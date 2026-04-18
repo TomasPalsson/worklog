@@ -1,0 +1,37 @@
+# worklog web — review UI container.
+#
+# One service, two bind mounts:
+#   - $WORKLOG_HOME (defaults to ~/.local/share/worklog) → /data
+#     gives the container the SQLite DB + WAL files + the unix socket
+#     the Rust daemon exposes
+#
+# The Rust daemon must be running on the host first — start it with
+# `worklog daemon &` or via `worklog web up` (which does both).
+#
+# Traffic: http://localhost:3333 on the host → port 3000 in the container.
+
+services:
+  web:
+    image: worklog-web:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: worklog-web
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3333:3000"
+    volumes:
+      # Bind mount the whole worklog dir so the container sees both the
+      # SQLite DB (for reads) and the unix socket (for writes via the
+      # daemon). Writable because SQLite's WAL mode creates sidecars.
+      - "${WORKLOG_HOME:-${HOME}/.local/share/worklog}:/data"
+    environment:
+      - WORKLOG_DB=/data/worklog.db
+      - WORKLOG_SOCKET=/data/api.sock
+      - TZ=${TZ:-UTC}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s

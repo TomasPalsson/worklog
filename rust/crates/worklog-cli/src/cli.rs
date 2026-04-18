@@ -12,7 +12,7 @@ use worklog_core::{
     collectors::{github as gh, jira as jira_col, tempo as tempo_col},
     daemon as daemon_mod, db, estimate, hook, hook_run, http, infer,
     paths::Paths,
-    repo, schedule, secrets,
+    repo, schedule, secrets, web as web_mod,
 };
 
 /// worklog — personal time-tracking for the developer who hates timers.
@@ -117,6 +117,42 @@ pub enum Cmd {
         /// Override the socket path (default: <data>/api.sock).
         #[arg(long)]
         socket: Option<std::path::PathBuf>,
+    },
+
+    /// Run the dockerised Next.js review UI (http://localhost:3333).
+    Web {
+        #[command(subcommand)]
+        sub: WebCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum WebCmd {
+    /// Start the web container in the background (also ensures the
+    /// daemon is running).
+    Up {
+        /// Port to bind on localhost. Default: 3333.
+        #[arg(long, default_value_t = 3333)]
+        port: u16,
+        /// Don't ensure the daemon is running — assume you started it.
+        #[arg(long)]
+        no_daemon: bool,
+    },
+    /// Stop and remove the web container (leaves the daemon alone).
+    Down,
+    /// Show container status.
+    Status,
+    /// Tail container logs (Ctrl-C to exit).
+    Logs {
+        /// Number of past lines to seed the tail with.
+        #[arg(long, default_value_t = 80)]
+        tail: u32,
+    },
+    /// (Re)build the container image from web/Dockerfile.
+    Build {
+        /// Force pull of the base image.
+        #[arg(long)]
+        pull: bool,
     },
 }
 
@@ -242,6 +278,13 @@ pub fn run_with<W: Write>(
         Cmd::Estimate { day, model } => cmd_estimate(day, &model, out, cli.json),
         Cmd::HookRun => cmd_hook_run(),
         Cmd::Daemon { socket } => cmd_daemon(socket),
+        Cmd::Web { sub } => match sub {
+            WebCmd::Up { port, no_daemon } => cmd_web_up(port, no_daemon, out, cli.json),
+            WebCmd::Down => cmd_web_down(out, cli.json),
+            WebCmd::Status => cmd_web_status(out, cli.json),
+            WebCmd::Logs { tail } => cmd_web_logs(tail),
+            WebCmd::Build { pull } => cmd_web_build(pull, out, cli.json),
+        },
     }
 }
 
@@ -825,4 +868,117 @@ fn rpassword_readline() -> Result<String> {
         std::io::stdin().lock().read_line(&mut line)?;
         Ok(line.trim_end_matches(['\n', '\r']).to_owned())
     }
+}
+
+// ─────────────────────────── web subcommand ───────────────────────────
+
+fn cmd_web_up<W: Write>(port: u16, no_daemon: bool, out: &mut W, json: bool) -> Result<()> {
+    web_mod::preflight_docker()?;
+    let paths = Paths::resolve()?;
+    paths.ensure()?;
+    let context = web_mod::resolve_web_context()?;
+    let compose = web_mod::render_compose(&paths, port, &context)?;
+
+    if !no_daemon && !daemon_reachable(&paths.socket) {
+        eprintln!(
+            "⚠ worklog daemon isn't running at {}.",
+            worklog_core::paths::short_display(&paths.socket)
+        );
+        eprintln!("   Start it in another terminal with: worklog daemon");
+        eprintln!("   (The web UI can read the DB without it, but writes will fail.)");
+    }
+
+    web_mod::compose_up(&compose, false)?;
+
+    if json {
+        writeln!(
+            out,
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "ok": true,
+                "url": format!("http://localhost:{port}"),
+                "compose": compose.display().to_string(),
+                "context": context.display().to_string(),
+            }))?
+        )?;
+    } else {
+        writeln!(out, "✓ worklog-web up — open http://localhost:{port}")?;
+        writeln!(out, "  compose: {}", compose.display())?;
+    }
+    Ok(())
+}
+
+fn cmd_web_down<W: Write>(out: &mut W, json: bool) -> Result<()> {
+    web_mod::preflight_docker()?;
+    let paths = Paths::resolve()?;
+    let compose = web_mod::compose_path(&paths);
+    if !compose.is_file() {
+        anyhow::bail!(
+            "no compose file at {} — nothing to bring down",
+            compose.display()
+        );
+    }
+    web_mod::compose_down(&compose)?;
+    if json {
+        writeln!(out, "{{\"ok\": true}}")?;
+    } else {
+        writeln!(out, "✓ worklog-web stopped")?;
+    }
+    Ok(())
+}
+
+fn cmd_web_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
+    web_mod::preflight_docker().ok(); // status should still run if docker daemon is off
+    let status = web_mod::status()?;
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&status)?)?;
+    } else if status.running {
+        writeln!(
+            out,
+            "✓ running — image={} port={} started={}",
+            status.image.as_deref().unwrap_or("?"),
+            status.port.map(|p| p.to_string()).unwrap_or("?".into()),
+            status.uptime.as_deref().unwrap_or("?"),
+        )?;
+    } else {
+        writeln!(out, "— not running. Start with `worklog web up`.")?;
+    }
+    Ok(())
+}
+
+fn cmd_web_logs(tail: u32) -> Result<()> {
+    web_mod::preflight_docker()?;
+    let paths = Paths::resolve()?;
+    let compose = web_mod::compose_path(&paths);
+    if !compose.is_file() {
+        anyhow::bail!(
+            "no compose file at {} — run `worklog web up` first",
+            compose.display()
+        );
+    }
+    web_mod::compose_logs(&compose, tail)
+}
+
+fn cmd_web_build<W: Write>(pull: bool, out: &mut W, json: bool) -> Result<()> {
+    web_mod::preflight_docker()?;
+    let paths = Paths::resolve()?;
+    paths.ensure()?;
+    let context = web_mod::resolve_web_context()?;
+    // Re-render so the compose file points at the current web/ location.
+    let compose = web_mod::render_compose(&paths, 3333, &context)?;
+    web_mod::compose_build(&compose, pull)?;
+    if json {
+        writeln!(out, "{{\"ok\": true, \"context\": {:?}}}", context.display())?;
+    } else {
+        writeln!(out, "✓ worklog-web image built from {}", context.display())?;
+    }
+    Ok(())
+}
+
+/// Cheap TCP-style reachability check for the unix socket: try connecting
+/// and immediately close. We don't speak HTTP — if the socket exists and
+/// is owned by our daemon it's listening.
+fn daemon_reachable(socket: &std::path::Path) -> bool {
+    use std::os::unix::net::UnixStream;
+    UnixStream::connect(socket).is_ok()
 }
