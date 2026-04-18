@@ -27,6 +27,41 @@ app = typer.Typer(help="Unified work-time tracker → Tempo.")
 console = Console()
 
 
+# ---------- Rust binary delegation ----------
+#
+# Commands below marked with `context_settings={"allow_extra_args": True,
+# "ignore_unknown_options": True}` forward all remaining argv to the Rust
+# `worklog` binary. We look for it first at ~/.worklog/bin/worklog-rs, then
+# on $PATH. If missing, we print a one-line install hint. Stage 2+ of the
+# rewrite will make this seamless — for now it's an explicit delegate so
+# users can opt into the new commands without Python changes.
+
+
+def _rust_binary() -> Path | None:
+    """Locate the Rust `worklog` binary. Returns None if not installed yet."""
+    from os import environ
+
+    candidate = Path(environ.get("HOME", "")) / ".worklog" / "bin" / "worklog-rs"
+    if candidate.is_file():
+        return candidate
+    which = shutil.which("worklog-rs")
+    return Path(which) if which else None
+
+
+def _exec_rust(args: list[str]) -> None:
+    """Replace this process with the Rust binary, forwarding argv."""
+    import os
+
+    binary = _rust_binary()
+    if binary is None:
+        console.print(
+            "[yellow]![/] Rust binary not installed yet. Run "
+            "[bold]worklog upgrade[/] to build & install it."
+        )
+        raise typer.Exit(code=127)
+    os.execvp(str(binary), [str(binary), *args])
+
+
 def _parse_day(s: str | None) -> date:
     if not s:
         return date.today()
@@ -479,4 +514,116 @@ def upgrade(
     if result.returncode != 0:
         console.print("[red]✗[/] upgrade failed — check the uv output above")
         raise typer.Exit(code=result.returncode)
-    console.print("[green]✓[/] upgraded. run [bold]worklog doctor[/] to confirm.")
+    console.print("[green]✓[/] python upgraded")
+
+    # Also build + install the Rust binary. Stage-1 lives in the rust/ workspace
+    # of the freshly upgraded checkout; we build a release and drop it at
+    # ~/.worklog/bin/worklog-rs so every `worklog db|secret|version|doctor-rs`
+    # passthrough works immediately.
+    _install_rust_binary()
+    console.print("[green]✓[/] all set. run [bold]worklog doctor[/] to confirm.")
+
+
+def _install_rust_binary() -> None:
+    """Build and install the Rust binary from the installed package's rust/ dir."""
+    import subprocess
+
+    # Locate the rust/ workspace. When installed via `uv tool install git+…`
+    # we won't have one — fall back to cloning into a temp dir.
+    pkg_root = Path(__file__).resolve().parent.parent.parent
+    rust_dir = pkg_root / "rust"
+
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        console.print(
+            "[yellow]![/] cargo not found — skipping Rust binary install. "
+            "Install Rust from rustup.rs and re-run [bold]worklog upgrade[/]."
+        )
+        return
+
+    if not rust_dir.is_dir():
+        # Installed via `uv tool install` which strips the rust/ tree. Clone
+        # it into a scratch dir so we can still build.
+        import tempfile
+
+        tmp = Path(tempfile.mkdtemp(prefix="worklog-rust-"))
+        rust_dir = tmp / "worklog" / "rust"
+        console.print(f"  [dim]cloning rust/ into {tmp} …[/]")
+        clone = subprocess.run(  # noqa: S603 - trusted args
+            ["git", "clone", "--depth", "1", "git@github.com:TomasPalsson/worklog.git", str(tmp / "worklog")],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if clone.returncode != 0:
+            console.print(f"[yellow]![/] git clone failed: {clone.stderr.strip()}")
+            return
+
+    bin_dir = Path.home() / ".worklog" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    dest = bin_dir / "worklog-rs"
+
+    console.print("[bold]building Rust binary[/] (this takes ~30s the first time) …")
+    build = subprocess.run(  # noqa: S603
+        [cargo, "build", "--release", "--bin", "worklog", "--manifest-path", str(rust_dir / "Cargo.toml")],
+        check=False,
+    )
+    if build.returncode != 0:
+        console.print("[yellow]![/] Rust build failed — see cargo output above.")
+        return
+
+    src = rust_dir / "target" / "release" / "worklog"
+    if not src.is_file():
+        console.print(f"[yellow]![/] Rust binary missing at {src}")
+        return
+
+    shutil.copy2(src, dest)
+    dest.chmod(0o755)
+    console.print(f"[green]✓[/] rust binary installed at {dest}")
+
+
+# ---------- Rust passthrough commands ----------
+#
+# These shell out to the Rust binary. They're deliberately defined at the
+# end of the module so the delegation helper above is available, and so
+# `worklog --help` lists them alongside the Python commands.
+
+_PASSTHROUGH_CONTEXT = {"allow_extra_args": True, "ignore_unknown_options": True}
+
+
+@app.command("db", context_settings=_PASSTHROUGH_CONTEXT)
+def db_passthrough(ctx: typer.Context) -> None:
+    """Database operations — delegates to the Rust binary.
+
+    Try: `worklog db migrate`, `worklog db info`, `worklog db path`.
+    """
+    _exec_rust(["db", *ctx.args])
+
+
+@app.command("secret", context_settings=_PASSTHROUGH_CONTEXT)
+def secret_passthrough(ctx: typer.Context) -> None:
+    """OS-keychain secrets — delegates to the Rust binary.
+
+    Try: `worklog secret list`, `worklog secret set jira_api_token`.
+    """
+    _exec_rust(["secret", *ctx.args])
+
+
+@app.command("version")
+def version_passthrough() -> None:
+    """Show Python + Rust binary versions."""
+    import importlib.metadata
+    import subprocess
+
+    try:
+        py_ver = importlib.metadata.version("worklog")
+    except importlib.metadata.PackageNotFoundError:
+        py_ver = "unknown"
+    console.print(f"worklog (python)  {py_ver}")
+
+    rust = _rust_binary()
+    if rust is None:
+        console.print("worklog (rust)    [yellow]not installed[/] — run `worklog upgrade`")
+        return
+    result = subprocess.run([str(rust), "version"], capture_output=True, text=True, check=False)  # noqa: S603
+    console.print(f"worklog (rust)    {result.stdout.strip() or result.stderr.strip()}")
