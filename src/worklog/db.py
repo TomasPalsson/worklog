@@ -11,16 +11,21 @@ from worklog.config import DB_PATH, ensure_dirs
 
 SCHEMA = files("worklog").joinpath("schema.sql").read_text()
 
+_CONNECTION_PRAGMAS = (
+    "PRAGMA foreign_keys = ON",
+    "PRAGMA journal_mode = WAL",
+    "PRAGMA synchronous = NORMAL",
+    "PRAGMA busy_timeout = 2000",
+)
+
 
 @contextmanager
 def connect(path: Path = DB_PATH) -> Iterator[sqlite3.Connection]:
     ensure_dirs()
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA synchronous = NORMAL")
-    conn.execute("PRAGMA busy_timeout = 2000")
+    for pragma in _CONNECTION_PRAGMAS:
+        conn.execute(pragma)
     try:
         yield conn
         conn.commit()
@@ -28,27 +33,29 @@ def connect(path: Path = DB_PATH) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def _migrate_events_table(conn: sqlite3.Connection) -> None:
-    """Add v2 columns to a pre-existing v1 events table.
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (name,),
+        ).fetchone()
+        is not None
+    )
 
-    Idempotent: safe to call when `events` already has the new columns.
-    """
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()}
-    if "session_id" not in cols:
+
+def _table_columns(conn: sqlite3.Connection, name: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({name})").fetchall()}
+
+
+def _migrate_events_table(conn: sqlite3.Connection) -> None:
+    if "session_id" not in _table_columns(conn, "events"):
         conn.execute("ALTER TABLE events ADD COLUMN session_id TEXT")
 
 
 def init_db(path: Path = DB_PATH) -> None:
-    """Create schema v2 from scratch or migrate an existing v1 database."""
+    """Apply schema v2: migrate legacy `events` shape, then ensure all v2 objects."""
     with connect(path) as conn:
-        # ALTER first, then executescript (CREATE IF NOT EXISTS) for fresh bits.
-        existing = {
-            r[0]
-            for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
-        }
-        if "events" in existing:
+        if _table_exists(conn, "events"):
             _migrate_events_table(conn)
         conn.executescript(SCHEMA)
 
