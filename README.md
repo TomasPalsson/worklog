@@ -5,9 +5,10 @@ from Claude Code, GitHub, Google Calendar, and Jira into one local event log,
 lets you review and clean it up in a web UI, and syncs the result to Tempo.
 
 > **Rewrite status:** the project is transitioning from Python to Rust in
-> five stages. **Stage 1.1 is live** — the Rust binary owns
-> `worklog version`, `worklog setup`, `worklog db …`, and `worklog secret …`.
-> Every other command stays Python until its stage lands. See
+> five stages. **Stages 1.1 + 1.2 are live** — the Rust binary owns
+> `worklog version`, `worklog setup`, `worklog db …`, `worklog secret …`,
+> `worklog hook install|uninstall|status`, and `worklog schedule …`. Every
+> other command stays Python until its stage lands. See
 > [`rust/README.md`](rust/README.md) and the
 > [Rewrite roadmap](#rewrite-roadmap) below.
 
@@ -85,9 +86,11 @@ from the `worklog` entrypoint. Everything else is Python (for now).
 | `worklog secret get <key>` | rust | Read a credential to stdout |
 | `worklog secret rm <key>` | rust | Delete a credential |
 | `worklog secret list` | rust | List known keys and whether each is set |
+| `worklog hook install / uninstall / status` | rust | Claude Code hook wiring in `~/.claude/settings.json` |
+| `worklog schedule install / uninstall / status` | rust | Scheduled collection (launchd or systemd --user) |
 | `worklog doctor` | python | Environment + DB + auth sanity report |
 | `worklog init` | python | Create dirs + DB (prefer `worklog setup`) |
-| `worklog hook install / uninstall` | python | Claude Code hook wiring |
+| `worklog hook run` | python | Invoked by Claude Code; still Python until Stage 2 |
 | `worklog collect [all\|github\|gcal\|jira]` | python | Pull remote activity |
 | `worklog today [--day …]` | python | Terminal summary |
 | `worklog infer [--day …]` | python | Rebuild blocks for a day |
@@ -121,7 +124,7 @@ users.
 | Stage | Scope | Status |
 |---|---|---|
 | 1.1 | Rust skeleton: workspace, db + schema share, paths, secrets, `setup` wizard, CLI passthroughs | ✅ shipped |
-| 1.2 | Scheduled collection (launchd/systemd), hook install inside Rust | ⏳ next |
+| 1.2 | Scheduled collection (launchd/systemd), hook install inside Rust, wizard integration | ✅ shipped |
 | 2 | Rust collectors (jira/github/gcal/tempo) — deprecate Python collectors | ⏳ |
 | 3 | axum unix-socket API + Rust estimator | ⏳ |
 | 4 | Next.js + Bun web container, dockerized, replaces FastAPI | ⏳ |

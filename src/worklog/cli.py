@@ -128,15 +128,38 @@ def _uninstall_hook() -> None:
 
 
 @app.command()
-def hook(action: str = typer.Argument(..., help="install | uninstall | run")) -> None:
+def hook(action: str = typer.Argument(..., help="install | uninstall | status | run")) -> None:
     """Manage the Claude Code hook integration.
 
-    install   — register stdin-JSON hook in ~/.claude/settings.json
-    uninstall — remove it
-    run       — read a hook event from stdin and log it (used by the hook itself)
+    install   — register stdin-JSON hook in ~/.claude/settings.json (Rust)
+    uninstall — remove it (Rust)
+    status    — report whether worklog is registered (Rust)
+    run       — read a hook event from stdin and log it (Python — called by Claude)
     """
+    # `run` stays Python: it's the event pipeline Claude invokes on every
+    # SessionStart/Stop, still backed by the existing collector. Install and
+    # uninstall delegate to the Rust binary so the settings.json editor has
+    # one canonical implementation.
     if action == "run":
         sys.exit(claude_collector.main())
+    if action not in {"install", "uninstall", "status"}:
+        raise typer.BadParameter("action must be install, uninstall, status, or run")
+
+    # Prefer the Rust binary — it's the canonical editor for
+    # ~/.claude/settings.json now. Only fall back to Python when Rust is
+    # genuinely missing (transitional / fresh installs that haven't run
+    # `worklog upgrade` yet).
+    import os
+
+    rust_bin = _rust_binary()
+    if rust_bin is not None:
+        os.execvp(str(rust_bin), [str(rust_bin), "hook", action])
+        # os.execvp does not return on success.
+
+    console.print(
+        "[yellow]![/] Rust binary missing — falling back to the Python installer. "
+        "Run [bold]worklog upgrade[/] when convenient."
+    )
     if action == "install":
         cmd = _install_hook()
         console.print("[green]✓[/] hook installed (Session/Prompt/Stop events)")
@@ -144,8 +167,19 @@ def hook(action: str = typer.Argument(..., help="install | uninstall | run")) ->
     elif action == "uninstall":
         _uninstall_hook()
         console.print("[green]✓[/] hook removed")
-    else:
-        raise typer.BadParameter("action must be install, uninstall, or run")
+    else:  # status
+        path = Path.home() / ".claude" / "settings.json"
+        if not path.exists():
+            console.print(f"settings: {path}")
+            console.print("installed: no")
+            return
+        settings = json.loads(path.read_text())
+        hooks = settings.get("hooks", {})
+        events = [e for e, hs in hooks.items() if any(_matches_our_hook(h, "") for h in hs)]
+        console.print(f"settings: {path}")
+        console.print(f"installed: {'yes' if events else 'no'}")
+        if events:
+            console.print(f"events:    {', '.join(events)}")
 
 
 # ---------- setup wizard ----------
@@ -607,6 +641,15 @@ def secret_passthrough(ctx: typer.Context) -> None:
     Try: `worklog secret list`, `worklog secret set jira_api_token`.
     """
     _exec_rust(["secret", *ctx.args])
+
+
+@app.command("schedule", context_settings=_PASSTHROUGH_CONTEXT)
+def schedule_passthrough(ctx: typer.Context) -> None:
+    """Scheduled collection — delegates to the Rust binary.
+
+    Try: `worklog schedule install --interval 15m`, `worklog schedule status`.
+    """
+    _exec_rust(["schedule", *ctx.args])
 
 
 @app.command("version")

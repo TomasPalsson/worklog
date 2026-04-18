@@ -1,8 +1,9 @@
 # worklog/rust — the Rust rewrite
 
-Stage 1.1 of the rewrite is here. The Python CLI keeps working in parallel;
-the Rust binary owns its own copy of the schema and a superset-compatible
-view of the same SQLite database at `~/.worklog/worklog.db`.
+Stages 1.1 + 1.2 of the rewrite are here. The Python CLI keeps working in
+parallel; the Rust binary owns its own copy of the schema and a
+superset-compatible view of the same SQLite database at
+`~/.local/share/worklog/worklog.db`.
 
 ## Layout
 
@@ -15,7 +16,7 @@ rust/
 │   │   ├── sql/schema.sql      # embedded via include_str! — mirror of
 │   │   │                       #   ../../src/worklog/schema.sql (tested for
 │   │   │                       #   byte-equality so the two cannot drift)
-│   │   └── src/{lib,paths,db,models,repo,secrets}.rs
+│   │   └── src/{lib,paths,db,models,repo,secrets,hook,schedule}.rs
 │   └── worklog-cli/            # bin: the `worklog` binary
 │       ├── src/{main,lib,cli,wizard}.rs
 │       └── tests/cli.rs        # assert_cmd end-to-end tests
@@ -35,6 +36,13 @@ worklog secret set <key>        # stash a credential in the OS keychain
 worklog secret get <key>        # print a credential to stdout
 worklog secret rm  <key>        # delete a credential
 worklog secret list             # show which KNOWN_KEYS are set
+worklog hook install            # register worklog in ~/.claude/settings.json
+worklog hook uninstall          # remove our handlers (leaves others alone)
+worklog hook status             # show which events are hooked
+worklog schedule install \
+       --interval 15m           # launchd plist (macOS) or systemd timer (Linux)
+worklog schedule uninstall
+worklog schedule status
 ```
 
 All commands accept `--json` for machine-readable output and honour
