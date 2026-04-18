@@ -7,7 +7,7 @@ to ~/.config/worklog/google_credentials.json.
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 
 from dateutil.parser import isoparse
 from google.auth.transport.requests import Request
@@ -17,6 +17,33 @@ from googleapiclient.discovery import build
 
 from worklog.config import Settings
 from worklog.db import connect, init_db, upsert_event
+
+
+def _to_utc(raw: str) -> datetime:
+    """Parse a Google Calendar start/end field and return it as UTC.
+
+    Google returns either:
+      - A full RFC3339 string with offset, e.g. ``2026-04-18T09:00:00+02:00``
+      - A bare date for all-day events, e.g. ``2026-04-18``
+
+    Without normalisation, non-UTC offset strings break the lexicographic
+    ``started_at >= ? AND < ?`` comparison used by both the Python and
+    Rust event bucketers: ``2026-04-18T09:00:00+02:00`` sorts *later*
+    than ``2026-04-18T07:00:00+00:00`` even though they represent the
+    same instant. Events from non-UTC calendars would land on the wrong
+    day or fall outside the window entirely.
+
+    All-day events are anchored at midnight UTC on the stated date,
+    which matches what the previous implementation did accidentally via
+    ``datetime.combine(..., time.min)``.
+    """
+    parsed = isoparse(raw)
+    if isinstance(parsed, date) and not isinstance(parsed, datetime):
+        # All-day event — `isoparse("2026-04-18")` returns a `date`.
+        parsed = datetime.combine(parsed, time.min)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 
@@ -83,8 +110,8 @@ def collect(
                     end = ev.get("end", {}).get("dateTime") or ev.get("end", {}).get("date")
                     if not start:
                         continue
-                    started_at = isoparse(start)
-                    ended_at = isoparse(end) if end else None
+                    started_at = _to_utc(start)
+                    ended_at = _to_utc(end) if end else None
                     duration = (
                         int((ended_at - started_at).total_seconds())
                         if ended_at

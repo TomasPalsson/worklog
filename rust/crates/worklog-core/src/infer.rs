@@ -80,7 +80,10 @@ pub struct InferBlock {
 fn new_block(e: &InferEvent) -> InferBlock {
     let end = e.end();
     InferBlock {
-        day: e.ts.date_naive().to_string(),
+        // Bucket the block on the user's LOCAL day (driven by
+        // `$WORKLOG_TZ`; defaults to UTC). Without this a developer in
+        // UTC-5 sees 23:00-local work land on tomorrow's page.
+        day: crate::tz::local_date(e.ts).to_string(),
         started_at: e.ts,
         ended_at: end,
         duration_seconds: (end - e.ts).num_seconds(),
@@ -163,12 +166,11 @@ pub fn build_blocks(events: Vec<InferEvent>) -> Vec<InferBlock> {
 // ───────────────────────── db glue ─────────────────────────
 
 pub fn load_day_events(conn: &Connection, day: NaiveDate) -> Result<Vec<InferEvent>> {
-    use chrono::NaiveTime;
-    let start = day.and_time(NaiveTime::MIN).and_utc().to_rfc3339();
-    let end = (day + Duration::days(1))
-        .and_time(NaiveTime::MIN)
-        .and_utc()
-        .to_rfc3339();
+    // `day` is interpreted in the user's local TZ (`$WORKLOG_TZ`); the
+    // SQL range is the UTC window that covers it.
+    let (start_utc, end_utc) = crate::tz::utc_window_for_local_day(day);
+    let start = start_utc.to_rfc3339();
+    let end = end_utc.to_rfc3339();
     let mut stmt = conn.prepare(
         "SELECT id, source, started_at, duration_seconds, jira_issue
            FROM events
@@ -553,6 +555,29 @@ mod tests {
         assert_eq!(stored[0].description.as_deref(), Some("custom"));
         assert_eq!(stored[0].jira_issue.as_deref(), Some("PROJ-7"));
         assert_eq!(stored[0].estimated_by.as_deref(), Some("manual"));
+    }
+
+    #[test]
+    fn block_day_respects_worklog_tz() {
+        // Regression for H4: without WORKLOG_TZ, a 23:30 local event in
+        // UTC-5 (=04:30Z the next day) would land on the WRONG day's
+        // review page. With WORKLOG_TZ=-05:00, it lands on the local day.
+        let _g = crate::tz::test_env_lock();
+        std::env::set_var("WORKLOG_TZ", "-05:00");
+        let ts = chrono::Utc.with_ymd_and_hms(2026, 4, 19, 4, 30, 0).unwrap();
+        let event = InferEvent {
+            event_id: None,
+            source: "manual".into(),
+            ts,
+            duration_seconds: Some(600),
+            jira_issue: None,
+        };
+        let block = new_block(&event);
+        assert_eq!(
+            block.day, "2026-04-18",
+            "04:30 UTC in UTC-5 is 23:30 on Apr 18 local"
+        );
+        std::env::remove_var("WORKLOG_TZ");
     }
 
     #[test]
