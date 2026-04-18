@@ -17,12 +17,77 @@ pub const KNOWN_KEYS: &[&str] = &[
     "jira_api_token",
     "jira_base_url",
     "github_token",
+    "github_user",
     "tempo_api_token",
     "google_client_id",
     "google_client_secret",
     "google_refresh_token",
     "anthropic_api_key",
 ];
+
+/// Map each known key to the Python-era `.env` variable name so Rust
+/// collectors can read tokens the user entered via the old
+/// `worklog setup` wizard without forcing a migration.
+fn env_var_for(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "jira_email"           => "WORKLOG_JIRA_EMAIL",
+        "jira_api_token"       => "WORKLOG_JIRA_TOKEN",
+        "jira_base_url"        => "WORKLOG_JIRA_BASE_URL",
+        "github_token"         => "WORKLOG_GITHUB_TOKEN",
+        "github_user"          => "WORKLOG_GITHUB_USER",
+        "tempo_api_token"      => "WORKLOG_TEMPO_TOKEN",
+        "google_client_id"     => "WORKLOG_GOOGLE_CLIENT_ID",
+        "google_client_secret" => "WORKLOG_GOOGLE_CLIENT_SECRET",
+        "google_refresh_token" => "WORKLOG_GOOGLE_REFRESH_TOKEN",
+        "anthropic_api_key"    => "ANTHROPIC_API_KEY",
+        _ => return None,
+    })
+}
+
+/// Override for the `.env` fallback path. Primarily for tests.
+#[cfg(not(test))]
+const ENV_FILE_PATH_OVERRIDE: &str = "WORKLOG_ENV_FILE";
+
+/// Read a value from the XDG `.env` file that the Python CLI writes to
+/// `~/.config/worklog/.env`. Returns `None` if the file or key is missing.
+///
+/// Never used under `cfg(test)` — test builds use the in-memory HashMap.
+#[cfg(not(test))]
+fn read_env_file(key: &str) -> Option<String> {
+    let env_name = env_var_for(key)?;
+    let path = if let Some(p) = std::env::var_os(ENV_FILE_PATH_OVERRIDE) {
+        std::path::PathBuf::from(p)
+    } else {
+        let home = dirs::home_dir()?;
+        home.join(".config/worklog/.env")
+    };
+    let bytes = std::fs::read(&path).ok()?;
+    let text = std::str::from_utf8(&bytes).ok()?;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (k, v) = line.split_once('=')?;
+        if k.trim() != env_name {
+            continue;
+        }
+        return Some(strip_quotes(v.trim()).to_owned());
+    }
+    None
+}
+
+#[cfg(not(test))]
+fn strip_quotes(s: &str) -> &str {
+    if s.len() >= 2
+        && ((s.starts_with('"') && s.ends_with('"'))
+            || (s.starts_with('\'') && s.ends_with('\'')))
+    {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
+}
 
 /// Environment variable that, if set to a path, forces secrets into a JSON
 /// file rather than the OS keychain. Exclusively for tests and CI — never
@@ -83,14 +148,23 @@ mod backend {
     }
 
     pub fn get(key: &str) -> Result<Option<String>> {
-        if let Some(path) = file_backend_path() {
-            return Ok(read_file_store(&path)?.get(key).cloned());
+        let primary = if let Some(path) = file_backend_path() {
+            read_file_store(&path)?.get(key).cloned()
+        } else {
+            match entry(key)?.get_password() {
+                Ok(v) => Some(v),
+                Err(keyring::Error::NoEntry) => None,
+                Err(e) => return Err(e).with_context(|| format!("reading secret {key}")),
+            }
+        };
+        if primary.is_some() {
+            return Ok(primary);
         }
-        match entry(key)?.get_password() {
-            Ok(v) => Ok(Some(v)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(e).with_context(|| format!("reading secret {key}")),
-        }
+        // Fall back to the Python-era .env file so existing installs keep
+        // working without a migration step. Applies to both the real
+        // keychain backend and the file-backed shim used by integration
+        // tests — otherwise tests can't verify the fallback end-to-end.
+        Ok(super::read_env_file(key))
     }
 
     pub fn delete(key: &str) -> Result<bool> {
@@ -147,6 +221,17 @@ pub fn get(key: &str) -> Result<Option<String>> {
 }
 pub fn delete(key: &str) -> Result<bool> {
     backend::delete(key)
+}
+
+/// Fetch a required secret or return a helpful error pointing at the
+/// commands that would set it.
+pub fn require(key: &str) -> Result<String> {
+    match get(key)? {
+        Some(v) if !v.is_empty() => Ok(v),
+        _ => anyhow::bail!(
+            "missing secret `{key}`. Set it with `worklog secret set {key}` or run `worklog setup`."
+        ),
+    }
 }
 
 /// Status of a single known secret, for `worklog doctor` and the wizard.
@@ -217,5 +302,32 @@ mod tests {
         let _g = LOCK.lock().unwrap();
         clean();
         assert!(!delete("nonexistent_key").unwrap());
+    }
+
+    #[test]
+    fn env_var_mapping_covers_every_known_key() {
+        for k in KNOWN_KEYS {
+            assert!(
+                env_var_for(k).is_some(),
+                "known key {k} has no WORKLOG_* mapping — collectors reading from .env will miss it"
+            );
+        }
+    }
+
+    #[test]
+    fn require_errors_when_absent_with_actionable_message() {
+        let _g = LOCK.lock().unwrap();
+        clean();
+        let err = require("jira_api_token").unwrap_err().to_string();
+        assert!(err.contains("missing secret"), "err = {err}");
+        assert!(err.contains("worklog secret set"), "err = {err}");
+    }
+
+    #[test]
+    fn require_returns_stored_value() {
+        let _g = LOCK.lock().unwrap();
+        clean();
+        set("jira_email", "t@p5.is").unwrap();
+        assert_eq!(require("jira_email").unwrap(), "t@p5.is");
     }
 }

@@ -555,6 +555,10 @@ mod tests {
         std::env::set_var("WORKLOG_HOME", tmp.path());
         let secrets_file = tmp.path().join("secrets.json");
         std::env::set_var("WORKLOG_SECRETS_FILE", &secrets_file);
+        // Point the .env fallback at a non-existent file so this test is
+        // insulated from whatever's in the developer's real
+        // ~/.config/worklog/.env.
+        std::env::set_var("WORKLOG_ENV_FILE", tmp.path().join("absent.env"));
         let report = run(WizardOptions {
             non_interactive: true,
             skip_validate: true,
@@ -573,5 +577,6 @@ mod tests {
         assert!(tmp.path().join("worklog.db").is_file());
         std::env::remove_var("WORKLOG_HOME");
         std::env::remove_var("WORKLOG_SECRETS_FILE");
+        std::env::remove_var("WORKLOG_ENV_FILE");
     }
 }

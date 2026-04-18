@@ -17,6 +17,8 @@ fn cmd(home: &TempDir) -> Command {
     // touched by `cargo test`.
     c.env("CLAUDE_HOME", home.path().join("claude"));
     c.env("WORKLOG_SCHEDULE_HOME", home.path());
+    // Insulate tests from the developer's real ~/.config/worklog/.env.
+    c.env("WORKLOG_ENV_FILE", home.path().join("absent.env"));
     // Shut up tracing during tests.
     c.env("RUST_LOG", "error");
     c

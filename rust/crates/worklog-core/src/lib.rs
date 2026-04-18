@@ -4,8 +4,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod collectors;
 pub mod db;
 pub mod hook;
+pub mod http;
 pub mod models;
 pub mod paths;
 pub mod repo;
