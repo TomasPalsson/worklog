@@ -114,6 +114,32 @@ mod tests {
     }
 
     #[test]
+    fn set_duration_returns_error_on_naive_started_at() {
+        // started_at must be RFC3339 (with offset). If a row somehow got
+        // stored without one — shouldn't happen post-stage-1, but
+        // defensive — set_duration must error cleanly rather than panic.
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-18', '2026-04-18T09:00:00', '2026-04-18T09:30:00', 1800)",
+            [],
+        )
+        .unwrap();
+        let id = conn.last_insert_rowid();
+        let err = set_duration(&conn, id, 60).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("RFC3339") || msg.contains("parsing started_at"),
+            "expected parse error context, got: {msg}"
+        );
+        // DB must be untouched — no half-update.
+        let dur: i64 = conn
+            .query_row("SELECT duration_seconds FROM blocks WHERE id = ?", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(dur, 1800, "duration must not change when parse fails");
+    }
+
+    #[test]
     fn set_duration_updates_ended_at_to_match() {
         // Regression: set_duration used to leave ended_at stale, so
         // ended_at - started_at disagreed with duration_seconds. Anyone

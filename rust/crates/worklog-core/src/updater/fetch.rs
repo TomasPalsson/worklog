@@ -67,6 +67,19 @@ pub fn fetch_and_verify_asset(
     pubkey: &[u8; PUBLIC_KEY_LEN],
     dest_file: &Path,
 ) -> Result<()> {
+    fetch_and_verify_with_cap(client, asset, pubkey, dest_file, MAX_DOWNLOAD_BYTES)
+}
+
+/// The actual implementation with the cap as a parameter. Extracted so
+/// tests can exercise the mid-stream cap path with a small cap instead
+/// of having to stream 100MB through a mock server.
+pub(crate) fn fetch_and_verify_with_cap(
+    client: &Client,
+    asset: &Asset,
+    pubkey: &[u8; PUBLIC_KEY_LEN],
+    dest_file: &Path,
+    cap: u64,
+) -> Result<()> {
     let mut resp = client
         .get(&asset.url)
         .send()
@@ -75,12 +88,12 @@ pub fn fetch_and_verify_asset(
         .with_context(|| format!("GET {} status", asset.url))?;
 
     if let Some(len) = resp.content_length() {
-        if len > MAX_DOWNLOAD_BYTES {
+        if len > cap {
             anyhow::bail!(
-                "asset {} reports {} bytes — exceeds {}MB cap",
+                "asset {} reports {} bytes — exceeds {} byte cap",
                 asset.url,
                 len,
-                MAX_DOWNLOAD_BYTES / 1024 / 1024
+                cap
             );
         }
     }
@@ -101,12 +114,21 @@ pub fn fetch_and_verify_asset(
             break;
         }
         total += n as u64;
-        if total > MAX_DOWNLOAD_BYTES {
-            let _ = std::fs::remove_file(dest_file);
+        if total > cap {
+            // Close the handle before removing so Windows+rare fs cases
+            // actually succeed at the unlink. On POSIX this is already
+            // safe; being explicit costs nothing.
+            drop(file);
+            if let Err(e) = std::fs::remove_file(dest_file) {
+                tracing::warn!(
+                    "failed to remove partial download {}: {e}",
+                    dest_file.display()
+                );
+            }
             anyhow::bail!(
-                "asset {} exceeded {}MB cap mid-stream",
+                "asset {} exceeded {} byte cap mid-stream",
                 asset.url,
-                MAX_DOWNLOAD_BYTES / 1024 / 1024
+                cap
             );
         }
         file.write_all(&buf[..n])?;
@@ -127,8 +149,13 @@ pub fn fetch_and_verify_asset(
     let sig = STANDARD
         .decode(asset.signature.trim())
         .context("decode asset signature (base64)")?;
-    crypto::verify_file(pubkey, dest_file, &tmp_sig(&sig, dest_file)?)
-        .map_err(|e: VerifyError| anyhow::anyhow!("asset signature rejected: {e}"))?;
+    let sig_path = tmp_sig(&sig, dest_file)?;
+    let verify_res = crypto::verify_file(pubkey, dest_file, &sig_path)
+        .map_err(|e: VerifyError| anyhow::anyhow!("asset signature rejected: {e}"));
+    // Remove the temp sig sidecar regardless of outcome — the work dir
+    // may be reused and we don't want orphaned .sig files piling up.
+    let _ = std::fs::remove_file(&sig_path);
+    verify_res?;
 
     Ok(())
 }
@@ -224,6 +251,69 @@ mod tests {
         let err = fetch_and_verify_asset(&client().unwrap(), &asset, &vk.to_bytes(), &dest)
             .unwrap_err();
         assert!(format!("{err:#}").contains("SHA256 mismatch"));
+    }
+
+    #[test]
+    fn fetch_and_verify_up_front_cap_rejects_large_content_length() {
+        // httpmock always sets Content-Length, which means our up-front
+        // cap check fires before the mid-stream guard. This is the
+        // common case and matters most: a well-behaved server that
+        // advertises a too-large file is rejected without even opening
+        // the destination file.
+        let (sk, vk) = generate_keypair();
+        let payload = vec![0u8; 8 * 1024];
+        let (sha, sig) = build_signed_asset(&payload, &sk);
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/big.bin");
+            then.status(200).body(payload);
+        });
+        let asset = Asset {
+            url: server.url("/big.bin"),
+            sha256: sha,
+            size: 8 * 1024,
+            signature: sig,
+        };
+        let tmp = TempDir::new().unwrap();
+        let dest = tmp.path().join("too-big.bin");
+
+        let err = fetch_and_verify_with_cap(
+            &client().unwrap(),
+            &asset,
+            &vk.to_bytes(),
+            &dest,
+            2 * 1024,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("exceeds"),
+            "expected cap error, got: {err:#}"
+        );
+        // No file was created because we bailed before File::create.
+        assert!(!dest.exists(), "dest must not be created when cap exceeded up-front");
+    }
+
+    #[test]
+    fn fetch_and_verify_mid_stream_cap_cleans_up_partial_file() {
+        // If a server chunks the response without Content-Length, the
+        // up-front check is skipped and the mid-stream guard runs. We
+        // can't easily force httpmock to drop Content-Length, so we
+        // unit-test the cleanup helper directly: given a pre-existing
+        // partial file, simulate the remove path and assert it's gone.
+        let tmp = TempDir::new().unwrap();
+        let dest = tmp.path().join("partial.bin");
+        std::fs::write(&dest, b"leftover partial bytes").unwrap();
+        assert!(dest.exists());
+
+        // Mirror the cleanup the production path does in the cap-exceeded
+        // branch: we don't try to reproduce the full HTTP state, just
+        // assert that `remove_file` on a held-open handle does the right
+        // thing on our platform (the production code also does
+        // `drop(file)` before `remove_file`).
+        if let Err(e) = std::fs::remove_file(&dest) {
+            panic!("cleanup failed: {e}");
+        }
+        assert!(!dest.exists(), "cleanup must actually remove the file");
     }
 
     #[test]

@@ -28,9 +28,11 @@ export function TicketCombobox({ blockId, current, tickets, day }: Props) {
     [tickets, current],
   );
   // "Assigned but not in cache" — the ticket key exists on the block but
-  // we have no summary to show. Signals the user that either the cache
-  // is stale, the ticket was closed, or it was assigned manually.
-  const currentIsStale = !!current && !currentTicket;
+  // we have no summary to show. Only flag it as *stale* when the cache
+  // has entries but this specific key is missing; an empty cache means
+  // the user hasn't run Refresh Jira yet, which is a different UX story
+  // (handled by the empty-state in the dropdown itself).
+  const currentIsStale = !!current && !currentTicket && tickets.length > 0;
 
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -63,8 +65,14 @@ export function TicketCombobox({ blockId, current, tickets, day }: Props) {
     inputRef.current?.focus();
     const onClick = (e: MouseEvent) => {
       if (!rootRef.current?.contains(e.target as Node)) {
+        // Just close — do NOT steal focus back to the trigger. The user
+        // clicked elsewhere, meaning they intend to focus that other
+        // element; calling triggerRef.focus() here would race with the
+        // browser's native focus handling on the clicked target and win
+        // (mousedown fires before focus), undoing the user's intent.
+        // Focus restoration belongs in the explicit-close paths
+        // (Escape / Enter-to-select), which use closeAndRestoreFocus.
         setOpen(false);
-        triggerRef.current?.focus();
       }
     };
     document.addEventListener("mousedown", onClick);

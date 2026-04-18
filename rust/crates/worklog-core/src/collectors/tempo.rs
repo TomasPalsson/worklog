@@ -480,6 +480,69 @@ mod tests {
     }
 
     #[test]
+    fn sync_writes_integer_tempo_worklog_id_from_response() {
+        // The happy path: Tempo returns a numeric id. Must be persisted
+        // as a non-empty string. Previously only the negative case
+        // (empty/null) was tested — if Value::Number handling broke,
+        // no test would catch it.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/worklogs");
+            then.status(200).body(r#"{"tempoWorklogId": 42}"#);
+        });
+        let conn = open_memory().unwrap();
+        let bid = insert_block(
+            &conn,
+            "2026-04-18",
+            "2026-04-18T09:00:00Z",
+            "2026-04-18T09:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("x"),
+        );
+        let (report, results) = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report.synced, 1);
+        assert_eq!(results[0].status, "synced");
+        assert_eq!(results[0].tempo_id.as_deref(), Some("42"));
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT tempo_worklog_id FROM blocks WHERE id = ?1",
+                params![bid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored.as_deref(), Some("42"));
+    }
+
+    #[test]
+    fn normalise_tempo_id_accepts_integer_and_string() {
+        use serde_json::json;
+        assert_eq!(normalise_tempo_id(&json!(42)).as_deref(), Some("42"));
+        assert_eq!(normalise_tempo_id(&json!(0)).as_deref(), Some("0"));
+        assert_eq!(normalise_tempo_id(&json!("tw-7")).as_deref(), Some("tw-7"));
+        assert_eq!(normalise_tempo_id(&json!("  42  ")).as_deref(), Some("42"));
+    }
+
+    #[test]
+    fn normalise_tempo_id_rejects_garbage() {
+        use serde_json::json;
+        assert_eq!(normalise_tempo_id(&json!(null)), None);
+        assert_eq!(normalise_tempo_id(&json!("")), None);
+        assert_eq!(normalise_tempo_id(&json!("null")), None);
+        assert_eq!(normalise_tempo_id(&json!("NULL")), None);
+        assert_eq!(normalise_tempo_id(&json!({"id": 7})), None);
+        assert_eq!(normalise_tempo_id(&json!([42])), None);
+        assert_eq!(normalise_tempo_id(&json!(true)), None);
+    }
+
+    #[test]
     fn sync_records_errors_without_crashing() {
         let server = MockServer::start();
         server.mock(|when, then| {

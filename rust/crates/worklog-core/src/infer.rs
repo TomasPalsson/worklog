@@ -217,9 +217,15 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
     let mut prior: std::collections::HashMap<String, CarryRow> = std::collections::HashMap::new();
     let mut prior_list: Vec<CarryRow> = Vec::new();
     {
+        // ORDER BY started_at matters: the overlap-fallback claims rows
+        // in iteration order, so two new blocks that both overlap the
+        // same prior would otherwise race nondeterministically for its
+        // carry state (tempo_worklog_id in particular). Stable order
+        // ensures the earliest-starting new block claims the earliest
+        // prior.
         let mut stmt = conn.prepare(
             "SELECT started_at, ended_at, jira_issue, description, estimated_by, tempo_worklog_id
-               FROM blocks WHERE day = ?1",
+               FROM blocks WHERE day = ?1 ORDER BY started_at",
         )?;
         let iter = stmt.query_map(params![day_iso], |r| {
             Ok(CarryRow {
@@ -555,6 +561,56 @@ mod tests {
         assert_eq!(stored[0].description.as_deref(), Some("custom"));
         assert_eq!(stored[0].jira_issue.as_deref(), Some("PROJ-7"));
         assert_eq!(stored[0].estimated_by.as_deref(), Some("manual"));
+    }
+
+    #[test]
+    fn load_day_events_window_respects_worklog_tz() {
+        // The round-1 phase-5 test only exercised new_block's local_date
+        // bucketing. The actual query path (utc_window_for_local_day
+        // driving the SQL range) was untested with a non-UTC TZ. This
+        // test covers it: an event at 04:30 UTC lands on local Apr 18
+        // in UTC-5, so asking for local Apr 18 must return that event.
+        let _g = crate::tz::test_env_lock();
+        std::env::set_var("WORKLOG_TZ", "-05:00");
+        let conn = open_memory().unwrap();
+        // 04:30 UTC = 23:30 local on Apr 18 in UTC-5.
+        repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                "github_commit",
+                "late-commit",
+                "2026-04-19T04:30:00+00:00",
+                "late night work",
+            ),
+        )
+        .unwrap();
+        // 14:00 UTC on Apr 18 = 09:00 local — also on Apr 18.
+        repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                "github_commit",
+                "morning-commit",
+                "2026-04-18T14:00:00+00:00",
+                "morning work",
+            ),
+        )
+        .unwrap();
+
+        let events = load_day_events(&conn, NaiveDate::from_ymd_opt(2026, 4, 18).unwrap())
+            .expect("load_day_events");
+        assert_eq!(events.len(), 2, "both events must land on local Apr 18");
+
+        // And asking for local Apr 19 returns NOTHING (the 04:30Z event
+        // is local Apr 18, not Apr 19).
+        let none = load_day_events(&conn, NaiveDate::from_ymd_opt(2026, 4, 19).unwrap())
+            .expect("load_day_events");
+        assert_eq!(
+            none.len(),
+            0,
+            "Apr 19 local should be empty — the 04:30Z event is Apr 18 local"
+        );
+
+        std::env::remove_var("WORKLOG_TZ");
     }
 
     #[test]
