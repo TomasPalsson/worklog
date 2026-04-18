@@ -22,3 +22,7 @@ htmlcov/
 # Local DB (for test runs inside the project dir)
 *.db
 
+# Rust
+rust/**/target/
+rust/**/Cargo.lock.bak
+
