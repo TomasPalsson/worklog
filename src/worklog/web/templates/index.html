@@ -2,112 +2,173 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>worklog — {{ day }}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>worklog · {{ day }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <header>
-    <h1>worklog</h1>
-    <nav>
-      <a href="/?day={{ prev_day }}">← {{ prev_day }}</a>
-      <strong>{{ day }}</strong>
-      <a href="/?day={{ next_day }}">{{ next_day }} →</a>
-    </nav>
-  </header>
+  <div class="shell">
 
-  <section class="totals">
-    <div class="pill"><span class="label">Total</span>
-      <span class="value">{{ "%.1f"|format(total_seconds / 3600) }}h</span>
+    {# ─── ticker bar ──────────────────────────────────────── #}
+    <div class="ticker">
+      <span class="brand">◆ WORKLOG</span>
+      <span class="sep">/</span>
+      <span>{{ day.strftime('%Y-%m-%d') }}</span>
+      <span class="sep">·</span>
+      <span>{{ day.strftime('%A').upper() }} · W{{ "%02d"|format(day.isocalendar().week) }}</span>
+      <nav>
+        <a href="/?day={{ prev_day }}" title="Previous day">◀ {{ prev_day }}</a>
+        <strong>{{ day }}</strong>
+        <a href="/?day={{ next_day }}" title="Next day">{{ next_day }} ▶</a>
+      </nav>
     </div>
-    <div class="pill"><span class="label">Blocks</span>
-      <span class="value">{{ blocks|length }}</span>
+
+    {# ─── metrics ────────────────────────────────────────── #}
+    <section class="metrics">
+      <div class="metric">
+        <span class="label">Total tracked</span>
+        <span class="value accent">
+          {{ "%.1f"|format(total_seconds / 3600) }}<span class="unit">h</span>
+        </span>
+      </div>
+      <div class="metric">
+        <span class="label">Blocks</span>
+        <span class="value">{{ blocks|length }}</span>
+      </div>
+      <div class="metric">
+        <span class="label">No ticket</span>
+        <span class="value {% if unassigned_count %}warn{% else %}mute{% endif %}">
+          {{ unassigned_count }}
+        </span>
+      </div>
+      <div class="metric">
+        <span class="label">Jira cache</span>
+        <span class="value mute">
+          {{ ticket_cache_count }}<span class="unit">keys</span>
+        </span>
+      </div>
+    </section>
+
+    {# ─── actions ────────────────────────────────────────── #}
+    <div class="rail">Actions</div>
+    <div class="actions">
+      <form method="post" action="/infer" class="inline-form">
+        <input type="hidden" name="day" value="{{ day }}" />
+        <button type="submit">Re-infer blocks</button>
+      </form>
+      <form method="post" action="/estimate" class="inline-form">
+        <input type="hidden" name="day" value="{{ day }}" />
+        <button type="submit">AI estimate</button>
+      </form>
+      <form method="post" action="/jira/refresh" class="inline-form">
+        <input type="hidden" name="day" value="{{ day }}" />
+        <button type="submit">Refresh Jira</button>
+      </form>
+      <span class="spacer"></span>
+      <form method="post" action="/sync" class="inline-form">
+        <input type="hidden" name="day" value="{{ day }}" />
+        <button type="submit" name="dry_run" value="true">Dry-run</button>
+        <button type="submit" name="dry_run" value="false" class="primary">Sync → Tempo</button>
+      </form>
     </div>
-    {% if unassigned_count %}
-      <div class="pill warn"><span class="label">No ticket</span>
-        <span class="value">{{ unassigned_count }}</span>
+
+    {# ─── blocks table ───────────────────────────────────── #}
+    <div class="rail">
+      Blocks <span class="count">· {{ blocks|length }} total · {{ "%.1f"|format(total_seconds / 3600) }}h</span>
+    </div>
+
+    {% if blocks %}
+      <div class="blocks-wrap">
+        <table class="blocks">
+          <thead>
+            <tr>
+              <th style="width:3px; padding:0;"></th>
+              <th style="width:120px;">06h ─── 22h</th>
+              <th>Time</th>
+              <th class="num">Min</th>
+              <th>Ticket</th>
+              <th>Description</th>
+              <th class="num">Evt</th>
+              <th>Src</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for b in blocks %}
+              {% set sh = b.started_at[11:13]|int %}
+              {% set sm = b.started_at[14:16]|int %}
+              {% set start_min = sh*60 + sm %}
+              {% set dur_min = b.duration_seconds // 60 %}
+              {% set window_start = 360 %}    {# 06:00 #}
+              {% set window_span = 960 %}     {# 16h  #}
+              {% set left_pct = ((start_min - window_start) / window_span * 100) %}
+              {% set width_pct = (dur_min / window_span * 100) %}
+              {% if left_pct < 0 %}{% set left_pct = 0 %}{% endif %}
+              {% if left_pct > 100 %}{% set left_pct = 100 %}{% endif %}
+              <tr class="{% if b.flagged %}flagged{% endif %} {% if b.tempo_worklog_id %}synced{% endif %} {% if not b.jira_issue %}no-ticket{% endif %}">
+                <td class="marker"></td>
+                <td>
+                  <div class="timeline" title="{{ b.started_at[11:16] }}–{{ b.ended_at[11:16] }}">
+                    <div class="bar" style="left: {{ '%.2f'|format(left_pct) }}%; width: {{ '%.2f'|format(width_pct) }}%;"></div>
+                  </div>
+                </td>
+                <td class="time">
+                  <span class="range">{{ b.started_at[11:16] }}<span style="color:var(--ink-faint)">–</span>{{ b.ended_at[11:16] }}</span>
+                </td>
+                <td class="num">
+                  <form method="post" action="/blocks/{{ b.id }}/duration" class="inline-form">
+                    <input type="hidden" name="day" value="{{ day }}" />
+                    <input type="number" name="minutes" min="0" step="15"
+                           value="{{ b.duration_seconds // 60 }}"
+                           aria-label="Duration in minutes" />
+                  </form>
+                </td>
+                <td class="ticket">
+                  <form method="post" action="/blocks/{{ b.id }}/ticket" class="inline-form" style="width:100%">
+                    <input type="hidden" name="day" value="{{ day }}" />
+                    <input type="text" name="jira_issue" list="tickets-dl"
+                           value="{{ b.jira_issue or '' }}"
+                           placeholder="— unassigned"
+                           aria-label="Jira ticket key" />
+                  </form>
+                </td>
+                <td class="desc">
+                  <form method="post" action="/blocks/{{ b.id }}/description" class="inline-form" style="width:100%">
+                    <input type="hidden" name="day" value="{{ day }}" />
+                    <input type="text" name="description"
+                           value="{{ b.description or '' }}"
+                           placeholder="— add a description"
+                           aria-label="Block description" />
+                  </form>
+                </td>
+                <td class="evt">{{ b.event_count }}</td>
+                <td><span class="tag src-{{ b.estimated_by or 'gap' }}">{{ b.estimated_by or 'gap' }}</span></td>
+                <td>
+                  <form method="post" action="/blocks/{{ b.id }}/delete" class="inline-form">
+                    <input type="hidden" name="day" value="{{ day }}" />
+                    <button type="submit" title="Remove block" class="danger" aria-label="Remove block">✕</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <datalist id="tickets-dl">
+        {% for t in tickets %}
+          <option value="{{ t.key }}">{{ t.key }} — {{ t.summary }} [{{ t.status or '?' }}]</option>
+        {% endfor %}
+      </datalist>
+    {% else %}
+      <div class="empty">
+        No blocks recorded for <strong>{{ day }}</strong>.<br/>
+        Run <code>worklog collect all</code>, then press <strong>Re-infer blocks</strong>.
       </div>
     {% endif %}
-    <div class="pill"><span class="label">Tickets cached</span>
-      <span class="value">{{ ticket_cache_count }}</span>
-    </div>
-  </section>
 
-  <section class="actions">
-    <form method="post" action="/infer" style="display:inline">
-      <input type="hidden" name="day" value="{{ day }}" />
-      <button type="submit">↻ Re-infer blocks</button>
-    </form>
-    <form method="post" action="/estimate" style="display:inline">
-      <input type="hidden" name="day" value="{{ day }}" />
-      <button type="submit">🤖 Estimate with claude -p</button>
-    </form>
-    <form method="post" action="/jira/refresh" style="display:inline">
-      <input type="hidden" name="day" value="{{ day }}" />
-      <button type="submit">↻ Refresh Jira tickets</button>
-    </form>
-    <form method="post" action="/sync" style="display:inline">
-      <input type="hidden" name="day" value="{{ day }}" />
-      <button type="submit" name="dry_run" value="true">Dry-run sync</button>
-      <button type="submit" name="dry_run" value="false" class="primary">Sync to Tempo</button>
-    </form>
-  </section>
-
-  {% if blocks %}
-    <table class="blocks">
-      <thead>
-        <tr>
-          <th>Time</th><th>Minutes</th><th>Ticket</th>
-          <th>Description</th><th>Events</th><th>Source</th><th></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for b in blocks %}
-          <tr class="{% if b.flagged %}flagged{% endif %} {% if b.tempo_worklog_id %}synced{% endif %} {% if not b.jira_issue %}no-ticket{% endif %}">
-            <td class="time">{{ b.started_at[11:16] }}–{{ b.ended_at[11:16] }}</td>
-            <td>
-              <form method="post" action="/blocks/{{ b.id }}/duration" class="inline">
-                <input type="hidden" name="day" value="{{ day }}" />
-                <input type="number" name="minutes" min="0" step="15"
-                       value="{{ b.duration_seconds // 60 }}" />
-              </form>
-            </td>
-            <td class="ticket">
-              <form method="post" action="/blocks/{{ b.id }}/ticket" class="inline">
-                <input type="hidden" name="day" value="{{ day }}" />
-                <input type="text" name="jira_issue" list="tickets-dl"
-                       value="{{ b.jira_issue or '' }}"
-                       placeholder="(pick or type)" />
-              </form>
-            </td>
-            <td class="desc">
-              <form method="post" action="/blocks/{{ b.id }}/description" class="inline">
-                <input type="hidden" name="day" value="{{ day }}" />
-                <input type="text" name="description"
-                       value="{{ b.description or '' }}"
-                       placeholder="(add a description)" />
-              </form>
-            </td>
-            <td>{{ b.event_count }}</td>
-            <td><span class="tag src-{{ b.estimated_by or 'gap' }}">{{ b.estimated_by or 'gap' }}</span></td>
-            <td>
-              <form method="post" action="/blocks/{{ b.id }}/delete" class="inline">
-                <input type="hidden" name="day" value="{{ day }}" />
-                <button type="submit" title="Delete block" class="danger">✕</button>
-              </form>
-            </td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-
-    <datalist id="tickets-dl">
-      {% for t in tickets %}
-        <option value="{{ t.key }}">{{ t.key }} — {{ t.summary }} [{{ t.status or '?' }}]</option>
-      {% endfor %}
-    </datalist>
-  {% else %}
-    <p class="empty">No blocks for {{ day }}. Run <code>worklog collect all</code>
-      then click <strong>Re-infer blocks</strong>.</p>
-  {% endif %}
+  </div>
 </body>
 </html>
