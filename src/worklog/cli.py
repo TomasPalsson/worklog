@@ -1,21 +1,17 @@
 from __future__ import annotations
 
-import json
-import shutil
-import sys
 from datetime import date, datetime, timedelta
-from pathlib import Path
 
 import typer
 import uvicorn
 from rich.console import Console
+from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
-from worklog.collectors import claude as claude_collector
 from worklog.collectors import gcal as gcal_collector
 from worklog.collectors import github as github_collector
 from worklog.collectors import jira_ as jira_collector
-from worklog.config import CONFIG_DIR, DB_PATH, ensure_dirs
+from worklog.config import CONFIG_DIR, DB_PATH, ENV_PATH, ensure_dirs
 from worklog.db import connect, init_db
 from worklog.estimate import DEFAULT_MODEL, estimate_day
 from worklog.infer import build_blocks
@@ -34,66 +30,125 @@ def _parse_day(s: str | None) -> date:
 
 @app.command()
 def init() -> None:
-    """Create config dirs and DB schema."""
+    """Create config dirs and DB schema. (Usually you want `worklog setup` instead.)"""
     ensure_dirs()
     init_db()
     console.print(f"[green]✓[/] config dir: {CONFIG_DIR}")
     console.print(f"[green]✓[/] database:   {DB_PATH}")
-    console.print("\nNext:")
-    console.print("  1. set tokens in ~/.config/worklog/.env (or export WORKLOG_*)")
-    console.print("  2. worklog hook install")
-    console.print("  3. worklog collect jira   # populates the ticket picker")
+    console.print("\n[cyan]Next:[/] run [bold]worklog setup[/] to configure credentials.")
+
+
+# ---------- setup wizard ----------
+
+_ENV_KEYS: list[tuple[str, str, str, bool]] = [
+    ("WORKLOG_JIRA_BASE_URL", "Jira base URL",
+     "e.g. https://yourco.atlassian.net", False),
+    ("WORKLOG_JIRA_EMAIL", "Jira email",
+     "the address you use to log in", False),
+    ("WORKLOG_JIRA_TOKEN", "Jira API token",
+     "id.atlassian.com/manage-profile/security/api-tokens", True),
+    ("WORKLOG_TEMPO_TOKEN", "Tempo API token",
+     "Jira → apps → Tempo → Settings → API Integration", True),
+    ("WORKLOG_GITHUB_TOKEN", "GitHub token",
+     "github.com/settings/tokens — needs `repo` scope", True),
+    ("WORKLOG_GITHUB_USER", "GitHub username",
+     "your handle, e.g. TomasPalsson", False),
+]
+
+
+def _read_env_file() -> dict[str, str]:
+    if not ENV_PATH.exists():
+        return {}
+    out: dict[str, str] = {}
+    for line in ENV_PATH.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        out[k.strip()] = v.strip().strip('"').strip("'")
+    return out
+
+
+def _write_env_file(values: dict[str, str]) -> None:
+    ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    lines = ["# worklog credentials — edit by hand or re-run `worklog setup`"]
+    for k, v in values.items():
+        if v == "":
+            continue
+        # Quote values that contain spaces or special chars for safety.
+        if any(c in v for c in " #\"'"):
+            v_out = '"' + v.replace('"', '\\"') + '"'
+        else:
+            v_out = v
+        lines.append(f"{k}={v_out}")
+    ENV_PATH.write_text("\n".join(lines) + "\n")
+    ENV_PATH.chmod(0o600)  # tokens are secrets
+
+
+def _mask(v: str) -> str:
+    if not v:
+        return ""
+    if len(v) <= 8:
+        return "•" * len(v)
+    return v[:4] + "•" * (len(v) - 8) + v[-4:]
 
 
 @app.command()
-def hook(action: str = typer.Argument(..., help="install | uninstall | run")) -> None:
-    """Manage the Claude Code hook integration.
+def setup(
+    reset: bool = typer.Option(False, "--reset", help="Ignore existing values"),
+) -> None:
+    """Interactive wizard: enter Jira/Tempo/GitHub credentials once."""
+    ensure_dirs()
+    init_db()
 
-    install   — register stdin-JSON hook in ~/.claude/settings.json
-    uninstall — remove it
-    run       — read a hook event from stdin and log it (used by the hook itself)
-    """
-    if action == "run":
-        sys.exit(claude_collector.main())
-    settings_path = Path.home() / ".claude" / "settings.json"
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
-    hooks = settings.setdefault("hooks", {})
-    cmd = _hook_cmd()
+    existing = {} if reset else _read_env_file()
 
-    if action == "install":
-        for event in ("SessionStart", "UserPromptSubmit", "Stop", "SubagentStop"):
-            handlers = hooks.setdefault(event, [])
-            if any(_matches_our_hook(h, cmd) for h in handlers):
-                continue
-            handlers.append({"hooks": [{"type": "command", "command": cmd}]})
-        settings_path.write_text(json.dumps(settings, indent=2))
-        console.print("[green]✓[/] hook installed (Session/Prompt/Stop events)")
-        console.print(f"  command: {cmd}")
-    elif action == "uninstall":
-        for event, handlers in list(hooks.items()):
-            hooks[event] = [h for h in handlers if not _matches_our_hook(h, cmd)]
-            if not hooks[event]:
-                del hooks[event]
-        settings_path.write_text(json.dumps(settings, indent=2))
-        console.print("[green]✓[/] hook removed")
-    else:
-        raise typer.BadParameter("action must be install, uninstall, or run")
+    console.print("[bold]worklog setup[/]")
+    console.print(f"Writing credentials to [dim]{ENV_PATH}[/]\n")
+
+    values: dict[str, str] = {}
+    for key, label, hint, secret in _ENV_KEYS:
+        current = existing.get(key, "")
+        shown_current = _mask(current) if secret and current else current
+        if current:
+            prompt_msg = f"{label} [dim]({shown_current})[/]"
+        else:
+            prompt_msg = f"{label}\n  [dim]hint: {hint}[/]\n  value"
+        value = Prompt.ask(
+            prompt_msg,
+            default=current,
+            password=secret and not current,
+            show_default=not secret,
+        )
+        values[key] = (value or "").strip()
+
+    _write_env_file(values)
+    console.print(f"\n[green]✓[/] saved to {ENV_PATH}")
+
+    console.print("\n[bold]Google Calendar (optional)[/] — skipped by setup.")
+    console.print(
+        "  To enable: download OAuth client credentials from "
+        "console.cloud.google.com → APIs & Services → Credentials → "
+        f"save JSON at [dim]{CONFIG_DIR / 'google_credentials.json'}[/]"
+    )
+
+    if values.get("WORKLOG_JIRA_TOKEN") and Confirm.ask(
+        "\nRefresh your open Jira tickets now?", default=True
+    ):
+        try:
+            n = jira_collector.fetch_open_tickets()
+            console.print(f"[green]✓[/] cached {n} open tickets")
+        except Exception as e:  # noqa: BLE001 - diagnostic only
+            console.print(f"[red]✗[/] jira refresh failed: {e}")
+
+    console.print("\n[bold]You're done.[/] Typical daily flow:")
+    console.print(
+        "  [dim]worklog collect all && worklog infer && "
+        "worklog estimate && worklog serve[/]"
+    )
 
 
-def _matches_our_hook(handler: dict, cmd: str) -> bool:
-    for h in handler.get("hooks", []):
-        if h.get("command") == cmd:
-            return True
-    return False
-
-
-def _hook_cmd() -> str:
-    """Prefer the native Rust hook if installed, fall back to Python."""
-    if rust_bin := shutil.which("worklog-hook"):
-        return rust_bin
-    worklog_bin = shutil.which("worklog") or "worklog"
-    return f"{worklog_bin} hook run"
+# ---------- collectors ----------
 
 
 @app.command()
@@ -194,8 +249,8 @@ def sync(
 
 @app.command()
 def doctor() -> None:
-    """Diagnose worklog setup: paths, binaries, hook registration, ticket cache."""
-    import subprocess
+    """Diagnose worklog setup: paths, credentials, ticket cache."""
+    import shutil
 
     def ok(label: str, detail: str) -> None:
         console.print(f"[green]✓[/] {label:28} {detail}")
@@ -207,7 +262,6 @@ def doctor() -> None:
         console.print(f"[red]✗[/] {label:28} {detail}")
 
     if DB_PATH.exists():
-        # Run migration in case a prior-version DB is sitting on disk.
         init_db()
         with connect() as conn:
             n_events = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
@@ -221,40 +275,29 @@ def doctor() -> None:
         else:
             warn(
                 "Jira ticket cache:",
-                "empty — run `worklog collect jira` to populate the picker",
+                "empty — run `worklog setup` or `worklog collect jira`",
             )
     else:
-        warn("Database:", f"{DB_PATH} (does not exist — run `worklog init`)")
-        warn("Jira ticket cache:", "n/a (no database)")
+        warn("Database:", f"{DB_PATH} (does not exist — run `worklog setup`)")
 
-    if rust_bin := shutil.which("worklog-hook"):
-        ok("Hook binary:", f"Rust ({rust_bin})")
+    if ENV_PATH.exists():
+        env = _read_env_file()
+        missing = [
+            k for k, *_ in _ENV_KEYS
+            if k.endswith("_TOKEN") or k.endswith("_URL") or k.endswith("_EMAIL")
+            if not env.get(k)
+        ]
+        if missing:
+            warn("Credentials:", f"{ENV_PATH} — missing {', '.join(missing)}")
+        else:
+            ok("Credentials:", f"{ENV_PATH}")
     else:
-        warn("Hook binary:", "Rust worklog-hook not on PATH (falling back to Python)")
+        warn("Credentials:", f"{ENV_PATH} (missing — run `worklog setup`)")
 
     if claude_bin := shutil.which("claude"):
         ok("claude CLI:", claude_bin)
     else:
         fail("claude CLI:", "not on PATH — `worklog estimate` will fail")
-
-    settings_file = Path.home() / ".claude" / "settings.json"
-    if settings_file.exists():
-        settings = json.loads(settings_file.read_text())
-        hook_events = [k for k, v in settings.get("hooks", {}).items() if v]
-        if hook_events:
-            ok("Claude hooks registered:", ", ".join(hook_events))
-        else:
-            warn("Claude hooks registered:", "none — run `worklog hook install`")
-    else:
-        warn("Claude hooks registered:", f"{settings_file} not found")
-
-    hook_source = Path(__file__).resolve().parents[2] / "rust" / "hook" / "Cargo.toml"
-    if hook_source.exists() and not shutil.which("worklog-hook"):
-        console.print()
-        console.print("[dim]To install the fast Rust hook:[/]")
-        console.print(f"  cd {hook_source.parent} && cargo install --locked --path .")
-
-    _ = subprocess  # future: check `claude --version`
 
 
 @app.command()

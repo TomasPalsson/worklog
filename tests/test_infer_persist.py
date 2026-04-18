@@ -108,18 +108,18 @@ def test_persist_preserves_tempo_worklog_id_and_manual_ticket(db: Path) -> None:
     assert row["jira_issue"] == "MAN-7"
 
 
-def test_load_handles_session_duration(db: Path) -> None:
+def test_load_handles_explicit_duration(db: Path) -> None:
+    """Events with ended_at + duration_seconds (e.g. gcal meetings) are used verbatim."""
     start = datetime(2026, 4, 18, 10, 0, tzinfo=UTC)
     with connect(db) as conn:
         upsert_event(
             conn,
-            source="claude",
-            source_id="sess-1:Stop:x",
+            source="gcal",
+            source_id="cal:evt-1",
             started_at=start,
             ended_at=start + timedelta(minutes=30),
             duration_seconds=1800,
-            title="session",
-            session_id="sess-1",
+            title="meeting",
         )
     events = load_day_events(date=start.date())
     assert events[0].duration_seconds == 1800

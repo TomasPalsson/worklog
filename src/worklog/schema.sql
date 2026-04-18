@@ -1,9 +1,9 @@
--- Worklog schema v3. Shared between Python and the Rust hook (include_str!).
--- All CREATE statements are idempotent (IF NOT EXISTS) so the Rust hook can
--- run this on every invocation with negligible cost.
+-- Worklog schema v4.
 --
--- v3 drops the "company" concept: everything is routed by jira_issue. Open
--- Jira tickets are cached in jira_tickets for the estimator + UI picker.
+-- v4 removes the Claude Code hook machinery (sessions table, events.session_id).
+-- Activity sources are now external: GitHub commits, Google Calendar, Jira.
+--
+-- All CREATE statements are idempotent (IF NOT EXISTS).
 
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -17,7 +17,6 @@ CREATE TABLE IF NOT EXISTS events (
     repo TEXT,
     project_path TEXT,
     jira_issue TEXT,
-    session_id TEXT,
     tempo_worklog_id TEXT,
     raw_json TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -26,20 +25,7 @@ CREATE TABLE IF NOT EXISTS events (
 
 CREATE INDEX IF NOT EXISTS idx_events_started ON events(started_at);
 CREATE INDEX IF NOT EXISTS idx_events_tempo ON events(tempo_worklog_id);
-CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
 CREATE INDEX IF NOT EXISTS idx_events_jira ON events(jira_issue);
-
-CREATE TABLE IF NOT EXISTS sessions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT UNIQUE NOT NULL,
-    started_at TEXT NOT NULL,
-    ended_at TEXT,
-    end_source TEXT,
-    project_path TEXT,
-    event_count INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at);
 
 CREATE TABLE IF NOT EXISTS blocks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,8 +51,6 @@ CREATE TABLE IF NOT EXISTS block_events (
     PRIMARY KEY (block_id, event_id)
 );
 
--- Cache of the user's open Jira tickets, refreshed by `worklog collect jira`.
--- Feeds the UI picker and is passed as candidate context to the estimator.
 CREATE TABLE IF NOT EXISTS jira_tickets (
     key TEXT PRIMARY KEY,
     summary TEXT NOT NULL,
