@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
-import { ChevronDown, Search, Ticket, X } from "lucide-react";
+import { AlertCircle, ChevronDown, Search, Ticket, X } from "lucide-react";
 import type { JiraTicket } from "@/lib/types";
 import { assignTicket } from "@/app/actions";
+import { toast } from "@/lib/toast";
 
 interface Props {
   blockId: number;
@@ -15,14 +16,21 @@ interface Props {
 export function TicketCombobox({ blockId, current, tickets, day }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [, start] = useTransition();
-  const ref = useRef<HTMLDivElement>(null);
+  const [activeIdx, setActiveIdx] = useState(0);
+  const [, startTransition] = useTransition();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   const currentTicket = useMemo(
     () => tickets.find((t) => t.key === current),
     [tickets, current],
   );
+  // "Assigned but not in cache" — the ticket key exists on the block but
+  // we have no summary to show. Signals the user that either the cache
+  // is stale, the ticket was closed, or it was assigned manually.
+  const currentIsStale = !!current && !currentTicket;
 
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -36,43 +44,113 @@ export function TicketCombobox({ blockId, current, tickets, day }: Props) {
       .slice(0, 60);
   }, [tickets, query]);
 
+  // Reset active index when the filtered set changes.
+  useEffect(() => {
+    setActiveIdx(0);
+  }, [query, open]);
+
+  // Scroll the active option into view on keyboard navigation.
+  useEffect(() => {
+    if (!open) return;
+    const el = listRef.current?.querySelector<HTMLElement>(
+      `[data-idx="${activeIdx}"]`,
+    );
+    el?.scrollIntoView({ block: "nearest" });
+  }, [activeIdx, open]);
+
   useEffect(() => {
     if (!open) return;
     inputRef.current?.focus();
     const onClick = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (!rootRef.current?.contains(e.target as Node)) {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
     };
     document.addEventListener("mousedown", onClick);
-    document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("mousedown", onClick);
-      document.removeEventListener("keydown", onKey);
     };
   }, [open]);
 
-  const pick = (key: string | null) => {
+  const closeAndRestoreFocus = () => {
     setOpen(false);
     setQuery("");
-    start(() => assignTicket(blockId, key, day));
+    // Defer so React processes the popover unmount first.
+    queueMicrotask(() => triggerRef.current?.focus());
   };
 
+  const pick = (key: string | null) => {
+    closeAndRestoreFocus();
+    startTransition(async () => {
+      const res = await assignTicket(blockId, key, day);
+      if (!res.ok) toast.error(`Assign ticket failed — ${res.error}`);
+    });
+  };
+
+  const onInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIdx((i) => Math.min(i + 1, Math.max(matches.length - 1, 0)));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIdx((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      setActiveIdx(0);
+    } else if (e.key === "End") {
+      e.preventDefault();
+      setActiveIdx(Math.max(matches.length - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const t = matches[activeIdx];
+      if (t) pick(t.key);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      closeAndRestoreFocus();
+    }
+  };
+
+  const triggerLabel = current
+    ? currentIsStale
+      ? `Ticket ${current} — not in cache`
+      : `Change ticket (currently ${current})`
+    : "Pick a ticket";
+
   return (
-    <div className="combobox" ref={ref}>
+    <div className="combobox" ref={rootRef}>
       <button
+        ref={triggerRef}
         type="button"
-        className={`ticket-chip ${current ? "assigned" : "unassigned"}`}
+        className={`ticket-chip ${current ? "assigned" : "unassigned"} ${currentIsStale ? "stale" : ""}`}
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-label={triggerLabel}
         onClick={() => setOpen((v) => !v)}
+        onKeyDown={(e) => {
+          if ((e.key === "Enter" || e.key === " ") && !open) {
+            e.preventDefault();
+            setOpen(true);
+          } else if (e.key === "ArrowDown" && !open) {
+            e.preventDefault();
+            setOpen(true);
+          }
+        }}
       >
         {current ? (
           <>
             <span className="key">{current}</span>
-            {currentTicket?.summary && (
-              <span className="summary">{currentTicket.summary}</span>
+            {currentIsStale ? (
+              <span
+                className="summary stale-note"
+                title="Ticket key isn't in the Jira cache — click 'Refresh Jira' to reload"
+              >
+                <AlertCircle width={12} height={12} /> not in cache
+              </span>
+            ) : (
+              currentTicket?.summary && (
+                <span className="summary">{currentTicket.summary}</span>
+              )
             )}
           </>
         ) : (
@@ -85,7 +163,12 @@ export function TicketCombobox({ blockId, current, tickets, day }: Props) {
       </button>
 
       {open && (
-        <div className="combobox-popover" role="listbox">
+        <div
+          className="combobox-popover"
+          role="listbox"
+          id={`combobox-list-${blockId}`}
+          aria-label="Jira tickets"
+        >
           <div className="combobox-search">
             <Search />
             <input
@@ -93,11 +176,14 @@ export function TicketCombobox({ blockId, current, tickets, day }: Props) {
               placeholder="Search PROJ-123 or words…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && matches[0]) {
-                  pick(matches[0].key);
-                }
-              }}
+              onKeyDown={onInputKeyDown}
+              aria-label="Search tickets"
+              aria-controls={`combobox-list-${blockId}`}
+              aria-activedescendant={
+                matches[activeIdx]
+                  ? `combobox-item-${blockId}-${matches[activeIdx].key}`
+                  : undefined
+              }
             />
             {query && (
               <button
@@ -111,7 +197,7 @@ export function TicketCombobox({ blockId, current, tickets, day }: Props) {
             )}
           </div>
 
-          <div className="combobox-list">
+          <div className="combobox-list" ref={listRef}>
             {matches.length === 0 ? (
               <div className="combobox-empty">
                 {tickets.length === 0
@@ -119,13 +205,17 @@ export function TicketCombobox({ blockId, current, tickets, day }: Props) {
                   : `No match for "${query}"`}
               </div>
             ) : (
-              matches.map((t) => (
+              matches.map((t, idx) => (
                 <button
                   key={t.key}
+                  id={`combobox-item-${blockId}-${t.key}`}
+                  data-idx={idx}
                   type="button"
                   role="option"
                   className="combobox-item"
                   aria-selected={t.key === current}
+                  data-active={idx === activeIdx ? "true" : undefined}
+                  onMouseEnter={() => setActiveIdx(idx)}
                   onClick={() => pick(t.key)}
                 >
                   <span className="key">{t.key}</span>

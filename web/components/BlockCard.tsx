@@ -5,6 +5,7 @@ import { Check, Clock, Trash2 } from "lucide-react";
 import type { Block, JiraTicket } from "@/lib/types";
 import { formatDuration, formatRange } from "@/lib/format";
 import { deleteBlock, setDescription, setDuration } from "@/app/actions";
+import { toast } from "@/lib/toast";
 import { SourceBadges } from "./SourceBadges";
 import { EstBadge } from "./EstBadge";
 import { TicketCombobox } from "./TicketCombobox";
@@ -27,23 +28,55 @@ export function BlockCard({ block, tickets, day }: Props) {
     .filter(Boolean)
     .join(" ");
 
+  const timeRangeLabel = formatRange(block.started_at, block.ended_at);
+  const durationLabel = formatDuration(block.duration_seconds);
+  // Article label for screen readers — useful info, not "block 42".
+  const ariaLabel = `${timeRangeLabel} · ${block.jira_issue ?? "unassigned"} · ${durationLabel}`;
+
   const commitDescription = () => {
     const next = (descRef.current?.innerText ?? "").trim();
     if (next === (block.description ?? "")) return;
-    start(() => setDescription(block.id, next, day));
+    start(async () => {
+      const r = await setDescription(block.id, next, day);
+      if (!r.ok) toast.error(`Save description failed — ${r.error}`);
+      else if (synced) {
+        toast.ok(
+          "Description saved. Note: this block was already synced — re-sync to update Tempo.",
+        );
+      }
+    });
   };
 
   const commitDuration = () => {
     setEditingDur(false);
     const m = Math.max(1, durVal | 0);
     if (m === Math.round(block.duration_seconds / 60)) return;
-    start(() => setDuration(block.id, m, day));
+    start(async () => {
+      const r = await setDuration(block.id, m, day);
+      if (!r.ok) toast.error(`Save duration failed — ${r.error}`);
+      else if (synced) {
+        toast.ok(
+          "Duration saved. Note: this block was already synced — re-sync to update Tempo.",
+        );
+      }
+    });
+  };
+
+  const onDelete = () => {
+    const label = `the ${timeRangeLabel} block${block.jira_issue ? ` on ${block.jira_issue}` : ""}`;
+    if (!confirm(`Delete ${label}? This also removes links to its events.`)) return;
+    start(async () => {
+      const r = await deleteBlock(block.id, day);
+      if (!r.ok) toast.error(`Delete failed — ${r.error}`);
+    });
   };
 
   return (
-    <article className={cls} aria-label={`block ${block.id}`}>
+    <article className={cls} aria-label={ariaLabel}>
       <div className="block-time">
-        <span className="range">{formatRange(block.started_at, block.ended_at)}</span>
+        <span className="range" aria-label={`time range ${timeRangeLabel}`}>
+          {timeRangeLabel}
+        </span>
         {editingDur ? (
           <span className="duration-edit">
             <input
@@ -51,6 +84,7 @@ export function BlockCard({ block, tickets, day }: Props) {
               min={1}
               value={durVal}
               autoFocus
+              aria-label="duration in minutes"
               onChange={(e) => setDurVal(Number(e.target.value))}
               onBlur={commitDuration}
               onKeyDown={(e) => {
@@ -67,10 +101,10 @@ export function BlockCard({ block, tickets, day }: Props) {
           <button
             type="button"
             className="duration"
-            title="Click to edit"
+            aria-label={`duration ${durationLabel} — click to edit`}
             onClick={() => setEditingDur(true)}
           >
-            {formatDuration(block.duration_seconds)}
+            {durationLabel}
           </button>
         )}
       </div>
@@ -97,6 +131,9 @@ export function BlockCard({ block, tickets, day }: Props) {
           contentEditable
           suppressContentEditableWarning
           spellCheck={false}
+          role="textbox"
+          aria-multiline="true"
+          aria-label="Block description — click to edit"
           onBlur={commitDescription}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -129,12 +166,8 @@ export function BlockCard({ block, tickets, day }: Props) {
           type="button"
           className="icon-btn danger"
           title="Delete block"
-          aria-label="delete block"
-          onClick={() => {
-            if (confirm(`Delete block ${block.id}? This also removes links to its events.`)) {
-              start(() => deleteBlock(block.id, day));
-            }
-          }}
+          aria-label={`delete ${timeRangeLabel} block`}
+          onClick={onDelete}
         >
           <Trash2 />
         </button>

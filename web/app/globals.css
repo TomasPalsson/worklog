@@ -480,6 +480,37 @@ button {
   background: var(--amber-bg);
 }
 
+.ticket-chip.stale {
+  border-color: var(--amber);
+  background: var(--amber-bg);
+}
+
+.ticket-chip.stale .key {
+  color: var(--amber-ink);
+}
+
+.ticket-chip .stale-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--amber-ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.combobox-item[data-active="true"] {
+  background: var(--bg-sunk);
+  outline: 1px solid var(--border-strong);
+  outline-offset: -1px;
+}
+
+.action-btn[data-confirm="true"] {
+  background: var(--amber-bg);
+  border-color: var(--amber);
+  color: var(--amber-ink);
+}
+
 .ticket-chip svg.chevron {
   width: 14px;
   height: 14px;
