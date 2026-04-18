@@ -20,9 +20,10 @@ _CONNECTION_PRAGMAS = (
 
 
 @contextmanager
-def connect(path: Path = DB_PATH) -> Iterator[sqlite3.Connection]:
+def connect(path: Path | None = None) -> Iterator[sqlite3.Connection]:
+    # Resolve DB_PATH at call time so tests can monkeypatch it.
     ensure_dirs()
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path if path is not None else DB_PATH)
     conn.row_factory = sqlite3.Row
     for pragma in _CONNECTION_PRAGMAS:
         conn.execute(pragma)
@@ -52,9 +53,9 @@ def _migrate_events_table(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE events ADD COLUMN session_id TEXT")
 
 
-def init_db(path: Path = DB_PATH) -> None:
+def init_db(path: Path | None = None) -> None:
     """Apply schema v2: migrate legacy `events` shape, then ensure all v2 objects."""
-    with connect(path) as conn:
+    with connect(path if path is not None else DB_PATH) as conn:
         if _table_exists(conn, "events"):
             _migrate_events_table(conn)
         conn.executescript(SCHEMA)

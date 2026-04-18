@@ -1,9 +1,8 @@
 """Claude Code hook collector.
 
-Reads a JSON event from stdin (as Claude Code hooks do), extracts the useful
-bits, classifies it against the companies config, and upserts into the event
-store. Never prints to stdout (hook output gets surfaced as tool output) —
-errors go to stderr and we exit 0 so we never block the user's workflow.
+Reads a JSON event from stdin, upserts an event row and (for lifecycle events)
+maintains the `sessions` table for real duration tracking. Never prints to
+stdout; errors go to stderr and we exit 0 so Claude is never blocked.
 """
 
 from __future__ import annotations
@@ -17,9 +16,15 @@ from typing import Any
 from worklog.classify import classify
 from worklog.config import load_companies
 from worklog.db import connect, init_db, upsert_event
+from worklog.sessions import close_session, open_session, reap_stale
 
-# Matches ACME-123 style keys anywhere in a string (conservative — 2-10 upper letters).
 JIRA_KEY_RE = re.compile(r"\b([A-Z][A-Z0-9]{1,9}-\d+)\b")
+
+# Which hook events pair with which lifecycle action.
+_CLOSING_EVENTS: dict[str, str] = {
+    "Stop": "stop",
+    "SessionEnd": "session_end",
+}
 
 
 def _jira_from_text(*parts: str | None) -> str | None:
@@ -32,29 +37,25 @@ def _jira_from_text(*parts: str | None) -> str | None:
     return None
 
 
+def _title_for(event: str, payload: dict[str, Any]) -> str:
+    prompt = payload.get("prompt") or payload.get("user_prompt")
+    if prompt:
+        return f"{event} — {str(prompt)[:80]}"
+    return event
+
+
 def handle(payload: dict[str, Any]) -> None:
     """Process a single Claude Code hook event."""
-    event_name = payload.get("hook_event_name") or payload.get("event") or "unknown"
+    event = payload.get("hook_event_name") or payload.get("event") or "unknown"
     session_id = payload.get("session_id", "no-session")
     cwd = payload.get("cwd") or payload.get("project_path")
     transcript_path = payload.get("transcript_path")
-
     now = datetime.now(UTC)
-    source_id = f"{session_id}:{event_name}:{now.isoformat()}"
+    source_id = f"{session_id}:{event}:{now.isoformat()}"
 
-    # SessionStart / UserPromptSubmit / Stop / SubagentStop / PreToolUse / PostToolUse
-    # We treat Stop as the canonical "session segment ended" marker when it has
-    # a start time; otherwise log as point-in-time events.
-    title_bits = [event_name]
-    user_prompt = payload.get("prompt") or payload.get("user_prompt")
-    if user_prompt:
-        title_bits.append(str(user_prompt)[:80])
-    title = " — ".join(title_bits)
-
-    jira_issue = _jira_from_text(user_prompt, cwd)
-
-    config = load_companies()
-    company = classify(config, project_path=cwd, jira_issue=jira_issue)
+    prompt = payload.get("prompt") or payload.get("user_prompt")
+    jira_issue = _jira_from_text(prompt, cwd)
+    company = classify(load_companies(), project_path=cwd, jira_issue=jira_issue)
 
     init_db()
     with connect() as conn:
@@ -63,13 +64,23 @@ def handle(payload: dict[str, Any]) -> None:
             source="claude",
             source_id=source_id,
             started_at=now,
-            title=title,
+            title=_title_for(event, payload),
             details=transcript_path,
             project_path=cwd,
             jira_issue=jira_issue,
             company=company,
+            session_id=session_id,
             raw_json=json.dumps(payload),
         )
+        open_session(conn, session_id=session_id, started_at=now, project_path=cwd)
+        if event in _CLOSING_EVENTS:
+            close_session(
+                conn,
+                session_id=session_id,
+                ended_at=now,
+                end_source=_CLOSING_EVENTS[event],
+            )
+        reap_stale(conn, now=now)
 
 
 def main() -> int:
