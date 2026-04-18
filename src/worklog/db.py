@@ -4,34 +4,12 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
+from importlib.resources import files
 from pathlib import Path
 
 from worklog.config import DB_PATH, ensure_dirs
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source TEXT NOT NULL,          -- claude | github | gcal | jira | manual
-    source_id TEXT NOT NULL,       -- stable external id for dedupe
-    started_at TEXT NOT NULL,      -- ISO-8601 UTC
-    ended_at TEXT,                 -- nullable for point-in-time events
-    duration_seconds INTEGER,      -- derived or reported
-    title TEXT NOT NULL,
-    details TEXT,                  -- freeform body / diff summary
-    repo TEXT,
-    project_path TEXT,             -- cwd when known (Claude hook)
-    jira_issue TEXT,               -- e.g. ACME-123 if parseable
-    company TEXT,                  -- resolved company name (nullable until classified)
-    tempo_worklog_id TEXT,         -- set after successful Tempo sync
-    raw_json TEXT,                 -- original payload for auditing
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    UNIQUE(source, source_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_events_started ON events(started_at);
-CREATE INDEX IF NOT EXISTS idx_events_company ON events(company);
-CREATE INDEX IF NOT EXISTS idx_events_tempo ON events(tempo_worklog_id);
-"""
+SCHEMA = files("worklog").joinpath("schema.sql").read_text()
 
 
 @contextmanager
@@ -40,6 +18,9 @@ def connect(path: Path = DB_PATH) -> Iterator[sqlite3.Connection]:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
+    conn.execute("PRAGMA busy_timeout = 2000")
     try:
         yield conn
         conn.commit()
@@ -47,8 +28,28 @@ def connect(path: Path = DB_PATH) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+def _migrate_events_table(conn: sqlite3.Connection) -> None:
+    """Add v2 columns to a pre-existing v1 events table.
+
+    Idempotent: safe to call when `events` already has the new columns.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()}
+    if "session_id" not in cols:
+        conn.execute("ALTER TABLE events ADD COLUMN session_id TEXT")
+
+
 def init_db(path: Path = DB_PATH) -> None:
+    """Create schema v2 from scratch or migrate an existing v1 database."""
     with connect(path) as conn:
+        # ALTER first, then executescript (CREATE IF NOT EXISTS) for fresh bits.
+        existing = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if "events" in existing:
+            _migrate_events_table(conn)
         conn.executescript(SCHEMA)
 
 
@@ -66,6 +67,7 @@ def upsert_event(
     project_path: str | None = None,
     jira_issue: str | None = None,
     company: str | None = None,
+    session_id: str | None = None,
     raw_json: str | None = None,
 ) -> None:
     """Insert or update on (source, source_id). Does not overwrite tempo_worklog_id."""
@@ -73,17 +75,19 @@ def upsert_event(
         """
         INSERT INTO events (
             source, source_id, started_at, ended_at, duration_seconds,
-            title, details, repo, project_path, jira_issue, company, raw_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            title, details, repo, project_path, jira_issue, company,
+            session_id, raw_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source, source_id) DO UPDATE SET
-            ended_at = excluded.ended_at,
-            duration_seconds = excluded.duration_seconds,
+            ended_at = COALESCE(excluded.ended_at, events.ended_at),
+            duration_seconds = COALESCE(excluded.duration_seconds, events.duration_seconds),
             title = excluded.title,
             details = excluded.details,
             repo = excluded.repo,
             project_path = excluded.project_path,
             jira_issue = excluded.jira_issue,
             company = COALESCE(events.company, excluded.company),
+            session_id = COALESCE(events.session_id, excluded.session_id),
             raw_json = excluded.raw_json
         """,
         (
@@ -98,6 +102,7 @@ def upsert_event(
             project_path,
             jira_issue,
             company,
+            session_id,
             raw_json,
         ),
     )
