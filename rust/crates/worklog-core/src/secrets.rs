@@ -27,6 +27,7 @@ pub const KNOWN_KEYS: &[&str] = &[
 /// Environment variable that, if set to a path, forces secrets into a JSON
 /// file rather than the OS keychain. Exclusively for tests and CI — never
 /// advertised in the user docs. The setup wizard ignores this path.
+#[cfg(not(test))]
 const ENV_FILE_BACKEND: &str = "WORKLOG_SECRETS_FILE";
 
 #[cfg(not(test))]
@@ -58,7 +59,8 @@ mod backend {
 
     fn write_file_store(p: &std::path::Path, store: &HashMap<String, String>) -> Result<()> {
         if let Some(parent) = p.parent() {
-            std::fs::create_dir_all(parent).with_context(|| format!("mkdir {}", parent.display()))?;
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("mkdir {}", parent.display()))?;
         }
         let bytes = serde_json::to_vec_pretty(store)?;
         std::fs::write(p, bytes).with_context(|| format!("writing {}", p.display()))?;
@@ -66,8 +68,7 @@ mod backend {
     }
 
     fn entry(key: &str) -> Result<Entry> {
-        Entry::new(SERVICE, key)
-            .with_context(|| format!("opening keyring entry for {key}"))
+        Entry::new(SERVICE, key).with_context(|| format!("opening keyring entry for {key}"))
     }
 
     pub fn set(key: &str, value: &str) -> Result<()> {
@@ -76,7 +77,8 @@ mod backend {
             store.insert(key.to_owned(), value.to_owned());
             return write_file_store(&path, &store);
         }
-        entry(key)?.set_password(value)
+        entry(key)?
+            .set_password(value)
             .with_context(|| format!("writing secret {key}"))
     }
 
@@ -95,7 +97,9 @@ mod backend {
         if let Some(path) = file_backend_path() {
             let mut store = read_file_store(&path)?;
             let existed = store.remove(key).is_some();
-            if existed { write_file_store(&path, &store)?; }
+            if existed {
+                write_file_store(&path, &store)?;
+            }
             return Ok(existed);
         }
         match entry(key)?.delete_credential() {
@@ -119,7 +123,10 @@ mod backend {
     }
 
     pub fn set(key: &str, value: &str) -> Result<()> {
-        store().lock().unwrap().insert(key.to_owned(), value.to_owned());
+        store()
+            .lock()
+            .unwrap()
+            .insert(key.to_owned(), value.to_owned());
         Ok(())
     }
 
@@ -145,7 +152,7 @@ pub fn delete(key: &str) -> Result<bool> {
 /// Status of a single known secret, for `worklog doctor` and the wizard.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SecretStatus {
-    pub key:     &'static str,
+    pub key: &'static str,
     pub present: bool,
 }
 
@@ -153,7 +160,7 @@ pub fn audit() -> Vec<SecretStatus> {
     KNOWN_KEYS
         .iter()
         .map(|&k| SecretStatus {
-            key:     k,
+            key: k,
             present: matches!(get(k), Ok(Some(_))),
         })
         .collect()

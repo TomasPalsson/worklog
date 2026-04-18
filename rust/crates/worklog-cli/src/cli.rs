@@ -39,6 +39,16 @@ pub enum Cmd {
     /// Report environment, db, and secret status.
     Doctor,
 
+    /// One-shot onboarding: db migrate + preflight + capture secrets.
+    Setup {
+        /// Print what would run and exit; capture nothing.
+        #[arg(long)]
+        non_interactive: bool,
+        /// Skip HTTP validation of captured credentials.
+        #[arg(long)]
+        skip_validate: bool,
+    },
+
     /// Database operations.
     #[command(subcommand)]
     Db(DbCmd),
@@ -69,19 +79,19 @@ pub enum SecretCmd {
         value: Option<String>,
     },
     /// Read a secret to stdout.
-    Get {
-        key: String,
-    },
+    Get { key: String },
     /// Remove a secret.
-    Rm {
-        key: String,
-    },
+    Rm { key: String },
     /// List known secret keys and whether each is set.
     List,
 }
 
 pub fn run() -> Result<()> {
-    run_with(std::env::args_os().collect::<Vec<_>>(), &mut io::stdout(), &mut io::stderr())
+    run_with(
+        std::env::args_os().collect::<Vec<_>>(),
+        &mut io::stdout(),
+        &mut io::stderr(),
+    )
 }
 
 pub fn run_with<W: Write>(
@@ -98,16 +108,20 @@ pub fn run_with<W: Write>(
     match cli.command {
         Cmd::Version => cmd_version(out, cli.json),
         Cmd::Doctor => cmd_doctor(out, cli.json),
+        Cmd::Setup {
+            non_interactive,
+            skip_validate,
+        } => cmd_setup(non_interactive, skip_validate),
         Cmd::Db(sub) => match sub {
             DbCmd::Migrate => cmd_db_migrate(out, cli.json),
-            DbCmd::Info    => cmd_db_info(out, cli.json),
-            DbCmd::Path    => cmd_db_path(out),
+            DbCmd::Info => cmd_db_info(out, cli.json),
+            DbCmd::Path => cmd_db_path(out),
         },
         Cmd::Secret(sub) => match sub {
             SecretCmd::Set { key, value } => cmd_secret_set(&key, value, out),
-            SecretCmd::Get { key }        => cmd_secret_get(&key, out),
-            SecretCmd::Rm  { key }        => cmd_secret_rm(&key, out),
-            SecretCmd::List               => cmd_secret_list(out, cli.json),
+            SecretCmd::Get { key } => cmd_secret_get(&key, out),
+            SecretCmd::Rm { key } => cmd_secret_rm(&key, out),
+            SecretCmd::List => cmd_secret_list(out, cli.json),
         },
     }
 }
@@ -115,7 +129,9 @@ pub fn run_with<W: Write>(
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
     let _ = tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
+        )
         .with_writer(io::stderr)
         .try_init();
 }
@@ -125,7 +141,11 @@ fn init_tracing() {
 fn cmd_version<W: Write>(out: &mut W, json: bool) -> Result<()> {
     let v = env!("CARGO_PKG_VERSION");
     if json {
-        writeln!(out, "{}", serde_json::json!({ "version": v, "core": worklog_core::VERSION }))?;
+        writeln!(
+            out,
+            "{}",
+            serde_json::json!({ "version": v, "core": worklog_core::VERSION })
+        )?;
     } else {
         writeln!(out, "worklog {v}")?;
     }
@@ -156,19 +176,36 @@ fn cmd_doctor<W: Write>(out: &mut W, json: bool) -> Result<()> {
     }
 
     writeln!(out, "worklog {} — doctor", env!("CARGO_PKG_VERSION"))?;
-    writeln!(out, "  home   {}", worklog_core::paths::short_display(&paths.root))?;
-    writeln!(out, "  db     {} ({})",
+    writeln!(
+        out,
+        "  home   {}",
+        worklog_core::paths::short_display(&paths.root)
+    )?;
+    writeln!(
+        out,
+        "  db     {} ({})",
         worklog_core::paths::short_display(&paths.db),
-        if paths.db_exists() { "present" } else { "not created yet — run `worklog db migrate`" })?;
+        if paths.db_exists() {
+            "present"
+        } else {
+            "not created yet — run `worklog db migrate`"
+        }
+    )?;
     if let Some(s) = &db_summary {
-        writeln!(out, "         schema v{}, {} events, {} blocks, {} sessions, {} tickets",
-            s.schema_version, s.events, s.blocks, s.sessions, s.jira_tickets)?;
+        writeln!(
+            out,
+            "         schema v{}, {} events, {} blocks, {} sessions, {} tickets",
+            s.schema_version, s.events, s.blocks, s.sessions, s.jira_tickets
+        )?;
     }
     writeln!(out, "  secrets")?;
     for s in &secrets {
-        writeln!(out, "    {:<22} {}",
+        writeln!(
+            out,
+            "    {:<22} {}",
             s.key,
-            if s.present { "set" } else { "—" })?;
+            if s.present { "set" } else { "—" }
+        )?;
     }
     Ok(())
 }
@@ -179,9 +216,17 @@ fn cmd_db_migrate<W: Write>(out: &mut W, json: bool) -> Result<()> {
     let conn = db::open(&paths.db)?;
     let v = db::current_version(&conn)?;
     if json {
-        writeln!(out, "{}", serde_json::json!({ "ok": true, "path": paths.db, "schema_version": v }))?;
+        writeln!(
+            out,
+            "{}",
+            serde_json::json!({ "ok": true, "path": paths.db, "schema_version": v })
+        )?;
     } else {
-        writeln!(out, "✓ db ready at {}  (schema v{v})", worklog_core::paths::short_display(&paths.db))?;
+        writeln!(
+            out,
+            "✓ db ready at {}  (schema v{v})",
+            worklog_core::paths::short_display(&paths.db)
+        )?;
     }
     Ok(())
 }
@@ -196,11 +241,25 @@ fn cmd_db_info<W: Write>(out: &mut W, json: bool) -> Result<()> {
     if json {
         writeln!(out, "{}", serde_json::to_string_pretty(&s)?)?;
     } else {
-        writeln!(out, "schema v{}  events={}  blocks={}  sessions={}  tickets={}",
-            s.schema_version, s.events, s.blocks, s.sessions, s.jira_tickets)?;
+        writeln!(
+            out,
+            "schema v{}  events={}  blocks={}  sessions={}  tickets={}",
+            s.schema_version, s.events, s.blocks, s.sessions, s.jira_tickets
+        )?;
     }
     // Keep the warning about unused import silent.
     let _ = repo::count_events(&conn);
+    Ok(())
+}
+
+fn cmd_setup(non_interactive: bool, skip_validate: bool) -> Result<()> {
+    let opts = crate::wizard::WizardOptions {
+        non_interactive,
+        skip_validate,
+        skip_schedule: false,
+        secrets_file: std::env::var_os("WORKLOG_SECRETS_FILE").map(std::path::PathBuf::from),
+    };
+    let _ = crate::wizard::run(opts)?;
     Ok(())
 }
 
@@ -225,7 +284,9 @@ fn cmd_secret_get<W: Write>(key: &str, out: &mut W) -> Result<()> {
     match secrets::get(key)? {
         Some(v) => {
             out.write_all(v.as_bytes())?;
-            if !v.ends_with('\n') { writeln!(out)?; }
+            if !v.ends_with('\n') {
+                writeln!(out)?;
+            }
         }
         None => anyhow::bail!("{key} not set"),
     }

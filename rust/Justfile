@@ -1,0 +1,30 @@
+# worklog — Rust workspace conveniences.
+
+default: check
+
+check:
+    cargo fmt --all --check
+    cargo clippy --all-targets -- -D warnings
+    cargo test --all
+
+fmt:
+    cargo fmt --all
+
+test:
+    cargo test --all
+
+clippy:
+    cargo clippy --all-targets -- -D warnings
+
+# Hermetic wizard smoke — blows away a scratch dir first.
+demo:
+    rm -rf /tmp/worklog-demo
+    mkdir -p /tmp/worklog-demo
+    WORKLOG_HOME=/tmp/worklog-demo WORKLOG_SECRETS_FILE=/tmp/worklog-demo/secrets.json \
+      cargo run --bin worklog -- setup --non-interactive --skip-validate
+    WORKLOG_HOME=/tmp/worklog-demo WORKLOG_SECRETS_FILE=/tmp/worklog-demo/secrets.json \
+      cargo run --bin worklog -- doctor
+
+release:
+    cargo build --release --bin worklog
+    @echo "artifact: rust/target/release/worklog"

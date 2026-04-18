@@ -87,7 +87,9 @@ fn db_path_prints_resolved_path() {
         .args(["db", "path"])
         .assert()
         .success()
-        .stdout(predicate::str::contains(expected.to_string_lossy().as_ref()));
+        .stdout(predicate::str::contains(
+            expected.to_string_lossy().as_ref(),
+        ));
 }
 
 #[test]
@@ -138,6 +140,31 @@ fn secret_list_shows_state() {
         .assert()
         .success()
         .stdout(predicate::str::contains("jira_email"));
+}
+
+#[test]
+fn setup_non_interactive_creates_db_and_exits_clean() {
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["setup", "--non-interactive", "--skip-validate"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("worklog setup"))
+        .stdout(predicate::str::contains("database ready"));
+    assert!(home.path().join("worklog.db").is_file());
+}
+
+#[test]
+fn setup_is_idempotent() {
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["setup", "--non-interactive", "--skip-validate"])
+        .assert()
+        .success();
+    cmd(&home)
+        .args(["setup", "--non-interactive", "--skip-validate"])
+        .assert()
+        .success();
 }
 
 #[test]

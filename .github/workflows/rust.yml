@@ -1,0 +1,55 @@
+name: rust
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "rust/**"
+      - "src/worklog/schema.sql"
+      - ".github/workflows/rust.yml"
+  pull_request:
+    paths:
+      - "rust/**"
+      - "src/worklog/schema.sql"
+      - ".github/workflows/rust.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-Dwarnings"
+
+jobs:
+  test:
+    name: fmt + clippy + test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        env:
+          # Secrets tests use the in-process mock; CLI tests use the
+          # file-backed shim. Neither needs a real keychain, but enforce it.
+          WORKLOG_SECRETS_FILE: /tmp/worklog-ci-secrets.json
+        run: cargo test --all

@@ -4,9 +4,9 @@
 
 #![forbid(unsafe_code)]
 
-pub mod paths;
 pub mod db;
 pub mod models;
+pub mod paths;
 pub mod repo;
 pub mod secrets;
 

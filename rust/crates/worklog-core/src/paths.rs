@@ -13,13 +13,13 @@ const ENV_HOME: &str = "WORKLOG_HOME";
 /// Resolved filesystem paths. Cheap to clone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
-    pub root:     PathBuf,
-    pub db:       PathBuf,
-    pub socket:   PathBuf,
-    pub config:   PathBuf,
-    pub bin_dir:  PathBuf,
+    pub root: PathBuf,
+    pub db: PathBuf,
+    pub socket: PathBuf,
+    pub config: PathBuf,
+    pub bin_dir: PathBuf,
     pub releases: PathBuf,
-    pub log_dir:  PathBuf,
+    pub log_dir: PathBuf,
 }
 
 impl Paths {
@@ -36,12 +36,12 @@ impl Paths {
     pub fn from_root(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
         Self {
-            db:       root.join("worklog.db"),
-            socket:   root.join("api.sock"),
-            config:   root.join("config.toml"),
-            bin_dir:  root.join("bin"),
+            db: root.join("worklog.db"),
+            socket: root.join("api.sock"),
+            config: root.join("config.toml"),
+            bin_dir: root.join("bin"),
             releases: root.join("releases"),
-            log_dir:  root.join("logs"),
+            log_dir: root.join("logs"),
             root,
         }
     }
@@ -49,8 +49,7 @@ impl Paths {
     /// Create every directory this layout needs. Idempotent.
     pub fn ensure(&self) -> Result<()> {
         for dir in [&self.root, &self.bin_dir, &self.releases, &self.log_dir] {
-            std::fs::create_dir_all(dir)
-                .with_context(|| format!("creating {}", dir.display()))?;
+            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
         Ok(())
     }
@@ -91,9 +90,9 @@ mod tests {
     #[test]
     fn from_root_assigns_expected_subpaths() {
         let p = Paths::from_root("/tmp/fake");
-        assert_eq!(p.db,      PathBuf::from("/tmp/fake/worklog.db"));
-        assert_eq!(p.socket,  PathBuf::from("/tmp/fake/api.sock"));
-        assert_eq!(p.config,  PathBuf::from("/tmp/fake/config.toml"));
+        assert_eq!(p.db, PathBuf::from("/tmp/fake/worklog.db"));
+        assert_eq!(p.socket, PathBuf::from("/tmp/fake/api.sock"));
+        assert_eq!(p.config, PathBuf::from("/tmp/fake/config.toml"));
         assert_eq!(p.bin_dir, PathBuf::from("/tmp/fake/bin"));
     }
 

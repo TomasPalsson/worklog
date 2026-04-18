@@ -24,8 +24,8 @@ pub fn open(path: &Path) -> Result<Connection> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating db parent {}", parent.display()))?;
     }
-    let conn = Connection::open(path)
-        .with_context(|| format!("opening sqlite at {}", path.display()))?;
+    let conn =
+        Connection::open(path).with_context(|| format!("opening sqlite at {}", path.display()))?;
     configure(&conn)?;
     migrate(&conn)?;
     Ok(conn)
@@ -75,19 +75,25 @@ pub fn current_version(conn: &Connection) -> Result<i32> {
 #[derive(Debug, serde::Serialize)]
 pub struct DbSummary {
     pub schema_version: i32,
-    pub events:         i64,
-    pub blocks:         i64,
-    pub sessions:       i64,
-    pub jira_tickets:   i64,
+    pub events: i64,
+    pub blocks: i64,
+    pub sessions: i64,
+    pub jira_tickets: i64,
 }
 
 pub fn summarize(conn: &Connection) -> Result<DbSummary> {
     let schema_version = current_version(conn)?;
-    let events       = count(conn, "events")?;
-    let blocks       = count(conn, "blocks")?;
-    let sessions     = count(conn, "sessions")?;
+    let events = count(conn, "events")?;
+    let blocks = count(conn, "blocks")?;
+    let sessions = count(conn, "sessions")?;
     let jira_tickets = count(conn, "jira_tickets")?;
-    Ok(DbSummary { schema_version, events, blocks, sessions, jira_tickets })
+    Ok(DbSummary {
+        schema_version,
+        events,
+        blocks,
+        sessions,
+        jira_tickets,
+    })
 }
 
 fn count(conn: &Connection, table: &str) -> Result<i64> {
@@ -115,8 +121,17 @@ mod tests {
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap();
-        for expected in ["block_events", "blocks", "events", "jira_tickets", "sessions"] {
-            assert!(tables.contains(&expected.to_string()), "missing table {expected}; got {tables:?}");
+        for expected in [
+            "block_events",
+            "blocks",
+            "events",
+            "jira_tickets",
+            "sessions",
+        ] {
+            assert!(
+                tables.contains(&expected.to_string()),
+                "missing table {expected}; got {tables:?}"
+            );
         }
     }
 

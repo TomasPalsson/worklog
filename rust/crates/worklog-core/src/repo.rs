@@ -34,9 +34,19 @@ pub fn upsert_event(conn: &Connection, e: &Event) -> Result<i64> {
             tempo_worklog_id = excluded.tempo_worklog_id,
             raw_json         = excluded.raw_json",
         params![
-            e.source, e.source_id, e.started_at, e.ended_at, e.duration_seconds,
-            e.title,  e.details,   e.repo,       e.project_path, e.jira_issue,
-            e.session_id, e.tempo_worklog_id, e.raw_json,
+            e.source,
+            e.source_id,
+            e.started_at,
+            e.ended_at,
+            e.duration_seconds,
+            e.title,
+            e.details,
+            e.repo,
+            e.project_path,
+            e.jira_issue,
+            e.session_id,
+            e.tempo_worklog_id,
+            e.raw_json,
         ],
     )
     .context("upsert event")?;
@@ -68,20 +78,20 @@ pub fn load_day_events(conn: &Connection, day: &str) -> Result<Vec<Event>> {
     )?;
     let rows = stmt.query_map(params![day], |r| {
         Ok(Event {
-            id:               Some(r.get(0)?),
-            source:           r.get(1)?,
-            source_id:        r.get(2)?,
-            started_at:       r.get(3)?,
-            ended_at:         r.get(4)?,
+            id: Some(r.get(0)?),
+            source: r.get(1)?,
+            source_id: r.get(2)?,
+            started_at: r.get(3)?,
+            ended_at: r.get(4)?,
             duration_seconds: r.get(5)?,
-            title:            r.get(6)?,
-            details:          r.get(7)?,
-            repo:             r.get(8)?,
-            project_path:     r.get(9)?,
-            jira_issue:       r.get(10)?,
-            session_id:       r.get(11)?,
+            title: r.get(6)?,
+            details: r.get(7)?,
+            repo: r.get(8)?,
+            project_path: r.get(9)?,
+            jira_issue: r.get(10)?,
+            session_id: r.get(11)?,
             tempo_worklog_id: r.get(12)?,
-            raw_json:         r.get(13)?,
+            raw_json: r.get(13)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -99,15 +109,15 @@ pub fn list_blocks_for_day(conn: &Connection, day: &str) -> Result<Vec<Block>> {
     )?;
     let rows = stmt.query_map(params![day], |r| {
         Ok(Block {
-            id:               r.get(0)?,
-            day:              r.get(1)?,
-            jira_issue:       r.get(2)?,
-            started_at:       r.get(3)?,
-            ended_at:         r.get(4)?,
+            id: r.get(0)?,
+            day: r.get(1)?,
+            jira_issue: r.get(2)?,
+            started_at: r.get(3)?,
+            ended_at: r.get(4)?,
             duration_seconds: r.get(5)?,
-            description:      r.get(6)?,
-            estimated_by:     r.get(7)?,
-            flagged:          r.get::<_, i64>(8)? != 0,
+            description: r.get(6)?,
+            estimated_by: r.get(7)?,
+            flagged: r.get::<_, i64>(8)? != 0,
             tempo_worklog_id: r.get(9)?,
         })
     })?;
@@ -123,15 +133,15 @@ pub fn get_block(conn: &Connection, id: i64) -> Result<Option<Block>> {
             params![id],
             |r| {
                 Ok(Block {
-                    id:               r.get(0)?,
-                    day:              r.get(1)?,
-                    jira_issue:       r.get(2)?,
-                    started_at:       r.get(3)?,
-                    ended_at:         r.get(4)?,
+                    id: r.get(0)?,
+                    day: r.get(1)?,
+                    jira_issue: r.get(2)?,
+                    started_at: r.get(3)?,
+                    ended_at: r.get(4)?,
                     duration_seconds: r.get(5)?,
-                    description:      r.get(6)?,
-                    estimated_by:     r.get(7)?,
-                    flagged:          r.get::<_, i64>(8)? != 0,
+                    description: r.get(6)?,
+                    estimated_by: r.get(7)?,
+                    flagged: r.get::<_, i64>(8)? != 0,
                     tempo_worklog_id: r.get(9)?,
                 })
             },
@@ -166,11 +176,11 @@ pub fn list_tickets(conn: &Connection) -> Result<Vec<JiraTicket>> {
     )?;
     let rows = stmt.query_map([], |r| {
         Ok(JiraTicket {
-            key:         r.get(0)?,
-            summary:     r.get(1)?,
-            status:      r.get(2)?,
+            key: r.get(0)?,
+            summary: r.get(1)?,
+            status: r.get(2)?,
             project_key: r.get(3)?,
-            updated:     r.get(4)?,
+            updated: r.get(4)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -195,7 +205,11 @@ mod tests {
         assert_eq!(id1, id2);
         assert_eq!(count_events(&c).unwrap(), 1);
         let title: String = c
-            .query_row("SELECT title FROM events WHERE id = ?1", params![id1], |r| r.get(0))
+            .query_row(
+                "SELECT title FROM events WHERE id = ?1",
+                params![id1],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(title, "second");
     }
@@ -203,9 +217,21 @@ mod tests {
     #[test]
     fn load_day_events_filters_by_iso_day() {
         let c = fresh();
-        upsert_event(&c, &Event::minimal("gcal", "a", "2026-04-18T08:00:00Z", "A")).unwrap();
-        upsert_event(&c, &Event::minimal("gcal", "b", "2026-04-18T23:59:59Z", "B")).unwrap();
-        upsert_event(&c, &Event::minimal("gcal", "c", "2026-04-19T00:00:00Z", "C")).unwrap();
+        upsert_event(
+            &c,
+            &Event::minimal("gcal", "a", "2026-04-18T08:00:00Z", "A"),
+        )
+        .unwrap();
+        upsert_event(
+            &c,
+            &Event::minimal("gcal", "b", "2026-04-18T23:59:59Z", "B"),
+        )
+        .unwrap();
+        upsert_event(
+            &c,
+            &Event::minimal("gcal", "c", "2026-04-19T00:00:00Z", "C"),
+        )
+        .unwrap();
 
         let got = load_day_events(&c, "2026-04-18").unwrap();
         assert_eq!(got.len(), 2);
@@ -221,7 +247,8 @@ mod tests {
              VALUES ('2026-04-18','2026-04-18T10:00:00Z','2026-04-18T10:30:00Z',1800),
                     ('2026-04-18','2026-04-18T09:00:00Z','2026-04-18T09:15:00Z', 900)",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let blocks = list_blocks_for_day(&c, "2026-04-18").unwrap();
         assert_eq!(blocks.len(), 2);
         assert!(blocks[0].started_at < blocks[1].started_at);
@@ -256,15 +283,28 @@ mod tests {
     #[test]
     fn list_tickets_orders_by_updated_desc() {
         let c = fresh();
-        for (k, u) in [("A", "2026-04-17"), ("B", "2026-04-18"), ("C", "2026-04-16")] {
-            upsert_ticket(&c, &JiraTicket {
-                key: k.into(),
-                summary: format!("ticket {k}"),
-                status: None, project_key: None,
-                updated: Some(u.into()),
-            }).unwrap();
+        for (k, u) in [
+            ("A", "2026-04-17"),
+            ("B", "2026-04-18"),
+            ("C", "2026-04-16"),
+        ] {
+            upsert_ticket(
+                &c,
+                &JiraTicket {
+                    key: k.into(),
+                    summary: format!("ticket {k}"),
+                    status: None,
+                    project_key: None,
+                    updated: Some(u.into()),
+                },
+            )
+            .unwrap();
         }
-        let keys: Vec<String> = list_tickets(&c).unwrap().into_iter().map(|t| t.key).collect();
+        let keys: Vec<String> = list_tickets(&c)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.key)
+            .collect();
         assert_eq!(keys, vec!["B", "A", "C"]);
     }
 }
