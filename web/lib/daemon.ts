@@ -1,33 +1,48 @@
-// Unix-socket HTTP client for the worklog Rust daemon.
+// HTTP client for the worklog Rust daemon.
 //
 // All write endpoints are here. Reads go through bun:sqlite in ./db.ts
 // — the daemon's GET /blocks/:day would work too, but direct SQLite is
 // half a millisecond vs a cross-process RPC and keeps the daemon free
 // for writes.
 //
-// Bun's global `fetch` accepts a `unix` option so this stays boringly
-// idiomatic — no http.Agent, no hand-rolled socket writes.
+// Two transports supported:
+//   1. WORKLOG_DAEMON_URL — TCP (used by the dockerised web UI, since
+//      Docker Desktop on macOS can't proxy unix sockets through its VM
+//      bind mounts). Example: http://host.docker.internal:9323
+//   2. Unix socket at WORKLOG_SOCKET or ~/.local/share/worklog/api.sock
+//      (used for host-local clients — lower overhead, no port collision).
+//
+// Bun's global `fetch` accepts a `unix` option so the unix transport
+// stays boringly idiomatic.
 
-function socketPath(): string {
-  return (
-    process.env.WORKLOG_SOCKET ??
-    `${process.env.HOME ?? ""}/.local/share/worklog/api.sock`
-  );
+type Transport =
+  | { kind: "tcp"; base: string }
+  | { kind: "unix"; path: string };
+
+function transport(): Transport {
+  const url = process.env.WORKLOG_DAEMON_URL;
+  if (url) return { kind: "tcp", base: url.replace(/\/$/, "") };
+  return {
+    kind: "unix",
+    path:
+      process.env.WORKLOG_SOCKET ??
+      `${process.env.HOME ?? ""}/.local/share/worklog/api.sock`,
+  };
 }
 
 type FetchInit = Parameters<typeof fetch>[1];
 
 async function call<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+  const t = transport();
   const init: FetchInit & { unix?: string } = {
     method,
-    unix: socketPath(),
     headers: { "content-type": "application/json" },
   };
-  if (body !== undefined) {
-    init.body = JSON.stringify(body);
-  }
-  // Host doesn't matter — the unix socket routes everything.
-  const resp = await fetch(`http://worklog${path}`, init);
+  if (t.kind === "unix") init.unix = t.path;
+  if (body !== undefined) init.body = JSON.stringify(body);
+
+  const url = t.kind === "tcp" ? `${t.base}${path}` : `http://worklog${path}`;
+  const resp = await fetch(url, init);
   const text = await resp.text();
   if (!resp.ok) {
     const msg =

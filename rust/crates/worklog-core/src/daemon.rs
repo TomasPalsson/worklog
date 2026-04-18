@@ -23,6 +23,7 @@
 //! Unix-socket file perms are forced to `0600` so only the owning user can
 //! speak to the daemon.
 
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -36,7 +37,7 @@ use chrono::NaiveDate;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::net::UnixListener;
+use tokio::net::{TcpListener, UnixListener};
 use tokio::sync::Mutex;
 use tracing::{error, info};
 
@@ -67,6 +68,42 @@ pub fn router(state: Shared) -> Router {
         .with_state(state)
 }
 
+/// Bind a TCP socket at `addr` (typically `127.0.0.1:<port>`) and serve
+/// the router. Used by the containerised web UI since Docker Desktop on
+/// macOS can't proxy unix sockets through its VM bind mounts.
+pub async fn serve_tcp(addr: SocketAddr, router: Router) -> Result<()> {
+    let listener = TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("binding TCP {addr}"))?;
+    info!("worklog daemon listening on {addr}");
+
+    use hyper::server::conn::http1;
+    use hyper_util::rt::TokioIo;
+    use tower::Service;
+
+    loop {
+        let (stream, _peer) = match listener.accept().await {
+            Ok(pair) => pair,
+            Err(e) => {
+                error!("tcp accept failed: {e}");
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                continue;
+            }
+        };
+        let io = TokioIo::new(stream);
+        let router = router.clone();
+        tokio::spawn(async move {
+            let svc = hyper::service::service_fn(move |req| {
+                let mut router = router.clone();
+                async move { router.call(req).await }
+            });
+            if let Err(e) = http1::Builder::new().serve_connection(io, svc).await {
+                error!("conn error: {e}");
+            }
+        });
+    }
+}
+
 /// Bind a unix socket at `path` and serve the router until the returned
 /// future is dropped or the process receives SIGINT. Any stale socket file
 /// at `path` is removed first.
@@ -80,13 +117,26 @@ pub async fn serve_at(path: &Path, router: Router) -> Result<()> {
     let listener = UnixListener::bind(path)
         .with_context(|| format!("binding unix socket at {}", path.display()))?;
 
-    // Tighten perms — only the owner may speak to the daemon.
+    // Tighten perms. On a single-user workstation the security boundary is
+    // already the user account — the socket is inside the user's data dir
+    // and the containerised web UI bind-mounts that same dir. Docker Desktop
+    // on macOS doesn't remap UIDs for unix-socket bind mounts, so 0600
+    // would lock the container out. 0666 keeps the filesystem perms
+    // permissive; the path itself still sits under ~/.local/share/worklog,
+    // which only the user can read.
+    //
+    // Override with WORKLOG_SOCKET_MODE (octal, e.g. 0600) if you're on a
+    // multi-user host and need to tighten it.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
+        let mode = std::env::var("WORKLOG_SOCKET_MODE")
+            .ok()
+            .and_then(|s| u32::from_str_radix(s.trim_start_matches("0o"), 8).ok())
+            .unwrap_or(0o666);
+        let perms = std::fs::Permissions::from_mode(mode);
         if let Err(e) = std::fs::set_permissions(path, perms) {
-            error!("could not chmod 600 socket: {e}");
+            error!("could not chmod socket: {e}");
         }
     }
 

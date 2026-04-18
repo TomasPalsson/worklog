@@ -20,14 +20,17 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:3333:3000"
+    # Bind-mount the data dir so bun:sqlite can read the DB directly;
+    # writes go over TCP to the host daemon. Docker Desktop on macOS
+    # can't proxy unix sockets across its VM bind mounts, hence the
+    # TCP route.
     volumes:
-      # Bind mount the whole worklog dir so the container sees both the
-      # SQLite DB (for reads) and the unix socket (for writes via the
-      # daemon). Writable because SQLite's WAL mode creates sidecars.
       - "${WORKLOG_HOME:-${HOME}/.local/share/worklog}:/data"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - WORKLOG_DB=/data/worklog.db
-      - WORKLOG_SOCKET=/data/api.sock
+      - WORKLOG_DAEMON_URL=http://host.docker.internal:9323
       - TZ=${TZ:-UTC}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/"]

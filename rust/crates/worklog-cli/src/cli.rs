@@ -117,6 +117,12 @@ pub enum Cmd {
         /// Override the socket path (default: <data>/api.sock).
         #[arg(long)]
         socket: Option<std::path::PathBuf>,
+        /// Also listen on this TCP address (e.g. 127.0.0.1:9323). Needed
+        /// for the dockerised web UI on Docker Desktop, which can't
+        /// bind-mount a live unix socket across its VM. Defaults to
+        /// `127.0.0.1:9323` — pass an empty string to disable.
+        #[arg(long, default_value = "127.0.0.1:9323")]
+        tcp: String,
     },
 
     /// Run the dockerised Next.js review UI (http://localhost:3333).
@@ -277,7 +283,7 @@ pub fn run_with<W: Write>(
         Cmd::Infer { day } => cmd_infer(day, out, cli.json),
         Cmd::Estimate { day, model } => cmd_estimate(day, &model, out, cli.json),
         Cmd::HookRun => cmd_hook_run(),
-        Cmd::Daemon { socket } => cmd_daemon(socket),
+        Cmd::Daemon { socket, tcp } => cmd_daemon(socket, tcp),
         Cmd::Web { sub } => match sub {
             WebCmd::Up { port, no_daemon } => cmd_web_up(port, no_daemon, out, cli.json),
             WebCmd::Down => cmd_web_down(out, cli.json),
@@ -791,7 +797,7 @@ fn cmd_hook_run() -> Result<()> {
     hook_run::run_from_stdin()
 }
 
-fn cmd_daemon(socket: Option<std::path::PathBuf>) -> Result<()> {
+fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -799,13 +805,35 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>) -> Result<()> {
 
     rt.block_on(async move {
         let state = daemon_mod::new_state()?;
-        let router = daemon_mod::router(state);
+        let router = daemon_mod::router(state.clone());
         let path = match socket {
             Some(p) => p,
             None => daemon_mod::socket_path()?,
         };
         eprintln!("→ socket {}", worklog_core::paths::short_display(&path));
-        daemon_mod::serve_at(&path, router).await
+
+        // Clone the router for the TCP task so the unix+TCP listeners
+        // share the same Arc<AppState> — both mutate the same DB.
+        let tcp_task = if tcp.is_empty() {
+            None
+        } else {
+            let addr: std::net::SocketAddr = tcp
+                .parse()
+                .with_context(|| format!("invalid --tcp address: {tcp}"))?;
+            eprintln!("→ tcp    http://{addr}");
+            let tcp_router = daemon_mod::router(state);
+            Some(tokio::spawn(async move {
+                if let Err(e) = daemon_mod::serve_tcp(addr, tcp_router).await {
+                    tracing::error!("tcp listener died: {e:#}");
+                }
+            }))
+        };
+
+        let unix_res = daemon_mod::serve_at(&path, router).await;
+        if let Some(t) = tcp_task {
+            t.abort();
+        }
+        unix_res
     })
 }
 
@@ -879,11 +907,8 @@ fn cmd_web_up<W: Write>(port: u16, no_daemon: bool, out: &mut W, json: bool) -> 
     let context = web_mod::resolve_web_context()?;
     let compose = web_mod::render_compose(&paths, port, &context)?;
 
-    if !no_daemon && !daemon_reachable(&paths.socket) {
-        eprintln!(
-            "⚠ worklog daemon isn't running at {}.",
-            worklog_core::paths::short_display(&paths.socket)
-        );
+    if !no_daemon && !daemon_tcp_reachable("127.0.0.1:9323") {
+        eprintln!("⚠ worklog daemon isn't listening on 127.0.0.1:9323.");
         eprintln!("   Start it in another terminal with: worklog daemon");
         eprintln!("   (The web UI can read the DB without it, but writes will fail.)");
     }
@@ -975,10 +1000,14 @@ fn cmd_web_build<W: Write>(pull: bool, out: &mut W, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Cheap TCP-style reachability check for the unix socket: try connecting
-/// and immediately close. We don't speak HTTP — if the socket exists and
-/// is owned by our daemon it's listening.
-fn daemon_reachable(socket: &std::path::Path) -> bool {
-    use std::os::unix::net::UnixStream;
-    UnixStream::connect(socket).is_ok()
+/// Cheap reachability check: try to open a TCP connection to the daemon
+/// and immediately close. We don't speak HTTP — we just confirm a listener
+/// is accepting. Timeout is bounded so a stuck daemon can't hang the CLI.
+fn daemon_tcp_reachable(addr: &str) -> bool {
+    use std::net::TcpStream;
+    use std::time::Duration;
+    let Ok(parsed) = addr.parse::<std::net::SocketAddr>() else {
+        return false;
+    };
+    TcpStream::connect_timeout(&parsed, Duration::from_millis(150)).is_ok()
 }
