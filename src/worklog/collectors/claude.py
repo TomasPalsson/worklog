@@ -27,21 +27,19 @@ _CLOSING_EVENTS: dict[str, str] = {
 }
 
 
-def _jira_from_text(*parts: str | None) -> str | None:
+def _first_jira_key(*parts: str | None) -> str | None:
     for p in parts:
-        if not p:
-            continue
-        m = JIRA_KEY_RE.search(p)
-        if m:
+        if p and (m := JIRA_KEY_RE.search(p)):
             return m.group(1)
     return None
 
 
-def _title_for(event: str, payload: dict[str, Any]) -> str:
-    prompt = payload.get("prompt") or payload.get("user_prompt")
-    if prompt:
-        return f"{event} — {str(prompt)[:80]}"
-    return event
+def _prompt_of(payload: dict[str, Any]) -> str | None:
+    return payload.get("prompt") or payload.get("user_prompt")
+
+
+def _title_for(event: str, prompt: str | None) -> str:
+    return f"{event} — {str(prompt)[:80]}" if prompt else event
 
 
 def handle(payload: dict[str, Any]) -> None:
@@ -49,12 +47,10 @@ def handle(payload: dict[str, Any]) -> None:
     event = payload.get("hook_event_name") or payload.get("event") or "unknown"
     session_id = payload.get("session_id", "no-session")
     cwd = payload.get("cwd") or payload.get("project_path")
-    transcript_path = payload.get("transcript_path")
+    prompt = _prompt_of(payload)
     now = datetime.now(UTC)
-    source_id = f"{session_id}:{event}:{now.isoformat()}"
 
-    prompt = payload.get("prompt") or payload.get("user_prompt")
-    jira_issue = _jira_from_text(prompt, cwd)
+    jira_issue = _first_jira_key(prompt, cwd)
     company = classify(load_companies(), project_path=cwd, jira_issue=jira_issue)
 
     init_db()
@@ -62,10 +58,10 @@ def handle(payload: dict[str, Any]) -> None:
         upsert_event(
             conn,
             source="claude",
-            source_id=source_id,
+            source_id=f"{session_id}:{event}:{now.isoformat()}",
             started_at=now,
-            title=_title_for(event, payload),
-            details=transcript_path,
+            title=_title_for(event, prompt),
+            details=payload.get("transcript_path"),
             project_path=cwd,
             jira_issue=jira_issue,
             company=company,
@@ -73,12 +69,9 @@ def handle(payload: dict[str, Any]) -> None:
             raw_json=json.dumps(payload),
         )
         open_session(conn, session_id=session_id, started_at=now, project_path=cwd)
-        if event in _CLOSING_EVENTS:
+        if close_reason := _CLOSING_EVENTS.get(event):
             close_session(
-                conn,
-                session_id=session_id,
-                ended_at=now,
-                end_source=_CLOSING_EVENTS[event],
+                conn, session_id=session_id, ended_at=now, end_source=close_reason
             )
         reap_stale(conn, now=now)
 

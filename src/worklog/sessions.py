@@ -39,7 +39,7 @@ def close_session(
     ended_at: datetime,
     end_source: str,
 ) -> None:
-    """Record first close only. Stop → SubagentStop → SessionEnd → reaper ordering is intentional."""
+    """Record first close only; later closes are ignored (stop > session_end > reaper)."""
     conn.execute(
         """
         UPDATE sessions
