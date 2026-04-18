@@ -72,12 +72,12 @@ pub fn swap_with_rollback(staged: &Path, dest: &Path) -> Result<InstallOutcome> 
             })
         }
         Err(e) => {
-            warn!(
-                "post-swap smoke test failed: {e:#}. Rolling back {} → {}",
-                previous.display(),
-                dest.display()
-            );
             if had_previous {
+                warn!(
+                    "post-swap smoke test failed: {e:#}. Rolling back {} → {}",
+                    previous.display(),
+                    dest.display()
+                );
                 // Best-effort rollback. If this fails too, the user has
                 // .previous they can manually restore.
                 std::fs::rename(&previous, dest).with_context(|| {
@@ -88,12 +88,40 @@ pub fn swap_with_rollback(staged: &Path, dest: &Path) -> Result<InstallOutcome> 
                         dest.display()
                     )
                 })?;
+                Ok(InstallOutcome {
+                    destination: dest.to_path_buf(),
+                    previous_backup: Some(previous),
+                    rolled_back: true,
+                })
+            } else {
+                // Fresh install (no .previous to restore). The broken
+                // binary is sitting at dest right now — remove it so the
+                // user isn't left with a non-functional worklog, and
+                // surface the failure as an error rather than pretending
+                // we "rolled back" to something that never existed.
+                warn!(
+                    "post-swap smoke test failed on fresh install: {e:#}. \
+                     Removing broken binary at {}.",
+                    dest.display()
+                );
+                let rm_err = std::fs::remove_file(dest).err();
+                Err(e)
+                    .with_context(|| {
+                        match rm_err {
+                            Some(rm) => format!(
+                                "post-swap smoke test failed; additionally, \
+                                 removing the broken binary at {} failed: {rm}",
+                                dest.display()
+                            ),
+                            None => format!(
+                                "post-swap smoke test failed; no previous \
+                                 binary to restore, the broken download at \
+                                 {} has been removed",
+                                dest.display()
+                            ),
+                        }
+                    })
             }
-            Ok(InstallOutcome {
-                destination: dest.to_path_buf(),
-                previous_backup: had_previous.then(|| previous.clone()),
-                rolled_back: true,
-            })
         }
     }
 }
@@ -186,38 +214,82 @@ mod tests {
     }
 
     #[test]
-    fn swap_rolls_back_on_bad_new_binary() {
+    fn swap_aborts_when_pre_swap_smoke_fails() {
+        // If the staged binary itself can't run, the swap must never
+        // happen — the live binary stays intact.
         let tmp = TempDir::new().unwrap();
         let dest = tmp.path().join("worklog");
         script(&dest, "echo old; exit 0");
         let staged = tmp.path().join("worklog.new");
-        script(&staged, "exit 0"); // passes pre-swap smoke
-        // ...but when we invoke the staged one *after* moving it into
-        // dest, we want to simulate failure. Use a trigger file so the
-        // post-swap test fails but pre-swap passes.
-        let trigger = tmp.path().join("trigger");
-        std::fs::write(&trigger, "").unwrap();
-        script(
-            &staged,
-            &format!(
-                "if [ -f {trigger} ]; then exit 7; else echo ok; exit 0; fi",
-                trigger = trigger.display()
-            ),
-        );
-        // pre-swap: trigger exists → staged exits 7 → pre-swap fails
-        // That's what we want to assert for THIS test: swap aborts early.
+        script(&staged, "exit 7");
+
         let err = swap_with_rollback(&staged, &dest).unwrap_err();
         assert!(format!("{err:#}").contains("pre-swap"));
-        // dest is untouched
         let out = Command::new(&dest).arg("--version").output().unwrap();
         assert!(String::from_utf8_lossy(&out.stdout).contains("old"));
+    }
+
+    #[test]
+    fn swap_rolls_back_when_post_swap_smoke_fails() {
+        // The real rollback path: pre-swap passes, rename happens, then
+        // the *new* binary fails its post-swap smoke test. We must
+        // restore dest from .previous.
+        //
+        // Trick: the staged script branches on its invocation path ($0).
+        // When invoked at its staged path (contains "new"), exits 0 so
+        // pre-swap passes. When invoked from dest after rename, exits
+        // non-zero so post-swap fails.
+        let tmp = TempDir::new().unwrap();
+        let dest = tmp.path().join("worklog");
+        script(&dest, "echo old 0.1; exit 0");
+        let staged = tmp.path().join("worklog.new");
+        script(
+            &staged,
+            r#"case "$0" in *.new) echo pre; exit 0;; *) exit 9;; esac"#,
+        );
+
+        let outcome = swap_with_rollback(&staged, &dest).unwrap();
+        assert!(outcome.rolled_back, "post-swap failure must report rolled_back");
+        assert!(outcome.previous_backup.is_some());
+        // The old binary must still run at dest.
+        let out = Command::new(&dest).arg("--version").output().unwrap();
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("old"),
+            "dest should have been restored from .previous; got {out:?}"
+        );
+    }
+
+    #[test]
+    fn fresh_install_post_swap_failure_returns_err_and_cleans_up() {
+        // Regression for the C4 bug: on a fresh install (no .previous to
+        // restore) + post-swap failure, the function used to return
+        // Ok(rolled_back: true) while leaving the broken binary at dest.
+        // The CLI would then lie and say "rolled back". Now it must
+        // Err, and dest should NOT contain a broken binary.
+        let tmp = TempDir::new().unwrap();
+        let dest = tmp.path().join("worklog"); // does not exist
+        let staged = tmp.path().join("staged");
+        script(
+            &staged,
+            r#"case "$0" in *staged) echo pre; exit 0;; *) exit 9;; esac"#,
+        );
+
+        let err = swap_with_rollback(&staged, &dest).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("post-swap"),
+            "error should mention post-swap failure: {err:#}"
+        );
+        // Broken binary must not be left at dest.
+        assert!(
+            !dest.exists(),
+            "a broken binary must not be left at dest on fresh install"
+        );
     }
 
     #[test]
     fn swap_into_empty_destination_works() {
         let tmp = TempDir::new().unwrap();
         let dest = tmp.path().join("worklog");
-        // dest does not exist yet
         let staged = tmp.path().join("staged");
         script(&staged, "echo fresh 0.1; exit 0");
         let outcome = swap_with_rollback(&staged, &dest).unwrap();

@@ -5,9 +5,18 @@
 //! great at spotting reordered/rewritten sections. `bspatch(old, patch)`
 //! reconstructs `new` deterministically.
 //!
-//! We hash the output and compare against the manifest's `sha256` so a
-//! patch that somehow reconstructs the wrong bytes still gets caught
-//! before we swap the live binary.
+//! This module itself does NOT verify the reconstructed output. bspatch
+//! is content-blind — applying a patch to the wrong `old` produces
+//! garbage, not an error. The load-bearing integrity check lives in
+//! `updater::run_update`, which hashes the output of `apply_patch` and
+//! compares against the manifest's `PatchDescriptor::result_sha256`.
+//! Without that check, a client whose `old` differs from the one the
+//! patch was built against (sideload, different toolchain) would
+//! silently install garbage.
+//!
+//! Patches produced by `worklog dev make-patch` are raw-to-raw (no
+//! zstd). `run_update`'s delta branch applies them to the raw current
+//! binary; full assets are the only zstd-wrapped artifacts.
 
 use std::io::Cursor;
 
@@ -23,11 +32,21 @@ pub fn make_patch(old: &[u8], new: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Upper bound on the reconstructed binary size. Defence-in-depth: the
+/// patch is already Ed25519 + SHA256 verified, but if the signing key is
+/// ever compromised, an attacker could craft a patch header claiming a
+/// multi-GB target size. `Vec::with_capacity` would eagerly allocate
+/// that much before any patching begins — an instant OOM primitive.
+/// We cap the hint so that pathological headers just start smaller and
+/// grow as needed.
+pub const MAX_PATCH_TARGET_HINT: usize = 256 * 1024 * 1024;
+
 /// Apply `patch` to `old`, producing the reconstructed bytes. Used by the
 /// updater client.
 pub fn apply_patch(old: &[u8], patch: &[u8]) -> Result<Vec<u8>> {
     let patcher = Bspatch::new(patch).context("parse bspatch header")?;
-    let mut out = Vec::with_capacity(patcher.hint_target_size() as usize);
+    let hint = (patcher.hint_target_size() as usize).min(MAX_PATCH_TARGET_HINT);
+    let mut out = Vec::with_capacity(hint);
     patcher
         .apply(old, Cursor::new(&mut out))
         .context("bspatch apply")?;

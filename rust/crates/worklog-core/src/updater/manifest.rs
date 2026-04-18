@@ -71,6 +71,11 @@ pub struct Asset {
 pub struct PatchDescriptor {
     /// Version this patch starts from.
     pub from: String,
+    /// SHA256 of the RECONSTRUCTED binary (i.e. `bspatch(old, patch)`).
+    /// Verified after applying the patch. This is the load-bearing
+    /// integrity check for the delta path — `asset.sha256` only covers
+    /// the patch bytes themselves, not the reconstructed output.
+    pub result_sha256: String,
     #[serde(flatten)]
     pub asset: Asset,
 }
@@ -205,6 +210,7 @@ mod tests {
                     .iter()
                     .map(|v| PatchDescriptor {
                         from: (*v).to_string(),
+                        result_sha256: "0".repeat(64),
                         asset: sample_asset(120_000),
                     })
                     .collect(),

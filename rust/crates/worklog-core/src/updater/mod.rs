@@ -138,33 +138,48 @@ pub fn run_update(req: &UpdateRequest) -> Result<UpdateReport> {
     std::fs::create_dir_all(&req.work_dir)
         .with_context(|| format!("creating work dir {}", req.work_dir.display()))?;
 
-    let (staged_compressed, used_delta, bytes) = match &choice {
+    // Staged path — the final raw binary that `swap_with_rollback` will
+    // install. How we get bytes into it depends on the asset type:
+    //   Full:  download zstd blob → decompress → staged
+    //   Delta: download raw bsdiff patch → apply to current binary
+    //          (raw-to-raw; produced by `worklog dev make-patch`) →
+    //          verify SHA256 of the reconstructed bytes → staged
+    let staged = req.work_dir.join("worklog.new");
+    let (used_delta, bytes) = match &choice {
         manifest::Choice::Full(a) => {
             let dst = req.work_dir.join("full.zst");
             fetch::fetch_and_verify_asset(&http, a, &pk, &dst)?;
-            (dst, false, a.size)
+            decompress_zstd(&dst, &staged)?;
+            (false, a.size)
         }
         manifest::Choice::Delta(pd) => {
             let patch_path = req.work_dir.join("delta.bin");
             fetch::fetch_and_verify_asset(&http, &pd.asset, &pk, &patch_path)?;
-            // Apply patch: old binary → new compressed bytes. The patch
-            // itself is (old-compressed, new-compressed) so the result
-            // is still a zstd-compressed new binary — same as `Full`.
-            let old_bytes = std::fs::read(&req.current_binary)
-                .with_context(|| format!("reading current binary {}", req.current_binary.display()))?;
-            let old_zstd = zstd::encode_all(std::io::Cursor::new(&old_bytes), 19)
-                .context("recompress current binary for patch base")?;
+            let old_bytes = std::fs::read(&req.current_binary).with_context(|| {
+                format!("reading current binary {}", req.current_binary.display())
+            })?;
             let patch_bytes = std::fs::read(&patch_path)?;
-            let new_zstd = delta::apply_patch(&old_zstd, &patch_bytes)?;
-            let dst = req.work_dir.join("full.zst");
-            std::fs::write(&dst, &new_zstd)?;
-            (dst, true, pd.asset.size)
+            let new_bytes = delta::apply_patch(&old_bytes, &patch_bytes)?;
+            // Load-bearing integrity check: bspatch is content-blind and
+            // will happily produce garbage if the local `old` doesn't
+            // match the `old` the patch was built against (different
+            // rustc, sideloaded build, etc.). This is the only line
+            // standing between the user and a silently-broken binary.
+            let got = crypto::sha256_hex(&new_bytes);
+            if got != pd.result_sha256 {
+                anyhow::bail!(
+                    "delta applied cleanly but the reconstructed binary's SHA256 \
+                     ({got}) doesn't match the manifest's expected \
+                     result_sha256 ({}). Your current binary may not have been \
+                     built from an official release — try `--force` with the \
+                     full asset, or re-install manually.",
+                    pd.result_sha256
+                );
+            }
+            std::fs::write(&staged, &new_bytes)?;
+            (true, pd.asset.size)
         }
     };
-
-    // Decompress the staged zstd blob → raw binary, ready to smoke-test.
-    let staged = req.work_dir.join("worklog.new");
-    decompress_zstd(&staged_compressed, &staged)?;
 
     if req.dry_run {
         info!("dry-run: staged binary at {}", staged.display());
@@ -192,11 +207,31 @@ pub fn run_update(req: &UpdateRequest) -> Result<UpdateReport> {
     })
 }
 
+/// Hard cap on decompressed binary size. Rust worklog binaries compile
+/// to ~15MB at release; 200MB is generous headroom while still catching
+/// a zstd decompression bomb (a crafted patch that expands to GBs and
+/// fills the disk before we notice).
+pub const MAX_DECOMPRESSED_BYTES: u64 = 200 * 1024 * 1024;
+
 fn decompress_zstd(src: &Path, dst: &Path) -> Result<()> {
+    use std::io::Read;
     let f = std::fs::File::open(src).with_context(|| format!("open {}", src.display()))?;
-    let mut decoder = zstd::Decoder::new(f).context("init zstd decoder")?;
+    let decoder = zstd::Decoder::new(f).context("init zstd decoder")?;
+    // `Take` enforces MAX_DECOMPRESSED_BYTES bytes and then yields EOF.
+    // If the real output exceeds the cap, the next read returns 0 and we
+    // stop writing — then we check whether we stopped at the cap (bomb)
+    // or at genuine EOF. This keeps constant memory.
+    let mut limited = decoder.take(MAX_DECOMPRESSED_BYTES + 1);
     let mut out = std::fs::File::create(dst).with_context(|| format!("create {}", dst.display()))?;
-    std::io::copy(&mut decoder, &mut out).context("zstd decompress")?;
+    let written = std::io::copy(&mut limited, &mut out).context("zstd decompress")?;
+    if written > MAX_DECOMPRESSED_BYTES {
+        // Purge the partially-written output so the caller never sees it.
+        let _ = std::fs::remove_file(dst);
+        anyhow::bail!(
+            "decompressed output exceeds {}MB cap — refusing (possible decompression bomb)",
+            MAX_DECOMPRESSED_BYTES / 1024 / 1024
+        );
+    }
     Ok(())
 }
 
@@ -364,4 +399,246 @@ mod tests {
         });
     }
 
+    #[test]
+    fn run_update_applies_delta_end_to_end() {
+        // Previously the delta path was never end-to-end tested — only
+        // make_patch/apply_patch unit-tested. A wiring bug (raw vs zstd
+        // mismatch, missing result_sha256, wrong apply target) would
+        // have shipped. This test exercises the full delta flow.
+        let _g = pubkey::test_env_lock();
+        with_test_key(|sk| {
+            // "Current" binary that prints old version + has some bulk
+            // bytes so the delta actually shrinks.
+            let old_script = {
+                let mut v = b"#!/bin/sh\necho worklog 1.0.0\n".to_vec();
+                v.extend_from_slice(&vec![b'#'; 8000]);
+                v
+            };
+            let new_script = {
+                let mut v = b"#!/bin/sh\necho worklog 1.1.0\n".to_vec();
+                v.extend_from_slice(&vec![b'#'; 8000]);
+                v
+            };
+            let patch = delta::make_patch(&old_script, &new_script).unwrap();
+            let result_sha = sha(&new_script);
+            let patch_sig = sk.sign(&patch).to_bytes();
+            let patch_sha = sha(&patch);
+
+            let target = Target::current().expect("running on supported target");
+            let mut manifest = Manifest {
+                version: "1.1.0".into(),
+                targets: vec![TargetManifest {
+                    target,
+                    full: Asset {
+                        url: "http://unused/full".into(),
+                        sha256: "0".repeat(64),
+                        size: 999_999_999, // force delta pick
+                        signature: STANDARD.encode([0u8; 64]),
+                    },
+                    patches: vec![PatchDescriptor {
+                        from: "1.0.0".into(),
+                        result_sha256: result_sha,
+                        asset: Asset {
+                            url: "PLACEHOLDER".into(),
+                            sha256: patch_sha,
+                            size: patch.len() as u64,
+                            signature: STANDARD.encode(patch_sig),
+                        },
+                    }],
+                }],
+                notes: "".into(),
+                published_at: "".into(),
+                schema: 1,
+            };
+
+            let server = MockServer::start();
+            manifest.targets[0].patches[0].asset.url = server.url("/delta.bin");
+            let manifest_json = serde_json::to_vec(&manifest).unwrap();
+            let manifest_sig = sk.sign(&manifest_json).to_bytes();
+            server.mock(|when, then| {
+                when.method(GET).path("/manifest.json");
+                then.status(200).body(manifest_json);
+            });
+            server.mock(|when, then| {
+                when.method(GET).path("/manifest.json.sig");
+                then.status(200).body(manifest_sig.as_slice());
+            });
+            server.mock(|when, then| {
+                when.method(GET).path("/delta.bin");
+                then.status(200).body(patch);
+            });
+
+            let tmp = TempDir::new().unwrap();
+            let dest = tmp.path().join("worklog");
+            std::fs::write(&dest, &old_script).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&dest).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&dest, perms).unwrap();
+
+            let req = UpdateRequest {
+                manifest_url: server.url("/manifest.json"),
+                current_binary: dest.clone(),
+                current_version: "1.0.0".into(),
+                work_dir: tmp.path().join("stage"),
+                dry_run: false,
+                force: false,
+            };
+            let report = run_update(&req).unwrap();
+            assert!(report.used_delta, "delta asset must have been picked");
+            assert!(!report.rolled_back);
+            let out = std::process::Command::new(&dest)
+                .arg("--version")
+                .output()
+                .unwrap();
+            assert!(
+                String::from_utf8_lossy(&out.stdout).contains("1.1.0"),
+                "delta-applied binary should now print 1.1.0"
+            );
+        });
+    }
+
+    #[test]
+    fn run_update_rejects_delta_with_mismatched_result_sha() {
+        // Invariant: if the reconstructed binary's SHA doesn't match the
+        // manifest's expected result_sha256, refuse. This catches
+        // sideloaded builds + corrupted patches + wrong zstd levels.
+        let _g = pubkey::test_env_lock();
+        with_test_key(|sk| {
+            let old = b"#!/bin/sh\necho 1.0.0\n".to_vec();
+            let new = b"#!/bin/sh\necho 1.1.0\n".to_vec();
+            let patch = delta::make_patch(&old, &new).unwrap();
+            let patch_sig = sk.sign(&patch).to_bytes();
+            let patch_sha = sha(&patch);
+
+            let target = Target::current().unwrap();
+            let mut manifest = Manifest {
+                version: "1.1.0".into(),
+                targets: vec![TargetManifest {
+                    target,
+                    full: Asset {
+                        url: "http://unused".into(),
+                        sha256: "0".repeat(64),
+                        size: 999_999_999,
+                        signature: STANDARD.encode([0u8; 64]),
+                    },
+                    patches: vec![PatchDescriptor {
+                        from: "1.0.0".into(),
+                        result_sha256: "0".repeat(64), // wrong on purpose
+                        asset: Asset {
+                            url: "PLACEHOLDER".into(),
+                            sha256: patch_sha,
+                            size: patch.len() as u64,
+                            signature: STANDARD.encode(patch_sig),
+                        },
+                    }],
+                }],
+                notes: "".into(),
+                published_at: "".into(),
+                schema: 1,
+            };
+            let server = MockServer::start();
+            manifest.targets[0].patches[0].asset.url = server.url("/d.bin");
+            let mj = serde_json::to_vec(&manifest).unwrap();
+            let ms = sk.sign(&mj).to_bytes();
+            server.mock(|when, then| {
+                when.method(GET).path("/m.json");
+                then.status(200).body(mj);
+            });
+            server.mock(|when, then| {
+                when.method(GET).path("/m.json.sig");
+                then.status(200).body(ms.as_slice());
+            });
+            server.mock(|when, then| {
+                when.method(GET).path("/d.bin");
+                then.status(200).body(patch);
+            });
+
+            let tmp = TempDir::new().unwrap();
+            let dest = tmp.path().join("worklog");
+            std::fs::write(&dest, &old).unwrap();
+            let req = UpdateRequest {
+                manifest_url: server.url("/m.json"),
+                current_binary: dest.clone(),
+                current_version: "1.0.0".into(),
+                work_dir: tmp.path().join("stage"),
+                dry_run: false,
+                force: false,
+            };
+            let err = run_update(&req).unwrap_err();
+            assert!(
+                format!("{err:#}").contains("result_sha256"),
+                "expected result_sha256 mismatch error, got: {err:#}"
+            );
+            // Current binary must be untouched.
+            assert_eq!(std::fs::read(&dest).unwrap(), old);
+        });
+    }
+
+    #[test]
+    fn decompress_zstd_rejects_decompression_bomb() {
+        // Craft a small zstd-compressed payload that expands to more
+        // than MAX_DECOMPRESSED_BYTES. Highly-compressible inputs like
+        // a stream of zeros shrink ~1000x — so a ~256MB zero buffer
+        // compresses to a few KB.
+        let tmp = TempDir::new().unwrap();
+        let over_cap = (MAX_DECOMPRESSED_BYTES as usize) + 4096;
+        let zeros = vec![0u8; over_cap];
+        let compressed = zstd::encode_all(std::io::Cursor::new(&zeros), 3).unwrap();
+        assert!(
+            compressed.len() < (over_cap / 100),
+            "sanity: compressed should be <<1% of raw for a zero-filled input"
+        );
+        let src = tmp.path().join("bomb.zst");
+        std::fs::write(&src, &compressed).unwrap();
+        let dst = tmp.path().join("out.bin");
+
+        let err = decompress_zstd(&src, &dst).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("cap"),
+            "expected cap error, got: {err:#}"
+        );
+        assert!(!dst.exists(), "partial output must be cleaned up");
+    }
+
+    #[test]
+    fn decompress_zstd_accepts_normal_payload() {
+        // Sanity check: the cap doesn't block legitimate payloads.
+        let tmp = TempDir::new().unwrap();
+        let payload = vec![42u8; 512 * 1024]; // 512KB
+        let compressed = zstd::encode_all(std::io::Cursor::new(&payload), 3).unwrap();
+        let src = tmp.path().join("ok.zst");
+        std::fs::write(&src, &compressed).unwrap();
+        let dst = tmp.path().join("out.bin");
+        decompress_zstd(&src, &dst).unwrap();
+        assert_eq!(std::fs::read(&dst).unwrap(), payload);
+    }
+
+    #[test]
+    fn run_update_refuses_placeholder_pubkey() {
+        // Fail-closed guard: with the embedded pubkey still at the
+        // all-zero placeholder, run_update must refuse BEFORE making any
+        // network call — otherwise a freshly-built binary with no real
+        // release key might accept forged signatures.
+        let _g = pubkey::test_env_lock();
+        std::env::remove_var("WORKLOG_RELEASE_PUBKEY_BASE64");
+
+        let tmp = TempDir::new().unwrap();
+        let dest = tmp.path().join("worklog");
+        let req = UpdateRequest {
+            // Unreachable URL — the point is we shouldn't even try.
+            manifest_url: "http://127.0.0.1:1/never".into(),
+            current_binary: dest,
+            current_version: "0.1.0".into(),
+            work_dir: tmp.path().join("stage"),
+            dry_run: false,
+            force: false,
+        };
+        let err = run_update(&req).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("placeholder"),
+            "placeholder refusal message expected, got: {msg}"
+        );
+    }
 }

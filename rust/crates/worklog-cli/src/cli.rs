@@ -1312,16 +1312,21 @@ fn cmd_dev_make_patch<W: Write>(
         }
     };
     std::fs::write(&dest, &patch)?;
+    // The result SHA256 is the load-bearing post-apply check in
+    // run_update — surface it so the release author can paste it into
+    // the manifest's PatchDescriptor.result_sha256.
+    let result_sha = upd::crypto::sha256_hex(&new_bytes);
     if json {
         writeln!(
             out,
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
-                "patch_path":  dest.display().to_string(),
-                "patch_bytes": patch.len(),
-                "old_bytes":   old_bytes.len(),
-                "new_bytes":   new_bytes.len(),
-                "ratio":       patch.len() as f64 / new_bytes.len() as f64,
+                "patch_path":    dest.display().to_string(),
+                "patch_bytes":   patch.len(),
+                "old_bytes":     old_bytes.len(),
+                "new_bytes":     new_bytes.len(),
+                "ratio":         patch.len() as f64 / new_bytes.len() as f64,
+                "result_sha256": result_sha,
             }))?
         )?;
     } else {
@@ -1332,6 +1337,7 @@ fn cmd_dev_make_patch<W: Write>(
             patch.len(),
             100.0 * patch.len() as f64 / new_bytes.len() as f64,
         )?;
+        writeln!(out, "  manifest result_sha256: {result_sha}")?;
     }
     Ok(())
 }

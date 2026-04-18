@@ -41,12 +41,12 @@ pub fn resolve() -> [u8; PUBLIC_KEY_LEN] {
     RELEASE_PUBLIC_KEY
 }
 
-/// True iff the embedded/overridden pubkey is the placeholder (all zeros).
-/// The updater refuses to run against a placeholder — signatures can't
-/// be verified and rolling out an updater that accepts "any signature
-/// verifies against all-zeros" would be worse than useless.
+/// True iff the resolved pubkey is the all-zero placeholder. The updater
+/// refuses to run against it — verification against an all-zero key
+/// accepts degenerate signatures and rolling out an updater that
+/// "verifies" by coincidence would be worse than useless.
 pub fn is_placeholder() -> bool {
-    resolve() == RELEASE_PUBLIC_KEY && RELEASE_PUBLIC_KEY == [0u8; PUBLIC_KEY_LEN]
+    resolve() == [0u8; PUBLIC_KEY_LEN]
 }
 
 /// Crate-internal mutex so tests that touch $WORKLOG_RELEASE_PUBKEY_BASE64
