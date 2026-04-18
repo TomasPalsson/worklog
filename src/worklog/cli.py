@@ -15,7 +15,7 @@ from worklog.collectors import claude as claude_collector
 from worklog.collectors import gcal as gcal_collector
 from worklog.collectors import github as github_collector
 from worklog.collectors import jira_ as jira_collector
-from worklog.config import COMPANIES_PATH, CONFIG_DIR, DB_PATH, ensure_dirs
+from worklog.config import CONFIG_DIR, DB_PATH, ensure_dirs
 from worklog.db import connect, init_db
 from worklog.estimate import DEFAULT_MODEL, estimate_day
 from worklog.infer import build_blocks
@@ -34,18 +34,15 @@ def _parse_day(s: str | None) -> date:
 
 @app.command()
 def init() -> None:
-    """Create config dirs, DB schema, and a companies.yaml stub."""
+    """Create config dirs and DB schema."""
     ensure_dirs()
     init_db()
-    if not COMPANIES_PATH.exists():
-        COMPANIES_PATH.write_text(_COMPANIES_STUB)
     console.print(f"[green]✓[/] config dir: {CONFIG_DIR}")
     console.print(f"[green]✓[/] database:   {DB_PATH}")
-    console.print(f"[green]✓[/] companies:  {COMPANIES_PATH}")
     console.print("\nNext:")
-    console.print(f"  1. edit {COMPANIES_PATH}")
-    console.print("  2. set tokens in ~/.config/worklog/.env (or export WORKLOG_*)")
-    console.print("  3. worklog hook install")
+    console.print("  1. set tokens in ~/.config/worklog/.env (or export WORKLOG_*)")
+    console.print("  2. worklog hook install")
+    console.print("  3. worklog collect jira   # populates the ticket picker")
 
 
 @app.command()
@@ -138,13 +135,12 @@ def today(day: str = typer.Option(None, help="YYYY-MM-DD, default today")) -> No
         ).fetchall()
 
     table = Table(title=f"worklog — {d}")
-    for col in ("time", "src", "company", "title", "issue", "min"):
+    for col in ("time", "src", "title", "issue", "min"):
         table.add_column(col)
     for r in rows:
         table.add_row(
             r["started_at"][11:16],
             r["source"],
-            r["company"] or "—",
             (r["title"] or "")[:60],
             r["jira_issue"] or "—",
             str((r["duration_seconds"] or 0) // 60),
@@ -163,10 +159,10 @@ def infer(day: str = typer.Option(None, help="YYYY-MM-DD, default today")) -> No
     console.print(f"[green]✓[/] {d}: {len(blocks)} blocks, {total_min} min total")
     for b in blocks:
         flag = " [yellow](flagged)[/]" if b.flagged else ""
+        issue = f" {b.jira_issue}" if b.jira_issue else ""
         console.print(
             f"  {b.started_at.strftime('%H:%M')}–{b.ended_at.strftime('%H:%M')} "
-            f"{b.company} ({b.duration_seconds // 60}min, {b.event_count} events)"
-            f"{flag}"
+            f"({b.duration_seconds // 60}min, {b.event_count} events){issue}{flag}"
         )
 
 
@@ -175,7 +171,7 @@ def estimate(
     day: str = typer.Option(None, help="YYYY-MM-DD, default today"),
     model: str = typer.Option(DEFAULT_MODEL, help="claude model id (default: haiku 4.5)"),
 ) -> None:
-    """Ask `claude -p` to write descriptions + sanity-check durations for blocks."""
+    """Ask `claude -p` to pick a Jira ticket + write a description for each block."""
     d = _parse_day(day)
     stats = estimate_day(d, model=model)
     console.print(
@@ -189,7 +185,7 @@ def sync(
     day: str = typer.Option(None, help="YYYY-MM-DD (default today)"),
     dry_run: bool = typer.Option(True, help="Show payloads without POSTing"),
 ) -> None:
-    """Push reviewed events to Tempo."""
+    """Push reviewed blocks to Tempo (one worklog per block)."""
     d = _parse_day(day)
     results = sync_day(d, dry_run=dry_run)
     for r in results:
@@ -198,8 +194,7 @@ def sync(
 
 @app.command()
 def doctor() -> None:
-    """Diagnose worklog setup: paths, binaries, hook registration, `claude -p`."""
-    import json
+    """Diagnose worklog setup: paths, binaries, hook registration, ticket cache."""
     import subprocess
 
     def ok(label: str, detail: str) -> None:
@@ -211,34 +206,37 @@ def doctor() -> None:
     def fail(label: str, detail: str) -> None:
         console.print(f"[red]✗[/] {label:28} {detail}")
 
-    # DB
     if DB_PATH.exists():
+        # Run migration in case a prior-version DB is sitting on disk.
+        init_db()
         with connect() as conn:
-            n = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
-            blocks = conn.execute("SELECT COUNT(*) FROM blocks").fetchone()[0]
-        ok("Database:", f"{DB_PATH} ({n} events, {blocks} blocks)")
+            n_events = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+            n_blocks = conn.execute("SELECT COUNT(*) FROM blocks").fetchone()[0]
+            cache = conn.execute(
+                "SELECT COUNT(*) AS n, MAX(fetched_at) AS last FROM jira_tickets"
+            ).fetchone()
+        ok("Database:", f"{DB_PATH} ({n_events} events, {n_blocks} blocks)")
+        if cache["n"]:
+            ok("Jira ticket cache:", f"{cache['n']} tickets (fetched {cache['last']})")
+        else:
+            warn(
+                "Jira ticket cache:",
+                "empty — run `worklog collect jira` to populate the picker",
+            )
     else:
         warn("Database:", f"{DB_PATH} (does not exist — run `worklog init`)")
+        warn("Jira ticket cache:", "n/a (no database)")
 
-    # Companies
-    if COMPANIES_PATH.exists():
-        ok("Companies config:", str(COMPANIES_PATH))
-    else:
-        warn("Companies config:", f"{COMPANIES_PATH} (missing)")
-
-    # Rust hook
     if rust_bin := shutil.which("worklog-hook"):
         ok("Hook binary:", f"Rust ({rust_bin})")
     else:
         warn("Hook binary:", "Rust worklog-hook not on PATH (falling back to Python)")
 
-    # Claude CLI
     if claude_bin := shutil.which("claude"):
         ok("claude CLI:", claude_bin)
     else:
         fail("claude CLI:", "not on PATH — `worklog estimate` will fail")
 
-    # Hook registration
     settings_file = Path.home() / ".claude" / "settings.json"
     if settings_file.exists():
         settings = json.loads(settings_file.read_text())
@@ -250,7 +248,6 @@ def doctor() -> None:
     else:
         warn("Claude hooks registered:", f"{settings_file} not found")
 
-    # Cargo build for release hook (optional)
     hook_source = Path(__file__).resolve().parents[2] / "rust" / "hook" / "Cargo.toml"
     if hook_source.exists() and not shutil.which("worklog-hook"):
         console.print()
@@ -268,37 +265,3 @@ def serve(
     """Start the review web UI."""
     init_db()
     uvicorn.run("worklog.web.app:app", host=host, port=port, reload=False)
-
-
-_COMPANIES_STUB = """\
-# worklog companies configuration.
-# First match wins across all companies (path → repo → jira → calendar → keyword).
-
-default_company: null  # fallback when nothing matches
-
-companies:
-  - name: AcmeCorp
-    tempo_account_key: ACME_ACCOUNT
-    jira_issue_default: ACME-1       # fallback issue for commits/meetings without explicit issue
-    path_prefixes:
-      - /Users/tomas/projects/acme-
-    github_repos:
-      - AcmeCorp/api
-      - AcmeCorp/web
-    jira_projects:
-      - ACME
-    gcal_calendars: []
-    gcal_keywords:
-      - acme
-
-  - name: SideClient
-    tempo_account_key: SIDE_ACCOUNT
-    jira_issue_default: SIDE-1
-    path_prefixes:
-      - /Users/tomas/projects/side-
-    github_repos: []
-    jira_projects:
-      - SIDE
-    gcal_keywords:
-      - side client
-"""

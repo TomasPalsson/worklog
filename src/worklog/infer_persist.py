@@ -12,7 +12,7 @@ from worklog.infer import Block, InferEvent
 
 
 def load_day_events(*, date: date, conn: sqlite3.Connection | None = None) -> list[InferEvent]:
-    """All classified events whose start date matches `date`."""
+    """All events whose start date matches `date`."""
     start = datetime.combine(date, datetime.min.time()).isoformat()
     end = datetime.combine(date + timedelta(days=1), datetime.min.time()).isoformat()
 
@@ -21,7 +21,6 @@ def load_day_events(*, date: date, conn: sqlite3.Connection | None = None) -> li
             InferEvent(
                 ts=isoparse(r["started_at"]),
                 source=r["source"],
-                company=r["company"] or "",
                 duration_seconds=r["duration_seconds"],
                 jira_issue=r["jira_issue"],
                 event_id=r["id"],
@@ -39,39 +38,42 @@ def load_day_events(*, date: date, conn: sqlite3.Connection | None = None) -> li
 
 
 def persist_blocks(blocks: list[Block], *, day: date) -> None:
-    """Replace the day's blocks transactionally, preserving tempo_worklog_id.
-
-    Matching a prior block to the new one is done by (started_at, company). If a
-    prior block has the same key, its tempo_worklog_id + description carry over.
+    """Replace the day's blocks transactionally, preserving tempo_worklog_id
+    + description via (started_at) as the stable key across re-inferences.
     """
     day_iso = day.isoformat()
     with connect() as conn:
         prior = {
-            (r["started_at"], r["company"]): r
+            r["started_at"]: r
             for r in conn.execute(
                 "SELECT * FROM blocks WHERE day = ?", (day_iso,)
             ).fetchall()
         }
         conn.execute("DELETE FROM blocks WHERE day = ?", (day_iso,))
         for b in blocks:
-            key = (b.started_at.isoformat(), b.company)
-            carry = prior.get(key)
+            carry = prior.get(b.started_at.isoformat())
             tempo_id = carry["tempo_worklog_id"] if carry else None
             description = carry["description"] if carry else None
             estimated_by = carry["estimated_by"] if carry else None
+            # If the user had manually assigned a ticket, preserve it; otherwise
+            # fall back to inference.
+            jira_issue = (
+                carry["jira_issue"]
+                if carry and carry["jira_issue"]
+                else b.jira_issue
+            )
 
             cur = conn.execute(
                 """
                 INSERT INTO blocks (
-                    day, company, jira_issue, started_at, ended_at,
+                    day, jira_issue, started_at, ended_at,
                     duration_seconds, description, estimated_by, flagged,
                     tempo_worklog_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     b.day,
-                    b.company,
-                    b.jira_issue,
+                    jira_issue,
                     b.started_at.isoformat(),
                     b.ended_at.isoformat(),
                     b.duration_seconds,

@@ -1,7 +1,10 @@
-"""Tempo Cloud worklog sync — reads from the `blocks` table, not raw events.
+"""Tempo Cloud worklog sync — reads from the `blocks` table.
 
 Each block becomes exactly one Tempo worklog. `tempo_worklog_id` on the block
 row is set after a successful POST so re-syncing is safe and cheap.
+
+Blocks without a `jira_issue` are skipped — the UI flags them so the user can
+pick a ticket before syncing.
 """
 
 from __future__ import annotations
@@ -11,7 +14,7 @@ from typing import Any
 
 import httpx
 
-from worklog.config import Settings, load_companies
+from worklog.config import Settings
 from worklog.db import connect
 
 
@@ -29,7 +32,6 @@ def sync_day(
     settings = settings or Settings()
     if not dry_run and not settings.tempo_token:
         raise RuntimeError("WORKLOG_TEMPO_TOKEN not set")
-    companies = {c.name: c for c in load_companies().companies}
 
     results: list[dict[str, Any]] = []
     headers = {
@@ -48,17 +50,13 @@ def sync_day(
         ).fetchall()
 
         for block in blocks:
-            company = companies.get(block["company"])
-            issue_key = block["jira_issue"] or (
-                company.jira_issue_default if company else None
-            )
+            issue_key = block["jira_issue"]
             if not issue_key:
                 results.append(
                     {
                         "block_id": block["id"],
-                        "company": block["company"],
                         "status": "skipped",
-                        "reason": "no jira_issue and no company default",
+                        "reason": "no jira_issue — assign one in the UI",
                     }
                 )
                 continue
@@ -71,10 +69,6 @@ def sync_day(
                 "description": block["description"] or f"Work on {issue_key}",
                 "authorAccountId": settings.jira_email or "",
             }
-            if company and company.tempo_account_key:
-                payload["attributes"] = [
-                    {"key": "_Account_", "value": company.tempo_account_key}
-                ]
 
             if dry_run:
                 results.append(

@@ -3,7 +3,6 @@
 //! Reads a JSON event on stdin, writes an events row + maintains sessions,
 //! exits 0 no matter what. Never prints to stdout.
 
-mod classify;
 mod config;
 mod db;
 mod sessions;
@@ -15,8 +14,7 @@ use std::io::Read;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::classify::classify;
-use crate::config::{load_companies, Paths};
+use crate::config::Paths;
 use crate::sessions::{close_session, open_session, reap_stale, REAPER_TTL_SECONDS};
 
 static JIRA_RE: OnceLock<regex::Regex> = OnceLock::new();
@@ -118,7 +116,6 @@ struct EventRow<'a> {
     details: Option<&'a str>,
     project_path: Option<&'a str>,
     jira_issue: Option<&'a str>,
-    company: Option<&'a str>,
     session_id: &'a str,
     raw_json: &'a str,
 }
@@ -126,14 +123,13 @@ struct EventRow<'a> {
 fn upsert_event(conn: &rusqlite::Connection, row: &EventRow<'_>) -> Result<()> {
     conn.execute(
         "INSERT INTO events (source, source_id, started_at, title, details,
-                             project_path, jira_issue, company, session_id, raw_json)
-         VALUES ('claude', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             project_path, jira_issue, session_id, raw_json)
+         VALUES ('claude', ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(source, source_id) DO UPDATE SET
             title = excluded.title,
             details = excluded.details,
             project_path = excluded.project_path,
             jira_issue = excluded.jira_issue,
-            company = COALESCE(events.company, excluded.company),
             session_id = COALESCE(events.session_id, excluded.session_id),
             raw_json = excluded.raw_json",
         params![
@@ -143,7 +139,6 @@ fn upsert_event(conn: &rusqlite::Connection, row: &EventRow<'_>) -> Result<()> {
             row.details,
             row.project_path,
             row.jira_issue,
-            row.company,
             row.session_id,
             row.raw_json,
         ],
@@ -169,8 +164,6 @@ fn run() -> Result<()> {
     let jira = first_jira_key(&[prompt.as_deref(), cwd.as_deref()]);
 
     let paths = Paths::resolve();
-    let companies = load_companies(&paths.companies_yaml).unwrap_or_default();
-    let company = classify(&companies, cwd.as_deref(), jira.as_deref());
 
     let now = now_utc_iso(0);
     let cutoff = now_utc_iso(-REAPER_TTL_SECONDS);
@@ -194,7 +187,6 @@ fn run() -> Result<()> {
             details: payload.transcript_path.as_deref(),
             project_path: cwd.as_deref(),
             jira_issue: jira.as_deref(),
-            company: company.as_deref(),
             session_id: &session_id,
             raw_json: &raw,
         },

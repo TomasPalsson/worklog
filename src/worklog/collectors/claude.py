@@ -13,8 +13,6 @@ import sys
 from datetime import UTC, datetime
 from typing import Any
 
-from worklog.classify import classify
-from worklog.config import load_companies
 from worklog.db import connect, init_db, upsert_event
 from worklog.sessions import close_session, open_session, reap_stale
 
@@ -51,7 +49,6 @@ def handle(payload: dict[str, Any]) -> None:
     now = datetime.now(UTC)
 
     jira_issue = _first_jira_key(prompt, cwd)
-    company = classify(load_companies(), project_path=cwd, jira_issue=jira_issue)
 
     init_db()
     with connect() as conn:
@@ -64,7 +61,6 @@ def handle(payload: dict[str, Any]) -> None:
             details=payload.get("transcript_path"),
             project_path=cwd,
             jira_issue=jira_issue,
-            company=company,
             session_id=session_id,
             raw_json=json.dumps(payload),
         )

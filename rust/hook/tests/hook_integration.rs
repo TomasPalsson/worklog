@@ -183,35 +183,6 @@ fn jira_key_extracted_from_prompt() {
 }
 
 #[test]
-fn classification_by_path_prefix() {
-    let tmp = TempDir::new().unwrap();
-    let db = tmp.path().join("worklog.db");
-    seed_schema(&db);
-
-    std::fs::write(
-        tmp.path().join("companies.yaml"),
-        "default_company: null\ncompanies:\n  - name: Acme\n    path_prefixes:\n      - /Users/me/acme-\n",
-    )
-    .unwrap();
-
-    run_hook(
-        &db,
-        tmp.path(),
-        r#"{"hook_event_name":"UserPromptSubmit","session_id":"c-1","cwd":"/Users/me/acme-api"}"#,
-    );
-
-    let conn = Connection::open(&db).unwrap();
-    let company: Option<String> = conn
-        .query_row(
-            "SELECT company FROM events WHERE session_id = 'c-1'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(company.as_deref(), Some("Acme"));
-}
-
-#[test]
 fn concurrent_writes_both_succeed() {
     // WAL + busy_timeout should let two invocations serialize without errors.
     let tmp = TempDir::new().unwrap();

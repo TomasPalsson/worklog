@@ -20,14 +20,13 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return p
 
 
-def _add(conn, ts: datetime, company: str, source: str = "github_commit", **extra) -> None:
+def _add(conn, ts: datetime, source: str = "github_commit", **extra) -> None:
     upsert_event(
         conn,
         source=source,
         source_id=f"{source}-{ts.isoformat()}",
         started_at=ts,
         title=f"event at {ts}",
-        company=company,
         duration_seconds=extra.get("duration_seconds"),
         jira_issue=extra.get("jira_issue"),
     )
@@ -35,8 +34,8 @@ def _add(conn, ts: datetime, company: str, source: str = "github_commit", **extr
 
 def test_load_day_events_filters_by_date(db: Path) -> None:
     with connect(db) as conn:
-        _add(conn, datetime(2026, 4, 18, 10, tzinfo=UTC), "Acme")
-        _add(conn, datetime(2026, 4, 17, 10, tzinfo=UTC), "Acme")
+        _add(conn, datetime(2026, 4, 18, 10, tzinfo=UTC))
+        _add(conn, datetime(2026, 4, 17, 10, tzinfo=UTC))
     events = load_day_events(date=datetime(2026, 4, 18).date())
     assert len(events) == 1
     assert events[0].ts.day == 18
@@ -44,57 +43,72 @@ def test_load_day_events_filters_by_date(db: Path) -> None:
 
 def test_persist_blocks_writes_rows_and_join(db: Path) -> None:
     with connect(db) as conn:
-        _add(conn, datetime(2026, 4, 18, 10, 0, tzinfo=UTC), "Acme")
-        _add(conn, datetime(2026, 4, 18, 10, 10, tzinfo=UTC), "Acme")
+        _add(conn, datetime(2026, 4, 18, 10, 0, tzinfo=UTC), jira_issue="ACME-1")
+        _add(conn, datetime(2026, 4, 18, 10, 10, tzinfo=UTC), jira_issue="ACME-1")
     day = datetime(2026, 4, 18).date()
     events = load_day_events(date=day)
     blocks = build_blocks(events)
     persist_blocks(blocks, day=day)
 
     with connect(db) as conn:
-        block_rows = conn.execute("SELECT company, duration_seconds FROM blocks").fetchall()
+        rows = conn.execute(
+            "SELECT jira_issue, duration_seconds FROM blocks"
+        ).fetchall()
         join_count = conn.execute("SELECT COUNT(*) FROM block_events").fetchone()[0]
-    assert len(block_rows) == 1
-    assert block_rows[0]["company"] == "Acme"
+    assert len(rows) == 1
+    assert rows[0]["jira_issue"] == "ACME-1"
     assert join_count == 2
 
 
 def test_persist_blocks_is_idempotent(db: Path) -> None:
-    """Re-running infer + persist for the same day replaces prior blocks."""
     with connect(db) as conn:
-        _add(conn, datetime(2026, 4, 18, 10, 0, tzinfo=UTC), "Acme")
-        _add(conn, datetime(2026, 4, 18, 10, 10, tzinfo=UTC), "Acme")
+        _add(conn, datetime(2026, 4, 18, 10, 0, tzinfo=UTC))
+        _add(conn, datetime(2026, 4, 18, 10, 10, tzinfo=UTC))
     day = datetime(2026, 4, 18).date()
     events = load_day_events(date=day)
 
     persist_blocks(build_blocks(events), day=day)
-    persist_blocks(build_blocks(events), day=day)  # second run
+    persist_blocks(build_blocks(events), day=day)
 
     with connect(db) as conn:
-        n = conn.execute("SELECT COUNT(*) FROM blocks WHERE day = ?", (day.isoformat(),)).fetchone()[0]
+        n = conn.execute(
+            "SELECT COUNT(*) FROM blocks WHERE day = ?", (day.isoformat(),)
+        ).fetchone()[0]
     assert n == 1
 
 
-def test_persist_preserves_tempo_worklog_id(db: Path) -> None:
-    """If a block was already synced to Tempo, re-infer must not wipe tempo_worklog_id."""
+def test_persist_preserves_tempo_worklog_id_and_manual_ticket(db: Path) -> None:
+    """Tempo-ID, description, and a manually-assigned ticket must survive re-infer."""
     with connect(db) as conn:
-        _add(conn, datetime(2026, 4, 18, 10, 0, tzinfo=UTC), "Acme")
-        _add(conn, datetime(2026, 4, 18, 10, 10, tzinfo=UTC), "Acme")
+        _add(conn, datetime(2026, 4, 18, 10, 0, tzinfo=UTC))
+        _add(conn, datetime(2026, 4, 18, 10, 10, tzinfo=UTC))
     day = datetime(2026, 4, 18).date()
     events = load_day_events(date=day)
 
     persist_blocks(build_blocks(events), day=day)
     with connect(db) as conn:
-        conn.execute("UPDATE blocks SET tempo_worklog_id = 'TW-99' WHERE day = ?", (day.isoformat(),))
+        conn.execute(
+            """
+            UPDATE blocks
+               SET tempo_worklog_id = 'TW-99',
+                   description = 'manual desc',
+                   jira_issue = 'MAN-7'
+             WHERE day = ?
+            """,
+            (day.isoformat(),),
+        )
 
     persist_blocks(build_blocks(events), day=day)
     with connect(db) as conn:
-        row = conn.execute("SELECT tempo_worklog_id FROM blocks").fetchone()
+        row = conn.execute(
+            "SELECT tempo_worklog_id, description, jira_issue FROM blocks"
+        ).fetchone()
     assert row["tempo_worklog_id"] == "TW-99"
+    assert row["description"] == "manual desc"
+    assert row["jira_issue"] == "MAN-7"
 
 
 def test_load_handles_session_duration(db: Path) -> None:
-    """Claude events with duration_seconds from SessionStart→Stop pairing are used."""
     start = datetime(2026, 4, 18, 10, 0, tzinfo=UTC)
     with connect(db) as conn:
         upsert_event(
@@ -105,7 +119,6 @@ def test_load_handles_session_duration(db: Path) -> None:
             ended_at=start + timedelta(minutes=30),
             duration_seconds=1800,
             title="session",
-            company="Acme",
             session_id="sess-1",
         )
     events = load_day_events(date=start.date())

@@ -19,9 +19,6 @@ def temp_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # Redirect both the Settings default AND the db module constant.
     monkeypatch.setattr("worklog.db.DB_PATH", db)
     monkeypatch.setattr("worklog.config.DB_PATH", db)
-    monkeypatch.setattr(
-        "worklog.config.COMPANIES_PATH", tmp_path / "companies.yaml"
-    )
     init_db(db)
     os.environ.pop("WORKLOG_GITHUB_TOKEN", None)
     return db

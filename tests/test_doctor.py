@@ -15,7 +15,6 @@ from worklog.db import init_db
 def isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr("worklog.db.DB_PATH", tmp_path / "worklog.db")
     monkeypatch.setattr("worklog.config.CONFIG_DIR", tmp_path / "cfg")
-    monkeypatch.setattr("worklog.config.COMPANIES_PATH", tmp_path / "cfg" / "companies.yaml")
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     init_db(tmp_path / "worklog.db")
     return tmp_path
@@ -26,7 +25,7 @@ def test_doctor_command_prints_status(isolated: Path) -> None:
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     assert "Database:" in result.stdout
-    assert "Companies config:" in result.stdout
+    assert "Jira ticket cache:" in result.stdout
     assert "Hook binary:" in result.stdout
 
 
