@@ -12,6 +12,11 @@ fn cmd(home: &TempDir) -> Command {
     // Divert secrets into a file under the tempdir so tests never touch the
     // real keychain.
     c.env("WORKLOG_SECRETS_FILE", home.path().join("secrets.json"));
+    // Redirect the Claude Code settings and the scheduler into the tempdir
+    // so neither the user's ~/.claude nor ~/Library/LaunchAgents gets
+    // touched by `cargo test`.
+    c.env("CLAUDE_HOME", home.path().join("claude"));
+    c.env("WORKLOG_SCHEDULE_HOME", home.path());
     // Shut up tracing during tests.
     c.env("RUST_LOG", "error");
     c
@@ -165,6 +170,88 @@ fn setup_is_idempotent() {
         .args(["setup", "--non-interactive", "--skip-validate"])
         .assert()
         .success();
+}
+
+#[test]
+fn hook_install_status_uninstall_roundtrip() {
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["hook", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("installed: no"));
+
+    cmd(&home)
+        .args(["hook", "install", "--command", "/tmp/fake-worklog hook run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hook installed"));
+
+    cmd(&home)
+        .args(["hook", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("installed: yes"))
+        .stdout(predicate::str::contains("/tmp/fake-worklog hook run"));
+
+    cmd(&home)
+        .args(["hook", "uninstall"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hook removed"));
+
+    cmd(&home)
+        .args(["hook", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("installed: no"));
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn schedule_install_status_uninstall_roundtrip() {
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["schedule", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("installed: no"));
+
+    cmd(&home)
+        .args([
+            "schedule",
+            "install",
+            "--interval",
+            "15m",
+            "--command",
+            "/usr/bin/true",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("schedule installed"));
+
+    cmd(&home)
+        .args(["schedule", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("installed: yes"))
+        .stdout(predicate::str::contains("every 15m"));
+
+    cmd(&home)
+        .args(["schedule", "uninstall"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("schedule removed"));
+}
+
+#[test]
+fn schedule_install_rejects_subminute_interval() {
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["schedule", "install", "--interval", "30"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("at least 60 seconds"));
 }
 
 #[test]

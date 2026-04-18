@@ -5,9 +5,11 @@
 #![forbid(unsafe_code)]
 
 pub mod db;
+pub mod hook;
 pub mod models;
 pub mod paths;
 pub mod repo;
+pub mod schedule;
 pub mod secrets;
 
 pub use crate::paths::Paths;

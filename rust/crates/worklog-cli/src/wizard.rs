@@ -21,7 +21,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use console::{style, Style};
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Password, Select};
-use worklog_core::{db, paths::Paths, secrets};
+use worklog_core::{db, hook, paths::Paths, schedule, secrets};
 
 /// Options controlling what the wizard actually runs. Defaults to a full
 /// interactive flow; tests swap these for hermetic behaviour.
@@ -104,27 +104,127 @@ pub fn run(opts: WizardOptions) -> Result<WizardReport> {
         }
     }
 
-    // Step 4 — schedule + hook are no-ops in Stage 1 (a separate feature
-    // iteration owns those platform-specific writes). Surface them so the
-    // user knows what's coming.
+    // Step 4 — Claude Code hook + scheduled collection. Interactive-only;
+    // `--non-interactive` skips the writes so the wizard is pure reporting
+    // in automation.
     let mut notes = Vec::new();
-    if !opts.skip_schedule && !opts.non_interactive {
-        notes.push(
-            "scheduled collection (launchd/systemd) comes in stage 1.3 — run `worklog collect all` manually for now"
-                .into()
-        );
+    let mut schedule_installed: Option<String> = None;
+
+    if !opts.non_interactive {
+        let theme = ColorfulTheme::default();
+        configure_hook(&theme, &mut notes)?;
+        if !opts.skip_schedule {
+            schedule_installed = configure_schedule(&theme, &mut notes)?;
+        }
     }
 
-    print_done(&paths, &secrets_set, &secrets_skipped);
+    print_done(
+        &paths,
+        &secrets_set,
+        &secrets_skipped,
+        schedule_installed.as_deref(),
+    );
 
     Ok(WizardReport {
         paths,
         db_initialized: true,
         secrets_set,
         secrets_skipped,
-        schedule_installed: None,
+        schedule_installed,
         notes,
     })
+}
+
+fn configure_hook(theme: &ColorfulTheme, notes: &mut Vec<String>) -> Result<()> {
+    println!("\n{}", section("claude code hook"));
+    let current = hook::status()?;
+    let cmd = hook::default_command();
+    println!("  {} command: {}", style("·").dim(), style(&cmd).cyan());
+
+    if current.installed {
+        println!(
+            "  {} already installed for {} events",
+            style("·").dim(),
+            current.events.len(),
+        );
+        let replace = Confirm::with_theme(theme)
+            .with_prompt("  re-install to update the command path?")
+            .default(false)
+            .interact()?;
+        if !replace {
+            notes.push("hook left alone".into());
+            return Ok(());
+        }
+    } else {
+        let install = Confirm::with_theme(theme)
+            .with_prompt("  install Claude Code hook now?")
+            .default(true)
+            .interact()?;
+        if !install {
+            notes.push("hook install skipped — run `worklog hook install` later".into());
+            return Ok(());
+        }
+    }
+    let s = hook::install(&cmd)?;
+    println!(
+        "  {} installed ({} events)",
+        style("✓").green().bold(),
+        s.events.len()
+    );
+    Ok(())
+}
+
+fn configure_schedule(theme: &ColorfulTheme, notes: &mut Vec<String>) -> Result<Option<String>> {
+    println!("\n{}", section("scheduled collection"));
+    let platform = schedule::Platform::current();
+    if platform == schedule::Platform::Unsupported {
+        println!("  {} platform not supported — skipping", style("·").dim());
+        notes.push("scheduler not available on this OS — run `worklog collect all` by hand".into());
+        return Ok(None);
+    }
+    println!(
+        "  {} uses {} on {}",
+        style("·").dim(),
+        style(platform.name()).cyan(),
+        std::env::consts::OS
+    );
+
+    let choices = &[
+        "off",
+        "every 5m",
+        "every 15m",
+        "hourly",
+        "every 4h",
+        "daily",
+    ];
+    let default = 2; // every 15m
+    let pick = Select::with_theme(theme)
+        .with_prompt("  how often to pull events?")
+        .items(choices)
+        .default(default)
+        .interact()?;
+    let interval = match pick {
+        0 => {
+            let _ = schedule::uninstall();
+            notes.push("schedule disabled".into());
+            return Ok(None);
+        }
+        1 => schedule::Interval::FIVE_MIN,
+        2 => schedule::Interval::FIFTEEN_MIN,
+        3 => schedule::Interval::HOURLY,
+        4 => schedule::Interval::FOUR_HOURLY,
+        5 => schedule::Interval::DAILY,
+        _ => schedule::Interval::FIFTEEN_MIN,
+    };
+    let cmd = schedule::default_command();
+    let s = schedule::install(interval, &cmd)?;
+    println!(
+        "  {} {} ({})",
+        style("✓").green().bold(),
+        interval.human(),
+        s.platform
+    );
+    Ok(Some(interval.human()))
 }
 
 // ───────────────────────── preflight ─────────────────────────
@@ -381,7 +481,7 @@ fn print_banner(paths: &Paths) {
     println!();
 }
 
-fn print_done(paths: &Paths, set: &[String], skipped: &[String]) {
+fn print_done(paths: &Paths, set: &[String], skipped: &[String], schedule_installed: Option<&str>) {
     println!("\n{}", section("ready"));
     println!(
         "  {} worklog home at {}",
@@ -394,9 +494,12 @@ fn print_done(paths: &Paths, set: &[String], skipped: &[String]) {
         set.len(),
         skipped.len()
     );
+    if let Some(iv) = schedule_installed {
+        println!("  {} scheduled collection: {}", style("·").dim(), iv);
+    }
     println!("\n  next:");
-    println!("    {} worklog db info", style("$").dim());
     println!("    {} worklog doctor", style("$").dim());
+    println!("    {} worklog collect all", style("$").dim());
     println!();
 }
 
