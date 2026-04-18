@@ -24,43 +24,62 @@
     {% endfor %}
   </section>
 
-  <form method="post" action="/sync" class="sync-bar">
-    <input type="hidden" name="day" value="{{ day }}" />
-    <button type="submit" name="dry_run" value="true">Dry-run Tempo sync</button>
-    <button type="submit" name="dry_run" value="false" class="primary">Sync to Tempo</button>
-  </form>
+  <section class="actions">
+    <form method="post" action="/infer" style="display:inline">
+      <input type="hidden" name="day" value="{{ day }}" />
+      <button type="submit">↻ Re-infer blocks</button>
+    </form>
+    <form method="post" action="/estimate" style="display:inline">
+      <input type="hidden" name="day" value="{{ day }}" />
+      <button type="submit">🤖 Estimate with claude -p</button>
+    </form>
+    <form method="post" action="/sync" style="display:inline">
+      <input type="hidden" name="day" value="{{ day }}" />
+      <button type="submit" name="dry_run" value="true">Dry-run sync</button>
+      <button type="submit" name="dry_run" value="false" class="primary">Sync to Tempo</button>
+    </form>
+  </section>
 
-  {% for company_name, events in by_company.items() %}
+  {% for company_name, blocks in by_company.items() %}
     <section class="company">
       <h2>{{ company_name }}</h2>
       <table>
         <thead>
           <tr>
-            <th>Time</th><th>Source</th><th>Title</th><th>Issue</th><th>Duration</th><th>Assign</th>
+            <th>Time</th><th>Duration</th><th>Description</th><th>Issue</th>
+            <th>Events</th><th>Source</th><th>Assign</th>
           </tr>
         </thead>
         <tbody>
-          {% for e in events %}
-            <tr class="src-{{ e.source }}">
-              <td>{{ e.started_at[11:16] }}</td>
-              <td><span class="tag">{{ e.source }}</span></td>
-              <td title="{{ e.details or '' }}">{{ e.title }}</td>
-              <td>{{ e.jira_issue or '—' }}</td>
-              <td>
-                <form method="post" action="/events/{{ e.id }}/duration">
-                  <input type="hidden" name="day" value="{{ day }}" />
-                  <input type="number" name="minutes" min="0" step="5"
-                         value="{{ (e.duration_seconds or 0) // 60 }}" />
-                  <button type="submit">Save</button>
-                </form>
+          {% for b in blocks %}
+            <tr class="{% if b.flagged %}flagged{% endif %} {% if b.tempo_worklog_id %}synced{% endif %}">
+              <td class="time">
+                {{ b.started_at[11:16] }}–{{ b.ended_at[11:16] }}
               </td>
               <td>
-                <form method="post" action="/events/{{ e.id }}/assign">
+                <form method="post" action="/blocks/{{ b.id }}/duration" class="inline">
+                  <input type="hidden" name="day" value="{{ day }}" />
+                  <input type="number" name="minutes" min="0" step="15"
+                         value="{{ b.duration_seconds // 60 }}" />
+                </form>
+              </td>
+              <td class="desc">
+                <form method="post" action="/blocks/{{ b.id }}/description" class="inline">
+                  <input type="hidden" name="day" value="{{ day }}" />
+                  <input type="text" name="description"
+                         value="{{ b.description or '' }}"
+                         placeholder="(add a description)" />
+                </form>
+              </td>
+              <td>{{ b.jira_issue or '—' }}</td>
+              <td>{{ b.event_count }}</td>
+              <td><span class="tag src-{{ b.estimated_by or 'gap' }}">{{ b.estimated_by or 'gap' }}</span></td>
+              <td>
+                <form method="post" action="/blocks/{{ b.id }}/assign">
                   <input type="hidden" name="day" value="{{ day }}" />
                   <select name="company" onchange="this.form.submit()">
-                    <option value="">— unassigned —</option>
                     {% for c in companies %}
-                      <option value="{{ c.name }}" {% if c.name == e.company %}selected{% endif %}>
+                      <option value="{{ c.name }}" {% if c.name == b.company %}selected{% endif %}>
                         {{ c.name }}
                       </option>
                     {% endfor %}
@@ -72,6 +91,9 @@
         </tbody>
       </table>
     </section>
+  {% else %}
+    <p class="empty">No blocks for {{ day }}. Run <code>worklog collect all</code>
+      then click <strong>Re-infer blocks</strong>.</p>
   {% endfor %}
 </body>
 </html>
