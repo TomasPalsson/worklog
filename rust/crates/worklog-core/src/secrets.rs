@@ -24,11 +24,46 @@ pub const KNOWN_KEYS: &[&str] = &[
     "anthropic_api_key",
 ];
 
+/// Environment variable that, if set to a path, forces secrets into a JSON
+/// file rather than the OS keychain. Exclusively for tests and CI — never
+/// advertised in the user docs. The setup wizard ignores this path.
+const ENV_FILE_BACKEND: &str = "WORKLOG_SECRETS_FILE";
+
 #[cfg(not(test))]
 mod backend {
     use super::*;
     use anyhow::Context;
     use keyring::Entry;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    fn file_backend_path() -> Option<PathBuf> {
+        std::env::var_os(ENV_FILE_BACKEND)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    }
+
+    fn read_file_store(p: &std::path::Path) -> Result<HashMap<String, String>> {
+        if !p.exists() {
+            return Ok(HashMap::new());
+        }
+        let bytes = std::fs::read(p).with_context(|| format!("reading {}", p.display()))?;
+        if bytes.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let store: HashMap<String, String> = serde_json::from_slice(&bytes)
+            .with_context(|| format!("parsing {} as JSON secret store", p.display()))?;
+        Ok(store)
+    }
+
+    fn write_file_store(p: &std::path::Path, store: &HashMap<String, String>) -> Result<()> {
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).with_context(|| format!("mkdir {}", parent.display()))?;
+        }
+        let bytes = serde_json::to_vec_pretty(store)?;
+        std::fs::write(p, bytes).with_context(|| format!("writing {}", p.display()))?;
+        Ok(())
+    }
 
     fn entry(key: &str) -> Result<Entry> {
         Entry::new(SERVICE, key)
@@ -36,11 +71,19 @@ mod backend {
     }
 
     pub fn set(key: &str, value: &str) -> Result<()> {
+        if let Some(path) = file_backend_path() {
+            let mut store = read_file_store(&path)?;
+            store.insert(key.to_owned(), value.to_owned());
+            return write_file_store(&path, &store);
+        }
         entry(key)?.set_password(value)
             .with_context(|| format!("writing secret {key}"))
     }
 
     pub fn get(key: &str) -> Result<Option<String>> {
+        if let Some(path) = file_backend_path() {
+            return Ok(read_file_store(&path)?.get(key).cloned());
+        }
         match entry(key)?.get_password() {
             Ok(v) => Ok(Some(v)),
             Err(keyring::Error::NoEntry) => Ok(None),
@@ -49,6 +92,12 @@ mod backend {
     }
 
     pub fn delete(key: &str) -> Result<bool> {
+        if let Some(path) = file_backend_path() {
+            let mut store = read_file_store(&path)?;
+            let existed = store.remove(key).is_some();
+            if existed { write_file_store(&path, &store)?; }
+            return Ok(existed);
+        }
         match entry(key)?.delete_credential() {
             Ok(()) => Ok(true),
             Err(keyring::Error::NoEntry) => Ok(false),
