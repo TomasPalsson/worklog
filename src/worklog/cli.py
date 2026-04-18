@@ -668,21 +668,31 @@ def _rust_has_signed_updater() -> bool:
     ``self-update --check`` with a bogus URL — if the pubkey is a
     placeholder we get an explicit error, otherwise we get a network
     error (which means the updater is wired up).
+
+    Returns ``False`` on any failure mode — timeout, crash, missing
+    binary. The intent is "can we trust the signed path?" so uncertainty
+    routes the caller to the fallback git upgrade.
     """
     import subprocess
 
     rust = _rust_binary()
     if rust is None:
         return False
-    # `self-update --check` without a real URL probes the pubkey state
-    # cheaply: placeholder → fails with a specific message *before* any
-    # network call.
-    proc = subprocess.run(  # noqa: S603 - trusted args
-        [str(rust), "self-update", "--check", "--manifest-url", "http://127.0.0.1:1/never"],
-        capture_output=True,
-        text=True,
-        timeout=3,
-    )
+    try:
+        proc = subprocess.run(  # noqa: S603 - trusted args
+            [
+                str(rust),
+                "self-update",
+                "--check",
+                "--manifest-url",
+                "http://127.0.0.1:1/never",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
     combined = (proc.stdout or "") + (proc.stderr or "")
     return "placeholder" not in combined
 

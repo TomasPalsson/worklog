@@ -38,16 +38,32 @@ pub struct WebStatus {
     pub uptime: Option<String>,
 }
 
-/// Check whether docker is on PATH and the daemon is reachable.
+/// Check whether docker is on PATH AND the daemon is reachable.
+/// `docker version` exits non-zero when the client can't reach the
+/// daemon — we capture stderr so the user gets the actual reason
+/// ("Cannot connect to the Docker daemon. Is it running?") instead of
+/// a generic "exited 1".
 pub fn preflight_docker() -> Result<()> {
-    let status = Command::new("docker")
+    let out = Command::new("docker")
         .arg("version")
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    match status {
-        Ok(s) if s.success() => Ok(()),
-        Ok(s) => anyhow::bail!("`docker version` exited {}", s),
+        .stderr(Stdio::piped())
+        .output();
+    match out {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            let hint = if stderr.to_lowercase().contains("cannot connect") {
+                "\n   The Docker daemon isn't running — start Docker Desktop or `colima start`."
+            } else {
+                ""
+            };
+            anyhow::bail!(
+                "`docker version` exited {}: {}{hint}",
+                o.status,
+                stderr.trim()
+            )
+        }
         Err(e) => anyhow::bail!(
             "can't find docker on PATH ({e}). Install Docker Desktop \
              or colima, then run `worklog web up` again."
@@ -163,7 +179,12 @@ pub fn compose_build(compose: &Path, pull: bool) -> Result<()> {
     run_inherit(cmd)
 }
 
-/// Status from `docker inspect` — returns running/container/image/uptime.
+/// Status from `docker inspect`. Distinguishes three cases:
+///   - container is running → `WebStatus { running: true, ... }`
+///   - container doesn't exist / is stopped → `WebStatus { running: false, .. }`
+///   - docker daemon itself unreachable → `Err(...)` so the CLI can tell
+///     the user "start Docker Desktop" instead of the misleading
+///     "not running, try `worklog web up`".
 pub fn status() -> Result<WebStatus> {
     let out = Command::new("docker")
         .args([
@@ -186,13 +207,24 @@ pub fn status() -> Result<WebStatus> {
                 uptime: parts.get(1).map(|s| s.to_string()),
             })
         }
-        _ => Ok(WebStatus {
-            running: false,
-            container: None,
-            image: None,
-            port: None,
-            uptime: None,
-        }),
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            if stderr.to_lowercase().contains("cannot connect") {
+                anyhow::bail!(
+                    "docker inspect failed — the Docker daemon isn't running. \
+                     Start Docker Desktop (or `colima start`) and retry."
+                );
+            }
+            // "No such container" and similar — the container just isn't there.
+            Ok(WebStatus {
+                running: false,
+                container: None,
+                image: None,
+                port: None,
+                uptime: None,
+            })
+        }
+        Err(e) => anyhow::bail!("spawning docker: {e}"),
     }
 }
 
