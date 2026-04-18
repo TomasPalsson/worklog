@@ -85,6 +85,22 @@ def _write_env_file(values: dict[str, str]) -> None:
     ENV_PATH.chmod(0o600)  # tokens are secrets
 
 
+_TOKEN_PREFIXES: dict[str, tuple[str, ...]] = {
+    "WORKLOG_JIRA_TOKEN": ("ATATT",),
+    "WORKLOG_GITHUB_TOKEN": ("github_pat_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_"),
+}
+
+
+def _scrub_token(key: str, value: str) -> str:
+    """Strip stray prefix glyphs pasted from clipboard icons (e.g. Atlassian's
+    Copy button, which sometimes prepends a non-printable to the token).
+    """
+    for prefix in _TOKEN_PREFIXES.get(key, ()):
+        if prefix in value and not value.startswith(prefix):
+            return value[value.index(prefix):]
+    return value
+
+
 def _mask(v: str) -> str:
     if not v:
         return ""
@@ -120,11 +136,7 @@ def setup(
             password=secret and not current,
             show_default=not secret,
         )
-        cleaned = (value or "").strip()
-        # Atlassian API tokens start with "ATATT" — the Copy button in their UI
-        # sometimes pastes a stray glyph before the token.
-        if key == "WORKLOG_JIRA_TOKEN" and "ATATT" in cleaned:
-            cleaned = cleaned[cleaned.index("ATATT"):]
+        cleaned = _scrub_token(key, (value or "").strip())
         values[key] = cleaned
 
     _write_env_file(values)
