@@ -210,7 +210,10 @@ def estimate_day(day: date, *, model: str = DEFAULT_MODEL) -> dict[str, int]:
         open_tickets = _load_open_tickets(conn)
 
         for block in blocks:
-            if block["estimated_by"] == "claude_p":
+            # Skip already-estimated (claude_p) AND user-edited (manual)
+            # blocks. Overwriting manual would destroy the user's work —
+            # see CLAUDE.md for the invariant.
+            if block["estimated_by"] in ("claude_p", "manual"):
                 stats["skipped"] += 1
                 continue
 

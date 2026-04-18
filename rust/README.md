@@ -69,23 +69,33 @@ worklog hook-run                # invoked by Claude Code via stdin JSON
 worklog daemon                  # axum IPC over ~/.local/share/worklog/api.sock
 ```
 
-## Daemon (Stage 3.2)
+## Daemon
 
-`worklog daemon` binds a unix socket at `api.sock` (chmod 0600) and serves a
-small HTTP/1.1 API the Next.js web UI talks to via Server Actions:
+`worklog daemon` binds a unix socket at `api.sock` (chmod 0666 by default —
+override with `$WORKLOG_SOCKET_MODE` on multi-user hosts) AND a TCP listener
+at `127.0.0.1:9323` (the dockerised web UI talks to TCP because Docker
+Desktop on macOS can't proxy unix sockets across its VM bind mounts).
+Both listeners share the same `Arc<AppState>` so writes through either
+route hit the same DB.
 
 | Route | Body | Purpose |
 |---|---|---|
 | `GET /health` | — | liveness + version |
 | `GET /blocks/:day` | — | list blocks for `YYYY-MM-DD` |
 | `POST /blocks/:id/ticket` | `{"jira_issue": string \| null}` | assign ticket |
-| `POST /blocks/:id/duration` | `{"minutes": u32}` | set duration (marks manual) |
+| `POST /blocks/:id/duration` | `{"minutes": u32}` | set duration (marks manual; derives ended_at) |
 | `POST /blocks/:id/description` | `{"description": string}` | set description (marks manual) |
 | `POST /blocks/:id/delete` | — | remove the block |
 | `POST /infer` | `{"day": "YYYY-MM-DD"}` | re-cluster events for a day |
 | `POST /jira/refresh` | — | refresh open-ticket cache |
+| `POST /estimate` | `{"day": "YYYY-MM-DD", "model": "?"}` | run claude -p for un-estimated blocks |
+| `POST /sync` | `{"day": "YYYY-MM-DD", "dry_run": true}` | push reviewed blocks to Tempo |
 
-Talk to it with `curl --unix-socket $(worklog db path | xargs dirname)/api.sock …`.
+Errors split into `400 Bad Request` (e.g. malformed `day`) and
+`500 Internal Server Error` (anything else).
+
+Talk to it with `curl --unix-socket $(worklog db path | xargs dirname)/api.sock …`
+or `curl http://127.0.0.1:9323/health`.
 
 All commands accept `--json` for machine-readable output and honour
 `$WORKLOG_HOME` as the root for the db / config / socket / logs.

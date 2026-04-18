@@ -1,12 +1,16 @@
-//! Unix-socket IPC server for the web UI.
+//! IPC server (unix socket + optional TCP) for the web UI.
 //!
 //! Architecture:
-//! * Single axum router bound to a unix socket at `~/.local/share/worklog/api.sock`.
+//! * Single axum router bound to a unix socket at
+//!   `~/.local/share/worklog/api.sock` and, by default, also to
+//!   `127.0.0.1:9323` (the dockerised web UI reaches the latter because
+//!   Docker Desktop on macOS can't proxy live unix sockets through its
+//!   VM bind mounts).
 //! * A single `Connection` behind a `tokio::sync::Mutex` — personal tool,
 //!   single user, low volume. Serialising writes is the simplest thing
 //!   that correctly preserves SQLite invariants.
 //! * `spawn_blocking` wraps every db call so the async runtime isn't
-//!   starved by sqlite syscalls.
+//!   starved by sqlite syscalls and blocking reqwest clients drop cleanly.
 //!
 //! Endpoints (all JSON):
 //! * `GET  /health`                      — liveness
@@ -20,8 +24,13 @@
 //! * `POST /estimate`                    — { "day": "YYYY-MM-DD", "model": "?" }
 //! * `POST /sync`                        — { "day": "YYYY-MM-DD", "dry_run": true }
 //!
-//! Unix-socket file perms are forced to `0600` so only the owning user can
-//! speak to the daemon.
+//! Unix-socket file perms default to `0666` so the containerised UI can
+//! connect across Docker Desktop's VM (same user, same host — the data
+//! dir is the security boundary). Override with `$WORKLOG_SOCKET_MODE`
+//! (octal, e.g. `0600`) on multi-user hosts.
+//!
+//! Errors are split into `ApiError::BadRequest` (→ 400) and `::Internal`
+//! (→ 500). Invalid input (e.g. malformed `day`) routes through 400.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -193,24 +202,39 @@ pub fn socket_path() -> Result<PathBuf> {
 
 // ───────────────────────── handlers ─────────────────────────
 
-/// Sentinel type so handlers stay concise.
-pub struct ApiError(anyhow::Error);
+/// Sentinel type so handlers stay concise. Variants map to HTTP status
+/// codes: `BadRequest` → 400 (client sent bad input), `Internal` → 500
+/// (anything else). Any `anyhow::Error` that bubbles up via `?` becomes
+/// `Internal` by default; handlers opt into 400 by constructing
+/// `ApiError::bad_request(...)` explicitly.
+pub enum ApiError {
+    BadRequest(anyhow::Error),
+    Internal(anyhow::Error),
+}
+
+impl ApiError {
+    pub fn bad_request<E: Into<anyhow::Error>>(e: E) -> Self {
+        Self::BadRequest(e.into())
+    }
+}
 
 impl<E: Into<anyhow::Error>> From<E> for ApiError {
     fn from(e: E) -> Self {
-        Self(e.into())
+        Self::Internal(e.into())
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let msg = format!("{:#}", self.0);
-        error!("api error: {msg}");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": msg })),
-        )
-            .into_response()
+        let (status, err) = match self {
+            ApiError::BadRequest(e) => (StatusCode::BAD_REQUEST, e),
+            ApiError::Internal(e) => (StatusCode::INTERNAL_SERVER_ERROR, e),
+        };
+        let msg = format!("{err:#}");
+        if status == StatusCode::INTERNAL_SERVER_ERROR {
+            error!("api error: {msg}");
+        }
+        (status, Json(json!({ "error": msg }))).into_response()
     }
 }
 
@@ -302,7 +326,7 @@ async fn run_infer(
     Json(body): Json<InferBody>,
 ) -> Result<Json<InferResponse>, ApiError> {
     let day = NaiveDate::parse_from_str(&body.day, "%Y-%m-%d")
-        .with_context(|| format!("invalid day {}", body.day))?;
+        .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{}`: {e}", body.day)))?;
     let (count, minutes) = with_conn(state, move |c| {
         let events = infer::load_day_events(c, day)?;
         let blocks = infer::build_blocks(events);
@@ -345,7 +369,7 @@ async fn run_estimate(
     Json(body): Json<EstimateBody>,
 ) -> Result<Json<Value>, ApiError> {
     let day = NaiveDate::parse_from_str(&body.day, "%Y-%m-%d")
-        .with_context(|| format!("invalid day {}", body.day))?;
+        .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{}`: {e}", body.day)))?;
     let model = body
         .model
         .unwrap_or_else(|| estimate::DEFAULT_MODEL.to_string());
@@ -377,7 +401,7 @@ async fn run_sync(
     Json(body): Json<SyncBody>,
 ) -> Result<Json<Value>, ApiError> {
     let day = NaiveDate::parse_from_str(&body.day, "%Y-%m-%d")
-        .with_context(|| format!("invalid day {}", body.day))?;
+        .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{}`: {e}", body.day)))?;
     let auth = tempo::TempoAuth::from_secrets().map_err(ApiError::from)?;
     let dry_run = body.dry_run;
     let (report, results) =
@@ -643,7 +667,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        // Bad input → 400, not 500.
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let v = read_json(resp).await;
+        assert!(v["error"].as_str().unwrap().contains("invalid day"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -659,7 +686,25 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn infer_rejects_invalid_day() {
+        // Previously uncovered — H1-ish coverage gap. /infer also takes a
+        // day and must return 400 on bad input rather than 500.
+        let app = router(state_with_block());
+        let body = Body::from(serde_json::to_vec(&json!({"day": "nope"})).unwrap());
+        let resp = app
+            .oneshot(
+                Request::post("/infer")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test(flavor = "current_thread")]

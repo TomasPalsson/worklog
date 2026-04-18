@@ -206,28 +206,38 @@ fn iso_prefix(s: &str) -> String {
 pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) -> Result<()> {
     let day_iso = day.to_string();
 
-    // Collect "carry" state keyed by started_at so re-inference preserves
-    // tempo_worklog_id, description, estimated_by, and manual ticket edits.
+    // Collect "carry" state so re-inference preserves tempo_worklog_id,
+    // description, estimated_by, and manual ticket edits. We keep two
+    // views of the prior state: a strict started_at→CarryRow map for the
+    // common case (no time shift), and an ordered Vec of (start, end, row)
+    // for the fallback case where a backfilled earlier event shifts the
+    // block's started_at. See `carry_for_block` for the matching rules.
     let mut prior: std::collections::HashMap<String, CarryRow> = std::collections::HashMap::new();
+    let mut prior_list: Vec<CarryRow> = Vec::new();
     {
         let mut stmt = conn.prepare(
-            "SELECT started_at, jira_issue, description, estimated_by, tempo_worklog_id
+            "SELECT started_at, ended_at, jira_issue, description, estimated_by, tempo_worklog_id
                FROM blocks WHERE day = ?1",
         )?;
         let iter = stmt.query_map(params![day_iso], |r| {
             Ok(CarryRow {
                 started_at: r.get(0)?,
-                jira_issue: r.get(1)?,
-                description: r.get(2)?,
-                estimated_by: r.get(3)?,
-                tempo_worklog_id: r.get(4)?,
+                ended_at: r.get(1)?,
+                jira_issue: r.get(2)?,
+                description: r.get(3)?,
+                estimated_by: r.get(4)?,
+                tempo_worklog_id: r.get(5)?,
             })
         })?;
         for row in iter {
             let row = row?;
-            prior.insert(row.started_at.clone(), row);
+            prior.insert(row.started_at.clone(), row.clone());
+            prior_list.push(row);
         }
     }
+    // Track which fallback rows we've already claimed so two new blocks
+    // can't both inherit the same prior state.
+    let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     let tx = conn.unchecked_transaction()?;
     tx.execute("DELETE FROM blocks WHERE day = ?1", params![day_iso])
@@ -235,7 +245,26 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
 
     for b in blocks {
         let started_key = block_iso(b.started_at);
-        let carry = prior.get(&started_key);
+        let ended_key = block_iso(b.ended_at);
+        let carry: Option<&CarryRow> = prior.get(&started_key).or_else(|| {
+            // Overlap fallback: if no exact-start match, find one prior
+            // block whose time range overlaps the new block's. Must not
+            // already be claimed by a different new block.
+            prior_list
+                .iter()
+                .find(|c| {
+                    !claimed.contains(&c.started_at)
+                        && ranges_overlap(
+                            &c.started_at,
+                            &c.ended_at,
+                            &started_key,
+                            &ended_key,
+                        )
+                })
+        });
+        if let Some(c) = carry {
+            claimed.insert(c.started_at.clone());
+        }
         let tempo_id = carry.and_then(|c| c.tempo_worklog_id.clone());
         let description = carry.and_then(|c| c.description.clone());
         let estimated_by = carry.and_then(|c| c.estimated_by.clone());
@@ -288,10 +317,19 @@ fn block_iso(dt: DateTime<Utc>) -> String {
 #[derive(Debug, Clone)]
 struct CarryRow {
     started_at: String,
+    ended_at: String,
     jira_issue: Option<String>,
     description: Option<String>,
     estimated_by: Option<String>,
     tempo_worklog_id: Option<String>,
+}
+
+/// Lexicographic overlap check on ISO-8601 prefix strings. Two ranges
+/// overlap iff `a_start < b_end && b_start < a_end`. ISO timestamps
+/// sort chronologically when they share the same offset (we strip the
+/// trailing `+00:00` upstream so this holds for our rows).
+fn ranges_overlap(a_start: &str, a_end: &str, b_start: &str, b_end: &str) -> bool {
+    a_start < b_end && b_start < a_end
 }
 
 #[cfg(test)]
@@ -514,6 +552,58 @@ mod tests {
         assert_eq!(stored[0].tempo_worklog_id.as_deref(), Some("98765"));
         assert_eq!(stored[0].description.as_deref(), Some("custom"));
         assert_eq!(stored[0].jira_issue.as_deref(), Some("PROJ-7"));
+        assert_eq!(stored[0].estimated_by.as_deref(), Some("manual"));
+    }
+
+    #[test]
+    fn reinference_preserves_state_when_start_shifts_backward() {
+        // Regression test for the infer carry bug: a backfilled earlier
+        // event shifts a block's started_at. Strict-key equality loses
+        // tempo_worklog_id (and other carry state) — the CLAUDE.md
+        // canary invariant "tempo_worklog_id MUST NEVER be cleared" is
+        // violated. The carry logic must fall back to overlap matching.
+        let conn = open_memory().unwrap();
+        repo::upsert_event(
+            &conn,
+            &Event::minimal("github_commit", "late1", "2026-04-18T10:00:00+00:00", "first"),
+        )
+        .unwrap();
+        repo::upsert_event(
+            &conn,
+            &Event::minimal("github_commit", "late2", "2026-04-18T10:05:00+00:00", "second"),
+        )
+        .unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let blocks = build_blocks(load_day_events(&conn, day).unwrap());
+        persist_blocks(&conn, day, &blocks).unwrap();
+
+        // User reviews and syncs this block.
+        conn.execute(
+            "UPDATE blocks SET tempo_worklog_id = '42424', jira_issue = 'PROJ-3', \
+             description = 'reviewed', estimated_by = 'manual' WHERE day = '2026-04-18'",
+            [],
+        )
+        .unwrap();
+
+        // A GitHub backfill now adds an EARLIER event, shifting the
+        // block's started_at by several minutes. Strict-key match misses.
+        repo::upsert_event(
+            &conn,
+            &Event::minimal("github_commit", "early1", "2026-04-18T09:55:00+00:00", "earlier"),
+        )
+        .unwrap();
+        let blocks = build_blocks(load_day_events(&conn, day).unwrap());
+        persist_blocks(&conn, day, &blocks).unwrap();
+
+        let stored = repo::list_blocks_for_day(&conn, "2026-04-18").unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(
+            stored[0].tempo_worklog_id.as_deref(),
+            Some("42424"),
+            "tempo_worklog_id MUST be preserved across started_at shift"
+        );
+        assert_eq!(stored[0].jira_issue.as_deref(), Some("PROJ-3"));
+        assert_eq!(stored[0].description.as_deref(), Some("reviewed"));
         assert_eq!(stored[0].estimated_by.as_deref(), Some("manual"));
     }
 }

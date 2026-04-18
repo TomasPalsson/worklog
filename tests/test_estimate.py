@@ -206,3 +206,36 @@ def test_estimate_skips_already_estimated(db: Path) -> None:
     assert len(calls) == 1
     assert result["skipped"] == 1
     assert result["estimated"] == 1
+
+
+def test_estimate_skips_manual_blocks(db: Path) -> None:
+    """A block the user has hand-edited (estimated_by='manual') must NOT
+    be overwritten on re-estimation — CLAUDE.md invariant."""
+    with connect(db) as conn:
+        conn.execute(
+            """
+            INSERT INTO blocks (day, started_at, ended_at, duration_seconds,
+                                description, estimated_by, jira_issue)
+            VALUES ('2026-04-18', '2026-04-18T14:00:00+00:00',
+                    '2026-04-18T14:30:00+00:00', 1800,
+                    'user typed this', 'manual', 'USR-7')
+            """
+        )
+
+    def fake_claude(*_args, **_kwargs):
+        # If this is invoked for the manual block we should clobber it.
+        return {"jira_issue": "BOT-1", "minutes": 90, "description": "AI-rewrote"}
+
+    with patch("worklog.estimate._invoke_claude_p", side_effect=fake_claude):
+        result = estimate_day(datetime(2026, 4, 18).date())
+
+    with connect(db) as conn:
+        manual_row = conn.execute(
+            "SELECT description, estimated_by, jira_issue, duration_seconds "
+            "FROM blocks WHERE jira_issue = 'USR-7'"
+        ).fetchone()
+    assert manual_row["description"] == "user typed this"
+    assert manual_row["estimated_by"] == "manual"
+    assert manual_row["jira_issue"] == "USR-7"
+    assert manual_row["duration_seconds"] == 1800
+    assert result["skipped"] >= 1

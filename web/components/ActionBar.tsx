@@ -1,12 +1,14 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState } from "react";
 import {
   Braces,
+  Check,
   ListRestart,
   RefreshCw,
   Send,
   Sparkles,
+  X,
 } from "lucide-react";
 import {
   refreshJira,
@@ -14,7 +16,8 @@ import {
   runInfer,
   runSync,
 } from "@/app/actions";
-import { Toast } from "./Toast";
+import type { ActionResult } from "@/app/actions";
+import { toast } from "@/lib/toast";
 
 interface Props {
   day: string;
@@ -22,93 +25,159 @@ interface Props {
   cacheLast: string | null;
 }
 
-type Msg = { tone: "ok" | "error"; text: string } | null;
+type ActionId = "infer" | "estimate" | "jira" | "dry-run" | "sync";
 
 export function ActionBar({ day, cacheCount, cacheLast }: Props) {
-  const [pending, start] = useTransition();
-  const [toast, setToast] = useState<Msg>(null);
+  // Per-button pending set so one slow action doesn't freeze the rest.
+  const [pending, setPending] = useState<Set<ActionId>>(new Set());
+  const [confirmSync, setConfirmSync] = useState(false);
 
-  const show = (m: Msg) => {
-    setToast(m);
-    if (m) setTimeout(() => setToast(null), 3500);
-  };
+  const isPending = (id: ActionId) => pending.has(id);
 
-  const guard =
-    <R,>(fn: () => Promise<R>, label: string) =>
-    () => {
-      start(async () => {
-        try {
-          const r = await fn();
-          show({ tone: "ok", text: `${label}: ${summarise(r)}` });
-        } catch (e) {
-          show({ tone: "error", text: `${label} failed — ${(e as Error).message}` });
-        }
+  async function run<R>(
+    id: ActionId,
+    label: string,
+    fn: () => Promise<ActionResult<R> | R>,
+  ) {
+    setPending((p) => new Set(p).add(id));
+    try {
+      const res = await fn();
+      // Heuristic: if the returned value has `ok: boolean`, it's a
+      // tagged ActionResult. Otherwise assume raw success.
+      if (res && typeof res === "object" && "ok" in res) {
+        const tagged = res as ActionResult<R>;
+        if (tagged.ok) toast.ok(`${label}: ${summarise(tagged.data)}`);
+        else toast.error(`${label} failed — ${tagged.error}`);
+      } else {
+        toast.ok(`${label}: ${summarise(res)}`);
+      }
+    } catch (e) {
+      toast.error(`${label} failed — ${(e as Error).message}`);
+    } finally {
+      setPending((p) => {
+        const n = new Set(p);
+        n.delete(id);
+        return n;
       });
-    };
+    }
+  }
+
+  const onSyncClick = () => {
+    if (!confirmSync) {
+      setConfirmSync(true);
+      // Give the user 4s to confirm before reverting.
+      setTimeout(() => setConfirmSync(false), 4000);
+      return;
+    }
+    setConfirmSync(false);
+    void run("sync", "Synced to Tempo", () => runSync(day, false));
+  };
 
   return (
     <div className="actions">
-      <button
-        type="button"
-        className="action-btn"
-        disabled={pending}
-        onClick={guard(() => runInfer(day), "Rebuilt blocks")}
+      <ActionButton
+        pending={isPending("infer")}
+        icon={<ListRestart />}
+        label="Rebuild blocks"
+        pendingLabel="Rebuilding…"
         title="Cluster today's events into blocks (idempotent)"
-      >
-        <ListRestart />
-        Rebuild blocks
-      </button>
-
-      <button
-        type="button"
-        className="action-btn"
-        disabled={pending}
-        onClick={guard(() => runEstimate(day), "Estimated")}
+        onClick={() => run("infer", "Rebuilt blocks", () => runInfer(day))}
+      />
+      <ActionButton
+        pending={isPending("estimate")}
+        icon={<Sparkles />}
+        label="Estimate with Claude"
+        pendingLabel="Estimating…"
         title="Use claude -p to fill tickets/descriptions for un-estimated blocks"
-      >
-        <Sparkles />
-        Estimate with Claude
-      </button>
-
-      <button
-        type="button"
-        className="action-btn"
-        disabled={pending}
-        onClick={guard(() => refreshJira(day), "Refreshed Jira")}
+        onClick={() => run("estimate", "Estimated", () => runEstimate(day))}
+      />
+      <ActionButton
+        pending={isPending("jira")}
+        icon={<RefreshCw />}
+        label="Refresh Jira"
+        pendingLabel="Refreshing…"
         title={
           cacheLast
             ? `${cacheCount} tickets cached · last ${new Date(cacheLast).toLocaleString()}`
             : "Fetch open tickets from Jira"
         }
-      >
-        <RefreshCw />
-        Refresh Jira
-      </button>
-
-      <button
-        type="button"
-        className="action-btn"
-        disabled={pending}
-        onClick={guard(() => runSync(day, true), "Dry-run")}
+        onClick={() => run("jira", "Refreshed Jira", () => refreshJira(day))}
+      />
+      <ActionButton
+        pending={isPending("dry-run")}
+        icon={<Braces />}
+        label="Dry-run sync"
+        pendingLabel="Checking…"
         title="Show what would be posted to Tempo — no network writes"
-      >
-        <Braces />
-        Dry-run sync
-      </button>
-
+        onClick={() =>
+          run("dry-run", "Dry-run", () => runSync(day, true))
+        }
+      />
       <button
         type="button"
         className="action-btn"
-        disabled={pending}
-        onClick={guard(() => runSync(day, false), "Synced to Tempo")}
-        title="Post un-synced blocks to Tempo"
+        disabled={isPending("sync")}
+        data-confirm={confirmSync ? "true" : undefined}
+        onClick={onSyncClick}
+        title={
+          confirmSync
+            ? "Click again to confirm — this posts worklogs to Tempo"
+            : "Post un-synced blocks to Tempo (click twice to confirm)"
+        }
       >
-        <Send />
-        Sync to Tempo
+        {confirmSync ? (
+          <>
+            <Check />
+            Confirm sync?
+          </>
+        ) : isPending("sync") ? (
+          <>
+            <Send />
+            Syncing…
+          </>
+        ) : (
+          <>
+            <Send />
+            Sync to Tempo
+          </>
+        )}
       </button>
-
-      {toast && <Toast tone={toast.tone}>{toast.text}</Toast>}
+      {confirmSync && (
+        <button
+          type="button"
+          className="action-btn"
+          onClick={() => setConfirmSync(false)}
+          title="Cancel"
+          aria-label="cancel sync"
+        >
+          <X />
+          Cancel
+        </button>
+      )}
     </div>
+  );
+}
+
+function ActionButton(props: {
+  pending: boolean;
+  icon: React.ReactNode;
+  label: string;
+  pendingLabel: string;
+  title: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="action-btn"
+      disabled={props.pending}
+      title={props.title}
+      aria-busy={props.pending || undefined}
+      onClick={props.onClick}
+    >
+      {props.icon}
+      {props.pending ? props.pendingLabel : props.label}
+    </button>
   );
 }
 

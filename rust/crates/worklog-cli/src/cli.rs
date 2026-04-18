@@ -962,9 +962,9 @@ fn rpassword_readline() -> Result<String> {
     {
         use std::io::BufRead;
         use std::os::fd::AsRawFd;
-        // Best-effort: just read a line visibly on systems where we can't
-        // toggle echo without extra deps. This keeps Stage 1 dep-light; we'll
-        // swap in `rpassword` properly in Stage 1.2 wizard work.
+        // Deliberately dep-light: read a line visibly rather than pull in
+        // `rpassword` for one prompt. The interactive secret flow in the
+        // wizard handles echo suppression via `dialoguer::Password`.
         let fd = io::stdin().as_raw_fd();
         let _ = fd;
         let mut line = String::new();
@@ -1312,16 +1312,21 @@ fn cmd_dev_make_patch<W: Write>(
         }
     };
     std::fs::write(&dest, &patch)?;
+    // The result SHA256 is the load-bearing post-apply check in
+    // run_update — surface it so the release author can paste it into
+    // the manifest's PatchDescriptor.result_sha256.
+    let result_sha = upd::crypto::sha256_hex(&new_bytes);
     if json {
         writeln!(
             out,
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
-                "patch_path":  dest.display().to_string(),
-                "patch_bytes": patch.len(),
-                "old_bytes":   old_bytes.len(),
-                "new_bytes":   new_bytes.len(),
-                "ratio":       patch.len() as f64 / new_bytes.len() as f64,
+                "patch_path":    dest.display().to_string(),
+                "patch_bytes":   patch.len(),
+                "old_bytes":     old_bytes.len(),
+                "new_bytes":     new_bytes.len(),
+                "ratio":         patch.len() as f64 / new_bytes.len() as f64,
+                "result_sha256": result_sha,
             }))?
         )?;
     } else {
@@ -1332,6 +1337,7 @@ fn cmd_dev_make_patch<W: Write>(
             patch.len(),
             100.0 * patch.len() as f64 / new_bytes.len() as f64,
         )?;
+        writeln!(out, "  manifest result_sha256: {result_sha}")?;
     }
     Ok(())
 }
