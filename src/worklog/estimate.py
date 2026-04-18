@@ -229,7 +229,19 @@ def estimate_day(day: date, *, model: str = DEFAULT_MODEL) -> dict[str, int]:
             user_msg = build_user_message(block, events, open_tickets, literals)
             try:
                 reply = _invoke_claude_p(SYSTEM_PROMPT, user_msg, ESTIMATE_SCHEMA, model)
-            except Exception:  # noqa: BLE001 - fallback, recorded per-block
+                # Minutes is required; fall back to block duration if claude omits it.
+                raw_minutes = reply.get("minutes")
+                if raw_minutes is None:
+                    from dateutil.parser import isoparse
+                    raw_minutes = int(
+                        (isoparse(block["ended_at"]) - isoparse(block["started_at"]))
+                        .total_seconds() / 60
+                    )
+                minutes = _round_up_minutes(int(raw_minutes))
+                description = reply.get("description") or ""
+                if not description:
+                    raise ValueError("claude returned no description")
+            except Exception:  # noqa: BLE001 - any failure → fallback, recorded
                 conn.execute(
                     "UPDATE blocks SET estimated_by = 'gap' WHERE id = ?",
                     (block["id"],),
@@ -237,7 +249,6 @@ def estimate_day(day: date, *, model: str = DEFAULT_MODEL) -> dict[str, int]:
                 stats["failed"] += 1
                 continue
 
-            minutes = _round_up_minutes(int(reply["minutes"]))
             ticket = _validate_ticket_choice(
                 reply.get("jira_issue"), open_tickets, literals
             )
@@ -255,7 +266,7 @@ def estimate_day(day: date, *, model: str = DEFAULT_MODEL) -> dict[str, int]:
                        estimated_by = 'claude_p'
                  WHERE id = ?
                 """,
-                (reply["description"], minutes * 60, ticket, block["id"]),
+                (description, minutes * 60, ticket, block["id"]),
             )
             stats["estimated"] += 1
     return stats
