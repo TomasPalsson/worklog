@@ -84,9 +84,13 @@ _HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "Stop", "SubagentStop", "Ses
 
 
 def _hook_cmd() -> str:
-    """Prefer the native Rust hook if installed, fall back to Python."""
+    """Prefer the native Rust binary if installed, fall back to Python."""
     if rust_bin := shutil.which("worklog-hook"):
         return rust_bin
+    # Stage 3 added `worklog hook-run` in Rust; point new installs at it.
+    rust_worklog = _rust_binary()
+    if rust_worklog is not None:
+        return f"{rust_worklog} hook-run"
     worklog_bin = shutil.which("worklog") or "worklog"
     return f"{worklog_bin} hook run"
 
@@ -420,7 +424,17 @@ def today(day: str = typer.Option(None, help="YYYY-MM-DD, default today")) -> No
 
 @app.command()
 def infer(day: str = typer.Option(None, help="YYYY-MM-DD, default today")) -> None:
-    """Cluster the day's events into blocks (gap-timeout algorithm)."""
+    """Cluster the day's events into blocks (gap-timeout algorithm).
+
+    Delegates to the Rust binary when available; Python fallback otherwise.
+    """
+    rust_bin = _rust_binary()
+    if rust_bin is not None:
+        import os
+
+        d = _parse_day(day)
+        os.execvp(str(rust_bin), [str(rust_bin), "infer", "--day", d.isoformat()])
+
     d = _parse_day(day)
     events = load_day_events(date=d)
     blocks = build_blocks(events)
@@ -441,7 +455,20 @@ def estimate(
     day: str = typer.Option(None, help="YYYY-MM-DD, default today"),
     model: str = typer.Option(DEFAULT_MODEL, help="claude model id (default: haiku 4.5)"),
 ) -> None:
-    """Ask `claude -p` to pick a Jira ticket + write a description for each block."""
+    """Ask `claude -p` to pick a Jira ticket + write a description for each block.
+
+    Delegates to the Rust binary when available; Python fallback otherwise.
+    """
+    rust_bin = _rust_binary()
+    if rust_bin is not None:
+        import os
+
+        d = _parse_day(day)
+        os.execvp(
+            str(rust_bin),
+            [str(rust_bin), "estimate", "--day", d.isoformat(), "--model", model],
+        )
+
     d = _parse_day(day)
     stats = estimate_day(d, model=model)
     console.print(

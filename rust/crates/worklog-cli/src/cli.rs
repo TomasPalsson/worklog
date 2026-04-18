@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use worklog_core::{
     collectors::{github as gh, jira as jira_col, tempo as tempo_col},
-    db, hook, http,
+    db, estimate, hook, hook_run, http, infer,
     paths::Paths,
     repo, schedule, secrets,
 };
@@ -90,6 +90,27 @@ pub enum Cmd {
         #[arg(long)]
         dry_run: bool,
     },
+
+    /// Cluster a day's events into blocks (gap-timeout algorithm).
+    Infer {
+        /// YYYY-MM-DD; default today (UTC).
+        #[arg(long)]
+        day: Option<String>,
+    },
+
+    /// Estimate jira_issue + duration + description for each un-estimated block.
+    Estimate {
+        /// YYYY-MM-DD; default today (UTC).
+        #[arg(long)]
+        day: Option<String>,
+        /// Model id passed to `claude -p`.
+        #[arg(long, default_value = estimate::DEFAULT_MODEL)]
+        model: String,
+    },
+
+    /// Claude Code hook — reads a JSON event from stdin and records it.
+    #[command(name = "hook-run", hide = true)]
+    HookRun,
 }
 
 #[derive(clap::ValueEnum, Debug, Clone, Copy)]
@@ -210,6 +231,9 @@ pub fn run_with<W: Write>(
         },
         Cmd::Collect { target, days } => cmd_collect(target, days, out, cli.json),
         Cmd::Sync { day, dry_run } => cmd_sync(day, dry_run, out, cli.json),
+        Cmd::Infer { day } => cmd_infer(day, out, cli.json),
+        Cmd::Estimate { day, model } => cmd_estimate(day, &model, out, cli.json),
+        Cmd::HookRun => cmd_hook_run(),
     }
 }
 
@@ -645,6 +669,75 @@ fn parse_day(s: Option<&str>) -> Result<chrono::NaiveDate> {
         Some(s) => chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
             .map_err(|e| anyhow::anyhow!("invalid --day '{s}': {e}")),
     }
+}
+
+fn cmd_infer<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()> {
+    let paths = Paths::resolve()?;
+    paths.ensure()?;
+    let conn = db::open(&paths.db)?;
+    let day = parse_day(day.as_deref())?;
+    let events = infer::load_day_events(&conn, day)?;
+    let blocks = infer::build_blocks(events);
+    infer::persist_blocks(&conn, day, &blocks)?;
+
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&blocks)?)?;
+        return Ok(());
+    }
+    let total: i64 = blocks.iter().map(|b| b.duration_seconds).sum();
+    writeln!(
+        out,
+        "✓ {day}: {} block{} · {} min total",
+        blocks.len(),
+        if blocks.len() == 1 { "" } else { "s" },
+        total / 60
+    )?;
+    for b in &blocks {
+        let flag = if b.flagged { " [flagged]" } else { "" };
+        let issue = b
+            .jira_issue
+            .as_deref()
+            .map(|k| format!(" {k}"))
+            .unwrap_or_default();
+        writeln!(
+            out,
+            "  {}–{} ({}min, {} events){}{}",
+            b.started_at.format("%H:%M"),
+            b.ended_at.format("%H:%M"),
+            b.duration_seconds / 60,
+            b.event_count,
+            issue,
+            flag,
+        )?;
+    }
+    Ok(())
+}
+
+fn cmd_estimate<W: Write>(day: Option<String>, model: &str, out: &mut W, json: bool) -> Result<()> {
+    let paths = Paths::resolve()?;
+    if !paths.db_exists() {
+        anyhow::bail!("db not initialized. Run `worklog db migrate` first.");
+    }
+    let conn = db::open(&paths.db)?;
+    let day = parse_day(day.as_deref())?;
+    let stats = estimate::estimate_day(&conn, day, model)?;
+
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&stats)?)?;
+        return Ok(());
+    }
+    writeln!(
+        out,
+        "✓ {day}: estimated={} skipped={} failed={}",
+        stats.estimated, stats.skipped, stats.failed
+    )?;
+    Ok(())
+}
+
+fn cmd_hook_run() -> Result<()> {
+    // All output goes to stderr (handled inside hook_run::run_from_stdin) so
+    // Claude Code never sees bytes on stdout.
+    hook_run::run_from_stdin()
 }
 
 fn cmd_secret_list<W: Write>(out: &mut W, json: bool) -> Result<()> {

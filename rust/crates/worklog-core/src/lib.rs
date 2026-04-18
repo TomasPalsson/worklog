@@ -6,13 +6,17 @@
 
 pub mod collectors;
 pub mod db;
+pub mod estimate;
 pub mod hook;
+pub mod hook_run;
 pub mod http;
+pub mod infer;
 pub mod models;
 pub mod paths;
 pub mod repo;
 pub mod schedule;
 pub mod secrets;
+pub mod sessions;
 
 pub use crate::paths::Paths;
 

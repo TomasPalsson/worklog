@@ -1,0 +1,519 @@
+//! Gap-timeout block clustering.
+//!
+//! Ports `src/worklog/infer.py` + `infer_persist.py`. The two files are one
+//! logical piece in Rust: `build_blocks()` is a pure function over an event
+//! list, `persist_blocks()` writes to the db. Constants match the Python
+//! verbatim so re-running either side on the same day produces identical
+//! blocks.
+//!
+//! Invariants:
+//! * Calendar events are authoritative closed units — they never absorb
+//!   code/commit activity and never get absorbed by it.
+//! * Re-inference preserves `tempo_worklog_id`, `description`, and
+//!   `estimated_by` per-block-start so syncing and AI estimates survive.
+//! * Blocks shorter than MIN_BLOCK are dropped; longer than MAX_BLOCK are
+//!   flagged for human review.
+
+use std::collections::HashSet;
+
+use anyhow::{Context, Result};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
+use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
+
+const TIMEOUT_MINUTES: i64 = 20;
+const CREDIT_MINUTES: i64 = 2;
+const MIN_BLOCK_MINUTES: i64 = 5;
+const MAX_BLOCK_MINUTES: i64 = 4 * 60;
+
+/// Event sources that are treated as authoritative calendar blocks.
+pub fn is_calendar_source(s: &str) -> bool {
+    matches!(s, "gcal")
+}
+
+/// A single event as consumed by the clustering algorithm. Kept separate
+/// from [`crate::models::Event`] so we can drive tests without an owned
+/// connection.
+#[derive(Debug, Clone)]
+pub struct InferEvent {
+    pub ts: DateTime<Utc>,
+    pub source: String,
+    pub duration_seconds: Option<i64>,
+    pub jira_issue: Option<String>,
+    pub event_id: Option<i64>,
+}
+
+impl InferEvent {
+    pub fn end(&self) -> DateTime<Utc> {
+        if is_calendar_source(&self.source) {
+            if let Some(d) = self.duration_seconds {
+                return self.ts + Duration::seconds(d);
+            }
+        }
+        self.ts + Duration::minutes(CREDIT_MINUTES)
+    }
+
+    pub fn is_calendar(&self) -> bool {
+        is_calendar_source(&self.source)
+    }
+}
+
+/// A finalized block ready for persistence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InferBlock {
+    pub day: String,
+    pub started_at: DateTime<Utc>,
+    pub ended_at: DateTime<Utc>,
+    pub duration_seconds: i64,
+    pub event_count: u32,
+    pub event_ids: Vec<i64>,
+    pub jira_issue: Option<String>,
+    pub flagged: bool,
+    /// Track the source kind so the clustering pass can refuse to extend
+    /// a calendar block. Skipped in serialization; not needed on disk.
+    #[serde(skip)]
+    is_calendar: bool,
+    #[serde(skip)]
+    events: Vec<InferEvent>,
+}
+
+fn new_block(e: &InferEvent) -> InferBlock {
+    let end = e.end();
+    InferBlock {
+        day: e.ts.date_naive().to_string(),
+        started_at: e.ts,
+        ended_at: end,
+        duration_seconds: (end - e.ts).num_seconds(),
+        event_count: 1,
+        event_ids: e.event_id.into_iter().collect(),
+        jira_issue: e.jira_issue.clone(),
+        flagged: false,
+        is_calendar: e.is_calendar(),
+        events: vec![e.clone()],
+    }
+}
+
+fn extend_block(block: &mut InferBlock, e: &InferEvent) {
+    let end = e.end().max(block.ended_at);
+    block.ended_at = end;
+    block.duration_seconds = (end - block.started_at).num_seconds();
+    block.event_count += 1;
+    if let Some(id) = e.event_id {
+        block.event_ids.push(id);
+    }
+    block.events.push(e.clone());
+}
+
+fn finalize(mut block: InferBlock) -> Option<InferBlock> {
+    let duration = block.ended_at - block.started_at;
+    if duration < Duration::minutes(MIN_BLOCK_MINUTES) {
+        return None;
+    }
+    if duration > Duration::minutes(MAX_BLOCK_MINUTES) {
+        block.flagged = true;
+    }
+    let issues: HashSet<String> = block
+        .events
+        .iter()
+        .filter_map(|e| e.jira_issue.clone())
+        .collect();
+    block.jira_issue = if issues.len() == 1 {
+        issues.into_iter().next()
+    } else {
+        None
+    };
+    Some(block)
+}
+
+/// Pure clustering over a day's events. Input order doesn't matter.
+pub fn build_blocks(events: Vec<InferEvent>) -> Vec<InferBlock> {
+    let mut usable = events;
+    usable.sort_by_key(|e| e.ts);
+
+    let mut blocks: Vec<InferBlock> = Vec::new();
+    let mut current: Option<InferBlock> = None;
+
+    for e in usable {
+        let Some(mut c) = current.take() else {
+            current = Some(new_block(&e));
+            continue;
+        };
+
+        let gap = e.ts - c.ended_at;
+        let closed = e.is_calendar() || c.is_calendar || gap > Duration::minutes(TIMEOUT_MINUTES);
+        if closed {
+            if let Some(f) = finalize(c) {
+                blocks.push(f);
+            }
+            current = Some(new_block(&e));
+        } else {
+            extend_block(&mut c, &e);
+            current = Some(c);
+        }
+    }
+    if let Some(c) = current {
+        if let Some(f) = finalize(c) {
+            blocks.push(f);
+        }
+    }
+    blocks.sort_by_key(|b| b.started_at);
+    blocks
+}
+
+// ───────────────────────── db glue ─────────────────────────
+
+pub fn load_day_events(conn: &Connection, day: NaiveDate) -> Result<Vec<InferEvent>> {
+    use chrono::NaiveTime;
+    let start = day.and_time(NaiveTime::MIN).and_utc().to_rfc3339();
+    let end = (day + Duration::days(1))
+        .and_time(NaiveTime::MIN)
+        .and_utc()
+        .to_rfc3339();
+    let mut stmt = conn.prepare(
+        "SELECT id, source, started_at, duration_seconds, jira_issue
+           FROM events
+          WHERE started_at >= ?1 AND started_at < ?2
+          ORDER BY started_at",
+    )?;
+    // started_at is ISO-8601 string; we compare lexicographically which works
+    // because the format is fixed-width. Use the fixed-width prefix to match
+    // the Python code exactly.
+    let start = iso_prefix(&start);
+    let end = iso_prefix(&end);
+    let iter = stmt.query_map(params![start, end], |r| {
+        let iso: String = r.get(2)?;
+        let ts = chrono::DateTime::parse_from_rfc3339(&iso)
+            .map(|t| t.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now());
+        Ok(InferEvent {
+            event_id: Some(r.get(0)?),
+            source: r.get(1)?,
+            ts,
+            duration_seconds: r.get(3)?,
+            jira_issue: r.get(4)?,
+        })
+    })?;
+    iter.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Use the same string form Python emits (`datetime.isoformat()` without
+/// offset suffix) so the text comparison works either way. rfc3339 adds
+/// `+00:00`; strip it for parity with the Python code.
+fn iso_prefix(s: &str) -> String {
+    s.trim_end_matches("+00:00").to_owned()
+}
+
+pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) -> Result<()> {
+    let day_iso = day.to_string();
+
+    // Collect "carry" state keyed by started_at so re-inference preserves
+    // tempo_worklog_id, description, estimated_by, and manual ticket edits.
+    let mut prior: std::collections::HashMap<String, CarryRow> = std::collections::HashMap::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT started_at, jira_issue, description, estimated_by, tempo_worklog_id
+               FROM blocks WHERE day = ?1",
+        )?;
+        let iter = stmt.query_map(params![day_iso], |r| {
+            Ok(CarryRow {
+                started_at: r.get(0)?,
+                jira_issue: r.get(1)?,
+                description: r.get(2)?,
+                estimated_by: r.get(3)?,
+                tempo_worklog_id: r.get(4)?,
+            })
+        })?;
+        for row in iter {
+            let row = row?;
+            prior.insert(row.started_at.clone(), row);
+        }
+    }
+
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM blocks WHERE day = ?1", params![day_iso])
+        .context("clearing stale blocks")?;
+
+    for b in blocks {
+        let started_key = block_iso(b.started_at);
+        let carry = prior.get(&started_key);
+        let tempo_id = carry.and_then(|c| c.tempo_worklog_id.clone());
+        let description = carry.and_then(|c| c.description.clone());
+        let estimated_by = carry.and_then(|c| c.estimated_by.clone());
+        // Preserve manual ticket override if present; otherwise trust inference.
+        let jira_issue = carry
+            .and_then(|c| c.jira_issue.clone())
+            .or_else(|| b.jira_issue.clone());
+
+        tx.execute(
+            "INSERT INTO blocks (
+                day, jira_issue, started_at, ended_at,
+                duration_seconds, description, estimated_by, flagged,
+                tempo_worklog_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                b.day,
+                jira_issue,
+                block_iso(b.started_at),
+                block_iso(b.ended_at),
+                b.duration_seconds,
+                description,
+                estimated_by,
+                if b.flagged { 1 } else { 0 },
+                tempo_id,
+            ],
+        )
+        .context("inserting block")?;
+        let block_id = tx.last_insert_rowid();
+        for eid in &b.event_ids {
+            tx.execute(
+                "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+                params![block_id, eid],
+            )
+            .context("inserting block_events row")?;
+        }
+    }
+    tx.commit().context("committing block persistence")?;
+    Ok(())
+}
+
+/// Format timestamps the way the Python code does (`datetime.isoformat()`
+/// with offset). Avoids the `Z` vs `+00:00` mismatch that would break the
+/// carry-preservation lookup keyed on `started_at`.
+fn block_iso(dt: DateTime<Utc>) -> String {
+    // `to_rfc3339_opts` lets us force `+00:00` instead of `Z`.
+    use chrono::SecondsFormat;
+    dt.to_rfc3339_opts(SecondsFormat::Micros, false)
+}
+
+#[derive(Debug, Clone)]
+struct CarryRow {
+    started_at: String,
+    jira_issue: Option<String>,
+    description: Option<String>,
+    estimated_by: Option<String>,
+    tempo_worklog_id: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::open_memory;
+    use crate::models::Event;
+    use crate::repo;
+    use chrono::TimeZone;
+
+    fn at(h: u32, m: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 4, 18, h, m, 0).unwrap()
+    }
+
+    fn ev(h: u32, m: u32, source: &str) -> InferEvent {
+        InferEvent {
+            ts: at(h, m),
+            source: source.into(),
+            duration_seconds: None,
+            jira_issue: None,
+            event_id: None,
+        }
+    }
+
+    fn calendar(h: u32, m: u32, secs: i64) -> InferEvent {
+        InferEvent {
+            ts: at(h, m),
+            source: "gcal".into(),
+            duration_seconds: Some(secs),
+            jira_issue: None,
+            event_id: None,
+        }
+    }
+
+    #[test]
+    fn single_event_blocks_are_dropped_when_shorter_than_min() {
+        // Point event extends by CREDIT (2m) < MIN_BLOCK (5m) → dropped.
+        let blocks = build_blocks(vec![ev(10, 0, "github_commit")]);
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn close_events_form_one_block() {
+        let events: Vec<_> = (0..5)
+            .map(|i| ev(10, 5 * i as u32, "github_commit"))
+            .collect();
+        let blocks = build_blocks(events);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].event_count, 5);
+    }
+
+    #[test]
+    fn gap_over_timeout_starts_new_block() {
+        let a = ev(9, 0, "github_commit");
+        let b = ev(9, 5, "github_commit");
+        // 30-minute gap exceeds TIMEOUT (20m).
+        let c = ev(9, 35, "github_commit");
+        let d = ev(9, 40, "github_commit");
+        let blocks = build_blocks(vec![a, b, c, d]);
+        assert_eq!(blocks.len(), 2);
+    }
+
+    #[test]
+    fn calendar_event_is_authoritative_and_isolated() {
+        let code_before = ev(9, 0, "github_commit");
+        let meeting = calendar(9, 10, 45 * 60); // 45-min meeting
+        let code_after = ev(10, 0, "github_commit");
+        let blocks = build_blocks(vec![code_before, meeting, code_after]);
+        // Three separate blocks: code block before is <MIN so dropped;
+        // meeting is its own block; code after is <MIN so dropped.
+        // Result: exactly one block (the meeting).
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].duration_seconds, 45 * 60);
+    }
+
+    #[test]
+    fn jira_issue_is_kept_when_all_events_agree() {
+        let mut a = ev(10, 0, "github_commit");
+        a.jira_issue = Some("PROJ-1".into());
+        let mut b = ev(10, 5, "github_commit");
+        b.jira_issue = Some("PROJ-1".into());
+        let blocks = build_blocks(vec![a, b]);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].jira_issue.as_deref(), Some("PROJ-1"));
+    }
+
+    #[test]
+    fn jira_issue_cleared_when_events_disagree() {
+        let mut a = ev(10, 0, "github_commit");
+        a.jira_issue = Some("PROJ-1".into());
+        let mut b = ev(10, 5, "github_commit");
+        b.jira_issue = Some("PROJ-2".into());
+        let blocks = build_blocks(vec![a, b]);
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].jira_issue.is_none());
+    }
+
+    #[test]
+    fn flags_blocks_over_max() {
+        let start = Utc.with_ymd_and_hms(2026, 4, 18, 9, 0, 0).unwrap();
+        let end = start + Duration::hours(5); // > MAX_BLOCK
+        let events = vec![
+            InferEvent {
+                ts: start,
+                source: "github_commit".into(),
+                duration_seconds: None,
+                jira_issue: None,
+                event_id: None,
+            },
+            InferEvent {
+                ts: end - Duration::minutes(1),
+                source: "github_commit".into(),
+                duration_seconds: None,
+                jira_issue: None,
+                event_id: None,
+            },
+        ];
+        // Gap is > TIMEOUT, so these become two separate blocks.
+        // Change: use densely packed events to form a single long block.
+        let mut dense = Vec::new();
+        let mut t = start;
+        while t < end {
+            dense.push(InferEvent {
+                ts: t,
+                source: "github_commit".into(),
+                duration_seconds: None,
+                jira_issue: None,
+                event_id: None,
+            });
+            t += Duration::minutes(10);
+        }
+        let blocks = build_blocks(dense);
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].flagged, "long block must be flagged");
+        // Unused test vars — silence compiler.
+        let _ = events;
+    }
+
+    #[test]
+    fn persist_round_trip_creates_rows() {
+        let conn = open_memory().unwrap();
+        // Insert two raw events for the day.
+        let e1 = repo::upsert_event(
+            &conn,
+            &Event::minimal("github_commit", "aaa", "2026-04-18T10:00:00+00:00", "first"),
+        )
+        .unwrap();
+        let e2 = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                "github_commit",
+                "bbb",
+                "2026-04-18T10:05:00+00:00",
+                "second",
+            ),
+        )
+        .unwrap();
+
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let events = load_day_events(&conn, day).unwrap();
+        assert_eq!(events.len(), 2);
+        let blocks = build_blocks(events);
+        persist_blocks(&conn, day, &blocks).unwrap();
+
+        let stored = repo::list_blocks_for_day(&conn, "2026-04-18").unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].duration_seconds, blocks[0].duration_seconds);
+
+        // block_events must have both rows.
+        let junction: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM block_events WHERE block_id = ?1",
+                params![stored[0].id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(junction, 2);
+        let _ = (e1, e2);
+    }
+
+    #[test]
+    fn reinference_preserves_tempo_id_and_description() {
+        let conn = open_memory().unwrap();
+        repo::upsert_event(
+            &conn,
+            &Event::minimal("github_commit", "x1", "2026-04-18T10:00:00+00:00", "first"),
+        )
+        .unwrap();
+        repo::upsert_event(
+            &conn,
+            &Event::minimal("github_commit", "x2", "2026-04-18T10:05:00+00:00", "second"),
+        )
+        .unwrap();
+
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let events = load_day_events(&conn, day).unwrap();
+        let blocks = build_blocks(events);
+        persist_blocks(&conn, day, &blocks).unwrap();
+
+        // Simulate the user hand-editing.
+        conn.execute(
+            "UPDATE blocks SET tempo_worklog_id = '98765', description = 'custom', \
+             jira_issue = 'PROJ-7', estimated_by = 'manual' WHERE day = ?1",
+            params!["2026-04-18"],
+        )
+        .unwrap();
+
+        // Add another event and re-infer.
+        repo::upsert_event(
+            &conn,
+            &Event::minimal("github_commit", "x3", "2026-04-18T10:08:00+00:00", "third"),
+        )
+        .unwrap();
+        let events = load_day_events(&conn, day).unwrap();
+        let blocks = build_blocks(events);
+        persist_blocks(&conn, day, &blocks).unwrap();
+
+        let stored = repo::list_blocks_for_day(&conn, "2026-04-18").unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].tempo_worklog_id.as_deref(), Some("98765"));
+        assert_eq!(stored[0].description.as_deref(), Some("custom"));
+        assert_eq!(stored[0].jira_issue.as_deref(), Some("PROJ-7"));
+        assert_eq!(stored[0].estimated_by.as_deref(), Some("manual"));
+    }
+}

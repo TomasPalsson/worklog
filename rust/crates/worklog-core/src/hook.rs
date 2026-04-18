@@ -49,13 +49,21 @@ pub fn settings_path() -> Result<PathBuf> {
     Ok(base.join("settings.json"))
 }
 
-/// Default command string registered in the hook handler. In Stage 1 we
-/// delegate back to the Python `worklog hook run` because the hook event
-/// pipeline still lives in Python; Stage 2 will flip this to a native
-/// `worklog-hook` binary once collectors move over.
+/// Default command string registered in the hook handler.
+///
+/// Preference order (most preferred first):
+/// 1. `worklog-hook` — the old standalone Rust hook binary, if any user
+///    still has it installed from Stage 0.
+/// 2. A `worklog-rs` next to the CLI — the Stage 1 binary, which now has
+///    a `hook-run` subcommand.
+/// 3. `worklog` on PATH — falls back to the Python entrypoint's
+///    `hook run` subcommand, which itself delegates to Rust when present.
 pub fn default_command() -> String {
     if let Some(p) = which::which_ok("worklog-hook") {
         return p.to_string_lossy().into_owned();
+    }
+    if let Some(p) = which::which_ok("worklog-rs") {
+        return format!("{} hook-run", p.to_string_lossy());
     }
     if let Some(p) = which::which_ok("worklog") {
         return format!("{} hook run", p.to_string_lossy());

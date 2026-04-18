@@ -291,6 +291,57 @@ fn sync_dry_run_reports_zero_when_no_blocks() {
 }
 
 #[test]
+fn infer_on_empty_day_prints_zero_blocks() {
+    let home = TempDir::new().unwrap();
+    cmd(&home).args(["db", "migrate"]).assert().success();
+    cmd(&home)
+        .args(["infer", "--day", "2026-04-18"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("0 blocks"))
+        .stdout(predicate::str::contains("0 min"));
+}
+
+#[test]
+fn estimate_errors_without_db() {
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["estimate", "--day", "2026-04-18"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not initialized"));
+}
+
+#[test]
+fn hook_run_writes_claude_event_from_stdin() {
+    let home = TempDir::new().unwrap();
+    cmd(&home).args(["db", "migrate"]).assert().success();
+    cmd(&home)
+        .arg("hook-run")
+        .write_stdin(r#"{"hook_event_name":"UserPromptSubmit","session_id":"S1","cwd":"/tmp/x","user_prompt":"see PROJ-42"}"#)
+        .assert()
+        .success();
+    // Read back via the worklog db.
+    cmd(&home)
+        .args(["db", "info"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("events=1"))
+        .stdout(predicate::str::contains("sessions=1"));
+}
+
+#[test]
+fn hook_run_exits_zero_on_malformed_stdin() {
+    let home = TempDir::new().unwrap();
+    cmd(&home).args(["db", "migrate"]).assert().success();
+    cmd(&home)
+        .arg("hook-run")
+        .write_stdin("not json at all")
+        .assert()
+        .success(); // Never blocks Claude.
+}
+
+#[test]
 fn secret_rm_reports_absent_cleanly() {
     let home = TempDir::new().unwrap();
     cmd(&home)
