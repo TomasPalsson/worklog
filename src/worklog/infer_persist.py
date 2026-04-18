@@ -39,19 +39,49 @@ def load_day_events(*, date: date, conn: sqlite3.Connection | None = None) -> li
 
 def persist_blocks(blocks: list[Block], *, day: date) -> None:
     """Replace the day's blocks transactionally, preserving tempo_worklog_id
-    + description via (started_at) as the stable key across re-inferences.
+    + description across re-inferences. Primary key is ``started_at``;
+    when a new block's ``started_at`` shifted (because a backfilled
+    earlier event moved the cluster's start), we fall back to an overlap
+    match against the prior list — otherwise the CLAUDE.md canary
+    invariant ("tempo_worklog_id MUST NEVER be cleared") would silently
+    break on the next re-inference.
     """
     day_iso = day.isoformat()
     with connect() as conn:
-        prior = {
-            r["started_at"]: r
-            for r in conn.execute(
-                "SELECT * FROM blocks WHERE day = ?", (day_iso,)
-            ).fetchall()
-        }
+        prior_rows = conn.execute(
+            "SELECT * FROM blocks WHERE day = ? ORDER BY started_at",
+            (day_iso,),
+        ).fetchall()
+        prior = {r["started_at"]: r for r in prior_rows}
+        # Parse each prior's range once so the overlap fallback doesn't
+        # re-parse on every inner-loop iteration.
+        prior_parsed = [
+            (isoparse(r["started_at"]), isoparse(r["ended_at"]), r)
+            for r in prior_rows
+        ]
+        claimed_keys: set[str] = set()
+
         conn.execute("DELETE FROM blocks WHERE day = ?", (day_iso,))
         for b in blocks:
-            carry = prior.get(b.started_at.isoformat())
+            key = b.started_at.isoformat()
+            carry = prior.get(key)
+            if carry is None:
+                # Overlap fallback: find an unclaimed prior whose time
+                # range overlaps this new block. Parsing both sides to
+                # datetimes sidesteps any format drift between the
+                # writer (Python isoformat) and the reader (Rust's
+                # block_iso), which used to produce non-matching strings
+                # for whole-second timestamps.
+                for prev_start, prev_end, row in prior_parsed:
+                    if row["started_at"] in claimed_keys:
+                        continue
+                    if b.started_at < prev_end and prev_start < b.ended_at:
+                        carry = row
+                        claimed_keys.add(row["started_at"])
+                        break
+            elif carry is not None:
+                claimed_keys.add(key)
+
             tempo_id = carry["tempo_worklog_id"] if carry else None
             description = carry["description"] if carry else None
             estimated_by = carry["estimated_by"] if carry else None

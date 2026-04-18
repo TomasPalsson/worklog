@@ -1,12 +1,32 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-CONFIG_DIR = Path.home() / ".config" / "worklog"
-DATA_DIR = Path.home() / ".local" / "share" / "worklog"
+
+def _resolve_paths() -> tuple[Path, Path]:
+    """Return (config_dir, data_dir). Honours $WORKLOG_HOME so Python
+    and Rust agree on which DB to open when a user sets the override.
+
+    Rust's `paths::resolve` collapses $WORKLOG_HOME into a SINGLE
+    directory (config_dir == data_dir == root). We match that
+    behaviour so a user who sets `WORKLOG_HOME=/tmp/worklog-dev` gets
+    `/tmp/worklog-dev/worklog.db` from both languages.
+    """
+    override = os.environ.get("WORKLOG_HOME")
+    if override:
+        root = Path(override).expanduser()
+        return (root, root)
+    return (
+        Path.home() / ".config" / "worklog",
+        Path.home() / ".local" / "share" / "worklog",
+    )
+
+
+CONFIG_DIR, DATA_DIR = _resolve_paths()
 DB_PATH = DATA_DIR / "worklog.db"
 ENV_PATH = CONFIG_DIR / ".env"
 

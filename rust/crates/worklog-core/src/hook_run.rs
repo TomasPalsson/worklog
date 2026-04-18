@@ -116,13 +116,33 @@ pub fn handle(conn: &Connection, payload: &Value, now: DateTime<Utc>) -> Result<
     Ok(())
 }
 
+/// Hard cap on Claude Code hook payloads. Realistic events are a few KB
+/// of JSON (session id + event name + a short prompt excerpt). 4MB is
+/// generous headroom. Without this, a runaway Claude process could
+/// flood the DB with a single huge row.
+pub const MAX_STDIN_BYTES: u64 = 4 * 1024 * 1024;
+
 /// CLI entrypoint. Reads stdin, opens db, handles. Always returns Ok —
 /// hook-side errors are logged to stderr but never propagated (Claude
 /// must never be blocked by a worklog failure).
 pub fn run_from_stdin() -> Result<()> {
+    use std::io::Read;
     let mut buf = String::new();
-    if let Err(e) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf) {
+    // `Read::take` enforces MAX_STDIN_BYTES so a pathological payload
+    // can't exhaust memory or balloon the DB. Anything at or near the
+    // cap is truncated and rejected — we'd rather drop the event than
+    // store 4MB of garbage.
+    let stdin = std::io::stdin();
+    let mut limited = stdin.lock().take(MAX_STDIN_BYTES + 1);
+    if let Err(e) = limited.read_to_string(&mut buf) {
         warn!("reading stdin failed: {e}");
+        return Ok(());
+    }
+    if buf.len() as u64 > MAX_STDIN_BYTES {
+        eprintln!(
+            "worklog hook: stdin exceeded {}MB cap — dropping event",
+            MAX_STDIN_BYTES / 1024 / 1024
+        );
         return Ok(());
     }
     let payload: Value = match serde_json::from_str(&buf) {

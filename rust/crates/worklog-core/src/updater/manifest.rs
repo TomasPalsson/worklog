@@ -75,6 +75,13 @@ pub struct PatchDescriptor {
     /// Verified after applying the patch. This is the load-bearing
     /// integrity check for the delta path — `asset.sha256` only covers
     /// the patch bytes themselves, not the reconstructed output.
+    ///
+    /// Defaults to empty string for forward compatibility with older
+    /// manifests (pre-qa-phase-2) that didn't include this field. An
+    /// empty value causes `run_update` to reject the delta and fall
+    /// back to the full-binary asset — safer than silently skipping
+    /// the check.
+    #[serde(default)]
     pub result_sha256: String,
     #[serde(flatten)]
     pub asset: Asset,
@@ -239,6 +246,24 @@ mod tests {
             published_at: "2026-04-18T00:00:00Z".into(),
             schema: 1,
         }
+    }
+
+    #[test]
+    fn patch_descriptor_parses_old_manifest_without_result_sha256() {
+        // Forward compatibility: manifests signed before the
+        // result_sha256 field was added must still parse. The default
+        // is empty string, which `run_update` treats as "refuse this
+        // delta and let the user retry with --force for full".
+        let raw = r#"{
+            "from": "0.3.0",
+            "url": "http://example.com/patch.bin",
+            "sha256": "aa",
+            "size": 100,
+            "signature": "sig"
+        }"#;
+        let pd: PatchDescriptor = serde_json::from_str(raw).unwrap();
+        assert_eq!(pd.from, "0.3.0");
+        assert_eq!(pd.result_sha256, "");
     }
 
     #[test]

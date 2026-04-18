@@ -108,6 +108,50 @@ def test_persist_preserves_tempo_worklog_id_and_manual_ticket(db: Path) -> None:
     assert row["jira_issue"] == "MAN-7"
 
 
+def test_persist_preserves_carry_on_started_at_shift(db: Path) -> None:
+    """Regression: a backfilled earlier event shifts a block's
+    started_at, so the strict-key carry lookup misses. Without the
+    overlap fallback, tempo_worklog_id silently clears — violating the
+    CLAUDE.md canary. Python must mirror the Rust fix."""
+    day = datetime(2026, 4, 18).date()
+    with connect(db) as conn:
+        _add(conn, datetime(2026, 4, 18, 10, 0, tzinfo=UTC))
+        _add(conn, datetime(2026, 4, 18, 10, 5, tzinfo=UTC))
+    events = load_day_events(date=day)
+    persist_blocks(build_blocks(events), day=day)
+
+    with connect(db) as conn:
+        conn.execute(
+            """
+            UPDATE blocks
+               SET tempo_worklog_id = 'TW-42',
+                   description = 'reviewed',
+                   jira_issue = 'PROJ-3',
+                   estimated_by = 'manual'
+             WHERE day = ?
+            """,
+            (day.isoformat(),),
+        )
+
+    # Backfill adds an earlier event → started_at of the block shifts
+    # backward by 5 minutes.
+    with connect(db) as conn:
+        _add(conn, datetime(2026, 4, 18, 9, 55, tzinfo=UTC))
+
+    persist_blocks(build_blocks(load_day_events(date=day)), day=day)
+
+    with connect(db) as conn:
+        row = conn.execute(
+            "SELECT tempo_worklog_id, description, jira_issue, estimated_by "
+            "FROM blocks WHERE day = ?",
+            (day.isoformat(),),
+        ).fetchone()
+    assert row["tempo_worklog_id"] == "TW-42"
+    assert row["description"] == "reviewed"
+    assert row["jira_issue"] == "PROJ-3"
+    assert row["estimated_by"] == "manual"
+
+
 def test_load_handles_explicit_duration(db: Path) -> None:
     """Events with ended_at + duration_seconds (e.g. gcal meetings) are used verbatim."""
     start = datetime(2026, 4, 18, 10, 0, tzinfo=UTC)
