@@ -96,28 +96,45 @@ pub enum Target {
     X86_64UnknownLinuxGnu,
 }
 
+/// The build target isn't one of the published ones. Carries the
+/// compile-time arch + os so the error message names them.
+#[derive(Debug, thiserror::Error)]
+#[error("unsupported target: {arch}-{os} — no signed release published for it. \
+         Either build + install from source, or ask the maintainer to add \
+         this target to the release matrix.")]
+pub struct UnsupportedTarget {
+    pub arch: &'static str,
+    pub os: &'static str,
+}
+
 impl Target {
     /// The target triple of the running binary, as published in
-    /// manifests. Returns `None` on an unsupported build target.
-    pub const fn current() -> Option<Self> {
+    /// manifests. Returns an error (naming arch + os) on an unsupported
+    /// build target — the type system prevents callers from accidentally
+    /// defaulting to a specific target, which would silently install
+    /// the wrong binary.
+    pub const fn current() -> Result<Self, UnsupportedTarget> {
         #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
         {
-            return Some(Target::AArch64AppleDarwin);
+            return Ok(Target::AArch64AppleDarwin);
         }
         #[cfg(all(target_arch = "x86_64", target_os = "macos"))]
         {
-            return Some(Target::X86_64AppleDarwin);
+            return Ok(Target::X86_64AppleDarwin);
         }
         #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
         {
-            return Some(Target::AArch64UnknownLinuxGnu);
+            return Ok(Target::AArch64UnknownLinuxGnu);
         }
         #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
         {
-            return Some(Target::X86_64UnknownLinuxGnu);
+            return Ok(Target::X86_64UnknownLinuxGnu);
         }
         #[allow(unreachable_code)]
-        None
+        Err(UnsupportedTarget {
+            arch: std::env::consts::ARCH,
+            os: std::env::consts::OS,
+        })
     }
 
     pub const fn triple(self) -> &'static str {
@@ -137,9 +154,12 @@ impl fmt::Display for Target {
 }
 
 impl Manifest {
-    /// Find the target-specific section for the running binary.
+    /// Find the target-specific section for the running binary. Returns
+    /// `None` if this binary was built for a target we don't publish
+    /// assets for OR the manifest simply doesn't include a section for
+    /// this target.
     pub fn for_current_target(&self) -> Option<&TargetManifest> {
-        let t = Target::current()?;
+        let t = Target::current().ok()?;
         self.targets.iter().find(|tm| tm.target == t)
     }
 
@@ -204,7 +224,7 @@ mod tests {
         Manifest {
             version: "0.3.1".into(),
             targets: vec![TargetManifest {
-                target: Target::current().unwrap_or(Target::AArch64AppleDarwin),
+                target: Target::current().unwrap_or(Target::AArch64AppleDarwin), // test-only default
                 full: sample_asset(15_000_000),
                 patches: from_versions
                     .iter()
@@ -234,7 +254,7 @@ mod tests {
     #[test]
     fn pick_asset_prefers_delta_when_smaller() {
         let m = sample_manifest(&["0.3.0"]);
-        if Target::current().is_none() {
+        if Target::current().is_err() {
             return; // Skip on unsupported build targets.
         }
         match m.pick_asset("0.3.0").unwrap() {
@@ -246,7 +266,7 @@ mod tests {
     #[test]
     fn pick_asset_falls_back_to_full_when_no_matching_patch() {
         let m = sample_manifest(&["0.3.0"]);
-        if Target::current().is_none() {
+        if Target::current().is_err() {
             return;
         }
         assert!(matches!(m.pick_asset("99.0.0"), Some(Choice::Full(_))));
@@ -260,7 +280,7 @@ mod tests {
         let mut m = sample_manifest(&["0.3.0"]);
         m.targets[0].patches[0].asset.size = 999_999_999;
         m.targets[0].full.size = 1_000;
-        if Target::current().is_none() {
+        if Target::current().is_err() {
             return;
         }
         assert!(matches!(m.pick_asset("0.3.0"), Some(Choice::Full(_))));

@@ -595,7 +595,13 @@ button {
   font-weight: 600;
   color: var(--sage-ink);
   flex-shrink: 0;
-  width: 88px;
+  /* Long project prefixes like INFRASTRUCTURE-1234 used to overflow the
+     fixed 88px column; ellipsize instead so the layout stays intact. */
+  min-width: 88px;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   letter-spacing: 0.02em;
 }
 
@@ -768,16 +774,29 @@ button {
 
 @media (max-width: 640px) {
   .block {
-    grid-template-columns: 1fr;
+    /* Two-row grid: time + delete on top, body below. Keeps the delete
+       button anchored to the time range it refers to instead of
+       floating under the description text. */
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      "time   actions"
+      "body   body";
     gap: 10px;
   }
   .block-time {
+    grid-area: time;
     flex-direction: row;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-start;
+    gap: 10px;
     min-width: 0;
   }
+  .block-body {
+    grid-area: body;
+  }
   .block-actions {
+    grid-area: actions;
     justify-content: flex-end;
+    padding-top: 0;
   }
 }

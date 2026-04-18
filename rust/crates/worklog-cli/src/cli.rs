@@ -12,7 +12,7 @@ use worklog_core::{
     collectors::{github as gh, jira as jira_col, tempo as tempo_col},
     daemon as daemon_mod, db, estimate, hook, hook_run, http, infer,
     paths::Paths,
-    repo, schedule, secrets, updater as upd, web as web_mod,
+    schedule, secrets, updater as upd, web as web_mod,
 };
 
 /// worklog — personal time-tracking for the developer who hates timers.
@@ -496,8 +496,6 @@ fn cmd_db_info<W: Write>(out: &mut W, json: bool) -> Result<()> {
             s.schema_version, s.events, s.blocks, s.sessions, s.jira_tickets
         )?;
     }
-    // Keep the warning about unused import silent.
-    let _ = repo::count_events(&conn);
     Ok(())
 }
 
