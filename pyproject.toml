@@ -1,6 +1,6 @@
 [project]
 name = "worklog"
-version = "0.3.0"
+version = "0.3.1"
 description = "Unified work-time tracker: aggregates Claude Code, GitHub, Google Calendar, and Jira activity into a reviewable log, then syncs to Tempo."
 readme = "README.md"
 authors = [

@@ -466,7 +466,8 @@ def upgrade(
     """Upgrade worklog to the latest version from GitHub."""
     import subprocess
 
-    repo = "git+https://github.com/TomasPalsson/worklog.git"
+    # SSH — works with the user's existing GitHub auth and handles private repos.
+    repo = "git+ssh://git@github.com/TomasPalsson/worklog.git"
     if ref and ref != "main":
         repo = f"{repo}@{ref}"
     uv_bin = shutil.which("uv") or "uv"
