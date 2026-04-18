@@ -32,17 +32,48 @@ function transport(): Transport {
 
 type FetchInit = Parameters<typeof fetch>[1];
 
+/**
+ * Per-request timeout. `worklog estimate` shells out to `claude -p`
+ * which can take 30+ seconds per block on larger days, so we use a
+ * generous 60s cap for estimate-like routes and 10s for the rest.
+ * Without this, a wedged daemon leaves the UI spinning forever.
+ */
+function timeoutMs(path: string): number {
+  if (path.startsWith("/estimate")) return 60_000;
+  if (path.startsWith("/sync")) return 30_000;
+  if (path.startsWith("/jira/refresh")) return 30_000;
+  if (path.startsWith("/infer")) return 30_000;
+  return 10_000;
+}
+
 async function call<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
   const t = transport();
+  const signal = AbortSignal.timeout(timeoutMs(path));
   const init: FetchInit & { unix?: string } = {
     method,
     headers: { "content-type": "application/json" },
+    signal,
   };
   if (t.kind === "unix") init.unix = t.path;
   if (body !== undefined) init.body = JSON.stringify(body);
 
   const url = t.kind === "tcp" ? `${t.base}${path}` : `http://worklog${path}`;
-  const resp = await fetch(url, init);
+  let resp: Response;
+  try {
+    resp = await fetch(url, init);
+  } catch (e) {
+    // AbortSignal.timeout emits a DOMException with name "TimeoutError".
+    // Rewrap so the caller can show a clearer message than the raw
+    // "The operation was aborted" text.
+    if ((e as Error).name === "TimeoutError") {
+      throw new DaemonError(
+        `daemon request to ${path} timed out after ${timeoutMs(path)}ms — ` +
+          "the daemon may be stuck or unreachable",
+        0,
+      );
+    }
+    throw e;
+  }
   const text = await resp.text();
   if (!resp.ok) {
     const msg =

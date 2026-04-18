@@ -25,9 +25,13 @@ _DONE_CATEGORIES = {"Done", "done", "Complete", "complete"}
 def _client(settings: Settings) -> JIRA:
     if not (settings.jira_base_url and settings.jira_email and settings.jira_token):
         raise RuntimeError("WORKLOG_JIRA_BASE_URL / JIRA_EMAIL / JIRA_TOKEN not set")
+    # Without `timeout` the `jira` library inherits `requests`' default of
+    # no timeout, so a stalled Atlassian API would hang `worklog collect
+    # jira` indefinitely. 30s is generous for a JQL query.
     return JIRA(
         server=settings.jira_base_url,
         basic_auth=(settings.jira_email, settings.jira_token),
+        timeout=30,
     )
 
 

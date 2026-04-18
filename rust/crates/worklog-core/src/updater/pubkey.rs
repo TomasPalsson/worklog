@@ -15,11 +15,13 @@
 //! default that keeps a freshly-built binary from accepting unverified
 //! downloads.
 //!
-//! **Override at runtime:** if `$WORKLOG_RELEASE_PUBKEY_BASE64` is set
-//! (e.g. for testing), it takes precedence over the embedded const. The
-//! env var must decode to exactly 32 bytes.
-
-use base64::{engine::general_purpose::STANDARD, Engine};
+//! **Test-only override:** in `#[cfg(test)]` builds, setting
+//! `$WORKLOG_RELEASE_PUBKEY_BASE64` overrides the embedded const so
+//! integration tests can inject a fresh keypair. The override is
+//! compiled out of release binaries entirely — a production process
+//! cannot swap the pubkey via an env var, closing a supply-chain gap
+//! where a post-install hook or misconfigured shell could substitute
+//! an attacker-controlled key.
 
 use super::crypto::PUBLIC_KEY_LEN;
 
@@ -27,14 +29,20 @@ use super::crypto::PUBLIC_KEY_LEN;
 /// `worklog dev keygen` and pasting the printed constant.
 pub const RELEASE_PUBLIC_KEY: [u8; PUBLIC_KEY_LEN] = [0u8; PUBLIC_KEY_LEN];
 
-/// Resolve the pubkey at runtime: env override → embedded const. The env
-/// override exists for integration tests; production should rely on the
-/// compiled-in key.
+/// Resolve the pubkey at runtime. In release builds this always returns
+/// the compiled-in constant. In test builds the
+/// `$WORKLOG_RELEASE_PUBKEY_BASE64` env var can override the const so
+/// integration tests can verify signatures with a freshly-generated
+/// keypair without mutating source.
 pub fn resolve() -> [u8; PUBLIC_KEY_LEN] {
-    if let Ok(b64) = std::env::var("WORKLOG_RELEASE_PUBKEY_BASE64") {
-        if let Ok(bytes) = STANDARD.decode(b64.trim()) {
-            if let Ok(arr) = <[u8; PUBLIC_KEY_LEN]>::try_from(bytes) {
-                return arr;
+    #[cfg(test)]
+    {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        if let Ok(b64) = std::env::var("WORKLOG_RELEASE_PUBKEY_BASE64") {
+            if let Ok(bytes) = STANDARD.decode(b64.trim()) {
+                if let Ok(arr) = <[u8; PUBLIC_KEY_LEN]>::try_from(bytes) {
+                    return arr;
+                }
             }
         }
     }
@@ -65,6 +73,8 @@ pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
 
     #[test]
     fn default_is_placeholder() {

@@ -48,7 +48,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::net::{TcpListener, UnixListener};
 use tokio::sync::Mutex;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::collectors::{jira, tempo};
 use crate::{block_service, db, estimate, infer, models::Block, repo};
@@ -270,10 +270,16 @@ async fn assign_ticket(
     AxumPath(id): AxumPath<i64>,
     Json(body): Json<TicketBody>,
 ) -> Result<Json<Block>, ApiError> {
+    let key = body.jira_issue.clone();
     let block = with_conn(state, move |c| {
         block_service::assign_ticket(c, id, body.jira_issue.as_deref())
     })
     .await?;
+    info!(
+        block_id = id,
+        ticket = key.as_deref().unwrap_or("(unassigned)"),
+        "assigned ticket"
+    );
     Ok(Json(block))
 }
 
@@ -287,10 +293,12 @@ async fn set_duration(
     AxumPath(id): AxumPath<i64>,
     Json(body): Json<DurationBody>,
 ) -> Result<Json<Block>, ApiError> {
+    let minutes = body.minutes;
     let block = with_conn(state, move |c| {
         block_service::set_duration(c, id, body.minutes)
     })
     .await?;
+    info!(block_id = id, minutes, "set duration");
     Ok(Json(block))
 }
 
@@ -304,10 +312,12 @@ async fn set_description(
     AxumPath(id): AxumPath<i64>,
     Json(body): Json<DescriptionBody>,
 ) -> Result<Json<Block>, ApiError> {
+    let desc_len = body.description.len();
     let block = with_conn(state, move |c| {
         block_service::set_description(c, id, &body.description)
     })
     .await?;
+    info!(block_id = id, desc_len, "set description");
     Ok(Json(block))
 }
 
@@ -316,6 +326,7 @@ async fn delete_block(
     AxumPath(id): AxumPath<i64>,
 ) -> Result<Json<Value>, ApiError> {
     with_conn(state, move |c| block_service::delete_block(c, id)).await?;
+    warn!(block_id = id, "deleted block");
     Ok(Json(json!({ "ok": true, "deleted_id": id })))
 }
 
