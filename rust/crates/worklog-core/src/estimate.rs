@@ -164,9 +164,15 @@ pub fn estimate_day_with<I: ModelInvoker>(
     let blocks = load_blocks_for_estimator(conn, &day_iso)?;
 
     for block in blocks {
-        if block.estimated_by.as_deref() == Some("claude_p") {
-            stats.skipped += 1;
-            continue;
+        // Skip blocks we already processed (claude_p) OR that the user
+        // has hand-edited (manual). Overwriting `manual` would silently
+        // destroy the user's work — CLAUDE.md calls this out explicitly.
+        match block.estimated_by.as_deref() {
+            Some("claude_p") | Some("manual") => {
+                stats.skipped += 1;
+                continue;
+            }
+            _ => {}
         }
 
         let events = load_block_events(conn, block.id)?;
@@ -564,6 +570,43 @@ mod tests {
         assert_eq!(block.jira_issue.as_deref(), Some("PROJ-1"));
         assert_eq!(block.estimated_by.as_deref(), Some("claude_p"));
         assert_eq!(block.duration_seconds, 30 * 60);
+    }
+
+    #[test]
+    fn estimate_skips_manual_blocks() {
+        // The user has already hand-edited this block (set description or
+        // duration, which flips estimated_by = 'manual'). Re-running the
+        // estimator MUST NOT overwrite their work.
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO blocks (day, jira_issue, started_at, ended_at, duration_seconds, description, estimated_by)
+             VALUES ('2026-04-18', 'PROJ-7', '2026-04-18T10:00:00+00:00', '2026-04-18T10:30:00+00:00', 1800, 'user typed this', 'manual')",
+            [],
+        ).unwrap();
+        let bid = conn.last_insert_rowid();
+
+        // If the estimator WERE to call out, it would try to overwrite.
+        // This invoker would clobber both jira_issue and description.
+        let invoker = FixedInvoker(json!({
+            "jira_issue": "PROJ-9",
+            "minutes": 90,
+            "description": "AI-rewritten description"
+        }));
+        let stats = estimate_day_with(
+            &conn,
+            NaiveDate::from_ymd_opt(2026, 4, 18).unwrap(),
+            "m",
+            &invoker,
+        )
+        .unwrap();
+        assert_eq!(stats.skipped, 1, "manual block must be skipped");
+        assert_eq!(stats.estimated, 0);
+
+        let block = repo::get_block(&conn, bid).unwrap().unwrap();
+        assert_eq!(block.jira_issue.as_deref(), Some("PROJ-7"));
+        assert_eq!(block.description.as_deref(), Some("user typed this"));
+        assert_eq!(block.estimated_by.as_deref(), Some("manual"));
+        assert_eq!(block.duration_seconds, 1800);
     }
 
     #[test]

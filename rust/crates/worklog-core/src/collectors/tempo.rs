@@ -77,7 +77,8 @@ pub fn sync_day_with(
         let mut stmt = conn.prepare(
             "SELECT id, jira_issue, started_at, duration_seconds, description, day
                FROM blocks
-              WHERE day = ?1 AND tempo_worklog_id IS NULL
+              WHERE day = ?1
+                AND (tempo_worklog_id IS NULL OR tempo_worklog_id = '')
               ORDER BY started_at",
         )?;
         let iter = stmt.query_map(params![day.to_string()], |r| {
@@ -154,7 +155,28 @@ pub fn sync_day_with(
         }
 
         let parsed: TempoCreateResponse = resp.json().context("decode tempo response")?;
-        let tempo_id = parsed.tempo_worklog_id.to_string();
+        // `tempoWorklogId` is an integer in real responses but we accept
+        // string too for resilience. Reject Null / "" / "null" /
+        // anything that would silently become a phantom canary.
+        let tempo_id = match normalise_tempo_id(&parsed.tempo_worklog_id) {
+            Some(s) => s,
+            None => {
+                let msg = format!(
+                    "block {}: tempo returned no usable tempoWorklogId: {}",
+                    b.id, parsed.tempo_worklog_id
+                );
+                report.errors.push(msg.clone());
+                results.push(SyncResult {
+                    block_id: b.id,
+                    status: "error",
+                    reason: Some(msg),
+                    tempo_id: None,
+                    payload: Some(payload),
+                    http_status: Some(http_status),
+                });
+                continue;
+            }
+        };
         conn.execute(
             "UPDATE blocks SET tempo_worklog_id = ?1 WHERE id = ?2",
             params![tempo_id, b.id],
@@ -198,6 +220,23 @@ struct PendingBlock {
 struct TempoCreateResponse {
     #[serde(rename = "tempoWorklogId")]
     tempo_worklog_id: serde_json::Value,
+}
+
+/// Extract a non-empty string id from Tempo's `tempoWorklogId` field.
+/// Real responses return an integer; we accept string for resilience
+/// but reject `null`, empty string, and the literal "null" so a phantom
+/// canary can never be written to the DB.
+fn normalise_tempo_id(v: &serde_json::Value) -> Option<String> {
+    let s = match v {
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::String(s) => s.clone(),
+        _ => return None,
+    };
+    let trimmed = s.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("null") {
+        return None;
+    }
+    Some(trimmed.to_string())
 }
 
 #[cfg(test)]
@@ -372,6 +411,72 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.synced, 0);
+    }
+
+    #[test]
+    fn sync_rejects_empty_tempo_worklog_id_response() {
+        // Hardening for the "tempo_worklog_id is the canary" invariant:
+        // if Tempo returns {"tempoWorklogId": ""} or {"tempoWorklogId": null}
+        // (or the field is missing entirely), we must NOT write an empty
+        // or non-integer value to the DB. A subsequent sync should still
+        // see the block as unsynced.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/worklogs");
+            // Malformed response: no integer id.
+            then.status(200).body(r#"{"tempoWorklogId": ""}"#);
+        });
+        let conn = open_memory().unwrap();
+        let bid = insert_block(
+            &conn,
+            "2026-04-18",
+            "2026-04-18T09:00:00Z",
+            "2026-04-18T09:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("x"),
+        );
+        let _ = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        );
+        let tempo_id: Option<String> = conn
+            .query_row(
+                "SELECT tempo_worklog_id FROM blocks WHERE id = ?1",
+                params![bid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            tempo_id.is_none() || tempo_id.as_deref() == Some(""),
+            "must not record a phantom tempo id — got {tempo_id:?}"
+        );
+
+        // Second sync attempt should also include this block — the guard
+        // must treat empty-string and NULL as equivalently unsynced.
+        // Seed an empty string deliberately and re-run a dry_run; the
+        // block must show up.
+        conn.execute(
+            "UPDATE blocks SET tempo_worklog_id = '' WHERE id = ?1",
+            params![bid],
+        )
+        .unwrap();
+        let (_, results) = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            true,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "empty-string tempo_worklog_id must be treated as unsynced"
+        );
     }
 
     #[test]
