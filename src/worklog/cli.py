@@ -17,6 +17,7 @@ from worklog.collectors import github as github_collector
 from worklog.collectors import jira_ as jira_collector
 from worklog.config import COMPANIES_PATH, CONFIG_DIR, DB_PATH, ensure_dirs
 from worklog.db import connect, init_db
+from worklog.estimate import DEFAULT_MODEL, estimate_day
 from worklog.infer import build_blocks
 from worklog.infer_persist import load_day_events, persist_blocks
 from worklog.tempo import sync_day
@@ -164,6 +165,20 @@ def infer(day: str = typer.Option(None, help="YYYY-MM-DD, default today")) -> No
             f"{b.company} ({b.duration_seconds // 60}min, {b.event_count} events)"
             f"{flag}"
         )
+
+
+@app.command()
+def estimate(
+    day: str = typer.Option(None, help="YYYY-MM-DD, default today"),
+    model: str = typer.Option(DEFAULT_MODEL, help="claude model id (default: haiku 4.5)"),
+) -> None:
+    """Ask `claude -p` to write descriptions + sanity-check durations for blocks."""
+    d = _parse_day(day)
+    stats = estimate_day(d, model=model)
+    console.print(
+        f"[green]✓[/] {d}: estimated={stats['estimated']}, "
+        f"skipped={stats['skipped']}, failed={stats['failed']}"
+    )
 
 
 @app.command()
