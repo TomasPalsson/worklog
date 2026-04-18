@@ -8,11 +8,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 CONFIG_DIR = Path.home() / ".config" / "worklog"
 DATA_DIR = Path.home() / ".local" / "share" / "worklog"
 DB_PATH = DATA_DIR / "worklog.db"
+ENV_PATH = CONFIG_DIR / ".env"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(ENV_PATH),
         env_prefix="WORKLOG_",
         extra="ignore",
     )

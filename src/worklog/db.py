@@ -21,7 +21,6 @@ _CONNECTION_PRAGMAS = (
 
 @contextmanager
 def connect(path: Path | None = None) -> Iterator[sqlite3.Connection]:
-    # Resolve DB_PATH at call time so tests can monkeypatch it.
     ensure_dirs()
     conn = sqlite3.connect(path if path is not None else DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -50,17 +49,18 @@ def _table_columns(conn: sqlite3.Connection, name: str) -> set[str]:
 
 def _migrate_events_table(conn: sqlite3.Connection) -> None:
     cols = _table_columns(conn, "events")
-    if "session_id" not in cols:
-        conn.execute("ALTER TABLE events ADD COLUMN session_id TEXT")
+    # v1 → v3 residue: drop the old company column.
     if "company" in cols:
         conn.execute("DROP INDEX IF EXISTS idx_events_company")
         conn.execute("ALTER TABLE events DROP COLUMN company")
+    # v3 → v4: drop session_id (hook is gone).
+    if "session_id" in cols:
+        conn.execute("DROP INDEX IF EXISTS idx_events_session")
+        conn.execute("ALTER TABLE events DROP COLUMN session_id")
 
 
 def _migrate_blocks_table(conn: sqlite3.Connection) -> None:
-    # v2 → v3: drop the NOT NULL company column and rebuild via copy-swap
-    # (ALTER DROP COLUMN can fail on a NOT NULL column without a default on
-    # some SQLite versions, so rebuild the table for safety).
+    # v2 → v3: rebuild blocks without the NOT NULL company column.
     if "company" not in _table_columns(conn, "blocks"):
         return
     conn.executescript(
@@ -90,13 +90,21 @@ def _migrate_blocks_table(conn: sqlite3.Connection) -> None:
     )
 
 
+def _drop_sessions_table(conn: sqlite3.Connection) -> None:
+    # v3 → v4: remove the Claude-hook sessions table entirely.
+    if _table_exists(conn, "sessions"):
+        conn.execute("DROP INDEX IF EXISTS idx_sessions_started")
+        conn.execute("DROP TABLE sessions")
+
+
 def init_db(path: Path | None = None) -> None:
-    """Apply schema v3: migrate legacy v2 shape, then ensure all v3 objects."""
+    """Apply schema v4: migrate legacy v1/v2/v3 shape, then ensure v4 objects."""
     with connect(path if path is not None else DB_PATH) as conn:
         if _table_exists(conn, "events"):
             _migrate_events_table(conn)
         if _table_exists(conn, "blocks"):
             _migrate_blocks_table(conn)
+        _drop_sessions_table(conn)
         conn.executescript(SCHEMA)
 
 
@@ -113,7 +121,6 @@ def upsert_event(
     repo: str | None = None,
     project_path: str | None = None,
     jira_issue: str | None = None,
-    session_id: str | None = None,
     raw_json: str | None = None,
 ) -> None:
     """Insert or update on (source, source_id). Does not overwrite tempo_worklog_id."""
@@ -121,9 +128,8 @@ def upsert_event(
         """
         INSERT INTO events (
             source, source_id, started_at, ended_at, duration_seconds,
-            title, details, repo, project_path, jira_issue,
-            session_id, raw_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            title, details, repo, project_path, jira_issue, raw_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source, source_id) DO UPDATE SET
             ended_at = COALESCE(excluded.ended_at, events.ended_at),
             duration_seconds = COALESCE(excluded.duration_seconds, events.duration_seconds),
@@ -132,7 +138,6 @@ def upsert_event(
             repo = excluded.repo,
             project_path = excluded.project_path,
             jira_issue = excluded.jira_issue,
-            session_id = COALESCE(events.session_id, excluded.session_id),
             raw_json = excluded.raw_json
         """,
         (
@@ -146,7 +151,6 @@ def upsert_event(
             repo,
             project_path,
             jira_issue,
-            session_id,
             raw_json,
         ),
     )
