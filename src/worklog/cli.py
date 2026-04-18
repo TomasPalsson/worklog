@@ -17,6 +17,8 @@ from worklog.collectors import github as github_collector
 from worklog.collectors import jira_ as jira_collector
 from worklog.config import COMPANIES_PATH, CONFIG_DIR, DB_PATH, ensure_dirs
 from worklog.db import connect, init_db
+from worklog.infer import build_blocks
+from worklog.infer_persist import load_day_events, persist_blocks
 from worklog.tempo import sync_day
 
 app = typer.Typer(help="Unified work-time tracker → Tempo.")
@@ -144,6 +146,24 @@ def today(day: str = typer.Option(None, help="YYYY-MM-DD, default today")) -> No
             str((r["duration_seconds"] or 0) // 60),
         )
     console.print(table)
+
+
+@app.command()
+def infer(day: str = typer.Option(None, help="YYYY-MM-DD, default today")) -> None:
+    """Cluster the day's events into blocks (gap-timeout algorithm)."""
+    d = _parse_day(day)
+    events = load_day_events(date=d)
+    blocks = build_blocks(events)
+    persist_blocks(blocks, day=d)
+    total_min = sum(b.duration_seconds for b in blocks) // 60
+    console.print(f"[green]✓[/] {d}: {len(blocks)} blocks, {total_min} min total")
+    for b in blocks:
+        flag = " [yellow](flagged)[/]" if b.flagged else ""
+        console.print(
+            f"  {b.started_at.strftime('%H:%M')}–{b.ended_at.strftime('%H:%M')} "
+            f"{b.company} ({b.duration_seconds // 60}min, {b.event_count} events)"
+            f"{flag}"
+        )
 
 
 @app.command()
