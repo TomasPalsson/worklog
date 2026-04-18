@@ -5,48 +5,52 @@ from Claude Code, GitHub, Google Calendar, and Jira into one local event log,
 lets you review and clean it up in a web UI, and syncs the result to Tempo.
 
 > **Rewrite status:** the project is transitioning from Python to Rust in
-> five stages. **Stages 1.1, 1.2, 2, and 3 are live** — the Rust binary
+> five stages. **Stages 1.1, 1.2, 2, 3, and 4 are live** — the Rust binary
 > owns `worklog version`, `worklog setup`, `worklog db …`, `worklog secret
 > …`, `worklog hook …`, `worklog schedule …`, `worklog collect jira|github|all`,
 > `worklog sync`, `worklog infer`, `worklog estimate`, `worklog hook-run`,
-> and `worklog daemon` (axum unix-socket IPC). Google Calendar collection
-> + the FastAPI review UI stay Python until Stages 2.1 and 4. See
+> `worklog daemon` (axum IPC on both unix socket and TCP), and
+> `worklog web {up,down,status,logs,build}` (dockerised Next.js + Bun
+> review UI). The Python FastAPI UI has been retired; Python now keeps
+> only the Google Calendar collector until Stage 2.1. See
 > [`rust/README.md`](rust/README.md) and the
 > [Rewrite roadmap](#rewrite-roadmap) below.
 
-## Architecture (target)
+## Architecture
 
 ```
-┌─────────────────────── your Mac ──────────────────────────┐
-│                                                            │
-│   ~/.local/share/worklog/worklog.db   (single source of    │
-│                                        truth, WAL mode)    │
-│             ▲               ▲                              │
-│             │               │                              │
-│     writes via unix         │ reads direct (RO)            │
-│      socket (axum IPC)      │ (bun:sqlite)                 │
-│             │               │                              │
-│    ┌────────┴────────┐  ┌───┴─────────────┐                │
-│    │ worklog (Rust)  │  │ Docker:         │                │
-│    │ · CLI           │  │ worklog-web     │                │
-│    │ · Collectors    │  │ (Bun + Next.js) │                │
-│    │ · Estimator     │  │                 │                │
-│    │ · axum IPC      │  │ Server Actions  │                │
-│    │ · Self-updater  │  │   → api.sock    │                │
-│    └────────┬────────┘  └─────────────────┘                │
-│             │  spawns/manages                              │
-│             ▼                                              │
-└────────────────────────────────────────────────────────────┘
+┌──────────────────────────── your Mac ─────────────────────────────┐
+│                                                                    │
+│   ~/.local/share/worklog/worklog.db   (single source of truth,     │
+│                                        WAL mode — safe RO readers  │
+│                                        during concurrent writes)   │
+│             ▲                     ▲                                │
+│             │                     │                                │
+│     writes (unix socket           │ reads direct                   │
+│      OR TCP 127.0.0.1:9323)       │ via bun:sqlite                 │
+│             │                     │                                │
+│    ┌────────┴────────┐        ┌───┴───────────────────┐            │
+│    │ worklog (Rust)  │        │ Docker: worklog-web   │            │
+│    │  · CLI          │        │  · Bun + Next.js 15   │            │
+│    │  · Collectors   │        │  · Server Components  │            │
+│    │  · Estimator    │───────▶│  · Server Actions →   │            │
+│    │  · axum daemon  │  TCP   │     host.docker       │            │
+│    │  · web orch.    │        │     .internal:9323    │            │
+│    └────────┬────────┘        └───────────────────────┘            │
+│             │  spawns/manages                                       │
+│             ▼                                                       │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 Activity is classified to a Jira ticket via rules + the AI estimator. Unmatched
 rows appear as "unassigned" in the web UI and can be reassigned by hand. The
-web UI is read-heavy and connects directly to the same SQLite file via a
-read-only mount — mutations cross a unix socket so only the Rust binary writes.
+web container reads SQLite directly via `bun:sqlite` (WAL mode = safe
+concurrent reads), and writes flow through Next.js Server Actions → the Rust
+daemon over TCP (Docker Desktop can't proxy live unix sockets through its
+macOS VM, hence TCP between the container and host).
 
-Today (Stage 1.1) the Rust binary handles db + secret + setup; the Python CLI
-still owns collectors, estimator, hook, and the FastAPI web UI. Stages 2–5
-migrate the rest.
+Only the Rust daemon ever writes to the DB — Server Actions are just a thin
+shim that forwards the mutation and calls `revalidatePath`.
 
 ## Install
 
@@ -98,17 +102,16 @@ from the `worklog` entrypoint. Everything else is Python (for now).
 | `worklog infer [--day]` | rust | Gap-timeout clustering of events into blocks |
 | `worklog estimate [--day] [--model]` | rust | `claude -p` fills jira + description + minutes |
 | `worklog hook-run` | rust | New Rust hook-event handler invoked by Claude Code |
-| `worklog daemon [--socket]` | rust | Axum unix-socket API server (for the web UI) |
+| `worklog daemon [--socket] [--tcp]` | rust | Axum API server — unix socket + TCP 127.0.0.1:9323 |
+| `worklog web up [--port]` | rust | Bring up the dockerised Next.js review UI (and checks the daemon is reachable) |
+| `worklog web down / status / logs / build` | rust | Container lifecycle |
+| `worklog serve [--port]` | rust | Alias for `worklog web up` (legacy) |
 | `worklog doctor` | python | Environment + DB + auth sanity report |
 | `worklog init` | python | Create dirs + DB (prefer `worklog setup`) |
 | `worklog hook run` | python | Legacy hook handler (delegates to `hook-run` when Rust is present) |
 | `worklog collect [all\|github\|gcal\|jira]` | python | Pull remote activity |
 | `worklog today [--day …]` | python | Terminal summary |
-| `worklog infer [--day …]` | python | Rebuild blocks for a day |
-| `worklog estimate [--day …]` | python | Run Claude estimator |
-| `worklog sync [--day …] [--dry-run]` | python | Push to Tempo |
-| `worklog serve` | python | Start the FastAPI review UI |
-| `worklog day [--day …]` | python | One-shot daily flow |
+| `worklog day [--day …]` | python | One-shot daily flow (collect → infer → estimate → `worklog web up`) |
 | `worklog upgrade` | python | Reinstall Python + rebuild Rust binary |
 
 Any Rust subcommand also accepts `--json` for structured output.
@@ -139,7 +142,7 @@ users.
 | 2 | Rust collectors — jira tickets, github commits + PRs, tempo sync, httpmock test harness, Python delegation | ✅ shipped |
 | 2.1 | Google Calendar collector (OAuth via browser flow + refresh-token cache) | ⏳ |
 | 3 | axum unix-socket API + Rust infer + Rust estimator + Rust hook-run + `worklog daemon` | ✅ shipped |
-| 4 | Next.js + Bun web container, dockerized, replaces FastAPI | ⏳ |
+| 4 | Next.js + Bun web container, dockerized, replaces FastAPI; `worklog web` orchestration; daemon gains TCP listener for Docker Desktop | ✅ shipped |
 | 5 | Signed delta-patch self-updater with auto-rollback | ⏳ |
 
 ## Dev
