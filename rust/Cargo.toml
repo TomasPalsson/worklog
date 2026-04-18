@@ -1,0 +1,34 @@
+[workspace]
+resolver = "2"
+members = ["crates/worklog-core", "crates/worklog-cli"]
+
+[workspace.package]
+version = "0.3.0-dev"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+authors = ["Tomas Palsson <tomas@p5.is>"]
+repository = "https://github.com/TomasPalsson/worklog"
+
+[workspace.dependencies]
+anyhow      = "1"
+thiserror   = "1"
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+rusqlite    = { version = "0.31", features = ["bundled", "chrono"] }
+chrono      = { version = "0.4", features = ["serde"] }
+clap        = { version = "4.5", features = ["derive", "env"] }
+dirs        = "5"
+toml        = "0.8"
+tracing     = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+keyring     = "3"
+tempfile    = "3"
+assert_cmd  = "2"
+predicates  = "3"
+
+[profile.release]
+lto           = "thin"
+codegen-units = 1
+strip         = "symbols"
+opt-level     = 3
