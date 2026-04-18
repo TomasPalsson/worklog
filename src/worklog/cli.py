@@ -37,12 +37,32 @@ console = Console()
 
 
 def _rust_binary() -> Path | None:
-    """Locate the Rust `worklog` binary. Returns None if not installed yet."""
+    """Locate the Rust `worklog` binary. Returns None if not installed yet.
+
+    Also handles a SIGKILL-mid-swap recovery case: if the primary path
+    is missing but its `.previous` sibling exists, the last self-update
+    was killed between the two atomic renames in `swap_with_rollback`.
+    Restore the previous binary automatically — otherwise the user
+    would be stuck with no working Rust binary and a confusing
+    "not installed" message.
+    """
     from os import environ
 
     candidate = Path(environ.get("HOME", "")) / ".worklog" / "bin" / "worklog-rs"
     if candidate.is_file():
         return candidate
+    previous = candidate.with_suffix(".previous")
+    if previous.is_file() and not candidate.exists():
+        try:
+            previous.rename(candidate)
+            console.print(
+                "[yellow]![/] Recovered previous worklog-rs from an "
+                "interrupted self-update."
+            )
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            pass
     which = shutil.which("worklog-rs")
     return Path(which) if which else None
 

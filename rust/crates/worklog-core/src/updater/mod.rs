@@ -161,20 +161,13 @@ pub fn run_update(req: &UpdateRequest) -> Result<UpdateReport> {
             (false, a.size)
         }
         manifest::Choice::Delta(pd) => {
-            // Forward-compat: older manifests don't carry result_sha256
-            // (the field defaults to ""). Without the post-apply check
-            // we'd be trusting bspatch blindly — safer to refuse the
-            // delta and fall through to the full asset on next try.
-            if pd.result_sha256.is_empty() {
-                anyhow::bail!(
-                    "manifest's delta from {} has no result_sha256 — \
-                     refusing to apply without a post-apply integrity check. \
-                     Re-sign the manifest with a current `worklog dev \
-                     make-patch` (which prints the expected sha) or retry \
-                     with --force to fetch the full binary instead.",
-                    pd.from
-                );
-            }
+            // pick_asset already refuses deltas without result_sha256,
+            // but keep a defense-in-depth guard in case the selection
+            // logic changes in the future.
+            debug_assert!(
+                !pd.result_sha256.is_empty(),
+                "pick_asset should have fallen through to Full for empty result_sha256"
+            );
             let patch_path = req.work_dir.join("delta.bin");
             fetch::fetch_and_verify_asset(&http, &pd.asset, &pk, &patch_path)?;
             let old_bytes = std::fs::read(&req.current_binary).with_context(|| {

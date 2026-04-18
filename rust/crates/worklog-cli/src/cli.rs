@@ -377,9 +377,15 @@ pub fn run_with<W: Write>(
 
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
+    // Default filter: `info` for our own crates, `warn` for noisy
+    // dependencies (hyper, tower, etc). Without this the daemon's
+    // startup banner and mutation audit lines were invisible unless
+    // the user remembered to set `$RUST_LOG` themselves.
+    // Override with `RUST_LOG=debug` for a firehose.
+    let default = "worklog_core=info,worklog_cli=info,warn";
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default)),
         )
         .with_writer(io::stderr)
         .try_init();

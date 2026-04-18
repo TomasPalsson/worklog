@@ -173,10 +173,16 @@ impl Manifest {
     /// Choose the best asset for `(from_version → self.version)` on the
     /// current target. Prefers a delta patch starting from `from_version`
     /// over the full binary if one exists and the patch is smaller.
+    ///
+    /// A patch without a `result_sha256` (older manifests, from before
+    /// the post-apply integrity check was added) is ineligible — we
+    /// silently fall through to the Full asset rather than bailing,
+    /// since the Full download has its own end-to-end signature + hash
+    /// verification.
     pub fn pick_asset(&self, from_version: &str) -> Option<Choice<'_>> {
         let tm = self.for_current_target()?;
         if let Some(p) = tm.patches.iter().find(|p| p.from == from_version) {
-            if p.asset.size < tm.full.size {
+            if !p.result_sha256.is_empty() && p.asset.size < tm.full.size {
                 return Some(Choice::Delta(p));
             }
         }
@@ -245,6 +251,38 @@ mod tests {
             notes: "release notes".into(),
             published_at: "2026-04-18T00:00:00Z".into(),
             schema: 1,
+        }
+    }
+
+    #[test]
+    fn pick_asset_falls_back_to_full_when_patch_has_no_result_sha256() {
+        // Regression for qa-round-4: forward-compat manifests that
+        // predate the result_sha256 field used to select the delta and
+        // then hard-bail in run_update. Now pick_asset treats an empty
+        // result_sha256 as ineligible so the user silently falls back
+        // to the Full (end-to-end sig + sha verified) asset.
+        if Target::current().is_err() {
+            return;
+        }
+        let target = Target::current().unwrap();
+        let m = Manifest {
+            version: "1.0.0".into(),
+            targets: vec![TargetManifest {
+                target,
+                full: sample_asset(15_000_000),
+                patches: vec![PatchDescriptor {
+                    from: "0.9.0".into(),
+                    result_sha256: "".into(), // older manifest
+                    asset: sample_asset(100_000),
+                }],
+            }],
+            notes: "".into(),
+            published_at: "".into(),
+            schema: 1,
+        };
+        match m.pick_asset("0.9.0").unwrap() {
+            Choice::Full(_) => {}
+            Choice::Delta(_) => panic!("must not pick delta without result_sha256"),
         }
     }
 
