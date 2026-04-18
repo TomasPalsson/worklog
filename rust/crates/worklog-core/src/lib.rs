@@ -4,7 +4,9 @@
 
 #![forbid(unsafe_code)]
 
+pub mod block_service;
 pub mod collectors;
+pub mod daemon;
 pub mod db;
 pub mod estimate;
 pub mod hook;

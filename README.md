@@ -5,12 +5,14 @@ from Claude Code, GitHub, Google Calendar, and Jira into one local event log,
 lets you review and clean it up in a web UI, and syncs the result to Tempo.
 
 > **Rewrite status:** the project is transitioning from Python to Rust in
-> five stages. **Stages 1.1, 1.2, and 2 are live** — the Rust binary owns
-> `worklog version`, `worklog setup`, `worklog db …`, `worklog secret …`,
-> `worklog hook …`, `worklog schedule …`, `worklog collect jira|github|all`,
-> and `worklog sync`. Google Calendar collection + the review UI stay
-> Python until Stages 2.1 and 4. See [`rust/README.md`](rust/README.md)
-> and the [Rewrite roadmap](#rewrite-roadmap) below.
+> five stages. **Stages 1.1, 1.2, 2, and 3 are live** — the Rust binary
+> owns `worklog version`, `worklog setup`, `worklog db …`, `worklog secret
+> …`, `worklog hook …`, `worklog schedule …`, `worklog collect jira|github|all`,
+> `worklog sync`, `worklog infer`, `worklog estimate`, `worklog hook-run`,
+> and `worklog daemon` (axum unix-socket IPC). Google Calendar collection
+> + the FastAPI review UI stay Python until Stages 2.1 and 4. See
+> [`rust/README.md`](rust/README.md) and the
+> [Rewrite roadmap](#rewrite-roadmap) below.
 
 ## Architecture (target)
 
@@ -93,9 +95,13 @@ from the `worklog` entrypoint. Everything else is Python (for now).
 | `worklog collect all` | mixed | jira + github via Rust, then gcal via Python |
 | `worklog collect gcal` | python | Google Calendar events (Rust port in Stage 2.1) |
 | `worklog sync [--day] [--dry-run]` | rust | POST reviewed blocks to Tempo Cloud v4 |
+| `worklog infer [--day]` | rust | Gap-timeout clustering of events into blocks |
+| `worklog estimate [--day] [--model]` | rust | `claude -p` fills jira + description + minutes |
+| `worklog hook-run` | rust | New Rust hook-event handler invoked by Claude Code |
+| `worklog daemon [--socket]` | rust | Axum unix-socket API server (for the web UI) |
 | `worklog doctor` | python | Environment + DB + auth sanity report |
 | `worklog init` | python | Create dirs + DB (prefer `worklog setup`) |
-| `worklog hook run` | python | Invoked by Claude Code; still Python until Stage 3 |
+| `worklog hook run` | python | Legacy hook handler (delegates to `hook-run` when Rust is present) |
 | `worklog collect [all\|github\|gcal\|jira]` | python | Pull remote activity |
 | `worklog today [--day …]` | python | Terminal summary |
 | `worklog infer [--day …]` | python | Rebuild blocks for a day |
@@ -131,8 +137,8 @@ users.
 | 1.1 | Rust skeleton: workspace, db + schema share, paths, secrets, `setup` wizard, CLI passthroughs | ✅ shipped |
 | 1.2 | Scheduled collection (launchd/systemd), hook install inside Rust, wizard integration | ✅ shipped |
 | 2 | Rust collectors — jira tickets, github commits + PRs, tempo sync, httpmock test harness, Python delegation | ✅ shipped |
-| 2.1 | Google Calendar collector (OAuth via browser flow + refresh-token cache) | ⏳ next |
-| 3 | axum unix-socket API + Rust estimator + Rust hook run handler | ⏳ |
+| 2.1 | Google Calendar collector (OAuth via browser flow + refresh-token cache) | ⏳ |
+| 3 | axum unix-socket API + Rust infer + Rust estimator + Rust hook-run + `worklog daemon` | ✅ shipped |
 | 4 | Next.js + Bun web container, dockerized, replaces FastAPI | ⏳ |
 | 5 | Signed delta-patch self-updater with auto-rollback | ⏳ |
 

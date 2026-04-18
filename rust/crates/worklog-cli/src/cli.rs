@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use worklog_core::{
     collectors::{github as gh, jira as jira_col, tempo as tempo_col},
-    db, estimate, hook, hook_run, http, infer,
+    daemon as daemon_mod, db, estimate, hook, hook_run, http, infer,
     paths::Paths,
     repo, schedule, secrets,
 };
@@ -111,6 +111,13 @@ pub enum Cmd {
     /// Claude Code hook — reads a JSON event from stdin and records it.
     #[command(name = "hook-run", hide = true)]
     HookRun,
+
+    /// Start the axum unix-socket IPC server. The web UI talks to this.
+    Daemon {
+        /// Override the socket path (default: <data>/api.sock).
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(clap::ValueEnum, Debug, Clone, Copy)]
@@ -234,6 +241,7 @@ pub fn run_with<W: Write>(
         Cmd::Infer { day } => cmd_infer(day, out, cli.json),
         Cmd::Estimate { day, model } => cmd_estimate(day, &model, out, cli.json),
         Cmd::HookRun => cmd_hook_run(),
+        Cmd::Daemon { socket } => cmd_daemon(socket),
     }
 }
 
@@ -738,6 +746,24 @@ fn cmd_hook_run() -> Result<()> {
     // All output goes to stderr (handled inside hook_run::run_from_stdin) so
     // Claude Code never sees bytes on stdout.
     hook_run::run_from_stdin()
+}
+
+fn cmd_daemon(socket: Option<std::path::PathBuf>) -> Result<()> {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("building tokio runtime")?;
+
+    rt.block_on(async move {
+        let state = daemon_mod::new_state()?;
+        let router = daemon_mod::router(state);
+        let path = match socket {
+            Some(p) => p,
+            None => daemon_mod::socket_path()?,
+        };
+        eprintln!("→ socket {}", worklog_core::paths::short_display(&path));
+        daemon_mod::serve_at(&path, router).await
+    })
 }
 
 fn cmd_secret_list<W: Write>(out: &mut W, json: bool) -> Result<()> {

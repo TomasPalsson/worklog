@@ -29,6 +29,12 @@ predicates  = "3"
 dialoguer   = { version = "0.11", default-features = false, features = ["password"] }
 console     = "0.15"
 reqwest     = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "blocking"] }
+tokio       = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "fs", "sync"] }
+axum        = { version = "0.7", default-features = false, features = ["json", "tokio", "http1"] }
+hyper       = { version = "1", features = ["server", "http1"] }
+hyper-util  = { version = "0.1", features = ["tokio", "server", "service"] }
+tower       = { version = "0.5", features = ["util"] }
+tower-http  = { version = "0.6", features = ["trace"] }
 
 [profile.release]
 lto           = "thin"

@@ -1,9 +1,11 @@
 # worklog/rust — the Rust rewrite
 
-Stages 1.1, 1.2, and 2 of the rewrite are here. The Python CLI keeps
+Stages 1.1, 1.2, 2, and 3 of the rewrite are here. The Python CLI keeps
 working in parallel; the Rust binary owns its own copy of the schema
 and a superset-compatible view of the same SQLite database at
-`~/.local/share/worklog/worklog.db`.
+`~/.local/share/worklog/worklog.db`. Stage 3 adds the axum unix-socket
+daemon (`worklog daemon`) that the Next.js web UI will talk to in
+Stage 4.
 
 ## Layout
 
@@ -20,6 +22,7 @@ rust/
 │   │   │                       #   ../../src/worklog/schema.sql (tested for
 │   │   │                       #   byte-equality so the two cannot drift)
 │   │   └── src/{lib,paths,db,models,repo,secrets,hook,schedule,http}.rs
+│   │       + src/{infer,sessions,hook_run,estimate,block_service,daemon}.rs
 │   │       + collectors/{jira,github,tempo}.rs
 │   └── worklog-cli/            # bin: the `worklog` binary
 │       ├── src/{main,lib,cli,wizard}.rs
@@ -53,7 +56,30 @@ worklog collect github --days 7 # pull last 7 days of commits + PRs
 worklog sync --day 2026-04-18 \
              --dry-run          # preview Tempo POSTs
 worklog sync --day 2026-04-18   # actually sync to Tempo
+worklog infer --day 2026-04-18  # cluster events into blocks
+worklog estimate --day 2026-04-18 \
+               --model claude-haiku-4-5
+worklog hook-run                # invoked by Claude Code via stdin JSON
+worklog daemon                  # axum IPC over ~/.local/share/worklog/api.sock
 ```
+
+## Daemon (Stage 3.2)
+
+`worklog daemon` binds a unix socket at `api.sock` (chmod 0600) and serves a
+small HTTP/1.1 API the Next.js web UI talks to via Server Actions:
+
+| Route | Body | Purpose |
+|---|---|---|
+| `GET /health` | — | liveness + version |
+| `GET /blocks/:day` | — | list blocks for `YYYY-MM-DD` |
+| `POST /blocks/:id/ticket` | `{"jira_issue": string \| null}` | assign ticket |
+| `POST /blocks/:id/duration` | `{"minutes": u32}` | set duration (marks manual) |
+| `POST /blocks/:id/description` | `{"description": string}` | set description (marks manual) |
+| `POST /blocks/:id/delete` | — | remove the block |
+| `POST /infer` | `{"day": "YYYY-MM-DD"}` | re-cluster events for a day |
+| `POST /jira/refresh` | — | refresh open-ticket cache |
+
+Talk to it with `curl --unix-socket $(worklog db path | xargs dirname)/api.sock …`.
 
 All commands accept `--json` for machine-readable output and honour
 `$WORKLOG_HOME` as the root for the db / config / socket / logs.
