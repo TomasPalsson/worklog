@@ -13,7 +13,7 @@ import math
 import re
 import sqlite3
 import subprocess
-from datetime import date, datetime, timedelta
+from datetime import date
 from typing import Any
 
 from dateutil.parser import isoparse
@@ -190,11 +190,6 @@ def estimate_day(day: date, *, model: str = DEFAULT_MODEL) -> dict[str, int]:
     return stats
 
 
-def _day_from_datetime_range() -> timedelta:
-    # Convenience no-op so lints don't complain about unused timedelta import.
-    return timedelta(0)
-
-
 __all__ = [
     "DEFAULT_MODEL",
     "ESTIMATE_SCHEMA",
@@ -203,6 +198,3 @@ __all__ = [
     "estimate_day",
     "parse_response",
 ]
-
-# Silence unused-import complaint on datetime.
-_ = datetime
