@@ -120,7 +120,12 @@ def setup(
             password=secret and not current,
             show_default=not secret,
         )
-        values[key] = (value or "").strip()
+        cleaned = (value or "").strip()
+        # Atlassian API tokens start with "ATATT" — the Copy button in their UI
+        # sometimes pastes a stray glyph before the token.
+        if key == "WORKLOG_JIRA_TOKEN" and "ATATT" in cleaned:
+            cleaned = cleaned[cleaned.index("ATATT"):]
+        values[key] = cleaned
 
     _write_env_file(values)
     console.print(f"\n[green]✓[/] saved to {ENV_PATH}")
