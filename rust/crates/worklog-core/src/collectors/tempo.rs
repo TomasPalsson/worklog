@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tracing::debug;
 
-use crate::http::{self, RequestBuilderExt};
+use crate::http;
 
 use super::CollectReport;
 
@@ -22,21 +22,21 @@ pub const DEFAULT_BASE: &str = "https://api.tempo.io/4";
 /// One row's outcome — useful for the CLI to print a table.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SyncResult {
-    pub block_id:       i64,
-    pub status:         &'static str,
-    pub reason:         Option<String>,
-    pub tempo_id:       Option<String>,
-    pub payload:        Option<serde_json::Value>,
-    pub http_status:    Option<u16>,
+    pub block_id: i64,
+    pub status: &'static str,
+    pub reason: Option<String>,
+    pub tempo_id: Option<String>,
+    pub payload: Option<serde_json::Value>,
+    pub http_status: Option<u16>,
 }
 
 #[derive(Debug, Clone)]
 pub struct TempoAuth {
-    pub token:    String,
+    pub token: String,
     /// Atlassian accountId stored as `jira_email` for now — Stage 2
     /// preserves the Python shape. Fix in Stage 2.1 once we add an
     /// explicit `jira_account_id` key.
-    pub author:   String,
+    pub author: String,
     pub base_url: String,
 }
 
@@ -44,8 +44,8 @@ impl TempoAuth {
     pub fn from_secrets() -> Result<Self> {
         use crate::secrets;
         Ok(Self {
-            token:    secrets::require("tempo_api_token")?,
-            author:   secrets::require("jira_email")?,
+            token: secrets::require("tempo_api_token")?,
+            author: secrets::require("jira_email")?,
             base_url: DEFAULT_BASE.to_owned(),
         })
     }
@@ -82,12 +82,12 @@ pub fn sync_day_with(
         )?;
         let iter = stmt.query_map(params![day.to_string()], |r| {
             Ok(PendingBlock {
-                id:               r.get(0)?,
-                jira_issue:       r.get(1)?,
-                started_at:       r.get(2)?,
+                id: r.get(0)?,
+                jira_issue: r.get(1)?,
+                started_at: r.get(2)?,
                 duration_seconds: r.get(3)?,
-                description:      r.get(4)?,
-                day:              r.get(5)?,
+                description: r.get(4)?,
+                day: r.get(5)?,
             })
         })?;
         iter.collect::<Result<Vec<_>, _>>()?
@@ -97,11 +97,11 @@ pub fn sync_day_with(
         let Some(issue) = b.jira_issue.clone() else {
             report.skipped += 1;
             results.push(SyncResult {
-                block_id:    b.id,
-                status:      "skipped",
-                reason:      Some("no jira_issue — assign one in the UI".into()),
-                tempo_id:    None,
-                payload:     None,
+                block_id: b.id,
+                status: "skipped",
+                reason: Some("no jira_issue — assign one in the UI".into()),
+                tempo_id: None,
+                payload: None,
                 http_status: None,
             });
             continue;
@@ -118,11 +118,11 @@ pub fn sync_day_with(
 
         if dry_run {
             results.push(SyncResult {
-                block_id:    b.id,
-                status:      "dry-run",
-                reason:      None,
-                tempo_id:    None,
-                payload:     Some(payload),
+                block_id: b.id,
+                status: "dry-run",
+                reason: None,
+                tempo_id: None,
+                payload: Some(payload),
                 http_status: None,
             });
             continue;
@@ -139,13 +139,15 @@ pub fn sync_day_with(
         let http_status = resp.status().as_u16();
         if !resp.status().is_success() {
             let body = resp.text().unwrap_or_default();
-            report.errors.push(format!("block {}: HTTP {http_status} — {body}", b.id));
+            report
+                .errors
+                .push(format!("block {}: HTTP {http_status} — {body}", b.id));
             results.push(SyncResult {
-                block_id:    b.id,
-                status:      "error",
-                reason:      Some(body),
-                tempo_id:    None,
-                payload:     Some(payload),
+                block_id: b.id,
+                status: "error",
+                reason: Some(body),
+                tempo_id: None,
+                payload: Some(payload),
                 http_status: Some(http_status),
             });
             continue;
@@ -159,11 +161,11 @@ pub fn sync_day_with(
         )?;
         report.synced += 1;
         results.push(SyncResult {
-            block_id:    b.id,
-            status:      "synced",
-            reason:      None,
-            tempo_id:    Some(tempo_id),
-            payload:     None,
+            block_id: b.id,
+            status: "synced",
+            reason: None,
+            tempo_id: Some(tempo_id),
+            payload: None,
             http_status: Some(http_status),
         });
         debug!(block_id = b.id, "synced to tempo");
@@ -184,12 +186,12 @@ fn start_time(iso: &str) -> String {
 
 #[derive(Debug)]
 struct PendingBlock {
-    id:               i64,
-    jira_issue:       Option<String>,
-    started_at:       String,
+    id: i64,
+    jira_issue: Option<String>,
+    started_at: String,
     duration_seconds: i64,
-    description:      Option<String>,
-    day:              String,
+    description: Option<String>,
+    day: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -240,7 +242,8 @@ mod tests {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(POST).path("/worklogs");
-            then.status(200).json_body(json!({ "tempoWorklogId": 12345 }));
+            then.status(200)
+                .json_body(json!({ "tempoWorklogId": 12345 }));
         });
         let conn = open_memory().unwrap();
         let id = insert_block(
@@ -253,9 +256,14 @@ mod tests {
             Some("Set up the combobox"),
         );
 
-        let (report, results) =
-            sync_day_with(&conn, &auth(server.base_url()), day(), false, &http::client().unwrap())
-                .unwrap();
+        let (report, results) = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
         assert_eq!(report.synced, 1);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].status, "synced");
@@ -285,13 +293,22 @@ mod tests {
             None,
             None,
         );
-        let (report, results) =
-            sync_day_with(&conn, &auth(server.base_url()), day(), false, &http::client().unwrap())
-                .unwrap();
+        let (report, results) = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
         assert_eq!(report.skipped, 1);
         assert_eq!(report.synced, 0);
         assert_eq!(results[0].status, "skipped");
-        assert!(results[0].reason.as_deref().unwrap().contains("no jira_issue"));
+        assert!(results[0]
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("no jira_issue"));
     }
 
     #[test]
@@ -308,9 +325,14 @@ mod tests {
             Some("PROJ-1"),
             Some("edit schema"),
         );
-        let (_report, results) =
-            sync_day_with(&conn, &auth(server.base_url()), day(), true, &http::client().unwrap())
-                .unwrap();
+        let (_report, results) = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            true,
+            &http::client().unwrap(),
+        )
+        .unwrap();
         assert_eq!(results[0].status, "dry-run");
         assert!(results[0].payload.is_some());
     }
@@ -333,10 +355,22 @@ mod tests {
             Some(""),
         );
         // Sync twice; second sync must see the stored tempo_worklog_id and skip.
-        sync_day_with(&conn, &auth(server.base_url()), day(), false, &http::client().unwrap()).unwrap();
-        let (report, _) =
-            sync_day_with(&conn, &auth(server.base_url()), day(), false, &http::client().unwrap())
-                .unwrap();
+        sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+        let (report, _) = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
         assert_eq!(report.synced, 0);
     }
 
@@ -357,9 +391,14 @@ mod tests {
             Some("NOPE-1"),
             Some("x"),
         );
-        let (report, results) =
-            sync_day_with(&conn, &auth(server.base_url()), day(), false, &http::client().unwrap())
-                .unwrap();
+        let (report, results) = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
         assert_eq!(report.synced, 0);
         assert_eq!(results[0].status, "error");
         assert_eq!(results[0].http_status, Some(400));

@@ -40,11 +40,15 @@ fn get_reads_from_env_file_when_keychain_misses() {
         Some("tomas@p5.is")
     );
     assert_eq!(
-        worklog_core::secrets::get("jira_api_token").unwrap().as_deref(),
+        worklog_core::secrets::get("jira_api_token")
+            .unwrap()
+            .as_deref(),
         Some("ATATT_value_with_spaces_ok")
     );
     assert_eq!(
-        worklog_core::secrets::get("github_user").unwrap().as_deref(),
+        worklog_core::secrets::get("github_user")
+            .unwrap()
+            .as_deref(),
         Some("TomasPalsson")
     );
 

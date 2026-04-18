@@ -50,8 +50,8 @@ struct Status {
 #[derive(Debug, Clone)]
 pub struct JiraAuth {
     pub base_url: String,
-    pub email:    String,
-    pub token:    String,
+    pub email: String,
+    pub token: String,
 }
 
 impl JiraAuth {
@@ -59,9 +59,11 @@ impl JiraAuth {
     pub fn from_secrets() -> Result<Self> {
         use crate::secrets;
         Ok(Self {
-            base_url: secrets::require("jira_base_url")?.trim_end_matches('/').to_owned(),
-            email:    secrets::require("jira_email")?,
-            token:    secrets::require("jira_api_token")?,
+            base_url: secrets::require("jira_base_url")?
+                .trim_end_matches('/')
+                .to_owned(),
+            email: secrets::require("jira_email")?,
+            token: secrets::require("jira_api_token")?,
         })
     }
 }
@@ -84,7 +86,9 @@ pub fn fetch_open_tickets_with(
         ..Default::default()
     };
 
-    let url = format!("{}/rest/api/3/search", auth.base_url);
+    // Atlassian retired `/rest/api/3/search` on 2026-04 — new endpoint
+    // is `/search/jql` with the same response shape for basic queries.
+    let url = format!("{}/rest/api/3/search/jql", auth.base_url);
     let body: SearchResponse = client
         .get(&url)
         .basic_auth(&auth.email, Some(&auth.token))
@@ -101,11 +105,11 @@ pub fn fetch_open_tickets_with(
     for issue in body.issues {
         let project_key = issue.key.split_once('-').map(|(p, _)| p.to_owned());
         let ticket = JiraTicket {
-            key:         issue.key,
-            summary:     issue.fields.summary.unwrap_or_default(),
-            status:      issue.fields.status.and_then(|s| s.name),
+            key: issue.key,
+            summary: issue.fields.summary.unwrap_or_default(),
+            status: issue.fields.status.and_then(|s| s.name),
             project_key,
-            updated:     issue.fields.updated,
+            updated: issue.fields.updated,
         };
         repo::upsert_ticket(conn, &ticket)?;
         report.tickets_written += 1;
@@ -125,7 +129,7 @@ mod tests {
         let server = MockServer::start();
         let mock = server.mock(|when, then| {
             when.method(GET)
-                .path("/rest/api/3/search")
+                .path("/rest/api/3/search/jql")
                 .query_param("jql", JQL);
             then.status(200).json_body(json!({
                 "issues": [
@@ -152,8 +156,8 @@ mod tests {
         let conn = open_memory().unwrap();
         let auth = JiraAuth {
             base_url: server.base_url(),
-            email:    "tomas@p5.is".into(),
-            token:    "tok".into(),
+            email: "tomas@p5.is".into(),
+            token: "tok".into(),
         };
         let report = fetch_open_tickets_with(&conn, &auth, &http::client().unwrap()).unwrap();
 
@@ -174,14 +178,14 @@ mod tests {
     fn fetch_open_tickets_propagates_http_errors() {
         let server = MockServer::start();
         server.mock(|when, then| {
-            when.method(GET).path("/rest/api/3/search");
+            when.method(GET).path("/rest/api/3/search/jql");
             then.status(401).body("unauthorized");
         });
         let conn = open_memory().unwrap();
         let auth = JiraAuth {
             base_url: server.base_url(),
-            email:    "x".into(),
-            token:    "bad".into(),
+            email: "x".into(),
+            token: "bad".into(),
         };
         let err = format!(
             "{:#}",
@@ -194,7 +198,7 @@ mod tests {
     fn fetch_open_tickets_upsert_updates_summary_in_place() {
         let server = MockServer::start();
         let _m = server.mock(|when, then| {
-            when.method(GET).path("/rest/api/3/search");
+            when.method(GET).path("/rest/api/3/search/jql");
             then.status(200).json_body(json!({
                 "issues": [
                     {

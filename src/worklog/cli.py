@@ -330,11 +330,53 @@ def collect(
     since: str = typer.Option(None, help="YYYY-MM-DD (default: 7 days ago)"),
     until: str = typer.Option(None, help="YYYY-MM-DD exclusive (default: tomorrow)"),
 ) -> None:
-    """Pull activity from external sources into the local event store."""
+    """Pull activity from external sources into the local event store.
+
+    jira/github/all delegate to the Rust binary (Stage 2). gcal stays in
+    Python until Stage 2.1 adds Google OAuth support to the Rust side.
+    """
     since_d = _parse_day(since) if since else date.today() - timedelta(days=7)
     until_d = _parse_day(until) if until else None
 
-    sources = ["github", "gcal", "jira"] if source == "all" else [source]
+    # gcal is Python-only for now; strip it out of the Rust-delegated slice.
+    wants_gcal = source in {"all", "gcal"}
+    wants_rust = source in {"all", "jira", "github"}
+
+    if wants_rust and _rust_binary() is not None:
+        import os
+        import subprocess
+
+        rust_args: list[str] = ["collect"]
+        if source == "gcal":
+            # Skip rust entirely for gcal-only requests.
+            pass
+        else:
+            rust_args.append("jira" if source == "jira" else "github" if source == "github" else "all")
+            days = (date.today() + timedelta(days=1) - since_d).days
+            rust_args.extend(["--days", str(max(days, 1))])
+            # Run Rust; when source is 'all' we still want to run the
+            # Python gcal collector after, so we spawn+wait rather than
+            # exec into Rust.
+            res = subprocess.run(  # noqa: S603
+                [str(_rust_binary()), *rust_args], check=False
+            )
+            if res.returncode != 0:
+                console.print(f"[red]✗[/] rust collect exited {res.returncode}")
+            if source in {"jira", "github"}:
+                return  # Done — no Python fallback needed.
+            _ = os  # silence unused import when gcal path is skipped
+
+    # Python path — either the Rust binary is missing, or the user asked
+    # for gcal specifically, or `all` (continuing from Rust above).
+    sources: list[str] = []
+    if source == "all":
+        sources = ["gcal"]  # jira+github already handled by Rust above
+    elif source == "gcal":
+        sources = ["gcal"]
+    elif _rust_binary() is None:
+        # Full Python fallback when Rust isn't installed.
+        sources = ["github", "gcal", "jira"] if source == "all" else [source]
+
     for s in sources:
         try:
             if s == "github":
@@ -413,7 +455,23 @@ def sync(
     day: str = typer.Option(None, help="YYYY-MM-DD (default today)"),
     dry_run: bool = typer.Option(True, help="Show payloads without POSTing"),
 ) -> None:
-    """Push reviewed blocks to Tempo (one worklog per block)."""
+    """Push reviewed blocks to Tempo (one worklog per block).
+
+    Delegates to the Rust binary when available; falls back to the
+    Python implementation so the command works even before
+    `worklog upgrade` has installed the Rust binary.
+    """
+    rust_bin = _rust_binary()
+    if rust_bin is not None:
+        import os
+
+        d = _parse_day(day)
+        args = [str(rust_bin), "sync", "--day", d.isoformat()]
+        if dry_run:
+            args.append("--dry-run")
+        os.execvp(str(rust_bin), args)
+
+    # Python fallback (no-Rust-binary path).
     d = _parse_day(day)
     results = sync_day(d, dry_run=dry_run)
     for r in results:

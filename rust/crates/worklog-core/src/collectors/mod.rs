@@ -13,10 +13,10 @@ pub mod tempo;
 /// Shared snapshot returned by every collector's public entrypoint.
 #[derive(Debug, Clone, serde::Serialize, Default)]
 pub struct CollectReport {
-    pub source:          &'static str,
+    pub source: &'static str,
     pub tickets_written: usize,
-    pub events_written:  usize,
-    pub synced:          usize,
-    pub skipped:         usize,
-    pub errors:          Vec<String>,
+    pub events_written: usize,
+    pub synced: usize,
+    pub skipped: usize,
+    pub errors: Vec<String>,
 }

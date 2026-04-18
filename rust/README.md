@@ -1,8 +1,8 @@
 # worklog/rust — the Rust rewrite
 
-Stages 1.1 + 1.2 of the rewrite are here. The Python CLI keeps working in
-parallel; the Rust binary owns its own copy of the schema and a
-superset-compatible view of the same SQLite database at
+Stages 1.1, 1.2, and 2 of the rewrite are here. The Python CLI keeps
+working in parallel; the Rust binary owns its own copy of the schema
+and a superset-compatible view of the same SQLite database at
 `~/.local/share/worklog/worklog.db`.
 
 ## Layout
@@ -16,7 +16,11 @@ rust/
 │   │   ├── sql/schema.sql      # embedded via include_str! — mirror of
 │   │   │                       #   ../../src/worklog/schema.sql (tested for
 │   │   │                       #   byte-equality so the two cannot drift)
-│   │   └── src/{lib,paths,db,models,repo,secrets,hook,schedule}.rs
+│   │   ├── sql/schema.sql      # embedded via include_str! — mirror of
+│   │   │                       #   ../../src/worklog/schema.sql (tested for
+│   │   │                       #   byte-equality so the two cannot drift)
+│   │   └── src/{lib,paths,db,models,repo,secrets,hook,schedule,http}.rs
+│   │       + collectors/{jira,github,tempo}.rs
 │   └── worklog-cli/            # bin: the `worklog` binary
 │       ├── src/{main,lib,cli,wizard}.rs
 │       └── tests/cli.rs        # assert_cmd end-to-end tests
@@ -43,6 +47,12 @@ worklog schedule install \
        --interval 15m           # launchd plist (macOS) or systemd timer (Linux)
 worklog schedule uninstall
 worklog schedule status
+worklog collect all             # jira tickets + github (commits + PRs)
+worklog collect jira            # just the ticket cache
+worklog collect github --days 7 # pull last 7 days of commits + PRs
+worklog sync --day 2026-04-18 \
+             --dry-run          # preview Tempo POSTs
+worklog sync --day 2026-04-18   # actually sync to Tempo
 ```
 
 All commands accept `--json` for machine-readable output and honour

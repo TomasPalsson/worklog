@@ -257,6 +257,40 @@ fn schedule_install_rejects_subminute_interval() {
 }
 
 #[test]
+fn collect_skips_sources_when_credentials_missing() {
+    // No secrets set — wizard never run, .env pointed at absent file.
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["collect", "all"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("jira skipped"))
+        .stdout(predicate::str::contains("github skipped"));
+}
+
+#[test]
+fn sync_errors_without_db() {
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["sync", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("db not initialized"));
+}
+
+#[test]
+fn sync_dry_run_reports_zero_when_no_blocks() {
+    let home = TempDir::new().unwrap();
+    cmd(&home).args(["db", "migrate"]).assert().success();
+    cmd(&home)
+        .args(["sync", "--day", "2026-04-18", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("0 synced"))
+        .stdout(predicate::str::contains("2026-04-18"));
+}
+
+#[test]
 fn secret_rm_reports_absent_cleanly() {
     let home = TempDir::new().unwrap();
     cmd(&home)

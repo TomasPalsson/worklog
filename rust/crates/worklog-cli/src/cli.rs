@@ -8,7 +8,12 @@ use std::io::{self, IsTerminal, Read, Write};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use worklog_core::{db, hook, paths::Paths, repo, schedule, secrets};
+use worklog_core::{
+    collectors::{github as gh, jira as jira_col, tempo as tempo_col},
+    db, hook, http,
+    paths::Paths,
+    repo, schedule, secrets,
+};
 
 /// worklog — personal time-tracking for the developer who hates timers.
 #[derive(Parser, Debug)]
@@ -64,6 +69,34 @@ pub enum Cmd {
     /// Scheduled collection (launchd on macOS, systemd --user on Linux).
     #[command(subcommand)]
     Schedule(ScheduleCmd),
+
+    /// Pull events from external sources (jira, github, tempo, all).
+    Collect {
+        /// Which source to pull. `all` = jira + github. Gcal is deferred
+        /// until Stage 2.1.
+        #[arg(value_enum, default_value_t = CollectTarget::All)]
+        target: CollectTarget,
+        /// Days of history to pull for time-range sources (github). Default 7.
+        #[arg(long, default_value_t = 7)]
+        days: u32,
+    },
+
+    /// Sync reviewed blocks for a given day to Tempo Cloud.
+    Sync {
+        /// YYYY-MM-DD; default is today (UTC).
+        #[arg(long)]
+        day: Option<String>,
+        /// Preview the payload without calling Tempo.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(clap::ValueEnum, Debug, Clone, Copy)]
+pub enum CollectTarget {
+    All,
+    Jira,
+    Github,
 }
 
 #[derive(Subcommand, Debug)]
@@ -175,6 +208,8 @@ pub fn run_with<W: Write>(
             ScheduleCmd::Uninstall => cmd_schedule_uninstall(out, cli.json),
             ScheduleCmd::Status => cmd_schedule_status(out, cli.json),
         },
+        Cmd::Collect { target, days } => cmd_collect(target, days, out, cli.json),
+        Cmd::Sync { day, dry_run } => cmd_sync(day, dry_run, out, cli.json),
     }
 }
 
@@ -480,6 +515,136 @@ fn cmd_schedule_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
         writeln!(out, "note:      {note}")?;
     }
     Ok(())
+}
+
+fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bool) -> Result<()> {
+    let paths = Paths::resolve()?;
+    paths.ensure()?;
+    let conn = db::open(&paths.db)?;
+    let client = http::client()?;
+    let today = chrono::Utc::now().date_naive();
+    let since = today - chrono::Duration::days(days as i64);
+
+    // Each report wrapped in an Option so we can still emit something
+    // useful when a source's credentials aren't set.
+    let mut reports: Vec<worklog_core::collectors::CollectReport> = Vec::new();
+
+    if matches!(target, CollectTarget::All | CollectTarget::Jira) {
+        match jira_col::JiraAuth::from_secrets() {
+            Ok(auth) => reports.push(jira_col::fetch_open_tickets_with(&conn, &auth, &client)?),
+            Err(e) => writeln!(out, "· jira skipped: {e}")?,
+        }
+    }
+
+    if matches!(target, CollectTarget::All | CollectTarget::Github) {
+        match gh::GitHubAuth::from_secrets() {
+            Ok(auth) => reports.push(gh::collect_with(
+                &conn,
+                &auth,
+                since,
+                today + chrono::Duration::days(1),
+                &client,
+            )?),
+            Err(e) => writeln!(out, "· github skipped: {e}")?,
+        }
+    }
+
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&reports)?)?;
+        return Ok(());
+    }
+
+    for r in &reports {
+        writeln!(
+            out,
+            "✓ {:<8} tickets={}  events={}  errors={}",
+            r.source,
+            r.tickets_written,
+            r.events_written,
+            r.errors.len()
+        )?;
+        for err in &r.errors {
+            writeln!(out, "  · {err}")?;
+        }
+    }
+    Ok(())
+}
+
+fn cmd_sync<W: Write>(day: Option<String>, dry_run: bool, out: &mut W, json: bool) -> Result<()> {
+    let paths = Paths::resolve()?;
+    if !paths.db_exists() {
+        anyhow::bail!("db not initialized. Run `worklog db migrate` first.");
+    }
+    let conn = db::open(&paths.db)?;
+    let day = parse_day(day.as_deref())?;
+    let auth = if dry_run {
+        // Dry-run only prints payloads — placeholders are fine.
+        tempo_col::TempoAuth::from_secrets().unwrap_or(tempo_col::TempoAuth {
+            token: "dry-run".into(),
+            author: secrets::get("jira_email")?.unwrap_or_default(),
+            base_url: tempo_col::DEFAULT_BASE.into(),
+        })
+    } else {
+        tempo_col::TempoAuth::from_secrets()?
+    };
+    let client = http::client()?;
+    let (report, results) = tempo_col::sync_day_with(&conn, &auth, day, dry_run, &client)?;
+
+    if json {
+        writeln!(
+            out,
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "report": report,
+                "results": results,
+            }))?
+        )?;
+        return Ok(());
+    }
+
+    writeln!(
+        out,
+        "{} {} — {} synced, {} skipped, {} errors",
+        if dry_run { "◇" } else { "✓" },
+        day,
+        report.synced,
+        report.skipped,
+        report.errors.len()
+    )?;
+    for r in &results {
+        match r.status {
+            "synced" => writeln!(
+                out,
+                "  ✓ block {:>4}  tempo_id={}",
+                r.block_id,
+                r.tempo_id.as_deref().unwrap_or("-")
+            )?,
+            "dry-run" => writeln!(out, "  ◇ block {:>4}  would POST", r.block_id)?,
+            "skipped" => writeln!(
+                out,
+                "  · block {:>4}  {}",
+                r.block_id,
+                r.reason.as_deref().unwrap_or("")
+            )?,
+            "error" => writeln!(
+                out,
+                "  ✗ block {:>4}  HTTP {}  {}",
+                r.block_id,
+                r.http_status.map(|c| c.to_string()).unwrap_or_default(),
+                r.reason.as_deref().unwrap_or("")
+            )?,
+            other => writeln!(out, "  ? block {:>4}  {other}", r.block_id)?,
+        }
+    }
+    Ok(())
+}
+
+fn parse_day(s: Option<&str>) -> Result<chrono::NaiveDate> {
+    match s {
+        None => Ok(chrono::Utc::now().date_naive()),
+        Some(s) => chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+            .map_err(|e| anyhow::anyhow!("invalid --day '{s}': {e}")),
+    }
 }
 
 fn cmd_secret_list<W: Write>(out: &mut W, json: bool) -> Result<()> {

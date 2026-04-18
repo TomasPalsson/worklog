@@ -30,16 +30,16 @@ pub const KNOWN_KEYS: &[&str] = &[
 /// `worklog setup` wizard without forcing a migration.
 fn env_var_for(key: &str) -> Option<&'static str> {
     Some(match key {
-        "jira_email"           => "WORKLOG_JIRA_EMAIL",
-        "jira_api_token"       => "WORKLOG_JIRA_TOKEN",
-        "jira_base_url"        => "WORKLOG_JIRA_BASE_URL",
-        "github_token"         => "WORKLOG_GITHUB_TOKEN",
-        "github_user"          => "WORKLOG_GITHUB_USER",
-        "tempo_api_token"      => "WORKLOG_TEMPO_TOKEN",
-        "google_client_id"     => "WORKLOG_GOOGLE_CLIENT_ID",
+        "jira_email" => "WORKLOG_JIRA_EMAIL",
+        "jira_api_token" => "WORKLOG_JIRA_TOKEN",
+        "jira_base_url" => "WORKLOG_JIRA_BASE_URL",
+        "github_token" => "WORKLOG_GITHUB_TOKEN",
+        "github_user" => "WORKLOG_GITHUB_USER",
+        "tempo_api_token" => "WORKLOG_TEMPO_TOKEN",
+        "google_client_id" => "WORKLOG_GOOGLE_CLIENT_ID",
         "google_client_secret" => "WORKLOG_GOOGLE_CLIENT_SECRET",
         "google_refresh_token" => "WORKLOG_GOOGLE_REFRESH_TOKEN",
-        "anthropic_api_key"    => "ANTHROPIC_API_KEY",
+        "anthropic_api_key" => "ANTHROPIC_API_KEY",
         _ => return None,
     })
 }
@@ -80,8 +80,7 @@ fn read_env_file(key: &str) -> Option<String> {
 #[cfg(not(test))]
 fn strip_quotes(s: &str) -> &str {
     if s.len() >= 2
-        && ((s.starts_with('"') && s.ends_with('"'))
-            || (s.starts_with('\'') && s.ends_with('\'')))
+        && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
     {
         &s[1..s.len() - 1]
     } else {

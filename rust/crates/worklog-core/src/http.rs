@@ -31,10 +31,7 @@ pub fn client() -> Result<Client> {
 pub fn basic_auth_header(user: &str, token: &str) -> String {
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine as _;
-    format!(
-        "Basic {}",
-        STANDARD.encode(format!("{user}:{token}"))
-    )
+    format!("Basic {}", STANDARD.encode(format!("{user}:{token}")))
 }
 
 /// Small helper to turn a non-2xx response into an anyhow error that

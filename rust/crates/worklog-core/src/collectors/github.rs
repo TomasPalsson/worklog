@@ -26,9 +26,9 @@ const GH_API: &str = "https://api.github.com";
 #[derive(Debug, Clone)]
 pub struct GitHubAuth {
     pub token: String,
-    pub user:  String,
+    pub user: String,
     /// Override the GH API base — used by tests with httpmock.
-    pub base:  String,
+    pub base: String,
 }
 
 impl GitHubAuth {
@@ -36,8 +36,8 @@ impl GitHubAuth {
         use crate::secrets;
         Ok(Self {
             token: secrets::require("github_token")?,
-            user:  secrets::require("github_user")?,
-            base:  GH_API.to_owned(),
+            user: secrets::require("github_user")?,
+            base: GH_API.to_owned(),
         })
     }
 }
@@ -68,10 +68,7 @@ pub fn collect_with(
     let jira_re = Regex::new(r"\b([A-Z][A-Z0-9]{1,9}-\d+)\b").unwrap();
 
     // --- commits -----------------------------------------------------------
-    let commits_q = format!(
-        "author:{} author-date:{}..{}",
-        auth.user, since, until
-    );
+    let commits_q = format!("author:{} author-date:{}..{}", auth.user, since, until);
     let commits: CommitSearch = client
         .get(format!("{}/search/commits", auth.base))
         .bearer_auth(&auth.token)
@@ -83,33 +80,40 @@ pub fn collect_with(
     debug!(total = commits.items.len(), "github commits");
     for c in commits.items {
         let ts = c.commit.author.date;
-        let title = c.commit.message.lines().next().unwrap_or("").chars().take(200).collect::<String>();
-        let jira_issue = jira_re.find(&c.commit.message).map(|m| m.as_str().to_owned());
+        let title = c
+            .commit
+            .message
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(200)
+            .collect::<String>();
+        let jira_issue = jira_re
+            .find(&c.commit.message)
+            .map(|m| m.as_str().to_owned());
         let ev = Event {
-            id:               None,
-            source:           "github_commit".into(),
-            source_id:        c.sha,
-            started_at:       ts,
-            ended_at:         None,
+            id: None,
+            source: "github_commit".into(),
+            source_id: c.sha,
+            started_at: ts,
+            ended_at: None,
             duration_seconds: None,
             title,
-            details:          Some(c.commit.message),
-            repo:             Some(c.repository.full_name),
-            project_path:     None,
+            details: Some(c.commit.message),
+            repo: Some(c.repository.full_name),
+            project_path: None,
             jira_issue,
-            session_id:       None,
+            session_id: None,
             tempo_worklog_id: None,
-            raw_json:         None,
+            raw_json: None,
         };
         repo::upsert_event(conn, &ev)?;
         report.events_written += 1;
     }
 
     // --- PRs ---------------------------------------------------------------
-    let pr_q = format!(
-        "author:{} type:pr created:{}..{}",
-        auth.user, since, until
-    );
+    let pr_q = format!("author:{} type:pr created:{}..{}", auth.user, since, until);
     let prs: IssueSearch = client
         .get(format!("{}/search/issues", auth.base))
         .bearer_auth(&auth.token)
@@ -132,20 +136,20 @@ pub fn collect_with(
         let combined = format!("{} {}", p.title, p.body.as_deref().unwrap_or(""));
         let jira_issue = jira_re.find(&combined).map(|m| m.as_str().to_owned());
         let ev = Event {
-            id:               None,
-            source:           "github_pr".into(),
-            source_id:        p.id.to_string(),
-            started_at:       p.created_at,
-            ended_at:         p.closed_at,
+            id: None,
+            source: "github_pr".into(),
+            source_id: p.id.to_string(),
+            started_at: p.created_at,
+            ended_at: p.closed_at,
             duration_seconds: None,
-            title:            format!("PR #{}: {}", p.number, p.title),
-            details:          p.body.clone(),
-            repo:             Some(repo_name),
-            project_path:     None,
+            title: format!("PR #{}: {}", p.number, p.title),
+            details: p.body.clone(),
+            repo: Some(repo_name),
+            project_path: None,
             jira_issue,
-            session_id:       None,
+            session_id: None,
             tempo_worklog_id: None,
-            raw_json:         None,
+            raw_json: None,
         };
         repo::upsert_event(conn, &ev)?;
         report.events_written += 1;
@@ -163,9 +167,9 @@ struct CommitSearch {
 
 #[derive(Debug, Deserialize)]
 struct CommitItem {
-    sha:        String,
+    sha: String,
     repository: Repo,
-    commit:     CommitPayload,
+    commit: CommitPayload,
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,7 +179,7 @@ struct Repo {
 
 #[derive(Debug, Deserialize)]
 struct CommitPayload {
-    author:  CommitAuthor,
+    author: CommitAuthor,
     message: String,
 }
 
@@ -191,12 +195,12 @@ struct IssueSearch {
 
 #[derive(Debug, Deserialize)]
 struct IssueItem {
-    id:             i64,
-    number:         i64,
-    title:          String,
-    body:           Option<String>,
-    created_at:     String,
-    closed_at:      Option<String>,
+    id: i64,
+    number: i64,
+    title: String,
+    body: Option<String>,
+    created_at: String,
+    closed_at: Option<String>,
     repository_url: String,
 }
 
@@ -210,7 +214,7 @@ mod tests {
     fn auth(base: String) -> GitHubAuth {
         GitHubAuth {
             token: "ghp_test".into(),
-            user:  "TomasPalsson".into(),
+            user: "TomasPalsson".into(),
             base,
         }
     }
@@ -266,10 +270,7 @@ mod tests {
         let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
         assert_eq!(events.len(), 2);
 
-        let commit = events
-            .iter()
-            .find(|e| e.source == "github_commit")
-            .unwrap();
+        let commit = events.iter().find(|e| e.source == "github_commit").unwrap();
         assert_eq!(commit.source_id, "abc123");
         assert_eq!(commit.jira_issue.as_deref(), Some("PROJ-42"));
         assert_eq!(commit.repo.as_deref(), Some("org/repo"));
@@ -305,10 +306,28 @@ mod tests {
         let conn = open_memory().unwrap();
         let since = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
         let until = NaiveDate::from_ymd_opt(2026, 4, 19).unwrap();
-        collect_with(&conn, &auth(server.base_url()), since, until, &http::client().unwrap()).unwrap();
-        collect_with(&conn, &auth(server.base_url()), since, until, &http::client().unwrap()).unwrap();
+        collect_with(
+            &conn,
+            &auth(server.base_url()),
+            since,
+            until,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+        collect_with(
+            &conn,
+            &auth(server.base_url()),
+            since,
+            until,
+            &http::client().unwrap(),
+        )
+        .unwrap();
         let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
-        assert_eq!(events.len(), 1, "dedupe on (source, source_id) must prevent duplicates");
+        assert_eq!(
+            events.len(),
+            1,
+            "dedupe on (source, source_id) must prevent duplicates"
+        );
     }
 
     #[test]
