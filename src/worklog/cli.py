@@ -92,6 +92,9 @@ def _matches_our_hook(handler: dict, cmd: str) -> bool:
 
 
 def _hook_cmd() -> str:
+    """Prefer the native Rust hook if installed, fall back to Python."""
+    if rust_bin := shutil.which("worklog-hook"):
+        return rust_bin
     worklog_bin = shutil.which("worklog") or "worklog"
     return f"{worklog_bin} hook run"
 
@@ -191,6 +194,70 @@ def sync(
     results = sync_day(d, dry_run=dry_run)
     for r in results:
         console.print(r)
+
+
+@app.command()
+def doctor() -> None:
+    """Diagnose worklog setup: paths, binaries, hook registration, `claude -p`."""
+    import json
+    import subprocess
+
+    def ok(label: str, detail: str) -> None:
+        console.print(f"[green]✓[/] {label:28} {detail}")
+
+    def warn(label: str, detail: str) -> None:
+        console.print(f"[yellow]![/] {label:28} {detail}")
+
+    def fail(label: str, detail: str) -> None:
+        console.print(f"[red]✗[/] {label:28} {detail}")
+
+    # DB
+    if DB_PATH.exists():
+        with connect() as conn:
+            n = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+            blocks = conn.execute("SELECT COUNT(*) FROM blocks").fetchone()[0]
+        ok("Database:", f"{DB_PATH} ({n} events, {blocks} blocks)")
+    else:
+        warn("Database:", f"{DB_PATH} (does not exist — run `worklog init`)")
+
+    # Companies
+    if COMPANIES_PATH.exists():
+        ok("Companies config:", str(COMPANIES_PATH))
+    else:
+        warn("Companies config:", f"{COMPANIES_PATH} (missing)")
+
+    # Rust hook
+    if rust_bin := shutil.which("worklog-hook"):
+        ok("Hook binary:", f"Rust ({rust_bin})")
+    else:
+        warn("Hook binary:", "Rust worklog-hook not on PATH (falling back to Python)")
+
+    # Claude CLI
+    if claude_bin := shutil.which("claude"):
+        ok("claude CLI:", claude_bin)
+    else:
+        fail("claude CLI:", "not on PATH — `worklog estimate` will fail")
+
+    # Hook registration
+    settings_file = Path.home() / ".claude" / "settings.json"
+    if settings_file.exists():
+        settings = json.loads(settings_file.read_text())
+        hook_events = [k for k, v in settings.get("hooks", {}).items() if v]
+        if hook_events:
+            ok("Claude hooks registered:", ", ".join(hook_events))
+        else:
+            warn("Claude hooks registered:", "none — run `worklog hook install`")
+    else:
+        warn("Claude hooks registered:", f"{settings_file} not found")
+
+    # Cargo build for release hook (optional)
+    hook_source = Path(__file__).resolve().parents[2] / "rust" / "hook" / "Cargo.toml"
+    if hook_source.exists() and not shutil.which("worklog-hook"):
+        console.print()
+        console.print("[dim]To install the fast Rust hook:[/]")
+        console.print(f"  cd {hook_source.parent} && cargo install --locked --path .")
+
+    _ = subprocess  # future: check `claude --version`
 
 
 @app.command()
