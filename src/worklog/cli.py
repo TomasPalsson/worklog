@@ -616,17 +616,40 @@ def day(
 
 @app.command()
 def upgrade(
-    ref: str = typer.Option("main", help="git branch/tag/SHA to install"),
+    ref: str = typer.Option("main", help="git branch/tag/SHA (git upgrade only)"),
+    source: str = typer.Option(
+        "auto",
+        help="'signed' = signed binary via `worklog self-update` "
+        "(Stage 5, recommended). 'git' = legacy uv-based reinstall. "
+        "'auto' = signed if the release pubkey is embedded, else git.",
+    ),
 ) -> None:
-    """Upgrade worklog to the latest version from GitHub."""
+    """Upgrade worklog.
+
+    Prefers the signed self-updater (Stage 5) when the release public
+    key is baked in; otherwise falls back to the legacy git-based
+    ``uv tool install`` flow.
+    """
     import subprocess
 
-    # SSH — works with the user's existing GitHub auth and handles private repos.
+    if source == "signed" or (source == "auto" and _rust_has_signed_updater()):
+        rust = _rust_binary()
+        if rust is None:
+            console.print(
+                "[red]✗[/] signed upgrade needs the Rust binary — "
+                "run [bold]worklog upgrade --source git[/] first."
+            )
+            raise typer.Exit(code=1)
+        console.print("[bold]upgrading via signed self-update[/] …")
+        result = subprocess.run([str(rust), "self-update"], check=False)  # noqa: S603 - trusted args
+        raise typer.Exit(code=result.returncode)
+
+    # Legacy path: uv pulls a fresh git checkout + rebuilds the Rust binary.
     repo = "git+ssh://git@github.com/TomasPalsson/worklog.git"
     if ref and ref != "main":
         repo = f"{repo}@{ref}"
     uv_bin = shutil.which("uv") or "uv"
-    console.print(f"[bold]upgrading worklog[/] from {repo} …")
+    console.print(f"[bold]upgrading worklog (git)[/] from {repo} …")
     result = subprocess.run(  # noqa: S603 - trusted args
         [uv_bin, "tool", "install", "--force", "--reinstall", repo],
         check=False,
@@ -635,13 +658,33 @@ def upgrade(
         console.print("[red]✗[/] upgrade failed — check the uv output above")
         raise typer.Exit(code=result.returncode)
     console.print("[green]✓[/] python upgraded")
-
-    # Also build + install the Rust binary. Stage-1 lives in the rust/ workspace
-    # of the freshly upgraded checkout; we build a release and drop it at
-    # ~/.worklog/bin/worklog-rs so every `worklog db|secret|version|doctor-rs`
-    # passthrough works immediately.
     _install_rust_binary()
     console.print("[green]✓[/] all set. run [bold]worklog doctor[/] to confirm.")
+
+
+def _rust_has_signed_updater() -> bool:
+    """True iff the Rust binary is installed AND has a real release pubkey
+    embedded (not the all-zero placeholder). We detect it by running
+    ``self-update --check`` with a bogus URL — if the pubkey is a
+    placeholder we get an explicit error, otherwise we get a network
+    error (which means the updater is wired up).
+    """
+    import subprocess
+
+    rust = _rust_binary()
+    if rust is None:
+        return False
+    # `self-update --check` without a real URL probes the pubkey state
+    # cheaply: placeholder → fails with a specific message *before* any
+    # network call.
+    proc = subprocess.run(  # noqa: S603 - trusted args
+        [str(rust), "self-update", "--check", "--manifest-url", "http://127.0.0.1:1/never"],
+        capture_output=True,
+        text=True,
+        timeout=3,
+    )
+    combined = (proc.stdout or "") + (proc.stderr or "")
+    return "placeholder" not in combined
 
 
 def _install_rust_binary() -> None:

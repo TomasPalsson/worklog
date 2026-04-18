@@ -12,7 +12,7 @@ use worklog_core::{
     collectors::{github as gh, jira as jira_col, tempo as tempo_col},
     daemon as daemon_mod, db, estimate, hook, hook_run, http, infer,
     paths::Paths,
-    repo, schedule, secrets, web as web_mod,
+    repo, schedule, secrets, updater as upd, web as web_mod,
 };
 
 /// worklog — personal time-tracking for the developer who hates timers.
@@ -129,6 +129,71 @@ pub enum Cmd {
     Web {
         #[command(subcommand)]
         sub: WebCmd,
+    },
+
+    /// Self-update: verify + download + atomically swap the binary.
+    SelfUpdate {
+        /// Override the manifest URL. Defaults to the worklog release
+        /// bucket on GitHub.
+        #[arg(long, env = "WORKLOG_MANIFEST_URL")]
+        manifest_url: Option<String>,
+        /// Only check; don't download or swap.
+        #[arg(long)]
+        check: bool,
+        /// Fetch and verify everything but skip the final swap.
+        #[arg(long)]
+        dry_run: bool,
+        /// Re-install even when the manifest version matches.
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Release-management tooling. Used by the maintainer to cut signed
+    /// releases — not something end-users run.
+    Dev {
+        #[command(subcommand)]
+        sub: DevCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DevCmd {
+    /// Generate a fresh Ed25519 release keypair and print the public
+    /// key constant to paste into worklog-core::updater::pubkey.
+    Keygen {
+        /// Where to write the private key in PEM format. Defaults to
+        /// $XDG_CONFIG_HOME/worklog/keys/release-ed25519.pem, chmod 0600.
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+        /// Overwrite any existing key at `out` without prompting.
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Sign a file with the local release private key. Writes a
+    /// `<file>.sig` with the raw 64-byte signature.
+    Sign {
+        /// The file whose bytes should be signed.
+        file: std::path::PathBuf,
+        /// Override the key path. Defaults to the keygen default.
+        #[arg(long)]
+        key: Option<std::path::PathBuf>,
+    },
+
+    /// Produce a bsdiff delta from `old` to `new`.
+    MakePatch {
+        old: std::path::PathBuf,
+        new: std::path::PathBuf,
+        /// Where to write the patch. Defaults to `<new>.patch`.
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
+
+    /// Apply a delta patch to `old`, producing `out`.
+    ApplyPatch {
+        old: std::path::PathBuf,
+        patch: std::path::PathBuf,
+        out: std::path::PathBuf,
     },
 }
 
@@ -290,6 +355,22 @@ pub fn run_with<W: Write>(
             WebCmd::Status => cmd_web_status(out, cli.json),
             WebCmd::Logs { tail } => cmd_web_logs(tail),
             WebCmd::Build { pull } => cmd_web_build(pull, out, cli.json),
+        },
+        Cmd::SelfUpdate {
+            manifest_url,
+            check,
+            dry_run,
+            force,
+        } => cmd_self_update(manifest_url, check, dry_run, force, out, cli.json),
+        Cmd::Dev { sub } => match sub {
+            DevCmd::Keygen { out: out_path, force } => cmd_dev_keygen(out_path, force, out, cli.json),
+            DevCmd::Sign { file, key } => cmd_dev_sign(&file, key.as_deref(), out, cli.json),
+            DevCmd::MakePatch { old, new, out: patch_out } => {
+                cmd_dev_make_patch(&old, &new, patch_out.as_deref(), out, cli.json)
+            }
+            DevCmd::ApplyPatch { old, patch, out: patched_out } => {
+                cmd_dev_apply_patch(&old, &patch, &patched_out, out, cli.json)
+            }
         },
     }
 }
@@ -1011,3 +1092,279 @@ fn daemon_tcp_reachable(addr: &str) -> bool {
     };
     TcpStream::connect_timeout(&parsed, Duration::from_millis(150)).is_ok()
 }
+
+// ─────────────────────── self-update + dev commands ───────────────────────
+
+/// Default manifest URL if the user hasn't set --manifest-url or the env var.
+/// Points at GitHub's "latest release" asset URL, which redirects to the
+/// actual release tag's asset.
+const DEFAULT_MANIFEST_URL: &str =
+    "https://github.com/TomasPalsson/worklog/releases/latest/download/manifest.json";
+
+/// Default path for the release signing private key. Lives under the
+/// resolved worklog config dir to match the rest of the app.
+fn default_key_path() -> Result<std::path::PathBuf> {
+    let paths = Paths::resolve()?;
+    Ok(paths.config_dir.join("keys").join("release-ed25519.pem"))
+}
+
+fn cmd_self_update<W: Write>(
+    manifest_url: Option<String>,
+    check: bool,
+    dry_run: bool,
+    force: bool,
+    out: &mut W,
+    json: bool,
+) -> Result<()> {
+    let paths = Paths::resolve()?;
+    paths.ensure()?;
+
+    let binary = std::env::current_exe().context("resolving current binary path")?;
+    let current_version = env!("CARGO_PKG_VERSION").to_string();
+    let url = manifest_url.unwrap_or_else(|| DEFAULT_MANIFEST_URL.to_string());
+
+    let req = upd::UpdateRequest {
+        manifest_url: url.clone(),
+        current_binary: binary,
+        current_version: current_version.clone(),
+        work_dir: paths.data_dir.join("updates"),
+        dry_run: check || dry_run,
+        force,
+    };
+
+    if check {
+        // --check is a no-swap probe: download + verify just the manifest,
+        // report whether an update is available.
+        if upd::pubkey::is_placeholder() {
+            anyhow::bail!(
+                "release pubkey isn't embedded yet — see worklog-core::updater::pubkey"
+            );
+        }
+        let pk = upd::pubkey::resolve();
+        let http = upd::fetch::client()?;
+        let manifest = upd::fetch::fetch_manifest(&http, &url, &pk)?;
+        if json {
+            writeln!(
+                out,
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "current":  current_version,
+                    "latest":   manifest.version,
+                    "up_to_date": manifest.version == current_version,
+                    "notes":    manifest.notes,
+                }))?
+            )?;
+        } else if manifest.version == current_version {
+            writeln!(out, "✓ up to date ({current_version})")?;
+        } else {
+            writeln!(
+                out,
+                "→ {current_version} → {} available",
+                manifest.version
+            )?;
+            if !manifest.notes.is_empty() {
+                writeln!(out, "\n{}", manifest.notes)?;
+            }
+        }
+        return Ok(());
+    }
+
+    let report = upd::run_update(&req)?;
+    if json {
+        writeln!(
+            out,
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "from":        report.from,
+                "to":          report.to,
+                "used_delta":  report.used_delta,
+                "asset_bytes": report.asset_bytes,
+                "dry_run":     report.dry_run,
+                "rolled_back": report.rolled_back,
+            }))?
+        )?;
+    } else if report.rolled_back {
+        writeln!(
+            out,
+            "✗ new binary failed smoke test — rolled back to {}.",
+            report.from
+        )?;
+    } else if report.install.is_none() && !report.dry_run {
+        writeln!(out, "✓ already on {} — nothing to do", report.from)?;
+    } else if report.dry_run {
+        writeln!(
+            out,
+            "✓ dry-run — would update {} → {} ({} bytes{})",
+            report.from,
+            report.to,
+            report.asset_bytes,
+            if report.used_delta { ", delta" } else { "" }
+        )?;
+    } else {
+        writeln!(
+            out,
+            "✓ updated {} → {} ({} bytes{})",
+            report.from,
+            report.to,
+            report.asset_bytes,
+            if report.used_delta { ", delta" } else { "" }
+        )?;
+    }
+    Ok(())
+}
+
+fn cmd_dev_keygen<W: Write>(
+    out_path: Option<std::path::PathBuf>,
+    force: bool,
+    out: &mut W,
+    json: bool,
+) -> Result<()> {
+    let path = match out_path {
+        Some(p) => p,
+        None => default_key_path()?,
+    };
+    let gen = upd::signing::keygen_to_file(&path, force)?;
+
+    if json {
+        writeln!(
+            out,
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "private_key_path":        path.display().to_string(),
+                "public_key_rust_literal": gen.rust_literal,
+                "public_key_base64":       gen.base64,
+            }))?
+        )?;
+    } else {
+        writeln!(out, "✓ private key → {} (chmod 600)", path.display())?;
+        writeln!(
+            out,
+            "\nPaste this into rust/crates/worklog-core/src/updater/pubkey.rs:\n"
+        )?;
+        writeln!(
+            out,
+            "pub const RELEASE_PUBLIC_KEY: [u8; PUBLIC_KEY_LEN] = {};",
+            gen.rust_literal
+        )?;
+    }
+    Ok(())
+}
+
+fn cmd_dev_sign<W: Write>(
+    file: &std::path::Path,
+    key_path: Option<&std::path::Path>,
+    out: &mut W,
+    json: bool,
+) -> Result<()> {
+    let key_path = match key_path {
+        Some(p) => p.to_path_buf(),
+        None => default_key_path()?,
+    };
+    let sk = upd::signing::load_signing_key(&key_path)?;
+    let msg = std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;
+    let sig = upd::crypto::sign_detached(&sk.to_bytes(), &msg);
+    let mut sig_path = file.to_path_buf();
+    let new_name = format!(
+        "{}.sig",
+        file.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("bin")
+    );
+    sig_path.set_file_name(new_name);
+    std::fs::write(&sig_path, sig).with_context(|| format!("writing {}", sig_path.display()))?;
+
+    if json {
+        writeln!(
+            out,
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "signature_path":    sig_path.display().to_string(),
+                "file_sha256":       upd::crypto::sha256_hex(&msg),
+            }))?
+        )?;
+    } else {
+        writeln!(out, "✓ signed → {}", sig_path.display())?;
+    }
+    Ok(())
+}
+
+fn cmd_dev_make_patch<W: Write>(
+    old: &std::path::Path,
+    new: &std::path::Path,
+    out_path: Option<&std::path::Path>,
+    out: &mut W,
+    json: bool,
+) -> Result<()> {
+    let old_bytes = std::fs::read(old).with_context(|| format!("reading {}", old.display()))?;
+    let new_bytes = std::fs::read(new).with_context(|| format!("reading {}", new.display()))?;
+    let patch = upd::delta::make_patch(&old_bytes, &new_bytes)?;
+    let dest = match out_path {
+        Some(p) => p.to_path_buf(),
+        None => {
+            let mut p = new.to_path_buf();
+            p.set_extension(format!(
+                "{}.patch",
+                new.extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("bin")
+            ));
+            p
+        }
+    };
+    std::fs::write(&dest, &patch)?;
+    if json {
+        writeln!(
+            out,
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "patch_path":  dest.display().to_string(),
+                "patch_bytes": patch.len(),
+                "old_bytes":   old_bytes.len(),
+                "new_bytes":   new_bytes.len(),
+                "ratio":       patch.len() as f64 / new_bytes.len() as f64,
+            }))?
+        )?;
+    } else {
+        writeln!(
+            out,
+            "✓ patch → {} ({} bytes, {:.1}% of new)",
+            dest.display(),
+            patch.len(),
+            100.0 * patch.len() as f64 / new_bytes.len() as f64,
+        )?;
+    }
+    Ok(())
+}
+
+fn cmd_dev_apply_patch<W: Write>(
+    old: &std::path::Path,
+    patch: &std::path::Path,
+    out_path: &std::path::Path,
+    out: &mut W,
+    json: bool,
+) -> Result<()> {
+    let old_bytes = std::fs::read(old)?;
+    let patch_bytes = std::fs::read(patch)?;
+    let new_bytes = upd::delta::apply_patch(&old_bytes, &patch_bytes)?;
+    std::fs::write(out_path, &new_bytes)?;
+    if json {
+        writeln!(
+            out,
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "out_path":  out_path.display().to_string(),
+                "out_bytes": new_bytes.len(),
+                "sha256":    upd::crypto::sha256_hex(&new_bytes),
+            }))?
+        )?;
+    } else {
+        writeln!(
+            out,
+            "✓ reconstructed → {} ({} bytes)",
+            out_path.display(),
+            new_bytes.len()
+        )?;
+    }
+    Ok(())
+}
+
