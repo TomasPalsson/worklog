@@ -17,6 +17,8 @@
 //! * `POST /blocks/:id/delete`           — no body
 //! * `POST /infer`                       — { "day": "YYYY-MM-DD" }
 //! * `POST /jira/refresh`                — no body, refreshes open tickets
+//! * `POST /estimate`                    — { "day": "YYYY-MM-DD", "model": "?" }
+//! * `POST /sync`                        — { "day": "YYYY-MM-DD", "dry_run": true }
 //!
 //! Unix-socket file perms are forced to `0600` so only the owning user can
 //! speak to the daemon.
@@ -38,8 +40,8 @@ use tokio::net::UnixListener;
 use tokio::sync::Mutex;
 use tracing::{error, info};
 
-use crate::collectors::jira;
-use crate::{block_service, db, infer, models::Block, repo};
+use crate::collectors::{jira, tempo};
+use crate::{block_service, db, estimate, infer, models::Block, repo};
 
 pub struct AppState {
     /// Single shared connection — SQLite + rusqlite is !Send, so we keep
@@ -60,6 +62,8 @@ pub fn router(state: Shared) -> Router {
         .route("/blocks/:id/delete", post(delete_block))
         .route("/infer", post(run_infer))
         .route("/jira/refresh", post(refresh_jira))
+        .route("/estimate", post(run_estimate))
+        .route("/sync", post(run_sync))
         .with_state(state)
 }
 
@@ -277,21 +281,84 @@ async fn refresh_jira(State(state): State<Shared>) -> Result<Json<Value>, ApiErr
     })))
 }
 
+#[derive(Deserialize)]
+pub struct EstimateBody {
+    pub day: String,
+    pub model: Option<String>,
+}
+
+/// Run the AI estimator for every un-estimated block on the requested day.
+/// Shells out to `claude -p` under the hood, which can take a few seconds
+/// per block, so this is a long-ish request. Fine for a single-user tool.
+async fn run_estimate(
+    State(state): State<Shared>,
+    Json(body): Json<EstimateBody>,
+) -> Result<Json<Value>, ApiError> {
+    let day = NaiveDate::parse_from_str(&body.day, "%Y-%m-%d")
+        .with_context(|| format!("invalid day {}", body.day))?;
+    let model = body
+        .model
+        .unwrap_or_else(|| estimate::DEFAULT_MODEL.to_string());
+    let stats = with_conn(state, move |c| estimate::estimate_day(c, day, &model)).await?;
+    Ok(Json(json!({
+        "day":       body.day,
+        "estimated": stats.estimated,
+        "skipped":   stats.skipped,
+        "failed":    stats.failed,
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct SyncBody {
+    pub day: String,
+    #[serde(default = "default_dry_run")]
+    pub dry_run: bool,
+}
+
+fn default_dry_run() -> bool {
+    true
+}
+
+/// Push blocks to Tempo for the given day. Defaults to dry-run so a careless
+/// click from the UI can't double-post. Requires `tempo_api_token` and
+/// `jira_email` (used as accountId) in the keychain or .env.
+async fn run_sync(
+    State(state): State<Shared>,
+    Json(body): Json<SyncBody>,
+) -> Result<Json<Value>, ApiError> {
+    let day = NaiveDate::parse_from_str(&body.day, "%Y-%m-%d")
+        .with_context(|| format!("invalid day {}", body.day))?;
+    let auth = tempo::TempoAuth::from_secrets().map_err(ApiError::from)?;
+    let dry_run = body.dry_run;
+    let (report, results) =
+        with_conn(state, move |c| tempo::sync_day(c, &auth, day, dry_run)).await?;
+    Ok(Json(json!({
+        "day":     body.day,
+        "dry_run": dry_run,
+        "synced":  report.synced,
+        "skipped": report.skipped,
+        "errors":  report.errors,
+        "results": results,
+    })))
+}
+
 // ───────────────────────── helpers ─────────────────────────
 
 /// Run a blocking closure with exclusive access to the shared connection.
-/// Wraps `spawn_blocking` so sqlite calls don't stall the reactor.
+/// Wraps `spawn_blocking` so sqlite calls — and, critically, blocking
+/// `reqwest` clients used by tempo/jira collectors — don't panic on drop
+/// inside the async context.
 async fn with_conn<F, T>(state: Shared, f: F) -> Result<T>
 where
     F: FnOnce(&Connection) -> Result<T> + Send + 'static,
     T: Send + 'static,
 {
-    // The connection is held across the closure so we must keep the mutex
-    // guard alive. Since rusqlite::Connection is !Send on tokio threads,
-    // run the closure on the current task (which already owns the lock
-    // future) rather than spawn_blocking.
-    let guard = state.conn.lock().await;
-    f(&guard)
+    tokio::task::spawn_blocking(move || {
+        let conn = state.conn.blocking_lock();
+        f(&conn)
+    })
+    .await
+    .context("spawn_blocking")?
 }
 
 #[cfg(test)]
@@ -457,6 +524,92 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM blocks", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn sync_dry_run_reports_blocks_and_leaves_db_untouched() {
+        // Seed Tempo creds so TempoAuth::from_secrets() succeeds. cfg(test)
+        // secrets uses an in-process HashMap; these don't leak to the real
+        // keychain.
+        crate::secrets::set("tempo_api_token", "tok").unwrap();
+        crate::secrets::set("jira_email", "acct-id-123").unwrap();
+
+        let state = state_with_block();
+        {
+            // Assign a ticket so the block is syncable.
+            let conn = state.conn.lock().await;
+            conn.execute(
+                "UPDATE blocks SET jira_issue = 'PROJ-1', description = 'test'",
+                [],
+            )
+            .unwrap();
+        }
+        let app = router(state.clone());
+        let body = Body::from(
+            serde_json::to_vec(&json!({"day": "2026-04-18", "dry_run": true})).unwrap(),
+        );
+        let resp = app
+            .oneshot(
+                Request::post("/sync")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["dry_run"], true);
+        let results = v["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["status"], "dry-run");
+
+        // DB untouched — no tempo_worklog_id set.
+        let id: Option<String> = state
+            .conn
+            .lock()
+            .await
+            .query_row(
+                "SELECT tempo_worklog_id FROM blocks WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(id.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn sync_rejects_invalid_day() {
+        crate::secrets::set("tempo_api_token", "tok").unwrap();
+        crate::secrets::set("jira_email", "acct-id-123").unwrap();
+        let app = router(state_with_block());
+        let body = Body::from(serde_json::to_vec(&json!({"day": "not-a-date"})).unwrap());
+        let resp = app
+            .oneshot(
+                Request::post("/sync")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn estimate_rejects_invalid_day() {
+        let app = router(state_with_block());
+        let body = Body::from(serde_json::to_vec(&json!({"day": "garbage"})).unwrap());
+        let resp = app
+            .oneshot(
+                Request::post("/estimate")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -1,0 +1,30 @@
+{
+  "name": "worklog-web",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Worklog review UI — reads SQLite directly, writes through the Rust daemon via unix socket",
+  "scripts": {
+    "dev": "next dev -p 3333",
+    "build": "next build",
+    "start": "next start -p 3333",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "geist": "^1.3.1",
+    "lucide-react": "^0.469.0",
+    "next": "15.1.3",
+    "react": "19.0.0",
+    "react-dom": "19.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.14",
+    "@types/node": "^22.10.5",
+    "@types/react": "19.0.2",
+    "@types/react-dom": "19.0.2",
+    "eslint": "^9.17.0",
+    "eslint-config-next": "15.1.3",
+    "typescript": "^5.7.2"
+  }
+}
