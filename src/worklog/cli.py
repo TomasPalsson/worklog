@@ -7,7 +7,6 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import typer
-import uvicorn
 from rich.console import Console
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
@@ -560,12 +559,15 @@ def doctor() -> None:
 
 @app.command()
 def serve(
-    host: str = typer.Option("127.0.0.1"),
-    port: int = typer.Option(8765),
+    port: int = typer.Option(3333, help="port to bind on localhost"),
 ) -> None:
-    """Start the review web UI."""
-    init_db()
-    uvicorn.run("worklog.web.app:app", host=host, port=port, reload=False)
+    """Start the review web UI.
+
+    Stage 4: the FastAPI app has been retired in favour of a dockerised
+    Next.js + Bun stack. This command just delegates to the Rust
+    `worklog web up` which orchestrates the container + daemon.
+    """
+    _exec_rust(["web", "up", "--port", str(port)])
 
 
 @app.command()
@@ -607,10 +609,9 @@ def day(
 
     if no_serve:
         return
-    console.print("\n[bold]opening review UI[/] at http://127.0.0.1:8765")
-    console.print("  [dim]ctrl+c when you're done[/]\n")
-    init_db()
-    uvicorn.run("worklog.web.app:app", host="127.0.0.1", port=8765, reload=False)
+    console.print("\n[bold]bringing up review UI[/] at http://localhost:3333")
+    console.print("  [dim]ctrl+c to bring it down, or `worklog web down`[/]\n")
+    _exec_rust(["web", "up"])
 
 
 @app.command()

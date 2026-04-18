@@ -1,11 +1,12 @@
 # worklog/rust — the Rust rewrite
 
-Stages 1.1, 1.2, 2, and 3 of the rewrite are here. The Python CLI keeps
-working in parallel; the Rust binary owns its own copy of the schema
-and a superset-compatible view of the same SQLite database at
-`~/.local/share/worklog/worklog.db`. Stage 3 adds the axum unix-socket
-daemon (`worklog daemon`) that the Next.js web UI will talk to in
-Stage 4.
+Stages 1.1, 1.2, 2, 3, and 4 of the rewrite are here. The Python CLI
+keeps working in parallel (minus the FastAPI web, retired in stage 4);
+the Rust binary owns its own copy of the schema and a superset-compatible
+view of the same SQLite database at `~/.local/share/worklog/worklog.db`.
+Stage 3 added the axum daemon; stage 4 added a TCP listener alongside
+the unix socket (for Docker Desktop) and a `worklog web` subcommand
+that orchestrates the Next.js + Bun container.
 
 ## Layout
 
@@ -21,8 +22,10 @@ rust/
 │   │   ├── sql/schema.sql      # embedded via include_str! — mirror of
 │   │   │                       #   ../../src/worklog/schema.sql (tested for
 │   │   │                       #   byte-equality so the two cannot drift)
+│   │   ├── templates/docker-compose.yml  # embedded, rendered by
+│   │   │                       #   `worklog web up` into the data dir
 │   │   └── src/{lib,paths,db,models,repo,secrets,hook,schedule,http}.rs
-│   │       + src/{infer,sessions,hook_run,estimate,block_service,daemon}.rs
+│   │       + src/{infer,sessions,hook_run,estimate,block_service,daemon,web}.rs
 │   │       + collectors/{jira,github,tempo}.rs
 │   └── worklog-cli/            # bin: the `worklog` binary
 │       ├── src/{main,lib,cli,wizard}.rs
