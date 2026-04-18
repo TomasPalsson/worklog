@@ -24,7 +24,12 @@ cd web && bun test && bun run typecheck              # web tests + TS
 ## Conventions
 
 - Stdlib datetimes are always UTC (`datetime.now(UTC)` in Python, `Utc::now()`
-  in Rust). ISO-8601 in DB.
+  in Rust). ISO-8601 in DB. Gcal events are normalised to UTC at the
+  collector boundary (`_to_utc` in `src/worklog/collectors/gcal.py`).
+- Day bucketing for blocks uses the user's local TZ, driven by
+  `$WORKLOG_TZ` as a fixed offset (e.g. `-05:00`, `+01:00`, `UTC`).
+  Default is UTC. Named zones like `America/New_York` are not
+  supported; DST-observers update the env var when DST flips.
 - Collectors MUST be idempotent: dedupe on `(source, source_id)` via
   `db.upsert_event` (Python) / `repo::upsert_event` (Rust).
 - Never print from `worklog hook run` except to stderr — it's wired to Claude

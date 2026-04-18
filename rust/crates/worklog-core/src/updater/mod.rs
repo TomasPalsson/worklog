@@ -126,14 +126,12 @@ pub fn run_update(req: &UpdateRequest) -> Result<UpdateReport> {
         });
     }
 
-    let choice = manifest.pick_asset(&req.current_version).with_context(|| {
-        format!(
-            "manifest has no asset for target {}",
-            Target::current()
-                .map(|t| t.triple())
-                .unwrap_or("(unsupported)")
-        )
-    })?;
+    // If this binary isn't built for a target we publish, say so up front
+    // rather than bubbling a vague "no asset" error.
+    let current_target = Target::current().context("self-update target check")?;
+    let choice = manifest
+        .pick_asset(&req.current_version)
+        .with_context(|| format!("manifest has no asset for target {current_target}"))?;
 
     std::fs::create_dir_all(&req.work_dir)
         .with_context(|| format!("creating work dir {}", req.work_dir.display()))?;
