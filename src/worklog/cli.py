@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+import shutil
+import sys
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import typer
 import uvicorn
@@ -8,6 +12,7 @@ from rich.console import Console
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
+from worklog.collectors import claude as claude_collector
 from worklog.collectors import gcal as gcal_collector
 from worklog.collectors import github as github_collector
 from worklog.collectors import jira_ as jira_collector
@@ -36,6 +41,76 @@ def init() -> None:
     console.print(f"[green]✓[/] config dir: {CONFIG_DIR}")
     console.print(f"[green]✓[/] database:   {DB_PATH}")
     console.print("\n[cyan]Next:[/] run [bold]worklog setup[/] to configure credentials.")
+
+
+# ---------- Claude Code hook ----------
+
+_HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "Stop", "SubagentStop", "SessionEnd")
+
+
+def _hook_cmd() -> str:
+    """Prefer the native Rust hook if installed, fall back to Python."""
+    if rust_bin := shutil.which("worklog-hook"):
+        return rust_bin
+    worklog_bin = shutil.which("worklog") or "worklog"
+    return f"{worklog_bin} hook run"
+
+
+def _matches_our_hook(handler: dict, cmd: str) -> bool:
+    for h in handler.get("hooks", []):
+        if "worklog" in (h.get("command") or "") or h.get("command") == cmd:
+            return True
+    return False
+
+
+def _install_hook() -> str:
+    """Register the stdin-JSON hook in ~/.claude/settings.json. Idempotent."""
+    settings_path = Path.home() / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
+    hooks = settings.setdefault("hooks", {})
+    cmd = _hook_cmd()
+    for event in _HOOK_EVENTS:
+        handlers = hooks.setdefault(event, [])
+        if any(_matches_our_hook(h, cmd) for h in handlers):
+            continue
+        handlers.append({"hooks": [{"type": "command", "command": cmd}]})
+    settings_path.write_text(json.dumps(settings, indent=2))
+    return cmd
+
+
+def _uninstall_hook() -> None:
+    settings_path = Path.home() / ".claude" / "settings.json"
+    if not settings_path.exists():
+        return
+    settings = json.loads(settings_path.read_text())
+    hooks = settings.get("hooks", {})
+    for event, handlers in list(hooks.items()):
+        hooks[event] = [h for h in handlers if not _matches_our_hook(h, "")]
+        if not hooks[event]:
+            del hooks[event]
+    settings_path.write_text(json.dumps(settings, indent=2))
+
+
+@app.command()
+def hook(action: str = typer.Argument(..., help="install | uninstall | run")) -> None:
+    """Manage the Claude Code hook integration.
+
+    install   — register stdin-JSON hook in ~/.claude/settings.json
+    uninstall — remove it
+    run       — read a hook event from stdin and log it (used by the hook itself)
+    """
+    if action == "run":
+        sys.exit(claude_collector.main())
+    if action == "install":
+        cmd = _install_hook()
+        console.print("[green]✓[/] hook installed (Session/Prompt/Stop events)")
+        console.print(f"  command: {cmd}")
+    elif action == "uninstall":
+        _uninstall_hook()
+        console.print("[green]✓[/] hook removed")
+    else:
+        raise typer.BadParameter("action must be install, uninstall, or run")
 
 
 # ---------- setup wizard ----------
@@ -157,6 +232,18 @@ def setup(
             console.print(f"[green]✓[/] cached {n} open tickets")
         except Exception as e:  # noqa: BLE001 - diagnostic only
             console.print(f"[red]✗[/] jira refresh failed: {e}")
+
+    console.print(
+        "\n[bold]Claude Code hook[/] — logs your coding sessions automatically "
+        "so they show up as blocks."
+    )
+    if Confirm.ask("Install the Claude Code hook?", default=True):
+        cmd = _install_hook()
+        console.print(f"[green]✓[/] hook installed → [dim]{cmd}[/]")
+        console.print(
+            "  [dim]takes effect in your next Claude Code session "
+            "(current sessions won't re-read settings.json)[/]"
+        )
 
     console.print("\n[bold]You're done.[/] Typical daily flow:")
     console.print(

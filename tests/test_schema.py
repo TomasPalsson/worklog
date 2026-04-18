@@ -34,17 +34,16 @@ def fresh_db(tmp_path: Path) -> Path:
     return db
 
 
-def test_events_columns_exclude_legacy(fresh_db: Path) -> None:
+def test_events_columns_no_company(fresh_db: Path) -> None:
     with connect(fresh_db) as conn:
         cols = _columns(conn, "events")
         assert "company" not in cols
-        assert "session_id" not in cols
-        assert {"source", "source_id", "started_at", "jira_issue"} <= cols
+        assert {"source", "source_id", "started_at", "jira_issue", "session_id"} <= cols
 
 
-def test_no_sessions_table(fresh_db: Path) -> None:
+def test_sessions_table_exists(fresh_db: Path) -> None:
     with connect(fresh_db) as conn:
-        assert "sessions" not in _tables(conn)
+        assert "sessions" in _tables(conn)
 
 
 def test_blocks_columns_exclude_company(fresh_db: Path) -> None:
@@ -93,53 +92,7 @@ def test_block_events_cascades_on_delete(fresh_db: Path) -> None:
         assert conn.execute("SELECT COUNT(*) FROM block_events").fetchone()[0] == 0
 
 
-def test_migration_v3_to_v4_drops_sessions_and_session_id(tmp_path: Path) -> None:
-    db = tmp_path / "v3.db"
-    with sqlite3.connect(db) as c:
-        c.executescript(
-            """
-            CREATE TABLE events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                source TEXT NOT NULL,
-                source_id TEXT NOT NULL,
-                started_at TEXT NOT NULL,
-                ended_at TEXT,
-                duration_seconds INTEGER,
-                title TEXT NOT NULL,
-                details TEXT,
-                repo TEXT,
-                project_path TEXT,
-                jira_issue TEXT,
-                session_id TEXT,
-                tempo_worklog_id TEXT,
-                raw_json TEXT,
-                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-                UNIQUE(source, source_id)
-            );
-            CREATE TABLE sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT UNIQUE NOT NULL,
-                started_at TEXT NOT NULL
-            );
-            INSERT INTO events (source, source_id, started_at, title, session_id)
-              VALUES ('legacy', 'x', '2026-04-01T12:00:00+00:00', 'kept', 's1');
-            INSERT INTO sessions (session_id, started_at)
-              VALUES ('s1', '2026-04-01T12:00:00+00:00');
-            """
-        )
-
-    init_db(db)
-
-    with connect(db) as conn:
-        assert "session_id" not in _columns(conn, "events")
-        assert "sessions" not in _tables(conn)
-        row = conn.execute(
-            "SELECT title FROM events WHERE source_id = 'x'"
-        ).fetchone()
-        assert row["title"] == "kept"
-
-
-def test_migration_v2_to_v4_drops_company_and_sessions(tmp_path: Path) -> None:
+def test_migration_v2_drops_company_keeps_sessions(tmp_path: Path) -> None:
     db = tmp_path / "v2.db"
     with sqlite3.connect(db) as c:
         c.executescript(
@@ -187,7 +140,6 @@ def test_migration_v2_to_v4_drops_company_and_sessions(tmp_path: Path) -> None:
     with connect(db) as conn:
         assert "company" not in _columns(conn, "blocks")
         assert "company" not in _columns(conn, "events")
-        assert "sessions" not in _tables(conn)
         row = conn.execute("SELECT description, jira_issue FROM blocks").fetchone()
         assert row["description"] == "prior work"
         assert row["jira_issue"] == "ACME-1"

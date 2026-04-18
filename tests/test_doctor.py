@@ -74,7 +74,8 @@ def test_setup_writes_env_from_stdin(isolated: Path) -> None:
         "tempo-tok",                  # tempo token
         "gh-tok",                     # github token
         "TomasPalsson",               # github user
-        "n",                          # skip jira refresh prompt
+        "n",                          # skip jira refresh
+        "n",                          # skip hook install
     ]) + "\n"
     result = CliRunner().invoke(app, ["setup"], input=stdin)
     assert result.exit_code == 0, result.stdout
@@ -87,7 +88,8 @@ def test_setup_writes_env_from_stdin(isolated: Path) -> None:
 
 def test_setup_reset_ignores_existing(isolated: Path) -> None:
     _write_env_file({"WORKLOG_JIRA_TOKEN": "old"})
-    stdin = "\n".join([""] * 6 + ["n"]) + "\n"  # empty answers, skip refresh
+    # 6 empty answers + skip refresh + skip hook install
+    stdin = "\n".join([""] * 6 + ["n", "n"]) + "\n"
     result = CliRunner().invoke(app, ["setup", "--reset"], input=stdin)
     assert result.exit_code == 0
     # All empty values → nothing written (empty dict)
