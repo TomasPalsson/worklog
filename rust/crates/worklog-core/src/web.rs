@@ -53,22 +53,28 @@ pub fn preflight_docker() -> Result<()> {
         Ok(o) if o.status.success() => Ok(()),
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr);
-            let hint = if stderr.to_lowercase().contains("cannot connect") {
-                "\n   The Docker daemon isn't running — start Docker Desktop or `colima start`."
-            } else {
-                ""
-            };
-            anyhow::bail!(
-                "`docker version` exited {}: {}{hint}",
-                o.status,
-                stderr.trim()
-            )
+            Err(format_docker_preflight_error(&o.status.to_string(), &stderr))
         }
         Err(e) => anyhow::bail!(
             "can't find docker on PATH ({e}). Install Docker Desktop \
              or colima, then run `worklog web up` again."
         ),
     }
+}
+
+/// Render the user-facing error message for a failed `docker version`
+/// invocation. Pure function so tests can exercise the stderr-hint
+/// branch without mocking a subprocess.
+pub(crate) fn format_docker_preflight_error(status: &str, stderr: &str) -> anyhow::Error {
+    let hint = if stderr.to_lowercase().contains("cannot connect") {
+        "\n   The Docker daemon isn't running — start Docker Desktop or `colima start`."
+    } else {
+        ""
+    };
+    anyhow::anyhow!(
+        "`docker version` exited {status}: {}{hint}",
+        stderr.trim()
+    )
 }
 
 /// Render the compose template into the data dir, overwriting any
@@ -322,5 +328,37 @@ mod tests {
         let p = compose_path(&paths);
         assert!(p.starts_with(&paths.data_dir));
         assert!(p.ends_with("docker-compose.yml"));
+    }
+
+    #[test]
+    fn preflight_error_includes_start_hint_when_daemon_off() {
+        // `docker version` with the daemon stopped prints "Cannot connect
+        // to the Docker daemon" to stderr. Our error message must include
+        // the actionable hint instead of just "exited 1".
+        let err = format_docker_preflight_error(
+            "exit status: 1",
+            "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+        );
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("start Docker Desktop") || msg.contains("colima"),
+            "missing actionable hint: {msg}"
+        );
+        assert!(msg.contains("Cannot connect"), "original stderr must be preserved");
+    }
+
+    #[test]
+    fn preflight_error_without_connect_keyword_has_no_hint() {
+        // A different docker failure (e.g. permission denied on the
+        // socket) shouldn't get the "start Docker Desktop" hint — it'd
+        // be misleading. The "permission denied" message doesn't
+        // contain "cannot connect" so the hint branch should not fire.
+        let err = format_docker_preflight_error(
+            "exit status: 126",
+            "permission denied while trying to access the Docker socket",
+        );
+        let msg = format!("{err}");
+        assert!(!msg.contains("start Docker Desktop"), "hint must not misfire");
+        assert!(!msg.contains("colima"), "hint must not misfire");
     }
 }

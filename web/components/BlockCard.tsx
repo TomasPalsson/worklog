@@ -34,12 +34,20 @@ export function BlockCard({ block, tickets, day }: Props) {
   const ariaLabel = `${timeRangeLabel} · ${block.jira_issue ?? "unassigned"} · ${durationLabel}`;
 
   const commitDescription = () => {
+    const previous = block.description ?? "";
     const next = (descRef.current?.innerText ?? "").trim();
-    if (next === (block.description ?? "")) return;
+    if (next === previous) return;
     start(async () => {
       const r = await setDescription(block.id, next, day);
-      if (!r.ok) toast.error(`Save description failed — ${r.error}`);
-      else if (synced) {
+      if (!r.ok) {
+        toast.error(`Save description failed — ${r.error}`);
+        // Revert the visible text so the user sees the real DB state,
+        // not their unsaved edit. Without this the UI silently disagrees
+        // with the DB and the next blur re-submits the same rejected text.
+        if (descRef.current) {
+          descRef.current.innerText = previous;
+        }
+      } else if (synced) {
         toast.ok(
           "Description saved. Note: this block was already synced — re-sync to update Tempo.",
         );
@@ -49,12 +57,17 @@ export function BlockCard({ block, tickets, day }: Props) {
 
   const commitDuration = () => {
     setEditingDur(false);
+    const previousMinutes = Math.round(block.duration_seconds / 60);
     const m = Math.max(1, durVal | 0);
-    if (m === Math.round(block.duration_seconds / 60)) return;
+    if (m === previousMinutes) return;
     start(async () => {
       const r = await setDuration(block.id, m, day);
-      if (!r.ok) toast.error(`Save duration failed — ${r.error}`);
-      else if (synced) {
+      if (!r.ok) {
+        toast.error(`Save duration failed — ${r.error}`);
+        // Revert local state so the next edit starts from the canonical
+        // value, not the rejected one.
+        setDurVal(previousMinutes);
+      } else if (synced) {
         toast.ok(
           "Duration saved. Note: this block was already synced — re-sync to update Tempo.",
         );

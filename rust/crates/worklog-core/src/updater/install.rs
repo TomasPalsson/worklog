@@ -54,8 +54,25 @@ pub fn swap_with_rollback(staged: &Path, dest: &Path) -> Result<InstallOutcome> 
     }
 
     if let Err(e) = std::fs::rename(staged, dest) {
+        // The primary rename failed (likely cross-filesystem staging,
+        // or a permissions flip mid-run). Try to put the previous binary
+        // back where it was — but if THAT fails too, the user is now
+        // staring at an empty `dest` and needs explicit instructions
+        // for manual recovery from `.previous`.
         if had_previous {
-            let _ = std::fs::rename(&previous, dest);
+            if let Err(rb) = std::fs::rename(&previous, dest) {
+                return Err(e).with_context(|| {
+                    format!(
+                        "renaming {} → {} failed; rollback of {} → {} also failed: {rb}. \
+                         The live binary is absent; restore manually from {}.",
+                        staged.display(),
+                        dest.display(),
+                        previous.display(),
+                        dest.display(),
+                        previous.display(),
+                    )
+                });
+            }
         }
         return Err(e).with_context(|| format!("renaming {} → {}", staged.display(), dest.display()));
     }

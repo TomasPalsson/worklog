@@ -230,9 +230,19 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest(e) => (StatusCode::BAD_REQUEST, e),
             ApiError::Internal(e) => (StatusCode::INTERNAL_SERVER_ERROR, e),
         };
-        let msg = format!("{err:#}");
-        if status == StatusCode::INTERNAL_SERVER_ERROR {
-            error!("api error: {msg}");
+        // For 400, emit only the top-level message (no `{:#}` chain
+        // walk) so a future handler that wraps e.g. a serde decode
+        // error with `ApiError::bad_request` doesn't leak struct-field
+        // names or internal type paths to the response body.
+        // For 500 we keep the full chain — it goes to the server log
+        // via `error!()` where the developer needs it, and the client
+        // needs enough context to file a useful bug report.
+        let (msg, log_msg) = match status {
+            StatusCode::BAD_REQUEST => (format!("{err}"), None),
+            _ => (format!("{err:#}"), Some(format!("{err:#}"))),
+        };
+        if let Some(m) = log_msg {
+            error!("api error: {m}");
         }
         (status, Json(json!({ "error": msg }))).into_response()
     }

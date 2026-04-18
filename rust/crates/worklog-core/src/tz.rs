@@ -21,13 +21,25 @@ use chrono::{FixedOffset, NaiveDate, Utc};
 ///   * `UTC`, `utc`, empty → UTC (+00:00)
 ///   * `+HH:MM` or `-HH:MM` → the given offset
 ///   * `+HH`, `-HH` → hour-only shorthand
+///
+/// An unparseable value (e.g. `America/New_York`, `+99:99`) logs a
+/// `tracing::warn!` with a hint pointing at the supported format, then
+/// falls back to UTC. Silent fallback would leave a user who typo'd
+/// their timezone wondering why late-night events keep landing on
+/// tomorrow's page.
 pub fn day_offset() -> FixedOffset {
+    let utc = FixedOffset::east_opt(0).unwrap();
     match std::env::var("WORKLOG_TZ").ok().as_deref().map(str::trim) {
-        None | Some("") => FixedOffset::east_opt(0).unwrap(),
-        Some(s) if s.eq_ignore_ascii_case("utc") || s == "Z" => {
-            FixedOffset::east_opt(0).unwrap()
-        }
-        Some(s) => parse_offset(s).unwrap_or_else(|| FixedOffset::east_opt(0).unwrap()),
+        None | Some("") => utc,
+        Some(s) if s.eq_ignore_ascii_case("utc") || s == "Z" => utc,
+        Some(s) => parse_offset(s).unwrap_or_else(|| {
+            tracing::warn!(
+                "WORKLOG_TZ={s:?} is not a recognised fixed offset \
+                 (use +HH:MM or -HH:MM — named zones like America/New_York \
+                 are not supported). Falling back to UTC."
+            );
+            utc
+        }),
     }
 }
 
