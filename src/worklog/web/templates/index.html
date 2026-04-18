@@ -147,13 +147,34 @@
           <div class="block-body">
             <div class="ticket-row">
               {{ icon('hash') }}
-              <form method="post" action="/blocks/{{ b.id }}/ticket" class="inline-form">
+              <form method="post" action="/blocks/{{ b.id }}/ticket" class="inline-form combo-form" data-combo-form>
                 <input type="hidden" name="day" value="{{ day }}" />
-                <input type="text" name="jira_issue" list="tickets-dl"
-                       class="{% if b.jira_issue %}ticket-filled{% endif %}"
-                       value="{{ b.jira_issue or '' }}"
-                       placeholder="Assign a Jira ticket…"
-                       aria-label="Jira ticket" />
+                <input type="hidden" name="jira_issue" value="{{ b.jira_issue or '' }}" data-combo-value />
+                {% set current = b.jira_issue %}
+                {% set current_summary = (tickets | selectattr('key', 'equalto', current) | map(attribute='summary') | first) if current else '' %}
+                <div class="combo" data-combo>
+                  <button type="button" class="combo-trigger {% if not current %}empty{% endif %}" data-combo-trigger aria-haspopup="listbox" aria-expanded="false">
+                    {% if current %}
+                      <span class="combo-key">{{ current }}</span>
+                      <span class="combo-sum">{{ current_summary or '—' }}</span>
+                    {% else %}
+                      <span class="combo-sum">Assign a Jira ticket…</span>
+                    {% endif %}
+                    {{ icon('chev-right', 'icon icon-sm combo-caret') }}
+                  </button>
+                  <div class="combo-panel" role="dialog">
+                    <div class="combo-search">
+                      {{ icon('hash', 'icon') }}
+                      <input type="text" data-combo-search placeholder="Search by key or summary…" autocomplete="off" />
+                    </div>
+                    <div class="combo-list" data-combo-list role="listbox"></div>
+                    <div class="combo-foot">
+                      <span><kbd>↑↓</kbd> navigate</span>
+                      <span><kbd>↵</kbd> select</span>
+                      <span><kbd>esc</kbd> close</span>
+                    </div>
+                  </div>
+                </div>
               </form>
             </div>
             <div class="desc-row">
@@ -178,12 +199,28 @@
             <span class="unit">min</span>
           </div>
 
-          <div>
-            <span class="badge src-{{ b.estimated_by or 'gap' }}">
-              {% if b.estimated_by == 'claude_p' %}{{ icon('sparkles') }}{% elif b.estimated_by == 'manual' %}{{ icon('check') }}{% else %}{{ icon('inbox') }}{% endif %}
-              {{ b.estimated_by or 'gap' }}
-            </span>
-            <div style="font-size:11px; color:var(--ink-faint); margin-top:4px; padding-left:2px;">{{ b.event_count }} events</div>
+          <div class="sources-cell">
+            <div class="sources-chips">
+              {% for s in b.sources %}
+                <span class="source-chip source-{{ s.source }}" title="{{ s.source }} · {{ s.n }} event{{ 's' if s.n != 1 else '' }}">
+                  {% if s.source in ('github_commit','github_pr') %}{{ icon('hash', 'icon icon-sm') }}
+                  {% elif s.source == 'gcal' %}{{ icon('clock', 'icon icon-sm') }}
+                  {% elif s.source == 'jira' %}{{ icon('layers', 'icon icon-sm') }}
+                  {% elif s.source == 'claude' %}{{ icon('sparkles', 'icon icon-sm') }}
+                  {% else %}{{ icon('inbox', 'icon icon-sm') }}{% endif %}
+                  <span class="src-label">{{ s.source.replace('_', ' ') }}</span>
+                  <span class="src-count">{{ s.n }}</span>
+                </span>
+              {% endfor %}
+              {% if not b.sources %}
+                <span class="source-chip source-gap">{{ icon('inbox', 'icon icon-sm') }} <span class="src-label">no events</span></span>
+              {% endif %}
+            </div>
+            <div class="estimator-note">
+              {% if b.estimated_by == 'claude_p' %}{{ icon('sparkles', 'icon icon-sm') }} estimated by Claude
+              {% elif b.estimated_by == 'manual' %}{{ icon('check', 'icon icon-sm') }} manually edited
+              {% else %}{{ icon('inbox', 'icon icon-sm') }} inferred gap{% endif %}
+            </div>
           </div>
 
           <div class="block-actions">
@@ -199,11 +236,9 @@
       {% endfor %}
     </div>
 
-    <datalist id="tickets-dl">
-      {% for t in tickets %}
-        <option value="{{ t.key }}">{{ t.key }} — {{ t.summary }} [{{ t.status or '?' }}]</option>
-      {% endfor %}
-    </datalist>
+    <script id="tickets-data" type="application/json">
+      [{% for t in tickets %}{"key": {{ t.key|tojson }}, "summary": {{ (t.summary or '')|tojson }}, "status": {{ (t.status or '')|tojson }}}{% if not loop.last %},{% endif %}{% endfor %}]
+    </script>
   {% else %}
     <div class="empty">
       {{ icon('inbox', 'icon') }}
@@ -213,5 +248,149 @@
   {% endif %}
 
 </div>
+
+<script>
+(() => {
+  const tickets = JSON.parse(document.getElementById('tickets-data').textContent);
+  const statusClass = (s) => 'status-' + (s || '').toLowerCase().replace(/\s+/g, '-');
+
+  const norm = (s) => (s || '').toLowerCase();
+  const score = (t, q) => {
+    if (!q) return 1;
+    const k = norm(t.key), s = norm(t.summary);
+    if (k === q) return 100;
+    if (k.startsWith(q)) return 50;
+    if (k.includes(q)) return 30;
+    if (s.includes(q)) return 10;
+    return 0;
+  };
+
+  const renderList = (listEl, query, activeIdx) => {
+    const q = norm(query);
+    const matches = tickets
+      .map(t => ({ t, s: score(t, q) }))
+      .filter(x => x.s > 0 || !q)
+      .sort((a, b) => b.s - a.s)
+      .slice(0, 50);
+
+    listEl.innerHTML = '';
+    if (!matches.length) {
+      listEl.innerHTML = '<div class="combo-empty">No matching tickets. Refresh the Jira cache.</div>';
+      return [];
+    }
+
+    const frag = document.createDocumentFragment();
+    const clear = document.createElement('div');
+    clear.className = 'combo-clear';
+    clear.setAttribute('role', 'option');
+    clear.dataset.value = '';
+    clear.innerHTML = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg><span>Clear ticket</span>';
+    frag.appendChild(clear);
+
+    matches.forEach(({ t }, i) => {
+      const opt = document.createElement('div');
+      opt.className = 'combo-opt';
+      opt.setAttribute('role', 'option');
+      opt.dataset.value = t.key;
+      if (i === activeIdx) opt.setAttribute('aria-selected', 'true');
+      const status = t.status
+        ? `<span class="status ${statusClass(t.status)}">${t.status}</span>`
+        : '';
+      opt.innerHTML = `
+        <span class="key">${t.key}</span>
+        <span class="summary">${escapeHtml(t.summary || '—')}</span>
+        ${status}
+      `;
+      frag.appendChild(opt);
+    });
+    listEl.appendChild(frag);
+    return matches.map(m => m.t);
+  };
+
+  const escapeHtml = (s) => s.replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+
+  const initCombo = (combo) => {
+    const form = combo.closest('[data-combo-form]');
+    const hidden = form.querySelector('[data-combo-value]');
+    const trigger = combo.querySelector('[data-combo-trigger]');
+    const panel = combo.querySelector('.combo-panel');
+    const search = combo.querySelector('[data-combo-search]');
+    const list = combo.querySelector('[data-combo-list]');
+
+    let activeIdx = 0;
+    let rendered = [];
+
+    const open = () => {
+      combo.setAttribute('data-open', 'true');
+      trigger.setAttribute('aria-expanded', 'true');
+      search.value = '';
+      activeIdx = 0;
+      rendered = renderList(list, '', activeIdx);
+      setTimeout(() => search.focus(), 10);
+    };
+
+    const close = () => {
+      combo.removeAttribute('data-open');
+      trigger.setAttribute('aria-expanded', 'false');
+    };
+
+    const select = (value) => {
+      hidden.value = value;
+      form.submit();
+    };
+
+    trigger.addEventListener('click', (e) => {
+      e.preventDefault();
+      combo.hasAttribute('data-open') ? close() : open();
+    });
+
+    search.addEventListener('input', () => {
+      activeIdx = 0;
+      rendered = renderList(list, search.value, activeIdx);
+    });
+
+    search.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        activeIdx = Math.min(activeIdx + 1, rendered.length);
+        rendered = renderList(list, search.value, activeIdx);
+        scrollActive(list);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        activeIdx = Math.max(activeIdx - 1, 0);
+        rendered = renderList(list, search.value, activeIdx);
+        scrollActive(list);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (rendered[activeIdx]) select(rendered[activeIdx].key);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        close();
+        trigger.focus();
+      }
+    });
+
+    list.addEventListener('click', (e) => {
+      const opt = e.target.closest('[role="option"], .combo-clear');
+      if (!opt) return;
+      select(opt.dataset.value || '');
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!combo.contains(e.target)) close();
+    });
+  };
+
+  const scrollActive = (list) => {
+    const active = list.querySelector('[aria-selected="true"]');
+    if (active) active.scrollIntoView({ block: 'nearest' });
+  };
+
+  document.querySelectorAll('[data-combo]').forEach(initCombo);
+})();
+</script>
+
 </body>
 </html>

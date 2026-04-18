@@ -71,6 +71,23 @@ def index(request: Request, day: str | None = None) -> HTMLResponse:
                 (d.isoformat(),),
             ).fetchall()
         }
+        source_rows = conn.execute(
+            """
+            SELECT be.block_id AS block_id, e.source AS source, COUNT(*) AS n
+              FROM block_events be
+              JOIN blocks b ON b.id = be.block_id
+              JOIN events e ON e.id = be.event_id
+             WHERE b.day = ?
+             GROUP BY be.block_id, e.source
+             ORDER BY n DESC
+            """,
+            (d.isoformat(),),
+        ).fetchall()
+        block_sources: dict[int, list[dict]] = {}
+        for r in source_rows:
+            block_sources.setdefault(r["block_id"], []).append(
+                {"source": r["source"], "n": r["n"]}
+            )
         tickets = [
             dict(r)
             for r in conn.execute(
@@ -83,6 +100,7 @@ def index(request: Request, day: str | None = None) -> HTMLResponse:
 
     for b in blocks:
         b["event_count"] = event_counts.get(b["id"], 0)
+        b["sources"] = block_sources.get(b["id"], [])
 
     total_seconds = sum(b["duration_seconds"] for b in blocks)
     unassigned_count = sum(1 for b in blocks if not b["jira_issue"])
