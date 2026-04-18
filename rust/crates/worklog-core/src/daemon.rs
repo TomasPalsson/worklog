@@ -1,12 +1,16 @@
-//! Unix-socket IPC server for the web UI.
+//! IPC server (unix socket + optional TCP) for the web UI.
 //!
 //! Architecture:
-//! * Single axum router bound to a unix socket at `~/.local/share/worklog/api.sock`.
+//! * Single axum router bound to a unix socket at
+//!   `~/.local/share/worklog/api.sock` and, by default, also to
+//!   `127.0.0.1:9323` (the dockerised web UI reaches the latter because
+//!   Docker Desktop on macOS can't proxy live unix sockets through its
+//!   VM bind mounts).
 //! * A single `Connection` behind a `tokio::sync::Mutex` — personal tool,
 //!   single user, low volume. Serialising writes is the simplest thing
 //!   that correctly preserves SQLite invariants.
 //! * `spawn_blocking` wraps every db call so the async runtime isn't
-//!   starved by sqlite syscalls.
+//!   starved by sqlite syscalls and blocking reqwest clients drop cleanly.
 //!
 //! Endpoints (all JSON):
 //! * `GET  /health`                      — liveness
@@ -20,8 +24,13 @@
 //! * `POST /estimate`                    — { "day": "YYYY-MM-DD", "model": "?" }
 //! * `POST /sync`                        — { "day": "YYYY-MM-DD", "dry_run": true }
 //!
-//! Unix-socket file perms are forced to `0600` so only the owning user can
-//! speak to the daemon.
+//! Unix-socket file perms default to `0666` so the containerised UI can
+//! connect across Docker Desktop's VM (same user, same host — the data
+//! dir is the security boundary). Override with `$WORKLOG_SOCKET_MODE`
+//! (octal, e.g. `0600`) on multi-user hosts.
+//!
+//! Errors are split into `ApiError::BadRequest` (→ 400) and `::Internal`
+//! (→ 500). Invalid input (e.g. malformed `day`) routes through 400.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};

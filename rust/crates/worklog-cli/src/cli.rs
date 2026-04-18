@@ -962,9 +962,9 @@ fn rpassword_readline() -> Result<String> {
     {
         use std::io::BufRead;
         use std::os::fd::AsRawFd;
-        // Best-effort: just read a line visibly on systems where we can't
-        // toggle echo without extra deps. This keeps Stage 1 dep-light; we'll
-        // swap in `rpassword` properly in Stage 1.2 wizard work.
+        // Deliberately dep-light: read a line visibly rather than pull in
+        // `rpassword` for one prompt. The interactive secret flow in the
+        // wizard handles echo suppression via `dialoguer::Password`.
         let fd = io::stdin().as_raw_fd();
         let _ = fd;
         let mut line = String::new();
