@@ -43,6 +43,7 @@ zstd        = "0.13"
 qbsdiff     = "1"
 rand        = "0.8"
 base64      = "0.22"
+fs4         = "0.9"
 
 [profile.release]
 lto           = "thin"

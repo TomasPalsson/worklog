@@ -23,15 +23,24 @@ pub fn upsert_event(conn: &Connection, e: &Event) -> Result<i64> {
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
          ON CONFLICT(source, source_id) DO UPDATE SET
             started_at       = excluded.started_at,
-            ended_at         = excluded.ended_at,
-            duration_seconds = excluded.duration_seconds,
+            -- COALESCE: collectors don't populate these on re-collect,
+            -- so a None on the new side must not wipe existing data.
+            ended_at         = COALESCE(excluded.ended_at, events.ended_at),
+            duration_seconds = COALESCE(excluded.duration_seconds, events.duration_seconds),
             title            = excluded.title,
             details          = excluded.details,
             repo             = excluded.repo,
             project_path     = excluded.project_path,
             jira_issue       = excluded.jira_issue,
-            session_id       = excluded.session_id,
-            tempo_worklog_id = excluded.tempo_worklog_id,
+            -- session_id: preserve existing when the new side doesn't
+            -- carry one — matches Python and prevents e.g. a GitHub
+            -- re-collect from wiping the claude session linkage.
+            session_id       = COALESCE(events.session_id, excluded.session_id),
+            -- tempo_worklog_id: the CLAUDE.md canary. Must NEVER be
+            -- cleared. Collectors always pass None here, so unconditional
+            -- overwrite would destroy the double-sync guard on every
+            -- re-collect. COALESCE keeps the existing value.
+            tempo_worklog_id = COALESCE(events.tempo_worklog_id, excluded.tempo_worklog_id),
             raw_json         = excluded.raw_json",
         params![
             e.source,
@@ -212,6 +221,66 @@ mod tests {
             )
             .unwrap();
         assert_eq!(title, "second");
+    }
+
+    #[test]
+    fn upsert_event_preserves_tempo_worklog_id_on_re_collect() {
+        // CLAUDE.md canary: tempo_worklog_id MUST NEVER be cleared.
+        // A re-collect pass (which passes tempo_worklog_id=None on the
+        // Event struct because collectors don't know about sync state)
+        // must not overwrite a previously-synced value. The ON CONFLICT
+        // UPDATE must COALESCE, not unconditionally overwrite.
+        let c = fresh();
+        let mut e = Event::minimal("github_commit", "abc", "2026-04-18T09:00:00Z", "first");
+        let id = upsert_event(&c, &e).unwrap();
+        // Simulate the sync step having marked this event as synced.
+        c.execute(
+            "UPDATE events SET tempo_worklog_id = 'tw-42' WHERE id = ?1",
+            params![id],
+        )
+        .unwrap();
+        // Re-collect: the event is seen again, same source_id, no
+        // tempo_worklog_id in the Event struct.
+        assert!(e.tempo_worklog_id.is_none());
+        e.title = "updated".into();
+        upsert_event(&c, &e).unwrap();
+        let stored: Option<String> = c
+            .query_row(
+                "SELECT tempo_worklog_id FROM events WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stored.as_deref(),
+            Some("tw-42"),
+            "tempo_worklog_id canary must survive re-collect"
+        );
+    }
+
+    #[test]
+    fn upsert_event_preserves_session_id_when_new_is_none() {
+        // Parity with Python: session_id uses COALESCE so an existing
+        // non-null value is not clobbered by a collector that doesn't
+        // know about it.
+        let c = fresh();
+        let e = Event::minimal("claude", "evt-1", "2026-04-18T09:00:00Z", "first");
+        let id = upsert_event(&c, &e).unwrap();
+        c.execute(
+            "UPDATE events SET session_id = 'sess-a' WHERE id = ?1",
+            params![id],
+        )
+        .unwrap();
+        // Re-upsert with session_id = None on the struct.
+        upsert_event(&c, &e).unwrap();
+        let stored: Option<String> = c
+            .query_row(
+                "SELECT session_id FROM events WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored.as_deref(), Some("sess-a"));
     }
 
     #[test]

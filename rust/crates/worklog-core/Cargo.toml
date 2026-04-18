@@ -29,6 +29,7 @@ sha2        = { workspace = true }
 zstd        = { workspace = true }
 qbsdiff     = { workspace = true }
 rand        = { workspace = true }
+fs4         = { workspace = true }
 
 # Stage 3.2: axum IPC server bits. Used by the daemon only — unit tests
 # on the block service don't need any of these.

@@ -48,7 +48,13 @@ def _rust_binary() -> Path | None:
 
 
 def _exec_rust(args: list[str]) -> None:
-    """Replace this process with the Rust binary, forwarding argv."""
+    """Replace this process with the Rust binary, forwarding argv.
+
+    A race is possible: another process might unlink the binary
+    between `_rust_binary()` (which calls `is_file()`) and this
+    `execvp`. Without a catch, the user sees a raw Python traceback.
+    Handle it explicitly and point them at `worklog upgrade`.
+    """
     import os
 
     binary = _rust_binary()
@@ -58,7 +64,17 @@ def _exec_rust(args: list[str]) -> None:
             "[bold]worklog upgrade[/] to build & install it."
         )
         raise typer.Exit(code=127)
-    os.execvp(str(binary), [str(binary), *args])
+    try:
+        os.execvp(str(binary), [str(binary), *args])
+    except OSError as e:
+        console.print(
+            f"[red]✗[/] Couldn't exec the Rust binary at {binary}: {e}."
+        )
+        console.print(
+            "   This usually means another process unlinked it "
+            "mid-run. Run [bold]worklog upgrade[/] to reinstall."
+        )
+        raise typer.Exit(code=127) from e
 
 
 def _parse_day(s: str | None) -> date:

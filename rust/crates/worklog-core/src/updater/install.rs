@@ -8,13 +8,53 @@
 //!   broken rollout can be manually rolled back if even our in-process
 //!   rollback fails.
 
+use std::fs::{File, OpenOptions};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use fs4::fs_std::FileExt;
 use tracing::{info, warn};
+
+/// RAII handle for the self-update lockfile. Drops the fd → flock
+/// released automatically.
+#[derive(Debug)]
+pub struct UpdateLock {
+    // Keep the File alive for the guard's lifetime — flock releases on
+    // fd close per POSIX.
+    #[allow(dead_code)]
+    file: File,
+}
+
+/// Acquire an exclusive, non-blocking advisory lock on
+/// `<work_dir>/update.lock`. Returns the guard on success. If another
+/// process already holds the lock we bail with an informative error
+/// so the user knows an update is already in flight.
+pub fn acquire_update_lock(work_dir: &Path) -> Result<UpdateLock> {
+    let lock_path = work_dir.join("update.lock");
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| format!("opening lock file {}", lock_path.display()))?;
+    // Non-blocking flock via `fs4`. Ok(()) → we got the lock.
+    // WouldBlock → another process holds it; surface a loud error so
+    // the user knows why we refused rather than quietly racing.
+    match file.try_lock_exclusive() {
+        Ok(()) => Ok(UpdateLock { file }),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => anyhow::bail!(
+            "another worklog self-update is already running \
+             (lock held on {}). Wait for it to finish or `rm` the \
+             lockfile if it's stale.",
+            lock_path.display()
+        ),
+        Err(e) => Err(e).with_context(|| format!("locking {}", lock_path.display())),
+    }
+}
 
 /// Result of the install + smoke test. Returned so the CLI can report
 /// what happened (especially whether rollback triggered).
@@ -228,6 +268,24 @@ mod tests {
         let prev_out = Command::new(&prev).arg("--version").output().unwrap();
         let prev_stdout = String::from_utf8_lossy(&prev_out.stdout);
         assert!(prev_stdout.contains("old"), "got {prev_stdout}");
+    }
+
+    #[test]
+    fn acquire_update_lock_is_exclusive() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let first = acquire_update_lock(dir).unwrap();
+        // Second acquire from the same process/fd-table must fail
+        // immediately — flock is advisory but OS-level.
+        let err = acquire_update_lock(dir).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("already running"),
+            "expected concurrent-run error, got: {err:#}"
+        );
+        drop(first);
+        // After dropping the first, the lock releases and a new
+        // acquire succeeds — proves it's not a permanent file.
+        let _second = acquire_update_lock(dir).unwrap();
     }
 
     #[test]

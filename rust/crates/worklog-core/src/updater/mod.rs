@@ -101,6 +101,17 @@ pub fn run_update(req: &UpdateRequest) -> Result<UpdateReport> {
         );
     }
 
+    // Serialize concurrent `self-update` invocations. Two processes
+    // writing to the same `worklog.new` staged path + both renaming
+    // onto `dest` is a race: whichever rename won second wins the
+    // install, the other reports "rolled back" for no reason, and the
+    // user ends up on an unpredictable version. A filesystem lock on
+    // a well-known path in the work dir lets the second invocation
+    // bail cleanly instead.
+    std::fs::create_dir_all(&req.work_dir)
+        .with_context(|| format!("creating work dir {}", req.work_dir.display()))?;
+    let _lock = install::acquire_update_lock(&req.work_dir)?;
+
     let pk = pubkey::resolve();
     let http = fetch::client()?;
 
@@ -133,8 +144,7 @@ pub fn run_update(req: &UpdateRequest) -> Result<UpdateReport> {
         .pick_asset(&req.current_version)
         .with_context(|| format!("manifest has no asset for target {current_target}"))?;
 
-    std::fs::create_dir_all(&req.work_dir)
-        .with_context(|| format!("creating work dir {}", req.work_dir.display()))?;
+    // work_dir already created + lock held above.
 
     // Staged path — the final raw binary that `swap_with_rollback` will
     // install. How we get bytes into it depends on the asset type:
@@ -151,6 +161,20 @@ pub fn run_update(req: &UpdateRequest) -> Result<UpdateReport> {
             (false, a.size)
         }
         manifest::Choice::Delta(pd) => {
+            // Forward-compat: older manifests don't carry result_sha256
+            // (the field defaults to ""). Without the post-apply check
+            // we'd be trusting bspatch blindly — safer to refuse the
+            // delta and fall through to the full asset on next try.
+            if pd.result_sha256.is_empty() {
+                anyhow::bail!(
+                    "manifest's delta from {} has no result_sha256 — \
+                     refusing to apply without a post-apply integrity check. \
+                     Re-sign the manifest with a current `worklog dev \
+                     make-patch` (which prints the expected sha) or retry \
+                     with --force to fetch the full binary instead.",
+                    pd.from
+                );
+            }
             let patch_path = req.work_dir.join("delta.bin");
             fetch::fetch_and_verify_asset(&http, &pd.asset, &pk, &patch_path)?;
             let old_bytes = std::fs::read(&req.current_binary).with_context(|| {

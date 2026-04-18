@@ -314,12 +314,14 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
 }
 
 /// Format timestamps the way the Python code does (`datetime.isoformat()`
-/// with offset). Avoids the `Z` vs `+00:00` mismatch that would break the
-/// carry-preservation lookup keyed on `started_at`.
+/// with offset). Python emits sub-seconds iff microsecond != 0; we use
+/// `SecondsFormat::AutoSi` which behaves the same way (no fractional
+/// when zero). This maximises the odds of exact-string match with rows
+/// Python wrote; the overlap fallback handles the remaining cases.
+/// The `false` argument forces `+00:00` instead of `Z` for the offset.
 fn block_iso(dt: DateTime<Utc>) -> String {
-    // `to_rfc3339_opts` lets us force `+00:00` instead of `Z`.
     use chrono::SecondsFormat;
-    dt.to_rfc3339_opts(SecondsFormat::Micros, false)
+    dt.to_rfc3339_opts(SecondsFormat::AutoSi, false)
 }
 
 #[derive(Debug, Clone)]
@@ -332,12 +334,46 @@ struct CarryRow {
     tempo_worklog_id: Option<String>,
 }
 
-/// Lexicographic overlap check on ISO-8601 prefix strings. Two ranges
-/// overlap iff `a_start < b_end && b_start < a_end`. ISO timestamps
-/// sort chronologically when they share the same offset (we strip the
-/// trailing `+00:00` upstream so this holds for our rows).
+/// Overlap check on ISO-8601 timestamps. Parses each string to a
+/// `DateTime` before comparing so we're robust to cross-format
+/// differences — e.g. Python emits `T09:00:00+00:00` (no sub-seconds
+/// when microsecond == 0) while Rust's `block_iso` historically emitted
+/// `T09:00:00.000000+00:00` (forced microseconds). Lexicographic
+/// comparison of those two strings gives the wrong answer because
+/// `.` (0x2E) sorts after `+` (0x2B). Parsing them both sidesteps the
+/// issue entirely.
 fn ranges_overlap(a_start: &str, a_end: &str, b_start: &str, b_end: &str) -> bool {
-    a_start < b_end && b_start < a_end
+    let Some((a_s, a_e)) = parse_pair(a_start, a_end) else {
+        return false;
+    };
+    let Some((b_s, b_e)) = parse_pair(b_start, b_end) else {
+        return false;
+    };
+    a_s < b_e && b_s < a_e
+}
+
+fn parse_pair(start: &str, end: &str) -> Option<(chrono::DateTime<Utc>, chrono::DateTime<Utc>)> {
+    // Accept the common variants our codebase writes:
+    //   * `+00:00` offset (what block_iso emits)
+    //   * `Z` (chrono's default to_rfc3339 on some builds)
+    //   * naive (no offset) — treat as UTC
+    let s = parse_maybe_utc(start)?;
+    let e = parse_maybe_utc(end)?;
+    Some((s, e))
+}
+
+fn parse_maybe_utc(s: &str) -> Option<chrono::DateTime<Utc>> {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Some(dt.with_timezone(&Utc));
+    }
+    // Fallback: naive ISO → assume UTC.
+    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
+        return Some(naive.and_utc());
+    }
+    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f") {
+        return Some(naive.and_utc());
+    }
+    None
 }
 
 #[cfg(test)]
@@ -347,6 +383,69 @@ mod tests {
     use crate::models::Event;
     use crate::repo;
     use chrono::TimeZone;
+
+    #[test]
+    fn ranges_overlap_handles_cross_format_timestamps() {
+        // The concrete bug: Python emits `09:00:00+00:00` (no
+        // sub-seconds when microsecond==0), Rust's old block_iso emitted
+        // `09:00:00.000000+00:00`. Lexicographic compare said "Python
+        // start > Rust end" because `.` > `+`, so the overlap fallback
+        // silently failed and the carry state was lost.
+        //
+        // Parsed-DateTime compare doesn't care about formatting.
+        assert!(ranges_overlap(
+            "2026-04-18T09:00:00.000000+00:00", // Rust micro-precision
+            "2026-04-18T09:30:00.000000+00:00",
+            "2026-04-18T09:00:00+00:00",        // Python second-precision
+            "2026-04-18T09:30:00+00:00",
+        ));
+
+        // And Z suffix vs +00:00 suffix, both should parse fine.
+        assert!(ranges_overlap(
+            "2026-04-18T09:00:00Z",
+            "2026-04-18T09:30:00Z",
+            "2026-04-18T09:15:00+00:00",
+            "2026-04-18T09:45:00+00:00",
+        ));
+
+        // Non-overlapping ranges still return false.
+        assert!(!ranges_overlap(
+            "2026-04-18T09:00:00+00:00",
+            "2026-04-18T09:30:00+00:00",
+            "2026-04-18T09:30:00.000000+00:00",
+            "2026-04-18T10:00:00.000000+00:00",
+        ));
+
+        // Unparseable strings fail closed (no overlap).
+        assert!(!ranges_overlap("garbage", "garbage", "also", "also"));
+    }
+
+    #[test]
+    fn block_iso_matches_python_for_whole_seconds() {
+        // Python: `datetime(2026,4,18,9,0,0,tzinfo=UTC).isoformat()`
+        //   → "2026-04-18T09:00:00+00:00"
+        // Rust block_iso with SecondsFormat::AutoSi must produce the
+        // same string (no `.000000` padding).
+        let dt = Utc.with_ymd_and_hms(2026, 4, 18, 9, 0, 0).unwrap();
+        assert_eq!(block_iso(dt), "2026-04-18T09:00:00+00:00");
+    }
+
+    #[test]
+    fn block_iso_emits_sub_seconds_when_non_zero() {
+        // Matches Python: isoformat emits sub-seconds iff non-zero.
+        use chrono::Timelike;
+        let dt = Utc
+            .with_ymd_and_hms(2026, 4, 18, 9, 0, 0)
+            .unwrap()
+            .with_nanosecond(123_456_789)
+            .unwrap();
+        let s = block_iso(dt);
+        assert!(
+            s.starts_with("2026-04-18T09:00:00.")
+                && s.ends_with("+00:00"),
+            "block_iso should emit sub-seconds for non-zero nanos: {s}"
+        );
+    }
 
     fn at(h: u32, m: u32) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 4, 18, h, m, 0).unwrap()
