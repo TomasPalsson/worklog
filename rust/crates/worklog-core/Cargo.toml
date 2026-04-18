@@ -19,9 +19,16 @@ dirs        = { workspace = true }
 toml        = { workspace = true }
 tracing     = { workspace = true }
 reqwest     = { workspace = true }
-base64      = "0.22"
+base64      = { workspace = true }
 urlencoding = "2"
 regex       = "1"
+
+# Stage 5 — signed updater.
+ed25519-dalek = { workspace = true }
+sha2        = { workspace = true }
+zstd        = { workspace = true }
+qbsdiff     = { workspace = true }
+rand        = { workspace = true }
 
 # Stage 3.2: axum IPC server bits. Used by the daemon only — unit tests
 # on the block service don't need any of these.

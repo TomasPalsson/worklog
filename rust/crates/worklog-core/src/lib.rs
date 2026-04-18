@@ -19,6 +19,7 @@ pub mod repo;
 pub mod schedule;
 pub mod secrets;
 pub mod sessions;
+pub mod updater;
 pub mod web;
 
 pub use crate::paths::Paths;
