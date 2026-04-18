@@ -37,7 +37,7 @@ tower       = { version = "0.5", features = ["util"] }
 tower-http  = { version = "0.6", features = ["trace"] }
 
 # Stage 5: signed updater
-ed25519-dalek = { version = "2", features = ["rand_core", "pem"] }
+ed25519-dalek = { version = "2", features = ["rand_core", "pem", "pkcs8"] }
 sha2        = "0.10"
 zstd        = "0.13"
 qbsdiff     = "1"

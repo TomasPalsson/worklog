@@ -5,16 +5,16 @@ from Claude Code, GitHub, Google Calendar, and Jira into one local event log,
 lets you review and clean it up in a web UI, and syncs the result to Tempo.
 
 > **Rewrite status:** the project is transitioning from Python to Rust in
-> five stages. **Stages 1.1, 1.2, 2, 3, and 4 are live** — the Rust binary
-> owns `worklog version`, `worklog setup`, `worklog db …`, `worklog secret
-> …`, `worklog hook …`, `worklog schedule …`, `worklog collect jira|github|all`,
-> `worklog sync`, `worklog infer`, `worklog estimate`, `worklog hook-run`,
-> `worklog daemon` (axum IPC on both unix socket and TCP), and
-> `worklog web {up,down,status,logs,build}` (dockerised Next.js + Bun
-> review UI). The Python FastAPI UI has been retired; Python now keeps
-> only the Google Calendar collector until Stage 2.1. See
-> [`rust/README.md`](rust/README.md) and the
-> [Rewrite roadmap](#rewrite-roadmap) below.
+> five stages. **Stages 1.1, 1.2, 2, 3, 4, and 5 are live** — the Rust
+> binary owns `worklog version`, `worklog setup`, `worklog db …`,
+> `worklog secret …`, `worklog hook …`, `worklog schedule …`,
+> `worklog collect jira|github|all`, `worklog sync`, `worklog infer`,
+> `worklog estimate`, `worklog hook-run`, `worklog daemon`,
+> `worklog web`, and now `worklog self-update` + `worklog dev`
+> (signed Ed25519 delta-patch releases with auto-rollback). The Python
+> FastAPI UI has been retired; Python now keeps only the Google Calendar
+> collector until Stage 2.1. See [`rust/README.md`](rust/README.md) and
+> the [Rewrite roadmap](#rewrite-roadmap) below.
 
 ## Architecture
 
@@ -106,6 +106,8 @@ from the `worklog` entrypoint. Everything else is Python (for now).
 | `worklog web up [--port]` | rust | Bring up the dockerised Next.js review UI (and checks the daemon is reachable) |
 | `worklog web down / status / logs / build` | rust | Container lifecycle |
 | `worklog serve [--port]` | rust | Alias for `worklog web up` (legacy) |
+| `worklog self-update [--check] [--dry-run] [--force]` | rust | Signed Ed25519 delta-patch self-updater with atomic swap + rollback |
+| `worklog dev keygen / sign / make-patch / apply-patch` | rust | Maintainer tooling: Ed25519 keypair, detached signatures, bsdiff patches |
 | `worklog doctor` | python | Environment + DB + auth sanity report |
 | `worklog init` | python | Create dirs + DB (prefer `worklog setup`) |
 | `worklog hook run` | python | Legacy hook handler (delegates to `hook-run` when Rust is present) |
@@ -143,7 +145,7 @@ users.
 | 2.1 | Google Calendar collector (OAuth via browser flow + refresh-token cache) | ⏳ |
 | 3 | axum unix-socket API + Rust infer + Rust estimator + Rust hook-run + `worklog daemon` | ✅ shipped |
 | 4 | Next.js + Bun web container, dockerized, replaces FastAPI; `worklog web` orchestration; daemon gains TCP listener for Docker Desktop | ✅ shipped |
-| 5 | Signed delta-patch self-updater with auto-rollback | ⏳ |
+| 5 | Signed Ed25519 delta-patch self-updater, atomic swap with auto-rollback; `worklog dev {keygen,sign,make-patch,apply-patch}`; Python `worklog upgrade` routes to `worklog self-update` by default | ✅ shipped |
 
 ## Dev
 

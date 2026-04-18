@@ -49,28 +49,33 @@ pub fn is_placeholder() -> bool {
     resolve() == RELEASE_PUBLIC_KEY && RELEASE_PUBLIC_KEY == [0u8; PUBLIC_KEY_LEN]
 }
 
+/// Crate-internal mutex so tests that touch $WORKLOG_RELEASE_PUBKEY_BASE64
+/// serialise — otherwise parallel tests leak each other's env state.
+/// Uses a poison-tolerant lock so a panicked earlier test doesn't take
+/// down every test that follows.
+#[cfg(test)]
+pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
+    use std::sync::{Mutex, OnceLock};
+    static L: OnceLock<Mutex<()>> = OnceLock::new();
+    L.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
-
-    // Env var mutations race across tests; serialise the ones that touch
-    // $WORKLOG_RELEASE_PUBKEY_BASE64.
-    fn env_lock() -> &'static Mutex<()> {
-        static L: OnceLock<Mutex<()>> = OnceLock::new();
-        L.get_or_init(|| Mutex::new(()))
-    }
 
     #[test]
     fn default_is_placeholder() {
-        let _g = env_lock().lock().unwrap();
+        let _g = test_env_lock();
         std::env::remove_var("WORKLOG_RELEASE_PUBKEY_BASE64");
         assert!(is_placeholder(), "shipped default must be all-zero");
     }
 
     #[test]
     fn env_override_takes_precedence() {
-        let _g = env_lock().lock().unwrap();
+        let _g = test_env_lock();
         let key = [7u8; PUBLIC_KEY_LEN];
         std::env::set_var("WORKLOG_RELEASE_PUBKEY_BASE64", STANDARD.encode(key));
         assert_eq!(resolve(), key);
@@ -80,7 +85,7 @@ mod tests {
 
     #[test]
     fn bad_env_falls_back_to_embedded() {
-        let _g = env_lock().lock().unwrap();
+        let _g = test_env_lock();
         std::env::set_var("WORKLOG_RELEASE_PUBKEY_BASE64", "not base64!!!");
         assert_eq!(resolve(), RELEASE_PUBLIC_KEY);
         std::env::remove_var("WORKLOG_RELEASE_PUBKEY_BASE64");
