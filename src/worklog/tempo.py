@@ -1,50 +1,26 @@
-"""Tempo Cloud (tempo.io) worklog sync.
+"""Tempo Cloud worklog sync — reads from the `blocks` table.
 
-Reads reviewed events from the DB and posts worklogs to Tempo v4 API.
-Each event's tempo_worklog_id is filled in after success so re-syncing is safe.
+Each block becomes exactly one Tempo worklog. `tempo_worklog_id` on the block
+row is set after a successful POST so re-syncing is safe and cheap.
 
-Grouping strategy: events for the same (date, company, jira_issue) are coalesced
-into a single worklog per day. Duration is the sum of event durations, or — for
-events without duration (commits, point-in-time) — we use the configured default
-per company or ignore them.
+Blocks without a `jira_issue` are skipped — the UI flags them so the user can
+pick a ticket before syncing.
 """
 
 from __future__ import annotations
 
-import sqlite3
-from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date
 from typing import Any
 
 import httpx
 
-from worklog.config import Settings, load_companies
+from worklog.config import Settings
 from worklog.db import connect
 
 
-def _group_for_day(
-    conn: sqlite3.Connection, day: date
-) -> dict[tuple[str, str], list[sqlite3.Row]]:
-    """Group synced-able events on `day` by (company, jira_issue)."""
-    start = datetime.combine(day, datetime.min.time()).isoformat()
-    end = datetime.combine(day + timedelta(days=1), datetime.min.time()).isoformat()
-    rows = conn.execute(
-        """
-        SELECT * FROM events
-        WHERE started_at >= ? AND started_at < ?
-          AND company IS NOT NULL
-          AND tempo_worklog_id IS NULL
-        """,
-        (start, end),
-    ).fetchall()
-    groups: dict[tuple[str, str], list[sqlite3.Row]] = defaultdict(list)
-    for r in rows:
-        issue = r["jira_issue"]
-        if not issue:
-            # no jira issue → fall back to company-level default (set later)
-            issue = ""
-        groups[(r["company"], issue)].append(r)
-    return groups
+def _start_time(started_at_iso: str) -> str:
+    # Tempo v4 wants HH:MM:SS; the block's ISO-8601 contains timezone — strip.
+    return started_at_iso[11:19]
 
 
 def sync_day(
@@ -56,77 +32,71 @@ def sync_day(
     settings = settings or Settings()
     if not dry_run and not settings.tempo_token:
         raise RuntimeError("WORKLOG_TEMPO_TOKEN not set")
-    config = load_companies()
-    company_map = {c.name: c for c in config.companies}
 
     results: list[dict[str, Any]] = []
     headers = {
-        "Authorization": f"Bearer {settings.tempo_token}",
+        "Authorization": f"Bearer {settings.tempo_token or ''}",
         "Content-Type": "application/json",
     }
 
     with connect() as conn, httpx.Client(headers=headers, timeout=30) as client:
-        groups = _group_for_day(conn, day)
-        for (company_name, issue), rows in groups.items():
-            company = company_map.get(company_name)
-            issue_key = issue or (company.jira_issue_default if company else None)
+        blocks = conn.execute(
+            """
+            SELECT * FROM blocks
+             WHERE day = ? AND tempo_worklog_id IS NULL
+             ORDER BY started_at
+            """,
+            (day.isoformat(),),
+        ).fetchall()
+
+        for block in blocks:
+            issue_key = block["jira_issue"]
             if not issue_key:
                 results.append(
                     {
-                        "company": company_name,
+                        "block_id": block["id"],
                         "status": "skipped",
-                        "reason": "no jira_issue and no jira_issue_default for company",
-                        "event_ids": [r["id"] for r in rows],
+                        "reason": "no jira_issue — assign one in the UI",
                     }
                 )
                 continue
 
-            total_seconds = sum(r["duration_seconds"] or 0 for r in rows)
-            if total_seconds == 0:
-                # No explicit durations — default each commit/PR to 15min placeholder
-                total_seconds = 15 * 60 * max(1, len(rows))
-
-            description = " | ".join(r["title"] for r in rows)[:2000]
-            payload = {
+            payload: dict[str, Any] = {
                 "issueKey": issue_key,
-                "timeSpentSeconds": total_seconds,
-                "startDate": day.isoformat(),
-                "startTime": "09:00:00",
-                "description": description,
+                "timeSpentSeconds": block["duration_seconds"],
+                "startDate": block["day"],
+                "startTime": _start_time(block["started_at"]),
+                "description": block["description"] or f"Work on {issue_key}",
                 "authorAccountId": settings.jira_email or "",
             }
-            if company and company.tempo_account_key:
-                payload["attributes"] = [
-                    {"key": "_Account_", "value": company.tempo_account_key}
-                ]
 
             if dry_run:
-                results.append({"company": company_name, "status": "dry-run", "payload": payload})
+                results.append(
+                    {"block_id": block["id"], "status": "dry-run", "payload": payload}
+                )
                 continue
 
-            r = client.post(f"{settings.tempo_base_url}/worklogs", json=payload)
-            if r.status_code >= 300:
+            resp = client.post(f"{settings.tempo_base_url}/worklogs", json=payload)
+            if resp.status_code >= 300:
                 results.append(
                     {
-                        "company": company_name,
+                        "block_id": block["id"],
                         "status": "error",
-                        "http_status": r.status_code,
-                        "body": r.text,
+                        "http_status": resp.status_code,
+                        "body": resp.text,
                     }
                 )
                 continue
-            worklog_id = str(r.json().get("tempoWorklogId"))
-            ids = [row["id"] for row in rows]
-            conn.executemany(
-                "UPDATE events SET tempo_worklog_id = ? WHERE id = ?",
-                [(worklog_id, i) for i in ids],
+            worklog_id = str(resp.json().get("tempoWorklogId"))
+            conn.execute(
+                "UPDATE blocks SET tempo_worklog_id = ? WHERE id = ?",
+                (worklog_id, block["id"]),
             )
             results.append(
                 {
-                    "company": company_name,
+                    "block_id": block["id"],
                     "status": "synced",
                     "tempo_worklog_id": worklog_id,
-                    "event_ids": ids,
                 }
             )
     return results

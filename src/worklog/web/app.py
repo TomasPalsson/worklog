@@ -1,22 +1,31 @@
-"""FastAPI review UI.
+"""FastAPI review UI — operates on blocks.
 
-Browse activity by day, reassign companies, edit durations, trigger a Tempo sync.
-Run with: `worklog serve` → http://127.0.0.1:8765
+Endpoints:
+  GET  /              — daily view, blocks ordered by start time
+  POST /blocks/{id}/ticket       — assign jira_issue (from dropdown)
+  POST /blocks/{id}/duration     — edit duration (minutes)
+  POST /blocks/{id}/description  — edit description
+  POST /blocks/{id}/delete       — remove a block (e.g. lunch/noise)
+  POST /infer                    — rebuild blocks for a day
+  POST /estimate                 — run claude -p on blocks for a day
+  POST /jira/refresh             — refresh open-ticket cache
+  POST /sync                     — push blocks to Tempo
 """
 
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from worklog.config import load_companies
 from worklog.db import connect, init_db
+from worklog.estimate import estimate_day
+from worklog.infer import build_blocks
+from worklog.infer_persist import load_day_events, persist_blocks
 from worklog.tempo import sync_day
 
 BASE_DIR = Path(__file__).parent
@@ -32,30 +41,51 @@ def _parse_day(s: str | None) -> date:
     return datetime.strptime(s, "%Y-%m-%d").date()
 
 
+def _nullable(s: str) -> str | None:
+    s = (s or "").strip()
+    return s or None
+
+
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request, day: str | None = None) -> HTMLResponse:
     init_db()
     d = _parse_day(day)
-    start = datetime.combine(d, datetime.min.time()).isoformat()
-    end = datetime.combine(d + timedelta(days=1), datetime.min.time()).isoformat()
-
     with connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT * FROM events
-            WHERE started_at >= ? AND started_at < ?
-            ORDER BY started_at ASC
-            """,
-            (start, end),
-        ).fetchall()
+        blocks = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT * FROM blocks WHERE day = ? ORDER BY started_at",
+                (d.isoformat(),),
+            ).fetchall()
+        ]
+        event_counts = {
+            r["block_id"]: r["n"]
+            for r in conn.execute(
+                """
+                SELECT be.block_id AS block_id, COUNT(*) AS n
+                  FROM block_events be
+                  JOIN blocks b ON b.id = be.block_id
+                 WHERE b.day = ?
+                 GROUP BY be.block_id
+                """,
+                (d.isoformat(),),
+            ).fetchall()
+        }
+        tickets = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT key, summary, status FROM jira_tickets ORDER BY updated DESC"
+            ).fetchall()
+        ]
+        ticket_cache_meta = conn.execute(
+            "SELECT COUNT(*) AS n, MAX(fetched_at) AS last FROM jira_tickets"
+        ).fetchone()
 
-    companies = load_companies().companies
-    totals: dict[str, int] = {}
-    by_company: dict[str, list[dict[str, Any]]] = {}
-    for r in rows:
-        key = r["company"] or "unassigned"
-        by_company.setdefault(key, []).append(dict(r))
-        totals[key] = totals.get(key, 0) + (r["duration_seconds"] or 0)
+    for b in blocks:
+        b["event_count"] = event_counts.get(b["id"], 0)
+
+    total_seconds = sum(b["duration_seconds"] for b in blocks)
+    unassigned_count = sum(1 for b in blocks if not b["jira_issue"])
 
     return templates.TemplateResponse(
         request,
@@ -64,43 +94,90 @@ def index(request: Request, day: str | None = None) -> HTMLResponse:
             "day": d,
             "prev_day": d - timedelta(days=1),
             "next_day": d + timedelta(days=1),
-            "by_company": by_company,
-            "totals": totals,
-            "companies": companies,
+            "blocks": blocks,
+            "total_seconds": total_seconds,
+            "unassigned_count": unassigned_count,
+            "tickets": tickets,
+            "ticket_cache_count": ticket_cache_meta["n"] or 0,
+            "ticket_cache_last": ticket_cache_meta["last"],
         },
     )
 
 
-@app.post("/events/{event_id}/assign")
-def assign_company(
-    event_id: int,
-    company: str = Form(...),
-    day: str = Form(...),
+@app.post("/blocks/{block_id}/ticket")
+def assign_ticket(
+    block_id: int, jira_issue: str = Form(""), day: str = Form(...)
 ) -> RedirectResponse:
+    key = _nullable(jira_issue)
     with connect() as conn:
         conn.execute(
-            "UPDATE events SET company = ? WHERE id = ?",
-            (company or None, event_id),
+            "UPDATE blocks SET jira_issue = ? WHERE id = ?",
+            (key, block_id),
         )
     return RedirectResponse(url=f"/?day={day}", status_code=303)
 
 
-@app.post("/events/{event_id}/duration")
-def set_duration(event_id: int, minutes: int = Form(...), day: str = Form(...)) -> RedirectResponse:
+@app.post("/blocks/{block_id}/duration")
+def set_duration(
+    block_id: int, minutes: int = Form(...), day: str = Form(...)
+) -> RedirectResponse:
     with connect() as conn:
         conn.execute(
-            "UPDATE events SET duration_seconds = ? WHERE id = ?",
-            (minutes * 60, event_id),
+            "UPDATE blocks SET duration_seconds = ?, estimated_by = 'manual' WHERE id = ?",
+            (minutes * 60, block_id),
         )
+    return RedirectResponse(url=f"/?day={day}", status_code=303)
+
+
+@app.post("/blocks/{block_id}/description")
+def set_description(
+    block_id: int, description: str = Form(...), day: str = Form(...)
+) -> RedirectResponse:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE blocks SET description = ?, estimated_by = 'manual' WHERE id = ?",
+            (description, block_id),
+        )
+    return RedirectResponse(url=f"/?day={day}", status_code=303)
+
+
+@app.post("/blocks/{block_id}/delete")
+def delete_block(block_id: int, day: str = Form(...)) -> RedirectResponse:
+    with connect() as conn:
+        conn.execute("DELETE FROM blocks WHERE id = ?", (block_id,))
+    return RedirectResponse(url=f"/?day={day}", status_code=303)
+
+
+@app.post("/infer")
+def run_infer(day: str = Form(...)) -> RedirectResponse:
+    d = _parse_day(day)
+    events = load_day_events(date=d)
+    persist_blocks(build_blocks(events), day=d)
+    return RedirectResponse(url=f"/?day={day}", status_code=303)
+
+
+@app.post("/estimate")
+def run_estimate(day: str = Form(...)) -> RedirectResponse:
+    estimate_day(_parse_day(day))
+    return RedirectResponse(url=f"/?day={day}", status_code=303)
+
+
+@app.post("/jira/refresh")
+def refresh_tickets(day: str = Form(...)) -> RedirectResponse:
+    # Imported lazily so the web app still starts if `jira` isn't configured.
+    import logging
+
+    from worklog.collectors.jira_ import fetch_open_tickets
+
+    try:
+        fetch_open_tickets()
+    except Exception as e:  # noqa: BLE001 - keep UI resilient regardless of Jira state
+        logging.getLogger("worklog.web").warning("jira refresh failed: %s", e)
     return RedirectResponse(url=f"/?day={day}", status_code=303)
 
 
 @app.post("/sync")
-def sync(day: str = Form(...), dry_run: bool = Form(False)) -> HTMLResponse:
-    d = _parse_day(day)
-    results = sync_day(d, dry_run=dry_run)
-    return HTMLResponse(
-        "<pre>"
-        + "\n".join(str(r) for r in results)
-        + f"\n</pre><a href='/?day={day}'>back</a>"
-    )
+def sync(day: str = Form(...), dry_run: str = Form("true")) -> HTMLResponse:
+    results = sync_day(_parse_day(day), dry_run=(dry_run == "true"))
+    body = "<pre>" + "\n".join(str(r) for r in results) + "</pre>"
+    return HTMLResponse(body + f"<a href='/?day={day}'>← back</a>")

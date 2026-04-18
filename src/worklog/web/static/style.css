@@ -45,7 +45,16 @@ nav strong { color: var(--text); }
 .pill .label { color: var(--muted); }
 .pill .value { color: var(--accent); font-variant-numeric: tabular-nums; }
 
+.actions { margin: 1rem 0; display: flex; gap: 0.5rem; flex-wrap: wrap; }
 .sync-bar { margin: 1rem 0; display: flex; gap: 0.5rem; }
+tr.flagged { background: rgba(224, 175, 104, 0.08); }
+tr.synced .time::before { content: "✓ "; color: var(--success); }
+.inline { display: inline; }
+td.desc input { width: 100%; }
+.empty { color: var(--muted); font-style: italic; }
+.tag.src-claude_p { color: var(--success); }
+.tag.src-manual { color: var(--accent); }
+.tag.src-gap { color: var(--muted); }
 button {
   background: var(--panel);
   border: 1px solid var(--border);

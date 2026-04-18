@@ -15,8 +15,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-from worklog.classify import classify
-from worklog.config import Settings, load_companies
+from worklog.config import Settings
 from worklog.db import connect, init_db, upsert_event
 
 SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
@@ -55,7 +54,6 @@ def collect(
     until = until or (date.today() + timedelta(days=1))
     service = build("calendar", "v3", credentials=_creds(settings))
 
-    config = load_companies()
     init_db()
     count = 0
 
@@ -93,11 +91,6 @@ def collect(
                         else None
                     )
                     summary = ev.get("summary", "(no title)")
-                    company = classify(
-                        config,
-                        gcal_calendar=cal,
-                        gcal_summary=summary,
-                    )
                     upsert_event(
                         conn,
                         source="gcal",
@@ -107,7 +100,6 @@ def collect(
                         duration_seconds=duration,
                         title=summary,
                         details=ev.get("description"),
-                        company=company,
                     )
                     count += 1
                 page_token = resp.get("nextPageToken")
