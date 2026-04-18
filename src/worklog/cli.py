@@ -412,3 +412,70 @@ def serve(
     """Start the review web UI."""
     init_db()
     uvicorn.run("worklog.web.app:app", host=host, port=port, reload=False)
+
+
+@app.command()
+def day(
+    day: str = typer.Option(None, help="YYYY-MM-DD, default today"),
+    no_serve: bool = typer.Option(False, "--no-serve", help="Skip opening the review UI"),
+    model: str = typer.Option(DEFAULT_MODEL, help="claude model id"),
+) -> None:
+    """One-shot: collect → infer → estimate → serve. The daily command."""
+    d = _parse_day(day)
+
+    console.print("[bold]collecting[/] github + jira …")
+    for s, fn in (
+        ("github", lambda: github_collector.collect(since=d, until=None)),
+        ("jira", lambda: jira_collector.collect(since=d, until=None)),
+    ):
+        try:
+            n = fn()
+            console.print(f"  [green]✓[/] {s}: {n} events")
+        except Exception as e:  # noqa: BLE001
+            console.print(f"  [yellow]![/] {s}: {e}")
+
+    console.print("\n[bold]inferring blocks[/] …")
+    events = load_day_events(date=d)
+    blocks = build_blocks(events)
+    persist_blocks(blocks, day=d)
+    total_min = sum(b.duration_seconds for b in blocks) // 60
+    console.print(f"  [green]✓[/] {len(blocks)} blocks, {total_min} min total")
+
+    console.print("\n[bold]asking claude to pick tickets + write descriptions[/] …")
+    try:
+        stats = estimate_day(d, model=model)
+        console.print(
+            f"  [green]✓[/] estimated={stats['estimated']}, "
+            f"skipped={stats['skipped']}, failed={stats['failed']}"
+        )
+    except Exception as e:  # noqa: BLE001
+        console.print(f"  [yellow]![/] estimate skipped: {e}")
+
+    if no_serve:
+        return
+    console.print("\n[bold]opening review UI[/] at http://127.0.0.1:8765")
+    console.print("  [dim]ctrl+c when you're done[/]\n")
+    init_db()
+    uvicorn.run("worklog.web.app:app", host="127.0.0.1", port=8765, reload=False)
+
+
+@app.command()
+def upgrade(
+    ref: str = typer.Option("main", help="git branch/tag/SHA to install"),
+) -> None:
+    """Upgrade worklog to the latest version from GitHub."""
+    import subprocess
+
+    repo = "git+https://github.com/TomasPalsson/worklog.git"
+    if ref and ref != "main":
+        repo = f"{repo}@{ref}"
+    uv_bin = shutil.which("uv") or "uv"
+    console.print(f"[bold]upgrading worklog[/] from {repo} …")
+    result = subprocess.run(  # noqa: S603 - trusted args
+        [uv_bin, "tool", "install", "--force", "--reinstall", repo],
+        check=False,
+    )
+    if result.returncode != 0:
+        console.print("[red]✗[/] upgrade failed — check the uv output above")
+        raise typer.Exit(code=result.returncode)
+    console.print("[green]✓[/] upgraded. run [bold]worklog doctor[/] to confirm.")
