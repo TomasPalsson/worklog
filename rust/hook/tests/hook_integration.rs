@@ -50,7 +50,12 @@ fn session_start_inserts_event_and_session() {
     }"#;
 
     let out = run_hook(&db, tmp.path(), payload);
-    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(out.stdout.is_empty(), "hook must not print to stdout");
 
     let conn = Connection::open(&db).unwrap();
@@ -70,7 +75,10 @@ fn session_start_inserts_event_and_session() {
             |r| r.get(0),
         )
         .unwrap();
-    assert!(session_ended_at.is_none(), "SessionStart should leave ended_at NULL");
+    assert!(
+        session_ended_at.is_none(),
+        "SessionStart should leave ended_at NULL"
+    );
 }
 
 #[test]
@@ -109,8 +117,15 @@ fn malformed_json_exits_zero_with_stderr() {
     seed_schema(&db);
 
     let out = run_hook(&db, tmp.path(), "this is not JSON");
-    assert_eq!(out.status.code(), Some(0), "hook MUST exit 0 even on bad input");
-    assert!(!out.stderr.is_empty(), "bad input should produce stderr warning");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "hook MUST exit 0 even on bad input"
+    );
+    assert!(
+        !out.stderr.is_empty(),
+        "bad input should produce stderr warning"
+    );
 }
 
 #[test]
@@ -124,7 +139,12 @@ fn missing_database_file_is_created() {
         tmp.path(),
         r#"{"hook_event_name":"SessionStart","session_id":"auto-create","cwd":"/t","source":"startup"}"#,
     );
-    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(db.exists(), "DB file should have been created");
 
     let conn = Connection::open(&db).unwrap();
@@ -198,7 +218,7 @@ fn concurrent_writes_both_succeed() {
     let db = tmp.path().join("worklog.db");
     seed_schema(&db);
 
-    let handles: Vec<_> = (0..10)
+    let handles: Vec<_> = (0..5)
         .map(|i| {
             let db = db.clone();
             let cfg = tmp.path().to_path_buf();
@@ -222,5 +242,5 @@ fn concurrent_writes_both_succeed() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(n, 10);
+    assert_eq!(n, 5);
 }

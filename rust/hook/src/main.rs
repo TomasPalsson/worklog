@@ -79,7 +79,9 @@ fn first_jira_key(parts: &[Option<&str>]) -> Option<String> {
 }
 
 fn now_utc_iso(offset_seconds: i64) -> String {
-    let d = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let d = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let secs = d.as_secs() as i64 + offset_seconds;
     let nanos = d.subsec_nanos();
     format_iso(secs, nanos)
@@ -106,23 +108,22 @@ fn format_iso(unix_secs: i64, nanos: u32) -> String {
     let year = if month <= 2 { y + 1 } else { y };
 
     let us = nanos / 1000;
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{us:06}+00:00"
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{us:06}+00:00")
 }
 
-fn upsert_event(
-    conn: &rusqlite::Connection,
-    source_id: &str,
-    started_at: &str,
-    title: &str,
-    details: Option<&str>,
-    project_path: Option<&str>,
-    jira_issue: Option<&str>,
-    company: Option<&str>,
-    session_id: &str,
-    raw_json: &str,
-) -> Result<()> {
+struct EventRow<'a> {
+    source_id: &'a str,
+    started_at: &'a str,
+    title: &'a str,
+    details: Option<&'a str>,
+    project_path: Option<&'a str>,
+    jira_issue: Option<&'a str>,
+    company: Option<&'a str>,
+    session_id: &'a str,
+    raw_json: &'a str,
+}
+
+fn upsert_event(conn: &rusqlite::Connection, row: &EventRow<'_>) -> Result<()> {
     conn.execute(
         "INSERT INTO events (source, source_id, started_at, title, details,
                              project_path, jira_issue, company, session_id, raw_json)
@@ -136,15 +137,15 @@ fn upsert_event(
             session_id = COALESCE(events.session_id, excluded.session_id),
             raw_json = excluded.raw_json",
         params![
-            source_id,
-            started_at,
-            title,
-            details,
-            project_path,
-            jira_issue,
-            company,
-            session_id,
-            raw_json,
+            row.source_id,
+            row.started_at,
+            row.title,
+            row.details,
+            row.project_path,
+            row.jira_issue,
+            row.company,
+            row.session_id,
+            row.raw_json,
         ],
     )?;
     Ok(())
@@ -186,15 +187,17 @@ fn run() -> Result<()> {
     let conn = db::open(&paths.db)?;
     upsert_event(
         &conn,
-        &source_id,
-        &now,
-        &title,
-        payload.transcript_path.as_deref(),
-        cwd.as_deref(),
-        jira.as_deref(),
-        company.as_deref(),
-        &session_id,
-        &raw,
+        &EventRow {
+            source_id: &source_id,
+            started_at: &now,
+            title: &title,
+            details: payload.transcript_path.as_deref(),
+            project_path: cwd.as_deref(),
+            jira_issue: jira.as_deref(),
+            company: company.as_deref(),
+            session_id: &session_id,
+            raw_json: &raw,
+        },
     )?;
     open_session(&conn, &session_id, &now, cwd.as_deref())?;
     if let Some(reason) = close_reason_for(&event) {

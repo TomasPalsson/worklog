@@ -59,7 +59,6 @@ pub fn load_companies(path: &std::path::Path) -> Result<Companies> {
     if !path.exists() {
         return Ok(Companies::default());
     }
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("read {}", path.display()))?;
+    let text = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     serde_saphyr::from_str(&text).with_context(|| format!("parse {}", path.display()))
 }

@@ -11,7 +11,7 @@ const SCHEMA: &str = include_str!("../../../src/worklog/schema.sql");
 const PRAGMAS: &str = "
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
-PRAGMA busy_timeout = 150;
+PRAGMA busy_timeout = 1000;
 PRAGMA foreign_keys = ON;
 PRAGMA temp_store = MEMORY;
 ";
