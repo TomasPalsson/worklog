@@ -1,57 +1,70 @@
 # CLAUDE.md — worklog
 
-Hybrid Python + Rust tool. Python 3.12 + uv + Typer lives in
-`src/worklog/` (CLI shim + Google Calendar collector). Everything else
-— other collectors, infer, estimator, tempo sync, axum daemon,
-self-updater — is Rust, under `rust/crates/{worklog-core,worklog-cli}/`.
-The review UI is a dockerised Next.js + Bun app in `web/`, talking to
-the Rust daemon over TCP `127.0.0.1:9323`. FastAPI was retired in stage 4.
+Pure-Rust CLI (`rust/crates/{worklog-core,worklog-cli}/`) plus a
+dockerised Next.js + Bun review UI in `web/`. The Rust daemon listens
+on unix socket `api.sock` + TCP `127.0.0.1:9323`; the web container
+reads SQLite directly via `bun:sqlite` and writes via Server Actions
+that call the daemon.
 
 ## Commands
 
 ```bash
-uv run worklog <cmd>         # Python entry (delegates to Rust when installed)
-uv run pytest                # Python tests
-uv run ruff check src        # Python lint
-uv run mypy src              # Python types
-
-cargo test --manifest-path rust/Cargo.toml           # Rust tests
+cargo test  --manifest-path rust/Cargo.toml
 cargo clippy --manifest-path rust/Cargo.toml --all-targets --all-features -- -D warnings
+cargo fmt   --manifest-path rust/Cargo.toml --all -- --check
 
-cd web && bun test && bun run typecheck              # web tests + TS
+cd web && bun test && bun run typecheck && bun run build
+```
+
+Release smoke (no network, no tag push):
+
+```bash
+bash scripts/release-smoke.sh
+bash tests/install/smoke.sh
 ```
 
 ## Conventions
 
-- Stdlib datetimes are always UTC (`datetime.now(UTC)` in Python, `Utc::now()`
-  in Rust). ISO-8601 in DB. Gcal events are normalised to UTC at the
-  collector boundary (`_to_utc` in `src/worklog/collectors/gcal.py`).
-- Day bucketing for blocks uses the user's local TZ, driven by
-  `$WORKLOG_TZ` as a fixed offset (e.g. `-05:00`, `+01:00`, `UTC`).
-  Default is UTC. Named zones like `America/New_York` are not
-  supported; DST-observers update the env var when DST flips.
+- Stdlib datetimes are UTC (`Utc::now()`). ISO-8601 in DB. Gcal
+  events are normalised to UTC at the collector boundary
+  (`gcal::to_utc` in `rust/crates/worklog-core/src/collectors/gcal.rs`).
+- Day bucketing for blocks uses the user's local TZ via `$WORKLOG_TZ`
+  as a fixed offset (e.g. `-05:00`, `+01:00`, `UTC`). Default is UTC.
+  Named zones (`America/New_York`) are not supported; DST observers
+  update the env var when DST flips.
 - Collectors MUST be idempotent: dedupe on `(source, source_id)` via
-  `db.upsert_event` (Python) / `repo::upsert_event` (Rust).
-- Never print from `worklog hook run` except to stderr — it's wired to Claude
-  Code and stdout would surface in the user's session.
-- `company` on an event may be `None` (unassigned) — UI reassigns.
-- `tempo_worklog_id` is the canary that prevents double-syncing; never clear it.
-  Accepts "" AND NULL as "unsynced" (see `tempo::normalise_tempo_id`).
-- `estimated_by = 'manual'` blocks MUST NOT be overwritten by re-estimation
-  (both Python and Rust skip them).
-- `rust/crates/worklog-core/sql/schema.sql` must stay byte-identical to
-  `src/worklog/schema.sql`. A test enforces it.
+  `repo::upsert_event`.
+- Never print to stdout from `worklog hook-run` — it's wired to Claude
+  Code and stdout would surface in the user's session. Everything
+  goes to stderr.
+- `tempo_worklog_id` is the canary that prevents double-syncing —
+  **never clear it**. Accepts `""` AND `NULL` as "unsynced" (see
+  `tempo::normalise_tempo_id`).
+- `estimated_by = 'manual'` blocks MUST NOT be overwritten by
+  re-estimation.
+- The embedded Ed25519 release pubkey lives at
+  `rust/crates/worklog-core/src/updater/pubkey.rs`. The matching
+  private key lives only in the `WORKLOG_RELEASE_PRIVATE_KEY` GHA
+  secret. CI signs on every tag push; a unit test asserts the
+  placeholder has been replaced so no accidental rebuild can ship
+  an unsigned binary.
 
-## Adding a collector (Python)
-
-1. New module in `src/worklog/collectors/`.
-2. Expose `collect(*, since, until, settings=None) -> int`.
-3. Register in `cli.collect`.
-4. Call `classify()` with the right signal before `upsert_event`.
-
-## Adding a collector (Rust)
+## Adding a collector
 
 1. New module in `rust/crates/worklog-core/src/collectors/`.
-2. Expose `collect*()` returning `CollectReport`.
-3. Wire into `worklog-cli`'s `Cmd::Collect` dispatch.
-4. Use `repo::upsert_event` to insert with idempotent dedupe.
+2. Expose `collect(conn, auth, since, until) -> Result<CollectReport>`
+   plus a test-injectable `collect_with(... client)` variant.
+3. Wire into `worklog-cli`'s `Cmd::Collect` dispatch (`CollectTarget`).
+4. Use `repo::upsert_event` for idempotent dedupe.
+5. Inline `#[cfg(test)] mod tests` with httpmock fixtures; mirror the
+   github/jira patterns.
+
+## Release pipeline
+
+- Push a tag `v*` → `.github/workflows/release.yml` runs on
+  `macos-14` (arm64) + `ubuntu-24.04` (x86_64), signs each asset and
+  the manifest, and creates a GitHub Release with eight files.
+- Users install via:
+  `curl -fsSL https://raw.githubusercontent.com/TomasPalsson/worklog/main/install.sh | bash`
+- Subsequent upgrades: `worklog upgrade` → `worklog self-update`,
+  which re-verifies every signature against the embedded pubkey.

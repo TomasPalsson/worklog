@@ -1,9 +1,8 @@
 //! Database connection + migration runner.
 //!
 //! The schema lives in `sql/schema.sql` and is embedded with `include_str!`.
-//! Every `CREATE` in the schema is idempotent, so `migrate()` can be called on
-//! every boot. This mirrors the Rust claude-code hook and the Python runtime
-//! so the three stay bit-compatible during Stage 1.
+//! Every `CREATE` in the schema is idempotent, so `migrate()` can be called
+//! on every boot.
 
 use std::path::Path;
 
@@ -164,5 +163,4 @@ mod tests {
         assert_eq!(s.sessions, 0);
         assert_eq!(s.jira_tickets, 0);
     }
-
 }

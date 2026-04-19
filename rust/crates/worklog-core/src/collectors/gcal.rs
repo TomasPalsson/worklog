@@ -209,7 +209,10 @@ fn needs_refresh(token: &StoredToken) -> bool {
         return true;
     };
     let Ok(expiry) = DateTime::parse_from_rfc3339(expiry) else {
-        warn!(expiry, "gcal: unparseable expiry in token.json — forcing refresh");
+        warn!(
+            expiry,
+            "gcal: unparseable expiry in token.json — forcing refresh"
+        );
         return true;
     };
     // 60s buffer so a refresh kicked off right before expiry completes
@@ -582,9 +585,7 @@ mod tests {
     // ------- collect_with ----------------------------------------------
 
     /// Set up a mock Google Calendar + OAuth server and a valid token.
-    fn setup_gcal_env(
-        tmp: &std::path::Path,
-    ) -> (MockServer, GcalAuth, Connection) {
+    fn setup_gcal_env(tmp: &std::path::Path) -> (MockServer, GcalAuth, Connection) {
         let server = MockServer::start();
         let token_path = tmp.join("google_token.json");
         let future = (chrono::Utc::now() + chrono::Duration::hours(1))

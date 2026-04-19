@@ -53,7 +53,10 @@ pub fn preflight_docker() -> Result<()> {
         Ok(o) if o.status.success() => Ok(()),
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr);
-            Err(format_docker_preflight_error(&o.status.to_string(), &stderr))
+            Err(format_docker_preflight_error(
+                &o.status.to_string(),
+                &stderr,
+            ))
         }
         Err(e) => anyhow::bail!(
             "can't find docker on PATH ({e}). Install Docker Desktop \
@@ -71,10 +74,7 @@ pub(crate) fn format_docker_preflight_error(status: &str, stderr: &str) -> anyho
     } else {
         ""
     };
-    anyhow::anyhow!(
-        "`docker version` exited {status}: {}{hint}",
-        stderr.trim()
-    )
+    anyhow::anyhow!("`docker version` exited {status}: {}{hint}", stderr.trim())
 }
 
 /// Render the compose template into the data dir, overwriting any
@@ -114,10 +114,7 @@ pub fn resolve_web_context() -> Result<PathBuf> {
         if p.join("Dockerfile").is_file() {
             return std::fs::canonicalize(&p).context("canonicalising WORKLOG_WEB_DIR");
         }
-        anyhow::bail!(
-            "WORKLOG_WEB_DIR={} has no Dockerfile",
-            p.display()
-        );
+        anyhow::bail!("WORKLOG_WEB_DIR={} has no Dockerfile", p.display());
     }
     let cwd = std::env::current_dir().context("getting cwd")?;
     let mut cur: Option<&Path> = Some(&cwd);
@@ -283,7 +280,10 @@ mod tests {
             body.contains(paths.data_dir.to_str().unwrap()),
             "compose should reference the data dir: {body}"
         );
-        assert!(body.contains("3333:3000"), "port mapping should be rendered");
+        assert!(
+            body.contains("3333:3000"),
+            "port mapping should be rendered"
+        );
         assert!(
             body.contains(web_ctx.to_str().unwrap()),
             "compose should reference the web build context"
@@ -346,7 +346,10 @@ mod tests {
             msg.contains("start Docker Desktop") || msg.contains("colima"),
             "missing actionable hint: {msg}"
         );
-        assert!(msg.contains("Cannot connect"), "original stderr must be preserved");
+        assert!(
+            msg.contains("Cannot connect"),
+            "original stderr must be preserved"
+        );
     }
 
     #[test]
@@ -360,7 +363,10 @@ mod tests {
             "permission denied while trying to access the Docker socket",
         );
         let msg = format!("{err}");
-        assert!(!msg.contains("start Docker Desktop"), "hint must not misfire");
+        assert!(
+            !msg.contains("start Docker Desktop"),
+            "hint must not misfire"
+        );
         assert!(!msg.contains("colima"), "hint must not misfire");
     }
 }

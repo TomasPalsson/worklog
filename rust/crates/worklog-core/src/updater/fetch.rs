@@ -33,7 +33,11 @@ pub fn client() -> Result<Client> {
 /// serve `<url>.sig` — a detached Ed25519 signature over the manifest
 /// bytes (the raw bytes we read, not any re-serialisation). Returns the
 /// parsed manifest on success.
-pub fn fetch_manifest(client: &Client, url: &str, pubkey: &[u8; PUBLIC_KEY_LEN]) -> Result<Manifest> {
+pub fn fetch_manifest(
+    client: &Client,
+    url: &str,
+    pubkey: &[u8; PUBLIC_KEY_LEN],
+) -> Result<Manifest> {
     let body = client
         .get(url)
         .send()
@@ -101,8 +105,8 @@ pub(crate) fn fetch_and_verify_with_cap(
     if let Some(parent) = dest_file.parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    let mut file =
-        std::fs::File::create(dest_file).with_context(|| format!("create {}", dest_file.display()))?;
+    let mut file = std::fs::File::create(dest_file)
+        .with_context(|| format!("create {}", dest_file.display()))?;
 
     // Manual copy so we can enforce the hard cap even without
     // Content-Length. Errors at any point below leave the `dest_file`
@@ -121,11 +125,7 @@ pub(crate) fn fetch_and_verify_with_cap(
             }
             total += n as u64;
             if total > cap {
-                anyhow::bail!(
-                    "asset {} exceeded {} byte cap mid-stream",
-                    asset.url,
-                    cap
-                );
+                anyhow::bail!("asset {} exceeded {} byte cap mid-stream", asset.url, cap);
             }
             file.write_all(&buf[..n])?;
         }
@@ -209,7 +209,10 @@ mod tests {
             let mut h = sha2::Sha256::new();
             h.update(payload);
             let digest = h.finalize();
-            digest.iter().map(|b| format!("{b:02x}")).collect::<String>()
+            digest
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
         };
         let sig = key.sign(payload).to_bytes();
         (sha, STANDARD.encode(sig))
@@ -260,8 +263,8 @@ mod tests {
         };
         let tmp = TempDir::new().unwrap();
         let dest = tmp.path().join("a.bin");
-        let err = fetch_and_verify_asset(&client().unwrap(), &asset, &vk.to_bytes(), &dest)
-            .unwrap_err();
+        let err =
+            fetch_and_verify_asset(&client().unwrap(), &asset, &vk.to_bytes(), &dest).unwrap_err();
         assert!(format!("{err:#}").contains("SHA256 mismatch"));
     }
 
@@ -289,20 +292,18 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dest = tmp.path().join("too-big.bin");
 
-        let err = fetch_and_verify_with_cap(
-            &client().unwrap(),
-            &asset,
-            &vk.to_bytes(),
-            &dest,
-            2 * 1024,
-        )
-        .unwrap_err();
+        let err =
+            fetch_and_verify_with_cap(&client().unwrap(), &asset, &vk.to_bytes(), &dest, 2 * 1024)
+                .unwrap_err();
         assert!(
             format!("{err:#}").contains("exceeds"),
             "expected cap error, got: {err:#}"
         );
         // No file was created because we bailed before File::create.
-        assert!(!dest.exists(), "dest must not be created when cap exceeded up-front");
+        assert!(
+            !dest.exists(),
+            "dest must not be created when cap exceeded up-front"
+        );
     }
 
     #[test]
@@ -362,8 +363,8 @@ mod tests {
         };
         let tmp = TempDir::new().unwrap();
         let dest = tmp.path().join("a.bin");
-        let err = fetch_and_verify_asset(&client().unwrap(), &asset, &vk.to_bytes(), &dest)
-            .unwrap_err();
+        let err =
+            fetch_and_verify_asset(&client().unwrap(), &asset, &vk.to_bytes(), &dest).unwrap_err();
         assert!(
             format!("{err:#}").contains("signature"),
             "expected signature error, got: {err:#}"

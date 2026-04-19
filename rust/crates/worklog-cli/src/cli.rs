@@ -365,7 +365,11 @@ pub fn run_with<W: Write>(
         Cmd::Sync { day, dry_run } => cmd_sync(day, dry_run, out, cli.json),
         Cmd::Infer { day } => cmd_infer(day, out, cli.json),
         Cmd::Estimate { day, model } => cmd_estimate(day, &model, out, cli.json),
-        Cmd::Day { day, no_serve, model } => cmd_day(day, no_serve, &model, out, cli.json),
+        Cmd::Day {
+            day,
+            no_serve,
+            model,
+        } => cmd_day(day, no_serve, &model, out, cli.json),
         Cmd::HookRun => cmd_hook_run(),
         Cmd::Daemon { socket, tcp } => cmd_daemon(socket, tcp),
         Cmd::Web { sub } => match sub {
@@ -382,14 +386,21 @@ pub fn run_with<W: Write>(
             force,
         } => cmd_self_update(manifest_url, check, dry_run, force, out, cli.json),
         Cmd::Dev { sub } => match sub {
-            DevCmd::Keygen { out: out_path, force } => cmd_dev_keygen(out_path, force, out, cli.json),
+            DevCmd::Keygen {
+                out: out_path,
+                force,
+            } => cmd_dev_keygen(out_path, force, out, cli.json),
             DevCmd::Sign { file, key } => cmd_dev_sign(&file, key.as_deref(), out, cli.json),
-            DevCmd::MakePatch { old, new, out: patch_out } => {
-                cmd_dev_make_patch(&old, &new, patch_out.as_deref(), out, cli.json)
-            }
-            DevCmd::ApplyPatch { old, patch, out: patched_out } => {
-                cmd_dev_apply_patch(&old, &patch, &patched_out, out, cli.json)
-            }
+            DevCmd::MakePatch {
+                old,
+                new,
+                out: patch_out,
+            } => cmd_dev_make_patch(&old, &new, patch_out.as_deref(), out, cli.json),
+            DevCmd::ApplyPatch {
+                old,
+                patch,
+                out: patched_out,
+            } => cmd_dev_apply_patch(&old, &patch, &patched_out, out, cli.json),
         },
     }
 }
@@ -938,7 +949,11 @@ fn cmd_day<W: Write>(
     // the rest of the daily flow — matches Python's yellow-! behaviour.
     match jira_col::JiraAuth::from_secrets() {
         Ok(auth) => match jira_col::fetch_open_tickets_with(&conn, &auth, &client) {
-            Ok(r) => writeln!(out, "  ✓ jira:   tickets={} events={}", r.tickets_written, r.events_written)?,
+            Ok(r) => writeln!(
+                out,
+                "  ✓ jira:   tickets={} events={}",
+                r.tickets_written, r.events_written
+            )?,
             Err(e) => writeln!(out, "  ! jira:   {e}")?,
         },
         Err(e) => writeln!(out, "  · jira skipped: {e}")?,
@@ -1206,7 +1221,11 @@ fn cmd_web_build<W: Write>(pull: bool, out: &mut W, json: bool) -> Result<()> {
     let compose = web_mod::render_compose(&paths, 3333, &context)?;
     web_mod::compose_build(&compose, pull)?;
     if json {
-        writeln!(out, "{{\"ok\": true, \"context\": {:?}}}", context.display())?;
+        writeln!(
+            out,
+            "{{\"ok\": true, \"context\": {:?}}}",
+            context.display()
+        )?;
     } else {
         writeln!(out, "✓ worklog-web image built from {}", context.display())?;
     }
@@ -1268,9 +1287,7 @@ fn cmd_self_update<W: Write>(
         // --check is a no-swap probe: download + verify just the manifest,
         // report whether an update is available.
         if upd::pubkey::is_placeholder() {
-            anyhow::bail!(
-                "release pubkey isn't embedded yet — see worklog-core::updater::pubkey"
-            );
+            anyhow::bail!("release pubkey isn't embedded yet — see worklog-core::updater::pubkey");
         }
         let pk = upd::pubkey::resolve();
         let http = upd::fetch::client()?;
@@ -1289,11 +1306,7 @@ fn cmd_self_update<W: Write>(
         } else if manifest.version == current_version {
             writeln!(out, "✓ up to date ({current_version})")?;
         } else {
-            writeln!(
-                out,
-                "→ {current_version} → {} available",
-                manifest.version
-            )?;
+            writeln!(out, "→ {current_version} → {} available", manifest.version)?;
             if !manifest.notes.is_empty() {
                 writeln!(out, "\n{}", manifest.notes)?;
             }
@@ -1398,9 +1411,7 @@ fn cmd_dev_sign<W: Write>(
     let mut sig_path = file.to_path_buf();
     let new_name = format!(
         "{}.sig",
-        file.file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("bin")
+        file.file_name().and_then(|s| s.to_str()).unwrap_or("bin")
     );
     sig_path.set_file_name(new_name);
     std::fs::write(&sig_path, sig).with_context(|| format!("writing {}", sig_path.display()))?;
@@ -1436,9 +1447,7 @@ fn cmd_dev_make_patch<W: Write>(
             let mut p = new.to_path_buf();
             p.set_extension(format!(
                 "{}.patch",
-                new.extension()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("bin")
+                new.extension().and_then(|s| s.to_str()).unwrap_or("bin")
             ));
             p
         }
@@ -1505,4 +1514,3 @@ fn cmd_dev_apply_patch<W: Write>(
     }
     Ok(())
 }
-

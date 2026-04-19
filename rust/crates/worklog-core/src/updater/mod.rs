@@ -238,7 +238,8 @@ fn decompress_zstd(src: &Path, dst: &Path) -> Result<()> {
     // stop writing — then we check whether we stopped at the cap (bomb)
     // or at genuine EOF. This keeps constant memory.
     let mut limited = decoder.take(MAX_DECOMPRESSED_BYTES + 1);
-    let mut out = std::fs::File::create(dst).with_context(|| format!("create {}", dst.display()))?;
+    let mut out =
+        std::fs::File::create(dst).with_context(|| format!("create {}", dst.display()))?;
     let written = std::io::copy(&mut limited, &mut out).context("zstd decompress")?;
     if written > MAX_DECOMPRESSED_BYTES {
         // Purge the partially-written output so the caller never sees it.

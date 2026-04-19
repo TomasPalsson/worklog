@@ -640,9 +640,8 @@ mod tests {
             .unwrap();
         }
         let app = router(state.clone());
-        let body = Body::from(
-            serde_json::to_vec(&json!({"day": "2026-04-18", "dry_run": true})).unwrap(),
-        );
+        let body =
+            Body::from(serde_json::to_vec(&json!({"day": "2026-04-18", "dry_run": true})).unwrap());
         let resp = app
             .oneshot(
                 Request::post("/sync")

@@ -1,27 +1,29 @@
 //! Embedded release public key.
 //!
-//! This is the Ed25519 public key whose matching private key is held by
-//! the release author. Every release manifest + asset must be signed
-//! with that private key; the updater refuses anything else.
+//! The Ed25519 public key whose matching private key lives only in the
+//! `WORKLOG_RELEASE_PRIVATE_KEY` GitHub Actions secret. CI signs every
+//! release manifest + asset with that private key; the updater refuses
+//! anything else.
 //!
-//! **How to set your key:**
-//! 1. Run `worklog dev keygen` on the release-signing machine.
-//! 2. Copy the `pub const RELEASE_PUBLIC_KEY: [u8; 32] = …` line it
-//!    prints into this file, replacing the placeholder below.
-//! 3. Commit the change; distribute the new binary.
+//! **Rotation procedure** (only needed if the key is compromised):
+//! 1. Run `worklog dev keygen` on a trusted machine.
+//! 2. Paste the printed `pub const RELEASE_PUBLIC_KEY` into this file.
+//! 3. Update the `WORKLOG_RELEASE_PRIVATE_KEY` GHA secret.
+//! 4. Commit, cut a new tag — older users get one final signed update
+//!    from the old key, then bind to the new one.
 //!
-//! The placeholder starts as all zeros so the updater will reject every
-//! real signature until a genuine key is embedded — a fail-closed
-//! default that keeps a freshly-built binary from accepting unverified
-//! downloads.
+//! The `embedded_pubkey_is_real_not_placeholder` unit test is a
+//! supply-chain tripwire: if someone accidentally reverts the const
+//! back to all-zeros, CI fails rather than shipping a binary that
+//! accepts forged signatures against the degenerate key.
 //!
 //! **Test-only override:** in `#[cfg(test)]` builds, setting
 //! `$WORKLOG_RELEASE_PUBKEY_BASE64` overrides the embedded const so
-//! integration tests can inject a fresh keypair. The override is
-//! compiled out of release binaries entirely — a production process
-//! cannot swap the pubkey via an env var, closing a supply-chain gap
-//! where a post-install hook or misconfigured shell could substitute
-//! an attacker-controlled key.
+//! integration tests can verify against a freshly-generated keypair.
+//! The override is compiled out of release binaries entirely — a
+//! production process cannot swap the pubkey via an env var, closing
+//! a supply-chain gap where a post-install hook could substitute an
+//! attacker-controlled key.
 
 use super::crypto::PUBLIC_KEY_LEN;
 
@@ -34,10 +36,8 @@ use super::crypto::PUBLIC_KEY_LEN;
 /// a fresh tag. Users on older versions will still succeed on that one
 /// signed update (old pubkey), then bind to the new one after swapping.
 pub const RELEASE_PUBLIC_KEY: [u8; PUBLIC_KEY_LEN] = [
-    0x6a, 0xe0, 0x85, 0x6a, 0x41, 0x74, 0xa6, 0x5f,
-    0xe4, 0xc7, 0x3d, 0xd2, 0x0f, 0x4b, 0x37, 0xd6,
-    0x59, 0xf6, 0x92, 0xd6, 0x23, 0x9c, 0x05, 0x2d,
-    0xf3, 0xed, 0x53, 0xef, 0xbe, 0x4c, 0x7a, 0xdd,
+    0x6a, 0xe0, 0x85, 0x6a, 0x41, 0x74, 0xa6, 0x5f, 0xe4, 0xc7, 0x3d, 0xd2, 0x0f, 0x4b, 0x37, 0xd6,
+    0x59, 0xf6, 0x92, 0xd6, 0x23, 0x9c, 0x05, 0x2d, 0xf3, 0xed, 0x53, 0xef, 0xbe, 0x4c, 0x7a, 0xdd,
 ];
 
 /// Resolve the pubkey at runtime. In release builds this always returns
