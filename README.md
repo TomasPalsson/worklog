@@ -123,6 +123,30 @@ Override everything with `$WORKLOG_HOME=<dir>` — collapses db, socket,
 config, bin, logs, releases into one root. Primarily for tests and
 power users.
 
+## Switching estimator provider
+
+The estimator has two interchangeable backends:
+
+- **`claude_subprocess`** *(default)* — shells out to `claude -p`. Zero
+  configuration. Requires the Claude Code CLI on `PATH`.
+- **`litellm`** — POSTs to any OpenAI-compatible proxy
+  ([LiteLLM](https://github.com/BerriAI/litellm) is the reference
+  implementation). Lets you route to Anthropic, OpenAI, local Ollama,
+  Bedrock, etc. without changing worklog.
+
+Select via `worklog setup` (interactive) or set the env var:
+
+```bash
+export WORKLOG_ESTIMATOR_PROVIDER=litellm
+worklog secret set litellm_base_url http://localhost:4000
+worklog secret set litellm_api_key  <your-proxy-key>   # empty OK for unauthed local
+worklog secret set litellm_model    anthropic/claude-haiku-4-5
+```
+
+`worklog doctor` reports the active provider and a reachability probe.
+Unset `WORKLOG_ESTIMATOR_PROVIDER` (and run `worklog secret rm
+worklog_estimator_provider`) to fall back to the subprocess path.
+
 ## Dev
 
 ```bash
