@@ -312,6 +312,13 @@ impl LiteLLMInvoker {
         format!("{}/v1/chat/completions", self.base_url)
     }
 
+    /// The model the invoker falls back to when the caller passes
+    /// `""`. Exposed so `worklog doctor` can print the user-configured
+    /// default without needing to re-read the secret.
+    pub fn configured_model(&self) -> &str {
+        &self.default_model
+    }
+
     /// Chosen model for a given invocation: caller's `--model` wins,
     /// falling back to whatever the user configured in secrets.
     fn resolve_model<'a>(&'a self, caller: &'a str) -> &'a str {

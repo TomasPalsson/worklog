@@ -133,11 +133,30 @@ pub enum Cmd {
     },
 
     /// Estimate jira_issue + duration + description for each un-estimated block.
+    #[command(long_about = "\
+Estimate jira_issue + duration + description for each un-estimated block \
+on the given day.
+
+Provider selection:
+  Set WORKLOG_ESTIMATOR_PROVIDER=claude_subprocess (default) or =litellm.
+  The env var wins; the `worklog_estimator_provider` secret is used as a
+  persistent fallback (set via `worklog setup`).
+
+Providers:
+  claude_subprocess   shells out to `claude -p` — the historical default.
+  litellm             POSTs to any OpenAI-compatible proxy (LiteLLM,
+                      Anthropic-shaped). Configure with:
+                        worklog secret set litellm_base_url <URL>
+                        worklog secret set litellm_api_key <key>
+                        worklog secret set litellm_model <e.g. anthropic/...>
+
+--model accepts whatever the active provider understands: plain Claude
+model ids for the subprocess path, `provider/model` form for LiteLLM.")]
     Estimate {
         /// YYYY-MM-DD; default today (UTC).
         #[arg(long)]
         day: Option<String>,
-        /// Model id passed to `claude -p`.
+        /// Model id passed to the active estimator provider.
         #[arg(long, default_value = estimate::DEFAULT_MODEL)]
         model: String,
     },
@@ -576,6 +595,60 @@ fn cmd_version<W: Write>(out: &mut W, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// What `doctor` shows for the active estimator. `base_url`/`model`
+/// populated only when the user picked LiteLLM; `reachable` is a
+/// best-effort probe so hitting this in a tight loop doesn't hang.
+#[derive(Debug, serde::Serialize)]
+struct EstimatorReport {
+    provider: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reachable: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+fn estimator_report() -> EstimatorReport {
+    use worklog_core::estimate as est;
+    match est::resolve_provider() {
+        Ok(est::ProviderChoice::ClaudeSubprocess) => EstimatorReport {
+            provider: "claude_subprocess",
+            base_url: None,
+            model: None,
+            reachable: None,
+            reason: None,
+        },
+        Ok(est::ProviderChoice::LiteLLM(inv)) => {
+            // Resolved choice has already consumed the secrets — pull
+            // the user-facing fields back out of the invoker itself.
+            let endpoint = inv.endpoint();
+            let base_url = endpoint.trim_end_matches("/v1/chat/completions").to_owned();
+            let model = inv.configured_model().to_owned();
+            let probe = est::probe_litellm(&base_url);
+            EstimatorReport {
+                provider: "litellm",
+                base_url: Some(base_url),
+                model: Some(model),
+                reachable: Some(probe.is_none()),
+                reason: probe,
+            }
+        }
+        Err(e) => EstimatorReport {
+            // We intentionally surface misconfiguration as
+            // `provider: unconfigured` so `doctor` can run even when
+            // the env says litellm but the secrets aren't set yet.
+            provider: "unconfigured",
+            base_url: None,
+            model: None,
+            reachable: None,
+            reason: Some(format!("{e:#}")),
+        },
+    }
+}
+
 fn cmd_doctor<W: Write>(out: &mut W, json: bool) -> Result<()> {
     let paths = Paths::resolve()?;
     let db_summary = if paths.db_exists() {
@@ -585,6 +658,7 @@ fn cmd_doctor<W: Write>(out: &mut W, json: bool) -> Result<()> {
         None
     };
     let secrets = secrets::audit();
+    let estimator = estimator_report();
 
     if json {
         let report = serde_json::json!({
@@ -594,6 +668,7 @@ fn cmd_doctor<W: Write>(out: &mut W, json: bool) -> Result<()> {
             "db_exists": paths.db_exists(),
             "db":        db_summary,
             "secrets":   secrets,
+            "estimator": estimator,
         });
         writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
         return Ok(());
@@ -627,6 +702,20 @@ fn cmd_doctor<W: Write>(out: &mut W, json: bool) -> Result<()> {
             ),
         ]);
     }
+    let est_note = match &estimator.reachable {
+        Some(true) => "reachable".to_string(),
+        Some(false) => estimator.reason.clone().unwrap_or_else(|| "unreachable".to_string()),
+        None if estimator.provider == "unconfigured" => estimator
+            .reason
+            .clone()
+            .unwrap_or_else(|| "misconfigured".to_string()),
+        None => String::new(),
+    };
+    let est_value = match (&estimator.base_url, &estimator.model) {
+        (Some(url), Some(model)) => format!("{} {} ({})", estimator.provider, model, url),
+        _ => estimator.provider.to_string(),
+    };
+    env_table.add_row(vec!["estimator".to_owned(), est_value, est_note]);
     writeln!(out, "{env_table}")?;
 
     let mut sec_table = style::table();
@@ -1207,8 +1296,14 @@ fn cmd_day<W: Write>(
     )?;
 
     // --- estimate -------------------------------------------------------
-    style::step(out, "estimating (claude) …")?;
-    let spinner = style::spinner("running claude -p over unestimated blocks");
+    let provider_label = match estimate::resolve_provider() {
+        Ok(estimate::ProviderChoice::LiteLLM(_)) => "litellm",
+        _ => "claude -p",
+    };
+    style::step(out, &format!("estimating ({provider_label}) …"))?;
+    let spinner = style::spinner(&format!(
+        "running {provider_label} over unestimated blocks"
+    ));
     let est_result = estimate::estimate_day(&conn, day_parsed, model);
     spinner.finish_and_clear();
     match est_result {
