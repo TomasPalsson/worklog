@@ -1,5 +1,5 @@
-//! Session lifecycle — matches `src/worklog/sessions.py` line for line so
-//! the Rust and Python hook implementations converge on identical db state.
+//! Session lifecycle — pair SessionStart with Stop/SessionEnd to turn the
+//! raw Claude Code event stream into closed intervals.
 //!
 //! Pure module: every function takes an open `Connection` and runs SQL. No
 //! globals, no i/o beyond the db.

@@ -1,10 +1,8 @@
 //! Gap-timeout block clustering.
 //!
-//! Ports `src/worklog/infer.py` + `infer_persist.py`. The two files are one
-//! logical piece in Rust: `build_blocks()` is a pure function over an event
-//! list, `persist_blocks()` writes to the db. Constants match the Python
-//! verbatim so re-running either side on the same day produces identical
-//! blocks.
+//! `build_blocks()` is a pure function over an event list;
+//! `persist_blocks()` writes them to the db. Separated so tests can exercise
+//! the clustering algorithm without any SQLite setup.
 //!
 //! Invariants:
 //! * Calendar events are authoritative closed units — they never absorb

@@ -119,7 +119,8 @@ pub fn run_update(req: &UpdateRequest) -> Result<UpdateReport> {
     if manifest.schema > manifest::CURRENT_SCHEMA {
         anyhow::bail!(
             "manifest schema {} is newer than this binary understands ({}). \
-             Please upgrade manually — `uv tool install git+ssh://…`",
+             Re-run the installer to pick up a fresh release: \
+             curl -fsSL https://raw.githubusercontent.com/TomasPalsson/worklog/main/install.sh | bash",
             manifest.schema,
             manifest::CURRENT_SCHEMA,
         );

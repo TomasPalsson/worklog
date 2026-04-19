@@ -1,11 +1,11 @@
-//! Google Calendar collector — ports `src/worklog/collectors/gcal.py`.
+//! Google Calendar collector — OAuth2 installed-app flow + events.list.
 //!
-//! Drop-in compatible with the Python runtime: reads/writes the same
-//! `google_credentials.json` + `google_token.json` files under
-//! `~/.config/worklog/` (or `$WORKLOG_HOME`), calls the same v3 REST
-//! endpoint, and upserts events as `source="gcal"` with a stable
-//! `source_id = "<calendar>:<eventId>"` so the Python-era data survives
-//! the port without any migration.
+//! Reads/writes `google_credentials.json` + `google_token.json` under
+//! `~/.config/worklog/` (or `$WORKLOG_HOME`), calls the v3 REST endpoint,
+//! and upserts events as `source="gcal"` with a stable
+//! `source_id = "<calendar>:<eventId>"`. The token file layout matches
+//! Google's own authorized-user format so existing tokens from other
+//! tooling round-trip cleanly.
 //!
 //! Synchronous / blocking by design — matches every other collector
 //! (github, jira, tempo). We reach OAuth2's token endpoint directly with

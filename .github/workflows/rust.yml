@@ -5,12 +5,10 @@ on:
     branches: [main]
     paths:
       - "rust/**"
-      - "src/worklog/schema.sql"
       - ".github/workflows/rust.yml"
   pull_request:
     paths:
       - "rust/**"
-      - "src/worklog/schema.sql"
       - ".github/workflows/rust.yml"
 
 env:

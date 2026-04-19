@@ -2,13 +2,13 @@
 //! <schema>` to fill `jira_issue` + `minutes` + `description` for every block
 //! on a given day that hasn't been estimated yet.
 //!
-//! Ports `src/worklog/estimate.py` faithfully:
-//! * Schema and system prompt are byte-for-byte the Python version so the
-//!   model sees the same instruction regardless of caller.
+//! Design constraints:
 //! * Ticket selection is hard-validated — Claude may only pick keys that
 //!   appeared in the candidate cache OR were literal matches in event
 //!   content. Anything else is treated as a hallucination and dropped.
 //! * Any hard failure → `estimated_by = 'gap'` so the UI can surface it.
+//! * `estimated_by = 'manual'` blocks are skipped unconditionally — a
+//!   user's override is the ground truth.
 
 use std::process::Command;
 

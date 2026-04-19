@@ -131,8 +131,10 @@ pub fn resolve_web_context() -> Result<PathBuf> {
         }
         cur = dir.parent();
     }
-    // Last-ditch FHS-style location. Users who `uv tool install` us and
-    // want to run the web container should symlink their web/ here.
+    // Last-ditch FHS-style location. Users who installed via the curl
+    // script and want to run the web container should symlink their
+    // cloned web/ here (the installer drops only the binary, not the
+    // Dockerfile source tree).
     let prefix = PathBuf::from("/usr/local/share/worklog/web");
     if prefix.join("Dockerfile").is_file() {
         return Ok(prefix);

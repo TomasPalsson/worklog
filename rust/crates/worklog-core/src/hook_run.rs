@@ -1,9 +1,5 @@
 //! Claude Code hook handler — reads stdin JSON, writes `events` + updates
 //! `sessions`, never prints to stdout so Claude never sees our output.
-//!
-//! Matches `src/worklog/collectors/claude.py`. The Python file is the
-//! reference implementation; the existing standalone Rust hook binary and
-//! this module write the same rows.
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};

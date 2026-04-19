@@ -165,12 +165,4 @@ mod tests {
         assert_eq!(s.jira_tickets, 0);
     }
 
-    #[test]
-    fn embedded_schema_matches_python_copy() {
-        let python_schema = include_str!("../../../../src/worklog/schema.sql");
-        assert_eq!(
-            SCHEMA_SQL, python_schema,
-            "rust sql/schema.sql has drifted from src/worklog/schema.sql — keep them identical during Stage 1"
-        );
-    }
 }
