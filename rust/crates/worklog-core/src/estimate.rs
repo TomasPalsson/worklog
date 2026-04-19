@@ -458,6 +458,55 @@ mod tests {
     }
 
     #[test]
+    fn build_user_message_preserves_long_claude_details_but_trims_others() {
+        // B4: events from the Claude Code hook now carry the full user
+        // prompt (up to 4KiB). When we hand the payload to the estimator
+        // we keep up to 800 chars of `details` for `source='claude'` so
+        // Claude has substance to summarise from — but non-claude sources
+        // stay at the 200-char cap so a chatty gcal description doesn't
+        // blow up the token bill.
+        let block = BlockRow {
+            id: 1,
+            started_at: "2026-04-18T09:00:00+00:00".into(),
+            ended_at: "2026-04-18T09:30:00+00:00".into(),
+            jira_issue: None,
+            estimated_by: None,
+        };
+        let claude_event = EventRow {
+            source: "claude".into(),
+            started_at: "2026-04-18T09:05:00+00:00".into(),
+            title: Some("UserPromptSubmit — fix auth".into()),
+            details: Some("c".repeat(500)),
+            jira_issue: None,
+        };
+        let github_event = EventRow {
+            source: "github_commit".into(),
+            started_at: "2026-04-18T09:10:00+00:00".into(),
+            title: Some("Initial commit".into()),
+            details: Some("g".repeat(500)),
+            jira_issue: None,
+        };
+
+        let msg = build_user_message(&block, &[claude_event, github_event], &[], &[]);
+        let payload: Value = serde_json::from_str(&msg).unwrap();
+        let events = payload["events"].as_array().unwrap();
+
+        let claude_details = events[0]["details"].as_str().unwrap();
+        assert_eq!(
+            claude_details.chars().count(),
+            500,
+            "claude event should keep all 500 chars (cap is 800 for this source)"
+        );
+
+        let github_details = events[1]["details"].as_str().unwrap();
+        assert_eq!(
+            github_details.chars().count(),
+            200,
+            "non-claude events stay at the old 200-char cap"
+        );
+    }
+
+    #[test]
     fn parse_response_handles_raw_object() {
         let v =
             parse_response(r#"{"jira_issue":"PROJ-1","minutes":30,"description":"x"}"#).unwrap();
