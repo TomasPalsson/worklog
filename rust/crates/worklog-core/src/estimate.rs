@@ -217,25 +217,7 @@ impl LiteLLMInvoker {
 
 impl ModelInvoker for LiteLLMInvoker {
     fn invoke(&self, system: &str, user: &str, schema: &Value, model: &str) -> Result<Value> {
-        // The proxy's `response_format: json_object` asks the model to
-        // emit valid JSON. We still append the schema into the system
-        // prompt so older providers that ignore `response_format`
-        // (Ollama, some on-prem proxies) still get the shape hint.
-        let schema_str = serde_json::to_string(schema)?;
-        let system_with_schema =
-            format!("{system}\n\nRespond ONLY with JSON matching this schema:\n{schema_str}");
-
-        let body = json!({
-            "model":           self.resolve_model(model),
-            "messages": [
-                { "role": "system", "content": system_with_schema },
-                { "role": "user",   "content": user },
-            ],
-            "response_format": { "type": "json_object" },
-            "temperature":     0,
-            "max_tokens":      512,
-        });
-
+        let body = self.build_request_body(system, user, schema, model)?;
         let mut req = self
             .client
             .post(self.endpoint())
@@ -251,29 +233,65 @@ impl ModelInvoker for LiteLLMInvoker {
 
         let status = resp.status();
         if !status.is_success() {
-            // Keep the body preview bounded; some proxies echo the full
-            // request payload on 5xx which can include the user's event
-            // content. 500 chars is enough to identify the real cause.
-            let body_preview = resp
-                .text()
-                .unwrap_or_else(|_| "<unreadable body>".into())
-                .chars()
-                .take(500)
-                .collect::<String>();
-            anyhow::bail!("HTTP {status} from LiteLLM proxy: {body_preview}");
+            anyhow::bail!(
+                "HTTP {status} from LiteLLM proxy: {}",
+                bounded_body_preview(resp)
+            );
         }
 
         let envelope: Value = resp.json().context("decoding LiteLLM JSON response")?;
-        let content = envelope
-            .pointer("/choices/0/message/content")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "LiteLLM response missing choices[0].message.content: {envelope}"
-                )
-            })?;
+        let content = extract_message_content(&envelope)?;
         parse_response(content)
     }
+}
+
+impl LiteLLMInvoker {
+    /// Build the OpenAI-compatible chat.completions body. The schema
+    /// ends up in the system prompt so providers that ignore
+    /// `response_format` (some on-prem proxies, Ollama) still see it.
+    fn build_request_body(
+        &self,
+        system: &str,
+        user: &str,
+        schema: &Value,
+        model: &str,
+    ) -> Result<Value> {
+        let schema_str = serde_json::to_string(schema)?;
+        let system_with_schema =
+            format!("{system}\n\nRespond ONLY with JSON matching this schema:\n{schema_str}");
+        Ok(json!({
+            "model":           self.resolve_model(model),
+            "messages": [
+                { "role": "system", "content": system_with_schema },
+                { "role": "user",   "content": user },
+            ],
+            "response_format": { "type": "json_object" },
+            "temperature":     0,
+            "max_tokens":      512,
+        }))
+    }
+}
+
+/// Some proxies echo the full request payload on 5xx — which can
+/// include the user's event content. Cap at 500 chars so errors never
+/// accidentally persist unbounded PII into logs.
+fn bounded_body_preview(resp: reqwest::blocking::Response) -> String {
+    resp.text()
+        .unwrap_or_else(|_| "<unreadable body>".into())
+        .chars()
+        .take(500)
+        .collect()
+}
+
+/// Extract `choices[0].message.content` as a `&str`, with an error
+/// that carries the raw envelope so debugging isn't guesswork.
+fn extract_message_content(envelope: &Value) -> Result<&str> {
+    envelope
+        .pointer("/choices/0/message/content")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!("LiteLLM response missing choices[0].message.content: {envelope}")
+        })
 }
 
 pub fn estimate_day_with<I: ModelInvoker>(
