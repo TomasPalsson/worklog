@@ -40,16 +40,28 @@ pub struct DaemonServiceStatus {
 
 // ───────────────────────── public API ─────────────────────────
 
-pub fn install(_command: &str) -> Result<DaemonServiceStatus> {
-    anyhow::bail!("daemon_service::install not yet implemented")
+pub fn install(command: &str) -> Result<DaemonServiceStatus> {
+    match Platform::current() {
+        Platform::MacOS => macos::install(command),
+        Platform::Linux => linux::install(command),
+        Platform::Unsupported => Ok(unsupported_status()),
+    }
 }
 
 pub fn uninstall() -> Result<DaemonServiceStatus> {
-    anyhow::bail!("daemon_service::uninstall not yet implemented")
+    match Platform::current() {
+        Platform::MacOS => macos::uninstall(),
+        Platform::Linux => linux::uninstall(),
+        Platform::Unsupported => Ok(unsupported_status()),
+    }
 }
 
 pub fn status() -> Result<DaemonServiceStatus> {
-    anyhow::bail!("daemon_service::status not yet implemented")
+    match Platform::current() {
+        Platform::MacOS => macos::status(),
+        Platform::Linux => linux::status(),
+        Platform::Unsupported => Ok(unsupported_status()),
+    }
 }
 
 /// Default command baked into the plist / service unit. Resolves the
@@ -101,6 +113,270 @@ fn unsupported_status() -> DaemonServiceStatus {
         unit_path: None,
         extra_paths: vec![],
         notes: vec!["daemon supervisor not implemented for this platform — run `worklog daemon` in a tmux session".into()],
+    }
+}
+
+// ───────────────────────── macOS (launchd) ─────────────────────────
+
+mod macos {
+    use super::*;
+
+    fn plist_path() -> Result<PathBuf> {
+        Ok(service_home()?
+            .join("Library/LaunchAgents")
+            .join(format!("{LABEL}.plist")))
+    }
+
+    fn log_paths() -> Result<(PathBuf, PathBuf)> {
+        let dir = service_home()?.join(".local/share/worklog/logs");
+        Ok((dir.join("daemon.out.log"), dir.join("daemon.err.log")))
+    }
+
+    pub fn install(command: &str) -> Result<DaemonServiceStatus> {
+        let path = plist_path()?;
+        let (stdout, stderr) = log_paths()?;
+        let plist = plist_xml(command, &stdout, &stderr);
+        atomic_write(&path, &plist)?;
+        if let Some(parent) = stdout.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+
+        // Best-effort launchctl. Skip under tests (env override set).
+        if std::env::var_os(ENV_SCHEDULE_HOME).is_none() {
+            let _ = std::process::Command::new("launchctl")
+                .args(["unload", path.to_string_lossy().as_ref()])
+                .status();
+            let _ = std::process::Command::new("launchctl")
+                .args(["load", "-w", path.to_string_lossy().as_ref()])
+                .status();
+        }
+
+        Ok(DaemonServiceStatus {
+            platform: "launchd",
+            installed: true,
+            command: Some(command.to_owned()),
+            unit_path: Some(path),
+            extra_paths: vec![stdout, stderr],
+            notes: vec!["starts at login; launchd restarts on crash".into()],
+        })
+    }
+
+    pub fn uninstall() -> Result<DaemonServiceStatus> {
+        let path = plist_path()?;
+        if path.exists() {
+            if std::env::var_os(ENV_SCHEDULE_HOME).is_none() {
+                let _ = std::process::Command::new("launchctl")
+                    .args(["unload", path.to_string_lossy().as_ref()])
+                    .status();
+            }
+            std::fs::remove_file(&path).with_context(|| format!("rm {}", path.display()))?;
+        }
+        Ok(DaemonServiceStatus {
+            platform: "launchd",
+            installed: false,
+            command: None,
+            unit_path: Some(path),
+            extra_paths: vec![],
+            notes: vec![],
+        })
+    }
+
+    pub fn status() -> Result<DaemonServiceStatus> {
+        let path = plist_path()?;
+        if !path.exists() {
+            return Ok(DaemonServiceStatus {
+                platform: "launchd",
+                installed: false,
+                command: None,
+                unit_path: Some(path),
+                extra_paths: vec![],
+                notes: vec![],
+            });
+        }
+        let body = std::fs::read_to_string(&path)?;
+        let command = parse_plist_command(&body);
+        Ok(DaemonServiceStatus {
+            platform: "launchd",
+            installed: true,
+            command,
+            unit_path: Some(path),
+            extra_paths: vec![],
+            notes: vec![],
+        })
+    }
+
+    fn parse_plist_command(body: &str) -> Option<String> {
+        // The ProgramArguments array ends with the shell command we passed
+        // through `/bin/sh -c`. Grab the last <string>…</string> in the
+        // array.
+        let args_idx = body.find("<key>ProgramArguments</key>")?;
+        let arr_rest = &body[args_idx..];
+        let arr_start = arr_rest.find("<array>")?;
+        let arr_end = arr_rest.find("</array>")?;
+        let arr = &arr_rest[arr_start..arr_end];
+        let mut last = None;
+        let mut cursor = 0;
+        while let Some(open) = arr[cursor..].find("<string>") {
+            let start = cursor + open + "<string>".len();
+            let end = start + arr[start..].find("</string>")?;
+            last = Some(arr[start..end].to_owned());
+            cursor = end + "</string>".len();
+        }
+        last
+    }
+
+    fn plist_xml(cmd: &str, stdout: &Path, stderr: &Path) -> String {
+        let escaped = xml_escape(cmd);
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{label}</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>{cmd}</string>
+  </array>
+
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Background</string>
+
+  <key>StandardOutPath</key><string>{stdout}</string>
+  <key>StandardErrorPath</key><string>{stderr}</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+  </dict>
+</dict>
+</plist>
+"#,
+            label = LABEL,
+            cmd = escaped,
+            stdout = stdout.display(),
+            stderr = stderr.display(),
+        )
+    }
+
+    fn xml_escape(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for ch in s.chars() {
+            match ch {
+                '&' => out.push_str("&amp;"),
+                '<' => out.push_str("&lt;"),
+                '>' => out.push_str("&gt;"),
+                '"' => out.push_str("&quot;"),
+                '\'' => out.push_str("&apos;"),
+                c => out.push(c),
+            }
+        }
+        out
+    }
+}
+
+// ───────────────────────── Linux (systemd --user) ─────────────────────────
+
+mod linux {
+    use super::*;
+
+    fn unit_dir() -> Result<PathBuf> {
+        Ok(service_home()?.join(".config/systemd/user"))
+    }
+
+    fn service_path() -> Result<PathBuf> {
+        Ok(unit_dir()?.join("worklog-daemon.service"))
+    }
+
+    pub fn install(command: &str) -> Result<DaemonServiceStatus> {
+        let svc = service_path()?;
+        atomic_write(&svc, &service_unit(command))?;
+
+        if std::env::var_os(ENV_SCHEDULE_HOME).is_none() {
+            let _ = std::process::Command::new("systemctl")
+                .args(["--user", "daemon-reload"])
+                .status();
+            let _ = std::process::Command::new("systemctl")
+                .args(["--user", "enable", "--now", "worklog-daemon.service"])
+                .status();
+        }
+
+        Ok(DaemonServiceStatus {
+            platform: "systemd",
+            installed: true,
+            command: Some(command.to_owned()),
+            unit_path: Some(svc),
+            extra_paths: vec![],
+            notes: vec!["starts at login; systemd restarts on crash".into()],
+        })
+    }
+
+    pub fn uninstall() -> Result<DaemonServiceStatus> {
+        let svc = service_path()?;
+        if std::env::var_os(ENV_SCHEDULE_HOME).is_none() {
+            let _ = std::process::Command::new("systemctl")
+                .args(["--user", "disable", "--now", "worklog-daemon.service"])
+                .status();
+        }
+        if svc.exists() {
+            std::fs::remove_file(&svc).ok();
+        }
+        Ok(DaemonServiceStatus {
+            platform: "systemd",
+            installed: false,
+            command: None,
+            unit_path: Some(svc),
+            extra_paths: vec![],
+            notes: vec![],
+        })
+    }
+
+    pub fn status() -> Result<DaemonServiceStatus> {
+        let svc = service_path()?;
+        if !svc.exists() {
+            return Ok(DaemonServiceStatus {
+                platform: "systemd",
+                installed: false,
+                command: None,
+                unit_path: Some(svc),
+                extra_paths: vec![],
+                notes: vec![],
+            });
+        }
+        let body = std::fs::read_to_string(&svc)?;
+        let command = body
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("ExecStart=").map(|v| v.to_owned()));
+        Ok(DaemonServiceStatus {
+            platform: "systemd",
+            installed: true,
+            command,
+            unit_path: Some(svc),
+            extra_paths: vec![],
+            notes: vec![],
+        })
+    }
+
+    fn service_unit(cmd: &str) -> String {
+        format!(
+            "[Unit]\n\
+             Description=worklog daemon (HTTP IPC backing the web UI)\n\
+             After=network-online.target\n\n\
+             [Service]\n\
+             Type=simple\n\
+             ExecStart={cmd}\n\
+             Restart=on-failure\n\
+             RestartSec=5s\n\
+             Environment=PATH=/usr/local/bin:/usr/bin:/bin\n\n\
+             [Install]\n\
+             WantedBy=default.target\n"
+        )
     }
 }
 

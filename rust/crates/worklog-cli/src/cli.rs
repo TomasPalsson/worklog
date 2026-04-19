@@ -131,8 +131,13 @@ pub enum Cmd {
     #[command(name = "hook-run", hide = true)]
     HookRun,
 
-    /// Start the axum unix-socket IPC server. The web UI talks to this.
+    /// Start the axum unix-socket IPC server (foreground) OR manage the
+    /// background service unit that supervises it. Bare `worklog daemon`
+    /// keeps running in the foreground like before; the install / status
+    /// / uninstall subcommands write a launchd plist / systemd user unit.
     Daemon {
+        #[command(subcommand)]
+        sub: Option<DaemonCmd>,
         /// Override the socket path (default: <data>/api.sock).
         #[arg(long)]
         socket: Option<std::path::PathBuf>,
@@ -186,6 +191,22 @@ pub enum Cmd {
         #[command(subcommand)]
         sub: DevCmd,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DaemonCmd {
+    /// Install a launchd plist (macOS) or systemd user unit (Linux) so
+    /// the daemon starts at login and auto-restarts on crash.
+    Install {
+        /// Override the command baked into the service unit. Defaults
+        /// to the resolved `worklog` binary + ` daemon`.
+        #[arg(long)]
+        command: Option<String>,
+    },
+    /// Remove the service unit (and stop the supervisor-managed process).
+    Uninstall,
+    /// Report whether the service unit is installed and where it lives.
+    Status,
 }
 
 #[derive(Subcommand, Debug)]
@@ -447,7 +468,14 @@ pub fn run_with<W: Write>(
             model,
         } => cmd_day(day, no_serve, &model, out, cli.json),
         Cmd::HookRun => cmd_hook_run(),
-        Cmd::Daemon { socket, tcp } => cmd_daemon(socket, tcp),
+        Cmd::Daemon { sub, socket, tcp } => match sub {
+            None => cmd_daemon(socket, tcp),
+            Some(DaemonCmd::Install { command }) => {
+                cmd_daemon_install(command, out, cli.json)
+            }
+            Some(DaemonCmd::Uninstall) => cmd_daemon_uninstall(out, cli.json),
+            Some(DaemonCmd::Status) => cmd_daemon_status(out, cli.json),
+        },
         Cmd::Web { sub } => match sub {
             WebCmd::Up { port, no_daemon } => cmd_web_up(port, no_daemon, out, cli.json),
             WebCmd::Down => cmd_web_down(out, cli.json),
@@ -1209,6 +1237,80 @@ fn cmd_hook_run() -> Result<()> {
     // All output goes to stderr (handled inside hook_run::run_from_stdin) so
     // Claude Code never sees bytes on stdout.
     hook_run::run_from_stdin()
+}
+
+fn cmd_daemon_install<W: Write>(
+    command: Option<String>,
+    out: &mut W,
+    json: bool,
+) -> Result<()> {
+    let cmd = command.unwrap_or_else(worklog_core::daemon_service::default_command);
+    let status = worklog_core::daemon_service::install(&cmd)?;
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&status)?)?;
+        return Ok(());
+    }
+    style::ok(
+        out,
+        &format!(
+            "daemon service installed ({})",
+            status
+                .unit_path
+                .as_ref()
+                .map(|p| worklog_core::paths::short_display(p))
+                .unwrap_or_else(|| "?".into())
+        ),
+    )?;
+    if let Some(cmd) = &status.command {
+        style::info(out, &format!("runs: {cmd}"))?;
+    }
+    for note in &status.notes {
+        style::info(out, note)?;
+    }
+    Ok(())
+}
+
+fn cmd_daemon_uninstall<W: Write>(out: &mut W, json: bool) -> Result<()> {
+    let status = worklog_core::daemon_service::uninstall()?;
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&status)?)?;
+        return Ok(());
+    }
+    style::ok(out, "daemon service uninstalled")?;
+    Ok(())
+}
+
+fn cmd_daemon_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
+    let status = worklog_core::daemon_service::status()?;
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&status)?)?;
+        return Ok(());
+    }
+    if status.installed {
+        style::ok(
+            out,
+            &format!(
+                "daemon service installed via {} ({})",
+                status.platform,
+                status
+                    .unit_path
+                    .as_ref()
+                    .map(|p| worklog_core::paths::short_display(p))
+                    .unwrap_or_else(|| "?".into())
+            ),
+        )?;
+        if let Some(cmd) = &status.command {
+            style::info(out, &format!("runs: {cmd}"))?;
+        }
+    } else {
+        style::warn(
+            out,
+            &format!(
+                "daemon service not installed — run `worklog daemon install` to start at login"
+            ),
+        )?;
+    }
+    Ok(())
 }
 
 fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
