@@ -793,4 +793,179 @@ mod tests {
         let got = collect_literal_matches(&events);
         assert_eq!(got, vec!["PROJ-1".to_string(), "PROJ-2".to_string()]);
     }
+
+    // ───────────────── LiteLLM invoker (v0.7 — Phase 2) ─────────────────
+
+    /// OpenAI-compatible content envelope the proxy returns. Keeping this
+    /// as a helper keeps the per-test fixtures readable.
+    fn openai_envelope(content: &str) -> serde_json::Value {
+        json!({
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": content},
+                "finish_reason": "stop",
+            }]
+        })
+    }
+
+    fn short_timeout_client() -> reqwest::blocking::Client {
+        reqwest::blocking::Client::builder()
+            .user_agent("worklog-test")
+            .timeout(std::time::Duration::from_millis(200))
+            .build()
+            .unwrap()
+    }
+
+    /// B4: a well-formed proxy reply → the invoker returns the parsed
+    /// worklog JSON as a `Value`. The schema the caller sends is embedded
+    /// in the system prompt so downstream validation (validate_ticket,
+    /// round_up_minutes) keeps working identically to the subprocess path.
+    #[test]
+    fn litellm_invoker_returns_parsed_reply_on_200() {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        let content =
+            r#"{"jira_issue":"PROJ-1","minutes":30,"description":"Implement auth refresh"}"#;
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/chat/completions")
+                .header("Authorization", "Bearer test_key");
+            then.status(200).json_body(openai_envelope(content));
+        });
+
+        let inv =
+            LiteLLMInvoker::new(server.base_url(), "test_key", "anthropic/claude-haiku-4-5")
+                .unwrap();
+        let schema = response_schema();
+        let got = inv.invoke("sys", "user", &schema, "").unwrap();
+
+        assert_eq!(got["jira_issue"], "PROJ-1");
+        assert_eq!(got["minutes"], 30);
+        assert_eq!(got["description"], "Implement auth refresh");
+    }
+
+    /// B5: a 401 must bubble up as a readable error — the outer
+    /// `estimate_day_with` loop converts any `Err` into a `gap` row, so
+    /// the error message is what lands in the `warn!` tracing event the
+    /// user sees when debugging.
+    #[test]
+    fn litellm_invoker_bails_on_401() {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/chat/completions");
+            then.status(401).body("invalid api key");
+        });
+
+        let inv = LiteLLMInvoker::new(server.base_url(), "bad_key", "m").unwrap();
+        let schema = response_schema();
+        let err = inv
+            .invoke("sys", "user", &schema, "")
+            .expect_err("401 must bubble as an Err");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("401"), "error should name the HTTP status: {msg}");
+    }
+
+    /// B6: providers sometimes wrap JSON in prose ("Here you go: {...}").
+    /// The invoker reuses the existing `parse_response` helper so this
+    /// path is already covered for the subprocess; we just need to prove
+    /// the LiteLLM path delegates into it.
+    #[test]
+    fn litellm_invoker_handles_prose_wrapped_json_content() {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        let prose = r#"Here you go: {"jira_issue":"PROJ-2","minutes":15,"description":"Fix flaky test"}"#;
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/chat/completions");
+            then.status(200).json_body(openai_envelope(prose));
+        });
+
+        let inv = LiteLLMInvoker::new(server.base_url(), "k", "m").unwrap();
+        let schema = response_schema();
+        let got = inv.invoke("sys", "user", &schema, "").unwrap();
+        assert_eq!(got["jira_issue"], "PROJ-2");
+        assert_eq!(got["minutes"], 15);
+    }
+
+    /// B7: if the proxy hangs we want a deterministic failure, not a
+    /// silently-hung block. Test uses a 200ms-timeout client against an
+    /// httpmock `delay` of 500ms so the request is guaranteed to time out.
+    #[test]
+    fn litellm_invoker_bails_on_timeout() {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/chat/completions");
+            then.status(200)
+                .delay(std::time::Duration::from_millis(500))
+                .json_body(openai_envelope("{}"));
+        });
+
+        let inv = LiteLLMInvoker::new(server.base_url(), "k", "m")
+            .unwrap()
+            .with_client(short_timeout_client());
+        let schema = response_schema();
+        let err = inv
+            .invoke("sys", "user", &schema, "")
+            .expect_err("timeout must return Err");
+        let msg = format!("{err:#}").to_lowercase();
+        assert!(
+            msg.contains("timed out") || msg.contains("timeout") || msg.contains("operation"),
+            "expected timeout-shaped error, got: {msg}"
+        );
+    }
+
+    /// B8: a local LiteLLM proxy run without auth ignores the
+    /// Authorization header — but some servers reject requests that
+    /// carry an empty bearer token. If the caller leaves `api_key` empty
+    /// we must omit the header entirely, not send `Authorization: Bearer `.
+    #[test]
+    fn litellm_invoker_omits_authorization_header_when_key_empty() {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        let hit = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/chat/completions")
+                .header_exists("Content-Type")
+                .matches(|req| {
+                    req.headers
+                        .as_ref()
+                        .map(|h| h.iter().all(|(k, _)| k.to_lowercase() != "authorization"))
+                        .unwrap_or(true)
+                });
+            then.status(200).json_body(openai_envelope(
+                r#"{"jira_issue":null,"minutes":5,"description":"x"}"#,
+            ));
+        });
+
+        let inv = LiteLLMInvoker::new(server.base_url(), "", "m").unwrap();
+        let schema = response_schema();
+        inv.invoke("sys", "user", &schema, "").unwrap();
+        hit.assert();
+    }
+
+    /// The invoker's `--model` passthrough: when the caller (e.g.
+    /// `worklog estimate --model openai/gpt-4o`) passes a non-empty
+    /// model, it wins over the invoker's configured default.
+    #[test]
+    fn litellm_invoker_uses_caller_model_when_provided() {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        let hit = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/chat/completions")
+                .json_body_partial(r#"{"model":"openai/gpt-4o"}"#);
+            then.status(200).json_body(openai_envelope(
+                r#"{"jira_issue":null,"minutes":5,"description":"x"}"#,
+            ));
+        });
+
+        let inv =
+            LiteLLMInvoker::new(server.base_url(), "k", "anthropic/claude-haiku-4-5").unwrap();
+        let schema = response_schema();
+        inv.invoke("sys", "user", &schema, "openai/gpt-4o").unwrap();
+        hit.assert();
+    }
 }
