@@ -1,10 +1,5 @@
 import { notFound } from "next/navigation";
-import {
-  dayTotalSeconds,
-  listBlocksForDay,
-  listTickets,
-  ticketCacheMeta,
-} from "@/lib/db";
+import { DaemonError, listTickets, loadDaySummary } from "@/lib/daemon";
 import { formatDayHeading, formatTotalHours } from "@/lib/format";
 import { DayHeader } from "@/components/DayHeader";
 import { ActionBar } from "@/components/ActionBar";
@@ -24,12 +19,31 @@ export default async function DayPage({
   const { day } = await params;
   if (!DAY_RE.test(day)) notFound();
 
-  const [blocks, tickets, cache, total] = await Promise.all([
-    listBlocksForDay(day),
-    listTickets(),
-    ticketCacheMeta(),
-    dayTotalSeconds(day),
-  ]);
+  // Both reads go to the daemon — this is the fix for the WAL stale-read
+  // bug where the container's direct bun:sqlite reader couldn't see the
+  // host daemon's writes through Docker Desktop's VFS.
+  let summary: Awaited<ReturnType<typeof loadDaySummary>>;
+  let ticketsResp: Awaited<ReturnType<typeof listTickets>>;
+  try {
+    [summary, ticketsResp] = await Promise.all([
+      loadDaySummary(day),
+      listTickets(),
+    ]);
+  } catch (e) {
+    // Route any daemon failure to the error boundary with a clearer
+    // message than the raw fetch error. The boundary renders an empty-
+    // state that tells the user how to start the daemon.
+    if (e instanceof DaemonError) {
+      throw new Error(
+        `Can't reach the worklog daemon — start it on the host with ` +
+          `\`worklog daemon\` or \`worklog daemon install\`. (${e.message})`,
+      );
+    }
+    throw e;
+  }
+
+  const { blocks, total_seconds: total } = summary;
+  const { tickets, meta: cache } = ticketsResp;
   const unassigned = blocks.filter((b) => !b.jira_issue).length;
 
   return (

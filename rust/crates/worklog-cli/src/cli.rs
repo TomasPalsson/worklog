@@ -1723,12 +1723,13 @@ fn cmd_self_update<W: Write>(
             out,
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
-                "from":        report.from,
-                "to":          report.to,
-                "used_delta":  report.used_delta,
-                "asset_bytes": report.asset_bytes,
-                "dry_run":     report.dry_run,
-                "rolled_back": report.rolled_back,
+                "from":           report.from,
+                "to":             report.to,
+                "used_delta":     report.used_delta,
+                "asset_bytes":    report.asset_bytes,
+                "dry_run":        report.dry_run,
+                "rolled_back":    report.rolled_back,
+                "daemon_restart": report.daemon_restart,
             }))?
         )?;
     } else if report.rolled_back {
@@ -1751,14 +1752,31 @@ fn cmd_self_update<W: Write>(
     } else {
         writeln!(
             out,
-            "✓ updated {} → {} ({} bytes{})",
+            "✓ updated {} → {} ({} bytes{}){}",
             report.from,
             report.to,
             report.asset_bytes,
-            if report.used_delta { ", delta" } else { "" }
+            if report.used_delta { ", delta" } else { "" },
+            restart_suffix(report.daemon_restart.as_ref()),
         )?;
     }
     Ok(())
+}
+
+/// Render a short phrase describing whether the supervised daemon was
+/// cycled. Appended to the "updated" line so the user knows without
+/// having to check `worklog daemon status` after the fact.
+fn restart_suffix(outcome: Option<&worklog_core::daemon_service::RestartOutcome>) -> &'static str {
+    use worklog_core::daemon_service::RestartOutcome;
+    match outcome {
+        Some(RestartOutcome::Restarted) => " · daemon restarted",
+        Some(RestartOutcome::NotRunning) => {
+            " · daemon service not running — start with `worklog daemon`"
+        }
+        Some(RestartOutcome::NotInstalled) => "",
+        Some(RestartOutcome::Unsupported) => "",
+        None => "",
+    }
 }
 
 fn cmd_dev_keygen<W: Write>(

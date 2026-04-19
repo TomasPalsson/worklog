@@ -10,7 +10,9 @@ import {
   runEstimate as daemonRunEstimate,
   runSync as daemonRunSync,
   refreshJira as daemonRefreshJira,
+  listBlockEvents as daemonListBlockEvents,
 } from "@/lib/daemon";
+import type { Event } from "@/lib/types";
 
 /**
  * Every Server Action returns one of these. `useTransition`'s `start()`
@@ -111,6 +113,17 @@ export async function runSync(day: string, dryRun: boolean) {
 
 export async function refreshJira(day: string) {
   return runAction(() => daemonRefreshJira(), `/${day}`);
+}
+
+/**
+ * Fetch the events linked to a block. Lazy — called by the per-block
+ * drill-down on first expand. No revalidation side effect because the
+ * events don't change in response to UI actions.
+ */
+export async function fetchBlockEvents(
+  blockId: number,
+): Promise<ActionResult<Event[]>> {
+  return runAction(() => daemonListBlockEvents(blockId));
 }
 
 // Exported for tests. Not used by callers — they use the CRUD/query

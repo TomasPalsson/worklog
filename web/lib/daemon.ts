@@ -1,9 +1,12 @@
 // HTTP client for the worklog Rust daemon.
 //
-// All write endpoints are here. Reads go through bun:sqlite in ./db.ts
-// — the daemon's GET /blocks/:day would work too, but direct SQLite is
-// half a millisecond vs a cross-process RPC and keeps the daemon free
-// for writes.
+// Both reads and writes go through the daemon. Reads used to hit
+// bun:sqlite directly for raw speed, but that path was quietly broken on
+// Docker Desktop — the container's read-only connection couldn't see WAL
+// writes the host daemon had just committed, so unassign → re-assign
+// looked like it failed until a hard reload. Routing reads through the
+// daemon fixes it permanently and keeps the two paths on the same
+// connection view.
 //
 // Two transports supported:
 //   1. WORKLOG_DAEMON_URL — TCP (used by the dockerised web UI, since
@@ -146,4 +149,39 @@ export async function runSync(day: string, dryRun = true) {
 
 export async function refreshJira() {
   return call<{ tickets_written: number; source: string }>("POST", "/jira/refresh");
+}
+
+// ───────────────────── reads (v0.6) ─────────────────────
+
+import type { Block, Event, JiraTicket, TicketCacheMeta } from "./types";
+
+interface DaySummary {
+  day: string;
+  total_seconds: number;
+  blocks: Block[];
+}
+
+/**
+ * One-shot day load: blocks enriched with event_count + sources, plus
+ * the total seconds for the header. Replaces four separate direct-DB
+ * queries with a single round-trip.
+ */
+export async function loadDaySummary(day: string): Promise<DaySummary> {
+  return call<DaySummary>("GET", `/days/${day}`);
+}
+
+export async function listTickets(): Promise<{
+  tickets: JiraTicket[];
+  meta: TicketCacheMeta;
+}> {
+  return call("GET", "/tickets");
+}
+
+/**
+ * Events linked to a specific block, ordered by their own timestamp.
+ * Fetched lazily on the first expand of the per-block events drill-down
+ * so the day page's initial render stays cheap.
+ */
+export async function listBlockEvents(blockId: number): Promise<Event[]> {
+  return call<Event[]>("GET", `/blocks/${blockId}/events`);
 }
