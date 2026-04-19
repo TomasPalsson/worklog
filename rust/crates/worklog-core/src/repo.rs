@@ -133,6 +133,13 @@ pub fn list_blocks_for_day(conn: &Connection, day: &str) -> Result<Vec<Block>> {
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
+/// Events linked to a specific block via `block_events`, ordered by
+/// their own `started_at`. Used by the per-block events drill-down in
+/// the web UI. Stub — implementation lands in Phase 1 GREEN.
+pub fn list_events_for_block(_conn: &Connection, _block_id: i64) -> Result<Vec<Event>> {
+    anyhow::bail!("repo::list_events_for_block not yet implemented")
+}
+
 pub fn get_block(conn: &Connection, id: i64) -> Result<Option<Block>> {
     let block = conn
         .query_row(

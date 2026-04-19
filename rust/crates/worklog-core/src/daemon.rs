@@ -51,7 +51,11 @@ use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 use crate::collectors::{jira, tempo};
-use crate::{block_service, db, estimate, infer, models::Block, repo};
+use crate::{
+    block_service, db, estimate, infer,
+    models::{Block, Event},
+    repo,
+};
 
 pub struct AppState {
     /// Single shared connection — SQLite + rusqlite is !Send, so we keep
@@ -66,6 +70,9 @@ pub fn router(state: Shared) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/blocks/:day", get(list_blocks))
+        .route("/days/:day", get(day_summary))
+        .route("/tickets", get(list_tickets))
+        .route("/blocks/:id/events", get(block_events))
         .route("/blocks/:id/ticket", post(assign_ticket))
         .route("/blocks/:id/duration", post(set_duration))
         .route("/blocks/:id/description", post(set_description))
@@ -258,6 +265,75 @@ async fn list_blocks(
 ) -> Result<Json<Vec<Block>>, ApiError> {
     let blocks = with_conn(state, move |c| repo::list_blocks_for_day(c, &day)).await?;
     Ok(Json(blocks))
+}
+
+// ───────────────────────── v0.6 read endpoints ─────────────────────────
+//
+// The web container reads the DB directly via `bun:sqlite` today. That path
+// was fast but subtly broken on Docker Desktop — SQLite's WAL shared-memory
+// index doesn't sync across the host ↔ VM bind mount, so the container's
+// read-only connection could miss writes the daemon just committed. These
+// endpoints move reads into the daemon so everyone's on the same connection
+// view.
+
+/// Per-block event count + sources, stitched into the day-summary
+/// response. Kept here (rather than as a free `serde::Serialize` struct)
+/// so the shape stays close to its only caller.
+#[derive(Serialize)]
+pub struct SourceCount {
+    pub source: String,
+    pub n: i64,
+}
+
+#[derive(Serialize)]
+pub struct BlockSummary {
+    #[serde(flatten)]
+    pub block: Block,
+    pub event_count: i64,
+    pub sources: Vec<SourceCount>,
+}
+
+#[derive(Serialize)]
+pub struct DaySummary {
+    pub day: String,
+    pub total_seconds: i64,
+    pub blocks: Vec<BlockSummary>,
+}
+
+#[derive(Serialize)]
+pub struct TicketsResponse {
+    pub tickets: Vec<crate::models::JiraTicket>,
+    pub meta: TicketCacheMeta,
+}
+
+#[derive(Serialize)]
+pub struct TicketCacheMeta {
+    pub count: i64,
+    pub last_fetched: Option<String>,
+}
+
+async fn day_summary(
+    State(_state): State<Shared>,
+    AxumPath(_day): AxumPath<String>,
+) -> Result<Json<DaySummary>, ApiError> {
+    Err(ApiError::Internal(anyhow::anyhow!(
+        "day_summary not yet implemented"
+    )))
+}
+
+async fn list_tickets(State(_state): State<Shared>) -> Result<Json<TicketsResponse>, ApiError> {
+    Err(ApiError::Internal(anyhow::anyhow!(
+        "list_tickets not yet implemented"
+    )))
+}
+
+async fn block_events(
+    State(_state): State<Shared>,
+    AxumPath(_id): AxumPath<i64>,
+) -> Result<Json<Vec<Event>>, ApiError> {
+    Err(ApiError::Internal(anyhow::anyhow!(
+        "block_events not yet implemented"
+    )))
 }
 
 #[derive(Deserialize)]
@@ -461,10 +537,11 @@ mod tests {
     use super::*;
     use axum::body::{self, Body};
     use axum::http::{Request, StatusCode};
+    use rusqlite::params;
     use tower::ServiceExt; // for `.oneshot`
 
     use crate::db::open_memory;
-    use crate::models::Event;
+    use crate::models::{Event, JiraTicket};
 
     fn state_with_block() -> Shared {
         let conn = open_memory().unwrap();
@@ -474,25 +551,33 @@ mod tests {
             [],
         )
         .unwrap();
-        // Seed an event so /infer has something to do.
-        repo::upsert_event(
+        let bid = conn.last_insert_rowid();
+        // Seed two events and link them to the block so tests of the
+        // new /days/:day and /blocks/:id/events endpoints have real
+        // rows to assert on.
+        let e1 = repo::upsert_event(
             &conn,
             &Event::minimal(
                 "github_commit",
                 "a",
-                "2026-04-18T10:00:00+00:00",
+                "2026-04-18T09:05:00+00:00",
                 "commit msg",
             ),
         )
         .unwrap();
-        repo::upsert_event(
+        let e2 = repo::upsert_event(
             &conn,
             &Event::minimal(
-                "github_commit",
+                "claude",
                 "b",
-                "2026-04-18T10:05:00+00:00",
-                "commit 2",
+                "2026-04-18T09:10:00+00:00",
+                "UserPromptSubmit — fix oauth",
             ),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2), (?1, ?3)",
+            params![bid, e1, e2],
         )
         .unwrap();
         Arc::new(AppState {
@@ -533,6 +618,170 @@ mod tests {
         let arr = v.as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["duration_seconds"], 1800);
+    }
+
+    // ─────────────────── v0.6 read endpoints ───────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn day_summary_returns_blocks_with_counts_sources_and_total() {
+        // B1: the new `/days/:day` endpoint is the single read path for the
+        // web container. One round-trip returns everything needed to render
+        // a day — blocks enriched with event_count + sources, plus the
+        // total seconds for the day header.
+        let app = router(state_with_block());
+        let resp = app
+            .oneshot(
+                Request::get("/days/2026-04-18")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["day"], "2026-04-18");
+        assert_eq!(v["total_seconds"], 1800);
+        let blocks = v["blocks"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["event_count"], 2);
+        // Both sources should appear. Order isn't guaranteed, so check
+        // membership and aggregate rather than positional equality.
+        let sources = blocks[0]["sources"].as_array().unwrap();
+        let src_set: std::collections::HashSet<&str> = sources
+            .iter()
+            .map(|s| s["source"].as_str().unwrap())
+            .collect();
+        assert!(src_set.contains("github_commit"));
+        assert!(src_set.contains("claude"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn day_summary_zero_total_when_no_blocks_on_day() {
+        // B20: a day with no blocks returns an empty blocks array and
+        // total_seconds=0 — not an error. The web empty-state renders
+        // this shape.
+        let app = router(state_with_block());
+        let resp = app
+            .oneshot(
+                Request::get("/days/2099-01-01")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["total_seconds"], 0);
+        assert_eq!(v["blocks"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn block_events_returns_ordered_events_for_block() {
+        // B2: /blocks/:id/events returns events in started_at order so
+        // the UI drill-down reads as a timeline.
+        let app = router(state_with_block());
+        let resp = app
+            .oneshot(
+                Request::get("/blocks/1/events")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["source"], "github_commit");
+        assert_eq!(arr[1]["source"], "claude");
+        assert!(arr[0]["started_at"].as_str().unwrap() < arr[1]["started_at"].as_str().unwrap());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn block_events_returns_empty_for_block_with_no_linked_events() {
+        // An orphan block — exists but has no rows in block_events. The
+        // drill-down should render a "no events" empty state rather than
+        // error out.
+        let state = state_with_block();
+        {
+            let conn = state.conn.lock().await;
+            conn.execute(
+                "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+                 VALUES ('2026-04-18', '2026-04-18T11:00:00+00:00', '2026-04-18T11:15:00+00:00', 900)",
+                [],
+            )
+            .unwrap();
+        }
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::get("/blocks/2/events")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_tickets_returns_cached_tickets_with_meta() {
+        // B3: /tickets returns the cached Jira tickets + cache meta in
+        // one response so the web combobox can render the empty state
+        // (no cache yet) or the hydrated list.
+        let state = state_with_block();
+        {
+            let conn = state.conn.lock().await;
+            repo::upsert_ticket(
+                &conn,
+                &JiraTicket {
+                    key: "PROJ-1".into(),
+                    summary: "fix login".into(),
+                    status: Some("In Progress".into()),
+                    project_key: Some("PROJ".into()),
+                    updated: Some("2026-04-18T10:00:00Z".into()),
+                },
+            )
+            .unwrap();
+            repo::upsert_ticket(
+                &conn,
+                &JiraTicket {
+                    key: "PROJ-2".into(),
+                    summary: "add signup".into(),
+                    status: None,
+                    project_key: Some("PROJ".into()),
+                    updated: None,
+                },
+            )
+            .unwrap();
+        }
+        let app = router(state);
+        let resp = app
+            .oneshot(Request::get("/tickets").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["tickets"].as_array().unwrap().len(), 2);
+        assert_eq!(v["meta"]["count"], 2);
+        // At least one of the two should carry a non-null last_fetched
+        // (schema defaults fetched_at on insert).
+        assert!(v["meta"]["last_fetched"].is_string());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_tickets_returns_empty_when_cache_is_cold() {
+        let app = router(state_with_block());
+        let resp = app
+            .oneshot(Request::get("/tickets").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["tickets"].as_array().unwrap().len(), 0);
+        assert_eq!(v["meta"]["count"], 0);
     }
 
     #[tokio::test(flavor = "current_thread")]
