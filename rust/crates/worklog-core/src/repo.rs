@@ -135,9 +135,37 @@ pub fn list_blocks_for_day(conn: &Connection, day: &str) -> Result<Vec<Block>> {
 
 /// Events linked to a specific block via `block_events`, ordered by
 /// their own `started_at`. Used by the per-block events drill-down in
-/// the web UI. Stub — implementation lands in Phase 1 GREEN.
-pub fn list_events_for_block(_conn: &Connection, _block_id: i64) -> Result<Vec<Event>> {
-    anyhow::bail!("repo::list_events_for_block not yet implemented")
+/// the web UI.
+pub fn list_events_for_block(conn: &Connection, block_id: i64) -> Result<Vec<Event>> {
+    let mut stmt = conn.prepare(
+        "SELECT e.id, e.source, e.source_id, e.started_at, e.ended_at,
+                e.duration_seconds, e.title, e.details, e.repo,
+                e.project_path, e.jira_issue, e.session_id,
+                e.tempo_worklog_id, e.raw_json
+           FROM events e
+           JOIN block_events be ON be.event_id = e.id
+          WHERE be.block_id = ?1
+          ORDER BY e.started_at",
+    )?;
+    let rows = stmt.query_map(params![block_id], |r| {
+        Ok(Event {
+            id: Some(r.get(0)?),
+            source: r.get(1)?,
+            source_id: r.get(2)?,
+            started_at: r.get(3)?,
+            ended_at: r.get(4)?,
+            duration_seconds: r.get(5)?,
+            title: r.get(6)?,
+            details: r.get(7)?,
+            repo: r.get(8)?,
+            project_path: r.get(9)?,
+            jira_issue: r.get(10)?,
+            session_id: r.get(11)?,
+            tempo_worklog_id: r.get(12)?,
+            raw_json: r.get(13)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
 pub fn get_block(conn: &Connection, id: i64) -> Result<Option<Block>> {

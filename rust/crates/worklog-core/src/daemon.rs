@@ -313,27 +313,138 @@ pub struct TicketCacheMeta {
 }
 
 async fn day_summary(
-    State(_state): State<Shared>,
-    AxumPath(_day): AxumPath<String>,
+    State(state): State<Shared>,
+    AxumPath(day): AxumPath<String>,
 ) -> Result<Json<DaySummary>, ApiError> {
-    Err(ApiError::Internal(anyhow::anyhow!(
-        "day_summary not yet implemented"
-    )))
+    let summary = with_conn(state, move |c| stitch_day_summary(c, &day)).await?;
+    Ok(Json(summary))
 }
 
-async fn list_tickets(State(_state): State<Shared>) -> Result<Json<TicketsResponse>, ApiError> {
-    Err(ApiError::Internal(anyhow::anyhow!(
-        "list_tickets not yet implemented"
-    )))
+/// Load blocks for a day and enrich each with its event count + per-source
+/// breakdown. Kept as a free fn so the daemon handler + tests + any
+/// future sync caller share the same aggregation.
+fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
+    let blocks = repo::list_blocks_for_day(conn, day)?;
+    if blocks.is_empty() {
+        return Ok(DaySummary {
+            day: day.to_owned(),
+            total_seconds: 0,
+            blocks: vec![],
+        });
+    }
+
+    let total_seconds: i64 = blocks.iter().map(|b| b.duration_seconds).sum();
+
+    let ids: Vec<String> = blocks.iter().map(|b| b.id.to_string()).collect();
+    let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+
+    // Counts + source breakdown in one pair of queries — faster than N
+    // round-trips per block.
+    let count_sql = format!(
+        "SELECT block_id, COUNT(*) FROM block_events
+          WHERE block_id IN ({placeholders})
+          GROUP BY block_id"
+    );
+    let mut count_stmt = conn.prepare(&count_sql)?;
+    let counts: std::collections::HashMap<i64, i64> = count_stmt
+        .query_map(rusqlite::params_from_iter(ids.iter()), |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+        })?
+        .collect::<Result<_, _>>()?;
+
+    let src_sql = format!(
+        "SELECT be.block_id, e.source, COUNT(*)
+           FROM block_events be
+           JOIN events e ON e.id = be.event_id
+          WHERE be.block_id IN ({placeholders})
+          GROUP BY be.block_id, e.source
+          ORDER BY COUNT(*) DESC"
+    );
+    let mut src_stmt = conn.prepare(&src_sql)?;
+    let mut sources_by_block: std::collections::HashMap<i64, Vec<SourceCount>> =
+        std::collections::HashMap::new();
+    let rows = src_stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, i64>(2)?,
+        ))
+    })?;
+    for row in rows {
+        let (bid, source, n) = row?;
+        sources_by_block.entry(bid).or_default().push(SourceCount { source, n });
+    }
+
+    let enriched = blocks
+        .into_iter()
+        .map(|block| {
+            let id = block.id;
+            BlockSummary {
+                event_count: counts.get(&id).copied().unwrap_or(0),
+                sources: sources_by_block.remove(&id).unwrap_or_default(),
+                block,
+            }
+        })
+        .collect();
+
+    Ok(DaySummary {
+        day: day.to_owned(),
+        total_seconds,
+        blocks: enriched,
+    })
+}
+
+async fn list_tickets(State(state): State<Shared>) -> Result<Json<TicketsResponse>, ApiError> {
+    let payload = with_conn(state, |c| {
+        let tickets = list_jira_tickets(c)?;
+        let meta = jira_cache_meta(c)?;
+        Ok(TicketsResponse { tickets, meta })
+    })
+    .await?;
+    Ok(Json(payload))
+}
+
+/// Cached Jira tickets, ordered like the existing UI picker: most recently
+/// updated first, then alphabetical by key. Mirrors the previous direct
+/// SQL in `web/lib/db.ts::listTickets`.
+fn list_jira_tickets(conn: &Connection) -> Result<Vec<crate::models::JiraTicket>> {
+    let mut stmt = conn.prepare(
+        "SELECT key, summary, status, project_key, updated
+           FROM jira_tickets
+          ORDER BY COALESCE(updated, '') DESC, key ASC",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(crate::models::JiraTicket {
+            key: r.get(0)?,
+            summary: r.get(1)?,
+            status: r.get(2)?,
+            project_key: r.get(3)?,
+            updated: r.get(4)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+fn jira_cache_meta(conn: &Connection) -> Result<TicketCacheMeta> {
+    let (count, last_fetched): (i64, Option<String>) = conn
+        .query_row(
+            "SELECT COUNT(*), MAX(fetched_at) FROM jira_tickets",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .context("querying jira_tickets meta")?;
+    Ok(TicketCacheMeta {
+        count,
+        last_fetched,
+    })
 }
 
 async fn block_events(
-    State(_state): State<Shared>,
-    AxumPath(_id): AxumPath<i64>,
+    State(state): State<Shared>,
+    AxumPath(id): AxumPath<i64>,
 ) -> Result<Json<Vec<Event>>, ApiError> {
-    Err(ApiError::Internal(anyhow::anyhow!(
-        "block_events not yet implemented"
-    )))
+    let events = with_conn(state, move |c| repo::list_events_for_block(c, id)).await?;
+    Ok(Json(events))
 }
 
 #[derive(Deserialize)]
