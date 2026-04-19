@@ -912,13 +912,96 @@ fn cmd_estimate<W: Write>(day: Option<String>, model: &str, out: &mut W, json: b
 }
 
 fn cmd_day<W: Write>(
-    _day: Option<String>,
-    _no_serve: bool,
-    _model: &str,
-    _out: &mut W,
-    _json: bool,
+    day: Option<String>,
+    no_serve: bool,
+    model: &str,
+    out: &mut W,
+    json: bool,
 ) -> Result<()> {
-    todo!("cmd_day — implemented in Phase 2 GREEN")
+    // `db::open` is idempotent: it creates the file + runs migrations if
+    // missing, so first-run users don't need to remember `db migrate`.
+    let paths = Paths::resolve()?;
+    paths.ensure()?;
+    let conn = db::open(&paths.db)?;
+    let day_parsed = parse_day(day.as_deref())?;
+
+    // --- collect --------------------------------------------------------
+    // Collect for the requested day, not "now" — lets `worklog day --day
+    // 2026-04-01` pull the right slice instead of dumping today's data
+    // into last month's folder.
+    writeln!(out, "collecting github + jira + gcal …")?;
+    let client = http::client()?;
+    let since = day_parsed;
+    let until = day_parsed + chrono::Duration::days(1);
+
+    // Each step captures its own error. A Jira outage shouldn't block
+    // the rest of the daily flow — matches Python's yellow-! behaviour.
+    match jira_col::JiraAuth::from_secrets() {
+        Ok(auth) => match jira_col::fetch_open_tickets_with(&conn, &auth, &client) {
+            Ok(r) => writeln!(out, "  ✓ jira:   tickets={} events={}", r.tickets_written, r.events_written)?,
+            Err(e) => writeln!(out, "  ! jira:   {e}")?,
+        },
+        Err(e) => writeln!(out, "  · jira skipped: {e}")?,
+    }
+    match gh::GitHubAuth::from_secrets() {
+        Ok(auth) => match gh::collect_with(&conn, &auth, since, until, &client) {
+            Ok(r) => writeln!(out, "  ✓ github: events={}", r.events_written)?,
+            Err(e) => writeln!(out, "  ! github: {e}")?,
+        },
+        Err(e) => writeln!(out, "  · github skipped: {e}")?,
+    }
+    match gcal_col::GcalAuth::from_paths() {
+        Ok(auth) => match gcal_col::collect_with(&conn, &auth, since, until, &client) {
+            Ok(r) => writeln!(out, "  ✓ gcal:   events={}", r.events_written)?,
+            Err(e) => writeln!(out, "  ! gcal:   {e}")?,
+        },
+        Err(e) => writeln!(out, "  · gcal skipped: {e}")?,
+    }
+
+    // --- infer ----------------------------------------------------------
+    writeln!(out, "\ninferring blocks …")?;
+    let events = infer::load_day_events(&conn, day_parsed)?;
+    let blocks = infer::build_blocks(events);
+    infer::persist_blocks(&conn, day_parsed, &blocks)?;
+    let total_min: i64 = blocks.iter().map(|b| b.duration_seconds).sum::<i64>() / 60;
+    writeln!(
+        out,
+        "  ✓ {} block{} · {} min total",
+        blocks.len(),
+        if blocks.len() == 1 { "" } else { "s" },
+        total_min
+    )?;
+
+    // --- estimate -------------------------------------------------------
+    writeln!(out, "\nestimating (claude) …")?;
+    match estimate::estimate_day(&conn, day_parsed, model) {
+        Ok(stats) => writeln!(
+            out,
+            "  ✓ estimated={} skipped={} failed={}",
+            stats.estimated, stats.skipped, stats.failed
+        )?,
+        Err(e) => writeln!(out, "  ! estimate skipped: {e}")?,
+    }
+
+    // --- serve ----------------------------------------------------------
+    if no_serve {
+        if json {
+            writeln!(
+                out,
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "day": day_parsed.to_string(),
+                    "blocks": blocks.len(),
+                    "minutes": total_min,
+                    "served": false,
+                }))?
+            )?;
+        }
+        return Ok(());
+    }
+    writeln!(out, "\nbringing up review UI at http://localhost:3333")?;
+    writeln!(out, "  ctrl+c to bring it down, or `worklog web down`\n")?;
+    cmd_web_up(3333, false, out, false)
 }
 
 fn cmd_hook_run() -> Result<()> {
