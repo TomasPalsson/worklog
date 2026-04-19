@@ -13,16 +13,27 @@ pub const SERVICE: &str = "worklog";
 
 /// Secrets the app knows about by name. The setup wizard walks this list.
 pub const KNOWN_KEYS: &[&str] = &[
+    // Atlassian / Tempo
     "jira_email",
     "jira_api_token",
     "jira_base_url",
+    "tempo_api_token",
+    // GitHub
     "github_token",
     "github_user",
-    "tempo_api_token",
+    // Google Calendar (OAuth installed-app flow)
     "google_client_id",
     "google_client_secret",
     "google_refresh_token",
+    // Estimator providers
     "anthropic_api_key",
+    // LiteLLM-proxy provider. All optional; unset → fall back to the
+    // `claude -p` subprocess path. See `estimate::resolve_provider`.
+    "litellm_base_url",
+    "litellm_api_key",
+    "litellm_model",
+    // `claude_subprocess` | `litellm`. Env WORKLOG_ESTIMATOR_PROVIDER wins.
+    "worklog_estimator_provider",
 ];
 
 /// Map each known key to the Python-era `.env` variable name so Rust
@@ -40,6 +51,10 @@ fn env_var_for(key: &str) -> Option<&'static str> {
         "google_client_secret" => "WORKLOG_GOOGLE_CLIENT_SECRET",
         "google_refresh_token" => "WORKLOG_GOOGLE_REFRESH_TOKEN",
         "anthropic_api_key" => "ANTHROPIC_API_KEY",
+        "litellm_base_url" => "WORKLOG_LITELLM_BASE_URL",
+        "litellm_api_key" => "WORKLOG_LITELLM_API_KEY",
+        "litellm_model" => "WORKLOG_LITELLM_MODEL",
+        "worklog_estimator_provider" => "WORKLOG_ESTIMATOR_PROVIDER",
         _ => return None,
     })
 }
