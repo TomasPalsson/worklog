@@ -49,6 +49,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install system deps (linux)
+        # libdbus is pulled in by keyring's sync-secret-service feature.
+        # Not pre-installed on ubuntu-24.04; macOS uses the native Keychain.
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
