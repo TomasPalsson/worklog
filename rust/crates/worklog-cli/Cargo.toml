@@ -34,3 +34,7 @@ assert_cmd  = { workspace = true }
 predicates  = { workspace = true }
 tempfile    = { workspace = true }
 rusqlite    = { workspace = true }
+# Only used by wizard::tests for the LiteLLM probe; matches the
+# version pinned in worklog-core/Cargo.toml so cargo has a single
+# dependency tree to resolve.
+httpmock    = "0.7"

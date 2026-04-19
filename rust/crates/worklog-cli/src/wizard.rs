@@ -618,4 +618,88 @@ mod tests {
         std::env::remove_var("WORKLOG_SECRETS_FILE");
         std::env::remove_var("WORKLOG_ENV_FILE");
     }
+
+    // ─────────────────── Estimator provider step (v0.7 — Phase 4) ───────────────────
+
+    /// `capture_secrets` walks `KNOWN_KEYS` and renders each with
+    /// `human_label` in the prompt. Adding a key without a label would
+    /// show up as an empty header — silently confusing.
+    #[test]
+    fn human_label_covers_all_litellm_and_provider_keys() {
+        for k in &[
+            "litellm_base_url",
+            "litellm_api_key",
+            "litellm_model",
+            "worklog_estimator_provider",
+        ] {
+            let label = human_label(k);
+            assert!(
+                !label.is_empty(),
+                "human_label({k}) should be non-empty so the wizard shows a heading"
+            );
+        }
+    }
+
+    /// The probe surfaces "proxy unreachable" to the wizard so users
+    /// get a warning before saving. A running `/health` → None (OK).
+    #[test]
+    fn probe_litellm_returns_none_on_healthy_proxy() {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/health");
+            then.status(200).body("{\"status\":\"ok\"}");
+        });
+        assert_eq!(probe_litellm(&server.base_url()), None);
+    }
+
+    /// Unreachable → the user sees a warning. We probe against a port
+    /// that's almost certainly closed on every host (port 1) — Linux
+    /// and macOS both close it for non-root processes.
+    #[test]
+    fn probe_litellm_returns_err_string_when_unreachable() {
+        let err = probe_litellm("http://127.0.0.1:1");
+        assert!(
+            err.is_some(),
+            "unreachable endpoint should surface an err string; got None"
+        );
+    }
+
+    /// Non-interactive wizard must not write any LiteLLM secrets —
+    /// headless CI runs and `worklog setup --non-interactive` must stay
+    /// side-effect-free for the new step just like they are for the
+    /// schedule / daemon steps.
+    #[test]
+    fn non_interactive_wizard_does_not_write_litellm_secrets() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("WORKLOG_HOME", tmp.path());
+        let secrets_file = tmp.path().join("secrets.json");
+        std::env::set_var("WORKLOG_SECRETS_FILE", &secrets_file);
+        std::env::set_var("WORKLOG_ENV_FILE", tmp.path().join("absent.env"));
+
+        run(WizardOptions {
+            non_interactive: true,
+            skip_validate: true,
+            skip_schedule: true,
+            secrets_file: Some(secrets_file.clone()),
+        })
+        .unwrap();
+
+        // None of the four new keys should have landed in the store.
+        for k in &[
+            "litellm_base_url",
+            "litellm_api_key",
+            "litellm_model",
+            "worklog_estimator_provider",
+        ] {
+            assert!(
+                worklog_core::secrets::get(k).unwrap().is_none(),
+                "non-interactive wizard wrote secret {k}"
+            );
+        }
+
+        std::env::remove_var("WORKLOG_HOME");
+        std::env::remove_var("WORKLOG_SECRETS_FILE");
+        std::env::remove_var("WORKLOG_ENV_FILE");
+    }
 }

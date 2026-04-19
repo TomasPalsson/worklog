@@ -4339,6 +4339,7 @@ dependencies = [
  "comfy-table",
  "console",
  "dialoguer",
+ "httpmock",
  "indicatif",
  "miette",
  "predicates",
