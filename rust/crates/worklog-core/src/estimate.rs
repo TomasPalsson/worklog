@@ -63,9 +63,87 @@ struct Reply {
     description: Option<String>,
 }
 
-/// Invoke the estimator for every un-estimated block on `day`.
+/// Which invoker a given day's estimate run will route through. Built
+/// by [`resolve_provider`] from env + secrets. Kept as an enum (not a
+/// boxed trait object) so tests can pattern-match without a downcast
+/// and the compiler proves every arm is handled at the dispatch site.
+pub enum ProviderChoice {
+    /// The historical `claude -p` subprocess path. Default when nothing
+    /// is configured — existing installs keep working unchanged.
+    ClaudeSubprocess,
+    /// LiteLLM / any OpenAI-compatible HTTP proxy.
+    LiteLLM(LiteLLMInvoker),
+}
+
+impl std::fmt::Debug for ProviderChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Don't leak endpoint/model fields via default Derive — debug
+        // output lands in test panic messages + tracing events.
+        match self {
+            ProviderChoice::ClaudeSubprocess => f.write_str("ClaudeSubprocess"),
+            ProviderChoice::LiteLLM(_) => f.write_str("LiteLLM(<invoker>)"),
+        }
+    }
+}
+
+/// Env wins over secret. Returns the trimmed lowercase choice or None
+/// when neither is set; caller defaults to `claude_subprocess`.
+fn read_provider_selector() -> Result<Option<String>> {
+    if let Ok(v) = std::env::var("WORKLOG_ESTIMATOR_PROVIDER") {
+        let v = v.trim();
+        if !v.is_empty() {
+            return Ok(Some(v.to_lowercase()));
+        }
+    }
+    match crate::secrets::get("worklog_estimator_provider")? {
+        Some(v) if !v.trim().is_empty() => Ok(Some(v.trim().to_lowercase())),
+        _ => Ok(None),
+    }
+}
+
+/// Build a `LiteLLMInvoker` from secrets, with actionable errors when
+/// required pieces are missing. Only `litellm_base_url` is required;
+/// `api_key` can be empty (unauthed local proxies) and `model` falls
+/// back to [`DEFAULT_LITELLM_MODEL`].
+fn build_litellm_from_secrets() -> Result<LiteLLMInvoker> {
+    let base_url = crate::secrets::get("litellm_base_url")?
+        .filter(|v| !v.trim().is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "estimator provider `litellm` selected, but `litellm_base_url` is not set. \
+                 Run `worklog setup` or `worklog secret set litellm_base_url <URL>`."
+            )
+        })?;
+    let api_key = crate::secrets::get("litellm_api_key")?.unwrap_or_default();
+    let model = crate::secrets::get("litellm_model")?
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_LITELLM_MODEL.to_owned());
+    LiteLLMInvoker::new(base_url, api_key, model)
+}
+
+/// Read env + secrets to decide which invoker today's run uses. Called
+/// by [`estimate_day`] and surfaced in `worklog doctor`.
+pub fn resolve_provider() -> Result<ProviderChoice> {
+    match read_provider_selector()?.as_deref() {
+        None | Some("claude_subprocess") | Some("subprocess") | Some("claude") => {
+            Ok(ProviderChoice::ClaudeSubprocess)
+        }
+        Some("litellm") => Ok(ProviderChoice::LiteLLM(build_litellm_from_secrets()?)),
+        Some(other) => anyhow::bail!(
+            "unknown estimator provider `{other}`. \
+             Expected `claude_subprocess` or `litellm` \
+             (set via WORKLOG_ESTIMATOR_PROVIDER env or `worklog setup`)."
+        ),
+    }
+}
+
+/// Invoke the estimator for every un-estimated block on `day`. Routes
+/// through whichever [`ProviderChoice`] is active.
 pub fn estimate_day(conn: &Connection, day: NaiveDate, model: &str) -> Result<EstimateStats> {
-    estimate_day_with(conn, day, model, &ClaudeSubprocess)
+    match resolve_provider()? {
+        ProviderChoice::ClaudeSubprocess => estimate_day_with(conn, day, model, &ClaudeSubprocess),
+        ProviderChoice::LiteLLM(inv) => estimate_day_with(conn, day, model, &inv),
+    }
 }
 
 /// Test seam — tests pass a fake invoker so we don't shell out to `claude`.
