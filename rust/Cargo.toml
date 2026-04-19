@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/worklog-core", "crates/worklog-cli"]
 
 [workspace.package]
-version = "0.3.0-dev"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.82"
 license = "MIT"
@@ -28,6 +28,7 @@ assert_cmd  = "2"
 predicates  = "3"
 dialoguer   = { version = "0.11", default-features = false, features = ["password"] }
 console     = "0.15"
+indicatif   = "0.17"
 reqwest     = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "blocking"] }
 tokio       = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "fs", "sync"] }
 axum        = { version = "0.7", default-features = false, features = ["json", "tokio", "http1"] }
@@ -41,6 +42,8 @@ ed25519-dalek = { version = "2", features = ["rand_core", "pem", "pkcs8"] }
 sha2        = "0.10"
 zstd        = "0.13"
 qbsdiff     = "1"
+tar         = "0.4"
+flate2      = "1"
 rand        = "0.8"
 base64      = "0.22"
 fs4         = "0.9"

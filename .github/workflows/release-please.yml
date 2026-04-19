@@ -1,0 +1,33 @@
+# release-please — automated versioning + release PRs.
+#
+# What it does:
+#   On every push to `main`, parse conventional-commit messages since the
+#   last tag, compute the next semver, and maintain a PR on a
+#   `release-please--branches--main` branch that bumps the version in
+#   rust/Cargo.toml and appends a CHANGELOG entry. Merging that PR pushes
+#   a `vX.Y.Z` tag and creates a GitHub Release.
+#
+# Flow after merge:
+#   release-please creates the Release (with changelog notes, zero
+#   binaries) → push of `vX.Y.Z` tag triggers `release.yml` → that
+#   workflow builds + signs the binaries and uploads them onto the
+#   already-created Release via `gh release upload --clobber`.
+
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

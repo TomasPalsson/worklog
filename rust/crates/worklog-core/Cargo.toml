@@ -31,6 +31,11 @@ qbsdiff     = { workspace = true }
 rand        = { workspace = true }
 fs4         = { workspace = true }
 
+# Web-tree auto-fetch: `worklog web fetch` + auto-download on first
+# `worklog web up` when the Dockerfile isn't in cwd/prefix.
+tar         = { workspace = true }
+flate2      = { workspace = true }
+
 # Stage 3.2: axum IPC server bits. Used by the daemon only — unit tests
 # on the block service don't need any of these.
 tokio       = { workspace = true }

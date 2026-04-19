@@ -387,3 +387,97 @@ fn day_continues_past_collect_failures() {
         .stdout(predicate::str::contains("inferring"))
         .stdout(predicate::str::contains("estimating"));
 }
+
+// ─────────── help + version exit codes (DisplayHelp/DisplayVersion) ───────────
+
+#[test]
+fn top_level_help_flag_exits_zero() {
+    // `worklog --help` is not an error. Clap's DisplayHelp flows through
+    // try_parse_from as Err(...) by default; we special-case it in run_with
+    // so the binary returns 0 and the help text goes to stdout, matching
+    // every other well-behaved CLI.
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Personal worklog"))
+        .stdout(predicate::str::contains("day"))
+        .stdout(predicate::str::contains("web"));
+}
+
+#[test]
+fn top_level_help_subcommand_exits_zero() {
+    // `worklog help` (the subcommand — clap synthesises it) should behave
+    // identically to `--help`, including exit 0.
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Personal worklog"));
+}
+
+#[test]
+fn version_flag_exits_zero() {
+    // `--version` uses ErrorKind::DisplayVersion which is a separate code
+    // path from DisplayHelp; test it explicitly so neither regresses.
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["--version"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("worklog "));
+}
+
+#[test]
+fn subcommand_help_flag_exits_zero() {
+    // `worklog day --help` — sub-command help.
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["day", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--no-serve"));
+}
+
+#[test]
+fn web_without_subcommand_exits_zero_and_prints_help() {
+    // `worklog web` (no sub) — clap auto-renders usage + subcommands for
+    // groups with required sub. Must exit 0 like `--help`.
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["web"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("up"))
+        .stdout(predicate::str::contains("down"));
+}
+
+// ─────────────────────── `serve` and `upgrade` aliases ───────────────────────
+
+#[test]
+fn serve_alias_exists_and_delegates_to_web_up() {
+    // `worklog serve` is a compat alias for `worklog web up`. We don't
+    // want the dev server to actually spin up in tests, so just verify
+    // `serve --help` resolves — proves the variant exists.
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["serve", "--help"])
+        .assert()
+        .success()
+        // Help should mention the port flag to confirm it's aliased to web up.
+        .stdout(predicate::str::contains("--port"));
+}
+
+#[test]
+fn upgrade_alias_exists_and_delegates_to_self_update() {
+    // `worklog upgrade` is a compat alias for `worklog self-update`.
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["upgrade", "--help"])
+        .assert()
+        .success()
+        // self-update's --check flag is the canary we assert on.
+        .stdout(predicate::str::contains("--check"));
+}

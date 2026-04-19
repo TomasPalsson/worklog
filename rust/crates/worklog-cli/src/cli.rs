@@ -15,6 +15,8 @@ use worklog_core::{
     schedule, secrets, updater as upd, web as web_mod,
 };
 
+use crate::style;
+
 /// worklog — personal time-tracking for the developer who hates timers.
 #[derive(Parser, Debug)]
 #[command(
@@ -148,7 +150,20 @@ pub enum Cmd {
         sub: WebCmd,
     },
 
+    /// Bring up the review UI. Convenience alias for `web up` — kept so
+    /// muscle memory from the Python era (`worklog serve`) keeps working.
+    Serve {
+        /// Host port the container binds. Default: 3333.
+        #[arg(long, default_value_t = 3333)]
+        port: u16,
+        /// Skip the daemon-reachability check (useful when the daemon
+        /// is managed out-of-band, e.g. a systemd unit on linux).
+        #[arg(long)]
+        no_daemon: bool,
+    },
+
     /// Self-update: verify + download + atomically swap the binary.
+    #[command(alias = "upgrade")]
     SelfUpdate {
         /// Override the manifest URL. Defaults to the worklog release
         /// bucket on GitHub.
@@ -242,6 +257,15 @@ pub enum WebCmd {
         #[arg(long)]
         pull: bool,
     },
+    /// Download the `web/` tree from GitHub into the local cache
+    /// (`$data/web`). Lets `worklog web up` work on machines that
+    /// only installed the binary via curl — no repo clone needed.
+    Fetch {
+        /// Force a re-download even when the cache already matches the
+        /// binary's version.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(clap::ValueEnum, Debug, Clone, Copy)]
@@ -332,7 +356,39 @@ pub fn run_with<W: Write>(
     out: &mut W,
     _err: &mut dyn Write,
 ) -> Result<()> {
-    let cli = Cli::try_parse_from(argv)?;
+    // Hand-roll clap error handling so --help / --version / `help` exit
+    // with code 0 instead of bubbling up as anyhow errors. Clap's default
+    // `try_parse_from` treats these as Err(ErrorKind::DisplayHelp), which
+    // is semantically fine for library callers but lands as exit-1 in
+    // main() — users see "Error: worklog — ..." on stderr with a clean
+    // exit code, indistinguishable from actual parse failures. This is
+    // the standard fix: print on the right stream, exit process with 0.
+    let cli = match Cli::try_parse_from(argv) {
+        Ok(c) => c,
+        Err(e) => {
+            use clap::error::ErrorKind;
+            match e.kind() {
+                // Help / version / "which sub?" are all informational.
+                // Clap's default routes MissingSubcommand (and similar)
+                // to stderr as an error — we route everything here to
+                // stdout and exit 0 so `worklog web | cat` shows the
+                // subcommand list like every other CLI. That deviates
+                // slightly from the POSIX "exit 2 on misuse" convention,
+                // but matches user expectation for an exploratory CLI
+                // that doubles as its own documentation.
+                ErrorKind::DisplayHelp
+                | ErrorKind::DisplayVersion
+                | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+                | ErrorKind::MissingSubcommand => {
+                    // `e` renders the formatted text (with ANSI colors
+                    // if attached to a tty); println forces stdout.
+                    println!("{e}");
+                    std::process::exit(0);
+                }
+                _ => return Err(e.into()),
+            }
+        }
+    };
     init_tracing();
     if let Some(h) = &cli.home {
         std::env::set_var("WORKLOG_HOME", h);
@@ -386,7 +442,12 @@ pub fn run_with<W: Write>(
             WebCmd::Status => cmd_web_status(out, cli.json),
             WebCmd::Logs { tail } => cmd_web_logs(tail),
             WebCmd::Build { pull } => cmd_web_build(pull, out, cli.json),
+            WebCmd::Fetch { force } => cmd_web_fetch(force, out, cli.json),
         },
+        // `serve` is literally `web up` with the same args — the alias
+        // lives at the top-level so muscle memory from the Python era
+        // (`worklog serve`) keeps working.
+        Cmd::Serve { port, no_daemon } => cmd_web_up(port, no_daemon, out, cli.json),
         Cmd::SelfUpdate {
             manifest_url,
             check,
@@ -734,38 +795,59 @@ fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bo
     let mut reports: Vec<worklog_core::collectors::CollectReport> = Vec::new();
 
     if matches!(target, CollectTarget::All | CollectTarget::Jira) {
-        match jira_col::JiraAuth::from_secrets() {
-            Ok(auth) => reports.push(jira_col::fetch_open_tickets_with(&conn, &auth, &client)?),
-            Err(e) => writeln!(out, "· jira skipped: {e}")?,
+        let pb = style::spinner("jira …");
+        let result = match jira_col::JiraAuth::from_secrets() {
+            Ok(auth) => jira_col::fetch_open_tickets_with(&conn, &auth, &client)
+                .map_err(|e| format!("fetch: {e}")),
+            Err(e) => Err(format!("skipped: {e}")),
+        };
+        pb.finish_and_clear();
+        match result {
+            Ok(r) => reports.push(r),
+            Err(msg) if !json => style::info(out, &format!("jira {msg}"))?,
+            Err(_) => (),
         }
     }
 
     if matches!(target, CollectTarget::All | CollectTarget::Github) {
-        match gh::GitHubAuth::from_secrets() {
-            Ok(auth) => reports.push(gh::collect_with(
+        let pb = style::spinner("github …");
+        let result = match gh::GitHubAuth::from_secrets() {
+            Ok(auth) => gh::collect_with(
                 &conn,
                 &auth,
                 since,
                 today + chrono::Duration::days(1),
                 &client,
-            )?),
-            Err(e) => writeln!(out, "· github skipped: {e}")?,
+            )
+            .map_err(|e| format!("fetch: {e}")),
+            Err(e) => Err(format!("skipped: {e}")),
+        };
+        pb.finish_and_clear();
+        match result {
+            Ok(r) => reports.push(r),
+            Err(msg) if !json => style::info(out, &format!("github {msg}"))?,
+            Err(_) => (),
         }
     }
 
     if matches!(target, CollectTarget::All | CollectTarget::Gcal) {
-        match gcal_col::GcalAuth::from_paths() {
-            Ok(auth) => match gcal_col::collect_with(
+        let pb = style::spinner("gcal …");
+        let result = match gcal_col::GcalAuth::from_paths() {
+            Ok(auth) => gcal_col::collect_with(
                 &conn,
                 &auth,
                 since,
                 today + chrono::Duration::days(1),
                 &client,
-            ) {
-                Ok(report) => reports.push(report),
-                Err(e) => writeln!(out, "· gcal skipped: {e}")?,
-            },
-            Err(e) => writeln!(out, "· gcal skipped: {e}")?,
+            )
+            .map_err(|e| format!("fetch: {e}")),
+            Err(e) => Err(format!("skipped: {e}")),
+        };
+        pb.finish_and_clear();
+        match result {
+            Ok(r) => reports.push(r),
+            Err(msg) if !json => style::info(out, &format!("gcal {msg}"))?,
+            Err(_) => (),
         }
     }
 
@@ -775,16 +857,18 @@ fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bo
     }
 
     for r in &reports {
-        writeln!(
+        style::ok(
             out,
-            "✓ {:<8} tickets={}  events={}  errors={}",
-            r.source,
-            r.tickets_written,
-            r.events_written,
-            r.errors.len()
+            &format!(
+                "{:<8} tickets={}  events={}  errors={}",
+                r.source,
+                r.tickets_written,
+                r.events_written,
+                r.errors.len()
+            ),
         )?;
         for err in &r.errors {
-            writeln!(out, "  · {err}")?;
+            style::info(out, err)?;
         }
     }
     Ok(())
@@ -948,62 +1032,74 @@ fn cmd_day<W: Write>(
     // Collect for the requested day, not "now" — lets `worklog day --day
     // 2026-04-01` pull the right slice instead of dumping today's data
     // into last month's folder.
-    writeln!(out, "collecting github + jira + gcal …")?;
+    style::step(out, "collecting github + jira + gcal …")?;
     let client = http::client()?;
     let since = day_parsed;
     let until = day_parsed + chrono::Duration::days(1);
 
-    // Each step captures its own error. A Jira outage shouldn't block
-    // the rest of the daily flow — matches Python's yellow-! behaviour.
-    match jira_col::JiraAuth::from_secrets() {
+    // Each collector gets its own spinner + ok/warn line so a stall on
+    // one source doesn't look like the whole pipeline has hung. A Jira
+    // outage shouldn't block the rest of the flow.
+    run_with_spinner("jira", || match jira_col::JiraAuth::from_secrets() {
         Ok(auth) => match jira_col::fetch_open_tickets_with(&conn, &auth, &client) {
-            Ok(r) => writeln!(
-                out,
-                "  ✓ jira:   tickets={} events={}",
+            Ok(r) => StepOutcome::Ok(format!(
+                "jira:   tickets={} events={}",
                 r.tickets_written, r.events_written
-            )?,
-            Err(e) => writeln!(out, "  ! jira:   {e}")?,
+            )),
+            Err(e) => StepOutcome::Warn(format!("jira:   {e}")),
         },
-        Err(e) => writeln!(out, "  · jira skipped: {e}")?,
-    }
-    match gh::GitHubAuth::from_secrets() {
+        Err(e) => StepOutcome::Info(format!("jira skipped: {e}")),
+    })
+    .render(out)?;
+
+    run_with_spinner("github", || match gh::GitHubAuth::from_secrets() {
         Ok(auth) => match gh::collect_with(&conn, &auth, since, until, &client) {
-            Ok(r) => writeln!(out, "  ✓ github: events={}", r.events_written)?,
-            Err(e) => writeln!(out, "  ! github: {e}")?,
+            Ok(r) => StepOutcome::Ok(format!("github: events={}", r.events_written)),
+            Err(e) => StepOutcome::Warn(format!("github: {e}")),
         },
-        Err(e) => writeln!(out, "  · github skipped: {e}")?,
-    }
-    match gcal_col::GcalAuth::from_paths() {
+        Err(e) => StepOutcome::Info(format!("github skipped: {e}")),
+    })
+    .render(out)?;
+
+    run_with_spinner("gcal", || match gcal_col::GcalAuth::from_paths() {
         Ok(auth) => match gcal_col::collect_with(&conn, &auth, since, until, &client) {
-            Ok(r) => writeln!(out, "  ✓ gcal:   events={}", r.events_written)?,
-            Err(e) => writeln!(out, "  ! gcal:   {e}")?,
+            Ok(r) => StepOutcome::Ok(format!("gcal:   events={}", r.events_written)),
+            Err(e) => StepOutcome::Warn(format!("gcal:   {e}")),
         },
-        Err(e) => writeln!(out, "  · gcal skipped: {e}")?,
-    }
+        Err(e) => StepOutcome::Info(format!("gcal skipped: {e}")),
+    })
+    .render(out)?;
 
     // --- infer ----------------------------------------------------------
-    writeln!(out, "\ninferring blocks …")?;
+    style::step(out, "inferring blocks …")?;
     let events = infer::load_day_events(&conn, day_parsed)?;
     let blocks = infer::build_blocks(events);
     infer::persist_blocks(&conn, day_parsed, &blocks)?;
     let total_min: i64 = blocks.iter().map(|b| b.duration_seconds).sum::<i64>() / 60;
-    writeln!(
+    style::ok(
         out,
-        "  ✓ {} block{} · {} min total",
-        blocks.len(),
-        if blocks.len() == 1 { "" } else { "s" },
-        total_min
+        &format!(
+            "{} block{} · {} min total",
+            blocks.len(),
+            if blocks.len() == 1 { "" } else { "s" },
+            total_min
+        ),
     )?;
 
     // --- estimate -------------------------------------------------------
-    writeln!(out, "\nestimating (claude) …")?;
-    match estimate::estimate_day(&conn, day_parsed, model) {
-        Ok(stats) => writeln!(
+    style::step(out, "estimating (claude) …")?;
+    let spinner = style::spinner("running claude -p over unestimated blocks");
+    let est_result = estimate::estimate_day(&conn, day_parsed, model);
+    spinner.finish_and_clear();
+    match est_result {
+        Ok(stats) => style::ok(
             out,
-            "  ✓ estimated={} skipped={} failed={}",
-            stats.estimated, stats.skipped, stats.failed
+            &format!(
+                "estimated={} skipped={} failed={}",
+                stats.estimated, stats.skipped, stats.failed
+            ),
         )?,
-        Err(e) => writeln!(out, "  ! estimate skipped: {e}")?,
+        Err(e) => style::warn(out, &format!("estimate skipped: {e}"))?,
     }
 
     // --- serve ----------------------------------------------------------
@@ -1022,9 +1118,42 @@ fn cmd_day<W: Write>(
         }
         return Ok(());
     }
-    writeln!(out, "\nbringing up review UI at http://localhost:3333")?;
-    writeln!(out, "  ctrl+c to bring it down, or `worklog web down`\n")?;
+    style::step(out, "bringing up review UI at http://localhost:3333")?;
+    style::info(out, "ctrl+c to bring it down, or `worklog web down`")?;
+    writeln!(out)?;
     cmd_web_up(3333, false, out, false)
+}
+
+/// Outcome of a single `cmd_day` collector step. Owns the message so
+/// the spinner can finish cleanly before we write the styled line.
+enum StepOutcome {
+    Ok(String),
+    Warn(String),
+    Info(String),
+}
+
+impl StepOutcome {
+    fn render<W: Write>(self, out: &mut W) -> Result<()> {
+        match self {
+            StepOutcome::Ok(msg) => style::ok(out, &msg)?,
+            StepOutcome::Warn(msg) => style::warn(out, &msg)?,
+            StepOutcome::Info(msg) => style::info(out, &msg)?,
+        }
+        Ok(())
+    }
+}
+
+/// Run a closure with a spinner labelled `label`; clear the spinner
+/// before the outcome line prints so the spinner frame doesn't ghost
+/// under the ✓ / ! / · marker.
+fn run_with_spinner<F>(label: &str, f: F) -> StepOutcome
+where
+    F: FnOnce() -> StepOutcome,
+{
+    let pb = style::spinner(&format!("{label} …"));
+    let out = f();
+    pb.finish_and_clear();
+    out
 }
 
 fn cmd_hook_run() -> Result<()> {
@@ -1140,7 +1269,7 @@ fn cmd_web_up<W: Write>(port: u16, no_daemon: bool, out: &mut W, json: bool) -> 
     web_mod::preflight_docker()?;
     let paths = Paths::resolve()?;
     paths.ensure()?;
-    let context = web_mod::resolve_web_context()?;
+    let context = web_mod::resolve_web_context(&paths)?;
     let compose = web_mod::render_compose(&paths, port, &context)?;
 
     if !no_daemon && !daemon_tcp_reachable("127.0.0.1:9323") {
@@ -1224,7 +1353,7 @@ fn cmd_web_build<W: Write>(pull: bool, out: &mut W, json: bool) -> Result<()> {
     web_mod::preflight_docker()?;
     let paths = Paths::resolve()?;
     paths.ensure()?;
-    let context = web_mod::resolve_web_context()?;
+    let context = web_mod::resolve_web_context(&paths)?;
     // Re-render so the compose file points at the current web/ location.
     let compose = web_mod::render_compose(&paths, 3333, &context)?;
     web_mod::compose_build(&compose, pull)?;
@@ -1236,6 +1365,54 @@ fn cmd_web_build<W: Write>(pull: bool, out: &mut W, json: bool) -> Result<()> {
         )?;
     } else {
         writeln!(out, "✓ worklog-web image built from {}", context.display())?;
+    }
+    Ok(())
+}
+
+fn cmd_web_fetch<W: Write>(force: bool, out: &mut W, json: bool) -> Result<()> {
+    let paths = Paths::resolve()?;
+    paths.ensure()?;
+    let version = env!("CARGO_PKG_VERSION");
+
+    if !force && web_mod::fetch::cache_is_current(&paths, version) {
+        let cache = web_mod::fetch::cache_dir(&paths);
+        if json {
+            writeln!(
+                out,
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "cached": true,
+                    "path": cache.display().to_string(),
+                    "version": version,
+                }))?
+            )?;
+        } else {
+            style::info(
+                out,
+                &format!("already fetched for {version} → {}", cache.display()),
+            )?;
+        }
+        return Ok(());
+    }
+
+    let url = web_mod::fetch::archive_url_for(version);
+    let pb = style::spinner(&format!("downloading {url}"));
+    let result = web_mod::fetch::fetch_to_cache(&paths, version);
+    pb.finish_and_clear();
+    let path = result?;
+    if json {
+        writeln!(
+            out,
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "cached": false,
+                "path": path.display().to_string(),
+                "version": version,
+                "url": url,
+            }))?
+        )?;
+    } else {
+        style::ok(out, &format!("fetched web tree → {}", path.display()))?;
     }
     Ok(())
 }
