@@ -7,6 +7,7 @@
 pub mod block_service;
 pub mod collectors;
 pub mod daemon;
+pub mod daemon_service;
 pub mod db;
 pub mod estimate;
 pub mod hook;
