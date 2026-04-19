@@ -108,6 +108,23 @@ pub enum Cmd {
         model: String,
     },
 
+    /// One-shot daily flow: collect → infer → estimate → open the review UI.
+    ///
+    /// Each step that fails is reported inline and the next one still runs —
+    /// missing Jira credentials or a transient API blip shouldn't block the
+    /// rest of the pipeline. Use `--no-serve` to skip spinning up the web UI.
+    Day {
+        /// YYYY-MM-DD; default today (UTC).
+        #[arg(long)]
+        day: Option<String>,
+        /// Skip launching the web review UI at the end.
+        #[arg(long)]
+        no_serve: bool,
+        /// Model id passed to `claude -p` during estimation.
+        #[arg(long, default_value = estimate::DEFAULT_MODEL)]
+        model: String,
+    },
+
     /// Claude Code hook — reads a JSON event from stdin and records it.
     #[command(name = "hook-run", hide = true)]
     HookRun,
@@ -348,6 +365,7 @@ pub fn run_with<W: Write>(
         Cmd::Sync { day, dry_run } => cmd_sync(day, dry_run, out, cli.json),
         Cmd::Infer { day } => cmd_infer(day, out, cli.json),
         Cmd::Estimate { day, model } => cmd_estimate(day, &model, out, cli.json),
+        Cmd::Day { day, no_serve, model } => cmd_day(day, no_serve, &model, out, cli.json),
         Cmd::HookRun => cmd_hook_run(),
         Cmd::Daemon { socket, tcp } => cmd_daemon(socket, tcp),
         Cmd::Web { sub } => match sub {
@@ -891,6 +909,16 @@ fn cmd_estimate<W: Write>(day: Option<String>, model: &str, out: &mut W, json: b
         stats.estimated, stats.skipped, stats.failed
     )?;
     Ok(())
+}
+
+fn cmd_day<W: Write>(
+    _day: Option<String>,
+    _no_serve: bool,
+    _model: &str,
+    _out: &mut W,
+    _json: bool,
+) -> Result<()> {
+    todo!("cmd_day — implemented in Phase 2 GREEN")
 }
 
 fn cmd_hook_run() -> Result<()> {

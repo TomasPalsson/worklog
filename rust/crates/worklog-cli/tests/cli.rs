@@ -349,3 +349,41 @@ fn secret_rm_reports_absent_cleanly() {
         .assert()
         .success();
 }
+
+// ─────────────────────────── `worklog day` ───────────────────────────
+
+#[test]
+fn day_no_serve_runs_full_pipeline_on_empty_day() {
+    // No creds → collectors skip; no blocks → infer=0, estimate=0. The test
+    // asserts that every stage heading appears and the command exits 0
+    // without waiting on Docker or opening a browser.
+    let home = TempDir::new().unwrap();
+    cmd(&home).args(["db", "migrate"]).assert().success();
+    cmd(&home)
+        .args(["day", "--day", "2026-04-18", "--no-serve"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("collecting"))
+        .stdout(predicate::str::contains("inferring"))
+        .stdout(predicate::str::contains("estimating"))
+        // Web UI must be suppressed by --no-serve.
+        .stdout(predicate::str::contains("review UI").not())
+        // 0 blocks on an empty day — mirrors `infer`'s own output.
+        .stdout(predicate::str::contains("0 blocks"));
+}
+
+#[test]
+fn day_continues_past_collect_failures() {
+    // With no credentials we expect each collector to surface a skip line
+    // AND the flow to reach infer+estimate anyway — matches the Python
+    // `[yellow]!` behaviour (report, don't abort).
+    let home = TempDir::new().unwrap();
+    cmd(&home).args(["db", "migrate"]).assert().success();
+    cmd(&home)
+        .args(["day", "--day", "2026-04-18", "--no-serve"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("skipped"))
+        .stdout(predicate::str::contains("inferring"))
+        .stdout(predicate::str::contains("estimating"));
+}
