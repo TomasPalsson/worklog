@@ -56,10 +56,7 @@ fn fetched_version_file(paths: &Paths) -> PathBuf {
 pub fn ref_for_version(version: &str) -> String {
     // `0.3.0` → `refs/tags/v0.3.0`
     // `0.3.0-dev`, `0.3.0-rc.1` → `refs/heads/main`
-    if version
-        .chars()
-        .all(|c| c.is_ascii_digit() || c == '.')
-    {
+    if version.chars().all(|c| c.is_ascii_digit() || c == '.') {
         format!("refs/tags/v{version}")
     } else {
         "refs/heads/main".to_owned()
@@ -99,8 +96,7 @@ pub fn fetch_and_extract(url: &str, dest: &Path, client: &Client) -> Result<Path
 
     // Wipe + recreate dest so prior fetches don't pollute.
     if dest.exists() {
-        std::fs::remove_dir_all(dest)
-            .with_context(|| format!("wiping {}", dest.display()))?;
+        std::fs::remove_dir_all(dest).with_context(|| format!("wiping {}", dest.display()))?;
     }
     std::fs::create_dir_all(dest).with_context(|| format!("creating {}", dest.display()))?;
 
@@ -146,7 +142,10 @@ pub fn fetch_and_extract(url: &str, dest: &Path, client: &Client) -> Result<Path
         // these and a malicious archive could overwrite arbitrary paths.
         for comp in rest.components() {
             use std::path::Component;
-            if matches!(comp, Component::ParentDir | Component::RootDir | Component::Prefix(_)) {
+            if matches!(
+                comp,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            ) {
                 return Err(anyhow!(
                     "refusing to extract archive entry with unsafe path: {}",
                     rest.display()
@@ -271,10 +270,7 @@ mod tests {
     fn archive_url_env_override_and_default() {
         std::env::remove_var(ENV_ARCHIVE_URL);
         let default = archive_url_for("0.3.0");
-        assert!(
-            default.starts_with("https://github.com/"),
-            "got: {default}"
-        );
+        assert!(default.starts_with("https://github.com/"), "got: {default}");
         assert!(default.contains("/archive/refs/tags/v0.3.0.tar.gz"));
 
         std::env::set_var(ENV_ARCHIVE_URL, "http://localhost:9999/fake.tar.gz");
@@ -389,4 +385,3 @@ mod tests {
         assert!(!cache_is_current(&paths, "0.3.1"));
     }
 }
-

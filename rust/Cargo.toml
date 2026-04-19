@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/worklog-core", "crates/worklog-cli"]
 
 [workspace.package]
-version = "0.3.0-dev"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.82"
 license = "MIT"

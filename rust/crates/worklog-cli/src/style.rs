@@ -98,6 +98,9 @@ mod tests {
         let mut buf = Vec::new();
         step(&mut buf, "go").unwrap();
         let s = String::from_utf8(buf).unwrap();
-        assert!(s.starts_with('\n'), "step should prefix a blank line, got: {s:?}");
+        assert!(
+            s.starts_with('\n'),
+            "step should prefix a blank line, got: {s:?}"
+        );
     }
 }
