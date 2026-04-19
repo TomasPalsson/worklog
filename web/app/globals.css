@@ -23,8 +23,9 @@
 
   /* ink */
   --fg:         oklch(0.19 0.01 260);      /* body */
-  --fg-muted:   oklch(0.52 0.015 260);     /* meta, timestamps */
-  --fg-subtle:  oklch(0.68 0.01 260);      /* placeholder */
+  --fg-muted:   oklch(0.48 0.015 260);     /* meta, timestamps — was 0.52 */
+  --fg-subtle:  oklch(0.58 0.01 260);      /* placeholder + inline helper —
+                                              was 0.68; 4.5:1 AA on --bg */
 
   /* state */
   --sage:       oklch(0.72 0.10 145);      /* assigned / success */
@@ -51,7 +52,7 @@
   --radius-lg: 12px;
 
   /* depth — single tier, subtle. Hue-matched, not pure black. */
-  --ring: 0 0 0 3px oklch(0.88 0.03 85);
+  --ring: 0 0 0 3px oklch(0.70 0.08 85);   /* was 0.88 — 3:1 visible vs bg */
   --elevation-1: 0 1px 2px 0 oklch(0.80 0.01 85 / 0.12);
 
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
@@ -85,27 +86,27 @@
     --border-strong: oklch(0.36 0.008 85);
 
     --fg:         oklch(0.93 0.008 260);
-    --fg-muted:   oklch(0.70 0.010 260);
-    --fg-subtle:  oklch(0.52 0.010 260);
+    --fg-muted:   oklch(0.78 0.010 260);   /* was 0.70 — 4.5:1 on --bg */
+    --fg-subtle:  oklch(0.60 0.010 260);   /* was 0.52 */
 
-    --sage:       oklch(0.62 0.085 145);
-    --sage-ink:   oklch(0.80 0.09 145);
+    --sage:       oklch(0.66 0.085 145);
+    --sage-ink:   oklch(0.85 0.09 145);    /* was 0.80 — 4.5:1 on --sage-bg */
     --sage-bg:    oklch(0.24 0.04 145);
 
-    --amber:      oklch(0.70 0.115 70);
-    --amber-ink:  oklch(0.80 0.12 70);
+    --amber:      oklch(0.72 0.115 70);
+    --amber-ink:  oklch(0.85 0.12 70);     /* was 0.80 */
     --amber-bg:   oklch(0.26 0.05 70);
 
-    --terracotta: oklch(0.62 0.14 25);
+    --terracotta: oklch(0.68 0.14 25);     /* was 0.62 */
     --terracotta-bg: oklch(0.26 0.06 25);
 
-    --slate:      oklch(0.68 0.035 240);
+    --slate:      oklch(0.72 0.035 240);   /* was 0.68 */
     --slate-bg:   oklch(0.24 0.015 240);
 
-    --violet:     oklch(0.65 0.085 290);
+    --violet:     oklch(0.70 0.085 290);   /* was 0.65 */
     --violet-bg:  oklch(0.24 0.03 290);
 
-    --ring: 0 0 0 3px oklch(0.42 0.04 85);
+    --ring: 0 0 0 3px oklch(0.62 0.08 85); /* was 0.42 — 3:1 vs dark bg */
     --elevation-1: none;
   }
 }
@@ -118,27 +119,27 @@
   --border-strong: oklch(0.36 0.008 85);
 
   --fg:         oklch(0.93 0.008 260);
-  --fg-muted:   oklch(0.70 0.010 260);
-  --fg-subtle:  oklch(0.52 0.010 260);
+  --fg-muted:   oklch(0.78 0.010 260);
+  --fg-subtle:  oklch(0.60 0.010 260);
 
-  --sage:       oklch(0.62 0.085 145);
-  --sage-ink:   oklch(0.80 0.09 145);
+  --sage:       oklch(0.66 0.085 145);
+  --sage-ink:   oklch(0.85 0.09 145);
   --sage-bg:    oklch(0.24 0.04 145);
 
-  --amber:      oklch(0.70 0.115 70);
-  --amber-ink:  oklch(0.80 0.12 70);
+  --amber:      oklch(0.72 0.115 70);
+  --amber-ink:  oklch(0.85 0.12 70);
   --amber-bg:   oklch(0.26 0.05 70);
 
-  --terracotta: oklch(0.62 0.14 25);
+  --terracotta: oklch(0.68 0.14 25);
   --terracotta-bg: oklch(0.26 0.06 25);
 
-  --slate:      oklch(0.68 0.035 240);
+  --slate:      oklch(0.72 0.035 240);
   --slate-bg:   oklch(0.24 0.015 240);
 
-  --violet:     oklch(0.65 0.085 290);
+  --violet:     oklch(0.70 0.085 290);
   --violet-bg:  oklch(0.24 0.03 290);
 
-  --ring: 0 0 0 3px oklch(0.42 0.04 85);
+  --ring: 0 0 0 3px oklch(0.62 0.08 85);
   --elevation-1: none;
 }
 
@@ -673,6 +674,12 @@ button {
   background: var(--bg-sunk);
 }
 
+.combobox-item:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+  background: var(--bg-sunk);
+}
+
 .combobox-item .key {
   font-family: var(--font-mono);
   font-size: 12px;
@@ -1084,4 +1091,45 @@ button {
 
 .event-expand:hover {
   color: var(--fg);
+}
+
+/* ─────────────────── loading states (v0.6 polish) ───────────────────
+   A single pattern for every async affordance: `aria-busy="true"` dims
+   the element AND blocks clicks so double-submits can't race. Spinner
+   is implemented as a small pseudo-element that doesn't disturb the
+   element's box sizing. */
+
+@keyframes wl-spin {
+  to { transform: rotate(360deg); }
+}
+
+.action-btn[aria-busy="true"],
+.ticket-chip[aria-busy="true"],
+.icon-btn[aria-busy="true"],
+.events-disclosure[aria-busy="true"] {
+  pointer-events: none;
+  opacity: 0.75;
+  position: relative;
+}
+
+.action-btn[aria-busy="true"]::after,
+.ticket-chip[aria-busy="true"]::after {
+  content: "";
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border-strong);
+  border-top-color: transparent;
+  display: inline-block;
+  margin-left: 8px;
+  animation: wl-spin 600ms linear infinite;
+  vertical-align: -1px;
+}
+
+/* Contenteditable description: while the Server Action is pending we
+   disable the caret + typing so the user can't race ahead of the last
+   commit. Applied via the aria-busy attr the BlockCard now sets. */
+.block-description[aria-busy="true"] {
+  pointer-events: none;
+  opacity: 0.7;
 }

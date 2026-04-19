@@ -20,7 +20,7 @@ interface Props {
 export function BlockCard({ block, tickets, day }: Props) {
   const [editingDur, setEditingDur] = useState(false);
   const [durVal, setDurVal] = useState(Math.round(block.duration_seconds / 60));
-  const [, start] = useTransition();
+  const [isPending, start] = useTransition();
   const descRef = useRef<HTMLDivElement>(null);
 
   const assigned = !!block.jira_issue;
@@ -142,12 +142,13 @@ export function BlockCard({ block, tickets, day }: Props) {
         <div
           ref={descRef}
           className={`block-description ${!block.description ? "empty" : ""}`}
-          contentEditable
+          contentEditable={!isPending}
           suppressContentEditableWarning
           spellCheck={false}
           role="textbox"
           aria-multiline="true"
           aria-label="Block description — click to edit"
+          aria-busy={isPending || undefined}
           onBlur={commitDescription}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -172,6 +173,7 @@ export function BlockCard({ block, tickets, day }: Props) {
           className="icon-btn danger"
           title="Delete block"
           aria-label={`delete ${timeRangeLabel} block`}
+          aria-busy={isPending || undefined}
           onClick={onDelete}
         >
           <Trash2 />

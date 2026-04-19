@@ -17,7 +17,7 @@ export function TicketCombobox({ blockId, current, tickets, day }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
-  const [, startTransition] = useTransition();
+  const [isPending, startTransition] = useTransition();
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -134,6 +134,7 @@ export function TicketCombobox({ blockId, current, tickets, day }: Props) {
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={triggerLabel}
+        aria-busy={isPending || undefined}
         onClick={() => setOpen((v) => !v)}
         onKeyDown={(e) => {
           if ((e.key === "Enter" || e.key === " ") && !open) {
