@@ -19,7 +19,10 @@ use super::crypto::PUBLIC_KEY_LEN;
 /// base64_pubkey)` — everything a caller needs to report to the user.
 pub fn keygen_to_file(path: &Path, overwrite: bool) -> Result<GenResult> {
     if path.exists() && !overwrite {
-        anyhow::bail!("{} already exists — pass --force to overwrite", path.display());
+        anyhow::bail!(
+            "{} already exists — pass --force to overwrite",
+            path.display()
+        );
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -57,7 +60,8 @@ pub struct GenResult {
 
 /// Load a signing key from a PKCS#8 PEM file.
 pub fn load_signing_key(path: &Path) -> Result<SigningKey> {
-    let pem = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let pem =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     SigningKey::from_pkcs8_pem(&pem).context("parsing PKCS#8 PEM key")
 }
 
@@ -114,7 +118,10 @@ mod tests {
         let path = tmp.path().join("key.pem");
         let a = keygen_to_file(&path, false).unwrap();
         let b = keygen_to_file(&path, true).unwrap();
-        assert_ne!(a.public_key, b.public_key, "second keygen must produce a new key");
+        assert_ne!(
+            a.public_key, b.public_key,
+            "second keygen must produce a new key"
+        );
     }
 
     #[test]

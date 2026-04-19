@@ -1,23 +1,6 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
-
-# Virtual environments
-.venv
-
 # Env + secrets
 .env
 .env.*.local
-
-# Caches
-.ruff_cache/
-.mypy_cache/
-.pytest_cache/
-htmlcov/
 
 # Local DB (for test runs inside the project dir)
 *.db
@@ -26,3 +9,7 @@ htmlcov/
 rust/**/target/
 rust/**/Cargo.lock.bak
 
+# Web (Next.js / Bun)
+web/node_modules/
+web/.next/
+web/.bun/

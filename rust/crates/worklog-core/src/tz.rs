@@ -80,8 +80,16 @@ pub fn utc_window_for_local_day(day: NaiveDate) -> (chrono::DateTime<Utc>, chron
         .and_time(NaiveTime::MIN)
         .and_local_timezone(off)
         .single()
-        .unwrap_or_else(|| (day + chrono::Duration::days(1)).and_time(NaiveTime::MIN).and_utc().with_timezone(&off));
-    (start_local.with_timezone(&Utc), end_local.with_timezone(&Utc))
+        .unwrap_or_else(|| {
+            (day + chrono::Duration::days(1))
+                .and_time(NaiveTime::MIN)
+                .and_utc()
+                .with_timezone(&off)
+        });
+    (
+        start_local.with_timezone(&Utc),
+        end_local.with_timezone(&Utc),
+    )
 }
 
 #[cfg(test)]
@@ -127,10 +135,7 @@ mod tests {
     fn negative_offset_parses() {
         let _g = test_env_lock();
         std::env::set_var("WORKLOG_TZ", "-05:30");
-        assert_eq!(
-            day_offset().local_minus_utc(),
-            -(5 * 3600 + 30 * 60)
-        );
+        assert_eq!(day_offset().local_minus_utc(), -(5 * 3600 + 30 * 60));
         std::env::remove_var("WORKLOG_TZ");
     }
 
@@ -158,7 +163,10 @@ mod tests {
         let _g = test_env_lock();
         std::env::set_var("WORKLOG_TZ", "-05:00");
         let ts = Utc.with_ymd_and_hms(2026, 4, 19, 2, 0, 0).unwrap();
-        assert_eq!(local_date(ts), NaiveDate::from_ymd_opt(2026, 4, 18).unwrap());
+        assert_eq!(
+            local_date(ts),
+            NaiveDate::from_ymd_opt(2026, 4, 18).unwrap()
+        );
         std::env::remove_var("WORKLOG_TZ");
     }
 

@@ -1,0 +1,215 @@
+# Build + sign + release on tag push.
+#
+# Triggered by: a tag that matches `v*` (e.g. v0.3.1, v1.0.0-rc.1).
+# Produces, for each matrixed target:
+#   * `worklog-<target>`               — the raw binary (chmod +x)
+#   * `worklog-<target>.zst`           — zstd-compressed, the `full` asset
+#   * `worklog-<target>.zst.sig`       — detached Ed25519 signature
+# And one manifest covering every target:
+#   * `manifest.json`                  — top-level release descriptor
+#   * `manifest.json.sig`              — detached Ed25519 signature
+#
+# All seven files are attached to the GitHub release created at `$GITHUB_REF`.
+#
+# Secrets required (set on the repo in Settings → Secrets → Actions):
+#   WORKLOG_RELEASE_PRIVATE_KEY  — base64-encoded PKCS#8 PEM private key
+#                                  (the `.pem` file from `worklog dev keygen`)
+#
+# Threat model: the pubkey in `rust/crates/worklog-core/src/updater/pubkey.rs`
+# is the trust anchor embedded in every shipped binary. This workflow signs
+# artifacts with the matching private key so the signed self-updater can
+# verify new releases against that anchor. Losing the private key = you can
+# never ship a new release accepted by existing users without forcing a
+# manual reinstall.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # `gh release create` needs this.
+
+jobs:
+  # ───────────────────────── per-target build ─────────────────────────
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runs-on: macos-14
+          - target: x86_64-unknown-linux-gnu
+            runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Build release binary
+        working-directory: rust
+        run: cargo build --release --target ${{ matrix.target }} --bin worklog
+
+      - name: Strip binary
+        # Trims ~20–30% from the artifact size. macOS `strip` is conservative
+        # enough that it won't break the binary; Linux needs no special flags.
+        run: |
+          strip rust/target/${{ matrix.target }}/release/worklog
+
+      - name: Rename binary for upload
+        run: |
+          mkdir -p staged
+          cp rust/target/${{ matrix.target }}/release/worklog staged/worklog-${{ matrix.target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: worklog-${{ matrix.target }}
+          path: staged/worklog-${{ matrix.target }}
+          retention-days: 1
+
+  # ───────────────────────── assemble + sign + release ─────────────────────────
+  release:
+    name: assemble + sign + release
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Build worklog (host) — needed for `dev sign`
+        # The signer doesn't need to be a release build; debug is faster.
+        working-directory: rust
+        run: cargo build --bin worklog
+
+      - name: Download all target artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Write private key to disk
+        env:
+          PRIV: ${{ secrets.WORKLOG_RELEASE_PRIVATE_KEY }}
+        run: |
+          if [ -z "$PRIV" ]; then
+            echo "::error::WORKLOG_RELEASE_PRIVATE_KEY secret is not set — aborting to avoid an unsigned release."
+            exit 1
+          fi
+          mkdir -p /tmp/wl-keys
+          echo "$PRIV" | base64 --decode > /tmp/wl-keys/release-ed25519.pem
+          chmod 600 /tmp/wl-keys/release-ed25519.pem
+
+      - name: Assemble release (zstd + sign + manifest)
+        env:
+          TAG: ${{ github.ref_name }}
+          OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          BASE_URL="https://github.com/${OWNER}/${REPO_NAME}/releases/download/${TAG}"
+          PUB=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          WORKLOG=rust/target/debug/worklog
+          OUT=release
+          mkdir -p "$OUT"
+
+          TARGETS=(aarch64-apple-darwin x86_64-unknown-linux-gnu)
+          TARGETS_JSON="[]"
+
+          for T in "${TARGETS[@]}"; do
+            BIN="artifacts/worklog-${T}/worklog-${T}"
+            chmod +x "$BIN"
+            cp "$BIN" "$OUT/worklog-${T}"
+
+            ZST="$OUT/worklog-${T}.zst"
+            # Level 11 — size/speed sweet spot for pre-stripped Rust binaries.
+            # 19 saves <3% on disk for ~20-40s extra per target per release.
+            zstd -11 -f -o "$ZST" "$BIN"
+
+            SHA=$(sha256sum "$ZST" | awk '{print $1}')
+            SIZE=$(stat -c '%s' "$ZST")
+
+            "$WORKLOG" dev sign "$ZST" --key /tmp/wl-keys/release-ed25519.pem
+            # `dev sign` writes raw 64 bytes; manifests want base64.
+            SIG_B64=$(base64 -w0 < "${ZST}.sig")
+
+            TARGETS_JSON=$(jq -c \
+              --arg target "$T" \
+              --arg url "${BASE_URL}/worklog-${T}.zst" \
+              --arg sha "$SHA" \
+              --argjson size "$SIZE" \
+              --arg sig "$SIG_B64" \
+              '. + [{
+                target: $target,
+                full:   { url: $url, sha256: $sha, size: $size, signature: $sig },
+                patches: []
+              }]' <<<"$TARGETS_JSON")
+          done
+
+          # Notes: use the annotated tag body if present, otherwise an empty
+          # string. `git for-each-ref` produces the body without the subject.
+          NOTES=$(git for-each-ref --format='%(contents:body)' "refs/tags/${TAG}" | tr -d '\r' || true)
+
+          jq -n \
+            --arg version "$VERSION" \
+            --arg notes "$NOTES" \
+            --arg published_at "$PUB" \
+            --argjson targets "$TARGETS_JSON" \
+            '{version: $version, targets: $targets, notes: $notes, published_at: $published_at, schema: 1}' \
+            > "$OUT/manifest.json"
+
+          "$WORKLOG" dev sign "$OUT/manifest.json" --key /tmp/wl-keys/release-ed25519.pem
+
+          echo "─── release contents ──────────────────────────────────"
+          ls -lh "$OUT/"
+          echo "─── manifest.json ─────────────────────────────────────"
+          cat "$OUT/manifest.json" | jq .
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            release/worklog-aarch64-apple-darwin \
+            release/worklog-aarch64-apple-darwin.zst \
+            release/worklog-aarch64-apple-darwin.zst.sig \
+            release/worklog-x86_64-unknown-linux-gnu \
+            release/worklog-x86_64-unknown-linux-gnu.zst \
+            release/worklog-x86_64-unknown-linux-gnu.zst.sig \
+            release/manifest.json \
+            release/manifest.json.sig
+
+      - name: Purge private key (always)
+        # Runs even on cancellation or earlier-step failure — otherwise a
+        # killed job could leave the PEM on the (ephemerally-destroyed)
+        # runner. Belt-and-braces against a post-cancellation forensics
+        # window.
+        if: always()
+        run: |
+          shred -u /tmp/wl-keys/release-ed25519.pem 2>/dev/null \
+            || rm -f /tmp/wl-keys/release-ed25519.pem

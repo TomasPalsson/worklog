@@ -1,234 +1,247 @@
-# Feature Plan — Rust hook + Time Inference + `claude -p` Estimator
+# Feature: Delete Python — Pure-Rust worklog
 
-**Branch:** `feature/rust-hook-and-time-inference`
-**Size:** Medium (3–5 days)
-**Research:** 4-agent overkill swarm complete — findings baked into this plan.
+**Branch:** `feature/delete-python`  **Size:** Large
 
 ## Why
 
-Current hook is Python (~150–250ms cold start per Claude event — not OK on a blocking path). Durations are fake (15-min placeholder per commit/meeting). Time estimation is wrong. This PR replaces the hook with a sub-15ms Rust binary, adds real duration inference from event clustering, and uses `claude -p --json-schema` to turn each block into a Jira-worthy description + sanity-checked minutes.
+Python is a second implementation of half the product (collectors, infer,
+estimate) and a thin Typer shim for the other half. That drift has
+already bitten us: `worklog day` is Python-only and shells out to a stale
+Rust binary that 404s on `web up`. CLAUDE.md's north-star says
+"everything else is Rust" — this feature makes that literally true by
+deleting the Python package and replacing `uv tool install` with a
+signed curl installer fed by a GitHub Actions release pipeline.
 
-## Scope
+## Decisions (user-approved 2026-04-19)
 
-**In:**
-1. Rust `worklog-hook` binary (replaces Python hook).
-2. `sessions` table + SessionStart↔Stop/SessionEnd pairing → real durations for Claude activity.
-3. `blocks` table + gap-timeout clustering algorithm (20-min threshold, calendar authoritative, +2min credit).
-4. `worklog infer` CLI command (builds blocks from events).
-5. `worklog estimate` CLI command (calls `claude -p --json-schema`, fills descriptions + sanity-check minutes).
-6. Web UI + Tempo sync rewired to operate on `blocks`, not raw events.
-7. `worklog hook install` prefers Rust binary if present, falls back to Python.
-8. `worklog doctor` diagnostic command.
-9. Inline SQL schema shared between Python and Rust (`src/worklog/schema.sql`, `include_str!` into Rust).
+- **Path B** — delete Python entirely, no hybrid.
+- **Gcal**: port to Rust now.
+- **Install**: `curl … | sh` only. No Homebrew tap.
+- **Signing**: Ed25519 private key in GHA secret. CI signs on tag push.
+- **Platforms**: `aarch64-apple-darwin` + `x86_64-unknown-linux-gnu`. No
+  intel mac, no linux-arm, no windows.
 
-**Out (documented as follow-ups):**
-- Homebrew tap / crates.io publishing.
-- Anthropic SDK path (research recommended it for caching; `claude -p` is simpler and reuses existing Claude Code auth).
-- Cross-platform CI; macOS arm64 only.
-- Multi-device sync / cloud backup.
-- GitHub remote + actual PR (project has no remote).
+## Assumptions (since you said "you decide")
 
-## Research Findings (abridged)
+- Install path: `$HOME/.local/bin/worklog`.
+- Installer URL: `https://raw.githubusercontent.com/TomasPalsson/worklog/main/install.sh`.
+- Release artifact names: `worklog-<target>` (version carried by the signed manifest, not filename).
+- `install.sh` is bash (not pure POSIX) — available on both targets, stays readable.
+- Migration: detect-and-warn on existing `uv tool install worklog`, not auto-uninstall.
+- CLAUDE.md rewrite: remove the "Python 3.12 + uv + Typer" carve-out. New invariant: pure Rust CLI + Next.js web UI.
 
-- **Hook schema**: `session_id`, `hook_event_name`, `cwd`, `transcript_path`, `permission_mode`, plus per-event fields (`source` on SessionStart, `prompt` on UserPromptSubmit). `SessionEnd` exists with `source: logout|prompt_input_exit|...`. `CLAUDE_PROJECT_DIR` env provided.
-- **Perf budget**: <50ms for blocking events (UserPromptSubmit, Stop, SubagentStop). Rust target: <15ms wall-clock.
-- **Rust stack**: `serde_json` + `rusqlite` (bundled) + `anyhow` + `serde-saphyr`. Profile: `opt-level=3, lto="thin", codegen-units=1, panic="abort", strip="symbols"`.
-- **SQLite concurrency**: `journal_mode=WAL`, `synchronous=NORMAL`, `busy_timeout=150`. No retry on busy — log & exit 0.
-- **Clustering**: gap-timeout method (Spiliopoulou 1999), τ=20min, calendar duration authoritative, +2min credit per point event, company mismatch forces split, `MIN_BLOCK=5min`, `MAX_BLOCK=4h` (flag if exceeded), round up to 15min for Tempo.
-- **`claude -p`**: flags = `-p --model haiku --output-format json --json-schema '<schema>' --system-prompt '...'`. Input via stdin. Parse envelope: `json.loads(json.loads(stdout)["result"])`. Retry with explicit JSON-only nudge on parse failure (max 2 retries).
+## Risks (plan highest-first)
 
-## Behavior Inventory (Given/When/Then)
+1. **Gcal OAuth port** — `google-api-python-client` wraps OAuth2 gracefully; Rust equivalents are verbose. Risk: users lose calendar events. → Phase 1 (first).
+2. **Signing key rotation** — once pubkey X is shipped, switching to pubkey Y breaks upgrades for every user on X. → Get it right in Phase 3.
+3. **Existing user migration** — anyone on `uv tool install` must uninstall old before curling new. Silent-fail strands them. → Installer detects + instructs.
+
+## Behavior Inventory
 
 | # | Given | When | Then |
-|---|---|---|---|
-| B1 | Rust hook receives SessionStart JSON on stdin | it parses and runs | event row inserted with `source=claude`, `started_at=now`, `duration_seconds=null` |
-| B2 | Rust hook receives Stop for a prior open SessionStart | it pairs them | matching row gets `ended_at=now`, `duration_seconds=(end-start)` |
-| B3 | Rust hook invoked with SessionStart older than 5min still unpaired | new event arrives | reaper sets `ended_at=started_at+5min` on the stale session before proceeding |
-| B4 | Rust hook encounters malformed JSON, missing config, or SQLite busy >150ms | any failure | warning to stderr, exit 0 (never blocks Claude) |
-| B5 | Rust hook exec time on M-series arm64 | steady-state invocation | <15ms wall-clock p50 (measured with hyperfine) |
-| B6 | Events within 20min gap for same company | `worklog infer --day X` | collapsed into one block, `started_at=first_event.ts`, `ended_at=last_event.ts+credit` |
-| B7 | Calendar event during coding block, same company | infer runs | block extends to cover calendar span (authoritative) |
-| B8 | Acme event at 10:00, Side at 10:15, Acme at 10:30 | infer runs | 3 blocks, not 2 (company mismatch splits) |
-| B9 | Block built from events | `worklog estimate --day X` | `claude -p` called with schema, block gets `description` + validated `minutes` (integer, rounded to 15) |
-| B10 | `claude -p` returns malformed JSON twice | estimate runs | estimate falls back to gap-based minutes + concatenated event titles, logs warning |
-| B11 | User runs `worklog sync --day X` | blocks exist with descriptions | one Tempo worklog per `(day, company, jira_issue)` using block duration, not 15min placeholder |
-| B12 | `worklog hook install` runs on machine with `worklog-hook` in PATH | install | `~/.claude/settings.json` registers Rust binary path; falls back to `worklog hook run` if not found |
-| B13 | `worklog doctor` runs | any state | prints status of: DB schema version, config file, Rust binary presence+version, Claude hook registration, `claude -p` availability |
-| B14 | Python hook and Rust hook both write to the same SQLite concurrently | both invoked in quick succession | WAL mode + busy_timeout prevents `SQLITE_BUSY` errors, both rows land |
-| B15 | Web UI opened after infer | /?day=X | shows blocks (not raw events) grouped by company with editable duration + reassignable company + description |
+|---|-------|------|------|
+| 1 | Rust binary from this branch | `worklog day` | Rust dispatches collect → infer → estimate → web up; no Python process spawned |
+| 2 | Rust binary, `credentials.json` present | `worklog collect gcal --since 2026-04-01 --until 2026-04-19` | Events fetched via Calendar API, normalised to UTC, upserted by `(source='gcal', source_id=<iCalUID>)` |
+| 3 | Rust binary, no credentials | `worklog collect gcal` | Actionable error pointing at the expected path |
+| 4 | Rust binary, expired refresh token | `worklog collect gcal` | Attempts refresh, if that fails instructs user to re-auth |
+| 5 | Tag `v0.3.0` pushed | GHA release workflow runs | Per platform: `worklog-<target>`, `worklog-<target>.sig`, signed `manifest.json` uploaded |
+| 6 | Tag pushed with missing signing secret | GHA release workflow | Fails loudly, no release created |
+| 7 | Fresh macOS arm64, no worklog | `curl -fsSL …/install.sh \| bash` | Downloads target-correct binary, verifies signature against embedded pubkey, installs to `~/.local/bin/worklog`, prints version |
+| 8 | Installer gets a tampered binary | verification step | Refuses to install, exits non-zero |
+| 9 | `uv tool install worklog` already present | `install.sh` runs | Detects, warns, instructs `uv tool uninstall worklog`, exits non-zero unless `--force` |
+| 10 | Rust binary installed via new installer | `worklog upgrade` | Calls `self-update`, pulls latest signed release |
+| 11 | Any `worklog <cmd>` | invocation | No Python interpreter in the chain |
 
-## TDD Phase Plan
+## Out of Scope (follow-ups)
 
-**Phase rule**: each phase is Red → Green → Refactor (the refactor step MUST apply `clean-code` skill). Phase commits visibly show this ordering in `git log`.
+- Homebrew tap.
+- Intel mac / linux-arm / windows.
+- Shell completions (clap has `clap_complete`; separate PR).
+- Docker image of the CLI (web container stays).
 
-### Phase A — Shared schema + sessions/blocks tables (Python)
-- **T-A1 (Red)**: tests for `sessions` + `blocks` table creation, `events.session_id` column, schema migration from v1→v2 preserves data.
-- **T-A2 (Green)**: extract schema to `src/worklog/schema.sql`, load via `importlib.resources`; write `scripts/migrate_v2.py`.
-- **T-A3 (Refactor)**: `clean-code` pass on `db.py`.
-- Covers: B1 (prereq), B14 (prereq).
+## Files
 
-### Phase B — Python hook writes session_id; reaper logic
-- **T-B1 (Red)**: tests for SessionStart→Stop pairing (same session_id), reaper for stale sessions.
-- **T-B2 (Green)**: implement in `collectors/claude.py`.
-- **T-B3 (Refactor)**: `clean-code` pass.
-- Covers: B2, B3.
+**New**
+- `rust/crates/worklog-core/src/collectors/gcal.rs` — OAuth2 + Calendar v3 REST
+- `rust/crates/worklog-core/src/collectors/gcal/oauth.rs` — token refresh, file cache
+- `rust/crates/worklog-cli/src/day.rs` — `worklog day` orchestrator
+- `.github/workflows/release.yml` — build-sign-upload on tag push
+- `install.sh` — curl-piped installer at repo root
+- `docs/MIGRATION.md` — uv → curl, one page
+- Tests: `gcal_oauth.rs`, `gcal_collector.rs`, `day_cmd.rs`, `tests/release/smoke.sh`, `tests/install/*.bats`
 
-### Phase C — Rust workspace + hook binary
-- **T-C1 (Red)**: Rust integration tests — feed fixture JSON on stdin, assert row in SQLite with correct fields. Benchmark test: <15ms p50 via `hyperfine` in CI.
-- **T-C2 (Green)**: `rust/hook/` crate, `main.rs`, `db.rs`, `classify.rs`, `config.rs`, schema via `include_str!`.
-- **T-C3 (Refactor)**: `clean-code` pass (Rust edition: clippy pedantic + idiomatic patterns).
-- Covers: B1, B2, B3, B4, B5, B14.
+**Modified**
+- `rust/crates/worklog-cli/src/cli.rs` — add `Cmd::Day`
+- `rust/crates/worklog-core/src/updater/pubkey.rs` — real pubkey (replace zeros)
+- `rust/crates/worklog-core/src/lib.rs` — export `gcal`
+- `README.md` — install section rewrite
+- `CLAUDE.md` — drop Python invariants
+- `rust/README.md` — brief
 
-### Phase D — Block inference
-- **T-D1 (Red)**: pytest cases for every edge case in B6–B8 plus the three edge cases from research (lunch gap, overlap, all-hands).
-- **T-D2 (Green)**: `src/worklog/infer.py` with pure function `build_blocks(events) -> list[Block]`; CLI `worklog infer`.
-- **T-D3 (Refactor)**: `clean-code` pass.
-- Covers: B6, B7, B8.
+**Deleted**
+- `src/worklog/` (entire tree)
+- `tests/` (all Python tests)
+- `pyproject.toml`, `uv.lock`, `.python-version`
+- `setup_gcal.py` (verify existence)
 
-### Phase E — `claude -p` estimator
-- **T-E1 (Red)**: tests for subprocess call with mocked `claude` binary; schema validation path; malformed-JSON fallback.
-- **T-E2 (Green)**: `src/worklog/estimate.py`; CLI `worklog estimate`.
-- **T-E3 (Refactor)**: `clean-code` pass; extract prompt to `src/worklog/prompts/estimate_block.txt`.
-- Covers: B9, B10.
+## TDD Phases
 
-### Phase F — Tempo sync rewire
-- **T-F1 (Red)**: tests that sync reads from `blocks` (not events), uses real `duration_seconds`, no 15-min placeholder.
-- **T-F2 (Green)**: rewrite `tempo.py` to join `blocks → events` for event ids, mark block `tempo_worklog_id`.
-- **T-F3 (Refactor)**: `clean-code` pass.
-- Covers: B11.
+### Phase 1 — Gcal collector (RISKIEST, FIRST)
 
-### Phase G — Web UI rewire to blocks
-- **T-G1 (Red)**: FastAPI TestClient tests: `/?day=X` returns blocks grouped by company; POST `/blocks/{id}/duration` updates.
-- **T-G2 (Green)**: update `web/app.py` + templates.
-- **T-G3 (Refactor)**: `clean-code` pass; extract shared datetime helpers.
-- Covers: B15.
+**RED.** Write failing tests in `rust/crates/worklog-core/tests/`:
+- `gcal_oauth::refresh_token()` loads `credentials.json` + `token.json`, refreshes when `expires_in < 60s`, writes updated token back.
+- `gcal::collect(since, until)` paginates `calendars/<id>/events?timeMin=…&timeMax=…`, yields events normalised to UTC, upserts as `(source='gcal', source_id=<iCalUID>)`.
+- Re-collecting same iCalUID → idempotent (single row).
+- `status: "cancelled"` events skipped.
+- All-day events (no `dateTime`) — fixture + assertion pinned to chosen behavior.
+- Use `httpmock` for API, fixtures under `tests/fixtures/gcal/`.
 
-### Phase H — Installer + doctor
-- **T-H1 (Red)**: tests for `worklog hook install` prefers Rust binary; `worklog doctor` output format.
-- **T-H2 (Green)**: update `cli.py:hook()`; add `cli.py:doctor()`.
-- **T-H3 (Refactor)**: `clean-code` pass.
-- Covers: B12, B13.
+Gate: `cargo test -p worklog-core gcal` exits NON-ZERO.
 
-## Data Model Deltas
+**GREEN.** Implement `gcal.rs` + `gcal/oauth.rs` using `reqwest` (already in deps), `oauth2` crate, `url`. Reuse `repo::upsert_event`. Mirror `src/worklog/collectors/gcal.py::_to_utc` for TZ.
 
-```sql
--- new table
-CREATE TABLE sessions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT UNIQUE NOT NULL,       -- Claude session_id
-    started_at TEXT NOT NULL,
-    ended_at TEXT,
-    end_source TEXT,                       -- stop|subagent_stop|session_end|reaper
-    project_path TEXT,
-    event_count INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX idx_sessions_started ON sessions(started_at);
+Gate: `cargo test gcal` passes. `cargo clippy -- -D warnings`.
 
--- new table
-CREATE TABLE blocks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    day TEXT NOT NULL,                     -- YYYY-MM-DD for fast filter
-    company TEXT NOT NULL,
-    jira_issue TEXT,
-    started_at TEXT NOT NULL,
-    ended_at TEXT NOT NULL,
-    duration_seconds INTEGER NOT NULL,
-    description TEXT,
-    estimated_by TEXT,                     -- claude_p|gap|manual
-    flagged INTEGER NOT NULL DEFAULT 0,    -- 1 if exceeds MAX_BLOCK or manual review needed
-    tempo_worklog_id TEXT,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-);
-CREATE INDEX idx_blocks_day ON blocks(day);
-CREATE INDEX idx_blocks_tempo ON blocks(tempo_worklog_id);
+**REFACTOR.** Apply `clean-code`. Extract OAuth from collector. Match other collectors' `fn collect(since, until, settings) -> Result<CollectReport>` shape. Wire into CLI dispatch.
 
--- new join table
-CREATE TABLE block_events (
-    block_id INTEGER NOT NULL REFERENCES blocks(id) ON DELETE CASCADE,
-    event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-    PRIMARY KEY (block_id, event_id)
-);
+### Phase 2 — `worklog day` in Rust
 
--- events table gets a session_id column for Claude pairing
-ALTER TABLE events ADD COLUMN session_id TEXT;
-CREATE INDEX idx_events_session ON events(session_id);
-```
+**RED.** Test `Cmd::Day` dispatches the pipeline:
+- `day::run(day, model)` calls collect_all → infer → estimate → web_up in order.
+- Each step's failure is captured + reported but doesn't abort the next (matches Python `[yellow]!` behavior).
+- `--no-serve` skips `web up`.
+- Output shape close enough to Python that muscle memory transfers.
 
-## Verification Steps
+Gate: `cargo test day` NON-ZERO.
 
-### Browser Verification (after Phase G)
-1. `uv run worklog serve` → open http://127.0.0.1:8765
-2. Navigate to day with blocks. **Assert**: page renders blocks grouped by company, each with start–end time, duration, description.
-3. Edit a block duration via the form. **Assert**: page reloads, new duration persisted (check via `worklog today`).
-4. Click "Dry-run Tempo sync". **Assert**: response shows payloads referencing block `duration_seconds`, not 15-min multiples.
-5. Open DevTools console. **Assert**: no errors.
+**GREEN.** Implement `day.rs`. Reuse existing `cmd_collect`/`cmd_infer`/`cmd_estimate`/`cmd_web_up` internals; extract helpers if needed. `owo-colors` for ticks.
 
-### Runtime Verification (after Phase C, the Rust hook)
-1. Install Rust binary: `cargo install --locked --path rust/hook`.
-2. Simulate a SessionStart: `echo '{"hook_event_name":"SessionStart","session_id":"test-1","cwd":"/tmp","source":"startup"}' | worklog-hook`. **Assert**: exit 0, row in `events` with `source=claude`, `session_id=test-1`.
-3. Send Stop: `echo '{"hook_event_name":"Stop","session_id":"test-1","cwd":"/tmp"}' | worklog-hook`. **Assert**: matching `sessions` row has `ended_at` set, `duration_seconds > 0`.
-4. Benchmark: `hyperfine --warmup 3 "echo '...' | worklog-hook"`. **Assert**: p50 < 15ms on M-series.
-5. Concurrent-write stress: spawn 20 Rust + 20 Python hook invocations in parallel. **Assert**: all 40 rows present, zero `SQLITE_BUSY` errors reach the user.
+Gate: `cargo test` passes.
 
-### User Verification Steps (Stage 6 — HARD GATE)
-1. The Claude Code hook fires in real usage (you run a prompt in any repo): verify a row appears in `events` with `session_id`.
-2. `worklog infer --day today` produces blocks that match your intuition about your day.
-3. `worklog estimate --day today` produces readable Tempo-style descriptions.
-4. Review UI at `/?day=today` shows those blocks correctly.
-5. `worklog sync --dry-run` produces Tempo payloads with real durations.
+**REFACTOR.** Apply `clean-code`. Share "capture + report + continue" helper. Audit `cli.rs` for port-dead-code.
 
-## Quality Gates
+### Phase 3 — GHA release + real signing key
 
-Inline (Stage 3, run via `check-all`):
-- `uv run pytest -q`
-- `uv run ruff check src`
-- `uv run mypy src`
-- `cargo test --manifest-path rust/hook/Cargo.toml`
-- `cargo clippy --manifest-path rust/hook/Cargo.toml -- -D warnings`
-- `cargo fmt --manifest-path rust/hook/Cargo.toml --check`
+**RED.** Smoke harness `tests/release/smoke.sh`:
+- Run `scripts/release.sh` (local version of CI assemble) against a dummy tag.
+- Assert three files per platform, manifest shape (version = tag, `result_sha256` set, targets listed).
+- Assert missing `WORKLOG_RELEASE_PRIVATE_KEY` fails cleanly.
 
-Parallel quality agents (Stage 4, sonnet):
-- Security — subprocess injection risk in `claude -p`, SQL injection in web handlers, SSRF, secret handling.
-- Performance — Rust hook hot path (allocations, syscalls), Python infer scalability.
-- Accessibility — web UI (contrast, keyboard nav, ARIA on form elements).
-- Type-safety — mypy strict + clippy pedantic results.
+Gate: `bash tests/release/smoke.sh` NON-ZERO.
 
-## Assumptions Documented
+**GREEN.**
+- Generate keypair: `worklog dev keygen --out /tmp/wl-release-keys`.
+- Paste pubkey const into `updater/pubkey.rs`.
+- Print `gh secret set` command for the user to run (private key stays on their machine until they paste it).
+- Write `.github/workflows/release.yml`:
+  - Trigger: tag `v*`.
+  - Matrix: `aarch64-apple-darwin` (runs-on `macos-14`), `x86_64-unknown-linux-gnu` (runs-on `ubuntu-24.04`).
+  - `cargo build --release --target <target>`.
+  - `worklog dev sign` binary + manifest.
+  - `gh release create` with artifacts attached.
 
-1. Only macOS arm64 is targeted. Linux / Intel macs NOT tested.
-2. `claude` binary is in PATH (already required by the user's Claude Code install).
-3. Single-user machine; no multi-tenant concerns.
-4. Python continues to own the `worklog init` schema creation; Rust only runs `CREATE TABLE IF NOT EXISTS` as safety net.
-5. `claude -p` auth uses existing Claude Code subscription auth (no `--bare`/`ANTHROPIC_API_KEY` required). Adds ~200ms per call; acceptable for daily batch.
-6. No PR created at end — merge directly to `main`.
+Gate: smoke tests pass. Pre-release tag `v0.3.0-rc.1` builds green in CI.
 
-## Non-goals (flagged for follow-up)
+**REFACTOR.** Composite action for repeated steps. Add `dry-run` input that builds+signs but skips `gh release create`.
 
-- Learning per-user adaptive gap threshold (insufficient data).
-- Tempo Server/Data Center support (only Tempo Cloud v4).
-- CI/CD; this is a personal tool on one machine.
-- Structured logging / observability stack.
+### Phase 4 — `install.sh` curl installer
 
-## Rollback Plan
+**RED.** `bats` tests in `tests/install/`:
+- Fresh install downloads correct arm64/x86_64 binary, verifies, installs to `~/.local/bin/worklog`, +x.
+- Tampered binary → exits 1, no binary installed.
+- Missing manifest signature → fails.
+- `uv tool install worklog` detected → warns, instructs uninstall, exits non-zero without `--force`.
+- Idempotent (double-run doesn't double-install).
 
-If the Rust hook is broken: `worklog hook uninstall && worklog hook install --python` reverts to Python hook. Both share the same SQLite schema. Rollback is a one-command operation.
+Gate: `bats tests/install/` NON-ZERO.
 
-## Progress
+**GREEN.** Write `install.sh` (~150 lines):
+- Detect target (`uname -sm` → `aarch64-apple-darwin` | `x86_64-unknown-linux-gnu`).
+- `curl -fsSL` release asset + manifest + sig.
+- Add a `worklog self-update --verify-only <path>` subcommand in Phase 3 if missing; installer shells out to it using the downloaded binary to self-validate against its embedded pubkey.
+- Write to `~/.local/bin/worklog`, chmod +x.
+- Warn if `$HOME/.local/bin` not in PATH.
 
-- [x] Stage 1.2: research swarm
-- [ ] Stage 1.3: plan (this doc)
-- [ ] Stage 1.5: user approval HARD GATE ← **WAITING**
-- [ ] Phase A — schema + sessions/blocks
-- [ ] Phase B — Python hook session pairing
-- [ ] Phase C — Rust hook
-- [ ] Phase D — block inference
-- [ ] Phase E — claude -p estimator
-- [ ] Phase F — Tempo sync rewire
-- [ ] Phase G — Web UI rewire
-- [ ] Phase H — installer + doctor
-- [ ] Stage 3: inline gates
-- [ ] Stage 4: quality pipeline
-- [ ] Stage 5: verification
-- [ ] Stage 6: user verification HARD GATE
-- [ ] Stage 7: QA
-- [ ] Stage 8: merge summary
+Gate: tests pass; manual test on a clean VM (Runtime Verification).
+
+**REFACTOR.** Apply `clean-code` (shell). Consolidate error messages, consistent exit codes.
+
+### Phase 5 — Delete Python
+
+**RED.** `tests/integration/no_python.sh` (runs after installing the Rust binary):
+- During each command, `ps -ef | grep -E 'python|uv '` is empty.
+- `find . -name '*.py' -not -path './target/*'` returns empty.
+- `cargo test --manifest-path rust/Cargo.toml` passes.
+
+Gate: test fails (Python files still exist).
+
+**GREEN.**
+- `git rm -r src/worklog/ tests/`
+- `git rm pyproject.toml uv.lock .python-version setup_gcal.py` (verify each)
+- `.gitignore` — remove `__pycache__`, `.pytest_cache`, `venv/`, `.venv/`.
+- Verify nothing in Rust imports from Python (`grep -r "python\|pyproject" rust/`).
+
+Gate: `cargo test` passes. `cd web && bun test && bun run typecheck && bun run build` passes. `find . -name '*.py'` empty (except `target/`).
+
+**REFACTOR.** Scan for dangling `_exec_rust`, `_install_rust_binary`, `uv tool install` references in README/scripts/docs.
+
+### Phase 6 — Docs + CLAUDE.md rewrite
+
+**RED.** N/A — docs-only. Validation: `markdownlint` + manually running every command in the new README.
+
+**GREEN.**
+- `README.md` install section:
+  ```
+  curl -fsSL https://raw.githubusercontent.com/TomasPalsson/worklog/main/install.sh | bash
+  ```
+- CLAUDE.md first paragraph:
+  > Pure-Rust CLI (`rust/crates/{worklog-core,worklog-cli}/`) + a
+  > dockerised Next.js + Bun review UI in `web/`. The Rust daemon
+  > listens on `127.0.0.1:9323` (TCP) and a unix socket for the web UI.
+- Replace `uv run` commands with `cargo test`, `cargo clippy`, `cargo fmt`.
+- Delete "Adding a collector (Python)" section.
+- Add `docs/MIGRATION.md`: one page for `uv tool uninstall` → curl installer.
+
+Gate: all docs examples run.
+
+**REFACTOR.** Ensure CLAUDE.md invariants (UTC timestamps, `$WORKLOG_TZ`, manual-estimate skip) still coherent. Delete anything that only made sense when Python existed (schema.sql byte-parity rule — schema.sql now lives only in Rust).
+
+## Runtime Verification
+
+1. Clean macOS arm64 (or docker): curl-install.
+2. `worklog --version` → version string.
+3. `WORKLOG_HOME=/tmp/wl-verify worklog setup --non-interactive`.
+4. `worklog collect gcal --since $(date -v-1d +%F) --until $(date +%F)` → events in DB.
+5. `worklog day` → full pipeline, web UI opens, no python/uv in `ps`.
+6. `worklog upgrade` → "already up to date."
+7. Tamper with binary on disk → `worklog self-update --verify-only` refuses.
+8. `find ~/.worklog -name '*.py'` empty.
+
+## User Verification (HARD GATE — I ask, you approve)
+
+1. `worklog day` on a real day — output feels same or better than Python.
+2. `worklog collect gcal` — events appear in the UI with correct ticket assignments.
+3. `worklog upgrade` — reports success.
+4. Tail `worklog daemon` logs during a sync — no python subprocess.
+5. Read new README install section — you'd follow it yourself on a fresh machine.
+
+## Quality Gates (non-skippable)
+
+**Inline.** `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cd web && bun test && bun run typecheck && bun run build`.
+
+**Agent wave (4 × sonnet, parallel).**
+- Security — OAuth token handling, installer curl pipe, signing-key handling.
+- Performance — Gcal pagination, day orchestrator, release assemble step.
+- Type-safety — Result propagation in gcal, error-type hierarchy.
+- Accessibility — n/a (no UI change); skip with documented reason.
+
+## Plan Validation
+
+- [x] Every phase has Red/Green/Refactor
+- [x] No phase has >8 T-IDs
+- [x] Riskiest phase (Gcal) first
+- [x] Behavior inventory: 11 rows, happy + error paths
+- [x] Runtime + user verification are specific
+- [x] Browser verification skipped with reason (no UI change; web UI stays as-is)
+- [x] Quality gates included
+- [x] Scope bounded; follow-ups listed

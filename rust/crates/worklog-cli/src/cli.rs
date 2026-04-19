@@ -9,7 +9,7 @@ use std::io::{self, IsTerminal, Read, Write};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use worklog_core::{
-    collectors::{github as gh, jira as jira_col, tempo as tempo_col},
+    collectors::{gcal as gcal_col, github as gh, jira as jira_col, tempo as tempo_col},
     daemon as daemon_mod, db, estimate, hook, hook_run, http, infer,
     paths::Paths,
     schedule, secrets, updater as upd, web as web_mod,
@@ -104,6 +104,23 @@ pub enum Cmd {
         #[arg(long)]
         day: Option<String>,
         /// Model id passed to `claude -p`.
+        #[arg(long, default_value = estimate::DEFAULT_MODEL)]
+        model: String,
+    },
+
+    /// One-shot daily flow: collect → infer → estimate → open the review UI.
+    ///
+    /// Each step that fails is reported inline and the next one still runs —
+    /// missing Jira credentials or a transient API blip shouldn't block the
+    /// rest of the pipeline. Use `--no-serve` to skip spinning up the web UI.
+    Day {
+        /// YYYY-MM-DD; default today (UTC).
+        #[arg(long)]
+        day: Option<String>,
+        /// Skip launching the web review UI at the end.
+        #[arg(long)]
+        no_serve: bool,
+        /// Model id passed to `claude -p` during estimation.
         #[arg(long, default_value = estimate::DEFAULT_MODEL)]
         model: String,
     },
@@ -232,6 +249,7 @@ pub enum CollectTarget {
     All,
     Jira,
     Github,
+    Gcal,
 }
 
 #[derive(Subcommand, Debug)]
@@ -347,6 +365,11 @@ pub fn run_with<W: Write>(
         Cmd::Sync { day, dry_run } => cmd_sync(day, dry_run, out, cli.json),
         Cmd::Infer { day } => cmd_infer(day, out, cli.json),
         Cmd::Estimate { day, model } => cmd_estimate(day, &model, out, cli.json),
+        Cmd::Day {
+            day,
+            no_serve,
+            model,
+        } => cmd_day(day, no_serve, &model, out, cli.json),
         Cmd::HookRun => cmd_hook_run(),
         Cmd::Daemon { socket, tcp } => cmd_daemon(socket, tcp),
         Cmd::Web { sub } => match sub {
@@ -363,14 +386,21 @@ pub fn run_with<W: Write>(
             force,
         } => cmd_self_update(manifest_url, check, dry_run, force, out, cli.json),
         Cmd::Dev { sub } => match sub {
-            DevCmd::Keygen { out: out_path, force } => cmd_dev_keygen(out_path, force, out, cli.json),
+            DevCmd::Keygen {
+                out: out_path,
+                force,
+            } => cmd_dev_keygen(out_path, force, out, cli.json),
             DevCmd::Sign { file, key } => cmd_dev_sign(&file, key.as_deref(), out, cli.json),
-            DevCmd::MakePatch { old, new, out: patch_out } => {
-                cmd_dev_make_patch(&old, &new, patch_out.as_deref(), out, cli.json)
-            }
-            DevCmd::ApplyPatch { old, patch, out: patched_out } => {
-                cmd_dev_apply_patch(&old, &patch, &patched_out, out, cli.json)
-            }
+            DevCmd::MakePatch {
+                old,
+                new,
+                out: patch_out,
+            } => cmd_dev_make_patch(&old, &new, patch_out.as_deref(), out, cli.json),
+            DevCmd::ApplyPatch {
+                old,
+                patch,
+                out: patched_out,
+            } => cmd_dev_apply_patch(&old, &patch, &patched_out, out, cli.json),
         },
     }
 }
@@ -715,6 +745,22 @@ fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bo
         }
     }
 
+    if matches!(target, CollectTarget::All | CollectTarget::Gcal) {
+        match gcal_col::GcalAuth::from_paths() {
+            Ok(auth) => match gcal_col::collect_with(
+                &conn,
+                &auth,
+                since,
+                today + chrono::Duration::days(1),
+                &client,
+            ) {
+                Ok(report) => reports.push(report),
+                Err(e) => writeln!(out, "· gcal skipped: {e}")?,
+            },
+            Err(e) => writeln!(out, "· gcal skipped: {e}")?,
+        }
+    }
+
     if json {
         writeln!(out, "{}", serde_json::to_string_pretty(&reports)?)?;
         return Ok(());
@@ -874,6 +920,103 @@ fn cmd_estimate<W: Write>(day: Option<String>, model: &str, out: &mut W, json: b
         stats.estimated, stats.skipped, stats.failed
     )?;
     Ok(())
+}
+
+fn cmd_day<W: Write>(
+    day: Option<String>,
+    no_serve: bool,
+    model: &str,
+    out: &mut W,
+    json: bool,
+) -> Result<()> {
+    // `db::open` is idempotent: it creates the file + runs migrations if
+    // missing, so first-run users don't need to remember `db migrate`.
+    let paths = Paths::resolve()?;
+    paths.ensure()?;
+    let conn = db::open(&paths.db)?;
+    let day_parsed = parse_day(day.as_deref())?;
+
+    // --- collect --------------------------------------------------------
+    // Collect for the requested day, not "now" — lets `worklog day --day
+    // 2026-04-01` pull the right slice instead of dumping today's data
+    // into last month's folder.
+    writeln!(out, "collecting github + jira + gcal …")?;
+    let client = http::client()?;
+    let since = day_parsed;
+    let until = day_parsed + chrono::Duration::days(1);
+
+    // Each step captures its own error. A Jira outage shouldn't block
+    // the rest of the daily flow — matches Python's yellow-! behaviour.
+    match jira_col::JiraAuth::from_secrets() {
+        Ok(auth) => match jira_col::fetch_open_tickets_with(&conn, &auth, &client) {
+            Ok(r) => writeln!(
+                out,
+                "  ✓ jira:   tickets={} events={}",
+                r.tickets_written, r.events_written
+            )?,
+            Err(e) => writeln!(out, "  ! jira:   {e}")?,
+        },
+        Err(e) => writeln!(out, "  · jira skipped: {e}")?,
+    }
+    match gh::GitHubAuth::from_secrets() {
+        Ok(auth) => match gh::collect_with(&conn, &auth, since, until, &client) {
+            Ok(r) => writeln!(out, "  ✓ github: events={}", r.events_written)?,
+            Err(e) => writeln!(out, "  ! github: {e}")?,
+        },
+        Err(e) => writeln!(out, "  · github skipped: {e}")?,
+    }
+    match gcal_col::GcalAuth::from_paths() {
+        Ok(auth) => match gcal_col::collect_with(&conn, &auth, since, until, &client) {
+            Ok(r) => writeln!(out, "  ✓ gcal:   events={}", r.events_written)?,
+            Err(e) => writeln!(out, "  ! gcal:   {e}")?,
+        },
+        Err(e) => writeln!(out, "  · gcal skipped: {e}")?,
+    }
+
+    // --- infer ----------------------------------------------------------
+    writeln!(out, "\ninferring blocks …")?;
+    let events = infer::load_day_events(&conn, day_parsed)?;
+    let blocks = infer::build_blocks(events);
+    infer::persist_blocks(&conn, day_parsed, &blocks)?;
+    let total_min: i64 = blocks.iter().map(|b| b.duration_seconds).sum::<i64>() / 60;
+    writeln!(
+        out,
+        "  ✓ {} block{} · {} min total",
+        blocks.len(),
+        if blocks.len() == 1 { "" } else { "s" },
+        total_min
+    )?;
+
+    // --- estimate -------------------------------------------------------
+    writeln!(out, "\nestimating (claude) …")?;
+    match estimate::estimate_day(&conn, day_parsed, model) {
+        Ok(stats) => writeln!(
+            out,
+            "  ✓ estimated={} skipped={} failed={}",
+            stats.estimated, stats.skipped, stats.failed
+        )?,
+        Err(e) => writeln!(out, "  ! estimate skipped: {e}")?,
+    }
+
+    // --- serve ----------------------------------------------------------
+    if no_serve {
+        if json {
+            writeln!(
+                out,
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "day": day_parsed.to_string(),
+                    "blocks": blocks.len(),
+                    "minutes": total_min,
+                    "served": false,
+                }))?
+            )?;
+        }
+        return Ok(());
+    }
+    writeln!(out, "\nbringing up review UI at http://localhost:3333")?;
+    writeln!(out, "  ctrl+c to bring it down, or `worklog web down`\n")?;
+    cmd_web_up(3333, false, out, false)
 }
 
 fn cmd_hook_run() -> Result<()> {
@@ -1078,7 +1221,11 @@ fn cmd_web_build<W: Write>(pull: bool, out: &mut W, json: bool) -> Result<()> {
     let compose = web_mod::render_compose(&paths, 3333, &context)?;
     web_mod::compose_build(&compose, pull)?;
     if json {
-        writeln!(out, "{{\"ok\": true, \"context\": {:?}}}", context.display())?;
+        writeln!(
+            out,
+            "{{\"ok\": true, \"context\": {:?}}}",
+            context.display()
+        )?;
     } else {
         writeln!(out, "✓ worklog-web image built from {}", context.display())?;
     }
@@ -1140,9 +1287,7 @@ fn cmd_self_update<W: Write>(
         // --check is a no-swap probe: download + verify just the manifest,
         // report whether an update is available.
         if upd::pubkey::is_placeholder() {
-            anyhow::bail!(
-                "release pubkey isn't embedded yet — see worklog-core::updater::pubkey"
-            );
+            anyhow::bail!("release pubkey isn't embedded yet — see worklog-core::updater::pubkey");
         }
         let pk = upd::pubkey::resolve();
         let http = upd::fetch::client()?;
@@ -1161,11 +1306,7 @@ fn cmd_self_update<W: Write>(
         } else if manifest.version == current_version {
             writeln!(out, "✓ up to date ({current_version})")?;
         } else {
-            writeln!(
-                out,
-                "→ {current_version} → {} available",
-                manifest.version
-            )?;
+            writeln!(out, "→ {current_version} → {} available", manifest.version)?;
             if !manifest.notes.is_empty() {
                 writeln!(out, "\n{}", manifest.notes)?;
             }
@@ -1270,9 +1411,7 @@ fn cmd_dev_sign<W: Write>(
     let mut sig_path = file.to_path_buf();
     let new_name = format!(
         "{}.sig",
-        file.file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("bin")
+        file.file_name().and_then(|s| s.to_str()).unwrap_or("bin")
     );
     sig_path.set_file_name(new_name);
     std::fs::write(&sig_path, sig).with_context(|| format!("writing {}", sig_path.display()))?;
@@ -1308,9 +1447,7 @@ fn cmd_dev_make_patch<W: Write>(
             let mut p = new.to_path_buf();
             p.set_extension(format!(
                 "{}.patch",
-                new.extension()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("bin")
+                new.extension().and_then(|s| s.to_str()).unwrap_or("bin")
             ));
             p
         }
@@ -1377,4 +1514,3 @@ fn cmd_dev_apply_patch<W: Write>(
     }
     Ok(())
 }
-

@@ -119,7 +119,8 @@ pub fn run_update(req: &UpdateRequest) -> Result<UpdateReport> {
     if manifest.schema > manifest::CURRENT_SCHEMA {
         anyhow::bail!(
             "manifest schema {} is newer than this binary understands ({}). \
-             Please upgrade manually — `uv tool install git+ssh://…`",
+             Re-run the installer to pick up a fresh release: \
+             curl -fsSL https://raw.githubusercontent.com/TomasPalsson/worklog/main/install.sh | bash",
             manifest.schema,
             manifest::CURRENT_SCHEMA,
         );
@@ -237,7 +238,8 @@ fn decompress_zstd(src: &Path, dst: &Path) -> Result<()> {
     // stop writing — then we check whether we stopped at the cap (bomb)
     // or at genuine EOF. This keeps constant memory.
     let mut limited = decoder.take(MAX_DECOMPRESSED_BYTES + 1);
-    let mut out = std::fs::File::create(dst).with_context(|| format!("create {}", dst.display()))?;
+    let mut out =
+        std::fs::File::create(dst).with_context(|| format!("create {}", dst.display()))?;
     let written = std::io::copy(&mut limited, &mut out).context("zstd decompress")?;
     if written > MAX_DECOMPRESSED_BYTES {
         // Purge the partially-written output so the caller never sees it.
@@ -631,12 +633,16 @@ mod tests {
 
     #[test]
     fn run_update_refuses_placeholder_pubkey() {
-        // Fail-closed guard: with the embedded pubkey still at the
-        // all-zero placeholder, run_update must refuse BEFORE making any
-        // network call — otherwise a freshly-built binary with no real
-        // release key might accept forged signatures.
+        // Fail-closed guard — force the placeholder via the test env
+        // override and assert run_update refuses BEFORE any network
+        // call. Without this, a binary built pre-keygen would accept
+        // any forged signature. Real releases embed a non-placeholder
+        // pubkey so the override is the only way to exercise this path.
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
         let _g = pubkey::test_env_lock();
-        std::env::remove_var("WORKLOG_RELEASE_PUBKEY_BASE64");
+        let zeros = [0u8; crate::updater::crypto::PUBLIC_KEY_LEN];
+        std::env::set_var("WORKLOG_RELEASE_PUBKEY_BASE64", STANDARD.encode(zeros));
 
         let tmp = TempDir::new().unwrap();
         let dest = tmp.path().join("worklog");
@@ -655,5 +661,6 @@ mod tests {
             msg.contains("placeholder"),
             "placeholder refusal message expected, got: {msg}"
         );
+        std::env::remove_var("WORKLOG_RELEASE_PUBKEY_BASE64");
     }
 }

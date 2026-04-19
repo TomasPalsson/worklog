@@ -1,9 +1,8 @@
 //! Database connection + migration runner.
 //!
 //! The schema lives in `sql/schema.sql` and is embedded with `include_str!`.
-//! Every `CREATE` in the schema is idempotent, so `migrate()` can be called on
-//! every boot. This mirrors the Rust claude-code hook and the Python runtime
-//! so the three stay bit-compatible during Stage 1.
+//! Every `CREATE` in the schema is idempotent, so `migrate()` can be called
+//! on every boot.
 
 use std::path::Path;
 
@@ -163,14 +162,5 @@ mod tests {
         assert_eq!(s.blocks, 0);
         assert_eq!(s.sessions, 0);
         assert_eq!(s.jira_tickets, 0);
-    }
-
-    #[test]
-    fn embedded_schema_matches_python_copy() {
-        let python_schema = include_str!("../../../../src/worklog/schema.sql");
-        assert_eq!(
-            SCHEMA_SQL, python_schema,
-            "rust sql/schema.sql has drifted from src/worklog/schema.sql — keep them identical during Stage 1"
-        );
     }
 }

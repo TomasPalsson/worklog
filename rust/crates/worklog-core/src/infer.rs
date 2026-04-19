@@ -1,10 +1,8 @@
 //! Gap-timeout block clustering.
 //!
-//! Ports `src/worklog/infer.py` + `infer_persist.py`. The two files are one
-//! logical piece in Rust: `build_blocks()` is a pure function over an event
-//! list, `persist_blocks()` writes to the db. Constants match the Python
-//! verbatim so re-running either side on the same day produces identical
-//! blocks.
+//! `build_blocks()` is a pure function over an event list;
+//! `persist_blocks()` writes them to the db. Separated so tests can exercise
+//! the clustering algorithm without any SQLite setup.
 //!
 //! Invariants:
 //! * Calendar events are authoritative closed units — they never absorb
@@ -258,17 +256,10 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
             // Overlap fallback: if no exact-start match, find one prior
             // block whose time range overlaps the new block's. Must not
             // already be claimed by a different new block.
-            prior_list
-                .iter()
-                .find(|c| {
-                    !claimed.contains(&c.started_at)
-                        && ranges_overlap(
-                            &c.started_at,
-                            &c.ended_at,
-                            &started_key,
-                            &ended_key,
-                        )
-                })
+            prior_list.iter().find(|c| {
+                !claimed.contains(&c.started_at)
+                    && ranges_overlap(&c.started_at, &c.ended_at, &started_key, &ended_key)
+            })
         });
         if let Some(c) = carry {
             claimed.insert(c.started_at.clone());
@@ -396,7 +387,7 @@ mod tests {
         assert!(ranges_overlap(
             "2026-04-18T09:00:00.000000+00:00", // Rust micro-precision
             "2026-04-18T09:30:00.000000+00:00",
-            "2026-04-18T09:00:00+00:00",        // Python second-precision
+            "2026-04-18T09:00:00+00:00", // Python second-precision
             "2026-04-18T09:30:00+00:00",
         ));
 
@@ -441,8 +432,7 @@ mod tests {
             .unwrap();
         let s = block_iso(dt);
         assert!(
-            s.starts_with("2026-04-18T09:00:00.")
-                && s.ends_with("+00:00"),
+            s.starts_with("2026-04-18T09:00:00.") && s.ends_with("+00:00"),
             "block_iso should emit sub-seconds for non-zero nanos: {s}"
         );
     }
@@ -745,12 +735,22 @@ mod tests {
         let conn = open_memory().unwrap();
         repo::upsert_event(
             &conn,
-            &Event::minimal("github_commit", "late1", "2026-04-18T10:00:00+00:00", "first"),
+            &Event::minimal(
+                "github_commit",
+                "late1",
+                "2026-04-18T10:00:00+00:00",
+                "first",
+            ),
         )
         .unwrap();
         repo::upsert_event(
             &conn,
-            &Event::minimal("github_commit", "late2", "2026-04-18T10:05:00+00:00", "second"),
+            &Event::minimal(
+                "github_commit",
+                "late2",
+                "2026-04-18T10:05:00+00:00",
+                "second",
+            ),
         )
         .unwrap();
         let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
@@ -769,7 +769,12 @@ mod tests {
         // block's started_at by several minutes. Strict-key match misses.
         repo::upsert_event(
             &conn,
-            &Event::minimal("github_commit", "early1", "2026-04-18T09:55:00+00:00", "earlier"),
+            &Event::minimal(
+                "github_commit",
+                "early1",
+                "2026-04-18T09:55:00+00:00",
+                "earlier",
+            ),
         )
         .unwrap();
         let blocks = build_blocks(load_day_events(&conn, day).unwrap());

@@ -106,9 +106,11 @@ pub enum Target {
 /// The build target isn't one of the published ones. Carries the
 /// compile-time arch + os so the error message names them.
 #[derive(Debug, thiserror::Error)]
-#[error("unsupported target: {arch}-{os} — no signed release published for it. \
+#[error(
+    "unsupported target: {arch}-{os} — no signed release published for it. \
          Either build + install from source, or ask the maintainer to add \
-         this target to the release matrix.")]
+         this target to the release matrix."
+)]
 pub struct UnsupportedTarget {
     pub arch: &'static str,
     pub os: &'static str,

@@ -84,13 +84,8 @@ pub fn swap_with_rollback(staged: &Path, dest: &Path) -> Result<InstallOutcome> 
     let had_previous = dest.exists();
     if had_previous {
         let _ = std::fs::remove_file(&previous);
-        std::fs::rename(dest, &previous).with_context(|| {
-            format!(
-                "backing up {} → {}",
-                dest.display(),
-                previous.display()
-            )
-        })?;
+        std::fs::rename(dest, &previous)
+            .with_context(|| format!("backing up {} → {}", dest.display(), previous.display()))?;
     }
 
     if let Err(e) = std::fs::rename(staged, dest) {
@@ -114,7 +109,8 @@ pub fn swap_with_rollback(staged: &Path, dest: &Path) -> Result<InstallOutcome> 
                 });
             }
         }
-        return Err(e).with_context(|| format!("renaming {} → {}", staged.display(), dest.display()));
+        return Err(e)
+            .with_context(|| format!("renaming {} → {}", staged.display(), dest.display()));
     }
 
     // Post-swap smoke — if the new binary can't report its version, roll
@@ -162,22 +158,19 @@ pub fn swap_with_rollback(staged: &Path, dest: &Path) -> Result<InstallOutcome> 
                     dest.display()
                 );
                 let rm_err = std::fs::remove_file(dest).err();
-                Err(e)
-                    .with_context(|| {
-                        match rm_err {
-                            Some(rm) => format!(
-                                "post-swap smoke test failed; additionally, \
+                Err(e).with_context(|| match rm_err {
+                    Some(rm) => format!(
+                        "post-swap smoke test failed; additionally, \
                                  removing the broken binary at {} failed: {rm}",
-                                dest.display()
-                            ),
-                            None => format!(
-                                "post-swap smoke test failed; no previous \
+                        dest.display()
+                    ),
+                    None => format!(
+                        "post-swap smoke test failed; no previous \
                                  binary to restore, the broken download at \
                                  {} has been removed",
-                                dest.display()
-                            ),
-                        }
-                    })
+                        dest.display()
+                    ),
+                })
             }
         }
     }
@@ -201,7 +194,10 @@ pub fn smoke_test(binary: &Path) -> Result<()> {
             Some(status) => anyhow::bail!("{} --version exited {}", binary.display(), status),
             None if start.elapsed() > timeout => {
                 let _ = child.kill();
-                anyhow::bail!("{} --version did not return within {timeout:?}", binary.display());
+                anyhow::bail!(
+                    "{} --version did not return within {timeout:?}",
+                    binary.display()
+                );
             }
             None => std::thread::sleep(Duration::from_millis(50)),
         }
@@ -324,7 +320,10 @@ mod tests {
         );
 
         let outcome = swap_with_rollback(&staged, &dest).unwrap();
-        assert!(outcome.rolled_back, "post-swap failure must report rolled_back");
+        assert!(
+            outcome.rolled_back,
+            "post-swap failure must report rolled_back"
+        );
         assert!(outcome.previous_backup.is_some());
         // The old binary must still run at dest.
         let out = Command::new(&dest).arg("--version").output().unwrap();
