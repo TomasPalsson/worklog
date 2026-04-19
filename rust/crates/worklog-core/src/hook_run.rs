@@ -54,6 +54,25 @@ fn title_for(event: &str, prompt: Option<&str>) -> String {
     }
 }
 
+/// Max chars preserved when storing a Claude Code user prompt into
+/// `event.details`. 4 KiB is plenty for normal prompts but cheap insurance
+/// against someone pasting a 50 KB error log — that would balloon the row
+/// (and later the estimator's token bill) without adding real signal.
+pub const PROMPT_CAP_CHARS: usize = 4096;
+
+/// Slice `s` to at most `max` chars, appending a human-readable marker
+/// `"…<truncated N chars>"` when truncation happens. Truncation is on
+/// char boundaries so multi-byte UTF-8 is never corrupted.
+fn cap_prompt(s: &str, max: usize) -> String {
+    let total = s.chars().count();
+    if total <= max {
+        return s.to_owned();
+    }
+    let kept: String = s.chars().take(max).collect();
+    let dropped = total - max;
+    format!("{kept}…<truncated {dropped} chars>")
+}
+
 /// Process a single hook payload against an already-open connection. Errors
 /// are logged to stderr by the caller; this function bails on a hard db
 /// failure only so the CLI entrypoint can still return exit 0 (we never
@@ -85,6 +104,15 @@ pub fn handle(conn: &Connection, payload: &Value, now: DateTime<Utc>) -> Result<
         .map(str::to_owned);
     let raw_json = json!(payload).to_string();
 
+    // Prefer the (capped) user prompt so the estimator has real substance
+    // to summarise from. Fall back to the transcript path only when no
+    // prompt is attached (SessionStart, Stop, SessionEnd, etc.). This is
+    // the one field that survives into `build_user_message` in estimate.rs.
+    let details = match prompt.as_deref() {
+        Some(p) if !p.is_empty() => Some(cap_prompt(p, PROMPT_CAP_CHARS)),
+        _ => transcript,
+    };
+
     let ev = Event {
         id: None,
         source: "claude".into(),
@@ -93,7 +121,7 @@ pub fn handle(conn: &Connection, payload: &Value, now: DateTime<Utc>) -> Result<
         ended_at: None,
         duration_seconds: None,
         title: title_for(&event, prompt.as_deref()),
-        details: transcript,
+        details,
         repo: None,
         project_path: cwd.clone(),
         jira_issue,

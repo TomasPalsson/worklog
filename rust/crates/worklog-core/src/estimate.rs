@@ -339,6 +339,23 @@ fn collect_literal_matches(events: &[EventRow]) -> Vec<String> {
     out
 }
 
+/// Per-event details char cap in the payload sent to the estimator.
+/// Claude Code events get a generous cap because `hook_run` now stores the
+/// full user prompt there — that prompt *is* the description signal. Other
+/// sources (gcal, github, jira) pass through a `details` blob that is
+/// usually already short; keep the old bound so a chatty meeting
+/// description doesn't blow up the token bill.
+const DETAILS_CAP_CLAUDE: usize = 800;
+const DETAILS_CAP_OTHER: usize = 200;
+
+fn event_details_cap(source: &str) -> usize {
+    if source == "claude" {
+        DETAILS_CAP_CLAUDE
+    } else {
+        DETAILS_CAP_OTHER
+    }
+}
+
 fn build_user_message(
     block: &BlockRow,
     events: &[EventRow],
@@ -358,13 +375,16 @@ fn build_user_message(
             "status": c.status,
         })).collect::<Vec<_>>(),
         "literal_matches":        literals,
-        "events":                 events.iter().map(|e| json!({
-            "type":       e.source,
-            "timestamp":  e.started_at,
-            "summary":    trunc(e.title.as_deref().unwrap_or(""), 200),
-            "details":    e.details.as_deref().map(|d| trunc(d, 200)),
-            "jira_issue": e.jira_issue,
-        })).collect::<Vec<_>>(),
+        "events":                 events.iter().map(|e| {
+            let cap = event_details_cap(&e.source);
+            json!({
+                "type":       e.source,
+                "timestamp":  e.started_at,
+                "summary":    trunc(e.title.as_deref().unwrap_or(""), 200),
+                "details":    e.details.as_deref().map(|d| trunc(d, cap)),
+                "jira_issue": e.jira_issue,
+            })
+        }).collect::<Vec<_>>(),
     });
     serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".into())
 }
