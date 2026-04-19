@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/TomasPalsson/worklog/compare/v0.5.0...v0.6.0) (2026-04-19)
+
+
+### Features
+
+* events submenu + ticket-flow fix + design polish + upgrade daemon-restart (v0.6.0) ([#5](https://github.com/TomasPalsson/worklog/issues/5)) ([a53f493](https://github.com/TomasPalsson/worklog/commit/a53f493e2caec647b892857fbfeeab230344cbf7))
+
 ## [0.5.0](https://github.com/TomasPalsson/worklog/compare/v0.4.0...v0.5.0) (2026-04-19)
 
 
