@@ -86,19 +86,26 @@ impl std::fmt::Debug for ProviderChoice {
     }
 }
 
+/// Reject empty-or-whitespace values so "secret exists but blank"
+/// behaves like "secret absent". Keyring + `.env` fallback both admit
+/// empty strings and we want a single rule everywhere.
+fn read_trimmed_secret(key: &str) -> Result<Option<String>> {
+    Ok(crate::secrets::get(key)?
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty()))
+}
+
 /// Env wins over secret. Returns the trimmed lowercase choice or None
 /// when neither is set; caller defaults to `claude_subprocess`.
 fn read_provider_selector() -> Result<Option<String>> {
-    if let Ok(v) = std::env::var("WORKLOG_ESTIMATOR_PROVIDER") {
-        let v = v.trim();
-        if !v.is_empty() {
-            return Ok(Some(v.to_lowercase()));
-        }
+    if let Some(v) = std::env::var("WORKLOG_ESTIMATOR_PROVIDER")
+        .ok()
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
+    {
+        return Ok(Some(v.to_lowercase()));
     }
-    match crate::secrets::get("worklog_estimator_provider")? {
-        Some(v) if !v.trim().is_empty() => Ok(Some(v.trim().to_lowercase())),
-        _ => Ok(None),
-    }
+    Ok(read_trimmed_secret("worklog_estimator_provider")?.map(|s| s.to_lowercase()))
 }
 
 /// Build a `LiteLLMInvoker` from secrets, with actionable errors when
@@ -106,18 +113,15 @@ fn read_provider_selector() -> Result<Option<String>> {
 /// `api_key` can be empty (unauthed local proxies) and `model` falls
 /// back to [`DEFAULT_LITELLM_MODEL`].
 fn build_litellm_from_secrets() -> Result<LiteLLMInvoker> {
-    let base_url = crate::secrets::get("litellm_base_url")?
-        .filter(|v| !v.trim().is_empty())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "estimator provider `litellm` selected, but `litellm_base_url` is not set. \
-                 Run `worklog setup` or `worklog secret set litellm_base_url <URL>`."
-            )
-        })?;
+    let base_url = read_trimmed_secret("litellm_base_url")?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "estimator provider `litellm` selected, but `litellm_base_url` is not set. \
+             Run `worklog setup` or `worklog secret set litellm_base_url <URL>`."
+        )
+    })?;
     let api_key = crate::secrets::get("litellm_api_key")?.unwrap_or_default();
-    let model = crate::secrets::get("litellm_model")?
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_LITELLM_MODEL.to_owned());
+    let model =
+        read_trimmed_secret("litellm_model")?.unwrap_or_else(|| DEFAULT_LITELLM_MODEL.to_owned());
     LiteLLMInvoker::new(base_url, api_key, model)
 }
 
