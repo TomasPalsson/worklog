@@ -267,7 +267,7 @@ pub enum HookCmd {
     /// Register the stdin-JSON hook in ~/.claude/settings.json.
     Install {
         /// Override the command stored in each handler. Default: auto-detect
-        /// `worklog-hook` or `worklog hook run`.
+        /// (`worklog-rs hook-run` or `worklog hook-run`).
         #[arg(long)]
         command: Option<String>,
     },
@@ -275,6 +275,13 @@ pub enum HookCmd {
     Uninstall,
     /// Report whether worklog is registered and which events it listens on.
     Status,
+    /// Process a single Claude Code hook event from stdin. Back-compat
+    /// alias for the top-level `hook-run` — keeps existing
+    /// ~/.claude/settings.json entries like `worklog hook run` working
+    /// after the Python-era CLI shape was retired. New installs write
+    /// `hook-run` directly; this alias is the graceful migration path.
+    #[command(hide = true)]
+    Run,
 }
 
 #[derive(Subcommand, Debug)]
@@ -353,6 +360,7 @@ pub fn run_with<W: Write>(
             HookCmd::Install { command } => cmd_hook_install(command, out, cli.json),
             HookCmd::Uninstall => cmd_hook_uninstall(out, cli.json),
             HookCmd::Status => cmd_hook_status(out, cli.json),
+            HookCmd::Run => cmd_hook_run(),
         },
         Cmd::Schedule(sub) => match sub {
             ScheduleCmd::Install { interval, command } => {

@@ -6,17 +6,18 @@
 //! same file and a repeat install is a no-op.
 //!
 //! A single worklog handler is identified by substring `"worklog"` in the
-//! command. That's loose on purpose: `worklog-hook`, `worklog hook run`,
-//! and any future `worklog-rs hook run` are all recognised so we never
-//! leave duplicates around. Tests override `$CLAUDE_HOME` (and the hook
-//! command) so nothing here ever touches your real settings file.
+//! command. That's loose on purpose: `worklog-hook`, `worklog hook-run`,
+//! the legacy `worklog hook run`, and `worklog-rs` variants are all
+//! recognised so re-running install doesn't leave duplicates behind.
+//! Tests override `$CLAUDE_HOME` (and the hook command) so nothing here
+//! ever touches your real settings file.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde_json::{json, Map, Value};
 
-/// Events worklog listens for. Matches `_HOOK_EVENTS` in the Python CLI.
+/// Events worklog listens for.
 pub const EVENTS: &[&str] = &[
     "SessionStart",
     "UserPromptSubmit",
@@ -52,12 +53,16 @@ pub fn settings_path() -> Result<PathBuf> {
 /// Default command string registered in the hook handler.
 ///
 /// Preference order (most preferred first):
-/// 1. `worklog-hook` — the old standalone Rust hook binary, if any user
-///    still has it installed from Stage 0.
-/// 2. A `worklog-rs` next to the CLI — the Stage 1 binary, which now has
-///    a `hook-run` subcommand.
-/// 3. `worklog` on PATH — falls back to the Python entrypoint's
-///    `hook run` subcommand, which itself delegates to Rust when present.
+/// 1. `worklog-hook` — the old standalone Rust hook binary. Users on
+///    Stage 0-era installs may still have it; if so, use it directly.
+/// 2. `worklog-rs` — the Stage 1-4 binary name, kept for users who
+///    haven't re-run the curl installer yet.
+/// 3. `worklog` on PATH — the current pure-Rust binary.
+///
+/// All three flavours accept `hook-run` (hyphenated top-level command);
+/// `worklog hook run` (two words) is also accepted via the back-compat
+/// alias so an existing settings.json entry doesn't break after a
+/// binary swap.
 pub fn default_command() -> String {
     if let Some(p) = which::which_ok("worklog-hook") {
         return p.to_string_lossy().into_owned();
@@ -66,9 +71,9 @@ pub fn default_command() -> String {
         return format!("{} hook-run", p.to_string_lossy());
     }
     if let Some(p) = which::which_ok("worklog") {
-        return format!("{} hook run", p.to_string_lossy());
+        return format!("{} hook-run", p.to_string_lossy());
     }
-    "worklog hook run".to_owned()
+    "worklog hook-run".to_owned()
 }
 
 pub fn install(command: &str) -> Result<HookStatus> {
