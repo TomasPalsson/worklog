@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 pub mod cli;
+pub mod style;
 pub mod wizard;
 
 pub use cli::run;

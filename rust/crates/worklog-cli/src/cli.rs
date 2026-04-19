@@ -15,6 +15,8 @@ use worklog_core::{
     schedule, secrets, updater as upd, web as web_mod,
 };
 
+use crate::style;
+
 /// worklog — personal time-tracking for the developer who hates timers.
 #[derive(Parser, Debug)]
 #[command(
@@ -783,38 +785,59 @@ fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bo
     let mut reports: Vec<worklog_core::collectors::CollectReport> = Vec::new();
 
     if matches!(target, CollectTarget::All | CollectTarget::Jira) {
-        match jira_col::JiraAuth::from_secrets() {
-            Ok(auth) => reports.push(jira_col::fetch_open_tickets_with(&conn, &auth, &client)?),
-            Err(e) => writeln!(out, "· jira skipped: {e}")?,
+        let pb = style::spinner("jira …");
+        let result = match jira_col::JiraAuth::from_secrets() {
+            Ok(auth) => jira_col::fetch_open_tickets_with(&conn, &auth, &client)
+                .map_err(|e| format!("fetch: {e}")),
+            Err(e) => Err(format!("skipped: {e}")),
+        };
+        pb.finish_and_clear();
+        match result {
+            Ok(r) => reports.push(r),
+            Err(msg) if !json => style::info(out, &format!("jira {msg}"))?,
+            Err(_) => (),
         }
     }
 
     if matches!(target, CollectTarget::All | CollectTarget::Github) {
-        match gh::GitHubAuth::from_secrets() {
-            Ok(auth) => reports.push(gh::collect_with(
+        let pb = style::spinner("github …");
+        let result = match gh::GitHubAuth::from_secrets() {
+            Ok(auth) => gh::collect_with(
                 &conn,
                 &auth,
                 since,
                 today + chrono::Duration::days(1),
                 &client,
-            )?),
-            Err(e) => writeln!(out, "· github skipped: {e}")?,
+            )
+            .map_err(|e| format!("fetch: {e}")),
+            Err(e) => Err(format!("skipped: {e}")),
+        };
+        pb.finish_and_clear();
+        match result {
+            Ok(r) => reports.push(r),
+            Err(msg) if !json => style::info(out, &format!("github {msg}"))?,
+            Err(_) => (),
         }
     }
 
     if matches!(target, CollectTarget::All | CollectTarget::Gcal) {
-        match gcal_col::GcalAuth::from_paths() {
-            Ok(auth) => match gcal_col::collect_with(
+        let pb = style::spinner("gcal …");
+        let result = match gcal_col::GcalAuth::from_paths() {
+            Ok(auth) => gcal_col::collect_with(
                 &conn,
                 &auth,
                 since,
                 today + chrono::Duration::days(1),
                 &client,
-            ) {
-                Ok(report) => reports.push(report),
-                Err(e) => writeln!(out, "· gcal skipped: {e}")?,
-            },
-            Err(e) => writeln!(out, "· gcal skipped: {e}")?,
+            )
+            .map_err(|e| format!("fetch: {e}")),
+            Err(e) => Err(format!("skipped: {e}")),
+        };
+        pb.finish_and_clear();
+        match result {
+            Ok(r) => reports.push(r),
+            Err(msg) if !json => style::info(out, &format!("gcal {msg}"))?,
+            Err(_) => (),
         }
     }
 
@@ -824,16 +847,18 @@ fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bo
     }
 
     for r in &reports {
-        writeln!(
+        style::ok(
             out,
-            "✓ {:<8} tickets={}  events={}  errors={}",
-            r.source,
-            r.tickets_written,
-            r.events_written,
-            r.errors.len()
+            &format!(
+                "{:<8} tickets={}  events={}  errors={}",
+                r.source,
+                r.tickets_written,
+                r.events_written,
+                r.errors.len()
+            ),
         )?;
         for err in &r.errors {
-            writeln!(out, "  · {err}")?;
+            style::info(out, err)?;
         }
     }
     Ok(())
@@ -997,62 +1022,74 @@ fn cmd_day<W: Write>(
     // Collect for the requested day, not "now" — lets `worklog day --day
     // 2026-04-01` pull the right slice instead of dumping today's data
     // into last month's folder.
-    writeln!(out, "collecting github + jira + gcal …")?;
+    style::step(out, "collecting github + jira + gcal …")?;
     let client = http::client()?;
     let since = day_parsed;
     let until = day_parsed + chrono::Duration::days(1);
 
-    // Each step captures its own error. A Jira outage shouldn't block
-    // the rest of the daily flow — matches Python's yellow-! behaviour.
-    match jira_col::JiraAuth::from_secrets() {
+    // Each collector gets its own spinner + ok/warn line so a stall on
+    // one source doesn't look like the whole pipeline has hung. A Jira
+    // outage shouldn't block the rest of the flow.
+    run_with_spinner("jira", || match jira_col::JiraAuth::from_secrets() {
         Ok(auth) => match jira_col::fetch_open_tickets_with(&conn, &auth, &client) {
-            Ok(r) => writeln!(
-                out,
-                "  ✓ jira:   tickets={} events={}",
+            Ok(r) => StepOutcome::Ok(format!(
+                "jira:   tickets={} events={}",
                 r.tickets_written, r.events_written
-            )?,
-            Err(e) => writeln!(out, "  ! jira:   {e}")?,
+            )),
+            Err(e) => StepOutcome::Warn(format!("jira:   {e}")),
         },
-        Err(e) => writeln!(out, "  · jira skipped: {e}")?,
-    }
-    match gh::GitHubAuth::from_secrets() {
+        Err(e) => StepOutcome::Info(format!("jira skipped: {e}")),
+    })
+    .render(out)?;
+
+    run_with_spinner("github", || match gh::GitHubAuth::from_secrets() {
         Ok(auth) => match gh::collect_with(&conn, &auth, since, until, &client) {
-            Ok(r) => writeln!(out, "  ✓ github: events={}", r.events_written)?,
-            Err(e) => writeln!(out, "  ! github: {e}")?,
+            Ok(r) => StepOutcome::Ok(format!("github: events={}", r.events_written)),
+            Err(e) => StepOutcome::Warn(format!("github: {e}")),
         },
-        Err(e) => writeln!(out, "  · github skipped: {e}")?,
-    }
-    match gcal_col::GcalAuth::from_paths() {
+        Err(e) => StepOutcome::Info(format!("github skipped: {e}")),
+    })
+    .render(out)?;
+
+    run_with_spinner("gcal", || match gcal_col::GcalAuth::from_paths() {
         Ok(auth) => match gcal_col::collect_with(&conn, &auth, since, until, &client) {
-            Ok(r) => writeln!(out, "  ✓ gcal:   events={}", r.events_written)?,
-            Err(e) => writeln!(out, "  ! gcal:   {e}")?,
+            Ok(r) => StepOutcome::Ok(format!("gcal:   events={}", r.events_written)),
+            Err(e) => StepOutcome::Warn(format!("gcal:   {e}")),
         },
-        Err(e) => writeln!(out, "  · gcal skipped: {e}")?,
-    }
+        Err(e) => StepOutcome::Info(format!("gcal skipped: {e}")),
+    })
+    .render(out)?;
 
     // --- infer ----------------------------------------------------------
-    writeln!(out, "\ninferring blocks …")?;
+    style::step(out, "inferring blocks …")?;
     let events = infer::load_day_events(&conn, day_parsed)?;
     let blocks = infer::build_blocks(events);
     infer::persist_blocks(&conn, day_parsed, &blocks)?;
     let total_min: i64 = blocks.iter().map(|b| b.duration_seconds).sum::<i64>() / 60;
-    writeln!(
+    style::ok(
         out,
-        "  ✓ {} block{} · {} min total",
-        blocks.len(),
-        if blocks.len() == 1 { "" } else { "s" },
-        total_min
+        &format!(
+            "{} block{} · {} min total",
+            blocks.len(),
+            if blocks.len() == 1 { "" } else { "s" },
+            total_min
+        ),
     )?;
 
     // --- estimate -------------------------------------------------------
-    writeln!(out, "\nestimating (claude) …")?;
-    match estimate::estimate_day(&conn, day_parsed, model) {
-        Ok(stats) => writeln!(
+    style::step(out, "estimating (claude) …")?;
+    let spinner = style::spinner("running claude -p over unestimated blocks");
+    let est_result = estimate::estimate_day(&conn, day_parsed, model);
+    spinner.finish_and_clear();
+    match est_result {
+        Ok(stats) => style::ok(
             out,
-            "  ✓ estimated={} skipped={} failed={}",
-            stats.estimated, stats.skipped, stats.failed
+            &format!(
+                "estimated={} skipped={} failed={}",
+                stats.estimated, stats.skipped, stats.failed
+            ),
         )?,
-        Err(e) => writeln!(out, "  ! estimate skipped: {e}")?,
+        Err(e) => style::warn(out, &format!("estimate skipped: {e}"))?,
     }
 
     // --- serve ----------------------------------------------------------
@@ -1071,9 +1108,42 @@ fn cmd_day<W: Write>(
         }
         return Ok(());
     }
-    writeln!(out, "\nbringing up review UI at http://localhost:3333")?;
-    writeln!(out, "  ctrl+c to bring it down, or `worklog web down`\n")?;
+    style::step(out, "bringing up review UI at http://localhost:3333")?;
+    style::info(out, "ctrl+c to bring it down, or `worklog web down`")?;
+    writeln!(out)?;
     cmd_web_up(3333, false, out, false)
+}
+
+/// Outcome of a single `cmd_day` collector step. Owns the message so
+/// the spinner can finish cleanly before we write the styled line.
+enum StepOutcome {
+    Ok(String),
+    Warn(String),
+    Info(String),
+}
+
+impl StepOutcome {
+    fn render<W: Write>(self, out: &mut W) -> Result<()> {
+        match self {
+            StepOutcome::Ok(msg) => style::ok(out, &msg)?,
+            StepOutcome::Warn(msg) => style::warn(out, &msg)?,
+            StepOutcome::Info(msg) => style::info(out, &msg)?,
+        }
+        Ok(())
+    }
+}
+
+/// Run a closure with a spinner labelled `label`; clear the spinner
+/// before the outcome line prints so the spinner frame doesn't ghost
+/// under the ✓ / ! / · marker.
+fn run_with_spinner<F>(label: &str, f: F) -> StepOutcome
+where
+    F: FnOnce() -> StepOutcome,
+{
+    let pb = style::spinner(&format!("{label} …"));
+    let out = f();
+    pb.finish_and_clear();
+    out
 }
 
 fn cmd_hook_run() -> Result<()> {
