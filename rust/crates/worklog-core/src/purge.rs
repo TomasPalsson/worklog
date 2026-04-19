@@ -37,11 +37,124 @@ pub struct PurgeReport {
     pub dry_run: bool,
 }
 
+/// SQL fragment matching blocks that are old AND safe to delete:
+/// synced to Tempo OR explicitly marked as `gap`, excluding manual
+/// edits. Kept as a named const so the delete + counting queries use
+/// identical logic and can't drift.
+const PURGEABLE_BLOCKS_WHERE: &str = "
+    day < ?1
+    AND (estimated_by IS NULL OR estimated_by != 'manual')
+    AND (
+        (tempo_worklog_id IS NOT NULL AND tempo_worklog_id != '')
+        OR estimated_by = 'gap'
+    )
+";
+
+/// Blocks we decline to delete because the user hasn't synced (or
+/// reviewed) them yet. Counted for the report so the user can see why
+/// the rule preserved something.
+const KEPT_UNSYNCED_WHERE: &str = "
+    day < ?1
+    AND (estimated_by IS NULL OR estimated_by != 'manual')
+    AND (tempo_worklog_id IS NULL OR tempo_worklog_id = '')
+    AND (estimated_by IS NULL OR estimated_by != 'gap')
+";
+
+const KEPT_MANUAL_WHERE: &str = "
+    day < ?1 AND estimated_by = 'manual'
+";
+
 /// Purge everything older than `retention_days` that's safe to drop.
 /// Returns a report regardless of `dry_run` — callers render it for the
 /// user.
-pub fn purge(_conn: &Connection, _retention_days: i64, _dry_run: bool) -> Result<PurgeReport> {
-    anyhow::bail!("purge::purge not yet implemented")
+pub fn purge(conn: &Connection, retention_days: i64, dry_run: bool) -> Result<PurgeReport> {
+    let cutoff = chrono::Utc::now().date_naive() - chrono::Duration::days(retention_days);
+    let cutoff_iso = cutoff.to_string();
+
+    // Count informational "kept" rows up front — these stay whether or
+    // not we're in dry-run. Purely for the user-facing report.
+    let blocks_kept_unsynced: i64 = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM blocks WHERE {KEPT_UNSYNCED_WHERE}"),
+            params![cutoff_iso],
+            |r| r.get(0),
+        )
+        .context("counting unsynced blocks past cutoff")?;
+    let blocks_kept_manual: i64 = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM blocks WHERE {KEPT_MANUAL_WHERE}"),
+            params![cutoff_iso],
+            |r| r.get(0),
+        )
+        .context("counting manual-edited blocks past cutoff")?;
+
+    // Count + delete purgeable blocks in one shot under a tx so the
+    // cascade on block_events lands atomically.
+    let blocks_deleted: i64 = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM blocks WHERE {PURGEABLE_BLOCKS_WHERE}"),
+            params![cutoff_iso],
+            |r| r.get(0),
+        )
+        .context("counting purgeable blocks")?;
+
+    // An orphan event is one no surviving block references AND that itself
+    // is older than the cutoff. `substr(started_at, 1, 10)` lifts the date
+    // out of the ISO-8601 TEXT column — fast enough at our scale and
+    // matches how `load_day_events` already slices.
+    let events_deleted: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events
+             WHERE substr(started_at, 1, 10) < ?1
+               AND id NOT IN (
+                   SELECT event_id FROM block_events WHERE block_id IN (
+                       SELECT id FROM blocks WHERE NOT (day < ?1 AND (
+                           (estimated_by IS NULL OR estimated_by != 'manual')
+                           AND (
+                               (tempo_worklog_id IS NOT NULL AND tempo_worklog_id != '')
+                               OR estimated_by = 'gap'
+                           )
+                       ))
+                   )
+               )",
+            params![cutoff_iso],
+            |r| r.get(0),
+        )
+        .context("counting orphan events past cutoff")?;
+
+    let report = PurgeReport {
+        cutoff_date: cutoff_iso.clone(),
+        blocks_deleted,
+        events_deleted,
+        blocks_kept_unsynced,
+        blocks_kept_manual,
+        dry_run,
+    };
+
+    if dry_run {
+        return Ok(report);
+    }
+
+    // Real run — do the deletes in a single transaction so a crash
+    // mid-purge doesn't leave block_events dangling (the FK cascade
+    // already handles that, but txn keeps counts consistent with what
+    // we reported).
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        &format!("DELETE FROM blocks WHERE {PURGEABLE_BLOCKS_WHERE}"),
+        params![cutoff_iso],
+    )
+    .context("deleting purgeable blocks")?;
+    tx.execute(
+        "DELETE FROM events
+         WHERE substr(started_at, 1, 10) < ?1
+           AND id NOT IN (SELECT event_id FROM block_events)",
+        params![cutoff_iso],
+    )
+    .context("deleting orphan events")?;
+    tx.commit()?;
+
+    Ok(report)
 }
 
 #[cfg(test)]

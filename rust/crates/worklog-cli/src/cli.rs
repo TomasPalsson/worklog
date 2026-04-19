@@ -284,6 +284,17 @@ pub enum DbCmd {
     Info,
     /// Print the resolved db path.
     Path,
+    /// Drop events + blocks older than N days that have been synced to
+    /// Tempo (or explicitly marked as 'gap'). Preserves unsynced work and
+    /// manual edits regardless of age.
+    Purge {
+        /// Retention window in days. Anything older is fair game.
+        #[arg(long, default_value_t = worklog_core::purge::DEFAULT_RETENTION_DAYS)]
+        days: i64,
+        /// Report what would be deleted without touching the database.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -405,6 +416,7 @@ pub fn run_with<W: Write>(
             DbCmd::Migrate => cmd_db_migrate(out, cli.json),
             DbCmd::Info => cmd_db_info(out, cli.json),
             DbCmd::Path => cmd_db_path(out),
+            DbCmd::Purge { days, dry_run } => cmd_db_purge(days, dry_run, out, cli.json),
         },
         Cmd::Secret(sub) => match sub {
             SecretCmd::Set { key, value } => cmd_secret_set(&key, value, out),
@@ -599,6 +611,43 @@ fn cmd_db_info<W: Write>(out: &mut W, json: bool) -> Result<()> {
             out,
             "schema v{}  events={}  blocks={}  sessions={}  tickets={}",
             s.schema_version, s.events, s.blocks, s.sessions, s.jira_tickets
+        )?;
+    }
+    Ok(())
+}
+
+fn cmd_db_purge<W: Write>(days: i64, dry_run: bool, out: &mut W, json: bool) -> Result<()> {
+    let paths = Paths::resolve()?;
+    if !paths.db_exists() {
+        anyhow::bail!("db not initialized. Run `worklog db migrate` first.");
+    }
+    let conn = db::open(&paths.db)?;
+    let report = worklog_core::purge::purge(&conn, days, dry_run)?;
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
+        return Ok(());
+    }
+    let prefix = if dry_run { "(dry-run) " } else { "" };
+    if report.blocks_deleted + report.events_deleted == 0 {
+        style::info(
+            out,
+            &format!(
+                "{prefix}nothing to purge before {} (kept: {} unsynced, {} manual)",
+                report.cutoff_date, report.blocks_kept_unsynced, report.blocks_kept_manual
+            ),
+        )?;
+    } else {
+        let verb = if dry_run { "would delete" } else { "deleted" };
+        style::ok(
+            out,
+            &format!(
+                "{prefix}{verb} {} block(s) + {} event(s) before {} (kept: {} unsynced, {} manual)",
+                report.blocks_deleted,
+                report.events_deleted,
+                report.cutoff_date,
+                report.blocks_kept_unsynced,
+                report.blocks_kept_manual
+            ),
         )?;
     }
     Ok(())
