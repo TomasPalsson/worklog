@@ -86,6 +86,11 @@ pub struct UpdateReport {
     pub dry_run: bool,
     pub rolled_back: bool,
     pub install: Option<install::InstallOutcome>,
+    /// Whether the post-swap restart of the supervised daemon was
+    /// triggered. `None` for dry-runs or rolled-back installs — we only
+    /// touch the running supervisor when the new binary is actually in
+    /// place. Swallowed errors here do NOT fail the whole update.
+    pub daemon_restart: Option<crate::daemon_service::RestartOutcome>,
 }
 
 /// Run the whole update flow: fetch manifest → verify → pick asset →
@@ -135,6 +140,7 @@ pub fn run_update(req: &UpdateRequest) -> Result<UpdateReport> {
             dry_run: req.dry_run,
             rolled_back: false,
             install: None,
+            daemon_restart: None,
         });
     }
 
@@ -207,11 +213,36 @@ pub fn run_update(req: &UpdateRequest) -> Result<UpdateReport> {
             dry_run: true,
             rolled_back: false,
             install: None,
+            daemon_restart: None,
         });
     }
 
     let outcome = install::swap_with_rollback(&staged, &req.current_binary)?;
     let rolled_back = outcome.rolled_back;
+
+    // If the swap landed cleanly, cycle the supervised daemon so the new
+    // binary is the one being supervised. Best-effort: a failure here
+    // does NOT fail the upgrade — the binary is already in place, the
+    // user just has a stale daemon process that they can cycle by hand.
+    // Rolled-back installs skip this entirely since the old binary is
+    // what's running.
+    let daemon_restart = if rolled_back {
+        None
+    } else {
+        match crate::daemon_service::restart_if_running("127.0.0.1:9323") {
+            Ok(o) => Some(o),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "post-upgrade daemon restart failed — binary is swapped, \
+                     but the old daemon process is still running. Cycle it \
+                     manually with `worklog daemon uninstall && worklog daemon install`."
+                );
+                None
+            }
+        }
+    };
+
     Ok(UpdateReport {
         from: req.current_version.clone(),
         to: manifest.version,
@@ -220,6 +251,7 @@ pub fn run_update(req: &UpdateRequest) -> Result<UpdateReport> {
         dry_run: false,
         rolled_back,
         install: Some(outcome),
+        daemon_restart,
     })
 }
 

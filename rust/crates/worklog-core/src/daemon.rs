@@ -372,7 +372,10 @@ fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
     })?;
     for row in rows {
         let (bid, source, n) = row?;
-        sources_by_block.entry(bid).or_default().push(SourceCount { source, n });
+        sources_by_block
+            .entry(bid)
+            .or_default()
+            .push(SourceCount { source, n });
     }
 
     let enriched = blocks
