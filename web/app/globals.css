@@ -906,3 +906,182 @@ button {
   background: var(--bg-sunk);
   color: var(--fg);
 }
+
+/* ─────────────────── events disclosure (v0.6) ───────────────────
+   Per-block drill-down. Collapsed button sits in .block-meta beside
+   the source badges; clicking expands a vertical list inline under
+   the card body. Keep the aesthetic in line with the source badges
+   (small, dim, monospace-ish for counts). */
+
+.events-disclosure-wrap {
+  display: contents; /* button stays inline in .block-meta, list breaks out below */
+}
+
+.events-disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px 3px 4px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  transition: background 120ms cubic-bezier(0.25, 1, 0.5, 1),
+              border-color 120ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.events-disclosure:hover {
+  background: var(--bg-sunk);
+  color: var(--fg);
+}
+
+.events-disclosure.empty {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.events-disclosure[aria-expanded="true"] {
+  background: var(--bg-sunk);
+  color: var(--fg);
+  border-color: var(--border);
+}
+
+.events-disclosure .disclosure-chev {
+  width: 12px;
+  height: 12px;
+  transition: transform 150ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.events-disclosure .disclosure-chev.open {
+  transform: rotate(90deg);
+}
+
+.events-disclosure[aria-busy="true"] {
+  opacity: 0.7;
+}
+
+.events-list {
+  grid-column: 1 / -1; /* break out of the .block grid's middle column */
+  margin-top: 14px;
+  padding: 12px 14px;
+  background: var(--bg-sunk);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  list-style: none;
+}
+
+.events-loading {
+  font-size: 13px;
+  color: var(--fg-muted);
+  font-style: italic;
+  padding: 8px 0;
+}
+
+.event-row {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 6px 4px;
+  border-radius: var(--radius-sm);
+}
+
+.event-row:focus-within {
+  background: var(--bg-raised);
+}
+
+.event-source {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+
+.event-row[data-source="claude"] .event-source {
+  background: var(--violet-bg);
+  color: var(--violet);
+}
+.event-row[data-source="github"] .event-source {
+  background: var(--slate-bg);
+  color: var(--slate);
+}
+.event-row[data-source="gcal"] .event-source {
+  background: var(--sage-bg);
+  color: var(--sage-ink);
+}
+.event-row[data-source="jira"] .event-source {
+  background: var(--amber-bg);
+  color: var(--amber-ink);
+}
+
+.event-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.event-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.event-title {
+  font-size: 14px;
+  color: var(--fg);
+  font-weight: 500;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.event-time {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+  flex-shrink: 0;
+  letter-spacing: 0.01em;
+}
+
+.event-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.preview-text {
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.preview-text.open {
+  color: var(--fg);
+}
+
+.event-expand {
+  font-size: 12px;
+  color: var(--fg-muted);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+  padding: 2px 0;
+  border-radius: var(--radius-sm);
+}
+
+.event-expand:hover {
+  color: var(--fg);
+}

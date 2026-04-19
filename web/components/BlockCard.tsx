@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState, useTransition } from "react";
-import { Check, Clock, Trash2 } from "lucide-react";
+import { Check, Trash2 } from "lucide-react";
 import type { Block, JiraTicket } from "@/lib/types";
 import { formatDuration, formatRange } from "@/lib/format";
 import { deleteBlock, setDescription, setDuration } from "@/app/actions";
@@ -9,6 +9,7 @@ import { toast } from "@/lib/toast";
 import { SourceBadges } from "./SourceBadges";
 import { EstBadge } from "./EstBadge";
 import { TicketCombobox } from "./TicketCombobox";
+import { EventList } from "./EventList";
 
 interface Props {
   block: Block;
@@ -161,16 +162,7 @@ export function BlockCard({ block, tickets, day }: Props) {
         <div className="block-meta">
           <SourceBadges sources={block.sources} />
           <EstBadge kind={block.estimated_by} />
-          {block.event_count > 0 && (
-            <span title="total events in this block" style={{ color: "var(--fg-subtle)" }}>
-              <Clock
-                width={11}
-                height={11}
-                style={{ display: "inline", verticalAlign: "-1px", marginRight: 3 }}
-              />
-              {block.event_count} event{block.event_count === 1 ? "" : "s"}
-            </span>
-          )}
+          <EventList blockId={block.id} eventCount={block.event_count} />
         </div>
       </div>
 
