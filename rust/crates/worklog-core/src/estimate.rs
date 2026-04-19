@@ -1111,4 +1111,132 @@ mod tests {
         inv.invoke("sys", "user", &schema, "openai/gpt-4o").unwrap();
         hit.assert();
     }
+
+    // ───────────────── Provider factory (v0.7 — Phase 3) ─────────────────
+    //
+    // resolve_provider() reads env + secrets and returns a ProviderChoice
+    // that estimate_day dispatches on. These tests serialize on their own
+    // mutex because they mutate std::env which is process-global.
+
+    use std::sync::Mutex;
+    static PROVIDER_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn clear_provider_state() {
+        // env
+        std::env::remove_var("WORKLOG_ESTIMATOR_PROVIDER");
+        std::env::remove_var("WORKLOG_LITELLM_BASE_URL");
+        std::env::remove_var("WORKLOG_LITELLM_API_KEY");
+        std::env::remove_var("WORKLOG_LITELLM_MODEL");
+        // secrets (test backend is a process-global HashMap)
+        let _ = crate::secrets::delete("worklog_estimator_provider");
+        let _ = crate::secrets::delete("litellm_base_url");
+        let _ = crate::secrets::delete("litellm_api_key");
+        let _ = crate::secrets::delete("litellm_model");
+    }
+
+    /// B1: nothing configured → fall back to the existing subprocess
+    /// behaviour. This is the back-compat contract — existing installs
+    /// MUST see no behaviour change.
+    #[test]
+    fn resolve_provider_defaults_to_claude_subprocess_when_nothing_set() {
+        let _g = PROVIDER_ENV_LOCK.lock().unwrap();
+        clear_provider_state();
+        match resolve_provider().unwrap() {
+            ProviderChoice::ClaudeSubprocess => {}
+            other => panic!("expected ClaudeSubprocess, got {other:?}"),
+        }
+    }
+
+    /// B2: env var picks LiteLLM and the minimum required secrets are
+    /// present → factory returns a configured LiteLLMInvoker.
+    #[test]
+    fn resolve_provider_picks_litellm_when_env_says_so_and_url_present() {
+        let _g = PROVIDER_ENV_LOCK.lock().unwrap();
+        clear_provider_state();
+        std::env::set_var("WORKLOG_ESTIMATOR_PROVIDER", "litellm");
+        crate::secrets::set("litellm_base_url", "http://localhost:4000").unwrap();
+        crate::secrets::set("litellm_model", "anthropic/claude-haiku-4-5").unwrap();
+
+        let choice = resolve_provider().unwrap();
+        match &choice {
+            ProviderChoice::LiteLLM(inv) => {
+                assert!(inv.endpoint().starts_with("http://localhost:4000"));
+                assert!(inv.endpoint().ends_with("/v1/chat/completions"));
+            }
+            other => panic!("expected LiteLLM, got {other:?}"),
+        }
+        clear_provider_state();
+    }
+
+    /// B3: user selected LiteLLM but forgot to configure the URL. The
+    /// error must name the missing key AND point at `worklog setup` so
+    /// the recovery path is obvious.
+    #[test]
+    fn resolve_provider_errors_when_litellm_selected_but_url_missing() {
+        let _g = PROVIDER_ENV_LOCK.lock().unwrap();
+        clear_provider_state();
+        std::env::set_var("WORKLOG_ESTIMATOR_PROVIDER", "litellm");
+        // no base_url secret
+        let err = resolve_provider().unwrap_err().to_string();
+        assert!(
+            err.contains("litellm_base_url"),
+            "err should name the missing key: {err}"
+        );
+        assert!(
+            err.contains("worklog setup") || err.contains("worklog secret set"),
+            "err should point at the recovery command: {err}"
+        );
+        clear_provider_state();
+    }
+
+    /// Env is process-wide and ephemeral; the persistent choice also
+    /// lives in the keychain under `worklog_estimator_provider`. Env
+    /// wins when both are set, but when env is unset the secret is
+    /// consulted.
+    #[test]
+    fn resolve_provider_reads_secret_when_env_unset() {
+        let _g = PROVIDER_ENV_LOCK.lock().unwrap();
+        clear_provider_state();
+        crate::secrets::set("worklog_estimator_provider", "litellm").unwrap();
+        crate::secrets::set("litellm_base_url", "http://localhost:4000").unwrap();
+        let choice = resolve_provider().unwrap();
+        assert!(matches!(choice, ProviderChoice::LiteLLM(_)));
+        clear_provider_state();
+    }
+
+    /// If the user didn't set `litellm_model` we fall back to the
+    /// first-class default (`anthropic/claude-haiku-4-5`) — the same
+    /// constant the wizard uses.
+    #[test]
+    fn resolve_provider_uses_default_litellm_model_when_model_secret_missing() {
+        let _g = PROVIDER_ENV_LOCK.lock().unwrap();
+        clear_provider_state();
+        std::env::set_var("WORKLOG_ESTIMATOR_PROVIDER", "litellm");
+        crate::secrets::set("litellm_base_url", "http://localhost:4000").unwrap();
+        // no litellm_model
+
+        match resolve_provider().unwrap() {
+            ProviderChoice::LiteLLM(inv) => {
+                assert_eq!(inv.resolve_model(""), DEFAULT_LITELLM_MODEL);
+            }
+            _ => panic!("expected LiteLLM"),
+        }
+        clear_provider_state();
+    }
+
+    /// An unrecognised provider string must error, not silently fall
+    /// back to one of the two valid choices — typos in a config file
+    /// shouldn't quietly run the wrong estimator.
+    #[test]
+    fn resolve_provider_errors_on_unknown_provider_string() {
+        let _g = PROVIDER_ENV_LOCK.lock().unwrap();
+        clear_provider_state();
+        std::env::set_var("WORKLOG_ESTIMATOR_PROVIDER", "openai_direct");
+        let err = resolve_provider().unwrap_err().to_string();
+        assert!(
+            err.contains("openai_direct") || err.contains("unknown"),
+            "err should name the bad value: {err}"
+        );
+        clear_provider_state();
+    }
 }
