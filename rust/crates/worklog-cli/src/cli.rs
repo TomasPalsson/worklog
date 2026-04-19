@@ -148,7 +148,20 @@ pub enum Cmd {
         sub: WebCmd,
     },
 
+    /// Bring up the review UI. Convenience alias for `web up` — kept so
+    /// muscle memory from the Python era (`worklog serve`) keeps working.
+    Serve {
+        /// Host port the container binds. Default: 3333.
+        #[arg(long, default_value_t = 3333)]
+        port: u16,
+        /// Skip the daemon-reachability check (useful when the daemon
+        /// is managed out-of-band, e.g. a systemd unit on linux).
+        #[arg(long)]
+        no_daemon: bool,
+    },
+
     /// Self-update: verify + download + atomically swap the binary.
+    #[command(alias = "upgrade")]
     SelfUpdate {
         /// Override the manifest URL. Defaults to the worklog release
         /// bucket on GitHub.
@@ -332,7 +345,39 @@ pub fn run_with<W: Write>(
     out: &mut W,
     _err: &mut dyn Write,
 ) -> Result<()> {
-    let cli = Cli::try_parse_from(argv)?;
+    // Hand-roll clap error handling so --help / --version / `help` exit
+    // with code 0 instead of bubbling up as anyhow errors. Clap's default
+    // `try_parse_from` treats these as Err(ErrorKind::DisplayHelp), which
+    // is semantically fine for library callers but lands as exit-1 in
+    // main() — users see "Error: worklog — ..." on stderr with a clean
+    // exit code, indistinguishable from actual parse failures. This is
+    // the standard fix: print on the right stream, exit process with 0.
+    let cli = match Cli::try_parse_from(argv) {
+        Ok(c) => c,
+        Err(e) => {
+            use clap::error::ErrorKind;
+            match e.kind() {
+                // Help / version / "which sub?" are all informational.
+                // Clap's default routes MissingSubcommand (and similar)
+                // to stderr as an error — we route everything here to
+                // stdout and exit 0 so `worklog web | cat` shows the
+                // subcommand list like every other CLI. That deviates
+                // slightly from the POSIX "exit 2 on misuse" convention,
+                // but matches user expectation for an exploratory CLI
+                // that doubles as its own documentation.
+                ErrorKind::DisplayHelp
+                | ErrorKind::DisplayVersion
+                | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+                | ErrorKind::MissingSubcommand => {
+                    // `e` renders the formatted text (with ANSI colors
+                    // if attached to a tty); println forces stdout.
+                    println!("{e}");
+                    std::process::exit(0);
+                }
+                _ => return Err(e.into()),
+            }
+        }
+    };
     init_tracing();
     if let Some(h) = &cli.home {
         std::env::set_var("WORKLOG_HOME", h);
@@ -387,6 +432,10 @@ pub fn run_with<W: Write>(
             WebCmd::Logs { tail } => cmd_web_logs(tail),
             WebCmd::Build { pull } => cmd_web_build(pull, out, cli.json),
         },
+        // `serve` is literally `web up` with the same args — the alias
+        // lives at the top-level so muscle memory from the Python era
+        // (`worklog serve`) keeps working.
+        Cmd::Serve { port, no_daemon } => cmd_web_up(port, no_daemon, out, cli.json),
         Cmd::SelfUpdate {
             manifest_url,
             check,
