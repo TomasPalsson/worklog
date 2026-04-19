@@ -1093,9 +1093,8 @@ mod tests {
             then.status(200).json_body(openai_envelope(content));
         });
 
-        let inv =
-            LiteLLMInvoker::new(server.base_url(), "test_key", "anthropic/claude-haiku-4-5")
-                .unwrap();
+        let inv = LiteLLMInvoker::new(server.base_url(), "test_key", "anthropic/claude-haiku-4-5")
+            .unwrap();
         let schema = response_schema();
         let got = inv.invoke("sys", "user", &schema, "").unwrap();
 
@@ -1123,7 +1122,10 @@ mod tests {
             .invoke("sys", "user", &schema, "")
             .expect_err("401 must bubble as an Err");
         let msg = format!("{err:#}");
-        assert!(msg.contains("401"), "error should name the HTTP status: {msg}");
+        assert!(
+            msg.contains("401"),
+            "error should name the HTTP status: {msg}"
+        );
     }
 
     /// B6: providers sometimes wrap JSON in prose ("Here you go: {...}").
@@ -1134,7 +1136,8 @@ mod tests {
     fn litellm_invoker_handles_prose_wrapped_json_content() {
         use httpmock::prelude::*;
         let server = MockServer::start();
-        let prose = r#"Here you go: {"jira_issue":"PROJ-2","minutes":15,"description":"Fix flaky test"}"#;
+        let prose =
+            r#"Here you go: {"jira_issue":"PROJ-2","minutes":15,"description":"Fix flaky test"}"#;
         server.mock(|when, then| {
             when.method(POST).path("/v1/chat/completions");
             then.status(200).json_body(openai_envelope(prose));

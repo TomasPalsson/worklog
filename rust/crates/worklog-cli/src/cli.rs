@@ -704,7 +704,10 @@ fn cmd_doctor<W: Write>(out: &mut W, json: bool) -> Result<()> {
     }
     let est_note = match &estimator.reachable {
         Some(true) => "reachable".to_string(),
-        Some(false) => estimator.reason.clone().unwrap_or_else(|| "unreachable".to_string()),
+        Some(false) => estimator
+            .reason
+            .clone()
+            .unwrap_or_else(|| "unreachable".to_string()),
         None if estimator.provider == "unconfigured" => estimator
             .reason
             .clone()
@@ -1301,9 +1304,7 @@ fn cmd_day<W: Write>(
         _ => "claude -p",
     };
     style::step(out, &format!("estimating ({provider_label}) …"))?;
-    let spinner = style::spinner(&format!(
-        "running {provider_label} over unestimated blocks"
-    ));
+    let spinner = style::spinner(&format!("running {provider_label} over unestimated blocks"));
     let est_result = estimate::estimate_day(&conn, day_parsed, model);
     spinner.finish_and_clear();
     match est_result {
