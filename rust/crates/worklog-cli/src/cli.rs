@@ -17,6 +17,36 @@ use worklog_core::{
 
 use crate::style;
 
+/// Clap styles applied to every help surface. Matches the `console`
+/// colour palette used by `style.rs` so help + status output feel like
+/// one CLI. `AnsiColor::Cyan` is reused for section headers, and valid
+/// values get a matching green to keep the palette tight.
+fn clap_styles() -> clap::builder::Styles {
+    use clap::builder::styling::{AnsiColor, Effects};
+    use clap::builder::Styles;
+    Styles::styled()
+        .header(AnsiColor::Cyan.on_default() | Effects::BOLD)
+        .usage(AnsiColor::Cyan.on_default() | Effects::BOLD)
+        .literal(AnsiColor::Green.on_default())
+        .placeholder(AnsiColor::Yellow.on_default())
+        .error(AnsiColor::Red.on_default() | Effects::BOLD)
+        .valid(AnsiColor::Green.on_default())
+        .invalid(AnsiColor::Red.on_default() | Effects::BOLD)
+}
+
+/// Static overview rendered at the top of `worklog --help`. Groups the
+/// subcommands into the same logical sections the README and CLAUDE.md
+/// reference. Kept as a `&str` constant so clap inlines it — a fn call
+/// would need lifetime gymnastics in the derive attribute.
+const HELP_OVERVIEW: &str = "\x1b[1;36m\
+commands by area\x1b[0m
+  setup & diagnostics  \x1b[32msetup  doctor  db  secret  version\x1b[0m
+  data collection      \x1b[32mcollect  infer  estimate  hook\x1b[0m
+  review & sync        \x1b[32mday  sync  web  serve\x1b[0m
+  daemon & schedule    \x1b[32mdaemon  schedule\x1b[0m
+  release ops          \x1b[32mself-update  upgrade  dev\x1b[0m
+";
+
 /// worklog — personal time-tracking for the developer who hates timers.
 #[derive(Parser, Debug)]
 #[command(
@@ -24,6 +54,8 @@ use crate::style;
     version,
     about = "Personal worklog — Rust edition.",
     long_about = None,
+    styles = clap_styles(),
+    before_help = HELP_OVERVIEW,
 )]
 pub struct Cli {
     /// Override the worklog home directory (default: $WORKLOG_HOME or ~/.worklog).
@@ -568,37 +600,50 @@ fn cmd_doctor<W: Write>(out: &mut W, json: bool) -> Result<()> {
     }
 
     writeln!(out, "worklog {} — doctor", env!("CARGO_PKG_VERSION"))?;
-    writeln!(
-        out,
-        "  home   {}",
-        worklog_core::paths::short_display(&paths.root)
-    )?;
-    writeln!(
-        out,
-        "  db     {} ({})",
+
+    let mut env_table = style::table();
+    env_table.set_header(vec!["check", "value", "note"]);
+    env_table.add_row(vec![
+        "home".to_owned(),
+        worklog_core::paths::short_display(&paths.root),
+        String::new(),
+    ]);
+    env_table.add_row(vec![
+        "db".to_owned(),
         worklog_core::paths::short_display(&paths.db),
         if paths.db_exists() {
-            "present"
+            "present".into()
         } else {
-            "not created yet — run `worklog db migrate`"
-        }
-    )?;
+            "missing — run `worklog db migrate`".into()
+        },
+    ]);
     if let Some(s) = &db_summary {
-        writeln!(
-            out,
-            "         schema v{}, {} events, {} blocks, {} sessions, {} tickets",
-            s.schema_version, s.events, s.blocks, s.sessions, s.jira_tickets
-        )?;
+        env_table.add_row(vec![
+            "schema".to_owned(),
+            format!("v{}", s.schema_version),
+            format!(
+                "{} events, {} blocks, {} sessions, {} tickets",
+                s.events, s.blocks, s.sessions, s.jira_tickets
+            ),
+        ]);
     }
-    writeln!(out, "  secrets")?;
+    writeln!(out, "{env_table}")?;
+
+    let mut sec_table = style::table();
+    sec_table.set_header(vec!["secret", "status"]);
     for s in &secrets {
-        writeln!(
-            out,
-            "    {:<22} {}",
-            s.key,
-            if s.present { "set" } else { "—" }
-        )?;
+        sec_table.add_row(vec![
+            s.key.to_string(),
+            if s.present {
+                "set".into()
+            } else {
+                "—".into()
+            },
+        ]);
     }
+    writeln!(out, "secrets")?;
+    writeln!(out, "{sec_table}")?;
+
     Ok(())
 }
 

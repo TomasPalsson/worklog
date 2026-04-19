@@ -16,8 +16,11 @@
 //! * `step` — `▶` bold: section header inside multi-step flows
 //!   (e.g. "collecting …")
 
+use comfy_table::modifiers::UTF8_ROUND_CORNERS;
+use comfy_table::presets::UTF8_FULL;
+use comfy_table::{ContentArrangement, Table};
 use console::style;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 
 /// Render `✓ <msg>` in green. Caller passes the already-formatted
 /// message body. Newline is appended.
@@ -49,6 +52,44 @@ pub fn fail<W: Write>(out: &mut W, msg: &str) -> std::io::Result<()> {
 pub fn step<W: Write>(out: &mut W, msg: &str) -> std::io::Result<()> {
     writeln!(out)?;
     writeln!(out, "{} {msg}", style("▶").cyan().bold())
+}
+
+/// Short ASCII banner printed on bare `worklog` invocation so the root
+/// help page reads as a product, not a man page dump. Keep it under 6
+/// lines and use stable Unicode box characters so terminal-width tests
+/// don't break when fonts change.
+pub fn banner() -> String {
+    // Hue-matched cyan matches the step marker so the banner + section
+    // dividers visually agree.
+    let lines = [
+        "  ╭──────────────────────────────────╮",
+        "  │  worklog — personal time tracker │",
+        "  │  collect · review · sync · ship  │",
+        "  ╰──────────────────────────────────╯",
+    ];
+    let styled: Vec<String> = lines
+        .iter()
+        .map(|l| style(*l).cyan().bold().to_string())
+        .collect();
+    styled.join("\n")
+}
+
+/// Comfy-table preconfigured with the aesthetic the rest of the CLI uses:
+/// full UTF-8 box drawing + round corners + dynamic-arrangement so long
+/// cells don't shove the table off-screen. Callers add header/rows.
+pub fn table() -> Table {
+    let mut t = Table::new();
+    t.load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_content_arrangement(ContentArrangement::Dynamic);
+    t
+}
+
+/// Are we writing to an actual terminal, not a pipe or CI capture? Used
+/// by commands that want to fall back to plain text when the output is
+/// being scraped (pipes, `--json`, cron logs).
+pub fn is_tty() -> bool {
+    std::io::stdout().is_terminal()
 }
 
 /// Best-effort spinner for network / long-running work. Returns a

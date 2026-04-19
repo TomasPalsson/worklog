@@ -48,6 +48,10 @@ rand        = "0.8"
 base64      = "0.22"
 fs4         = "0.9"
 
+# v0.4 CLI polish.
+miette      = { version = "7", features = ["fancy"] }
+comfy-table = "7"
+
 [profile.release]
 lto           = "thin"
 codegen-units = 1
