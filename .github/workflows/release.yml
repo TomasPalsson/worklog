@@ -186,23 +186,36 @@ jobs:
           echo "─── manifest.json ─────────────────────────────────────"
           cat "$OUT/manifest.json" | jq .
 
-      - name: Create GitHub release
+      - name: Create or upload to GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          gh release create "$TAG" \
-            --title "$TAG" \
-            --generate-notes \
-            release/worklog-aarch64-apple-darwin \
-            release/worklog-aarch64-apple-darwin.zst \
-            release/worklog-aarch64-apple-darwin.zst.sig \
-            release/worklog-x86_64-unknown-linux-gnu \
-            release/worklog-x86_64-unknown-linux-gnu.zst \
-            release/worklog-x86_64-unknown-linux-gnu.zst.sig \
-            release/manifest.json \
+          ASSETS=(
+            release/worklog-aarch64-apple-darwin
+            release/worklog-aarch64-apple-darwin.zst
+            release/worklog-aarch64-apple-darwin.zst.sig
+            release/worklog-x86_64-unknown-linux-gnu
+            release/worklog-x86_64-unknown-linux-gnu.zst
+            release/worklog-x86_64-unknown-linux-gnu.zst.sig
+            release/manifest.json
             release/manifest.json.sig
+          )
+          # release-please creates the Release first (with changelog
+          # notes) when its PR is merged; this workflow fires on the tag
+          # push it triggers, and would otherwise collide with
+          # `gh release create`. Detect + branch.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists (release-please path); uploading assets with --clobber"
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
+          else
+            echo "no existing release; creating $TAG"
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --generate-notes \
+              "${ASSETS[@]}"
+          fi
 
       - name: Purge private key (always)
         # Runs even on cancellation or earlier-step failure — otherwise a
