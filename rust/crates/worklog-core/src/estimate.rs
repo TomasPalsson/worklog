@@ -151,6 +151,131 @@ impl ModelInvoker for FixedInvoker {
     }
 }
 
+/// Default model passed to LiteLLM when the caller leaves `--model`
+/// unset AND the user hasn't configured one via secrets. LiteLLM
+/// requires a `provider/model` prefix — unqualified names route
+/// nowhere. Anthropic is the wizard's first-class provider.
+pub const DEFAULT_LITELLM_MODEL: &str = "anthropic/claude-haiku-4-5";
+
+/// OpenAI-compatible HTTP invoker. Points at any LiteLLM proxy (or any
+/// OpenAI-shaped endpoint) and POSTs `/v1/chat/completions`. The
+/// response's `choices[0].message.content` is handed to
+/// [`parse_response`] so prose-wrapped JSON + envelope shapes work
+/// identically to the subprocess path.
+///
+/// TLS + 30s default timeout come from [`crate::http::client`]. Tests
+/// swap in a short-timeout client via [`Self::with_client`].
+pub struct LiteLLMInvoker {
+    base_url: String,
+    api_key: String,
+    default_model: String,
+    client: reqwest::blocking::Client,
+}
+
+impl LiteLLMInvoker {
+    /// Build from already-resolved config. `base_url` trailing slash is
+    /// tolerated. Empty `api_key` omits the `Authorization` header on
+    /// requests (some local proxies run unauthed).
+    pub fn new(
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Result<Self> {
+        Ok(Self {
+            base_url: base_url.into().trim_end_matches('/').to_owned(),
+            api_key: api_key.into(),
+            default_model: model.into(),
+            client: crate::http::client()?,
+        })
+    }
+
+    /// Test seam: swap the HTTP client (short timeouts, custom TLS,
+    /// mock routing). Not exposed in production because every caller
+    /// outside tests wants the default `crate::http::client`.
+    #[cfg(test)]
+    pub fn with_client(mut self, client: reqwest::blocking::Client) -> Self {
+        self.client = client;
+        self
+    }
+
+    /// Where the request actually lands. Pulled into a method so tests
+    /// and `doctor` can surface it without reaching inside the struct.
+    pub fn endpoint(&self) -> String {
+        format!("{}/v1/chat/completions", self.base_url)
+    }
+
+    /// Chosen model for a given invocation: caller's `--model` wins,
+    /// falling back to whatever the user configured in secrets.
+    fn resolve_model<'a>(&'a self, caller: &'a str) -> &'a str {
+        if caller.is_empty() {
+            &self.default_model
+        } else {
+            caller
+        }
+    }
+}
+
+impl ModelInvoker for LiteLLMInvoker {
+    fn invoke(&self, system: &str, user: &str, schema: &Value, model: &str) -> Result<Value> {
+        // The proxy's `response_format: json_object` asks the model to
+        // emit valid JSON. We still append the schema into the system
+        // prompt so older providers that ignore `response_format`
+        // (Ollama, some on-prem proxies) still get the shape hint.
+        let schema_str = serde_json::to_string(schema)?;
+        let system_with_schema =
+            format!("{system}\n\nRespond ONLY with JSON matching this schema:\n{schema_str}");
+
+        let body = json!({
+            "model":           self.resolve_model(model),
+            "messages": [
+                { "role": "system", "content": system_with_schema },
+                { "role": "user",   "content": user },
+            ],
+            "response_format": { "type": "json_object" },
+            "temperature":     0,
+            "max_tokens":      512,
+        });
+
+        let mut req = self
+            .client
+            .post(self.endpoint())
+            .header("Content-Type", "application/json");
+        if !self.api_key.is_empty() {
+            req = req.bearer_auth(&self.api_key);
+        }
+
+        let resp = req
+            .json(&body)
+            .send()
+            .context("POST /v1/chat/completions")?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            // Keep the body preview bounded; some proxies echo the full
+            // request payload on 5xx which can include the user's event
+            // content. 500 chars is enough to identify the real cause.
+            let body_preview = resp
+                .text()
+                .unwrap_or_else(|_| "<unreadable body>".into())
+                .chars()
+                .take(500)
+                .collect::<String>();
+            anyhow::bail!("HTTP {status} from LiteLLM proxy: {body_preview}");
+        }
+
+        let envelope: Value = resp.json().context("decoding LiteLLM JSON response")?;
+        let content = envelope
+            .pointer("/choices/0/message/content")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "LiteLLM response missing choices[0].message.content: {envelope}"
+                )
+            })?;
+        parse_response(content)
+    }
+}
+
 pub fn estimate_day_with<I: ModelInvoker>(
     conn: &Connection,
     day: NaiveDate,
