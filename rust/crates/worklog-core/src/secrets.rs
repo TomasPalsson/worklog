@@ -329,4 +329,46 @@ mod tests {
         set("jira_email", "t@p5.is").unwrap();
         assert_eq!(require("jira_email").unwrap(), "t@p5.is");
     }
+
+    // ───────────────────────── LiteLLM / provider keys (v0.7) ─────────────────────────
+
+    /// `worklog setup` and `worklog doctor` walk `KNOWN_KEYS` to drive their
+    /// UI — every new credential the estimator can read MUST be listed here
+    /// or the wizard silently skips prompting for it and the doctor report
+    /// hides it. These assertions pin that contract.
+    #[test]
+    fn known_keys_include_litellm_provider_settings() {
+        for k in &[
+            "litellm_base_url",
+            "litellm_api_key",
+            "litellm_model",
+            "worklog_estimator_provider",
+        ] {
+            assert!(
+                KNOWN_KEYS.contains(k),
+                "KNOWN_KEYS should include `{k}` so the wizard prompts for it"
+            );
+        }
+    }
+
+    /// The `.env` fallback exists so Python-era and CI users can drop a
+    /// flat file instead of touching the keychain. If we add a key but
+    /// forget the env mapping, those users lose a setting. Mirror the
+    /// screaming-snake `WORKLOG_*` convention already in use.
+    #[test]
+    fn env_var_mapping_for_litellm_keys() {
+        assert_eq!(
+            env_var_for("litellm_base_url"),
+            Some("WORKLOG_LITELLM_BASE_URL")
+        );
+        assert_eq!(
+            env_var_for("litellm_api_key"),
+            Some("WORKLOG_LITELLM_API_KEY")
+        );
+        assert_eq!(env_var_for("litellm_model"), Some("WORKLOG_LITELLM_MODEL"));
+        assert_eq!(
+            env_var_for("worklog_estimator_provider"),
+            Some("WORKLOG_ESTIMATOR_PROVIDER"),
+        );
+    }
 }
