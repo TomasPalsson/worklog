@@ -631,12 +631,16 @@ mod tests {
 
     #[test]
     fn run_update_refuses_placeholder_pubkey() {
-        // Fail-closed guard: with the embedded pubkey still at the
-        // all-zero placeholder, run_update must refuse BEFORE making any
-        // network call — otherwise a freshly-built binary with no real
-        // release key might accept forged signatures.
+        // Fail-closed guard — force the placeholder via the test env
+        // override and assert run_update refuses BEFORE any network
+        // call. Without this, a binary built pre-keygen would accept
+        // any forged signature. Real releases embed a non-placeholder
+        // pubkey so the override is the only way to exercise this path.
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
         let _g = pubkey::test_env_lock();
-        std::env::remove_var("WORKLOG_RELEASE_PUBKEY_BASE64");
+        let zeros = [0u8; crate::updater::crypto::PUBLIC_KEY_LEN];
+        std::env::set_var("WORKLOG_RELEASE_PUBKEY_BASE64", STANDARD.encode(zeros));
 
         let tmp = TempDir::new().unwrap();
         let dest = tmp.path().join("worklog");
@@ -655,5 +659,6 @@ mod tests {
             msg.contains("placeholder"),
             "placeholder refusal message expected, got: {msg}"
         );
+        std::env::remove_var("WORKLOG_RELEASE_PUBKEY_BASE64");
     }
 }

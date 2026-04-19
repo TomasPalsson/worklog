@@ -25,9 +25,20 @@
 
 use super::crypto::PUBLIC_KEY_LEN;
 
-/// Embedded public key. Replace this with your own by running
-/// `worklog dev keygen` and pasting the printed constant.
-pub const RELEASE_PUBLIC_KEY: [u8; PUBLIC_KEY_LEN] = [0u8; PUBLIC_KEY_LEN];
+/// Embedded public key for release verification. The matching private
+/// key lives only in the `WORKLOG_RELEASE_PRIVATE_KEY` GitHub Actions
+/// secret; CI signs the manifest + assets with it on every tag push.
+///
+/// Rotation procedure: generate a new keypair with `worklog dev keygen`,
+/// paste the printed constant here, update the GHA secret, and release
+/// a fresh tag. Users on older versions will still succeed on that one
+/// signed update (old pubkey), then bind to the new one after swapping.
+pub const RELEASE_PUBLIC_KEY: [u8; PUBLIC_KEY_LEN] = [
+    0x6a, 0xe0, 0x85, 0x6a, 0x41, 0x74, 0xa6, 0x5f,
+    0xe4, 0xc7, 0x3d, 0xd2, 0x0f, 0x4b, 0x37, 0xd6,
+    0x59, 0xf6, 0x92, 0xd6, 0x23, 0x9c, 0x05, 0x2d,
+    0xf3, 0xed, 0x53, 0xef, 0xbe, 0x4c, 0x7a, 0xdd,
+];
 
 /// Resolve the pubkey at runtime. In release builds this always returns
 /// the compiled-in constant. In test builds the
