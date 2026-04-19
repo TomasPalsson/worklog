@@ -257,6 +257,15 @@ pub enum WebCmd {
         #[arg(long)]
         pull: bool,
     },
+    /// Download the `web/` tree from GitHub into the local cache
+    /// (`$data/web`). Lets `worklog web up` work on machines that
+    /// only installed the binary via curl — no repo clone needed.
+    Fetch {
+        /// Force a re-download even when the cache already matches the
+        /// binary's version.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(clap::ValueEnum, Debug, Clone, Copy)]
@@ -433,6 +442,7 @@ pub fn run_with<W: Write>(
             WebCmd::Status => cmd_web_status(out, cli.json),
             WebCmd::Logs { tail } => cmd_web_logs(tail),
             WebCmd::Build { pull } => cmd_web_build(pull, out, cli.json),
+            WebCmd::Fetch { force } => cmd_web_fetch(force, out, cli.json),
         },
         // `serve` is literally `web up` with the same args — the alias
         // lives at the top-level so muscle memory from the Python era
@@ -1259,7 +1269,7 @@ fn cmd_web_up<W: Write>(port: u16, no_daemon: bool, out: &mut W, json: bool) -> 
     web_mod::preflight_docker()?;
     let paths = Paths::resolve()?;
     paths.ensure()?;
-    let context = web_mod::resolve_web_context()?;
+    let context = web_mod::resolve_web_context(&paths)?;
     let compose = web_mod::render_compose(&paths, port, &context)?;
 
     if !no_daemon && !daemon_tcp_reachable("127.0.0.1:9323") {
@@ -1343,7 +1353,7 @@ fn cmd_web_build<W: Write>(pull: bool, out: &mut W, json: bool) -> Result<()> {
     web_mod::preflight_docker()?;
     let paths = Paths::resolve()?;
     paths.ensure()?;
-    let context = web_mod::resolve_web_context()?;
+    let context = web_mod::resolve_web_context(&paths)?;
     // Re-render so the compose file points at the current web/ location.
     let compose = web_mod::render_compose(&paths, 3333, &context)?;
     web_mod::compose_build(&compose, pull)?;
@@ -1355,6 +1365,54 @@ fn cmd_web_build<W: Write>(pull: bool, out: &mut W, json: bool) -> Result<()> {
         )?;
     } else {
         writeln!(out, "✓ worklog-web image built from {}", context.display())?;
+    }
+    Ok(())
+}
+
+fn cmd_web_fetch<W: Write>(force: bool, out: &mut W, json: bool) -> Result<()> {
+    let paths = Paths::resolve()?;
+    paths.ensure()?;
+    let version = env!("CARGO_PKG_VERSION");
+
+    if !force && web_mod::fetch::cache_is_current(&paths, version) {
+        let cache = web_mod::fetch::cache_dir(&paths);
+        if json {
+            writeln!(
+                out,
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "cached": true,
+                    "path": cache.display().to_string(),
+                    "version": version,
+                }))?
+            )?;
+        } else {
+            style::info(
+                out,
+                &format!("already fetched for {version} → {}", cache.display()),
+            )?;
+        }
+        return Ok(());
+    }
+
+    let url = web_mod::fetch::archive_url_for(version);
+    let pb = style::spinner(&format!("downloading {url}"));
+    let result = web_mod::fetch::fetch_to_cache(&paths, version);
+    pb.finish_and_clear();
+    let path = result?;
+    if json {
+        writeln!(
+            out,
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "cached": false,
+                "path": path.display().to_string(),
+                "version": version,
+                "url": url,
+            }))?
+        )?;
+    } else {
+        style::ok(out, &format!("fetched web tree → {}", path.display()))?;
     }
     Ok(())
 }

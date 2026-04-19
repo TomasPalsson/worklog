@@ -5,6 +5,13 @@
 //! over its unix socket. This module wraps `docker` / `docker compose`
 //! and the rendered-out compose file so the CLI doesn't need to know
 //! anything about Docker internals.
+//!
+//! Submodule:
+//! * [`fetch`] — download the `web/` tree from GitHub when the user
+//!   isn't in a cloned repo. `resolve_web_context` fans out to the
+//!   cache path first; `worklog web fetch` pre-warms it.
+
+pub mod fetch;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -104,11 +111,13 @@ pub fn render_compose(paths: &Paths, port: u16, web_context: &Path) -> Result<Pa
 ///   1. `$WORKLOG_WEB_DIR` env override
 ///   2. `<cwd>/web` (most common: running from repo root)
 ///   3. walk up from cwd looking for a `web/Dockerfile`
-///   4. `<install prefix>/share/worklog/web` (packaged install)
+///   4. `<paths.data_dir>/web` (cache populated by `web::fetch`)
+///   5. `/usr/local/share/worklog/web` (FHS system install)
+///   6. *auto-fetch* the archive from GitHub into `<paths.data_dir>/web`
 ///
-/// Returns a canonical absolute path if found, else an error explaining
-/// what to do.
-pub fn resolve_web_context() -> Result<PathBuf> {
+/// Only step 6 hits the network; the other five are filesystem checks
+/// that complete in microseconds.
+pub fn resolve_web_context(paths: &Paths) -> Result<PathBuf> {
     if let Ok(dir) = std::env::var("WORKLOG_WEB_DIR") {
         let p = PathBuf::from(dir);
         if p.join("Dockerfile").is_file() {
@@ -128,18 +137,27 @@ pub fn resolve_web_context() -> Result<PathBuf> {
         }
         cur = dir.parent();
     }
-    // Last-ditch FHS-style location. Users who installed via the curl
-    // script and want to run the web container should symlink their
-    // cloned web/ here (the installer drops only the binary, not the
-    // Dockerfile source tree).
+    // Cache populated by a previous `worklog web fetch` (or an earlier
+    // auto-fetch). This is the warm path for users who installed via
+    // install.sh and never cloned the repo.
+    let cache = fetch::cache_dir(paths);
+    if cache.join("Dockerfile").is_file() {
+        return std::fs::canonicalize(&cache).context("canonicalising web cache");
+    }
+    // FHS location for packaged installs (if a distro decides to ship
+    // the worklog web tree under /usr/local/share).
     let prefix = PathBuf::from("/usr/local/share/worklog/web");
     if prefix.join("Dockerfile").is_file() {
         return Ok(prefix);
     }
-    anyhow::bail!(
-        "couldn't find the worklog `web/` directory. Set WORKLOG_WEB_DIR to \
-         the path of the web/ folder in the worklog repo, or cd into the repo \
-         and re-run."
+    // Nothing on disk — pull from GitHub. One network hit per install
+    // or per upgrade, zero user effort.
+    let version = env!("CARGO_PKG_VERSION");
+    tracing::info!(version, "web: no local tree found, auto-fetching");
+    fetch::fetch_to_cache(paths, version).context(
+        "auto-fetching web/ from the github archive failed. \
+         Set $WORKLOG_WEB_DIR to a local checkout of the worklog repo, \
+         or run `worklog web fetch` manually once you have network.",
     )
 }
 
@@ -305,22 +323,29 @@ mod tests {
         std::fs::create_dir_all(&web).unwrap();
         std::fs::write(web.join("Dockerfile"), "FROM scratch\n").unwrap();
         std::env::set_var("WORKLOG_WEB_DIR", &web);
-        let got = resolve_web_context().unwrap();
+        let paths = paths_in(&tmp);
+        let got = resolve_web_context(&paths).unwrap();
         std::env::remove_var("WORKLOG_WEB_DIR");
         assert_eq!(got, std::fs::canonicalize(&web).unwrap());
     }
 
     #[test]
-    fn resolve_web_context_errors_when_missing() {
-        // Make sure env var and cwd don't rescue us.
+    fn resolve_web_context_falls_back_to_cache_when_populated() {
+        // New behaviour: a populated cache dir rescues a user who isn't
+        // in the repo and hasn't set WORKLOG_WEB_DIR.
         std::env::remove_var("WORKLOG_WEB_DIR");
         let tmp = TempDir::new().unwrap();
         let prev = std::env::current_dir().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
-        let err = resolve_web_context().unwrap_err();
+        let paths = paths_in(&tmp);
+        // Pre-populate the cache path to simulate a prior fetch.
+        let cache = fetch::cache_dir(&paths);
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("Dockerfile"), "FROM bun").unwrap();
+
+        let got = resolve_web_context(&paths).unwrap();
         std::env::set_current_dir(prev).unwrap();
-        let msg = format!("{err}");
-        assert!(msg.contains("web/"), "error should mention web/: {msg}");
+        assert_eq!(got, std::fs::canonicalize(&cache).unwrap());
     }
 
     #[test]
