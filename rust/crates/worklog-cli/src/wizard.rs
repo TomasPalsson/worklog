@@ -336,35 +336,13 @@ fn capture_litellm_config(theme: &ColorfulTheme, opts: &WizardOptions) -> Result
 }
 
 /// The wizard's first-class LiteLLM default — keep in sync with
-/// `worklog_core::estimate::DEFAULT_LITELLM_MODEL`. Duplicated as a
-/// `&str` constant so the wizard stays a pure crate-local concern.
+/// `worklog_core::estimate::DEFAULT_LITELLM_MODEL`.
 const DEFAULT_LITELLM_MODEL: &str = worklog_core::estimate::DEFAULT_LITELLM_MODEL;
 
-/// Best-effort reachability check. Returns `None` when the proxy is
-/// alive (2xx on `/health` or a 404 that still proves the port is
-/// accepting connections), or `Some(error_string)` when the wizard
-/// should show a warning and ask "save anyway?".
+/// Re-export so the existing wizard test file doesn't need to know
+/// the probe lives in worklog-core now.
 pub(crate) fn probe_litellm(base_url: &str) -> Option<String> {
-    let client = match reqwest::blocking::Client::builder()
-        .user_agent("worklog-cli")
-        .timeout(Duration::from_secs(3))
-        .build()
-    {
-        Ok(c) => c,
-        // If we can't build a client, skip the probe — treat as "not
-        // available" rather than a hard fail, mirroring the github
-        // token validator's fallback.
-        Err(_) => return None,
-    };
-    let url = format!("{}/health", base_url.trim_end_matches('/'));
-    match client.get(&url).send() {
-        // 2xx = healthy. A 4xx (e.g. /health not defined) still proves
-        // we talked to *something* on that port, which is what we're
-        // really checking here; auth correctness is the proxy's job.
-        Ok(resp) if resp.status().is_success() || resp.status().is_client_error() => None,
-        Ok(resp) => Some(format!("HTTP {} on /health", resp.status())),
-        Err(e) => Some(format!("connect: {e}")),
-    }
+    worklog_core::estimate::probe_litellm(base_url)
 }
 
 fn configure_daemon_service(theme: &ColorfulTheme, notes: &mut Vec<String>) -> Result<()> {

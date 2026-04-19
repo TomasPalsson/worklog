@@ -125,6 +125,32 @@ fn build_litellm_from_secrets() -> Result<LiteLLMInvoker> {
     LiteLLMInvoker::new(base_url, api_key, model)
 }
 
+/// Best-effort reachability check for a LiteLLM / OpenAI-compatible
+/// proxy. Returns `None` when `{base_url}/health` answers 2xx OR 4xx
+/// (the latter still proves we talked to *something* on the port —
+/// auth correctness is the proxy's job). Returns `Some(err_string)`
+/// on connect failure / timeout / 5xx.
+///
+/// Used by the wizard's "probe failed — save anyway?" prompt and by
+/// `worklog doctor` to surface `estimator.reachable` in its report.
+/// 3s timeout keeps an unreachable proxy from hanging the setup flow.
+pub fn probe_litellm(base_url: &str) -> Option<String> {
+    let client = match reqwest::blocking::Client::builder()
+        .user_agent("worklog")
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+    let url = format!("{}/health", base_url.trim_end_matches('/'));
+    match client.get(&url).send() {
+        Ok(resp) if resp.status().is_success() || resp.status().is_client_error() => None,
+        Ok(resp) => Some(format!("HTTP {} on /health", resp.status())),
+        Err(e) => Some(format!("connect: {e}")),
+    }
+}
+
 /// Read env + secrets to decide which invoker today's run uses. Called
 /// by [`estimate_day`] and surfaced in `worklog doctor`.
 pub fn resolve_provider() -> Result<ProviderChoice> {
