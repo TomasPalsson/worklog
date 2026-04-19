@@ -4330,7 +4330,7 @@ dependencies = [
 
 [[package]]
 name = "worklog-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -4355,7 +4355,7 @@ dependencies = [
 
 [[package]]
 name = "worklog-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "axum",

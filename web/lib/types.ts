@@ -1,6 +1,24 @@
 // Shared types mirroring the Rust models in worklog-core. Kept thin on
 // purpose — we only list the columns the UI actually reads.
 
+/** A row from the `events` table as the daemon returns it. */
+export interface Event {
+  id: number;
+  source: string;
+  source_id: string;
+  started_at: string; // ISO-8601
+  ended_at: string | null;
+  duration_seconds: number | null;
+  title: string;
+  details: string | null;
+  repo: string | null;
+  project_path: string | null;
+  jira_issue: string | null;
+  session_id: string | null;
+  tempo_worklog_id: string | null;
+  raw_json: string | null;
+}
+
 export interface Block {
   id: number;
   day: string;

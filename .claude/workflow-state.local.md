@@ -1,43 +1,37 @@
 ---
 type: feature
-branch: feat/v0.4-daemon-polish-purge
+branch: feat/v0.5-events-submenu-polish
 worktree: null
-size: medium
+size: large
 ---
 
 # Workflow State
 
 ## Metadata
 - Type: feature
-- Branch: feat/v0.4-daemon-polish-purge
+- Branch: feat/v0.5-events-submenu-polish
 - Worktree: none (in-place)
-- Description: v0.4 bundle — daemon auto-install, CLI polish, rolling purge, richer hook capture
-- Size: medium
-- Max iterations: 50
+- Description: v0.6 — events submenu + ticket-flow fix + design polish + upgrade daemon-restart
+- Size: large
+- Max iterations: 100
 
 ## Detected commands
-- TEST_CMD: `cargo test --manifest-path rust/Cargo.toml`
-- LINT_CMD: `cargo clippy --manifest-path rust/Cargo.toml --all-targets --all-features -- -D warnings`
+- TEST_CMD: `cargo test --manifest-path rust/Cargo.toml` + `cd web && bun test`
+- LINT_CMD: `cargo clippy --manifest-path rust/Cargo.toml --all-targets --all-features -- -D warnings` + `cd web && bun run lint`
 - FORMAT_CMD: `cargo fmt --manifest-path rust/Cargo.toml --all`
-- TYPECHECK_CMD: (folded into `cargo test`)
-- BUILD_CMD: `cargo build --manifest-path rust/Cargo.toml`
+- TYPECHECK_CMD: `cd web && bun run typecheck`
+- BUILD_CMD: `cd web && bun run build`
 
 ## Progress
 - [x] Plan drafted → `.claude/feature-plan.local.md`
-- [ ] Phase 1: hook prompt capture — RED / GREEN / REFACTOR
-- [ ] Phase 2: data purge — RED / GREEN / REFACTOR
-- [ ] Phase 3: daemon install — RED / GREEN / REFACTOR
-- [ ] Phase 4: daemon auto-start + wizard — RED / GREEN / REFACTOR
-- [ ] Phase 5: CLI polish — RED / GREEN / REFACTOR
-- [ ] Phase 6: web dark mode — RED / GREEN / REFACTOR
-- [ ] Phase 7: Inline gates
-- [ ] Phase 8: Quality pipeline
-- [ ] Phase 9: Runtime verification (CLI + browser)
-- [ ] Phase 10: User verification (HARD GATE)
-- [ ] Phase 11: QA pass
-- [ ] Phase 12: PR creation (v0.4.0)
-
-## Notes
-- Skipping UI showcase gate (CLI feature, no UI changes to web/).
-- Skipping browser verification — runtime verification in a terminal replaces it.
-- User's memory: "Default to autonomous execution on worklog — ship agreed plans phase-by-phase without mid-execution permission checks". Once plan is approved, blast through phases.
+- [ ] Phase 1: daemon read endpoints — RED / GREEN / REFACTOR
+- [ ] Phase 2: web reader migration — RED / GREEN / REFACTOR
+- [ ] Phase 3: events submenu UI — RED / GREEN / REFACTOR
+- [ ] Phase 4: design polish — RED / GREEN / REFACTOR (includes /design evaluator subagent)
+- [ ] Phase 5: upgrade daemon-restart — RED / GREEN / REFACTOR
+- [ ] Phase 6: Inline gates
+- [ ] Phase 7: Quality pipeline
+- [ ] Phase 8: Browser verification (Claude-in-Chrome)
+- [ ] Phase 9: User verification (HARD GATE)
+- [ ] Phase 10: QA pass
+- [ ] Phase 11: PR + release (target v0.6.0)
