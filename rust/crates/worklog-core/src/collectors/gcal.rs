@@ -1,21 +1,30 @@
 //! Google Calendar collector — ports `src/worklog/collectors/gcal.py`.
 //!
-//! **Phase 1 RED stub.** No implementation yet; tests in the `tests`
-//! module pin the target behavior. Green phase fills these in.
-//!
 //! Drop-in compatible with the Python runtime: reads/writes the same
 //! `google_credentials.json` + `google_token.json` files under
 //! `~/.config/worklog/` (or `$WORKLOG_HOME`), calls the same v3 REST
 //! endpoint, and upserts events as `source="gcal"` with a stable
 //! `source_id = "<calendar>:<eventId>"` so the Python-era data survives
 //! the port without any migration.
+//!
+//! Synchronous / blocking by design — matches every other collector
+//! (github, jira, tempo). We reach OAuth2's token endpoint directly with
+//! reqwest rather than pulling in `yup-oauth2` or `oauth2` because the
+//! surface we need is tiny (parse a JSON file, refresh via
+//! `grant_type=refresh_token`, persist) and we already depend on
+//! reqwest + serde_json. One fewer transitive dep tree to vet.
 
 use std::path::PathBuf;
 
-use anyhow::Result;
-use chrono::NaiveDate;
+use anyhow::{anyhow, Context, Result};
+use chrono::{DateTime, Duration, NaiveDate, SecondsFormat, Utc};
 use reqwest::blocking::Client;
 use rusqlite::Connection;
+use serde::Deserialize;
+use tracing::{debug, warn};
+
+use crate::models::Event;
+use crate::repo;
 
 use super::CollectReport;
 
@@ -51,7 +60,25 @@ impl GcalAuth {
     /// credentials files are missing — `collect_with` surfaces that
     /// error with an actionable message.
     pub fn from_paths() -> Result<Self> {
-        todo!("gcal::GcalAuth::from_paths — implemented in GREEN")
+        let paths = crate::paths::Paths::resolve()?;
+        let calendars = std::env::var(ENV_CALENDARS)
+            .ok()
+            .map(|s| {
+                s.split(',')
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| vec!["primary".into()]);
+        Ok(Self {
+            token_path: paths.config_dir.join("google_token.json"),
+            credentials_path: paths.config_dir.join("google_credentials.json"),
+            calendars,
+            api_base: GCAL_API.into(),
+            oauth_base: OAUTH_TOKEN_URL.into(),
+        })
     }
 }
 
@@ -83,15 +110,120 @@ pub struct StoredToken {
 /// comparison on `started_at`, so non-UTC offsets silently land events
 /// on the wrong day.
 pub fn to_utc(raw: &str) -> Result<String> {
-    todo!("gcal::to_utc — implemented in GREEN: {raw}")
+    // Full RFC3339 with offset (incl. Z) — most common path.
+    if let Ok(dt) = DateTime::parse_from_rfc3339(raw) {
+        return Ok(dt
+            .with_timezone(&Utc)
+            .to_rfc3339_opts(SecondsFormat::Secs, true));
+    }
+    // All-day event: bare `YYYY-MM-DD`. Anchor at midnight UTC so the
+    // bucketer's lexicographic `started_at` range lands it on the
+    // stated day, matching Python `datetime.combine(d, time.min)`.
+    if let Ok(date) = NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
+        let midnight = date
+            .and_hms_opt(0, 0, 0)
+            .expect("00:00:00 is always a valid time")
+            .and_utc();
+        return Ok(midnight.to_rfc3339_opts(SecondsFormat::Secs, true));
+    }
+    Err(anyhow!(
+        "gcal: could not parse date/datetime {raw:?} \
+         (expected RFC3339 datetime or YYYY-MM-DD)"
+    ))
 }
 
 /// Read `token.json`, POST a refresh if the stored token has expired
 /// (or will within 60s), write the updated token back to disk, and
 /// return the live access token.
 pub fn refresh_access_token(auth: &GcalAuth, client: &Client) -> Result<String> {
-    let _ = (auth, client);
-    todo!("gcal::refresh_access_token — implemented in GREEN")
+    let raw = std::fs::read_to_string(&auth.token_path).with_context(|| {
+        format!(
+            "reading {} — run `worklog collect gcal --auth` to re-authenticate",
+            auth.token_path.display()
+        )
+    })?;
+    let mut token: StoredToken = serde_json::from_str(&raw)
+        .with_context(|| format!("parsing {} as JSON", auth.token_path.display()))?;
+
+    if !needs_refresh(&token) {
+        return Ok(token.token);
+    }
+
+    if token.refresh_token.is_empty() {
+        return Err(anyhow!(
+            "gcal: token at {} is expired and has no refresh_token — \
+             re-authenticate with `worklog collect gcal --auth`",
+            auth.token_path.display()
+        ));
+    }
+    if token.client_id.is_empty() || token.client_secret.is_empty() {
+        return Err(anyhow!(
+            "gcal: token at {} is missing client_id/client_secret; \
+             re-authenticate with `worklog collect gcal --auth`",
+            auth.token_path.display()
+        ));
+    }
+
+    debug!("gcal: refreshing access token");
+    let form = [
+        ("grant_type", "refresh_token"),
+        ("refresh_token", token.refresh_token.as_str()),
+        ("client_id", token.client_id.as_str()),
+        ("client_secret", token.client_secret.as_str()),
+    ];
+    let resp = client
+        .post(&auth.oauth_base)
+        .form(&form)
+        .send()
+        .context("POST to OAuth token endpoint")?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().unwrap_or_else(|_| "<unreadable>".into());
+        return Err(anyhow!(
+            "gcal: token refresh failed ({status}): {body} — \
+             re-authenticate with `worklog collect gcal --auth`"
+        ));
+    }
+    let parsed: RefreshResponse = resp.json().context("parsing refresh response")?;
+    let expires_in = parsed.expires_in.unwrap_or(3600);
+    let new_expiry = Utc::now() + Duration::seconds(expires_in);
+    token.token = parsed.access_token.clone();
+    token.expiry = Some(new_expiry.to_rfc3339_opts(SecondsFormat::Secs, true));
+    if let Some(parent) = auth.token_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    std::fs::write(
+        &auth.token_path,
+        serde_json::to_string_pretty(&token).context("serialising refreshed token")?,
+    )
+    .with_context(|| format!("writing {}", auth.token_path.display()))?;
+
+    Ok(parsed.access_token)
+}
+
+/// Treat "no expiry" as expired — the Python client does the same via
+/// `Credentials.expired` returning True when `expiry` is None.
+fn needs_refresh(token: &StoredToken) -> bool {
+    let Some(expiry) = token.expiry.as_deref() else {
+        return true;
+    };
+    let Ok(expiry) = DateTime::parse_from_rfc3339(expiry) else {
+        warn!(expiry, "gcal: unparseable expiry in token.json — forcing refresh");
+        return true;
+    };
+    // 60s buffer so a refresh kicked off right before expiry completes
+    // before the backend would reject the old access_token.
+    expiry.with_timezone(&Utc) <= Utc::now() + Duration::seconds(60)
+}
+
+#[derive(Debug, Deserialize)]
+struct RefreshResponse {
+    access_token: String,
+    /// Seconds. Google almost always sets this but the spec marks it
+    /// optional, so we treat missing as "1h" (Google's default).
+    #[serde(default)]
+    expires_in: Option<i64>,
 }
 
 /// Fetch events in `[since, until)` from every configured calendar and
@@ -117,8 +249,171 @@ pub fn collect_with(
     until: NaiveDate,
     client: &Client,
 ) -> Result<CollectReport> {
-    let _ = (conn, auth, since, until, client);
-    todo!("gcal::collect_with — implemented in GREEN")
+    ensure_credentials_exist(auth)?;
+    let access_token = refresh_access_token(auth, client)?;
+
+    let time_min = format!("{since}T00:00:00Z");
+    let time_max = format!("{until}T00:00:00Z");
+
+    let mut report = CollectReport {
+        source: "gcal",
+        ..Default::default()
+    };
+
+    for cal in &auth.calendars {
+        let mut page_token: Option<String> = None;
+        loop {
+            let url = format!(
+                "{}/calendars/{}/events",
+                auth.api_base.trim_end_matches('/'),
+                urlencoding::encode(cal)
+            );
+            let mut query: Vec<(&str, String)> = vec![
+                ("timeMin", time_min.clone()),
+                ("timeMax", time_max.clone()),
+                ("singleEvents", "true".into()),
+                ("orderBy", "startTime".into()),
+                ("maxResults", "250".into()),
+            ];
+            if let Some(t) = &page_token {
+                query.push(("pageToken", t.clone()));
+            }
+            let resp = client
+                .get(&url)
+                .bearer_auth(&access_token)
+                .query(&query)
+                .send()
+                .with_context(|| format!("GET {url}"))?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body = resp.text().unwrap_or_else(|_| "<unreadable>".into());
+                return Err(anyhow!(
+                    "gcal: events.list failed for {cal} ({status}): {body}"
+                ));
+            }
+            let page: EventsList = resp.json().context("parsing events.list response")?;
+            for ev in page.items.into_iter() {
+                if ev.status.as_deref() == Some("cancelled") {
+                    report.skipped += 1;
+                    continue;
+                }
+                let Some(start_raw) = ev.start.as_ref().and_then(GcalDate::pick) else {
+                    debug!(id = %ev.id, "gcal: skipping event with no start");
+                    report.skipped += 1;
+                    continue;
+                };
+                let started_at = to_utc(start_raw)?;
+                let ended_at = match ev.end.as_ref().and_then(GcalDate::pick) {
+                    Some(s) => Some(to_utc(s)?),
+                    None => None,
+                };
+                let duration_seconds = match (&ended_at, &started_at) {
+                    (Some(e), s) => {
+                        let a = DateTime::parse_from_rfc3339(s)?;
+                        let b = DateTime::parse_from_rfc3339(e)?;
+                        Some((b - a).num_seconds())
+                    }
+                    _ => None,
+                };
+                let event = Event {
+                    id: None,
+                    source: "gcal".into(),
+                    source_id: format!("{cal}:{}", ev.id),
+                    started_at,
+                    ended_at,
+                    duration_seconds,
+                    title: ev.summary.unwrap_or_else(|| "(no title)".into()),
+                    details: ev.description,
+                    repo: None,
+                    project_path: None,
+                    jira_issue: None,
+                    session_id: None,
+                    tempo_worklog_id: None,
+                    raw_json: None,
+                };
+                repo::upsert_event(conn, &event)?;
+                report.events_written += 1;
+            }
+            match page.next_page_token {
+                Some(next) if !next.is_empty() => page_token = Some(next),
+                _ => break,
+            }
+        }
+    }
+
+    Ok(report)
+}
+
+/// Fail before the first HTTP call when neither a token nor credentials
+/// file exist on disk. The collector is best-effort up to that point,
+/// but a totally unauthenticated call would just emit a confusing HTTP
+/// error; the actionable message names the exact file the user needs.
+fn ensure_credentials_exist(auth: &GcalAuth) -> Result<()> {
+    if auth.token_path.is_file() {
+        return Ok(());
+    }
+    if !auth.credentials_path.is_file() {
+        return Err(anyhow!(
+            "gcal: missing {} — download the OAuth client credentials \
+             from Google Cloud Console and save them there, then run \
+             `worklog collect gcal --auth` to complete first-time login",
+            auth.credentials_path.display()
+        ));
+    }
+    Err(anyhow!(
+        "gcal: {} exists but {} is missing — run `worklog collect gcal --auth` \
+         to complete first-time OAuth login",
+        auth.credentials_path.display(),
+        auth.token_path.display()
+    ))
+}
+
+/// Google's `events.list` response. Only the fields we actually read.
+#[derive(Debug, Deserialize)]
+struct EventsList {
+    #[serde(default)]
+    items: Vec<GcalEvent>,
+    #[serde(default, rename = "nextPageToken")]
+    next_page_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GcalEvent {
+    id: String,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    start: Option<GcalDate>,
+    #[serde(default)]
+    end: Option<GcalDate>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GcalDate {
+    #[serde(default, rename = "dateTime")]
+    date_time: Option<String>,
+    #[serde(default)]
+    date: Option<String>,
+}
+
+impl GcalDate {
+    fn pick(&self) -> Option<&str> {
+        self.date_time.as_deref().or(self.date.as_deref())
+    }
+}
+
+/// Default token.json path — exposed so `worklog doctor` can show it.
+pub fn default_token_path(paths: &crate::paths::Paths) -> PathBuf {
+    paths.config_dir.join("google_token.json")
+}
+
+/// Default credentials.json path — exposed so `worklog doctor` can show it.
+pub fn default_credentials_path(paths: &crate::paths::Paths) -> PathBuf {
+    paths.config_dir.join("google_credentials.json")
 }
 
 // ───────────────────────── tests (RED phase) ─────────────────────────
