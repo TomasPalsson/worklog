@@ -143,7 +143,9 @@ jobs:
             cp "$BIN" "$OUT/worklog-${T}"
 
             ZST="$OUT/worklog-${T}.zst"
-            zstd -19 -f -o "$ZST" "$BIN"
+            # Level 11 — size/speed sweet spot for pre-stripped Rust binaries.
+            # 19 saves <3% on disk for ~20-40s extra per target per release.
+            zstd -11 -f -o "$ZST" "$BIN"
 
             SHA=$(sha256sum "$ZST" | awk '{print $1}')
             SIZE=$(stat -c '%s' "$ZST")
@@ -179,9 +181,6 @@ jobs:
 
           "$WORKLOG" dev sign "$OUT/manifest.json" --key /tmp/wl-keys/release-ed25519.pem
 
-          # Purge the key as soon as we're done with it.
-          shred -u /tmp/wl-keys/release-ed25519.pem || rm -f /tmp/wl-keys/release-ed25519.pem
-
           echo "─── release contents ──────────────────────────────────"
           ls -lh "$OUT/"
           echo "─── manifest.json ─────────────────────────────────────"
@@ -204,3 +203,13 @@ jobs:
             release/worklog-x86_64-unknown-linux-gnu.zst.sig \
             release/manifest.json \
             release/manifest.json.sig
+
+      - name: Purge private key (always)
+        # Runs even on cancellation or earlier-step failure — otherwise a
+        # killed job could leave the PEM on the (ephemerally-destroyed)
+        # runner. Belt-and-braces against a post-cancellation forensics
+        # window.
+        if: always()
+        run: |
+          shred -u /tmp/wl-keys/release-ed25519.pem 2>/dev/null \
+            || rm -f /tmp/wl-keys/release-ed25519.pem

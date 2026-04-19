@@ -178,9 +178,13 @@ pub fn refresh_access_token(auth: &GcalAuth, client: &Client) -> Result<String> 
         .context("POST to OAuth token endpoint")?;
     if !resp.status().is_success() {
         let status = resp.status();
+        // Google's OAuth error responses can echo credential values in
+        // `error_description`; surface only the status to the user and
+        // log the body at debug! so a CI transcript doesn't leak tokens.
         let body = resp.text().unwrap_or_else(|_| "<unreadable>".into());
+        debug!(%status, %body, "gcal: token refresh error body");
         return Err(anyhow!(
-            "gcal: token refresh failed ({status}): {body} — \
+            "gcal: token refresh failed ({status}) — \
              re-authenticate with `worklog collect gcal --auth`"
         ));
     }
@@ -198,6 +202,16 @@ pub fn refresh_access_token(auth: &GcalAuth, client: &Client) -> Result<String> 
         serde_json::to_string_pretty(&token).context("serialising refreshed token")?,
     )
     .with_context(|| format!("writing {}", auth.token_path.display()))?;
+    // Tighten perms to 0600 — the file carries refresh_token + client_secret.
+    // std::fs::write honours the process umask (0644 by default on linux);
+    // without this, anyone on the box can read the tokens.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&auth.token_path)?.permissions();
+        perms.set_mode(0o600);
+        std::fs::set_permissions(&auth.token_path, perms)?;
+    }
 
     Ok(parsed.access_token)
 }

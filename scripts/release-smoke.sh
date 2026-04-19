@@ -32,7 +32,9 @@ echo "→ constructing a fake 'release' using the current binary"
 FAKE="$TMP/worklog-test-target"
 cp "$WORKLOG" "$FAKE"
 ZST="$TMP/worklog-test-target.zst"
-zstd -19 -f -o "$ZST" "$FAKE" --quiet
+# Mirror the release workflow's zstd level so the smoke test exercises
+# the same codepath sizes users will see. -11 is the sweet spot.
+zstd -11 -f -o "$ZST" "$FAKE" --quiet
 
 if command -v sha256sum >/dev/null; then
     SHA=$(sha256sum "$ZST" | awk '{print $1}')
