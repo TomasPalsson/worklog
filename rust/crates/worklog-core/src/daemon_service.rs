@@ -205,13 +205,18 @@ mod macos {
         }
 
         // Best-effort launchctl. Skip under tests (env override set).
+        // `.output()` captures stderr so first-time installs don't spam
+        // the terminal with "Unload failed: 5: Input/output error" —
+        // launchctl complains when unload targets a service that wasn't
+        // loaded yet, but that's expected on a fresh install and users
+        // shouldn't see the noise.
         if std::env::var_os(ENV_SCHEDULE_HOME).is_none() {
             let _ = std::process::Command::new("launchctl")
                 .args(["unload", path.to_string_lossy().as_ref()])
-                .status();
+                .output();
             let _ = std::process::Command::new("launchctl")
                 .args(["load", "-w", path.to_string_lossy().as_ref()])
-                .status();
+                .output();
         }
 
         Ok(DaemonServiceStatus {
@@ -230,7 +235,7 @@ mod macos {
             if std::env::var_os(ENV_SCHEDULE_HOME).is_none() {
                 let _ = std::process::Command::new("launchctl")
                     .args(["unload", path.to_string_lossy().as_ref()])
-                    .status();
+                    .output();
             }
             std::fs::remove_file(&path).with_context(|| format!("rm {}", path.display()))?;
         }
