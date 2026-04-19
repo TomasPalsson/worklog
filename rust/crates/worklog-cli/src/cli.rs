@@ -9,7 +9,7 @@ use std::io::{self, IsTerminal, Read, Write};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use worklog_core::{
-    collectors::{github as gh, jira as jira_col, tempo as tempo_col},
+    collectors::{gcal as gcal_col, github as gh, jira as jira_col, tempo as tempo_col},
     daemon as daemon_mod, db, estimate, hook, hook_run, http, infer,
     paths::Paths,
     schedule, secrets, updater as upd, web as web_mod,
@@ -232,6 +232,7 @@ pub enum CollectTarget {
     All,
     Jira,
     Github,
+    Gcal,
 }
 
 #[derive(Subcommand, Debug)]
@@ -712,6 +713,22 @@ fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bo
                 &client,
             )?),
             Err(e) => writeln!(out, "· github skipped: {e}")?,
+        }
+    }
+
+    if matches!(target, CollectTarget::All | CollectTarget::Gcal) {
+        match gcal_col::GcalAuth::from_paths() {
+            Ok(auth) => match gcal_col::collect_with(
+                &conn,
+                &auth,
+                since,
+                today + chrono::Duration::days(1),
+                &client,
+            ) {
+                Ok(report) => reports.push(report),
+                Err(e) => writeln!(out, "· gcal skipped: {e}")?,
+            },
+            Err(e) => writeln!(out, "· gcal skipped: {e}")?,
         }
     }
 
