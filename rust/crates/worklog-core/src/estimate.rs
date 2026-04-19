@@ -339,6 +339,23 @@ fn collect_literal_matches(events: &[EventRow]) -> Vec<String> {
     out
 }
 
+/// Per-event details char cap in the payload sent to the estimator.
+/// Claude Code events get a generous cap because `hook_run` now stores the
+/// full user prompt there — that prompt *is* the description signal. Other
+/// sources (gcal, github, jira) pass through a `details` blob that is
+/// usually already short; keep the old bound so a chatty meeting
+/// description doesn't blow up the token bill.
+const DETAILS_CAP_CLAUDE: usize = 800;
+const DETAILS_CAP_OTHER: usize = 200;
+
+fn event_details_cap(source: &str) -> usize {
+    if source == "claude" {
+        DETAILS_CAP_CLAUDE
+    } else {
+        DETAILS_CAP_OTHER
+    }
+}
+
 fn build_user_message(
     block: &BlockRow,
     events: &[EventRow],
@@ -358,13 +375,16 @@ fn build_user_message(
             "status": c.status,
         })).collect::<Vec<_>>(),
         "literal_matches":        literals,
-        "events":                 events.iter().map(|e| json!({
-            "type":       e.source,
-            "timestamp":  e.started_at,
-            "summary":    trunc(e.title.as_deref().unwrap_or(""), 200),
-            "details":    e.details.as_deref().map(|d| trunc(d, 200)),
-            "jira_issue": e.jira_issue,
-        })).collect::<Vec<_>>(),
+        "events":                 events.iter().map(|e| {
+            let cap = event_details_cap(&e.source);
+            json!({
+                "type":       e.source,
+                "timestamp":  e.started_at,
+                "summary":    trunc(e.title.as_deref().unwrap_or(""), 200),
+                "details":    e.details.as_deref().map(|d| trunc(d, cap)),
+                "jira_issue": e.jira_issue,
+            })
+        }).collect::<Vec<_>>(),
     });
     serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".into())
 }
@@ -455,6 +475,55 @@ mod tests {
             params![block_id, event_id],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn build_user_message_preserves_long_claude_details_but_trims_others() {
+        // B4: events from the Claude Code hook now carry the full user
+        // prompt (up to 4KiB). When we hand the payload to the estimator
+        // we keep up to 800 chars of `details` for `source='claude'` so
+        // Claude has substance to summarise from — but non-claude sources
+        // stay at the 200-char cap so a chatty gcal description doesn't
+        // blow up the token bill.
+        let block = BlockRow {
+            id: 1,
+            started_at: "2026-04-18T09:00:00+00:00".into(),
+            ended_at: "2026-04-18T09:30:00+00:00".into(),
+            jira_issue: None,
+            estimated_by: None,
+        };
+        let claude_event = EventRow {
+            source: "claude".into(),
+            started_at: "2026-04-18T09:05:00+00:00".into(),
+            title: Some("UserPromptSubmit — fix auth".into()),
+            details: Some("c".repeat(500)),
+            jira_issue: None,
+        };
+        let github_event = EventRow {
+            source: "github_commit".into(),
+            started_at: "2026-04-18T09:10:00+00:00".into(),
+            title: Some("Initial commit".into()),
+            details: Some("g".repeat(500)),
+            jira_issue: None,
+        };
+
+        let msg = build_user_message(&block, &[claude_event, github_event], &[], &[]);
+        let payload: Value = serde_json::from_str(&msg).unwrap();
+        let events = payload["events"].as_array().unwrap();
+
+        let claude_details = events[0]["details"].as_str().unwrap();
+        assert_eq!(
+            claude_details.chars().count(),
+            500,
+            "claude event should keep all 500 chars (cap is 800 for this source)"
+        );
+
+        let github_details = events[1]["details"].as_str().unwrap();
+        assert_eq!(
+            github_details.chars().count(),
+            200,
+            "non-claude events stay at the old 200-char cap"
+        );
     }
 
     #[test]

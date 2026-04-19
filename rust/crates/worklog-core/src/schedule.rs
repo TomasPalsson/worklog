@@ -237,13 +237,16 @@ mod macos {
 
         // Best-effort launchctl load. Skip under tests (no real launchd for
         // the tmp label) by checking $WORKLOG_SCHEDULE_HOME — tests set it.
+        // `.output()` captures stderr so first-time unloads don't spam
+        // the terminal (launchctl errors when unloading a service that
+        // wasn't loaded — expected on first install).
         if std::env::var_os(ENV_SCHEDULE_HOME).is_none() {
             let _ = std::process::Command::new("launchctl")
                 .args(["unload", path.to_string_lossy().as_ref()])
-                .status();
+                .output();
             let _ = std::process::Command::new("launchctl")
                 .args(["load", "-w", path.to_string_lossy().as_ref()])
-                .status();
+                .output();
         }
 
         Ok(ScheduleStatus {
@@ -263,7 +266,7 @@ mod macos {
             if std::env::var_os(ENV_SCHEDULE_HOME).is_none() {
                 let _ = std::process::Command::new("launchctl")
                     .args(["unload", path.to_string_lossy().as_ref()])
-                    .status();
+                    .output();
             }
             std::fs::remove_file(&path).with_context(|| format!("rm {}", path.display()))?;
         }

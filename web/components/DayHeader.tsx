@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { shiftDay, todayISO } from "@/lib/format";
+import { ThemeToggle } from "./ThemeToggle";
 
 interface Props {
   day: string;
@@ -44,6 +45,7 @@ export function DayHeader({ day, heading, totalHours, blockCount, unassigned }: 
         <Link href={`/${next}`} className="day-nav-btn" aria-label="next day">
           <ChevronRight size={16} strokeWidth={1.75} />
         </Link>
+        <ThemeToggle />
       </nav>
     </header>
   );

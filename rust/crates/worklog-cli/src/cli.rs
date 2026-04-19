@@ -17,6 +17,36 @@ use worklog_core::{
 
 use crate::style;
 
+/// Clap styles applied to every help surface. Matches the `console`
+/// colour palette used by `style.rs` so help + status output feel like
+/// one CLI. `AnsiColor::Cyan` is reused for section headers, and valid
+/// values get a matching green to keep the palette tight.
+fn clap_styles() -> clap::builder::Styles {
+    use clap::builder::styling::{AnsiColor, Effects};
+    use clap::builder::Styles;
+    Styles::styled()
+        .header(AnsiColor::Cyan.on_default() | Effects::BOLD)
+        .usage(AnsiColor::Cyan.on_default() | Effects::BOLD)
+        .literal(AnsiColor::Green.on_default())
+        .placeholder(AnsiColor::Yellow.on_default())
+        .error(AnsiColor::Red.on_default() | Effects::BOLD)
+        .valid(AnsiColor::Green.on_default())
+        .invalid(AnsiColor::Red.on_default() | Effects::BOLD)
+}
+
+/// Static overview rendered at the top of `worklog --help`. Groups the
+/// subcommands into the same logical sections the README and CLAUDE.md
+/// reference. Kept as a `&str` constant so clap inlines it — a fn call
+/// would need lifetime gymnastics in the derive attribute.
+const HELP_OVERVIEW: &str = "\x1b[1;36m\
+commands by area\x1b[0m
+  setup & diagnostics  \x1b[32msetup  doctor  db  secret  version\x1b[0m
+  data collection      \x1b[32mcollect  infer  estimate  hook\x1b[0m
+  review & sync        \x1b[32mday  sync  web  serve\x1b[0m
+  daemon & schedule    \x1b[32mdaemon  schedule\x1b[0m
+  release ops          \x1b[32mself-update  upgrade  dev\x1b[0m
+";
+
 /// worklog — personal time-tracking for the developer who hates timers.
 #[derive(Parser, Debug)]
 #[command(
@@ -24,6 +54,8 @@ use crate::style;
     version,
     about = "Personal worklog — Rust edition.",
     long_about = None,
+    styles = clap_styles(),
+    before_help = HELP_OVERVIEW,
 )]
 pub struct Cli {
     /// Override the worklog home directory (default: $WORKLOG_HOME or ~/.worklog).
@@ -131,8 +163,13 @@ pub enum Cmd {
     #[command(name = "hook-run", hide = true)]
     HookRun,
 
-    /// Start the axum unix-socket IPC server. The web UI talks to this.
+    /// Start the axum unix-socket IPC server (foreground) OR manage the
+    /// background service unit that supervises it. Bare `worklog daemon`
+    /// keeps running in the foreground like before; the install / status
+    /// / uninstall subcommands write a launchd plist / systemd user unit.
     Daemon {
+        #[command(subcommand)]
+        sub: Option<DaemonCmd>,
         /// Override the socket path (default: <data>/api.sock).
         #[arg(long)]
         socket: Option<std::path::PathBuf>,
@@ -186,6 +223,22 @@ pub enum Cmd {
         #[command(subcommand)]
         sub: DevCmd,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DaemonCmd {
+    /// Install a launchd plist (macOS) or systemd user unit (Linux) so
+    /// the daemon starts at login and auto-restarts on crash.
+    Install {
+        /// Override the command baked into the service unit. Defaults
+        /// to the resolved `worklog` binary + ` daemon`.
+        #[arg(long)]
+        command: Option<String>,
+    },
+    /// Remove the service unit (and stop the supervisor-managed process).
+    Uninstall,
+    /// Report whether the service unit is installed and where it lives.
+    Status,
 }
 
 #[derive(Subcommand, Debug)]
@@ -284,6 +337,17 @@ pub enum DbCmd {
     Info,
     /// Print the resolved db path.
     Path,
+    /// Drop events + blocks older than N days that have been synced to
+    /// Tempo (or explicitly marked as 'gap'). Preserves unsynced work and
+    /// manual edits regardless of age.
+    Purge {
+        /// Retention window in days. Anything older is fair game.
+        #[arg(long, default_value_t = worklog_core::purge::DEFAULT_RETENTION_DAYS)]
+        days: i64,
+        /// Report what would be deleted without touching the database.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -405,6 +469,7 @@ pub fn run_with<W: Write>(
             DbCmd::Migrate => cmd_db_migrate(out, cli.json),
             DbCmd::Info => cmd_db_info(out, cli.json),
             DbCmd::Path => cmd_db_path(out),
+            DbCmd::Purge { days, dry_run } => cmd_db_purge(days, dry_run, out, cli.json),
         },
         Cmd::Secret(sub) => match sub {
             SecretCmd::Set { key, value } => cmd_secret_set(&key, value, out),
@@ -435,7 +500,12 @@ pub fn run_with<W: Write>(
             model,
         } => cmd_day(day, no_serve, &model, out, cli.json),
         Cmd::HookRun => cmd_hook_run(),
-        Cmd::Daemon { socket, tcp } => cmd_daemon(socket, tcp),
+        Cmd::Daemon { sub, socket, tcp } => match sub {
+            None => cmd_daemon(socket, tcp),
+            Some(DaemonCmd::Install { command }) => cmd_daemon_install(command, out, cli.json),
+            Some(DaemonCmd::Uninstall) => cmd_daemon_uninstall(out, cli.json),
+            Some(DaemonCmd::Status) => cmd_daemon_status(out, cli.json),
+        },
         Cmd::Web { sub } => match sub {
             WebCmd::Up { port, no_daemon } => cmd_web_up(port, no_daemon, out, cli.json),
             WebCmd::Down => cmd_web_down(out, cli.json),
@@ -530,37 +600,50 @@ fn cmd_doctor<W: Write>(out: &mut W, json: bool) -> Result<()> {
     }
 
     writeln!(out, "worklog {} — doctor", env!("CARGO_PKG_VERSION"))?;
-    writeln!(
-        out,
-        "  home   {}",
-        worklog_core::paths::short_display(&paths.root)
-    )?;
-    writeln!(
-        out,
-        "  db     {} ({})",
+
+    let mut env_table = style::table();
+    env_table.set_header(vec!["check", "value", "note"]);
+    env_table.add_row(vec![
+        "home".to_owned(),
+        worklog_core::paths::short_display(&paths.root),
+        String::new(),
+    ]);
+    env_table.add_row(vec![
+        "db".to_owned(),
         worklog_core::paths::short_display(&paths.db),
         if paths.db_exists() {
-            "present"
+            "present".into()
         } else {
-            "not created yet — run `worklog db migrate`"
-        }
-    )?;
+            "missing — run `worklog db migrate`".into()
+        },
+    ]);
     if let Some(s) = &db_summary {
-        writeln!(
-            out,
-            "         schema v{}, {} events, {} blocks, {} sessions, {} tickets",
-            s.schema_version, s.events, s.blocks, s.sessions, s.jira_tickets
-        )?;
+        env_table.add_row(vec![
+            "schema".to_owned(),
+            format!("v{}", s.schema_version),
+            format!(
+                "{} events, {} blocks, {} sessions, {} tickets",
+                s.events, s.blocks, s.sessions, s.jira_tickets
+            ),
+        ]);
     }
-    writeln!(out, "  secrets")?;
+    writeln!(out, "{env_table}")?;
+
+    let mut sec_table = style::table();
+    sec_table.set_header(vec!["secret", "status"]);
     for s in &secrets {
-        writeln!(
-            out,
-            "    {:<22} {}",
-            s.key,
-            if s.present { "set" } else { "—" }
-        )?;
+        sec_table.add_row(vec![
+            s.key.to_string(),
+            if s.present {
+                "set".into()
+            } else {
+                "—".into()
+            },
+        ]);
     }
+    writeln!(out, "secrets")?;
+    writeln!(out, "{sec_table}")?;
+
     Ok(())
 }
 
@@ -599,6 +682,43 @@ fn cmd_db_info<W: Write>(out: &mut W, json: bool) -> Result<()> {
             out,
             "schema v{}  events={}  blocks={}  sessions={}  tickets={}",
             s.schema_version, s.events, s.blocks, s.sessions, s.jira_tickets
+        )?;
+    }
+    Ok(())
+}
+
+fn cmd_db_purge<W: Write>(days: i64, dry_run: bool, out: &mut W, json: bool) -> Result<()> {
+    let paths = Paths::resolve()?;
+    if !paths.db_exists() {
+        anyhow::bail!("db not initialized. Run `worklog db migrate` first.");
+    }
+    let conn = db::open(&paths.db)?;
+    let report = worklog_core::purge::purge(&conn, days, dry_run)?;
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
+        return Ok(());
+    }
+    let prefix = if dry_run { "(dry-run) " } else { "" };
+    if report.blocks_deleted + report.events_deleted == 0 {
+        style::info(
+            out,
+            &format!(
+                "{prefix}nothing to purge before {} (kept: {} unsynced, {} manual)",
+                report.cutoff_date, report.blocks_kept_unsynced, report.blocks_kept_manual
+            ),
+        )?;
+    } else {
+        let verb = if dry_run { "would delete" } else { "deleted" };
+        style::ok(
+            out,
+            &format!(
+                "{prefix}{verb} {} block(s) + {} event(s) before {} (kept: {} unsynced, {} manual)",
+                report.blocks_deleted,
+                report.events_deleted,
+                report.cutoff_date,
+                report.blocks_kept_unsynced,
+                report.blocks_kept_manual
+            ),
         )?;
     }
     Ok(())
@@ -1162,6 +1282,74 @@ fn cmd_hook_run() -> Result<()> {
     hook_run::run_from_stdin()
 }
 
+fn cmd_daemon_install<W: Write>(command: Option<String>, out: &mut W, json: bool) -> Result<()> {
+    let cmd = command.unwrap_or_else(worklog_core::daemon_service::default_command);
+    let status = worklog_core::daemon_service::install(&cmd)?;
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&status)?)?;
+        return Ok(());
+    }
+    style::ok(
+        out,
+        &format!(
+            "daemon service installed ({})",
+            status
+                .unit_path
+                .as_ref()
+                .map(|p| worklog_core::paths::short_display(p))
+                .unwrap_or_else(|| "?".into())
+        ),
+    )?;
+    if let Some(cmd) = &status.command {
+        style::info(out, &format!("runs: {cmd}"))?;
+    }
+    for note in &status.notes {
+        style::info(out, note)?;
+    }
+    Ok(())
+}
+
+fn cmd_daemon_uninstall<W: Write>(out: &mut W, json: bool) -> Result<()> {
+    let status = worklog_core::daemon_service::uninstall()?;
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&status)?)?;
+        return Ok(());
+    }
+    style::ok(out, "daemon service uninstalled")?;
+    Ok(())
+}
+
+fn cmd_daemon_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
+    let status = worklog_core::daemon_service::status()?;
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&status)?)?;
+        return Ok(());
+    }
+    if status.installed {
+        style::ok(
+            out,
+            &format!(
+                "daemon service installed via {} ({})",
+                status.platform,
+                status
+                    .unit_path
+                    .as_ref()
+                    .map(|p| worklog_core::paths::short_display(p))
+                    .unwrap_or_else(|| "?".into())
+            ),
+        )?;
+        if let Some(cmd) = &status.command {
+            style::info(out, &format!("runs: {cmd}"))?;
+        }
+    } else {
+        style::warn(
+            out,
+            "daemon service not installed — run `worklog daemon install` to start at login",
+        )?;
+    }
+    Ok(())
+}
+
 fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -1272,10 +1460,8 @@ fn cmd_web_up<W: Write>(port: u16, no_daemon: bool, out: &mut W, json: bool) -> 
     let context = web_mod::resolve_web_context(&paths)?;
     let compose = web_mod::render_compose(&paths, port, &context)?;
 
-    if !no_daemon && !daemon_tcp_reachable("127.0.0.1:9323") {
-        eprintln!("⚠ worklog daemon isn't listening on 127.0.0.1:9323.");
-        eprintln!("   Start it in another terminal with: worklog daemon");
-        eprintln!("   (The web UI can read the DB without it, but writes will fail.)");
+    if !no_daemon {
+        ensure_daemon_running(out)?;
     }
 
     web_mod::compose_up(&compose, false)?;
@@ -1427,6 +1613,38 @@ fn daemon_tcp_reachable(addr: &str) -> bool {
         return false;
     };
     TcpStream::connect_timeout(&parsed, Duration::from_millis(150)).is_ok()
+}
+
+/// Make sure the daemon is listening on `127.0.0.1:9323` before doing
+/// work that depends on it. Fast-path when it's already up; otherwise
+/// show a spinner, install (if the service unit is missing), and poll.
+fn ensure_daemon_running<W: Write>(out: &mut W) -> Result<()> {
+    use worklog_core::daemon_service::{ensure_running, DaemonEnsureOutcome};
+    if daemon_tcp_reachable("127.0.0.1:9323") {
+        return Ok(());
+    }
+    let pb = style::spinner("starting worklog daemon …");
+    let res = ensure_running("127.0.0.1:9323");
+    pb.finish_and_clear();
+    match res {
+        Ok(DaemonEnsureOutcome::AlreadyUp) => Ok(()),
+        Ok(DaemonEnsureOutcome::Installed) => {
+            style::ok(out, "daemon service installed and started").ok();
+            Ok(())
+        }
+        Ok(DaemonEnsureOutcome::Restarted) => {
+            style::ok(out, "daemon service resumed").ok();
+            Ok(())
+        }
+        Err(e) => {
+            style::warn(
+                out,
+                &format!("daemon did not come up ({e:#}) — the web UI can still read, but writes will fail"),
+            )
+            .ok();
+            Ok(())
+        }
+    }
 }
 
 // ─────────────────────── self-update + dev commands ───────────────────────

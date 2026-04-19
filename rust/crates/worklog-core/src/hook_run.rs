@@ -54,6 +54,25 @@ fn title_for(event: &str, prompt: Option<&str>) -> String {
     }
 }
 
+/// Max chars preserved when storing a Claude Code user prompt into
+/// `event.details`. 4 KiB is plenty for normal prompts but cheap insurance
+/// against someone pasting a 50 KB error log — that would balloon the row
+/// (and later the estimator's token bill) without adding real signal.
+pub const PROMPT_CAP_CHARS: usize = 4096;
+
+/// Slice `s` to at most `max` chars, appending a human-readable marker
+/// `"…<truncated N chars>"` when truncation happens. Truncation is on
+/// char boundaries so multi-byte UTF-8 is never corrupted.
+fn cap_prompt(s: &str, max: usize) -> String {
+    let total = s.chars().count();
+    if total <= max {
+        return s.to_owned();
+    }
+    let kept: String = s.chars().take(max).collect();
+    let dropped = total - max;
+    format!("{kept}…<truncated {dropped} chars>")
+}
+
 /// Process a single hook payload against an already-open connection. Errors
 /// are logged to stderr by the caller; this function bails on a hard db
 /// failure only so the CLI entrypoint can still return exit 0 (we never
@@ -85,6 +104,15 @@ pub fn handle(conn: &Connection, payload: &Value, now: DateTime<Utc>) -> Result<
         .map(str::to_owned);
     let raw_json = json!(payload).to_string();
 
+    // Prefer the (capped) user prompt so the estimator has real substance
+    // to summarise from. Fall back to the transcript path only when no
+    // prompt is attached (SessionStart, Stop, SessionEnd, etc.). This is
+    // the one field that survives into `build_user_message` in estimate.rs.
+    let details = match prompt.as_deref() {
+        Some(p) if !p.is_empty() => Some(cap_prompt(p, PROMPT_CAP_CHARS)),
+        _ => transcript,
+    };
+
     let ev = Event {
         id: None,
         source: "claude".into(),
@@ -93,7 +121,7 @@ pub fn handle(conn: &Connection, payload: &Value, now: DateTime<Utc>) -> Result<
         ended_at: None,
         duration_seconds: None,
         title: title_for(&event, prompt.as_deref()),
-        details: transcript,
+        details,
         repo: None,
         project_path: cwd.clone(),
         jira_issue,
@@ -252,5 +280,113 @@ mod tests {
         let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].title, "unknown");
+    }
+
+    // ───────────────────── prompt capture (v0.4) ─────────────────────
+
+    #[test]
+    fn captures_full_prompt_up_to_cap_in_details() {
+        // B1: a 200-char prompt is well below the 4KiB cap → must land
+        // verbatim in event.details. The estimator reads `details`, so
+        // anything the user typed in their Claude prompt is now visible
+        // to the summariser (previously dropped after the 80-char title).
+        let conn = open_memory().unwrap();
+        let prompt = "a".repeat(200);
+        let payload = json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "s1",
+            "user_prompt": prompt,
+        });
+        handle(&conn, &payload, now()).unwrap();
+        let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].details.as_deref(),
+            Some("a".repeat(200).as_str()),
+            "full 200-char prompt should round-trip into event.details"
+        );
+    }
+
+    #[test]
+    fn truncates_prompts_over_cap_with_explicit_marker() {
+        // B2: anything over 4096 chars gets sliced to the cap + a
+        // `…<truncated N chars>` suffix so readers (and Claude, when it
+        // re-reads this in the estimator) know the payload was cut.
+        let conn = open_memory().unwrap();
+        let prompt = "x".repeat(10_000);
+        let payload = json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "s2",
+            "user_prompt": prompt,
+        });
+        handle(&conn, &payload, now()).unwrap();
+        let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+        let details = events[0]
+            .details
+            .as_deref()
+            .expect("details should be populated from the prompt");
+        assert!(
+            details.starts_with(&"x".repeat(4096)),
+            "first 4096 chars must be preserved verbatim"
+        );
+        assert!(
+            details.contains("truncated"),
+            "truncation marker must be present so downstream readers know"
+        );
+        assert!(
+            details.chars().count() < 10_000,
+            "payload must actually be shorter than the original"
+        );
+    }
+
+    #[test]
+    fn falls_back_to_transcript_path_when_no_prompt() {
+        // B3: SessionStart/Stop fire without a prompt → preserve the old
+        // behaviour where `details` holds the transcript path. The hook
+        // never stops receiving those events, so this path must keep
+        // working.
+        let conn = open_memory().unwrap();
+        let payload = json!({
+            "hook_event_name": "SessionStart",
+            "session_id": "s3",
+            "transcript_path": "/tmp/transcript-abc.jsonl",
+        });
+        handle(&conn, &payload, now()).unwrap();
+        let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+        assert_eq!(
+            events[0].details.as_deref(),
+            Some("/tmp/transcript-abc.jsonl"),
+            "no prompt → details keeps the pre-existing transcript path"
+        );
+    }
+
+    #[test]
+    fn cap_prompt_is_char_safe_for_multi_byte_unicode() {
+        // If the cap clipped on byte boundaries we'd corrupt emoji /
+        // non-ASCII at the boundary. Feed a payload that crosses the
+        // cap with multi-byte chars and assert the stored string is
+        // still valid UTF-8 and of the expected char length.
+        let conn = open_memory().unwrap();
+        // "日" is 3 bytes, 1 char. 5000 of them > 4096 chars but < 4096
+        // bytes if we were byte-counting (we're not).
+        let prompt = "日".repeat(5000);
+        let payload = json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "s4",
+            "user_prompt": prompt,
+        });
+        handle(&conn, &payload, now()).unwrap();
+        let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+        let details = events[0].details.as_deref().unwrap();
+        // First 4096 chars must be "日"*4096. Count chars, not bytes.
+        let prefix_chars = details.chars().take(4096).count();
+        assert_eq!(
+            prefix_chars, 4096,
+            "cap must slice on char boundaries, not byte boundaries"
+        );
+        assert!(
+            details.chars().take(4096).all(|c| c == '日'),
+            "the first 4096 chars should all be the original char"
+        );
     }
 }

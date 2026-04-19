@@ -7,6 +7,7 @@
 pub mod block_service;
 pub mod collectors;
 pub mod daemon;
+pub mod daemon_service;
 pub mod db;
 pub mod estimate;
 pub mod hook;
@@ -15,6 +16,7 @@ pub mod http;
 pub mod infer;
 pub mod models;
 pub mod paths;
+pub mod purge;
 pub mod repo;
 pub mod schedule;
 pub mod secrets;
