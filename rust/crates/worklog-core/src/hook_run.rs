@@ -369,7 +369,7 @@ mod tests {
         let conn = open_memory().unwrap();
         // "日" is 3 bytes, 1 char. 5000 of them > 4096 chars but < 4096
         // bytes if we were byte-counting (we're not).
-        let prompt: String = std::iter::repeat('日').take(5000).collect();
+        let prompt = "日".repeat(5000);
         let payload = json!({
             "hook_event_name": "UserPromptSubmit",
             "session_id": "s4",

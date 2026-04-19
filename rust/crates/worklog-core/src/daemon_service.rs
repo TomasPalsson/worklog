@@ -86,6 +86,69 @@ fn which_ok(bin: &str) -> Option<PathBuf> {
     None
 }
 
+/// Blocking probe that hits `/health` on the daemon's TCP port. Returns
+/// true on HTTP 2xx within `timeout`, false on any other outcome
+/// (connect refused, slow, wrong status, whatever). No retries — callers
+/// own the retry loop.
+pub fn is_running(tcp: &str, timeout: std::time::Duration) -> bool {
+    let Ok(client) = reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .build()
+    else {
+        return false;
+    };
+    let url = format!("http://{tcp}/health");
+    matches!(client.get(&url).send(), Ok(r) if r.status().is_success())
+}
+
+/// Probe /health; if the daemon isn't up, install the service unit (if
+/// needed) and poll until it comes up OR we hit the budget. Returns
+/// immediately if the daemon is already running.
+///
+/// This is the "just work" glue wired into `worklog day` and
+/// `worklog web up`. Installation is idempotent so calling it on every
+/// invocation is cheap — the plist write + rename is a no-op when the
+/// file content matches.
+pub fn ensure_running(tcp: &str) -> Result<DaemonEnsureOutcome> {
+    if is_running(tcp, std::time::Duration::from_millis(500)) {
+        return Ok(DaemonEnsureOutcome::AlreadyUp);
+    }
+    let s = status()?;
+    let did_install = if !s.installed {
+        install(&default_command())?;
+        true
+    } else {
+        // Already installed but not responding — launchd / systemd should
+        // already be trying to keep it alive. Fall through to the polling
+        // loop; if it stays down, surface the error.
+        false
+    };
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if is_running(tcp, std::time::Duration::from_millis(200)) {
+            return Ok(if did_install {
+                DaemonEnsureOutcome::Installed
+            } else {
+                DaemonEnsureOutcome::Restarted
+            });
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    anyhow::bail!(
+        "daemon did not come up within 5s on {tcp} — try `worklog daemon status` to diagnose"
+    )
+}
+
+/// What `ensure_running` actually did. Drives the spinner / log line the
+/// caller prints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum DaemonEnsureOutcome {
+    AlreadyUp,
+    Installed,
+    Restarted,
+}
+
 fn service_home() -> Result<PathBuf> {
     if let Some(v) = std::env::var_os(ENV_SCHEDULE_HOME) {
         if !v.is_empty() {

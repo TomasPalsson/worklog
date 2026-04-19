@@ -21,7 +21,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use console::{style, Style};
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Password, Select};
-use worklog_core::{db, hook, paths::Paths, schedule, secrets};
+use worklog_core::{daemon_service, db, hook, paths::Paths, schedule, secrets};
 
 /// Options controlling what the wizard actually runs. Defaults to a full
 /// interactive flow; tests swap these for hermetic behaviour.
@@ -115,6 +115,7 @@ pub fn run(opts: WizardOptions) -> Result<WizardReport> {
         configure_hook(&theme, &mut notes)?;
         if !opts.skip_schedule {
             schedule_installed = configure_schedule(&theme, &mut notes)?;
+            configure_daemon_service(&theme, &mut notes)?;
         }
     }
 
@@ -225,6 +226,44 @@ fn configure_schedule(theme: &ColorfulTheme, notes: &mut Vec<String>) -> Result<
         s.platform
     );
     Ok(Some(interval.human()))
+}
+
+fn configure_daemon_service(theme: &ColorfulTheme, notes: &mut Vec<String>) -> Result<()> {
+    println!("\n{}", section("daemon auto-start"));
+    let platform = schedule::Platform::current();
+    if platform == schedule::Platform::Unsupported {
+        println!("  {} platform not supported — skipping", style("·").dim());
+        notes.push("daemon auto-start not available on this OS".into());
+        return Ok(());
+    }
+
+    let current = daemon_service::status()?;
+    if current.installed {
+        println!(
+            "  {} already installed ({})",
+            style("·").dim(),
+            current.platform
+        );
+        return Ok(());
+    }
+
+    println!(
+        "  {} runs the web-UI backend at login, restarts on crash",
+        style("·").dim(),
+    );
+    let install = Confirm::with_theme(theme)
+        .with_prompt("  install the worklog daemon to start at login?")
+        .default(true)
+        .interact()?;
+    if !install {
+        notes
+            .push("daemon auto-start skipped — `worklog daemon install` any time to enable".into());
+        return Ok(());
+    }
+    let cmd = daemon_service::default_command();
+    let s = daemon_service::install(&cmd)?;
+    println!("  {} installed ({})", style("✓").green().bold(), s.platform);
+    Ok(())
 }
 
 // ───────────────────────── preflight ─────────────────────────

@@ -470,9 +470,7 @@ pub fn run_with<W: Write>(
         Cmd::HookRun => cmd_hook_run(),
         Cmd::Daemon { sub, socket, tcp } => match sub {
             None => cmd_daemon(socket, tcp),
-            Some(DaemonCmd::Install { command }) => {
-                cmd_daemon_install(command, out, cli.json)
-            }
+            Some(DaemonCmd::Install { command }) => cmd_daemon_install(command, out, cli.json),
             Some(DaemonCmd::Uninstall) => cmd_daemon_uninstall(out, cli.json),
             Some(DaemonCmd::Status) => cmd_daemon_status(out, cli.json),
         },
@@ -1239,11 +1237,7 @@ fn cmd_hook_run() -> Result<()> {
     hook_run::run_from_stdin()
 }
 
-fn cmd_daemon_install<W: Write>(
-    command: Option<String>,
-    out: &mut W,
-    json: bool,
-) -> Result<()> {
+fn cmd_daemon_install<W: Write>(command: Option<String>, out: &mut W, json: bool) -> Result<()> {
     let cmd = command.unwrap_or_else(worklog_core::daemon_service::default_command);
     let status = worklog_core::daemon_service::install(&cmd)?;
     if json {
@@ -1305,9 +1299,7 @@ fn cmd_daemon_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
     } else {
         style::warn(
             out,
-            &format!(
-                "daemon service not installed — run `worklog daemon install` to start at login"
-            ),
+            "daemon service not installed — run `worklog daemon install` to start at login",
         )?;
     }
     Ok(())
@@ -1423,10 +1415,8 @@ fn cmd_web_up<W: Write>(port: u16, no_daemon: bool, out: &mut W, json: bool) -> 
     let context = web_mod::resolve_web_context(&paths)?;
     let compose = web_mod::render_compose(&paths, port, &context)?;
 
-    if !no_daemon && !daemon_tcp_reachable("127.0.0.1:9323") {
-        eprintln!("⚠ worklog daemon isn't listening on 127.0.0.1:9323.");
-        eprintln!("   Start it in another terminal with: worklog daemon");
-        eprintln!("   (The web UI can read the DB without it, but writes will fail.)");
+    if !no_daemon {
+        ensure_daemon_running(out)?;
     }
 
     web_mod::compose_up(&compose, false)?;
@@ -1578,6 +1568,38 @@ fn daemon_tcp_reachable(addr: &str) -> bool {
         return false;
     };
     TcpStream::connect_timeout(&parsed, Duration::from_millis(150)).is_ok()
+}
+
+/// Make sure the daemon is listening on `127.0.0.1:9323` before doing
+/// work that depends on it. Fast-path when it's already up; otherwise
+/// show a spinner, install (if the service unit is missing), and poll.
+fn ensure_daemon_running<W: Write>(out: &mut W) -> Result<()> {
+    use worklog_core::daemon_service::{ensure_running, DaemonEnsureOutcome};
+    if daemon_tcp_reachable("127.0.0.1:9323") {
+        return Ok(());
+    }
+    let pb = style::spinner("starting worklog daemon …");
+    let res = ensure_running("127.0.0.1:9323");
+    pb.finish_and_clear();
+    match res {
+        Ok(DaemonEnsureOutcome::AlreadyUp) => Ok(()),
+        Ok(DaemonEnsureOutcome::Installed) => {
+            style::ok(out, "daemon service installed and started").ok();
+            Ok(())
+        }
+        Ok(DaemonEnsureOutcome::Restarted) => {
+            style::ok(out, "daemon service resumed").ok();
+            Ok(())
+        }
+        Err(e) => {
+            style::warn(
+                out,
+                &format!("daemon did not come up ({e:#}) — the web UI can still read, but writes will fail"),
+            )
+            .ok();
+            Ok(())
+        }
+    }
 }
 
 // ─────────────────────── self-update + dev commands ───────────────────────
