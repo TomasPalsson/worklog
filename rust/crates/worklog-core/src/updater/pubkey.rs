@@ -77,10 +77,18 @@ mod tests {
     use base64::Engine;
 
     #[test]
-    fn default_is_placeholder() {
+    fn embedded_pubkey_is_real_not_placeholder() {
+        // Invariant flip: once a real keypair is generated and embedded,
+        // the all-zero placeholder must never ship again. If this test
+        // regresses, someone committed the placeholder — that's a
+        // supply-chain tripwire, not a nuisance.
         let _g = test_env_lock();
         std::env::remove_var("WORKLOG_RELEASE_PUBKEY_BASE64");
-        assert!(is_placeholder(), "shipped default must be all-zero");
+        assert!(
+            !is_placeholder(),
+            "pubkey.rs still has the all-zero placeholder — \
+             generate a release keypair and embed its RELEASE_PUBLIC_KEY const"
+        );
     }
 
     #[test]
