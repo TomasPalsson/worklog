@@ -531,7 +531,9 @@ fn doctor_json_reports_litellm_provider_when_selected() {
         .success();
     cmd(&home)
         .env("WORKLOG_ESTIMATOR_PROVIDER", "litellm")
-        .args(["--json", "doctor"])
+        // --probe adds the live reachability check; without it doctor
+        // stays fast + offline-safe.
+        .args(["--json", "doctor", "--probe"])
         .assert()
         .success()
         .stdout(predicate::str::contains("\"provider\": \"litellm\""))
@@ -540,6 +542,34 @@ fn doctor_json_reports_litellm_provider_when_selected() {
         .stdout(predicate::str::contains(
             "\"model\": \"anthropic/claude-haiku-4-5\"",
         ));
+}
+
+/// The default `worklog doctor` (no --probe) does NOT hit the network.
+/// Scripted/monitoring callers invoke this path thousands of times a
+/// day; a 3s HTTP tax would be a UX regression. `reachable` must be
+/// absent from the JSON when probing is skipped.
+#[test]
+fn doctor_json_skips_probe_by_default() {
+    let home = TempDir::new().unwrap();
+    cmd(&home).args(["db", "migrate"]).assert().success();
+    cmd(&home)
+        .args([
+            "secret",
+            "set",
+            "litellm_base_url",
+            "--value",
+            "http://127.0.0.1:1",
+        ])
+        .assert()
+        .success();
+    cmd(&home)
+        .env("WORKLOG_ESTIMATOR_PROVIDER", "litellm")
+        .args(["--json", "doctor"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"provider\": \"litellm\""))
+        // reachable skipped → `skip_serializing_if` drops the field.
+        .stdout(predicate::str::contains("\"reachable\"").not());
 }
 
 /// `worklog estimate --help` needs a `long_about` that names the

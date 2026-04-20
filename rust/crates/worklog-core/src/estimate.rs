@@ -135,6 +135,14 @@ fn build_litellm_from_secrets() -> Result<LiteLLMInvoker> {
 /// `worklog doctor` to surface `estimator.reachable` in its report.
 /// 3s timeout keeps an unreachable proxy from hanging the setup flow.
 pub fn probe_litellm(base_url: &str) -> Option<String> {
+    // Reject non-http(s) schemes up-front so a misconfigured
+    // `file:///…` or bare hostname in the keychain can't trigger an
+    // accidental local-fs read / SSRF against an unintended target.
+    if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
+        return Some(format!(
+            "base_url must start with http:// or https:// (got `{base_url}`)"
+        ));
+    }
     let client = match reqwest::blocking::Client::builder()
         .user_agent("worklog")
         .timeout(std::time::Duration::from_secs(3))
@@ -278,22 +286,52 @@ pub struct LiteLLMInvoker {
     api_key: String,
     default_model: String,
     client: reqwest::blocking::Client,
+    /// Memoised `system + schema hint` — the upstream estimator passes
+    /// the same `system` and `schema` for every block in a single
+    /// `estimate_day` run, so we allocate the combined string once and
+    /// reuse it. Per-block `build_request_body` now just clones a
+    /// `String` reference instead of re-running `serde_json::to_string`
+    /// and `format!` on every iteration.
+    system_with_schema: std::sync::OnceLock<String>,
 }
+
+/// Hard cap on the `/v1/chat/completions` response body. A compliant
+/// proxy responding to `max_tokens: 512` emits at most ~3 KB; we grant
+/// 1 MiB headroom for multi-turn or reasoning envelopes while bounding
+/// the OOM surface from a hostile / compromised proxy (which could
+/// otherwise stream gigabytes of JSON into `serde_json::from_slice`).
+const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 
 impl LiteLLMInvoker {
     /// Build from already-resolved config. `base_url` trailing slash is
     /// tolerated. Empty `api_key` omits the `Authorization` header on
     /// requests (some local proxies run unauthed).
+    ///
+    /// Rejects any scheme other than `http://` or `https://` so a
+    /// misconfigured secret (`file:///etc/passwd`, `ftp://…`, bare
+    /// hostnames) fails at construction time rather than at the first
+    /// estimate call. RFC1918 / link-local IPs are intentionally
+    /// allowed because `http://localhost:4000` is the documented happy
+    /// path for a local LiteLLM proxy.
     pub fn new(
         base_url: impl Into<String>,
         api_key: impl Into<String>,
         model: impl Into<String>,
     ) -> Result<Self> {
+        let base_url = base_url.into().trim_end_matches('/').to_owned();
+        if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
+            anyhow::bail!(
+                "litellm_base_url must start with http:// or https:// (got `{}`). \
+                 Run `worklog secret set litellm_base_url <URL>` to fix.",
+                base_url
+            );
+        }
         Ok(Self {
-            base_url: base_url.into().trim_end_matches('/').to_owned(),
+            base_url,
             api_key: api_key.into(),
             default_model: model.into(),
             client: crate::http::client()?,
+            system_with_schema: std::sync::OnceLock::new(),
         })
     }
 
@@ -354,7 +392,19 @@ impl ModelInvoker for LiteLLMInvoker {
             );
         }
 
-        let envelope: Value = resp.json().context("decoding LiteLLM JSON response")?;
+        // Read as bytes, cap the size, then decode. `.json()` would
+        // buffer the entire body unbounded — a hostile proxy streaming
+        // gigabytes of JSON would OOM the process. The 1 MiB cap is
+        // comfortable headroom over the ~3 KB typical response.
+        let bytes = resp.bytes().context("reading LiteLLM response body")?;
+        if bytes.len() > MAX_RESPONSE_BYTES {
+            anyhow::bail!(
+                "LiteLLM response body exceeded {} MiB cap — refusing to decode (possible hostile proxy)",
+                MAX_RESPONSE_BYTES / (1024 * 1024)
+            );
+        }
+        let envelope: Value =
+            serde_json::from_slice(&bytes).context("decoding LiteLLM JSON response")?;
         let content = extract_message_content(&envelope)?;
         parse_response(content)
     }
@@ -364,6 +414,9 @@ impl LiteLLMInvoker {
     /// Build the OpenAI-compatible chat.completions body. The schema
     /// ends up in the system prompt so providers that ignore
     /// `response_format` (some on-prem proxies, Ollama) still see it.
+    /// The combined system+schema string is memoised in
+    /// `self.system_with_schema`; per-block calls clone-by-reference
+    /// instead of re-running the format+serialize dance.
     fn build_request_body(
         &self,
         system: &str,
@@ -371,9 +424,13 @@ impl LiteLLMInvoker {
         schema: &Value,
         model: &str,
     ) -> Result<Value> {
-        let schema_str = serde_json::to_string(schema)?;
-        let system_with_schema =
-            format!("{system}\n\nRespond ONLY with JSON matching this schema:\n{schema_str}");
+        let system_with_schema = self
+            .system_with_schema
+            .get_or_init(|| {
+                let schema_str = serde_json::to_string(schema).unwrap_or_else(|_| "{}".into());
+                format!("{system}\n\nRespond ONLY with JSON matching this schema:\n{schema_str}")
+            })
+            .as_str();
         Ok(json!({
             "model":           self.resolve_model(model),
             "messages": [
@@ -1324,7 +1381,9 @@ mod tests {
 
     /// If the user didn't set `litellm_model` we fall back to the
     /// first-class default (`anthropic/claude-haiku-4-5`) — the same
-    /// constant the wizard uses.
+    /// constant the wizard uses. Asserts via the public
+    /// `configured_model()` surface rather than the private
+    /// dispatch helper.
     #[test]
     fn resolve_provider_uses_default_litellm_model_when_model_secret_missing() {
         let _g = PROVIDER_ENV_LOCK.lock().unwrap();
@@ -1335,7 +1394,7 @@ mod tests {
 
         match resolve_provider().unwrap() {
             ProviderChoice::LiteLLM(inv) => {
-                assert_eq!(inv.resolve_model(""), DEFAULT_LITELLM_MODEL);
+                assert_eq!(inv.configured_model(), DEFAULT_LITELLM_MODEL);
             }
             _ => panic!("expected LiteLLM"),
         }

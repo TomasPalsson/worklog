@@ -76,7 +76,14 @@ pub enum Cmd {
     Version,
 
     /// Report environment, db, and secret status.
-    Doctor,
+    Doctor {
+        /// Also probe the LiteLLM proxy (when configured) — adds a 3s
+        /// HTTP GET against `{base_url}/health`. Default off so
+        /// `worklog doctor` stays a fast, offline-safe check.
+        /// `WORKLOG_DOCTOR_PROBE=1` is accepted as an alternative.
+        #[arg(long, env = "WORKLOG_DOCTOR_PROBE")]
+        probe: bool,
+    },
 
     /// One-shot onboarding: db migrate + preflight + capture secrets.
     Setup {
@@ -479,7 +486,7 @@ pub fn run_with<W: Write>(
 
     match cli.command {
         Cmd::Version => cmd_version(out, cli.json),
-        Cmd::Doctor => cmd_doctor(out, cli.json),
+        Cmd::Doctor { probe } => cmd_doctor(probe, out, cli.json),
         Cmd::Setup {
             non_interactive,
             skip_validate,
@@ -611,7 +618,7 @@ struct EstimatorReport {
     reason: Option<String>,
 }
 
-fn estimator_report() -> EstimatorReport {
+fn estimator_report(probe: bool) -> EstimatorReport {
     use worklog_core::estimate as est;
     match est::resolve_provider() {
         Ok(est::ProviderChoice::ClaudeSubprocess) => EstimatorReport {
@@ -627,13 +634,22 @@ fn estimator_report() -> EstimatorReport {
             let endpoint = inv.endpoint();
             let base_url = endpoint.trim_end_matches("/v1/chat/completions").to_owned();
             let model = inv.configured_model().to_owned();
-            let probe = est::probe_litellm(&base_url);
+            let (reachable, reason) = if probe {
+                // Live probe — 3s timeout. Only runs when the caller
+                // opted in via `--probe` or `WORKLOG_DOCTOR_PROBE=1`.
+                let p = est::probe_litellm(&base_url);
+                (Some(p.is_none()), p)
+            } else {
+                // Skip by default so scripted callers don't pay the
+                // 3s-HTTP tax on every `worklog doctor` invocation.
+                (None, None)
+            };
             EstimatorReport {
                 provider: "litellm",
                 base_url: Some(base_url),
                 model: Some(model),
-                reachable: Some(probe.is_none()),
-                reason: probe,
+                reachable,
+                reason,
             }
         }
         Err(e) => EstimatorReport {
@@ -649,7 +665,7 @@ fn estimator_report() -> EstimatorReport {
     }
 }
 
-fn cmd_doctor<W: Write>(out: &mut W, json: bool) -> Result<()> {
+fn cmd_doctor<W: Write>(probe: bool, out: &mut W, json: bool) -> Result<()> {
     let paths = Paths::resolve()?;
     let db_summary = if paths.db_exists() {
         let conn = db::open(&paths.db).context("opening db for doctor")?;
@@ -658,7 +674,7 @@ fn cmd_doctor<W: Write>(out: &mut W, json: bool) -> Result<()> {
         None
     };
     let secrets = secrets::audit();
-    let estimator = estimator_report();
+    let estimator = estimator_report(probe);
 
     if json {
         let report = serde_json::json!({
@@ -712,6 +728,7 @@ fn cmd_doctor<W: Write>(out: &mut W, json: bool) -> Result<()> {
             .reason
             .clone()
             .unwrap_or_else(|| "misconfigured".to_string()),
+        None if estimator.provider == "litellm" => "probe skipped (pass --probe)".to_string(),
         None => String::new(),
     };
     let est_value = match (&estimator.base_url, &estimator.model) {
