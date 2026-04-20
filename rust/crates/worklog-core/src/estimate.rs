@@ -281,6 +281,14 @@ pub const DEFAULT_LITELLM_MODEL: &str = "anthropic/claude-haiku-4-5";
 ///
 /// TLS + 30s default timeout come from [`crate::http::client`]. Tests
 /// swap in a short-timeout client via [`Self::with_client`].
+/// # Contract
+///
+/// A single `LiteLLMInvoker` instance assumes `system` and `schema`
+/// are IDENTICAL across every `invoke` call — `system_with_schema` is
+/// memoised on first use and reused thereafter for perf. This matches
+/// how `estimate_day` uses it (one invoker per run, same prompt +
+/// schema for every block). Constructing a fresh invoker per
+/// structurally-different task keeps the memoisation correct.
 pub struct LiteLLMInvoker {
     base_url: String,
     api_key: String,
@@ -291,7 +299,9 @@ pub struct LiteLLMInvoker {
     /// `estimate_day` run, so we allocate the combined string once and
     /// reuse it. Per-block `build_request_body` now just clones a
     /// `String` reference instead of re-running `serde_json::to_string`
-    /// and `format!` on every iteration.
+    /// and `format!` on every iteration. See the struct-level contract
+    /// above — callers reusing one invoker for heterogeneous prompts
+    /// would silently get the first call's cached string.
     system_with_schema: std::sync::OnceLock<String>,
 }
 
@@ -318,7 +328,19 @@ impl LiteLLMInvoker {
         api_key: impl Into<String>,
         model: impl Into<String>,
     ) -> Result<Self> {
-        let base_url = base_url.into().trim_end_matches('/').to_owned();
+        let base_url = base_url.into();
+        // LiteLLM's own docs show `http://localhost:4000/v1` as the
+        // proxy URL for OpenAI-compatible clients — easy for a user to
+        // paste into `litellm_base_url` directly. Our `endpoint()`
+        // always appends `/v1/chat/completions`, so a user-provided
+        // `/v1` suffix produced `…/v1/v1/chat/completions` and silently
+        // gapped every block. Strip `/v1` (trailing-slash tolerant) up
+        // front so either form works.
+        let base_url = base_url
+            .trim_end_matches('/')
+            .trim_end_matches("/v1")
+            .trim_end_matches('/')
+            .to_owned();
         if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
             anyhow::bail!(
                 "litellm_base_url must start with http:// or https:// (got `{}`). \
@@ -359,8 +381,11 @@ impl LiteLLMInvoker {
 
     /// Chosen model for a given invocation: caller's `--model` wins,
     /// falling back to whatever the user configured in secrets.
+    /// Whitespace-only callers (`--model "   "`) are treated as empty
+    /// so the fallback kicks in instead of forwarding garbage to the
+    /// proxy.
     fn resolve_model<'a>(&'a self, caller: &'a str) -> &'a str {
-        if caller.is_empty() {
+        if caller.trim().is_empty() {
             &self.default_model
         } else {
             caller
@@ -1262,6 +1287,51 @@ mod tests {
         let schema = response_schema();
         inv.invoke("sys", "user", &schema, "").unwrap();
         hit.assert();
+    }
+
+    /// QA regression — LiteLLM's own docs sometimes print
+    /// `http://localhost:4000/v1` as the proxy URL, so users paste
+    /// that straight into `litellm_base_url`. Without the strip, we
+    /// would POST to `…/v1/v1/chat/completions` and silently gap
+    /// every block. The constructor strips a trailing `/v1` so both
+    /// `http://…:4000` and `http://…:4000/v1` land at the same
+    /// `endpoint()`.
+    #[test]
+    fn litellm_invoker_new_strips_trailing_v1_from_base_url() {
+        let a = LiteLLMInvoker::new("http://localhost:4000", "k", "m").unwrap();
+        let b = LiteLLMInvoker::new("http://localhost:4000/v1", "k", "m").unwrap();
+        let c = LiteLLMInvoker::new("http://localhost:4000/v1/", "k", "m").unwrap();
+        assert_eq!(a.endpoint(), "http://localhost:4000/v1/chat/completions");
+        assert_eq!(b.endpoint(), "http://localhost:4000/v1/chat/completions");
+        assert_eq!(c.endpoint(), "http://localhost:4000/v1/chat/completions");
+    }
+
+    /// QA regression — non-http(s) schemes must error at construction
+    /// so a typo in the keychain fails fast rather than hanging on
+    /// the first estimate call. Using `.err()` (not `.unwrap_err()`)
+    /// avoids requiring Debug on the Ok variant; LiteLLMInvoker
+    /// intentionally doesn't derive Debug so api_key can't leak.
+    #[test]
+    fn litellm_invoker_new_rejects_non_http_scheme() {
+        let err = LiteLLMInvoker::new("file:///etc/passwd", "k", "m")
+            .err()
+            .expect("non-http scheme must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("http://") && msg.contains("https://"),
+            "error must name the valid schemes: {msg}"
+        );
+    }
+
+    /// QA regression — `--model "   "` must fall back to the
+    /// configured default, not forward whitespace as the model name.
+    #[test]
+    fn litellm_invoker_resolve_model_treats_whitespace_as_empty() {
+        let inv = LiteLLMInvoker::new("http://localhost:4000", "k", "anthropic/x").unwrap();
+        assert_eq!(inv.resolve_model(""), "anthropic/x");
+        assert_eq!(inv.resolve_model("   "), "anthropic/x");
+        assert_eq!(inv.resolve_model("\t\n "), "anthropic/x");
+        assert_eq!(inv.resolve_model("openai/gpt-4o"), "openai/gpt-4o");
     }
 
     /// The invoker's `--model` passthrough: when the caller (e.g.
