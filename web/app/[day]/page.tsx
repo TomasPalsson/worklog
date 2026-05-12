@@ -44,20 +44,23 @@ export default async function DayPage({
 
   const { blocks, total_seconds: total } = summary;
   const { tickets, meta: cache } = ticketsResp;
-  // Personal blocks aren't candidates for Jira/Tempo, so they don't
-  // count toward the unassigned amber-nag — that nag fires for *work*
-  // blocks the user still needs to assign.
-  const unassigned = blocks.filter((b) => !b.jira_issue && !b.is_personal).length;
-  // Split the totals so the header can show "Xh work · Yh personal".
-  // `total` from the daemon is wall-clock across everything; subtract
-  // the personal slice for the headline figure.
-  const personalSeconds = blocks
-    .filter((b) => b.is_personal)
-    .reduce((acc, b) => acc + b.duration_seconds, 0);
+
+  // Split work vs personal. Personal blocks aren't candidates for
+  // Jira/Tempo, so they don't count toward the unassigned amber-nag —
+  // that nag fires for *work* blocks the user still needs to assign.
+  const workBlocks = blocks.filter((b) => !b.is_personal);
+  const personalBlocks = blocks.filter((b) => b.is_personal);
+  const unassigned = workBlocks.filter((b) => !b.jira_issue).length;
+
+  // Header total reflects work-only hours; personal time gets a
+  // muted annotation so the focus is on billable time.
+  const personalSeconds = personalBlocks.reduce(
+    (acc, b) => acc + b.duration_seconds,
+    0,
+  );
   const workSeconds = Math.max(0, total - personalSeconds);
-  const personalSummary = personalSeconds > 0
-    ? `${formatTotalHours(personalSeconds)} personal`
-    : undefined;
+  const personalSummary =
+    personalSeconds > 0 ? `${formatTotalHours(personalSeconds)} personal` : undefined;
 
   return (
     <>
@@ -65,7 +68,7 @@ export default async function DayPage({
         day={day}
         heading={formatDayHeading(day)}
         totalHours={formatTotalHours(workSeconds)}
-        blockCount={blocks.length}
+        blockCount={workBlocks.length}
         unassigned={unassigned}
         personalSummary={personalSummary}
       />
@@ -73,13 +76,40 @@ export default async function DayPage({
       {blocks.length === 0 ? (
         <EmptyState day={day} />
       ) : (
-        <ul className="blocks" role="list">
-          {blocks.map((b) => (
-            <li key={b.id}>
-              <BlockCard block={b} tickets={tickets} day={day} />
-            </li>
-          ))}
-        </ul>
+        <>
+          {workBlocks.length > 0 ? (
+            <ul className="blocks" role="list">
+              {workBlocks.map((b) => (
+                <li key={b.id}>
+                  <BlockCard block={b} tickets={tickets} day={day} />
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="day-empty-work">No work blocks today — only personal.</p>
+          )}
+
+          {personalBlocks.length > 0 && (
+            <details className="personal-section">
+              <summary>
+                <span className="personal-section-count">
+                  {personalBlocks.length} personal
+                </span>
+                <span className="personal-section-hours">
+                  {formatTotalHours(personalSeconds)}
+                </span>
+                <span className="personal-section-hint">click to show</span>
+              </summary>
+              <ul className="blocks" role="list">
+                {personalBlocks.map((b) => (
+                  <li key={b.id}>
+                    <BlockCard block={b} tickets={tickets} day={day} />
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </>
       )}
     </>
   );

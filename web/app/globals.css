@@ -371,16 +371,81 @@ button {
   background: var(--bg-sunk);
 }
 
-/* Personal blocks fade into the background — the user is focused on
-   work in this view. Restore full opacity on hover/focus so they
-   stay interactable for inspection or manual override. */
+/* Personal blocks live inside a <details> footer section (collapsed
+   by default). When expanded they still render dimmed so the eye
+   doesn't accidentally treat them as work. */
 .block.personal {
-  opacity: 0.55;
+  opacity: 0.7;
   transition: opacity 120ms ease-out;
 }
 .block.personal:hover,
 .block.personal:focus-within {
   opacity: 1;
+}
+
+/* "N personal · 2.3h · click to show" — collapsed footer. */
+.personal-section {
+  margin-top: 24px;
+  border-top: 1px dashed var(--border);
+  padding-top: 12px;
+}
+.personal-section > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+.personal-section > summary::-webkit-details-marker {
+  display: none;
+}
+.personal-section > summary:hover {
+  background: var(--bg-sunk);
+  color: var(--fg);
+}
+.personal-section[open] > summary {
+  margin-bottom: 12px;
+}
+.personal-section-count {
+  font-weight: 600;
+}
+.personal-section-hours::before {
+  content: "·";
+  margin-right: 8px;
+  opacity: 0.5;
+}
+.personal-section-hint {
+  font-style: italic;
+  opacity: 0.7;
+}
+.personal-section-hint::after {
+  content: "▸";
+  margin-left: 6px;
+  display: inline-block;
+  transition: transform 120ms ease-out;
+}
+.personal-section[open] .personal-section-hint::after {
+  transform: rotate(90deg);
+}
+.personal-section[open] .personal-section-hint {
+  /* "click to show" reads wrong when expanded — hide the words, keep
+     the chevron via ::after which already rotated. */
+  font-size: 0;
+}
+.personal-section[open] .personal-section-hint::after {
+  font-size: 12px;
+}
+
+.day-empty-work {
+  color: var(--fg-muted);
+  font-style: italic;
+  padding: 8px 0;
 }
 
 /* time column */

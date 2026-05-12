@@ -237,12 +237,19 @@ pub fn reclassify_blocks(conn: &Connection, day_filter: Option<&str>) -> Result<
     };
     for id in ids {
         let project = dominant_project_path_for_block(conn, id)?;
-        let new_personal = cfg.classify(project.as_deref());
-        let current: i64 =
-            conn.query_row("SELECT is_personal FROM blocks WHERE id = ?1", [id], |r| {
-                r.get(0)
-            })?;
-        let was_personal = current != 0;
+        let path_personal = cfg.classify(project.as_deref());
+        // Strong override: any block carrying a Jira ticket is by
+        // definition work. Assignment beats the path heuristic — if you
+        // (or the estimator) committed to a ticket, that's a clearer
+        // signal than what folder the events came from.
+        let (current_personal, has_ticket): (i64, bool) = conn.query_row(
+            "SELECT is_personal, jira_issue IS NOT NULL AND jira_issue != ''
+               FROM blocks WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get::<_, i64>(1)? != 0)),
+        )?;
+        let new_personal = path_personal && !has_ticket;
+        let was_personal = current_personal != 0;
         if was_personal == new_personal {
             stats.unchanged += 1;
             continue;

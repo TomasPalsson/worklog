@@ -491,7 +491,11 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
             .and_then(|c| c.jira_issue.clone())
             .or_else(|| b.jira_issue.clone());
 
-        let is_personal = personal_cfg.classify(b.dominant_project_path().as_deref());
+        // path-based classifier gives the first signal, but a non-null
+        // jira_issue (manual or inferred) is a stronger one — if the user
+        // (or estimator) bothered to attach a ticket, the block is work.
+        let path_personal = personal_cfg.classify(b.dominant_project_path().as_deref());
+        let is_personal = path_personal && jira_issue.is_none();
         tx.execute(
             "INSERT INTO blocks (
                 day, jira_issue, started_at, ended_at,

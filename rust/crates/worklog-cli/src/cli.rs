@@ -1597,17 +1597,15 @@ fn rpassword_readline() -> Result<String> {
 // ─────────────────────────── web subcommand ───────────────────────────
 
 fn cmd_web_up<W: Write>(port: u16, no_daemon: bool, out: &mut W, json: bool) -> Result<()> {
-    web_mod::preflight_docker()?;
     let paths = Paths::resolve()?;
     paths.ensure()?;
     let context = web_mod::resolve_web_context(&paths)?;
-    let compose = web_mod::render_compose(&paths, port, &context)?;
 
     if !no_daemon {
         ensure_daemon_running(out)?;
     }
 
-    web_mod::compose_up(&compose, false)?;
+    let pid = web_mod::bun_up(&paths, &context, port)?;
 
     if json {
         writeln!(
@@ -1616,28 +1614,27 @@ fn cmd_web_up<W: Write>(port: u16, no_daemon: bool, out: &mut W, json: bool) -> 
             serde_json::to_string_pretty(&serde_json::json!({
                 "ok": true,
                 "url": format!("http://localhost:{port}"),
-                "compose": compose.display().to_string(),
+                "pid": pid,
                 "context": context.display().to_string(),
+                "log": web_mod::bun_log_path(&paths).display().to_string(),
             }))?
         )?;
     } else {
         writeln!(out, "✓ worklog-web up — open http://localhost:{port}")?;
-        writeln!(out, "  compose: {}", compose.display())?;
+        writeln!(out, "  pid:     {pid}")?;
+        writeln!(
+            out,
+            "  log:     {}",
+            web_mod::bun_log_path(&paths).display()
+        )?;
+        writeln!(out, "  context: {}", context.display())?;
     }
     Ok(())
 }
 
 fn cmd_web_down<W: Write>(out: &mut W, json: bool) -> Result<()> {
-    web_mod::preflight_docker()?;
     let paths = Paths::resolve()?;
-    let compose = web_mod::compose_path(&paths);
-    if !compose.is_file() {
-        anyhow::bail!(
-            "no compose file at {} — nothing to bring down",
-            compose.display()
-        );
-    }
-    web_mod::compose_down(&compose)?;
+    web_mod::bun_down(&paths)?;
     if json {
         writeln!(out, "{{\"ok\": true}}")?;
     } else {
@@ -1647,18 +1644,18 @@ fn cmd_web_down<W: Write>(out: &mut W, json: bool) -> Result<()> {
 }
 
 fn cmd_web_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
-    web_mod::preflight_docker().ok(); // status should still run if docker daemon is off
-    let status = web_mod::status()?;
+    let paths = Paths::resolve()?;
+    let status = web_mod::bun_status(&paths);
     if json {
         writeln!(out, "{}", serde_json::to_string_pretty(&status)?)?;
     } else if status.running {
         writeln!(
             out,
-            "✓ running — image={} port={} started={}",
-            status.image.as_deref().unwrap_or("?"),
-            status.port.map(|p| p.to_string()).unwrap_or("?".into()),
-            status.uptime.as_deref().unwrap_or("?"),
+            "✓ running — {} ({})",
+            status.image.as_deref().unwrap_or("bun"),
+            status.container.as_deref().unwrap_or("?"),
         )?;
+        writeln!(out, "  log: {}", web_mod::bun_log_path(&paths).display())?;
     } else {
         writeln!(out, "— not running. Start with `worklog web up`.")?;
     }
@@ -1666,26 +1663,35 @@ fn cmd_web_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
 }
 
 fn cmd_web_logs(tail: u32) -> Result<()> {
-    web_mod::preflight_docker()?;
     let paths = Paths::resolve()?;
-    let compose = web_mod::compose_path(&paths);
-    if !compose.is_file() {
-        anyhow::bail!(
-            "no compose file at {} — run `worklog web up` first",
-            compose.display()
-        );
+    let log = web_mod::bun_log_path(&paths);
+    if !log.is_file() {
+        anyhow::bail!("no log at {} — has the web UI ever been up?", log.display());
     }
-    web_mod::compose_logs(&compose, tail)
+    let status = std::process::Command::new("tail")
+        .args(["-n", &tail.to_string(), "-f"])
+        .arg(&log)
+        .status()
+        .context("spawning tail")?;
+    if !status.success() {
+        anyhow::bail!("tail exited {status}");
+    }
+    Ok(())
 }
 
-fn cmd_web_build<W: Write>(pull: bool, out: &mut W, json: bool) -> Result<()> {
-    web_mod::preflight_docker()?;
+fn cmd_web_build<W: Write>(_pull: bool, out: &mut W, json: bool) -> Result<()> {
     let paths = Paths::resolve()?;
     paths.ensure()?;
     let context = web_mod::resolve_web_context(&paths)?;
-    // Re-render so the compose file points at the current web/ location.
-    let compose = web_mod::render_compose(&paths, 3333, &context)?;
-    web_mod::compose_build(&compose, pull)?;
+    let status = std::process::Command::new("bun")
+        .current_dir(&context)
+        .env("NEXT_TELEMETRY_DISABLED", "1")
+        .args(["run", "build"])
+        .status()
+        .context("spawning `bun run build`")?;
+    if !status.success() {
+        anyhow::bail!("bun run build exited {status}");
+    }
     if json {
         writeln!(
             out,
@@ -1693,7 +1699,7 @@ fn cmd_web_build<W: Write>(pull: bool, out: &mut W, json: bool) -> Result<()> {
             context.display()
         )?;
     } else {
-        writeln!(out, "✓ worklog-web image built from {}", context.display())?;
+        writeln!(out, "✓ worklog-web built from {}", context.display())?;
     }
     Ok(())
 }
