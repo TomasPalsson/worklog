@@ -78,9 +78,11 @@ pub fn bun_up(paths: &Paths, web_context: &Path, port: u16) -> Result<u32> {
         run_inherit(cmd).context("running `bun install`")?;
     }
 
-    // Build if the standalone output isn't there yet.
-    let standalone_marker = web_context.join(".next/BUILD_ID");
-    if !standalone_marker.is_file() {
+    // Always rebuild on `up` — the production build caches aggressively
+    // and a stale .next dir would silently serve the previous version
+    // of the UI after any web/ edit. Next caches per-file under
+    // .next/cache so the rebuild is incremental (~3-5s after the first).
+    {
         let mut cmd = Command::new("bun");
         cmd.current_dir(web_context)
             .env("NEXT_TELEMETRY_DISABLED", "1")
