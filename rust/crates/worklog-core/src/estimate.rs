@@ -427,21 +427,42 @@ fn mark_gap(conn: &Connection, block_id: i64) -> Result<()> {
     Ok(())
 }
 
-/// Accept any of: raw JSON object, `{"result": "<string json>"}` envelope,
-/// `{"result": {...}}` envelope, or prose-wrapped JSON. Matches Python.
+/// Accept any of: `{"structured_output": {...}}` (current `claude -p
+/// --json-schema` envelope — `result` is prose), raw JSON object,
+/// `{"result": "<string json>"}` envelope, `{"result": {...}}` envelope,
+/// or prose-wrapped JSON.
 pub fn parse_response(raw: &str) -> Result<Value> {
     let raw = raw.trim();
 
     if let Ok(parsed) = serde_json::from_str::<Value>(raw) {
+        // Preferred: claude -p --json-schema now emits the schema-validated
+        // object under `structured_output`. `result` is a prose summary.
+        if let Some(so) = parsed.get("structured_output") {
+            if so.is_object() {
+                return Ok(so.clone());
+            }
+            if let Some(s) = so.as_str() {
+                if let Ok(v) = serde_json::from_str::<Value>(s) {
+                    return Ok(v);
+                }
+            }
+        }
         if let Some(result) = parsed.get("result") {
             if let Some(s) = result.as_str() {
-                return serde_json::from_str(s).context("envelope.result not JSON");
+                if let Ok(v) = serde_json::from_str::<Value>(s) {
+                    return Ok(v);
+                }
+                // result is prose (new CLI behavior) — fall through to
+                // the regex extractor below in case it embeds JSON.
             }
             if result.is_object() {
                 return Ok(result.clone());
             }
         }
-        if parsed.is_object() {
+        if parsed.is_object()
+            && parsed.get("structured_output").is_none()
+            && parsed.get("result").is_none()
+        {
             return Ok(parsed);
         }
     }
@@ -531,6 +552,28 @@ mod tests {
         let v =
             parse_response(r#"{"jira_issue":"PROJ-1","minutes":30,"description":"x"}"#).unwrap();
         assert_eq!(v["jira_issue"], "PROJ-1");
+    }
+
+    #[test]
+    fn parse_response_prefers_structured_output_over_prose_result() {
+        // Current `claude -p --json-schema` envelope: `result` is a prose
+        // summary, the schema-validated object lives in `structured_output`.
+        // Regression: parser used to read `result` first and bail with
+        // "envelope.result not JSON", marking every block as `gap`.
+        let v = parse_response(
+            r#"{
+              "type": "result",
+              "result": "Done. Worklog entry created for PROJ-1.",
+              "structured_output": {
+                "jira_issue": "PROJ-1",
+                "minutes": 30,
+                "description": "x"
+              }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(v["jira_issue"], "PROJ-1");
+        assert_eq!(v["minutes"], 30);
     }
 
     #[test]
