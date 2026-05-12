@@ -16,6 +16,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "jira_email",
     "jira_api_token",
     "jira_base_url",
+    "jira_account_id",
     "github_token",
     "github_user",
     "tempo_api_token",
@@ -33,6 +34,7 @@ fn env_var_for(key: &str) -> Option<&'static str> {
         "jira_email" => "WORKLOG_JIRA_EMAIL",
         "jira_api_token" => "WORKLOG_JIRA_TOKEN",
         "jira_base_url" => "WORKLOG_JIRA_BASE_URL",
+        "jira_account_id" => "WORKLOG_JIRA_ACCOUNT_ID",
         "github_token" => "WORKLOG_GITHUB_TOKEN",
         "github_user" => "WORKLOG_GITHUB_USER",
         "tempo_api_token" => "WORKLOG_TEMPO_TOKEN",
@@ -147,6 +149,18 @@ mod backend {
     }
 
     pub fn get(key: &str) -> Result<Option<String>> {
+        // 1) Process env wins. Lets users set `WORKLOG_*` in .envrc /
+        //    .zshrc / docker-compose env and never get a macOS keychain
+        //    prompt. Was previously last in the lookup order, which
+        //    meant a populated keychain shadowed the env entirely.
+        if let Some(env_name) = super::env_var_for(key) {
+            if let Ok(v) = std::env::var(env_name) {
+                if !v.is_empty() {
+                    return Ok(Some(v));
+                }
+            }
+        }
+        // 2) Keychain (the source the setup wizard writes to).
         let primary = if let Some(path) = file_backend_path() {
             read_file_store(&path)?.get(key).cloned()
         } else {
@@ -159,10 +173,8 @@ mod backend {
         if primary.is_some() {
             return Ok(primary);
         }
-        // Fall back to the Python-era .env file so existing installs keep
-        // working without a migration step. Applies to both the real
-        // keychain backend and the file-backed shim used by integration
-        // tests — otherwise tests can't verify the fallback end-to-end.
+        // 3) Python-era ~/.config/worklog/.env file — existing installs
+        //    keep working without a migration step.
         Ok(super::read_env_file(key))
     }
 

@@ -25,10 +25,12 @@ export function BlockCard({ block, tickets, day }: Props) {
 
   const assigned = !!block.jira_issue;
   const synced = !!block.tempo_worklog_id;
+  const dirty = synced && block.dirty;
   const cls = [
     "block",
     assigned ? "assigned" : "unassigned",
     synced ? "synced" : "",
+    dirty ? "dirty" : "",
     block.is_personal ? "personal" : "",
   ]
     .filter(Boolean)
@@ -136,10 +138,18 @@ export function BlockCard({ block, tickets, day }: Props) {
             tickets={tickets}
             day={day}
           />
-          {synced && (
+          {synced && !dirty && (
             <span className="synced-tag" title={`Synced to Tempo · id ${block.tempo_worklog_id}`}>
               <Check />
               synced
+            </span>
+          )}
+          {dirty && (
+            <span
+              className="dirty-tag"
+              title={`Edited since last sync — click "Sync to Tempo" to update Tempo entry ${block.tempo_worklog_id}`}
+            >
+              unsynced edits
             </span>
           )}
           {block.is_personal && (

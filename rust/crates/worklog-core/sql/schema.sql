@@ -1,4 +1,4 @@
--- Worklog schema v5. Shared between Python and the Rust hook (include_str!).
+-- Worklog schema v6. Shared between Python and the Rust hook (include_str!).
 -- All CREATE statements are idempotent (IF NOT EXISTS) so the Rust hook can
 -- run this on every invocation with negligible cost.
 --
@@ -57,6 +57,10 @@ CREATE TABLE IF NOT EXISTS blocks (
     flagged INTEGER NOT NULL DEFAULT 0,
     tempo_worklog_id TEXT,
     is_personal INTEGER NOT NULL DEFAULT 0,
+    -- `dirty = 1` means the block has been edited since it was synced
+    -- (only ever set when tempo_worklog_id is present). The next
+    -- `worklog sync` PUTs the new values to Tempo and clears the flag.
+    dirty INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 

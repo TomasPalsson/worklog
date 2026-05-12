@@ -15,7 +15,7 @@ pub const SCHEMA_SQL: &str = include_str!("../sql/schema.sql");
 /// Monotonic integer version of the schema, bumped by future migrations.
 /// Stored in `PRAGMA user_version` so we can detect stale dbs without adding
 /// a dedicated table.
-pub const SCHEMA_VERSION: i32 = 5;
+pub const SCHEMA_VERSION: i32 = 6;
 
 /// Open a connection at `path`, enable WAL + FK, and run migrations.
 pub fn open(path: &Path) -> Result<Connection> {
@@ -61,6 +61,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     // table already exists, so a DB from v3 won't auto-pick up the new
     // is_personal column. Do an idempotent ALTER for upgraded users.
     ensure_blocks_is_personal(conn).context("ensuring blocks.is_personal")?;
+    ensure_blocks_dirty(conn).context("ensuring blocks.dirty")?;
     ensure_jira_tickets_issue_id(conn).context("ensuring jira_tickets.issue_id")?;
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)
         .context("stamping user_version")?;
@@ -80,6 +81,23 @@ fn ensure_blocks_is_personal(conn: &Connection) -> Result<()> {
             [],
         )
         .context("ALTER TABLE blocks ADD is_personal")?;
+    }
+    Ok(())
+}
+
+fn ensure_blocks_dirty(conn: &Connection) -> Result<()> {
+    let has: bool = conn
+        .prepare("PRAGMA table_info(blocks)")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter()
+        .any(|c| c == "dirty");
+    if !has {
+        conn.execute(
+            "ALTER TABLE blocks ADD COLUMN dirty INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .context("ALTER TABLE blocks ADD dirty")?;
     }
     Ok(())
 }

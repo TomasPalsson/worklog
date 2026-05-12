@@ -65,6 +65,11 @@ pub struct Block {
     /// review UI, skipped by the estimator, and excluded from Tempo sync.
     #[serde(default)]
     pub is_personal: bool,
+    /// True when the block has been edited since `tempo_worklog_id` was
+    /// recorded — the next `worklog sync` PUTs the new values to Tempo
+    /// instead of POSTing a duplicate, then clears the flag.
+    #[serde(default)]
+    pub dirty: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

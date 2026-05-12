@@ -904,6 +904,22 @@ button {
   height: 11px;
 }
 
+/* "unsynced edits" pill — amber to draw the eye toward the sync button.
+   Sits where the synced ✓ would be, since a dirty block is by
+   definition already synced once. */
+.dirty-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--amber-ink);
+  background: var(--amber-bg, rgba(245, 158, 11, 0.12));
+  border: 1px solid var(--amber-ink);
+}
+
 /* personal-block pill — muted, no icon, sits next to the synced tag */
 .personal-tag {
   display: inline-flex;

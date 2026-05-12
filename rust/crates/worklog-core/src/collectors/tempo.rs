@@ -97,13 +97,21 @@ pub fn sync_day_with(
     // and cache it back so the next sync is local-only.
     let author = resolve_account_id(&auth.author, client).unwrap_or_else(|_| auth.author.clone());
 
+    // Pick up two kinds of work:
+    //   (a) blocks never synced (`tempo_worklog_id` blank) → POST
+    //   (b) blocks edited since their last sync (`dirty = 1`) → PUT
     let rows: Vec<PendingBlock> = {
         let mut stmt = conn.prepare(
-            "SELECT id, jira_issue, started_at, duration_seconds, description, day
+            "SELECT id, jira_issue, started_at, duration_seconds, description, day,
+                    tempo_worklog_id
                FROM blocks
               WHERE day = ?1
                 AND is_personal = 0
-                AND (tempo_worklog_id IS NULL OR tempo_worklog_id = '')
+                AND (
+                  tempo_worklog_id IS NULL
+                  OR tempo_worklog_id = ''
+                  OR dirty = 1
+                )
               ORDER BY started_at",
         )?;
         let iter = stmt.query_map(params![day.to_string()], |r| {
@@ -114,6 +122,7 @@ pub fn sync_day_with(
                 duration_seconds: r.get(3)?,
                 description: r.get(4)?,
                 day: r.get(5)?,
+                tempo_worklog_id: r.get(6)?,
             })
         })?;
         iter.collect::<Result<Vec<_>, _>>()?
@@ -166,26 +175,44 @@ pub fn sync_day_with(
             "authorAccountId":  author,
         });
 
+        // Two paths: existing tempo_worklog_id → PUT update; otherwise → POST create.
+        let existing_id = b
+            .tempo_worklog_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+
         if dry_run {
             results.push(SyncResult {
                 block_id: b.id,
-                status: "dry-run",
+                status: if existing_id.is_some() {
+                    "dry-run-update"
+                } else {
+                    "dry-run"
+                },
                 reason: None,
-                tempo_id: None,
+                tempo_id: existing_id.map(|s| s.to_owned()),
                 payload: Some(payload),
                 http_status: None,
             });
             continue;
         }
 
-        let url = format!("{}/worklogs", auth.base_url);
-        let resp = client
-            .post(&url)
+        let (url, method) = match existing_id {
+            Some(id) => (format!("{}/worklogs/{}", auth.base_url, id), "PUT"),
+            None => (format!("{}/worklogs", auth.base_url), "POST"),
+        };
+        let req = if method == "PUT" {
+            client.put(&url)
+        } else {
+            client.post(&url)
+        };
+        let resp = req
             .bearer_auth(&auth.token)
             .header("Content-Type", "application/json")
             .json(&payload)
             .send()
-            .context("tempo POST")?;
+            .with_context(|| format!("tempo {method}"))?;
         let http_status = resp.status().as_u16();
         if !resp.status().is_success() {
             let body = resp.text().unwrap_or_default();
@@ -203,13 +230,15 @@ pub fn sync_day_with(
             continue;
         }
 
+        // PUT response shape is the same envelope as POST. For PUTs the
+        // existing id is the source of truth — fall back to it if the
+        // server somehow omits the field, so we never re-create the
+        // worklog on the next sync (double-billing).
         let parsed: TempoCreateResponse = resp.json().context("decode tempo response")?;
-        // `tempoWorklogId` is an integer in real responses but we accept
-        // string too for resilience. Reject Null / "" / "null" /
-        // anything that would silently become a phantom canary.
-        let tempo_id = match normalise_tempo_id(&parsed.tempo_worklog_id) {
-            Some(s) => s,
-            None => {
+        let tempo_id = match (normalise_tempo_id(&parsed.tempo_worklog_id), existing_id) {
+            (Some(s), _) => s,
+            (None, Some(prev)) => prev.to_owned(),
+            (None, None) => {
                 let msg = format!(
                     "block {}: tempo returned no usable tempoWorklogId: {}",
                     b.id, parsed.tempo_worklog_id
@@ -226,20 +255,22 @@ pub fn sync_day_with(
                 continue;
             }
         };
+        // Clear dirty alongside the id write — the local row is now
+        // back in sync with Tempo's view of it.
         conn.execute(
-            "UPDATE blocks SET tempo_worklog_id = ?1 WHERE id = ?2",
+            "UPDATE blocks SET tempo_worklog_id = ?1, dirty = 0 WHERE id = ?2",
             params![tempo_id, b.id],
         )?;
         report.synced += 1;
         results.push(SyncResult {
             block_id: b.id,
-            status: "synced",
+            status: if method == "PUT" { "updated" } else { "synced" },
             reason: None,
             tempo_id: Some(tempo_id),
             payload: None,
             http_status: Some(http_status),
         });
-        debug!(block_id = b.id, "synced to tempo");
+        debug!(block_id = b.id, method, "synced to tempo");
     }
     Ok((report, results))
 }
@@ -304,10 +335,17 @@ fn resolve_account_id(author: &str, client: &Client) -> Result<String> {
         .basic_auth(&jira_auth.email, Some(&jira_auth.token))
         .json_ok()
         .context("jira /myself")?;
-    // Cache it so we don't pay the round-trip every sync. Failures are
-    // best-effort — the resolved id still works for *this* sync.
-    if let Err(e) = crate::secrets::set("jira_account_id", &resp.account_id) {
-        debug!(error = %e, "couldn't cache jira_account_id");
+    // Cache it so we don't pay the round-trip every sync. Skip the
+    // write when the env var is set — that bypasses the keychain
+    // entirely, and writing back would trigger a macOS keychain
+    // password prompt the user didn't ask for.
+    let env_set = std::env::var("WORKLOG_JIRA_ACCOUNT_ID")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    if !env_set {
+        if let Err(e) = crate::secrets::set("jira_account_id", &resp.account_id) {
+            debug!(error = %e, "couldn't cache jira_account_id");
+        }
     }
     Ok(resp.account_id)
 }
@@ -337,6 +375,9 @@ struct PendingBlock {
     duration_seconds: i64,
     description: Option<String>,
     day: String,
+    /// Present means "already synced once" — sync uses PUT instead of POST
+    /// so the existing Tempo entry gets updated rather than duplicated.
+    tempo_worklog_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

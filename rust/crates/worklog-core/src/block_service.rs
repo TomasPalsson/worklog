@@ -12,6 +12,14 @@ use rusqlite::{params, Connection};
 use crate::models::Block;
 use crate::repo;
 
+/// `dirty = CASE WHEN tempo_worklog_id IS ... THEN 1 ELSE dirty END` — set
+/// the dirty flag only when the block has already been synced. Unsynced
+/// blocks don't need the marker because the next sync picks them up via
+/// `tempo_worklog_id IS NULL` anyway, and we don't want every estimator
+/// pass to leave the day with a row of false-positive dirty pills.
+const MARK_DIRTY_IF_SYNCED: &str =
+    "CASE WHEN tempo_worklog_id IS NOT NULL AND tempo_worklog_id != '' THEN 1 ELSE dirty END";
+
 pub fn assign_ticket(conn: &Connection, block_id: i64, key: Option<&str>) -> Result<Block> {
     // A block that's been assigned a real ticket is, by definition,
     // work — flip is_personal off so it leaves the dimmed "personal"
@@ -21,13 +29,21 @@ pub fn assign_ticket(conn: &Connection, block_id: i64, key: Option<&str>) -> Res
     // `worklog tag reclassify`.
     if key.is_some() {
         conn.execute(
-            "UPDATE blocks SET jira_issue = ?1, is_personal = 0 WHERE id = ?2",
+            &format!(
+                "UPDATE blocks
+                    SET jira_issue = ?1, is_personal = 0, dirty = {MARK_DIRTY_IF_SYNCED}
+                  WHERE id = ?2"
+            ),
             params![key, block_id],
         )
         .context("assign_ticket")?;
     } else {
         conn.execute(
-            "UPDATE blocks SET jira_issue = NULL WHERE id = ?1",
+            &format!(
+                "UPDATE blocks
+                    SET jira_issue = NULL, dirty = {MARK_DIRTY_IF_SYNCED}
+                  WHERE id = ?1"
+            ),
             params![block_id],
         )
         .context("assign_ticket")?;
@@ -50,9 +66,14 @@ pub fn set_duration(conn: &Connection, block_id: i64, minutes: u32) -> Result<Bl
 
     // Mark as manual so re-estimation doesn't clobber it.
     conn.execute(
-        "UPDATE blocks
-            SET duration_seconds = ?1, ended_at = ?2, estimated_by = 'manual'
-          WHERE id = ?3",
+        &format!(
+            "UPDATE blocks
+                SET duration_seconds = ?1,
+                    ended_at = ?2,
+                    estimated_by = 'manual',
+                    dirty = {MARK_DIRTY_IF_SYNCED}
+              WHERE id = ?3"
+        ),
         params![minutes as i64 * 60, new_end, block_id],
     )
     .context("set_duration")?;
@@ -74,9 +95,13 @@ fn derive_ended_at(started_at: &str, duration_seconds: i64) -> Result<String> {
 
 pub fn set_description(conn: &Connection, block_id: i64, description: &str) -> Result<Block> {
     conn.execute(
-        "UPDATE blocks
-            SET description = ?1, estimated_by = 'manual'
-          WHERE id = ?2",
+        &format!(
+            "UPDATE blocks
+                SET description = ?1,
+                    estimated_by = 'manual',
+                    dirty = {MARK_DIRTY_IF_SYNCED}
+              WHERE id = ?2"
+        ),
         params![description, block_id],
     )
     .context("set_description")?;

@@ -32,6 +32,9 @@ export interface Block {
   /** Auto-classified from the block's dominant project_path. Personal
    * blocks dim in the UI, skip the estimator, and aren't synced to Tempo. */
   is_personal: boolean;
+  /** True when the block has been edited since its `tempo_worklog_id` was
+   * written — the next sync PUTs the new values instead of duplicating. */
+  dirty: boolean;
   event_count: number;
   sources: SourceCount[];
 }
