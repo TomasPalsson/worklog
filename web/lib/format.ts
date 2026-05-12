@@ -43,6 +43,85 @@ export function shiftDay(day: string, delta: number): string {
   return dt.toISOString().slice(0, 10);
 }
 
+/**
+ * Snap an ISO day to the Monday of its week. ISO week starts on Monday,
+ * matching the Rust side.
+ */
+export function mondayOf(day: string): string {
+  const [y, m, d] = day.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  // getUTCDay: Sun=0, Mon=1, … Sat=6. ISO offset is (day+6)%7.
+  const offset = (dt.getUTCDay() + 6) % 7;
+  dt.setUTCDate(dt.getUTCDate() - offset);
+  return dt.toISOString().slice(0, 10);
+}
+
+export function shiftWeek(monday: string, deltaWeeks: number): string {
+  return shiftDay(monday, deltaWeeks * 7);
+}
+
+/** The 7 ISO days starting at `monday`, in order Mon..Sun. */
+export function weekDays(monday: string): string[] {
+  return Array.from({ length: 7 }, (_, i) => shiftDay(monday, i));
+}
+
+/**
+ * Human label for the week. "May 11–17, 2026" when both ends share a
+ * month, "Dec 30 – Jan 5, 2026" when only the year is shared, and the
+ * full "Dec 30, 2025 – Jan 5, 2026" when the week straddles a year.
+ * Year is omitted entirely when both ends fall in the current year.
+ */
+export function formatWeekRange(monday: string): string {
+  const [sy, sm, sd] = monday.split("-").map(Number);
+  const start = new Date(Date.UTC(sy, sm - 1, sd));
+  const end = new Date(start);
+  end.setUTCDate(end.getUTCDate() + 6);
+  const thisYear = new Date().getFullYear();
+  const sameMonth = start.getUTCMonth() === end.getUTCMonth();
+  const sameYear = start.getUTCFullYear() === end.getUTCFullYear();
+  const showYear = !sameYear || start.getUTCFullYear() !== thisYear;
+  const fmt = (d: Date, opts: Intl.DateTimeFormatOptions) =>
+    new Intl.DateTimeFormat("en-US", { timeZone: "UTC", ...opts }).format(d);
+
+  if (sameMonth) {
+    const month = fmt(start, { month: "short" });
+    const yearSuffix = showYear ? `, ${start.getUTCFullYear()}` : "";
+    return `${month} ${start.getUTCDate()}–${end.getUTCDate()}${yearSuffix}`;
+  }
+  if (sameYear) {
+    const startStr = fmt(start, { month: "short", day: "numeric" });
+    const endStr = fmt(end, { month: "short", day: "numeric" });
+    const yearSuffix = showYear ? `, ${start.getUTCFullYear()}` : "";
+    return `${startStr} – ${endStr}${yearSuffix}`;
+  }
+  const startStr = fmt(start, { month: "short", day: "numeric", year: "numeric" });
+  const endStr = fmt(end, { month: "short", day: "numeric", year: "numeric" });
+  return `${startStr} – ${endStr}`;
+}
+
+/**
+ * Short weekday name for a calendar column header. "Mon" / "Tue" / …
+ */
+export function shortWeekday(day: string): string {
+  const [y, m, d] = day.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return new Intl.DateTimeFormat("en-US", {
+    weekday: "short",
+    timeZone: "UTC",
+  }).format(dt);
+}
+
+/** "May 11" — no year, used for compact column headers. */
+export function shortMonthDay(day: string): string {
+  const [y, m, d] = day.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  }).format(dt);
+}
+
 export function formatDayHeading(day: string): string {
   const [y, m, d] = day.split("-").map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d));
