@@ -37,9 +37,17 @@ on:
       - "v*"
   release:
     types: [published]
-  # Dispatch with `gh workflow run release.yml --ref vX.Y.Z` to rebuild
-  # an existing tag — `github.ref_name` resolves to the tag.
+  # Dispatch with `gh workflow run release.yml --ref main -f tag=vX.Y.Z`
+  # to rebuild an existing tag without re-pushing it. We dispatch against
+  # `main` so the workflow definition (incl. this trigger) is the one on
+  # the default branch, and the `tag` input tells the build which tag's
+  # source to check out + which release to upload to.
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to (re)build, e.g. v0.8.0. Defaults to the dispatched ref."
+        required: false
+        type: string
 
 permissions:
   contents: write   # `gh release create` needs this.
@@ -60,6 +68,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Check out the tag's source so workflow_dispatch rebuilds the
+          # right code. For push:tags and release:published, `inputs.tag`
+          # is empty and `github.ref_name` is already the tag.
+          ref: ${{ inputs.tag || github.ref_name }}
 
       - name: Install system deps (linux)
         # libdbus is pulled in by keyring's sync-secret-service feature.
@@ -106,6 +119,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
 
       - name: Install system deps
         # Same libdbus story as the per-target build — keyring's linux
@@ -144,7 +159,7 @@ jobs:
 
       - name: Assemble release (zstd + sign + manifest)
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
           OWNER: ${{ github.repository_owner }}
           REPO_NAME: ${{ github.event.repository.name }}
         shell: bash
@@ -212,7 +227,7 @@ jobs:
       - name: Create or upload to GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
           ASSETS=(
