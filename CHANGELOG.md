@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/TomasPalsson/worklog/compare/v0.8.0...v0.9.0) (2026-05-12)
+
+
+### Features
+
+* **web:** /week — 7-column week view with calendar jumper ([#14](https://github.com/TomasPalsson/worklog/issues/14)) ([8764029](https://github.com/TomasPalsson/worklog/commit/8764029bccf283fbecb960f0e96fd4816a6fdd54))
+
 ## [0.8.0](https://github.com/TomasPalsson/worklog/compare/v0.7.0...v0.8.0) (2026-05-12)
 
 
