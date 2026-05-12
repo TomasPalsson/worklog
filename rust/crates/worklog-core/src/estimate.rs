@@ -63,9 +63,125 @@ struct Reply {
     description: Option<String>,
 }
 
-/// Invoke the estimator for every un-estimated block on `day`.
+/// Which invoker a given day's estimate run will route through. Built
+/// by [`resolve_provider`] from env + secrets. Kept as an enum (not a
+/// boxed trait object) so tests can pattern-match without a downcast
+/// and the compiler proves every arm is handled at the dispatch site.
+pub enum ProviderChoice {
+    /// The historical `claude -p` subprocess path. Default when nothing
+    /// is configured — existing installs keep working unchanged.
+    ClaudeSubprocess,
+    /// LiteLLM / any OpenAI-compatible HTTP proxy.
+    LiteLLM(LiteLLMInvoker),
+}
+
+impl std::fmt::Debug for ProviderChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Don't leak endpoint/model fields via default Derive — debug
+        // output lands in test panic messages + tracing events.
+        match self {
+            ProviderChoice::ClaudeSubprocess => f.write_str("ClaudeSubprocess"),
+            ProviderChoice::LiteLLM(_) => f.write_str("LiteLLM(<invoker>)"),
+        }
+    }
+}
+
+/// Reject empty-or-whitespace values so "secret exists but blank"
+/// behaves like "secret absent". Keyring + `.env` fallback both admit
+/// empty strings and we want a single rule everywhere.
+fn read_trimmed_secret(key: &str) -> Result<Option<String>> {
+    Ok(crate::secrets::get(key)?
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty()))
+}
+
+/// Env wins over secret. Returns the trimmed lowercase choice or None
+/// when neither is set; caller defaults to `claude_subprocess`.
+fn read_provider_selector() -> Result<Option<String>> {
+    if let Some(v) = std::env::var("WORKLOG_ESTIMATOR_PROVIDER")
+        .ok()
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
+    {
+        return Ok(Some(v.to_lowercase()));
+    }
+    Ok(read_trimmed_secret("worklog_estimator_provider")?.map(|s| s.to_lowercase()))
+}
+
+/// Build a `LiteLLMInvoker` from secrets, with actionable errors when
+/// required pieces are missing. Only `litellm_base_url` is required;
+/// `api_key` can be empty (unauthed local proxies) and `model` falls
+/// back to [`DEFAULT_LITELLM_MODEL`].
+fn build_litellm_from_secrets() -> Result<LiteLLMInvoker> {
+    let base_url = read_trimmed_secret("litellm_base_url")?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "estimator provider `litellm` selected, but `litellm_base_url` is not set. \
+             Run `worklog setup` or `worklog secret set litellm_base_url <URL>`."
+        )
+    })?;
+    let api_key = crate::secrets::get("litellm_api_key")?.unwrap_or_default();
+    let model =
+        read_trimmed_secret("litellm_model")?.unwrap_or_else(|| DEFAULT_LITELLM_MODEL.to_owned());
+    LiteLLMInvoker::new(base_url, api_key, model)
+}
+
+/// Best-effort reachability check for a LiteLLM / OpenAI-compatible
+/// proxy. Returns `None` when `{base_url}/health` answers 2xx OR 4xx
+/// (the latter still proves we talked to *something* on the port —
+/// auth correctness is the proxy's job). Returns `Some(err_string)`
+/// on connect failure / timeout / 5xx.
+///
+/// Used by the wizard's "probe failed — save anyway?" prompt and by
+/// `worklog doctor` to surface `estimator.reachable` in its report.
+/// 3s timeout keeps an unreachable proxy from hanging the setup flow.
+pub fn probe_litellm(base_url: &str) -> Option<String> {
+    // Reject non-http(s) schemes up-front so a misconfigured
+    // `file:///…` or bare hostname in the keychain can't trigger an
+    // accidental local-fs read / SSRF against an unintended target.
+    if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
+        return Some(format!(
+            "base_url must start with http:// or https:// (got `{base_url}`)"
+        ));
+    }
+    let client = match reqwest::blocking::Client::builder()
+        .user_agent("worklog")
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+    let url = format!("{}/health", base_url.trim_end_matches('/'));
+    match client.get(&url).send() {
+        Ok(resp) if resp.status().is_success() || resp.status().is_client_error() => None,
+        Ok(resp) => Some(format!("HTTP {} on /health", resp.status())),
+        Err(e) => Some(format!("connect: {e}")),
+    }
+}
+
+/// Read env + secrets to decide which invoker today's run uses. Called
+/// by [`estimate_day`] and surfaced in `worklog doctor`.
+pub fn resolve_provider() -> Result<ProviderChoice> {
+    match read_provider_selector()?.as_deref() {
+        None | Some("claude_subprocess") | Some("subprocess") | Some("claude") => {
+            Ok(ProviderChoice::ClaudeSubprocess)
+        }
+        Some("litellm") => Ok(ProviderChoice::LiteLLM(build_litellm_from_secrets()?)),
+        Some(other) => anyhow::bail!(
+            "unknown estimator provider `{other}`. \
+             Expected `claude_subprocess` or `litellm` \
+             (set via WORKLOG_ESTIMATOR_PROVIDER env or `worklog setup`)."
+        ),
+    }
+}
+
+/// Invoke the estimator for every un-estimated block on `day`. Routes
+/// through whichever [`ProviderChoice`] is active.
 pub fn estimate_day(conn: &Connection, day: NaiveDate, model: &str) -> Result<EstimateStats> {
-    estimate_day_with(conn, day, model, &ClaudeSubprocess)
+    match resolve_provider()? {
+        ProviderChoice::ClaudeSubprocess => estimate_day_with(conn, day, model, &ClaudeSubprocess),
+        ProviderChoice::LiteLLM(inv) => estimate_day_with(conn, day, model, &inv),
+    }
 }
 
 /// Test seam — tests pass a fake invoker so we don't shell out to `claude`.
@@ -149,6 +265,230 @@ impl ModelInvoker for FixedInvoker {
     fn invoke(&self, _s: &str, _u: &str, _sc: &Value, _m: &str) -> Result<Value> {
         Ok(self.0.clone())
     }
+}
+
+/// Default model passed to LiteLLM when the caller leaves `--model`
+/// unset AND the user hasn't configured one via secrets. LiteLLM
+/// requires a `provider/model` prefix — unqualified names route
+/// nowhere. Anthropic is the wizard's first-class provider.
+pub const DEFAULT_LITELLM_MODEL: &str = "anthropic/claude-haiku-4-5";
+
+/// OpenAI-compatible HTTP invoker. Points at any LiteLLM proxy (or any
+/// OpenAI-shaped endpoint) and POSTs `/v1/chat/completions`. The
+/// response's `choices[0].message.content` is handed to
+/// [`parse_response`] so prose-wrapped JSON + envelope shapes work
+/// identically to the subprocess path.
+///
+/// TLS + 30s default timeout come from [`crate::http::client`]. Tests
+/// swap in a short-timeout client via [`Self::with_client`].
+/// # Contract
+///
+/// A single `LiteLLMInvoker` instance assumes `system` and `schema`
+/// are IDENTICAL across every `invoke` call — `system_with_schema` is
+/// memoised on first use and reused thereafter for perf. This matches
+/// how `estimate_day` uses it (one invoker per run, same prompt +
+/// schema for every block). Constructing a fresh invoker per
+/// structurally-different task keeps the memoisation correct.
+pub struct LiteLLMInvoker {
+    base_url: String,
+    api_key: String,
+    default_model: String,
+    client: reqwest::blocking::Client,
+    /// Memoised `system + schema hint` — the upstream estimator passes
+    /// the same `system` and `schema` for every block in a single
+    /// `estimate_day` run, so we allocate the combined string once and
+    /// reuse it. Per-block `build_request_body` now just clones a
+    /// `String` reference instead of re-running `serde_json::to_string`
+    /// and `format!` on every iteration. See the struct-level contract
+    /// above — callers reusing one invoker for heterogeneous prompts
+    /// would silently get the first call's cached string.
+    system_with_schema: std::sync::OnceLock<String>,
+}
+
+/// Hard cap on the `/v1/chat/completions` response body. A compliant
+/// proxy responding to `max_tokens: 512` emits at most ~3 KB; we grant
+/// 1 MiB headroom for multi-turn or reasoning envelopes while bounding
+/// the OOM surface from a hostile / compromised proxy (which could
+/// otherwise stream gigabytes of JSON into `serde_json::from_slice`).
+const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+
+impl LiteLLMInvoker {
+    /// Build from already-resolved config. `base_url` trailing slash is
+    /// tolerated. Empty `api_key` omits the `Authorization` header on
+    /// requests (some local proxies run unauthed).
+    ///
+    /// Rejects any scheme other than `http://` or `https://` so a
+    /// misconfigured secret (`file:///etc/passwd`, `ftp://…`, bare
+    /// hostnames) fails at construction time rather than at the first
+    /// estimate call. RFC1918 / link-local IPs are intentionally
+    /// allowed because `http://localhost:4000` is the documented happy
+    /// path for a local LiteLLM proxy.
+    pub fn new(
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Result<Self> {
+        let base_url = base_url.into();
+        // LiteLLM's own docs show `http://localhost:4000/v1` as the
+        // proxy URL for OpenAI-compatible clients — easy for a user to
+        // paste into `litellm_base_url` directly. Our `endpoint()`
+        // always appends `/v1/chat/completions`, so a user-provided
+        // `/v1` suffix produced `…/v1/v1/chat/completions` and silently
+        // gapped every block. Strip `/v1` (trailing-slash tolerant) up
+        // front so either form works.
+        let base_url = base_url
+            .trim_end_matches('/')
+            .trim_end_matches("/v1")
+            .trim_end_matches('/')
+            .to_owned();
+        if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
+            anyhow::bail!(
+                "litellm_base_url must start with http:// or https:// (got `{}`). \
+                 Run `worklog secret set litellm_base_url <URL>` to fix.",
+                base_url
+            );
+        }
+        Ok(Self {
+            base_url,
+            api_key: api_key.into(),
+            default_model: model.into(),
+            client: crate::http::client()?,
+            system_with_schema: std::sync::OnceLock::new(),
+        })
+    }
+
+    /// Test seam: swap the HTTP client (short timeouts, custom TLS,
+    /// mock routing). Not exposed in production because every caller
+    /// outside tests wants the default `crate::http::client`.
+    #[cfg(test)]
+    pub fn with_client(mut self, client: reqwest::blocking::Client) -> Self {
+        self.client = client;
+        self
+    }
+
+    /// Where the request actually lands. Pulled into a method so tests
+    /// and `doctor` can surface it without reaching inside the struct.
+    pub fn endpoint(&self) -> String {
+        format!("{}/v1/chat/completions", self.base_url)
+    }
+
+    /// The model the invoker falls back to when the caller passes
+    /// `""`. Exposed so `worklog doctor` can print the user-configured
+    /// default without needing to re-read the secret.
+    pub fn configured_model(&self) -> &str {
+        &self.default_model
+    }
+
+    /// Chosen model for a given invocation: caller's `--model` wins,
+    /// falling back to whatever the user configured in secrets.
+    /// Whitespace-only callers (`--model "   "`) are treated as empty
+    /// so the fallback kicks in instead of forwarding garbage to the
+    /// proxy.
+    fn resolve_model<'a>(&'a self, caller: &'a str) -> &'a str {
+        if caller.trim().is_empty() {
+            &self.default_model
+        } else {
+            caller
+        }
+    }
+}
+
+impl ModelInvoker for LiteLLMInvoker {
+    fn invoke(&self, system: &str, user: &str, schema: &Value, model: &str) -> Result<Value> {
+        let body = self.build_request_body(system, user, schema, model)?;
+        let mut req = self
+            .client
+            .post(self.endpoint())
+            .header("Content-Type", "application/json");
+        if !self.api_key.is_empty() {
+            req = req.bearer_auth(&self.api_key);
+        }
+
+        let resp = req
+            .json(&body)
+            .send()
+            .context("POST /v1/chat/completions")?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            anyhow::bail!(
+                "HTTP {status} from LiteLLM proxy: {}",
+                bounded_body_preview(resp)
+            );
+        }
+
+        // Read as bytes, cap the size, then decode. `.json()` would
+        // buffer the entire body unbounded — a hostile proxy streaming
+        // gigabytes of JSON would OOM the process. The 1 MiB cap is
+        // comfortable headroom over the ~3 KB typical response.
+        let bytes = resp.bytes().context("reading LiteLLM response body")?;
+        if bytes.len() > MAX_RESPONSE_BYTES {
+            anyhow::bail!(
+                "LiteLLM response body exceeded {} MiB cap — refusing to decode (possible hostile proxy)",
+                MAX_RESPONSE_BYTES / (1024 * 1024)
+            );
+        }
+        let envelope: Value =
+            serde_json::from_slice(&bytes).context("decoding LiteLLM JSON response")?;
+        let content = extract_message_content(&envelope)?;
+        parse_response(content)
+    }
+}
+
+impl LiteLLMInvoker {
+    /// Build the OpenAI-compatible chat.completions body. The schema
+    /// ends up in the system prompt so providers that ignore
+    /// `response_format` (some on-prem proxies, Ollama) still see it.
+    /// The combined system+schema string is memoised in
+    /// `self.system_with_schema`; per-block calls clone-by-reference
+    /// instead of re-running the format+serialize dance.
+    fn build_request_body(
+        &self,
+        system: &str,
+        user: &str,
+        schema: &Value,
+        model: &str,
+    ) -> Result<Value> {
+        let system_with_schema = self
+            .system_with_schema
+            .get_or_init(|| {
+                let schema_str = serde_json::to_string(schema).unwrap_or_else(|_| "{}".into());
+                format!("{system}\n\nRespond ONLY with JSON matching this schema:\n{schema_str}")
+            })
+            .as_str();
+        Ok(json!({
+            "model":           self.resolve_model(model),
+            "messages": [
+                { "role": "system", "content": system_with_schema },
+                { "role": "user",   "content": user },
+            ],
+            "response_format": { "type": "json_object" },
+            "temperature":     0,
+            "max_tokens":      512,
+        }))
+    }
+}
+
+/// Some proxies echo the full request payload on 5xx — which can
+/// include the user's event content. Cap at 500 chars so errors never
+/// accidentally persist unbounded PII into logs.
+fn bounded_body_preview(resp: reqwest::blocking::Response) -> String {
+    resp.text()
+        .unwrap_or_else(|_| "<unreadable body>".into())
+        .chars()
+        .take(500)
+        .collect()
+}
+
+/// Extract `choices[0].message.content` as a `&str`, with an error
+/// that carries the raw envelope so debugging isn't guesswork.
+fn extract_message_content(envelope: &Value) -> Result<&str> {
+    envelope
+        .pointer("/choices/0/message/content")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!("LiteLLM response missing choices[0].message.content: {envelope}")
+        })
 }
 
 pub fn estimate_day_with<I: ModelInvoker>(
@@ -1259,5 +1599,358 @@ mod tests {
         ];
         let got = collect_literal_matches(&events);
         assert_eq!(got, vec!["PROJ-1".to_string(), "PROJ-2".to_string()]);
+    }
+
+    // ───────────────── LiteLLM invoker (v0.7 — Phase 2) ─────────────────
+
+    /// OpenAI-compatible content envelope the proxy returns. Keeping this
+    /// as a helper keeps the per-test fixtures readable.
+    fn openai_envelope(content: &str) -> serde_json::Value {
+        json!({
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": content},
+                "finish_reason": "stop",
+            }]
+        })
+    }
+
+    fn short_timeout_client() -> reqwest::blocking::Client {
+        reqwest::blocking::Client::builder()
+            .user_agent("worklog-test")
+            .timeout(std::time::Duration::from_millis(200))
+            .build()
+            .unwrap()
+    }
+
+    /// B4: a well-formed proxy reply → the invoker returns the parsed
+    /// worklog JSON as a `Value`. The schema the caller sends is embedded
+    /// in the system prompt so downstream validation (validate_ticket,
+    /// round_up_minutes) keeps working identically to the subprocess path.
+    #[test]
+    fn litellm_invoker_returns_parsed_reply_on_200() {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        let content =
+            r#"{"jira_issue":"PROJ-1","minutes":30,"description":"Implement auth refresh"}"#;
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/chat/completions")
+                .header("Authorization", "Bearer test_key");
+            then.status(200).json_body(openai_envelope(content));
+        });
+
+        let inv = LiteLLMInvoker::new(server.base_url(), "test_key", "anthropic/claude-haiku-4-5")
+            .unwrap();
+        let schema = response_schema();
+        let got = inv.invoke("sys", "user", &schema, "").unwrap();
+
+        assert_eq!(got["jira_issue"], "PROJ-1");
+        assert_eq!(got["minutes"], 30);
+        assert_eq!(got["description"], "Implement auth refresh");
+    }
+
+    /// B5: a 401 must bubble up as a readable error — the outer
+    /// `estimate_day_with` loop converts any `Err` into a `gap` row, so
+    /// the error message is what lands in the `warn!` tracing event the
+    /// user sees when debugging.
+    #[test]
+    fn litellm_invoker_bails_on_401() {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/chat/completions");
+            then.status(401).body("invalid api key");
+        });
+
+        let inv = LiteLLMInvoker::new(server.base_url(), "bad_key", "m").unwrap();
+        let schema = response_schema();
+        let err = inv
+            .invoke("sys", "user", &schema, "")
+            .expect_err("401 must bubble as an Err");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("401"),
+            "error should name the HTTP status: {msg}"
+        );
+    }
+
+    /// B6: providers sometimes wrap JSON in prose ("Here you go: {...}").
+    /// The invoker reuses the existing `parse_response` helper so this
+    /// path is already covered for the subprocess; we just need to prove
+    /// the LiteLLM path delegates into it.
+    #[test]
+    fn litellm_invoker_handles_prose_wrapped_json_content() {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        let prose =
+            r#"Here you go: {"jira_issue":"PROJ-2","minutes":15,"description":"Fix flaky test"}"#;
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/chat/completions");
+            then.status(200).json_body(openai_envelope(prose));
+        });
+
+        let inv = LiteLLMInvoker::new(server.base_url(), "k", "m").unwrap();
+        let schema = response_schema();
+        let got = inv.invoke("sys", "user", &schema, "").unwrap();
+        assert_eq!(got["jira_issue"], "PROJ-2");
+        assert_eq!(got["minutes"], 15);
+    }
+
+    /// B7: if the proxy hangs we want a deterministic failure, not a
+    /// silently-hung block. Test uses a 200ms-timeout client against an
+    /// httpmock `delay` of 500ms so the request is guaranteed to time out.
+    #[test]
+    fn litellm_invoker_bails_on_timeout() {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/chat/completions");
+            then.status(200)
+                .delay(std::time::Duration::from_millis(500))
+                .json_body(openai_envelope("{}"));
+        });
+
+        let inv = LiteLLMInvoker::new(server.base_url(), "k", "m")
+            .unwrap()
+            .with_client(short_timeout_client());
+        let schema = response_schema();
+        let err = inv
+            .invoke("sys", "user", &schema, "")
+            .expect_err("timeout must return Err");
+        let msg = format!("{err:#}").to_lowercase();
+        assert!(
+            msg.contains("timed out") || msg.contains("timeout") || msg.contains("operation"),
+            "expected timeout-shaped error, got: {msg}"
+        );
+    }
+
+    /// B8: a local LiteLLM proxy run without auth ignores the
+    /// Authorization header — but some servers reject requests that
+    /// carry an empty bearer token. If the caller leaves `api_key` empty
+    /// we must omit the header entirely, not send `Authorization: Bearer `.
+    #[test]
+    fn litellm_invoker_omits_authorization_header_when_key_empty() {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        let hit = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/chat/completions")
+                .header_exists("Content-Type")
+                .matches(|req| {
+                    req.headers
+                        .as_ref()
+                        .map(|h| h.iter().all(|(k, _)| k.to_lowercase() != "authorization"))
+                        .unwrap_or(true)
+                });
+            then.status(200).json_body(openai_envelope(
+                r#"{"jira_issue":null,"minutes":5,"description":"x"}"#,
+            ));
+        });
+
+        let inv = LiteLLMInvoker::new(server.base_url(), "", "m").unwrap();
+        let schema = response_schema();
+        inv.invoke("sys", "user", &schema, "").unwrap();
+        hit.assert();
+    }
+
+    /// QA regression — LiteLLM's own docs sometimes print
+    /// `http://localhost:4000/v1` as the proxy URL, so users paste
+    /// that straight into `litellm_base_url`. Without the strip, we
+    /// would POST to `…/v1/v1/chat/completions` and silently gap
+    /// every block. The constructor strips a trailing `/v1` so both
+    /// `http://…:4000` and `http://…:4000/v1` land at the same
+    /// `endpoint()`.
+    #[test]
+    fn litellm_invoker_new_strips_trailing_v1_from_base_url() {
+        let a = LiteLLMInvoker::new("http://localhost:4000", "k", "m").unwrap();
+        let b = LiteLLMInvoker::new("http://localhost:4000/v1", "k", "m").unwrap();
+        let c = LiteLLMInvoker::new("http://localhost:4000/v1/", "k", "m").unwrap();
+        assert_eq!(a.endpoint(), "http://localhost:4000/v1/chat/completions");
+        assert_eq!(b.endpoint(), "http://localhost:4000/v1/chat/completions");
+        assert_eq!(c.endpoint(), "http://localhost:4000/v1/chat/completions");
+    }
+
+    /// QA regression — non-http(s) schemes must error at construction
+    /// so a typo in the keychain fails fast rather than hanging on
+    /// the first estimate call. Using `.err()` (not `.unwrap_err()`)
+    /// avoids requiring Debug on the Ok variant; LiteLLMInvoker
+    /// intentionally doesn't derive Debug so api_key can't leak.
+    #[test]
+    fn litellm_invoker_new_rejects_non_http_scheme() {
+        let err = LiteLLMInvoker::new("file:///etc/passwd", "k", "m")
+            .err()
+            .expect("non-http scheme must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("http://") && msg.contains("https://"),
+            "error must name the valid schemes: {msg}"
+        );
+    }
+
+    /// QA regression — `--model "   "` must fall back to the
+    /// configured default, not forward whitespace as the model name.
+    #[test]
+    fn litellm_invoker_resolve_model_treats_whitespace_as_empty() {
+        let inv = LiteLLMInvoker::new("http://localhost:4000", "k", "anthropic/x").unwrap();
+        assert_eq!(inv.resolve_model(""), "anthropic/x");
+        assert_eq!(inv.resolve_model("   "), "anthropic/x");
+        assert_eq!(inv.resolve_model("\t\n "), "anthropic/x");
+        assert_eq!(inv.resolve_model("openai/gpt-4o"), "openai/gpt-4o");
+    }
+
+    /// The invoker's `--model` passthrough: when the caller (e.g.
+    /// `worklog estimate --model openai/gpt-4o`) passes a non-empty
+    /// model, it wins over the invoker's configured default.
+    #[test]
+    fn litellm_invoker_uses_caller_model_when_provided() {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        let hit = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/chat/completions")
+                .json_body_partial(r#"{"model":"openai/gpt-4o"}"#);
+            then.status(200).json_body(openai_envelope(
+                r#"{"jira_issue":null,"minutes":5,"description":"x"}"#,
+            ));
+        });
+
+        let inv =
+            LiteLLMInvoker::new(server.base_url(), "k", "anthropic/claude-haiku-4-5").unwrap();
+        let schema = response_schema();
+        inv.invoke("sys", "user", &schema, "openai/gpt-4o").unwrap();
+        hit.assert();
+    }
+
+    // ───────────────── Provider factory (v0.7 — Phase 3) ─────────────────
+    //
+    // resolve_provider() reads env + secrets and returns a ProviderChoice
+    // that estimate_day dispatches on. These tests serialize on their own
+    // mutex because they mutate std::env which is process-global.
+
+    use std::sync::Mutex;
+    static PROVIDER_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn clear_provider_state() {
+        // env
+        std::env::remove_var("WORKLOG_ESTIMATOR_PROVIDER");
+        std::env::remove_var("WORKLOG_LITELLM_BASE_URL");
+        std::env::remove_var("WORKLOG_LITELLM_API_KEY");
+        std::env::remove_var("WORKLOG_LITELLM_MODEL");
+        // secrets (test backend is a process-global HashMap)
+        let _ = crate::secrets::delete("worklog_estimator_provider");
+        let _ = crate::secrets::delete("litellm_base_url");
+        let _ = crate::secrets::delete("litellm_api_key");
+        let _ = crate::secrets::delete("litellm_model");
+    }
+
+    /// B1: nothing configured → fall back to the existing subprocess
+    /// behaviour. This is the back-compat contract — existing installs
+    /// MUST see no behaviour change.
+    #[test]
+    fn resolve_provider_defaults_to_claude_subprocess_when_nothing_set() {
+        let _g = PROVIDER_ENV_LOCK.lock().unwrap();
+        clear_provider_state();
+        match resolve_provider().unwrap() {
+            ProviderChoice::ClaudeSubprocess => {}
+            other => panic!("expected ClaudeSubprocess, got {other:?}"),
+        }
+    }
+
+    /// B2: env var picks LiteLLM and the minimum required secrets are
+    /// present → factory returns a configured LiteLLMInvoker.
+    #[test]
+    fn resolve_provider_picks_litellm_when_env_says_so_and_url_present() {
+        let _g = PROVIDER_ENV_LOCK.lock().unwrap();
+        clear_provider_state();
+        std::env::set_var("WORKLOG_ESTIMATOR_PROVIDER", "litellm");
+        crate::secrets::set("litellm_base_url", "http://localhost:4000").unwrap();
+        crate::secrets::set("litellm_model", "anthropic/claude-haiku-4-5").unwrap();
+
+        let choice = resolve_provider().unwrap();
+        match &choice {
+            ProviderChoice::LiteLLM(inv) => {
+                assert!(inv.endpoint().starts_with("http://localhost:4000"));
+                assert!(inv.endpoint().ends_with("/v1/chat/completions"));
+            }
+            other => panic!("expected LiteLLM, got {other:?}"),
+        }
+        clear_provider_state();
+    }
+
+    /// B3: user selected LiteLLM but forgot to configure the URL. The
+    /// error must name the missing key AND point at `worklog setup` so
+    /// the recovery path is obvious.
+    #[test]
+    fn resolve_provider_errors_when_litellm_selected_but_url_missing() {
+        let _g = PROVIDER_ENV_LOCK.lock().unwrap();
+        clear_provider_state();
+        std::env::set_var("WORKLOG_ESTIMATOR_PROVIDER", "litellm");
+        // no base_url secret
+        let err = resolve_provider().unwrap_err().to_string();
+        assert!(
+            err.contains("litellm_base_url"),
+            "err should name the missing key: {err}"
+        );
+        assert!(
+            err.contains("worklog setup") || err.contains("worklog secret set"),
+            "err should point at the recovery command: {err}"
+        );
+        clear_provider_state();
+    }
+
+    /// Env is process-wide and ephemeral; the persistent choice also
+    /// lives in the keychain under `worklog_estimator_provider`. Env
+    /// wins when both are set, but when env is unset the secret is
+    /// consulted.
+    #[test]
+    fn resolve_provider_reads_secret_when_env_unset() {
+        let _g = PROVIDER_ENV_LOCK.lock().unwrap();
+        clear_provider_state();
+        crate::secrets::set("worklog_estimator_provider", "litellm").unwrap();
+        crate::secrets::set("litellm_base_url", "http://localhost:4000").unwrap();
+        let choice = resolve_provider().unwrap();
+        assert!(matches!(choice, ProviderChoice::LiteLLM(_)));
+        clear_provider_state();
+    }
+
+    /// If the user didn't set `litellm_model` we fall back to the
+    /// first-class default (`anthropic/claude-haiku-4-5`) — the same
+    /// constant the wizard uses. Asserts via the public
+    /// `configured_model()` surface rather than the private
+    /// dispatch helper.
+    #[test]
+    fn resolve_provider_uses_default_litellm_model_when_model_secret_missing() {
+        let _g = PROVIDER_ENV_LOCK.lock().unwrap();
+        clear_provider_state();
+        std::env::set_var("WORKLOG_ESTIMATOR_PROVIDER", "litellm");
+        crate::secrets::set("litellm_base_url", "http://localhost:4000").unwrap();
+        // no litellm_model
+
+        match resolve_provider().unwrap() {
+            ProviderChoice::LiteLLM(inv) => {
+                assert_eq!(inv.configured_model(), DEFAULT_LITELLM_MODEL);
+            }
+            _ => panic!("expected LiteLLM"),
+        }
+        clear_provider_state();
+    }
+
+    /// An unrecognised provider string must error, not silently fall
+    /// back to one of the two valid choices — typos in a config file
+    /// shouldn't quietly run the wrong estimator.
+    #[test]
+    fn resolve_provider_errors_on_unknown_provider_string() {
+        let _g = PROVIDER_ENV_LOCK.lock().unwrap();
+        clear_provider_state();
+        std::env::set_var("WORKLOG_ESTIMATOR_PROVIDER", "openai_direct");
+        let err = resolve_provider().unwrap_err().to_string();
+        assert!(
+            err.contains("openai_direct") || err.contains("unknown"),
+            "err should name the bad value: {err}"
+        );
+        clear_provider_state();
     }
 }

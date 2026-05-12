@@ -481,3 +481,107 @@ fn upgrade_alias_exists_and_delegates_to_self_update() {
         // self-update's --check flag is the canary we assert on.
         .stdout(predicate::str::contains("--check"));
 }
+
+// ─────────────── estimator provider surface (v0.7 — Phase 5) ───────────────
+
+/// `worklog doctor --json` must carry an `"estimator"` block so the
+/// user (or a monitoring script) can see which provider is wired up
+/// without re-deriving it from env + secrets. Defaults to
+/// `claude_subprocess` on a fresh install — it's the back-compat path.
+#[test]
+fn doctor_json_reports_estimator_provider_block() {
+    let home = TempDir::new().unwrap();
+    cmd(&home).args(["db", "migrate"]).assert().success();
+    cmd(&home)
+        .args(["--json", "doctor"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"estimator\""))
+        .stdout(predicate::str::contains("\"provider\""))
+        .stdout(predicate::str::contains("claude_subprocess"));
+}
+
+/// When the user selects LiteLLM via env, doctor should report
+/// `provider: litellm` and carry the configured base_url + model.
+/// Reachability will be false here (the test URL points at an unused
+/// port); we assert the field is present, not the bool value.
+#[test]
+fn doctor_json_reports_litellm_provider_when_selected() {
+    let home = TempDir::new().unwrap();
+    cmd(&home).args(["db", "migrate"]).assert().success();
+    cmd(&home)
+        .args([
+            "secret",
+            "set",
+            "litellm_base_url",
+            "--value",
+            "http://127.0.0.1:1",
+        ])
+        .assert()
+        .success();
+    cmd(&home)
+        .args([
+            "secret",
+            "set",
+            "litellm_model",
+            "--value",
+            "anthropic/claude-haiku-4-5",
+        ])
+        .assert()
+        .success();
+    cmd(&home)
+        .env("WORKLOG_ESTIMATOR_PROVIDER", "litellm")
+        // --probe adds the live reachability check; without it doctor
+        // stays fast + offline-safe.
+        .args(["--json", "doctor", "--probe"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"provider\": \"litellm\""))
+        .stdout(predicate::str::contains("\"base_url\""))
+        .stdout(predicate::str::contains("\"reachable\""))
+        .stdout(predicate::str::contains(
+            "\"model\": \"anthropic/claude-haiku-4-5\"",
+        ));
+}
+
+/// The default `worklog doctor` (no --probe) does NOT hit the network.
+/// Scripted/monitoring callers invoke this path thousands of times a
+/// day; a 3s HTTP tax would be a UX regression. `reachable` must be
+/// absent from the JSON when probing is skipped.
+#[test]
+fn doctor_json_skips_probe_by_default() {
+    let home = TempDir::new().unwrap();
+    cmd(&home).args(["db", "migrate"]).assert().success();
+    cmd(&home)
+        .args([
+            "secret",
+            "set",
+            "litellm_base_url",
+            "--value",
+            "http://127.0.0.1:1",
+        ])
+        .assert()
+        .success();
+    cmd(&home)
+        .env("WORKLOG_ESTIMATOR_PROVIDER", "litellm")
+        .args(["--json", "doctor"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"provider\": \"litellm\""))
+        // reachable skipped → `skip_serializing_if` drops the field.
+        .stdout(predicate::str::contains("\"reachable\"").not());
+}
+
+/// `worklog estimate --help` needs a `long_about` that names the
+/// WORKLOG_ESTIMATOR_PROVIDER env var — otherwise users who set it
+/// (per the README) have no in-CLI way to discover the valid values.
+#[test]
+fn estimate_help_documents_provider_env_var() {
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["estimate", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("WORKLOG_ESTIMATOR_PROVIDER"))
+        .stdout(predicate::str::contains("litellm"));
+}

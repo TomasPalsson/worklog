@@ -117,6 +117,7 @@ pub fn run(opts: WizardOptions) -> Result<WizardReport> {
             schedule_installed = configure_schedule(&theme, &mut notes)?;
             configure_daemon_service(&theme, &mut notes)?;
         }
+        configure_estimator_provider(&theme, &mut notes, &opts)?;
     }
 
     print_done(
@@ -226,6 +227,122 @@ fn configure_schedule(theme: &ColorfulTheme, notes: &mut Vec<String>) -> Result<
         s.platform
     );
     Ok(Some(interval.human()))
+}
+
+/// Prompt the user to pick an estimator provider — the subprocess
+/// `claude -p` path (today's default) or a LiteLLM / OpenAI-compatible
+/// HTTP proxy. Non-interactive + skip-validate runs are no-ops; the
+/// existing secret state (if any) determines which provider the
+/// estimator actually uses at run time via `estimate::resolve_provider`.
+fn configure_estimator_provider(
+    theme: &ColorfulTheme,
+    notes: &mut Vec<String>,
+    opts: &WizardOptions,
+) -> Result<()> {
+    println!("\n{}", section("estimator provider"));
+
+    // Resolve the current active provider so the pick list defaults to
+    // whatever's already wired up — re-running `worklog setup` should
+    // not silently switch estimators on the user.
+    let current = secrets::get("worklog_estimator_provider")?.unwrap_or_default();
+    let default_idx = match current.trim() {
+        "litellm" => 1,
+        _ => 0,
+    };
+
+    let choices = &["claude -p  (subprocess, default)", "litellm  (HTTP proxy)"];
+    let pick = Select::with_theme(theme)
+        .with_prompt("  which estimator should `worklog estimate` call?")
+        .items(choices)
+        .default(default_idx)
+        .interact()?;
+
+    match pick {
+        0 => {
+            // Clear any prior persistent choice so env / secret don't
+            // disagree. Env still wins; removing the secret just
+            // removes the keychain-level override.
+            let _ = secrets::delete("worklog_estimator_provider");
+            notes.push("estimator: claude -p (subprocess)".into());
+            println!(
+                "  {} keeping the subprocess path — nothing to configure",
+                style("·").dim()
+            );
+            Ok(())
+        }
+        1 => {
+            let saved = capture_litellm_config(theme, opts)?;
+            if saved {
+                secrets::set("worklog_estimator_provider", "litellm")?;
+                notes.push("estimator: litellm".into());
+            } else {
+                notes.push("estimator: litellm — skipped, using subprocess".into());
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Prompt for LiteLLM base URL / api key / model and save them via
+/// `secrets::set`. Returns `true` when the three fields landed on disk
+/// (subject to "save anyway?" on probe failure), `false` if the user
+/// cancelled. The probe is best-effort; an unreachable endpoint drops
+/// the user into the existing "save anyway?" pattern.
+fn capture_litellm_config(theme: &ColorfulTheme, opts: &WizardOptions) -> Result<bool> {
+    let base_url: String = Input::with_theme(theme)
+        .with_prompt("  litellm_base_url (e.g. http://localhost:4000)")
+        .with_initial_text(
+            secrets::get("litellm_base_url")?
+                .unwrap_or_default()
+                .as_str(),
+        )
+        .interact_text()?;
+
+    let api_key: String = Password::with_theme(theme)
+        .with_prompt("  litellm_api_key (press Enter to leave blank for unauthed proxy)")
+        .allow_empty_password(true)
+        .interact()?;
+
+    let model: String = Input::with_theme(theme)
+        .with_prompt("  litellm_model")
+        .with_initial_text(
+            secrets::get("litellm_model")?
+                .unwrap_or_else(|| DEFAULT_LITELLM_MODEL.into())
+                .as_str(),
+        )
+        .interact_text()?;
+
+    if !opts.skip_validate {
+        if let Some(err) = probe_litellm(&base_url) {
+            println!("  {} probe failed: {}", style("!").yellow().bold(), err);
+            let save_anyway = Confirm::with_theme(theme)
+                .with_prompt("  save anyway?")
+                .default(false)
+                .interact()?;
+            if !save_anyway {
+                println!("  {} skipped", style("·").dim());
+                return Ok(false);
+            }
+        } else {
+            println!("  {} probe ok", style("✓").green().bold());
+        }
+    }
+
+    secrets::set("litellm_base_url", base_url.trim())?;
+    secrets::set("litellm_api_key", &api_key)?;
+    secrets::set("litellm_model", model.trim())?;
+    Ok(true)
+}
+
+/// The wizard's first-class LiteLLM default — keep in sync with
+/// `worklog_core::estimate::DEFAULT_LITELLM_MODEL`.
+const DEFAULT_LITELLM_MODEL: &str = worklog_core::estimate::DEFAULT_LITELLM_MODEL;
+
+/// Re-export so the existing wizard test file doesn't need to know
+/// the probe lives in worklog-core now.
+pub(crate) fn probe_litellm(base_url: &str) -> Option<String> {
+    worklog_core::estimate::probe_litellm(base_url)
 }
 
 fn configure_daemon_service(theme: &ColorfulTheme, notes: &mut Vec<String>) -> Result<()> {
@@ -562,11 +679,16 @@ fn human_label(key: &str) -> &'static str {
         "jira_api_token" => "Atlassian API token (id.atlassian.com)",
         "jira_base_url" => "https://<workspace>.atlassian.net",
         "github_token" => "GitHub personal access token (repo + read:user)",
+        "github_user" => "GitHub username (for the /user/events commit query)",
         "tempo_api_token" => "Tempo Cloud API token (tempo.io)",
         "google_client_id" => "Google OAuth client id",
         "google_client_secret" => "Google OAuth client secret",
         "google_refresh_token" => "Google OAuth refresh token",
         "anthropic_api_key" => "Anthropic API key (console.anthropic.com)",
+        "litellm_base_url" => "LiteLLM proxy URL (e.g. http://localhost:4000)",
+        "litellm_api_key" => "LiteLLM proxy API key (blank OK for local/unauthed)",
+        "litellm_model" => "LiteLLM model id (e.g. anthropic/claude-haiku-4-5)",
+        "worklog_estimator_provider" => "estimator provider (claude_subprocess | litellm)",
         _ => "",
     }
 }
@@ -578,6 +700,12 @@ fn _noop<W: Write>(_w: &mut W) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // Wizard integration tests mutate process-global env + secrets.
+    // Parallel runs would stomp each other. Serialise any test that
+    // calls run() or touches WORKLOG_HOME / WORKLOG_SECRETS_FILE.
+    static WIZARD_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn validate_rejects_obvious_garbage() {
@@ -595,6 +723,7 @@ mod tests {
 
     #[test]
     fn non_interactive_wizard_is_a_nop_on_empty_system() {
+        let _g = WIZARD_LOCK.lock().unwrap();
         // Run in a scratch dir so the real home is untouched.
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("WORKLOG_HOME", tmp.path());
@@ -620,6 +749,91 @@ mod tests {
         );
         // Db file really exists.
         assert!(tmp.path().join("worklog.db").is_file());
+        std::env::remove_var("WORKLOG_HOME");
+        std::env::remove_var("WORKLOG_SECRETS_FILE");
+        std::env::remove_var("WORKLOG_ENV_FILE");
+    }
+
+    // ─────────────────── Estimator provider step (v0.7 — Phase 4) ───────────────────
+
+    /// `capture_secrets` walks `KNOWN_KEYS` and renders each with
+    /// `human_label` in the prompt. Adding a key without a label would
+    /// show up as an empty header — silently confusing.
+    #[test]
+    fn human_label_covers_all_litellm_and_provider_keys() {
+        for k in &[
+            "litellm_base_url",
+            "litellm_api_key",
+            "litellm_model",
+            "worklog_estimator_provider",
+        ] {
+            let label = human_label(k);
+            assert!(
+                !label.is_empty(),
+                "human_label({k}) should be non-empty so the wizard shows a heading"
+            );
+        }
+    }
+
+    /// The probe surfaces "proxy unreachable" to the wizard so users
+    /// get a warning before saving. A running `/health` → None (OK).
+    #[test]
+    fn probe_litellm_returns_none_on_healthy_proxy() {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/health");
+            then.status(200).body("{\"status\":\"ok\"}");
+        });
+        assert_eq!(probe_litellm(&server.base_url()), None);
+    }
+
+    /// Unreachable → the user sees a warning. We probe against a port
+    /// that's almost certainly closed on every host (port 1) — Linux
+    /// and macOS both close it for non-root processes.
+    #[test]
+    fn probe_litellm_returns_err_string_when_unreachable() {
+        let err = probe_litellm("http://127.0.0.1:1");
+        assert!(
+            err.is_some(),
+            "unreachable endpoint should surface an err string; got None"
+        );
+    }
+
+    /// Non-interactive wizard must not write any LiteLLM secrets —
+    /// headless CI runs and `worklog setup --non-interactive` must stay
+    /// side-effect-free for the new step just like they are for the
+    /// schedule / daemon steps.
+    #[test]
+    fn non_interactive_wizard_does_not_write_litellm_secrets() {
+        let _g = WIZARD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("WORKLOG_HOME", tmp.path());
+        let secrets_file = tmp.path().join("secrets.json");
+        std::env::set_var("WORKLOG_SECRETS_FILE", &secrets_file);
+        std::env::set_var("WORKLOG_ENV_FILE", tmp.path().join("absent.env"));
+
+        run(WizardOptions {
+            non_interactive: true,
+            skip_validate: true,
+            skip_schedule: true,
+            secrets_file: Some(secrets_file.clone()),
+        })
+        .unwrap();
+
+        // None of the four new keys should have landed in the store.
+        for k in &[
+            "litellm_base_url",
+            "litellm_api_key",
+            "litellm_model",
+            "worklog_estimator_provider",
+        ] {
+            assert!(
+                worklog_core::secrets::get(k).unwrap().is_none(),
+                "non-interactive wizard wrote secret {k}"
+            );
+        }
+
         std::env::remove_var("WORKLOG_HOME");
         std::env::remove_var("WORKLOG_SECRETS_FILE");
         std::env::remove_var("WORKLOG_ENV_FILE");
