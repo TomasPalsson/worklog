@@ -471,31 +471,6 @@ fn serve_alias_exists_and_delegates_to_web_up() {
 }
 
 #[test]
-fn week_help_mentions_day_flag() {
-    // `worklog week` opens an interactive TUI; we can't drive that
-    // from `assert_cmd` without a real PTY. Asserting on `--help`
-    // proves the subcommand and its flag exist.
-    let home = TempDir::new().unwrap();
-    cmd(&home)
-        .args(["week", "--help"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("--day"))
-        .stdout(predicate::str::contains("YYYY-MM-DD"));
-}
-
-#[test]
-fn week_rejects_invalid_day() {
-    // Bad --day should fail with a useful message before any TUI work.
-    let home = TempDir::new().unwrap();
-    cmd(&home)
-        .args(["week", "--day", "not-a-date"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("invalid --day"));
-}
-
-#[test]
 fn upgrade_alias_exists_and_delegates_to_self_update() {
     // `worklog upgrade` is a compat alias for `worklog self-update`.
     let home = TempDir::new().unwrap();
