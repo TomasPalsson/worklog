@@ -29,6 +29,13 @@ pub const EVENTS: &[&str] = &[
 /// Override the Claude settings dir for tests and power users.
 pub const ENV_CLAUDE_HOME: &str = "CLAUDE_HOME";
 
+/// Cross-module test lock for `$CLAUDE_HOME`. Both `hook` and `skill` set
+/// this env var during tests; without a shared lock their TestDir guards
+/// race and one module's `remove_var` on drop can wipe another module's
+/// setup mid-test. Public-but-test-only is the least invasive fix.
+#[cfg(test)]
+pub static CLAUDE_HOME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// A captured view of the installation state, used by `status`.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct HookStatus {
@@ -257,14 +264,13 @@ mod which {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
     use tempfile::tempdir;
 
     // Every hook test mutates `$CLAUDE_HOME` which is process-global, so
-    // we serialise them. Cheap compared to the alternative (refactoring
-    // the public API to take a path and duplicating tests for the
-    // env-var shim).
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    // we serialise them with a shared cross-module lock — the `skill`
+    // module flips the same env var and its TestDir guard would otherwise
+    // race against ours and wipe each other's setup on drop.
+    use super::CLAUDE_HOME_TEST_LOCK as ENV_LOCK;
 
     struct TestDir {
         _tmp: tempfile::TempDir,
