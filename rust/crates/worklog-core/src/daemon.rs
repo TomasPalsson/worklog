@@ -516,9 +516,63 @@ async fn delete_block(
     State(state): State<Shared>,
     AxumPath(id): AxumPath<i64>,
 ) -> Result<Json<Value>, ApiError> {
+    // Fetch first so we can clean up Tempo if the block was synced.
+    // Doing this before the local delete keeps the two stores in step
+    // even when Tempo is down — we'd rather leave the local block in
+    // place than have a phantom Tempo entry the user can't see.
+    let block = with_conn(state.clone(), move |c| {
+        crate::repo::get_block(c, id)?.ok_or_else(|| anyhow::anyhow!("block {id} not found"))
+    })
+    .await?;
+
+    let mut deleted_tempo_id: Option<String> = None;
+    if let Some(tempo_id) = block
+        .tempo_worklog_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        // Pull TempoAuth from secrets. If the user hasn't configured
+        // Tempo credentials, fall back to the local-only delete and
+        // warn — they may be cleaning up offline.
+        match tempo::TempoAuth::from_secrets() {
+            Ok(auth) => {
+                let tempo_id = tempo_id.to_owned();
+                let auth_clone = auth.clone();
+                let tid = tempo_id.clone();
+                let res =
+                    tokio::task::spawn_blocking(move || tempo::delete_worklog(&auth_clone, &tid))
+                        .await
+                        .map_err(|e| anyhow::anyhow!("delete task join: {e}"))?;
+                match res {
+                    Ok(()) => {
+                        deleted_tempo_id = Some(tempo_id);
+                    }
+                    Err(e) => {
+                        return Err(ApiError::from(anyhow::anyhow!(
+                            "couldn't remove worklog {tempo_id} from Tempo — \
+                             local block kept. {e}"
+                        )));
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(
+                    block_id = id,
+                    tempo_id, error = %e,
+                    "no tempo auth — deleting locally but Tempo entry will remain"
+                );
+            }
+        }
+    }
+
     with_conn(state, move |c| block_service::delete_block(c, id)).await?;
-    warn!(block_id = id, "deleted block");
-    Ok(Json(json!({ "ok": true, "deleted_id": id })))
+    warn!(block_id = id, ?deleted_tempo_id, "deleted block");
+    Ok(Json(json!({
+        "ok": true,
+        "deleted_id": id,
+        "deleted_tempo_id": deleted_tempo_id,
+    })))
 }
 
 #[derive(Deserialize)]

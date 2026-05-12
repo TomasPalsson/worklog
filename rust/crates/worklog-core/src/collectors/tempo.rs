@@ -275,6 +275,43 @@ pub fn sync_day_with(
     Ok((report, results))
 }
 
+/// Delete a worklog entry from Tempo. Used when the user deletes a
+/// block locally — otherwise the worklog would orphan in Tempo and
+/// the user's daily total would silently include it.
+///
+/// Treats HTTP 404 as success (the entry's already gone — same end
+/// state). All other non-2xx statuses bubble up so the caller can
+/// surface the failure to the user instead of swallowing it.
+pub fn delete_worklog(auth: &TempoAuth, tempo_worklog_id: &str) -> Result<()> {
+    delete_worklog_with(auth, tempo_worklog_id, &http::client()?)
+}
+
+pub fn delete_worklog_with(
+    auth: &TempoAuth,
+    tempo_worklog_id: &str,
+    client: &Client,
+) -> Result<()> {
+    let id = tempo_worklog_id.trim();
+    if id.is_empty() {
+        return Ok(());
+    }
+    let url = format!("{}/worklogs/{}", auth.base_url, id);
+    let resp = client
+        .delete(&url)
+        .bearer_auth(&auth.token)
+        .send()
+        .with_context(|| format!("tempo DELETE {url}"))?;
+    let status = resp.status();
+    if status.is_success() || status.as_u16() == 404 {
+        return Ok(());
+    }
+    let body = resp.text().unwrap_or_default();
+    anyhow::bail!(
+        "tempo DELETE /worklogs/{id} returned HTTP {} — {body}",
+        status.as_u16()
+    )
+}
+
 /// Resolve a Jira key (`PROJ-123`) to its numeric Atlassian issue id.
 ///
 /// Walks the cache first; on miss, calls Jira's REST `/issue/{key}`
