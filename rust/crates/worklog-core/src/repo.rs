@@ -388,6 +388,34 @@ mod tests {
     }
 
     #[test]
+    fn list_blocks_for_week_returns_range_inclusive_ordered() {
+        let c = fresh();
+        // Mon 2026-04-13 .. Sun 2026-04-19. Insert one block per day in
+        // shuffled order plus blocks just outside the range to confirm
+        // the inclusive bounds.
+        c.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds) VALUES
+                ('2026-04-12','2026-04-12T10:00:00Z','2026-04-12T10:30:00Z',1800),
+                ('2026-04-15','2026-04-15T11:00:00Z','2026-04-15T11:15:00Z', 900),
+                ('2026-04-13','2026-04-13T09:00:00Z','2026-04-13T09:15:00Z', 900),
+                ('2026-04-19','2026-04-19T20:00:00Z','2026-04-19T20:30:00Z',1800),
+                ('2026-04-15','2026-04-15T08:00:00Z','2026-04-15T08:15:00Z', 900),
+                ('2026-04-20','2026-04-20T09:00:00Z','2026-04-20T09:30:00Z',1800)",
+            [],
+        )
+        .unwrap();
+        let monday = chrono::NaiveDate::from_ymd_opt(2026, 4, 13).unwrap();
+        let blocks = list_blocks_for_week(&c, monday).unwrap();
+        let days: Vec<&str> = blocks.iter().map(|b| b.day.as_str()).collect();
+        // Mon-only block, then both Wednesday blocks ordered by start, then Sun.
+        assert_eq!(
+            days,
+            vec!["2026-04-13", "2026-04-15", "2026-04-15", "2026-04-19"]
+        );
+        assert!(blocks[1].started_at < blocks[2].started_at);
+    }
+
+    #[test]
     fn list_blocks_for_day_orders_by_start() {
         let c = fresh();
         c.execute(
