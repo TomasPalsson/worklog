@@ -24,7 +24,7 @@ pub const DEFAULT_MODEL: &str = "claude-haiku-4-5";
 const ROUND_MINUTES: i64 = 15;
 const SUBPROCESS_TIMEOUT_SECS: u64 = 60;
 
-pub const SYSTEM_PROMPT: &str = "You are a Jira/Tempo worklog assistant. Given a JSON array of work events that\nhappened inside one contiguous time block, plus a candidate list of the user's\nopen Jira tickets, produce exactly one Tempo worklog entry.\n\nRules:\n- jira_issue: pick the single best matching ticket from candidate_tickets. You\n  may also pick a key from literal_matches (keys that appeared verbatim in\n  event content — e.g. in a commit message or branch name). If NEITHER list\n  gives you a confident match, return null. Never invent a key.\n- description: Jira-style imperative (e.g. \"Implement OAuth token refresh\",\n  \"Review PR for billing module\"). Avoid first-person (\"I\", \"we\"). For\n  meetings, \"Attend <topic> sync\".\n- minutes: prefer block_duration_minutes; only deviate if the events clearly\n  don't fill the block (e.g. a single 2-min commit in a 60-min gap). Round to\n  the nearest 15.\n- Output ONLY a JSON object matching the schema. No prose, no code fences.\n";
+pub const SYSTEM_PROMPT: &str = "You are a Jira/Tempo worklog assistant. Given a JSON array of work events that\nhappened inside one contiguous time block, plus a candidate list of the user's\nopen Jira tickets, produce exactly one Tempo worklog entry.\n\nRules:\n- jira_issue: pick a candidate ticket ONLY if the events clearly match its\n  summary AND project. Look at `project_name` and the event titles/details:\n  if the work is in a repo/project that doesn't correspond to ANY candidate\n  ticket's project, return null. Never assign work to the closest-looking\n  ticket as a fallback — wrong tickets are worse than no ticket. You may\n  also pick a key from literal_matches (keys that appeared verbatim in event\n  content like commit messages) but only if those events dominate the block.\n  Default to null when unsure.\n- description: Jira-style imperative (e.g. \"Implement OAuth token refresh\",\n  \"Review PR for billing module\"). Avoid first-person (\"I\", \"we\"). For\n  meetings, \"Attend <topic> sync\".\n- minutes: prefer block_duration_minutes; only deviate if the events clearly\n  don't fill the block (e.g. a single 2-min commit in a 60-min gap). Round to\n  the nearest 15.\n- Output ONLY a JSON object matching the schema. No prose, no code fences.\n";
 
 /// Output schema the model must produce. Identical to the Python version.
 pub fn response_schema() -> Value {
@@ -217,9 +217,12 @@ pub fn estimate_day_with<I: ModelInvoker>(
 
         let ticket_claim = parsed.jira_issue;
         let mut ticket = validate_ticket(ticket_claim.as_deref(), &open_tickets, &literals);
+        // Only carry the inferred ticket forward if it ALSO validates against
+        // candidates/literals. Otherwise we'd resurrect regex noise like
+        // `FINDING-01` (from pentest skill output) every time the model
+        // correctly returned null. Trust null when the model picks null.
         if ticket.is_none() && block.jira_issue.is_some() {
-            // Preserve inference if Claude didn't confidently pick.
-            ticket = block.jira_issue.clone();
+            ticket = validate_ticket(block.jira_issue.as_deref(), &open_tickets, &literals);
         }
 
         conn.execute(
@@ -235,7 +238,112 @@ pub fn estimate_day_with<I: ModelInvoker>(
         stats.estimated += 1;
         debug!(block_id = block.id, "estimated by claude_p");
     }
+
+    // After estimation, fold neighbouring blocks that landed on the same
+    // ticket back together. project-aware splitting can fragment a single
+    // ticket's work across multiple repos / cwds, but if the estimator
+    // resolves them all to the same key the user wants one entry, not
+    // five.
+    let merged = merge_same_ticket_adjacent(conn, &day_iso)?;
+    if merged > 0 {
+        debug!(merged, "merged same-ticket adjacent blocks");
+    }
+
     Ok(stats)
+}
+
+/// Merge runs of consecutive blocks that share a non-null jira_issue.
+/// Returns the count of blocks removed by merging.
+///
+/// Safe-skips:
+/// - blocks with `tempo_worklog_id` set (already synced — would orphan the
+///   Tempo entry)
+/// - blocks with `estimated_by = 'manual'` (user hand-edited; merging
+///   would silently change their work)
+pub fn merge_same_ticket_adjacent(conn: &Connection, day_iso: &str) -> Result<u32> {
+    let blocks = load_blocks_for_estimator(conn, day_iso)?;
+    let mut removed = 0;
+    let mut i = 0;
+    let mut blocks = blocks;
+    while i + 1 < blocks.len() {
+        let a = &blocks[i];
+        let b = &blocks[i + 1];
+        let same = match (a.jira_issue.as_deref(), b.jira_issue.as_deref()) {
+            (Some(x), Some(y)) => x == y,
+            _ => false,
+        };
+        let safe = a.estimated_by.as_deref() != Some("manual")
+            && b.estimated_by.as_deref() != Some("manual")
+            && block_is_unsynced(conn, a.id)?
+            && block_is_unsynced(conn, b.id)?;
+        if same && safe {
+            merge_block_into(conn, a.id, b.id)?;
+            // remove b from local view and try merging again from same i
+            blocks.remove(i + 1);
+            removed += 1;
+        } else {
+            i += 1;
+        }
+    }
+    Ok(removed)
+}
+
+fn block_is_unsynced(conn: &Connection, block_id: i64) -> Result<bool> {
+    let tid: Option<String> = conn.query_row(
+        "SELECT tempo_worklog_id FROM blocks WHERE id = ?1",
+        params![block_id],
+        |r| r.get(0),
+    )?;
+    // Tempo treats both "" and NULL as unsynced — see
+    // tempo::normalise_tempo_id. Mirror that here.
+    Ok(tid.as_deref().map(str::trim).unwrap_or("").is_empty())
+}
+
+/// Merge `src` into `dst`. After this call `src` no longer exists; all
+/// its events are linked to `dst` and `dst`'s wall-clock + duration
+/// covers both.
+fn merge_block_into(conn: &Connection, dst: i64, src: i64) -> Result<()> {
+    // Pick wider time range. ended_at is stored as RFC3339; lexical max
+    // works because the prefix is fixed-width.
+    let (dst_start, dst_end): (String, String) = conn.query_row(
+        "SELECT started_at, ended_at FROM blocks WHERE id = ?1",
+        params![dst],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let (src_start, src_end): (String, String) = conn.query_row(
+        "SELECT started_at, ended_at FROM blocks WHERE id = ?1",
+        params![src],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let new_start = if src_start < dst_start {
+        src_start
+    } else {
+        dst_start
+    };
+    let new_end = if src_end > dst_end { src_end } else { dst_end };
+    let new_dur = duration_seconds_between(&new_start, &new_end);
+
+    conn.execute(
+        "UPDATE blocks SET started_at = ?1, ended_at = ?2, duration_seconds = ?3 WHERE id = ?4",
+        params![new_start, new_end, new_dur, dst],
+    )?;
+    // Re-point junction rows. block_events uniqueness is per (block_id,
+    // event_id) so we use INSERT OR IGNORE to handle any (theoretical)
+    // overlap, then drop the src side.
+    conn.execute(
+        "INSERT OR IGNORE INTO block_events (block_id, event_id)
+           SELECT ?1, event_id FROM block_events WHERE block_id = ?2",
+        params![dst, src],
+    )?;
+    conn.execute("DELETE FROM block_events WHERE block_id = ?1", params![src])?;
+    conn.execute("DELETE FROM blocks WHERE id = ?1", params![src])?;
+    Ok(())
+}
+
+fn duration_seconds_between(start_iso: &str, end_iso: &str) -> i64 {
+    let s: DateTime<Utc> = start_iso.parse().unwrap_or_else(|_| Utc::now());
+    let e: DateTime<Utc> = end_iso.parse().unwrap_or_else(|_| Utc::now());
+    (e - s).num_seconds().max(0)
 }
 
 // ───────────────────────── helpers ─────────────────────────
@@ -263,6 +371,7 @@ struct EventRow {
     title: Option<String>,
     details: Option<String>,
     jira_issue: Option<String>,
+    project_path: Option<String>,
 }
 
 fn load_open_tickets(conn: &Connection) -> Result<Vec<Candidate>> {
@@ -301,7 +410,7 @@ fn load_blocks_for_estimator(conn: &Connection, day_iso: &str) -> Result<Vec<Blo
 
 fn load_block_events(conn: &Connection, block_id: i64) -> Result<Vec<EventRow>> {
     let mut stmt = conn.prepare(
-        "SELECT e.source, e.started_at, e.title, e.details, e.jira_issue
+        "SELECT e.source, e.started_at, e.title, e.details, e.jira_issue, e.project_path
            FROM events e
            JOIN block_events be ON be.event_id = e.id
           WHERE be.block_id = ?1
@@ -315,10 +424,31 @@ fn load_block_events(conn: &Connection, block_id: i64) -> Result<Vec<EventRow>> 
                 title: r.get(2)?,
                 details: r.get(3)?,
                 jira_issue: r.get(4)?,
+                project_path: r.get(5)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+/// Pick the project path that dominates the block. We send this to the
+/// estimator so it can refuse to assign a ticket when the dominant repo
+/// doesn't belong to any candidate's project — preventing "closest
+/// matching ticket" mis-assignments across unrelated codebases.
+fn dominant_project(events: &[EventRow]) -> Option<String> {
+    let mut counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    for e in events {
+        if let Some(p) = &e.project_path {
+            *counts.entry(p.clone()).or_insert(0) += 1;
+        }
+    }
+    counts.into_iter().max_by_key(|(_, n)| *n).map(|(p, _)| p)
+}
+
+/// Last path segment is what humans recognise — `/Users/tomas/Desktop/Work/sjukra`
+/// → `sjukra`. Sent alongside the full path so the model has both signals.
+fn project_name(path: &str) -> &str {
+    path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(path)
 }
 
 fn collect_literal_matches(events: &[EventRow]) -> Vec<String> {
@@ -366,9 +496,12 @@ fn build_user_message(
     let ended: DateTime<Utc> = block.ended_at.parse().unwrap_or_else(|_| Utc::now());
     let duration_min = (ended - started).num_seconds() / 60;
 
+    let dom = dominant_project(events);
     let payload = json!({
         "block_duration_minutes": duration_min,
         "inferred_jira_issue":    block.jira_issue,
+        "project_path":           dom,
+        "project_name":           dom.as_deref().map(project_name),
         "candidate_tickets":      candidates.iter().map(|c| json!({
             "key": c.key,
             "summary": c.summary,
@@ -383,6 +516,7 @@ fn build_user_message(
                 "summary":    trunc(e.title.as_deref().unwrap_or(""), 200),
                 "details":    e.details.as_deref().map(|d| trunc(d, cap)),
                 "jira_issue": e.jira_issue,
+                "project":    e.project_path.as_deref().map(project_name),
             })
         }).collect::<Vec<_>>(),
     });
@@ -498,6 +632,194 @@ mod tests {
         .unwrap();
     }
 
+    #[allow(clippy::too_many_arguments)] // test fixture
+    fn insert_block_with(
+        conn: &Connection,
+        day: &str,
+        started: &str,
+        ended: &str,
+        duration: i64,
+        jira: Option<&str>,
+        estimated_by: Option<&str>,
+        tempo: Option<&str>,
+    ) -> i64 {
+        conn.execute(
+            "INSERT INTO blocks (day, jira_issue, started_at, ended_at, duration_seconds, estimated_by, tempo_worklog_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![day, jira, started, ended, duration, estimated_by, tempo],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    #[test]
+    fn merge_combines_adjacent_blocks_with_same_ticket() {
+        let conn = open_memory().unwrap();
+        let a = insert_block_with(
+            &conn,
+            "2026-05-12",
+            "2026-05-12T09:00:00+00:00",
+            "2026-05-12T09:30:00+00:00",
+            1800,
+            Some("GENAI-1"),
+            Some("claude_p"),
+            None,
+        );
+        let b = insert_block_with(
+            &conn,
+            "2026-05-12",
+            "2026-05-12T09:31:00+00:00",
+            "2026-05-12T10:00:00+00:00",
+            1740,
+            Some("GENAI-1"),
+            Some("claude_p"),
+            None,
+        );
+        let removed = merge_same_ticket_adjacent(&conn, "2026-05-12").unwrap();
+        assert_eq!(removed, 1);
+        let remaining: Vec<(i64, String, String)> = conn
+            .prepare("SELECT id, started_at, ended_at FROM blocks WHERE day='2026-05-12'")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].0, a);
+        assert_eq!(remaining[0].1, "2026-05-12T09:00:00+00:00");
+        assert_eq!(remaining[0].2, "2026-05-12T10:00:00+00:00");
+        let _ = b;
+    }
+
+    #[test]
+    fn merge_leaves_different_tickets_alone() {
+        let conn = open_memory().unwrap();
+        insert_block_with(
+            &conn,
+            "2026-05-12",
+            "2026-05-12T09:00:00+00:00",
+            "2026-05-12T09:30:00+00:00",
+            1800,
+            Some("GENAI-1"),
+            Some("claude_p"),
+            None,
+        );
+        insert_block_with(
+            &conn,
+            "2026-05-12",
+            "2026-05-12T09:31:00+00:00",
+            "2026-05-12T10:00:00+00:00",
+            1740,
+            Some("GOJ-2"),
+            Some("claude_p"),
+            None,
+        );
+        let removed = merge_same_ticket_adjacent(&conn, "2026-05-12").unwrap();
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn merge_skips_manual_blocks() {
+        let conn = open_memory().unwrap();
+        insert_block_with(
+            &conn,
+            "2026-05-12",
+            "2026-05-12T09:00:00+00:00",
+            "2026-05-12T09:30:00+00:00",
+            1800,
+            Some("GENAI-1"),
+            Some("manual"),
+            None,
+        );
+        insert_block_with(
+            &conn,
+            "2026-05-12",
+            "2026-05-12T09:31:00+00:00",
+            "2026-05-12T10:00:00+00:00",
+            1740,
+            Some("GENAI-1"),
+            Some("claude_p"),
+            None,
+        );
+        let removed = merge_same_ticket_adjacent(&conn, "2026-05-12").unwrap();
+        assert_eq!(removed, 0, "manual blocks must not be merged");
+    }
+
+    #[test]
+    fn merge_skips_synced_blocks() {
+        let conn = open_memory().unwrap();
+        insert_block_with(
+            &conn,
+            "2026-05-12",
+            "2026-05-12T09:00:00+00:00",
+            "2026-05-12T09:30:00+00:00",
+            1800,
+            Some("GENAI-1"),
+            Some("claude_p"),
+            Some("12345"),
+        );
+        insert_block_with(
+            &conn,
+            "2026-05-12",
+            "2026-05-12T09:31:00+00:00",
+            "2026-05-12T10:00:00+00:00",
+            1740,
+            Some("GENAI-1"),
+            Some("claude_p"),
+            None,
+        );
+        let removed = merge_same_ticket_adjacent(&conn, "2026-05-12").unwrap();
+        assert_eq!(
+            removed, 0,
+            "synced (tempo_worklog_id set) blocks must not be merged"
+        );
+    }
+
+    #[test]
+    fn merge_chains_three_same_ticket_blocks() {
+        let conn = open_memory().unwrap();
+        insert_block_with(
+            &conn,
+            "2026-05-12",
+            "2026-05-12T09:00:00+00:00",
+            "2026-05-12T09:20:00+00:00",
+            1200,
+            Some("GENAI-1"),
+            Some("claude_p"),
+            None,
+        );
+        insert_block_with(
+            &conn,
+            "2026-05-12",
+            "2026-05-12T09:25:00+00:00",
+            "2026-05-12T09:45:00+00:00",
+            1200,
+            Some("GENAI-1"),
+            Some("claude_p"),
+            None,
+        );
+        insert_block_with(
+            &conn,
+            "2026-05-12",
+            "2026-05-12T09:50:00+00:00",
+            "2026-05-12T10:10:00+00:00",
+            1200,
+            Some("GENAI-1"),
+            Some("claude_p"),
+            None,
+        );
+        let removed = merge_same_ticket_adjacent(&conn, "2026-05-12").unwrap();
+        assert_eq!(removed, 2, "three same-ticket blocks collapse to one");
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM blocks WHERE day='2026-05-12'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
     #[test]
     fn build_user_message_preserves_long_claude_details_but_trims_others() {
         // B4: events from the Claude Code hook now carry the full user
@@ -519,6 +841,7 @@ mod tests {
             title: Some("UserPromptSubmit — fix auth".into()),
             details: Some("c".repeat(500)),
             jira_issue: None,
+            project_path: None,
         };
         let github_event = EventRow {
             source: "github_commit".into(),
@@ -526,6 +849,7 @@ mod tests {
             title: Some("Initial commit".into()),
             details: Some("g".repeat(500)),
             jira_issue: None,
+            project_path: None,
         };
 
         let msg = build_user_message(&block, &[claude_event, github_event], &[], &[]);
@@ -768,11 +1092,15 @@ mod tests {
     }
 
     #[test]
-    fn estimate_preserves_inferred_ticket_when_claude_is_unsure() {
+    fn estimate_drops_inferred_ticket_when_not_in_candidates() {
+        // If the regex-inferred ticket on the block doesn't match any
+        // real Jira project (e.g. `FINDING-01` from /pentest output or
+        // `CVE-2025` from a security skill), and Claude correctly returns
+        // null, we must NOT resurrect the noise. Trust null.
         let conn = open_memory().unwrap();
         conn.execute(
             "INSERT INTO blocks (day, jira_issue, started_at, ended_at, duration_seconds)
-             VALUES ('2026-04-18', 'INFER-1', '2026-04-18T10:00:00+00:00', '2026-04-18T10:30:00+00:00', 1800)",
+             VALUES ('2026-04-18', 'FINDING-01', '2026-04-18T10:00:00+00:00', '2026-04-18T10:30:00+00:00', 1800)",
             [],
         )
         .unwrap();
@@ -790,7 +1118,51 @@ mod tests {
         )
         .unwrap();
         let block = repo::get_block(&conn, bid).unwrap().unwrap();
-        assert_eq!(block.jira_issue.as_deref(), Some("INFER-1"));
+        assert_eq!(
+            block.jira_issue, None,
+            "noise key from inference must not survive null estimate"
+        );
+    }
+
+    #[test]
+    fn estimate_keeps_inferred_ticket_when_it_is_a_real_candidate() {
+        // If the inferred ticket DOES match a real Jira candidate (e.g.
+        // a GENAI-* key cached from the jira collector) and Claude
+        // returns null, preserve the inference — the model just wasn't
+        // confident enough to commit, but the signal is valid.
+        let conn = open_memory().unwrap();
+        repo::upsert_ticket(
+            &conn,
+            &JiraTicket {
+                key: "GENAI-1".into(),
+                summary: "Real ticket".into(),
+                status: Some("In Progress".into()),
+                project_key: Some("GENAI".into()),
+                updated: Some("2026-04-18T00:00:00Z".into()),
+            },
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO blocks (day, jira_issue, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-18', 'GENAI-1', '2026-04-18T10:00:00+00:00', '2026-04-18T10:30:00+00:00', 1800)",
+            [],
+        )
+        .unwrap();
+        let bid = conn.last_insert_rowid();
+        let invoker = FixedInvoker(json!({
+            "jira_issue": null,
+            "minutes": 30,
+            "description": "Work"
+        }));
+        estimate_day_with(
+            &conn,
+            NaiveDate::from_ymd_opt(2026, 4, 18).unwrap(),
+            "m",
+            &invoker,
+        )
+        .unwrap();
+        let block = repo::get_block(&conn, bid).unwrap().unwrap();
+        assert_eq!(block.jira_issue.as_deref(), Some("GENAI-1"));
     }
 
     #[test]
@@ -824,6 +1196,7 @@ mod tests {
                 title: Some("PROJ-1 fix".into()),
                 details: None,
                 jira_issue: None,
+                project_path: None,
             },
             EventRow {
                 source: "github_pr".into(),
@@ -831,6 +1204,7 @@ mod tests {
                 title: None,
                 details: Some("see PROJ-1 and PROJ-2".into()),
                 jira_issue: None,
+                project_path: None,
             },
         ];
         let got = collect_literal_matches(&events);
