@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.0](https://github.com/TomasPalsson/worklog/compare/v0.7.0...v0.8.0) (2026-05-12)
+
+
+### Features
+
+* **cli:** interactive console week view ([#10](https://github.com/TomasPalsson/worklog/issues/10)) ([c694d95](https://github.com/TomasPalsson/worklog/commit/c694d954a7298c917d159d6cd7e20aac298ad2e0))
+* per-block git-commit sidecar ([#11](https://github.com/TomasPalsson/worklog/issues/11)) ([dcf0f1d](https://github.com/TomasPalsson/worklog/commit/dcf0f1d6350df3defabe5552954bfcdf0bf2fa54))
+
 ## [0.7.0](https://github.com/TomasPalsson/worklog/compare/v0.6.0...v0.7.0) (2026-05-12)
 
 
