@@ -44,16 +44,30 @@ export default async function DayPage({
 
   const { blocks, total_seconds: total } = summary;
   const { tickets, meta: cache } = ticketsResp;
-  const unassigned = blocks.filter((b) => !b.jira_issue).length;
+  // Personal blocks aren't candidates for Jira/Tempo, so they don't
+  // count toward the unassigned amber-nag — that nag fires for *work*
+  // blocks the user still needs to assign.
+  const unassigned = blocks.filter((b) => !b.jira_issue && !b.is_personal).length;
+  // Split the totals so the header can show "Xh work · Yh personal".
+  // `total` from the daemon is wall-clock across everything; subtract
+  // the personal slice for the headline figure.
+  const personalSeconds = blocks
+    .filter((b) => b.is_personal)
+    .reduce((acc, b) => acc + b.duration_seconds, 0);
+  const workSeconds = Math.max(0, total - personalSeconds);
+  const personalSummary = personalSeconds > 0
+    ? `${formatTotalHours(personalSeconds)} personal`
+    : undefined;
 
   return (
     <>
       <DayHeader
         day={day}
         heading={formatDayHeading(day)}
-        totalHours={formatTotalHours(total)}
+        totalHours={formatTotalHours(workSeconds)}
         blockCount={blocks.length}
         unassigned={unassigned}
+        personalSummary={personalSummary}
       />
       <ActionBar day={day} cacheCount={cache.count} cacheLast={cache.last_fetched} />
       {blocks.length === 0 ? (

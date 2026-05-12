@@ -78,6 +78,7 @@ pub fn sync_day_with(
             "SELECT id, jira_issue, started_at, duration_seconds, description, day
                FROM blocks
               WHERE day = ?1
+                AND is_personal = 0
                 AND (tempo_worklog_id IS NULL OR tempo_worklog_id = '')
               ORDER BY started_at",
         )?;
@@ -540,6 +541,43 @@ mod tests {
         assert_eq!(normalise_tempo_id(&json!({"id": 7})), None);
         assert_eq!(normalise_tempo_id(&json!([42])), None);
         assert_eq!(normalise_tempo_id(&json!(true)), None);
+    }
+
+    #[test]
+    fn sync_excludes_personal_blocks() {
+        // A personal block must never reach Tempo. No mock is set, so any
+        // POST attempt would fail loudly.
+        let server = MockServer::start();
+        let conn = open_memory().unwrap();
+        let personal_id = insert_block(
+            &conn,
+            "2026-04-18",
+            "2026-04-18T09:00:00Z",
+            "2026-04-18T09:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("hacking on dotfiles"),
+        );
+        conn.execute(
+            "UPDATE blocks SET is_personal = 1 WHERE id = ?1",
+            params![personal_id],
+        )
+        .unwrap();
+
+        let (report, results) = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report.synced, 0);
+        assert_eq!(report.skipped, 0, "personal blocks aren't even listed");
+        assert!(
+            results.is_empty(),
+            "personal block must not appear in results"
+        );
     }
 
     #[test]

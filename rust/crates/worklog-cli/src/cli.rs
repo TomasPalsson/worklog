@@ -12,7 +12,7 @@ use worklog_core::{
     collectors::{gcal as gcal_col, github as gh, jira as jira_col, tempo as tempo_col},
     daemon as daemon_mod, db, estimate, hook, hook_run, http, infer,
     paths::Paths,
-    schedule, secrets, updater as upd, web as web_mod,
+    personal as personal_mod, schedule, secrets, updater as upd, web as web_mod,
 };
 
 use crate::style;
@@ -157,6 +157,13 @@ pub enum Cmd {
         /// Model id passed to `claude -p` during estimation.
         #[arg(long, default_value = estimate::DEFAULT_MODEL)]
         model: String,
+    },
+
+    /// Personal/work classification — manage the auto-classifier and
+    /// re-evaluate existing blocks against the current ruleset.
+    Tag {
+        #[command(subcommand)]
+        sub: TagCmd,
     },
 
     /// Claude Code hook — reads a JSON event from stdin and records it.
@@ -407,6 +414,28 @@ pub enum SecretCmd {
     List,
 }
 
+#[derive(Subcommand, Debug)]
+pub enum TagCmd {
+    /// Print the current personal/work patterns and the config file path.
+    List,
+    /// Add a path glob to the personal list (creates the config if missing).
+    Personal {
+        /// Glob pattern, e.g. `~/Desktop/Projects/ai-news/**` or
+        /// `~/Desktop/Work/scratch`. Tilde expansion is applied.
+        glob: String,
+    },
+    /// Add a path glob to the explicit work list — wins over the
+    /// default rule and any matching personal pattern.
+    Work { glob: String },
+    /// Re-evaluate the `is_personal` column on existing blocks against
+    /// the current ruleset. Doesn't re-cluster.
+    Reclassify {
+        /// YYYY-MM-DD. If omitted, all days are reclassified.
+        #[arg(long)]
+        day: Option<String>,
+    },
+}
+
 pub fn run() -> Result<()> {
     run_with(
         std::env::args_os().collect::<Vec<_>>(),
@@ -499,6 +528,12 @@ pub fn run_with<W: Write>(
             no_serve,
             model,
         } => cmd_day(day, no_serve, &model, out, cli.json),
+        Cmd::Tag { sub } => match sub {
+            TagCmd::List => cmd_tag_list(out, cli.json),
+            TagCmd::Personal { glob } => cmd_tag_personal(glob, out, cli.json),
+            TagCmd::Work { glob } => cmd_tag_work(glob, out, cli.json),
+            TagCmd::Reclassify { day } => cmd_tag_reclassify(day, out, cli.json),
+        },
         Cmd::HookRun => cmd_hook_run(),
         Cmd::Daemon { sub, socket, tcp } => match sub {
             None => cmd_daemon(socket, tcp),
@@ -1069,6 +1104,114 @@ fn parse_day(s: Option<&str>) -> Result<chrono::NaiveDate> {
         Some(s) => chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
             .map_err(|e| anyhow::anyhow!("invalid --day '{s}': {e}")),
     }
+}
+
+// ────────────────── worklog tag (personal/work classifier) ──────────────────
+
+fn cmd_tag_list<W: Write>(out: &mut W, json: bool) -> Result<()> {
+    let path = personal_mod::config_path()
+        .ok_or_else(|| anyhow::anyhow!("could not resolve config path"))?;
+    let file = personal_mod::read_file(&path);
+    if json {
+        let payload = serde_json::json!({
+            "config_path": path,
+            "work": file.work,
+            "personal": file.personal,
+            "default_rule": "any project_path under ~/Desktop/Work/** is work; everything else is personal",
+        });
+        writeln!(out, "{}", serde_json::to_string_pretty(&payload)?)?;
+        return Ok(());
+    }
+    writeln!(out, "config:  {}", path.display())?;
+    writeln!(
+        out,
+        "default: ~/Desktop/Work/** → work; everything else → personal"
+    )?;
+    if file.work.is_empty() && file.personal.is_empty() {
+        writeln!(out, "(no custom patterns — using default rule only)")?;
+        return Ok(());
+    }
+    if !file.work.is_empty() {
+        writeln!(out, "work overrides:")?;
+        for p in &file.work {
+            writeln!(out, "  {p}")?;
+        }
+    }
+    if !file.personal.is_empty() {
+        writeln!(out, "personal overrides:")?;
+        for p in &file.personal {
+            writeln!(out, "  {p}")?;
+        }
+    }
+    Ok(())
+}
+
+fn cmd_tag_personal<W: Write>(glob: String, out: &mut W, json: bool) -> Result<()> {
+    append_pattern("personal", glob, out, json)
+}
+
+fn cmd_tag_work<W: Write>(glob: String, out: &mut W, json: bool) -> Result<()> {
+    append_pattern("work", glob, out, json)
+}
+
+fn append_pattern<W: Write>(kind: &str, glob: String, out: &mut W, json: bool) -> Result<()> {
+    let path = personal_mod::config_path()
+        .ok_or_else(|| anyhow::anyhow!("could not resolve config path"))?;
+    let mut file = personal_mod::read_file(&path);
+    let list = match kind {
+        "personal" => &mut file.personal,
+        "work" => &mut file.work,
+        _ => unreachable!(),
+    };
+    if list.iter().any(|p| p == &glob) {
+        if json {
+            writeln!(
+                out,
+                "{}",
+                serde_json::json!({"status": "noop", "kind": kind, "glob": glob})
+            )?;
+        } else {
+            writeln!(out, "already in {kind} list: {glob}")?;
+        }
+        return Ok(());
+    }
+    list.push(glob.clone());
+    personal_mod::write_file(&path, &file)?;
+    if json {
+        writeln!(
+            out,
+            "{}",
+            serde_json::json!({"status": "added", "kind": kind, "glob": glob, "config_path": path})
+        )?;
+    } else {
+        writeln!(out, "added to {kind}: {glob}")?;
+        writeln!(out, "config: {}", path.display())?;
+        writeln!(
+            out,
+            "tip: run `worklog tag reclassify` to apply to existing blocks"
+        )?;
+    }
+    Ok(())
+}
+
+fn cmd_tag_reclassify<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()> {
+    let paths = Paths::resolve()?;
+    let conn = db::open(&paths.db)?;
+    let stats = personal_mod::reclassify_blocks(&conn, day.as_deref())?;
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&stats)?)?;
+    } else {
+        writeln!(
+            out,
+            "✓ reclassified {} block{} ({} now personal, {} now work, {} unchanged)",
+            stats.total,
+            if stats.total == 1 { "" } else { "s" },
+            stats.changed_to_personal,
+            stats.changed_to_work,
+            stats.unchanged
+        )?;
+    }
+    Ok(())
 }
 
 fn cmd_infer<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()> {

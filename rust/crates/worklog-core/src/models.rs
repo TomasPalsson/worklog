@@ -60,6 +60,11 @@ pub struct Block {
     pub estimated_by: Option<String>,
     pub flagged: bool,
     pub tempo_worklog_id: Option<String>,
+    /// Auto-classified from the dominant project_path of the block's events
+    /// (see worklog-core::personal). Personal blocks are dimmed in the
+    /// review UI, skipped by the estimator, and excluded from Tempo sync.
+    #[serde(default)]
+    pub is_personal: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

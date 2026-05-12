@@ -25,7 +25,12 @@ export function BlockCard({ block, tickets, day }: Props) {
 
   const assigned = !!block.jira_issue;
   const synced = !!block.tempo_worklog_id;
-  const cls = ["block", assigned ? "assigned" : "unassigned", synced ? "synced" : ""]
+  const cls = [
+    "block",
+    assigned ? "assigned" : "unassigned",
+    synced ? "synced" : "",
+    block.is_personal ? "personal" : "",
+  ]
     .filter(Boolean)
     .join(" ");
 
@@ -135,6 +140,14 @@ export function BlockCard({ block, tickets, day }: Props) {
             <span className="synced-tag" title={`Synced to Tempo · id ${block.tempo_worklog_id}`}>
               <Check />
               synced
+            </span>
+          )}
+          {block.is_personal && (
+            <span
+              className="personal-tag"
+              title="Personal — auto-classified from project path. Skipped by estimator and Tempo sync."
+            >
+              personal
             </span>
           )}
         </div>

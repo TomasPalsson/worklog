@@ -371,6 +371,18 @@ button {
   background: var(--bg-sunk);
 }
 
+/* Personal blocks fade into the background — the user is focused on
+   work in this view. Restore full opacity on hover/focus so they
+   stay interactable for inspection or manual override. */
+.block.personal {
+  opacity: 0.55;
+  transition: opacity 120ms ease-out;
+}
+.block.personal:hover,
+.block.personal:focus-within {
+  opacity: 1;
+}
+
 /* time column */
 
 .block-time {
@@ -825,6 +837,27 @@ button {
 .synced-tag svg {
   width: 11px;
   height: 11px;
+}
+
+/* personal-block pill — muted, no icon, sits next to the synced tag */
+.personal-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  background: var(--bg-sunk);
+  border: 1px dashed var(--border);
+}
+
+/* DayHeader personal-time annotation — sits next to the work total
+   muted so the eye lands on the work figure first. */
+.day-total-personal {
+  color: var(--fg-muted);
+  font-style: italic;
 }
 
 /* toast for server-action status */

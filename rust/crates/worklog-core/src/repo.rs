@@ -111,7 +111,7 @@ pub fn load_day_events(conn: &Connection, day: &str) -> Result<Vec<Event>> {
 pub fn list_blocks_for_day(conn: &Connection, day: &str) -> Result<Vec<Block>> {
     let mut stmt = conn.prepare(
         "SELECT id, day, jira_issue, started_at, ended_at, duration_seconds,
-                description, estimated_by, flagged, tempo_worklog_id
+                description, estimated_by, flagged, tempo_worklog_id, is_personal
            FROM blocks
           WHERE day = ?1
           ORDER BY started_at",
@@ -128,6 +128,7 @@ pub fn list_blocks_for_day(conn: &Connection, day: &str) -> Result<Vec<Block>> {
             estimated_by: r.get(7)?,
             flagged: r.get::<_, i64>(8)? != 0,
             tempo_worklog_id: r.get(9)?,
+            is_personal: r.get::<_, i64>(10)? != 0,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -172,7 +173,7 @@ pub fn get_block(conn: &Connection, id: i64) -> Result<Option<Block>> {
     let block = conn
         .query_row(
             "SELECT id, day, jira_issue, started_at, ended_at, duration_seconds,
-                    description, estimated_by, flagged, tempo_worklog_id
+                    description, estimated_by, flagged, tempo_worklog_id, is_personal
                FROM blocks WHERE id = ?1",
             params![id],
             |r| {
@@ -187,6 +188,7 @@ pub fn get_block(conn: &Connection, id: i64) -> Result<Option<Block>> {
                     estimated_by: r.get(7)?,
                     flagged: r.get::<_, i64>(8)? != 0,
                     tempo_worklog_id: r.get(9)?,
+                    is_personal: r.get::<_, i64>(10)? != 0,
                 })
             },
         )

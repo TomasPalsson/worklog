@@ -16,6 +16,7 @@ pub mod http;
 pub mod infer;
 pub mod models;
 pub mod paths;
+pub mod personal;
 pub mod purge;
 pub mod repo;
 pub mod schedule;

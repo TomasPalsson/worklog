@@ -1,9 +1,13 @@
--- Worklog schema v3. Shared between Python and the Rust hook (include_str!).
+-- Worklog schema v4. Shared between Python and the Rust hook (include_str!).
 -- All CREATE statements are idempotent (IF NOT EXISTS) so the Rust hook can
 -- run this on every invocation with negligible cost.
 --
--- v3 drops the "company" concept: everything is routed by jira_issue. Open
--- Jira tickets are cached in jira_tickets for the estimator + UI picker.
+-- v4 adds blocks.is_personal — auto-classified from the block's dominant
+-- project_path (see PersonalConfig in worklog-core::personal). Personal
+-- blocks render dimmed in the UI, skip the estimator, and are excluded
+-- from Tempo sync.
+-- v3 dropped the "company" concept: everything is routed by jira_issue.
+-- Open Jira tickets are cached in jira_tickets for the estimator + picker.
 
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,6 +56,7 @@ CREATE TABLE IF NOT EXISTS blocks (
     estimated_by TEXT,
     flagged INTEGER NOT NULL DEFAULT 0,
     tempo_worklog_id TEXT,
+    is_personal INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 

@@ -79,6 +79,25 @@ pub struct InferBlock {
     events: Vec<InferEvent>,
 }
 
+impl InferBlock {
+    /// Most common `project_path` across the block's events. Used by
+    /// `persist_blocks` to feed `personal::PersonalConfig::classify`.
+    /// Events with `project_path = None` (gcal/github/jira) don't count —
+    /// they ride with whichever cwd dominates from Claude hooks.
+    pub fn dominant_project_path(&self) -> Option<String> {
+        let mut counts: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+        for e in &self.events {
+            if let Some(p) = &e.project_path {
+                *counts.entry(p.as_str()).or_insert(0) += 1;
+            }
+        }
+        counts
+            .into_iter()
+            .max_by_key(|(_, n)| *n)
+            .map(|(p, _)| p.to_owned())
+    }
+}
+
 fn new_block(e: &InferEvent) -> InferBlock {
     let end = e.end();
     InferBlock {
@@ -402,6 +421,9 @@ fn iso_prefix(s: &str) -> String {
 
 pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) -> Result<()> {
     let day_iso = day.to_string();
+    // Load once per persist pass — cheap and avoids re-reading the TOML
+    // for every block. classify() is pure given the config.
+    let personal_cfg = crate::personal::PersonalConfig::load();
 
     // Collect "carry" state so re-inference preserves tempo_worklog_id,
     // description, estimated_by, and manual ticket edits. We keep two
@@ -469,12 +491,13 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
             .and_then(|c| c.jira_issue.clone())
             .or_else(|| b.jira_issue.clone());
 
+        let is_personal = personal_cfg.classify(b.dominant_project_path().as_deref());
         tx.execute(
             "INSERT INTO blocks (
                 day, jira_issue, started_at, ended_at,
                 duration_seconds, description, estimated_by, flagged,
-                tempo_worklog_id
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                tempo_worklog_id, is_personal
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 b.day,
                 jira_issue,
@@ -485,6 +508,7 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
                 estimated_by,
                 if b.flagged { 1 } else { 0 },
                 tempo_id,
+                if is_personal { 1 } else { 0 },
             ],
         )
         .context("inserting block")?;
@@ -785,6 +809,37 @@ mod tests {
         }
         let blocks = build_blocks(events);
         assert_eq!(blocks.len(), 1, "NULL project_path event must not split");
+    }
+
+    #[test]
+    fn dominant_project_path_picks_most_common() {
+        let mut a = ev_project(9, 0, "claude", "/work/sjukra");
+        a.event_id = Some(1);
+        let mut b = ev_project(9, 5, "claude", "/work/sjukra");
+        b.event_id = Some(2);
+        let mut c = ev_project(9, 10, "claude", "/work/pdf");
+        c.event_id = Some(3);
+        let block = new_block(&a);
+        let mut block = block;
+        extend_block(&mut block, &b);
+        extend_block(&mut block, &c);
+        assert_eq!(
+            block.dominant_project_path().as_deref(),
+            Some("/work/sjukra")
+        );
+    }
+
+    #[test]
+    fn dominant_project_path_ignores_null_paths() {
+        let a = ev_project(9, 0, "claude", "/work/sjukra");
+        let b = ev(9, 5, "github_commit"); // project_path = None
+        let block = new_block(&a);
+        let mut block = block;
+        extend_block(&mut block, &b);
+        assert_eq!(
+            block.dominant_project_path().as_deref(),
+            Some("/work/sjukra")
+        );
     }
 
     #[test]

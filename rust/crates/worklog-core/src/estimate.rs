@@ -164,6 +164,16 @@ pub fn estimate_day_with<I: ModelInvoker>(
     let blocks = load_blocks_for_estimator(conn, &day_iso)?;
 
     for block in blocks {
+        // Personal blocks don't get an estimate — they're never going to
+        // Tempo, and burning a `claude -p` call to write a Jira-style
+        // description for "fixed my dotfiles" is wasted spend. Note: we
+        // do NOT set `estimated_by`, so if the user reclassifies the
+        // block as work later, the next `worklog estimate` run still
+        // processes it normally.
+        if block.is_personal {
+            stats.skipped += 1;
+            continue;
+        }
         // Skip blocks we already processed (claude_p) OR that the user
         // has hand-edited (manual). Overwriting `manual` would silently
         // destroy the user's work — CLAUDE.md calls this out explicitly.
@@ -362,6 +372,7 @@ struct BlockRow {
     ended_at: String,
     jira_issue: Option<String>,
     estimated_by: Option<String>,
+    is_personal: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -391,7 +402,7 @@ fn load_open_tickets(conn: &Connection) -> Result<Vec<Candidate>> {
 
 fn load_blocks_for_estimator(conn: &Connection, day_iso: &str) -> Result<Vec<BlockRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, started_at, ended_at, jira_issue, estimated_by
+        "SELECT id, started_at, ended_at, jira_issue, estimated_by, is_personal
            FROM blocks WHERE day = ?1 ORDER BY started_at",
     )?;
     let rows = stmt
@@ -402,6 +413,7 @@ fn load_blocks_for_estimator(conn: &Connection, day_iso: &str) -> Result<Vec<Blo
                 ended_at: r.get(2)?,
                 jira_issue: r.get(3)?,
                 estimated_by: r.get(4)?,
+                is_personal: r.get::<_, i64>(5)? != 0,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -834,6 +846,7 @@ mod tests {
             ended_at: "2026-04-18T09:30:00+00:00".into(),
             jira_issue: None,
             estimated_by: None,
+            is_personal: false,
         };
         let claude_event = EventRow {
             source: "claude".into(),
@@ -1089,6 +1102,41 @@ mod tests {
         );
         assert_eq!(block.estimated_by.as_deref(), Some("claude_p"));
         assert_eq!(block.description.as_deref(), Some("work"));
+    }
+
+    #[test]
+    fn estimate_skips_personal_blocks() {
+        // Personal blocks are skipped without invoking the model and
+        // without flipping `estimated_by` (so a later reclassify can
+        // bring them back into the work flow).
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds, is_personal)
+             VALUES ('2026-04-18', '2026-04-18T09:00:00+00:00', '2026-04-18T09:30:00+00:00', 1800, 1)",
+            [],
+        )
+        .unwrap();
+        let bid = conn.last_insert_rowid();
+        let invoker = FixedInvoker(json!({
+            "jira_issue": "SHOULD-NOT-USE",
+            "minutes": 30,
+            "description": "should-not-run"
+        }));
+        let stats = estimate_day_with(
+            &conn,
+            NaiveDate::from_ymd_opt(2026, 4, 18).unwrap(),
+            "m",
+            &invoker,
+        )
+        .unwrap();
+        assert_eq!(stats.estimated, 0);
+        assert_eq!(stats.skipped, 1);
+        let block = repo::get_block(&conn, bid).unwrap().unwrap();
+        assert!(block.description.is_none(), "must not write description");
+        assert!(
+            block.estimated_by.is_none(),
+            "must not stamp estimated_by — leaves reclassify path open"
+        );
     }
 
     #[test]
