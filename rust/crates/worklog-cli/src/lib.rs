@@ -5,7 +5,6 @@
 
 pub mod cli;
 pub mod style;
-pub mod week_view;
 pub mod wizard;
 
 pub use cli::run;

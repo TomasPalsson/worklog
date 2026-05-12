@@ -52,10 +52,6 @@ fs4         = "0.9"
 miette      = { version = "7", features = ["fancy"] }
 comfy-table = "7"
 
-# v0.7+ TUI (worklog week)
-ratatui     = "0.28"
-crossterm   = "0.28"
-
 [profile.release]
 lto           = "thin"
 codegen-units = 1

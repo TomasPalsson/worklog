@@ -42,7 +42,7 @@ const HELP_OVERVIEW: &str = "\x1b[1;36m\
 commands by area\x1b[0m
   setup & diagnostics  \x1b[32msetup  doctor  db  secret  version\x1b[0m
   data collection      \x1b[32mcollect  infer  estimate  hook\x1b[0m
-  review & sync        \x1b[32mday  week  sync  web  serve\x1b[0m
+  review & sync        \x1b[32mday  sync  web  serve\x1b[0m
   daemon & schedule    \x1b[32mdaemon  schedule\x1b[0m
   release ops          \x1b[32mself-update  upgrade  dev\x1b[0m
 ";
@@ -165,16 +165,6 @@ pub enum Cmd {
         /// Model id passed to `claude -p` during estimation.
         #[arg(long, default_value = estimate::DEFAULT_MODEL)]
         model: String,
-    },
-
-    /// Interactive console week view — 7-column grid of your worklog
-    /// blocks with arrow-key navigation and a calendar popup (`g`) for
-    /// jumping to an arbitrary date. Read-only: edits still happen in
-    /// the web UI.
-    Week {
-        /// YYYY-MM-DD to focus on. Default: today in $WORKLOG_TZ.
-        #[arg(long)]
-        day: Option<String>,
     },
 
     /// Personal/work classification — manage the auto-classifier and
@@ -563,7 +553,6 @@ pub fn run_with<W: Write>(
             no_serve,
             model,
         } => cmd_day(day, no_serve, &model, out, cli.json),
-        Cmd::Week { day } => cmd_week(day),
         Cmd::Tag { sub } => match sub {
             TagCmd::List => cmd_tag_list(out, cli.json),
             TagCmd::Personal { glob } => cmd_tag_personal(glob, out, cli.json),
@@ -1284,14 +1273,6 @@ fn cmd_tag_reclassify<W: Write>(day: Option<String>, out: &mut W, json: bool) ->
         )?;
     }
     Ok(())
-}
-
-fn cmd_week(day: Option<String>) -> Result<()> {
-    let focus = match day.as_deref() {
-        Some(s) => Some(crate::week_view::parse_day(s)?),
-        None => None,
-    };
-    crate::week_view::run(focus)
 }
 
 fn cmd_infer<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()> {
