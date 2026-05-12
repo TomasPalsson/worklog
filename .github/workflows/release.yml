@@ -24,10 +24,22 @@
 
 name: release
 
+# release-please-action creates and publishes the tag using
+# GITHUB_TOKEN; by GitHub policy that does not fire `push: tags` on
+# downstream workflows, so v0.7.0's binaries+manifest never built and
+# `worklog upgrade` 404'd on its manifest. Adding the `release: published`
+# trigger picks up release-please's publish event going forward, and
+# `workflow_dispatch` lets us replay a build for an existing tag
+# (`gh workflow run release.yml --ref vX.Y.Z`) without re-pushing it.
 on:
   push:
     tags:
       - "v*"
+  release:
+    types: [published]
+  # Dispatch with `gh workflow run release.yml --ref vX.Y.Z` to rebuild
+  # an existing tag — `github.ref_name` resolves to the tag.
+  workflow_dispatch:
 
 permissions:
   contents: write   # `gh release create` needs this.
