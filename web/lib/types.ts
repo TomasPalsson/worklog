@@ -56,6 +56,22 @@ export interface TicketCacheMeta {
   last_fetched: string | null;
 }
 
+/** One commit landed inside a block's window. Returned by the daemon's
+ * `/blocks/:id/commits` route, fetched lazily by the BlockCard
+ * commits drill-down. `github_url` is omitted when origin isn't on
+ * GitHub. */
+export interface CommitEntry {
+  sha: string;
+  short_sha: string;
+  subject: string;
+  author_email: string;
+  committed_at: string; // ISO-8601 with offset
+  files_changed: number;
+  insertions: number;
+  deletions: number;
+  github_url?: string;
+}
+
 export type SourceKind = "github" | "claude" | "gcal" | "jira" | "other";
 
 /** Collapse a raw DB `source` column into one of our display buckets. */

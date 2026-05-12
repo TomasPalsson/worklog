@@ -10,6 +10,7 @@ import { SourceBadges } from "./SourceBadges";
 import { EstBadge } from "./EstBadge";
 import { TicketCombobox } from "./TicketCombobox";
 import { EventList } from "./EventList";
+import { CommitList } from "./CommitList";
 
 interface Props {
   block: Block;
@@ -187,6 +188,7 @@ export function BlockCard({ block, tickets, day }: Props) {
           <SourceBadges sources={block.sources} />
           <EstBadge kind={block.estimated_by} />
           <EventList blockId={block.id} eventCount={block.event_count} />
+          <CommitList blockId={block.id} isPersonal={block.is_personal} />
         </div>
       </div>
 

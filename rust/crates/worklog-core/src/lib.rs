@@ -11,6 +11,7 @@ pub mod daemon;
 pub mod daemon_service;
 pub mod db;
 pub mod estimate;
+pub mod git;
 pub mod hook;
 pub mod hook_run;
 pub mod http;

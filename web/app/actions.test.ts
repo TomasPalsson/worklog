@@ -30,6 +30,7 @@ mock.module("@/lib/daemon", () => ({
   runSync: async () => ({ day: "x", dry_run: true, synced: 0, skipped: 0, errors: [] }),
   refreshJira: async () => ({ tickets_written: 0, source: "jira" }),
   listBlockEvents: async () => [],
+  listBlockCommits: async () => [],
 }));
 
 let _runActionForTests: <T>(

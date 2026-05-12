@@ -153,7 +153,13 @@ export async function refreshJira() {
 
 // ───────────────────── reads (v0.6) ─────────────────────
 
-import type { Block, Event, JiraTicket, TicketCacheMeta } from "./types";
+import type {
+  Block,
+  CommitEntry,
+  Event,
+  JiraTicket,
+  TicketCacheMeta,
+} from "./types";
 
 interface DaySummary {
   day: string;
@@ -184,4 +190,14 @@ export async function listTickets(): Promise<{
  */
 export async function listBlockEvents(blockId: number): Promise<Event[]> {
   return call<Event[]>("GET", `/blocks/${blockId}/events`);
+}
+
+/**
+ * Commits authored under the block's dominant project path inside its
+ * window. Personal blocks and blocks without a dominant cwd come back
+ * empty. Fetched lazily on first expand of the per-block commits
+ * drill-down — same shape as `listBlockEvents`.
+ */
+export async function listBlockCommits(blockId: number): Promise<CommitEntry[]> {
+  return call<CommitEntry[]>("GET", `/blocks/${blockId}/commits`);
 }

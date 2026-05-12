@@ -267,7 +267,12 @@ pub fn reclassify_blocks(conn: &Connection, day_filter: Option<&str>) -> Result<
     Ok(stats)
 }
 
-fn dominant_project_path_for_block(conn: &Connection, block_id: i64) -> Result<Option<String>> {
+/// Pick the project_path that appears most often across the events
+/// linked to a block. `None` means no event under this block carried a
+/// `project_path` (e.g. a pure gcal/jira/github block). Public so the
+/// daemon can look up a block's git working directory without
+/// duplicating the query.
+pub fn dominant_project_path_for_block(conn: &Connection, block_id: i64) -> Result<Option<String>> {
     let mut stmt = conn.prepare(
         "SELECT e.project_path
            FROM events e

@@ -19,6 +19,7 @@
 //! * `POST /blocks/:id/duration`         — { "minutes": 45 }
 //! * `POST /blocks/:id/description`      — { "description": "text" }
 //! * `POST /blocks/:id/delete`           — no body
+//! * `GET  /blocks/:id/commits`          — commits in the window (work only)
 //! * `POST /infer`                       — { "day": "YYYY-MM-DD" }
 //! * `POST /jira/refresh`                — no body, refreshes open tickets
 //! * `POST /estimate`                    — { "day": "YYYY-MM-DD", "model": "?" }
@@ -51,6 +52,8 @@ use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 use crate::collectors::{jira, tempo};
+use crate::git::{self, CommitEntry};
+use crate::personal;
 use crate::{
     block_service, db, estimate, infer,
     models::{Block, Event},
@@ -73,6 +76,7 @@ pub fn router(state: Shared) -> Router {
         .route("/days/:day", get(day_summary))
         .route("/tickets", get(list_tickets))
         .route("/blocks/:id/events", get(block_events))
+        .route("/blocks/:id/commits", get(block_commits))
         .route("/blocks/:id/ticket", post(assign_ticket))
         .route("/blocks/:id/duration", post(set_duration))
         .route("/blocks/:id/description", post(set_description))
@@ -449,6 +453,42 @@ async fn block_events(
 ) -> Result<Json<Vec<Event>>, ApiError> {
     let events = with_conn(state, move |c| repo::list_events_for_block(c, id)).await?;
     Ok(Json(events))
+}
+
+/// Per-block commit sidecar — returns the commits that landed inside
+/// the block's `[started_at, ended_at]` window under the block's
+/// dominant `project_path`.
+///
+/// Returns `[]` when the block is personal, has no dominant project
+/// path (gcal-only / jira-only blocks), or when shelling out to git
+/// fails for any reason. The route is purely additive evidence; soft
+/// failure is preferable to surfacing a 500 in the UI.
+async fn block_commits(
+    State(state): State<Shared>,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<Json<Vec<CommitEntry>>, ApiError> {
+    // Read the block + dominant cwd off the connection on the blocking
+    // pool, then release the lock before shelling out to git so a slow
+    // repo doesn't stall other API calls.
+    let resolved = with_conn(state, move |c| {
+        let block =
+            repo::get_block(c, id)?.ok_or_else(|| anyhow::anyhow!("block {id} not found"))?;
+        if block.is_personal {
+            return Ok::<_, anyhow::Error>(None);
+        }
+        let project_path = personal::dominant_project_path_for_block(c, id)?;
+        Ok(project_path.map(|p| (p, block.started_at, block.ended_at)))
+    })
+    .await?;
+
+    let Some((path, since, until)) = resolved else {
+        return Ok(Json(vec![]));
+    };
+
+    let commits = git::git_log_in_window(std::path::Path::new(&path), &since, &until)
+        .await
+        .unwrap_or_default();
+    Ok(Json(commits))
 }
 
 #[derive(Deserialize)]
@@ -1166,5 +1206,164 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let v = read_json(resp).await;
         assert!(v["error"].as_str().unwrap().contains("not found"));
+    }
+
+    // ─────────────────── /blocks/:id/commits ───────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn block_commits_returns_empty_when_block_has_no_project_path() {
+        // state_with_block seeds events without a project_path, so the
+        // dominant lookup returns None — the handler must short-circuit
+        // to [] without invoking git.
+        let app = router(state_with_block());
+        let resp = app
+            .oneshot(
+                Request::get("/blocks/1/commits")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn block_commits_returns_empty_for_personal_blocks() {
+        // is_personal blocks must not invoke git regardless of cwd —
+        // personal work is opaque on purpose.
+        let state = state_with_block();
+        {
+            let conn = state.conn.lock().await;
+            conn.execute("UPDATE blocks SET is_personal = 1 WHERE id = 1", [])
+                .unwrap();
+        }
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::get("/blocks/1/commits")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn block_commits_lists_real_commits_inside_window() {
+        // Skip when no git binary is present (CI minimal images).
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        seed_git_repo(tmp.path());
+
+        let state = state_with_block();
+        {
+            let conn = state.conn.lock().await;
+            // Widen the block window so it spans the seeded commits.
+            conn.execute(
+                "UPDATE blocks
+                    SET started_at = '2026-05-01T00:00:00+00:00',
+                        ended_at   = '2026-05-31T23:59:59+00:00'
+                  WHERE id = 1",
+                [],
+            )
+            .unwrap();
+            // Attach the cwd to the seeded events so dominant_project_path
+            // resolves to our temp repo.
+            let path = tmp.path().to_string_lossy().into_owned();
+            conn.execute("UPDATE events SET project_path = ?1", params![path])
+                .unwrap();
+        }
+
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::get("/blocks/1/commits")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["subject"], "second");
+        assert_eq!(arr[1]["subject"], "first");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn block_commits_returns_500_when_block_missing() {
+        let app = router(state_with_block());
+        let resp = app
+            .oneshot(
+                Request::get("/blocks/9999/commits")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    fn seed_git_repo(path: &std::path::Path) {
+        run_git(path, &["init", "-q", "-b", "main"]);
+        run_git(path, &["config", "user.email", "test@example.com"]);
+        run_git(path, &["config", "user.name", "Tester"]);
+        run_git(path, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(path.join("a.txt"), "alpha\n").unwrap();
+        run_git(path, &["add", "a.txt"]);
+        run_git_with_date(
+            path,
+            &["commit", "-q", "-m", "first"],
+            "2026-05-10T10:00:00Z",
+        );
+        std::fs::write(path.join("a.txt"), "alpha\nbeta\n").unwrap();
+        run_git(path, &["add", "a.txt"]);
+        run_git_with_date(
+            path,
+            &["commit", "-q", "-m", "second"],
+            "2026-05-11T10:00:00Z",
+        );
+    }
+
+    fn run_git(cwd: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn run_git_with_date(cwd: &std::path::Path, args: &[&str], date: &str) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .args(args)
+            .env("GIT_AUTHOR_DATE", date)
+            .env("GIT_COMMITTER_DATE", date)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 }
