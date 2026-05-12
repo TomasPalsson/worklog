@@ -412,7 +412,7 @@ async fn list_tickets(State(state): State<Shared>) -> Result<Json<TicketsRespons
 /// SQL in `web/lib/db.ts::listTickets`.
 fn list_jira_tickets(conn: &Connection) -> Result<Vec<crate::models::JiraTicket>> {
     let mut stmt = conn.prepare(
-        "SELECT key, summary, status, project_key, updated
+        "SELECT key, summary, status, project_key, updated, issue_id
            FROM jira_tickets
           ORDER BY COALESCE(updated, '') DESC, key ASC",
     )?;
@@ -422,6 +422,7 @@ fn list_jira_tickets(conn: &Connection) -> Result<Vec<crate::models::JiraTicket>
             summary: r.get(1)?,
             status: r.get(2)?,
             project_key: r.get(3)?,
+            issue_id: r.get(5)?,
             updated: r.get(4)?,
         })
     })?;
@@ -856,6 +857,7 @@ mod tests {
                     status: Some("In Progress".into()),
                     project_key: Some("PROJ".into()),
                     updated: Some("2026-04-18T10:00:00Z".into()),
+                    issue_id: None,
                 },
             )
             .unwrap();
@@ -867,6 +869,7 @@ mod tests {
                     status: None,
                     project_key: Some("PROJ".into()),
                     updated: None,
+                    issue_id: None,
                 },
             )
             .unwrap();
@@ -1001,6 +1004,9 @@ mod tests {
                 [],
             )
             .unwrap();
+            // Seed numeric issue_id so resolve_issue_id doesn't have to
+            // call out to a real Jira instance.
+            repo::set_ticket_issue_id(&conn, "PROJ-1", "10000").unwrap();
         }
         let app = router(state.clone());
         let body =

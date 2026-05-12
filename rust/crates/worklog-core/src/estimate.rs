@@ -984,6 +984,7 @@ mod tests {
                 status: Some("In Progress".into()),
                 project_key: Some("PROJ".into()),
                 updated: None,
+                issue_id: None,
             },
         )
         .unwrap();
@@ -1187,6 +1188,7 @@ mod tests {
                 status: Some("In Progress".into()),
                 project_key: Some("GENAI".into()),
                 updated: Some("2026-04-18T00:00:00Z".into()),
+                issue_id: None,
             },
         )
         .unwrap();

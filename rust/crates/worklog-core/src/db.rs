@@ -15,7 +15,7 @@ pub const SCHEMA_SQL: &str = include_str!("../sql/schema.sql");
 /// Monotonic integer version of the schema, bumped by future migrations.
 /// Stored in `PRAGMA user_version` so we can detect stale dbs without adding
 /// a dedicated table.
-pub const SCHEMA_VERSION: i32 = 4;
+pub const SCHEMA_VERSION: i32 = 5;
 
 /// Open a connection at `path`, enable WAL + FK, and run migrations.
 pub fn open(path: &Path) -> Result<Connection> {
@@ -61,6 +61,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     // table already exists, so a DB from v3 won't auto-pick up the new
     // is_personal column. Do an idempotent ALTER for upgraded users.
     ensure_blocks_is_personal(conn).context("ensuring blocks.is_personal")?;
+    ensure_jira_tickets_issue_id(conn).context("ensuring jira_tickets.issue_id")?;
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)
         .context("stamping user_version")?;
     Ok(())
@@ -79,6 +80,20 @@ fn ensure_blocks_is_personal(conn: &Connection) -> Result<()> {
             [],
         )
         .context("ALTER TABLE blocks ADD is_personal")?;
+    }
+    Ok(())
+}
+
+fn ensure_jira_tickets_issue_id(conn: &Connection) -> Result<()> {
+    let has: bool = conn
+        .prepare("PRAGMA table_info(jira_tickets)")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter()
+        .any(|c| c == "issue_id");
+    if !has {
+        conn.execute("ALTER TABLE jira_tickets ADD COLUMN issue_id TEXT", [])
+            .context("ALTER TABLE jira_tickets ADD issue_id")?;
     }
     Ok(())
 }

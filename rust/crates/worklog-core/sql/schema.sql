@@ -1,4 +1,4 @@
--- Worklog schema v4. Shared between Python and the Rust hook (include_str!).
+-- Worklog schema v5. Shared between Python and the Rust hook (include_str!).
 -- All CREATE statements are idempotent (IF NOT EXISTS) so the Rust hook can
 -- run this on every invocation with negligible cost.
 --
@@ -71,13 +71,16 @@ CREATE TABLE IF NOT EXISTS block_events (
 );
 
 -- Cache of the user's open Jira tickets, refreshed by `worklog collect jira`.
--- Feeds the UI picker and is passed as candidate context to the estimator.
+-- Feeds the UI picker, the estimator's candidate context, and — via the
+-- numeric `issue_id` — Tempo Cloud's v4 worklog API (which deprecated
+-- issueKey in favour of issueId).
 CREATE TABLE IF NOT EXISTS jira_tickets (
     key TEXT PRIMARY KEY,
     summary TEXT NOT NULL,
     status TEXT,
     project_key TEXT,
     updated TEXT,
+    issue_id TEXT,
     fetched_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 

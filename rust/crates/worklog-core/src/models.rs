@@ -74,4 +74,10 @@ pub struct JiraTicket {
     pub status: Option<String>,
     pub project_key: Option<String>,
     pub updated: Option<String>,
+    /// Numeric Atlassian issue ID. Tempo Cloud v4's `/worklogs` endpoint
+    /// requires `issueId` (numeric) — `issueKey` was removed mid-2025.
+    /// Populated by `worklog collect jira`; the tempo collector self-heals
+    /// any missing ones with an inline Jira lookup.
+    #[serde(default)]
+    pub issue_id: Option<String>,
 }

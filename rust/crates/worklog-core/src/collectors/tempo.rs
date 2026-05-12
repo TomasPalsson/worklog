@@ -13,7 +13,9 @@ use serde::Deserialize;
 use serde_json::json;
 use tracing::debug;
 
-use crate::http;
+use crate::collectors::jira::JiraAuth;
+use crate::http::{self, RequestBuilderExt};
+use crate::repo;
 
 use super::CollectReport;
 
@@ -43,9 +45,25 @@ pub struct TempoAuth {
 impl TempoAuth {
     pub fn from_secrets() -> Result<Self> {
         use crate::secrets;
+        // `jira_account_id` is the Atlassian accountId (e.g.
+        // "557058:abc-123") that Tempo's `authorAccountId` requires.
+        // Fall back to `jira_email` for old setups — tempo.io rejects
+        // emails ("User is invalid") and the sync function self-heals
+        // by calling /myself + caching the real id back into secrets.
+        let author = secrets::get("jira_account_id")
+            .ok()
+            .flatten()
+            .or_else(|| secrets::get("jira_email").ok().flatten())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "neither jira_account_id nor jira_email is set — \
+                     run `worklog secret set jira_email <you@example.com>` \
+                     and let `worklog sync` resolve the account id from /myself"
+                )
+            })?;
         Ok(Self {
             token: secrets::require("tempo_api_token")?,
-            author: secrets::require("jira_email")?,
+            author,
             base_url: DEFAULT_BASE.to_owned(),
         })
     }
@@ -72,6 +90,12 @@ pub fn sync_day_with(
         ..Default::default()
     };
     let mut results = Vec::new();
+
+    // Tempo's authorAccountId field needs the Atlassian accountId
+    // (e.g. "557058:abc-123"), not the email. If the configured author
+    // looks like an email, ask Jira's /myself endpoint for the real id
+    // and cache it back so the next sync is local-only.
+    let author = resolve_account_id(&auth.author, client).unwrap_or_else(|_| auth.author.clone());
 
     let rows: Vec<PendingBlock> = {
         let mut stmt = conn.prepare(
@@ -109,13 +133,37 @@ pub fn sync_day_with(
             continue;
         };
 
+        // Tempo Cloud v4 requires `issueId` (numeric) not `issueKey`.
+        // Resolve from the local cache; if missing, fetch from Jira and
+        // write back so the next sync is fast.
+        let issue_id = match resolve_issue_id(conn, &issue, client)? {
+            Some(id) => id,
+            None => {
+                let msg = format!(
+                    "couldn't resolve numeric issueId for {issue} — \
+                     run `worklog collect jira` to refresh the ticket cache, \
+                     or check that the key exists"
+                );
+                report.errors.push(format!("block {}: {msg}", b.id));
+                results.push(SyncResult {
+                    block_id: b.id,
+                    status: "error",
+                    reason: Some(msg),
+                    tempo_id: None,
+                    payload: None,
+                    http_status: None,
+                });
+                continue;
+            }
+        };
+
         let payload = json!({
-            "issueKey":         issue,
+            "issueId":          issue_id,
             "timeSpentSeconds": b.duration_seconds,
             "startDate":        b.day,
             "startTime":        start_time(&b.started_at),
             "description":      b.description.clone().unwrap_or_else(|| format!("Work on {issue}")),
-            "authorAccountId":  auth.author,
+            "authorAccountId":  author,
         });
 
         if dry_run {
@@ -196,6 +244,80 @@ pub fn sync_day_with(
     Ok((report, results))
 }
 
+/// Resolve a Jira key (`PROJ-123`) to its numeric Atlassian issue id.
+///
+/// Walks the cache first; on miss, calls Jira's REST `/issue/{key}`
+/// endpoint with basic auth read from the secrets layer, and writes
+/// the id back to `jira_tickets` so the next sync is local-only.
+///
+/// Returns `None` only when Jira itself can't find the key (404) or
+/// the credentials are missing — both bubble up as a sync error per
+/// block, not a hard fatal.
+fn resolve_issue_id(conn: &Connection, key: &str, client: &Client) -> Result<Option<String>> {
+    if let Some(id) = repo::get_ticket_issue_id(conn, key)? {
+        return Ok(Some(id));
+    }
+    // Not cached — call Jira.
+    let Ok(jira_auth) = JiraAuth::from_secrets() else {
+        debug!(key, "jira creds unavailable; can't resolve issue_id");
+        return Ok(None);
+    };
+    let url = format!(
+        "{}/rest/api/3/issue/{}?fields=summary",
+        jira_auth.base_url, key
+    );
+    let resp: JiraIssueLookup = match client
+        .get(&url)
+        .basic_auth(&jira_auth.email, Some(&jira_auth.token))
+        .json_ok()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            debug!(key, error = %e, "jira issue lookup failed");
+            return Ok(None);
+        }
+    };
+    let id = resp.id;
+    repo::set_ticket_issue_id(conn, key, &id)?;
+    Ok(Some(id))
+}
+
+#[derive(Debug, Deserialize)]
+struct JiraIssueLookup {
+    id: String,
+}
+
+/// Normalise the configured `author` value to a real Atlassian accountId.
+/// If it already contains a colon (the accountId shape `123:abc`) we
+/// trust it. Otherwise call `/rest/api/3/myself` and cache the result
+/// in the `jira_account_id` secret so subsequent runs skip the network
+/// hop.
+fn resolve_account_id(author: &str, client: &Client) -> Result<String> {
+    if author.contains(':') && !author.contains('@') {
+        // Looks like an accountId already.
+        return Ok(author.to_owned());
+    }
+    let jira_auth = JiraAuth::from_secrets()?;
+    let url = format!("{}/rest/api/3/myself", jira_auth.base_url);
+    let resp: JiraMyself = client
+        .get(&url)
+        .basic_auth(&jira_auth.email, Some(&jira_auth.token))
+        .json_ok()
+        .context("jira /myself")?;
+    // Cache it so we don't pay the round-trip every sync. Failures are
+    // best-effort — the resolved id still works for *this* sync.
+    if let Err(e) = crate::secrets::set("jira_account_id", &resp.account_id) {
+        debug!(error = %e, "couldn't cache jira_account_id");
+    }
+    Ok(resp.account_id)
+}
+
+#[derive(Debug, Deserialize)]
+struct JiraMyself {
+    #[serde(rename = "accountId")]
+    account_id: String,
+}
+
 /// Extract `HH:MM:SS` from an ISO-8601 started_at string. Kept as the
 /// Python does — Tempo v4's `startTime` is a wall clock in the user's
 /// tempo-configured timezone, not UTC, so we pass through verbatim.
@@ -262,6 +384,13 @@ mod tests {
             params![day, jira_issue, started, ended, secs, description],
         )
         .unwrap();
+        // Seed a synthetic issue_id so resolve_issue_id can find one
+        // without needing real Jira credentials in tests. Anything
+        // non-empty works — sync only passes it through to the Tempo
+        // payload, where the mocked endpoint doesn't validate.
+        if let Some(key) = jira_issue {
+            repo::set_ticket_issue_id(conn, key, "10000").unwrap();
+        }
         conn.last_insert_rowid()
     }
 

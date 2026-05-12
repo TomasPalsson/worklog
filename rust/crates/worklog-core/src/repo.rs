@@ -200,15 +200,25 @@ pub fn get_block(conn: &Connection, id: i64) -> Result<Option<Block>> {
 
 pub fn upsert_ticket(conn: &Connection, t: &JiraTicket) -> Result<()> {
     conn.execute(
-        "INSERT INTO jira_tickets (key, summary, status, project_key, updated)
-         VALUES (?1, ?2, ?3, ?4, ?5)
+        "INSERT INTO jira_tickets (key, summary, status, project_key, updated, issue_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(key) DO UPDATE SET
             summary     = excluded.summary,
             status      = excluded.status,
             project_key = excluded.project_key,
             updated     = excluded.updated,
+            -- Don't clobber a known issue_id with NULL from a partial
+            -- refresh — only overwrite when the incoming row has one.
+            issue_id    = COALESCE(excluded.issue_id, jira_tickets.issue_id),
             fetched_at  = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
-        params![t.key, t.summary, t.status, t.project_key, t.updated],
+        params![
+            t.key,
+            t.summary,
+            t.status,
+            t.project_key,
+            t.updated,
+            t.issue_id
+        ],
     )
     .context("upsert jira ticket")?;
     Ok(())
@@ -216,7 +226,7 @@ pub fn upsert_ticket(conn: &Connection, t: &JiraTicket) -> Result<()> {
 
 pub fn list_tickets(conn: &Connection) -> Result<Vec<JiraTicket>> {
     let mut stmt = conn.prepare(
-        "SELECT key, summary, status, project_key, updated
+        "SELECT key, summary, status, project_key, updated, issue_id
            FROM jira_tickets
           ORDER BY updated DESC NULLS LAST, key",
     )?;
@@ -227,9 +237,39 @@ pub fn list_tickets(conn: &Connection) -> Result<Vec<JiraTicket>> {
             status: r.get(2)?,
             project_key: r.get(3)?,
             updated: r.get(4)?,
+            issue_id: r.get(5)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Cached numeric issue_id for a key, if known. Tempo sync calls this
+/// before paying the cost of a Jira REST roundtrip.
+pub fn get_ticket_issue_id(conn: &Connection, key: &str) -> Result<Option<String>> {
+    let id: Option<String> = conn
+        .query_row(
+            "SELECT issue_id FROM jira_tickets WHERE key = ?1",
+            params![key],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(id)
+}
+
+/// Write back an issue_id resolved on the fly by the tempo sync.
+/// Inserts the row if the ticket isn't cached yet — partial data is
+/// better than no data, and the next `worklog collect jira` will fill
+/// in the rest.
+pub fn set_ticket_issue_id(conn: &Connection, key: &str, issue_id: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO jira_tickets (key, summary, issue_id)
+         VALUES (?1, '', ?2)
+         ON CONFLICT(key) DO UPDATE SET issue_id = excluded.issue_id",
+        params![key, issue_id],
+    )
+    .context("set_ticket_issue_id")?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -375,6 +415,7 @@ mod tests {
             status: Some("Open".into()),
             project_key: Some("PROJ".into()),
             updated: Some("2026-04-17T10:00:00Z".into()),
+            issue_id: None,
         };
         upsert_ticket(&c, &t).unwrap();
         let mut t2 = t.clone();
@@ -402,6 +443,7 @@ mod tests {
                     status: None,
                     project_key: None,
                     updated: Some(u.into()),
+                    issue_id: None,
                 },
             )
             .unwrap();
