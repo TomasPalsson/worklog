@@ -12,7 +12,7 @@ use worklog_core::{
     collectors::{gcal as gcal_col, github as gh, jira as jira_col, tempo as tempo_col},
     daemon as daemon_mod, db, estimate, hook, hook_run, http, infer,
     paths::Paths,
-    schedule, secrets, updater as upd, web as web_mod,
+    personal as personal_mod, schedule, secrets, updater as upd, web as web_mod,
 };
 
 use crate::style;
@@ -85,7 +85,9 @@ pub enum Cmd {
         probe: bool,
     },
 
-    /// One-shot onboarding: db migrate + preflight + capture secrets.
+    /// One-shot onboarding: db migrate + preflight + capture secrets,
+    /// then bring up the review UI in your browser. Pass `--no-serve`
+    /// to stop after configuration.
     Setup {
         /// Print what would run and exit; capture nothing.
         #[arg(long)]
@@ -93,6 +95,12 @@ pub enum Cmd {
         /// Skip HTTP validation of captured credentials.
         #[arg(long)]
         skip_validate: bool,
+        /// Don't auto-start the web UI when the wizard finishes.
+        #[arg(long)]
+        no_serve: bool,
+        /// Port for the auto-started web UI. Default: 3333.
+        #[arg(long, default_value_t = 3333)]
+        port: u16,
     },
 
     /// Database operations.
@@ -185,6 +193,13 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
         model: String,
     },
 
+    /// Personal/work classification — manage the auto-classifier and
+    /// re-evaluate existing blocks against the current ruleset.
+    Tag {
+        #[command(subcommand)]
+        sub: TagCmd,
+    },
+
     /// Claude Code hook — reads a JSON event from stdin and records it.
     #[command(name = "hook-run", hide = true)]
     HookRun,
@@ -223,6 +238,9 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
         /// is managed out-of-band, e.g. a systemd unit on linux).
         #[arg(long)]
         no_daemon: bool,
+        /// Skip auto-opening the URL in your default browser.
+        #[arg(long)]
+        no_open: bool,
     },
 
     /// Self-update: verify + download + atomically swap the binary.
@@ -319,6 +337,11 @@ pub enum WebCmd {
         /// Don't ensure the daemon is running — assume you started it.
         #[arg(long)]
         no_daemon: bool,
+        /// Skip auto-opening the URL in your default browser. The
+        /// browser opens by default on TTY runs; `--json` and
+        /// non-tty stdout already suppress it automatically.
+        #[arg(long)]
+        no_open: bool,
     },
     /// Stop and remove the web container (leaves the daemon alone).
     Down,
@@ -433,6 +456,28 @@ pub enum SecretCmd {
     List,
 }
 
+#[derive(Subcommand, Debug)]
+pub enum TagCmd {
+    /// Print the current personal/work patterns and the config file path.
+    List,
+    /// Add a path glob to the personal list (creates the config if missing).
+    Personal {
+        /// Glob pattern, e.g. `~/Desktop/Projects/ai-news/**` or
+        /// `~/Desktop/Work/scratch`. Tilde expansion is applied.
+        glob: String,
+    },
+    /// Add a path glob to the explicit work list — wins over the
+    /// default rule and any matching personal pattern.
+    Work { glob: String },
+    /// Re-evaluate the `is_personal` column on existing blocks against
+    /// the current ruleset. Doesn't re-cluster.
+    Reclassify {
+        /// YYYY-MM-DD. If omitted, all days are reclassified.
+        #[arg(long)]
+        day: Option<String>,
+    },
+}
+
 pub fn run() -> Result<()> {
     run_with(
         std::env::args_os().collect::<Vec<_>>(),
@@ -490,7 +535,16 @@ pub fn run_with<W: Write>(
         Cmd::Setup {
             non_interactive,
             skip_validate,
-        } => cmd_setup(non_interactive, skip_validate),
+            no_serve,
+            port,
+        } => cmd_setup(
+            non_interactive,
+            skip_validate,
+            no_serve,
+            port,
+            out,
+            cli.json,
+        ),
         Cmd::Db(sub) => match sub {
             DbCmd::Migrate => cmd_db_migrate(out, cli.json),
             DbCmd::Info => cmd_db_info(out, cli.json),
@@ -525,6 +579,12 @@ pub fn run_with<W: Write>(
             no_serve,
             model,
         } => cmd_day(day, no_serve, &model, out, cli.json),
+        Cmd::Tag { sub } => match sub {
+            TagCmd::List => cmd_tag_list(out, cli.json),
+            TagCmd::Personal { glob } => cmd_tag_personal(glob, out, cli.json),
+            TagCmd::Work { glob } => cmd_tag_work(glob, out, cli.json),
+            TagCmd::Reclassify { day } => cmd_tag_reclassify(day, out, cli.json),
+        },
         Cmd::HookRun => cmd_hook_run(),
         Cmd::Daemon { sub, socket, tcp } => match sub {
             None => cmd_daemon(socket, tcp),
@@ -533,7 +593,11 @@ pub fn run_with<W: Write>(
             Some(DaemonCmd::Status) => cmd_daemon_status(out, cli.json),
         },
         Cmd::Web { sub } => match sub {
-            WebCmd::Up { port, no_daemon } => cmd_web_up(port, no_daemon, out, cli.json),
+            WebCmd::Up {
+                port,
+                no_daemon,
+                no_open,
+            } => cmd_web_up(port, no_daemon, no_open, out, cli.json),
             WebCmd::Down => cmd_web_down(out, cli.json),
             WebCmd::Status => cmd_web_status(out, cli.json),
             WebCmd::Logs { tail } => cmd_web_logs(tail),
@@ -543,7 +607,11 @@ pub fn run_with<W: Write>(
         // `serve` is literally `web up` with the same args — the alias
         // lives at the top-level so muscle memory from the Python era
         // (`worklog serve`) keeps working.
-        Cmd::Serve { port, no_daemon } => cmd_web_up(port, no_daemon, out, cli.json),
+        Cmd::Serve {
+            port,
+            no_daemon,
+            no_open,
+        } => cmd_web_up(port, no_daemon, no_open, out, cli.json),
         Cmd::SelfUpdate {
             manifest_url,
             check,
@@ -833,7 +901,14 @@ fn cmd_db_purge<W: Write>(days: i64, dry_run: bool, out: &mut W, json: bool) -> 
     Ok(())
 }
 
-fn cmd_setup(non_interactive: bool, skip_validate: bool) -> Result<()> {
+fn cmd_setup<W: Write>(
+    non_interactive: bool,
+    skip_validate: bool,
+    no_serve: bool,
+    port: u16,
+    out: &mut W,
+    json: bool,
+) -> Result<()> {
     let opts = crate::wizard::WizardOptions {
         non_interactive,
         skip_validate,
@@ -841,7 +916,28 @@ fn cmd_setup(non_interactive: bool, skip_validate: bool) -> Result<()> {
         secrets_file: std::env::var_os("WORKLOG_SECRETS_FILE").map(std::path::PathBuf::from),
     };
     let _ = crate::wizard::run(opts)?;
-    Ok(())
+
+    // Auto-launch the review UI so first-run feels seamless. We skip
+    // this for `--non-interactive` (CI / scripting) and `--no-serve`
+    // (user opt-out). The auto-open of the browser inside
+    // `cmd_web_up` further requires a real TTY, so headless runs
+    // still print the URL instead of trying to launch a browser.
+    if non_interactive || no_serve {
+        return Ok(());
+    }
+
+    // Visual break before the web-up log lines.
+    if !json {
+        writeln!(out)?;
+        writeln!(out, "→ launching review UI…")?;
+    }
+
+    // `no_daemon = false` → setup just configured the daemon, but the
+    // service may not be running yet; cmd_web_up will start it.
+    // `no_open = false` → the whole point of auto-serve is to open
+    // the browser; rely on the TTY check inside cmd_web_up to suppress
+    // it when stdout isn't a real terminal.
+    cmd_web_up(port, false, false, out, json)
 }
 
 fn cmd_db_path<W: Write>(out: &mut W) -> Result<()> {
@@ -1180,6 +1276,114 @@ fn parse_day(s: Option<&str>) -> Result<chrono::NaiveDate> {
     }
 }
 
+// ────────────────── worklog tag (personal/work classifier) ──────────────────
+
+fn cmd_tag_list<W: Write>(out: &mut W, json: bool) -> Result<()> {
+    let path = personal_mod::config_path()
+        .ok_or_else(|| anyhow::anyhow!("could not resolve config path"))?;
+    let file = personal_mod::read_file(&path);
+    if json {
+        let payload = serde_json::json!({
+            "config_path": path,
+            "work": file.work,
+            "personal": file.personal,
+            "default_rule": "any project_path under ~/Desktop/Work/** is work; everything else is personal",
+        });
+        writeln!(out, "{}", serde_json::to_string_pretty(&payload)?)?;
+        return Ok(());
+    }
+    writeln!(out, "config:  {}", path.display())?;
+    writeln!(
+        out,
+        "default: ~/Desktop/Work/** → work; everything else → personal"
+    )?;
+    if file.work.is_empty() && file.personal.is_empty() {
+        writeln!(out, "(no custom patterns — using default rule only)")?;
+        return Ok(());
+    }
+    if !file.work.is_empty() {
+        writeln!(out, "work overrides:")?;
+        for p in &file.work {
+            writeln!(out, "  {p}")?;
+        }
+    }
+    if !file.personal.is_empty() {
+        writeln!(out, "personal overrides:")?;
+        for p in &file.personal {
+            writeln!(out, "  {p}")?;
+        }
+    }
+    Ok(())
+}
+
+fn cmd_tag_personal<W: Write>(glob: String, out: &mut W, json: bool) -> Result<()> {
+    append_pattern("personal", glob, out, json)
+}
+
+fn cmd_tag_work<W: Write>(glob: String, out: &mut W, json: bool) -> Result<()> {
+    append_pattern("work", glob, out, json)
+}
+
+fn append_pattern<W: Write>(kind: &str, glob: String, out: &mut W, json: bool) -> Result<()> {
+    let path = personal_mod::config_path()
+        .ok_or_else(|| anyhow::anyhow!("could not resolve config path"))?;
+    let mut file = personal_mod::read_file(&path);
+    let list = match kind {
+        "personal" => &mut file.personal,
+        "work" => &mut file.work,
+        _ => unreachable!(),
+    };
+    if list.iter().any(|p| p == &glob) {
+        if json {
+            writeln!(
+                out,
+                "{}",
+                serde_json::json!({"status": "noop", "kind": kind, "glob": glob})
+            )?;
+        } else {
+            writeln!(out, "already in {kind} list: {glob}")?;
+        }
+        return Ok(());
+    }
+    list.push(glob.clone());
+    personal_mod::write_file(&path, &file)?;
+    if json {
+        writeln!(
+            out,
+            "{}",
+            serde_json::json!({"status": "added", "kind": kind, "glob": glob, "config_path": path})
+        )?;
+    } else {
+        writeln!(out, "added to {kind}: {glob}")?;
+        writeln!(out, "config: {}", path.display())?;
+        writeln!(
+            out,
+            "tip: run `worklog tag reclassify` to apply to existing blocks"
+        )?;
+    }
+    Ok(())
+}
+
+fn cmd_tag_reclassify<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()> {
+    let paths = Paths::resolve()?;
+    let conn = db::open(&paths.db)?;
+    let stats = personal_mod::reclassify_blocks(&conn, day.as_deref())?;
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&stats)?)?;
+    } else {
+        writeln!(
+            out,
+            "✓ reclassified {} block{} ({} now personal, {} now work, {} unchanged)",
+            stats.total,
+            if stats.total == 1 { "" } else { "s" },
+            stats.changed_to_personal,
+            stats.changed_to_work,
+            stats.unchanged
+        )?;
+    }
+    Ok(())
+}
+
 fn cmd_infer<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()> {
     let paths = Paths::resolve()?;
     paths.ensure()?;
@@ -1354,7 +1558,7 @@ fn cmd_day<W: Write>(
     style::step(out, "bringing up review UI at http://localhost:3333")?;
     style::info(out, "ctrl+c to bring it down, or `worklog web down`")?;
     writeln!(out)?;
-    cmd_web_up(3333, false, out, false)
+    cmd_web_up(3333, false, false, out, false)
 }
 
 /// Outcome of a single `cmd_day` collector step. Owns the message so
@@ -1566,18 +1770,39 @@ fn rpassword_readline() -> Result<String> {
 
 // ─────────────────────────── web subcommand ───────────────────────────
 
-fn cmd_web_up<W: Write>(port: u16, no_daemon: bool, out: &mut W, json: bool) -> Result<()> {
-    web_mod::preflight_docker()?;
+fn cmd_web_up<W: Write>(
+    port: u16,
+    no_daemon: bool,
+    no_open: bool,
+    out: &mut W,
+    json: bool,
+) -> Result<()> {
     let paths = Paths::resolve()?;
     paths.ensure()?;
     let context = web_mod::resolve_web_context(&paths)?;
-    let compose = web_mod::render_compose(&paths, port, &context)?;
 
     if !no_daemon {
         ensure_daemon_running(out)?;
     }
 
-    web_mod::compose_up(&compose, false)?;
+    let pid = web_mod::bun_up(&paths, &context, port)?;
+    let url = format!("http://localhost:{port}");
+
+    // Open the browser only on interactive TTY runs. `--json` is
+    // script mode and `--no-open` is an explicit opt-out; non-TTY
+    // stdout (e.g. piped into `tee`) silently suppresses to avoid
+    // surprising automation.
+    let should_open = !no_open && !json && io::stdout().is_terminal();
+    let opened = if should_open {
+        match worklog_core::browser::open_url(&url) {
+            Ok(worklog_core::browser::OpenOutcome::Spawned) => true,
+            Ok(worklog_core::browser::OpenOutcome::Unsupported) => false,
+            // Treat opener failures as non-fatal — server is up.
+            Err(_) => false,
+        }
+    } else {
+        false
+    };
 
     if json {
         writeln!(
@@ -1585,29 +1810,34 @@ fn cmd_web_up<W: Write>(port: u16, no_daemon: bool, out: &mut W, json: bool) -> 
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "ok": true,
-                "url": format!("http://localhost:{port}"),
-                "compose": compose.display().to_string(),
+                "url": url,
+                "pid": pid,
                 "context": context.display().to_string(),
+                "log": web_mod::bun_log_path(&paths).display().to_string(),
+                "opened": opened,
             }))?
         )?;
     } else {
-        writeln!(out, "✓ worklog-web up — open http://localhost:{port}")?;
-        writeln!(out, "  compose: {}", compose.display())?;
+        let suffix = if opened {
+            " (opening in browser…)"
+        } else {
+            ""
+        };
+        writeln!(out, "✓ worklog-web up — {url}{suffix}")?;
+        writeln!(out, "  pid:     {pid}")?;
+        writeln!(
+            out,
+            "  log:     {}",
+            web_mod::bun_log_path(&paths).display()
+        )?;
+        writeln!(out, "  context: {}", context.display())?;
     }
     Ok(())
 }
 
 fn cmd_web_down<W: Write>(out: &mut W, json: bool) -> Result<()> {
-    web_mod::preflight_docker()?;
     let paths = Paths::resolve()?;
-    let compose = web_mod::compose_path(&paths);
-    if !compose.is_file() {
-        anyhow::bail!(
-            "no compose file at {} — nothing to bring down",
-            compose.display()
-        );
-    }
-    web_mod::compose_down(&compose)?;
+    web_mod::bun_down(&paths)?;
     if json {
         writeln!(out, "{{\"ok\": true}}")?;
     } else {
@@ -1617,18 +1847,18 @@ fn cmd_web_down<W: Write>(out: &mut W, json: bool) -> Result<()> {
 }
 
 fn cmd_web_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
-    web_mod::preflight_docker().ok(); // status should still run if docker daemon is off
-    let status = web_mod::status()?;
+    let paths = Paths::resolve()?;
+    let status = web_mod::bun_status(&paths);
     if json {
         writeln!(out, "{}", serde_json::to_string_pretty(&status)?)?;
     } else if status.running {
         writeln!(
             out,
-            "✓ running — image={} port={} started={}",
-            status.image.as_deref().unwrap_or("?"),
-            status.port.map(|p| p.to_string()).unwrap_or("?".into()),
-            status.uptime.as_deref().unwrap_or("?"),
+            "✓ running — {} ({})",
+            status.image.as_deref().unwrap_or("bun"),
+            status.container.as_deref().unwrap_or("?"),
         )?;
+        writeln!(out, "  log: {}", web_mod::bun_log_path(&paths).display())?;
     } else {
         writeln!(out, "— not running. Start with `worklog web up`.")?;
     }
@@ -1636,26 +1866,35 @@ fn cmd_web_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
 }
 
 fn cmd_web_logs(tail: u32) -> Result<()> {
-    web_mod::preflight_docker()?;
     let paths = Paths::resolve()?;
-    let compose = web_mod::compose_path(&paths);
-    if !compose.is_file() {
-        anyhow::bail!(
-            "no compose file at {} — run `worklog web up` first",
-            compose.display()
-        );
+    let log = web_mod::bun_log_path(&paths);
+    if !log.is_file() {
+        anyhow::bail!("no log at {} — has the web UI ever been up?", log.display());
     }
-    web_mod::compose_logs(&compose, tail)
+    let status = std::process::Command::new("tail")
+        .args(["-n", &tail.to_string(), "-f"])
+        .arg(&log)
+        .status()
+        .context("spawning tail")?;
+    if !status.success() {
+        anyhow::bail!("tail exited {status}");
+    }
+    Ok(())
 }
 
-fn cmd_web_build<W: Write>(pull: bool, out: &mut W, json: bool) -> Result<()> {
-    web_mod::preflight_docker()?;
+fn cmd_web_build<W: Write>(_pull: bool, out: &mut W, json: bool) -> Result<()> {
     let paths = Paths::resolve()?;
     paths.ensure()?;
     let context = web_mod::resolve_web_context(&paths)?;
-    // Re-render so the compose file points at the current web/ location.
-    let compose = web_mod::render_compose(&paths, 3333, &context)?;
-    web_mod::compose_build(&compose, pull)?;
+    let status = std::process::Command::new("bun")
+        .current_dir(&context)
+        .env("NEXT_TELEMETRY_DISABLED", "1")
+        .args(["run", "build"])
+        .status()
+        .context("spawning `bun run build`")?;
+    if !status.success() {
+        anyhow::bail!("bun run build exited {status}");
+    }
     if json {
         writeln!(
             out,
@@ -1663,7 +1902,7 @@ fn cmd_web_build<W: Write>(pull: bool, out: &mut W, json: bool) -> Result<()> {
             context.display()
         )?;
     } else {
-        writeln!(out, "✓ worklog-web image built from {}", context.display())?;
+        writeln!(out, "✓ worklog-web built from {}", context.display())?;
     }
     Ok(())
 }

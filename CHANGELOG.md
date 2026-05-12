@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.9.0](https://github.com/TomasPalsson/worklog/compare/v0.8.0...v0.9.0) (2026-05-12)
+
+
+### Features
+
+* **web:** /week — 7-column week view with calendar jumper ([#14](https://github.com/TomasPalsson/worklog/issues/14)) ([8764029](https://github.com/TomasPalsson/worklog/commit/8764029bccf283fbecb960f0e96fd4816a6fdd54))
+
+## [0.8.0](https://github.com/TomasPalsson/worklog/compare/v0.7.0...v0.8.0) (2026-05-12)
+
+
+### Features
+
+* **cli:** interactive console week view ([#10](https://github.com/TomasPalsson/worklog/issues/10)) ([c694d95](https://github.com/TomasPalsson/worklog/commit/c694d954a7298c917d159d6cd7e20aac298ad2e0))
+* per-block git-commit sidecar ([#11](https://github.com/TomasPalsson/worklog/issues/11)) ([dcf0f1d](https://github.com/TomasPalsson/worklog/commit/dcf0f1d6350df3defabe5552954bfcdf0bf2fa54))
+
+## [0.7.0](https://github.com/TomasPalsson/worklog/compare/v0.6.0...v0.7.0) (2026-05-12)
+
+
+### Features
+
+* auto-launch web UI after setup, open browser by default ([b91179d](https://github.com/TomasPalsson/worklog/commit/b91179d9e2818f772349c516155f501e7bf4985e))
+* **cli:** auto-launch web UI + browser at end of setup ([8ea9a15](https://github.com/TomasPalsson/worklog/commit/8ea9a1563cd1c54ea45929421232dc54e36cecf5))
+* **core:** add browser::open_url cross-platform opener ([fe1260e](https://github.com/TomasPalsson/worklog/commit/fe1260e9ead4cf62a1a1bb924421989739efe23e))
+* **estimate:** conservative tickets + merge adjacent same-ticket blocks ([496ea7d](https://github.com/TomasPalsson/worklog/commit/496ea7d367ced95ec2af12fec795427fc438a20f))
+* **infer:** split blocks at sustained project_path transitions ([d6beef5](https://github.com/TomasPalsson/worklog/commit/d6beef59db21b171753203c9f097799d527d5dec))
+* **personal:** auto-classify and dim personal-project blocks ([022a66a](https://github.com/TomasPalsson/worklog/commit/022a66a2349aa77218e7ab901882fff1aa762280))
+* **sync:** dirty-flag local edits + PUT existing Tempo entries ([b1ea7be](https://github.com/TomasPalsson/worklog/commit/b1ea7be6abe1dc8392dae931dae1f08141bc82a4))
+* **web:** host-bun runner replaces Docker + collapse personal blocks ([a6ab48d](https://github.com/TomasPalsson/worklog/commit/a6ab48d45562b0705f4c446454fe4b2a4f877238))
+
+
+### Bug Fixes
+
+* **estimate:** allow cross-language project↔ticket matching ([46c7a1a](https://github.com/TomasPalsson/worklog/commit/46c7a1aa2d0343c0efe9040d2a507f7785fbd5cc))
+* **estimate:** read JSON from envelope.structured_output ([c555e92](https://github.com/TomasPalsson/worklog/commit/c555e92869a8185167993b89b68c46535917e118))
+* **secrets:** skip env-first lookup when file-backed shim is active ([29aca9a](https://github.com/TomasPalsson/worklog/commit/29aca9a4fc3d623ed2391f89b447f57c1084efff))
+* **sync:** DELETE Tempo worklog when block is deleted locally ([b89d22a](https://github.com/TomasPalsson/worklog/commit/b89d22a0b439791460c6fc26bf2f8740ac67489e))
+* **sync:** tempo v4 wants issueId + accountId, ticket overrides personal ([1c74552](https://github.com/TomasPalsson/worklog/commit/1c74552233f6e4a574e58f9c0c8d0582edd0c2d7))
+* **web:** clearer sync toast + always rebuild on web up ([a1adfec](https://github.com/TomasPalsson/worklog/commit/a1adfec44d824ebabe50feb1b347ff336f4c7af2))
+
+## [0.6.0](https://github.com/TomasPalsson/worklog/compare/v0.5.0...v0.6.0) (2026-04-19)
+
+
+### Features
+
+* events submenu + ticket-flow fix + design polish + upgrade daemon-restart (v0.6.0) ([#5](https://github.com/TomasPalsson/worklog/issues/5)) ([a53f493](https://github.com/TomasPalsson/worklog/commit/a53f493e2caec647b892857fbfeeab230344cbf7))
+
 ## [0.5.0](https://github.com/TomasPalsson/worklog/compare/v0.4.0...v0.5.0) (2026-04-19)
 
 

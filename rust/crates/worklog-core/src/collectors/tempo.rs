@@ -13,7 +13,9 @@ use serde::Deserialize;
 use serde_json::json;
 use tracing::debug;
 
-use crate::http;
+use crate::collectors::jira::JiraAuth;
+use crate::http::{self, RequestBuilderExt};
+use crate::repo;
 
 use super::CollectReport;
 
@@ -43,9 +45,25 @@ pub struct TempoAuth {
 impl TempoAuth {
     pub fn from_secrets() -> Result<Self> {
         use crate::secrets;
+        // `jira_account_id` is the Atlassian accountId (e.g.
+        // "557058:abc-123") that Tempo's `authorAccountId` requires.
+        // Fall back to `jira_email` for old setups — tempo.io rejects
+        // emails ("User is invalid") and the sync function self-heals
+        // by calling /myself + caching the real id back into secrets.
+        let author = secrets::get("jira_account_id")
+            .ok()
+            .flatten()
+            .or_else(|| secrets::get("jira_email").ok().flatten())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "neither jira_account_id nor jira_email is set — \
+                     run `worklog secret set jira_email <you@example.com>` \
+                     and let `worklog sync` resolve the account id from /myself"
+                )
+            })?;
         Ok(Self {
             token: secrets::require("tempo_api_token")?,
-            author: secrets::require("jira_email")?,
+            author,
             base_url: DEFAULT_BASE.to_owned(),
         })
     }
@@ -73,12 +91,27 @@ pub fn sync_day_with(
     };
     let mut results = Vec::new();
 
+    // Tempo's authorAccountId field needs the Atlassian accountId
+    // (e.g. "557058:abc-123"), not the email. If the configured author
+    // looks like an email, ask Jira's /myself endpoint for the real id
+    // and cache it back so the next sync is local-only.
+    let author = resolve_account_id(&auth.author, client).unwrap_or_else(|_| auth.author.clone());
+
+    // Pick up two kinds of work:
+    //   (a) blocks never synced (`tempo_worklog_id` blank) → POST
+    //   (b) blocks edited since their last sync (`dirty = 1`) → PUT
     let rows: Vec<PendingBlock> = {
         let mut stmt = conn.prepare(
-            "SELECT id, jira_issue, started_at, duration_seconds, description, day
+            "SELECT id, jira_issue, started_at, duration_seconds, description, day,
+                    tempo_worklog_id
                FROM blocks
               WHERE day = ?1
-                AND (tempo_worklog_id IS NULL OR tempo_worklog_id = '')
+                AND is_personal = 0
+                AND (
+                  tempo_worklog_id IS NULL
+                  OR tempo_worklog_id = ''
+                  OR dirty = 1
+                )
               ORDER BY started_at",
         )?;
         let iter = stmt.query_map(params![day.to_string()], |r| {
@@ -89,6 +122,7 @@ pub fn sync_day_with(
                 duration_seconds: r.get(3)?,
                 description: r.get(4)?,
                 day: r.get(5)?,
+                tempo_worklog_id: r.get(6)?,
             })
         })?;
         iter.collect::<Result<Vec<_>, _>>()?
@@ -108,35 +142,77 @@ pub fn sync_day_with(
             continue;
         };
 
+        // Tempo Cloud v4 requires `issueId` (numeric) not `issueKey`.
+        // Resolve from the local cache; if missing, fetch from Jira and
+        // write back so the next sync is fast.
+        let issue_id = match resolve_issue_id(conn, &issue, client)? {
+            Some(id) => id,
+            None => {
+                let msg = format!(
+                    "couldn't resolve numeric issueId for {issue} — \
+                     run `worklog collect jira` to refresh the ticket cache, \
+                     or check that the key exists"
+                );
+                report.errors.push(format!("block {}: {msg}", b.id));
+                results.push(SyncResult {
+                    block_id: b.id,
+                    status: "error",
+                    reason: Some(msg),
+                    tempo_id: None,
+                    payload: None,
+                    http_status: None,
+                });
+                continue;
+            }
+        };
+
         let payload = json!({
-            "issueKey":         issue,
+            "issueId":          issue_id,
             "timeSpentSeconds": b.duration_seconds,
             "startDate":        b.day,
             "startTime":        start_time(&b.started_at),
             "description":      b.description.clone().unwrap_or_else(|| format!("Work on {issue}")),
-            "authorAccountId":  auth.author,
+            "authorAccountId":  author,
         });
+
+        // Two paths: existing tempo_worklog_id → PUT update; otherwise → POST create.
+        let existing_id = b
+            .tempo_worklog_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
 
         if dry_run {
             results.push(SyncResult {
                 block_id: b.id,
-                status: "dry-run",
+                status: if existing_id.is_some() {
+                    "dry-run-update"
+                } else {
+                    "dry-run"
+                },
                 reason: None,
-                tempo_id: None,
+                tempo_id: existing_id.map(|s| s.to_owned()),
                 payload: Some(payload),
                 http_status: None,
             });
             continue;
         }
 
-        let url = format!("{}/worklogs", auth.base_url);
-        let resp = client
-            .post(&url)
+        let (url, method) = match existing_id {
+            Some(id) => (format!("{}/worklogs/{}", auth.base_url, id), "PUT"),
+            None => (format!("{}/worklogs", auth.base_url), "POST"),
+        };
+        let req = if method == "PUT" {
+            client.put(&url)
+        } else {
+            client.post(&url)
+        };
+        let resp = req
             .bearer_auth(&auth.token)
             .header("Content-Type", "application/json")
             .json(&payload)
             .send()
-            .context("tempo POST")?;
+            .with_context(|| format!("tempo {method}"))?;
         let http_status = resp.status().as_u16();
         if !resp.status().is_success() {
             let body = resp.text().unwrap_or_default();
@@ -154,13 +230,15 @@ pub fn sync_day_with(
             continue;
         }
 
+        // PUT response shape is the same envelope as POST. For PUTs the
+        // existing id is the source of truth — fall back to it if the
+        // server somehow omits the field, so we never re-create the
+        // worklog on the next sync (double-billing).
         let parsed: TempoCreateResponse = resp.json().context("decode tempo response")?;
-        // `tempoWorklogId` is an integer in real responses but we accept
-        // string too for resilience. Reject Null / "" / "null" /
-        // anything that would silently become a phantom canary.
-        let tempo_id = match normalise_tempo_id(&parsed.tempo_worklog_id) {
-            Some(s) => s,
-            None => {
+        let tempo_id = match (normalise_tempo_id(&parsed.tempo_worklog_id), existing_id) {
+            (Some(s), _) => s,
+            (None, Some(prev)) => prev.to_owned(),
+            (None, None) => {
                 let msg = format!(
                     "block {}: tempo returned no usable tempoWorklogId: {}",
                     b.id, parsed.tempo_worklog_id
@@ -177,22 +255,142 @@ pub fn sync_day_with(
                 continue;
             }
         };
+        // Clear dirty alongside the id write — the local row is now
+        // back in sync with Tempo's view of it.
         conn.execute(
-            "UPDATE blocks SET tempo_worklog_id = ?1 WHERE id = ?2",
+            "UPDATE blocks SET tempo_worklog_id = ?1, dirty = 0 WHERE id = ?2",
             params![tempo_id, b.id],
         )?;
         report.synced += 1;
         results.push(SyncResult {
             block_id: b.id,
-            status: "synced",
+            status: if method == "PUT" { "updated" } else { "synced" },
             reason: None,
             tempo_id: Some(tempo_id),
             payload: None,
             http_status: Some(http_status),
         });
-        debug!(block_id = b.id, "synced to tempo");
+        debug!(block_id = b.id, method, "synced to tempo");
     }
     Ok((report, results))
+}
+
+/// Delete a worklog entry from Tempo. Used when the user deletes a
+/// block locally — otherwise the worklog would orphan in Tempo and
+/// the user's daily total would silently include it.
+///
+/// Treats HTTP 404 as success (the entry's already gone — same end
+/// state). All other non-2xx statuses bubble up so the caller can
+/// surface the failure to the user instead of swallowing it.
+pub fn delete_worklog(auth: &TempoAuth, tempo_worklog_id: &str) -> Result<()> {
+    delete_worklog_with(auth, tempo_worklog_id, &http::client()?)
+}
+
+pub fn delete_worklog_with(
+    auth: &TempoAuth,
+    tempo_worklog_id: &str,
+    client: &Client,
+) -> Result<()> {
+    let id = tempo_worklog_id.trim();
+    if id.is_empty() {
+        return Ok(());
+    }
+    let url = format!("{}/worklogs/{}", auth.base_url, id);
+    let resp = client
+        .delete(&url)
+        .bearer_auth(&auth.token)
+        .send()
+        .with_context(|| format!("tempo DELETE {url}"))?;
+    let status = resp.status();
+    if status.is_success() || status.as_u16() == 404 {
+        return Ok(());
+    }
+    let body = resp.text().unwrap_or_default();
+    anyhow::bail!(
+        "tempo DELETE /worklogs/{id} returned HTTP {} — {body}",
+        status.as_u16()
+    )
+}
+
+/// Resolve a Jira key (`PROJ-123`) to its numeric Atlassian issue id.
+///
+/// Walks the cache first; on miss, calls Jira's REST `/issue/{key}`
+/// endpoint with basic auth read from the secrets layer, and writes
+/// the id back to `jira_tickets` so the next sync is local-only.
+///
+/// Returns `None` only when Jira itself can't find the key (404) or
+/// the credentials are missing — both bubble up as a sync error per
+/// block, not a hard fatal.
+fn resolve_issue_id(conn: &Connection, key: &str, client: &Client) -> Result<Option<String>> {
+    if let Some(id) = repo::get_ticket_issue_id(conn, key)? {
+        return Ok(Some(id));
+    }
+    // Not cached — call Jira.
+    let Ok(jira_auth) = JiraAuth::from_secrets() else {
+        debug!(key, "jira creds unavailable; can't resolve issue_id");
+        return Ok(None);
+    };
+    let url = format!(
+        "{}/rest/api/3/issue/{}?fields=summary",
+        jira_auth.base_url, key
+    );
+    let resp: JiraIssueLookup = match client
+        .get(&url)
+        .basic_auth(&jira_auth.email, Some(&jira_auth.token))
+        .json_ok()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            debug!(key, error = %e, "jira issue lookup failed");
+            return Ok(None);
+        }
+    };
+    let id = resp.id;
+    repo::set_ticket_issue_id(conn, key, &id)?;
+    Ok(Some(id))
+}
+
+#[derive(Debug, Deserialize)]
+struct JiraIssueLookup {
+    id: String,
+}
+
+/// Normalise the configured `author` value to a real Atlassian accountId.
+/// If it already contains a colon (the accountId shape `123:abc`) we
+/// trust it. Otherwise call `/rest/api/3/myself` and cache the result
+/// in the `jira_account_id` secret so subsequent runs skip the network
+/// hop.
+fn resolve_account_id(author: &str, client: &Client) -> Result<String> {
+    if author.contains(':') && !author.contains('@') {
+        // Looks like an accountId already.
+        return Ok(author.to_owned());
+    }
+    let jira_auth = JiraAuth::from_secrets()?;
+    let url = format!("{}/rest/api/3/myself", jira_auth.base_url);
+    let resp: JiraMyself = client
+        .get(&url)
+        .basic_auth(&jira_auth.email, Some(&jira_auth.token))
+        .json_ok()
+        .context("jira /myself")?;
+    // Cache it so we don't pay the round-trip every sync. Skip the
+    // write when the env var is set — that bypasses the keychain
+    // entirely, and writing back would trigger a macOS keychain
+    // password prompt the user didn't ask for.
+    let env_set = std::env::var("WORKLOG_JIRA_ACCOUNT_ID")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    if !env_set {
+        if let Err(e) = crate::secrets::set("jira_account_id", &resp.account_id) {
+            debug!(error = %e, "couldn't cache jira_account_id");
+        }
+    }
+    Ok(resp.account_id)
+}
+
+#[derive(Debug, Deserialize)]
+struct JiraMyself {
+    #[serde(rename = "accountId")]
+    account_id: String,
 }
 
 /// Extract `HH:MM:SS` from an ISO-8601 started_at string. Kept as the
@@ -214,6 +412,9 @@ struct PendingBlock {
     duration_seconds: i64,
     description: Option<String>,
     day: String,
+    /// Present means "already synced once" — sync uses PUT instead of POST
+    /// so the existing Tempo entry gets updated rather than duplicated.
+    tempo_worklog_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -261,6 +462,13 @@ mod tests {
             params![day, jira_issue, started, ended, secs, description],
         )
         .unwrap();
+        // Seed a synthetic issue_id so resolve_issue_id can find one
+        // without needing real Jira credentials in tests. Anything
+        // non-empty works — sync only passes it through to the Tempo
+        // payload, where the mocked endpoint doesn't validate.
+        if let Some(key) = jira_issue {
+            repo::set_ticket_issue_id(conn, key, "10000").unwrap();
+        }
         conn.last_insert_rowid()
     }
 
@@ -540,6 +748,43 @@ mod tests {
         assert_eq!(normalise_tempo_id(&json!({"id": 7})), None);
         assert_eq!(normalise_tempo_id(&json!([42])), None);
         assert_eq!(normalise_tempo_id(&json!(true)), None);
+    }
+
+    #[test]
+    fn sync_excludes_personal_blocks() {
+        // A personal block must never reach Tempo. No mock is set, so any
+        // POST attempt would fail loudly.
+        let server = MockServer::start();
+        let conn = open_memory().unwrap();
+        let personal_id = insert_block(
+            &conn,
+            "2026-04-18",
+            "2026-04-18T09:00:00Z",
+            "2026-04-18T09:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("hacking on dotfiles"),
+        );
+        conn.execute(
+            "UPDATE blocks SET is_personal = 1 WHERE id = ?1",
+            params![personal_id],
+        )
+        .unwrap();
+
+        let (report, results) = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report.synced, 0);
+        assert_eq!(report.skipped, 0, "personal blocks aren't even listed");
+        assert!(
+            results.is_empty(),
+            "personal block must not appear in results"
+        );
     }
 
     #[test]

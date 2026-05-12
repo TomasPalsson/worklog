@@ -17,6 +17,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "jira_email",
     "jira_api_token",
     "jira_base_url",
+    "jira_account_id",
     "tempo_api_token",
     // GitHub
     "github_token",
@@ -44,6 +45,7 @@ fn env_var_for(key: &str) -> Option<&'static str> {
         "jira_email" => "WORKLOG_JIRA_EMAIL",
         "jira_api_token" => "WORKLOG_JIRA_TOKEN",
         "jira_base_url" => "WORKLOG_JIRA_BASE_URL",
+        "jira_account_id" => "WORKLOG_JIRA_ACCOUNT_ID",
         "github_token" => "WORKLOG_GITHUB_TOKEN",
         "github_user" => "WORKLOG_GITHUB_USER",
         "tempo_api_token" => "WORKLOG_TEMPO_TOKEN",
@@ -162,7 +164,26 @@ mod backend {
     }
 
     pub fn get(key: &str) -> Result<Option<String>> {
-        let primary = if let Some(path) = file_backend_path() {
+        // When the file-backed shim is active (integration tests +
+        // CI), skip the process-env lookup — otherwise tests inherit
+        // whatever WORKLOG_* the developer has in their shell and
+        // get a polluted view of "secret store contents". Production
+        // builds without the override use the env-first path.
+        let file_path = file_backend_path();
+        if file_path.is_none() {
+            // 1) Process env wins on real systems — set `WORKLOG_*` in
+            //    .envrc / .zshrc and the macOS keychain never gets
+            //    prompted.
+            if let Some(env_name) = super::env_var_for(key) {
+                if let Ok(v) = std::env::var(env_name) {
+                    if !v.is_empty() {
+                        return Ok(Some(v));
+                    }
+                }
+            }
+        }
+        // 2) Keychain (or the file-backed shim in tests).
+        let primary = if let Some(path) = file_path {
             read_file_store(&path)?.get(key).cloned()
         } else {
             match entry(key)?.get_password() {
@@ -174,10 +195,8 @@ mod backend {
         if primary.is_some() {
             return Ok(primary);
         }
-        // Fall back to the Python-era .env file so existing installs keep
-        // working without a migration step. Applies to both the real
-        // keychain backend and the file-backed shim used by integration
-        // tests — otherwise tests can't verify the fallback end-to-end.
+        // 3) Python-era ~/.config/worklog/.env file — existing installs
+        //    keep working without a migration step.
         Ok(super::read_env_file(key))
     }
 

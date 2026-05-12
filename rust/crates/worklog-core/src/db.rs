@@ -15,7 +15,7 @@ pub const SCHEMA_SQL: &str = include_str!("../sql/schema.sql");
 /// Monotonic integer version of the schema, bumped by future migrations.
 /// Stored in `PRAGMA user_version` so we can detect stale dbs without adding
 /// a dedicated table.
-pub const SCHEMA_VERSION: i32 = 3;
+pub const SCHEMA_VERSION: i32 = 6;
 
 /// Open a connection at `path`, enable WAL + FK, and run migrations.
 pub fn open(path: &Path) -> Result<Connection> {
@@ -57,8 +57,62 @@ fn configure(conn: &Connection) -> Result<()> {
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(SCHEMA_SQL)
         .context("applying schema.sql")?;
+    // SCHEMA_SQL's `CREATE TABLE IF NOT EXISTS blocks` is a no-op when the
+    // table already exists, so a DB from v3 won't auto-pick up the new
+    // is_personal column. Do an idempotent ALTER for upgraded users.
+    ensure_blocks_is_personal(conn).context("ensuring blocks.is_personal")?;
+    ensure_blocks_dirty(conn).context("ensuring blocks.dirty")?;
+    ensure_jira_tickets_issue_id(conn).context("ensuring jira_tickets.issue_id")?;
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)
         .context("stamping user_version")?;
+    Ok(())
+}
+
+fn ensure_blocks_is_personal(conn: &Connection) -> Result<()> {
+    let has: bool = conn
+        .prepare("PRAGMA table_info(blocks)")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter()
+        .any(|c| c == "is_personal");
+    if !has {
+        conn.execute(
+            "ALTER TABLE blocks ADD COLUMN is_personal INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .context("ALTER TABLE blocks ADD is_personal")?;
+    }
+    Ok(())
+}
+
+fn ensure_blocks_dirty(conn: &Connection) -> Result<()> {
+    let has: bool = conn
+        .prepare("PRAGMA table_info(blocks)")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter()
+        .any(|c| c == "dirty");
+    if !has {
+        conn.execute(
+            "ALTER TABLE blocks ADD COLUMN dirty INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .context("ALTER TABLE blocks ADD dirty")?;
+    }
+    Ok(())
+}
+
+fn ensure_jira_tickets_issue_id(conn: &Connection) -> Result<()> {
+    let has: bool = conn
+        .prepare("PRAGMA table_info(jira_tickets)")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter()
+        .any(|c| c == "issue_id");
+    if !has {
+        conn.execute("ALTER TABLE jira_tickets ADD COLUMN issue_id TEXT", [])
+            .context("ALTER TABLE jira_tickets ADD issue_id")?;
+    }
     Ok(())
 }
 
@@ -151,6 +205,47 @@ mod tests {
             .query_row("PRAGMA journal_mode", [], |r| r.get(0))
             .unwrap();
         assert_eq!(mode.to_lowercase(), "wal");
+    }
+
+    #[test]
+    fn migrate_adds_is_personal_to_legacy_blocks_table() {
+        // Simulate a v3 DB: create a blocks table without is_personal,
+        // stamp user_version = 3, then run migrate() and assert the
+        // column appears.
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE blocks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                day TEXT NOT NULL,
+                jira_issue TEXT,
+                started_at TEXT NOT NULL,
+                ended_at TEXT NOT NULL,
+                duration_seconds INTEGER NOT NULL,
+                description TEXT,
+                estimated_by TEXT,
+                flagged INTEGER NOT NULL DEFAULT 0,
+                tempo_worklog_id TEXT,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );",
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 3).unwrap();
+
+        migrate(&conn).unwrap();
+
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(blocks)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            cols.contains(&"is_personal".to_string()),
+            "is_personal missing after migrate; got {cols:?}"
+        );
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
     }
 
     #[test]

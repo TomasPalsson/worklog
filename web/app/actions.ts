@@ -11,8 +11,9 @@ import {
   runSync as daemonRunSync,
   refreshJira as daemonRefreshJira,
   listBlockEvents as daemonListBlockEvents,
+  listBlockCommits as daemonListBlockCommits,
 } from "@/lib/daemon";
-import type { Event } from "@/lib/types";
+import type { CommitEntry, Event } from "@/lib/types";
 
 /**
  * Every Server Action returns one of these. `useTransition`'s `start()`
@@ -124,6 +125,18 @@ export async function fetchBlockEvents(
   blockId: number,
 ): Promise<ActionResult<Event[]>> {
   return runAction(() => daemonListBlockEvents(blockId));
+}
+
+/**
+ * Fetch the commits that landed inside the block's window under its
+ * dominant project path. Lazy — called by the per-block commits
+ * drill-down on first expand. Returns `[]` for personal blocks and
+ * blocks with no dominant cwd, so callers always get an array.
+ */
+export async function fetchBlockCommits(
+  blockId: number,
+): Promise<ActionResult<CommitEntry[]>> {
+  return runAction(() => daemonListBlockCommits(blockId));
 }
 
 // Exported for tests. Not used by callers — they use the CRUD/query

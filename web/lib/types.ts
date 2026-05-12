@@ -29,6 +29,12 @@ export interface Block {
   description: string | null;
   estimated_by: "manual" | "claude" | "gap" | string | null;
   tempo_worklog_id: string | null;
+  /** Auto-classified from the block's dominant project_path. Personal
+   * blocks dim in the UI, skip the estimator, and aren't synced to Tempo. */
+  is_personal: boolean;
+  /** True when the block has been edited since its `tempo_worklog_id` was
+   * written — the next sync PUTs the new values instead of duplicating. */
+  dirty: boolean;
   event_count: number;
   sources: SourceCount[];
 }
@@ -48,6 +54,22 @@ export interface JiraTicket {
 export interface TicketCacheMeta {
   count: number;
   last_fetched: string | null;
+}
+
+/** One commit landed inside a block's window. Returned by the daemon's
+ * `/blocks/:id/commits` route, fetched lazily by the BlockCard
+ * commits drill-down. `github_url` is omitted when origin isn't on
+ * GitHub. */
+export interface CommitEntry {
+  sha: string;
+  short_sha: string;
+  subject: string;
+  author_email: string;
+  committed_at: string; // ISO-8601 with offset
+  files_changed: number;
+  insertions: number;
+  deletions: number;
+  github_url?: string;
 }
 
 export type SourceKind = "github" | "claude" | "gcal" | "jira" | "other";

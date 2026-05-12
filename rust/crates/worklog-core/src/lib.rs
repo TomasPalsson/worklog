@@ -5,17 +5,20 @@
 #![forbid(unsafe_code)]
 
 pub mod block_service;
+pub mod browser;
 pub mod collectors;
 pub mod daemon;
 pub mod daemon_service;
 pub mod db;
 pub mod estimate;
+pub mod git;
 pub mod hook;
 pub mod hook_run;
 pub mod http;
 pub mod infer;
 pub mod models;
 pub mod paths;
+pub mod personal;
 pub mod purge;
 pub mod repo;
 pub mod schedule;

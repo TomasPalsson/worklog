@@ -24,6 +24,178 @@ use crate::paths::Paths;
 pub const CONTAINER_NAME: &str = "worklog-web";
 pub const IMAGE: &str = "worklog-web:latest";
 
+/// PID file for the host-bun web runner. Cohabits with the daemon
+/// socket / DB so `worklog web` can find it without an extra env var.
+pub fn bun_pid_path(paths: &Paths) -> PathBuf {
+    paths.data_dir.join("web.pid")
+}
+
+pub fn bun_log_path(paths: &Paths) -> PathBuf {
+    paths.log_dir.join("web.log")
+}
+
+/// Start the Next.js UI as a host-side `bun` process (no Docker).
+///
+/// `bun run start` requires a build, so we run `bun run build` first
+/// when the standalone output isn't there. Spawns in the background,
+/// writes a pid file, and returns once the port is responsive (or
+/// after a 30s timeout).
+pub fn bun_up(paths: &Paths, web_context: &Path, port: u16) -> Result<u32> {
+    // Refuse to double-start.
+    if let Some(pid) = read_bun_pid(paths) {
+        if pid_alive(pid) {
+            anyhow::bail!(
+                "worklog web is already running (pid {pid}). \
+                 Stop it with `worklog web down` first."
+            );
+        }
+        // stale pidfile — clean it up before continuing.
+        let _ = std::fs::remove_file(bun_pid_path(paths));
+    }
+
+    // Check bun is on PATH by invoking `bun --version`. Cheap and
+    // doesn't pull in a new crate.
+    let bun_ok = Command::new("bun")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !bun_ok {
+        anyhow::bail!(
+            "can't find `bun` on PATH. Install Bun (https://bun.sh) — \
+             the web UI now runs directly on your machine, no Docker."
+        );
+    }
+
+    // Run `bun install` if node_modules is missing — otherwise next-build
+    // will explode in a way that's hard to diagnose for a first-time user.
+    if !web_context.join("node_modules").is_dir() {
+        let mut cmd = Command::new("bun");
+        cmd.current_dir(web_context)
+            .args(["install", "--frozen-lockfile"]);
+        run_inherit(cmd).context("running `bun install`")?;
+    }
+
+    // Always rebuild on `up` — the production build caches aggressively
+    // and a stale .next dir would silently serve the previous version
+    // of the UI after any web/ edit. Next caches per-file under
+    // .next/cache so the rebuild is incremental (~3-5s after the first).
+    {
+        let mut cmd = Command::new("bun");
+        cmd.current_dir(web_context)
+            .env("NEXT_TELEMETRY_DISABLED", "1")
+            .args(["run", "build"]);
+        run_inherit(cmd).context("running `bun run build`")?;
+    }
+
+    // Open the log file (truncate per up).
+    std::fs::create_dir_all(&paths.log_dir).ok();
+    let log = std::fs::File::create(bun_log_path(paths))
+        .with_context(|| format!("creating {}", bun_log_path(paths).display()))?;
+    let log_err = log.try_clone()?;
+
+    let child = Command::new("bun")
+        .current_dir(web_context)
+        // bun runs `next start -p 3333` from package.json; pass PORT to
+        // override, and set HOSTNAME so the server binds 127.0.0.1.
+        .env("PORT", port.to_string())
+        .env("HOSTNAME", "127.0.0.1")
+        // The web client talks to the daemon over TCP (next start runs
+        // under Node internally; Bun's unix-socket fetch shim doesn't
+        // apply). Daemon already binds 127.0.0.1:9323 by default.
+        .env("WORKLOG_DAEMON_URL", "http://127.0.0.1:9323")
+        .env("NEXT_TELEMETRY_DISABLED", "1")
+        .args(["run", "start"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(log_err))
+        .spawn()
+        .context("spawning `bun run start`")?;
+
+    let pid = child.id();
+    std::fs::write(bun_pid_path(paths), pid.to_string())
+        .with_context(|| format!("writing {}", bun_pid_path(paths).display()))?;
+    // Drop the child handle — we tracked it via pid file. The process
+    // outlives this CLI invocation.
+    std::mem::forget(child);
+
+    // Wait up to 30s for the server to respond. Without this the user
+    // hits the URL too early and sees an "ECONNREFUSED" page.
+    let start = std::time::Instant::now();
+    while start.elapsed().as_secs() < 30 {
+        if !pid_alive(pid) {
+            anyhow::bail!(
+                "bun exited while starting — tail {} for the error",
+                bun_log_path(paths).display()
+            );
+        }
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            return Ok(pid);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    anyhow::bail!(
+        "bun started but port {port} didn't come up within 30s. \
+         Check {} for clues.",
+        bun_log_path(paths).display()
+    )
+}
+
+/// Stop the bun web runner. No-op if no pid file or the process is
+/// already dead.
+pub fn bun_down(paths: &Paths) -> Result<()> {
+    let Some(pid) = read_bun_pid(paths) else {
+        return Ok(());
+    };
+    if pid_alive(pid) {
+        // SIGTERM first; bun handles it gracefully.
+        let _ = Command::new("kill").arg(pid.to_string()).status();
+        // Give it 2 seconds, then SIGKILL if it's still around.
+        for _ in 0..20 {
+            if !pid_alive(pid) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        if pid_alive(pid) {
+            let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+        }
+    }
+    let _ = std::fs::remove_file(bun_pid_path(paths));
+    Ok(())
+}
+
+/// Bun-runner status, mirrors the Docker `status()` shape so the CLI
+/// can route either path through the same formatter.
+pub fn bun_status(paths: &Paths) -> WebStatus {
+    let pid = read_bun_pid(paths);
+    let running = pid.map(pid_alive).unwrap_or(false);
+    WebStatus {
+        running,
+        container: pid.map(|p| format!("bun pid {p}")),
+        image: Some("bun (host)".into()),
+        port: None,
+        uptime: None,
+    }
+}
+
+fn read_bun_pid(paths: &Paths) -> Option<u32> {
+    std::fs::read_to_string(bun_pid_path(paths))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+}
+
+fn pid_alive(pid: u32) -> bool {
+    // `kill -0` checks process existence without sending a signal.
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// Embedded docker-compose.yml written out into the data dir on first
 /// `worklog web up`. Kept in-source so a pure `cargo install` of the
 /// binary still has everything it needs — no ambient web/ checkout
