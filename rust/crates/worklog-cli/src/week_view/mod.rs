@@ -6,4 +6,5 @@
 //!   * `render` (added in phase 3) — ratatui drawing on top of `state`.
 //!   * `run` (added in phase 4) — terminal lifecycle + key dispatch.
 
+pub mod render;
 pub mod state;
