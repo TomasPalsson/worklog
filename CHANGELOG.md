@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/TomasPalsson/worklog/compare/v0.9.0...v0.10.0) (2026-05-12)
+
+
+### Features
+
+* **estimate:** add LiteLLM provider alongside claude -p subprocess ([#7](https://github.com/TomasPalsson/worklog/issues/7)) ([94c064e](https://github.com/TomasPalsson/worklog/commit/94c064eab7744195869bae177b645b9deed1088d))
+
 ## [0.9.0](https://github.com/TomasPalsson/worklog/compare/v0.8.0...v0.9.0) (2026-05-12)
 
 
