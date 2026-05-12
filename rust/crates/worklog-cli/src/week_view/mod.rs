@@ -7,4 +7,7 @@
 //!   * `run` (added in phase 4) — terminal lifecycle + key dispatch.
 
 pub mod render;
+pub mod run;
 pub mod state;
+
+pub use run::{parse_day, run};
