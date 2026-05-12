@@ -39,6 +39,10 @@ pub struct InferEvent {
     pub duration_seconds: Option<i64>,
     pub jira_issue: Option<String>,
     pub event_id: Option<i64>,
+    /// cwd captured by the Claude hook (NULL for github/jira/gcal events).
+    /// Drives the project-aware split inside `build_blocks` so two
+    /// concurrent projects don't get fused into a single worklog entry.
+    pub project_path: Option<String>,
 }
 
 impl InferEvent {
@@ -144,7 +148,7 @@ pub fn build_blocks(events: Vec<InferEvent>) -> Vec<InferBlock> {
         let closed = e.is_calendar() || c.is_calendar || gap > Duration::minutes(TIMEOUT_MINUTES);
         if closed {
             if let Some(f) = finalize(c) {
-                blocks.push(f);
+                blocks.extend(split_by_project(f));
             }
             current = Some(new_block(&e));
         } else {
@@ -154,11 +158,203 @@ pub fn build_blocks(events: Vec<InferEvent>) -> Vec<InferBlock> {
     }
     if let Some(c) = current {
         if let Some(f) = finalize(c) {
-            blocks.push(f);
+            blocks.extend(split_by_project(f));
         }
     }
     blocks.sort_by_key(|b| b.started_at);
     blocks
+}
+
+/// Split a gap-cluster at project_path transitions where both sides have
+/// at least `MIN_BLOCK_MINUTES` of work. Brief project ping-pongs (e.g.
+/// a single message into a second project while waiting on the first)
+/// absorb into the dominant block because their side fails the threshold.
+///
+/// Events with `project_path = None` (github/jira/gcal — sources that
+/// don't carry a cwd) don't trigger a split; they ride with whatever
+/// project they're sandwiched between.
+fn split_by_project(block: InferBlock) -> Vec<InferBlock> {
+    if block.is_calendar {
+        return vec![block];
+    }
+    let segments = project_segments(&block.events);
+    if segments.len() < 2 {
+        return vec![block];
+    }
+
+    // Greedy: scan transitions in order, cut whenever the duration on
+    // *both* sides crosses MIN_BLOCK_MINUTES. The "left side" duration
+    // is the sum of seconds since the most recent cut; the "right side"
+    // is the segment-runlength of the new project starting at this
+    // transition.
+    let min_seconds = MIN_BLOCK_MINUTES * 60;
+    let mut cut_indices: Vec<usize> = Vec::new();
+    let mut last_cut_event_idx = 0;
+
+    for i in 1..segments.len() {
+        // i indexes into segments; the first event of segment[i] is
+        // segments[i].start_event_idx.
+        let cut_event_idx = segments[i].start_event_idx;
+
+        // Left = span from the previous cut to just before this event.
+        let left_first_idx = last_cut_event_idx;
+        let left_last_idx = cut_event_idx - 1;
+        let left_secs = event_span_seconds(&block.events, left_first_idx, left_last_idx);
+
+        // Right = span over segments[i..] until the *next* project
+        // change (or end-of-block). That's the candidate new block's
+        // bounded length — anything past that is a future split
+        // decision.
+        let mut right_last_seg = i;
+        while right_last_seg + 1 < segments.len()
+            && segments[right_last_seg + 1].project == segments[i].project
+        {
+            right_last_seg += 1;
+        }
+        let right_first_idx = segments[i].start_event_idx;
+        let right_last_idx = if right_last_seg + 1 < segments.len() {
+            segments[right_last_seg + 1].start_event_idx - 1
+        } else {
+            block.events.len() - 1
+        };
+        let right_secs = event_span_seconds(&block.events, right_first_idx, right_last_idx);
+
+        if left_secs >= min_seconds && right_secs >= min_seconds {
+            cut_indices.push(cut_event_idx);
+            last_cut_event_idx = cut_event_idx;
+        }
+    }
+
+    if cut_indices.is_empty() {
+        return vec![block];
+    }
+
+    // Materialize sub-blocks from the cut indices.
+    let mut starts = vec![0usize];
+    starts.extend(cut_indices.iter().copied());
+    let mut ends: Vec<usize> = starts[1..].iter().map(|&i| i - 1).collect();
+    ends.push(block.events.len() - 1);
+
+    starts
+        .iter()
+        .zip(ends.iter())
+        .filter_map(|(&s, &e)| build_sub_block(&block, s, e))
+        .collect()
+}
+
+/// Bucket consecutive events by their `project_path`. Events with
+/// `None` project_path inherit the previous segment's project (so a
+/// github commit in the middle of a sjukra session doesn't split
+/// anything).
+#[derive(Debug)]
+struct ProjectSegment {
+    project: Option<String>,
+    start_event_idx: usize,
+}
+
+fn project_segments(events: &[InferEvent]) -> Vec<ProjectSegment> {
+    let mut out: Vec<ProjectSegment> = Vec::new();
+    let mut current: Option<String> = None;
+    for (idx, e) in events.iter().enumerate() {
+        let proj = e.project_path.clone().or_else(|| current.clone());
+        if out.is_empty() || out.last().unwrap().project != proj {
+            out.push(ProjectSegment {
+                project: proj.clone(),
+                start_event_idx: idx,
+            });
+        }
+        current = proj;
+    }
+
+    // Collapse brief sandwiched interruptions: A(long) → B(<MIN) → A
+    // means B was a quick ping into another project while the real work
+    // stayed in A. Drop B's segment boundary so it stays with the
+    // surrounding A run. Without this, a 2-min detour to another repo
+    // creates spurious project transitions.
+    collapse_brief_interruptions(events, out)
+}
+
+fn collapse_brief_interruptions(
+    events: &[InferEvent],
+    segments: Vec<ProjectSegment>,
+) -> Vec<ProjectSegment> {
+    let min_seconds = MIN_BLOCK_MINUTES * 60;
+    let mut out: Vec<ProjectSegment> = Vec::with_capacity(segments.len());
+    let mut i = 0;
+    while i < segments.len() {
+        // Sandwich check: need at least one segment before and after.
+        if i > 0 && i + 1 < segments.len() {
+            let before = &out.last().unwrap_or(&segments[i - 1]);
+            let after = &segments[i + 1];
+            let same_project_around = before.project == after.project;
+            // Duration of segment i = span until segment i+1 begins.
+            let seg_first = segments[i].start_event_idx;
+            let seg_last = segments[i + 1].start_event_idx - 1;
+            let seg_secs = event_span_seconds(events, seg_first, seg_last);
+            if same_project_around && seg_secs < min_seconds {
+                // Drop segment i; segment i+1 is identical to `before`,
+                // so drop it too — its events extend the previous run.
+                i += 2;
+                continue;
+            }
+        }
+        out.push(ProjectSegment {
+            project: segments[i].project.clone(),
+            start_event_idx: segments[i].start_event_idx,
+        });
+        i += 1;
+    }
+    out
+}
+
+fn event_span_seconds(events: &[InferEvent], first: usize, last: usize) -> i64 {
+    if first > last {
+        return 0;
+    }
+    let start = events[first].ts;
+    let end = events[last].end();
+    (end - start).num_seconds().max(0)
+}
+
+fn build_sub_block(parent: &InferBlock, first: usize, last: usize) -> Option<InferBlock> {
+    if first > last {
+        return None;
+    }
+    let slice: Vec<InferEvent> = parent.events[first..=last].to_vec();
+    if slice.is_empty() {
+        return None;
+    }
+    let started = slice.first().unwrap().ts;
+    let ended = slice
+        .iter()
+        .map(|e| e.end())
+        .max()
+        .unwrap_or(started)
+        .max(started);
+    let issues: HashSet<String> = slice.iter().filter_map(|e| e.jira_issue.clone()).collect();
+    let jira_issue = if issues.len() == 1 {
+        issues.into_iter().next()
+    } else {
+        None
+    };
+    let duration = ended - started;
+    if duration < Duration::minutes(MIN_BLOCK_MINUTES) {
+        return None;
+    }
+    let event_ids: Vec<i64> = slice.iter().filter_map(|e| e.event_id).collect();
+    let event_count = slice.len() as u32;
+    Some(InferBlock {
+        day: parent.day.clone(),
+        started_at: started,
+        ended_at: ended,
+        duration_seconds: duration.num_seconds(),
+        event_count,
+        event_ids,
+        jira_issue,
+        flagged: duration > Duration::minutes(MAX_BLOCK_MINUTES),
+        is_calendar: false,
+        events: slice,
+    })
 }
 
 // ───────────────────────── db glue ─────────────────────────
@@ -170,7 +366,7 @@ pub fn load_day_events(conn: &Connection, day: NaiveDate) -> Result<Vec<InferEve
     let start = start_utc.to_rfc3339();
     let end = end_utc.to_rfc3339();
     let mut stmt = conn.prepare(
-        "SELECT id, source, started_at, duration_seconds, jira_issue
+        "SELECT id, source, started_at, duration_seconds, jira_issue, project_path
            FROM events
           WHERE started_at >= ?1 AND started_at < ?2
           ORDER BY started_at",
@@ -191,6 +387,7 @@ pub fn load_day_events(conn: &Connection, day: NaiveDate) -> Result<Vec<InferEve
             ts,
             duration_seconds: r.get(3)?,
             jira_issue: r.get(4)?,
+            project_path: r.get(5)?,
         })
     })?;
     iter.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -448,6 +645,18 @@ mod tests {
             duration_seconds: None,
             jira_issue: None,
             event_id: None,
+            project_path: None,
+        }
+    }
+
+    fn ev_project(h: u32, m: u32, source: &str, project: &str) -> InferEvent {
+        InferEvent {
+            ts: at(h, m),
+            source: source.into(),
+            duration_seconds: None,
+            jira_issue: None,
+            event_id: None,
+            project_path: Some(project.into()),
         }
     }
 
@@ -458,6 +667,7 @@ mod tests {
             duration_seconds: Some(secs),
             jira_issue: None,
             event_id: None,
+            project_path: None,
         }
     }
 
@@ -514,6 +724,70 @@ mod tests {
     }
 
     #[test]
+    fn split_creates_two_blocks_on_sustained_project_switch() {
+        // Mirrors today's real scenario: 50 min on project A, then 25 min
+        // on project B, both within the gap-timeout (no natural cluster
+        // boundary). Expected: 2 blocks.
+        let mut events = Vec::new();
+        for i in 0..11 {
+            events.push(ev_project(9, i * 5, "claude", "/work/sjukra"));
+        }
+        for i in 0..6 {
+            // start at 10:00 (5 min after last sjukra event at 09:50)
+            events.push(ev_project(10, i * 5, "claude", "/work/pdf"));
+        }
+        let blocks = build_blocks(events);
+        assert_eq!(blocks.len(), 2, "should split on sustained project switch");
+        assert!(blocks[0].duration_seconds >= 30 * 60);
+        assert!(blocks[1].duration_seconds >= 20 * 60);
+    }
+
+    #[test]
+    fn split_absorbs_brief_project_interruption() {
+        // 30 min of sjukra with one stray pdf event in the middle.
+        // The pdf run is too short (<5 min on each side as a standalone)
+        // to justify a split — stays as one block.
+        let mut events = Vec::new();
+        for i in 0..6 {
+            events.push(ev_project(9, i * 5, "claude", "/work/sjukra"));
+        }
+        events.push(ev_project(9, 17, "claude", "/work/pdf"));
+        for i in 0..5 {
+            // resume sjukra after the brief pdf detour
+            events.push(ev_project(9, 20 + i * 5, "claude", "/work/sjukra"));
+        }
+        let blocks = build_blocks(events);
+        assert_eq!(blocks.len(), 1, "brief interruption must absorb");
+    }
+
+    #[test]
+    fn split_preserves_calendar_blocks() {
+        // A calendar block is authoritative and should never split even
+        // if its (hypothetical) events spanned multiple project_paths.
+        let meeting = calendar(10, 0, 45 * 60);
+        let blocks = build_blocks(vec![meeting]);
+        assert_eq!(blocks.len(), 1);
+    }
+
+    #[test]
+    fn split_ignores_null_project_path_events() {
+        // A github_commit (project_path = NULL) inside a sjukra session
+        // must NOT trigger a project split. The NULL event inherits the
+        // surrounding project.
+        let mut events = Vec::new();
+        for i in 0..6 {
+            events.push(ev_project(9, i * 5, "claude", "/work/sjukra"));
+        }
+        // github commit with no project_path, mid-stream
+        events.push(ev(9, 17, "github_commit"));
+        for i in 0..5 {
+            events.push(ev_project(9, 20 + i * 5, "claude", "/work/sjukra"));
+        }
+        let blocks = build_blocks(events);
+        assert_eq!(blocks.len(), 1, "NULL project_path event must not split");
+    }
+
+    #[test]
     fn jira_issue_cleared_when_events_disagree() {
         let mut a = ev(10, 0, "github_commit");
         a.jira_issue = Some("PROJ-1".into());
@@ -535,6 +809,7 @@ mod tests {
                 duration_seconds: None,
                 jira_issue: None,
                 event_id: None,
+                project_path: None,
             },
             InferEvent {
                 ts: end - Duration::minutes(1),
@@ -542,6 +817,7 @@ mod tests {
                 duration_seconds: None,
                 jira_issue: None,
                 event_id: None,
+                project_path: None,
             },
         ];
         // Gap is > TIMEOUT, so these become two separate blocks.
@@ -555,6 +831,7 @@ mod tests {
                 duration_seconds: None,
                 jira_issue: None,
                 event_id: None,
+                project_path: None,
             });
             t += Duration::minutes(10);
         }
@@ -716,6 +993,7 @@ mod tests {
             ts,
             duration_seconds: Some(600),
             jira_issue: None,
+            project_path: None,
         };
         let block = new_block(&event);
         assert_eq!(
