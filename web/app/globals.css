@@ -371,6 +371,83 @@ button {
   background: var(--bg-sunk);
 }
 
+/* Personal blocks live inside a <details> footer section (collapsed
+   by default). When expanded they still render dimmed so the eye
+   doesn't accidentally treat them as work. */
+.block.personal {
+  opacity: 0.7;
+  transition: opacity 120ms ease-out;
+}
+.block.personal:hover,
+.block.personal:focus-within {
+  opacity: 1;
+}
+
+/* "N personal · 2.3h · click to show" — collapsed footer. */
+.personal-section {
+  margin-top: 24px;
+  border-top: 1px dashed var(--border);
+  padding-top: 12px;
+}
+.personal-section > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+.personal-section > summary::-webkit-details-marker {
+  display: none;
+}
+.personal-section > summary:hover {
+  background: var(--bg-sunk);
+  color: var(--fg);
+}
+.personal-section[open] > summary {
+  margin-bottom: 12px;
+}
+.personal-section-count {
+  font-weight: 600;
+}
+.personal-section-hours::before {
+  content: "·";
+  margin-right: 8px;
+  opacity: 0.5;
+}
+.personal-section-hint {
+  font-style: italic;
+  opacity: 0.7;
+}
+.personal-section-hint::after {
+  content: "▸";
+  margin-left: 6px;
+  display: inline-block;
+  transition: transform 120ms ease-out;
+}
+.personal-section[open] .personal-section-hint::after {
+  transform: rotate(90deg);
+}
+.personal-section[open] .personal-section-hint {
+  /* "click to show" reads wrong when expanded — hide the words, keep
+     the chevron via ::after which already rotated. */
+  font-size: 0;
+}
+.personal-section[open] .personal-section-hint::after {
+  font-size: 12px;
+}
+
+.day-empty-work {
+  color: var(--fg-muted);
+  font-style: italic;
+  padding: 8px 0;
+}
+
 /* time column */
 
 .block-time {
@@ -825,6 +902,43 @@ button {
 .synced-tag svg {
   width: 11px;
   height: 11px;
+}
+
+/* "unsynced edits" pill — amber to draw the eye toward the sync button.
+   Sits where the synced ✓ would be, since a dirty block is by
+   definition already synced once. */
+.dirty-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--amber-ink);
+  background: var(--amber-bg, rgba(245, 158, 11, 0.12));
+  border: 1px solid var(--amber-ink);
+}
+
+/* personal-block pill — muted, no icon, sits next to the synced tag */
+.personal-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  background: var(--bg-sunk);
+  border: 1px dashed var(--border);
+}
+
+/* DayHeader personal-time annotation — sits next to the work total
+   muted so the eye lands on the work figure first. */
+.day-total-personal {
+  color: var(--fg-muted);
+  font-style: italic;
 }
 
 /* toast for server-action status */

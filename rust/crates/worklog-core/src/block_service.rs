@@ -12,12 +12,42 @@ use rusqlite::{params, Connection};
 use crate::models::Block;
 use crate::repo;
 
+/// `dirty = CASE WHEN tempo_worklog_id IS ... THEN 1 ELSE dirty END` — set
+/// the dirty flag only when the block has already been synced. Unsynced
+/// blocks don't need the marker because the next sync picks them up via
+/// `tempo_worklog_id IS NULL` anyway, and we don't want every estimator
+/// pass to leave the day with a row of false-positive dirty pills.
+const MARK_DIRTY_IF_SYNCED: &str =
+    "CASE WHEN tempo_worklog_id IS NOT NULL AND tempo_worklog_id != '' THEN 1 ELSE dirty END";
+
 pub fn assign_ticket(conn: &Connection, block_id: i64, key: Option<&str>) -> Result<Block> {
-    conn.execute(
-        "UPDATE blocks SET jira_issue = ?1 WHERE id = ?2",
-        params![key, block_id],
-    )
-    .context("assign_ticket")?;
+    // A block that's been assigned a real ticket is, by definition,
+    // work — flip is_personal off so it leaves the dimmed "personal"
+    // footer in the UI and starts going through estimate + tempo sync.
+    // Clearing the ticket leaves is_personal alone; the user might still
+    // want the personal flag managed by the path classifier on the next
+    // `worklog tag reclassify`.
+    if key.is_some() {
+        conn.execute(
+            &format!(
+                "UPDATE blocks
+                    SET jira_issue = ?1, is_personal = 0, dirty = {MARK_DIRTY_IF_SYNCED}
+                  WHERE id = ?2"
+            ),
+            params![key, block_id],
+        )
+        .context("assign_ticket")?;
+    } else {
+        conn.execute(
+            &format!(
+                "UPDATE blocks
+                    SET jira_issue = NULL, dirty = {MARK_DIRTY_IF_SYNCED}
+                  WHERE id = ?1"
+            ),
+            params![block_id],
+        )
+        .context("assign_ticket")?;
+    }
     repo::get_block(conn, block_id)?.ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))
 }
 
@@ -36,9 +66,14 @@ pub fn set_duration(conn: &Connection, block_id: i64, minutes: u32) -> Result<Bl
 
     // Mark as manual so re-estimation doesn't clobber it.
     conn.execute(
-        "UPDATE blocks
-            SET duration_seconds = ?1, ended_at = ?2, estimated_by = 'manual'
-          WHERE id = ?3",
+        &format!(
+            "UPDATE blocks
+                SET duration_seconds = ?1,
+                    ended_at = ?2,
+                    estimated_by = 'manual',
+                    dirty = {MARK_DIRTY_IF_SYNCED}
+              WHERE id = ?3"
+        ),
         params![minutes as i64 * 60, new_end, block_id],
     )
     .context("set_duration")?;
@@ -60,9 +95,13 @@ fn derive_ended_at(started_at: &str, duration_seconds: i64) -> Result<String> {
 
 pub fn set_description(conn: &Connection, block_id: i64, description: &str) -> Result<Block> {
     conn.execute(
-        "UPDATE blocks
-            SET description = ?1, estimated_by = 'manual'
-          WHERE id = ?2",
+        &format!(
+            "UPDATE blocks
+                SET description = ?1,
+                    estimated_by = 'manual',
+                    dirty = {MARK_DIRTY_IF_SYNCED}
+              WHERE id = ?2"
+        ),
         params![description, block_id],
     )
     .context("set_description")?;
@@ -102,6 +141,36 @@ mod tests {
         assert_eq!(got.jira_issue.as_deref(), Some("PROJ-1"));
         let got = assign_ticket(&conn, id, None).unwrap();
         assert!(got.jira_issue.is_none());
+    }
+
+    #[test]
+    fn assign_ticket_flips_is_personal_off() {
+        // Regression: a block that the path-classifier flagged personal
+        // shouldn't STAY personal once the user manually picks a ticket
+        // in the UI. assign_ticket is the boss of work/personal status.
+        let conn = open_memory().unwrap();
+        let id = seed(&conn);
+        conn.execute("UPDATE blocks SET is_personal = 1 WHERE id = ?1", [id])
+            .unwrap();
+        let got = assign_ticket(&conn, id, Some("PROJ-1")).unwrap();
+        assert_eq!(got.jira_issue.as_deref(), Some("PROJ-1"));
+        assert!(!got.is_personal, "ticket assignment must clear is_personal");
+    }
+
+    #[test]
+    fn clearing_ticket_does_not_touch_is_personal() {
+        // Inverse: clearing the ticket shouldn't auto-flip is_personal
+        // either way — let the path classifier / reclassify decide.
+        let conn = open_memory().unwrap();
+        let id = seed(&conn);
+        conn.execute(
+            "UPDATE blocks SET jira_issue = 'PROJ-1', is_personal = 0 WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+        let got = assign_ticket(&conn, id, None).unwrap();
+        assert!(got.jira_issue.is_none());
+        assert!(!got.is_personal, "clearing must not toggle is_personal");
     }
 
     #[test]

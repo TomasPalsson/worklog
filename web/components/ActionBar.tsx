@@ -187,8 +187,16 @@ function summarise(r: unknown): string {
     if ("estimated" in o)
       return `${o.estimated} estimated · ${o.skipped ?? 0} skipped · ${o.failed ?? 0} failed`;
     if ("synced" in o) {
+      const synced = Number(o.synced) || 0;
+      const skipped = Number(o.skipped ?? 0);
       const errs = Array.isArray(o.errors) ? o.errors.length : 0;
-      return `${o.synced} synced · ${o.skipped ?? 0} skipped · ${errs} error${errs === 1 ? "" : "s"}${o.dry_run ? " (dry-run)" : ""}`;
+      if (synced === 0 && skipped === 0 && errs === 0) {
+        // Empty result = everything's already in Tempo (or there were
+        // no candidates at all). "0 synced · 0 skipped · 0 errors" reads
+        // like silent failure even though it's the happy case.
+        return o.dry_run ? "nothing to preview" : "already up to date — nothing to sync";
+      }
+      return `${synced} synced · ${skipped} skipped · ${errs} error${errs === 1 ? "" : "s"}${o.dry_run ? " (dry-run)" : ""}`;
     }
     if ("blocks" in o) return `${o.blocks} blocks · ${o.minutes ?? 0} min`;
     if ("tickets_written" in o) return `${o.tickets_written} tickets`;

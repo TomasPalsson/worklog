@@ -9,9 +9,19 @@ interface Props {
   totalHours: string;
   blockCount: number;
   unassigned: number;
+  /** Optional personal-only summary suffix, e.g. "2.3h personal" — when
+   * present, rendered muted after the work total. */
+  personalSummary?: string;
 }
 
-export function DayHeader({ day, heading, totalHours, blockCount, unassigned }: Props) {
+export function DayHeader({
+  day,
+  heading,
+  totalHours,
+  blockCount,
+  unassigned,
+  personalSummary,
+}: Props) {
   const today = todayISO();
   const prev = shiftDay(day, -1);
   const next = shiftDay(day, 1);
@@ -23,6 +33,12 @@ export function DayHeader({ day, heading, totalHours, blockCount, unassigned }: 
         <h1>{heading}</h1>
         <div className="day-total" aria-label="summary">
           {totalHours} · {blockCount} {blockCount === 1 ? "block" : "blocks"}
+          {personalSummary && (
+            <>
+              {" · "}
+              <span className="day-total-personal">{personalSummary}</span>
+            </>
+          )}
           {unassigned > 0 && (
             <>
               {" · "}

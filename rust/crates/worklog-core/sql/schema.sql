@@ -1,9 +1,13 @@
--- Worklog schema v3. Shared between Python and the Rust hook (include_str!).
+-- Worklog schema v6. Shared between Python and the Rust hook (include_str!).
 -- All CREATE statements are idempotent (IF NOT EXISTS) so the Rust hook can
 -- run this on every invocation with negligible cost.
 --
--- v3 drops the "company" concept: everything is routed by jira_issue. Open
--- Jira tickets are cached in jira_tickets for the estimator + UI picker.
+-- v4 adds blocks.is_personal — auto-classified from the block's dominant
+-- project_path (see PersonalConfig in worklog-core::personal). Personal
+-- blocks render dimmed in the UI, skip the estimator, and are excluded
+-- from Tempo sync.
+-- v3 dropped the "company" concept: everything is routed by jira_issue.
+-- Open Jira tickets are cached in jira_tickets for the estimator + picker.
 
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,6 +56,11 @@ CREATE TABLE IF NOT EXISTS blocks (
     estimated_by TEXT,
     flagged INTEGER NOT NULL DEFAULT 0,
     tempo_worklog_id TEXT,
+    is_personal INTEGER NOT NULL DEFAULT 0,
+    -- `dirty = 1` means the block has been edited since it was synced
+    -- (only ever set when tempo_worklog_id is present). The next
+    -- `worklog sync` PUTs the new values to Tempo and clears the flag.
+    dirty INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -66,13 +75,16 @@ CREATE TABLE IF NOT EXISTS block_events (
 );
 
 -- Cache of the user's open Jira tickets, refreshed by `worklog collect jira`.
--- Feeds the UI picker and is passed as candidate context to the estimator.
+-- Feeds the UI picker, the estimator's candidate context, and — via the
+-- numeric `issue_id` — Tempo Cloud's v4 worklog API (which deprecated
+-- issueKey in favour of issueId).
 CREATE TABLE IF NOT EXISTS jira_tickets (
     key TEXT PRIMARY KEY,
     summary TEXT NOT NULL,
     status TEXT,
     project_key TEXT,
     updated TEXT,
+    issue_id TEXT,
     fetched_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 

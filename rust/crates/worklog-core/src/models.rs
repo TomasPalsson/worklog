@@ -60,6 +60,16 @@ pub struct Block {
     pub estimated_by: Option<String>,
     pub flagged: bool,
     pub tempo_worklog_id: Option<String>,
+    /// Auto-classified from the dominant project_path of the block's events
+    /// (see worklog-core::personal). Personal blocks are dimmed in the
+    /// review UI, skipped by the estimator, and excluded from Tempo sync.
+    #[serde(default)]
+    pub is_personal: bool,
+    /// True when the block has been edited since `tempo_worklog_id` was
+    /// recorded — the next `worklog sync` PUTs the new values to Tempo
+    /// instead of POSTing a duplicate, then clears the flag.
+    #[serde(default)]
+    pub dirty: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -69,4 +79,10 @@ pub struct JiraTicket {
     pub status: Option<String>,
     pub project_key: Option<String>,
     pub updated: Option<String>,
+    /// Numeric Atlassian issue ID. Tempo Cloud v4's `/worklogs` endpoint
+    /// requires `issueId` (numeric) — `issueKey` was removed mid-2025.
+    /// Populated by `worklog collect jira`; the tempo collector self-heals
+    /// any missing ones with an inline Jira lookup.
+    #[serde(default)]
+    pub issue_id: Option<String>,
 }

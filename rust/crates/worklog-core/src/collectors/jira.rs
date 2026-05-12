@@ -30,6 +30,8 @@ struct SearchResponse {
 #[derive(Debug, Deserialize)]
 struct Issue {
     key: String,
+    /// Atlassian's numeric id. Required by Tempo Cloud v4 `/worklogs`.
+    id: Option<String>,
     fields: Fields,
 }
 
@@ -110,6 +112,7 @@ pub fn fetch_open_tickets_with(
             status: issue.fields.status.and_then(|s| s.name),
             project_key,
             updated: issue.fields.updated,
+            issue_id: issue.id,
         };
         repo::upsert_ticket(conn, &ticket)?;
         report.tickets_written += 1;
@@ -222,6 +225,7 @@ mod tests {
                 status: Some("To Do".into()),
                 project_key: Some("PROJ".into()),
                 updated: Some("old".into()),
+                issue_id: None,
             },
         )
         .unwrap();
