@@ -78,7 +78,9 @@ pub enum Cmd {
     /// Report environment, db, and secret status.
     Doctor,
 
-    /// One-shot onboarding: db migrate + preflight + capture secrets.
+    /// One-shot onboarding: db migrate + preflight + capture secrets,
+    /// then bring up the review UI in your browser. Pass `--no-serve`
+    /// to stop after configuration.
     Setup {
         /// Print what would run and exit; capture nothing.
         #[arg(long)]
@@ -86,6 +88,12 @@ pub enum Cmd {
         /// Skip HTTP validation of captured credentials.
         #[arg(long)]
         skip_validate: bool,
+        /// Don't auto-start the web UI when the wizard finishes.
+        #[arg(long)]
+        no_serve: bool,
+        /// Port for the auto-started web UI. Default: 3333.
+        #[arg(long, default_value_t = 3333)]
+        port: u16,
     },
 
     /// Database operations.
@@ -204,6 +212,9 @@ pub enum Cmd {
         /// is managed out-of-band, e.g. a systemd unit on linux).
         #[arg(long)]
         no_daemon: bool,
+        /// Skip auto-opening the URL in your default browser.
+        #[arg(long)]
+        no_open: bool,
     },
 
     /// Self-update: verify + download + atomically swap the binary.
@@ -300,6 +311,11 @@ pub enum WebCmd {
         /// Don't ensure the daemon is running — assume you started it.
         #[arg(long)]
         no_daemon: bool,
+        /// Skip auto-opening the URL in your default browser. The
+        /// browser opens by default on TTY runs; `--json` and
+        /// non-tty stdout already suppress it automatically.
+        #[arg(long)]
+        no_open: bool,
     },
     /// Stop and remove the web container (leaves the daemon alone).
     Down,
@@ -493,7 +509,16 @@ pub fn run_with<W: Write>(
         Cmd::Setup {
             non_interactive,
             skip_validate,
-        } => cmd_setup(non_interactive, skip_validate),
+            no_serve,
+            port,
+        } => cmd_setup(
+            non_interactive,
+            skip_validate,
+            no_serve,
+            port,
+            out,
+            cli.json,
+        ),
         Cmd::Db(sub) => match sub {
             DbCmd::Migrate => cmd_db_migrate(out, cli.json),
             DbCmd::Info => cmd_db_info(out, cli.json),
@@ -542,7 +567,11 @@ pub fn run_with<W: Write>(
             Some(DaemonCmd::Status) => cmd_daemon_status(out, cli.json),
         },
         Cmd::Web { sub } => match sub {
-            WebCmd::Up { port, no_daemon } => cmd_web_up(port, no_daemon, out, cli.json),
+            WebCmd::Up {
+                port,
+                no_daemon,
+                no_open,
+            } => cmd_web_up(port, no_daemon, no_open, out, cli.json),
             WebCmd::Down => cmd_web_down(out, cli.json),
             WebCmd::Status => cmd_web_status(out, cli.json),
             WebCmd::Logs { tail } => cmd_web_logs(tail),
@@ -552,7 +581,11 @@ pub fn run_with<W: Write>(
         // `serve` is literally `web up` with the same args — the alias
         // lives at the top-level so muscle memory from the Python era
         // (`worklog serve`) keeps working.
-        Cmd::Serve { port, no_daemon } => cmd_web_up(port, no_daemon, out, cli.json),
+        Cmd::Serve {
+            port,
+            no_daemon,
+            no_open,
+        } => cmd_web_up(port, no_daemon, no_open, out, cli.json),
         Cmd::SelfUpdate {
             manifest_url,
             check,
@@ -759,7 +792,14 @@ fn cmd_db_purge<W: Write>(days: i64, dry_run: bool, out: &mut W, json: bool) -> 
     Ok(())
 }
 
-fn cmd_setup(non_interactive: bool, skip_validate: bool) -> Result<()> {
+fn cmd_setup<W: Write>(
+    non_interactive: bool,
+    skip_validate: bool,
+    no_serve: bool,
+    port: u16,
+    out: &mut W,
+    json: bool,
+) -> Result<()> {
     let opts = crate::wizard::WizardOptions {
         non_interactive,
         skip_validate,
@@ -767,7 +807,28 @@ fn cmd_setup(non_interactive: bool, skip_validate: bool) -> Result<()> {
         secrets_file: std::env::var_os("WORKLOG_SECRETS_FILE").map(std::path::PathBuf::from),
     };
     let _ = crate::wizard::run(opts)?;
-    Ok(())
+
+    // Auto-launch the review UI so first-run feels seamless. We skip
+    // this for `--non-interactive` (CI / scripting) and `--no-serve`
+    // (user opt-out). The auto-open of the browser inside
+    // `cmd_web_up` further requires a real TTY, so headless runs
+    // still print the URL instead of trying to launch a browser.
+    if non_interactive || no_serve {
+        return Ok(());
+    }
+
+    // Visual break before the web-up log lines.
+    if !json {
+        writeln!(out)?;
+        writeln!(out, "→ launching review UI…")?;
+    }
+
+    // `no_daemon = false` → setup just configured the daemon, but the
+    // service may not be running yet; cmd_web_up will start it.
+    // `no_open = false` → the whole point of auto-serve is to open
+    // the browser; rely on the TTY check inside cmd_web_up to suppress
+    // it when stdout isn't a real terminal.
+    cmd_web_up(port, false, false, out, json)
 }
 
 fn cmd_db_path<W: Write>(out: &mut W) -> Result<()> {
@@ -1384,7 +1445,7 @@ fn cmd_day<W: Write>(
     style::step(out, "bringing up review UI at http://localhost:3333")?;
     style::info(out, "ctrl+c to bring it down, or `worklog web down`")?;
     writeln!(out)?;
-    cmd_web_up(3333, false, out, false)
+    cmd_web_up(3333, false, false, out, false)
 }
 
 /// Outcome of a single `cmd_day` collector step. Owns the message so
@@ -1596,7 +1657,13 @@ fn rpassword_readline() -> Result<String> {
 
 // ─────────────────────────── web subcommand ───────────────────────────
 
-fn cmd_web_up<W: Write>(port: u16, no_daemon: bool, out: &mut W, json: bool) -> Result<()> {
+fn cmd_web_up<W: Write>(
+    port: u16,
+    no_daemon: bool,
+    no_open: bool,
+    out: &mut W,
+    json: bool,
+) -> Result<()> {
     let paths = Paths::resolve()?;
     paths.ensure()?;
     let context = web_mod::resolve_web_context(&paths)?;
@@ -1606,6 +1673,23 @@ fn cmd_web_up<W: Write>(port: u16, no_daemon: bool, out: &mut W, json: bool) -> 
     }
 
     let pid = web_mod::bun_up(&paths, &context, port)?;
+    let url = format!("http://localhost:{port}");
+
+    // Open the browser only on interactive TTY runs. `--json` is
+    // script mode and `--no-open` is an explicit opt-out; non-TTY
+    // stdout (e.g. piped into `tee`) silently suppresses to avoid
+    // surprising automation.
+    let should_open = !no_open && !json && io::stdout().is_terminal();
+    let opened = if should_open {
+        match worklog_core::browser::open_url(&url) {
+            Ok(worklog_core::browser::OpenOutcome::Spawned) => true,
+            Ok(worklog_core::browser::OpenOutcome::Unsupported) => false,
+            // Treat opener failures as non-fatal — server is up.
+            Err(_) => false,
+        }
+    } else {
+        false
+    };
 
     if json {
         writeln!(
@@ -1613,14 +1697,20 @@ fn cmd_web_up<W: Write>(port: u16, no_daemon: bool, out: &mut W, json: bool) -> 
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "ok": true,
-                "url": format!("http://localhost:{port}"),
+                "url": url,
                 "pid": pid,
                 "context": context.display().to_string(),
                 "log": web_mod::bun_log_path(&paths).display().to_string(),
+                "opened": opened,
             }))?
         )?;
     } else {
-        writeln!(out, "✓ worklog-web up — open http://localhost:{port}")?;
+        let suffix = if opened {
+            " (opening in browser…)"
+        } else {
+            ""
+        };
+        writeln!(out, "✓ worklog-web up — {url}{suffix}")?;
         writeln!(out, "  pid:     {pid}")?;
         writeln!(
             out,

@@ -537,8 +537,14 @@ fn print_done(paths: &Paths, set: &[String], skipped: &[String], schedule_instal
         println!("  {} scheduled collection: {}", style("·").dim(), iv);
     }
     println!("\n  next:");
-    println!("    {} worklog doctor", style("$").dim());
-    println!("    {} worklog collect all", style("$").dim());
+    println!(
+        "    {} the review UI will open in your browser",
+        style("·").dim()
+    );
+    println!(
+        "    {} or re-run anytime with `worklog serve`",
+        style("·").dim()
+    );
     println!();
 }
 

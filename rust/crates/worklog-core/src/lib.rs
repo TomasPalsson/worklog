@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 pub mod block_service;
+pub mod browser;
 pub mod collectors;
 pub mod daemon;
 pub mod daemon_service;
