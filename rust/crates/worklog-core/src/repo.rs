@@ -108,30 +108,52 @@ pub fn load_day_events(conn: &Connection, day: &str) -> Result<Vec<Event>> {
 
 // ───────────────────────── blocks ─────────────────────────
 
+const BLOCK_COLUMNS: &str = "id, day, jira_issue, started_at, ended_at, duration_seconds,
+     description, estimated_by, flagged, tempo_worklog_id, is_personal, dirty";
+
+fn block_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Block> {
+    Ok(Block {
+        id: r.get(0)?,
+        day: r.get(1)?,
+        jira_issue: r.get(2)?,
+        started_at: r.get(3)?,
+        ended_at: r.get(4)?,
+        duration_seconds: r.get(5)?,
+        description: r.get(6)?,
+        estimated_by: r.get(7)?,
+        flagged: r.get::<_, i64>(8)? != 0,
+        tempo_worklog_id: r.get(9)?,
+        is_personal: r.get::<_, i64>(10)? != 0,
+        dirty: r.get::<_, i64>(11)? != 0,
+    })
+}
+
 pub fn list_blocks_for_day(conn: &Connection, day: &str) -> Result<Vec<Block>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, day, jira_issue, started_at, ended_at, duration_seconds,
-                description, estimated_by, flagged, tempo_worklog_id, is_personal, dirty
-           FROM blocks
-          WHERE day = ?1
-          ORDER BY started_at",
-    )?;
-    let rows = stmt.query_map(params![day], |r| {
-        Ok(Block {
-            id: r.get(0)?,
-            day: r.get(1)?,
-            jira_issue: r.get(2)?,
-            started_at: r.get(3)?,
-            ended_at: r.get(4)?,
-            duration_seconds: r.get(5)?,
-            description: r.get(6)?,
-            estimated_by: r.get(7)?,
-            flagged: r.get::<_, i64>(8)? != 0,
-            tempo_worklog_id: r.get(9)?,
-            is_personal: r.get::<_, i64>(10)? != 0,
-            dirty: r.get::<_, i64>(11)? != 0,
-        })
-    })?;
+    let sql = format!("SELECT {BLOCK_COLUMNS} FROM blocks WHERE day = ?1 ORDER BY started_at");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![day], block_from_row)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Blocks for a 7-day window starting at `week_start` (Mon..=Sun by
+/// convention, but the function is agnostic — it returns blocks whose
+/// `day` falls in `[week_start, week_start+6]` inclusive). Ordered by
+/// `(day, started_at)` so callers can split into day-buckets in a single
+/// pass without resorting.
+pub fn list_blocks_for_week(
+    conn: &Connection,
+    week_start: chrono::NaiveDate,
+) -> Result<Vec<Block>> {
+    let week_end = week_start + chrono::Duration::days(6);
+    let start_iso = week_start.format("%Y-%m-%d").to_string();
+    let end_iso = week_end.format("%Y-%m-%d").to_string();
+    let sql = format!(
+        "SELECT {BLOCK_COLUMNS} FROM blocks
+          WHERE day BETWEEN ?1 AND ?2
+          ORDER BY day, started_at"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![start_iso, end_iso], block_from_row)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
