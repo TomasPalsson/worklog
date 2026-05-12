@@ -149,19 +149,26 @@ mod backend {
     }
 
     pub fn get(key: &str) -> Result<Option<String>> {
-        // 1) Process env wins. Lets users set `WORKLOG_*` in .envrc /
-        //    .zshrc / docker-compose env and never get a macOS keychain
-        //    prompt. Was previously last in the lookup order, which
-        //    meant a populated keychain shadowed the env entirely.
-        if let Some(env_name) = super::env_var_for(key) {
-            if let Ok(v) = std::env::var(env_name) {
-                if !v.is_empty() {
-                    return Ok(Some(v));
+        // When the file-backed shim is active (integration tests +
+        // CI), skip the process-env lookup — otherwise tests inherit
+        // whatever WORKLOG_* the developer has in their shell and
+        // get a polluted view of "secret store contents". Production
+        // builds without the override use the env-first path.
+        let file_path = file_backend_path();
+        if file_path.is_none() {
+            // 1) Process env wins on real systems — set `WORKLOG_*` in
+            //    .envrc / .zshrc and the macOS keychain never gets
+            //    prompted.
+            if let Some(env_name) = super::env_var_for(key) {
+                if let Ok(v) = std::env::var(env_name) {
+                    if !v.is_empty() {
+                        return Ok(Some(v));
+                    }
                 }
             }
         }
-        // 2) Keychain (the source the setup wizard writes to).
-        let primary = if let Some(path) = file_backend_path() {
+        // 2) Keychain (or the file-backed shim in tests).
+        let primary = if let Some(path) = file_path {
             read_file_store(&path)?.get(key).cloned()
         } else {
             match entry(key)?.get_password() {
