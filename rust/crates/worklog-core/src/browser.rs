@@ -115,24 +115,18 @@ mod tests {
     }
 
     #[test]
-    fn skips_notfound_and_tries_next_candidate() {
-        // Fail the first N-1 candidates with NotFound, succeed on the
-        // last. Only meaningful on Linux where we have multiple
-        // candidates — on macOS/Windows it still exercises the
-        // "first candidate failed → return Unsupported" branch.
+    fn exhausting_notfound_candidates_returns_unsupported() {
+        // Failing every candidate with NotFound walks the whole list
+        // and reports Unsupported. Verifies the loop's continue arm.
         let log: Calls = Rc::new(RefCell::new(Vec::new()));
         let log2 = log.clone();
-        let mut call_count = 0usize;
         let mut spawn = move |p: &str, args: &[&str]| -> std::io::Result<()> {
             log2.borrow_mut()
                 .push((p.to_string(), args.iter().map(|s| s.to_string()).collect()));
-            call_count += 1;
-            // Fail every call with NotFound so we exhaust the list.
             Err(std::io::Error::new(std::io::ErrorKind::NotFound, "missing"))
         };
         let outcome = open_url_with("https://example.com", &mut spawn).unwrap();
         assert_eq!(outcome, OpenOutcome::Unsupported);
-        // We should have tried at least one candidate.
         assert!(!log.borrow().is_empty());
     }
 
@@ -141,7 +135,10 @@ mod tests {
         let mut spawn = fail_with(std::io::ErrorKind::PermissionDenied);
         let err = open_url_with("https://example.com", &mut spawn).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("synthetic"), "expected underlying io error to bubble, got: {msg}");
+        assert!(
+            msg.contains("synthetic"),
+            "expected underlying io error to bubble, got: {msg}"
+        );
     }
 
     #[test]
@@ -150,7 +147,7 @@ mod tests {
         assert!(!candidates.is_empty());
         for (_, args) in candidates {
             assert!(
-                args.iter().any(|a| *a == "https://localhost:3333"),
+                args.contains(&"https://localhost:3333"),
                 "url missing from candidate args"
             );
         }
