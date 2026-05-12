@@ -19,7 +19,13 @@ use chrono::{DateTime, Duration, NaiveDate, Utc};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
-const TIMEOUT_MINUTES: i64 = 20;
+// Bumped from 20 → 30. AI-paired coding has long autonomous stretches
+// where Claude runs tools for 20+ min without firing a UserPromptSubmit/Stop
+// pair; 20 split those into dropped sub-MIN_BLOCK slivers. 30 keeps the
+// session intact while still closing on genuine breaks. Paired with
+// PreToolUse/PostToolUse hooks (see hook::EVENTS) which add heartbeats
+// during autonomous work.
+const TIMEOUT_MINUTES: i64 = 30;
 const CREDIT_MINUTES: i64 = 2;
 const MIN_BLOCK_MINUTES: i64 = 5;
 const MAX_BLOCK_MINUTES: i64 = 4 * 60;
@@ -720,11 +726,51 @@ mod tests {
     fn gap_over_timeout_starts_new_block() {
         let a = ev(9, 0, "github_commit");
         let b = ev(9, 5, "github_commit");
-        // 30-minute gap exceeds TIMEOUT (20m).
-        let c = ev(9, 35, "github_commit");
-        let d = ev(9, 40, "github_commit");
+        // 40-min gap (9:05 → 9:45) clearly exceeds TIMEOUT (30m).
+        let c = ev(9, 45, "github_commit");
+        let d = ev(9, 50, "github_commit");
         let blocks = build_blocks(vec![a, b, c, d]);
         assert_eq!(blocks.len(), 2);
+    }
+
+    #[test]
+    fn long_claude_turn_does_not_fragment_block() {
+        // Regression: user reported 3-hour Claude sessions showing as
+        // 15-30 min slivers. Cause: with the old TIMEOUT (20m) and the
+        // old hook event set (no PreToolUse), a Claude turn running tools
+        // autonomously for 25 min between UserPromptSubmit and Stop
+        // looked like two separate point-events 25 min apart, each
+        // getting 2 min of credit → two 2-min "blocks" both dropped
+        // under MIN_BLOCK (5m). With TIMEOUT=30 (and PreToolUse hooks
+        // emitting heartbeats in real Claude sessions), this stays as
+        // one continuous block.
+        let events = vec![
+            ev(9, 0, "claude"),   // UserPromptSubmit
+            ev(9, 25, "claude"),  // Stop (25 min autonomous run)
+            ev(9, 50, "claude"),  // next UserPromptSubmit (25 min reading)
+            ev(10, 15, "claude"), // Stop
+            ev(10, 40, "claude"), // UserPromptSubmit
+            ev(11, 5, "claude"),  // Stop
+            ev(11, 30, "claude"), // UserPromptSubmit
+            ev(11, 35, "claude"), // Stop (quick reply)
+        ];
+        let blocks = build_blocks(events);
+        assert_eq!(
+            blocks.len(),
+            1,
+            "long Claude session must stay as one block — got {} blocks of lengths {:?}",
+            blocks.len(),
+            blocks
+                .iter()
+                .map(|b| b.duration_seconds)
+                .collect::<Vec<_>>()
+        );
+        let dur_minutes = blocks[0].duration_seconds / 60;
+        assert!(
+            dur_minutes >= 2 * 60 + 30,
+            "block duration {} min should reflect the full 2h35m span",
+            dur_minutes
+        );
     }
 
     #[test]

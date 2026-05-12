@@ -18,9 +18,17 @@ use anyhow::{Context, Result};
 use serde_json::{json, Map, Value};
 
 /// Events worklog listens for.
+///
+/// `PreToolUse` and `PostToolUse` are the heartbeats that keep a Claude
+/// session visible to the block inference. Without them, a long
+/// autonomous turn (Claude running tools for 20+ min between user
+/// prompts) produces no events and the gap-timeout in `infer.rs` shreds
+/// the session into dropped sub-MIN_BLOCK slivers.
 pub const EVENTS: &[&str] = &[
     "SessionStart",
     "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
     "Stop",
     "SubagentStop",
     "SessionEnd",
