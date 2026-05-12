@@ -24,6 +24,7 @@ pub mod repo;
 pub mod schedule;
 pub mod secrets;
 pub mod sessions;
+pub mod skill;
 pub mod tz;
 pub mod updater;
 pub mod web;

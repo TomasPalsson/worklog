@@ -113,6 +113,7 @@ pub fn run(opts: WizardOptions) -> Result<WizardReport> {
     if !opts.non_interactive {
         let theme = ColorfulTheme::default();
         configure_hook(&theme, &mut notes)?;
+        configure_claude_skill(&theme, &mut notes)?;
         if !opts.skip_schedule {
             schedule_installed = configure_schedule(&theme, &mut notes)?;
             configure_daemon_service(&theme, &mut notes)?;
@@ -172,6 +173,75 @@ fn configure_hook(theme: &ColorfulTheme, notes: &mut Vec<String>) -> Result<()> 
         "  {} installed ({} events)",
         style("✓").green().bold(),
         s.events.len()
+    );
+    Ok(())
+}
+
+/// Install the bundled Claude Code skill that teaches Claude how to
+/// operate worklog. Idempotent — re-running offers to refresh against
+/// the binary's currently-bundled files. The skill is just markdown on
+/// disk; uninstalling it doesn't affect any worklog functionality, only
+/// Claude's ability to drive it on the user's behalf.
+fn configure_claude_skill(theme: &ColorfulTheme, notes: &mut Vec<String>) -> Result<()> {
+    use worklog_core::skill;
+
+    println!("\n{}", section("claude code skill"));
+    let current = skill::status()?;
+    println!(
+        "  {} target: {}",
+        style("·").dim(),
+        style(worklog_core::paths::short_display(&current.skill_dir)).cyan(),
+    );
+    println!(
+        "  {} teaches Claude Code how to operate worklog (read days, fix",
+        style("·").dim(),
+    );
+    println!(
+        "  {} blocks, sync to tempo, troubleshoot) — confirms before writes.",
+        style("·").dim(),
+    );
+
+    if current.installed {
+        let label = match current.up_to_date {
+            Some(true) => format!(
+                "already installed and up-to-date (v{})",
+                current.bundled_version
+            ),
+            Some(false) => {
+                "installed but the bundled files differ — re-install will overwrite".to_string()
+            }
+            None => "installed".to_string(),
+        };
+        println!("  {} {}", style("·").dim(), label);
+        let prompt = match current.up_to_date {
+            Some(false) => "  re-install to overwrite local edits?",
+            _ => "  re-install to refresh from this binary?",
+        };
+        let replace = Confirm::with_theme(theme)
+            .with_prompt(prompt)
+            .default(matches!(current.up_to_date, Some(false)))
+            .interact()?;
+        if !replace {
+            notes.push("skill left alone".into());
+            return Ok(());
+        }
+    } else {
+        let install = Confirm::with_theme(theme)
+            .with_prompt("  install Claude Code skill now?")
+            .default(true)
+            .interact()?;
+        if !install {
+            notes.push("skill install skipped — run `worklog skill install` later".into());
+            return Ok(());
+        }
+    }
+
+    let s = skill::install()?;
+    println!(
+        "  {} installed ({} files, v{})",
+        style("✓").green().bold(),
+        s.files.len(),
+        s.bundled_version,
     );
     Ok(())
 }
