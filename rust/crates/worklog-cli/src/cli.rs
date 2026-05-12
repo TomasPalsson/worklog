@@ -12,7 +12,8 @@ use worklog_core::{
     collectors::{gcal as gcal_col, github as gh, jira as jira_col, tempo as tempo_col},
     daemon as daemon_mod, db, estimate, hook, hook_run, http, infer,
     paths::Paths,
-    personal as personal_mod, schedule, secrets, updater as upd, web as web_mod,
+    personal as personal_mod, schedule, secrets, skill as skill_mod, updater as upd,
+    web as web_mod,
 };
 
 use crate::style;
@@ -118,6 +119,12 @@ pub enum Cmd {
     /// Scheduled collection (launchd on macOS, systemd --user on Linux).
     #[command(subcommand)]
     Schedule(ScheduleCmd),
+
+    /// Install / refresh / remove the Claude Code skill that teaches
+    /// Claude how to operate worklog (write SKILL.md + references to
+    /// ~/.claude/skills/worklog).
+    #[command(subcommand)]
+    Skill(SkillCmd),
 
     /// Pull events from external sources (jira, github, tempo, all).
     Collect {
@@ -439,6 +446,18 @@ pub enum ScheduleCmd {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum SkillCmd {
+    /// Write the bundled SKILL.md + reference files to ~/.claude/skills/worklog/.
+    /// Idempotent — re-run after `worklog upgrade` to pick up new bundled content.
+    Install,
+    /// Remove ~/.claude/skills/worklog/ entirely.
+    Uninstall,
+    /// Report whether the skill is installed and whether the on-disk files
+    /// match the bundled version (false → re-run install).
+    Status,
+}
+
+#[derive(Subcommand, Debug)]
 pub enum SecretCmd {
     /// Set a secret. Value read from stdin if not provided, or prompted on a TTY.
     Set {
@@ -569,6 +588,11 @@ pub fn run_with<W: Write>(
             }
             ScheduleCmd::Uninstall => cmd_schedule_uninstall(out, cli.json),
             ScheduleCmd::Status => cmd_schedule_status(out, cli.json),
+        },
+        Cmd::Skill(sub) => match sub {
+            SkillCmd::Install => cmd_skill_install(out, cli.json),
+            SkillCmd::Uninstall => cmd_skill_uninstall(out, cli.json),
+            SkillCmd::Status => cmd_skill_status(out, cli.json),
         },
         Cmd::Collect { target, days } => cmd_collect(target, days, out, cli.json),
         Cmd::Sync { day, dry_run } => cmd_sync(day, dry_run, out, cli.json),
@@ -1028,6 +1052,63 @@ fn cmd_hook_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
             writeln!(out, "command:   {cmd}")?;
         }
         writeln!(out, "events:    {}", status.events.join(", "))?;
+    } else {
+        writeln!(out, "installed: no")?;
+    }
+    Ok(())
+}
+
+fn cmd_skill_install<W: Write>(out: &mut W, json: bool) -> Result<()> {
+    let status = skill_mod::install()?;
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&status)?)?;
+        return Ok(());
+    }
+    writeln!(
+        out,
+        "✓ skill installed at {} ({} files, v{})",
+        worklog_core::paths::short_display(&status.skill_dir),
+        status.files.len(),
+        status.bundled_version,
+    )?;
+    Ok(())
+}
+
+fn cmd_skill_uninstall<W: Write>(out: &mut W, json: bool) -> Result<()> {
+    let status = skill_mod::uninstall()?;
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&status)?)?;
+    } else {
+        writeln!(
+            out,
+            "✓ skill removed from {}",
+            worklog_core::paths::short_display(&status.skill_dir)
+        )?;
+    }
+    Ok(())
+}
+
+fn cmd_skill_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
+    let status = skill_mod::status()?;
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&status)?)?;
+        return Ok(());
+    }
+    writeln!(
+        out,
+        "dir:       {}",
+        worklog_core::paths::short_display(&status.skill_dir)
+    )?;
+    if status.installed {
+        writeln!(out, "installed: yes ({} files)", status.files.len())?;
+        match status.up_to_date {
+            Some(true) => writeln!(out, "up-to-date: yes (v{})", status.bundled_version)?,
+            Some(false) => writeln!(
+                out,
+                "up-to-date: no — run `worklog skill install` to refresh"
+            )?,
+            None => {}
+        }
     } else {
         writeln!(out, "installed: no")?;
     }

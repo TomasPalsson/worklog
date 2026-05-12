@@ -13,3 +13,10 @@ rust/**/Cargo.lock.bak
 web/node_modules/
 web/.next/
 web/.bun/
+
+# Skill-forge research workspaces (research artifacts not for main)
+.skill-forge/
+.brainstorm/
+# Claude Code local state
+.claude/skills/
+.claude/worktrees/
