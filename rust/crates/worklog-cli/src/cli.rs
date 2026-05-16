@@ -7,7 +7,7 @@
 use std::io::{self, IsTerminal, Read, Write};
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use worklog_core::{
     collectors::{gcal as gcal_col, github as gh, jira as jira_col, tempo as tempo_col},
     daemon as daemon_mod, db, estimate, hook, hook_run, http, infer,
@@ -44,7 +44,7 @@ commands by area\x1b[0m
   daily workflow       \x1b[32mday  summary  week  block  sync\x1b[0m
   data collection      \x1b[32mcollect  infer  estimate  hook\x1b[0m
   review UI            \x1b[32mweb  serve\x1b[0m
-  setup & diagnostics  \x1b[32msetup  status  doctor  db  secret  version\x1b[0m
+  setup & diagnostics  \x1b[32msetup  status  doctor  db  secret  completions  version\x1b[0m
   daemon & schedule    \x1b[32mdaemon  schedule\x1b[0m
   release ops          \x1b[32mself-update  upgrade  dev\x1b[0m
 ";
@@ -81,6 +81,16 @@ pub enum Cmd {
     /// database and secrets, plus today's tracked time. Folds in what
     /// used to take five separate `*-status` commands.
     Status,
+
+    /// Print a shell completion script. Install it with, e.g.:
+    ///   bash: worklog completions bash > ~/.bash_completion.d/worklog
+    ///   zsh:  worklog completions zsh  > ~/.zfunc/_worklog
+    ///   fish: worklog completions fish > ~/.config/fish/completions/worklog.fish
+    Completions {
+        /// Shell to generate completions for.
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
 
     /// Report environment, db, and secret status.
     Doctor {
@@ -666,6 +676,7 @@ pub fn run_with<W: Write>(
     match cli.command {
         Cmd::Version => cmd_version(out, cli.json),
         Cmd::Status => cmd_status(out, cli.json),
+        Cmd::Completions { shell } => cmd_completions(shell, out),
         Cmd::Doctor { probe } => cmd_doctor(probe, out, cli.json),
         Cmd::Setup {
             non_interactive,
@@ -2400,6 +2411,15 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
             "scheduled collection off — `worklog schedule install --interval 15m`",
         )?;
     }
+    Ok(())
+}
+
+/// `worklog completions <shell>` — emit a shell completion script.
+/// clap derives the whole grammar, so this stays correct automatically
+/// as subcommands and flags change.
+fn cmd_completions<W: Write>(shell: clap_complete::Shell, out: &mut W) -> Result<()> {
+    let mut cmd = Cli::command();
+    clap_complete::generate(shell, &mut cmd, "worklog", out);
     Ok(())
 }
 

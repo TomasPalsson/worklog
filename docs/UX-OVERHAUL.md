@@ -249,7 +249,13 @@ CLI, for exactly this reason.
   scripts don't break, and `worklog day --json` now emits JSON without
   needing `--no-serve` (the old invariant-7 footgun is gone).
 
-## Roadmap — Phase 4 (proposed next)
+## Changelog — Phase 4 (in progress)
+
+- **`worklog completions <shell>`** — emits a bash / zsh / fish / etc.
+  completion script, derived from the clap grammar so it stays correct
+  as commands change.
+
+## Roadmap — Phase 4 (remaining)
 
 These are the remaining `[later]` user stories — none are blocking:
 
@@ -259,4 +265,5 @@ These are the remaining `[later]` user stories — none are blocking:
 - `worklog review` — interactive triage TUI (US-17).
 - bare `worklog` runs the daily pipeline (US-18).
 - `worklog ask "…"` — natural-language queries (US-5).
-- `worklog undo`, shell completions (`worklog completions <shell>`).
+- `worklog undo` — an edit journal so a fat-fingered delete/merge/split
+  is recoverable.
