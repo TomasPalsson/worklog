@@ -620,6 +620,15 @@ pub enum BlockCmd {
         /// Minutes the original block keeps; the rest forms the new block.
         first_minutes: u32,
     },
+    /// Flag a block as personal — dimmed in the UI, skipped by the
+    /// estimator, excluded from Tempo sync. Pass `--work` to flip it back.
+    Personal {
+        /// Block id.
+        id: i64,
+        /// Mark the block as work instead of personal.
+        #[arg(long)]
+        work: bool,
+    },
 }
 
 pub fn run() -> Result<()> {
@@ -752,6 +761,7 @@ pub fn run_with<W: Write>(
             BlockCmd::Split { id, first_minutes } => {
                 cmd_block_split(id, first_minutes, out, cli.json)
             }
+            BlockCmd::Personal { id, work } => cmd_block_personal(id, work, out, cli.json),
         },
         Cmd::Tag { sub } => match sub {
             TagCmd::List => cmd_tag_list(out, cli.json),
@@ -1907,6 +1917,19 @@ fn cmd_block_split<W: Write>(id: i64, first_minutes: u32, out: &mut W, json: boo
         )?;
     }
     Ok(())
+}
+
+fn cmd_block_personal<W: Write>(id: i64, work: bool, out: &mut W, json: bool) -> Result<()> {
+    ensure_daemon_running(&mut io::stderr())?;
+    let body = serde_json::json!({ "is_personal": !work });
+    let block: serde_json::Value =
+        crate::daemon_client::post(&format!("/blocks/{id}/personal"), &body)?;
+    let msg = if work {
+        format!("block {id} marked as work")
+    } else {
+        format!("block {id} marked as personal")
+    };
+    report_block_write(out, json, &block, &msg)
 }
 
 /// One ticket's slice of a day: wall-clock time, block count, and the

@@ -853,6 +853,13 @@ button {
   color: var(--terracotta);
 }
 
+/* personal toggle — "active" means the block is currently personal, so
+   the button reads as pressed-in (matches the dimmed `personal-tag`). */
+.icon-btn.personal-toggle.active {
+  background: var(--bg-sunk);
+  color: var(--fg);
+}
+
 /* duration editor */
 
 .duration-edit {

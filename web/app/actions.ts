@@ -5,6 +5,7 @@ import {
   assignTicket as daemonAssignTicket,
   setDuration as daemonSetDuration,
   setDescription as daemonSetDescription,
+  setPersonal as daemonSetPersonal,
   deleteBlock as daemonDeleteBlock,
   runInfer as daemonRunInfer,
   runEstimate as daemonRunEstimate,
@@ -87,6 +88,18 @@ export async function setDescription(
   day: string,
 ): Promise<ActionResult> {
   const r = await runAction(() => daemonSetDescription(blockId, description), `/${day}`);
+  return r.ok ? { ok: true, data: undefined } : r;
+}
+
+export async function setPersonal(
+  blockId: number,
+  isPersonal: boolean,
+  day: string,
+): Promise<ActionResult> {
+  const r = await runAction(
+    () => daemonSetPersonal(blockId, isPersonal),
+    `/${day}`,
+  );
   return r.ok ? { ok: true, data: undefined } : r;
 }
 

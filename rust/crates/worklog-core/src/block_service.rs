@@ -108,6 +108,23 @@ pub fn set_description(conn: &Connection, block_id: i64, description: &str) -> R
     repo::get_block(conn, block_id)?.ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))
 }
 
+/// Manually set a block's work/personal classification.
+///
+/// The path classifier infers `is_personal` from a block's dominant
+/// project path; this is the explicit user override — flagging a meeting
+/// or an off-the-clock spike as personal (or pulling a mis-classified
+/// block back into work) straight from the review UI. Personal blocks are
+/// dimmed in the UI, skipped by the estimator, and excluded from Tempo
+/// sync. Only the flag changes — the ticket, if any, is left untouched.
+pub fn set_personal(conn: &Connection, block_id: i64, is_personal: bool) -> Result<Block> {
+    conn.execute(
+        "UPDATE blocks SET is_personal = ?1 WHERE id = ?2",
+        params![is_personal as i64, block_id],
+    )
+    .context("set_personal")?;
+    repo::get_block(conn, block_id)?.ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))
+}
+
 pub fn delete_block(conn: &Connection, block_id: i64) -> Result<()> {
     let n = conn
         .execute("DELETE FROM blocks WHERE id = ?1", params![block_id])
@@ -449,6 +466,28 @@ mod tests {
     }
 
     #[test]
+    fn set_personal_toggles_the_flag() {
+        let conn = open_memory().unwrap();
+        let id = seed(&conn);
+        let got = set_personal(&conn, id, true).unwrap();
+        assert!(got.is_personal);
+        let got = set_personal(&conn, id, false).unwrap();
+        assert!(!got.is_personal);
+    }
+
+    #[test]
+    fn set_personal_leaves_the_ticket_untouched() {
+        // Marking a block personal is a pure classification change — it
+        // must not also clear an assigned ticket.
+        let conn = open_memory().unwrap();
+        let id = seed(&conn);
+        assign_ticket(&conn, id, Some("PROJ-1")).unwrap();
+        let got = set_personal(&conn, id, true).unwrap();
+        assert!(got.is_personal);
+        assert_eq!(got.jira_issue.as_deref(), Some("PROJ-1"));
+    }
+
+    #[test]
     fn delete_block_removes_row() {
         let conn = open_memory().unwrap();
         let id = seed(&conn);
@@ -462,6 +501,7 @@ mod tests {
         assert!(assign_ticket(&conn, 9999, Some("PROJ-1")).is_err());
         assert!(set_duration(&conn, 9999, 10).is_err());
         assert!(set_description(&conn, 9999, "x").is_err());
+        assert!(set_personal(&conn, 9999, true).is_err());
         assert!(delete_block(&conn, 9999).is_err());
     }
 

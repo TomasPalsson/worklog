@@ -122,6 +122,16 @@ export async function deleteBlock(blockId: number) {
   return call("POST", `/blocks/${blockId}/delete`);
 }
 
+/**
+ * Flag a block as personal (or, with `isPersonal: false`, pull it back
+ * into work). Personal blocks are dimmed, skipped by the estimator, and
+ * excluded from Tempo sync. Only the classification changes — the
+ * block's ticket, if any, is left as-is.
+ */
+export async function setPersonal(blockId: number, isPersonal: boolean) {
+  return call("POST", `/blocks/${blockId}/personal`, { is_personal: isPersonal });
+}
+
 export async function runInfer(day: string) {
   return call<{ day: string; blocks: number; minutes: number }>("POST", "/infer", {
     day,

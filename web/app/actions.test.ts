@@ -24,6 +24,7 @@ mock.module("@/lib/daemon", () => ({
   assignTicket: async () => ({}),
   setDuration: async () => ({}),
   setDescription: async () => ({}),
+  setPersonal: async () => ({}),
   deleteBlock: async () => ({}),
   runInfer: async () => ({ day: "x", blocks: 0, minutes: 0 }),
   runEstimate: async () => ({ day: "x", estimated: 0, skipped: 0, failed: 0 }),

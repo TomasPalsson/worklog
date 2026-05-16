@@ -1,10 +1,15 @@
 "use client";
 
 import { useRef, useState, useTransition } from "react";
-import { Check, Trash2 } from "lucide-react";
+import { Check, Coffee, Trash2 } from "lucide-react";
 import type { Block, JiraTicket } from "@/lib/types";
 import { formatDuration, formatRange } from "@/lib/format";
-import { deleteBlock, setDescription, setDuration } from "@/app/actions";
+import {
+  deleteBlock,
+  setDescription,
+  setDuration,
+  setPersonal,
+} from "@/app/actions";
 import { toast } from "@/lib/toast";
 import { SourceBadges } from "./SourceBadges";
 import { EstBadge } from "./EstBadge";
@@ -79,6 +84,24 @@ export function BlockCard({ block, tickets, day }: Props) {
       } else if (synced) {
         toast.ok(
           "Duration saved. Note: this block was already synced — re-sync to update Tempo.",
+        );
+      }
+    });
+  };
+
+  const onTogglePersonal = () => {
+    const next = !block.is_personal;
+    start(async () => {
+      const r = await setPersonal(block.id, next, day);
+      if (!r.ok) {
+        toast.error(
+          `${next ? "Mark personal" : "Mark as work"} failed — ${r.error}`,
+        );
+      } else if (next && synced) {
+        // A synced block keeps its Tempo entry — flipping it personal
+        // here only stops *future* syncs, it doesn't retract the past one.
+        toast.ok(
+          "Marked personal. Note: this block is already synced — its Tempo entry stays; delete the block to remove it.",
         );
       }
     });
@@ -193,6 +216,25 @@ export function BlockCard({ block, tickets, day }: Props) {
       </div>
 
       <div className="block-actions">
+        <button
+          type="button"
+          className={`icon-btn personal-toggle${block.is_personal ? " active" : ""}`}
+          title={
+            block.is_personal
+              ? "Personal — click to mark as work"
+              : "Mark as personal (skips estimate + Tempo sync)"
+          }
+          aria-label={
+            block.is_personal
+              ? `mark ${timeRangeLabel} block as work`
+              : `mark ${timeRangeLabel} block as personal`
+          }
+          aria-pressed={block.is_personal}
+          aria-busy={isPending || undefined}
+          onClick={onTogglePersonal}
+        >
+          <Coffee />
+        </button>
         <button
           type="button"
           className="icon-btn danger"

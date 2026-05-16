@@ -19,6 +19,7 @@
 //! * `POST /blocks/:id/duration`         — { "minutes": 45 }
 //! * `POST /blocks/:id/description`      — { "description": "text" }
 //! * `POST /blocks/:id/delete`           — no body
+//! * `POST /blocks/:id/personal`         — { "is_personal": true }
 //! * `POST /blocks/:id/split`            — { "first_minutes": 20 }
 //! * `POST /blocks/merge`                — { "primary": 1, "absorb": [2,3] }
 //! * `POST /blocks/auto-merge`           — { "day": "YYYY-MM-DD" }
@@ -84,6 +85,7 @@ pub fn router(state: Shared) -> Router {
         .route("/blocks/:id/duration", post(set_duration))
         .route("/blocks/:id/description", post(set_description))
         .route("/blocks/:id/delete", post(delete_block))
+        .route("/blocks/:id/personal", post(set_personal))
         .route("/blocks/:id/split", post(split_block))
         .route("/blocks/merge", post(merge_blocks))
         .route("/blocks/auto-merge", post(auto_merge))
@@ -555,6 +557,27 @@ async fn set_description(
     })
     .await?;
     info!(block_id = id, desc_len, "set description");
+    Ok(Json(block))
+}
+
+#[derive(Deserialize)]
+pub struct PersonalBody {
+    pub is_personal: bool,
+}
+
+/// Manually flag a block as personal (or pull it back into work). The
+/// review UI's per-block toggle. See [`block_service::set_personal`].
+async fn set_personal(
+    State(state): State<Shared>,
+    AxumPath(id): AxumPath<i64>,
+    Json(body): Json<PersonalBody>,
+) -> Result<Json<Block>, ApiError> {
+    let is_personal = body.is_personal;
+    let block = with_conn(state, move |c| {
+        block_service::set_personal(c, id, is_personal)
+    })
+    .await?;
+    info!(block_id = id, is_personal, "set personal");
     Ok(Json(block))
 }
 
@@ -1460,6 +1483,24 @@ mod tests {
             v["error"].as_str().unwrap().contains("same day"),
             "got: {v}"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn personal_endpoint_toggles_the_flag() {
+        let app = router(state_with_block());
+        let resp = app
+            .oneshot(
+                Request::post("/blocks/1/personal")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"is_personal":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["id"], 1);
+        assert_eq!(v["is_personal"], true);
     }
 
     #[tokio::test(flavor = "current_thread")]
