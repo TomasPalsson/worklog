@@ -99,6 +99,22 @@ pub fn install(command: &str) -> Result<HookStatus> {
         .or_insert_with(|| Value::Object(Map::new()));
     let hooks_obj = hooks.as_object_mut().context("`hooks` must be an object")?;
 
+    // Sweep worklog handlers out of EVERY hook key before re-adding them
+    // to the current EVENTS set. Older worklog versions registered extra
+    // events (notably PreToolUse / PostToolUse, which capture tool I/O —
+    // i.e. source code — into the events table). The per-event loop below
+    // only ever touches keys in EVENTS, so without this full sweep those
+    // stale handlers would linger forever and keep logging tool content.
+    let existing_keys: Vec<String> = hooks_obj.keys().cloned().collect();
+    for k in existing_keys {
+        if let Some(arr) = hooks_obj.get_mut(&k).and_then(Value::as_array_mut) {
+            arr.retain(|h| !is_worklog_handler(h));
+            if arr.is_empty() {
+                hooks_obj.remove(&k);
+            }
+        }
+    }
+
     for ev in EVENTS {
         let handlers = hooks_obj
             .entry((*ev).to_owned())
@@ -326,6 +342,50 @@ mod tests {
         let raw = std::fs::read_to_string(settings_path().unwrap()).unwrap();
         let root: Value = serde_json::from_str(&raw).unwrap();
         let hooks = root.get("hooks").unwrap().as_object().unwrap();
+        for ev in EVENTS {
+            assert_eq!(hooks.get(*ev).unwrap().as_array().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn install_sweeps_worklog_handlers_off_legacy_event_keys() {
+        // Regression: an older worklog registered PreToolUse / PostToolUse
+        // (which capture tool I/O — source code — into the events table).
+        // `install` only manages EVENTS, so those stale handlers used to
+        // linger forever. A fresh install must sweep them out.
+        let (_g, _t) = enter(tempdir().unwrap());
+        let settings = json!({
+            "hooks": {
+                "PreToolUse": [
+                    { "hooks": [{ "type": "command", "command": "worklog hook-run" }] }
+                ],
+                "PostToolUse": [
+                    { "hooks": [{ "type": "command", "command": "/x/worklog hook-run" }] },
+                    { "hooks": [{ "type": "command", "command": "other-tool" }] }
+                ]
+            }
+        });
+        std::fs::write(
+            settings_path().unwrap(),
+            serde_json::to_string_pretty(&settings).unwrap(),
+        )
+        .unwrap();
+
+        install("worklog hook-run").unwrap();
+
+        let raw = std::fs::read_to_string(settings_path().unwrap()).unwrap();
+        let root: Value = serde_json::from_str(&raw).unwrap();
+        let hooks = root.get("hooks").unwrap().as_object().unwrap();
+        // PreToolUse had only a worklog handler → key removed entirely.
+        assert!(
+            hooks.get("PreToolUse").is_none(),
+            "stale PreToolUse worklog handler must be swept"
+        );
+        // PostToolUse keeps the unrelated handler, loses the worklog one.
+        let post = hooks.get("PostToolUse").unwrap().as_array().unwrap();
+        assert_eq!(post.len(), 1, "only the non-worklog handler should remain");
+        assert!(!is_worklog_handler(&post[0]));
+        // …and the intended events are still installed.
         for ev in EVENTS {
             assert_eq!(hooks.get(*ev).unwrap().as_array().unwrap().len(), 1);
         }
