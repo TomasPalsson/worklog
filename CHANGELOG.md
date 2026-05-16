@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.11.0](https://github.com/TomasPalsson/worklog/compare/v0.10.0...v0.11.0) (2026-05-16)
+
+
+### Features
+
+* **cli:** UX overhaul phase 3 — auto-merge, status dashboard, Docker-free day ([1c45f27](https://github.com/TomasPalsson/worklog/commit/1c45f27a11a8d0e785bfdd82b7eabdb301fa9f02))
+* **cli:** UX overhaul phases 1-2 — block editing + day/week queries ([39a23e7](https://github.com/TomasPalsson/worklog/commit/39a23e78218f0e63b4ed014ffccce00a79f74cf2))
+* **cli:** worklog completions &lt;shell&gt; — shell completion scripts ([9f9ea23](https://github.com/TomasPalsson/worklog/commit/9f9ea2390c9cd8f287cbb9c7fd86c90a431d1f1f))
+* set a block personal/work from the review UI ([0503ea2](https://github.com/TomasPalsson/worklog/commit/0503ea2e885108fbc7f7b3a59540877656067cb2))
+* **skill:** bundled Claude Code skill for operating worklog ([641bd60](https://github.com/TomasPalsson/worklog/commit/641bd607596a41e29d54d94a1ef0a31c8058e891))
+
+
+### Bug Fixes
+
+* **estimate:** redact code from event content before it reaches claude -p ([5a155f6](https://github.com/TomasPalsson/worklog/commit/5a155f6b4b118cb9b5a2e7b177befac4b695b08a))
+* **hook:** add hook_run::SUPPRESS_ENV the estimator references ([9bd4a5e](https://github.com/TomasPalsson/worklog/commit/9bd4a5ec9ac05bafacaa0fe93eeb57d4101ba14e))
+* **hook:** stop storing code in the events database ([08c63e6](https://github.com/TomasPalsson/worklog/commit/08c63e6e4795f9c9799f7ed205da52d63ba2f2d8))
+* **hook:** sweep worklog handlers off legacy event keys on install ([5166045](https://github.com/TomasPalsson/worklog/commit/5166045d58b67311a3adaa54a0ba2753ce23fd36))
+* **infer:** stop fragmenting long Claude turns into dropped 2-min slivers ([#21](https://github.com/TomasPalsson/worklog/issues/21)) ([7ca11cc](https://github.com/TomasPalsson/worklog/commit/7ca11cc1094bf5c9453e5e01f6947115ebbd4178))
+* reject phantom tickets (CRIT-1) and stop double-billing overlaps ([20fdb68](https://github.com/TomasPalsson/worklog/commit/20fdb68849b6715453da152cc0c262e4f5db55a0))
+
 ## [0.10.0](https://github.com/TomasPalsson/worklog/compare/v0.9.0...v0.10.0) (2026-05-12)
 
 
