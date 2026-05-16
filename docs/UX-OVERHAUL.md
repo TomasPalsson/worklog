@@ -255,7 +255,27 @@ CLI, for exactly this reason.
   completion script, derived from the clap grammar so it stays correct
   as commands change.
 
-## Roadmap — Phase 4 (remaining)
+## Changelog — Phase 5 (correctness)
+
+Bug fixes for two issues that made the per-ticket hours wrong:
+
+- **Phantom tickets like `CRIT-1` are rejected.** The estimator accepted
+  any `KEY-N`-shaped token found in event text as a Jira ticket — so
+  severity tags (`CRIT-1`, `HIGH-2`), version strings (`UTF-8`, `GPT-4`,
+  `SHA-256`) all became tickets. `validate_ticket` now trusts a literal
+  only when its project prefix matches a real cached Jira project. A
+  genuine but un-cached ticket (closed / freshly filed) still passes;
+  invented prefixes never do.
+- **Overlapping blocks no longer double-bill.** Blocks can overlap in
+  wall-clock time (project-aware splitting puts concurrent work on two
+  blocks; the estimator sets durations independently of `ended_at`). All
+  time figures in `summary` / `week` / `day` / `status` are now the
+  **union** of the underlying intervals — overlap counted once — so the
+  hours reported are real hours. `summary` and `week` report how much
+  overlap was de-duplicated; `worklog block list` names the overlapping
+  block pairs so they can be merged / split / deleted.
+
+## Roadmap — Phase 6 (remaining)
 
 These are the remaining `[later]` user stories — none are blocking:
 
@@ -267,3 +287,5 @@ These are the remaining `[later]` user stories — none are blocking:
 - `worklog ask "…"` — natural-language queries (US-5).
 - `worklog undo` — an edit journal so a fat-fingered delete/merge/split
   is recoverable.
+- auto-resolve overlaps — proportionally clip overlapping blocks so the
+  data sent to Tempo (not just the display) is non-overlapping.

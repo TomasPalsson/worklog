@@ -1670,13 +1670,42 @@ fn cmd_block_list<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Res
         ]);
     }
     writeln!(out, "{t}")?;
+    // Decode to typed blocks for the union total + overlap check.
+    let decoded: Vec<worklog_core::models::Block> =
+        serde_json::from_value(summary["blocks"].clone()).unwrap_or_default();
+    let agg = aggregate_day(&day, &decoded);
     writeln!(
         out,
-        "{} {} · {}",
-        day,
-        human_dur(summary["total_seconds"].as_i64().unwrap_or(0)),
-        format_args!("{} {}", blocks.len(), plural(blocks.len() as i64)),
+        "{day} · {} across {} {}",
+        human_dur(agg.total_secs),
+        blocks.len(),
+        plural(blocks.len() as i64),
     )?;
+    let overlaps = overlapping_pairs(&decoded);
+    if !overlaps.is_empty() {
+        // Cap the list — a fragmented day can produce a long chain of
+        // pairs, and a wall of ids helps no one.
+        let shown: Vec<String> = overlaps
+            .iter()
+            .take(6)
+            .map(|(a, b)| format!("{a}↔{b}"))
+            .collect();
+        let more = overlaps.len().saturating_sub(shown.len());
+        let tail = if more > 0 {
+            format!(" +{more} more")
+        } else {
+            String::new()
+        };
+        style::warn(
+            out,
+            &format!(
+                "{} overlapping {}: {}{tail} — merge, split or delete to deconflict",
+                overlaps.len(),
+                if overlaps.len() == 1 { "pair" } else { "pairs" },
+                shown.join(", "),
+            ),
+        )?;
+    }
     Ok(())
 }
 
@@ -1880,7 +1909,7 @@ fn cmd_block_split<W: Write>(id: i64, first_minutes: u32, out: &mut W, json: boo
     Ok(())
 }
 
-/// One ticket's slice of a day: total time, block count, and the
+/// One ticket's slice of a day: wall-clock time, block count, and the
 /// distinct descriptions across those blocks.
 struct TicketRow {
     ticket: String,
@@ -1893,12 +1922,19 @@ struct TicketRow {
 /// `worklog summary`, the tail of `worklog day`, and each row of
 /// `worklog week`. Computed once by [`aggregate_day`] so all three
 /// surfaces agree.
+///
+/// Every time figure is the length of the *union* of the underlying
+/// blocks' wall-clock intervals: overlapping blocks are counted once, so
+/// the hours reported are real hours, never a sum that double-bills
+/// concurrent work. `overlap_secs` records how much double-counting the
+/// union removed (raw block-duration sum minus the union length).
 struct DayAgg {
     day: String,
     total_secs: i64,
     work_secs: i64,
     personal_secs: i64,
     unassigned_secs: i64,
+    overlap_secs: i64,
     block_count: i64,
     dirty: i64,
     gap: i64,
@@ -1908,19 +1944,84 @@ struct DayAgg {
     tickets: Vec<TicketRow>,
 }
 
+/// A block's wall-clock interval as epoch seconds: `[start, start +
+/// duration)`. Duration — not `ended_at` — sets the end, because the
+/// estimator writes `duration_seconds` independently of `ended_at`, so
+/// duration is the canonical "logged time".
+fn block_interval(b: &worklog_core::models::Block) -> (i64, i64) {
+    let start = chrono::DateTime::parse_from_rfc3339(&b.started_at)
+        .map(|d| d.timestamp())
+        .unwrap_or(0);
+    (start, start + b.duration_seconds.max(0))
+}
+
+/// Total length of the union of `[start, end)` intervals (epoch
+/// seconds) — stretches covered by more than one interval count once.
+fn union_seconds(mut intervals: Vec<(i64, i64)>) -> i64 {
+    intervals.sort_by_key(|&(s, _)| s);
+    let mut total = 0;
+    let mut cur: Option<(i64, i64)> = None;
+    for (s, e) in intervals {
+        match cur {
+            Some((cs, ce)) if s <= ce => cur = Some((cs, ce.max(e))),
+            Some((cs, ce)) => {
+                total += ce - cs;
+                cur = Some((s, e));
+            }
+            None => cur = Some((s, e)),
+        }
+    }
+    if let Some((cs, ce)) = cur {
+        total += ce - cs;
+    }
+    total
+}
+
+/// Pairs of block ids whose wall-clock intervals overlap. Used to flag
+/// double-booked time the user should merge / split / delete.
+fn overlapping_pairs(blocks: &[worklog_core::models::Block]) -> Vec<(i64, i64)> {
+    let mut ivs: Vec<(i64, i64, i64)> = blocks
+        .iter()
+        .map(|b| {
+            let (s, e) = block_interval(b);
+            (s, e, b.id)
+        })
+        .collect();
+    ivs.sort_by_key(|&(s, _, _)| s);
+    let mut pairs = Vec::new();
+    for (i, &(_, ei, id_i)) in ivs.iter().enumerate() {
+        for &(sj, _, id_j) in &ivs[i + 1..] {
+            if sj >= ei {
+                break; // sorted by start — nothing later can reach back
+            }
+            pairs.push((id_i.min(id_j), id_i.max(id_j)));
+        }
+    }
+    pairs
+}
+
+/// Per-ticket accumulator while folding a day: (wall-clock intervals,
+/// block count, distinct descriptions).
+type TicketAcc = (Vec<(i64, i64)>, i64, Vec<String>);
+
 /// Roll a day's `Block` rows into a [`DayAgg`]. Pure — no IO — so it is
 /// equally happy with blocks read straight from SQLite (`worklog day`)
 /// or decoded from the daemon's `/days/:day` response (`summary`/`week`).
 fn aggregate_day(day: &str, blocks: &[worklog_core::models::Block]) -> DayAgg {
     use std::collections::BTreeMap;
-    // (secs, block count, distinct descriptions) keyed by ticket.
-    let mut tickets: BTreeMap<String, (i64, i64, Vec<String>)> = BTreeMap::new();
-    let (mut personal_secs, mut personal_n) = (0_i64, 0_i64);
-    let (mut unassigned_secs, mut unassigned_n) = (0_i64, 0_i64);
+    // intervals + block count + distinct descriptions, keyed by ticket.
+    let mut tickets: BTreeMap<String, TicketAcc> = BTreeMap::new();
+    let mut personal_iv: Vec<(i64, i64)> = Vec::new();
+    let mut unassigned_iv: Vec<(i64, i64)> = Vec::new();
+    let mut work_iv: Vec<(i64, i64)> = Vec::new();
+    let mut all_iv: Vec<(i64, i64)> = Vec::new();
+    let (mut personal_n, mut unassigned_n) = (0_i64, 0_i64);
     let (mut dirty, mut gap) = (0_i64, 0_i64);
-    let mut total = 0_i64;
+    let mut raw_sum = 0_i64;
     for b in blocks {
-        total += b.duration_seconds;
+        let iv = block_interval(b);
+        all_iv.push(iv);
+        raw_sum += b.duration_seconds.max(0);
         if b.dirty {
             dirty += 1;
         }
@@ -1928,14 +2029,17 @@ fn aggregate_day(day: &str, blocks: &[worklog_core::models::Block]) -> DayAgg {
             gap += 1;
         }
         if b.is_personal {
-            personal_secs += b.duration_seconds;
+            personal_iv.push(iv);
             personal_n += 1;
             continue;
         }
+        work_iv.push(iv);
         match b.jira_issue.as_deref().filter(|s| !s.is_empty()) {
             Some(t) => {
-                let e = tickets.entry(t.to_owned()).or_insert((0, 0, Vec::new()));
-                e.0 += b.duration_seconds;
+                let e = tickets
+                    .entry(t.to_owned())
+                    .or_insert((Vec::new(), 0, Vec::new()));
+                e.0.push(iv);
                 e.1 += 1;
                 if let Some(d) = b
                     .description
@@ -1949,27 +2053,29 @@ fn aggregate_day(day: &str, blocks: &[worklog_core::models::Block]) -> DayAgg {
                 }
             }
             None => {
-                unassigned_secs += b.duration_seconds;
+                unassigned_iv.push(iv);
                 unassigned_n += 1;
             }
         }
     }
     let mut rows: Vec<TicketRow> = tickets
         .into_iter()
-        .map(|(ticket, (secs, blocks, descriptions))| TicketRow {
+        .map(|(ticket, (ivs, blocks, descriptions))| TicketRow {
             ticket,
-            secs,
+            secs: union_seconds(ivs),
             blocks,
             descriptions,
         })
         .collect();
     rows.sort_by_key(|r| -r.secs);
+    let total_secs = union_seconds(all_iv);
     DayAgg {
         day: day.to_owned(),
-        total_secs: total,
-        work_secs: total - personal_secs,
-        personal_secs,
-        unassigned_secs,
+        total_secs,
+        work_secs: union_seconds(work_iv),
+        personal_secs: union_seconds(personal_iv),
+        unassigned_secs: union_seconds(unassigned_iv),
+        overlap_secs: (raw_sum - total_secs).max(0),
         block_count: blocks.len() as i64,
         dirty,
         gap,
@@ -2089,6 +2195,18 @@ fn print_day_hints<W: Write>(out: &mut W, agg: &DayAgg) -> Result<()> {
             ),
         )?;
     }
+    // Only flag overlaps worth acting on — sub-minute slivers are noise.
+    if agg.overlap_secs >= 60 {
+        style::warn(
+            out,
+            &format!(
+                "blocks overlap by {} — times above already count it once; \
+                 `worklog block list --day {}` shows which to merge/split",
+                human_dur(agg.overlap_secs),
+                agg.day,
+            ),
+        )?;
+    }
     Ok(())
 }
 
@@ -2100,6 +2218,7 @@ fn day_agg_json(agg: &DayAgg) -> serde_json::Value {
         "work_seconds": agg.work_secs,
         "personal_seconds": agg.personal_secs,
         "unassigned_seconds": agg.unassigned_secs,
+        "overlap_seconds": agg.overlap_secs,
         "blocks": agg.block_count,
         "dirty": agg.dirty,
         "gap": agg.gap,
@@ -2155,6 +2274,7 @@ fn cmd_week<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()
     let personal: i64 = days.iter().map(|d| d.personal_secs).sum();
     let dirty: i64 = days.iter().map(|d| d.dirty).sum();
     let unassigned: i64 = days.iter().map(|d| d.unassigned_n).sum();
+    let overlap: i64 = days.iter().map(|d| d.overlap_secs).sum();
 
     if json {
         writeln!(
@@ -2166,6 +2286,7 @@ fn cmd_week<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()
                 "total_seconds": total,
                 "work_seconds": work,
                 "personal_seconds": personal,
+                "overlap_seconds": overlap,
                 "dirty": dirty,
                 "unassigned": unassigned,
                 "days": days.iter().map(day_agg_json).collect::<Vec<_>>(),
@@ -2234,6 +2355,15 @@ fn cmd_week<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()
             &format!(
                 "{unassigned} {} still need a ticket — `worklog block list`",
                 plural(unassigned)
+            ),
+        )?;
+    }
+    if overlap >= 60 {
+        style::warn(
+            out,
+            &format!(
+                "{} of overlapping blocks this week (already de-duplicated above)",
+                human_dur(overlap),
             ),
         )?;
     }
@@ -3452,4 +3582,75 @@ fn cmd_dev_apply_patch<W: Write>(
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use worklog_core::models::Block;
+
+    /// A minimal work block — only the fields `aggregate_day` /
+    /// `overlapping_pairs` read are meaningful.
+    fn block(id: i64, start: &str, dur_secs: i64, ticket: Option<&str>) -> Block {
+        Block {
+            id,
+            day: "2026-05-16".into(),
+            jira_issue: ticket.map(str::to_owned),
+            started_at: start.into(),
+            ended_at: start.into(),
+            duration_seconds: dur_secs,
+            description: None,
+            estimated_by: Some("claude_p".into()),
+            flagged: false,
+            tempo_worklog_id: None,
+            is_personal: false,
+            dirty: false,
+        }
+    }
+
+    #[test]
+    fn union_seconds_counts_overlap_once() {
+        assert_eq!(union_seconds(vec![(0, 100), (200, 300)]), 200); // disjoint
+        assert_eq!(union_seconds(vec![(0, 100), (50, 150)]), 150); // overlapping
+        assert_eq!(union_seconds(vec![(0, 100), (0, 100)]), 100); // identical
+        assert_eq!(union_seconds(vec![(0, 300), (100, 200)]), 300); // nested
+        assert_eq!(union_seconds(vec![(0, 100), (100, 200)]), 200); // touching
+        assert_eq!(union_seconds(vec![]), 0);
+    }
+
+    #[test]
+    fn overlapping_pairs_finds_double_booked_blocks() {
+        let blocks = vec![
+            block(1, "2026-05-16T09:00:00+00:00", 3600, None), // 09:00–10:00
+            block(2, "2026-05-16T09:30:00+00:00", 3600, None), // 09:30–10:30, overlaps 1
+            block(3, "2026-05-16T11:00:00+00:00", 600, None),  // 11:00–11:10, clear
+        ];
+        assert_eq!(overlapping_pairs(&blocks), vec![(1, 2)]);
+    }
+
+    #[test]
+    fn aggregate_day_reports_union_not_sum_for_overlaps() {
+        // Two 1h blocks on the same ticket overlapping by 30m: a naive
+        // sum says 2h, the honest union says 1h30m.
+        let blocks = vec![
+            block(1, "2026-05-16T09:00:00+00:00", 3600, Some("GOJ-1")),
+            block(2, "2026-05-16T09:30:00+00:00", 3600, Some("GOJ-1")),
+        ];
+        let agg = aggregate_day("2026-05-16", &blocks);
+        assert_eq!(agg.tickets.len(), 1);
+        assert_eq!(agg.tickets[0].secs, 5400, "union of the two intervals");
+        assert_eq!(agg.total_secs, 5400);
+        assert_eq!(agg.overlap_secs, 1800, "30m was double-booked");
+    }
+
+    #[test]
+    fn aggregate_day_no_overlap_when_blocks_are_sequential() {
+        let blocks = vec![
+            block(1, "2026-05-16T09:00:00+00:00", 3600, Some("GOJ-1")),
+            block(2, "2026-05-16T10:00:00+00:00", 1800, Some("GOJ-2")),
+        ];
+        let agg = aggregate_day("2026-05-16", &blocks);
+        assert_eq!(agg.overlap_secs, 0);
+        assert_eq!(agg.total_secs, 5400);
+    }
 }

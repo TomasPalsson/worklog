@@ -206,6 +206,12 @@ impl ModelInvoker for ClaudeSubprocess {
             "--system-prompt",
             system,
         ]);
+        // The spawned `claude -p` inherits this process's Claude Code hook
+        // config, so it would re-fire worklog's own hook and log this
+        // estimation prompt back into `events` as fake activity — which
+        // then clusters into phantom blocks. `hook_run::run_from_stdin`
+        // honours this env var by dropping the event entirely.
+        cmd.env(crate::hook_run::SUPPRESS_ENV, "1");
         let mut child = cmd
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -890,16 +896,38 @@ fn round_up_minutes(m: i64) -> i64 {
     ROUND_MINUTES * ((m + ROUND_MINUTES - 1) / ROUND_MINUTES)
 }
 
+/// The project prefix of a Jira key — `GOJ-1310` → `GOJ`. `None` when
+/// the string has no `-` (so it can't be a Jira key at all).
+fn ticket_prefix(key: &str) -> Option<&str> {
+    key.split_once('-').map(|(p, _)| p)
+}
+
 fn validate_ticket(
     claimed: Option<&str>,
     candidates: &[Candidate],
     literals: &[String],
 ) -> Option<String> {
     let claimed = claimed?;
+    // An exact match against a cached open ticket is always trusted.
     if candidates.iter().any(|c| c.key == claimed) {
         return Some(claimed.to_owned());
     }
-    if literals.iter().any(|l| l == claimed) {
+    // Literal fallback. The model echoed a `KEY-N` token that genuinely
+    // appeared in the block's events — but that alone is far too weak:
+    // ordinary text is full of `KEY-N`-shaped noise (`UTF-8`, `GPT-4`,
+    // `SHA-256`, `ISO-8601`, severity tags like `CRIT-1` / `HIGH-2`).
+    // Accepting those produced phantom tickets like `CRIT-1`.
+    //
+    // So only trust a literal when its project prefix matches a real
+    // Jira project we have cached. A genuine but un-cached ticket
+    // (closed, or filed after the last `collect jira`) still passes
+    // because its project is known; an invented prefix never does.
+    let claimed_prefix = ticket_prefix(claimed)?;
+    let prefix_is_real = candidates
+        .iter()
+        .filter_map(|c| ticket_prefix(&c.key))
+        .any(|p| p == claimed_prefix);
+    if prefix_is_real && literals.iter().any(|l| l == claimed) {
         return Some(claimed.to_owned());
     }
     None
@@ -1296,14 +1324,16 @@ mod tests {
             summary: "x".into(),
             status: None,
         }];
-        let literals = vec!["OTHER-2".to_string()];
+        // An un-cached ticket under the SAME real project, present as a
+        // literal in the events, is accepted (closed / freshly filed).
+        let literals = vec!["PROJ-2".to_string()];
         assert_eq!(
             validate_ticket(Some("PROJ-1"), &candidates, &literals).as_deref(),
             Some("PROJ-1")
         );
         assert_eq!(
-            validate_ticket(Some("OTHER-2"), &candidates, &literals).as_deref(),
-            Some("OTHER-2")
+            validate_ticket(Some("PROJ-2"), &candidates, &literals).as_deref(),
+            Some("PROJ-2")
         );
         // Hallucinated key — must be rejected.
         assert_eq!(
@@ -1311,6 +1341,33 @@ mod tests {
             None
         );
         assert_eq!(validate_ticket(None, &candidates, &literals), None);
+    }
+
+    #[test]
+    fn validate_ticket_rejects_noise_literals_with_unknown_prefixes() {
+        // Regression: `KEY-N`-shaped noise in event text used to be
+        // accepted as a ticket because it matched the literal regex.
+        // Severity tags, version strings, etc. must NOT become tickets
+        // even when the model echoes them and they appear as literals.
+        let candidates = vec![Candidate {
+            key: "GOJ-1310".into(),
+            summary: "real work".into(),
+            status: None,
+        }];
+        for noise in ["CRIT-1", "UTF-8", "GPT-4", "SHA-256", "HIGH-2"] {
+            let literals = vec![noise.to_string()];
+            assert_eq!(
+                validate_ticket(Some(noise), &candidates, &literals),
+                None,
+                "{noise} has no real project prefix — must be rejected"
+            );
+        }
+        // …but a real un-cached ticket under the GOJ project still passes.
+        let literals = vec!["GOJ-9001".to_string()];
+        assert_eq!(
+            validate_ticket(Some("GOJ-9001"), &candidates, &literals).as_deref(),
+            Some("GOJ-9001"),
+        );
     }
 
     #[test]
