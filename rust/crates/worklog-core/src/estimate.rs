@@ -868,11 +868,19 @@ fn build_user_message(
         "literal_matches":        literals,
         "events":                 events.iter().map(|e| {
             let cap = event_details_cap(&e.source);
+            // Sanitise BEFORE truncating: the estimator must see work
+            // intent, never source code (see `redact_code`).
+            let summary = redact_code(e.title.as_deref().unwrap_or(""));
+            let details = e
+                .details
+                .as_deref()
+                .map(redact_code)
+                .filter(|d| !d.is_empty());
             json!({
                 "type":       e.source,
                 "timestamp":  e.started_at,
-                "summary":    trunc(e.title.as_deref().unwrap_or(""), 200),
-                "details":    e.details.as_deref().map(|d| trunc(d, cap)),
+                "summary":    trunc(&summary, 200),
+                "details":    details.as_deref().map(|d| trunc(d, cap)),
                 "jira_issue": e.jira_issue,
                 "project":    e.project_path.as_deref().map(project_name),
             })
@@ -883,6 +891,70 @@ fn build_user_message(
 
 fn trunc(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
+}
+
+/// Strip source code and file-path leakage out of an event field before
+/// it is handed to the estimator LLM (`claude -p` / LiteLLM). The
+/// estimator only ever needs *work intent* — what was worked on — never
+/// the code itself. Three known carriers of code reach `details`:
+///
+///  1. `<task-notification>` blocks — Claude Code injects these as
+///     `UserPromptSubmit` prompts when a background agent finishes; the
+///     `<result>` element holds whatever that agent produced (diffs,
+///     review findings, full functions). We keep only the `<summary>`.
+///  2. fenced code blocks pasted into a prompt — replaced with a marker.
+///  3. a bare transcript path (`…/<uuid>.jsonl`) — handing the LLM a
+///     path to the entire session transcript is itself an exposure, so
+///     it is dropped.
+///
+/// Idempotent and cheap; safe to call on every field of every event.
+fn redact_code(raw: &str) -> String {
+    let t = raw.trim();
+    if t.is_empty() {
+        return String::new();
+    }
+    // (3) bare transcript path — no spaces, ends in `.jsonl`.
+    if t.ends_with(".jsonl") && !t.contains(char::is_whitespace) {
+        return String::new();
+    }
+    // (1) task-notification — collapse to its one-line summary.
+    if t.contains("<task-notification>") {
+        return match extract_xml_tag(t, "summary") {
+            Some(s) => format!("background task: {}", s.trim()),
+            None => "background task completed".to_string(),
+        };
+    }
+    // (2) fenced code blocks — ``` … ``` → placeholder.
+    strip_code_fences(raw)
+}
+
+/// Inner text of the first `<tag>…</tag>` in `s`, if present.
+fn extract_xml_tag<'a>(s: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = s.find(&open)? + open.len();
+    let rest = &s[start..];
+    let end = rest.find(&close)?;
+    Some(&rest[..end])
+}
+
+/// Replace every triple-backtick fenced block with `[code omitted]`. An
+/// unterminated fence (truncated prompt) redacts to end-of-string so a
+/// half-captured block never leaks.
+fn strip_code_fences(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(open) = rest.find("```") {
+        out.push_str(&rest[..open]);
+        out.push_str("[code omitted]");
+        let after = &rest[open + 3..];
+        match after.find("```") {
+            Some(close) => rest = &after[close + 3..],
+            None => return out, // unterminated — drop the remainder
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn fallback_block_minutes(block: &BlockRow) -> i64 {
@@ -1368,6 +1440,63 @@ mod tests {
             validate_ticket(Some("GOJ-9001"), &candidates, &literals).as_deref(),
             Some("GOJ-9001"),
         );
+    }
+
+    // ───────────── estimator code-leak redaction ─────────────
+
+    #[test]
+    fn redact_code_leaves_plain_prose_untouched() {
+        let prose = "Fix the OAuth token refresh in the auth module";
+        assert_eq!(redact_code(prose), prose);
+    }
+
+    #[test]
+    fn redact_code_collapses_task_notifications_to_their_summary() {
+        // Claude Code injects these as prompts when a background agent
+        // finishes; the <result> holds code we must not forward.
+        let notif = "<task-notification><task-id>abc</task-id>\
+             <summary>Agent \"PR #39 security review\" completed</summary>\
+             <result>{\"file\": \"handler.py\", \"line\": 50, \
+             \"code\": \"def handler(event): return secret\"}</result>\
+             </task-notification>";
+        let got = redact_code(notif);
+        assert_eq!(
+            got,
+            "background task: Agent \"PR #39 security review\" completed"
+        );
+        assert!(!got.contains("def handler"), "result code must be gone");
+        assert!(!got.contains("handler.py"), "result paths must be gone");
+    }
+
+    #[test]
+    fn redact_code_strips_fenced_code_blocks() {
+        let pasted = "look at this bug:\n```rust\nfn leak() { dbg!(secret); }\n```\nwhy?";
+        let got = redact_code(pasted);
+        assert!(got.contains("look at this bug"));
+        assert!(got.contains("why?"));
+        assert!(got.contains("[code omitted]"));
+        assert!(!got.contains("secret"), "fenced code must not survive");
+    }
+
+    #[test]
+    fn redact_code_drops_an_unterminated_fence_entirely() {
+        // A truncated prompt can leave a half-captured code block — the
+        // remainder after an unclosed fence is dropped, not forwarded.
+        let got = redact_code("debugging:\n```python\nAPI_KEY = 'sk-live-xyz'");
+        assert!(got.contains("debugging"));
+        assert!(
+            !got.contains("sk-live-xyz"),
+            "unterminated fence must be dropped"
+        );
+    }
+
+    #[test]
+    fn redact_code_drops_bare_transcript_paths() {
+        let path = "/Users/x/.claude/projects/-Users-x-proj/abc-123.jsonl";
+        assert_eq!(redact_code(path), "");
+        // …but a sentence that merely mentions a .jsonl file is kept.
+        let prose = "wrote results to output.jsonl for the report";
+        assert_eq!(redact_code(prose), prose);
     }
 
     #[test]
