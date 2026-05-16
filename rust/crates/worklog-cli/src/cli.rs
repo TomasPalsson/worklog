@@ -41,9 +41,10 @@ fn clap_styles() -> clap::builder::Styles {
 /// would need lifetime gymnastics in the derive attribute.
 const HELP_OVERVIEW: &str = "\x1b[1;36m\
 commands by area\x1b[0m
-  setup & diagnostics  \x1b[32msetup  doctor  db  secret  version\x1b[0m
+  daily workflow       \x1b[32mday  summary  week  block  sync\x1b[0m
   data collection      \x1b[32mcollect  infer  estimate  hook\x1b[0m
-  review & sync        \x1b[32mday  sync  web  serve\x1b[0m
+  review UI            \x1b[32mweb  serve\x1b[0m
+  setup & diagnostics  \x1b[32msetup  doctor  db  secret  version\x1b[0m
   daemon & schedule    \x1b[32mdaemon  schedule\x1b[0m
   release ops          \x1b[32mself-update  upgrade  dev\x1b[0m
 ";
@@ -198,6 +199,33 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
         /// Model id passed to `claude -p` during estimation.
         #[arg(long, default_value = estimate::DEFAULT_MODEL)]
         model: String,
+    },
+
+    /// Quick text summary of a day — total hours and a per-ticket
+    /// breakdown, printed straight to the terminal. The fast answer to
+    /// "how many hours did I work today, and on what?" without opening
+    /// the web UI. Alias: `today`.
+    #[command(alias = "today")]
+    Summary {
+        /// YYYY-MM-DD; default today (local TZ).
+        #[arg(long)]
+        day: Option<String>,
+    },
+
+    /// Roll the per-ticket breakdown across the 7 days ending on `--day`
+    /// (default: today) — the Friday-timesheet sanity check.
+    Week {
+        /// YYYY-MM-DD end of the window; default today (local TZ).
+        #[arg(long)]
+        day: Option<String>,
+    },
+
+    /// Inspect and edit individual time blocks — list, assign a ticket,
+    /// fix a duration, set a description, delete, or merge. Talks to the
+    /// daemon over HTTP, so no hand-written `curl` is ever needed.
+    Block {
+        #[command(subcommand)]
+        sub: BlockCmd,
     },
 
     /// Personal/work classification — manage the auto-classifier and
@@ -497,6 +525,73 @@ pub enum TagCmd {
     },
 }
 
+#[derive(Subcommand, Debug)]
+pub enum BlockCmd {
+    /// List a day's blocks with their ids, time ranges, durations,
+    /// tickets and sync state. Use the `#` column with the other
+    /// `worklog block` subcommands.
+    List {
+        /// YYYY-MM-DD; default today (local TZ).
+        #[arg(long)]
+        day: Option<String>,
+    },
+    /// Assign a Jira ticket to a block (or clear it with `--clear`).
+    /// Assigning a ticket also flips the block from personal to work.
+    Assign {
+        /// Block id (the `#` column from `worklog block list`).
+        id: i64,
+        /// Jira ticket key, e.g. GOJ-1310. Omit together with `--clear`.
+        ticket: Option<String>,
+        /// Clear the ticket instead of assigning one.
+        #[arg(long)]
+        clear: bool,
+    },
+    /// Set a block's duration in minutes. Marks the block as manually
+    /// edited so re-estimation won't clobber it.
+    Duration {
+        /// Block id.
+        id: i64,
+        /// New duration in whole minutes.
+        minutes: u32,
+    },
+    /// Set a block's description. Marks the block as manually edited.
+    Describe {
+        /// Block id.
+        id: i64,
+        /// Description text — quote it, or pass bare words.
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+    },
+    /// Delete a block. If it was synced, its Tempo entry is removed too.
+    Delete {
+        /// Block id.
+        id: i64,
+        /// Skip the confirmation prompt.
+        #[arg(short, long)]
+        yes: bool,
+    },
+    /// Merge two or more blocks into the first one. The first id is the
+    /// primary — it keeps its ticket and description; the rest hand over
+    /// their events and logged time, then are deleted.
+    Merge {
+        /// Block ids — the first is the primary, the rest are absorbed.
+        #[arg(required = true, num_args = 2..)]
+        ids: Vec<i64>,
+        /// Skip the confirmation prompt.
+        #[arg(short, long)]
+        yes: bool,
+    },
+    /// Split a block in two. The original keeps `<first-minutes>` of
+    /// logged time; the remainder becomes a new tail block. Events
+    /// re-bucket by their own timestamp. The inverse of `merge`.
+    Split {
+        /// Block id.
+        id: i64,
+        /// Minutes the original block keeps; the rest forms the new block.
+        first_minutes: u32,
+    },
+}
+
 pub fn run() -> Result<()> {
     run_with(
         std::env::args_os().collect::<Vec<_>>(),
@@ -603,6 +698,23 @@ pub fn run_with<W: Write>(
             no_serve,
             model,
         } => cmd_day(day, no_serve, &model, out, cli.json),
+        Cmd::Summary { day } => cmd_summary(day, out, cli.json),
+        Cmd::Week { day } => cmd_week(day, out, cli.json),
+        Cmd::Block { sub } => match sub {
+            BlockCmd::List { day } => cmd_block_list(day, out, cli.json),
+            BlockCmd::Assign { id, ticket, clear } => {
+                cmd_block_assign(id, ticket, clear, out, cli.json)
+            }
+            BlockCmd::Duration { id, minutes } => cmd_block_duration(id, minutes, out, cli.json),
+            BlockCmd::Describe { id, text } => {
+                cmd_block_describe(id, text.join(" "), out, cli.json)
+            }
+            BlockCmd::Delete { id, yes } => cmd_block_delete(id, yes, out, cli.json),
+            BlockCmd::Merge { ids, yes } => cmd_block_merge(ids, yes, out, cli.json),
+            BlockCmd::Split { id, first_minutes } => {
+                cmd_block_split(id, first_minutes, out, cli.json)
+            }
+        },
         Cmd::Tag { sub } => match sub {
             TagCmd::List => cmd_tag_list(out, cli.json),
             TagCmd::Personal { glob } => cmd_tag_personal(glob, out, cli.json),
@@ -1357,6 +1469,686 @@ fn parse_day(s: Option<&str>) -> Result<chrono::NaiveDate> {
     }
 }
 
+/// Resolve a `--day` argument, defaulting to *today in the user's local
+/// timezone* (`$WORKLOG_TZ`) — the bucket blocks actually land in. The
+/// query commands use this so "today" means the user's today, not UTC's.
+fn parse_local_day(s: Option<&str>) -> Result<chrono::NaiveDate> {
+    match s {
+        None => Ok(worklog_core::tz::local_date(chrono::Utc::now())),
+        Some(s) => chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+            .map_err(|e| anyhow::anyhow!("invalid --day '{s}': {e}")),
+    }
+}
+
+// ───────────────────── worklog summary / block ──────────────────────
+//
+// These talk to the daemon over HTTP via `daemon_client`. Before this
+// existed, every block edit meant a hand-written `curl 127.0.0.1:9323`.
+
+/// `HH:MM` in the user's local TZ from an RFC3339 UTC timestamp. Falls
+/// back to the raw string if it somehow doesn't parse.
+fn local_hhmm(rfc3339: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(rfc3339)
+        .map(|dt| {
+            dt.with_timezone(&worklog_core::tz::day_offset())
+                .format("%H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|_| rfc3339.to_string())
+}
+
+/// Trim a string to `max` characters, appending `…` when cut. Keeps the
+/// `block list` / `summary` tables scannable when descriptions run long.
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_owned();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+/// Render a duration in seconds as `Nh MMm` (or `Nm` under an hour).
+fn human_dur(secs: i64) -> String {
+    let mins = (secs.max(0) + 30) / 60;
+    if mins >= 60 {
+        format!("{}h {:02}m", mins / 60, mins % 60)
+    } else {
+        format!("{mins}m")
+    }
+}
+
+/// `"block"` / `"blocks"` for a count.
+fn plural(n: i64) -> &'static str {
+    if n == 1 {
+        "block"
+    } else {
+        "blocks"
+    }
+}
+
+/// Short lifecycle label for a block JSON object — mirrors the state
+/// machine in the worklog skill (unassigned → ready → synced, plus the
+/// `dirty`, `personal` and `gap` side-states).
+fn block_state(b: &serde_json::Value) -> &'static str {
+    if b["is_personal"].as_bool().unwrap_or(false) {
+        return "personal";
+    }
+    let synced = b["tempo_worklog_id"]
+        .as_str()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    if b["dirty"].as_bool().unwrap_or(false) {
+        return if synced { "dirty" } else { "edited" };
+    }
+    if synced {
+        return "synced";
+    }
+    if b["estimated_by"].as_str() == Some("gap") {
+        return "gap";
+    }
+    if b["jira_issue"].as_str().map(str::is_empty).unwrap_or(true) {
+        return "unassigned";
+    }
+    "ready"
+}
+
+/// Yes/no prompt on stderr. In a non-interactive shell it refuses rather
+/// than silently assuming "yes" — destructive `worklog block` commands
+/// take an explicit `--yes` for scripts.
+fn confirm(prompt: &str) -> Result<bool> {
+    if !io::stdin().is_terminal() {
+        anyhow::bail!("{prompt}\n  refusing in a non-interactive shell — pass --yes to proceed");
+    }
+    let mut err = io::stderr();
+    write!(err, "{prompt} [y/N] ")?;
+    err.flush()?;
+    let mut line = String::new();
+    io::stdin().read_line(&mut line)?;
+    Ok(matches!(
+        line.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
+}
+
+/// Emit a block-write result: the raw JSON under `--json`, otherwise a
+/// styled confirmation plus the "now dirty, re-sync" nudge when the edit
+/// touched an already-synced block.
+fn report_block_write<W: Write>(
+    out: &mut W,
+    json: bool,
+    block: &serde_json::Value,
+    msg: &str,
+) -> Result<()> {
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(block)?)?;
+        return Ok(());
+    }
+    style::ok(out, msg)?;
+    if block["dirty"].as_bool().unwrap_or(false) {
+        let day = block["day"].as_str().unwrap_or("");
+        style::warn(
+            out,
+            &format!("already synced — now dirty. Run `worklog sync --day {day}` to update Tempo."),
+        )?;
+    }
+    Ok(())
+}
+
+fn cmd_block_list<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()> {
+    ensure_daemon_running(&mut io::stderr())?;
+    let day = parse_local_day(day.as_deref())?.to_string();
+    let summary: serde_json::Value = crate::daemon_client::get(&format!("/days/{day}"))?;
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&summary)?)?;
+        return Ok(());
+    }
+    let blocks = summary["blocks"].as_array().cloned().unwrap_or_default();
+    if blocks.is_empty() {
+        style::info(
+            out,
+            &format!("no blocks for {day} — run `worklog day --day {day}` to build them"),
+        )?;
+        return Ok(());
+    }
+    let mut t = style::table();
+    t.set_header(vec!["#", "time", "dur", "ticket", "state", "what"]);
+    for b in &blocks {
+        t.add_row(vec![
+            b["id"].as_i64().unwrap_or(0).to_string(),
+            format!(
+                "{}–{}",
+                local_hhmm(b["started_at"].as_str().unwrap_or("")),
+                local_hhmm(b["ended_at"].as_str().unwrap_or("")),
+            ),
+            human_dur(b["duration_seconds"].as_i64().unwrap_or(0)),
+            b["jira_issue"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .unwrap_or("—")
+                .to_owned(),
+            block_state(b).to_owned(),
+            truncate(b["description"].as_str().unwrap_or(""), 60),
+        ]);
+    }
+    writeln!(out, "{t}")?;
+    writeln!(
+        out,
+        "{} {} · {}",
+        day,
+        human_dur(summary["total_seconds"].as_i64().unwrap_or(0)),
+        format_args!("{} {}", blocks.len(), plural(blocks.len() as i64)),
+    )?;
+    Ok(())
+}
+
+fn cmd_block_assign<W: Write>(
+    id: i64,
+    ticket: Option<String>,
+    clear: bool,
+    out: &mut W,
+    json: bool,
+) -> Result<()> {
+    let key = if clear {
+        None
+    } else {
+        Some(ticket.ok_or_else(|| {
+            anyhow::anyhow!("pass a ticket key (e.g. GOJ-1310), or `--clear` to unassign")
+        })?)
+    };
+    ensure_daemon_running(&mut io::stderr())?;
+    let body = serde_json::json!({ "jira_issue": key });
+    let block: serde_json::Value =
+        crate::daemon_client::post(&format!("/blocks/{id}/ticket"), &body)?;
+    let msg = match &key {
+        Some(k) => format!("block {id} assigned to {k}"),
+        None => format!("block {id} — ticket cleared"),
+    };
+    report_block_write(out, json, &block, &msg)
+}
+
+fn cmd_block_duration<W: Write>(id: i64, minutes: u32, out: &mut W, json: bool) -> Result<()> {
+    ensure_daemon_running(&mut io::stderr())?;
+    let body = serde_json::json!({ "minutes": minutes });
+    let block: serde_json::Value =
+        crate::daemon_client::post(&format!("/blocks/{id}/duration"), &body)?;
+    report_block_write(out, json, &block, &format!("block {id} set to {minutes}m"))
+}
+
+fn cmd_block_describe<W: Write>(id: i64, text: String, out: &mut W, json: bool) -> Result<()> {
+    ensure_daemon_running(&mut io::stderr())?;
+    let body = serde_json::json!({ "description": text });
+    let block: serde_json::Value =
+        crate::daemon_client::post(&format!("/blocks/{id}/description"), &body)?;
+    report_block_write(
+        out,
+        json,
+        &block,
+        &format!("block {id} description updated"),
+    )
+}
+
+fn cmd_block_delete<W: Write>(id: i64, yes: bool, out: &mut W, json: bool) -> Result<()> {
+    ensure_daemon_running(&mut io::stderr())?;
+    if !yes
+        && !confirm(&format!(
+            "Delete block {id}? If it was synced, its Tempo entry is removed too."
+        ))?
+    {
+        style::info(out, "cancelled")?;
+        return Ok(());
+    }
+    let res: serde_json::Value =
+        crate::daemon_client::post(&format!("/blocks/{id}/delete"), &serde_json::json!({}))?;
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&res)?)?;
+        return Ok(());
+    }
+    let mut msg = format!("block {id} deleted");
+    if let Some(t) = res["deleted_tempo_id"].as_str() {
+        msg.push_str(&format!(" (Tempo entry {t} removed)"));
+    }
+    style::ok(out, &msg)?;
+    Ok(())
+}
+
+fn cmd_block_merge<W: Write>(ids: Vec<i64>, yes: bool, out: &mut W, json: bool) -> Result<()> {
+    // clap enforces num_args >= 2, but stay defensive.
+    let (&primary, absorb) = ids
+        .split_first()
+        .filter(|(_, rest)| !rest.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("merge needs at least two block ids"))?;
+    ensure_daemon_running(&mut io::stderr())?;
+    if !yes
+        && !confirm(&format!(
+            "Merge {} into block {primary}? The absorbed {} {} deleted.",
+            absorb
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+            plural(absorb.len() as i64),
+            if absorb.len() == 1 { "is" } else { "are" },
+        ))?
+    {
+        style::info(out, "cancelled")?;
+        return Ok(());
+    }
+    let body = serde_json::json!({ "primary": primary, "absorb": absorb });
+    let res: serde_json::Value = crate::daemon_client::post("/blocks/merge", &body)?;
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&res)?)?;
+        return Ok(());
+    }
+    let merged = &res["merged"];
+    style::ok(
+        out,
+        &format!(
+            "merged {} {} into block {primary} — now {}",
+            absorb.len(),
+            plural(absorb.len() as i64),
+            human_dur(merged["duration_seconds"].as_i64().unwrap_or(0)),
+        ),
+    )?;
+    if merged["dirty"].as_bool().unwrap_or(false) {
+        let day = merged["day"].as_str().unwrap_or("");
+        style::warn(
+            out,
+            &format!("block {primary} was synced — now dirty. Run `worklog sync --day {day}`."),
+        )?;
+    }
+    Ok(())
+}
+
+fn cmd_block_split<W: Write>(id: i64, first_minutes: u32, out: &mut W, json: bool) -> Result<()> {
+    ensure_daemon_running(&mut io::stderr())?;
+    let body = serde_json::json!({ "first_minutes": first_minutes });
+    let res: serde_json::Value = crate::daemon_client::post(&format!("/blocks/{id}/split"), &body)?;
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&res)?)?;
+        return Ok(());
+    }
+    let first = &res["first"];
+    let second = &res["second"];
+    style::ok(
+        out,
+        &format!(
+            "split block {id} — block {id} is now {}, new block {} holds {}",
+            human_dur(first["duration_seconds"].as_i64().unwrap_or(0)),
+            second["id"].as_i64().unwrap_or(0),
+            human_dur(second["duration_seconds"].as_i64().unwrap_or(0)),
+        ),
+    )?;
+    if first["dirty"].as_bool().unwrap_or(false) {
+        let day = first["day"].as_str().unwrap_or("");
+        style::warn(
+            out,
+            &format!("block {id} was synced — now dirty. Run `worklog sync --day {day}`."),
+        )?;
+    }
+    Ok(())
+}
+
+/// One ticket's slice of a day: total time, block count, and the
+/// distinct descriptions across those blocks.
+struct TicketRow {
+    ticket: String,
+    secs: i64,
+    blocks: i64,
+    descriptions: Vec<String>,
+}
+
+/// Aggregated view of one day's blocks — the shared backbone of
+/// `worklog summary`, the tail of `worklog day`, and each row of
+/// `worklog week`. Computed once by [`aggregate_day`] so all three
+/// surfaces agree.
+struct DayAgg {
+    day: String,
+    total_secs: i64,
+    work_secs: i64,
+    personal_secs: i64,
+    unassigned_secs: i64,
+    block_count: i64,
+    dirty: i64,
+    gap: i64,
+    unassigned_n: i64,
+    personal_n: i64,
+    /// Per-ticket rows, biggest first.
+    tickets: Vec<TicketRow>,
+}
+
+/// Roll a day's `Block` rows into a [`DayAgg`]. Pure — no IO — so it is
+/// equally happy with blocks read straight from SQLite (`worklog day`)
+/// or decoded from the daemon's `/days/:day` response (`summary`/`week`).
+fn aggregate_day(day: &str, blocks: &[worklog_core::models::Block]) -> DayAgg {
+    use std::collections::BTreeMap;
+    // (secs, block count, distinct descriptions) keyed by ticket.
+    let mut tickets: BTreeMap<String, (i64, i64, Vec<String>)> = BTreeMap::new();
+    let (mut personal_secs, mut personal_n) = (0_i64, 0_i64);
+    let (mut unassigned_secs, mut unassigned_n) = (0_i64, 0_i64);
+    let (mut dirty, mut gap) = (0_i64, 0_i64);
+    let mut total = 0_i64;
+    for b in blocks {
+        total += b.duration_seconds;
+        if b.dirty {
+            dirty += 1;
+        }
+        if b.estimated_by.as_deref() == Some("gap") {
+            gap += 1;
+        }
+        if b.is_personal {
+            personal_secs += b.duration_seconds;
+            personal_n += 1;
+            continue;
+        }
+        match b.jira_issue.as_deref().filter(|s| !s.is_empty()) {
+            Some(t) => {
+                let e = tickets.entry(t.to_owned()).or_insert((0, 0, Vec::new()));
+                e.0 += b.duration_seconds;
+                e.1 += 1;
+                if let Some(d) = b
+                    .description
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|d| !d.is_empty())
+                {
+                    if !e.2.iter().any(|x| x == d) {
+                        e.2.push(d.to_owned());
+                    }
+                }
+            }
+            None => {
+                unassigned_secs += b.duration_seconds;
+                unassigned_n += 1;
+            }
+        }
+    }
+    let mut rows: Vec<TicketRow> = tickets
+        .into_iter()
+        .map(|(ticket, (secs, blocks, descriptions))| TicketRow {
+            ticket,
+            secs,
+            blocks,
+            descriptions,
+        })
+        .collect();
+    rows.sort_by_key(|r| -r.secs);
+    DayAgg {
+        day: day.to_owned(),
+        total_secs: total,
+        work_secs: total - personal_secs,
+        personal_secs,
+        unassigned_secs,
+        block_count: blocks.len() as i64,
+        dirty,
+        gap,
+        unassigned_n,
+        personal_n,
+        tickets: rows,
+    }
+}
+
+/// Decode the daemon's `/days/:day` response into plain `Block` rows. The
+/// daemon flattens extra `event_count` / `sources` fields onto each block;
+/// serde drops them since `Block` doesn't deny unknown fields.
+fn fetch_day_blocks(day: &str) -> Result<Vec<worklog_core::models::Block>> {
+    let summary: serde_json::Value = crate::daemon_client::get(&format!("/days/{day}"))?;
+    Ok(serde_json::from_value(summary["blocks"].clone()).unwrap_or_default())
+}
+
+/// Render a [`DayAgg`] as the human-readable `worklog summary` block:
+/// header, per-ticket table, work/personal split, and next-action hints.
+fn print_day_summary<W: Write>(out: &mut W, agg: &DayAgg) -> Result<()> {
+    if agg.block_count == 0 {
+        style::info(
+            out,
+            &format!(
+                "no time tracked for {} yet — run `worklog day --day {}` to build blocks",
+                agg.day, agg.day
+            ),
+        )?;
+        return Ok(());
+    }
+    writeln!(out)?;
+    writeln!(
+        out,
+        "{}",
+        console::style(format!(
+            "{} — {} tracked across {} {}",
+            agg.day,
+            human_dur(agg.total_secs),
+            agg.block_count,
+            plural(agg.block_count),
+        ))
+        .bold()
+    )?;
+    writeln!(out)?;
+
+    let mut t = style::table();
+    t.set_header(vec!["ticket", "time", "what"]);
+    for r in &agg.tickets {
+        let what = if r.descriptions.is_empty() {
+            format!("{} {}", r.blocks, plural(r.blocks))
+        } else {
+            truncate(&r.descriptions.join("; "), 90)
+        };
+        t.add_row(vec![r.ticket.clone(), human_dur(r.secs), what]);
+    }
+    if agg.unassigned_n > 0 {
+        t.add_row(vec![
+            "unassigned".to_owned(),
+            human_dur(agg.unassigned_secs),
+            format!(
+                "{} {} — needs a ticket",
+                agg.unassigned_n,
+                plural(agg.unassigned_n)
+            ),
+        ]);
+    }
+    if agg.personal_n > 0 {
+        t.add_row(vec![
+            "personal".to_owned(),
+            human_dur(agg.personal_secs),
+            format!("{} {}", agg.personal_n, plural(agg.personal_n)),
+        ]);
+    }
+    writeln!(out, "{t}")?;
+    writeln!(
+        out,
+        "{} work · {} personal",
+        human_dur(agg.work_secs),
+        human_dur(agg.personal_secs),
+    )?;
+    print_day_hints(out, agg)?;
+    Ok(())
+}
+
+/// The actionable `! …` footer lines shared by `summary` and `day`.
+fn print_day_hints<W: Write>(out: &mut W, agg: &DayAgg) -> Result<()> {
+    if agg.unassigned_n > 0 {
+        style::warn(
+            out,
+            &format!(
+                "{} {} need a ticket — `worklog block list --day {}`",
+                agg.unassigned_n,
+                plural(agg.unassigned_n),
+                agg.day,
+            ),
+        )?;
+    }
+    if agg.dirty > 0 {
+        style::warn(
+            out,
+            &format!(
+                "{} {} edited since last sync — `worklog sync --day {}`",
+                agg.dirty,
+                plural(agg.dirty),
+                agg.day,
+            ),
+        )?;
+    }
+    if agg.gap > 0 {
+        style::warn(
+            out,
+            &format!(
+                "{} {} failed estimation — `worklog estimate --day {}`",
+                agg.gap,
+                plural(agg.gap),
+                agg.day,
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+/// Serialise a [`DayAgg`] for `--json` consumers.
+fn day_agg_json(agg: &DayAgg) -> serde_json::Value {
+    serde_json::json!({
+        "day": agg.day,
+        "total_seconds": agg.total_secs,
+        "work_seconds": agg.work_secs,
+        "personal_seconds": agg.personal_secs,
+        "unassigned_seconds": agg.unassigned_secs,
+        "blocks": agg.block_count,
+        "dirty": agg.dirty,
+        "gap": agg.gap,
+        "tickets": agg.tickets.iter().map(|r| serde_json::json!({
+            "ticket": r.ticket,
+            "seconds": r.secs,
+            "blocks": r.blocks,
+            "descriptions": r.descriptions,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn cmd_summary<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()> {
+    ensure_daemon_running(&mut io::stderr())?;
+    let day = parse_local_day(day.as_deref())?.to_string();
+    let agg = aggregate_day(&day, &fetch_day_blocks(&day)?);
+    if json {
+        writeln!(
+            out,
+            "{}",
+            serde_json::to_string_pretty(&day_agg_json(&agg))?
+        )?;
+        return Ok(());
+    }
+    print_day_summary(out, &agg)
+}
+
+fn cmd_week<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()> {
+    use std::collections::BTreeMap;
+    ensure_daemon_running(&mut io::stderr())?;
+    // The window is the 7 days ending on `--day` (default: today).
+    let end = parse_local_day(day.as_deref())?;
+    let start = end - chrono::Duration::days(6);
+    let days: Vec<DayAgg> = (0..7)
+        .map(|i| {
+            let d = (start + chrono::Duration::days(i)).to_string();
+            fetch_day_blocks(&d).map(|b| aggregate_day(&d, &b))
+        })
+        .collect::<Result<_>>()?;
+
+    // Roll the per-ticket totals up across the whole window.
+    let mut ticket_totals: BTreeMap<String, i64> = BTreeMap::new();
+    for d in &days {
+        for r in &d.tickets {
+            *ticket_totals.entry(r.ticket.clone()).or_insert(0) += r.secs;
+        }
+    }
+    let mut ranked: Vec<(String, i64)> = ticket_totals.into_iter().collect();
+    ranked.sort_by_key(|(_, s)| -*s);
+
+    let total: i64 = days.iter().map(|d| d.total_secs).sum();
+    let work: i64 = days.iter().map(|d| d.work_secs).sum();
+    let personal: i64 = days.iter().map(|d| d.personal_secs).sum();
+    let dirty: i64 = days.iter().map(|d| d.dirty).sum();
+    let unassigned: i64 = days.iter().map(|d| d.unassigned_n).sum();
+
+    if json {
+        writeln!(
+            out,
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "start": start.to_string(),
+                "end": end.to_string(),
+                "total_seconds": total,
+                "work_seconds": work,
+                "personal_seconds": personal,
+                "dirty": dirty,
+                "unassigned": unassigned,
+                "days": days.iter().map(day_agg_json).collect::<Vec<_>>(),
+                "tickets": ranked.iter()
+                    .map(|(t, s)| serde_json::json!({ "ticket": t, "seconds": s }))
+                    .collect::<Vec<_>>(),
+            }))?
+        )?;
+        return Ok(());
+    }
+
+    writeln!(out)?;
+    writeln!(
+        out,
+        "{}",
+        console::style(format!("{start} → {end} — {} tracked", human_dur(total))).bold()
+    )?;
+    writeln!(out)?;
+
+    // One row per day.
+    let mut by_day = style::table();
+    by_day.set_header(vec!["day", "total", "work", "personal", "blocks"]);
+    for (i, d) in days.iter().enumerate() {
+        let date = start + chrono::Duration::days(i as i64);
+        by_day.add_row(vec![
+            date.format("%a %m-%d").to_string(),
+            human_dur(d.total_secs),
+            human_dur(d.work_secs),
+            human_dur(d.personal_secs),
+            d.block_count.to_string(),
+        ]);
+    }
+    by_day.add_row(vec![
+        "total".to_owned(),
+        human_dur(total),
+        human_dur(work),
+        human_dur(personal),
+        days.iter().map(|d| d.block_count).sum::<i64>().to_string(),
+    ]);
+    writeln!(out, "{by_day}")?;
+
+    // Per-ticket roll-up for the week.
+    if !ranked.is_empty() {
+        writeln!(out)?;
+        writeln!(out, "{}", console::style("by ticket").bold())?;
+        let mut tt = style::table();
+        tt.set_header(vec!["ticket", "time"]);
+        for (ticket, secs) in &ranked {
+            tt.add_row(vec![ticket.clone(), human_dur(*secs)]);
+        }
+        writeln!(out, "{tt}")?;
+    }
+
+    if dirty > 0 {
+        style::warn(
+            out,
+            &format!(
+                "{dirty} {} edited since last sync this week — `worklog sync` per day",
+                plural(dirty)
+            ),
+        )?;
+    }
+    if unassigned > 0 {
+        style::warn(
+            out,
+            &format!(
+                "{unassigned} {} still need a ticket — `worklog block list`",
+                plural(unassigned)
+            ),
+        )?;
+    }
+    Ok(())
+}
+
 // ────────────────── worklog tag (personal/work classifier) ──────────────────
 
 fn cmd_tag_list<W: Write>(out: &mut W, json: bool) -> Result<()> {
@@ -1620,21 +2412,37 @@ fn cmd_day<W: Write>(
         Err(e) => style::warn(out, &format!("estimate skipped: {e}"))?,
     }
 
+    // --- summary --------------------------------------------------------
+    // Re-read post-estimate so the tail reflects the tickets + durations
+    // the estimator just wrote, not the pre-estimate `blocks` snapshot.
+    let day_str = day_parsed.to_string();
+    let agg = worklog_core::repo::list_blocks_for_day(&conn, &day_str)
+        .map(|bs| aggregate_day(&day_str, &bs));
+
     // --- serve ----------------------------------------------------------
     if no_serve {
         if json {
+            // Invariant: `worklog day --json` only emits JSON with
+            // `--no-serve`. Keep the existing machine-readable shape.
             writeln!(
                 out,
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
-                    "day": day_parsed.to_string(),
+                    "day": day_str,
                     "blocks": blocks.len(),
                     "minutes": total_min,
                     "served": false,
                 }))?
             )?;
+        } else if let Ok(agg) = &agg {
+            // The pipeline used to finish silently here. End on the same
+            // readable summary `worklog summary` prints.
+            print_day_summary(out, agg)?;
         }
         return Ok(());
+    }
+    if let Ok(agg) = &agg {
+        print_day_summary(out, agg)?;
     }
     style::step(out, "bringing up review UI at http://localhost:3333")?;
     style::info(out, "ctrl+c to bring it down, or `worklog web down`")?;

@@ -81,6 +81,8 @@ pub fn router(state: Shared) -> Router {
         .route("/blocks/:id/duration", post(set_duration))
         .route("/blocks/:id/description", post(set_description))
         .route("/blocks/:id/delete", post(delete_block))
+        .route("/blocks/:id/split", post(split_block))
+        .route("/blocks/merge", post(merge_blocks))
         .route("/infer", post(run_infer))
         .route("/jira/refresh", post(refresh_jira))
         .route("/estimate", post(run_estimate))
@@ -613,6 +615,56 @@ async fn delete_block(
         "deleted_id": id,
         "deleted_tempo_id": deleted_tempo_id,
     })))
+}
+
+#[derive(Deserialize)]
+pub struct SplitBody {
+    /// Duration in minutes the original block keeps; the rest becomes a
+    /// new tail block.
+    pub first_minutes: u32,
+}
+
+/// Split a block in two at `first_minutes` from its start. See
+/// [`block_service::split_block`] for the duration/event/sync semantics.
+/// An out-of-range split point is a 400 so the caller can show it verbatim.
+async fn split_block(
+    State(state): State<Shared>,
+    AxumPath(id): AxumPath<i64>,
+    Json(body): Json<SplitBody>,
+) -> Result<Json<block_service::SplitOutcome>, ApiError> {
+    let minutes = body.first_minutes;
+    let outcome = with_conn(state, move |c| block_service::split_block(c, id, minutes))
+        .await
+        .map_err(ApiError::bad_request)?;
+    info!(block_id = id, first_minutes = minutes, "split block");
+    Ok(Json(outcome))
+}
+
+#[derive(Deserialize)]
+pub struct MergeBody {
+    /// The surviving block — keeps its ticket, description and tempo id.
+    pub primary: i64,
+    /// Blocks folded into the primary and then deleted.
+    pub absorb: Vec<i64>,
+}
+
+/// Merge `absorb` blocks into `primary`. See [`block_service::merge_blocks`]
+/// for the duration/event/sync semantics. A bad request (cross-day merge,
+/// self-merge, an absorbed block already synced) surfaces as a 400 so the
+/// caller can show the message verbatim rather than a generic 500.
+async fn merge_blocks(
+    State(state): State<Shared>,
+    Json(body): Json<MergeBody>,
+) -> Result<Json<block_service::MergeOutcome>, ApiError> {
+    let primary = body.primary;
+    let absorb = body.absorb.clone();
+    let outcome = with_conn(state, move |c| {
+        block_service::merge_blocks(c, primary, &absorb)
+    })
+    .await
+    .map_err(ApiError::bad_request)?;
+    info!(primary = body.primary, absorbed = ?outcome.absorbed, "merged blocks");
+    Ok(Json(outcome))
 }
 
 #[derive(Deserialize)]
@@ -1314,6 +1366,109 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// Build a state with two blocks; `days` picks the day for each.
+    fn state_with_two_blocks(day_a: &str, day_b: &str) -> (Shared, i64, i64) {
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES (?1, ?1 || 'T09:00:00+00:00', ?1 || 'T09:30:00+00:00', 1800)",
+            params![day_a],
+        )
+        .unwrap();
+        let a = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES (?1, ?1 || 'T10:00:00+00:00', ?1 || 'T10:30:00+00:00', 1800)",
+            params![day_b],
+        )
+        .unwrap();
+        let b = conn.last_insert_rowid();
+        (
+            Arc::new(AppState {
+                conn: Mutex::new(conn),
+            }),
+            a,
+            b,
+        )
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn merge_endpoint_folds_blocks_and_returns_outcome() {
+        let (state, a, b) = state_with_two_blocks("2026-04-18", "2026-04-18");
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::post("/blocks/merge")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(r#"{{"primary":{a},"absorb":[{b}]}}"#)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["merged"]["id"], a);
+        assert_eq!(v["merged"]["duration_seconds"], 3600);
+        assert_eq!(v["absorbed"].as_array().unwrap(), &vec![Value::from(b)]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn merge_endpoint_rejects_cross_day_with_400() {
+        let (state, a, b) = state_with_two_blocks("2026-04-18", "2026-04-19");
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::post("/blocks/merge")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(r#"{{"primary":{a},"absorb":[{b}]}}"#)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let v = read_json(resp).await;
+        assert!(
+            v["error"].as_str().unwrap().contains("same day"),
+            "got: {v}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn split_endpoint_divides_a_block() {
+        // state_with_block seeds one 1800s (30m) block as id 1.
+        let app = router(state_with_block());
+        let resp = app
+            .oneshot(
+                Request::post("/blocks/1/split")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"first_minutes":10}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["first"]["id"], 1);
+        assert_eq!(v["first"]["duration_seconds"], 600);
+        assert_eq!(v["second"]["duration_seconds"], 1200);
+        assert!(v["second"]["id"].as_i64().unwrap() > 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn split_endpoint_rejects_out_of_range_with_400() {
+        let app = router(state_with_block());
+        let resp = app
+            .oneshot(
+                Request::post("/blocks/1/split")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"first_minutes":99}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     fn seed_git_repo(path: &std::path::Path) {

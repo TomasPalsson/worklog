@@ -21,10 +21,11 @@ You operate worklog on the user's behalf. worklog is a personal time-tracker tha
 
 ## Mental model — three things to internalise
 
-### 1. Two surfaces, not one
+### 1. Two surfaces, one source of truth
 
 - **CLI (`worklog <cmd> --json`)** owns the *pipeline*: collect, infer, estimate, sync, tag, setup, doctor, hook/schedule/daemon install, web up/down. Always pass `--json` when parsing.
-- **Daemon HTTP API (`http://127.0.0.1:9323`)** owns *single-block mutations*: assign ticket, set duration, set description, delete. There are **no** `worklog block ...` CLI subcommands — block edits MUST go via HTTP. The unix socket `~/.local/share/worklog/api.sock` is an alternative transport; prefer TCP for host-local automation.
+- **CLI also covers block mutations now** via `worklog block` — `list`, `assign`/`--clear`, `duration`, `describe`, `delete`, `merge` — and day queries via `worklog summary` (alias `today`). These commands wrap the daemon HTTP API; they auto-start the daemon and accept `--json`. **Prefer them over raw curl.**
+- **Daemon HTTP API (`http://127.0.0.1:9323`)** is the underlying transport for the same single-block mutations (`POST /blocks/:id/{ticket,duration,description,delete}`, `POST /blocks/merge`) plus reads (`GET /days/:day`). Use it directly only when a `worklog block` subcommand doesn't cover the case. The unix socket `~/.local/share/worklog/api.sock` is an alternative transport; prefer TCP for host-local automation.
 
 ### 2. The block lifecycle
 
