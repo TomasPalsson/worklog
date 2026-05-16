@@ -146,10 +146,23 @@ pub fn handle(conn: &Connection, payload: &Value, now: DateTime<Utc>) -> Result<
 /// flood the DB with a single huge row.
 pub const MAX_STDIN_BYTES: u64 = 4 * 1024 * 1024;
 
+/// Env var that suppresses this hook. worklog's estimator shells out to
+/// `claude -p`, which inherits the user's Claude Code hook config and
+/// would otherwise re-fire this hook — recording the estimation prompt
+/// itself as a `claude` activity event. The estimator sets this on the
+/// subprocess so the inner `worklog hook-run` no-ops.
+pub const SUPPRESS_ENV: &str = "WORKLOG_HOOK_SUPPRESS";
+
 /// CLI entrypoint. Reads stdin, opens db, handles. Always returns Ok —
 /// hook-side errors are logged to stderr but never propagated (Claude
 /// must never be blocked by a worklog failure).
 pub fn run_from_stdin() -> Result<()> {
+    // Drop the event when invoked from worklog's own estimator subprocess
+    // (see `SUPPRESS_ENV`). Checked before reading stdin so the payload is
+    // discarded unparsed.
+    if std::env::var_os(SUPPRESS_ENV).is_some() {
+        return Ok(());
+    }
     use std::io::Read;
     let mut buf = String::new();
     // `Read::take` enforces MAX_STDIN_BYTES so a pathological payload
