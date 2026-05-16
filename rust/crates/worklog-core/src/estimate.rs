@@ -907,8 +907,11 @@ fn trunc(s: &str, n: usize) -> String {
 ///     path to the entire session transcript is itself an exposure, so
 ///     it is dropped.
 ///
-/// Idempotent and cheap; safe to call on every field of every event.
-fn redact_code(raw: &str) -> String {
+/// Idempotent and cheap; safe to call on every field of every event —
+/// `hook_run` calls it at capture time so code never lands in the DB,
+/// and the estimator calls it again at send time as defence-in-depth
+/// for any event captured before that.
+pub fn redact_code(raw: &str) -> String {
     let t = raw.trim();
     if t.is_empty() {
         return String::new();

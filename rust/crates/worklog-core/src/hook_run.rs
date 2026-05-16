@@ -5,7 +5,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use rusqlite::Connection;
-use serde_json::{json, Value};
+use serde_json::Value;
 use tracing::warn;
 
 use crate::models::Event;
@@ -98,20 +98,26 @@ pub fn handle(conn: &Connection, payload: &Value, now: DateTime<Utc>) -> Result<
 
     let jira_issue = first_jira_key(&[prompt.as_deref(), cwd.as_deref()]);
 
-    let transcript = payload
-        .get("transcript_path")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    let raw_json = json!(payload).to_string();
-
-    // Prefer the (capped) user prompt so the estimator has real substance
-    // to summarise from. Fall back to the transcript path only when no
-    // prompt is attached (SessionStart, Stop, SessionEnd, etc.). This is
-    // the one field that survives into `build_user_message` in estimate.rs.
+    // Prefer the user prompt so the estimator has real substance to
+    // summarise from — but run it through `redact_code` FIRST so source
+    // code (pasted snippets, `<task-notification>` `<result>` blocks)
+    // never lands in the DB at all, then cap what remains. Fall back to
+    // nothing when there's no prompt: the transcript path that used to
+    // be stored here is just a pointer to the full session and carries
+    // no work-intent signal worth keeping.
     let details = match prompt.as_deref() {
-        Some(p) if !p.is_empty() => Some(cap_prompt(p, PROMPT_CAP_CHARS)),
-        _ => transcript,
+        Some(p) if !p.is_empty() => {
+            let clean = crate::estimate::redact_code(p);
+            (!clean.is_empty()).then(|| cap_prompt(&clean, PROMPT_CAP_CHARS))
+        }
+        _ => None,
     };
+
+    // `raw_json` is deliberately NOT stored. The full Claude Code hook
+    // payload carries tool inputs/outputs (i.e. source code) for
+    // PreToolUse/PostToolUse events; nothing in worklog ever reads the
+    // column, so capturing it was pure code-at-rest with no upside.
+    let raw_json: Option<String> = None;
 
     let ev = Event {
         id: None,
@@ -127,7 +133,7 @@ pub fn handle(conn: &Connection, payload: &Value, now: DateTime<Utc>) -> Result<
         jira_issue,
         session_id: Some(session_id.clone()),
         tempo_worklog_id: None,
-        raw_json: Some(raw_json),
+        raw_json,
     };
     repo::upsert_event(conn, &ev)?;
 
@@ -353,11 +359,11 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_transcript_path_when_no_prompt() {
-        // B3: SessionStart/Stop fire without a prompt → preserve the old
-        // behaviour where `details` holds the transcript path. The hook
-        // never stops receiving those events, so this path must keep
-        // working.
+    fn no_prompt_event_stores_no_details() {
+        // A SessionStart/Stop fires without a prompt. We used to store the
+        // transcript path in `details`; that path points at the full
+        // session and is not work-intent signal, so `details` is now left
+        // empty for these events.
         let conn = open_memory().unwrap();
         let payload = json!({
             "hook_event_name": "SessionStart",
@@ -367,9 +373,47 @@ mod tests {
         handle(&conn, &payload, now()).unwrap();
         let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
         assert_eq!(
-            events[0].details.as_deref(),
-            Some("/tmp/transcript-abc.jsonl"),
-            "no prompt → details keeps the pre-existing transcript path"
+            events[0].details, None,
+            "no prompt → no details (transcript path is not stored)"
+        );
+    }
+
+    #[test]
+    fn raw_json_is_never_stored_for_hook_events() {
+        // The full hook payload carries tool inputs/outputs (source code)
+        // for tool events and must not land in the DB.
+        let conn = open_memory().unwrap();
+        let payload = json!({
+            "hook_event_name": "PostToolUse",
+            "session_id": "s5",
+            "tool_name": "Edit",
+            "tool_input": { "old_string": "let secret = 1;", "new_string": "let secret = 2;" },
+        });
+        handle(&conn, &payload, now()).unwrap();
+        let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+        assert_eq!(events[0].raw_json, None, "raw_json must never be stored");
+    }
+
+    #[test]
+    fn task_notification_prompt_is_redacted_before_storage() {
+        // Claude Code delivers background-agent completions as a prompt;
+        // the <result> holds code. `redact_code` runs at capture time so
+        // only the one-line summary is ever written to the DB.
+        let conn = open_memory().unwrap();
+        let notif = "<task-notification><summary>Agent review done</summary>\
+             <result>def f(): return SECRET_KEY</result></task-notification>";
+        let payload = json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "s6",
+            "user_prompt": notif,
+        });
+        handle(&conn, &payload, now()).unwrap();
+        let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+        let details = events[0].details.as_deref().unwrap_or("");
+        assert!(details.contains("Agent review done"));
+        assert!(
+            !details.contains("SECRET_KEY"),
+            "result code must not be stored"
         );
     }
 
