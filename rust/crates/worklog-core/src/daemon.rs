@@ -19,6 +19,9 @@
 //! * `POST /blocks/:id/duration`         — { "minutes": 45 }
 //! * `POST /blocks/:id/description`      — { "description": "text" }
 //! * `POST /blocks/:id/delete`           — no body
+//! * `POST /blocks/:id/split`            — { "first_minutes": 20 }
+//! * `POST /blocks/merge`                — { "primary": 1, "absorb": [2,3] }
+//! * `POST /blocks/auto-merge`           — { "day": "YYYY-MM-DD" }
 //! * `GET  /blocks/:id/commits`          — commits in the window (work only)
 //! * `POST /infer`                       — { "day": "YYYY-MM-DD" }
 //! * `POST /jira/refresh`                — no body, refreshes open tickets
@@ -83,6 +86,7 @@ pub fn router(state: Shared) -> Router {
         .route("/blocks/:id/delete", post(delete_block))
         .route("/blocks/:id/split", post(split_block))
         .route("/blocks/merge", post(merge_blocks))
+        .route("/blocks/auto-merge", post(auto_merge))
         .route("/infer", post(run_infer))
         .route("/jira/refresh", post(refresh_jira))
         .route("/estimate", post(run_estimate))
@@ -665,6 +669,29 @@ async fn merge_blocks(
     .map_err(ApiError::bad_request)?;
     info!(primary = body.primary, absorbed = ?outcome.absorbed, "merged blocks");
     Ok(Json(outcome))
+}
+
+#[derive(Deserialize)]
+pub struct AutoMergeBody {
+    pub day: String,
+}
+
+/// Merge every run of adjacent same-ticket blocks on `day`. Delegates to
+/// the estimator's merge pass, which safe-skips synced and manually-edited
+/// blocks. Returns the number of blocks removed by merging.
+async fn auto_merge(
+    State(state): State<Shared>,
+    Json(body): Json<AutoMergeBody>,
+) -> Result<Json<Value>, ApiError> {
+    NaiveDate::parse_from_str(&body.day, "%Y-%m-%d")
+        .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{}`: {e}", body.day)))?;
+    let day = body.day.clone();
+    let removed = with_conn(state, move |c| {
+        estimate::merge_same_ticket_adjacent(c, &day)
+    })
+    .await?;
+    info!(day = %body.day, removed, "auto-merged adjacent same-ticket blocks");
+    Ok(Json(json!({ "day": body.day, "removed": removed })))
 }
 
 #[derive(Deserialize)]
@@ -1469,6 +1496,36 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn auto_merge_endpoint_collapses_same_ticket_blocks() {
+        let conn = open_memory().unwrap();
+        for start in ["09:00:00", "09:30:00"] {
+            conn.execute(
+                "INSERT INTO blocks (day, jira_issue, started_at, ended_at, duration_seconds)
+                 VALUES ('2026-04-18', 'PROJ-1',
+                         '2026-04-18T' || ?1 || '+00:00',
+                         '2026-04-18T10:00:00+00:00', 1800)",
+                params![start],
+            )
+            .unwrap();
+        }
+        let state = Arc::new(AppState {
+            conn: Mutex::new(conn),
+        });
+        let resp = router(state)
+            .oneshot(
+                Request::post("/blocks/auto-merge")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"day":"2026-04-18"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["removed"], 1, "two same-ticket blocks → one removed");
     }
 
     fn seed_git_repo(path: &std::path::Path) {

@@ -44,7 +44,7 @@ commands by area\x1b[0m
   daily workflow       \x1b[32mday  summary  week  block  sync\x1b[0m
   data collection      \x1b[32mcollect  infer  estimate  hook\x1b[0m
   review UI            \x1b[32mweb  serve\x1b[0m
-  setup & diagnostics  \x1b[32msetup  doctor  db  secret  version\x1b[0m
+  setup & diagnostics  \x1b[32msetup  status  doctor  db  secret  version\x1b[0m
   daemon & schedule    \x1b[32mdaemon  schedule\x1b[0m
   release ops          \x1b[32mself-update  upgrade  dev\x1b[0m
 ";
@@ -76,6 +76,11 @@ pub struct Cli {
 pub enum Cmd {
     /// Print version info.
     Version,
+
+    /// One-screen health dashboard — daemon, hook, schedule, web UI,
+    /// database and secrets, plus today's tracked time. Folds in what
+    /// used to take five separate `*-status` commands.
+    Status,
 
     /// Report environment, db, and secret status.
     Doctor {
@@ -184,17 +189,24 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
         model: String,
     },
 
-    /// One-shot daily flow: collect → infer → estimate → open the review UI.
+    /// One-shot daily flow: collect → infer → estimate → print the day
+    /// summary.
     ///
     /// Each step that fails is reported inline and the next one still runs —
     /// missing Jira credentials or a transient API blip shouldn't block the
-    /// rest of the pipeline. Use `--no-serve` to skip spinning up the web UI.
+    /// rest of the pipeline. The pipeline finishes in the terminal; pass
+    /// `--serve` to also bring up the dockerised review UI.
     Day {
         /// YYYY-MM-DD; default today (UTC).
         #[arg(long)]
         day: Option<String>,
-        /// Skip launching the web review UI at the end.
+        /// Also launch the dockerised review UI once the pipeline finishes.
         #[arg(long)]
+        serve: bool,
+        /// Deprecated no-op — `worklog day` no longer opens the web UI by
+        /// default, so there is nothing to skip. Kept so existing scripts
+        /// and muscle memory don't break.
+        #[arg(long, hide = true)]
         no_serve: bool,
         /// Model id passed to `claude -p` during estimation.
         #[arg(long, default_value = estimate::DEFAULT_MODEL)]
@@ -570,13 +582,21 @@ pub enum BlockCmd {
         #[arg(short, long)]
         yes: bool,
     },
-    /// Merge two or more blocks into the first one. The first id is the
-    /// primary — it keeps its ticket and description; the rest hand over
-    /// their events and logged time, then are deleted.
+    /// Merge blocks. With ids: fold the rest into the first (it keeps its
+    /// ticket + description). With `--auto`: collapse every run of
+    /// adjacent same-ticket blocks on a day.
     Merge {
         /// Block ids — the first is the primary, the rest are absorbed.
-        #[arg(required = true, num_args = 2..)]
+        /// Omit when using `--auto`.
+        #[arg(num_args = 0.., conflicts_with = "auto")]
         ids: Vec<i64>,
+        /// Auto-merge adjacent same-ticket blocks on the day (skips
+        /// synced and manually-edited blocks).
+        #[arg(long)]
+        auto: bool,
+        /// Day for `--auto`; default today (local TZ).
+        #[arg(long, requires = "auto")]
+        day: Option<String>,
         /// Skip the confirmation prompt.
         #[arg(short, long)]
         yes: bool,
@@ -645,6 +665,7 @@ pub fn run_with<W: Write>(
 
     match cli.command {
         Cmd::Version => cmd_version(out, cli.json),
+        Cmd::Status => cmd_status(out, cli.json),
         Cmd::Doctor { probe } => cmd_doctor(probe, out, cli.json),
         Cmd::Setup {
             non_interactive,
@@ -695,9 +716,10 @@ pub fn run_with<W: Write>(
         Cmd::Estimate { day, model } => cmd_estimate(day, &model, out, cli.json),
         Cmd::Day {
             day,
+            serve,
             no_serve,
             model,
-        } => cmd_day(day, no_serve, &model, out, cli.json),
+        } => cmd_day(day, serve, no_serve, &model, out, cli.json),
         Cmd::Summary { day } => cmd_summary(day, out, cli.json),
         Cmd::Week { day } => cmd_week(day, out, cli.json),
         Cmd::Block { sub } => match sub {
@@ -710,7 +732,12 @@ pub fn run_with<W: Write>(
                 cmd_block_describe(id, text.join(" "), out, cli.json)
             }
             BlockCmd::Delete { id, yes } => cmd_block_delete(id, yes, out, cli.json),
-            BlockCmd::Merge { ids, yes } => cmd_block_merge(ids, yes, out, cli.json),
+            BlockCmd::Merge {
+                ids,
+                auto,
+                day,
+                yes,
+            } => cmd_block_merge(ids, auto, day, yes, out, cli.json),
             BlockCmd::Split { id, first_minutes } => {
                 cmd_block_split(id, first_minutes, out, cli.json)
             }
@@ -1712,12 +1739,21 @@ fn cmd_block_delete<W: Write>(id: i64, yes: bool, out: &mut W, json: bool) -> Re
     Ok(())
 }
 
-fn cmd_block_merge<W: Write>(ids: Vec<i64>, yes: bool, out: &mut W, json: bool) -> Result<()> {
-    // clap enforces num_args >= 2, but stay defensive.
+fn cmd_block_merge<W: Write>(
+    ids: Vec<i64>,
+    auto: bool,
+    day: Option<String>,
+    yes: bool,
+    out: &mut W,
+    json: bool,
+) -> Result<()> {
+    if auto {
+        return cmd_block_merge_auto(day, yes, out, json);
+    }
     let (&primary, absorb) = ids
         .split_first()
         .filter(|(_, rest)| !rest.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("merge needs at least two block ids"))?;
+        .ok_or_else(|| anyhow::anyhow!("merge needs at least two block ids — or pass --auto"))?;
     ensure_daemon_running(&mut io::stderr())?;
     if !yes
         && !confirm(&format!(
@@ -1755,6 +1791,50 @@ fn cmd_block_merge<W: Write>(ids: Vec<i64>, yes: bool, out: &mut W, json: bool) 
         style::warn(
             out,
             &format!("block {primary} was synced — now dirty. Run `worklog sync --day {day}`."),
+        )?;
+    }
+    Ok(())
+}
+
+/// `worklog block merge --auto` — collapse every run of adjacent
+/// same-ticket blocks on a day. Reuses the estimator's merge pass, which
+/// safe-skips synced and manually-edited blocks.
+fn cmd_block_merge_auto<W: Write>(
+    day: Option<String>,
+    yes: bool,
+    out: &mut W,
+    json: bool,
+) -> Result<()> {
+    ensure_daemon_running(&mut io::stderr())?;
+    let day = parse_local_day(day.as_deref())?.to_string();
+    if !yes
+        && !confirm(&format!(
+            "Auto-merge adjacent same-ticket blocks on {day}? (synced and \
+             manually-edited blocks are left alone)"
+        ))?
+    {
+        style::info(out, "cancelled")?;
+        return Ok(());
+    }
+    let res: serde_json::Value =
+        crate::daemon_client::post("/blocks/auto-merge", &serde_json::json!({ "day": day }))?;
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&res)?)?;
+        return Ok(());
+    }
+    let removed = res["removed"].as_i64().unwrap_or(0);
+    if removed == 0 {
+        style::info(
+            out,
+            &format!("no adjacent same-ticket blocks to merge on {day}"),
+        )?;
+    } else {
+        style::ok(
+            out,
+            &format!(
+                "auto-merged {removed} {} on {day} — run `worklog block list` to review",
+                plural(removed),
+            ),
         )?;
     }
     Ok(())
@@ -2149,6 +2229,180 @@ fn cmd_week<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()
     Ok(())
 }
 
+/// `worklog status` — one screen folding the daemon / hook / schedule /
+/// web / database / secrets health checks (previously five separate
+/// `*-status` commands) plus today's tracked time. Read-only and fast.
+fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
+    let daemon_up = daemon_tcp_reachable("127.0.0.1:9323");
+    let daemon_svc = worklog_core::daemon_service::status().ok();
+    let daemon_svc_on = daemon_svc.as_ref().is_some_and(|s| s.installed);
+    let hook = hook::status().ok();
+    let hook_on = hook.as_ref().is_some_and(|h| h.installed);
+    let sched = schedule::status().ok();
+    let sched_on = sched.as_ref().is_some_and(|s| s.installed);
+    let web = web_mod::status().ok();
+    let web_on = web.as_ref().is_some_and(|w| w.running);
+
+    let audit = secrets::audit();
+    let secrets_set = audit.iter().filter(|s| s.present).count();
+    let secrets_total = audit.len();
+    let secrets_missing: Vec<&str> = audit.iter().filter(|s| !s.present).map(|s| s.key).collect();
+
+    // Database summary — only when the db file already exists.
+    let paths = Paths::resolve()?;
+    let db_summary = if paths.db_exists() {
+        db::open(&paths.db)
+            .ok()
+            .and_then(|c| db::summarize(&c).ok())
+    } else {
+        None
+    };
+
+    // Today's tracked time — only reachable when the daemon is up.
+    let today = worklog_core::tz::local_date(chrono::Utc::now()).to_string();
+    let today_agg = if daemon_up {
+        fetch_day_blocks(&today)
+            .ok()
+            .map(|b| aggregate_day(&today, &b))
+    } else {
+        None
+    };
+
+    if json {
+        writeln!(
+            out,
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "daemon": { "running": daemon_up, "service_installed": daemon_svc_on },
+                "hook": { "installed": hook_on },
+                "schedule": {
+                    "installed": sched_on,
+                    "interval_secs": sched.as_ref().and_then(|s| s.interval_secs),
+                },
+                "web": { "running": web_on },
+                "database": db_summary.as_ref().map(|d| serde_json::json!({
+                    "schema_version": d.schema_version,
+                    "events": d.events,
+                    "blocks": d.blocks,
+                })),
+                "secrets": { "set": secrets_set, "total": secrets_total, "missing": secrets_missing },
+                "today": today_agg.as_ref().map(day_agg_json),
+            }))?
+        )?;
+        return Ok(());
+    }
+
+    let dot = |on: bool| if on { "●" } else { "○" };
+    writeln!(out)?;
+    writeln!(out, "{}", console::style("worklog status").bold())?;
+    writeln!(out)?;
+
+    let mut t = style::table();
+    t.add_row(vec![
+        "daemon".to_owned(),
+        format!(
+            "{} {} · service {}",
+            dot(daemon_up),
+            if daemon_up { "running" } else { "not running" },
+            if daemon_svc_on {
+                "installed"
+            } else {
+                "not installed"
+            },
+        ),
+    ]);
+    t.add_row(vec![
+        "hook".to_owned(),
+        format!(
+            "{} {}",
+            dot(hook_on),
+            if hook_on {
+                "installed"
+            } else {
+                "not installed"
+            },
+        ),
+    ]);
+    t.add_row(vec![
+        "schedule".to_owned(),
+        match sched.as_ref().and_then(|s| s.interval_secs) {
+            Some(secs) if sched_on => format!(
+                "{} installed · {}",
+                dot(true),
+                schedule::Interval::parse(&secs.to_string())
+                    .map(|i| i.human())
+                    .unwrap_or_else(|_| format!("{secs}s")),
+            ),
+            _ => format!("{} not installed", dot(false)),
+        },
+    ]);
+    t.add_row(vec![
+        "web UI".to_owned(),
+        format!(
+            "{} {}",
+            dot(web_on),
+            if web_on { "running" } else { "not running" },
+        ),
+    ]);
+    t.add_row(vec![
+        "database".to_owned(),
+        match &db_summary {
+            Some(d) => format!(
+                "schema v{} · {} events · {} blocks",
+                d.schema_version, d.events, d.blocks
+            ),
+            None => "not initialized — run `worklog setup`".to_owned(),
+        },
+    ]);
+    t.add_row(vec![
+        "secrets".to_owned(),
+        if secrets_missing.is_empty() {
+            format!("{secrets_set} / {secrets_total} set")
+        } else {
+            format!(
+                "{secrets_set} / {secrets_total} set · missing: {}",
+                truncate(&secrets_missing.join(", "), 60)
+            )
+        },
+    ]);
+    writeln!(out, "{t}")?;
+
+    if let Some(agg) = &today_agg {
+        let mut line = format!(
+            "today  {} across {} {}",
+            human_dur(agg.total_secs),
+            agg.block_count,
+            plural(agg.block_count),
+        );
+        if agg.unassigned_n > 0 {
+            line.push_str(&format!(
+                " · {} {} need a ticket",
+                agg.unassigned_n,
+                plural(agg.unassigned_n)
+            ));
+        }
+        writeln!(out, "{line}")?;
+    }
+
+    // Actionable nudges for anything that's off.
+    if !daemon_up {
+        style::warn(
+            out,
+            "daemon not running — `worklog daemon install` (writes + queries need it)",
+        )?;
+    }
+    if !hook_on {
+        style::warn(out, "Claude Code hook missing — `worklog hook install`")?;
+    }
+    if !sched_on {
+        style::warn(
+            out,
+            "scheduled collection off — `worklog schedule install --interval 15m`",
+        )?;
+    }
+    Ok(())
+}
+
 // ────────────────── worklog tag (personal/work classifier) ──────────────────
 
 fn cmd_tag_list<W: Write>(out: &mut W, json: bool) -> Result<()> {
@@ -2322,6 +2576,7 @@ fn cmd_estimate<W: Write>(day: Option<String>, model: &str, out: &mut W, json: b
 
 fn cmd_day<W: Write>(
     day: Option<String>,
+    serve: bool,
     no_serve: bool,
     model: &str,
     out: &mut W,
@@ -2420,10 +2675,12 @@ fn cmd_day<W: Write>(
         .map(|bs| aggregate_day(&day_str, &bs));
 
     // --- serve ----------------------------------------------------------
-    if no_serve {
+    // `worklog day` finishes in the terminal by default — the web UI
+    // (and its Docker dependency) is opt-in via `--serve`. `--no-serve`
+    // is a deprecated no-op kept so old scripts don't break.
+    let should_serve = serve && !no_serve;
+    if !should_serve {
         if json {
-            // Invariant: `worklog day --json` only emits JSON with
-            // `--no-serve`. Keep the existing machine-readable shape.
             writeln!(
                 out,
                 "{}",

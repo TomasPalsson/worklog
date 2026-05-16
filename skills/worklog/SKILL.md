@@ -24,8 +24,8 @@ You operate worklog on the user's behalf. worklog is a personal time-tracker tha
 ### 1. Two surfaces, one source of truth
 
 - **CLI (`worklog <cmd> --json`)** owns the *pipeline*: collect, infer, estimate, sync, tag, setup, doctor, hook/schedule/daemon install, web up/down. Always pass `--json` when parsing.
-- **CLI also covers block mutations now** via `worklog block` — `list`, `assign`/`--clear`, `duration`, `describe`, `delete`, `merge` — and day queries via `worklog summary` (alias `today`). These commands wrap the daemon HTTP API; they auto-start the daemon and accept `--json`. **Prefer them over raw curl.**
-- **Daemon HTTP API (`http://127.0.0.1:9323`)** is the underlying transport for the same single-block mutations (`POST /blocks/:id/{ticket,duration,description,delete}`, `POST /blocks/merge`) plus reads (`GET /days/:day`). Use it directly only when a `worklog block` subcommand doesn't cover the case. The unix socket `~/.local/share/worklog/api.sock` is an alternative transport; prefer TCP for host-local automation.
+- **CLI also covers block mutations now** via `worklog block` — `list`, `assign`/`--clear`, `duration`, `describe`, `delete`, `merge` (incl. `merge --auto`), `split` — plus day queries `worklog summary` (alias `today`), `worklog week`, and the health dashboard `worklog status`. These commands wrap the daemon HTTP API; they auto-start the daemon and accept `--json`. **Prefer them over raw curl.**
+- **Daemon HTTP API (`http://127.0.0.1:9323`)** is the underlying transport for the same single-block mutations (`POST /blocks/:id/{ticket,duration,description,delete,split}`, `POST /blocks/merge`, `POST /blocks/auto-merge`) plus reads (`GET /days/:day`). Use it directly only when a `worklog block` subcommand doesn't cover the case. The unix socket `~/.local/share/worklog/api.sock` is an alternative transport; prefer TCP for host-local automation.
 
 ### 2. The block lifecycle
 
@@ -65,7 +65,7 @@ Violating any of these breaks the user's data integrity. Treat as physics, not g
 
 6. **Never set `$WORKLOG_TZ` to a named zone** (e.g., `America/New_York`). The TZ parser only understands fixed offsets (`-05:00`, `+01:00`, `UTC`). Named zones fall back to UTC silently — the warning goes to the daemon log, not the terminal. Result: entire days of blocks land on the wrong date and `worklog day --day $TODAY` shows them missing. Always use a fixed offset and update it at DST transitions. The skill should run `echo $WORKLOG_TZ` as a sanity check whenever a day's block count is unexpectedly low.
 
-7. **`worklog day --json` only emits JSON when paired with `--no-serve`.** Without `--no-serve`, the command blocks on `worklog web up` and produces no machine-readable output.
+7. **`worklog day` finishes in the terminal — it no longer opens the web UI by default.** It ends by printing the day summary; `worklog day --json` emits machine-readable output directly. The dockerised review UI is opt-in via `worklog day --serve`. (`--no-serve` still parses as a deprecated no-op, so older recipes that pass it keep working.)
 
 8. **Re-inference resets the dirty flag silently.** `worklog infer` (and `worklog day`, which calls it) deletes all blocks for the day and rebuilds them. The carry mechanism preserves `tempo_worklog_id`, `description`, `estimated_by`, `jira_issue` — but NOT `dirty`. Any pending local edits to a synced block become invisible to the next sync. Always pre-check for dirty blocks before re-infer; if any exist, offer to sync first.
 

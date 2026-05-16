@@ -438,7 +438,7 @@ fn subcommand_help_flag_exits_zero() {
         .args(["day", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("--no-serve"));
+        .stdout(predicate::str::contains("--serve"));
 }
 
 #[test]

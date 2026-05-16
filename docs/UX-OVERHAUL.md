@@ -134,10 +134,9 @@ Format: **As a** … **I want** … **so that** …. Tagged `[shipped]`,
   absorbed block is already synced (so its Tempo entry can't be orphaned)
   and to mark a synced *primary* dirty, so that the data-integrity
   invariants hold automatically.
-- **US-15** `[next]` As a developer, I want `worklog block merge --auto
-  --day D` to merge every adjacent same-ticket block on a day in one shot,
-  so that cleanup is one command. (Logic already exists inside the
-  estimator's post-pass — this exposes it.)
+- **US-15** `[shipped]` As a developer, I want `worklog block merge --auto`
+  to merge every adjacent same-ticket block on a day in one shot, so that
+  cleanup is one command.
 
 ### Daily flow — "least friction"
 
@@ -156,20 +155,20 @@ Format: **As a** … **I want** … **so that** …. Tagged `[shipped]`,
 - **US-19** `[shipped]` As a new user, I want `worklog --help` grouped by
   *workflow* (daily / collection / review / setup), so that I can find the
   command I need.
-- **US-20** `[later]` As a new user, I want `worklog status` — one screen:
-  daemon up?, hook installed?, schedule running?, secrets present?, last
-  collect, today's totals — so that I have a single health-and-state
-  dashboard instead of five separate `*-status` commands.
+- **US-20** `[shipped]` As a new user, I want `worklog status` — one
+  screen: daemon up?, hook installed?, schedule running?, web up?,
+  database, secrets, today's totals — so that I have a single
+  health-and-state dashboard instead of five separate `*-status`
+  commands.
 
 ## Other ideas worth considering
 
-- **Collapse the `*-status` commands.** `hook status`, `schedule status`,
-  `daemon status`, `web status`, `doctor`, `secret list` all answer "is
-  worklog healthy?" — fold them into one `worklog status`.
-- **`worklog day` should not *require* Docker.** Make the terminal summary
-  the default tail; `--serve` (opt-in) launches the web UI. Reverses
-  today's `--no-serve` default and matches the "browser is a choice"
-  principle.
+- ~~Collapse the `*-status` commands into one `worklog status`.~~
+  **Shipped in Phase 3.** `hook status`, `schedule status`, `daemon
+  status`, `web status` and `secret list` still exist, but `worklog
+  status` is now the one screen that answers "is worklog healthy?".
+- ~~`worklog day` should not *require* Docker.~~ **Shipped in Phase 3** —
+  the terminal summary is the default tail; `--serve` is opt-in.
 - **Friendlier daemon failures.** Every daemon-backed command should, on a
   connection refusal, say `the worklog daemon isn't running — start it
   with 'worklog daemon install'` rather than a raw reqwest error.
@@ -234,11 +233,30 @@ CLI, for exactly this reason.
   block. `block_service::split_block` + `POST /blocks/:id/split`, with
   unit + endpoint tests.
 
-## Roadmap — Phase 3 (proposed next)
+## Changelog — Phase 3 (shipped)
 
-- `worklog block merge --auto --day D` (US-15) — expose the estimator's
-  existing adjacent-same-ticket merge pass as a user command.
-- `worklog status` (US-20) — fold `doctor` + `hook/schedule/daemon/web
-  status` + `secret list` into one health-and-state screen.
-- `worklog day` should not *require* Docker — make the terminal summary
-  the default and `--serve` opt-in.
+- **`worklog block merge --auto`** — collapses every run of adjacent
+  same-ticket blocks on a day, reusing the estimator's existing merge
+  pass (which safe-skips synced and manually-edited blocks). New
+  `POST /blocks/auto-merge` endpoint.
+- **`worklog status`** — one health-and-state screen: daemon, hook,
+  schedule, web UI, database and secrets, plus today's tracked time.
+  Replaces hunting through five separate `*-status` commands. `--json`
+  for scripting/monitoring.
+- **`worklog day` no longer requires Docker** — the pipeline finishes in
+  the terminal with the day summary by default; the dockerised web UI is
+  opt-in via `--serve`. `--no-serve` is kept as a deprecated no-op so old
+  scripts don't break, and `worklog day --json` now emits JSON without
+  needing `--no-serve` (the old invariant-7 footgun is gone).
+
+## Roadmap — Phase 4 (proposed next)
+
+These are the remaining `[later]` user stories — none are blocking:
+
+- `worklog block split <id> <at>` accepting a clock time, not just
+  first-minutes (US-11 refinement).
+- `worklog block edit <id>` — open an `$EDITOR` form (US-12).
+- `worklog review` — interactive triage TUI (US-17).
+- bare `worklog` runs the daily pipeline (US-18).
+- `worklog ask "…"` — natural-language queries (US-5).
+- `worklog undo`, shell completions (`worklog completions <shell>`).
