@@ -15,7 +15,7 @@ pub const SCHEMA_SQL: &str = include_str!("../sql/schema.sql");
 /// Monotonic integer version of the schema, bumped by future migrations.
 /// Stored in `PRAGMA user_version` so we can detect stale dbs without adding
 /// a dedicated table.
-pub const SCHEMA_VERSION: i32 = 6;
+pub const SCHEMA_VERSION: i32 = 7;
 
 /// Open a connection at `path`, enable WAL + FK, and run migrations.
 pub fn open(path: &Path) -> Result<Connection> {
@@ -63,6 +63,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     ensure_blocks_is_personal(conn).context("ensuring blocks.is_personal")?;
     ensure_blocks_dirty(conn).context("ensuring blocks.dirty")?;
     ensure_jira_tickets_issue_id(conn).context("ensuring jira_tickets.issue_id")?;
+    ensure_jira_tickets_external(conn).context("ensuring jira_tickets.external")?;
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)
         .context("stamping user_version")?;
     Ok(())
@@ -112,6 +113,23 @@ fn ensure_jira_tickets_issue_id(conn: &Connection) -> Result<()> {
     if !has {
         conn.execute("ALTER TABLE jira_tickets ADD COLUMN issue_id TEXT", [])
             .context("ALTER TABLE jira_tickets ADD issue_id")?;
+    }
+    Ok(())
+}
+
+fn ensure_jira_tickets_external(conn: &Connection) -> Result<()> {
+    let has: bool = conn
+        .prepare("PRAGMA table_info(jira_tickets)")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter()
+        .any(|c| c == "external");
+    if !has {
+        conn.execute(
+            "ALTER TABLE jira_tickets ADD COLUMN external INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .context("ALTER TABLE jira_tickets ADD external")?;
     }
     Ok(())
 }

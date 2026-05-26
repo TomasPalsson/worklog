@@ -201,9 +201,13 @@ pub fn get_block(conn: &Connection, id: i64) -> Result<Option<Block>> {
 // ───────────────────────── jira tickets ─────────────────────────
 
 pub fn upsert_ticket(conn: &Connection, t: &JiraTicket) -> Result<()> {
+    // This path is used by the assignee=currentUser() refresh, so any
+    // matching key is by definition no longer "external" — reset the
+    // flag so a previously-external pick gets promoted cleanly once it
+    // shows up in your assigned set.
     conn.execute(
-        "INSERT INTO jira_tickets (key, summary, status, project_key, updated, issue_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "INSERT INTO jira_tickets (key, summary, status, project_key, updated, issue_id, external)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)
          ON CONFLICT(key) DO UPDATE SET
             summary     = excluded.summary,
             status      = excluded.status,
@@ -212,6 +216,7 @@ pub fn upsert_ticket(conn: &Connection, t: &JiraTicket) -> Result<()> {
             -- Don't clobber a known issue_id with NULL from a partial
             -- refresh — only overwrite when the incoming row has one.
             issue_id    = COALESCE(excluded.issue_id, jira_tickets.issue_id),
+            external    = 0,
             fetched_at  = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
         params![
             t.key,
@@ -223,6 +228,36 @@ pub fn upsert_ticket(conn: &Connection, t: &JiraTicket) -> Result<()> {
         ],
     )
     .context("upsert jira ticket")?;
+    Ok(())
+}
+
+/// Cache a ticket the user picked manually via the in-UI Jira search.
+/// Sets `external = 1` on INSERT but DELIBERATELY does not touch the
+/// flag on conflict — if the same key was previously synced as an
+/// assigned ticket (`external = 0`), we don't want to downgrade it. The
+/// estimator reads `WHERE external = 0`, so externals stay invisible
+/// to Claude while still rendering in the picker with their summary.
+pub fn upsert_external_ticket(conn: &Connection, t: &JiraTicket) -> Result<()> {
+    conn.execute(
+        "INSERT INTO jira_tickets (key, summary, status, project_key, updated, issue_id, external)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)
+         ON CONFLICT(key) DO UPDATE SET
+            summary     = excluded.summary,
+            status      = excluded.status,
+            project_key = COALESCE(excluded.project_key, jira_tickets.project_key),
+            updated     = excluded.updated,
+            issue_id    = COALESCE(excluded.issue_id, jira_tickets.issue_id),
+            fetched_at  = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+        params![
+            t.key,
+            t.summary,
+            t.status,
+            t.project_key,
+            t.updated,
+            t.issue_id
+        ],
+    )
+    .context("upsert external jira ticket")?;
     Ok(())
 }
 
@@ -456,5 +491,104 @@ mod tests {
             .map(|t| t.key)
             .collect();
         assert_eq!(keys, vec!["B", "A", "C"]);
+    }
+
+    fn external_flag(conn: &Connection, key: &str) -> i64 {
+        conn.query_row(
+            "SELECT external FROM jira_tickets WHERE key = ?1",
+            params![key],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn upsert_external_ticket_inserts_with_external_flag() {
+        let c = fresh();
+        upsert_external_ticket(
+            &c,
+            &JiraTicket {
+                key: "EXT-1".into(),
+                summary: "from search".into(),
+                status: Some("To Do".into()),
+                project_key: Some("EXT".into()),
+                updated: Some("2026-04-17T10:00:00Z".into()),
+                issue_id: Some("10001".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(external_flag(&c, "EXT-1"), 1);
+        // Still visible to list_tickets so the picker can render its
+        // summary once the user has picked it.
+        let all = list_tickets(&c).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].summary, "from search");
+    }
+
+    #[test]
+    fn upsert_external_does_not_downgrade_assigned_ticket() {
+        let c = fresh();
+        upsert_ticket(
+            &c,
+            &JiraTicket {
+                key: "MINE-1".into(),
+                summary: "assigned to me".into(),
+                status: Some("In Progress".into()),
+                project_key: Some("MINE".into()),
+                updated: Some("2026-04-17T10:00:00Z".into()),
+                issue_id: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(external_flag(&c, "MINE-1"), 0);
+        upsert_external_ticket(
+            &c,
+            &JiraTicket {
+                key: "MINE-1".into(),
+                summary: "fresh summary".into(),
+                status: Some("In Progress".into()),
+                project_key: Some("MINE".into()),
+                updated: Some("2026-04-18T11:00:00Z".into()),
+                issue_id: None,
+            },
+        )
+        .unwrap();
+        // A subsequent external-search upsert MUST NOT flip external
+        // back to 1 — that would hide an actually-assigned ticket from
+        // the estimator.
+        assert_eq!(external_flag(&c, "MINE-1"), 0);
+    }
+
+    #[test]
+    fn upsert_ticket_promotes_external_to_assigned() {
+        let c = fresh();
+        upsert_external_ticket(
+            &c,
+            &JiraTicket {
+                key: "FLIP-1".into(),
+                summary: "picked manually".into(),
+                status: Some("To Do".into()),
+                project_key: Some("FLIP".into()),
+                updated: Some("2026-04-17T10:00:00Z".into()),
+                issue_id: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(external_flag(&c, "FLIP-1"), 1);
+        upsert_ticket(
+            &c,
+            &JiraTicket {
+                key: "FLIP-1".into(),
+                summary: "picked manually".into(),
+                status: Some("In Progress".into()),
+                project_key: Some("FLIP".into()),
+                updated: Some("2026-04-18T11:00:00Z".into()),
+                issue_id: None,
+            },
+        )
+        .unwrap();
+        // assignee=currentUser() refresh now returns this key — promote
+        // it (external→0) so the estimator can see it.
+        assert_eq!(external_flag(&c, "FLIP-1"), 0);
     }
 }

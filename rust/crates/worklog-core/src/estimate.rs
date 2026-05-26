@@ -732,8 +732,15 @@ struct EventRow {
 }
 
 fn load_open_tickets(conn: &Connection) -> Result<Vec<Candidate>> {
-    let mut stmt =
-        conn.prepare("SELECT key, summary, status FROM jira_tickets ORDER BY updated DESC")?;
+    // `external = 0` filters out tickets the user picked manually via the
+    // in-UI Jira search — those are intentionally hidden from the
+    // estimator so Claude only ever auto-assigns from the user's actual
+    // assignee=currentUser() set.
+    let mut stmt = conn.prepare(
+        "SELECT key, summary, status FROM jira_tickets
+          WHERE external = 0
+          ORDER BY updated DESC",
+    )?;
     let rows = stmt
         .query_map([], |r| {
             Ok(Candidate {
@@ -2141,5 +2148,37 @@ mod tests {
             "err should name the bad value: {err}"
         );
         clear_provider_state();
+    }
+
+    #[test]
+    fn load_open_tickets_excludes_external_picks() {
+        let conn = open_memory().unwrap();
+        crate::repo::upsert_ticket(
+            &conn,
+            &crate::models::JiraTicket {
+                key: "MINE-1".into(),
+                summary: "assigned".into(),
+                status: Some("In Progress".into()),
+                project_key: Some("MINE".into()),
+                updated: Some("2026-04-18T10:00:00Z".into()),
+                issue_id: None,
+            },
+        )
+        .unwrap();
+        crate::repo::upsert_external_ticket(
+            &conn,
+            &crate::models::JiraTicket {
+                key: "EXT-9".into(),
+                summary: "picked manually".into(),
+                status: Some("To Do".into()),
+                project_key: Some("EXT".into()),
+                updated: Some("2026-04-18T11:00:00Z".into()),
+                issue_id: None,
+            },
+        )
+        .unwrap();
+        let candidates = load_open_tickets(&conn).unwrap();
+        let keys: Vec<&str> = candidates.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(keys, vec!["MINE-1"], "external pick must be filtered out");
     }
 }

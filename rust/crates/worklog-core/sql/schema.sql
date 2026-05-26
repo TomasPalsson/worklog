@@ -85,6 +85,10 @@ CREATE TABLE IF NOT EXISTS jira_tickets (
     project_key TEXT,
     updated TEXT,
     issue_id TEXT,
+    -- 1 if the ticket was picked manually by the user via the in-UI Jira
+    -- search and is NOT in the assignee=currentUser() refresh set. The
+    -- estimator filters these out so they're never offered to Claude.
+    external INTEGER NOT NULL DEFAULT 0,
     fetched_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
