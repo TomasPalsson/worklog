@@ -26,6 +26,8 @@
 //! * `GET  /blocks/:id/commits`          — commits in the window (work only)
 //! * `POST /infer`                       — { "day": "YYYY-MM-DD" }
 //! * `POST /jira/refresh`                — no body, refreshes open tickets
+//! * `GET  /tickets/search?q=&limit=`    — live Jira search (no persistence)
+//! * `POST /tickets/external`            — cache a manually-picked ticket
 //! * `POST /estimate`                    — { "day": "YYYY-MM-DD", "model": "?" }
 //! * `POST /sync`                        — { "day": "YYYY-MM-DD", "dry_run": true }
 //!
@@ -79,6 +81,8 @@ pub fn router(state: Shared) -> Router {
         .route("/blocks/:day", get(list_blocks))
         .route("/days/:day", get(day_summary))
         .route("/tickets", get(list_tickets))
+        .route("/tickets/search", get(search_tickets))
+        .route("/tickets/external", post(record_external_ticket))
         .route("/blocks/:id/events", get(block_events))
         .route("/blocks/:id/commits", get(block_commits))
         .route("/blocks/:id/ticket", post(assign_ticket))
@@ -417,6 +421,56 @@ async fn list_tickets(State(state): State<Shared>) -> Result<Json<TicketsRespons
     })
     .await?;
     Ok(Json(payload))
+}
+
+#[derive(Deserialize)]
+pub struct SearchQuery {
+    pub q: String,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+/// Live Jira search for tickets the user is not assigned to. Returns the
+/// matches directly — nothing is written to the local cache, so the
+/// estimator (which reads `external = 0`) keeps seeing only the
+/// assignee=currentUser() set.
+async fn search_tickets(
+    axum::extract::Query(q): axum::extract::Query<SearchQuery>,
+) -> Result<Json<Vec<crate::models::JiraTicket>>, ApiError> {
+    let query = q.q.trim().to_owned();
+    if query.is_empty() {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "query parameter `q` is required"
+        )));
+    }
+    let limit = q.limit.unwrap_or(jira::SEARCH_DEFAULT_LIMIT);
+    let auth = jira::JiraAuth::from_secrets().map_err(ApiError::from)?;
+    // Same pattern as `refresh_jira`: the blocking reqwest call runs on
+    // the blocking pool. No db access, so no `with_conn` needed.
+    let results = tokio::task::spawn_blocking(move || -> Result<Vec<crate::models::JiraTicket>> {
+        let client = crate::http::client()?;
+        jira::search_tickets_with(&auth, &query, limit, &client)
+    })
+    .await
+    .context("spawn_blocking")??;
+    Ok(Json(results))
+}
+
+/// Record a ticket the user just picked from the in-UI Jira search so
+/// the picker can show its summary on subsequent visits. The ticket is
+/// stored with `external = 1`, which the estimator filters out — Claude
+/// only ever sees the user's actual assignee=currentUser() set.
+async fn record_external_ticket(
+    State(state): State<Shared>,
+    Json(body): Json<crate::models::JiraTicket>,
+) -> Result<Json<Value>, ApiError> {
+    if body.key.trim().is_empty() {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "ticket `key` is required"
+        )));
+    }
+    with_conn(state, move |c| repo::upsert_external_ticket(c, &body)).await?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 /// Cached Jira tickets, ordered like the existing UI picker: most recently
@@ -1095,6 +1149,85 @@ mod tests {
         let v = read_json(resp).await;
         assert_eq!(v["tickets"].as_array().unwrap().len(), 0);
         assert_eq!(v["meta"]["count"], 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn search_tickets_rejects_empty_query() {
+        let app = router(state_with_block());
+        let resp = app
+            .oneshot(
+                Request::get("/tickets/search?q=%20%20")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let v = read_json(resp).await;
+        assert!(
+            v["error"].as_str().unwrap_or("").to_lowercase().contains("q"),
+            "expected error to name the missing param, got {v}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn record_external_ticket_persists_with_external_flag() {
+        let state = state_with_block();
+        let app = router(state.clone());
+        let body = Body::from(
+            serde_json::to_vec(&json!({
+                "key": "EXT-42",
+                "summary": "external pick",
+                "status": "To Do",
+                "project_key": "EXT",
+                "updated": "2026-04-18T11:00:00Z",
+                "issue_id": null
+            }))
+            .unwrap(),
+        );
+        let resp = app
+            .oneshot(
+                Request::post("/tickets/external")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        // Verify the row landed with external=1 and is visible to
+        // list_tickets but invisible to the estimator's load_open_tickets.
+        let conn = state.conn.lock().await;
+        let external: i64 = conn
+            .query_row(
+                "SELECT external FROM jira_tickets WHERE key = 'EXT-42'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(external, 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn record_external_ticket_rejects_empty_key() {
+        let app = router(state_with_block());
+        let body = Body::from(
+            serde_json::to_vec(&json!({
+                "key": "   ",
+                "summary": "x"
+            }))
+            .unwrap(),
+        );
+        let resp = app
+            .oneshot(
+                Request::post("/tickets/external")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test(flavor = "current_thread")]
