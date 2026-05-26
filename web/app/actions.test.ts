@@ -32,6 +32,8 @@ mock.module("@/lib/daemon", () => ({
   refreshJira: async () => ({ tickets_written: 0, source: "jira" }),
   listBlockEvents: async () => [],
   listBlockCommits: async () => [],
+  searchTickets: async () => [],
+  rememberExternalTicket: async () => ({}),
 }));
 
 let _runActionForTests: <T>(

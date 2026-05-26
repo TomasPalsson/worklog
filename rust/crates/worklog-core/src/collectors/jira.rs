@@ -359,8 +359,7 @@ mod tests {
             email: "x".into(),
             token: "y".into(),
         };
-        let results =
-            search_tickets_with(&auth, "deploy", 20, &http::client().unwrap()).unwrap();
+        let results = search_tickets_with(&auth, "deploy", 20, &http::client().unwrap()).unwrap();
         mock.assert();
         assert_eq!(results.len(), 1);
         let t = &results[0];

@@ -1165,7 +1165,11 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let v = read_json(resp).await;
         assert!(
-            v["error"].as_str().unwrap_or("").to_lowercase().contains("q"),
+            v["error"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains("q"),
             "expected error to name the missing param, got {v}"
         );
     }

@@ -194,6 +194,30 @@ export async function listTickets(): Promise<{
 }
 
 /**
+ * Live Jira search for tickets the user is NOT assigned to. Results are
+ * returned ephemerally — the daemon does NOT cache them, so the
+ * estimator (which only reads tickets cached with `external = 0`) never
+ * sees them. Only persists when the user picks one via
+ * `rememberExternalTicket`.
+ */
+export async function searchTickets(q: string, limit = 20): Promise<JiraTicket[]> {
+  // The daemon enforces a min length but the picker should already gate
+  // this. encodeURIComponent because `q` can contain `+`, `&`, etc.
+  const path = `/tickets/search?q=${encodeURIComponent(q)}&limit=${limit}`;
+  return call<JiraTicket[]>("GET", path);
+}
+
+/**
+ * Persist a ticket the user just picked from the live search so the
+ * picker can render its summary on subsequent visits. The daemon flags
+ * it `external = 1`, hiding it from the estimator while keeping it
+ * available to the manual picker.
+ */
+export async function rememberExternalTicket(t: JiraTicket): Promise<void> {
+  await call("POST", "/tickets/external", t);
+}
+
+/**
  * Events linked to a specific block, ordered by their own timestamp.
  * Fetched lazily on the first expand of the per-block events drill-down
  * so the day page's initial render stays cheap.

@@ -802,6 +802,42 @@ button {
   font-size: 13px;
 }
 
+/* Section heading separating "Your tickets" from "Other Jira tickets"
+   in the picker. Quiet (small, muted) so it organises without competing
+   with the rows themselves. */
+.combobox-group-label {
+  padding: 8px 10px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.combobox-group-label + .combobox-item {
+  margin-top: 0;
+}
+
+.combobox-item.external .key {
+  /* Different ink so it's obvious at a glance which rows the estimator
+     can see and which were picked manually. Same hue family, lighter
+     so it reads as "secondary group" rather than "warning". */
+  color: var(--fg-muted);
+}
+
+.combobox-spinner {
+  width: 14px;
+  height: 14px;
+  color: var(--fg-subtle);
+  flex-shrink: 0;
+  animation: combobox-spin 0.8s linear infinite;
+}
+
+@keyframes combobox-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
 .combobox-clear {
   border-top: 1px solid var(--border);
   padding: 8px 10px;

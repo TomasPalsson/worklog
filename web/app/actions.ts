@@ -13,8 +13,10 @@ import {
   refreshJira as daemonRefreshJira,
   listBlockEvents as daemonListBlockEvents,
   listBlockCommits as daemonListBlockCommits,
+  searchTickets as daemonSearchTickets,
+  rememberExternalTicket as daemonRememberExternalTicket,
 } from "@/lib/daemon";
-import type { CommitEntry, Event } from "@/lib/types";
+import type { CommitEntry, Event, JiraTicket } from "@/lib/types";
 
 /**
  * Every Server Action returns one of these. `useTransition`'s `start()`
@@ -150,6 +152,36 @@ export async function fetchBlockCommits(
   blockId: number,
 ): Promise<ActionResult<CommitEntry[]>> {
   return runAction(() => daemonListBlockCommits(blockId));
+}
+
+/**
+ * Live Jira search for tickets the user is not assigned to. The picker
+ * debounces typed input and calls this. Results stay ephemeral — they
+ * are only persisted when the user actually picks one (via
+ * `assignExternalTicket`), so the estimator never sees them.
+ */
+export async function searchJiraTickets(
+  q: string,
+): Promise<ActionResult<JiraTicket[]>> {
+  return runAction(() => daemonSearchTickets(q));
+}
+
+/**
+ * Pick a ticket that came from the live search. Records it in the local
+ * cache with `external = 1` (so the picker can render its summary on
+ * subsequent visits) and then assigns it to the block in one server
+ * action. Two daemon calls; one round trip from the client.
+ */
+export async function assignExternalTicket(
+  blockId: number,
+  ticket: JiraTicket,
+  day: string,
+): Promise<ActionResult> {
+  const r = await runAction(async () => {
+    await daemonRememberExternalTicket(ticket);
+    await daemonAssignTicket(blockId, ticket.key);
+  }, `/${day}`);
+  return r.ok ? { ok: true, data: undefined } : r;
 }
 
 // Exported for tests. Not used by callers — they use the CRUD/query
