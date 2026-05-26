@@ -18,14 +18,24 @@ use anyhow::{Context, Result};
 use fs4::fs_std::FileExt;
 use tracing::{info, warn};
 
-/// RAII handle for the self-update lockfile. Drops the fd → flock
-/// released automatically.
+/// RAII handle for the self-update lockfile.
+///
+/// We explicitly `unlock` in Drop instead of relying on close-releases-flock
+/// semantics. On macOS the BSD `flock(2)` release on close is observable in
+/// the kernel asynchronously, so a re-`open + flock` immediately after drop
+/// can transiently return `EWOULDBLOCK`. An explicit unlock makes the
+/// release deterministic.
 #[derive(Debug)]
 pub struct UpdateLock {
-    // Keep the File alive for the guard's lifetime — flock releases on
-    // fd close per POSIX.
-    #[allow(dead_code)]
     file: File,
+}
+
+impl Drop for UpdateLock {
+    fn drop(&mut self) {
+        // Disambiguate against the stdlib `File::unlock` (stable since 1.89,
+        // newer than our MSRV) — `FileExt::unlock` is the one we want.
+        let _ = FileExt::unlock(&self.file);
+    }
 }
 
 /// Acquire an exclusive, non-blocking advisory lock on

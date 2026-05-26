@@ -122,6 +122,12 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    // `$WORKLOG_HOME` is process-global, so any test that flips it must
+    // hold this mutex — otherwise a concurrent `remove_var` from one
+    // test wipes another test's setup between its `set_var` and its
+    // assert and we get spurious `resolve()` mismatches.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn from_root_assigns_expected_subpaths() {
         let p = Paths::from_root("/tmp/fake");
@@ -146,9 +152,8 @@ mod tests {
 
     #[test]
     fn resolve_honors_env_override() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempdir().unwrap();
-        // SAFETY: tests are single-threaded via `--test-threads=1` is not
-        // guaranteed, so we scope the env mutation tightly.
         std::env::set_var(ENV_HOME, tmp.path());
         let p = Paths::resolve().unwrap();
         assert_eq!(p.root, tmp.path());
@@ -167,6 +172,7 @@ mod tests {
 
     #[test]
     fn xdg_default_splits_data_and_config() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var(ENV_HOME);
         let p = Paths::resolve().unwrap();
         // The two should live in distinct trees.
