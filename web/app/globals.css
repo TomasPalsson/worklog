@@ -448,6 +448,134 @@ button {
   padding: 8px 0;
 }
 
+/* Collapsible ticket groups — one row per (day, jira_issue) mirrors
+   how Tempo will see the day after `worklog sync` aggregates. Pattern
+   parallels .personal-section: native <details>, no client JS. */
+.ticket-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ticket-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-raised);
+  transition: border-color 120ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+.ticket-group:hover {
+  border-color: var(--border-strong);
+}
+.ticket-group.unassigned {
+  border-left: 3px solid var(--amber);
+}
+.ticket-group.assigned {
+  border-left: 3px solid var(--sage);
+}
+.ticket-group > summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  border-radius: var(--radius-lg);
+}
+.ticket-group > summary::-webkit-details-marker {
+  display: none;
+}
+.ticket-group > summary:hover {
+  background: var(--bg-sunk);
+}
+.ticket-group[open] > summary {
+  border-bottom: 1px solid var(--border);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+.ticket-group-label {
+  font-weight: 600;
+  color: var(--fg);
+  font-size: 14px;
+  letter-spacing: 0.01em;
+}
+.ticket-group-meta {
+  position: relative;
+  padding-left: 12px;
+}
+.ticket-group-meta::before {
+  content: "·";
+  position: absolute;
+  left: 4px;
+  opacity: 0.5;
+}
+.ticket-group-description {
+  flex: 1;
+  min-width: 0;
+  margin-left: 8px;
+  font-family: var(--font-sans, inherit);
+  font-size: 12px;
+  font-style: italic;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ticket-group-hint::after {
+  content: "▸";
+  display: inline-block;
+  transition: transform 120ms ease-out;
+  font-size: 12px;
+}
+.ticket-group[open] .ticket-group-hint::after {
+  transform: rotate(90deg);
+}
+.ticket-group-body {
+  padding: 12px 16px 16px;
+}
+/* When a group is expanded, the per-block cards inside don't need
+   their own border-left chip — the parent ticket-group already
+   communicates assigned/unassigned. Keeps the visual quieter. */
+.ticket-group-body .block.assigned,
+.ticket-group-body .block.unassigned {
+  border-left-width: 1px;
+  border-left-color: var(--border);
+  padding-left: 19px;
+}
+
+/* Sync-state chip — colour does most of the work; the label is
+   small but present for screenreaders and colourblind viewers. */
+.sync-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+  line-height: 1.4;
+}
+.sync-chip-synced {
+  background: var(--sage-bg);
+  color: var(--sage-ink);
+}
+.sync-chip-dirty {
+  background: var(--amber-bg);
+  color: var(--amber-ink);
+}
+.sync-chip-mixed {
+  background: var(--amber-bg);
+  color: var(--amber-ink);
+}
+.sync-chip-unsynced {
+  background: var(--bg-sunk);
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+}
+
 /* time column */
 
 .block-time {
