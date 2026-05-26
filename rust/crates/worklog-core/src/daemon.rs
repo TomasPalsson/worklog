@@ -866,8 +866,40 @@ async fn run_sync(
         .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{}`: {e}", body.day)))?;
     let auth = tempo::TempoAuth::from_secrets().map_err(ApiError::from)?;
     let dry_run = body.dry_run;
-    let (report, results) =
-        with_conn(state, move |c| tempo::sync_day(c, &auth, day, dry_run)).await?;
+    // Same invoker dance as the CLI: construct an LLM provider for
+    // multi-block ticket-day description summaries. We do this inside
+    // `with_conn` so the (non-Send) reqwest client lives on the
+    // spawn_blocking thread alongside the sqlite Connection.
+    let (report, results) = with_conn(state, move |c| {
+        let provider = if dry_run {
+            None
+        } else {
+            estimate::resolve_provider().ok()
+        };
+        let http_client = crate::http::client()?;
+        match provider.as_ref() {
+            Some(estimate::ProviderChoice::ClaudeSubprocess) => tempo::sync_day_with_invoker(
+                c,
+                &auth,
+                day,
+                dry_run,
+                &http_client,
+                Some(&estimate::ClaudeSubprocess),
+                estimate::DEFAULT_MODEL,
+            ),
+            Some(estimate::ProviderChoice::LiteLLM(inv)) => tempo::sync_day_with_invoker(
+                c,
+                &auth,
+                day,
+                dry_run,
+                &http_client,
+                Some(inv),
+                estimate::DEFAULT_MODEL,
+            ),
+            None => tempo::sync_day_with(c, &auth, day, dry_run, &http_client),
+        }
+    })
+    .await?;
     Ok(Json(json!({
         "day":     body.day,
         "dry_run": dry_run,

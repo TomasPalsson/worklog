@@ -1,19 +1,32 @@
 //! Tempo Cloud worklog sync.
 //!
-//! One Tempo worklog per block. Writes `tempo_worklog_id` back onto the
-//! block row after a successful POST so re-syncing is safe and cheap.
-//! Blocks without `jira_issue` are skipped — the review UI prompts the
-//! user to assign one before the next sync attempt.
+//! Aggregates blocks sharing the same `(day, jira_issue)` into a single
+//! Tempo worklog. Writes the resulting `tempo_worklog_id` back onto
+//! every block in the group so re-syncing is safe and cheap. Blocks
+//! without `jira_issue` are skipped — the review UI prompts the user
+//! to assign one before the next sync attempt.
+//!
+//! Three group states drive the dispatch (see [`GroupClassification`]):
+//!
+//! * `AllUnsynced` — POST one aggregated entry, write id back to all.
+//! * `SharedId` — PUT the existing entry with the new aggregate;
+//!   newly-added unsynced blocks inherit the id.
+//! * `MixedLegacy` — fall back to per-block sync. Days previously
+//!   synced one-Tempo-entry-per-block keep that shape; we never
+//!   silently delete or merge their entries.
+
+use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use reqwest::blocking::Client;
 use rusqlite::{params, Connection};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use tracing::debug;
 
 use crate::collectors::jira::JiraAuth;
+use crate::estimate::{self, ModelInvoker};
 use crate::http::{self, RequestBuilderExt};
 use crate::repo;
 
@@ -78,12 +91,40 @@ pub fn sync_day(
     sync_day_with(conn, auth, day, dry_run, &http::client()?)
 }
 
+/// Sync a day's blocks without an LLM for description generation.
+/// Aggregated multi-block groups fall back to a `;`-joined description
+/// of distinct per-block descriptions. Callers that want a Claude /
+/// LiteLLM summary should use [`sync_day_with_invoker`].
 pub fn sync_day_with(
     conn: &Connection,
     auth: &TempoAuth,
     day: NaiveDate,
     dry_run: bool,
     client: &Client,
+) -> Result<(CollectReport, Vec<SyncResult>)> {
+    sync_day_with_invoker(
+        conn,
+        auth,
+        day,
+        dry_run,
+        client,
+        None,
+        estimate::DEFAULT_MODEL,
+    )
+}
+
+/// Sync a day's blocks, optionally using `invoker` to summarise the
+/// joined descriptions of a multi-block ticket-day group into one
+/// concise Jira-style sentence. Passing `None` for the invoker (or
+/// running `dry_run = true`) skips the LLM call entirely.
+pub fn sync_day_with_invoker(
+    conn: &Connection,
+    auth: &TempoAuth,
+    day: NaiveDate,
+    dry_run: bool,
+    client: &Client,
+    invoker: Option<&dyn ModelInvoker>,
+    model: &str,
 ) -> Result<(CollectReport, Vec<SyncResult>)> {
     let mut report = CollectReport {
         source: "tempo",
@@ -97,54 +138,47 @@ pub fn sync_day_with(
     // and cache it back so the next sync is local-only.
     let author = resolve_account_id(&auth.author, client).unwrap_or_else(|_| auth.author.clone());
 
-    // Pick up two kinds of work:
+    // Eligible blocks = the set the old per-block sync would have
+    // touched. Two kinds:
     //   (a) blocks never synced (`tempo_worklog_id` blank) → POST
     //   (b) blocks edited since their last sync (`dirty = 1`) → PUT
-    let rows: Vec<PendingBlock> = {
-        let mut stmt = conn.prepare(
-            "SELECT id, jira_issue, started_at, duration_seconds, description, day,
-                    tempo_worklog_id
-               FROM blocks
-              WHERE day = ?1
-                AND is_personal = 0
-                AND (
-                  tempo_worklog_id IS NULL
-                  OR tempo_worklog_id = ''
-                  OR dirty = 1
-                )
-              ORDER BY started_at",
-        )?;
-        let iter = stmt.query_map(params![day.to_string()], |r| {
-            Ok(PendingBlock {
-                id: r.get(0)?,
-                jira_issue: r.get(1)?,
-                started_at: r.get(2)?,
-                duration_seconds: r.get(3)?,
-                description: r.get(4)?,
-                day: r.get(5)?,
-                tempo_worklog_id: r.get(6)?,
-            })
-        })?;
-        iter.collect::<Result<Vec<_>, _>>()?
-    };
+    // For aggregation we need the FULL ticket-day total later, but the
+    // eligibility filter still gates whether a ticket-day group needs
+    // network work this run.
+    let eligible = fetch_eligible_blocks(conn, day)?;
 
-    for b in rows {
-        let Some(issue) = b.jira_issue.clone() else {
-            report.skipped += 1;
-            results.push(SyncResult {
-                block_id: b.id,
-                status: "skipped",
-                reason: Some("no jira_issue — assign one in the UI".into()),
-                tempo_id: None,
-                payload: None,
-                http_status: None,
-            });
+    // Group eligible blocks by `jira_issue`. `BTreeMap` keeps a stable
+    // order so the result table prints deterministically.
+    let mut groups: BTreeMap<Option<String>, Vec<PendingBlock>> = BTreeMap::new();
+    for b in eligible {
+        groups.entry(b.jira_issue.clone()).or_default().push(b);
+    }
+
+    for (issue_opt, eligible_in_group) in groups {
+        let Some(issue) = issue_opt else {
+            // Unassigned eligible blocks → existing per-block skip.
+            for b in eligible_in_group {
+                report.skipped += 1;
+                results.push(SyncResult {
+                    block_id: b.id,
+                    status: "skipped",
+                    reason: Some("no jira_issue — assign one in the UI".into()),
+                    tempo_id: None,
+                    payload: None,
+                    http_status: None,
+                });
+            }
             continue;
         };
 
-        // Tempo Cloud v4 requires `issueId` (numeric) not `issueKey`.
-        // Resolve from the local cache; if missing, fetch from Jira and
-        // write back so the next sync is fast.
+        // Fetch every non-personal block for this `(day, issue)` so the
+        // aggregate total accounts for already-synced clean blocks too.
+        // Eligible-only would undercount the duration on re-sync after
+        // adding a fresh block to a previously-aggregated group.
+        let all_in_group = fetch_blocks_for_issue(conn, day, &issue)?;
+        let classification = classify_group(&all_in_group);
+
+        // Resolve numeric issue id once per group (cache hit after first).
         let issue_id = match resolve_issue_id(conn, &issue, client)? {
             Some(id) => id,
             None => {
@@ -153,126 +187,583 @@ pub fn sync_day_with(
                      run `worklog collect jira` to refresh the ticket cache, \
                      or check that the key exists"
                 );
-                report.errors.push(format!("block {}: {msg}", b.id));
-                results.push(SyncResult {
-                    block_id: b.id,
-                    status: "error",
-                    reason: Some(msg),
-                    tempo_id: None,
-                    payload: None,
-                    http_status: None,
-                });
+                for b in &eligible_in_group {
+                    report.errors.push(format!("block {}: {msg}", b.id));
+                    results.push(SyncResult {
+                        block_id: b.id,
+                        status: "error",
+                        reason: Some(msg.clone()),
+                        tempo_id: None,
+                        payload: None,
+                        http_status: None,
+                    });
+                }
                 continue;
             }
         };
 
-        let payload = json!({
-            "issueId":          issue_id,
-            "timeSpentSeconds": b.duration_seconds,
-            "startDate":        b.day,
-            "startTime":        start_time(&b.started_at),
-            "description":      b.description.clone().unwrap_or_else(|| format!("Work on {issue}")),
-            "authorAccountId":  author,
-        });
+        match classification {
+            GroupClassification::AllUnsynced => {
+                sync_group_aggregated(
+                    conn,
+                    auth,
+                    client,
+                    &issue,
+                    &issue_id,
+                    &author,
+                    &all_in_group,
+                    &eligible_in_group,
+                    None,
+                    dry_run,
+                    invoker,
+                    model,
+                    &mut report,
+                    &mut results,
+                )?;
+            }
+            GroupClassification::SharedId(existing_id) => {
+                sync_group_aggregated(
+                    conn,
+                    auth,
+                    client,
+                    &issue,
+                    &issue_id,
+                    &author,
+                    &all_in_group,
+                    &eligible_in_group,
+                    Some(&existing_id),
+                    dry_run,
+                    invoker,
+                    model,
+                    &mut report,
+                    &mut results,
+                )?;
+            }
+            GroupClassification::MixedLegacy => {
+                // Legacy days where every block has its own tempo entry
+                // stay one-per-block. Don't aggregate behind the user's
+                // back — that would orphan all-but-one Tempo entries.
+                for b in &eligible_in_group {
+                    sync_block_legacy(
+                        conn,
+                        auth,
+                        client,
+                        &issue,
+                        &issue_id,
+                        &author,
+                        b,
+                        dry_run,
+                        &mut report,
+                        &mut results,
+                    )?;
+                }
+            }
+        }
+    }
 
-        // Two paths: existing tempo_worklog_id → PUT update; otherwise → POST create.
-        let existing_id = b
-            .tempo_worklog_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
+    Ok((report, results))
+}
 
-        if dry_run {
+/// Pull every block that today's WHERE clause would consider "needs
+/// action" (unsynced or dirty, non-personal). Identical to the historic
+/// query so behaviour for ungrouped paths matches one-to-one.
+fn fetch_eligible_blocks(conn: &Connection, day: NaiveDate) -> Result<Vec<PendingBlock>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, jira_issue, started_at, duration_seconds, description, day,
+                tempo_worklog_id
+           FROM blocks
+          WHERE day = ?1
+            AND is_personal = 0
+            AND (
+              tempo_worklog_id IS NULL
+              OR tempo_worklog_id = ''
+              OR dirty = 1
+            )
+          ORDER BY started_at",
+    )?;
+    let iter = stmt.query_map(params![day.to_string()], |r| {
+        Ok(PendingBlock {
+            id: r.get(0)?,
+            jira_issue: r.get(1)?,
+            started_at: r.get(2)?,
+            duration_seconds: r.get(3)?,
+            description: r.get(4)?,
+            day: r.get(5)?,
+            tempo_worklog_id: r.get(6)?,
+        })
+    })?;
+    Ok(iter.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// All non-personal blocks for a `(day, issue)` ticket — synced and
+/// unsynced alike. Used to build the aggregated total + earliest start
+/// time + full description set so a re-sync of a previously-aggregated
+/// group accounts for blocks that are clean and weren't pulled by the
+/// eligibility query.
+fn fetch_blocks_for_issue(
+    conn: &Connection,
+    day: NaiveDate,
+    issue: &str,
+) -> Result<Vec<PendingBlock>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, jira_issue, started_at, duration_seconds, description, day,
+                tempo_worklog_id
+           FROM blocks
+          WHERE day = ?1
+            AND is_personal = 0
+            AND jira_issue = ?2
+          ORDER BY started_at",
+    )?;
+    let iter = stmt.query_map(params![day.to_string(), issue], |r| {
+        Ok(PendingBlock {
+            id: r.get(0)?,
+            jira_issue: r.get(1)?,
+            started_at: r.get(2)?,
+            duration_seconds: r.get(3)?,
+            description: r.get(4)?,
+            day: r.get(5)?,
+            tempo_worklog_id: r.get(6)?,
+        })
+    })?;
+    Ok(iter.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// Three group shapes drive sync dispatch. See module docs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GroupClassification {
+    /// No block in the group has a Tempo id yet → POST one new entry.
+    AllUnsynced,
+    /// Every synced block in the group shares the same Tempo id (the
+    /// group was previously aggregated, or has exactly one synced
+    /// block). PUT updates that id. Any unsynced blocks in the group
+    /// inherit the shared id on write-back.
+    SharedId(String),
+    /// Synced blocks have differing Tempo ids — this day was synced
+    /// under the old one-entry-per-block scheme. Fall back to per-block
+    /// behaviour; never merge legacy entries silently.
+    MixedLegacy,
+}
+
+fn classify_group(blocks: &[PendingBlock]) -> GroupClassification {
+    let mut seen: Option<String> = None;
+    for b in blocks {
+        let Some(id) = normalised_tempo_id_str(&b.tempo_worklog_id) else {
+            continue;
+        };
+        match &seen {
+            None => seen = Some(id),
+            Some(prev) if prev == &id => {}
+            Some(_) => return GroupClassification::MixedLegacy,
+        }
+    }
+    match seen {
+        Some(id) => GroupClassification::SharedId(id),
+        None => GroupClassification::AllUnsynced,
+    }
+}
+
+fn normalised_tempo_id_str(raw: &Option<String>) -> Option<String> {
+    raw.as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sync_group_aggregated(
+    conn: &Connection,
+    auth: &TempoAuth,
+    client: &Client,
+    issue: &str,
+    issue_id: &str,
+    author: &str,
+    all_in_group: &[PendingBlock],
+    eligible_in_group: &[PendingBlock],
+    existing_id: Option<&str>,
+    dry_run: bool,
+    invoker: Option<&dyn ModelInvoker>,
+    model: &str,
+    report: &mut CollectReport,
+    results: &mut Vec<SyncResult>,
+) -> Result<()> {
+    // Aggregate totals from the full group (synced + unsynced) so we
+    // PUT the right number on a re-sync that added a new block.
+    let total_seconds: i64 = all_in_group.iter().map(|b| b.duration_seconds).sum();
+    let earliest_started = all_in_group
+        .iter()
+        .map(|b| b.started_at.as_str())
+        .min()
+        .unwrap_or("");
+    let day_str = all_in_group
+        .first()
+        .map(|b| b.day.clone())
+        .unwrap_or_default();
+    let descriptions: Vec<String> = all_in_group
+        .iter()
+        .filter_map(|b| b.description.clone())
+        .collect();
+    let description = summarize_descriptions(invoker, issue, &descriptions, model, dry_run);
+
+    let payload = json!({
+        "issueId":          issue_id,
+        "timeSpentSeconds": total_seconds,
+        "startDate":        day_str,
+        "startTime":        start_time(earliest_started),
+        "description":      description,
+        "authorAccountId":  author,
+    });
+
+    if dry_run {
+        let status = if existing_id.is_some() {
+            "dry-run-update"
+        } else {
+            "dry-run"
+        };
+        for (i, b) in eligible_in_group.iter().enumerate() {
+            let agg_status = if eligible_in_group.len() > 1 && i > 0 {
+                if existing_id.is_some() {
+                    "dry-run-update-aggregated"
+                } else {
+                    "dry-run-aggregated"
+                }
+            } else {
+                status
+            };
             results.push(SyncResult {
                 block_id: b.id,
-                status: if existing_id.is_some() {
-                    "dry-run-update"
-                } else {
-                    "dry-run"
-                },
+                status: agg_status,
                 reason: None,
-                tempo_id: existing_id.map(|s| s.to_owned()),
-                payload: Some(payload),
+                tempo_id: existing_id.map(str::to_owned),
+                payload: Some(payload.clone()),
                 http_status: None,
             });
-            continue;
         }
+        return Ok(());
+    }
 
-        let (url, method) = match existing_id {
-            Some(id) => (format!("{}/worklogs/{}", auth.base_url, id), "PUT"),
-            None => (format!("{}/worklogs", auth.base_url), "POST"),
-        };
-        let req = if method == "PUT" {
-            client.put(&url)
-        } else {
-            client.post(&url)
-        };
-        let resp = req
-            .bearer_auth(&auth.token)
-            .header("Content-Type", "application/json")
-            .json(&payload)
-            .send()
-            .with_context(|| format!("tempo {method}"))?;
-        let http_status = resp.status().as_u16();
-        if !resp.status().is_success() {
-            let body = resp.text().unwrap_or_default();
-            report
-                .errors
-                .push(format!("block {}: HTTP {http_status} — {body}", b.id));
+    let (url, method) = match existing_id {
+        Some(id) => (format!("{}/worklogs/{}", auth.base_url, id), "PUT"),
+        None => (format!("{}/worklogs", auth.base_url), "POST"),
+    };
+    let req = if method == "PUT" {
+        client.put(&url)
+    } else {
+        client.post(&url)
+    };
+    let resp = req
+        .bearer_auth(&auth.token)
+        .header("Content-Type", "application/json")
+        .json(&payload)
+        .send()
+        .with_context(|| format!("tempo {method}"))?;
+    let http_status = resp.status().as_u16();
+    if !resp.status().is_success() {
+        let body = resp.text().unwrap_or_default();
+        let head_id = eligible_in_group.first().map(|b| b.id).unwrap_or(-1);
+        report
+            .errors
+            .push(format!("group {issue}: HTTP {http_status} — {body}"));
+        for b in eligible_in_group {
             results.push(SyncResult {
                 block_id: b.id,
                 status: "error",
-                reason: Some(body),
+                reason: Some(body.clone()),
+                tempo_id: None,
+                payload: if b.id == head_id {
+                    Some(payload.clone())
+                } else {
+                    None
+                },
+                http_status: Some(http_status),
+            });
+        }
+        return Ok(());
+    }
+
+    let parsed: TempoCreateResponse = resp.json().context("decode tempo response")?;
+    let tempo_id = match (normalise_tempo_id(&parsed.tempo_worklog_id), existing_id) {
+        (Some(s), _) => s,
+        (None, Some(prev)) => prev.to_owned(),
+        (None, None) => {
+            let msg = format!(
+                "group {issue}: tempo returned no usable tempoWorklogId: {}",
+                parsed.tempo_worklog_id
+            );
+            report.errors.push(msg.clone());
+            for b in eligible_in_group {
+                results.push(SyncResult {
+                    block_id: b.id,
+                    status: "error",
+                    reason: Some(msg.clone()),
+                    tempo_id: None,
+                    payload: None,
+                    http_status: Some(http_status),
+                });
+            }
+            return Ok(());
+        }
+    };
+
+    // Write the resolved tempo id back to every eligible block in the
+    // group — the new ones get the id for the first time, dirty ones
+    // get `dirty = 0` cleared. Clean already-synced blocks aren't in
+    // the eligible set so they're left untouched (their state is
+    // already correct).
+    {
+        let mut stmt =
+            conn.prepare("UPDATE blocks SET tempo_worklog_id = ?1, dirty = 0 WHERE id = ?2")?;
+        for b in eligible_in_group {
+            stmt.execute(params![tempo_id, b.id])?;
+        }
+    }
+    report.synced += 1;
+    let head_status = if method == "PUT" { "updated" } else { "synced" };
+    let tail_status = if method == "PUT" {
+        "updated-aggregated"
+    } else {
+        "synced-aggregated"
+    };
+    for (i, b) in eligible_in_group.iter().enumerate() {
+        let status = if eligible_in_group.len() > 1 && i > 0 {
+            tail_status
+        } else {
+            head_status
+        };
+        results.push(SyncResult {
+            block_id: b.id,
+            status,
+            reason: None,
+            tempo_id: Some(tempo_id.clone()),
+            payload: None,
+            http_status: Some(http_status),
+        });
+    }
+    debug!(
+        issue,
+        block_count = eligible_in_group.len(),
+        method,
+        "synced aggregated group to tempo"
+    );
+    Ok(())
+}
+
+/// One-block-per-Tempo-entry fallback used for `MixedLegacy` groups. A
+/// straight extraction of the original loop body — kept verbatim so
+/// already-synced days behave identically.
+#[allow(clippy::too_many_arguments)]
+fn sync_block_legacy(
+    conn: &Connection,
+    auth: &TempoAuth,
+    client: &Client,
+    issue: &str,
+    issue_id: &str,
+    author: &str,
+    b: &PendingBlock,
+    dry_run: bool,
+    report: &mut CollectReport,
+    results: &mut Vec<SyncResult>,
+) -> Result<()> {
+    let payload = json!({
+        "issueId":          issue_id,
+        "timeSpentSeconds": b.duration_seconds,
+        "startDate":        b.day,
+        "startTime":        start_time(&b.started_at),
+        "description":      b.description.clone().unwrap_or_else(|| format!("Work on {issue}")),
+        "authorAccountId":  author,
+    });
+
+    let existing_id = b
+        .tempo_worklog_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    if dry_run {
+        results.push(SyncResult {
+            block_id: b.id,
+            status: if existing_id.is_some() {
+                "dry-run-update"
+            } else {
+                "dry-run"
+            },
+            reason: None,
+            tempo_id: existing_id.map(|s| s.to_owned()),
+            payload: Some(payload),
+            http_status: None,
+        });
+        return Ok(());
+    }
+
+    let (url, method) = match existing_id {
+        Some(id) => (format!("{}/worklogs/{}", auth.base_url, id), "PUT"),
+        None => (format!("{}/worklogs", auth.base_url), "POST"),
+    };
+    let req = if method == "PUT" {
+        client.put(&url)
+    } else {
+        client.post(&url)
+    };
+    let resp = req
+        .bearer_auth(&auth.token)
+        .header("Content-Type", "application/json")
+        .json(&payload)
+        .send()
+        .with_context(|| format!("tempo {method}"))?;
+    let http_status = resp.status().as_u16();
+    if !resp.status().is_success() {
+        let body = resp.text().unwrap_or_default();
+        report
+            .errors
+            .push(format!("block {}: HTTP {http_status} — {body}", b.id));
+        results.push(SyncResult {
+            block_id: b.id,
+            status: "error",
+            reason: Some(body),
+            tempo_id: None,
+            payload: Some(payload),
+            http_status: Some(http_status),
+        });
+        return Ok(());
+    }
+
+    let parsed: TempoCreateResponse = resp.json().context("decode tempo response")?;
+    let tempo_id = match (normalise_tempo_id(&parsed.tempo_worklog_id), existing_id) {
+        (Some(s), _) => s,
+        (None, Some(prev)) => prev.to_owned(),
+        (None, None) => {
+            let msg = format!(
+                "block {}: tempo returned no usable tempoWorklogId: {}",
+                b.id, parsed.tempo_worklog_id
+            );
+            report.errors.push(msg.clone());
+            results.push(SyncResult {
+                block_id: b.id,
+                status: "error",
+                reason: Some(msg),
                 tempo_id: None,
                 payload: Some(payload),
                 http_status: Some(http_status),
             });
+            return Ok(());
+        }
+    };
+    conn.execute(
+        "UPDATE blocks SET tempo_worklog_id = ?1, dirty = 0 WHERE id = ?2",
+        params![tempo_id, b.id],
+    )?;
+    report.synced += 1;
+    results.push(SyncResult {
+        block_id: b.id,
+        status: if method == "PUT" { "updated" } else { "synced" },
+        reason: None,
+        tempo_id: Some(tempo_id),
+        payload: None,
+        http_status: Some(http_status),
+    });
+    debug!(block_id = b.id, method, "synced block to tempo (legacy)");
+    Ok(())
+}
+
+const SUMMARY_MAX_CHARS: usize = 250;
+
+/// Hard cap on the worklog description sent to Tempo. Truncates on a
+/// char boundary and appends `…` to make the cut visible.
+fn cap_description(s: &str) -> String {
+    if s.chars().count() <= SUMMARY_MAX_CHARS {
+        s.to_owned()
+    } else {
+        let mut out: String = s.chars().take(SUMMARY_MAX_CHARS - 1).collect();
+        out.push('…');
+        out
+    }
+}
+
+const DESCRIPTION_SYSTEM_PROMPT: &str =
+    "You are a Tempo worklog assistant. Given a Jira issue key and a list of \
+per-block descriptions of work done on that issue throughout one day, \
+produce ONE concise Jira-style imperative sentence (max 140 chars) that \
+summarises the day's work on that issue. Use imperative voice \
+(\"Implement…\", \"Review…\", \"Fix…\"). Avoid first-person (\"I\", \"we\"). \
+Do not invent work that isn't represented in the input. Output ONLY a \
+JSON object matching the schema.";
+
+fn description_response_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "description": {
+                "type": "string",
+                "description": "One concise Jira-style imperative sentence covering the day's work on this issue. Max 140 chars."
+            }
+        },
+        "required": ["description"],
+        "additionalProperties": false
+    })
+}
+
+/// Build the description sent to Tempo for an aggregated group:
+///   * single non-empty source description → use verbatim (no LLM call)
+///   * all empty → "Work on {issue}"
+///   * multiple distinct → ask the invoker for a one-sentence summary;
+///     fall back to `;`-joined distinct descriptions on any failure or
+///     when no invoker is configured / dry_run is set.
+fn summarize_descriptions(
+    invoker: Option<&dyn ModelInvoker>,
+    issue: &str,
+    descriptions: &[String],
+    model: &str,
+    dry_run: bool,
+) -> String {
+    let mut seen = std::collections::HashSet::new();
+    let mut unique: Vec<String> = Vec::new();
+    for d in descriptions {
+        let t = d.trim();
+        if t.is_empty() {
             continue;
         }
-
-        // PUT response shape is the same envelope as POST. For PUTs the
-        // existing id is the source of truth — fall back to it if the
-        // server somehow omits the field, so we never re-create the
-        // worklog on the next sync (double-billing).
-        let parsed: TempoCreateResponse = resp.json().context("decode tempo response")?;
-        let tempo_id = match (normalise_tempo_id(&parsed.tempo_worklog_id), existing_id) {
-            (Some(s), _) => s,
-            (None, Some(prev)) => prev.to_owned(),
-            (None, None) => {
-                let msg = format!(
-                    "block {}: tempo returned no usable tempoWorklogId: {}",
-                    b.id, parsed.tempo_worklog_id
-                );
-                report.errors.push(msg.clone());
-                results.push(SyncResult {
-                    block_id: b.id,
-                    status: "error",
-                    reason: Some(msg),
-                    tempo_id: None,
-                    payload: Some(payload),
-                    http_status: Some(http_status),
-                });
-                continue;
-            }
-        };
-        // Clear dirty alongside the id write — the local row is now
-        // back in sync with Tempo's view of it.
-        conn.execute(
-            "UPDATE blocks SET tempo_worklog_id = ?1, dirty = 0 WHERE id = ?2",
-            params![tempo_id, b.id],
-        )?;
-        report.synced += 1;
-        results.push(SyncResult {
-            block_id: b.id,
-            status: if method == "PUT" { "updated" } else { "synced" },
-            reason: None,
-            tempo_id: Some(tempo_id),
-            payload: None,
-            http_status: Some(http_status),
-        });
-        debug!(block_id = b.id, method, "synced to tempo");
+        if seen.insert(t.to_owned()) {
+            unique.push(t.to_owned());
+        }
     }
-    Ok((report, results))
+
+    if unique.is_empty() {
+        return format!("Work on {issue}");
+    }
+    if unique.len() == 1 {
+        return cap_description(&unique[0]);
+    }
+
+    let joined_fallback = || cap_description(&unique.join("; "));
+
+    if dry_run {
+        return joined_fallback();
+    }
+    let Some(invoker) = invoker else {
+        return joined_fallback();
+    };
+
+    let schema = description_response_schema();
+    let user_payload = json!({
+        "issue":              issue,
+        "block_descriptions": unique,
+    });
+    let user_msg = serde_json::to_string(&user_payload).unwrap_or_default();
+    let reply = match invoker.invoke(DESCRIPTION_SYSTEM_PROMPT, &user_msg, &schema, model) {
+        Ok(v) => v,
+        Err(e) => {
+            debug!(issue, error = %e, "description summariser failed; using joined fallback");
+            return joined_fallback();
+        }
+    };
+    let summary = reply
+        .get("description")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    match summary {
+        Some(s) => cap_description(s),
+        None => joined_fallback(),
+    }
 }
 
 /// Delete a worklog entry from Tempo. Used when the user deletes a
@@ -785,6 +1276,399 @@ mod tests {
             results.is_empty(),
             "personal block must not appear in results"
         );
+    }
+
+    /// Helper for the new aggregation tests — counts mocked endpoint
+    /// hits without forcing every test to track its own `Arc<AtomicU32>`.
+    fn count_blocks_with_tempo(conn: &Connection, day: &str, issue: &str, tempo_id: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM blocks
+              WHERE day = ?1 AND jira_issue = ?2 AND tempo_worklog_id = ?3 AND dirty = 0",
+            params![day, issue, tempo_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn aggregated_post_sums_durations_and_writes_shared_id_to_all_blocks() {
+        // Three unsynced blocks on the same ticket → ONE POST with the
+        // summed duration + earliest start; all three blocks end up
+        // sharing the returned tempo_id with dirty=0.
+        let server = MockServer::start();
+        let post_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/worklogs")
+                .json_body_partial(r#"{"timeSpentSeconds": 5400, "startTime": "09:00:00"}"#);
+            then.status(200).json_body(json!({"tempoWorklogId": 9001}));
+        });
+
+        let conn = open_memory().unwrap();
+        let day_s = "2026-04-18";
+        let b1 = insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T09:00:00Z",
+            "2026-04-18T09:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("Implement OAuth refresh"),
+        );
+        let b2 = insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T10:00:00Z",
+            "2026-04-18T10:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("Implement OAuth refresh"),
+        );
+        let b3 = insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T11:00:00Z",
+            "2026-04-18T11:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("Implement OAuth refresh"),
+        );
+
+        let (report, results) = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+
+        post_mock.assert_hits(1);
+        assert_eq!(report.synced, 1, "one group → one synced count");
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].status, "synced");
+        assert_eq!(results[1].status, "synced-aggregated");
+        assert_eq!(results[2].status, "synced-aggregated");
+        for r in &results {
+            assert_eq!(r.tempo_id.as_deref(), Some("9001"));
+        }
+
+        // All three blocks share the new id and are clean.
+        for bid in [b1, b2, b3] {
+            let (tid, dirty): (Option<String>, i64) = conn
+                .query_row(
+                    "SELECT tempo_worklog_id, dirty FROM blocks WHERE id = ?1",
+                    params![bid],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(tid.as_deref(), Some("9001"));
+            assert_eq!(dirty, 0);
+        }
+    }
+
+    #[test]
+    fn aggregated_put_updates_shared_group_when_new_block_added() {
+        // Group was previously aggregated (two synced blocks sharing
+        // tempo_id=42). User adds a third block on the same ticket.
+        // Re-sync must PUT /worklogs/42 with the new total (sum of
+        // ALL THREE durations) and copy the shared id onto the new
+        // block.
+        let server = MockServer::start();
+        let put_mock = server.mock(|when, then| {
+            when.method(PUT)
+                .path("/worklogs/42")
+                .json_body_partial(r#"{"timeSpentSeconds": 5400}"#);
+            then.status(200).json_body(json!({"tempoWorklogId": 42}));
+        });
+
+        let conn = open_memory().unwrap();
+        let day_s = "2026-04-18";
+        // Two pre-synced blocks sharing the same tempo id.
+        let b1 = insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T09:00:00Z",
+            "2026-04-18T09:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("Implement OAuth refresh"),
+        );
+        let b2 = insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T10:00:00Z",
+            "2026-04-18T10:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("Implement OAuth refresh"),
+        );
+        conn.execute(
+            "UPDATE blocks SET tempo_worklog_id = '42', dirty = 0 WHERE id IN (?1, ?2)",
+            params![b1, b2],
+        )
+        .unwrap();
+        // New unsynced third block on the same ticket.
+        let b3 = insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T11:00:00Z",
+            "2026-04-18T11:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("Implement OAuth refresh"),
+        );
+
+        let (report, results) = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+
+        put_mock.assert_hits(1);
+        assert_eq!(report.synced, 1);
+        // Only the third block was eligible → only it shows in results.
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].block_id, b3);
+        assert_eq!(results[0].status, "updated");
+        assert_eq!(results[0].tempo_id.as_deref(), Some("42"));
+        // All three blocks now share id=42.
+        assert_eq!(count_blocks_with_tempo(&conn, day_s, "PROJ-1", "42"), 3);
+    }
+
+    #[test]
+    fn mixed_legacy_tempo_ids_fall_back_to_per_block_sync() {
+        // Two pre-synced blocks with DIFFERENT tempo ids (the legacy
+        // one-Tempo-entry-per-block shape) plus one dirty block on the
+        // same ticket. The aggregator must NOT merge them — it falls
+        // back to per-block sync (PUT each dirty/unsynced individually).
+        let server = MockServer::start();
+        let put_77 = server.mock(|when, then| {
+            when.method(PUT).path("/worklogs/77");
+            then.status(200).json_body(json!({"tempoWorklogId": 77}));
+        });
+
+        let conn = open_memory().unwrap();
+        let day_s = "2026-04-18";
+        let b1 = insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T09:00:00Z",
+            "2026-04-18T09:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("x"),
+        );
+        let b2 = insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T10:00:00Z",
+            "2026-04-18T10:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("y"),
+        );
+        // Distinct tempo ids (legacy one-per-block sync).
+        conn.execute(
+            "UPDATE blocks SET tempo_worklog_id = '55', dirty = 0 WHERE id = ?1",
+            params![b1],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE blocks SET tempo_worklog_id = '77', dirty = 1 WHERE id = ?1",
+            params![b2],
+        )
+        .unwrap();
+
+        let (report, results) = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+
+        // Only b2 was dirty → exactly one PUT to its own id, no POST,
+        // no merge, b1 untouched.
+        put_77.assert_hits(1);
+        assert_eq!(report.synced, 1);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].block_id, b2);
+        assert_eq!(results[0].status, "updated");
+        let b1_id: Option<String> = conn
+            .query_row(
+                "SELECT tempo_worklog_id FROM blocks WHERE id = ?1",
+                params![b1],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(b1_id.as_deref(), Some("55"), "legacy block id untouched");
+    }
+
+    #[test]
+    fn aggregated_dry_run_never_invokes_claude_or_network() {
+        // Dry-run on a multi-block group: no POST/PUT, no invoker call,
+        // every block produces a payload-bearing dry-run result.
+        let server = MockServer::start();
+        let conn = open_memory().unwrap();
+        let day_s = "2026-04-18";
+        insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T09:00:00Z",
+            "2026-04-18T09:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("Implement OAuth refresh"),
+        );
+        insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T10:00:00Z",
+            "2026-04-18T10:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("Review API spec"),
+        );
+
+        // FixedInvoker would panic the test if called — we'd see its
+        // payload in the description. Instead it shouldn't be invoked
+        // at all on dry-run, and the joined fallback should appear.
+        let invoker = estimate::FixedInvoker(json!({"description": "DO NOT USE THIS"}));
+        let (report, results) = sync_day_with_invoker(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            true,
+            &http::client().unwrap(),
+            Some(&invoker),
+            estimate::DEFAULT_MODEL,
+        )
+        .unwrap();
+
+        assert_eq!(report.synced, 0);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].status, "dry-run");
+        assert_eq!(results[1].status, "dry-run-aggregated");
+        for r in &results {
+            let payload = r.payload.as_ref().unwrap();
+            let desc = payload["description"].as_str().unwrap();
+            assert!(
+                desc.contains("Implement OAuth refresh") && desc.contains("Review API spec"),
+                "dry-run uses joined fallback, not the invoker — got `{desc}`"
+            );
+            assert_eq!(payload["timeSpentSeconds"], 3600);
+        }
+    }
+
+    #[test]
+    fn single_description_skips_invoker() {
+        // When the group collapses to one distinct description after
+        // dedup, we don't need to ask Claude — pass it through verbatim.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/worklogs")
+                .json_body_partial(r#"{"description": "Implement OAuth refresh"}"#);
+            then.status(200).json_body(json!({"tempoWorklogId": 1}));
+        });
+        let conn = open_memory().unwrap();
+        let day_s = "2026-04-18";
+        insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T09:00:00Z",
+            "2026-04-18T09:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("Implement OAuth refresh"),
+        );
+        insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T10:00:00Z",
+            "2026-04-18T10:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("Implement OAuth refresh"),
+        );
+
+        // Use a panicking invoker to prove we don't call it.
+        struct PanicInvoker;
+        impl ModelInvoker for PanicInvoker {
+            fn invoke(
+                &self,
+                _: &str,
+                _: &str,
+                _: &serde_json::Value,
+                _: &str,
+            ) -> anyhow::Result<serde_json::Value> {
+                panic!("invoker must not be called for a single distinct description");
+            }
+        }
+
+        let (report, _) = sync_day_with_invoker(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+            Some(&PanicInvoker),
+            estimate::DEFAULT_MODEL,
+        )
+        .unwrap();
+        assert_eq!(report.synced, 1);
+    }
+
+    #[test]
+    fn multi_descriptions_use_invoker_summary() {
+        // Two distinct descriptions → invoker is called and its
+        // `description` field ends up in the Tempo POST body.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/worklogs").json_body_partial(
+                r#"{"description": "Implement OAuth refresh and review API spec"}"#,
+            );
+            then.status(200).json_body(json!({"tempoWorklogId": 1}));
+        });
+        let conn = open_memory().unwrap();
+        let day_s = "2026-04-18";
+        insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T09:00:00Z",
+            "2026-04-18T09:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("Implement OAuth refresh"),
+        );
+        insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T10:00:00Z",
+            "2026-04-18T10:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("Review API spec"),
+        );
+
+        let invoker = estimate::FixedInvoker(json!({
+            "description": "Implement OAuth refresh and review API spec"
+        }));
+        let (report, _) = sync_day_with_invoker(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+            Some(&invoker),
+            estimate::DEFAULT_MODEL,
+        )
+        .unwrap();
+        assert_eq!(report.synced, 1);
     }
 
     #[test]

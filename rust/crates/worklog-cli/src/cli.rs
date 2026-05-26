@@ -1458,7 +1458,37 @@ fn cmd_sync<W: Write>(day: Option<String>, dry_run: bool, out: &mut W, json: boo
         tempo_col::TempoAuth::from_secrets()?
     };
     let client = http::client()?;
-    let (report, results) = tempo_col::sync_day_with(&conn, &auth, day, dry_run, &client)?;
+    // Build an LLM invoker so multi-block ticket-day groups get a
+    // Claude/LiteLLM-summarised description. resolve_provider() reads
+    // env + secrets; on dry-run we don't need it (the summariser short
+    // -circuits anyway), and on any config error we fall back to a
+    // joined-descriptions string rather than failing the sync.
+    let provider = if dry_run {
+        None
+    } else {
+        estimate::resolve_provider().ok()
+    };
+    let (report, results) = match provider.as_ref() {
+        Some(estimate::ProviderChoice::ClaudeSubprocess) => tempo_col::sync_day_with_invoker(
+            &conn,
+            &auth,
+            day,
+            dry_run,
+            &client,
+            Some(&estimate::ClaudeSubprocess),
+            estimate::DEFAULT_MODEL,
+        )?,
+        Some(estimate::ProviderChoice::LiteLLM(inv)) => tempo_col::sync_day_with_invoker(
+            &conn,
+            &auth,
+            day,
+            dry_run,
+            &client,
+            Some(inv),
+            estimate::DEFAULT_MODEL,
+        )?,
+        None => tempo_col::sync_day_with(&conn, &auth, day, dry_run, &client)?,
+    };
 
     if json {
         writeln!(
@@ -1489,7 +1519,32 @@ fn cmd_sync<W: Write>(day: Option<String>, dry_run: bool, out: &mut W, json: boo
                 r.block_id,
                 r.tempo_id.as_deref().unwrap_or("-")
             )?,
+            "updated" => writeln!(
+                out,
+                "  ↻ block {:>4}  tempo_id={} (updated)",
+                r.block_id,
+                r.tempo_id.as_deref().unwrap_or("-")
+            )?,
+            "synced-aggregated" => writeln!(
+                out,
+                "  ⇉ block {:>4}  tempo_id={} (rolled up)",
+                r.block_id,
+                r.tempo_id.as_deref().unwrap_or("-")
+            )?,
+            "updated-aggregated" => writeln!(
+                out,
+                "  ⇉ block {:>4}  tempo_id={} (rolled up · updated)",
+                r.block_id,
+                r.tempo_id.as_deref().unwrap_or("-")
+            )?,
             "dry-run" => writeln!(out, "  ◇ block {:>4}  would POST", r.block_id)?,
+            "dry-run-update" => writeln!(out, "  ◇ block {:>4}  would PUT", r.block_id)?,
+            "dry-run-aggregated" => {
+                writeln!(out, "  ◇ block {:>4}  would POST (rolled up)", r.block_id)?
+            }
+            "dry-run-update-aggregated" => {
+                writeln!(out, "  ◇ block {:>4}  would PUT (rolled up)", r.block_id)?
+            }
             "skipped" => writeln!(
                 out,
                 "  · block {:>4}  {}",
@@ -2116,19 +2171,91 @@ fn fetch_day_blocks(day: &str) -> Result<Vec<worklog_core::models::Block>> {
     Ok(serde_json::from_value(summary["blocks"].clone()).unwrap_or_default())
 }
 
-/// Render a [`DayAgg`] as the human-readable `worklog summary` block:
-/// header, per-ticket table, work/personal split, and next-action hints.
-fn print_day_summary<W: Write>(out: &mut W, agg: &DayAgg) -> Result<()> {
-    if agg.block_count == 0 {
+/// Empty-day footer for `worklog day`. The pipeline has just run, so a
+/// "run `worklog day --day X` to build blocks" hint would tell the user
+/// to do exactly what they just did. Pick the most specific cause we can
+/// name from the collector outcomes and the day's age vs the hook's
+/// 30-day retention window, and print one short `·` line pointing the
+/// user at the next concrete action.
+fn print_day_empty_diagnostic<W: Write>(
+    out: &mut W,
+    day: chrono::NaiveDate,
+    jira: &StepOutcome,
+    github: &StepOutcome,
+    gcal: &StepOutcome,
+) -> Result<()> {
+    let day_str = day.to_string();
+
+    // 1. Gcal auth missing/broken — the warning text from
+    //    `collectors::gcal` always mentions either the credentials file
+    //    or the re-auth command, so match on either.
+    if let Some(msg) = gcal.warn_message() {
+        if msg.contains("google_credentials.json") || msg.contains("worklog collect gcal --auth") {
+            style::info(
+                out,
+                &format!(
+                    "no blocks for {day_str} — gcal isn't configured. \
+                     Run `worklog collect gcal --auth` to wire it up."
+                ),
+            )?;
+            return Ok(());
+        }
+    }
+
+    // 2. Day is past the hook's default 30-day retention, so any Claude
+    //    Code activity for that day has already been purged. The cutoff
+    //    here mirrors `purge::purge` (UTC `today - retention`) so the
+    //    diagnostic flips on the same boundary the purger uses.
+    let today = chrono::Utc::now().date_naive();
+    let retention = chrono::Duration::days(worklog_core::purge::DEFAULT_RETENTION_DAYS);
+    if day < today - retention {
         style::info(
             out,
             &format!(
-                "no time tracked for {} yet — run `worklog day --day {}` to build blocks",
-                agg.day, agg.day
+                "no blocks for {day_str} — hook events older than {} days are purged, \
+                 so this day no longer has Claude Code activity on file.",
+                worklog_core::purge::DEFAULT_RETENTION_DAYS
             ),
         )?;
         return Ok(());
     }
+
+    // 3. Some collector warned but it wasn't the gcal-auth case above —
+    //    point at the warning the user already saw.
+    if jira.is_warn() || github.is_warn() || gcal.is_warn() {
+        style::info(
+            out,
+            &format!(
+                "no blocks for {day_str} — one or more collectors failed above; \
+                 fix those and re-run."
+            ),
+        )?;
+        return Ok(());
+    }
+
+    // 4. Nothing went wrong, the day is recent, there just is no data.
+    //    Most common cause on a fresh install: the Claude Code hook
+    //    isn't actually wired up, so no session events ever land in the
+    //    events table.
+    style::info(
+        out,
+        &format!(
+            "no blocks for {day_str} — no Claude Code, jira, github, or gcal \
+             activity recorded. Confirm the Claude Code hook is installed \
+             (`worklog hook status`)."
+        ),
+    )?;
+    Ok(())
+}
+
+/// Render a [`DayAgg`] as the human-readable `worklog summary` block:
+/// header, per-ticket table, work/personal split, and next-action hints.
+///
+/// Callers must handle `agg.block_count == 0` themselves — the empty-day
+/// message differs between `worklog summary` (suggest running `worklog
+/// day`) and `worklog day` (the pipeline just ran, so the user needs a
+/// diagnostic, not a re-run hint).
+fn print_day_summary<W: Write>(out: &mut W, agg: &DayAgg) -> Result<()> {
     writeln!(out)?;
     writeln!(
         out,
@@ -2263,6 +2390,16 @@ fn cmd_summary<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result
             out,
             "{}",
             serde_json::to_string_pretty(&day_agg_json(&agg))?
+        )?;
+        return Ok(());
+    }
+    if agg.block_count == 0 {
+        style::info(
+            out,
+            &format!(
+                "no time tracked for {} yet — run `worklog day --day {}` to build blocks",
+                agg.day, agg.day
+            ),
         )?;
         return Ok(());
     }
@@ -2773,8 +2910,10 @@ fn cmd_day<W: Write>(
 
     // Each collector gets its own spinner + ok/warn line so a stall on
     // one source doesn't look like the whole pipeline has hung. A Jira
-    // outage shouldn't block the rest of the flow.
-    run_with_spinner("jira", || match jira_col::JiraAuth::from_secrets() {
+    // outage shouldn't block the rest of the flow. The outcomes are
+    // kept after rendering so the empty-day diagnostic below can name
+    // the specific collector that failed.
+    let jira_outcome = run_with_spinner("jira", || match jira_col::JiraAuth::from_secrets() {
         Ok(auth) => match jira_col::fetch_open_tickets_with(&conn, &auth, &client) {
             Ok(r) => StepOutcome::Ok(format!(
                 "jira:   tickets={} events={}",
@@ -2783,26 +2922,26 @@ fn cmd_day<W: Write>(
             Err(e) => StepOutcome::Warn(format!("jira:   {e}")),
         },
         Err(e) => StepOutcome::Info(format!("jira skipped: {e}")),
-    })
-    .render(out)?;
+    });
+    jira_outcome.render(out)?;
 
-    run_with_spinner("github", || match gh::GitHubAuth::from_secrets() {
+    let github_outcome = run_with_spinner("github", || match gh::GitHubAuth::from_secrets() {
         Ok(auth) => match gh::collect_with(&conn, &auth, since, until, &client) {
             Ok(r) => StepOutcome::Ok(format!("github: events={}", r.events_written)),
             Err(e) => StepOutcome::Warn(format!("github: {e}")),
         },
         Err(e) => StepOutcome::Info(format!("github skipped: {e}")),
-    })
-    .render(out)?;
+    });
+    github_outcome.render(out)?;
 
-    run_with_spinner("gcal", || match gcal_col::GcalAuth::from_paths() {
+    let gcal_outcome = run_with_spinner("gcal", || match gcal_col::GcalAuth::from_paths() {
         Ok(auth) => match gcal_col::collect_with(&conn, &auth, since, until, &client) {
             Ok(r) => StepOutcome::Ok(format!("gcal:   events={}", r.events_written)),
             Err(e) => StepOutcome::Warn(format!("gcal:   {e}")),
         },
         Err(e) => StepOutcome::Info(format!("gcal skipped: {e}")),
-    })
-    .render(out)?;
+    });
+    gcal_outcome.render(out)?;
 
     // --- infer ----------------------------------------------------------
     style::step(out, "inferring blocks …")?;
@@ -2865,14 +3004,34 @@ fn cmd_day<W: Write>(
                 }))?
             )?;
         } else if let Ok(agg) = &agg {
-            // The pipeline used to finish silently here. End on the same
-            // readable summary `worklog summary` prints.
-            print_day_summary(out, agg)?;
+            if agg.block_count == 0 {
+                print_day_empty_diagnostic(
+                    out,
+                    day_parsed,
+                    &jira_outcome,
+                    &github_outcome,
+                    &gcal_outcome,
+                )?;
+            } else {
+                // The pipeline used to finish silently here. End on the
+                // same readable summary `worklog summary` prints.
+                print_day_summary(out, agg)?;
+            }
         }
         return Ok(());
     }
     if let Ok(agg) = &agg {
-        print_day_summary(out, agg)?;
+        if agg.block_count == 0 {
+            print_day_empty_diagnostic(
+                out,
+                day_parsed,
+                &jira_outcome,
+                &github_outcome,
+                &gcal_outcome,
+            )?;
+        } else {
+            print_day_summary(out, agg)?;
+        }
     }
     style::step(out, "bringing up review UI at http://localhost:3333")?;
     style::info(out, "ctrl+c to bring it down, or `worklog web down`")?;
@@ -2889,13 +3048,24 @@ enum StepOutcome {
 }
 
 impl StepOutcome {
-    fn render<W: Write>(self, out: &mut W) -> Result<()> {
+    fn render<W: Write>(&self, out: &mut W) -> Result<()> {
         match self {
-            StepOutcome::Ok(msg) => style::ok(out, &msg)?,
-            StepOutcome::Warn(msg) => style::warn(out, &msg)?,
-            StepOutcome::Info(msg) => style::info(out, &msg)?,
+            StepOutcome::Ok(msg) => style::ok(out, msg)?,
+            StepOutcome::Warn(msg) => style::warn(out, msg)?,
+            StepOutcome::Info(msg) => style::info(out, msg)?,
         }
         Ok(())
+    }
+
+    fn is_warn(&self) -> bool {
+        matches!(self, StepOutcome::Warn(_))
+    }
+
+    fn warn_message(&self) -> Option<&str> {
+        match self {
+            StepOutcome::Warn(msg) => Some(msg.as_str()),
+            _ => None,
+        }
     }
 }
 
