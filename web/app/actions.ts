@@ -15,6 +15,8 @@ import {
   listBlockCommits as daemonListBlockCommits,
   searchTickets as daemonSearchTickets,
   rememberExternalTicket as daemonRememberExternalTicket,
+  mergeBlocks as daemonMergeBlocks,
+  estimateBlock as daemonEstimateBlock,
 } from "@/lib/daemon";
 import type { CommitEntry, Event, JiraTicket } from "@/lib/types";
 
@@ -182,6 +184,43 @@ export async function assignExternalTicket(
     await daemonAssignTicket(blockId, ticket.key);
   }, `/${day}`);
   return r.ok ? { ok: true, data: undefined } : r;
+}
+
+/**
+ * Fold the rest of a ticket group into its first block. `primary` keeps
+ * its id, ticket and any tempo_worklog_id; `absorb` blocks contribute
+ * their events + logged time and are deleted. The daemon refuses to
+ * merge an absorbed block that's already synced — the message comes back
+ * verbatim in `error` for the toast.
+ */
+export async function mergeGroup(
+  primary: number,
+  absorb: number[],
+  day: string,
+): Promise<ActionResult> {
+  const r = await runAction(() => daemonMergeBlocks(primary, absorb), `/${day}`);
+  return r.ok ? { ok: true, data: undefined } : r;
+}
+
+/**
+ * Re-describe a single block with Claude. Events + local git commits
+ * are sent to the LLM; the resulting description, duration and ticket
+ * are written back to the block, overwriting any prior value even if
+ * the user had hand-edited it. Day-wide `runEstimate` keeps its skip-
+ * manual rule unchanged — that path is the bulk re-estimator.
+ */
+export async function describeBlock(
+  blockId: number,
+  day: string,
+): Promise<
+  ActionResult<{
+    block_id: number;
+    description: string;
+    minutes: number;
+    jira_issue: string | null;
+  }>
+> {
+  return runAction(() => daemonEstimateBlock(blockId), `/${day}`);
 }
 
 // Exported for tests. Not used by callers — they use the CRUD/query

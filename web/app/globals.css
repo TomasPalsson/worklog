@@ -531,6 +531,57 @@ button {
 .ticket-group[open] .ticket-group-hint::after {
   transform: rotate(90deg);
 }
+
+/* "Merge all" pill inside the assigned-group summary. Sits between the
+   description preview and the disclosure chevron. Hidden in
+   single-block groups + the unassigned bucket via `canMergeGroup`
+   (web/lib/group-actions.ts). Uses the sage palette to match the
+   project's "assigned / success" semantic. */
+.merge-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  padding: 8px 14px;
+  /* Bumped from 28 to 36px so the touch target is closer to the
+     WCAG 2.5.5 baseline; the surrounding icon-btns in .block-actions
+     are smaller but that's a project-wide pre-existing concern. */
+  min-height: 36px;
+  border: 1px solid var(--sage);
+  border-radius: 999px;
+  background: var(--sage-bg);
+  color: var(--sage-ink);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.merge-btn:hover:not(:disabled) {
+  border-color: var(--sage-ink);
+}
+.merge-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+.merge-btn:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+.merge-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Sparkles "Describe with Claude" icon-btn inside .block-actions. Only
+   renders when shouldShowSparkles() returns true. Violet matches the
+   palette already used for claude-sourced events elsewhere. */
+.icon-btn.describe-btn {
+  color: var(--violet);
+}
+.icon-btn.describe-btn:hover:not(:disabled) {
+  background: var(--violet-bg);
+}
 .ticket-group-body {
   padding: 12px 16px 16px;
 }
