@@ -42,7 +42,12 @@ type FetchInit = Parameters<typeof fetch>[1];
  * Without this, a wedged daemon leaves the UI spinning forever.
  */
 function timeoutMs(path: string): number {
-  if (path.startsWith("/estimate")) return 60_000;
+  // The per-block route is POST /blocks/:id/estimate, which doesn't
+  // start with /estimate — so use includes() to catch both that and
+  // the day-wide POST /estimate. Both shell out to `claude -p`, both
+  // need the 60s cap. A startsWith check here would silently fall
+  // through to the 10s default and time out every Sparkles click.
+  if (path.includes("/estimate")) return 60_000;
   if (path.startsWith("/sync")) return 30_000;
   if (path.startsWith("/jira/refresh")) return 30_000;
   if (path.startsWith("/infer")) return 30_000;
@@ -159,6 +164,34 @@ export async function runSync(day: string, dryRun = true) {
 
 export async function refreshJira() {
   return call<{ tickets_written: number; source: string }>("POST", "/jira/refresh");
+}
+
+/**
+ * Fold `absorb` blocks into the `primary` block. The primary survives
+ * (keeps its id, ticket, description, tempo_worklog_id). The daemon
+ * refuses cross-day merges and merges that would orphan a synced
+ * Tempo entry — surfaces as 400 with the message verbatim.
+ */
+export async function mergeBlocks(
+  primary: number,
+  absorb: number[],
+): Promise<{ merged: Block; absorbed: number[] }> {
+  return call("POST", "/blocks/merge", { primary, absorb });
+}
+
+/**
+ * Re-run Claude on a single block, OVERWRITING the description even if
+ * the block was previously hand-edited. Events + local git commits are
+ * both fed to the LLM. The daemon returns 400 for personal blocks and
+ * 404 for missing blocks.
+ */
+export async function estimateBlock(blockId: number): Promise<{
+  block_id: number;
+  description: string;
+  minutes: number;
+  jira_issue: string | null;
+}> {
+  return call("POST", `/blocks/${blockId}/estimate`);
 }
 
 // ───────────────────── reads (v0.6) ─────────────────────

@@ -89,11 +89,16 @@ export default async function DayPage({
           {workGroups.length > 0 ? (
             <div className="ticket-groups">
               {workGroups.map((g) => (
-                <TicketGroup key={g.key} group={g}>
+                <TicketGroup key={g.key} group={g} day={day}>
                   <ul className="blocks" role="list">
                     {g.blocks.map((b) => (
                       <li key={b.id}>
-                        <BlockCard block={b} tickets={tickets} day={day} />
+                        <BlockCard
+                          block={b}
+                          tickets={tickets}
+                          day={day}
+                          isSoleInGroup={g.blocks.length === 1 && !g.unassigned}
+                        />
                       </li>
                     ))}
                   </ul>
@@ -118,7 +123,12 @@ export default async function DayPage({
               <ul className="blocks" role="list">
                 {personalBlocks.map((b) => (
                   <li key={b.id}>
-                    <BlockCard block={b} tickets={tickets} day={day} />
+                    <BlockCard
+                      block={b}
+                      tickets={tickets}
+                      day={day}
+                      isSoleInGroup={false}
+                    />
                   </li>
                 ))}
               </ul>

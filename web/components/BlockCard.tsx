@@ -1,15 +1,17 @@
 "use client";
 
 import { useRef, useState, useTransition } from "react";
-import { Check, Coffee, Trash2 } from "lucide-react";
+import { Check, Coffee, Sparkles, Trash2 } from "lucide-react";
 import type { Block, JiraTicket } from "@/lib/types";
 import { formatDuration, formatRange } from "@/lib/format";
 import {
   deleteBlock,
+  describeBlock,
   setDescription,
   setDuration,
   setPersonal,
 } from "@/app/actions";
+import { shouldShowSparkles } from "@/lib/group-actions";
 import { toast } from "@/lib/toast";
 import { SourceBadges } from "./SourceBadges";
 import { EstBadge } from "./EstBadge";
@@ -21,9 +23,15 @@ interface Props {
   block: Block;
   tickets: JiraTicket[];
   day: string;
+  /**
+   * True when this block is the sole survivor of its ticket group.
+   * Drives the Sparkles "Describe with Claude" button — see
+   * `shouldShowSparkles` for the full rule.
+   */
+  isSoleInGroup: boolean;
 }
 
-export function BlockCard({ block, tickets, day }: Props) {
+export function BlockCard({ block, tickets, day, isSoleInGroup }: Props) {
   const [editingDur, setEditingDur] = useState(false);
   const [durVal, setDurVal] = useState(Math.round(block.duration_seconds / 60));
   const [isPending, start] = useTransition();
@@ -115,6 +123,22 @@ export function BlockCard({ block, tickets, day }: Props) {
       if (!r.ok) toast.error(`Delete failed — ${r.error}`);
     });
   };
+
+  const onDescribe = () => {
+    start(async () => {
+      const r = await describeBlock(block.id, day);
+      if (!r.ok) {
+        toast.error(`Describe failed — ${r.error}`);
+        return;
+      }
+      toast.ok(`Described — ${r.data.minutes}m on ${r.data.jira_issue ?? "no ticket"}`);
+    });
+  };
+
+  const showSparkles = shouldShowSparkles(
+    { jira_issue: block.jira_issue, is_personal: block.is_personal },
+    isSoleInGroup,
+  );
 
   return (
     <article className={cls} aria-label={ariaLabel}>
@@ -216,6 +240,23 @@ export function BlockCard({ block, tickets, day }: Props) {
       </div>
 
       <div className="block-actions">
+        {showSparkles && (
+          <button
+            type="button"
+            className="icon-btn describe-btn"
+            title={
+              block.description
+                ? "Re-describe with Claude (events + commits) — overwrites the current text"
+                : "Describe with Claude using this block's events + commits"
+            }
+            aria-label={`describe ${timeRangeLabel} block with claude`}
+            aria-busy={isPending || undefined}
+            disabled={isPending}
+            onClick={onDescribe}
+          >
+            <Sparkles />
+          </button>
+        )}
         <button
           type="button"
           className={`icon-btn personal-toggle${block.is_personal ? " active" : ""}`}
