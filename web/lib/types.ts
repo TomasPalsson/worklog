@@ -37,6 +37,10 @@ export interface Block {
   dirty: boolean;
   event_count: number;
   sources: SourceCount[];
+  /** Dominant working directory across the block's events — the path the
+   * bulk of its commands ran in. Null for blocks with no cwd (pure
+   * calendar / PR-review blocks). */
+  project_path: string | null;
 }
 
 export interface SourceCount {
@@ -56,6 +60,34 @@ export interface TicketCacheMeta {
   last_fetched: string | null;
 }
 
+/** A Jira project for the create-ticket picker (`GET /projects`). */
+export interface JiraProject {
+  key: string;
+  name: string;
+  id: string | null;
+}
+
+/** A Tempo account — the billing bucket that maps logged time to a
+ * customer (`GET /accounts`). The chosen account's `id` is written onto
+ * the new issue's account custom field. */
+export interface TempoAccount {
+  id: number;
+  key: string;
+  name: string;
+  customer: string | null;
+}
+
+/** Body for `POST /tickets/create`. `account_id` is the chosen Tempo
+ * account id as a string; the account is the customer mapping, so the UI
+ * requires it. */
+export interface CreateTicketInput {
+  project_key: string;
+  summary: string;
+  account_id?: string;
+  description?: string;
+  issue_type?: string;
+}
+
 /** One commit landed inside a block's window. Returned by the daemon's
  * `/blocks/:id/commits` route, fetched lazily by the BlockCard
  * commits drill-down. `github_url` is omitted when origin isn't on
@@ -70,6 +102,50 @@ export interface CommitEntry {
   insertions: number;
   deletions: number;
   github_url?: string;
+}
+
+// ───────────────────────── settings ─────────────────────────
+
+/** One credential/config key as `GET /settings` returns it. Token-like
+ * keys are masked: `sensitive` is true and `value` is null — only
+ * `present` tells you whether one is stored. Non-sensitive keys (emails,
+ * URLs, model names) come back with their `value` for prefill. */
+export interface SettingField {
+  key: string;
+  present: boolean;
+  sensitive: boolean;
+  value: string | null;
+}
+
+/** Full settings snapshot backing the settings panel. */
+export interface SettingsView {
+  personal: { work: string[]; personal: string[] };
+  secrets: SettingField[];
+  /** Raw WORKLOG_TZ value, e.g. "+01:00" / "UTC" / "" (empty = UTC). */
+  timezone: string;
+  personal_config_path: string | null;
+}
+
+/** Partial update sent to `POST /settings`. Omitted groups are left
+ * untouched; in `secrets`, only listed keys are written and an empty
+ * string deletes the key. */
+export interface SettingsUpdate {
+  personal?: { work: string[]; personal: string[] };
+  secrets?: Record<string, string>;
+  timezone?: string;
+}
+
+export interface ReclassifyStats {
+  total: number;
+  changed_to_personal: number;
+  changed_to_work: number;
+  unchanged: number;
+}
+
+/** `POST /settings` response: the fresh snapshot plus, when patterns
+ * changed, what the reclassify pass did. */
+export interface SettingsSaveResponse extends SettingsView {
+  reclassified: ReclassifyStats | null;
 }
 
 export type SourceKind = "github" | "claude" | "gcal" | "jira" | "other";

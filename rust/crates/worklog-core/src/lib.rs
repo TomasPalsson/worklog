@@ -10,6 +10,7 @@ pub mod collectors;
 pub mod daemon;
 pub mod daemon_service;
 pub mod db;
+pub mod envfile;
 pub mod estimate;
 pub mod git;
 pub mod hook;

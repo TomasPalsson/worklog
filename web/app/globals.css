@@ -717,6 +717,31 @@ button {
 .est-badge[data-kind="claude"]   { color: var(--violet); border-color: var(--violet-bg); }
 .est-badge[data-kind="gap"]      { color: var(--amber-ink); border-color: var(--amber-bg); }
 
+/* dominant working directory for the block — the path its commands
+   mostly ran in. Truncated label, full path in the title tooltip. */
+.dir-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 240px;
+  padding: 2px 8px 2px 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--slate);
+  background: var(--slate-bg);
+  border-radius: 999px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dir-badge svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+
 /* ticket row — the combobox */
 
 .ticket-row {
@@ -978,6 +1003,27 @@ button {
 
 .combobox-clear:hover {
   background: var(--terracotta-bg);
+}
+
+.combobox-create {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-top: 1px solid var(--border);
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--sage-ink, var(--fg));
+  width: 100%;
+  text-align: left;
+  background: var(--bg-raised);
+}
+
+.combobox-create:hover {
+  background: var(--sage-bg, var(--bg-sunk));
+}
+
+.combobox-create svg {
+  flex-shrink: 0;
 }
 
 /* actions column (right side of card) */
@@ -1820,4 +1866,176 @@ button {
 .week-block.is-personal .week-block-ticket {
   font-weight: 500;
   color: var(--fg-muted);
+}
+
+/* ───────────────────────── settings panel ───────────────────────── */
+
+/* Reusable spinner utility for the settings panel (mirrors wl-spin). */
+.spin {
+  animation: wl-spin 600ms linear infinite;
+}
+
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 6vh 16px 16px;
+  background: oklch(0 0 0 / 0.4);
+  overflow-y: auto;
+}
+
+.settings-dialog {
+  width: 100%;
+  max-width: 640px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 12px 48px oklch(0 0 0 / 0.25);
+  display: flex;
+  flex-direction: column;
+  max-height: 88vh;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-header h2 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.settings-body {
+  padding: 8px 20px 4px;
+  overflow-y: auto;
+}
+
+.settings-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 40px 20px;
+  color: var(--fg-muted);
+  justify-content: center;
+}
+
+.settings-section {
+  padding: 16px 0;
+  border-bottom: 1px solid var(--border);
+}
+.settings-section:last-child {
+  border-bottom: none;
+}
+
+.settings-section h3 {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  margin: 0 0 8px;
+}
+
+.settings-hint {
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin: 0 0 12px;
+  line-height: 1.5;
+}
+.settings-hint code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--bg-sunk);
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
+}
+
+.settings-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+@media (max-width: 540px) {
+  .settings-grid-2 {
+    grid-template-columns: 1fr;
+  }
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+}
+.settings-field.settings-field-narrow {
+  max-width: 220px;
+}
+
+.settings-field > span {
+  font-weight: 500;
+  color: var(--fg-muted);
+}
+
+.settings-stored {
+  font-style: normal;
+  color: var(--sage-ink);
+  font-weight: 500;
+}
+
+.settings-field input,
+.settings-field select,
+.settings-field textarea {
+  width: 100%;
+  padding: 7px 9px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--fg);
+  background: var(--bg-sunk);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.settings-field textarea {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  resize: vertical;
+}
+.settings-field input:focus,
+.settings-field select:focus,
+.settings-field textarea:focus {
+  outline: none;
+  border-color: var(--border-strong);
+}
+
+.settings-path {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+  margin: 10px 0 0;
+  word-break: break-all;
+}
+
+.settings-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+}
+
+.action-btn.primary {
+  background: var(--sage);
+  border-color: var(--sage);
+  color: oklch(0.99 0.01 145);
+}
+.action-btn.primary:hover {
+  filter: brightness(0.97);
+  background: var(--sage);
 }

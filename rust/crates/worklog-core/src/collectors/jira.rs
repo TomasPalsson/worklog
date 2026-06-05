@@ -14,7 +14,7 @@ use serde::Deserialize;
 use tracing::debug;
 
 use crate::http::{self, RequestBuilderExt};
-use crate::models::JiraTicket;
+use crate::models::{JiraProject, JiraTicket};
 use crate::repo;
 
 use super::CollectReport;
@@ -205,6 +205,168 @@ fn escape_jql_literal(s: &str) -> String {
         }
     }
     out
+}
+
+// ───────────────────────── projects ─────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct ProjectSearchResponse {
+    #[serde(default)]
+    values: Vec<ProjectValue>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProjectValue {
+    id: Option<String>,
+    key: String,
+    name: Option<String>,
+}
+
+/// List the Jira projects the user can see, for the create-ticket picker.
+/// Ordered by name so the dropdown is scannable.
+pub fn list_projects(auth: &JiraAuth) -> Result<Vec<JiraProject>> {
+    list_projects_with(auth, &http::client()?)
+}
+
+pub fn list_projects_with(auth: &JiraAuth, client: &Client) -> Result<Vec<JiraProject>> {
+    let url = format!("{}/rest/api/3/project/search", auth.base_url);
+    let body: ProjectSearchResponse = client
+        .get(&url)
+        .basic_auth(&auth.email, Some(&auth.token))
+        .query(&[("maxResults", "100"), ("orderBy", "name")])
+        .json_ok()
+        .with_context(|| format!("jira project search at {url}"))?;
+    Ok(body
+        .values
+        .into_iter()
+        .map(|p| JiraProject {
+            key: p.key,
+            name: p.name.unwrap_or_default(),
+            id: p.id,
+        })
+        .collect())
+}
+
+// ───────────────────────── issue creation ─────────────────────────
+
+/// Everything needed to open a new Jira issue. The account is the point
+/// of the whole feature: `account_field_id` names the Tempo "Account"
+/// custom field on the issue, and `account_value` is the account that
+/// field is set to — that's what maps the ticket's worklogs to a
+/// billable customer.
+#[derive(Debug, Clone)]
+pub struct NewIssue {
+    pub project_key: String,
+    pub summary: String,
+    pub issue_type: String,
+    pub description: Option<String>,
+    /// e.g. `customfield_10100`. `None` → no account is set on the issue.
+    pub account_field_id: Option<String>,
+    /// The account id/key to write to `account_field_id`.
+    pub account_value: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreatedIssue {
+    id: String,
+    key: String,
+}
+
+/// Build the Atlassian Document Format wrapper Jira Cloud v3 requires for
+/// the `description` field — a plain string is rejected with a 400.
+fn adf_doc(text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "doc",
+        "version": 1,
+        "content": [{
+            "type": "paragraph",
+            "content": [{ "type": "text", "text": text }],
+        }],
+    })
+}
+
+/// Tempo's account custom field is backed by the numeric account id, so a
+/// digits-only value is sent as a JSON number; anything else (a key, a
+/// pre-wrapped value) passes through as a string. If Jira rejects the
+/// shape, `create_issue_with` surfaces the full error body so the user
+/// can correct the field id/format in settings.
+fn account_field_value(raw: &str) -> serde_json::Value {
+    let t = raw.trim();
+    match t.parse::<i64>() {
+        Ok(n) => serde_json::json!(n),
+        Err(_) => serde_json::json!(t),
+    }
+}
+
+/// Create a Jira issue and return it shaped as a `JiraTicket` (with the
+/// numeric `issue_id` Tempo needs already populated from the response).
+pub fn create_issue(auth: &JiraAuth, issue: &NewIssue) -> Result<JiraTicket> {
+    create_issue_with(auth, issue, &http::client()?)
+}
+
+pub fn create_issue_with(auth: &JiraAuth, issue: &NewIssue, client: &Client) -> Result<JiraTicket> {
+    let mut fields = serde_json::Map::new();
+    fields.insert(
+        "project".into(),
+        serde_json::json!({ "key": issue.project_key }),
+    );
+    fields.insert("summary".into(), serde_json::json!(issue.summary));
+    fields.insert(
+        "issuetype".into(),
+        serde_json::json!({ "name": issue.issue_type }),
+    );
+    if let Some(desc) = issue
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        fields.insert("description".into(), adf_doc(desc));
+    }
+    if let (Some(field), Some(val)) = (
+        issue
+            .account_field_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty()),
+        issue
+            .account_value
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty()),
+    ) {
+        fields.insert(field.to_owned(), account_field_value(val));
+    }
+    let body = serde_json::json!({ "fields": serde_json::Value::Object(fields) });
+
+    let url = format!("{}/rest/api/3/issue", auth.base_url);
+    // Manual send (not `json_ok`) so Jira's validation error body — which
+    // names the offending field, crucial for the account custom field —
+    // reaches the user verbatim instead of a bare status code.
+    let resp = client
+        .post(&url)
+        .basic_auth(&auth.email, Some(&auth.token))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .with_context(|| format!("jira create issue at {url}"))?;
+    let status = resp.status();
+    let text = resp.text().unwrap_or_default();
+    if !status.is_success() {
+        anyhow::bail!("jira create issue: HTTP {} — {text}", status.as_u16());
+    }
+    let created: CreatedIssue = serde_json::from_str(&text)
+        .with_context(|| format!("decode jira create-issue response: {text}"))?;
+    debug!(key = %created.key, "created jira issue");
+    let project_key = created.key.split_once('-').map(|(p, _)| p.to_owned());
+    Ok(JiraTicket {
+        key: created.key,
+        summary: issue.summary.clone(),
+        status: None,
+        project_key,
+        updated: None,
+        issue_id: Some(created.id),
+    })
 }
 
 #[cfg(test)]
@@ -436,5 +598,104 @@ mod tests {
         assert_eq!(escape_jql_literal(r#"plain"#), "plain");
         assert_eq!(escape_jql_literal(r#"with "quote""#), r#"with \"quote\""#);
         assert_eq!(escape_jql_literal(r#"back\slash"#), r#"back\\slash"#);
+    }
+
+    #[test]
+    fn list_projects_maps_values() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(GET).path("/rest/api/3/project/search");
+            then.status(200).json_body(json!({
+                "values": [
+                    { "id": "10001", "key": "PROJ", "name": "Project One" },
+                    { "id": "10002", "key": "OPS",  "name": "Operations" }
+                ]
+            }));
+        });
+        let auth = JiraAuth {
+            base_url: server.base_url(),
+            email: "x".into(),
+            token: "y".into(),
+        };
+        let projects = list_projects_with(&auth, &http::client().unwrap()).unwrap();
+        mock.assert();
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects[0].key, "PROJ");
+        assert_eq!(projects[0].name, "Project One");
+        assert_eq!(projects[0].id.as_deref(), Some("10001"));
+    }
+
+    #[test]
+    fn create_issue_sends_account_field_as_number_and_returns_ticket() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/rest/api/3/issue")
+                .json_body_partial(
+                    r#"{"fields": {
+                        "project": {"key": "PROJ"},
+                        "summary": "Investigate billing drift",
+                        "issuetype": {"name": "Task"},
+                        "customfield_10100": 42
+                    }}"#,
+                );
+            then.status(201)
+                .json_body(json!({ "id": "99123", "key": "PROJ-77" }));
+        });
+        let auth = JiraAuth {
+            base_url: server.base_url(),
+            email: "x".into(),
+            token: "y".into(),
+        };
+        let issue = NewIssue {
+            project_key: "PROJ".into(),
+            summary: "Investigate billing drift".into(),
+            issue_type: "Task".into(),
+            description: Some("look into the variance".into()),
+            account_field_id: Some("customfield_10100".into()),
+            account_value: Some("42".into()),
+        };
+        let ticket = create_issue_with(&auth, &issue, &http::client().unwrap()).unwrap();
+        mock.assert();
+        assert_eq!(ticket.key, "PROJ-77");
+        assert_eq!(ticket.issue_id.as_deref(), Some("99123"));
+        assert_eq!(ticket.project_key.as_deref(), Some("PROJ"));
+        assert_eq!(ticket.summary, "Investigate billing drift");
+    }
+
+    #[test]
+    fn create_issue_surfaces_jira_error_body() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/rest/api/3/issue");
+            then.status(400)
+                .body(r#"{"errors":{"customfield_10100":"Account is required"}}"#);
+        });
+        let auth = JiraAuth {
+            base_url: server.base_url(),
+            email: "x".into(),
+            token: "y".into(),
+        };
+        let issue = NewIssue {
+            project_key: "PROJ".into(),
+            summary: "no account".into(),
+            issue_type: "Task".into(),
+            description: None,
+            account_field_id: None,
+            account_value: None,
+        };
+        let err = format!(
+            "{:#}",
+            create_issue_with(&auth, &issue, &http::client().unwrap()).unwrap_err()
+        );
+        assert!(err.contains("HTTP 400"), "err = {err}");
+        assert!(err.contains("Account is required"), "err = {err}");
+    }
+
+    #[test]
+    fn account_field_value_is_number_for_digits_string_otherwise() {
+        assert_eq!(account_field_value("42"), json!(42));
+        assert_eq!(account_field_value(" 7 "), json!(7));
+        assert_eq!(account_field_value("ACME-1"), json!("ACME-1"));
     }
 }

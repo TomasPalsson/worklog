@@ -28,6 +28,9 @@
 //! * `POST /jira/refresh`                — no body, refreshes open tickets
 //! * `GET  /tickets/search?q=&limit=`    — live Jira search (no persistence)
 //! * `POST /tickets/external`            — cache a manually-picked ticket
+//! * `POST /tickets/create`              — create a Jira issue (sets account)
+//! * `GET  /projects`                    — list Jira projects (create picker)
+//! * `GET  /accounts`                    — list Tempo accounts (create picker)
 //! * `POST /estimate`                    — { "day": "YYYY-MM-DD", "model": "?" }
 //! * `POST /sync`                        — { "day": "YYYY-MM-DD", "dry_run": true }
 //!
@@ -60,6 +63,7 @@ use tracing::{error, info, warn};
 use crate::collectors::{jira, tempo};
 use crate::git::{self, CommitEntry};
 use crate::personal;
+use crate::secrets;
 use crate::{
     block_service, db, estimate, infer,
     models::{Block, Event},
@@ -83,6 +87,9 @@ pub fn router(state: Shared) -> Router {
         .route("/tickets", get(list_tickets))
         .route("/tickets/search", get(search_tickets))
         .route("/tickets/external", post(record_external_ticket))
+        .route("/tickets/create", post(create_ticket))
+        .route("/projects", get(list_projects))
+        .route("/accounts", get(list_accounts))
         .route("/blocks/:id/events", get(block_events))
         .route("/blocks/:id/commits", get(block_commits))
         .route("/blocks/:id/ticket", post(assign_ticket))
@@ -97,6 +104,7 @@ pub fn router(state: Shared) -> Router {
         .route("/jira/refresh", post(refresh_jira))
         .route("/estimate", post(run_estimate))
         .route("/sync", post(run_sync))
+        .route("/settings", get(get_settings).post(post_settings))
         .with_state(state)
 }
 
@@ -307,6 +315,12 @@ pub struct BlockSummary {
     pub block: Block,
     pub event_count: i64,
     pub sources: Vec<SourceCount>,
+    /// Dominant working directory across the block's events — the path
+    /// the bulk of its commands ran in. `None` when no event carried a
+    /// `project_path` (e.g. a pure calendar block). Surfaced in the
+    /// review UI so the user can tell at a glance which repo a block
+    /// belongs to.
+    pub project_path: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -394,6 +408,40 @@ fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
             .push(SourceCount { source, n });
     }
 
+    // Dominant working directory per block in one query — mirrors
+    // `personal::dominant_project_path_for_block` but batched so the day
+    // load stays a fixed number of round-trips regardless of block count.
+    // For each block, the path that tags the most events wins.
+    let path_sql = format!(
+        "SELECT be.block_id, e.project_path, COUNT(*)
+           FROM block_events be
+           JOIN events e ON e.id = be.event_id
+          WHERE be.block_id IN ({placeholders})
+            AND e.project_path IS NOT NULL
+          GROUP BY be.block_id, e.project_path"
+    );
+    let mut path_stmt = conn.prepare(&path_sql)?;
+    let mut best_path: std::collections::HashMap<i64, (String, i64)> =
+        std::collections::HashMap::new();
+    let path_rows = path_stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, i64>(2)?,
+        ))
+    })?;
+    for row in path_rows {
+        let (bid, path, n) = row?;
+        best_path
+            .entry(bid)
+            .and_modify(|cur| {
+                if n > cur.1 {
+                    *cur = (path.clone(), n);
+                }
+            })
+            .or_insert((path, n));
+    }
+
     let enriched = blocks
         .into_iter()
         .map(|block| {
@@ -401,6 +449,7 @@ fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
             BlockSummary {
                 event_count: counts.get(&id).copied().unwrap_or(0),
                 sources: sources_by_block.remove(&id).unwrap_or_default(),
+                project_path: best_path.remove(&id).map(|(p, _)| p),
                 block,
             }
         })
@@ -471,6 +520,128 @@ async fn record_external_ticket(
     }
     with_conn(state, move |c| repo::upsert_external_ticket(c, &body)).await?;
     Ok(Json(json!({ "ok": true })))
+}
+
+/// List the Jira projects the user can see — fills the create-ticket
+/// project dropdown. Read-only Jira call; no db access.
+async fn list_projects() -> Result<Json<Vec<crate::models::JiraProject>>, ApiError> {
+    let auth = jira::JiraAuth::from_secrets().map_err(ApiError::from)?;
+    let projects =
+        tokio::task::spawn_blocking(move || -> Result<Vec<crate::models::JiraProject>> {
+            let client = crate::http::client()?;
+            jira::list_projects_with(&auth, &client)
+        })
+        .await
+        .context("spawn_blocking")??;
+    Ok(Json(projects))
+}
+
+/// List the Tempo accounts — fills the create-ticket account dropdown.
+/// The account is the customer mapping, so it's the field that matters
+/// most when opening a ticket. Read-only Tempo call; no db access.
+async fn list_accounts() -> Result<Json<Vec<crate::models::TempoAccount>>, ApiError> {
+    let auth = tempo::TempoAuth::from_secrets().map_err(ApiError::from)?;
+    let accounts =
+        tokio::task::spawn_blocking(move || -> Result<Vec<crate::models::TempoAccount>> {
+            let client = crate::http::client()?;
+            tempo::list_accounts_with(&auth, &client)
+        })
+        .await
+        .context("spawn_blocking")??;
+    Ok(Json(accounts))
+}
+
+#[derive(Deserialize)]
+pub struct CreateTicketBody {
+    pub project_key: String,
+    pub summary: String,
+    /// Tempo account id (as a string) the issue's account field is set
+    /// to. Optional in the wire shape, but required when an account
+    /// field is configured — see the guard below.
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Defaults to `Task` when omitted.
+    #[serde(default)]
+    pub issue_type: Option<String>,
+}
+
+/// Create a Jira issue, set its Tempo account custom field so the
+/// ticket's worklogs map to a customer, and cache the result so the
+/// picker can render it immediately. The new ticket is stored
+/// `external = 1` (same as a manual search pick): visible to the picker,
+/// hidden from the estimator's assignee=currentUser() view.
+async fn create_ticket(
+    State(state): State<Shared>,
+    Json(body): Json<CreateTicketBody>,
+) -> Result<Json<crate::models::JiraTicket>, ApiError> {
+    let project_key = body.project_key.trim().to_owned();
+    let summary = body.summary.trim().to_owned();
+    if project_key.is_empty() {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "`project_key` is required"
+        )));
+    }
+    if summary.is_empty() {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "`summary` is required"
+        )));
+    }
+
+    let account_field_id = secrets::get("jira_account_field_id")
+        .ok()
+        .flatten()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty());
+    let account_value = body
+        .account_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+
+    // The account is the whole point — refuse to silently create an
+    // unbilled ticket. If the user picked an account but no account
+    // field is configured, the value would be dropped on the floor, so
+    // 400 with a fix-it pointer rather than create a ticket missing its
+    // customer mapping.
+    if account_value.is_some() && account_field_id.is_none() {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "an account was selected but no Jira account field is configured — \
+             set `jira_account_field_id` (e.g. customfield_10100) in \
+             Settings → Jira / Tempo so the account maps to a customer"
+        )));
+    }
+
+    let auth = jira::JiraAuth::from_secrets().map_err(ApiError::from)?;
+    let new_issue = jira::NewIssue {
+        project_key,
+        summary,
+        issue_type: body
+            .issue_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Task")
+            .to_owned(),
+        description: body.description,
+        account_field_id,
+        account_value,
+    };
+    let ticket = tokio::task::spawn_blocking(move || -> Result<crate::models::JiraTicket> {
+        let client = crate::http::client()?;
+        jira::create_issue_with(&auth, &new_issue, &client)
+    })
+    .await
+    .context("spawn_blocking")??;
+
+    // Cache so the picker can render the summary on subsequent visits,
+    // exactly like a manual external pick.
+    let cached = ticket.clone();
+    with_conn(state, move |c| repo::upsert_external_ticket(c, &cached)).await?;
+    info!(key = %ticket.key, "created jira ticket");
+    Ok(Json(ticket))
 }
 
 /// Cached Jira tickets, ordered like the existing UI picker: most recently
@@ -910,6 +1081,181 @@ async fn run_sync(
     })))
 }
 
+// ───────────────────────── settings ─────────────────────────
+//
+// One read endpoint (`GET /settings`) and one write endpoint
+// (`POST /settings`) back the review UI's settings panel. The write is a
+// partial update: any of the three groups (personal patterns, secrets,
+// timezone) may be omitted and is then left untouched.
+
+/// A credential/config key as the settings panel sees it. Token-like
+/// keys never echo their stored value — only whether one is present.
+/// Non-sensitive keys (emails, URLs, model names, provider choice) come
+/// back in full so the form can prefill the current value.
+#[derive(Serialize)]
+pub struct SettingField {
+    pub key: &'static str,
+    pub present: bool,
+    pub sensitive: bool,
+    pub value: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct PersonalPatterns {
+    pub work: Vec<String>,
+    pub personal: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct SettingsView {
+    pub personal: PersonalPatterns,
+    pub secrets: Vec<SettingField>,
+    pub timezone: String,
+    pub personal_config_path: Option<String>,
+}
+
+/// Token-like keys whose value must never be serialised to the browser.
+/// Everything else (emails, base URLs, account ids, usernames, the
+/// estimator provider choice, model names) is safe to echo so the form
+/// can show what's configured.
+fn is_sensitive_secret(key: &str) -> bool {
+    matches!(
+        key,
+        "jira_api_token"
+            | "tempo_api_token"
+            | "github_token"
+            | "google_client_secret"
+            | "google_refresh_token"
+            | "anthropic_api_key"
+            | "litellm_api_key"
+    )
+}
+
+fn current_settings() -> Result<SettingsView> {
+    let cfg_path = personal::config_path();
+    let file = cfg_path
+        .as_deref()
+        .map(personal::read_file)
+        .unwrap_or_default();
+    let secrets = secrets::KNOWN_KEYS
+        .iter()
+        .map(|&k| {
+            let stored = secrets::get(k).ok().flatten().filter(|s| !s.is_empty());
+            let sensitive = is_sensitive_secret(k);
+            SettingField {
+                key: k,
+                present: stored.is_some(),
+                sensitive,
+                value: if sensitive { None } else { stored },
+            }
+        })
+        .collect();
+    Ok(SettingsView {
+        personal: PersonalPatterns {
+            work: file.work,
+            personal: file.personal,
+        },
+        secrets,
+        timezone: crate::tz::configured_tz().unwrap_or_default(),
+        personal_config_path: cfg_path.map(|p| p.display().to_string()),
+    })
+}
+
+async fn get_settings() -> Result<Json<SettingsView>, ApiError> {
+    Ok(Json(current_settings()?))
+}
+
+#[derive(Deserialize)]
+pub struct PersonalPatternsIn {
+    #[serde(default)]
+    pub work: Vec<String>,
+    #[serde(default)]
+    pub personal: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct SettingsUpdate {
+    /// Replace the whole personal.toml work/personal lists. `None` leaves
+    /// classification untouched; `Some` rewrites the file wholesale.
+    pub personal: Option<PersonalPatternsIn>,
+    /// Map of secret key → value. Only keys present here are touched; an
+    /// empty string deletes the key. Unknown keys are ignored.
+    #[serde(default)]
+    pub secrets: std::collections::HashMap<String, String>,
+    /// Fixed-offset timezone (e.g. `+01:00`, `UTC`). `None` leaves as-is.
+    pub timezone: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct SettingsSaveResponse {
+    #[serde(flatten)]
+    pub settings: SettingsView,
+    /// Present only when classification patterns changed and existing
+    /// blocks were reclassified against the new rules.
+    pub reclassified: Option<personal::ReclassifyStats>,
+}
+
+async fn post_settings(
+    State(state): State<Shared>,
+    Json(body): Json<SettingsUpdate>,
+) -> Result<Json<SettingsSaveResponse>, ApiError> {
+    // 1. Timezone → .env. Validate as a fixed offset first so a typo
+    //    returns 400 instead of silently bucketing days in UTC later.
+    if let Some(tz) = body.timezone.as_deref().map(str::trim) {
+        if !crate::tz::is_valid_tz(tz) {
+            return Err(ApiError::bad_request(anyhow::anyhow!(
+                "`{tz}` is not a fixed offset — use +HH:MM, -HH:MM, or UTC \
+                 (named zones like America/New_York are not supported)"
+            )));
+        }
+        crate::envfile::upsert("WORKLOG_TZ", tz)?;
+    }
+
+    // 2. Secrets → OS keychain. Empty value deletes. Unknown keys are
+    //    refused so a stale client can't scribble arbitrary entries.
+    for (k, v) in &body.secrets {
+        if !secrets::KNOWN_KEYS.contains(&k.as_str()) {
+            warn!(key = %k, "ignoring unknown secret key in settings update");
+            continue;
+        }
+        if v.is_empty() {
+            secrets::delete(k)?;
+        } else {
+            secrets::set(k, v)?;
+        }
+    }
+
+    // 3. Personal patterns → personal.toml, then reclassify existing
+    //    blocks so the change shows up immediately, not just on next infer.
+    let mut reclassified = None;
+    if let Some(p) = body.personal {
+        let path = personal::config_path()
+            .ok_or_else(|| anyhow::anyhow!("no config dir — can't write personal.toml"))?;
+        let file = personal::ConfigFile {
+            work: clean_globs(p.work),
+            personal: clean_globs(p.personal),
+        };
+        personal::write_file(&path, &file)?;
+        let stats = with_conn(state, move |c| personal::reclassify_blocks(c, None)).await?;
+        reclassified = Some(stats);
+    }
+
+    info!("settings updated");
+    Ok(Json(SettingsSaveResponse {
+        settings: current_settings()?,
+        reclassified,
+    }))
+}
+
+/// Trim each glob and drop blank entries — the textarea UI sends one
+/// pattern per line and trailing empty lines are common.
+fn clean_globs(v: Vec<String>) -> Vec<String> {
+    v.into_iter()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
 // ───────────────────────── helpers ─────────────────────────
 
 /// Run a blocking closure with exclusive access to the shared connection.
@@ -1017,6 +1363,23 @@ mod tests {
         assert_eq!(arr[0]["duration_seconds"], 1800);
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn create_ticket_rejects_blank_project() {
+        // Validation runs before any Jira call, so this needs no network
+        // or secrets — a blank project_key is a 400, not a 500.
+        let app = router(state_with_block());
+        let resp = app
+            .oneshot(
+                Request::post("/tickets/create")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"project_key":"  ","summary":"x"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
     // ─────────────────── v0.6 read endpoints ───────────────────
 
     #[tokio::test(flavor = "current_thread")]
@@ -1070,6 +1433,128 @@ mod tests {
         let v = read_json(resp).await;
         assert_eq!(v["total_seconds"], 0);
         assert_eq!(v["blocks"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn day_summary_reports_dominant_project_path_per_block() {
+        // The review UI shows the directory a block's commands mostly ran
+        // in. stitch_day_summary must return, per block, the project_path
+        // that tags the most events — and None when no event carried one.
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-18', '2026-04-18T09:00:00+00:00', '2026-04-18T09:30:00+00:00', 1800)",
+            [],
+        )
+        .unwrap();
+        let bid = conn.last_insert_rowid();
+        // Two events under ~/work/api, one under ~/work/web — api wins.
+        for (i, path) in [
+            Some("/home/u/work/api"),
+            Some("/home/u/work/api"),
+            Some("/home/u/work/web"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let mut ev = Event::minimal(
+                "claude",
+                format!("e{i}").as_str(),
+                "2026-04-18T09:05:00+00:00",
+                "prompt",
+            );
+            ev.project_path = path.map(|s| s.to_string());
+            let eid = repo::upsert_event(&conn, &ev).unwrap();
+            conn.execute(
+                "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+                params![bid, eid],
+            )
+            .unwrap();
+        }
+
+        let summary = stitch_day_summary(&conn, "2026-04-18").unwrap();
+        assert_eq!(summary.blocks.len(), 1);
+        assert_eq!(
+            summary.blocks[0].project_path.as_deref(),
+            Some("/home/u/work/api"),
+            "dominant path should be the one tagging the most events"
+        );
+    }
+
+    #[test]
+    fn day_summary_project_path_is_none_without_cwd() {
+        // Blocks whose events carry no project_path (gcal / pure github)
+        // come back with project_path = None, not an empty string.
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-18', '2026-04-18T09:00:00+00:00', '2026-04-18T09:30:00+00:00', 1800)",
+            [],
+        )
+        .unwrap();
+        let bid = conn.last_insert_rowid();
+        // Event::minimal leaves project_path = None.
+        let eid = repo::upsert_event(
+            &conn,
+            &Event::minimal("gcal", "m", "2026-04-18T09:05:00+00:00", "standup"),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+            params![bid, eid],
+        )
+        .unwrap();
+
+        let summary = stitch_day_summary(&conn, "2026-04-18").unwrap();
+        assert_eq!(summary.blocks.len(), 1);
+        assert_eq!(summary.blocks[0].project_path, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn settings_post_rejects_invalid_timezone() {
+        // A named zone isn't a fixed offset — the handler must 400 before
+        // persisting it, so the user never silently falls back to UTC.
+        let app = router(state_with_block());
+        let resp = app
+            .oneshot(
+                Request::post("/settings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"timezone":"America/New_York"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let v = read_json(resp).await;
+        assert!(
+            v["error"].as_str().unwrap().contains("fixed offset"),
+            "error should explain the constraint: {v}"
+        );
+    }
+
+    #[test]
+    fn settings_view_masks_sensitive_secrets_and_lists_all_keys() {
+        // GET /settings must surface every known key and never echo a
+        // token value to the browser — only whether one is stored.
+        let view = current_settings().unwrap();
+        assert_eq!(view.secrets.len(), secrets::KNOWN_KEYS.len());
+        for f in &view.secrets {
+            if f.sensitive {
+                assert!(
+                    f.value.is_none(),
+                    "sensitive key {} must not echo its value",
+                    f.key
+                );
+            }
+        }
+        let token = view
+            .secrets
+            .iter()
+            .find(|f| f.key == "jira_api_token")
+            .unwrap();
+        assert!(token.sensitive, "api token must be sensitive");
+        let email = view.secrets.iter().find(|f| f.key == "jira_email").unwrap();
+        assert!(!email.sensitive, "email is not a secret value");
     }
 
     #[tokio::test(flavor = "current_thread")]

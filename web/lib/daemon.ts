@@ -46,6 +46,10 @@ function timeoutMs(path: string): number {
   if (path.startsWith("/sync")) return 30_000;
   if (path.startsWith("/jira/refresh")) return 30_000;
   if (path.startsWith("/infer")) return 30_000;
+  // Jira/Tempo round-trips: project + account listing and issue creation.
+  if (path.startsWith("/tickets/create")) return 30_000;
+  if (path.startsWith("/projects")) return 20_000;
+  if (path.startsWith("/accounts")) return 20_000;
   return 10_000;
 }
 
@@ -166,8 +170,14 @@ export async function refreshJira() {
 import type {
   Block,
   CommitEntry,
+  CreateTicketInput,
   Event,
+  JiraProject,
   JiraTicket,
+  SettingsSaveResponse,
+  SettingsUpdate,
+  SettingsView,
+  TempoAccount,
   TicketCacheMeta,
 } from "./types";
 
@@ -217,6 +227,26 @@ export async function rememberExternalTicket(t: JiraTicket): Promise<void> {
   await call("POST", "/tickets/external", t);
 }
 
+/** Jira projects for the create-ticket project picker. */
+export async function listProjects(): Promise<JiraProject[]> {
+  return call<JiraProject[]>("GET", "/projects");
+}
+
+/** Tempo accounts (the customer mapping) for the create-ticket account
+ * picker. */
+export async function listAccounts(): Promise<TempoAccount[]> {
+  return call<TempoAccount[]>("GET", "/accounts");
+}
+
+/**
+ * Create a Jira issue, setting its Tempo account custom field so the
+ * ticket's worklogs map to a customer. Returns the new ticket (with its
+ * key) so the caller can immediately assign it to a block.
+ */
+export async function createTicket(input: CreateTicketInput): Promise<JiraTicket> {
+  return call<JiraTicket>("POST", "/tickets/create", input);
+}
+
 /**
  * Events linked to a specific block, ordered by their own timestamp.
  * Fetched lazily on the first expand of the per-block events drill-down
@@ -234,4 +264,20 @@ export async function listBlockEvents(blockId: number): Promise<Event[]> {
  */
 export async function listBlockCommits(blockId: number): Promise<CommitEntry[]> {
   return call<CommitEntry[]>("GET", `/blocks/${blockId}/commits`);
+}
+
+// ───────────────────────── settings ─────────────────────────
+
+/** Current settings snapshot for the panel. Token values are masked by
+ * the daemon — see `SettingField.sensitive`. */
+export async function loadSettings(): Promise<SettingsView> {
+  return call<SettingsView>("GET", "/settings");
+}
+
+/** Apply a partial settings update. Returns the fresh snapshot plus a
+ * reclassify summary when the personal patterns changed. */
+export async function saveSettings(
+  update: SettingsUpdate,
+): Promise<SettingsSaveResponse> {
+  return call<SettingsSaveResponse>("POST", "/settings", update);
 }

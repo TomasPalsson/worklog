@@ -1,9 +1,9 @@
 "use client";
 
 import { useRef, useState, useTransition } from "react";
-import { Check, Coffee, Trash2 } from "lucide-react";
+import { Check, Coffee, FolderGit2, Trash2 } from "lucide-react";
 import type { Block, JiraTicket } from "@/lib/types";
-import { formatDuration, formatRange } from "@/lib/format";
+import { formatDuration, formatProjectPath, formatRange } from "@/lib/format";
 import {
   deleteBlock,
   setDescription,
@@ -210,6 +210,16 @@ export function BlockCard({ block, tickets, day }: Props) {
         <div className="block-meta">
           <SourceBadges sources={block.sources} />
           <EstBadge kind={block.estimated_by} />
+          {block.project_path && (
+            <span
+              className="dir-badge"
+              title={block.project_path}
+              aria-label={`working directory ${block.project_path}`}
+            >
+              <FolderGit2 />
+              {formatProjectPath(block.project_path)}
+            </span>
+          )}
           <EventList blockId={block.id} eventCount={block.event_count} />
           <CommitList blockId={block.id} isPersonal={block.is_personal} />
         </div>

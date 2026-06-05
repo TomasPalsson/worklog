@@ -34,6 +34,27 @@ mock.module("@/lib/daemon", () => ({
   listBlockCommits: async () => [],
   searchTickets: async () => [],
   rememberExternalTicket: async () => ({}),
+  loadSettings: async () => ({
+    personal: { work: [], personal: [] },
+    secrets: [],
+    timezone: "",
+    personal_config_path: null,
+  }),
+  saveSettings: async () => ({
+    personal: { work: [], personal: [] },
+    secrets: [],
+    timezone: "",
+    personal_config_path: null,
+    reclassified: null,
+  }),
+  listProjects: async () => [],
+  listAccounts: async () => [],
+  createTicket: async () => ({
+    key: "PROJ-1",
+    summary: "x",
+    status: null,
+    updated: null,
+  }),
 }));
 
 let _runActionForTests: <T>(

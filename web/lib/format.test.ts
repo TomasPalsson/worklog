@@ -1,10 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import {
+  formatBilledHours,
   formatDuration,
+  formatProjectPath,
   formatRange,
   formatTotalHours,
   formatWeekRange,
   mondayOf,
+  roundToHalfHour,
   shiftDay,
   shiftWeek,
   shortMonthDay,
@@ -12,6 +15,23 @@ import {
   todayISO,
   weekDays,
 } from "./format";
+
+describe("formatProjectPath", () => {
+  it("keeps the last two segments behind an ellipsis for deep paths", () => {
+    expect(formatProjectPath("/Users/tomas/Desktop/Projects/worklog")).toBe(
+      "…/Projects/worklog",
+    );
+  });
+
+  it("returns short paths unchanged", () => {
+    expect(formatProjectPath("/Users/tomas")).toBe("/Users/tomas");
+    expect(formatProjectPath("/var")).toBe("/var");
+  });
+
+  it("ignores trailing slashes", () => {
+    expect(formatProjectPath("/a/b/c/d/")).toBe("…/c/d");
+  });
+});
 
 describe("formatDuration", () => {
   it("shows just minutes under an hour", () => {
@@ -40,6 +60,36 @@ describe("formatTotalHours", () => {
     expect(formatTotalHours(3600)).toBe("1.0h");
     expect(formatTotalHours(5400)).toBe("1.5h");
     expect(formatTotalHours(9000)).toBe("2.5h");
+  });
+});
+
+describe("roundToHalfHour", () => {
+  it("rounds to the nearest half hour with ties up", () => {
+    expect(roundToHalfHour(1800)).toBe(1800);
+    expect(roundToHalfHour(5400)).toBe(5400);
+    expect(roundToHalfHour(26 * 60 + 40)).toBe(1800); // 26m40s → 0.5h
+    expect(roundToHalfHour(44 * 60)).toBe(1800); // 44m → 0.5h
+    expect(roundToHalfHour(45 * 60)).toBe(3600); // 45m tie → 1h
+  });
+
+  it("floors anything under 15 min to 0", () => {
+    expect(roundToHalfHour(0)).toBe(0);
+    expect(roundToHalfHour(14 * 60)).toBe(0);
+    expect(roundToHalfHour(15 * 60)).toBe(1800); // 15m tie → 0.5h
+    expect(roundToHalfHour(-100)).toBe(0);
+  });
+});
+
+describe("formatBilledHours", () => {
+  it("shows the half-hour-rounded billable hours", () => {
+    expect(formatBilledHours(45 * 60)).toBe("1.0h");
+    expect(formatBilledHours(26 * 60 + 40)).toBe("0.5h");
+    expect(formatBilledHours(5400)).toBe("1.5h");
+  });
+
+  it("shows 0h when nothing will sync (under 15 min)", () => {
+    expect(formatBilledHours(10 * 60)).toBe("0h");
+    expect(formatBilledHours(0)).toBe("0h");
   });
 });
 

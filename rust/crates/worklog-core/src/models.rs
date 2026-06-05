@@ -86,3 +86,30 @@ pub struct JiraTicket {
     #[serde(default)]
     pub issue_id: Option<String>,
 }
+
+/// A Jira project, for the create-ticket project picker. `id` is the
+/// numeric project id; `key` is the human prefix (e.g. `PROJ`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JiraProject {
+    pub key: String,
+    pub name: String,
+    #[serde(default)]
+    pub id: Option<String>,
+}
+
+/// A Tempo account — the billing bucket that maps logged time to a real
+/// customer. Surfaced in the create-ticket account picker; the chosen
+/// account is written onto the new issue's Tempo account custom field so
+/// every worklog against the ticket rolls up to the right customer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TempoAccount {
+    /// Numeric Tempo account id — the value written to the Jira account
+    /// custom field when creating an issue.
+    pub id: i64,
+    pub key: String,
+    pub name: String,
+    /// Customer name, when the account is linked to one. Shown alongside
+    /// the account so the user picks the right customer at a glance.
+    #[serde(default)]
+    pub customer: Option<String>,
+}

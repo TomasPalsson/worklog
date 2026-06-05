@@ -15,8 +15,23 @@ import {
   listBlockCommits as daemonListBlockCommits,
   searchTickets as daemonSearchTickets,
   rememberExternalTicket as daemonRememberExternalTicket,
+  loadSettings as daemonLoadSettings,
+  saveSettings as daemonSaveSettings,
+  listProjects as daemonListProjects,
+  listAccounts as daemonListAccounts,
+  createTicket as daemonCreateTicket,
 } from "@/lib/daemon";
-import type { CommitEntry, Event, JiraTicket } from "@/lib/types";
+import type {
+  CommitEntry,
+  CreateTicketInput,
+  Event,
+  JiraProject,
+  JiraTicket,
+  SettingsSaveResponse,
+  SettingsUpdate,
+  SettingsView,
+  TempoAccount,
+} from "@/lib/types";
 
 /**
  * Every Server Action returns one of these. `useTransition`'s `start()`
@@ -182,6 +197,55 @@ export async function assignExternalTicket(
     await daemonAssignTicket(blockId, ticket.key);
   }, `/${day}`);
   return r.ok ? { ok: true, data: undefined } : r;
+}
+
+// ───────────────────────── create ticket ─────────────────────────
+
+/** Jira projects for the create-ticket project picker. Read-only. */
+export async function fetchProjects(): Promise<ActionResult<JiraProject[]>> {
+  return runAction(() => daemonListProjects());
+}
+
+/** Tempo accounts (the customer mapping) for the create-ticket account
+ * picker. Read-only. */
+export async function fetchAccounts(): Promise<ActionResult<TempoAccount[]>> {
+  return runAction(() => daemonListAccounts());
+}
+
+/**
+ * Create a Jira issue (setting its Tempo account so worklogs map to a
+ * customer), then assign it to the block in one round-trip. The created
+ * ticket is cached daemon-side, so the picker can render it afterwards.
+ */
+export async function createTicket(
+  input: CreateTicketInput,
+  blockId: number,
+  day: string,
+): Promise<ActionResult<JiraTicket>> {
+  return runAction(async () => {
+    const ticket = await daemonCreateTicket(input);
+    await daemonAssignTicket(blockId, ticket.key);
+    return ticket;
+  }, `/${day}`);
+}
+
+// ───────────────────────── settings ─────────────────────────
+
+/** Load the settings snapshot for the panel. Read-only, no revalidate. */
+export async function fetchSettings(): Promise<ActionResult<SettingsView>> {
+  return runAction(() => daemonLoadSettings());
+}
+
+/**
+ * Persist a partial settings update. Revalidates the current day so a
+ * classification change (which reclassifies blocks) is reflected without
+ * a manual reload. `day` is the page the user saved from.
+ */
+export async function saveSettings(
+  update: SettingsUpdate,
+  day: string,
+): Promise<ActionResult<SettingsSaveResponse>> {
+  return runAction(() => daemonSaveSettings(update), `/${day}`);
 }
 
 // Exported for tests. Not used by callers — they use the CRUD/query

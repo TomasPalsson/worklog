@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { mondayOf, shiftDay, todayISO } from "@/lib/format";
 import { ThemeToggle } from "./ThemeToggle";
+import { SettingsPanel } from "./SettingsPanel";
 
 interface Props {
   day: string;
@@ -69,6 +70,7 @@ export function DayHeader({
           Week
         </Link>
         <ThemeToggle />
+        <SettingsPanel day={day} />
       </nav>
     </header>
   );
