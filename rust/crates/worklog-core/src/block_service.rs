@@ -108,6 +108,62 @@ pub fn set_description(conn: &Connection, block_id: i64, description: &str) -> R
     repo::get_block(conn, block_id)?.ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))
 }
 
+/// Reconcile the Tempo side after a synced block has LEFT the billable
+/// set (it was just deleted, or flipped to personal).
+///
+/// Tempo aggregates every non-personal block in a `(day, jira_issue)`
+/// group into one worklog whose duration is their sum. So a departing
+/// block doesn't mean "delete the worklog" — it means "the group's total
+/// shrank". Two outcomes:
+///   * other non-personal blocks still share this `tempo_worklog_id` →
+///     mark them `dirty` so the next sync PUTs the reduced total (the
+///     departed block no longer counts toward it);
+///   * none remain → the worklog has no backing time left, so queue it
+///     for deletion. A legacy one-worklog-per-block day lands here too:
+///     no sibling shares the id, so its own worklog is queued — exactly
+///     right.
+///
+/// Caller must have already applied the departure (deleted the row or set
+/// `is_personal = 1`) so the "remaining" query sees the post-state. The
+/// `tempo_worklog_id` canary is never cleared by this function.
+fn reconcile_departed_block(
+    conn: &Connection,
+    day: &str,
+    jira_issue: Option<&str>,
+    departed_tempo_id: &str,
+) -> Result<()> {
+    let tempo_id = departed_tempo_id.trim();
+    if tempo_id.is_empty() {
+        return Ok(());
+    }
+    // No ticket → the block can't have been part of an aggregate group
+    // (sync skips ticketless blocks), so its worklog is orphaned outright.
+    let Some(issue) = jira_issue else {
+        return repo::enqueue_tempo_deletion(conn, tempo_id);
+    };
+    let survivors: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM blocks
+              WHERE day = ?1 AND jira_issue = ?2 AND is_personal = 0
+                AND tempo_worklog_id = ?3",
+            params![day, issue, tempo_id],
+            |r| r.get(0),
+        )
+        .context("reconcile_departed_block: counting survivors")?;
+    if survivors == 0 {
+        repo::enqueue_tempo_deletion(conn, tempo_id)
+    } else {
+        conn.execute(
+            "UPDATE blocks SET dirty = 1
+              WHERE day = ?1 AND jira_issue = ?2 AND is_personal = 0
+                AND tempo_worklog_id = ?3",
+            params![day, issue, tempo_id],
+        )
+        .context("reconcile_departed_block: dirtying survivors")?;
+        Ok(())
+    }
+}
+
 /// Manually set a block's work/personal classification.
 ///
 /// The path classifier infers `is_personal` from a block's dominant
@@ -115,13 +171,53 @@ pub fn set_description(conn: &Connection, block_id: i64, description: &str) -> R
 /// or an off-the-clock spike as personal (or pulling a mis-classified
 /// block back into work) straight from the review UI. Personal blocks are
 /// dimmed in the UI, skipped by the estimator, and excluded from Tempo
-/// sync. Only the flag changes — the ticket, if any, is left untouched.
+/// sync. The ticket, if any, is left untouched.
+///
+/// Crucially, personal status is a *billing* signal, so it must reconcile
+/// with Tempo (see [`reconcile_departed_block`]):
+///   * → personal on a synced block: the block leaves the billable set,
+///     so its worklog total shrinks (survivors dirtied) or the worklog is
+///     queued for deletion (it was the last block);
+///   * → work on a synced block: it rejoins, so cancel any pending
+///     deletion of its worklog and re-dirty it for a fresh PUT.
 pub fn set_personal(conn: &Connection, block_id: i64, is_personal: bool) -> Result<Block> {
-    conn.execute(
-        "UPDATE blocks SET is_personal = ?1 WHERE id = ?2",
-        params![is_personal as i64, block_id],
-    )
-    .context("set_personal")?;
+    let before = repo::get_block(conn, block_id)?
+        .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
+    let synced_id = before
+        .tempo_worklog_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    if is_personal {
+        // Don't dirty the departing block itself — it's excluded from
+        // sync by is_personal=1, and a dirty pill on a dimmed personal
+        // block is just noise. reconcile_departed_block dirties survivors.
+        conn.execute(
+            "UPDATE blocks SET is_personal = 1 WHERE id = ?1",
+            params![block_id],
+        )
+        .context("set_personal")?;
+        if let Some(tempo_id) = synced_id {
+            reconcile_departed_block(
+                conn,
+                &before.day,
+                before.jira_issue.as_deref(),
+                tempo_id,
+            )?;
+        }
+    } else {
+        conn.execute(
+            &format!("UPDATE blocks SET is_personal = 0, dirty = {MARK_DIRTY_IF_SYNCED} WHERE id = ?1"),
+            params![block_id],
+        )
+        .context("set_personal")?;
+        if let Some(tempo_id) = synced_id {
+            // The worklog might have been queued for deletion when this
+            // block (or a sibling) left; it's billable again, so keep it.
+            repo::cancel_tempo_deletion(conn, tempo_id)?;
+        }
+    }
     repo::get_block(conn, block_id)?.ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))
 }
 
@@ -485,6 +581,96 @@ mod tests {
         let got = set_personal(&conn, id, true).unwrap();
         assert!(got.is_personal);
         assert_eq!(got.jira_issue.as_deref(), Some("PROJ-1"));
+    }
+
+    // ───────────── personal ⇄ Tempo reconciliation (Bug A) ─────────────
+
+    /// Seed a block already synced to Tempo under `issue` with `tempo_id`.
+    fn seed_synced(conn: &Connection, issue: &str, tempo_id: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO blocks
+                (day, jira_issue, started_at, ended_at, duration_seconds,
+                 tempo_worklog_id, is_personal, dirty)
+             VALUES ('2026-04-18', ?1, '2026-04-18T09:00:00+00:00',
+                     '2026-04-18T09:30:00+00:00', 1800, ?2, 0, 0)",
+            params![issue, tempo_id],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn is_dirty(conn: &Connection, id: i64) -> bool {
+        conn.query_row("SELECT dirty FROM blocks WHERE id = ?1", [id], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap()
+            != 0
+    }
+
+    #[test]
+    fn personalize_last_synced_block_enqueues_tempo_deletion() {
+        // The block was the only thing backing worklog 42. Personalising
+        // it removes the last billable time, so the remote worklog must
+        // be queued for deletion — but the canary stays put.
+        let conn = open_memory().unwrap();
+        let id = seed_synced(&conn, "PROJ-1", "42");
+        set_personal(&conn, id, true).unwrap();
+        assert_eq!(repo::list_tempo_deletions(&conn).unwrap(), vec!["42"]);
+        let b = repo::get_block(&conn, id).unwrap().unwrap();
+        assert!(b.is_personal);
+        assert_eq!(
+            b.tempo_worklog_id.as_deref(),
+            Some("42"),
+            "canary must never be cleared"
+        );
+    }
+
+    #[test]
+    fn personalize_synced_block_with_sibling_marks_sibling_dirty_no_tombstone() {
+        // Two blocks aggregate into worklog 42. Personalising one must
+        // NOT delete the worklog — it must dirty the survivor so the next
+        // sync PUTs the reduced total.
+        let conn = open_memory().unwrap();
+        let x = seed_synced(&conn, "PROJ-1", "42");
+        let y = seed_synced(&conn, "PROJ-1", "42");
+        set_personal(&conn, x, true).unwrap();
+        assert!(
+            repo::list_tempo_deletions(&conn).unwrap().is_empty(),
+            "shared worklog must not be queued for deletion"
+        );
+        assert!(is_dirty(&conn, y), "surviving sibling must be marked dirty");
+    }
+
+    #[test]
+    fn personalize_unsynced_block_is_a_noop_for_tempo() {
+        // No tempo_worklog_id → nothing was ever pushed → no deletion, no
+        // dirtying. (dirty stays 0; MARK_DIRTY_IF_SYNCED is a no-op here.)
+        let conn = open_memory().unwrap();
+        let id = seed(&conn);
+        assign_ticket(&conn, id, Some("PROJ-1")).unwrap();
+        set_personal(&conn, id, true).unwrap();
+        assert!(repo::list_tempo_deletions(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn unpersonalize_synced_block_cancels_pending_deletion_and_dirties() {
+        // A block that was personalised (and thus queued its worklog for
+        // deletion) is pulled back into work BEFORE the sync runs. The
+        // pending deletion must be cancelled so the worklog survives, and
+        // the block re-dirtied so the next sync re-PUTs its time.
+        let conn = open_memory().unwrap();
+        let id = seed_synced(&conn, "PROJ-1", "42");
+        conn.execute("UPDATE blocks SET is_personal = 1 WHERE id = ?1", [id])
+            .unwrap();
+        repo::enqueue_tempo_deletion(&conn, "42").unwrap();
+        set_personal(&conn, id, false).unwrap();
+        assert!(
+            repo::list_tempo_deletions(&conn).unwrap().is_empty(),
+            "rejoining block must cancel its worklog's pending deletion"
+        );
+        let b = repo::get_block(&conn, id).unwrap().unwrap();
+        assert!(!b.is_personal);
+        assert!(b.dirty, "rejoining synced block must be dirty for re-sync");
     }
 
     #[test]
