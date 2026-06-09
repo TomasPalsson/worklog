@@ -1303,6 +1303,171 @@ mod tests {
         assert!(results.iter().any(|r| r.status == "dry-run-delete"));
     }
 
+    // ───────── end-to-end: personalise/delete → sync reconciles ─────────
+    // These drive the real block_service → sync path the user hits, the
+    // scenario behind "it doesn't become unsynced so syncing does nothing".
+
+    #[test]
+    fn personalising_one_aggregated_block_shrinks_the_tempo_total() {
+        // b1 (0.5h) + b2 (1.0h) aggregate into worklog 42 (1.5h). Marking
+        // b1 personal must PUT 42 down to b2's 1.0h — NOT delete it.
+        let server = MockServer::start();
+        let put = server.mock(|when, then| {
+            when.method(PUT)
+                .path("/worklogs/42")
+                .json_body_partial(r#"{"timeSpentSeconds": 3600}"#);
+            then.status(200).json_body(json!({"tempoWorklogId": 42}));
+        });
+        let no_delete = server.mock(|when, then| {
+            when.method(DELETE).path("/worklogs/42");
+            then.status(204);
+        });
+        let conn = open_memory().unwrap();
+        let day_s = "2026-04-18";
+        let b1 = insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T09:00:00Z",
+            "2026-04-18T09:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("small"),
+        );
+        let b2 = insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T10:00:00Z",
+            "2026-04-18T11:00:00Z",
+            3600,
+            Some("PROJ-1"),
+            Some("big"),
+        );
+        conn.execute(
+            "UPDATE blocks SET tempo_worklog_id = '42', dirty = 0 WHERE id IN (?1, ?2)",
+            params![b1, b2],
+        )
+        .unwrap();
+
+        crate::block_service::set_personal(&conn, b1, true).unwrap();
+        let (report, _results) = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+
+        put.assert_hits(1);
+        assert_eq!(no_delete.hits(), 0, "shared worklog updated, not deleted");
+        assert_eq!(report.deleted, 0);
+    }
+
+    #[test]
+    fn deleting_one_aggregated_block_shrinks_the_tempo_total() {
+        // The old Bug B: deleting one block of an aggregate nuked the
+        // whole worklog. It must instead PUT the reduced total.
+        let server = MockServer::start();
+        let put = server.mock(|when, then| {
+            when.method(PUT)
+                .path("/worklogs/42")
+                .json_body_partial(r#"{"timeSpentSeconds": 3600}"#);
+            then.status(200).json_body(json!({"tempoWorklogId": 42}));
+        });
+        let no_delete = server.mock(|when, then| {
+            when.method(DELETE).path("/worklogs/42");
+            then.status(204);
+        });
+        let conn = open_memory().unwrap();
+        let day_s = "2026-04-18";
+        let b1 = insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T09:00:00Z",
+            "2026-04-18T09:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("small"),
+        );
+        let b2 = insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T10:00:00Z",
+            "2026-04-18T11:00:00Z",
+            3600,
+            Some("PROJ-1"),
+            Some("big"),
+        );
+        conn.execute(
+            "UPDATE blocks SET tempo_worklog_id = '42', dirty = 0 WHERE id IN (?1, ?2)",
+            params![b1, b2],
+        )
+        .unwrap();
+
+        crate::block_service::delete_block(&conn, b1).unwrap();
+        let (report, _results) = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+
+        put.assert_hits(1);
+        assert_eq!(
+            no_delete.hits(),
+            0,
+            "surviving sibling means PUT the remainder, never DELETE the shared worklog"
+        );
+        assert_eq!(report.deleted, 0);
+    }
+
+    #[test]
+    fn personalising_the_last_block_then_sync_deletes_the_worklog() {
+        // The sole block backing worklog 42 goes personal → next sync
+        // DELETEs 42 and nothing is PUT (no billable block remains).
+        let server = MockServer::start();
+        let del = server.mock(|when, then| {
+            when.method(DELETE).path("/worklogs/42");
+            then.status(204);
+        });
+        let no_put = server.mock(|when, then| {
+            when.method(PUT).path("/worklogs/42");
+            then.status(200).json_body(json!({"tempoWorklogId": 42}));
+        });
+        let conn = open_memory().unwrap();
+        let b1 = insert_block(
+            &conn,
+            "2026-04-18",
+            "2026-04-18T09:00:00Z",
+            "2026-04-18T09:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("only"),
+        );
+        conn.execute(
+            "UPDATE blocks SET tempo_worklog_id = '42', dirty = 0 WHERE id = ?1",
+            params![b1],
+        )
+        .unwrap();
+
+        crate::block_service::set_personal(&conn, b1, true).unwrap();
+        let (report, _results) = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+
+        del.assert_hits(1);
+        assert_eq!(no_put.hits(), 0, "no survivor → delete the worklog, no PUT");
+        assert_eq!(report.deleted, 1);
+        assert!(repo::list_tempo_deletions(&conn).unwrap().is_empty());
+    }
+
     #[test]
     fn aggregated_post_rounds_duration_to_half_hour() {
         // 600s + 1000s = 1600s (26m40s) → one POST rounded up to 1800s.
