@@ -126,20 +126,24 @@ pub fn set_description(conn: &Connection, block_id: i64, description: &str) -> R
 /// Caller must have already applied the departure (deleted the row or set
 /// `is_personal = 1`) so the "remaining" query sees the post-state. The
 /// `tempo_worklog_id` canary is never cleared by this function.
+///
+/// Returns `Some(id)` when the worklog was queued for deletion (no
+/// billable blocks remain), or `None` when survivors were dirtied instead.
 fn reconcile_departed_block(
     conn: &Connection,
     day: &str,
     jira_issue: Option<&str>,
     departed_tempo_id: &str,
-) -> Result<()> {
+) -> Result<Option<String>> {
     let tempo_id = departed_tempo_id.trim();
     if tempo_id.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     // No ticket → the block can't have been part of an aggregate group
     // (sync skips ticketless blocks), so its worklog is orphaned outright.
     let Some(issue) = jira_issue else {
-        return repo::enqueue_tempo_deletion(conn, tempo_id);
+        repo::enqueue_tempo_deletion(conn, tempo_id)?;
+        return Ok(Some(tempo_id.to_owned()));
     };
     let survivors: i64 = conn
         .query_row(
@@ -151,7 +155,8 @@ fn reconcile_departed_block(
         )
         .context("reconcile_departed_block: counting survivors")?;
     if survivors == 0 {
-        repo::enqueue_tempo_deletion(conn, tempo_id)
+        repo::enqueue_tempo_deletion(conn, tempo_id)?;
+        Ok(Some(tempo_id.to_owned()))
     } else {
         conn.execute(
             "UPDATE blocks SET dirty = 1
@@ -160,7 +165,7 @@ fn reconcile_departed_block(
             params![day, issue, tempo_id],
         )
         .context("reconcile_departed_block: dirtying survivors")?;
-        Ok(())
+        Ok(None)
     }
 }
 
@@ -199,16 +204,13 @@ pub fn set_personal(conn: &Connection, block_id: i64, is_personal: bool) -> Resu
         )
         .context("set_personal")?;
         if let Some(tempo_id) = synced_id {
-            reconcile_departed_block(
-                conn,
-                &before.day,
-                before.jira_issue.as_deref(),
-                tempo_id,
-            )?;
+            reconcile_departed_block(conn, &before.day, before.jira_issue.as_deref(), tempo_id)?;
         }
     } else {
         conn.execute(
-            &format!("UPDATE blocks SET is_personal = 0, dirty = {MARK_DIRTY_IF_SYNCED} WHERE id = ?1"),
+            &format!(
+                "UPDATE blocks SET is_personal = 0, dirty = {MARK_DIRTY_IF_SYNCED} WHERE id = ?1"
+            ),
             params![block_id],
         )
         .context("set_personal")?;
@@ -221,14 +223,30 @@ pub fn set_personal(conn: &Connection, block_id: i64, is_personal: bool) -> Resu
     repo::get_block(conn, block_id)?.ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))
 }
 
-pub fn delete_block(conn: &Connection, block_id: i64) -> Result<()> {
-    let n = conn
-        .execute("DELETE FROM blocks WHERE id = ?1", params![block_id])
+/// Delete a block and reconcile its Tempo worklog.
+///
+/// Returns `Some(worklog_id)` when the block's removal orphaned a remote
+/// worklog and it was queued for deletion, or `None` when survivors in the
+/// same aggregate were dirtied instead (or the block was never synced).
+/// The actual Tempo DELETE happens on the next `worklog sync`, not here —
+/// so a missing-auth or offline daemon never leaves a phantom worklog.
+pub fn delete_block(conn: &Connection, block_id: i64) -> Result<Option<String>> {
+    let before = repo::get_block(conn, block_id)?
+        .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
+    conn.execute("DELETE FROM blocks WHERE id = ?1", params![block_id])
         .context("delete_block")?;
-    if n == 0 {
-        anyhow::bail!("block {block_id} not found");
-    }
-    Ok(())
+    let queued = match before
+        .tempo_worklog_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(tempo_id) => {
+            reconcile_departed_block(conn, &before.day, before.jira_issue.as_deref(), tempo_id)?
+        }
+        None => None,
+    };
+    Ok(queued)
 }
 
 /// True when a block carries a real Tempo worklog id — i.e. it has been
@@ -689,6 +707,61 @@ mod tests {
         assert!(set_description(&conn, 9999, "x").is_err());
         assert!(set_personal(&conn, 9999, true).is_err());
         assert!(delete_block(&conn, 9999).is_err());
+    }
+
+    // ───────────── delete ⇄ Tempo reconciliation (Bug B) ─────────────
+
+    #[test]
+    fn delete_synced_block_with_sibling_marks_sibling_dirty_no_tombstone() {
+        // Two blocks aggregate into worklog 42. Deleting one must NOT nuke
+        // the whole worklog (the old bug) — it dirties the survivor so the
+        // next sync PUTs the reduced total.
+        let conn = open_memory().unwrap();
+        let x = seed_synced(&conn, "PROJ-1", "42");
+        let y = seed_synced(&conn, "PROJ-1", "42");
+        let queued = delete_block(&conn, x).unwrap();
+        assert!(queued.is_none(), "shared worklog kept; nothing queued");
+        assert!(repo::list_tempo_deletions(&conn).unwrap().is_empty());
+        assert!(
+            is_dirty(&conn, y),
+            "survivor must be dirtied for the reduced-total PUT"
+        );
+    }
+
+    #[test]
+    fn delete_last_synced_block_enqueues_tempo_deletion() {
+        let conn = open_memory().unwrap();
+        let id = seed_synced(&conn, "PROJ-1", "42");
+        let queued = delete_block(&conn, id).unwrap();
+        assert_eq!(queued.as_deref(), Some("42"));
+        assert_eq!(repo::list_tempo_deletions(&conn).unwrap(), vec!["42"]);
+    }
+
+    #[test]
+    fn delete_legacy_block_enqueues_only_its_own_worklog() {
+        // Pre-aggregation day: each block has its own worklog. Deleting
+        // one queues ONLY its id and leaves the sibling's worklog and
+        // dirty flag untouched.
+        let conn = open_memory().unwrap();
+        let x = seed_synced(&conn, "PROJ-1", "42");
+        let y = seed_synced(&conn, "PROJ-1", "43");
+        let queued = delete_block(&conn, x).unwrap();
+        assert_eq!(queued.as_deref(), Some("42"));
+        assert_eq!(repo::list_tempo_deletions(&conn).unwrap(), vec!["42"]);
+        assert!(
+            !is_dirty(&conn, y),
+            "the other legacy worklog's block stays clean"
+        );
+    }
+
+    #[test]
+    fn delete_unsynced_block_queues_nothing() {
+        let conn = open_memory().unwrap();
+        let id = seed(&conn);
+        assign_ticket(&conn, id, Some("PROJ-1")).unwrap();
+        let queued = delete_block(&conn, id).unwrap();
+        assert!(queued.is_none());
+        assert!(repo::list_tempo_deletions(&conn).unwrap().is_empty());
     }
 
     // ───────────────────────── merge ─────────────────────────

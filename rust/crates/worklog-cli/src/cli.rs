@@ -1824,7 +1824,7 @@ fn cmd_block_delete<W: Write>(id: i64, yes: bool, out: &mut W, json: bool) -> Re
     ensure_daemon_running(&mut io::stderr())?;
     if !yes
         && !confirm(&format!(
-            "Delete block {id}? If it was synced, its Tempo entry is removed too."
+            "Delete block {id}? If it was synced, its Tempo entry is removed on the next sync."
         ))?
     {
         style::info(out, "cancelled")?;
@@ -1837,8 +1837,10 @@ fn cmd_block_delete<W: Write>(id: i64, yes: bool, out: &mut W, json: bool) -> Re
         return Ok(());
     }
     let mut msg = format!("block {id} deleted");
-    if let Some(t) = res["deleted_tempo_id"].as_str() {
-        msg.push_str(&format!(" (Tempo entry {t} removed)"));
+    if let Some(t) = res["queued_tempo_deletion"].as_str() {
+        msg.push_str(&format!(
+            " (Tempo entry {t} queued for removal on next sync)"
+        ));
     }
     style::ok(out, &msg)?;
     Ok(())
