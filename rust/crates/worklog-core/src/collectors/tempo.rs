@@ -150,6 +150,11 @@ pub fn sync_day_with_invoker(
     };
     let mut results = Vec::new();
 
+    // Flush the deletion queue first: worklogs orphaned by a deleted or
+    // personalised block must come down before we recompute and PUT the
+    // surviving aggregates. Runs every sync; failed deletes stay queued.
+    process_tempo_deletions(conn, auth, client, dry_run, &mut report, &mut results)?;
+
     // Tempo's authorAccountId field needs the Atlassian accountId
     // (e.g. "557058:abc-123"), not the email. If the configured author
     // looks like an email, ask Jira's /myself endpoint for the real id
@@ -280,6 +285,66 @@ pub fn sync_day_with_invoker(
     }
 
     Ok((report, results))
+}
+
+/// Flush the `tempo_deletions` tombstone queue: DELETE every queued
+/// worklog id (orphaned when a synced block was deleted or marked
+/// personal — see `block_service::reconcile_departed_block`).
+///
+/// A successful delete (including a 404 — already gone) drops the
+/// tombstone. A real failure (5xx, network) keeps it so the next sync
+/// retries, and records an error rather than silently losing the work.
+/// In `dry_run` nothing is sent and nothing is dropped — we only report
+/// what would happen. The queue is day-independent, so this runs once per
+/// sync regardless of which day is being synced.
+fn process_tempo_deletions(
+    conn: &Connection,
+    auth: &TempoAuth,
+    client: &Client,
+    dry_run: bool,
+    report: &mut CollectReport,
+    results: &mut Vec<SyncResult>,
+) -> Result<()> {
+    for id in repo::list_tempo_deletions(conn)? {
+        if dry_run {
+            results.push(SyncResult {
+                block_id: 0,
+                status: "dry-run-delete",
+                reason: None,
+                tempo_id: Some(id),
+                payload: None,
+                http_status: None,
+            });
+            continue;
+        }
+        match delete_worklog_with(auth, &id, client) {
+            Ok(()) => {
+                repo::cancel_tempo_deletion(conn, &id)?;
+                report.deleted += 1;
+                results.push(SyncResult {
+                    block_id: 0,
+                    status: "deleted",
+                    reason: None,
+                    tempo_id: Some(id),
+                    payload: None,
+                    http_status: None,
+                });
+            }
+            Err(e) => {
+                let msg = format!("tempo delete worklog {id}: {e:#}");
+                report.errors.push(msg.clone());
+                results.push(SyncResult {
+                    block_id: 0,
+                    status: "delete-error",
+                    reason: Some(msg),
+                    tempo_id: Some(id),
+                    payload: None,
+                    http_status: None,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Pull every block that today's WHERE clause would consider "needs
@@ -1132,6 +1197,110 @@ mod tests {
         assert_eq!(accounts[0].customer.as_deref(), Some("Acme Corporation"));
         assert_eq!(accounts[1].id, 7);
         assert_eq!(accounts[1].customer, None);
+    }
+
+    // ───────────── tombstone flush at sync (Slice 4) ─────────────
+
+    #[test]
+    fn sync_flushes_queued_tempo_deletion() {
+        let server = MockServer::start();
+        let del = server.mock(|when, then| {
+            when.method(DELETE).path("/worklogs/42");
+            then.status(204);
+        });
+        let conn = open_memory().unwrap();
+        repo::enqueue_tempo_deletion(&conn, "42").unwrap();
+        let (report, results) = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+        del.assert();
+        assert_eq!(report.deleted, 1);
+        assert!(
+            repo::list_tempo_deletions(&conn).unwrap().is_empty(),
+            "tombstone dropped after a successful delete"
+        );
+        assert!(results
+            .iter()
+            .any(|r| r.status == "deleted" && r.tempo_id.as_deref() == Some("42")));
+    }
+
+    #[test]
+    fn sync_treats_404_delete_as_success() {
+        // The worklog was already gone (deleted in the Tempo UI, say) —
+        // same end state, so drop the tombstone rather than retry forever.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(DELETE).path("/worklogs/42");
+            then.status(404);
+        });
+        let conn = open_memory().unwrap();
+        repo::enqueue_tempo_deletion(&conn, "42").unwrap();
+        let (report, _results) = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report.deleted, 1);
+        assert!(repo::list_tempo_deletions(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn sync_retains_tombstone_when_delete_fails() {
+        // A 5xx is a real failure — keep the tombstone so the next sync
+        // retries, and surface the error instead of silently dropping it.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(DELETE).path("/worklogs/42");
+            then.status(500).body("boom");
+        });
+        let conn = open_memory().unwrap();
+        repo::enqueue_tempo_deletion(&conn, "42").unwrap();
+        let (report, _results) = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report.deleted, 0);
+        assert!(!report.errors.is_empty());
+        assert_eq!(
+            repo::list_tempo_deletions(&conn).unwrap(),
+            vec!["42"],
+            "a failed delete keeps the tombstone for retry"
+        );
+    }
+
+    #[test]
+    fn dry_run_does_not_delete_or_drop_tombstone() {
+        let server = MockServer::start();
+        let del = server.mock(|when, then| {
+            when.method(DELETE).path("/worklogs/42");
+            then.status(204);
+        });
+        let conn = open_memory().unwrap();
+        repo::enqueue_tempo_deletion(&conn, "42").unwrap();
+        let (report, results) = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            true,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(del.hits(), 0, "dry-run must not issue a DELETE");
+        assert_eq!(report.deleted, 0);
+        assert_eq!(repo::list_tempo_deletions(&conn).unwrap(), vec!["42"]);
+        assert!(results.iter().any(|r| r.status == "dry-run-delete"));
     }
 
     #[test]

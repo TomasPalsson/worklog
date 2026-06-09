@@ -1504,15 +1504,32 @@ fn cmd_sync<W: Write>(day: Option<String>, dry_run: bool, out: &mut W, json: boo
 
     writeln!(
         out,
-        "{} {} — {} synced, {} skipped, {} errors",
+        "{} {} — {} synced, {} deleted, {} skipped, {} errors",
         if dry_run { "◇" } else { "✓" },
         day,
         report.synced,
+        report.deleted,
         report.skipped,
         report.errors.len()
     )?;
     for r in &results {
         match r.status {
+            "deleted" => writeln!(
+                out,
+                "  ✗ tempo_id={} (removed from Tempo)",
+                r.tempo_id.as_deref().unwrap_or("-")
+            )?,
+            "dry-run-delete" => writeln!(
+                out,
+                "  ◇ tempo_id={} would be removed from Tempo",
+                r.tempo_id.as_deref().unwrap_or("-")
+            )?,
+            "delete-error" => writeln!(
+                out,
+                "  ✗ tempo_id={} delete failed — {}",
+                r.tempo_id.as_deref().unwrap_or("-"),
+                r.reason.as_deref().unwrap_or("")
+            )?,
             "synced" => writeln!(
                 out,
                 "  ✓ block {:>4}  tempo_id={}",

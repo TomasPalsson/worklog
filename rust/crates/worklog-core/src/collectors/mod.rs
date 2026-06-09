@@ -18,6 +18,9 @@ pub struct CollectReport {
     pub tickets_written: usize,
     pub events_written: usize,
     pub synced: usize,
+    /// Tempo worklogs removed from the deletion queue this run (a synced
+    /// block was deleted or marked personal, orphaning its worklog).
+    pub deleted: usize,
     pub skipped: usize,
     pub errors: Vec<String>,
 }
