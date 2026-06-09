@@ -93,3 +93,16 @@ CREATE TABLE IF NOT EXISTS jira_tickets (
 );
 
 CREATE INDEX IF NOT EXISTS idx_jira_tickets_updated ON jira_tickets(updated);
+
+-- v8 adds tempo_deletions: a tombstone queue of Tempo worklog ids whose
+-- backing blocks have all left the billable set (deleted, or marked
+-- personal). The next `worklog sync` issues a DELETE for each id and drops
+-- the row on success (a 404 from Tempo counts as success — already gone).
+-- This queue exists because the two obvious places to record "this remote
+-- worklog is now orphaned" are both unavailable: we never clear a block's
+-- tempo_worklog_id (the CLAUDE.md canary), and a hard-deleted block row is
+-- gone entirely. The PRIMARY KEY makes re-queuing the same id idempotent.
+CREATE TABLE IF NOT EXISTS tempo_deletions (
+    tempo_worklog_id TEXT PRIMARY KEY,
+    enqueued_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);

@@ -309,6 +309,50 @@ pub fn set_ticket_issue_id(conn: &Connection, key: &str, issue_id: &str) -> Resu
     Ok(())
 }
 
+// ───────────────────────── tempo deletions ─────────────────────────
+
+/// Queue a Tempo worklog id for deletion on the next `worklog sync`.
+///
+/// Called when a synced block leaves the billable aggregate (deleted or
+/// marked personal) and no surviving block still backs the worklog, so it
+/// must be removed from Tempo. Idempotent: re-queuing the same id is a
+/// no-op via the PRIMARY KEY + `OR IGNORE`. Blank ids (the canary's
+/// "unsynced" sentinel) are ignored — there is nothing remote to delete.
+pub fn enqueue_tempo_deletion(conn: &Connection, tempo_worklog_id: &str) -> Result<()> {
+    let id = tempo_worklog_id.trim();
+    if id.is_empty() {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO tempo_deletions (tempo_worklog_id) VALUES (?1)",
+        params![id],
+    )
+    .context("enqueue_tempo_deletion")?;
+    Ok(())
+}
+
+/// Drop a queued deletion — either because the sync deleted the worklog
+/// successfully, or because its block came back into the billable set
+/// (e.g. un-personalised) before the sync ran, so the worklog must live.
+pub fn cancel_tempo_deletion(conn: &Connection, tempo_worklog_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM tempo_deletions WHERE tempo_worklog_id = ?1",
+        params![tempo_worklog_id.trim()],
+    )
+    .context("cancel_tempo_deletion")?;
+    Ok(())
+}
+
+/// Every Tempo worklog id currently queued for deletion, oldest first.
+pub fn list_tempo_deletions(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT tempo_worklog_id FROM tempo_deletions
+          ORDER BY enqueued_at, tempo_worklog_id",
+    )?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -590,5 +634,43 @@ mod tests {
         // assignee=currentUser() refresh now returns this key — promote
         // it (external→0) so the estimator can see it.
         assert_eq!(external_flag(&c, "FLIP-1"), 0);
+    }
+
+    // ───────────────────── tempo deletion queue ─────────────────────
+
+    #[test]
+    fn tempo_deletion_queue_enqueue_list_cancel() {
+        let c = fresh();
+        assert!(list_tempo_deletions(&c).unwrap().is_empty());
+        enqueue_tempo_deletion(&c, "42").unwrap();
+        enqueue_tempo_deletion(&c, "7").unwrap();
+        let ids = list_tempo_deletions(&c).unwrap();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"42".to_string()));
+        assert!(ids.contains(&"7".to_string()));
+        cancel_tempo_deletion(&c, "42").unwrap();
+        assert_eq!(list_tempo_deletions(&c).unwrap(), vec!["7".to_string()]);
+    }
+
+    #[test]
+    fn enqueue_tempo_deletion_is_idempotent() {
+        // The same worklog id can be queued twice (e.g. delete then a
+        // second mutation racing on the same group) — the PRIMARY KEY +
+        // OR IGNORE must collapse it to one row, not error.
+        let c = fresh();
+        enqueue_tempo_deletion(&c, "42").unwrap();
+        enqueue_tempo_deletion(&c, "42").unwrap();
+        assert_eq!(list_tempo_deletions(&c).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn enqueue_tempo_deletion_ignores_blank() {
+        // An unsynced block carries "" / NULL as its tempo id (the
+        // canary's "unsynced" sentinel). Queuing that is meaningless and
+        // would let a sync DELETE an empty path.
+        let c = fresh();
+        enqueue_tempo_deletion(&c, "").unwrap();
+        enqueue_tempo_deletion(&c, "   ").unwrap();
+        assert!(list_tempo_deletions(&c).unwrap().is_empty());
     }
 }
