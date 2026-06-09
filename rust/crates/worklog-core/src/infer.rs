@@ -447,7 +447,8 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
         // ensures the earliest-starting new block claims the earliest
         // prior.
         let mut stmt = conn.prepare(
-            "SELECT started_at, ended_at, jira_issue, description, estimated_by, tempo_worklog_id
+            "SELECT started_at, ended_at, jira_issue, description, estimated_by,
+                    tempo_worklog_id, is_personal
                FROM blocks WHERE day = ?1 ORDER BY started_at",
         )?;
         let iter = stmt.query_map(params![day_iso], |r| {
@@ -458,6 +459,7 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
                 description: r.get(3)?,
                 estimated_by: r.get(4)?,
                 tempo_worklog_id: r.get(5)?,
+                is_personal: r.get::<_, i64>(6)? != 0,
             })
         })?;
         for row in iter {
@@ -497,11 +499,19 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
             .and_then(|c| c.jira_issue.clone())
             .or_else(|| b.jira_issue.clone());
 
-        // path-based classifier gives the first signal, but a non-null
-        // jira_issue (manual or inferred) is a stronger one — if the user
-        // (or estimator) bothered to attach a ticket, the block is work.
-        let path_personal = personal_cfg.classify(b.dominant_project_path().as_deref());
-        let is_personal = path_personal && jira_issue.is_none();
+        // Preserve a prior block's personal flag across re-inference. A
+        // manual set_personal (or the reconciled state behind it) must be
+        // sticky — recomputing here would (a) silently revert a user's
+        // personal mark on the next hook event, and (b) flip a synced
+        // block to personal when its ticket was cleared, orphaning its
+        // Tempo worklog. Only brand-new blocks (no carry) get classified
+        // by path; `worklog tag reclassify` is the explicit re-apply path.
+        let is_personal = match carry {
+            Some(c) => c.is_personal,
+            None => {
+                personal_cfg.classify(b.dominant_project_path().as_deref()) && jira_issue.is_none()
+            }
+        };
         tx.execute(
             "INSERT INTO blocks (
                 day, jira_issue, started_at, ended_at,
@@ -554,6 +564,7 @@ struct CarryRow {
     description: Option<String>,
     estimated_by: Option<String>,
     tempo_worklog_id: Option<String>,
+    is_personal: bool,
 }
 
 /// Overlap check on ISO-8601 timestamps. Parses each string to a
@@ -1032,6 +1043,54 @@ mod tests {
         assert_eq!(stored[0].description.as_deref(), Some("custom"));
         assert_eq!(stored[0].jira_issue.as_deref(), Some("PROJ-7"));
         assert_eq!(stored[0].estimated_by.as_deref(), Some("manual"));
+    }
+
+    #[test]
+    fn reinference_preserves_manual_personal_flag() {
+        // Regression (review finding): a synced block marked personal must
+        // keep that flag across re-inference. Recomputing is_personal from
+        // the path would revert a ticketed personal block to work — and,
+        // when a ticket was cleared, flip a synced block TO personal and
+        // orphan its Tempo worklog. CarryRow now carries is_personal.
+        let conn = open_memory().unwrap();
+        repo::upsert_event(
+            &conn,
+            &Event::minimal("github_commit", "p1", "2026-04-18T10:00:00+00:00", "first"),
+        )
+        .unwrap();
+        repo::upsert_event(
+            &conn,
+            &Event::minimal("github_commit", "p2", "2026-04-18T10:05:00+00:00", "second"),
+        )
+        .unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let blocks = build_blocks(load_day_events(&conn, day).unwrap());
+        persist_blocks(&conn, day, &blocks).unwrap();
+
+        // User marks the (ticketed, synced) block personal.
+        conn.execute(
+            "UPDATE blocks SET tempo_worklog_id = '55', jira_issue = 'PROJ-7', \
+             is_personal = 1 WHERE day = ?1",
+            params!["2026-04-18"],
+        )
+        .unwrap();
+
+        // A new event arrives → re-infer.
+        repo::upsert_event(
+            &conn,
+            &Event::minimal("github_commit", "p3", "2026-04-18T10:08:00+00:00", "third"),
+        )
+        .unwrap();
+        let blocks = build_blocks(load_day_events(&conn, day).unwrap());
+        persist_blocks(&conn, day, &blocks).unwrap();
+
+        let stored = repo::list_blocks_for_day(&conn, "2026-04-18").unwrap();
+        assert_eq!(stored.len(), 1);
+        assert!(
+            stored[0].is_personal,
+            "manual personal flag must survive re-inference"
+        );
+        assert_eq!(stored[0].tempo_worklog_id.as_deref(), Some("55"));
     }
 
     #[test]

@@ -452,6 +452,23 @@ fn normalised_tempo_id_str(raw: &Option<String>) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Clear a now-dead Tempo worklog id from a set of blocks (id → NULL,
+/// dirty → 0). Used only when the remote worklog is gone or being deleted
+/// — a PUT that 404s (the worklog was removed out from under us), or a
+/// group that rounded down to zero billable time. This is the single
+/// sanctioned exception to the never-clear-`tempo_worklog_id` canary in
+/// CLAUDE.md: the canary guards against dropping an id whose worklog still
+/// exists, but here the worklog provably does not (or will not). The
+/// blocks become "unsynced" and are POSTed fresh if they regain time.
+fn clear_worklog_id(conn: &Connection, blocks: &[PendingBlock]) -> Result<()> {
+    let mut stmt =
+        conn.prepare("UPDATE blocks SET tempo_worklog_id = NULL, dirty = 0 WHERE id = ?1")?;
+    for b in blocks {
+        stmt.execute(params![b.id])?;
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn sync_group_aggregated(
     conn: &Connection,
@@ -475,9 +492,17 @@ fn sync_group_aggregated(
     let raw_seconds: i64 = all_in_group.iter().map(|b| b.duration_seconds).sum();
     let total_seconds = round_to_half_hour(raw_seconds);
     // A whole ticket-day that rounds to 0 (under 15 min of tracked work)
-    // is below the half-hour minimum — skip rather than POST a 0s
-    // worklog. Any pre-existing Tempo entry is left untouched.
+    // is below the half-hour minimum — skip rather than POST a 0s worklog.
     if total_seconds == 0 {
+        // If a worklog already backs this group but no billable time
+        // remains after rounding (e.g. a sibling was personalised and the
+        // lone survivor is under 15 min), that worklog is now orphaned —
+        // queue it for deletion and clear the dead id from the group so we
+        // don't re-skip-and-re-queue it on every sync. Flushed next sync.
+        if let Some(eid) = existing_id {
+            repo::enqueue_tempo_deletion(conn, eid)?;
+            clear_worklog_id(conn, all_in_group)?;
+        }
         for b in eligible_in_group {
             report.skipped += 1;
             results.push(SyncResult {
@@ -545,21 +570,43 @@ fn sync_group_aggregated(
         return Ok(());
     }
 
-    let (url, method) = match existing_id {
-        Some(id) => (format!("{}/worklogs/{}", auth.base_url, id), "PUT"),
-        None => (format!("{}/worklogs", auth.base_url), "POST"),
+    let post_url = format!("{}/worklogs", auth.base_url);
+    let mut method = if existing_id.is_some() { "PUT" } else { "POST" };
+    let first_url = match existing_id {
+        Some(id) => format!("{}/worklogs/{}", auth.base_url, id),
+        None => post_url.clone(),
     };
-    let req = if method == "PUT" {
-        client.put(&url)
+    let mut resp = (if method == "PUT" {
+        client.put(&first_url)
     } else {
-        client.post(&url)
-    };
-    let resp = req
-        .bearer_auth(&auth.token)
-        .header("Content-Type", "application/json")
-        .json(&payload)
-        .send()
-        .with_context(|| format!("tempo {method}"))?;
+        client.post(&first_url)
+    })
+    .bearer_auth(&auth.token)
+    .header("Content-Type", "application/json")
+    .json(&payload)
+    .send()
+    .with_context(|| format!("tempo {method}"))?;
+
+    // PUT to a worklog Tempo no longer has (404): the remote entry was
+    // deleted out from under us — a block was personalised (its shared
+    // worklog DELETEd on a prior sync) then pulled back into work, or the
+    // worklog was removed directly in Tempo. The id is provably dead, so
+    // recover by POSTing a fresh worklog for the whole group instead of
+    // erroring on it forever. The write-back below rewrites EVERY block
+    // in the group with the new id (the sanctioned canary exception).
+    let mut recovered_from_404 = false;
+    if method == "PUT" && resp.status().as_u16() == 404 {
+        method = "POST";
+        recovered_from_404 = true;
+        resp = client
+            .post(&post_url)
+            .bearer_auth(&auth.token)
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .with_context(|| "tempo POST (404 recovery)".to_string())?;
+    }
+
     let http_status = resp.status().as_u16();
     if !resp.status().is_success() {
         let body = resp.text().unwrap_or_default();
@@ -587,8 +634,10 @@ fn sync_group_aggregated(
     let parsed: TempoCreateResponse = resp.json().context("decode tempo response")?;
     let tempo_id = match (normalise_tempo_id(&parsed.tempo_worklog_id), existing_id) {
         (Some(s), _) => s,
-        (None, Some(prev)) => prev.to_owned(),
-        (None, None) => {
+        // After 404-recovery we POSTed fresh, so a missing id in the
+        // response can't fall back to the now-dead existing_id.
+        (None, Some(prev)) if !recovered_from_404 => prev.to_owned(),
+        (None, _) => {
             let msg = format!(
                 "group {issue}: tempo returned no usable tempoWorklogId: {}",
                 parsed.tempo_worklog_id
@@ -608,15 +657,20 @@ fn sync_group_aggregated(
         }
     };
 
-    // Write the resolved tempo id back to every eligible block in the
-    // group — the new ones get the id for the first time, dirty ones
-    // get `dirty = 0` cleared. Clean already-synced blocks aren't in
-    // the eligible set so they're left untouched (their state is
-    // already correct).
+    // Write the resolved tempo id back. Normally only the eligible blocks
+    // need it — new ones get the id for the first time, dirty ones get
+    // `dirty = 0` cleared; clean already-synced blocks already hold the
+    // right id. But on 404-recovery the WHOLE group carried the now-dead
+    // id, so every block must be rewritten to the freshly-POSTed one.
     {
+        let writeback: &[PendingBlock] = if recovered_from_404 {
+            all_in_group
+        } else {
+            eligible_in_group
+        };
         let mut stmt =
             conn.prepare("UPDATE blocks SET tempo_worklog_id = ?1, dirty = 0 WHERE id = ?2")?;
-        for b in eligible_in_group {
+        for b in writeback {
             stmt.execute(params![tempo_id, b.id])?;
         }
     }
@@ -1466,6 +1520,139 @@ mod tests {
         assert_eq!(no_put.hits(), 0, "no survivor → delete the worklog, no PUT");
         assert_eq!(report.deleted, 1);
         assert!(repo::list_tempo_deletions(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn personalising_a_sibling_that_drops_group_under_15min_queues_deletion() {
+        // Two 800s blocks (1600s → rounds to 1800s) share worklog 42.
+        // Personalise one → the lone survivor is 800s, which rounds to 0.
+        // The worklog now has no billable time, so sync must queue it for
+        // deletion (and clear the dead id) rather than leave a stale 0.5h
+        // total in Tempo forever. (Finding 2.)
+        let server = MockServer::start();
+        let no_put = server.mock(|when, then| {
+            when.method(PUT).path("/worklogs/42");
+            then.status(200).json_body(json!({"tempoWorklogId": 42}));
+        });
+        let no_post = server.mock(|when, then| {
+            when.method(POST).path("/worklogs");
+            then.status(200).json_body(json!({"tempoWorklogId": 99}));
+        });
+        let conn = open_memory().unwrap();
+        let day_s = "2026-04-18";
+        let b1 = insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T09:00:00Z",
+            "2026-04-18T09:13:20Z",
+            800,
+            Some("PROJ-1"),
+            Some("a"),
+        );
+        let b2 = insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T10:00:00Z",
+            "2026-04-18T10:13:20Z",
+            800,
+            Some("PROJ-1"),
+            Some("b"),
+        );
+        conn.execute(
+            "UPDATE blocks SET tempo_worklog_id = '42', dirty = 0 WHERE id IN (?1, ?2)",
+            params![b1, b2],
+        )
+        .unwrap();
+
+        crate::block_service::set_personal(&conn, b1, true).unwrap();
+        sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(no_put.hits(), 0);
+        assert_eq!(no_post.hits(), 0);
+        assert_eq!(
+            repo::list_tempo_deletions(&conn).unwrap(),
+            vec!["42"],
+            "orphaned worklog must be queued for deletion"
+        );
+        let tid: Option<String> = conn
+            .query_row(
+                "SELECT tempo_worklog_id FROM blocks WHERE id = ?1",
+                [b2],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(tid.is_none(), "dead worklog id cleared from the survivor");
+    }
+
+    #[test]
+    fn put_404_recovers_by_posting_a_fresh_worklog() {
+        // Resurrection (Findings 1+3): a block carries tempo_worklog_id=42
+        // but Tempo no longer has worklog 42 (it was DELETEd when the block
+        // was briefly personal). The block is dirty and back to work. Sync
+        // PUTs 42 → 404 → must recover by POSTing a fresh worklog and
+        // rebind the block, not loop on the error forever.
+        let server = MockServer::start();
+        let put = server.mock(|when, then| {
+            when.method(PUT).path("/worklogs/42");
+            then.status(404);
+        });
+        let post = server.mock(|when, then| {
+            when.method(POST).path("/worklogs");
+            then.status(200).json_body(json!({"tempoWorklogId": 99}));
+        });
+        let conn = open_memory().unwrap();
+        let b = insert_block(
+            &conn,
+            "2026-04-18",
+            "2026-04-18T09:00:00Z",
+            "2026-04-18T09:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("work"),
+        );
+        conn.execute(
+            "UPDATE blocks SET tempo_worklog_id = '42', dirty = 1 WHERE id = ?1",
+            params![b],
+        )
+        .unwrap();
+
+        let (report, _results) = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+
+        put.assert_hits(1);
+        post.assert_hits(1);
+        assert_eq!(
+            report.errors,
+            Vec::<String>::new(),
+            "a 404 PUT must be recovered, not reported as an error"
+        );
+        assert_eq!(report.synced, 1);
+        let (tid, dirty): (Option<String>, i64) = conn
+            .query_row(
+                "SELECT tempo_worklog_id, dirty FROM blocks WHERE id = ?1",
+                [b],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            tid.as_deref(),
+            Some("99"),
+            "block rebound to the freshly-POSTed worklog"
+        );
+        assert_eq!(dirty, 0);
     }
 
     #[test]

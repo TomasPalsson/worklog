@@ -254,10 +254,13 @@ pub fn reclassify_blocks(conn: &Connection, day_filter: Option<&str>) -> Result<
             stats.unchanged += 1;
             continue;
         }
-        conn.execute(
-            "UPDATE blocks SET is_personal = ?1 WHERE id = ?2",
-            rusqlite::params![if new_personal { 1 } else { 0 }, id],
-        )?;
+        // Route the flip through block_service so it reconciles with
+        // Tempo: flipping a synced block to personal queues/dirties its
+        // worklog; flipping back to work cancels any pending deletion and
+        // re-dirties for a fresh sync. A raw UPDATE here (the old code)
+        // bypassed that and could silently orphan — or, after a flushed
+        // deletion, wrongly drop — a remote worklog.
+        crate::block_service::set_personal(conn, id, new_personal)?;
         if new_personal {
             stats.changed_to_personal += 1;
         } else {
@@ -405,5 +408,37 @@ mod tests {
         assert!(path_starts_with("/foo/bar", "/foo"));
         assert!(path_starts_with("/foo", "/foo"));
         assert!(!path_starts_with("/foobar", "/foo"));
+    }
+
+    #[test]
+    fn reclassify_back_to_work_cancels_pending_worklog_deletion() {
+        // Regression (review finding): reclassify_blocks used a raw UPDATE
+        // that bypassed Tempo reconciliation. A synced+ticketed block the
+        // user marked personal (queuing its worklog for deletion) gets
+        // forced back to work by the has-ticket override — and that flip
+        // must now cancel the pending deletion and re-dirty for re-sync,
+        // because it routes through block_service::set_personal.
+        let conn = crate::db::open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO blocks
+                (day, jira_issue, started_at, ended_at, duration_seconds,
+                 tempo_worklog_id, is_personal, dirty)
+             VALUES ('2026-04-18','PROJ-1','2026-04-18T09:00:00+00:00',
+                     '2026-04-18T09:30:00+00:00',1800,'42',1,0)",
+            [],
+        )
+        .unwrap();
+        let id = conn.last_insert_rowid();
+        crate::repo::enqueue_tempo_deletion(&conn, "42").unwrap();
+
+        reclassify_blocks(&conn, Some("2026-04-18")).unwrap();
+
+        assert!(
+            crate::repo::list_tempo_deletions(&conn).unwrap().is_empty(),
+            "pulling a ticketed block back to work must cancel its worklog deletion"
+        );
+        let b = crate::repo::get_block(&conn, id).unwrap().unwrap();
+        assert!(!b.is_personal, "ticket override forces work");
+        assert!(b.dirty, "rejoining synced block must be dirty for re-sync");
     }
 }
