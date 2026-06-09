@@ -156,6 +156,9 @@ export async function runSync(day: string, dryRun = true) {
     day: string;
     dry_run: boolean;
     synced: number;
+    // Tempo worklogs removed this run — orphaned when a synced block was
+    // deleted or marked personal, then flushed from the deletion queue.
+    deleted: number;
     skipped: number;
     errors: string[];
   }>("POST", "/sync", { day, dry_run: dryRun });

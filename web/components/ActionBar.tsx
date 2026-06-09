@@ -188,15 +188,22 @@ function summarise(r: unknown): string {
       return `${o.estimated} estimated · ${o.skipped ?? 0} skipped · ${o.failed ?? 0} failed`;
     if ("synced" in o) {
       const synced = Number(o.synced) || 0;
+      const deleted = Number(o.deleted ?? 0);
       const skipped = Number(o.skipped ?? 0);
       const errs = Array.isArray(o.errors) ? o.errors.length : 0;
-      if (synced === 0 && skipped === 0 && errs === 0) {
+      if (synced === 0 && deleted === 0 && skipped === 0 && errs === 0) {
         // Empty result = everything's already in Tempo (or there were
         // no candidates at all). "0 synced · 0 skipped · 0 errors" reads
         // like silent failure even though it's the happy case.
         return o.dry_run ? "nothing to preview" : "already up to date — nothing to sync";
       }
-      return `${synced} synced · ${skipped} skipped · ${errs} error${errs === 1 ? "" : "s"}${o.dry_run ? " (dry-run)" : ""}`;
+      const parts = [`${synced} synced`];
+      // Only surface removals when there are any — a constant "0 removed"
+      // on every sync is noise for the common no-deletion case.
+      if (deleted > 0) parts.push(`${deleted} removed`);
+      parts.push(`${skipped} skipped`);
+      parts.push(`${errs} error${errs === 1 ? "" : "s"}`);
+      return `${parts.join(" · ")}${o.dry_run ? " (dry-run)" : ""}`;
     }
     if ("blocks" in o) return `${o.blocks} blocks · ${o.minutes ?? 0} min`;
     if ("tickets_written" in o) return `${o.tickets_written} tickets`;
