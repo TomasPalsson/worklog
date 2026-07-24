@@ -612,4 +612,3 @@ fn export_on_empty_day_prints_no_blocks_notice() {
         .success()
         .stdout(predicate::str::contains("no blocks for 2026-04-18"));
 }
-

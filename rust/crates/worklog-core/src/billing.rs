@@ -329,12 +329,7 @@ mod tests {
         repo: Option<&str>,
         project_path: Option<&str>,
     ) {
-        let mut ev = Event::minimal(
-            "github_commit",
-            source_id,
-            "2026-04-18T09:00:00Z",
-            "commit",
-        );
+        let mut ev = Event::minimal("github_commit", source_id, "2026-04-18T09:00:00Z", "commit");
         ev.repo = repo.map(str::to_string);
         ev.project_path = project_path.map(str::to_string);
         let eid = repository::upsert_event(conn, &ev).unwrap();
@@ -351,7 +346,15 @@ mod tests {
     fn dominant_repo_picks_most_frequent_repo() {
         // events repo A×2, B×1 → "A".
         let conn = open_memory().unwrap();
-        let block_id = seed_block(&conn, "2026-04-18", "2026-04-18T09:00:00+00:00", 3600, None, None, false);
+        let block_id = seed_block(
+            &conn,
+            "2026-04-18",
+            "2026-04-18T09:00:00+00:00",
+            3600,
+            None,
+            None,
+            false,
+        );
         seed_event(&conn, block_id, "e1", Some("A"), None);
         seed_event(&conn, block_id, "e2", Some("A"), None);
         seed_event(&conn, block_id, "e3", Some("B"), None);
@@ -363,7 +366,15 @@ mod tests {
     #[test]
     fn dominant_repo_is_none_without_any_repo_signal() {
         let conn = open_memory().unwrap();
-        let block_id = seed_block(&conn, "2026-04-18", "2026-04-18T09:00:00+00:00", 3600, None, None, false);
+        let block_id = seed_block(
+            &conn,
+            "2026-04-18",
+            "2026-04-18T09:00:00+00:00",
+            3600,
+            None,
+            None,
+            false,
+        );
         seed_event(&conn, block_id, "e1", None, None);
 
         let got = dominant_repo_for_block(&conn, block_id).unwrap();
@@ -535,7 +546,8 @@ mod tests {
         ];
 
         let text = render(&rows, Format::Text);
-        let expected = "repo: genai-infra  description: did another thing  time: 5,5 hrs  type: Work\n\
+        let expected =
+            "repo: genai-infra  description: did another thing  time: 5,5 hrs  type: Work\n\
              repo: genai-infra  description: did the thing  time: 4 hrs  type: Work";
         assert_eq!(text, expected);
     }
