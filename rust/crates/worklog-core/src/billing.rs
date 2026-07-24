@@ -340,6 +340,29 @@ mod tests {
         .unwrap();
     }
 
+    /// Like `seed_event`, but lets the test control the event's
+    /// `title` (used by the description-fallback tests, B9).
+    /// `seed_event` hardcodes title to `"commit"` since most tests
+    /// don't care.
+    fn seed_event_titled(
+        conn: &Connection,
+        block_id: i64,
+        source_id: &str,
+        repo: Option<&str>,
+        project_path: Option<&str>,
+        title: &str,
+    ) {
+        let mut ev = Event::minimal("github_commit", source_id, "2026-04-18T09:00:00Z", title);
+        ev.repo = repo.map(str::to_string);
+        ev.project_path = project_path.map(str::to_string);
+        let eid = repository::upsert_event(conn, &ev).unwrap();
+        conn.execute(
+            "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+            params![block_id, eid],
+        )
+        .unwrap();
+    }
+
     // ─────────────────────── dominant_repo_for_block ───────────────────────
 
     #[test]
@@ -506,8 +529,13 @@ mod tests {
         assert_eq!(rows[0].description, "random work on foo");
     }
 
+    // Slice 1 excluded Personal blocks entirely (this test used to
+    // assert `rows.is_empty()`); slice 2 explicitly reverses that —
+    // see the "Behavioral changes" note in this module's doc-comment.
+    // Personal blocks now appear in `rows_for_day`'s output, tagged
+    // `Kind::Personal` (B7).
     #[test]
-    fn rows_for_day_excludes_personal_blocks_in_slice_one() {
+    fn rows_for_day_includes_personal_blocks_as_of_slice_two() {
         let conn = open_memory().unwrap();
         let b1 = seed_block(
             &conn,
@@ -521,7 +549,124 @@ mod tests {
         seed_event(&conn, b1, "e1", Some("some-app"), None);
 
         let rows = rows_for_day(&conn, "2026-04-18").unwrap();
-        assert!(rows.is_empty(), "slice 1 excludes personal blocks");
+        assert_eq!(rows.len(), 1, "slice 2 includes personal blocks");
+        assert_eq!(rows[0].kind, Kind::Personal);
+        assert_eq!(rows[0].description, "personal errand");
+    }
+
+    /// B7: a ~2h personal block on repo `some-app` with a description
+    /// yields one row tagged `Kind::Personal`, with that repo and
+    /// hours, and the rendered text line contains `type: Personal`.
+    #[test]
+    fn b7_personal_block_yields_personal_row_with_repo_and_hours() {
+        let conn = open_memory().unwrap();
+        let b1 = seed_block(
+            &conn,
+            "2026-04-18",
+            "2026-04-18T09:00:00+00:00",
+            7200, // 2h
+            None,
+            Some("dentist appointment"),
+            true,
+        );
+        seed_event(&conn, b1, "e1", Some("some-app"), None);
+
+        let rows = rows_for_day(&conn, "2026-04-18").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, Kind::Personal);
+        assert_eq!(rows[0].repo, "some-app");
+        assert_eq!(rows[0].hours, 2.0);
+
+        let text = render(&rows, Format::Text);
+        assert!(
+            text.contains("type: Personal"),
+            "expected a Personal type line, got: {text}"
+        );
+    }
+
+    /// B8: a work block explicitly yields `Kind::Work`.
+    #[test]
+    fn b8_work_block_yields_work_row() {
+        let conn = open_memory().unwrap();
+        let b1 = seed_block(
+            &conn,
+            "2026-04-18",
+            "2026-04-18T09:00:00+00:00",
+            3600,
+            None,
+            Some("shipped a fix"),
+            false,
+        );
+        seed_event(&conn, b1, "e1", Some("some-app"), None);
+
+        let rows = rows_for_day(&conn, "2026-04-18").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, Kind::Work);
+    }
+
+    /// B9: a block with no description, whose only event is titled
+    /// "Standup", falls back to that event title as its description —
+    /// non-empty, deterministic.
+    #[test]
+    fn b9_missing_description_falls_back_to_dominant_event_title() {
+        let conn = open_memory().unwrap();
+        let b1 = seed_block(
+            &conn,
+            "2026-04-18",
+            "2026-04-18T09:00:00+00:00",
+            3600,
+            None,
+            None,
+            true,
+        );
+        seed_event_titled(&conn, b1, "e1", Some("some-app"), None, "Standup");
+
+        let rows = rows_for_day(&conn, "2026-04-18").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].description.is_empty());
+        assert_eq!(rows[0].description, "Standup");
+    }
+
+    /// B9 (fallback branch 2): no description and no usable event
+    /// title (blank title), but the block's event does carry a repo →
+    /// falls back to `"Work in {repo}"`.
+    #[test]
+    fn b9_missing_description_and_blank_title_falls_back_to_work_in_repo() {
+        let conn = open_memory().unwrap();
+        let b1 = seed_block(
+            &conn,
+            "2026-04-18",
+            "2026-04-18T09:00:00+00:00",
+            3600,
+            None,
+            None,
+            true,
+        );
+        seed_event_titled(&conn, b1, "e1", Some("some-app"), None, "");
+
+        let rows = rows_for_day(&conn, "2026-04-18").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].description, "Work in some-app");
+    }
+
+    /// B9 (fallback branch 3): no description, no events at all (so
+    /// no repo either) → falls back to `"Untitled work"`.
+    #[test]
+    fn b9_missing_description_and_no_repo_falls_back_to_untitled_work() {
+        let conn = open_memory().unwrap();
+        seed_block(
+            &conn,
+            "2026-04-18",
+            "2026-04-18T09:00:00+00:00",
+            3600,
+            None,
+            None,
+            true,
+        );
+
+        let rows = rows_for_day(&conn, "2026-04-18").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].description, "Untitled work");
     }
 
     // ───────────────────────────── render ─────────────────────────────
