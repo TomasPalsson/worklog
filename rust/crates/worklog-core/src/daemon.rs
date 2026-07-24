@@ -104,6 +104,8 @@ pub fn router(state: Shared) -> Router {
         .route("/jira/refresh", post(refresh_jira))
         .route("/estimate", post(run_estimate))
         .route("/sync", post(run_sync))
+        .route("/export/:day", get(export_day))
+        .route("/export/:day/mark", post(mark_export))
         .route("/settings", get(get_settings).post(post_settings))
         .with_state(state)
 }
@@ -1273,6 +1275,20 @@ where
     })
     .await
     .context("spawn_blocking")?
+}
+
+async fn export_day(
+    State(_state): State<Shared>,
+    AxumPath(_day): AxumPath<String>,
+) -> Result<Json<Value>, ApiError> {
+    unimplemented!()
+}
+
+async fn mark_export(
+    State(_state): State<Shared>,
+    AxumPath(_day): AxumPath<String>,
+) -> Result<Json<Value>, ApiError> {
+    unimplemented!()
 }
 
 #[cfg(test)]
