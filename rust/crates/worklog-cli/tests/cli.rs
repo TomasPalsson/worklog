@@ -612,3 +612,15 @@ fn export_on_empty_day_prints_no_blocks_notice() {
         .success()
         .stdout(predicate::str::contains("no blocks for 2026-04-18"));
 }
+
+/// B12: `--format bogus` is not a valid `ExportFormat` value, so clap
+/// rejects it up-front (exit non-zero) before any db/day handling.
+#[test]
+fn export_rejects_unknown_format() {
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["export", "--day", "2026-07-23", "--format", "bogus"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--format"));
+}

@@ -243,16 +243,15 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
         day: Option<String>,
     },
 
-    /// Export a day's WORK blocks as billing line items grouped by
-    /// (dominant repo, task) — copy-pasteable text for an external
-    /// invoicing system. Reads the db directly (no daemon needed).
-    /// Personal blocks, `--format csv|json`, and marking a day
-    /// exported land in later releases.
+    /// Export a day's blocks as billing line items grouped by
+    /// (dominant repo, task) — copy-pasteable text (or CSV/JSON) for
+    /// an external invoicing system. Reads the db directly (no daemon
+    /// needed). Marking a day exported lands in a later release.
     Export {
         /// YYYY-MM-DD; default today (UTC).
         #[arg(long)]
         day: Option<String>,
-        /// Output format. Only `text` is supported for now.
+        /// Output format.
         #[arg(long, value_enum, default_value_t = ExportFormat::Text)]
         format: ExportFormat,
     },
@@ -450,11 +449,12 @@ pub enum CollectTarget {
     Gcal,
 }
 
-/// `worklog export --format`. Only `Text` ships in this release; `Csv`
-/// and `Json` are added as new variants in a later release.
+/// `worklog export --format`. Maps 1:1 onto `billing::Format`.
 #[derive(clap::ValueEnum, Debug, Clone, Copy)]
 pub enum ExportFormat {
     Text,
+    Csv,
+    Json,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1613,6 +1613,8 @@ fn cmd_export<W: Write>(
 
     let billing_format = match format {
         ExportFormat::Text => billing::Format::Text,
+        ExportFormat::Csv => billing::Format::Csv,
+        ExportFormat::Json => billing::Format::Json,
     };
     writeln!(out, "{}", billing::render(&rows, billing_format))?;
     Ok(())

@@ -60,12 +60,14 @@ pub struct BillingRow {
     pub hours: f64,
 }
 
-/// Output format for [`render`]. Only `Text` ships in slice 1; `Csv`
-/// and `Json` arrive as new variants (and a matching `render` arm) in
-/// a later slice — adding one must be a localized, additive change.
+/// Output format for [`render`]. `Csv` and `Json` (slice 3) render
+/// from the exact same [`BillingRow`] slice as `Text` — adding a
+/// format is a new variant plus a matching `render` arm only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Text,
+    Csv,
+    Json,
 }
 
 /// Last path segment of a filesystem path — the repo fallback when an
@@ -345,12 +347,14 @@ fn render_text(rows: &[BillingRow]) -> String {
         .join("\n")
 }
 
-/// Render `rows` in the given `format`. Slice 1 supports only
-/// [`Format::Text`]: one line per row —
-/// `repo: {repo}  description: {description}  time: {H} hrs  type: {Work|Personal}`.
+/// Render `rows` in the given `format`. [`Format::Text`]: one line per
+/// row — `repo: {repo}  description: {description}  time: {H} hrs  type: {Work|Personal}`.
+/// [`Format::Csv`]/[`Format::Json`]: see [`render_csv`]/[`render_json`].
 pub fn render(rows: &[BillingRow], format: Format) -> String {
     match format {
         Format::Text => render_text(rows),
+        Format::Csv => unimplemented!("slice 3 RED: CSV renderer not yet implemented"),
+        Format::Json => unimplemented!("slice 3 RED: JSON renderer not yet implemented"),
     }
 }
 
@@ -766,5 +770,120 @@ mod tests {
             "repo: genai-infra  description: did another thing  time: 5,5 hrs  type: Work\n\
              repo: genai-infra  description: did the thing  time: 4 hrs  type: Work";
         assert_eq!(text, expected);
+    }
+
+    /// B10: `render(&rows, Format::Json)` is a JSON array; each object
+    /// carries repo/description/hours/seconds/type with the expected
+    /// values (hours as a plain JSON number, dot decimal).
+    #[test]
+    fn b10_json_renderer_parses_into_array_of_expected_objects() {
+        let rows = vec![
+            BillingRow {
+                repo: "genai-infra".to_string(),
+                description: "did another thing".to_string(),
+                kind: Kind::Work,
+                seconds: 19_800,
+                hours: 5.5,
+            },
+            BillingRow {
+                repo: "genai-infra".to_string(),
+                description: "did the thing".to_string(),
+                kind: Kind::Work,
+                seconds: 14_400,
+                hours: 4.0,
+            },
+        ];
+
+        let json = render(&rows, Format::Json);
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        let arr = parsed.as_array().expect("top-level JSON array");
+        assert_eq!(arr.len(), 2);
+
+        let first = &arr[0];
+        assert_eq!(first["repo"], "genai-infra");
+        assert_eq!(first["description"], "did another thing");
+        assert_eq!(first["hours"].as_f64(), Some(5.5));
+        assert_eq!(first["seconds"].as_i64(), Some(19_800));
+        assert_eq!(first["type"], "Work");
+    }
+
+    /// B11 / NFR 5.2: a description starting with `=` gets the
+    /// formula-injection guard (`'` prefix); a description containing
+    /// a comma and a `"` gets RFC-4180 quoted with `""`-escaping. The
+    /// header line is exactly `repo,description,hours,type`.
+    #[test]
+    fn b11_csv_renderer_guards_formula_injection_and_quotes_rfc4180() {
+        let rows = vec![
+            BillingRow {
+                repo: "genai-infra".to_string(),
+                description: "=SUM(A1)".to_string(),
+                kind: Kind::Work,
+                seconds: 3_600,
+                hours: 1.0,
+            },
+            BillingRow {
+                repo: "genai-infra".to_string(),
+                description: "has, a \"quote\"".to_string(),
+                kind: Kind::Work,
+                seconds: 19_800,
+                hours: 5.5,
+            },
+        ];
+
+        let csv = render(&rows, Format::Csv);
+        let lines: Vec<&str> = csv.lines().collect();
+        assert_eq!(lines[0], "repo,description,hours,type");
+        assert_eq!(
+            lines[1], "genai-infra,'=SUM(A1),1,Work",
+            "formula-guard prefixes the leading '='"
+        );
+        assert_eq!(
+            lines[2], "genai-infra,\"has, a \"\"quote\"\"\",\"5,5\",Work",
+            "comma+quote description AND the comma-decimal hours cell are both RFC-4180 quoted"
+        );
+    }
+
+    /// AC-008: the same rows contain the same N line items whether
+    /// rendered as text, csv, or json.
+    #[test]
+    fn ac008_text_csv_json_agree_on_row_count() {
+        let rows = vec![
+            BillingRow {
+                repo: "genai-infra".to_string(),
+                description: "did another thing".to_string(),
+                kind: Kind::Work,
+                seconds: 19_800,
+                hours: 5.5,
+            },
+            BillingRow {
+                repo: "genai-infra".to_string(),
+                description: "did the thing".to_string(),
+                kind: Kind::Work,
+                seconds: 14_400,
+                hours: 4.0,
+            },
+            BillingRow {
+                repo: "some-app".to_string(),
+                description: "dentist appointment".to_string(),
+                kind: Kind::Personal,
+                seconds: 7_200,
+                hours: 2.0,
+            },
+        ];
+
+        let text_lines = render(&rows, Format::Text)
+            .lines()
+            .filter(|l| !l.is_empty())
+            .count();
+        let csv_data_rows = render(&rows, Format::Csv).lines().count() - 1; // minus header
+        let json_len = serde_json::from_str::<serde_json::Value>(&render(&rows, Format::Json))
+            .expect("valid JSON")
+            .as_array()
+            .expect("top-level JSON array")
+            .len();
+
+        assert_eq!(text_lines, rows.len());
+        assert_eq!(csv_data_rows, rows.len());
+        assert_eq!(json_len, rows.len());
     }
 }
