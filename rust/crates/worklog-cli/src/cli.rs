@@ -1593,9 +1593,29 @@ fn cmd_export<W: Write>(
     out: &mut W,
     json: bool,
 ) -> Result<()> {
-    let _ = (day, format, json);
-    let _ = out;
-    panic!("not implemented")
+    let paths = Paths::resolve()?;
+    if !paths.db_exists() {
+        anyhow::bail!("db not initialized. Run `worklog db migrate` first.");
+    }
+    let conn = db::open(&paths.db)?;
+    let day = parse_day(day.as_deref())?.to_string();
+    let rows = billing::rows_for_day(&conn, &day)?;
+
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&rows)?)?;
+        return Ok(());
+    }
+
+    if rows.is_empty() {
+        style::info(out, &format!("no blocks for {day}"))?;
+        return Ok(());
+    }
+
+    let billing_format = match format {
+        ExportFormat::Text => billing::Format::Text,
+    };
+    writeln!(out, "{}", billing::render(&rows, billing_format))?;
+    Ok(())
 }
 
 fn parse_day(s: Option<&str>) -> Result<chrono::NaiveDate> {

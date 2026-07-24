@@ -8,8 +8,14 @@
 //! grows new `Format` arms and a `Kind::Personal` inclusion, it never
 //! changes the shape of an existing row.
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use rusqlite::Connection;
+
+use crate::collectors::tempo::{round_to_half_hour, HALF_HOUR_SECONDS};
+use crate::models::Block;
+use crate::repo;
 
 /// Whether a billing row is billable Work or non-billable Personal
 /// time. Mirrors `Block::is_personal` (`false` → `Work`).
@@ -23,7 +29,10 @@ impl Kind {
     /// The label used everywhere a `Kind` is rendered: `"Work"` /
     /// `"Personal"`.
     pub fn label(self) -> &'static str {
-        panic!("not implemented")
+        match self {
+            Kind::Work => "Work",
+            Kind::Personal => "Personal",
+        }
     }
 }
 
@@ -54,13 +63,125 @@ pub enum Format {
     Text,
 }
 
+/// Last path segment of a filesystem path — the repo fallback when an
+/// event carries `project_path` but no explicit `repo`.
+fn basename(path: &str) -> Option<String> {
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
 /// Most-frequent `COALESCE(events.repo, basename(events.project_path))`
 /// across a block's events. `None` when the block has no events
 /// carrying either. Mirrors `personal::dominant_project_path_for_block`'s
 /// query shape.
 pub fn dominant_repo_for_block(conn: &Connection, block_id: i64) -> Result<Option<String>> {
-    let _ = (conn, block_id);
-    panic!("not implemented")
+    let mut stmt = conn.prepare(
+        "SELECT e.repo, e.project_path
+           FROM events e
+           JOIN block_events be ON be.event_id = e.id
+          WHERE be.block_id = ?1",
+    )?;
+    let rows: Vec<(Option<String>, Option<String>)> = stmt
+        .query_map([block_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<std::result::Result<_, _>>()?;
+
+    let mut counts: HashMap<String, u32> = HashMap::new();
+    for (repo_name, project_path) in rows {
+        let key = repo_name.or_else(|| project_path.as_deref().and_then(basename));
+        if let Some(key) = key {
+            *counts.entry(key).or_insert(0) += 1;
+        }
+    }
+    Ok(counts.into_iter().max_by_key(|(_, n)| *n).map(|(k, _)| k))
+}
+
+/// A block's wall-clock interval as epoch seconds: `[start, start +
+/// duration)`. Mirrors `worklog_cli::cli::block_interval` exactly —
+/// duration (not `ended_at`) is the canonical "logged time" because
+/// the estimator writes `duration_seconds` independently of `ended_at`.
+fn block_interval(block: &Block) -> (i64, i64) {
+    let start = chrono::DateTime::parse_from_rfc3339(&block.started_at)
+        .map(|d| d.timestamp())
+        .unwrap_or(0);
+    (start, start + block.duration_seconds.max(0))
+}
+
+/// Total length of the union of `[start, end)` intervals — stretches
+/// covered by more than one interval count once. Mirrors
+/// `worklog_cli::cli::union_seconds` exactly so a block that overlaps
+/// another (e.g. a meeting during coding) is never double-billed.
+fn union_seconds(mut intervals: Vec<(i64, i64)>) -> i64 {
+    intervals.sort_by_key(|&(s, _)| s);
+    let mut total = 0;
+    let mut cur: Option<(i64, i64)> = None;
+    for (s, e) in intervals {
+        match cur {
+            Some((cs, ce)) if s <= ce => cur = Some((cs, ce.max(e))),
+            Some((cs, ce)) => {
+                total += ce - cs;
+                cur = Some((s, e));
+            }
+            None => cur = Some((s, e)),
+        }
+    }
+    if let Some((cs, ce)) = cur {
+        total += ce - cs;
+    }
+    total
+}
+
+/// The grouping key within a repo: `jira_issue` if present and
+/// non-empty, else the trimmed block description, else `block-{id}`.
+fn task_for_block(block: &Block) -> String {
+    if let Some(issue) = block.jira_issue.as_deref().filter(|s| !s.is_empty()) {
+        return issue.to_string();
+    }
+    if let Some(desc) = block
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return desc.to_string();
+    }
+    format!("block-{}", block.id)
+}
+
+/// Accumulator for one `(repo, task)` group while folding a day's
+/// blocks.
+struct GroupAcc {
+    repo: String,
+    kind: Kind,
+    intervals: Vec<(i64, i64)>,
+    /// Distinct non-empty descriptions, in first-seen order.
+    descriptions: Vec<String>,
+}
+
+/// Fold a group's accumulator into its final [`BillingRow`].
+///
+/// `seconds` is the union of the group's block intervals (never a
+/// naive sum); `hours` is that union rounded to the nearest half hour.
+/// `description` is the single shared description when every block
+/// agrees, the distinct descriptions joined with `"; "` when they
+/// don't, or the task string when no block in the group has one.
+fn finish_group(task: &str, acc: GroupAcc) -> BillingRow {
+    let seconds = union_seconds(acc.intervals);
+    let hours = round_to_half_hour(seconds) as f64 / 3600.0;
+    let description = if acc.descriptions.is_empty() {
+        task.to_string()
+    } else {
+        acc.descriptions.join("; ")
+    };
+    BillingRow {
+        repo: acc.repo,
+        description,
+        kind: acc.kind,
+        seconds,
+        hours,
+    }
 }
 
 /// Compute a day's billing rows.
@@ -73,16 +194,93 @@ pub fn dominant_repo_for_block(conn: &Connection, block_id: i64) -> Result<Optio
 /// nearest half hour. Rows are sorted by `repo`, then by descending
 /// `seconds`, for deterministic output.
 pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
-    let _ = (conn, day);
-    panic!("not implemented")
+    const NO_REPO: &str = "—";
+
+    let blocks = repo::list_blocks_for_day(conn, day)?;
+
+    let mut groups: HashMap<(String, String), GroupAcc> = HashMap::new();
+    let mut order: Vec<(String, String)> = Vec::new();
+
+    for block in blocks.iter().filter(|b| !b.is_personal) {
+        let repo_name =
+            dominant_repo_for_block(conn, block.id)?.unwrap_or_else(|| NO_REPO.to_string());
+        let task = task_for_block(block);
+        let key = (repo_name.clone(), task.clone());
+
+        if !groups.contains_key(&key) {
+            order.push(key.clone());
+            groups.insert(
+                key.clone(),
+                GroupAcc {
+                    repo: repo_name,
+                    kind: Kind::Work,
+                    intervals: Vec::new(),
+                    descriptions: Vec::new(),
+                },
+            );
+        }
+        let acc = groups.get_mut(&key).expect("group just inserted");
+        acc.intervals.push(block_interval(block));
+        if let Some(desc) = block
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            if !acc.descriptions.iter().any(|d| d == desc) {
+                acc.descriptions.push(desc.to_string());
+            }
+        }
+    }
+
+    let mut rows: Vec<BillingRow> = order
+        .into_iter()
+        .map(|key| {
+            let acc = groups.remove(&key).expect("group present for its own key");
+            finish_group(&key.1, acc)
+        })
+        .collect();
+
+    rows.sort_by(|a, b| a.repo.cmp(&b.repo).then(b.seconds.cmp(&a.seconds)));
+    Ok(rows)
+}
+
+/// Render rounded seconds as a comma-decimal hour string using integer
+/// half-hour math — guarantees `5,5` / `4` with no float noise.
+fn format_hours(seconds: i64) -> String {
+    let halves = round_to_half_hour(seconds) / HALF_HOUR_SECONDS;
+    let whole = halves / 2;
+    if halves % 2 == 1 {
+        format!("{whole},5")
+    } else {
+        format!("{whole}")
+    }
+}
+
+fn render_text_line(row: &BillingRow) -> String {
+    format!(
+        "repo: {}  description: {}  time: {} hrs  type: {}",
+        row.repo,
+        row.description,
+        format_hours(row.seconds),
+        row.kind.label()
+    )
+}
+
+fn render_text(rows: &[BillingRow]) -> String {
+    rows.iter()
+        .map(render_text_line)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Render `rows` in the given `format`. Slice 1 supports only
 /// [`Format::Text`]: one line per row —
 /// `repo: {repo}  description: {description}  time: {H} hrs  type: {Work|Personal}`.
 pub fn render(rows: &[BillingRow], format: Format) -> String {
-    let _ = (rows, format);
-    panic!("not implemented")
+    match format {
+        Format::Text => render_text(rows),
+    }
 }
 
 #[cfg(test)]
