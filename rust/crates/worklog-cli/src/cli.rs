@@ -9,6 +9,7 @@ use std::io::{self, IsTerminal, Read, Write};
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 use worklog_core::{
+    billing,
     collectors::{gcal as gcal_col, github as gh, jira as jira_col, tempo as tempo_col},
     daemon as daemon_mod, db, estimate, hook, hook_run, http, infer,
     paths::Paths,
@@ -41,7 +42,7 @@ fn clap_styles() -> clap::builder::Styles {
 /// would need lifetime gymnastics in the derive attribute.
 const HELP_OVERVIEW: &str = "\x1b[1;36m\
 commands by area\x1b[0m
-  daily workflow       \x1b[32mday  summary  week  block  sync\x1b[0m
+  daily workflow       \x1b[32mday  summary  week  export  block  sync\x1b[0m
   data collection      \x1b[32mcollect  infer  estimate  hook\x1b[0m
   review UI            \x1b[32mweb  serve\x1b[0m
   setup & diagnostics  \x1b[32msetup  status  doctor  db  secret  completions  version\x1b[0m
@@ -242,6 +243,20 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
         day: Option<String>,
     },
 
+    /// Export a day's WORK blocks as billing line items grouped by
+    /// (dominant repo, task) — copy-pasteable text for an external
+    /// invoicing system. Reads the db directly (no daemon needed).
+    /// Personal blocks, `--format csv|json`, and marking a day
+    /// exported land in later releases.
+    Export {
+        /// YYYY-MM-DD; default today (UTC).
+        #[arg(long)]
+        day: Option<String>,
+        /// Output format. Only `text` is supported for now.
+        #[arg(long, value_enum, default_value_t = ExportFormat::Text)]
+        format: ExportFormat,
+    },
+
     /// Inspect and edit individual time blocks — list, assign a ticket,
     /// fix a duration, set a description, delete, or merge. Talks to the
     /// daemon over HTTP, so no hand-written `curl` is ever needed.
@@ -433,6 +448,13 @@ pub enum CollectTarget {
     Jira,
     Github,
     Gcal,
+}
+
+/// `worklog export --format`. Only `Text` ships in this release; `Csv`
+/// and `Json` are added as new variants in a later release.
+#[derive(clap::ValueEnum, Debug, Clone, Copy)]
+pub enum ExportFormat {
+    Text,
 }
 
 #[derive(Subcommand, Debug)]
@@ -742,6 +764,7 @@ pub fn run_with<W: Write>(
         } => cmd_day(day, serve, no_serve, &model, out, cli.json),
         Cmd::Summary { day } => cmd_summary(day, out, cli.json),
         Cmd::Week { day } => cmd_week(day, out, cli.json),
+        Cmd::Export { day, format } => cmd_export(day, format, out, cli.json),
         Cmd::Block { sub } => match sub {
             BlockCmd::List { day } => cmd_block_list(day, out, cli.json),
             BlockCmd::Assign { id, ticket, clear } => {
@@ -1562,6 +1585,17 @@ fn cmd_sync<W: Write>(day: Option<String>, dry_run: bool, out: &mut W, json: boo
         }
     }
     Ok(())
+}
+
+fn cmd_export<W: Write>(
+    day: Option<String>,
+    format: ExportFormat,
+    out: &mut W,
+    json: bool,
+) -> Result<()> {
+    let _ = (day, format, json);
+    let _ = out;
+    panic!("not implemented")
 }
 
 fn parse_day(s: Option<&str>) -> Result<chrono::NaiveDate> {

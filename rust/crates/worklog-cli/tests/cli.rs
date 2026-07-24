@@ -585,3 +585,31 @@ fn estimate_help_documents_provider_env_var() {
         .stdout(predicate::str::contains("WORKLOG_ESTIMATOR_PROVIDER"))
         .stdout(predicate::str::contains("litellm"));
 }
+
+// ─────────────────────────── `worklog export` (B5, B6) ───────────────────────────
+
+/// B6: `worklog export` before `db migrate` must exit non-zero with the
+/// same "db not initialized" message every other db-backed command uses.
+#[test]
+fn export_errors_without_db() {
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["export", "--day", "2026-04-18"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("db not initialized"));
+}
+
+/// B5: an empty day exits 0 and prints a "no blocks" notice instead of
+/// any billing lines.
+#[test]
+fn export_on_empty_day_prints_no_blocks_notice() {
+    let home = TempDir::new().unwrap();
+    cmd(&home).args(["db", "migrate"]).assert().success();
+    cmd(&home)
+        .args(["export", "--day", "2026-04-18"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no blocks for 2026-04-18"));
+}
+
