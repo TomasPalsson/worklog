@@ -38,25 +38,30 @@ pub struct PurgeReport {
 }
 
 /// SQL fragment matching blocks that are old AND safe to delete:
-/// synced to Tempo OR explicitly marked as `gap`, excluding manual
-/// edits. Kept as a named const so the delete + counting queries use
+/// synced to Tempo, exported for billing, OR explicitly marked as
+/// `gap`, excluding manual edits. `exported_at` is the Tempo-independent
+/// "has been billed" marker (the team moved off Tempo — see CLAUDE.md /
+/// billing.rs) and is treated as full parity with `tempo_worklog_id`
+/// here. Kept as a named const so the delete + counting queries use
 /// identical logic and can't drift.
 const PURGEABLE_BLOCKS_WHERE: &str = "
     day < ?1
     AND (estimated_by IS NULL OR estimated_by != 'manual')
     AND (
         (tempo_worklog_id IS NOT NULL AND tempo_worklog_id != '')
+        OR (exported_at IS NOT NULL AND exported_at != '')
         OR estimated_by = 'gap'
     )
 ";
 
 /// Blocks we decline to delete because the user hasn't synced (or
-/// reviewed) them yet. Counted for the report so the user can see why
-/// the rule preserved something.
+/// reviewed, or exported) them yet. Counted for the report so the user
+/// can see why the rule preserved something.
 const KEPT_UNSYNCED_WHERE: &str = "
     day < ?1
     AND (estimated_by IS NULL OR estimated_by != 'manual')
     AND (tempo_worklog_id IS NULL OR tempo_worklog_id = '')
+    AND (exported_at IS NULL OR exported_at = '')
     AND (estimated_by IS NULL OR estimated_by != 'gap')
 ";
 
@@ -104,19 +109,15 @@ pub fn purge(conn: &Connection, retention_days: i64, dry_run: bool) -> Result<Pu
     // matches how `load_day_events` already slices.
     let events_deleted: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM events
-             WHERE substr(started_at, 1, 10) < ?1
-               AND id NOT IN (
-                   SELECT event_id FROM block_events WHERE block_id IN (
-                       SELECT id FROM blocks WHERE NOT (day < ?1 AND (
-                           (estimated_by IS NULL OR estimated_by != 'manual')
-                           AND (
-                               (tempo_worklog_id IS NOT NULL AND tempo_worklog_id != '')
-                               OR estimated_by = 'gap'
-                           )
-                       ))
-                   )
-               )",
+            &format!(
+                "SELECT COUNT(*) FROM events
+                 WHERE substr(started_at, 1, 10) < ?1
+                   AND id NOT IN (
+                       SELECT event_id FROM block_events WHERE block_id IN (
+                           SELECT id FROM blocks WHERE NOT ({PURGEABLE_BLOCKS_WHERE})
+                       )
+                   )"
+            ),
             params![cutoff_iso],
             |r| r.get(0),
         )

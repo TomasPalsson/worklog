@@ -1,7 +1,9 @@
--- Worklog schema v6. Shared between Python and the Rust hook (include_str!).
+-- Worklog schema v8. Shared between Python and the Rust hook (include_str!).
 -- All CREATE statements are idempotent (IF NOT EXISTS) so the Rust hook can
 -- run this on every invocation with negligible cost.
 --
+-- v8 adds blocks.exported_at — billing-export canary; see billing.rs /
+-- purge.rs.
 -- v4 adds blocks.is_personal — auto-classified from the block's dominant
 -- project_path (see PersonalConfig in worklog-core::personal). Personal
 -- blocks render dimmed in the UI, skip the estimator, and are excluded
@@ -61,6 +63,12 @@ CREATE TABLE IF NOT EXISTS blocks (
     -- (only ever set when tempo_worklog_id is present). The next
     -- `worklog sync` PUTs the new values to Tempo and clears the flag.
     dirty INTEGER NOT NULL DEFAULT 0,
+    -- Billing-export "has been billed" canary — set by
+    -- block_service::mark_exported when the block's day is marked
+    -- exported (`worklog export --mark`). NULL means unexported.
+    -- Tempo-independent; purge.rs treats this the same as a synced
+    -- tempo_worklog_id.
+    exported_at TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 

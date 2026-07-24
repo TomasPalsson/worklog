@@ -111,7 +111,8 @@ pub fn load_day_events(conn: &Connection, day: &str) -> Result<Vec<Event>> {
 pub fn list_blocks_for_day(conn: &Connection, day: &str) -> Result<Vec<Block>> {
     let mut stmt = conn.prepare(
         "SELECT id, day, jira_issue, started_at, ended_at, duration_seconds,
-                description, estimated_by, flagged, tempo_worklog_id, is_personal, dirty
+                description, estimated_by, flagged, tempo_worklog_id, is_personal, dirty,
+                exported_at
            FROM blocks
           WHERE day = ?1
           ORDER BY started_at",
@@ -130,9 +131,7 @@ pub fn list_blocks_for_day(conn: &Connection, day: &str) -> Result<Vec<Block>> {
             tempo_worklog_id: r.get(9)?,
             is_personal: r.get::<_, i64>(10)? != 0,
             dirty: r.get::<_, i64>(11)? != 0,
-            // RED stub: exported_at isn't in the SELECT yet — the
-            // migration isn't wired. GREEN wires the real column.
-            exported_at: None,
+            exported_at: r.get(12)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -177,7 +176,8 @@ pub fn get_block(conn: &Connection, id: i64) -> Result<Option<Block>> {
     let block = conn
         .query_row(
             "SELECT id, day, jira_issue, started_at, ended_at, duration_seconds,
-                    description, estimated_by, flagged, tempo_worklog_id, is_personal, dirty
+                    description, estimated_by, flagged, tempo_worklog_id, is_personal, dirty,
+                    exported_at
                FROM blocks WHERE id = ?1",
             params![id],
             |r| {
@@ -194,10 +194,7 @@ pub fn get_block(conn: &Connection, id: i64) -> Result<Option<Block>> {
                     tempo_worklog_id: r.get(9)?,
                     is_personal: r.get::<_, i64>(10)? != 0,
                     dirty: r.get::<_, i64>(11)? != 0,
-                    // RED stub: exported_at isn't in the SELECT yet —
-                    // the migration isn't wired. GREEN wires the real
-                    // column.
-                    exported_at: None,
+                    exported_at: r.get(12)?,
                 })
             },
         )

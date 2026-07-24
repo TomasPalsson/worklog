@@ -136,8 +136,16 @@ pub fn set_personal(conn: &Connection, block_id: i64, is_personal: bool) -> Resu
 /// Returns the number of blocks newly marked (0 if the day was already
 /// fully exported, or has no blocks at all).
 pub fn mark_exported(conn: &Connection, day: &str) -> Result<usize> {
-    let _ = (conn, day);
-    unimplemented!("mark_exported: exported_at migration not yet wired")
+    let n = conn
+        .execute(
+            "UPDATE blocks
+                SET exported_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+              WHERE day = ?1
+                AND (exported_at IS NULL OR exported_at = '')",
+            params![day],
+        )
+        .context("mark_exported")?;
+    Ok(n)
 }
 
 pub fn delete_block(conn: &Connection, block_id: i64) -> Result<()> {

@@ -9,7 +9,7 @@ use std::io::{self, IsTerminal, Read, Write};
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 use worklog_core::{
-    billing,
+    billing, block_service,
     collectors::{gcal as gcal_col, github as gh, jira as jira_col, tempo as tempo_col},
     daemon as daemon_mod, db, estimate, hook, hook_run, http, infer,
     paths::Paths,
@@ -246,7 +246,7 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
     /// Export a day's blocks as billing line items grouped by
     /// (dominant repo, task) — copy-pasteable text (or CSV/JSON) for
     /// an external invoicing system. Reads the db directly (no daemon
-    /// needed). Marking a day exported lands in a later release.
+    /// needed).
     Export {
         /// YYYY-MM-DD; default today (UTC).
         #[arg(long)]
@@ -254,6 +254,11 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
         /// Output format.
         #[arg(long, value_enum, default_value_t = ExportFormat::Text)]
         format: ExportFormat,
+        /// Mark the day's blocks as exported (sets `exported_at`) after
+        /// rendering. Idempotent — re-running on an already-exported
+        /// day marks nothing and is reported as such.
+        #[arg(long)]
+        mark: bool,
     },
 
     /// Inspect and edit individual time blocks — list, assign a ticket,
@@ -764,7 +769,7 @@ pub fn run_with<W: Write>(
         } => cmd_day(day, serve, no_serve, &model, out, cli.json),
         Cmd::Summary { day } => cmd_summary(day, out, cli.json),
         Cmd::Week { day } => cmd_week(day, out, cli.json),
-        Cmd::Export { day, format } => cmd_export(day, format, out, cli.json),
+        Cmd::Export { day, format, mark } => cmd_export(day, format, mark, out, cli.json),
         Cmd::Block { sub } => match sub {
             BlockCmd::List { day } => cmd_block_list(day, out, cli.json),
             BlockCmd::Assign { id, ticket, clear } => {
@@ -1590,6 +1595,7 @@ fn cmd_sync<W: Write>(day: Option<String>, dry_run: bool, out: &mut W, json: boo
 fn cmd_export<W: Write>(
     day: Option<String>,
     format: ExportFormat,
+    mark: bool,
     out: &mut W,
     json: bool,
 ) -> Result<()> {
@@ -1603,20 +1609,33 @@ fn cmd_export<W: Write>(
 
     if json {
         writeln!(out, "{}", serde_json::to_string_pretty(&rows)?)?;
-        return Ok(());
-    }
-
-    if rows.is_empty() {
+    } else if rows.is_empty() {
         style::info(out, &format!("no blocks for {day}"))?;
-        return Ok(());
+    } else {
+        let billing_format = match format {
+            ExportFormat::Text => billing::Format::Text,
+            ExportFormat::Csv => billing::Format::Csv,
+            ExportFormat::Json => billing::Format::Json,
+        };
+        writeln!(out, "{}", billing::render(&rows, billing_format))?;
     }
 
-    let billing_format = match format {
-        ExportFormat::Text => billing::Format::Text,
-        ExportFormat::Csv => billing::Format::Csv,
-        ExportFormat::Json => billing::Format::Json,
-    };
-    writeln!(out, "{}", billing::render(&rows, billing_format))?;
+    if mark {
+        let marked = block_service::mark_exported(&conn, &day)?;
+        // Skip the human-readable line in --json mode so stdout stays a
+        // single parseable JSON value (FR-015).
+        if !json {
+            if marked > 0 {
+                style::ok(
+                    out,
+                    &format!("marked {marked} block(s) exported for {day}"),
+                )?;
+            } else if !rows.is_empty() {
+                style::info(out, &format!("{day} already exported"))?;
+            }
+        }
+    }
+
     Ok(())
 }
 

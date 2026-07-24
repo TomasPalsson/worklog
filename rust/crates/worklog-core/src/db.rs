@@ -15,7 +15,7 @@ pub const SCHEMA_SQL: &str = include_str!("../sql/schema.sql");
 /// Monotonic integer version of the schema, bumped by future migrations.
 /// Stored in `PRAGMA user_version` so we can detect stale dbs without adding
 /// a dedicated table.
-pub const SCHEMA_VERSION: i32 = 7;
+pub const SCHEMA_VERSION: i32 = 8;
 
 /// Open a connection at `path`, enable WAL + FK, and run migrations.
 pub fn open(path: &Path) -> Result<Connection> {
@@ -62,6 +62,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     // is_personal column. Do an idempotent ALTER for upgraded users.
     ensure_blocks_is_personal(conn).context("ensuring blocks.is_personal")?;
     ensure_blocks_dirty(conn).context("ensuring blocks.dirty")?;
+    ensure_blocks_exported_at(conn).context("ensuring blocks.exported_at")?;
     ensure_jira_tickets_issue_id(conn).context("ensuring jira_tickets.issue_id")?;
     ensure_jira_tickets_external(conn).context("ensuring jira_tickets.external")?;
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)
@@ -99,6 +100,20 @@ fn ensure_blocks_dirty(conn: &Connection) -> Result<()> {
             [],
         )
         .context("ALTER TABLE blocks ADD dirty")?;
+    }
+    Ok(())
+}
+
+fn ensure_blocks_exported_at(conn: &Connection) -> Result<()> {
+    let has: bool = conn
+        .prepare("PRAGMA table_info(blocks)")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter()
+        .any(|c| c == "exported_at");
+    if !has {
+        conn.execute("ALTER TABLE blocks ADD COLUMN exported_at TEXT", [])
+            .context("ALTER TABLE blocks ADD exported_at")?;
     }
     Ok(())
 }
