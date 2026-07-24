@@ -1,25 +1,30 @@
-//! Billing export — turn a day's blocks into per-(repo, task) line
-//! items for manual copy-paste into an external invoicing system.
+//! Billing export — turn a day's blocks into per-(repo, task, kind)
+//! line items for manual copy-paste into an external invoicing
+//! system.
 //!
-//! Slice 1 (walking skeleton): `worklog export --day D` groups a
-//! day's **Work** blocks by `(dominant repo, task)` and prints them as
-//! text lines. Personal blocks, CSV/JSON rendering, and the
-//! `exported_at` "billed" marker are later slices — this module only
-//! grows new `Format` arms and a `Kind::Personal` inclusion, it never
-//! changes the shape of an existing row.
+//! Slice 1 (walking skeleton) covered **Work** blocks only. Slice 2
+//! includes **Personal** blocks too (tagged `Kind::Personal`) and adds
+//! a deterministic, always-non-empty description fallback. CSV/JSON
+//! rendering and the `exported_at` "billed" marker are later slices —
+//! this module only grows new `Format` arms, it never changes the
+//! shape of an existing row.
 
 use std::collections::HashMap;
 
 use anyhow::Result;
-use rusqlite::Connection;
+use rusqlite::{params_from_iter, Connection};
 
 use crate::collectors::tempo::{round_to_half_hour, HALF_HOUR_SECONDS};
 use crate::models::Block;
 use crate::repo;
 
+/// The repo shown for a block/group that carries no repo signal at
+/// all.
+const NO_REPO: &str = "—";
+
 /// Whether a billing row is billable Work or non-billable Personal
 /// time. Mirrors `Block::is_personal` (`false` → `Work`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum Kind {
     Work,
     Personal,
@@ -98,6 +103,40 @@ pub fn dominant_repo_for_block(conn: &Connection, block_id: i64) -> Result<Optio
     Ok(counts.into_iter().max_by_key(|(_, n)| *n).map(|(k, _)| k))
 }
 
+/// Most-frequent non-empty `events.title` across a set of blocks'
+/// events (joined via `block_events`). `None` when none of the blocks
+/// have any events, or none of their events carry a non-empty title.
+/// Ties are broken lexicographically for determinism.
+fn dominant_title_for_blocks(conn: &Connection, block_ids: &[i64]) -> Result<Option<String>> {
+    if block_ids.is_empty() {
+        return Ok(None);
+    }
+    let placeholders = vec!["?"; block_ids.len()].join(",");
+    let sql = format!(
+        "SELECT e.title
+           FROM events e
+           JOIN block_events be ON be.event_id = e.id
+          WHERE be.block_id IN ({placeholders})"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let titles: Vec<String> = stmt
+        .query_map(params_from_iter(block_ids.iter()), |r| {
+            r.get::<_, String>(0)
+        })?
+        .collect::<std::result::Result<_, _>>()?;
+
+    let mut counts: HashMap<String, u32> = HashMap::new();
+    for title in titles {
+        let title = title.trim();
+        if !title.is_empty() {
+            *counts.entry(title.to_string()).or_insert(0) += 1;
+        }
+    }
+    let mut ranked: Vec<(String, u32)> = counts.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    Ok(ranked.into_iter().next().map(|(title, _)| title))
+}
+
 /// A block's wall-clock interval as epoch seconds: `[start, start +
 /// duration)`. Mirrors `worklog_cli::cli::block_interval` exactly —
 /// duration (not `ended_at`) is the canonical "logged time" because
@@ -150,14 +189,34 @@ fn task_for_block(block: &Block) -> String {
     format!("block-{}", block.id)
 }
 
-/// Accumulator for one `(repo, task)` group while folding a day's
-/// blocks.
+/// Accumulator for one `(repo, task, kind)` group while folding a
+/// day's blocks. Keying on `kind` too guarantees a group — and thus a
+/// row — is entirely Work or entirely Personal: a work block and a
+/// personal block that otherwise share `(repo, task)` never merge.
 struct GroupAcc {
     repo: String,
     kind: Kind,
     intervals: Vec<(i64, i64)>,
     /// Distinct non-empty descriptions, in first-seen order.
     descriptions: Vec<String>,
+    /// Ids of the blocks folded into this group, used for the
+    /// description fallback's dominant-event-title lookup.
+    block_ids: Vec<i64>,
+}
+
+/// Deterministic, always-non-empty description fallback for a group
+/// with no usable block description: the group's most-frequent event
+/// title, else `"Work in {repo}"`, else `"Untitled work"` when the
+/// group has no repo either (B9).
+fn fallback_description(conn: &Connection, acc: &GroupAcc) -> Result<String> {
+    if let Some(title) = dominant_title_for_blocks(conn, &acc.block_ids)? {
+        return Ok(title);
+    }
+    Ok(if acc.repo == NO_REPO {
+        "Untitled work".to_string()
+    } else {
+        format!("Work in {}", acc.repo)
+    })
 }
 
 /// Fold a group's accumulator into its final [`BillingRow`].
@@ -166,12 +225,13 @@ struct GroupAcc {
 /// naive sum); `hours` is that union rounded to the nearest half hour.
 /// `description` is the single shared description when every block
 /// agrees, the distinct descriptions joined with `"; "` when they
-/// don't, or the task string when no block in the group has one.
-fn finish_group(task: &str, acc: GroupAcc) -> BillingRow {
+/// don't, or `fallback` (see [`fallback_description`]) when no block
+/// in the group has one.
+fn finish_group(acc: GroupAcc, fallback: Option<String>) -> BillingRow {
     let seconds = union_seconds(acc.intervals);
     let hours = round_to_half_hour(seconds) as f64 / 3600.0;
     let description = if acc.descriptions.is_empty() {
-        task.to_string()
+        fallback.expect("fallback description computed for a group with no descriptions")
     } else {
         acc.descriptions.join("; ")
     };
@@ -186,26 +246,30 @@ fn finish_group(task: &str, acc: GroupAcc) -> BillingRow {
 
 /// Compute a day's billing rows.
 ///
-/// Slice 1 keeps only Work blocks (`!is_personal`) — Personal blocks
-/// join the export in a later slice. Blocks are grouped by
-/// `(dominant repo, task)`; each group's `seconds` is the union of its
-/// blocks' `[started_at, started_at + duration_seconds)` intervals
-/// (never a naive sum), and `hours` is that union rounded to the
-/// nearest half hour. Rows are sorted by `repo`, then by descending
-/// `seconds`, for deterministic output.
+/// All of the day's blocks are considered — Work and Personal alike.
+/// Blocks are grouped by `(dominant repo, task, kind)`, where `kind`
+/// is `Kind::Personal` for `is_personal` blocks and `Kind::Work`
+/// otherwise; each group's `seconds` is the union of its blocks'
+/// `[started_at, started_at + duration_seconds)` intervals (never a
+/// naive sum), and `hours` is that union rounded to the nearest half
+/// hour. Rows are sorted by `repo`, then by descending `seconds`, for
+/// deterministic output.
 pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
-    const NO_REPO: &str = "—";
-
     let blocks = repo::list_blocks_for_day(conn, day)?;
 
-    let mut groups: HashMap<(String, String), GroupAcc> = HashMap::new();
-    let mut order: Vec<(String, String)> = Vec::new();
+    let mut groups: HashMap<(String, String, Kind), GroupAcc> = HashMap::new();
+    let mut order: Vec<(String, String, Kind)> = Vec::new();
 
-    for block in blocks.iter().filter(|b| !b.is_personal) {
+    for block in blocks.iter() {
         let repo_name =
             dominant_repo_for_block(conn, block.id)?.unwrap_or_else(|| NO_REPO.to_string());
         let task = task_for_block(block);
-        let key = (repo_name.clone(), task.clone());
+        let kind = if block.is_personal {
+            Kind::Personal
+        } else {
+            Kind::Work
+        };
+        let key = (repo_name.clone(), task.clone(), kind);
 
         if !groups.contains_key(&key) {
             order.push(key.clone());
@@ -213,14 +277,16 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
                 key.clone(),
                 GroupAcc {
                     repo: repo_name,
-                    kind: Kind::Work,
+                    kind,
                     intervals: Vec::new(),
                     descriptions: Vec::new(),
+                    block_ids: Vec::new(),
                 },
             );
         }
         let acc = groups.get_mut(&key).expect("group just inserted");
         acc.intervals.push(block_interval(block));
+        acc.block_ids.push(block.id);
         if let Some(desc) = block
             .description
             .as_deref()
@@ -235,11 +301,16 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
 
     let mut rows: Vec<BillingRow> = order
         .into_iter()
-        .map(|key| {
+        .map(|key| -> Result<BillingRow> {
             let acc = groups.remove(&key).expect("group present for its own key");
-            finish_group(&key.1, acc)
+            let fallback = if acc.descriptions.is_empty() {
+                Some(fallback_description(conn, &acc)?)
+            } else {
+                None
+            };
+            Ok(finish_group(acc, fallback))
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
     rows.sort_by(|a, b| a.repo.cmp(&b.repo).then(b.seconds.cmp(&a.seconds)));
     Ok(rows)
