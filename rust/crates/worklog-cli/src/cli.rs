@@ -1626,10 +1626,7 @@ fn cmd_export<W: Write>(
         // single parseable JSON value (FR-015).
         if !json {
             if marked > 0 {
-                style::ok(
-                    out,
-                    &format!("marked {marked} block(s) exported for {day}"),
-                )?;
+                style::ok(out, &format!("marked {marked} block(s) exported for {day}"))?;
             } else if !rows.is_empty() {
                 style::info(out, &format!("{day} already exported"))?;
             }

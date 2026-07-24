@@ -185,7 +185,11 @@ mod tests {
 
     /// Insert a block with only `exported_at` set (no `tempo_worklog_id`)
     /// — the billing-export parity case for B21.
-    fn insert_block_with_exported_at(conn: &Connection, day: &str, exported_at: Option<&str>) -> i64 {
+    fn insert_block_with_exported_at(
+        conn: &Connection,
+        day: &str,
+        exported_at: Option<&str>,
+    ) -> i64 {
         conn.execute(
             "INSERT INTO blocks (day, started_at, ended_at, duration_seconds, exported_at)
              VALUES (?1, ?1 || 'T09:00:00+00:00', ?1 || 'T09:30:00+00:00', 1800, ?2)",

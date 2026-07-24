@@ -544,7 +544,10 @@ mod tests {
         let other_day_id = conn.last_insert_rowid();
 
         let marked = mark_exported(&conn, "2026-04-18").unwrap();
-        assert_eq!(marked, 3, "all 3 of the day's blocks should be newly marked");
+        assert_eq!(
+            marked, 3,
+            "all 3 of the day's blocks should be newly marked"
+        );
         for id in [a, b, c] {
             let got = repo::get_block(&conn, id).unwrap().unwrap();
             assert!(
@@ -565,15 +568,15 @@ mod tests {
             .map(|&id| repo::get_block(&conn, id).unwrap().unwrap().exported_at)
             .collect();
         let marked_again = mark_exported(&conn, "2026-04-18").unwrap();
-        assert_eq!(marked_again, 0, "re-marking an already-exported day marks nothing");
+        assert_eq!(
+            marked_again, 0,
+            "re-marking an already-exported day marks nothing"
+        );
         let after: Vec<Option<String>> = [a, b, c]
             .iter()
             .map(|&id| repo::get_block(&conn, id).unwrap().unwrap().exported_at)
             .collect();
-        assert_eq!(
-            before, after,
-            "exported_at must not change when re-marking"
-        );
+        assert_eq!(before, after, "exported_at must not change when re-marking");
     }
 
     #[test]
