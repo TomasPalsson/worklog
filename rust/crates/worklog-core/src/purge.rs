@@ -182,6 +182,18 @@ mod tests {
         conn.last_insert_rowid()
     }
 
+    /// Insert a block with only `exported_at` set (no `tempo_worklog_id`)
+    /// — the billing-export parity case for B21.
+    fn insert_block_with_exported_at(conn: &Connection, day: &str, exported_at: Option<&str>) -> i64 {
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds, exported_at)
+             VALUES (?1, ?1 || 'T09:00:00+00:00', ?1 || 'T09:30:00+00:00', 1800, ?2)",
+            params![day, exported_at],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
     fn insert_event(conn: &Connection, started_at: &str, source_id: &str) -> i64 {
         repo::upsert_event(
             conn,
@@ -229,6 +241,35 @@ mod tests {
         let report = purge(&conn, 30, false).unwrap();
         assert_eq!(report.blocks_deleted, 1);
         assert_eq!(count(&conn, "blocks"), 0);
+    }
+
+    #[test]
+    fn b21_deletes_old_block_with_only_exported_at_set() {
+        // B21: exported_at is a billing-parity marker for
+        // tempo_worklog_id — a worked block that was exported (but
+        // never synced to Tempo) must be just as purge-eligible once
+        // past the retention window.
+        let conn = open_memory().unwrap();
+        insert_block_with_exported_at(&conn, "2026-02-10", Some("2026-02-11T09:00:00.000Z"));
+
+        let report = purge(&conn, 30, false).unwrap();
+        assert_eq!(report.blocks_deleted, 1);
+        assert_eq!(count(&conn, "blocks"), 0);
+    }
+
+    #[test]
+    fn b21_exported_block_is_not_double_counted_as_kept_unsynced() {
+        // Regression guard for the KEPT_UNSYNCED_WHERE fragment: once
+        // exported_at makes a block purgeable, it must not also show up
+        // in the "kept because unsynced" report bucket.
+        let conn = open_memory().unwrap();
+        insert_block_with_exported_at(&conn, "2026-02-10", Some("2026-02-11T09:00:00.000Z"));
+
+        let report = purge(&conn, 30, false).unwrap();
+        assert_eq!(
+            report.blocks_kept_unsynced, 0,
+            "exported blocks are purgeable, not kept-unsynced"
+        );
     }
 
     #[test]

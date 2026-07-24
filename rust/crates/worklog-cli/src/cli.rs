@@ -3854,6 +3854,7 @@ mod tests {
             tempo_worklog_id: None,
             is_personal: false,
             dirty: false,
+            exported_at: None,
         }
     }
 

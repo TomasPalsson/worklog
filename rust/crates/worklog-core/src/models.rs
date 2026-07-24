@@ -70,6 +70,15 @@ pub struct Block {
     /// instead of POSTing a duplicate, then clears the flag.
     #[serde(default)]
     pub dirty: bool,
+    /// Billing-export "has been billed" canary — set (idempotently) by
+    /// `block_service::mark_exported` when the block's day is marked
+    /// exported via `worklog export --mark`. Analogous to
+    /// `tempo_worklog_id`, but Tempo-independent: the team moved off
+    /// Tempo, so `exported_at` is the marker `purge` now also accepts
+    /// as "billed" for blocks that never get a `tempo_worklog_id`.
+    /// Never set or cleared by Tempo sync.
+    #[serde(default)]
+    pub exported_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

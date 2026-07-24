@@ -267,6 +267,94 @@ mod tests {
     }
 
     #[test]
+    fn schema_version_is_bumped_for_exported_at_migration() {
+        // B22. The exported_at migration bumps SCHEMA_VERSION — hardcode
+        // the literal target so this genuinely fails until the bump
+        // lands (comparing SCHEMA_VERSION to itself would be a no-op).
+        let conn = open_memory().unwrap();
+        assert_eq!(
+            current_version(&conn).unwrap(),
+            8,
+            "exported_at migration must bump SCHEMA_VERSION to 8"
+        );
+    }
+
+    #[test]
+    fn fresh_db_blocks_table_has_exported_at_column() {
+        // B22.
+        let conn = open_memory().unwrap();
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(blocks)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            cols.contains(&"exported_at".to_string()),
+            "fresh db must have blocks.exported_at; got {cols:?}"
+        );
+    }
+
+    #[test]
+    fn migrate_adds_exported_at_to_legacy_blocks_table_and_backfills_null() {
+        // B22. Simulate a pre-exported_at DB: create a blocks table
+        // without exported_at (but with every column that shipped
+        // before this slice), insert a row, then run migrate() and
+        // assert the column appears with NULL for the pre-existing row.
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE blocks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                day TEXT NOT NULL,
+                jira_issue TEXT,
+                started_at TEXT NOT NULL,
+                ended_at TEXT NOT NULL,
+                duration_seconds INTEGER NOT NULL,
+                description TEXT,
+                estimated_by TEXT,
+                flagged INTEGER NOT NULL DEFAULT 0,
+                tempo_worklog_id TEXT,
+                is_personal INTEGER NOT NULL DEFAULT 0,
+                dirty INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-18', '2026-04-18T09:00:00+00:00', '2026-04-18T09:30:00+00:00', 1800)",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 7).unwrap();
+
+        migrate(&conn).unwrap();
+
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(blocks)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            cols.contains(&"exported_at".to_string()),
+            "exported_at missing after migrate; got {cols:?}"
+        );
+
+        let exported_at: Option<String> = conn
+            .query_row("SELECT exported_at FROM blocks LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert!(
+            exported_at.is_none(),
+            "pre-existing rows must backfill to NULL"
+        );
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
     fn summarize_counts_are_zero_on_fresh_db() {
         let conn = open_memory().unwrap();
         let s = summarize(&conn).unwrap();
