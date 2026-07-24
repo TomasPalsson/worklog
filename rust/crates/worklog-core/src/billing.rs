@@ -42,15 +42,15 @@ impl Kind {
 }
 
 /// One billable line item for a day — a group of blocks sharing the
-/// same `(dominant repo, task)`.
+/// same `(dominant repo, task, kind)`.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BillingRow {
     /// The block group's dominant repo, or `"—"` when none of the
     /// group's blocks carry a repo.
     pub repo: String,
-    /// The shared description, or distinct descriptions joined with
-    /// `"; "`, or the task string when no block in the group has a
-    /// description.
+    /// The shared description, distinct descriptions joined with
+    /// `"; "`, or a deterministic fallback (see
+    /// [`fallback_description`]) when no block in the group has one.
     pub description: String,
     pub kind: Kind,
     /// Overlap-safe union of the group's block intervals, in seconds
