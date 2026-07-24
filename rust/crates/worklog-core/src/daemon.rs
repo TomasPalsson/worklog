@@ -33,6 +33,8 @@
 //! * `GET  /accounts`                    — list Tempo accounts (create picker)
 //! * `POST /estimate`                    — { "day": "YYYY-MM-DD", "model": "?" }
 //! * `POST /sync`                        — { "day": "YYYY-MM-DD", "dry_run": true }
+//! * `GET  /export/:day`                 — billing rows + rendered text/csv/json for a day
+//! * `POST /export/:day/mark`            — mark a day's blocks as billed (idempotent)
 //!
 //! Unix-socket file perms default to `0666` so the containerised UI can
 //! connect across Docker Desktop's VM (same user, same host — the data
@@ -60,6 +62,7 @@ use tokio::net::{TcpListener, UnixListener};
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
+use crate::billing;
 use crate::collectors::{jira, tempo};
 use crate::git::{self, CommitEntry};
 use crate::personal;
@@ -1277,18 +1280,71 @@ where
     .context("spawn_blocking")?
 }
 
+/// Latest non-empty `blocks.exported_at` across a day's blocks, or
+/// `None` when the day has never been (fully or partially) marked
+/// exported.
+fn latest_exported_at(conn: &Connection, day: &str) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT MAX(exported_at) FROM blocks
+          WHERE day = ?1 AND exported_at IS NOT NULL AND exported_at != ''",
+        rusqlite::params![day],
+        |row| row.get(0),
+    )
+    .context("latest_exported_at")
+}
+
 async fn export_day(
-    State(_state): State<Shared>,
-    AxumPath(_day): AxumPath<String>,
+    State(state): State<Shared>,
+    AxumPath(day): AxumPath<String>,
 ) -> Result<Json<Value>, ApiError> {
-    unimplemented!()
+    NaiveDate::parse_from_str(&day, "%Y-%m-%d")
+        .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{}`: {e}", day)))?;
+
+    let day_for_conn = day.clone();
+    let (rows, exported_at) = with_conn(state, move |c| {
+        let rows = billing::rows_for_day(c, &day_for_conn)?;
+        let exported_at = latest_exported_at(c, &day_for_conn)?;
+        Ok((rows, exported_at))
+    })
+    .await?;
+
+    let text = billing::render(&rows, billing::Format::Text);
+    let csv = billing::render(&rows, billing::Format::Csv);
+    let json_str = billing::render(&rows, billing::Format::Json);
+
+    Ok(Json(json!({
+        "day": day,
+        "exported_at": exported_at,
+        "rows": rows,
+        "rendered": {
+            "text": text,
+            "csv": csv,
+            "json": json_str,
+        },
+    })))
 }
 
 async fn mark_export(
-    State(_state): State<Shared>,
-    AxumPath(_day): AxumPath<String>,
+    State(state): State<Shared>,
+    AxumPath(day): AxumPath<String>,
 ) -> Result<Json<Value>, ApiError> {
-    unimplemented!()
+    NaiveDate::parse_from_str(&day, "%Y-%m-%d")
+        .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{}`: {e}", day)))?;
+
+    let day_for_conn = day.clone();
+    let (marked, exported_at) = with_conn(state, move |c| {
+        let marked = block_service::mark_exported(c, &day_for_conn)?;
+        let exported_at = latest_exported_at(c, &day_for_conn)?;
+        Ok((marked, exported_at))
+    })
+    .await?;
+
+    info!(day = %day, marked, "marked blocks exported");
+    Ok(Json(json!({
+        "day": day,
+        "marked": marked,
+        "exported_at": exported_at,
+    })))
 }
 
 #[cfg(test)]
