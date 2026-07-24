@@ -347,14 +347,94 @@ fn render_text(rows: &[BillingRow]) -> String {
         .join("\n")
 }
 
+/// NFR 5.2 CSV formula-injection guard: prefixes `field` with `'`
+/// when its first character could make a spreadsheet interpret the
+/// cell as a formula (`=`, `+`, `-`, `@`) or as a leading TAB/CR.
+/// Applied to the string fields (repo, description, type) only —
+/// never to the numeric-derived hours cell.
+fn csv_guard(field: &str) -> String {
+    match field.chars().next() {
+        Some('=') | Some('+') | Some('-') | Some('@') | Some('\t') | Some('\r') => {
+            format!("'{field}")
+        }
+        _ => field.to_string(),
+    }
+}
+
+/// RFC-4180 quoting: wraps `field` in double quotes (doubling any
+/// internal `"`) when it contains a comma, double-quote, CR, or LF.
+fn csv_quote(field: &str) -> String {
+    if field.contains(['"', ',', '\r', '\n']) {
+        format!("\"{}\"", field.replace('"', "\"\""))
+    } else {
+        field.to_string()
+    }
+}
+
+/// Formula-guards then RFC-4180-quotes a string field.
+fn csv_cell(field: &str) -> String {
+    csv_quote(&csv_guard(field))
+}
+
+/// CSV: header `repo,description,hours,type` followed by one data
+/// row per `BillingRow`. `hours` reuses [`format_hours`] (the same
+/// comma-decimal text as the Text renderer) and is RFC-4180-quoted
+/// like any other cell (so `5,5` becomes `"5,5"`); it is never
+/// formula-guarded since it is derived, never user-authored text.
+fn render_csv(rows: &[BillingRow]) -> String {
+    let mut lines = vec!["repo,description,hours,type".to_string()];
+    for row in rows {
+        lines.push(
+            [
+                csv_cell(&row.repo),
+                csv_cell(&row.description),
+                csv_quote(&format_hours(row.seconds)),
+                csv_cell(row.kind.label()),
+            ]
+            .join(","),
+        );
+    }
+    lines.join("\n")
+}
+
+/// One JSON-rendered billing row: `hours` is the plain `f64` (dot
+/// decimal, e.g. `5.5`), `type` is `Kind::label()` under the `type`
+/// key (the wire name the export contract — and AC-006 — use).
+#[derive(serde::Serialize)]
+struct JsonRow<'a> {
+    repo: &'a str,
+    description: &'a str,
+    hours: f64,
+    seconds: i64,
+    #[serde(rename = "type")]
+    kind: &'static str,
+}
+
+/// JSON: a pretty-printed array of `{repo, description, hours,
+/// seconds, type}` objects, one per `BillingRow`.
+fn render_json(rows: &[BillingRow]) -> String {
+    let json_rows: Vec<JsonRow> = rows
+        .iter()
+        .map(|row| JsonRow {
+            repo: &row.repo,
+            description: &row.description,
+            hours: row.hours,
+            seconds: row.seconds,
+            kind: row.kind.label(),
+        })
+        .collect();
+    serde_json::to_string_pretty(&json_rows)
+        .expect("billing rows are plain data and always serialize")
+}
+
 /// Render `rows` in the given `format`. [`Format::Text`]: one line per
 /// row — `repo: {repo}  description: {description}  time: {H} hrs  type: {Work|Personal}`.
 /// [`Format::Csv`]/[`Format::Json`]: see [`render_csv`]/[`render_json`].
 pub fn render(rows: &[BillingRow], format: Format) -> String {
     match format {
         Format::Text => render_text(rows),
-        Format::Csv => unimplemented!("slice 3 RED: CSV renderer not yet implemented"),
-        Format::Json => unimplemented!("slice 3 RED: JSON renderer not yet implemented"),
+        Format::Csv => render_csv(rows),
+        Format::Json => render_json(rows),
     }
 }
 
