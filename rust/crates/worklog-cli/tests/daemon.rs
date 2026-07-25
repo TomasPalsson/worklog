@@ -78,6 +78,14 @@ fn spawn_daemon(home: &TempDir) -> (DaemonGuard, std::path::PathBuf) {
         .env("CLAUDE_HOME", home.path().join("claude"))
         .env("WORKLOG_SCHEDULE_HOME", home.path())
         .env("WORKLOG_ENV_FILE", home.path().join("absent.env"))
+        // The daemon's billing-cycle prune due-check runs on start and
+        // is enabled by default; this fixture's seeded block predates
+        // any real cutoff, so an unattended prune would delete it out
+        // from under these assertions. This suite tests unrelated
+        // endpoints, not the pruner — disable it here the same way the
+        // other env vars above isolate this daemon from the real
+        // environment.
+        .env("WORKLOG_PRUNE_ENABLED", "0")
         .env("RUST_LOG", "error")
         .args(["daemon", "--socket", socket.to_str().unwrap()])
         .stdout(Stdio::null())

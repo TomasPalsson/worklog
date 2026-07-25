@@ -31,7 +31,7 @@
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 /// Default retention window for the `--days` CLI override. Unrelated to
 /// the billing cycle; a plain rolling window.
@@ -361,13 +361,23 @@ pub fn run(conn: &Connection, opts: &PruneOptions) -> Result<PurgeReport> {
 pub const LATCH_KEY: &str = "last_prune_cutoff";
 
 /// Read a value from the `meta` table. `None` when `key` is absent.
-pub fn meta_get(_conn: &Connection, _key: &str) -> Result<Option<String>> {
-    unimplemented!()
+pub fn meta_get(conn: &Connection, key: &str) -> Result<Option<String>> {
+    conn.query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
+        r.get(0)
+    })
+    .optional()
+    .context("reading meta")
 }
 
 /// Insert or replace a value in the `meta` table (upsert on `key`).
-pub fn meta_set(_conn: &Connection, _key: &str, _value: &str) -> Result<()> {
-    unimplemented!()
+pub fn meta_set(conn: &Connection, key: &str, value: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )
+    .context("writing meta")?;
+    Ok(())
 }
 
 /// The daemon's due-check (spec 002 FR-009, Journey 1): run [`run`] only
@@ -377,8 +387,14 @@ pub fn meta_set(_conn: &Connection, _key: &str, _value: &str) -> Result<()> {
 /// success, records the new cutoff as the latch; a failure propagates
 /// with the latch left untouched so the next check retries the same
 /// work.
-pub fn prune_if_due(_conn: &Connection, _opts: &PruneOptions) -> Result<Option<PurgeReport>> {
-    unimplemented!()
+pub fn prune_if_due(conn: &Connection, opts: &PruneOptions) -> Result<Option<PurgeReport>> {
+    let cutoff_iso = opts.cutoff.to_string();
+    if meta_get(conn, LATCH_KEY)?.as_deref() == Some(cutoff_iso.as_str()) {
+        return Ok(None);
+    }
+    let report = run(conn, opts)?;
+    meta_set(conn, LATCH_KEY, &cutoff_iso)?;
+    Ok(Some(report))
 }
 
 /// Whether automatic pruning is enabled. Reads `WORKLOG_PRUNE_ENABLED`
@@ -389,7 +405,25 @@ pub fn prune_if_due(_conn: &Connection, _opts: &PruneOptions) -> Result<Option<P
 /// (case-insensitive) disable; anything else (including unset) leaves
 /// pruning enabled.
 pub fn pruning_enabled() -> bool {
-    unimplemented!()
+    let raw: Option<String> = match std::env::var("WORKLOG_PRUNE_ENABLED") {
+        Ok(v) if !v.trim().is_empty() => Some(v),
+        _ => {
+            #[cfg(not(test))]
+            {
+                crate::envfile::read("WORKLOG_PRUNE_ENABLED")
+            }
+            #[cfg(test)]
+            {
+                None
+            }
+        }
+    };
+    !matches!(
+        raw.as_deref()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("0") | Some("false") | Some("no") | Some("off")
+    )
 }
 
 #[cfg(test)]

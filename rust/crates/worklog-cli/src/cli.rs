@@ -3291,6 +3291,12 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
         };
         eprintln!("→ socket {}", worklog_core::paths::short_display(&path));
 
+        // Billing-cycle prune due-check: one timer per process, spawned
+        // here (not inside `router()`/`serve_at`/`serve_tcp`) precisely
+        // because the daemon binds both a unix socket and a TCP port —
+        // spawning inside either of those would run the loop twice.
+        let prune_task = daemon_mod::spawn_prune_loop(state.clone());
+
         // Clone the router for the TCP task so the unix+TCP listeners
         // share the same Arc<AppState> — both mutate the same DB.
         let tcp_task = if tcp.is_empty() {
@@ -3312,6 +3318,7 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
         if let Some(t) = tcp_task {
             t.abort();
         }
+        prune_task.abort();
         unix_res
     })
 }

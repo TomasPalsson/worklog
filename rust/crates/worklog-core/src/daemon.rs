@@ -255,9 +255,58 @@ pub const PRUNE_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_
 
 /// Spawn the daemon's periodic billing-cycle prune due-check: runs once
 /// immediately, then every [`PRUNE_CHECK_INTERVAL`] thereafter, for as
-/// long as the returned handle lives.
-pub fn spawn_prune_loop(_state: Shared) -> tokio::task::JoinHandle<()> {
-    unimplemented!()
+/// long as the returned handle lives. Skipped entirely — no db access,
+/// no path resolution — when [`crate::purge::pruning_enabled`] is
+/// `false`. The sqlite work runs on the blocking pool (mirroring
+/// [`with_conn`]) so rusqlite never runs directly on the async runtime;
+/// `state.conn`'s mutex is acquired only for the duration of that
+/// blocking call and released promptly afterwards. A prune failure is
+/// logged at `warn` and swallowed — it must never bring the daemon down
+/// or fail a request (spec 002 §5.3).
+pub fn spawn_prune_loop(state: Shared) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            prune_due_check_once(state.clone()).await;
+            tokio::time::sleep(PRUNE_CHECK_INTERVAL).await;
+        }
+    })
+}
+
+/// One tick of [`spawn_prune_loop`]: resolve the current cycle cutoff
+/// and hand it to [`crate::purge::prune_if_due`], swallowing any
+/// failure. Never logs on a successful (or skipped) check — that
+/// belongs to the report-rendering surfaces added later; here the only
+/// observable-by-log outcome is a failure.
+async fn prune_due_check_once(state: Shared) {
+    if !crate::purge::pruning_enabled() {
+        return;
+    }
+    let outcome =
+        tokio::task::spawn_blocking(move || -> Result<Option<crate::purge::PurgeReport>> {
+            let paths = crate::paths::Paths::resolve()?;
+            let today = crate::tz::local_date(chrono::Utc::now());
+            let cutoff = crate::purge::cutoff_for_cycle(
+                today,
+                crate::purge::DEFAULT_CYCLE_START_DAY,
+                crate::purge::DEFAULT_CLOSE_DAY,
+            );
+            let snapshot_to = paths.data_dir.join("worklog.db.preprune");
+            let opts = crate::purge::PruneOptions {
+                cutoff,
+                dry_run: false,
+                snapshot_to: Some(snapshot_to.as_path()),
+                db_path: Some(paths.db.as_path()),
+            };
+            let conn = state.conn.blocking_lock();
+            crate::purge::prune_if_due(&conn, &opts)
+        })
+        .await;
+
+    match outcome {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => warn!("billing-cycle prune due-check failed: {e:#}"),
+        Err(e) => warn!("billing-cycle prune due-check task panicked: {e}"),
+    }
 }
 
 // ───────────────────────── handlers ─────────────────────────
