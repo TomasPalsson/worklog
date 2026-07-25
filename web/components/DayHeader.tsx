@@ -4,6 +4,7 @@ import { mondayOf, shiftDay, todayISO } from "@/lib/format";
 import { ThemeToggle } from "./ThemeToggle";
 import { SettingsPanel } from "./SettingsPanel";
 import { ExportPanel } from "./ExportPanel";
+import { BillingRegistryPanel } from "./BillingRegistryPanel";
 
 interface Props {
   day: string;
@@ -71,6 +72,7 @@ export function DayHeader({
           Week
         </Link>
         <ExportPanel day={day} />
+        <BillingRegistryPanel day={day} />
         <ThemeToggle />
         <SettingsPanel day={day} />
       </nav>
