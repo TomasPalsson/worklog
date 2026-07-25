@@ -27,6 +27,17 @@ pub fn open(path: &Path) -> Result<Connection> {
         Connection::open(path).with_context(|| format!("opening sqlite at {}", path.display()))?;
     configure(&conn)?;
     migrate(&conn)?;
+    // Give the billing registry a starting point on first use so the user
+    // corrects entries instead of typing them all. Guarded internally, so
+    // it only fires when both registry tables are empty and never
+    // overwrites an edit.
+    //
+    // Deliberately here and NOT in `migrate`: `open_memory` shares
+    // `migrate`, and a test database arriving with ten fabricated customer
+    // names is a trap — a billing test asserting "no customer resolved"
+    // could match a seeded alias by accident. Real databases seed; test
+    // databases stay empty.
+    crate::billing_registry::seed_if_empty(&conn).context("seeding billing registry")?;
     Ok(conn)
 }
 
@@ -63,10 +74,6 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     ensure_blocks_is_personal(conn).context("ensuring blocks.is_personal")?;
     ensure_blocks_dirty(conn).context("ensuring blocks.dirty")?;
     ensure_blocks_exported_at(conn).context("ensuring blocks.exported_at")?;
-    // Give the billing registry a starting point on first use so the user
-    // corrects entries instead of typing them all. Guarded internally —
-    // only runs when both registry tables are empty.
-    crate::billing_registry::seed_if_empty(conn).context("seeding billing registry")?;
     ensure_jira_tickets_issue_id(conn).context("ensuring jira_tickets.issue_id")?;
     ensure_jira_tickets_external(conn).context("ensuring jira_tickets.external")?;
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)

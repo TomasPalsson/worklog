@@ -112,7 +112,10 @@ pub fn router(state: Shared) -> Router {
         .route("/export/:day/mark", post(mark_export))
         .route("/billing/registry", get(billing_registry_get))
         .route("/billing/customers", post(billing_customer_upsert))
-        .route("/billing/customers/:id/delete", post(billing_customer_delete))
+        .route(
+            "/billing/customers/:id/delete",
+            post(billing_customer_delete),
+        )
         .route("/billing/folders", post(billing_folder_upsert))
         .route("/billing/folders/:id/delete", post(billing_folder_delete))
         .route("/settings", get(get_settings).post(post_settings))
