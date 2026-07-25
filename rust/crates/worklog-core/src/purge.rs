@@ -6,7 +6,9 @@
 //! day after it ends, default the 23rd) nothing can add hours to it any
 //! more, so retaining its rows has no value. `cutoff_for_cycle` derives
 //! that boundary; `purge_rows` deletes every row strictly older than it
-//! from `blocks` (and, by cascade, `block_events`) and `events`.
+//! from `blocks` (and, by cascade, `block_events`), `events`, and
+//! `sessions`, plus every manually-picked (`external = 1`) `jira_tickets`
+//! entry no surviving block references any more.
 //!
 //! Deliberately rail-free: sync state (`tempo_worklog_id`), export state
 //! (`exported_at`), edit provenance (`estimated_by`), the pending-edit
@@ -48,9 +50,11 @@ pub struct PurgeReport {
     pub blocks_deleted_unbilled: i64,
     /// Events (orphan or cascaded) that were (or would be) deleted.
     pub events_deleted: i64,
-    /// Sessions that were (or would be) deleted. Populated from slice 2.
+    /// Sessions that were (or would be) deleted.
     pub sessions_deleted: i64,
-    /// Manually-picked ticket cache entries deleted. Populated from slice 2.
+    /// Manually-picked (`external = 1`) ticket cache entries deleted
+    /// because no surviving block references them any more.
+    /// Collector-owned (`external = 0`) entries are never touched.
     pub tickets_deleted: i64,
     /// Disk space reclaimed, in bytes. Populated from slice 3.
     pub bytes_freed: i64,
@@ -178,11 +182,35 @@ pub fn purge_rows(conn: &Connection, cutoff: NaiveDate, dry_run: bool) -> Result
                 |r| r.get(0),
             )
             .context("counting orphan events past cutoff")?;
+        // sessions.started_at is UTC, like events — compare against the
+        // same instant, never the local cutoff string.
+        let sessions_deleted: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE datetime(started_at) < datetime(?1)",
+                params![instant_iso],
+                |r| r.get(0),
+            )
+            .context("counting sessions past cutoff")?;
+        // Simulates the post-block-delete state for the ticket cache:
+        // a manually-picked (external = 1) ticket only survives if some
+        // surviving block (day >= cutoff) still references it.
+        let tickets_deleted: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM jira_tickets
+                 WHERE external = 1
+                   AND key NOT IN (SELECT jira_issue FROM blocks
+                                    WHERE jira_issue IS NOT NULL AND day >= ?1)",
+                params![cutoff_iso],
+                |r| r.get(0),
+            )
+            .context("counting orphaned external jira tickets past cutoff")?;
         return Ok(PurgeReport {
             cutoff_date: cutoff_iso,
             blocks_deleted,
             blocks_deleted_unbilled,
             events_deleted,
+            sessions_deleted,
+            tickets_deleted,
             dry_run,
             ..Default::default()
         });
@@ -207,6 +235,26 @@ pub fn purge_rows(conn: &Connection, cutoff: NaiveDate, dry_run: bool) -> Result
             params![instant_iso],
         )
         .context("deleting orphan events past cutoff")? as i64;
+    // sessions.started_at is UTC, like events — compare against the same
+    // instant. Nothing in worklog has ever deleted a sessions row before
+    // this: `reap_stale` only ever sets `ended_at`.
+    let sessions_deleted = tx
+        .execute(
+            "DELETE FROM sessions WHERE datetime(started_at) < datetime(?1)",
+            params![instant_iso],
+        )
+        .context("deleting sessions past cutoff")? as i64;
+    // Runs after the blocks delete, so only surviving blocks remain to
+    // reference a ticket. Collector-owned entries (external = 0) are
+    // never touched — that cache's lifecycle belongs to the collector.
+    let tickets_deleted =
+        tx.execute(
+            "DELETE FROM jira_tickets
+             WHERE external = 1
+               AND key NOT IN (SELECT jira_issue FROM blocks WHERE jira_issue IS NOT NULL)",
+            [],
+        )
+        .context("deleting orphaned external jira tickets past cutoff")? as i64;
     tx.commit()?;
 
     Ok(PurgeReport {
@@ -214,6 +262,8 @@ pub fn purge_rows(conn: &Connection, cutoff: NaiveDate, dry_run: bool) -> Result
         blocks_deleted,
         blocks_deleted_unbilled,
         events_deleted,
+        sessions_deleted,
+        tickets_deleted,
         dry_run,
         ..Default::default()
     })
