@@ -124,6 +124,13 @@ export interface SettingsView {
   /** Raw WORKLOG_TZ value, e.g. "+01:00" / "UTC" / "" (empty = UTC). */
   timezone: string;
   personal_config_path: string | null;
+  /** Whether the billing-cycle pruner's automatic due-check runs at all. */
+  prune_enabled: boolean;
+  /** Day-of-month the billing cycle starts (1-31). Default 20. */
+  cycle_start_day: number;
+  /** Last day-of-month the just-closed cycle can still take hours (1-31).
+   * Default 23. */
+  close_day: number;
 }
 
 /** Partial update sent to `POST /settings`. Omitted groups are left
@@ -133,6 +140,12 @@ export interface SettingsUpdate {
   personal?: { work: string[]; personal: string[] };
   secrets?: Record<string, string>;
   timezone?: string;
+  /** Omitted leaves the current enabled/disabled state untouched. */
+  prune_enabled?: boolean;
+  /** Omitted leaves the current cycle start day untouched. */
+  cycle_start_day?: number;
+  /** Omitted leaves the current close day untouched. */
+  close_day?: number;
 }
 
 export interface ReclassifyStats {
