@@ -12,8 +12,15 @@
 //! * Orphan events (not linked to any surviving block) are deleted too,
 //!   but only when *they* are older than the cutoff — we'd rather keep
 //!   an un-block'd event from yesterday than drop it silently.
+//!
+//! NOTE: the above rails are being replaced by a rail-free, billing-cycle
+//! aligned cutoff (see spec 002-billing-cycle-pruner). `cutoff_for_cycle`,
+//! `cutoff_for_days` and `purge_rows` are the new surface; `purge` and its
+//! supporting rail consts are still here only until the implementation
+//! lands.
 
 use anyhow::{Context, Result};
+use chrono::NaiveDate;
 use rusqlite::{params, Connection};
 
 /// Default retention window. See `CLAUDE.md` — billing cycle is 20th to
@@ -27,14 +34,30 @@ pub struct PurgeReport {
     pub cutoff_date: String,
     /// Blocks that were (or would be) deleted.
     pub blocks_deleted: i64,
+    /// Subset of `blocks_deleted` that had NEITHER `tempo_worklog_id` NOR
+    /// `exported_at` — work that was never billed. Not a rail: these are
+    /// still deleted. It exists so the loss is visible instead of silent.
+    pub blocks_deleted_unbilled: i64,
     /// Events (orphan or cascaded) that were (or would be) deleted.
     pub events_deleted: i64,
-    /// Old blocks we kept because the user hasn't synced them yet.
-    pub blocks_kept_unsynced: i64,
-    /// Old blocks we kept because the user hand-edited them.
-    pub blocks_kept_manual: i64,
+    /// Sessions that were (or would be) deleted. Populated from slice 2.
+    pub sessions_deleted: i64,
+    /// Manually-picked ticket cache entries deleted. Populated from slice 2.
+    pub tickets_deleted: i64,
+    /// Disk space reclaimed, in bytes. Populated from slice 3.
+    pub bytes_freed: i64,
+    /// Where the pre-prune snapshot was written. Populated from slice 3.
+    pub snapshot_path: Option<String>,
     /// If true, nothing was actually written to the database.
     pub dry_run: bool,
+    /// Old blocks we kept because the user hasn't synced them yet. Only
+    /// populated by the legacy [`purge`] rail — dropped once that
+    /// function is deleted.
+    pub blocks_kept_unsynced: i64,
+    /// Old blocks we kept because the user hand-edited them. Only
+    /// populated by the legacy [`purge`] rail — dropped once that
+    /// function is deleted.
+    pub blocks_kept_manual: i64,
 }
 
 /// SQL fragment matching blocks that are old AND safe to delete:
@@ -130,6 +153,7 @@ pub fn purge(conn: &Connection, retention_days: i64, dry_run: bool) -> Result<Pu
         blocks_kept_unsynced,
         blocks_kept_manual,
         dry_run,
+        ..Default::default()
     };
 
     if dry_run {
@@ -158,6 +182,81 @@ pub fn purge(conn: &Connection, retention_days: i64, dry_run: bool) -> Result<Pu
     Ok(report)
 }
 
+/// Billing cycles run `cycle_start_day` (default the 20th) through the
+/// day before `cycle_start_day` in the following month. Configurable in
+/// spirit, but v1 ships defaults only — see spec 002 §4.1.
+pub const DEFAULT_CYCLE_START_DAY: u32 = 20;
+/// Last day of the month on which hours can still be submitted against
+/// the cycle that just closed — default the 23rd (second business day
+/// after the 19th, in the general case).
+pub const DEFAULT_CLOSE_DAY: u32 = 23;
+
+/// The number of days in `year`-`month`, via the first-of-next-month
+/// minus first-of-this-month trick (handles the December → January
+/// wraparound for free).
+fn days_in_month(year: i32, month: u32) -> u32 {
+    let (next_year, next_month) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
+    let first_of_next =
+        NaiveDate::from_ymd_opt(next_year, next_month, 1).expect("month + 1 is always valid");
+    let first_of_this =
+        NaiveDate::from_ymd_opt(year, month, 1).expect("(year, month) is always valid");
+    (first_of_next - first_of_this).num_days() as u32
+}
+
+/// `cycle_start_day` clamped to the length of `year`-`month`, so a
+/// configured value like 31 is legal even in a 28/29/30-day month.
+fn effective_start_day(year: i32, month: u32, cycle_start_day: u32) -> u32 {
+    cycle_start_day.min(days_in_month(year, month))
+}
+
+/// The most recent cycle-start day on or before `d`, per the algorithm
+/// in spec 002 Appendix A.
+pub fn cycle_start_on_or_before(d: NaiveDate, cycle_start_day: u32) -> NaiveDate {
+    use chrono::Datelike;
+    let eff = effective_start_day(d.year(), d.month(), cycle_start_day);
+    if d.day() >= eff {
+        NaiveDate::from_ymd_opt(d.year(), d.month(), eff)
+            .expect("effective_start_day is clamped to days_in_month")
+    } else {
+        let (py, pm) = if d.month() == 1 {
+            (d.year() - 1, 12)
+        } else {
+            (d.year(), d.month() - 1)
+        };
+        let peff = effective_start_day(py, pm, cycle_start_day);
+        NaiveDate::from_ymd_opt(py, pm, peff)
+            .expect("effective_start_day is clamped to days_in_month")
+    }
+}
+
+/// The billing-cycle cutoff: the earliest local day whose data survives.
+/// `grace = close_day - cycle_start_day + 1` (4 with the defaults);
+/// everything older than `cycle_start_on_or_before(today - grace days)`
+/// is fair game.
+pub fn cutoff_for_cycle(_today: NaiveDate, _cycle_start_day: u32, _close_day: u32) -> NaiveDate {
+    unimplemented!()
+}
+
+/// A plain rolling-window cutoff, `days` before `today` — the
+/// `--days` CLI override. No cycle alignment, but still rail-free once
+/// `purge_rows` runs against it.
+pub fn cutoff_for_days(_today: NaiveDate, _days: i64) -> NaiveDate {
+    unimplemented!()
+}
+
+/// Delete every block (and, via cascade, its `block_events` rows) whose
+/// local `day` is before `cutoff`, plus every event before `cutoff` that
+/// no surviving block references. Rail-free: sync state, edit
+/// provenance, pending edits and personal classification make no
+/// difference. `dry_run` writes nothing and reports simulated counts.
+pub fn purge_rows(_conn: &Connection, _cutoff: NaiveDate, _dry_run: bool) -> Result<PurgeReport> {
+    unimplemented!()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,35 +264,42 @@ mod tests {
     use crate::models::Event;
     use crate::repo;
 
-    /// Insert a block with every field the purge rule cares about.
+    /// Insert a block with every field the cutoff predicate could ever
+    /// key off, aside from `dirty`/`is_personal` (see
+    /// [`insert_block_with_flags`]).
     fn insert_block(
         conn: &Connection,
         day: &str,
         tempo_id: Option<&str>,
         estimated_by: Option<&str>,
+        exported_at: Option<&str>,
     ) -> i64 {
         conn.execute(
             "INSERT INTO blocks (day, started_at, ended_at, duration_seconds,
-                                 tempo_worklog_id, estimated_by)
+                                 tempo_worklog_id, estimated_by, exported_at)
              VALUES (?1, ?1 || 'T09:00:00+00:00', ?1 || 'T09:30:00+00:00',
-                     1800, ?2, ?3)",
-            params![day, tempo_id, estimated_by],
+                     1800, ?2, ?3, ?4)",
+            params![day, tempo_id, estimated_by, exported_at],
         )
         .unwrap();
         conn.last_insert_rowid()
     }
 
-    /// Insert a block with only `exported_at` set (no `tempo_worklog_id`)
-    /// — the billing-export parity case for B21.
-    fn insert_block_with_exported_at(
+    /// Insert a block with an explicit `dirty` / `is_personal` flag —
+    /// the two columns the old rails never learned about (B8).
+    fn insert_block_with_flags(
         conn: &Connection,
         day: &str,
-        exported_at: Option<&str>,
+        tempo_id: Option<&str>,
+        dirty: i64,
+        is_personal: i64,
     ) -> i64 {
         conn.execute(
-            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds, exported_at)
-             VALUES (?1, ?1 || 'T09:00:00+00:00', ?1 || 'T09:30:00+00:00', 1800, ?2)",
-            params![day, exported_at],
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds,
+                                 tempo_worklog_id, dirty, is_personal)
+             VALUES (?1, ?1 || 'T09:00:00+00:00', ?1 || 'T09:30:00+00:00',
+                     1800, ?2, ?3, ?4)",
+            params![day, tempo_id, dirty, is_personal],
         )
         .unwrap();
         conn.last_insert_rowid()
@@ -220,155 +326,168 @@ mod tests {
             .unwrap()
     }
 
-    #[test]
-    fn b5_deletes_old_synced_block_and_its_events() {
-        // B5: >30d old + tempo_worklog_id present → block + linked events
-        // both cleared.
-        let conn = open_memory().unwrap();
-        let bid = insert_block(&conn, "2026-02-10", Some("tempo-1"), None);
-        let eid = insert_event(&conn, "2026-02-10T09:05:00+00:00", "ev-old-1");
-        link(&conn, bid, eid);
+    fn date(s: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
 
-        let report = purge(&conn, 30, false).unwrap();
-        assert_eq!(report.blocks_deleted, 1);
+    /// B1-B6: the authoritative cutoff table from spec Appendix A,
+    /// checked date-by-date at the documented defaults.
+    #[test]
+    fn b1_through_b6_cutoff_for_cycle_table() {
+        let cases: &[(&str, &str)] = &[
+            ("2026-07-24", "2026-07-20"),
+            ("2026-07-23", "2026-06-20"),
+            ("2026-07-05", "2026-06-20"),
+            ("2026-07-19", "2026-06-20"),
+            ("2026-07-20", "2026-06-20"),
+            ("2026-08-19", "2026-07-20"),
+            ("2026-08-24", "2026-08-20"),
+            ("2026-03-05", "2026-02-20"),
+            ("2026-01-02", "2025-12-20"),
+        ];
+        for (today_str, expected_str) in cases {
+            let today = date(today_str);
+            let expected = date(expected_str);
+            let cutoff = cutoff_for_cycle(today, DEFAULT_CYCLE_START_DAY, DEFAULT_CLOSE_DAY);
+            assert_eq!(cutoff, expected, "today={today_str}");
+        }
+    }
+
+    /// B7: a configured start day above the shortest month's length
+    /// clamps instead of producing an invalid date or panicking.
+    #[test]
+    fn b7_cycle_start_day_31_clamps_within_february() {
+        // Non-leap February 2026 has 28 days.
+        assert_eq!(effective_start_day(2026, 2, 31), 28);
+        let clamped = cycle_start_on_or_before(date("2026-02-28"), 31);
+        assert_eq!(clamped, date("2026-02-28"));
+
+        // Leap February 2028 has 29 days.
+        assert_eq!(effective_start_day(2028, 2, 31), 29);
+        let clamped_leap = cycle_start_on_or_before(date("2028-02-29"), 31);
+        assert_eq!(clamped_leap, date("2028-02-29"));
+    }
+
+    /// B8: hand-edited, edited-since-sync, never-synced, personal — and
+    /// exported-but-unsynced — blocks are ALL deleted once past the
+    /// cutoff. No exemption survives the rail-free rewrite.
+    #[test]
+    fn b8_all_block_classes_deleted_no_exemption() {
+        let conn = open_memory().unwrap();
+        let old = "2026-02-10";
+        insert_block(&conn, old, Some("tempo-1"), Some("manual"), None); // manual
+        insert_block_with_flags(&conn, old, Some("tempo-2"), 1, 0); // dirty=1, synced
+        insert_block(&conn, old, None, None, None); // tempo_worklog_id NULL
+        insert_block(&conn, old, Some(""), None, None); // tempo_worklog_id ''
+        insert_block_with_flags(&conn, old, None, 0, 1); // is_personal=1
+        insert_block(&conn, old, None, None, Some("2026-02-11T09:00:00.000Z")); // exported, no tempo id
+
+        let cutoff = date("2026-06-20");
+        let report = purge_rows(&conn, cutoff, false).unwrap();
+        assert_eq!(report.blocks_deleted, 6);
+        assert_eq!(count(&conn, "blocks"), 0);
+    }
+
+    /// B9: a block newer than the cutoff survives along with every
+    /// event linked to it — including one that is itself older than the
+    /// cutoff (the `NOT IN block_events` guard) — while a true orphan
+    /// event past the cutoff is deleted.
+    #[test]
+    fn b9_recent_block_and_linked_events_survive_true_orphan_deleted() {
+        let conn = open_memory().unwrap();
+        let cutoff = date("2026-06-20");
+        let bid = insert_block(&conn, "2026-06-25", Some("tempo-x"), None, None);
+        let old_linked = insert_event(&conn, "2026-02-10T09:00:00+00:00", "old-linked");
+        let recent_linked = insert_event(&conn, "2026-06-25T09:05:00+00:00", "recent-linked");
+        link(&conn, bid, old_linked);
+        link(&conn, bid, recent_linked);
+        insert_event(&conn, "2026-02-11T09:00:00+00:00", "orphan-old");
+
+        let report = purge_rows(&conn, cutoff, false).unwrap();
+        assert_eq!(report.blocks_deleted, 0);
         assert_eq!(report.events_deleted, 1);
-        assert_eq!(count(&conn, "blocks"), 0);
-        assert_eq!(count(&conn, "events"), 0);
-    }
-
-    #[test]
-    fn b6_deletes_old_gap_block() {
-        // B6: estimated_by='gap' means the user reviewed and discarded
-        // this block. Safe to drop once it's past the window.
-        let conn = open_memory().unwrap();
-        insert_block(&conn, "2026-02-10", None, Some("gap"));
-
-        let report = purge(&conn, 30, false).unwrap();
-        assert_eq!(report.blocks_deleted, 1);
-        assert_eq!(count(&conn, "blocks"), 0);
-    }
-
-    #[test]
-    fn b21_deletes_old_block_with_only_exported_at_set() {
-        // B21: exported_at is a billing-parity marker for
-        // tempo_worklog_id — a worked block that was exported (but
-        // never synced to Tempo) must be just as purge-eligible once
-        // past the retention window.
-        let conn = open_memory().unwrap();
-        insert_block_with_exported_at(&conn, "2026-02-10", Some("2026-02-11T09:00:00.000Z"));
-
-        let report = purge(&conn, 30, false).unwrap();
-        assert_eq!(report.blocks_deleted, 1);
-        assert_eq!(count(&conn, "blocks"), 0);
-    }
-
-    #[test]
-    fn b21_exported_block_is_not_double_counted_as_kept_unsynced() {
-        // Regression guard for the KEPT_UNSYNCED_WHERE fragment: once
-        // exported_at makes a block purgeable, it must not also show up
-        // in the "kept because unsynced" report bucket.
-        let conn = open_memory().unwrap();
-        insert_block_with_exported_at(&conn, "2026-02-10", Some("2026-02-11T09:00:00.000Z"));
-
-        let report = purge(&conn, 30, false).unwrap();
-        assert_eq!(
-            report.blocks_kept_unsynced, 0,
-            "exported blocks are purgeable, not kept-unsynced"
-        );
-    }
-
-    #[test]
-    fn b7_keeps_old_unsynced_block() {
-        // B7: old but never synced → user still needs to sync. Don't
-        // delete unreviewed work silently.
-        let conn = open_memory().unwrap();
-        insert_block(&conn, "2026-02-10", None, None);
-
-        let report = purge(&conn, 30, false).unwrap();
-        assert_eq!(report.blocks_deleted, 0);
-        assert_eq!(report.blocks_kept_unsynced, 1);
         assert_eq!(count(&conn, "blocks"), 1);
+        assert_eq!(count(&conn, "events"), 2);
+        assert_eq!(count(&conn, "block_events"), 2);
     }
 
+    /// B10: a dry run reports non-zero counts while every affected
+    /// table's row count stays identical.
     #[test]
-    fn b7_keeps_old_block_with_empty_string_tempo_id() {
-        // CLAUDE.md: empty string AND NULL both mean "unsynced". A block
-        // that was re-estimated then had its tempo_id cleared (happens
-        // via normalise_tempo_id) must NOT be deleted.
+    fn b10_dry_run_reports_counts_but_changes_nothing() {
         let conn = open_memory().unwrap();
-        insert_block(&conn, "2026-02-10", Some(""), None);
-
-        let report = purge(&conn, 30, false).unwrap();
-        assert_eq!(report.blocks_deleted, 0);
-        assert_eq!(count(&conn, "blocks"), 1);
-    }
-
-    #[test]
-    fn b8_keeps_old_manual_block_even_when_synced() {
-        // B8: user's hand-edit is ground truth. Never delete, regardless
-        // of how old it is or whether it's synced. Matches the estimator
-        // invariant in CLAUDE.md.
-        let conn = open_memory().unwrap();
-        insert_block(&conn, "2026-02-10", Some("tempo-2"), Some("manual"));
-
-        let report = purge(&conn, 30, false).unwrap();
-        assert_eq!(report.blocks_deleted, 0);
-        assert_eq!(report.blocks_kept_manual, 1);
-        assert_eq!(count(&conn, "blocks"), 1);
-    }
-
-    #[test]
-    fn b9_keeps_recent_block_even_when_synced() {
-        // B9: today-ish data — don't touch, it's the current cycle.
-        let conn = open_memory().unwrap();
-        let today = chrono::Utc::now().date_naive();
-        let recent = today - chrono::Duration::days(5);
-        insert_block(&conn, &recent.to_string(), Some("tempo-fresh"), None);
-
-        let report = purge(&conn, 30, false).unwrap();
-        assert_eq!(report.blocks_deleted, 0);
-        assert_eq!(count(&conn, "blocks"), 1);
-    }
-
-    #[test]
-    fn b10_dry_run_reports_but_does_not_delete() {
-        // B10: dry-run is how users sanity-check the rule before pulling
-        // the trigger. Report must still be accurate.
-        let conn = open_memory().unwrap();
-        insert_block(&conn, "2026-02-10", Some("tempo-3"), None);
-        insert_block(&conn, "2026-02-11", None, Some("gap"));
-
-        let report = purge(&conn, 30, true).unwrap();
-        assert_eq!(report.blocks_deleted, 2);
-        assert!(report.dry_run);
-        // Nothing actually removed.
-        assert_eq!(count(&conn, "blocks"), 2);
-    }
-
-    #[test]
-    fn deletes_orphan_events_older_than_cutoff() {
-        // An event never linked to a block but sitting in the table past
-        // the retention window should go too. Protects against collector
-        // drift leaving stale rows forever.
-        let conn = open_memory().unwrap();
+        let cutoff = date("2026-06-20");
+        insert_block(&conn, "2026-02-10", Some("tempo-3"), None, None);
+        insert_block(&conn, "2026-02-11", None, Some("gap"), None);
         insert_event(&conn, "2026-02-10T12:00:00+00:00", "orphan-old");
-        let today = chrono::Utc::now();
-        let fresh_ts = today.format("%Y-%m-%dT%H:%M:%S+00:00").to_string();
-        insert_event(&conn, &fresh_ts, "orphan-fresh");
+        insert_event(&conn, "2026-07-01T12:00:00+00:00", "orphan-fresh");
 
-        let report = purge(&conn, 30, false).unwrap();
+        let before_blocks = count(&conn, "blocks");
+        let before_events = count(&conn, "events");
+
+        let report = purge_rows(&conn, cutoff, true).unwrap();
+        assert!(report.dry_run);
+        assert_eq!(report.blocks_deleted, 2);
         assert_eq!(report.events_deleted, 1);
-        assert_eq!(count(&conn, "events"), 1);
+        assert_eq!(count(&conn, "blocks"), before_blocks);
+        assert_eq!(count(&conn, "events"), before_events);
     }
 
+    /// B11: `cutoff_for_cycle` and `cutoff_for_days` compute different,
+    /// independently-correct values from the same `today`.
     #[test]
-    fn cutoff_date_is_reported() {
-        // Rendering in the CLI needs a date to tell the user what
-        // window we used. Must be ISO `YYYY-MM-DD`.
+    fn b11_cutoff_for_cycle_and_cutoff_for_days_differ() {
+        let today = date("2026-07-24");
+        let cycle_cutoff = cutoff_for_cycle(today, DEFAULT_CYCLE_START_DAY, DEFAULT_CLOSE_DAY);
+        let days_cutoff = cutoff_for_days(today, 90);
+        assert_eq!(cycle_cutoff, date("2026-07-20"));
+        assert_eq!(days_cutoff, date("2026-04-25"));
+        assert_ne!(cycle_cutoff, days_cutoff);
+    }
+
+    /// B12: `purge_rows` deletes a manual block under a `--days`-style
+    /// cutoff too — the override is equally rail-free.
+    #[test]
+    fn b12_purge_rows_deletes_manual_block_under_days_style_cutoff() {
         let conn = open_memory().unwrap();
-        let report = purge(&conn, 30, true).unwrap();
+        let today = date("2026-07-24");
+        let cutoff = cutoff_for_days(today, 30);
+        insert_block(&conn, "2026-05-01", Some("tempo-9"), Some("manual"), None);
+
+        let report = purge_rows(&conn, cutoff, false).unwrap();
+        assert_eq!(report.blocks_deleted, 1);
+        assert_eq!(count(&conn, "blocks"), 0);
+    }
+
+    /// B37: of three deleted blocks — one synced, one exported, one
+    /// with neither marker — exactly the last is never-billed.
+    #[test]
+    fn b37_blocks_deleted_unbilled_counts_only_the_never_billed_subset() {
+        let conn = open_memory().unwrap();
+        let cutoff = date("2026-06-20");
+        insert_block(&conn, "2026-02-10", Some("tempo-1"), None, None);
+        insert_block(
+            &conn,
+            "2026-02-11",
+            None,
+            None,
+            Some("2026-02-12T09:00:00.000Z"),
+        );
+        insert_block(&conn, "2026-02-12", None, None, None);
+
+        let report = purge_rows(&conn, cutoff, false).unwrap();
+        assert_eq!(report.blocks_deleted, 3);
+        assert_eq!(report.blocks_deleted_unbilled, 1);
+    }
+
+    /// The cutoff is always rendered as a plain ISO `YYYY-MM-DD` — the
+    /// CLI's rendering depends on that exact width.
+    #[test]
+    fn cutoff_date_is_reported_as_iso() {
+        let conn = open_memory().unwrap();
+        let cutoff = date("2026-06-20");
+        let report = purge_rows(&conn, cutoff, true).unwrap();
+        assert_eq!(report.cutoff_date, "2026-06-20");
         assert_eq!(report.cutoff_date.len(), 10);
-        assert_eq!(&report.cutoff_date[4..5], "-");
-        assert_eq!(&report.cutoff_date[7..8], "-");
     }
 }
