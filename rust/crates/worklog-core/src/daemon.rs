@@ -247,6 +247,19 @@ pub fn socket_path() -> Result<PathBuf> {
     Ok(crate::paths::Paths::resolve()?.socket)
 }
 
+/// How often the daemon's billing-cycle-prune due-check runs — once on
+/// start, then on this cadence forever after (spec 002 FR-023 / B39).
+/// Named + exported so a test can assert the value without waiting for
+/// it to elapse.
+pub const PRUNE_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
+
+/// Spawn the daemon's periodic billing-cycle prune due-check: runs once
+/// immediately, then every [`PRUNE_CHECK_INTERVAL`] thereafter, for as
+/// long as the returned handle lives.
+pub fn spawn_prune_loop(_state: Shared) -> tokio::task::JoinHandle<()> {
+    unimplemented!()
+}
+
 // ───────────────────────── handlers ─────────────────────────
 
 /// Sentinel type so handlers stay concise. Variants map to HTTP status
@@ -2572,5 +2585,122 @@ mod tests {
                 .contains("personal"),
             "error body must mention personal: {v}"
         );
+    }
+
+    // ───────────────── billing-cycle prune due-check (slice 4) ─────────────────
+    //
+    // `$WORKLOG_HOME` and `$WORKLOG_PRUNE_ENABLED` are process-global, so
+    // any test that flips them must hold this mutex — mirrors
+    // `tz::test_env_lock` / `schedule::ENV_LOCK` / `paths::ENV_LOCK`. An
+    // async-aware `Mutex` (held across the `.await`s below) rather than
+    // a `std::sync::Mutex`, per `clippy::await_holding_lock`.
+    // `b39_*` below sets `WORKLOG_HOME` to a fresh tempdir before ever
+    // spawning the loop, and clears it again before releasing the lock,
+    // so a real user's `~/.local/share/worklog` is never touched here.
+    static PRUNE_ENV_LOCK: Mutex<()> = Mutex::const_new(());
+
+    async fn prune_env_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        PRUNE_ENV_LOCK.lock().await
+    }
+
+    /// B25: pruning disabled via the env var. The due-check must return
+    /// before ever touching the connection or resolving a real path —
+    /// no deletion, latch unchanged.
+    #[tokio::test(flavor = "current_thread")]
+    async fn b25_pruning_disabled_skips_the_check_entirely() {
+        let _g = prune_env_lock().await;
+        std::env::set_var("WORKLOG_PRUNE_ENABLED", "0");
+
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES ('2000-01-01', '2000-01-01T09:00:00+00:00', '2000-01-01T09:30:00+00:00', 1800)",
+            [],
+        )
+        .unwrap();
+        let state = Arc::new(AppState {
+            conn: Mutex::new(conn),
+        });
+
+        let handle = spawn_prune_loop(state.clone());
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        handle.abort();
+
+        let guard = state.conn.lock().await;
+        let count: i64 = guard
+            .query_row("SELECT COUNT(*) FROM blocks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "pruning disabled — nothing may be deleted");
+        assert!(
+            crate::purge::meta_get(&guard, crate::purge::LATCH_KEY)
+                .unwrap()
+                .is_none(),
+            "latch must stay unwritten while disabled"
+        );
+        drop(guard);
+
+        std::env::remove_var("WORKLOG_PRUNE_ENABLED");
+    }
+
+    /// B39: the check-interval is exactly 6 hours, and the loop performs
+    /// its first check on start — proven by observing a real deletion, a
+    /// fresh latch, and a snapshot file within a small, bounded amount
+    /// of real time, far less than the 6h interval. That would be
+    /// impossible if the loop slept before its first check.
+    #[tokio::test(flavor = "current_thread")]
+    async fn b39_interval_is_six_hours_and_loop_checks_on_start() {
+        assert_eq!(
+            PRUNE_CHECK_INTERVAL,
+            std::time::Duration::from_secs(6 * 60 * 60)
+        );
+
+        let _g = prune_env_lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("WORKLOG_HOME", tmp.path());
+        std::env::set_var("WORKLOG_PRUNE_ENABLED", "1");
+
+        let state = new_state().unwrap();
+        {
+            let conn = state.conn.lock().await;
+            conn.execute(
+                "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+                 VALUES ('2000-01-01', '2000-01-01T09:00:00+00:00', '2000-01-01T09:30:00+00:00', 1800)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let handle = spawn_prune_loop(state.clone());
+
+        let snapshot_path = tmp.path().join("worklog.db.preprune");
+        let step = std::time::Duration::from_millis(10);
+        let budget = std::time::Duration::from_millis(1000);
+        let mut waited = std::time::Duration::ZERO;
+        while !snapshot_path.exists() && waited < budget {
+            tokio::time::sleep(step).await;
+            waited += step;
+        }
+        handle.abort();
+
+        assert!(
+            snapshot_path.is_file(),
+            "expected the loop's first check to fire on start, well within \
+             {budget:?} — nowhere near the {PRUNE_CHECK_INTERVAL:?} interval"
+        );
+        let guard = state.conn.lock().await;
+        let count: i64 = guard
+            .query_row("SELECT COUNT(*) FROM blocks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "the old block must have been pruned on start");
+        assert!(
+            crate::purge::meta_get(&guard, crate::purge::LATCH_KEY)
+                .unwrap()
+                .is_some(),
+            "latch must be recorded after the on-start check"
+        );
+        drop(guard);
+
+        std::env::remove_var("WORKLOG_PRUNE_ENABLED");
+        std::env::remove_var("WORKLOG_HOME");
     }
 }

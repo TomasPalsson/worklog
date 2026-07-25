@@ -383,6 +383,27 @@ mod tests {
     }
 
     #[test]
+    fn meta_table_exists_and_schema_version_is_10() {
+        // B22. The pruner's latch lives in a new generic `meta` table
+        // (slice 002-billing-cycle-pruner §4), and the billing merge's
+        // registry tables took the schema to v9 — this feature bumps it
+        // to v10.
+        let conn = open_memory().unwrap();
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            tables.contains(&"meta".to_string()),
+            "missing meta table; got {tables:?}"
+        );
+        assert_eq!(current_version(&conn).unwrap(), 10);
+    }
+
+    #[test]
     fn summarize_counts_are_zero_on_fresh_db() {
         let conn = open_memory().unwrap();
         let s = summarize(&conn).unwrap();

@@ -356,6 +356,42 @@ pub fn run(conn: &Connection, opts: &PruneOptions) -> Result<PurgeReport> {
     Ok(report)
 }
 
+/// Key under which [`prune_if_due`] records the cutoff it last
+/// successfully pruned to, in the `meta` key/value table.
+pub const LATCH_KEY: &str = "last_prune_cutoff";
+
+/// Read a value from the `meta` table. `None` when `key` is absent.
+pub fn meta_get(_conn: &Connection, _key: &str) -> Result<Option<String>> {
+    unimplemented!()
+}
+
+/// Insert or replace a value in the `meta` table (upsert on `key`).
+pub fn meta_set(_conn: &Connection, _key: &str, _value: &str) -> Result<()> {
+    unimplemented!()
+}
+
+/// The daemon's due-check (spec 002 FR-009, Journey 1): run [`run`] only
+/// if `opts.cutoff` differs from the recorded [`LATCH_KEY`] latch.
+/// Returns `Ok(None)` — having done nothing at all — when the latch
+/// already matches. Otherwise delegates to [`run`] and, only on
+/// success, records the new cutoff as the latch; a failure propagates
+/// with the latch left untouched so the next check retries the same
+/// work.
+pub fn prune_if_due(_conn: &Connection, _opts: &PruneOptions) -> Result<Option<PurgeReport>> {
+    unimplemented!()
+}
+
+/// Whether automatic pruning is enabled. Reads `WORKLOG_PRUNE_ENABLED`
+/// from the process env, falling back to the persisted `.env` file,
+/// defaulting to `true`. Mirrors `tz::configured_tz`'s env-then-file
+/// precedence, including its `#[cfg(not(test))]` guard on the file
+/// fallback so tests stay hermetic. `"0"`/`"false"`/`"no"`/`"off"`
+/// (case-insensitive) disable; anything else (including unset) leaves
+/// pruning enabled.
+pub fn pruning_enabled() -> bool {
+    unimplemented!()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -909,5 +945,177 @@ mod tests {
             size_after <= size_before_delete,
             "file grew: before={size_before_delete} after={size_after}"
         );
+    }
+
+    /// Serialises mutation of `WORKLOG_PRUNE_ENABLED`, mirroring
+    /// `tz::test_env_lock` / `schedule::ENV_LOCK` — this env var is
+    /// process-global, so concurrent tests flipping it would otherwise
+    /// race.
+    fn prune_enabled_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static L: OnceLock<Mutex<()>> = OnceLock::new();
+        L.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    #[test]
+    fn meta_get_missing_key_returns_none() {
+        let conn = open_memory().unwrap();
+        assert_eq!(meta_get(&conn, "nope").unwrap(), None);
+    }
+
+    #[test]
+    fn meta_set_then_get_round_trips_and_upserts() {
+        let conn = open_memory().unwrap();
+        meta_set(&conn, "k", "v1").unwrap();
+        assert_eq!(meta_get(&conn, "k").unwrap(), Some("v1".to_string()));
+        meta_set(&conn, "k", "v2").unwrap();
+        assert_eq!(
+            meta_get(&conn, "k").unwrap(),
+            Some("v2".to_string()),
+            "meta_set must upsert, not duplicate"
+        );
+    }
+
+    /// B23: the latch already equals the freshly computed cutoff — a
+    /// total no-op. No deletion, no meta write, and (critically) no
+    /// snapshot file — proving the no-op is total, not merely
+    /// delete-free.
+    #[test]
+    fn b23_latch_equal_to_cutoff_is_a_total_noop() {
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("worklog.db");
+        let conn = crate::db::open(&db_path).unwrap();
+        let cutoff = date("2026-06-20");
+        meta_set(&conn, LATCH_KEY, "2026-06-20").unwrap();
+        insert_block(&conn, "2026-02-10", Some("tempo-1"), None, None);
+
+        let snapshot_path = tmp.path().join("worklog.db.preprune");
+        let opts = PruneOptions {
+            cutoff,
+            dry_run: false,
+            snapshot_to: Some(snapshot_path.as_path()),
+            db_path: Some(db_path.as_path()),
+        };
+        let result = prune_if_due(&conn, &opts).unwrap();
+        assert!(result.is_none());
+        assert_eq!(count(&conn, "blocks"), 1);
+        assert!(
+            !snapshot_path.exists(),
+            "a total no-op must not even attempt a snapshot"
+        );
+    }
+
+    /// B24: a successful `prune_if_due` leaves the latch at the new
+    /// cutoff.
+    #[test]
+    fn b24_successful_prune_leaves_latch_at_new_cutoff() {
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("worklog.db");
+        let conn = crate::db::open(&db_path).unwrap();
+        let cutoff = date("2026-06-20");
+        insert_block(&conn, "2026-02-10", Some("tempo-1"), None, None);
+
+        let snapshot_path = tmp.path().join("worklog.db.preprune");
+        let opts = PruneOptions {
+            cutoff,
+            dry_run: false,
+            snapshot_to: Some(snapshot_path.as_path()),
+            db_path: Some(db_path.as_path()),
+        };
+        let report = prune_if_due(&conn, &opts).unwrap().unwrap();
+        assert_eq!(report.blocks_deleted, 1);
+        assert_eq!(
+            meta_get(&conn, LATCH_KEY).unwrap(),
+            Some("2026-06-20".to_string())
+        );
+    }
+
+    /// Plus: calling `prune_if_due` twice with the same cutoff does the
+    /// work exactly once — the second call is B23's no-op.
+    #[test]
+    fn prune_if_due_called_twice_does_the_work_once() {
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("worklog.db");
+        let conn = crate::db::open(&db_path).unwrap();
+        let cutoff = date("2026-06-20");
+        insert_block(&conn, "2026-02-10", Some("tempo-1"), None, None);
+
+        let snapshot_path = tmp.path().join("worklog.db.preprune");
+        let opts = PruneOptions {
+            cutoff,
+            dry_run: false,
+            snapshot_to: Some(snapshot_path.as_path()),
+            db_path: Some(db_path.as_path()),
+        };
+        let first = prune_if_due(&conn, &opts).unwrap();
+        assert!(first.is_some());
+        assert_eq!(count(&conn, "blocks"), 0);
+
+        let second = prune_if_due(&conn, &opts).unwrap();
+        assert!(
+            second.is_none(),
+            "same cutoff twice must do the work only once"
+        );
+    }
+
+    /// B26: a prune that fails (unwritable snapshot target, reusing
+    /// B19's trick) leaves the latch at whatever it was before — so the
+    /// next check retries the exact same work instead of silently
+    /// skipping it.
+    #[test]
+    fn b26_failed_prune_leaves_latch_at_previous_value() {
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("worklog.db");
+        let conn = crate::db::open(&db_path).unwrap();
+        meta_set(&conn, LATCH_KEY, "2026-05-20").unwrap();
+        insert_block(&conn, "2026-02-10", Some("tempo-1"), None, None);
+
+        let unwritable = tmp
+            .path()
+            .join("does-not-exist")
+            .join("worklog.db.preprune");
+        let opts = PruneOptions {
+            cutoff: date("2026-06-20"),
+            dry_run: false,
+            snapshot_to: Some(unwritable.as_path()),
+            db_path: Some(db_path.as_path()),
+        };
+        let result = prune_if_due(&conn, &opts);
+        assert!(result.is_err());
+        assert_eq!(count(&conn, "blocks"), 1, "delete must not have run");
+        assert_eq!(
+            meta_get(&conn, LATCH_KEY).unwrap(),
+            Some("2026-05-20".to_string()),
+            "latch must remain at its previous value so the next check retries"
+        );
+    }
+
+    #[test]
+    fn pruning_enabled_defaults_to_true_when_unset() {
+        let _g = prune_enabled_env_lock();
+        std::env::remove_var("WORKLOG_PRUNE_ENABLED");
+        assert!(pruning_enabled());
+    }
+
+    #[test]
+    fn pruning_enabled_false_values_disable_case_insensitively() {
+        let _g = prune_enabled_env_lock();
+        for v in ["0", "false", "FALSE", "no", "NO", "off", "OFF"] {
+            std::env::set_var("WORKLOG_PRUNE_ENABLED", v);
+            assert!(!pruning_enabled(), "expected disabled for {v:?}");
+        }
+        std::env::remove_var("WORKLOG_PRUNE_ENABLED");
+    }
+
+    #[test]
+    fn pruning_enabled_true_for_other_values() {
+        let _g = prune_enabled_env_lock();
+        for v in ["1", "true", "yes", "on"] {
+            std::env::set_var("WORKLOG_PRUNE_ENABLED", v);
+            assert!(pruning_enabled(), "expected enabled for {v:?}");
+        }
+        std::env::remove_var("WORKLOG_PRUNE_ENABLED");
     }
 }
