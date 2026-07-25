@@ -133,11 +133,13 @@ pub fn cutoff_for_days(today: NaiveDate, days: i64) -> NaiveDate {
 }
 
 /// Delete every block (and, via cascade, its `block_events` rows) whose
-/// local `day` is before `cutoff`, plus every event before `cutoff` that
-/// no surviving block references. Rail-free: sync state, edit
-/// provenance, pending edits and personal classification make no
-/// difference. `dry_run` writes nothing and reports simulated counts
-/// that mirror exactly what a real run would delete.
+/// local `day` is before `cutoff`, every event before `cutoff` that no
+/// surviving block references, every session before `cutoff`, and every
+/// manually-picked (`external = 1`) ticket cache entry no surviving
+/// block references any more. Rail-free: sync state, edit provenance,
+/// pending edits and personal classification make no difference.
+/// `dry_run` writes nothing and reports simulated counts that mirror
+/// exactly what a real run would delete.
 pub fn purge_rows(conn: &Connection, cutoff: NaiveDate, dry_run: bool) -> Result<PurgeReport> {
     let cutoff_iso = cutoff.to_string();
     // The exact UTC instant of local midnight at the cutoff — events and
