@@ -302,8 +302,55 @@ pub struct PruneOptions<'a> {
 /// 5. `bytes_freed` is the database file's size before step 2 minus its
 ///    size after step 4, floored at zero, and only computed when
 ///    `db_path` is `Some`.
-pub fn run(_conn: &Connection, _opts: &PruneOptions) -> Result<PurgeReport> {
-    unimplemented!()
+pub fn run(conn: &Connection, opts: &PruneOptions) -> Result<PurgeReport> {
+    if opts.dry_run {
+        return purge_rows(conn, opts.cutoff, true);
+    }
+
+    // Measured before the snapshot (step 2) per spec 002 §5.4 — the
+    // snapshot itself never touches `db_path`, so this is also the size
+    // immediately before the delete transaction.
+    let size_before = opts
+        .db_path
+        .and_then(|p| std::fs::metadata(p).ok())
+        .map(|m| m.len());
+
+    if let Some(target) = opts.snapshot_to {
+        // VACUUM INTO refuses to overwrite an existing file — remove any
+        // stale snapshot from a previous prune first.
+        match std::fs::remove_file(target) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("removing stale snapshot at {}", target.display()))
+            }
+        }
+        let target_str = target
+            .to_str()
+            .with_context(|| format!("snapshot path {} is not valid UTF-8", target.display()))?;
+        conn.execute("VACUUM INTO ?1", params![target_str])
+            .with_context(|| format!("writing pre-prune snapshot to {}", target.display()))?;
+    }
+
+    // The real transactional delete. If the snapshot step above failed,
+    // we never reach here — nothing has been deleted.
+    let mut report = purge_rows(conn, opts.cutoff, false)?;
+
+    // Cannot run inside a transaction, so it follows purge_rows's commit.
+    // Not fatal on failure: the deletes already landed, so bytes_freed
+    // just stays at its default of 0.
+    if conn.execute_batch("VACUUM").is_ok() {
+        if let (Some(before), Some(p)) = (size_before, opts.db_path) {
+            if let Ok(meta) = std::fs::metadata(p) {
+                report.bytes_freed = before.saturating_sub(meta.len()) as i64;
+            }
+        }
+    }
+
+    report.snapshot_path = opts.snapshot_to.map(|p| p.display().to_string());
+
+    Ok(report)
 }
 
 #[cfg(test)]

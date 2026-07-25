@@ -1096,7 +1096,14 @@ fn cmd_db_purge<W: Write>(days: Option<i64>, dry_run: bool, out: &mut W, json: b
             worklog_core::purge::DEFAULT_CLOSE_DAY,
         ),
     };
-    let report = worklog_core::purge::purge_rows(&conn, cutoff, dry_run)?;
+    let snapshot_to = paths.data_dir.join("worklog.db.preprune");
+    let opts = worklog_core::purge::PruneOptions {
+        cutoff,
+        dry_run,
+        snapshot_to: Some(snapshot_to.as_path()),
+        db_path: Some(paths.db.as_path()),
+    };
+    let report = worklog_core::purge::run(&conn, &opts)?;
     if json {
         writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
         return Ok(());
@@ -1124,6 +1131,15 @@ fn cmd_db_purge<W: Write>(days: Option<i64>, dry_run: bool, out: &mut W, json: b
             &format!(
                 "{} never-billed block(s) {verb} deleted (no Tempo sync, no export marker)",
                 report.blocks_deleted_unbilled
+            ),
+        )?;
+    }
+    if let Some(snapshot_path) = &report.snapshot_path {
+        style::info(
+            out,
+            &format!(
+                "snapshot written to {snapshot_path} ({} bytes freed)",
+                report.bytes_freed
             ),
         )?;
     }
