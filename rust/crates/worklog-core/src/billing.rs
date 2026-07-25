@@ -79,6 +79,15 @@ pub struct BillingRow {
     pub billable: bool,
     /// `Texti á reikning` — the block description, unmodified.
     pub invoice_text: String,
+    /// True when no block in the group had a description, so
+    /// `invoice_text` is a fallback (an event title, or `Work in
+    /// {folder}`) rather than real work text.
+    ///
+    /// Surfaced so the UI can say *why* a line reads "Work in sjukra":
+    /// the day hasn't been through `worklog estimate` yet. Without this
+    /// the fallback looks like the export ignoring the descriptions it
+    /// was supposed to use.
+    pub needs_description: bool,
 }
 
 impl BillingRow {
@@ -488,7 +497,8 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
         .into_iter()
         .map(|key| -> Result<BillingRow> {
             let acc = groups.remove(&key).expect("group present for its own key");
-            let invoice_text = if acc.descriptions.is_empty() {
+            let needs_description = acc.descriptions.is_empty();
+            let invoice_text = if needs_description {
                 fallback_invoice_text(conn, &acc)?
             } else {
                 join_descriptions(&acc.descriptions)
@@ -504,6 +514,7 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
                 hours: round_to_half_hour(seconds) as f64 / 3600.0,
                 billable: acc.billable,
                 invoice_text,
+                needs_description,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -1103,6 +1114,34 @@ mod tests {
     }
 
     #[test]
+    fn needs_description_flags_a_fallback_invoice_text() {
+        // The user's question: "why do they all say 'Work in sjukra'?"
+        // Because the day was never estimated. The flag lets the UI say so
+        // instead of looking like the export ignored the descriptions.
+        let c = open_memory().unwrap();
+        let b = seed_block(&c, "2026-07-23T09:00:00+00:00", 3600, None, None, false);
+        seed_event(&c, b, "e1", Some(&work("sjukra")), "PreToolUse");
+        let rows = rows_for_day(&c, "2026-07-23").unwrap();
+        assert_eq!(rows[0].invoice_text, "Work in sjukra");
+        assert!(rows[0].needs_description, "fallback must be flagged");
+
+        // A described block is real text and must NOT be flagged.
+        let c2 = open_memory().unwrap();
+        let b2 = seed_block(
+            &c2,
+            "2026-07-23T09:00:00+00:00",
+            3600,
+            None,
+            Some("Implement back button navigation"),
+            false,
+        );
+        seed_event(&c2, b2, "e1", Some(&work("sjukra")), "PreToolUse");
+        let rows2 = rows_for_day(&c2, "2026-07-23").unwrap();
+        assert_eq!(rows2[0].invoice_text, "Implement back button navigation");
+        assert!(!rows2[0].needs_description);
+    }
+
+    #[test]
     fn discovery_only_offers_folders_under_the_work_prefix() {
         // Personal paths must not appear as candidate billing folders —
         // ~/dotfiles and ~/Desktop/Projects/* can never be billed, and
@@ -1235,6 +1274,7 @@ mod tests {
                 hours: 5.5,
                 billable: true,
                 invoice_text: "Document analyzer work".into(),
+                needs_description: false,
             },
             BillingRow {
                 day: "2026-07-23".into(),
@@ -1246,6 +1286,7 @@ mod tests {
                 hours: 4.0,
                 billable: true,
                 invoice_text: "Infra work".into(),
+                needs_description: false,
             },
         ]
     }

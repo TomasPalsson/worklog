@@ -1618,6 +1618,21 @@ fn cmd_export<W: Write>(
             ExportFormat::Json => billing::Format::Json,
         };
         writeln!(out, "{}", billing::render(&rows, billing_format))?;
+
+        // A line reading "Work in sjukra" means the day was never
+        // estimated, not that the export ignored the descriptions. Say so,
+        // otherwise the fallback looks like a bug.
+        let undescribed = rows.iter().filter(|r| r.needs_description).count();
+        if undescribed > 0 && matches!(format, ExportFormat::Text) {
+            style::info(
+                out,
+                &format!(
+                    "{undescribed} of {} line(s) have no description yet — \
+                     run `worklog estimate --day {day}` for Claude-written text",
+                    rows.len()
+                ),
+            )?;
+        }
     }
 
     if mark {
