@@ -42,7 +42,12 @@ type FetchInit = Parameters<typeof fetch>[1];
  * Without this, a wedged daemon leaves the UI spinning forever.
  */
 function timeoutMs(path: string): number {
-  if (path.startsWith("/estimate")) return 60_000;
+  // Estimation is one `claude -p` per un-estimated block, run sequentially.
+  // Measured on a real 16-block day: 216s (~13s/block), so the old 60s cap
+  // failed every multi-block day even when the estimate itself succeeded —
+  // the daemon kept working and the UI reported a timeout. 10 minutes covers
+  // roughly 45 blocks; beyond that, run `worklog estimate` in a terminal.
+  if (path.startsWith("/estimate")) return 600_000;
   if (path.startsWith("/sync")) return 30_000;
   if (path.startsWith("/jira/refresh")) return 30_000;
   if (path.startsWith("/infer")) return 30_000;
