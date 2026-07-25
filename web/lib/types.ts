@@ -163,14 +163,58 @@ export interface SettingsSaveResponse extends SettingsView {
  * `app/actions.test.ts`.
  */
 export interface BillingRow {
-  /** Dominant repo across the group's events, or `"—"` when none. */
-  repo: string;
-  description: string;
-  kind: "Work" | "Personal";
+  /** ISO day. Render as dd.mm.yyyy for the form's Dagsetning. */
+  day: string;
+  /** Resolved work folder — context for the user, not a form field. */
+  folder: string;
+  /** Viðskiptamaður. `null` when undetectable — the user fills it in. */
+  customer: string | null;
+  /** Verkefni (deild). `null` unless a folder pin supplied it; never guessed. */
+  verkefni: string | null;
+  /** The Jira key this line came from, when there was one. Context only. */
+  ticket: string | null;
   /** Overlap-safe union of the group's block intervals, unrounded. */
   seconds: number;
-  /** Half-hour-rounded billable hours (e.g. 4, 5.5). */
+  /** Tímar — half-hour-rounded hours (e.g. 4, 5.5). */
   hours: number;
+  /** Reikningshæfi: true = Reikningshæft. */
+  billable: boolean;
+  /** Texti á reikning — the block description, unmodified. */
+  invoice_text: string;
+}
+
+/** A customer time can be billed to. */
+export interface BillingCustomer {
+  id?: number | null;
+  name: string;
+  /** Alternate spellings matched against ticket summaries / descriptions. */
+  aliases: string[];
+}
+
+/**
+ * Per-work-folder billing defaults.
+ * `customer: null` means "shared folder — resolve from text per line".
+ * `verkefni: null` means "leave the accounting key blank".
+ */
+export interface BillingFolderMap {
+  id?: number | null;
+  folder: string;
+  customer: string | null;
+  verkefni: string | null;
+  billable: boolean;
+}
+
+/** A work folder seen in recent events with no mapping yet. */
+export interface UnmappedFolder {
+  folder: string;
+  events: number;
+}
+
+/** `GET /billing/registry` — everything Settings → Billing needs at once. */
+export interface BillingRegistry {
+  customers: BillingCustomer[];
+  folders: BillingFolderMap[];
+  unmapped: UnmappedFolder[];
 }
 
 /**

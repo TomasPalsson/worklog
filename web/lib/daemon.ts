@@ -168,6 +168,9 @@ export async function refreshJira() {
 // ───────────────────── reads (v0.6) ─────────────────────
 
 import type {
+  BillingCustomer,
+  BillingFolderMap,
+  BillingRegistry,
   Block,
   CommitEntry,
   CreateTicketInput,
@@ -288,6 +291,32 @@ export async function exportBilling(day: string): Promise<ExportResponse> {
  */
 export async function markExported(day: string): Promise<MarkExportResponse> {
   return call<MarkExportResponse>("POST", `/export/${day}/mark`);
+}
+
+/**
+ * The billing registry plus the recently-seen work folders that still
+ * have no mapping. One round trip for the whole Settings → Billing view.
+ */
+export async function loadBillingRegistry(): Promise<BillingRegistry> {
+  return call<BillingRegistry>("GET", "/billing/registry");
+}
+
+/** Insert or update a customer, keyed on its name. */
+export async function saveBillingCustomer(c: BillingCustomer): Promise<{ id: number }> {
+  return call("POST", "/billing/customers", c);
+}
+
+export async function deleteBillingCustomer(id: number): Promise<{ removed: boolean }> {
+  return call("POST", `/billing/customers/${id}/delete`);
+}
+
+/** Insert or update a folder mapping, keyed on the folder name. */
+export async function saveBillingFolder(f: BillingFolderMap): Promise<{ id: number }> {
+  return call("POST", "/billing/folders", f);
+}
+
+export async function deleteBillingFolder(id: number): Promise<{ removed: boolean }> {
+  return call("POST", `/billing/folders/${id}/delete`);
 }
 
 // ───────────────────────── settings ─────────────────────────

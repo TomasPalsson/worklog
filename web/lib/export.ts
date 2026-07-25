@@ -31,6 +31,91 @@ export function formatExportHours(hours: number): string {
   return halves % 2 === 1 ? `${whole},5` : `${whole}`;
 }
 
+/** Constants the invoicing form always gets, mirroring `billing.rs`. */
+export const TEGUND_SKRANINGAR = "Almenn skráning";
+export const TAXTI = "Dagvinna";
+export const REIKNINGSHAEFT = "Reikningshæft";
+export const OREIKNINGSHAEFT = "Óreikningshæft";
+/** Shown where a value could not be resolved and the user must pick it. */
+export const BLANK = "—";
+
+export function reikningshaefi(billable: boolean): string {
+  return billable ? REIKNINGSHAEFT : OREIKNINGSHAEFT;
+}
+
+/** `Dagsetning` as the form wants it: dd.mm.yyyy from an ISO day. */
+export function formatFormDate(day: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
+  // Parsed by regex rather than `new Date` so a UTC-vs-local shift can
+  // never move the billed date by a day.
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : day;
+}
+
+/** One row of the invoicing form, as the wizard renders it. */
+export interface FormField {
+  label: string;
+  value: string;
+  /** True when the user must pick this in the form (nothing to read off). */
+  missing: boolean;
+  /** True for typed fields — the only ones worth a copy button. */
+  copyable: boolean;
+}
+
+/**
+ * A billing row as the invoicing form's fields, **in the form's own
+ * order** so the user reads straight down while filling it in.
+ *
+ * `Tengiliður`, `Rukka fyrir akstur`, `Útkall á bakvakt` and `External
+ * Id` are deliberately absent — this user never fills them.
+ */
+export function formFields(row: BillingRow): FormField[] {
+  return [
+    {
+      label: "Dagsetning",
+      value: formatFormDate(row.day),
+      missing: false,
+      copyable: false,
+    },
+    {
+      label: "Viðskiptamaður",
+      value: row.customer ?? BLANK,
+      missing: row.customer === null,
+      copyable: false,
+    },
+    {
+      label: "Verkefni (deild)",
+      value: row.verkefni ?? BLANK,
+      missing: row.verkefni === null,
+      copyable: false,
+    },
+    {
+      label: "Tegund skráningar",
+      value: TEGUND_SKRANINGAR,
+      missing: false,
+      copyable: false,
+    },
+    { label: "Taxti", value: TAXTI, missing: false, copyable: false },
+    {
+      label: "Tímar",
+      value: formatExportHours(row.hours),
+      missing: false,
+      copyable: true,
+    },
+    {
+      label: "Reikningshæfi",
+      value: reikningshaefi(row.billable),
+      missing: false,
+      copyable: false,
+    },
+    {
+      label: "Texti á reikning",
+      value: row.invoice_text,
+      missing: false,
+      copyable: true,
+    },
+  ];
+}
+
 export type ExportFormat = "text" | "csv" | "json";
 
 /** Download filename for a day's export, e.g. `worklog-2026-07-23.csv`. */

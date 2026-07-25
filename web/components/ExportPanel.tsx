@@ -1,18 +1,32 @@
 "use client";
 
-// Billing export panel — turns a reviewed day into the line items the
-// external invoicing system charges customers from.
+// Billing export panel — walks the day's line items one at a time, in the
+// invoicing form's own field order, so the user reads straight down while
+// filling the real form in another tab.
 //
-// Deliberately thin: the daemon pre-renders text/CSV/JSON (the Rust
-// `billing` module is the single source of truth for grouping, the
-// overlap-safe hour union, and half-hour rounding), so this component
-// only displays rows, puts the pre-rendered text on the clipboard, and
-// hands the pre-rendered files to the browser. No billing arithmetic
-// happens here — that's what kept the old Tempo-era rounding mirror in
-// `format.ts` drifting.
+// Why a wizard and not a table: each line is one submission of a form with
+// eight fields, so the bottleneck is not seeing the whole day at once —
+// it's not losing your place halfway through. Ticking a line off advances
+// to the next and the dots show what's left.
+//
+// Deliberately thin: the daemon pre-renders text/CSV/JSON, so the Rust
+// `billing` module stays the single source of truth for grouping, the
+// overlap-safe hour union and half-hour rounding. Nothing here does
+// billing arithmetic.
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { Check, Copy, Download, FileSpreadsheet, Loader2, Receipt, X } from "lucide-react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
+import {
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  Download,
+  FileSpreadsheet,
+  Loader2,
+  Receipt,
+  TriangleAlert,
+  X,
+} from "lucide-react";
 
 import { exportBilling, markExported } from "@/app/actions";
 import {
@@ -20,6 +34,7 @@ import {
   exportFilename,
   exportMime,
   formatExportHours,
+  formFields,
   totalBilledHours,
 } from "@/lib/export";
 import { toast } from "@/lib/toast";
@@ -33,12 +48,17 @@ export function ExportPanel({ day }: Props) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<ExportResponse | null>(null);
-  // Inline (not toast) so a failed open leaves the panel usable with a
-  // Retry — a toast would vanish and leave an empty dialog behind.
+  // Inline rather than a toast: a failed open must leave the panel usable
+  // with a Retry instead of an empty dialog behind a vanished message.
   const [error, setError] = useState<string | null>(null);
   const [marking, setMarking] = useState(false);
+  const [index, setIndex] = useState(0);
+  const [done, setDone] = useState<Set<number>>(new Set());
   const titleId = useId();
-  const textRef = useRef<HTMLPreElement>(null);
+
+  const rows = useMemo(() => data?.rows ?? [], [data]);
+  const current = rows[index];
+  const fields = useMemo(() => (current ? formFields(current) : []), [current]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -50,9 +70,11 @@ export function ExportPanel({ day }: Props) {
       return;
     }
     setData(r.data);
+    setIndex(0);
+    setDone(new Set());
   }, [day]);
 
-  // Fetch on every open — blocks may have been edited since last time.
+  // Refetch on every open — blocks may have been edited since last time.
   useEffect(() => {
     if (open) void load();
   }, [open, load]);
@@ -67,19 +89,23 @@ export function ExportPanel({ day }: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [open, marking]);
 
-  async function onCopy() {
-    if (!data) return;
+  async function copyValue(label: string, value: string) {
     try {
-      await navigator.clipboard.writeText(data.rendered.text);
-      toast.ok("Billing lines copied");
+      await navigator.clipboard.writeText(value);
+      toast.ok(`${label} copied`);
     } catch (e) {
-      // Clipboard can be blocked by permissions or a non-secure origin.
-      // The raw text stays selectable in the panel as the fallback.
-      toast.error(
-        `Couldn't copy — ${(e as Error).message}. Select the text below instead.`,
-      );
-      textRef.current?.focus();
+      // Blocked by permissions or a non-secure origin. The value stays
+      // selectable on screen, so say so rather than failing silently.
+      toast.error(`Couldn't copy ${label} — ${(e as Error).message}`);
     }
+  }
+
+  function markLineDone() {
+    setDone((prev) => new Set(prev).add(index));
+    // Advance to the next line still to do, so ticking off out of order
+    // doesn't dump the user back onto something they already filed.
+    const next = rows.findIndex((_, i) => i !== index && !done.has(i));
+    if (next !== -1) setIndex(next);
   }
 
   function onDownload(format: "csv" | "json") {
@@ -109,12 +135,11 @@ export function ExportPanel({ day }: Props) {
         ? `Marked ${r.data.marked} block${r.data.marked === 1 ? "" : "s"} exported`
         : "Already exported — nothing to mark",
     );
-    // Refresh so the "already exported" stamp reflects the new state.
     await load();
   }
 
-  const rows = data?.rows ?? [];
   const total = totalBilledHours(rows);
+  const missingCount = rows.filter((r) => r.customer === null || r.verkefni === null).length;
 
   return (
     <>
@@ -123,7 +148,7 @@ export function ExportPanel({ day }: Props) {
         className="theme-toggle"
         onClick={() => setOpen(true)}
         aria-label="Open billing export"
-        title="Billing export — repo · description · hours · type"
+        title="Billing export — one line at a time, in form order"
       >
         <Receipt size={15} strokeWidth={1.75} />
       </button>
@@ -142,7 +167,14 @@ export function ExportPanel({ day }: Props) {
             aria-labelledby={titleId}
           >
             <header className="settings-header">
-              <h2 id={titleId}>Billing export · {day}</h2>
+              <h2 id={titleId}>
+                Billing export · {day}
+                {rows.length > 0 && (
+                  <span className="export-counter">
+                    line {index + 1} of {rows.length}
+                  </span>
+                )}
+              </h2>
               <button
                 type="button"
                 className="icon-btn"
@@ -165,9 +197,7 @@ export function ExportPanel({ day }: Props) {
                   <p className="export-error" role="alert">
                     Couldn&apos;t load the export — {error}
                   </p>
-                  <p className="export-hint">
-                    Is the worklog daemon running?
-                  </p>
+                  <p className="export-hint">Is the worklog daemon running?</p>
                   <button type="button" className="action-btn" onClick={() => void load()}>
                     Retry
                   </button>
@@ -176,60 +206,110 @@ export function ExportPanel({ day }: Props) {
             ) : rows.length === 0 ? (
               <div className="settings-body">
                 <section className="settings-section">
-                  <p className="export-hint">No blocks to export for this day.</p>
+                  <p className="export-hint">No billable work to export for this day.</p>
                 </section>
               </div>
             ) : (
               <div className="settings-body">
-                {data?.exported_at && (
-                  <p className="export-stamp">
-                    <Check size={13} /> Already exported{" "}
-                    {new Date(data.exported_at).toLocaleString()}
+                <p className="export-summary">
+                  {rows.length} line{rows.length === 1 ? "" : "s"} ·{" "}
+                  {formatExportHours(total)} hrs
+                  {missingCount > 0 && (
+                    <span className="export-missing-note">
+                      <TriangleAlert size={12} /> {missingCount} need a pick
+                    </span>
+                  )}
+                  {data?.exported_at && (
+                    <span className="export-stamp-inline">
+                      <Check size={12} /> exported{" "}
+                      {new Date(data.exported_at).toLocaleDateString()}
+                    </span>
+                  )}
+                </p>
+
+                {/* One line item, laid out in the invoicing form's order. */}
+                <dl className={`export-form${done.has(index) ? " is-done" : ""}`}>
+                  {fields.map((f) => (
+                    <div
+                      key={f.label}
+                      className={`export-field${f.missing ? " is-missing" : ""}`}
+                    >
+                      <dt>{f.label}</dt>
+                      <dd>
+                        {f.missing ? (
+                          <span className="export-pick">
+                            <TriangleAlert size={12} /> pick in form
+                          </span>
+                        ) : (
+                          <span className="export-value">{f.value}</span>
+                        )}
+                        {f.copyable && !f.missing && (
+                          <button
+                            type="button"
+                            className="export-copy"
+                            title={`Copy ${f.label}`}
+                            aria-label={`Copy ${f.label}`}
+                            onClick={() => void copyValue(f.label, f.value)}
+                          >
+                            <Copy size={12} />
+                          </button>
+                        )}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+
+                {current?.ticket && (
+                  <p className="export-hint export-context">
+                    from {current.ticket} · {current.folder}
                   </p>
                 )}
 
-                <section className="settings-section">
-                  <h3>
-                    {rows.length} line item{rows.length === 1 ? "" : "s"} ·{" "}
-                    {formatExportHours(total)} hrs
-                  </h3>
-                  <div className="export-table-wrap">
-                    <table className="export-table">
-                      <thead>
-                        <tr>
-                          <th scope="col">repo</th>
-                          <th scope="col">description</th>
-                          <th scope="col">time</th>
-                          <th scope="col">type</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {rows.map((r, i) => (
-                          <tr key={`${r.repo}-${r.kind}-${i}`}>
-                            <td className="export-repo">{r.repo}</td>
-                            <td>{r.description}</td>
-                            <td className="export-hours">
-                              {formatExportHours(r.hours)} hrs
-                            </td>
-                            <td>
-                              <span className={`export-kind kind-${r.kind.toLowerCase()}`}>
-                                {r.kind}
-                              </span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </section>
+                <div className="export-nav">
+                  <button
+                    type="button"
+                    className="action-btn"
+                    disabled={index === 0}
+                    onClick={() => setIndex((i) => Math.max(0, i - 1))}
+                  >
+                    <ChevronLeft size={14} />
+                    Prev
+                  </button>
+                  <button
+                    type="button"
+                    className="action-btn"
+                    onClick={markLineDone}
+                    title="Tick this line off and jump to the next one still to do"
+                  >
+                    <Check size={14} />
+                    {done.has(index) ? "Done" : "Done → next"}
+                  </button>
+                  <button
+                    type="button"
+                    className="action-btn"
+                    disabled={index >= rows.length - 1}
+                    onClick={() => setIndex((i) => Math.min(rows.length - 1, i + 1))}
+                  >
+                    Next
+                    <ChevronRight size={14} />
+                  </button>
 
-                <section className="settings-section">
-                  <h3>Copy-paste</h3>
-                  {/* tabIndex so the clipboard-blocked fallback can focus it. */}
-                  <pre ref={textRef} tabIndex={-1} className="export-text">
-                    {data?.rendered.text}
-                  </pre>
-                </section>
+                  <ol className="export-dots" aria-label="line progress">
+                    {rows.map((_, i) => (
+                      <li key={i}>
+                        <button
+                          type="button"
+                          className={`export-dot${i === index ? " is-current" : ""}${
+                            done.has(i) ? " is-done" : ""
+                          }`}
+                          aria-label={`Go to line ${i + 1}${done.has(i) ? " (done)" : ""}`}
+                          aria-current={i === index || undefined}
+                          onClick={() => setIndex(i)}
+                        />
+                      </li>
+                    ))}
+                  </ol>
+                </div>
               </div>
             )}
 
@@ -238,18 +318,8 @@ export function ExportPanel({ day }: Props) {
                 type="button"
                 className="action-btn"
                 disabled={!data || rows.length === 0}
-                onClick={() => void onCopy()}
-                title="Copy the line items as text"
-              >
-                <Copy size={14} />
-                Copy
-              </button>
-              <button
-                type="button"
-                className="action-btn"
-                disabled={!data || rows.length === 0}
                 onClick={() => onDownload("csv")}
-                title="Download as CSV"
+                title="Download the whole day as CSV"
               >
                 <FileSpreadsheet size={14} />
                 CSV
@@ -259,7 +329,7 @@ export function ExportPanel({ day }: Props) {
                 className="action-btn"
                 disabled={!data || rows.length === 0}
                 onClick={() => onDownload("json")}
-                title="Download as JSON"
+                title="Download the whole day as JSON"
               >
                 <Download size={14} />
                 JSON

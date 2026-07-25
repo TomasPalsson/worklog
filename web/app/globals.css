@@ -2031,85 +2031,146 @@ button {
 }
 
 /* ─────────────────────── billing export panel ─────────────────────── */
-/* Reuses the settings-dialog shell; only the export-specific table,
-   copy-paste block and state chips live here. */
+/* Reuses the settings-dialog shell. The panel walks one line item at a
+   time in the invoicing form's field order, so the layout is a definition
+   list of label → value rather than a table. */
 
-.export-table-wrap {
-  overflow-x: auto;
-}
-
-.export-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12.5px;
-}
-
-.export-table th {
-  text-align: left;
-  font-weight: 600;
-  font-size: 11px;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
+.export-counter {
+  margin-left: 10px;
+  font-size: 12px;
+  font-weight: 400;
   color: var(--fg-muted);
-  padding: 4px 8px 6px 0;
-  border-bottom: 1px solid var(--border);
-  white-space: nowrap;
 }
 
-.export-table td {
-  padding: 6px 8px 6px 0;
-  border-bottom: 1px solid var(--border);
-  vertical-align: top;
+.export-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin: 12px 0 4px;
 }
-.export-table tr:last-child td {
+
+.export-missing-note,
+.export-stamp-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.export-form {
+  margin: 12px 0 0;
+  padding: 0;
+  border-top: 1px solid var(--border);
+}
+/* A ticked-off line stays readable but recedes, so the eye goes to
+   whatever is still outstanding. */
+.export-form.is-done {
+  opacity: 0.55;
+}
+
+.export-field {
+  display: grid;
+  grid-template-columns: minmax(120px, 34%) 1fr;
+  gap: 10px;
+  align-items: baseline;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+}
+.export-field:last-child {
   border-bottom: none;
 }
 
-.export-repo {
-  font-family: var(--font-mono);
+.export-field dt {
   font-size: 11.5px;
-  white-space: nowrap;
-}
-
-.export-hours {
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.export-kind {
-  font-size: 11px;
-  padding: 1px 6px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  white-space: nowrap;
-}
-/* Personal time still appears in the export (the billing system needs to
-   see it) but is visually de-emphasised like everywhere else in the UI. */
-.export-kind.kind-personal {
   color: var(--fg-muted);
+  white-space: nowrap;
 }
 
-.export-text {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  line-height: 1.6;
-  background: var(--bg-sunk);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 10px 12px;
+.export-field dd {
   margin: 0;
-  overflow-x: auto;
-  white-space: pre;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  min-width: 0;
+}
+
+.export-value {
+  overflow-wrap: anywhere;
+  /* Selectable so a blocked clipboard still leaves a manual path. */
   user-select: all;
 }
 
-.export-stamp {
+/* Amber, not red: a missing pick is expected work, not an error. */
+.export-field.is-missing dd {
+  color: var(--amber, #b4690e);
+}
+.export-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+}
+
+.export-copy {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.export-copy:hover {
+  color: var(--fg);
+  background: var(--bg-sunk);
+}
+
+.export-context {
+  margin: 10px 0 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.export-nav {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--fg-muted);
-  margin: 12px 0 0;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 14px 0 4px;
+}
+
+.export-dots {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 0 0 auto;
+  padding: 0;
+  list-style: none;
+}
+
+.export-dot {
+  width: 9px;
+  height: 9px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: transparent;
+  cursor: pointer;
+}
+.export-dot.is-done {
+  background: var(--sage);
+  border-color: var(--sage);
+}
+.export-dot.is-current {
+  outline: 2px solid var(--fg-muted);
+  outline-offset: 2px;
 }
 
 .export-error {

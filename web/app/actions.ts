@@ -22,8 +22,16 @@ import {
   createTicket as daemonCreateTicket,
   exportBilling as daemonExportBilling,
   markExported as daemonMarkExported,
+  loadBillingRegistry as daemonLoadBillingRegistry,
+  saveBillingCustomer as daemonSaveBillingCustomer,
+  deleteBillingCustomer as daemonDeleteBillingCustomer,
+  saveBillingFolder as daemonSaveBillingFolder,
+  deleteBillingFolder as daemonDeleteBillingFolder,
 } from "@/lib/daemon";
 import type {
+  BillingCustomer,
+  BillingFolderMap,
+  BillingRegistry,
   CommitEntry,
   CreateTicketInput,
   Event,
@@ -254,6 +262,45 @@ export async function markExported(
   day: string,
 ): Promise<ActionResult<MarkExportResponse>> {
   return runAction(() => daemonMarkExported(day), `/${day}`);
+}
+
+// ─────────────────── billing registry (Settings → Billing) ───────────────────
+
+/** The registry + unmapped-folder discovery. Read-only, no revalidate. */
+export async function fetchBillingRegistry(): Promise<ActionResult<BillingRegistry>> {
+  return runAction(() => daemonLoadBillingRegistry());
+}
+
+/**
+ * Registry mutations revalidate the day page because changing a mapping
+ * changes how that day's export resolves.
+ */
+export async function saveBillingCustomer(
+  customer: BillingCustomer,
+  day: string,
+): Promise<ActionResult<{ id: number }>> {
+  return runAction(() => daemonSaveBillingCustomer(customer), `/${day}`);
+}
+
+export async function deleteBillingCustomer(
+  id: number,
+  day: string,
+): Promise<ActionResult<{ removed: boolean }>> {
+  return runAction(() => daemonDeleteBillingCustomer(id), `/${day}`);
+}
+
+export async function saveBillingFolder(
+  folder: BillingFolderMap,
+  day: string,
+): Promise<ActionResult<{ id: number }>> {
+  return runAction(() => daemonSaveBillingFolder(folder), `/${day}`);
+}
+
+export async function deleteBillingFolder(
+  id: number,
+  day: string,
+): Promise<ActionResult<{ removed: boolean }>> {
+  return runAction(() => daemonDeleteBillingFolder(id), `/${day}`);
 }
 
 // ───────────────────────── settings ─────────────────────────

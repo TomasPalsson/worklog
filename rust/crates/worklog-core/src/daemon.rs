@@ -63,6 +63,7 @@ use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 use crate::billing;
+use crate::billing_registry;
 use crate::collectors::{jira, tempo};
 use crate::git::{self, CommitEntry};
 use crate::personal;
@@ -109,6 +110,11 @@ pub fn router(state: Shared) -> Router {
         .route("/sync", post(run_sync))
         .route("/export/:day", get(export_day))
         .route("/export/:day/mark", post(mark_export))
+        .route("/billing/registry", get(billing_registry_get))
+        .route("/billing/customers", post(billing_customer_upsert))
+        .route("/billing/customers/:id/delete", post(billing_customer_delete))
+        .route("/billing/folders", post(billing_folder_upsert))
+        .route("/billing/folders/:id/delete", post(billing_folder_delete))
         .route("/settings", get(get_settings).post(post_settings))
         .with_state(state)
 }
@@ -1345,6 +1351,75 @@ async fn mark_export(
         "marked": marked,
         "exported_at": exported_at,
     })))
+}
+
+// ───────────────────────── billing registry ─────────────────────────
+
+/// How many days of events the unmapped-folder discovery looks back over.
+/// A month is long enough to surface every folder actually in rotation
+/// without dredging up one-off experiments from last year.
+const UNMAPPED_LOOKBACK_DAYS: i64 = 30;
+
+/// The whole registry plus the work folders seen recently that still have
+/// no mapping — everything Settings → Billing needs in one round trip.
+async fn billing_registry_get(State(state): State<Shared>) -> Result<Json<Value>, ApiError> {
+    let (customers, folders, unmapped) = with_conn(state, move |c| {
+        Ok((
+            billing_registry::list_customers(c)?,
+            billing_registry::list_folders(c)?,
+            billing_registry::unmapped_folders(c, UNMAPPED_LOOKBACK_DAYS)?,
+        ))
+    })
+    .await?;
+
+    let unmapped: Vec<Value> = unmapped
+        .into_iter()
+        .map(|(folder, events)| json!({ "folder": folder, "events": events }))
+        .collect();
+
+    Ok(Json(json!({
+        "customers": customers,
+        "folders": folders,
+        "unmapped": unmapped,
+    })))
+}
+
+async fn billing_customer_upsert(
+    State(state): State<Shared>,
+    Json(body): Json<billing_registry::Customer>,
+) -> Result<Json<Value>, ApiError> {
+    let name = body.name.clone();
+    let id = with_conn(state, move |c| billing_registry::upsert_customer(c, &body)).await?;
+    info!(customer = %name, id, "upserted billing customer");
+    Ok(Json(json!({ "id": id })))
+}
+
+async fn billing_customer_delete(
+    State(state): State<Shared>,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<Json<Value>, ApiError> {
+    let removed = with_conn(state, move |c| billing_registry::delete_customer(c, id)).await?;
+    info!(id, removed, "deleted billing customer");
+    Ok(Json(json!({ "removed": removed })))
+}
+
+async fn billing_folder_upsert(
+    State(state): State<Shared>,
+    Json(body): Json<billing_registry::FolderMap>,
+) -> Result<Json<Value>, ApiError> {
+    let folder = body.folder.clone();
+    let id = with_conn(state, move |c| billing_registry::upsert_folder(c, &body)).await?;
+    info!(folder = %folder, id, "upserted billing folder mapping");
+    Ok(Json(json!({ "id": id })))
+}
+
+async fn billing_folder_delete(
+    State(state): State<Shared>,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<Json<Value>, ApiError> {
+    let removed = with_conn(state, move |c| billing_registry::delete_folder(c, id)).await?;
+    info!(id, removed, "deleted billing folder mapping");
+    Ok(Json(json!({ "removed": removed })))
 }
 
 #[cfg(test)]

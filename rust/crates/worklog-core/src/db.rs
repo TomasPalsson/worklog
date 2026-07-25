@@ -63,6 +63,10 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     ensure_blocks_is_personal(conn).context("ensuring blocks.is_personal")?;
     ensure_blocks_dirty(conn).context("ensuring blocks.dirty")?;
     ensure_blocks_exported_at(conn).context("ensuring blocks.exported_at")?;
+    // Give the billing registry a starting point on first use so the user
+    // corrects entries instead of typing them all. Guarded internally —
+    // only runs when both registry tables are empty.
+    crate::billing_registry::seed_if_empty(conn).context("seeding billing registry")?;
     ensure_jira_tickets_issue_id(conn).context("ensuring jira_tickets.issue_id")?;
     ensure_jira_tickets_external(conn).context("ensuring jira_tickets.external")?;
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)
