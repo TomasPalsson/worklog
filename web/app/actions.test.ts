@@ -19,6 +19,44 @@ mock.module("next/cache", () => ({
   revalidatePath: (p: string) => revalidateImpl(p),
 }));
 
+// Controls the stubbed billing-export daemon calls per-test so we can
+// exercise both the happy path and the daemon-unreachable branch.
+const exportBillingImpl = mock(async (day: string) => ({
+  day,
+  exported_at: null as string | null,
+  rows: [
+    {
+      day,
+      folder: "genai-infra",
+      customer: "Sjúkra",
+      // Never guessed — a real unresolved accounting key.
+      verkefni: null as string | null,
+      ticket: "GENAI-1219",
+      seconds: 19800,
+      hours: 5.5,
+      billable: true,
+      invoice_text: "Document analyzer work",
+      needs_description: false,
+      block_count: 2,
+      started_at: "2026-07-23T09:00:00Z",
+      ended_at: "2026-07-23T14:30:00Z",
+      paths: ["/Users/x/Desktop/Work/sjukra"],
+      block_ids: [1, 2],
+    },
+  ],
+  rendered: {
+    text: "23.07.2026  Sjúkra  —  5,5 hrs  Reikningshæft  Document analyzer work",
+    csv:
+      "dagsetning,vidskiptamadur,verkefni,tegund_skraningar,taxti,timar,reikningshaefi,texti_a_reikning\n" +
+      '23.07.2026,Sjúkra,,Almenn skráning,Dagvinna,"5,5",Reikningshæft,Document analyzer work',
+    json: '[{"vidskiptamadur":"Sjúkra"}]',
+  },
+}));
+const markExportedImpl = mock(async (day: string) => ({
+  day,
+  marked: 3,
+  exported_at: "2026-07-23T18:00:00.000Z",
+}));
 // Capture daemon-call args so action tests can assert on them.
 const mergeBlocksCalls: Array<[number, number[]]> = [];
 const estimateBlockCalls: number[] = [];
@@ -38,6 +76,25 @@ const estimateBlockImpl = mock(async (blockId: number) => {
 
 // Stub the daemon so we never make real network calls from the unit test.
 mock.module("@/lib/daemon", () => ({
+  exportBilling: (day: string) => exportBillingImpl(day),
+  markExported: (day: string) => markExportedImpl(day),
+  loadBillingRegistry: async () => ({
+    customers: [{ id: 1, name: "Sjúkra", aliases: ["Sjukra"] }],
+    folders: [
+      {
+        id: 1,
+        folder: "genai-infra",
+        customer: null,
+        verkefni: null,
+        billable: true,
+      },
+    ],
+    unmapped: [{ folder: "autofixer", events: 42 }],
+  }),
+  saveBillingCustomer: async () => ({ id: 1 }),
+  deleteBillingCustomer: async () => ({ removed: true }),
+  saveBillingFolder: async () => ({ id: 1 }),
+  deleteBillingFolder: async () => ({ removed: true }),
   assignTicket: async () => ({}),
   setDuration: async () => ({}),
   setDescription: async () => ({}),
@@ -51,6 +108,27 @@ mock.module("@/lib/daemon", () => ({
   listBlockCommits: async () => [],
   searchTickets: async () => [],
   rememberExternalTicket: async () => ({}),
+  loadSettings: async () => ({
+    personal: { work: [], personal: [] },
+    secrets: [],
+    timezone: "",
+    personal_config_path: null,
+  }),
+  saveSettings: async () => ({
+    personal: { work: [], personal: [] },
+    secrets: [],
+    timezone: "",
+    personal_config_path: null,
+    reclassified: null,
+  }),
+  listProjects: async () => [],
+  listAccounts: async () => [],
+  createTicket: async () => ({
+    key: "PROJ-1",
+    summary: "x",
+    status: null,
+    updated: null,
+  }),
   mergeBlocks: (primary: number, absorb: number[]) => mergeBlocksImpl(primary, absorb),
   estimateBlock: (blockId: number) => estimateBlockImpl(blockId),
 }));
@@ -59,6 +137,44 @@ let _runActionForTests: <T>(
   fn: () => Promise<T>,
   revalidateOn?: string,
 ) => Promise<{ ok: true; data: T } | { ok: false; error: string }>;
+// The billing-export actions under test. Typed structurally rather than
+// via `typeof import("./actions")` so the test doesn't need the "use
+// server" module's full surface.
+type Fail = { ok: false; error: string };
+type Ok<T> = { ok: true; data: T };
+
+let actions: {
+  exportBilling: (day: string) => Promise<
+    | Ok<{
+        day: string;
+        exported_at: string | null;
+        rows: { customer: string | null; verkefni: string | null }[];
+        rendered: { text: string; csv: string; json: string };
+      }>
+    | Fail
+  >;
+  markExported: (
+    day: string,
+  ) => Promise<Ok<{ day: string; marked: number; exported_at: string | null }> | Fail>;
+  fetchBillingRegistry: () => Promise<
+    | Ok<{
+        customers: { name: string; aliases: string[] }[];
+        folders: { folder: string; customer: string | null }[];
+        unmapped: { folder: string; events: number }[];
+      }>
+    | Fail
+  >;
+  saveBillingCustomer: (c: {
+    name: string;
+    aliases: string[];
+  }) => Promise<Ok<{ id: number }> | Fail>;
+  saveBillingFolder: (f: {
+    folder: string;
+    customer: string | null;
+    verkefni: string | null;
+    billable: boolean;
+  }) => Promise<Ok<{ id: number }> | Fail>;
+};
 let mergeGroup: (
   primary: number,
   absorb: number[],
@@ -83,6 +199,7 @@ let describeBlock: (
 beforeAll(async () => {
   const mod = await import("./actions");
   _runActionForTests = mod._runActionForTests;
+  actions = mod;
   mergeGroup = mod.mergeGroup;
   describeBlock = mod.describeBlock;
 });
@@ -155,6 +272,92 @@ describe("runAction (ActionResult wrapper)", () => {
       throw new Error("nope");
     }, "/2026-04-18");
     expect(revalidateImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("billing export actions", () => {
+  it("B15: exportBilling returns the day's rows and pre-rendered formats", async () => {
+    revalidateImpl.mockImplementation(() => {});
+    const r = await actions.exportBilling("2026-07-23");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.data.day).toBe("2026-07-23");
+    expect(r.data.rows).toHaveLength(1);
+    expect(r.data.rows[0].customer).toBe("Sjúkra");
+    // The accounting key is never guessed — null means "user picks".
+    expect(r.data.rows[0].verkefni).toBeNull();
+    expect(r.data.rendered.csv.split("\n")[0]).toBe(
+      "dagsetning,vidskiptamadur,verkefni,tegund_skraningar,taxti,timar,reikningshaefi,texti_a_reikning",
+    );
+  });
+
+  it("is a read-only action — does not revalidate the page", async () => {
+    revalidateImpl.mockReset();
+    await actions.exportBilling("2026-07-23");
+    expect(revalidateImpl).not.toHaveBeenCalled();
+  });
+
+  it("B18: surfaces a daemon failure as ok=false instead of throwing", async () => {
+    exportBillingImpl.mockImplementationOnce(async () => {
+      throw new Error("daemon request to /export/2026-07-23 timed out");
+    });
+    const r = await actions.exportBilling("2026-07-23");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("timed out");
+  });
+
+  it("markExported reports how many blocks were newly marked", async () => {
+    revalidateImpl.mockImplementation(() => {});
+    const r = await actions.markExported("2026-07-23");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.data.marked).toBe(3);
+    expect(r.data.exported_at).toBe("2026-07-23T18:00:00.000Z");
+  });
+
+  it("markExported is a mutation — revalidates the day page", async () => {
+    revalidateImpl.mockReset();
+    revalidateImpl.mockImplementation(() => {});
+    await actions.markExported("2026-07-23");
+    expect(revalidateImpl).toHaveBeenCalledWith("/2026-07-23");
+  });
+});
+
+describe("billing registry actions", () => {
+  it("fetchBillingRegistry returns customers, folder pins and unmapped folders", async () => {
+    revalidateImpl.mockReset();
+    const r = await actions.fetchBillingRegistry();
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.data.customers[0].name).toBe("Sjúkra");
+    // A null customer marks a shared folder (resolve per line from text).
+    expect(r.data.folders[0].customer).toBeNull();
+    expect(r.data.unmapped[0].folder).toBe("autofixer");
+    // Read-only — must not invalidate the page.
+    expect(revalidateImpl).not.toHaveBeenCalled();
+  });
+
+  it("registry writes revalidate the registry page, not a day", async () => {
+    // The day pages are server-rendered on demand and re-read the registry
+    // from the daemon each time, so only the page being edited needs it.
+    revalidateImpl.mockReset();
+    revalidateImpl.mockImplementation(() => {});
+    await actions.saveBillingFolder({
+      folder: "autofixer",
+      customer: "APRÓ",
+      verkefni: null,
+      billable: true,
+    });
+    expect(revalidateImpl).toHaveBeenCalledWith("/billing");
+  });
+
+  it("surfaces a registry write failure as ok=false", async () => {
+    revalidateImpl.mockImplementation(() => {
+      throw new Error("cache unavailable");
+    });
+    const r = await actions.saveBillingCustomer({ name: "Sensa", aliases: [] });
+    expect(r.ok).toBe(false);
+    revalidateImpl.mockImplementation(() => {});
   });
 });
 

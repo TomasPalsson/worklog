@@ -9,6 +9,7 @@ use std::io::{self, IsTerminal, Read, Write};
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 use worklog_core::{
+    billing, block_service,
     collectors::{gcal as gcal_col, github as gh, jira as jira_col, tempo as tempo_col},
     daemon as daemon_mod, db, estimate, hook, hook_run, http, infer,
     paths::Paths,
@@ -41,7 +42,7 @@ fn clap_styles() -> clap::builder::Styles {
 /// would need lifetime gymnastics in the derive attribute.
 const HELP_OVERVIEW: &str = "\x1b[1;36m\
 commands by area\x1b[0m
-  daily workflow       \x1b[32mday  summary  week  block  sync\x1b[0m
+  daily workflow       \x1b[32mday  summary  week  export  block  sync\x1b[0m
   data collection      \x1b[32mcollect  infer  estimate  hook\x1b[0m
   review UI            \x1b[32mweb  serve\x1b[0m
   setup & diagnostics  \x1b[32msetup  status  doctor  db  secret  completions  version\x1b[0m
@@ -242,6 +243,24 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
         day: Option<String>,
     },
 
+    /// Export a day's blocks as billing line items grouped by
+    /// (dominant repo, task) — copy-pasteable text (or CSV/JSON) for
+    /// an external invoicing system. Reads the db directly (no daemon
+    /// needed).
+    Export {
+        /// YYYY-MM-DD; default today (UTC).
+        #[arg(long)]
+        day: Option<String>,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = ExportFormat::Text)]
+        format: ExportFormat,
+        /// Mark the day's blocks as exported (sets `exported_at`) after
+        /// rendering. Idempotent — re-running on an already-exported
+        /// day marks nothing and is reported as such.
+        #[arg(long)]
+        mark: bool,
+    },
+
     /// Inspect and edit individual time blocks — list, assign a ticket,
     /// fix a duration, set a description, delete, or merge. Talks to the
     /// daemon over HTTP, so no hand-written `curl` is ever needed.
@@ -433,6 +452,14 @@ pub enum CollectTarget {
     Jira,
     Github,
     Gcal,
+}
+
+/// `worklog export --format`. Maps 1:1 onto `billing::Format`.
+#[derive(clap::ValueEnum, Debug, Clone, Copy)]
+pub enum ExportFormat {
+    Text,
+    Csv,
+    Json,
 }
 
 #[derive(Subcommand, Debug)]
@@ -742,6 +769,7 @@ pub fn run_with<W: Write>(
         } => cmd_day(day, serve, no_serve, &model, out, cli.json),
         Cmd::Summary { day } => cmd_summary(day, out, cli.json),
         Cmd::Week { day } => cmd_week(day, out, cli.json),
+        Cmd::Export { day, format, mark } => cmd_export(day, format, mark, out, cli.json),
         Cmd::Block { sub } => match sub {
             BlockCmd::List { day } => cmd_block_list(day, out, cli.json),
             BlockCmd::Assign { id, ticket, clear } => {
@@ -1561,6 +1589,65 @@ fn cmd_sync<W: Write>(day: Option<String>, dry_run: bool, out: &mut W, json: boo
             other => writeln!(out, "  ? block {:>4}  {other}", r.block_id)?,
         }
     }
+    Ok(())
+}
+
+fn cmd_export<W: Write>(
+    day: Option<String>,
+    format: ExportFormat,
+    mark: bool,
+    out: &mut W,
+    json: bool,
+) -> Result<()> {
+    let paths = Paths::resolve()?;
+    if !paths.db_exists() {
+        anyhow::bail!("db not initialized. Run `worklog db migrate` first.");
+    }
+    let conn = db::open(&paths.db)?;
+    let day = parse_day(day.as_deref())?.to_string();
+    let rows = billing::rows_for_day(&conn, &day)?;
+
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&rows)?)?;
+    } else if rows.is_empty() {
+        style::info(out, &format!("no blocks for {day}"))?;
+    } else {
+        let billing_format = match format {
+            ExportFormat::Text => billing::Format::Text,
+            ExportFormat::Csv => billing::Format::Csv,
+            ExportFormat::Json => billing::Format::Json,
+        };
+        writeln!(out, "{}", billing::render(&rows, billing_format))?;
+
+        // A line reading "Work in sjukra" means the day was never
+        // estimated, not that the export ignored the descriptions. Say so,
+        // otherwise the fallback looks like a bug.
+        let undescribed = rows.iter().filter(|r| r.needs_description).count();
+        if undescribed > 0 && matches!(format, ExportFormat::Text) {
+            style::info(
+                out,
+                &format!(
+                    "{undescribed} of {} line(s) have no description yet — \
+                     run `worklog estimate --day {day}` for Claude-written text",
+                    rows.len()
+                ),
+            )?;
+        }
+    }
+
+    if mark {
+        let marked = block_service::mark_exported(&conn, &day)?;
+        // Skip the human-readable line in --json mode so stdout stays a
+        // single parseable JSON value (FR-015).
+        if !json {
+            if marked > 0 {
+                style::ok(out, &format!("marked {marked} block(s) exported for {day}"))?;
+            } else if !rows.is_empty() {
+                style::info(out, &format!("{day} already exported"))?;
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -3798,6 +3885,7 @@ mod tests {
             tempo_worklog_id: None,
             is_personal: false,
             dirty: false,
+            exported_at: None,
         }
     }
 

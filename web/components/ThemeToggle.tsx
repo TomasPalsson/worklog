@@ -65,7 +65,7 @@ export function ThemeToggle() {
       className="theme-toggle"
       onClick={toggle}
       aria-label={labelFor(state)}
-      title={labelFor(state)}
+      data-tip={labelFor(state)}
     >
       {iconFor(state)}
     </button>

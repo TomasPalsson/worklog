@@ -28,6 +28,30 @@ export function formatTotalHours(seconds: number): string {
   return `${hours.toFixed(1)}h`;
 }
 
+/**
+ * Round seconds to the nearest half hour, ties rounding up, with a zero
+ * floor — the mirror of the Rust `round_to_half_hour` used at Tempo sync.
+ * Under 15 min rounds to 0 (below the 0.5h minimum). Keep the two in
+ * step: this is what the UI shows as "billable", and the daemon logs the
+ * same number. 1800s = 30 min.
+ */
+export function roundToHalfHour(seconds: number): number {
+  if (seconds <= 0) return 0;
+  return Math.floor((seconds + 900) / 1800) * 1800;
+}
+
+/**
+ * The half-hour-rounded hours that will actually be logged to Tempo for
+ * a given tracked duration — what the customer is billed. Always a
+ * multiple of 0.5 (e.g. "0.5h", "2.0h"). 0 tracked or under 15 min shows
+ * "0h" since nothing syncs.
+ */
+export function formatBilledHours(seconds: number): string {
+  const rounded = roundToHalfHour(seconds);
+  if (rounded === 0) return "0h";
+  return `${(rounded / 3600).toFixed(1)}h`;
+}
+
 export function todayISO(): string {
   const d = new Date();
   const y = d.getFullYear();
@@ -120,6 +144,22 @@ export function shortMonthDay(day: string): string {
     day: "numeric",
     timeZone: "UTC",
   }).format(dt);
+}
+
+/**
+ * Compact a working-directory path for the block meta row. Collapses the
+ * home prefix to `~` and, for deep paths, keeps only the last two
+ * segments behind an ellipsis so a long absolute path doesn't blow out
+ * the badge. The full path is preserved in the element's `title`.
+ *
+ * `/Users/tomas/Desktop/Projects/worklog` → `…/Projects/worklog`
+ * `/Users/tomas/worklog`                  → `~/worklog`
+ */
+export function formatProjectPath(path: string): string {
+  const trimmed = path.replace(/\/+$/, "");
+  const segments = trimmed.split("/").filter(Boolean);
+  if (segments.length <= 2) return trimmed || "/";
+  return `…/${segments.slice(-2).join("/")}`;
 }
 
 export function formatDayHeading(day: string): string {

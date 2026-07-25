@@ -1,7 +1,9 @@
--- Worklog schema v6. Shared between Python and the Rust hook (include_str!).
+-- Worklog schema v8. Shared between Python and the Rust hook (include_str!).
 -- All CREATE statements are idempotent (IF NOT EXISTS) so the Rust hook can
 -- run this on every invocation with negligible cost.
 --
+-- v8 adds blocks.exported_at — billing-export canary; see billing.rs /
+-- purge.rs.
 -- v4 adds blocks.is_personal — auto-classified from the block's dominant
 -- project_path (see PersonalConfig in worklog-core::personal). Personal
 -- blocks render dimmed in the UI, skip the estimator, and are excluded
@@ -61,6 +63,12 @@ CREATE TABLE IF NOT EXISTS blocks (
     -- (only ever set when tempo_worklog_id is present). The next
     -- `worklog sync` PUTs the new values to Tempo and clears the flag.
     dirty INTEGER NOT NULL DEFAULT 0,
+    -- Billing-export "has been billed" canary — set by
+    -- block_service::mark_exported when the block's day is marked
+    -- exported (`worklog export --mark`). NULL means unexported.
+    -- Tempo-independent; purge.rs treats this the same as a synced
+    -- tempo_worklog_id.
+    exported_at TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -93,3 +101,37 @@ CREATE TABLE IF NOT EXISTS jira_tickets (
 );
 
 CREATE INDEX IF NOT EXISTS idx_jira_tickets_updated ON jira_tickets(updated);
+
+-- ───────────────────────── billing registry ─────────────────────────
+-- Backs the billing export's Viðskiptamaður / Verkefni resolution.
+-- Lives in SQLite (not a config file) so it is edited entirely from the
+-- review UI's Settings → Billing section via the daemon.
+
+-- The customers time can be billed to. `aliases` is a newline-separated
+-- list matched case-insensitively against a block's Jira ticket summary
+-- and description — that is how a shared infra folder (e.g. genai-infra,
+-- which serves many customers) still resolves to the right customer.
+CREATE TABLE IF NOT EXISTS billing_customers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    aliases TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+-- Per-work-folder defaults. `folder` is the project root under the work
+-- prefix (worktrees and sub-dirs collapse to it — see
+-- billing::work_folder_for_path), e.g. `sjukra`, `apro-website`.
+--
+--   customer NULL → shared folder: resolve the customer from ticket /
+--                   description text instead of pinning one here.
+--   verkefni NULL → leave the accounting key blank for the user to pick
+--                   (never model-guessed).
+CREATE TABLE IF NOT EXISTS billing_folder_map (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    folder TEXT NOT NULL UNIQUE,
+    customer TEXT,
+    verkefni TEXT,
+    -- 1 = Reikningshæft (billable), 0 = Óreikningshæft.
+    billable INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);

@@ -28,11 +28,29 @@ use tracing::debug;
 use crate::collectors::jira::JiraAuth;
 use crate::estimate::{self, ModelInvoker};
 use crate::http::{self, RequestBuilderExt};
+use crate::models::TempoAccount;
 use crate::repo;
 
 use super::CollectReport;
 
 pub const DEFAULT_BASE: &str = "https://api.tempo.io/4";
+
+/// We bill in half-hour units only — a worklog is always a multiple of
+/// 0.5h. `1800` seconds = 30 minutes.
+pub const HALF_HOUR_SECONDS: i64 = 1800;
+
+/// Round a raw second count to the nearest half hour, ties rounding up
+/// (15 min → 0.5h, 44 min → 0.5h, 45 min → 1h). A total under 15 minutes
+/// rounds to `0`, which the sync path treats as "below the 0.5h minimum,
+/// don't log". This is the single point where tracked seconds become
+/// billable half-hours, so both the aggregated and legacy sync paths run
+/// every duration through it before building the Tempo payload.
+pub fn round_to_half_hour(seconds: i64) -> i64 {
+    if seconds <= 0 {
+        return 0;
+    }
+    ((seconds + HALF_HOUR_SECONDS / 2) / HALF_HOUR_SECONDS) * HALF_HOUR_SECONDS
+}
 
 /// One row's outcome — useful for the CLI to print a table.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -387,8 +405,29 @@ fn sync_group_aggregated(
     results: &mut Vec<SyncResult>,
 ) -> Result<()> {
     // Aggregate totals from the full group (synced + unsynced) so we
-    // PUT the right number on a re-sync that added a new block.
-    let total_seconds: i64 = all_in_group.iter().map(|b| b.duration_seconds).sum();
+    // PUT the right number on a re-sync that added a new block, then
+    // round to the nearest half hour — Tempo only ever sees 0.5h units.
+    let raw_seconds: i64 = all_in_group.iter().map(|b| b.duration_seconds).sum();
+    let total_seconds = round_to_half_hour(raw_seconds);
+    // A whole ticket-day that rounds to 0 (under 15 min of tracked work)
+    // is below the half-hour minimum — skip rather than POST a 0s
+    // worklog. Any pre-existing Tempo entry is left untouched.
+    if total_seconds == 0 {
+        for b in eligible_in_group {
+            report.skipped += 1;
+            results.push(SyncResult {
+                block_id: b.id,
+                status: "skipped",
+                reason: Some(format!(
+                    "rounds to 0h — {raw_seconds}s of tracked work is under the 0.5h minimum"
+                )),
+                tempo_id: None,
+                payload: None,
+                http_status: None,
+            });
+        }
+        return Ok(());
+    }
     let earliest_started = all_in_group
         .iter()
         .map(|b| b.started_at.as_str())
@@ -563,9 +602,28 @@ fn sync_block_legacy(
     report: &mut CollectReport,
     results: &mut Vec<SyncResult>,
 ) -> Result<()> {
+    // Same half-hour rounding as the aggregated path. A legacy block
+    // under 15 min rounds to 0 and is skipped — we never PUT/POST a 0s
+    // worklog (leaving any existing Tempo entry as-is).
+    let timespent = round_to_half_hour(b.duration_seconds);
+    if timespent == 0 {
+        report.skipped += 1;
+        results.push(SyncResult {
+            block_id: b.id,
+            status: "skipped",
+            reason: Some(format!(
+                "rounds to 0h — {}s of tracked work is under the 0.5h minimum",
+                b.duration_seconds
+            )),
+            tempo_id: None,
+            payload: None,
+            http_status: None,
+        });
+        return Ok(());
+    }
     let payload = json!({
         "issueId":          issue_id,
-        "timeSpentSeconds": b.duration_seconds,
+        "timeSpentSeconds": timespent,
         "startDate":        b.day,
         "startTime":        start_time(&b.started_at),
         "description":      b.description.clone().unwrap_or_else(|| format!("Work on {issue}")),
@@ -931,6 +989,64 @@ fn normalise_tempo_id(v: &serde_json::Value) -> Option<String> {
     Some(trimmed.to_string())
 }
 
+// ───────────────────────── accounts ─────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct AccountsResponse {
+    #[serde(default)]
+    results: Vec<AccountValue>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AccountValue {
+    id: i64,
+    key: String,
+    name: String,
+    #[serde(default)]
+    customer: Option<CustomerValue>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CustomerValue {
+    name: Option<String>,
+}
+
+/// List the Tempo accounts (billing buckets) for the create-ticket
+/// account picker. The chosen account's `id` is written to the new
+/// issue's Tempo account custom field so its worklogs map to a customer.
+pub fn list_accounts(auth: &TempoAuth) -> Result<Vec<TempoAccount>> {
+    list_accounts_with(auth, &http::client()?)
+}
+
+pub fn list_accounts_with(auth: &TempoAuth, client: &Client) -> Result<Vec<TempoAccount>> {
+    let url = format!("{}/accounts", auth.base_url);
+    // A large limit avoids paging — a tenant's account list is small and
+    // the picker wants them all at once.
+    let resp = client
+        .get(&url)
+        .bearer_auth(&auth.token)
+        .query(&[("limit", "1000")])
+        .send()
+        .with_context(|| format!("tempo accounts at {url}"))?;
+    let status = resp.status();
+    let text = resp.text().unwrap_or_default();
+    if !status.is_success() {
+        anyhow::bail!("tempo accounts: HTTP {} — {text}", status.as_u16());
+    }
+    let parsed: AccountsResponse = serde_json::from_str(&text)
+        .with_context(|| format!("decode tempo accounts response: {text}"))?;
+    Ok(parsed
+        .results
+        .into_iter()
+        .map(|a| TempoAccount {
+            id: a.id,
+            key: a.key,
+            name: a.name,
+            customer: a.customer.and_then(|c| c.name),
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -973,6 +1089,126 @@ mod tests {
             author: "tomas@p5.is".into(),
             base_url: base,
         }
+    }
+
+    #[test]
+    fn round_to_half_hour_rounds_to_nearest_with_zero_floor() {
+        // Exact multiples are untouched.
+        assert_eq!(round_to_half_hour(0), 0);
+        assert_eq!(round_to_half_hour(1800), 1800);
+        assert_eq!(round_to_half_hour(5400), 5400);
+        // Under 15 min → 0 (below the half-hour minimum).
+        assert_eq!(round_to_half_hour(1), 0);
+        assert_eq!(round_to_half_hour(14 * 60), 0);
+        // The 15-min tie rounds up to 0.5h.
+        assert_eq!(round_to_half_hour(15 * 60), 1800);
+        assert_eq!(round_to_half_hour(26 * 60 + 40), 1800);
+        // 44 min → 0.5h, 45 min (tie) → 1h.
+        assert_eq!(round_to_half_hour(44 * 60), 1800);
+        assert_eq!(round_to_half_hour(45 * 60), 3600);
+        // Negatives clamp to 0 rather than going negative.
+        assert_eq!(round_to_half_hour(-100), 0);
+    }
+
+    #[test]
+    fn list_accounts_maps_results_and_customer() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(GET).path("/accounts");
+            then.status(200).json_body(json!({
+                "results": [
+                    { "id": 42, "key": "ACME", "name": "Acme Co",
+                      "customer": { "name": "Acme Corporation" } },
+                    { "id": 7, "key": "INTERNAL", "name": "Internal" }
+                ]
+            }));
+        });
+        let accounts =
+            list_accounts_with(&auth(server.base_url()), &http::client().unwrap()).unwrap();
+        mock.assert();
+        assert_eq!(accounts.len(), 2);
+        assert_eq!(accounts[0].id, 42);
+        assert_eq!(accounts[0].key, "ACME");
+        assert_eq!(accounts[0].customer.as_deref(), Some("Acme Corporation"));
+        assert_eq!(accounts[1].id, 7);
+        assert_eq!(accounts[1].customer, None);
+    }
+
+    #[test]
+    fn aggregated_post_rounds_duration_to_half_hour() {
+        // 600s + 1000s = 1600s (26m40s) → one POST rounded up to 1800s.
+        let server = MockServer::start();
+        let post_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/worklogs")
+                .json_body_partial(r#"{"timeSpentSeconds": 1800}"#);
+            then.status(200).json_body(json!({"tempoWorklogId": 7777}));
+        });
+        let conn = open_memory().unwrap();
+        let day_s = "2026-04-18";
+        insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T09:00:00Z",
+            "2026-04-18T09:10:00Z",
+            600,
+            Some("PROJ-1"),
+            Some("first chunk"),
+        );
+        insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T09:10:00Z",
+            "2026-04-18T09:27:00Z",
+            1000,
+            Some("PROJ-1"),
+            Some("second chunk"),
+        );
+        let (report, _results) = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+        post_mock.assert();
+        assert_eq!(report.errors, Vec::<String>::new());
+        assert!(report.synced >= 1, "the rounded group should sync");
+    }
+
+    #[test]
+    fn aggregated_skips_group_under_fifteen_minutes() {
+        // A 10-minute ticket-day rounds to 0 — no POST is made (the mock
+        // would error if hit) and the block is reported as skipped.
+        let server = MockServer::start();
+        let _never = server.mock(|when, then| {
+            when.method(POST).path("/worklogs");
+            then.status(500).body("must not be called");
+        });
+        let conn = open_memory().unwrap();
+        insert_block(
+            &conn,
+            "2026-04-18",
+            "2026-04-18T09:00:00Z",
+            "2026-04-18T09:10:00Z",
+            600,
+            Some("PROJ-1"),
+            Some("tiny"),
+        );
+        let (report, results) = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report.synced, 0);
+        assert_eq!(report.skipped, 1);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].status, "skipped");
+        assert!(results[0].reason.as_deref().unwrap().contains("0.5h"));
     }
 
     #[test]

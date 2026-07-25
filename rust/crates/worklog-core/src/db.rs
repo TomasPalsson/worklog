@@ -15,7 +15,7 @@ pub const SCHEMA_SQL: &str = include_str!("../sql/schema.sql");
 /// Monotonic integer version of the schema, bumped by future migrations.
 /// Stored in `PRAGMA user_version` so we can detect stale dbs without adding
 /// a dedicated table.
-pub const SCHEMA_VERSION: i32 = 7;
+pub const SCHEMA_VERSION: i32 = 9;
 
 /// Open a connection at `path`, enable WAL + FK, and run migrations.
 pub fn open(path: &Path) -> Result<Connection> {
@@ -27,6 +27,17 @@ pub fn open(path: &Path) -> Result<Connection> {
         Connection::open(path).with_context(|| format!("opening sqlite at {}", path.display()))?;
     configure(&conn)?;
     migrate(&conn)?;
+    // Give the billing registry a starting point on first use so the user
+    // corrects entries instead of typing them all. Guarded internally, so
+    // it only fires when both registry tables are empty and never
+    // overwrites an edit.
+    //
+    // Deliberately here and NOT in `migrate`: `open_memory` shares
+    // `migrate`, and a test database arriving with ten fabricated customer
+    // names is a trap — a billing test asserting "no customer resolved"
+    // could match a seeded alias by accident. Real databases seed; test
+    // databases stay empty.
+    crate::billing_registry::seed_if_empty(&conn).context("seeding billing registry")?;
     Ok(conn)
 }
 
@@ -62,6 +73,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     // is_personal column. Do an idempotent ALTER for upgraded users.
     ensure_blocks_is_personal(conn).context("ensuring blocks.is_personal")?;
     ensure_blocks_dirty(conn).context("ensuring blocks.dirty")?;
+    ensure_blocks_exported_at(conn).context("ensuring blocks.exported_at")?;
     ensure_jira_tickets_issue_id(conn).context("ensuring jira_tickets.issue_id")?;
     ensure_jira_tickets_external(conn).context("ensuring jira_tickets.external")?;
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)
@@ -99,6 +111,20 @@ fn ensure_blocks_dirty(conn: &Connection) -> Result<()> {
             [],
         )
         .context("ALTER TABLE blocks ADD dirty")?;
+    }
+    Ok(())
+}
+
+fn ensure_blocks_exported_at(conn: &Connection) -> Result<()> {
+    let has: bool = conn
+        .prepare("PRAGMA table_info(blocks)")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter()
+        .any(|c| c == "exported_at");
+    if !has {
+        conn.execute("ALTER TABLE blocks ADD COLUMN exported_at TEXT", [])
+            .context("ALTER TABLE blocks ADD exported_at")?;
     }
     Ok(())
 }
@@ -262,6 +288,96 @@ mod tests {
         assert!(
             cols.contains(&"is_personal".to_string()),
             "is_personal missing after migrate; got {cols:?}"
+        );
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn schema_version_is_bumped_for_exported_at_migration() {
+        // B22. `exported_at` landed at v8, so the schema can never be
+        // older than that. A `>=` floor rather than an equality keeps the
+        // test meaningful without having to be edited by every later
+        // migration (the billing registry took it to v9).
+        let conn = open_memory().unwrap();
+        let v = current_version(&conn).unwrap();
+        assert!(
+            v >= 8,
+            "exported_at shipped in schema v8; got v{v} — did SCHEMA_VERSION regress?"
+        );
+        assert_eq!(v, SCHEMA_VERSION, "a fresh db is stamped current");
+    }
+
+    #[test]
+    fn fresh_db_blocks_table_has_exported_at_column() {
+        // B22.
+        let conn = open_memory().unwrap();
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(blocks)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            cols.contains(&"exported_at".to_string()),
+            "fresh db must have blocks.exported_at; got {cols:?}"
+        );
+    }
+
+    #[test]
+    fn migrate_adds_exported_at_to_legacy_blocks_table_and_backfills_null() {
+        // B22. Simulate a pre-exported_at DB: create a blocks table
+        // without exported_at (but with every column that shipped
+        // before this slice), insert a row, then run migrate() and
+        // assert the column appears with NULL for the pre-existing row.
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE blocks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                day TEXT NOT NULL,
+                jira_issue TEXT,
+                started_at TEXT NOT NULL,
+                ended_at TEXT NOT NULL,
+                duration_seconds INTEGER NOT NULL,
+                description TEXT,
+                estimated_by TEXT,
+                flagged INTEGER NOT NULL DEFAULT 0,
+                tempo_worklog_id TEXT,
+                is_personal INTEGER NOT NULL DEFAULT 0,
+                dirty INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-18', '2026-04-18T09:00:00+00:00', '2026-04-18T09:30:00+00:00', 1800)",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 7).unwrap();
+
+        migrate(&conn).unwrap();
+
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(blocks)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            cols.contains(&"exported_at".to_string()),
+            "exported_at missing after migrate; got {cols:?}"
+        );
+
+        let exported_at: Option<String> = conn
+            .query_row("SELECT exported_at FROM blocks LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert!(
+            exported_at.is_none(),
+            "pre-existing rows must backfill to NULL"
         );
         assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
     }

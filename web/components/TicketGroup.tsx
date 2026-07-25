@@ -3,7 +3,7 @@
 import { ReactNode, useRef, useTransition } from "react";
 import { GitMerge } from "lucide-react";
 import type { BlockGroup } from "@/app/[day]/page";
-import { formatTotalHours } from "@/lib/format";
+import { formatBilledHours, formatTotalHours } from "@/lib/format";
 import { canMergeGroup } from "@/lib/group-actions";
 import { mergeGroup } from "@/app/actions";
 import { toast } from "@/lib/toast";
@@ -82,7 +82,22 @@ export function TicketGroup({ group, day, children }: Props) {
         <span className="ticket-group-meta">
           {group.blocks.length} {blockNoun}
         </span>
-        <span className="ticket-group-meta">{formatTotalHours(group.totalSeconds)}</span>
+        {group.unassigned ? (
+          <span className="ticket-group-meta">
+            {formatTotalHours(group.totalSeconds)}
+          </span>
+        ) : (
+          // Assigned groups sync as one Tempo worklog, rounded to the
+          // nearest half hour — show what will actually be billed, with
+          // the raw tracked time in the tooltip. "0h" flags a group
+          // under 15 min that won't sync.
+          <span
+            className="ticket-group-meta"
+            title={`${formatTotalHours(group.totalSeconds)} tracked`}
+          >
+            {formatBilledHours(group.totalSeconds)} billed
+          </span>
+        )}
         <SyncChip state={group.syncState} />
         <span className="ticket-group-description" title={group.previewDescription}>
           {group.previewDescription}

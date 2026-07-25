@@ -1,9 +1,9 @@
 "use client";
 
 import { useRef, useState, useTransition } from "react";
-import { Check, Coffee, Sparkles, Trash2 } from "lucide-react";
+import { Check, Coffee, FolderGit2, Sparkles, Trash2 } from "lucide-react";
 import type { Block, JiraTicket } from "@/lib/types";
-import { formatDuration, formatRange } from "@/lib/format";
+import { formatDuration, formatProjectPath, formatRange } from "@/lib/format";
 import {
   deleteBlock,
   describeBlock,
@@ -24,14 +24,31 @@ interface Props {
   tickets: JiraTicket[];
   day: string;
   /**
+   * Hide the Jira ticket picker and the Tempo sync/dirty tags. Set in the
+   * billing view, where tickets and sync state are noise — the grouping is
+   * already by customer and nothing is being synced to Tempo. Everything
+   * else (description, duration, personal, delete) stays editable.
+   */
+  hideTicketing?: boolean;
+  /**
    * True when this block is the sole survivor of its ticket group.
    * Drives the Sparkles "Describe with Claude" button — see
    * `shouldShowSparkles` for the full rule.
+   *
+   * Optional so the billing view can omit it: groups there are billing
+   * lines, not ticket groups, so "sole in group" has no meaning and the
+   * Sparkles affordance would be misleading.
    */
-  isSoleInGroup: boolean;
+  isSoleInGroup?: boolean;
 }
 
-export function BlockCard({ block, tickets, day, isSoleInGroup }: Props) {
+export function BlockCard({
+  block,
+  tickets,
+  day,
+  hideTicketing = false,
+  isSoleInGroup = false,
+}: Props) {
   const [editingDur, setEditingDur] = useState(false);
   const [durVal, setDurVal] = useState(Math.round(block.duration_seconds / 60));
   const [isPending, start] = useTransition();
@@ -180,19 +197,21 @@ export function BlockCard({ block, tickets, day, isSoleInGroup }: Props) {
 
       <div className="block-body">
         <div className="block-title-row">
-          <TicketCombobox
-            blockId={block.id}
-            current={block.jira_issue}
-            tickets={tickets}
-            day={day}
-          />
-          {synced && !dirty && (
+          {!hideTicketing && (
+            <TicketCombobox
+              blockId={block.id}
+              current={block.jira_issue}
+              tickets={tickets}
+              day={day}
+            />
+          )}
+          {!hideTicketing && synced && !dirty && (
             <span className="synced-tag" title={`Synced to Tempo · id ${block.tempo_worklog_id}`}>
               <Check />
               synced
             </span>
           )}
-          {dirty && (
+          {!hideTicketing && dirty && (
             <span
               className="dirty-tag"
               title={`Edited since last sync — click "Sync to Tempo" to update Tempo entry ${block.tempo_worklog_id}`}
@@ -234,6 +253,16 @@ export function BlockCard({ block, tickets, day, isSoleInGroup }: Props) {
         <div className="block-meta">
           <SourceBadges sources={block.sources} />
           <EstBadge kind={block.estimated_by} />
+          {block.project_path && (
+            <span
+              className="dir-badge"
+              title={block.project_path}
+              aria-label={`working directory ${block.project_path}`}
+            >
+              <FolderGit2 />
+              {formatProjectPath(block.project_path)}
+            </span>
+          )}
           <EventList blockId={block.id} eventCount={block.event_count} />
           <CommitList blockId={block.id} isPersonal={block.is_personal} />
         </div>

@@ -38,25 +38,30 @@ pub struct PurgeReport {
 }
 
 /// SQL fragment matching blocks that are old AND safe to delete:
-/// synced to Tempo OR explicitly marked as `gap`, excluding manual
-/// edits. Kept as a named const so the delete + counting queries use
+/// synced to Tempo, exported for billing, OR explicitly marked as
+/// `gap`, excluding manual edits. `exported_at` is the Tempo-independent
+/// "has been billed" marker (the team moved off Tempo — see CLAUDE.md /
+/// billing.rs) and is treated as full parity with `tempo_worklog_id`
+/// here. Kept as a named const so the delete + counting queries use
 /// identical logic and can't drift.
 const PURGEABLE_BLOCKS_WHERE: &str = "
     day < ?1
     AND (estimated_by IS NULL OR estimated_by != 'manual')
     AND (
         (tempo_worklog_id IS NOT NULL AND tempo_worklog_id != '')
+        OR (exported_at IS NOT NULL AND exported_at != '')
         OR estimated_by = 'gap'
     )
 ";
 
 /// Blocks we decline to delete because the user hasn't synced (or
-/// reviewed) them yet. Counted for the report so the user can see why
-/// the rule preserved something.
+/// reviewed, or exported) them yet. Counted for the report so the user
+/// can see why the rule preserved something.
 const KEPT_UNSYNCED_WHERE: &str = "
     day < ?1
     AND (estimated_by IS NULL OR estimated_by != 'manual')
     AND (tempo_worklog_id IS NULL OR tempo_worklog_id = '')
+    AND (exported_at IS NULL OR exported_at = '')
     AND (estimated_by IS NULL OR estimated_by != 'gap')
 ";
 
@@ -104,19 +109,15 @@ pub fn purge(conn: &Connection, retention_days: i64, dry_run: bool) -> Result<Pu
     // matches how `load_day_events` already slices.
     let events_deleted: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM events
-             WHERE substr(started_at, 1, 10) < ?1
-               AND id NOT IN (
-                   SELECT event_id FROM block_events WHERE block_id IN (
-                       SELECT id FROM blocks WHERE NOT (day < ?1 AND (
-                           (estimated_by IS NULL OR estimated_by != 'manual')
-                           AND (
-                               (tempo_worklog_id IS NOT NULL AND tempo_worklog_id != '')
-                               OR estimated_by = 'gap'
-                           )
-                       ))
-                   )
-               )",
+            &format!(
+                "SELECT COUNT(*) FROM events
+                 WHERE substr(started_at, 1, 10) < ?1
+                   AND id NOT IN (
+                       SELECT event_id FROM block_events WHERE block_id IN (
+                           SELECT id FROM blocks WHERE NOT ({PURGEABLE_BLOCKS_WHERE})
+                       )
+                   )"
+            ),
             params![cutoff_iso],
             |r| r.get(0),
         )
@@ -182,6 +183,22 @@ mod tests {
         conn.last_insert_rowid()
     }
 
+    /// Insert a block with only `exported_at` set (no `tempo_worklog_id`)
+    /// — the billing-export parity case for B21.
+    fn insert_block_with_exported_at(
+        conn: &Connection,
+        day: &str,
+        exported_at: Option<&str>,
+    ) -> i64 {
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds, exported_at)
+             VALUES (?1, ?1 || 'T09:00:00+00:00', ?1 || 'T09:30:00+00:00', 1800, ?2)",
+            params![day, exported_at],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
     fn insert_event(conn: &Connection, started_at: &str, source_id: &str) -> i64 {
         repo::upsert_event(
             conn,
@@ -229,6 +246,35 @@ mod tests {
         let report = purge(&conn, 30, false).unwrap();
         assert_eq!(report.blocks_deleted, 1);
         assert_eq!(count(&conn, "blocks"), 0);
+    }
+
+    #[test]
+    fn b21_deletes_old_block_with_only_exported_at_set() {
+        // B21: exported_at is a billing-parity marker for
+        // tempo_worklog_id — a worked block that was exported (but
+        // never synced to Tempo) must be just as purge-eligible once
+        // past the retention window.
+        let conn = open_memory().unwrap();
+        insert_block_with_exported_at(&conn, "2026-02-10", Some("2026-02-11T09:00:00.000Z"));
+
+        let report = purge(&conn, 30, false).unwrap();
+        assert_eq!(report.blocks_deleted, 1);
+        assert_eq!(count(&conn, "blocks"), 0);
+    }
+
+    #[test]
+    fn b21_exported_block_is_not_double_counted_as_kept_unsynced() {
+        // Regression guard for the KEPT_UNSYNCED_WHERE fragment: once
+        // exported_at makes a block purgeable, it must not also show up
+        // in the "kept because unsynced" report bucket.
+        let conn = open_memory().unwrap();
+        insert_block_with_exported_at(&conn, "2026-02-10", Some("2026-02-11T09:00:00.000Z"));
+
+        let report = purge(&conn, 30, false).unwrap();
+        assert_eq!(
+            report.blocks_kept_unsynced, 0,
+            "exported blocks are purgeable, not kept-unsynced"
+        );
     }
 
     #[test]

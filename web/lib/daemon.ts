@@ -42,15 +42,24 @@ type FetchInit = Parameters<typeof fetch>[1];
  * Without this, a wedged daemon leaves the UI spinning forever.
  */
 function timeoutMs(path: string): number {
-  // The per-block route is POST /blocks/:id/estimate, which doesn't
-  // start with /estimate — so use includes() to catch both that and
-  // the day-wide POST /estimate. Both shell out to `claude -p`, both
-  // need the 60s cap. A startsWith check here would silently fall
-  // through to the 10s default and time out every Sparkles click.
-  if (path.includes("/estimate")) return 60_000;
+  // `includes` not `startsWith`: the per-block route is
+  // POST /blocks/:id/estimate, so a startsWith check would fall through to
+  // the 10s default and time out every Sparkles click.
+  //
+  // 10 minutes, not 60s: estimation is one `claude -p` per un-estimated
+  // block, run sequentially. Measured on a real 16-block day: 216s (~13s a
+  // block), so 60s failed every multi-block day even when the estimate
+  // itself succeeded — the daemon kept working and the UI reported a
+  // timeout. 10 minutes covers roughly 45 blocks; past that, run
+  // `worklog estimate` in a terminal, which has no HTTP timeout.
+  if (path.includes("/estimate")) return 600_000;
   if (path.startsWith("/sync")) return 30_000;
   if (path.startsWith("/jira/refresh")) return 30_000;
   if (path.startsWith("/infer")) return 30_000;
+  // Jira/Tempo round-trips: project + account listing and issue creation.
+  if (path.startsWith("/tickets/create")) return 30_000;
+  if (path.startsWith("/projects")) return 20_000;
+  if (path.startsWith("/accounts")) return 20_000;
   return 10_000;
 }
 
@@ -197,10 +206,21 @@ export async function estimateBlock(blockId: number): Promise<{
 // ───────────────────── reads (v0.6) ─────────────────────
 
 import type {
+  BillingCustomer,
+  BillingFolderMap,
+  BillingRegistry,
   Block,
   CommitEntry,
+  CreateTicketInput,
   Event,
+  ExportResponse,
+  JiraProject,
   JiraTicket,
+  MarkExportResponse,
+  SettingsSaveResponse,
+  SettingsUpdate,
+  SettingsView,
+  TempoAccount,
   TicketCacheMeta,
 } from "./types";
 
@@ -250,6 +270,26 @@ export async function rememberExternalTicket(t: JiraTicket): Promise<void> {
   await call("POST", "/tickets/external", t);
 }
 
+/** Jira projects for the create-ticket project picker. */
+export async function listProjects(): Promise<JiraProject[]> {
+  return call<JiraProject[]>("GET", "/projects");
+}
+
+/** Tempo accounts (the customer mapping) for the create-ticket account
+ * picker. */
+export async function listAccounts(): Promise<TempoAccount[]> {
+  return call<TempoAccount[]>("GET", "/accounts");
+}
+
+/**
+ * Create a Jira issue, setting its Tempo account custom field so the
+ * ticket's worklogs map to a customer. Returns the new ticket (with its
+ * key) so the caller can immediately assign it to a block.
+ */
+export async function createTicket(input: CreateTicketInput): Promise<JiraTicket> {
+  return call<JiraTicket>("POST", "/tickets/create", input);
+}
+
 /**
  * Events linked to a specific block, ordered by their own timestamp.
  * Fetched lazily on the first expand of the per-block events drill-down
@@ -267,4 +307,68 @@ export async function listBlockEvents(blockId: number): Promise<Event[]> {
  */
 export async function listBlockCommits(blockId: number): Promise<CommitEntry[]> {
   return call<CommitEntry[]>("GET", `/blocks/${blockId}/commits`);
+}
+
+// ───────────────────────── billing export ─────────────────────────
+
+/**
+ * A day's billing line items plus all three pre-rendered output formats.
+ * Read-only — computing an export never mutates anything, so it's safe to
+ * call on every panel open.
+ */
+export async function exportBilling(day: string): Promise<ExportResponse> {
+  return call<ExportResponse>("GET", `/export/${day}`);
+}
+
+/**
+ * Stamp `exported_at` on the day's blocks — the billing canary that both
+ * guards against double-billing and (unlike `tempo_worklog_id`, which
+ * nothing sets now that we're off Tempo) keeps `worklog db purge` able to
+ * retire old work. Idempotent: already-marked blocks keep their original
+ * timestamp and `marked` comes back 0.
+ */
+export async function markExported(day: string): Promise<MarkExportResponse> {
+  return call<MarkExportResponse>("POST", `/export/${day}/mark`);
+}
+
+/**
+ * The billing registry plus the recently-seen work folders that still
+ * have no mapping. One round trip for the whole Settings → Billing view.
+ */
+export async function loadBillingRegistry(): Promise<BillingRegistry> {
+  return call<BillingRegistry>("GET", "/billing/registry");
+}
+
+/** Insert or update a customer, keyed on its name. */
+export async function saveBillingCustomer(c: BillingCustomer): Promise<{ id: number }> {
+  return call("POST", "/billing/customers", c);
+}
+
+export async function deleteBillingCustomer(id: number): Promise<{ removed: boolean }> {
+  return call("POST", `/billing/customers/${id}/delete`);
+}
+
+/** Insert or update a folder mapping, keyed on the folder name. */
+export async function saveBillingFolder(f: BillingFolderMap): Promise<{ id: number }> {
+  return call("POST", "/billing/folders", f);
+}
+
+export async function deleteBillingFolder(id: number): Promise<{ removed: boolean }> {
+  return call("POST", `/billing/folders/${id}/delete`);
+}
+
+// ───────────────────────── settings ─────────────────────────
+
+/** Current settings snapshot for the panel. Token values are masked by
+ * the daemon — see `SettingField.sensitive`. */
+export async function loadSettings(): Promise<SettingsView> {
+  return call<SettingsView>("GET", "/settings");
+}
+
+/** Apply a partial settings update. Returns the fresh snapshot plus a
+ * reclassify summary when the personal patterns changed. */
+export async function saveSettings(
+  update: SettingsUpdate,
+): Promise<SettingsSaveResponse> {
+  return call<SettingsSaveResponse>("POST", "/settings", update);
 }

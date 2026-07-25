@@ -16,6 +16,12 @@ cargo fmt   --manifest-path rust/Cargo.toml --all -- --check
 cd web && bun test && bun run typecheck && bun run build
 ```
 
+`bun run build` and `next dev` share `web/.next`, so running the build
+while a dev server is up clobbers the running server's chunks — it then
+dies with `Cannot find module './vendor-chunks/*.js'`. Stop the dev
+server before a build, or recover with
+`pkill -f "next dev"; rm -rf web/.next` and restart it.
+
 Release smoke (no network, no tag push):
 
 ```bash
@@ -42,6 +48,26 @@ bash tests/install/smoke.sh
   `tempo::normalise_tempo_id`).
 - `estimated_by = 'manual'` blocks MUST NOT be overwritten by
   re-estimation.
+- **Billing export** (`billing.rs` + `billing_registry.rs`) targets the
+  external invoicing form, not Tempo. Two rules are load-bearing:
+  nothing that lands on an invoice is invented — `Viðskiptamaður` comes
+  from a folder pin or an unambiguous customer-alias match, `Verkefni`
+  **only** from an explicit pin, and anything unresolved stays `None`
+  for the user to fill in; and a line's hours are the **union** of its
+  blocks' intervals (`round_to_half_hour`), never a naive sum, so
+  overlapping blocks can't be double-billed. Personal blocks are
+  excluded outright.
+- A block's billable folder is the **project root** under
+  `~/Desktop/Work` — `billing::work_folder_for_path` strips
+  `/.claude/worktrees/*` and collapses sub-dirs, because the path
+  basename is a branch name for worktree events.
+- `exported_at` is the billing analog of `tempo_worklog_id`: set by
+  `block_service::mark_exported` (idempotent), and accepted by
+  `purge.rs` as proof a block was billed. Without it, work blocks
+  become unpurgeable once Tempo sync stops being used.
+- The billing registry lives in SQLite and is edited **only** through
+  the review UI (Settings-adjacent Billing panel → daemon
+  `/billing/*`). Do not add a config-file path for it.
 - The embedded Ed25519 release pubkey lives at
   `rust/crates/worklog-core/src/updater/pubkey.rs`. The matching
   private key lives only in the `WORKLOG_RELEASE_PRIVATE_KEY` GHA

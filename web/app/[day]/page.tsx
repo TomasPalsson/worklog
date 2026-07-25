@@ -1,12 +1,21 @@
+import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
-import { DaemonError, listTickets, loadDaySummary } from "@/lib/daemon";
+import {
+  DaemonError,
+  exportBilling,
+  listTickets,
+  loadBillingRegistry,
+  loadDaySummary,
+} from "@/lib/daemon";
 import { formatDayHeading, formatTotalHours } from "@/lib/format";
 import { DayHeader } from "@/components/DayHeader";
 import { ActionBar } from "@/components/ActionBar";
+import { BillingGroup } from "@/components/BillingGroup";
 import { BlockCard } from "@/components/BlockCard";
 import { EmptyState } from "@/components/EmptyState";
 import { TicketGroup } from "@/components/TicketGroup";
-import type { Block } from "@/lib/types";
+import type { Block, BillingCustomer, BillingRow } from "@/lib/types";
+import { COOKIE_NAME as VIEW_COOKIE, normaliseView } from "@/lib/view-mode";
 
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -20,6 +29,10 @@ export default async function DayPage({
 }) {
   const { day } = await params;
   if (!DAY_RE.test(day)) notFound();
+
+  // Which grouping to render. Read server-side so the first paint is already
+  // the right view — no flash of ticket groups before switching to billing.
+  const view = normaliseView((await cookies()).get(VIEW_COOKIE)?.value);
 
   // Both reads go to the daemon — this is the fix for the WAL stale-read
   // bug where the container's direct bun:sqlite reader couldn't see the
@@ -71,6 +84,35 @@ export default async function DayPage({
   // defaults to open so the user is nudged to assign them.
   const workGroups = groupBlocksByTicket(workBlocks);
 
+  // Billing view groups the day the way the export bills it. The grouping is
+  // computed by the Rust core (customer resolution, overlap-safe hours), so
+  // it's fetched rather than re-derived here — the two must never disagree.
+  // A daemon hiccup degrades to the ticket view instead of failing the page.
+  let billingRows: BillingRow[] | null = null;
+  let billingCustomers: BillingCustomer[] = [];
+  let knownVerkefni: string[] = [];
+  if (view === "billing") {
+    try {
+      const [ex, registry] = await Promise.all([
+        exportBilling(day),
+        loadBillingRegistry(),
+      ]);
+      billingRows = ex.rows;
+      billingCustomers = registry.customers;
+      // Verkefni keys already pinned anywhere become suggestions, so the
+      // second time you bill a project you pick instead of retyping.
+      knownVerkefni = Array.from(
+        new Set(
+          registry.folders
+            .map((f) => f.verkefni)
+            .filter((v): v is string => !!v && v.trim() !== ""),
+        ),
+      ).sort();
+    } catch {
+      billingRows = null;
+    }
+  }
+
   return (
     <>
       <DayHeader
@@ -80,13 +122,43 @@ export default async function DayPage({
         blockCount={workBlocks.length}
         unassigned={unassigned}
         personalSummary={personalSummary}
+        view={view}
       />
       <ActionBar day={day} cacheCount={cache.count} cacheLast={cache.last_fetched} />
       {blocks.length === 0 ? (
         <EmptyState day={day} />
       ) : (
         <>
-          {workGroups.length > 0 ? (
+          {billingRows !== null ? (
+            billingRows.length > 0 ? (
+              <div className="ticket-groups">
+                {billingRows.map((row, i) => {
+                  const ids = new Set(row.block_ids);
+                  const members = workBlocks.filter((b) => ids.has(b.id));
+                  return (
+                    <BillingGroup
+                      key={`${row.customer ?? "?"}-${row.folder}-${i}`}
+                      row={row}
+                      customers={billingCustomers}
+                      knownVerkefni={knownVerkefni}
+                    >
+                      <ul className="blocks" role="list">
+                        {members.map((b) => (
+                          <li key={b.id}>
+                            <BlockCard block={b} tickets={tickets} day={day} hideTicketing />
+                          </li>
+                        ))}
+                      </ul>
+                    </BillingGroup>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="day-empty-work">
+                Nothing billable today — under half an hour, or all personal.
+              </p>
+            )
+          ) : workGroups.length > 0 ? (
             <div className="ticket-groups">
               {workGroups.map((g) => (
                 <TicketGroup key={g.key} group={g} day={day}>
@@ -127,6 +199,7 @@ export default async function DayPage({
                       block={b}
                       tickets={tickets}
                       day={day}
+                      hideTicketing={view === "billing"}
                       isSoleInGroup={false}
                     />
                   </li>

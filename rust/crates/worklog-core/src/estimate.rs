@@ -689,13 +689,7 @@ pub fn estimate_block_with<I: ModelInvoker>(
     } else {
         commits
     };
-    let user_msg = build_user_message(
-        &block,
-        &events,
-        &open_tickets,
-        &literals,
-        capped_commits,
-    );
+    let user_msg = build_user_message(&block, &events, &open_tickets, &literals, capped_commits);
 
     let reply = invoker.invoke(SYSTEM_PROMPT, &user_msg, &response_schema(), model)?;
     let parsed: Reply = serde_json::from_value(reply.clone())

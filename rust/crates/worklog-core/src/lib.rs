@@ -4,12 +4,15 @@
 
 #![forbid(unsafe_code)]
 
+pub mod billing;
+pub mod billing_registry;
 pub mod block_service;
 pub mod browser;
 pub mod collectors;
 pub mod daemon;
 pub mod daemon_service;
 pub mod db;
+pub mod envfile;
 pub mod estimate;
 pub mod git;
 pub mod hook;

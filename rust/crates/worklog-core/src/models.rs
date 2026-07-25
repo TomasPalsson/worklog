@@ -70,6 +70,15 @@ pub struct Block {
     /// instead of POSTing a duplicate, then clears the flag.
     #[serde(default)]
     pub dirty: bool,
+    /// Billing-export "has been billed" canary — set (idempotently) by
+    /// `block_service::mark_exported` when the block's day is marked
+    /// exported via `worklog export --mark`. Analogous to
+    /// `tempo_worklog_id`, but Tempo-independent: the team moved off
+    /// Tempo, so `exported_at` is the marker `purge` now also accepts
+    /// as "billed" for blocks that never get a `tempo_worklog_id`.
+    /// Never set or cleared by Tempo sync.
+    #[serde(default)]
+    pub exported_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -85,4 +94,31 @@ pub struct JiraTicket {
     /// any missing ones with an inline Jira lookup.
     #[serde(default)]
     pub issue_id: Option<String>,
+}
+
+/// A Jira project, for the create-ticket project picker. `id` is the
+/// numeric project id; `key` is the human prefix (e.g. `PROJ`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JiraProject {
+    pub key: String,
+    pub name: String,
+    #[serde(default)]
+    pub id: Option<String>,
+}
+
+/// A Tempo account — the billing bucket that maps logged time to a real
+/// customer. Surfaced in the create-ticket account picker; the chosen
+/// account is written onto the new issue's Tempo account custom field so
+/// every worklog against the ticket rolls up to the right customer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TempoAccount {
+    /// Numeric Tempo account id — the value written to the Jira account
+    /// custom field when creating an issue.
+    pub id: i64,
+    pub key: String,
+    pub name: String,
+    /// Customer name, when the account is linked to one. Shown alongside
+    /// the account so the user picks the right customer at a glance.
+    #[serde(default)]
+    pub customer: Option<String>,
 }

@@ -29,7 +29,7 @@ use chrono::{FixedOffset, NaiveDate, Utc};
 /// tomorrow's page.
 pub fn day_offset() -> FixedOffset {
     let utc = FixedOffset::east_opt(0).unwrap();
-    match std::env::var("WORKLOG_TZ").ok().as_deref().map(str::trim) {
+    match configured_tz().as_deref().map(str::trim) {
         None | Some("") => utc,
         Some(s) if s.eq_ignore_ascii_case("utc") || s == "Z" => utc,
         Some(s) => parse_offset(s).unwrap_or_else(|| {
@@ -41,6 +41,35 @@ pub fn day_offset() -> FixedOffset {
             utc
         }),
     }
+}
+
+/// The configured timezone string: the `WORKLOG_TZ` process env var when
+/// set, otherwise the value persisted by the settings panel in the
+/// `.env` file. The env var always wins so a shell/launchd override
+/// behaves as before. Test builds skip the file fallback so the unit
+/// tests below stay hermetic regardless of the dev's real `.env`.
+pub fn configured_tz() -> Option<String> {
+    match std::env::var("WORKLOG_TZ") {
+        Ok(v) if !v.trim().is_empty() => return Some(v),
+        _ => {}
+    }
+    #[cfg(not(test))]
+    {
+        crate::envfile::read("WORKLOG_TZ")
+    }
+    #[cfg(test)]
+    {
+        None
+    }
+}
+
+/// True when `s` is something `day_offset()` accepts without falling
+/// back to UTC on a typo: empty, `UTC`/`Z`, or a `±HH[:MM]` offset. The
+/// settings API uses this to 400 a bad timezone before persisting it,
+/// rather than silently bucketing days in UTC afterwards.
+pub fn is_valid_tz(s: &str) -> bool {
+    let s = s.trim();
+    s.is_empty() || s.eq_ignore_ascii_case("utc") || s == "Z" || parse_offset(s).is_some()
 }
 
 fn parse_offset(s: &str) -> Option<FixedOffset> {
@@ -145,6 +174,19 @@ mod tests {
         std::env::set_var("WORKLOG_TZ", "+05");
         assert_eq!(day_offset().local_minus_utc(), 5 * 3600);
         std::env::remove_var("WORKLOG_TZ");
+    }
+
+    #[test]
+    fn is_valid_tz_accepts_offsets_and_utc_rejects_named_zones() {
+        assert!(is_valid_tz(""));
+        assert!(is_valid_tz("UTC"));
+        assert!(is_valid_tz("Z"));
+        assert!(is_valid_tz("+01:00"));
+        assert!(is_valid_tz("-05:30"));
+        assert!(is_valid_tz("+05"));
+        assert!(!is_valid_tz("America/New_York"));
+        assert!(!is_valid_tz("+99:99"));
+        assert!(!is_valid_tz("garbage"));
     }
 
     #[test]

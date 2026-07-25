@@ -18,6 +18,10 @@ pub const KNOWN_KEYS: &[&str] = &[
     "jira_api_token",
     "jira_base_url",
     "jira_account_id",
+    // Tempo "Account" custom field on Jira issues (e.g.
+    // `customfield_10100`). Set on issues at create time so their
+    // worklogs map to a billable customer. Not a credential.
+    "jira_account_field_id",
     "tempo_api_token",
     // GitHub
     "github_token",
@@ -46,6 +50,7 @@ fn env_var_for(key: &str) -> Option<&'static str> {
         "jira_api_token" => "WORKLOG_JIRA_TOKEN",
         "jira_base_url" => "WORKLOG_JIRA_BASE_URL",
         "jira_account_id" => "WORKLOG_JIRA_ACCOUNT_ID",
+        "jira_account_field_id" => "WORKLOG_JIRA_ACCOUNT_FIELD_ID",
         "github_token" => "WORKLOG_GITHUB_TOKEN",
         "github_user" => "WORKLOG_GITHUB_USER",
         "tempo_api_token" => "WORKLOG_TEMPO_TOKEN",

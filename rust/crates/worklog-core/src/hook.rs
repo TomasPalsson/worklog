@@ -349,17 +349,23 @@ mod tests {
 
     #[test]
     fn install_sweeps_worklog_handlers_off_legacy_event_keys() {
-        // Regression: an older worklog registered PreToolUse / PostToolUse
-        // (which capture tool I/O — source code — into the events table).
-        // `install` only manages EVENTS, so those stale handlers used to
-        // linger forever. A fresh install must sweep them out.
+        // Regression: an older worklog may have registered handlers on event
+        // keys that are NOT in the current EVENTS set. `install`'s per-event
+        // loop only manages EVENTS, so without the up-front full sweep those
+        // stale worklog handlers would linger forever on the retired keys.
+        //
+        // Note: PreToolUse / PostToolUse are now first-class EVENTS heartbeats
+        // (see the EVENTS doc comment — they keep long autonomous turns
+        // visible to inference), so they are re-registered on install and are
+        // NOT valid "legacy" examples. Use a genuinely-retired event key.
         let (_g, _t) = enter(tempdir().unwrap());
         let settings = json!({
             "hooks": {
-                "PreToolUse": [
+                // Real Claude Code events that worklog does not register.
+                "Notification": [
                     { "hooks": [{ "type": "command", "command": "worklog hook-run" }] }
                 ],
-                "PostToolUse": [
+                "PreCompact": [
                     { "hooks": [{ "type": "command", "command": "/x/worklog hook-run" }] },
                     { "hooks": [{ "type": "command", "command": "other-tool" }] }
                 ]
@@ -376,15 +382,15 @@ mod tests {
         let raw = std::fs::read_to_string(settings_path().unwrap()).unwrap();
         let root: Value = serde_json::from_str(&raw).unwrap();
         let hooks = root.get("hooks").unwrap().as_object().unwrap();
-        // PreToolUse had only a worklog handler → key removed entirely.
+        // Notification had only a worklog handler → key removed entirely.
         assert!(
-            hooks.get("PreToolUse").is_none(),
-            "stale PreToolUse worklog handler must be swept"
+            hooks.get("Notification").is_none(),
+            "stale Notification worklog handler must be swept"
         );
-        // PostToolUse keeps the unrelated handler, loses the worklog one.
-        let post = hooks.get("PostToolUse").unwrap().as_array().unwrap();
-        assert_eq!(post.len(), 1, "only the non-worklog handler should remain");
-        assert!(!is_worklog_handler(&post[0]));
+        // PreCompact keeps the unrelated handler, loses the worklog one.
+        let pre = hooks.get("PreCompact").unwrap().as_array().unwrap();
+        assert_eq!(pre.len(), 1, "only the non-worklog handler should remain");
+        assert!(!is_worklog_handler(&pre[0]));
         // …and the intended events are still installed.
         for ev in EVENTS {
             assert_eq!(hooks.get(*ev).unwrap().as_array().unwrap().len(), 1);

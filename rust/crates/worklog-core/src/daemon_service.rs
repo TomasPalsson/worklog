@@ -429,7 +429,7 @@ mod macos {
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    <string>{path}</string>
   </dict>
 </dict>
 </plist>
@@ -438,6 +438,7 @@ mod macos {
             cmd = escaped,
             stdout = stdout.display(),
             stderr = stderr.display(),
+            path = xml_escape(&super::service_env_path()),
         )
     }
 
@@ -455,6 +456,34 @@ mod macos {
         }
         out
     }
+}
+
+/// PATH baked into the generated launchd plist / systemd unit.
+///
+/// A launchd agent (and a systemd --user unit) inherits almost nothing from
+/// your shell, so a system-only PATH silently breaks anything the daemon
+/// shells out to. The estimator spawns the `claude` CLI, which installs to
+/// `~/.local/bin` — absent from the PATH this used to hardcode. The effect
+/// was that **every** estimate triggered from the web UI failed with
+/// ``spawning `claude` ``, while the identical `worklog estimate` worked in a
+/// terminal, because a login shell has `~/.local/bin` and the daemon did not.
+///
+/// User bin dirs come first so a locally-installed tool wins over an older
+/// system copy, matching what a login shell would resolve. Named
+/// `service_env_path` rather than `service_path` because the platform
+/// modules already use that name for the unit *file* path.
+pub fn service_env_path() -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        // Where `claude`, `worklog` and friends actually land.
+        for rel in [".local/bin", ".claude/local", ".cargo/bin", ".bun/bin"] {
+            parts.push(home.join(rel).to_string_lossy().into_owned());
+        }
+    }
+    for sys in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
+        parts.push((*sys).to_owned());
+    }
+    parts.join(":")
 }
 
 // ───────────────────────── Linux (systemd --user) ─────────────────────────
@@ -540,6 +569,9 @@ mod linux {
     }
 
     fn service_unit(cmd: &str) -> String {
+        // Same reasoning as the launchd plist: the unit's PATH must include
+        // the user's bin dirs or the estimator can't spawn `claude`.
+        let path = super::service_env_path();
         format!(
             "[Unit]\n\
              Description=worklog daemon (HTTP IPC backing the web UI)\n\
@@ -549,7 +581,7 @@ mod linux {
              ExecStart={cmd}\n\
              Restart=on-failure\n\
              RestartSec=5s\n\
-             Environment=PATH=/usr/local/bin:/usr/bin:/bin\n\n\
+             Environment=PATH={path}\n\n\
              [Install]\n\
              WantedBy=default.target\n"
         )
@@ -559,6 +591,30 @@ mod linux {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service_env_path_includes_the_user_bin_dir_that_holds_claude() {
+        // Regression: the unit hardcoded a system-only PATH, so the daemon
+        // could not spawn `claude` (installed to ~/.local/bin). Every
+        // estimate started from the web UI failed with "spawning `claude`"
+        // while the same command worked in a terminal.
+        let path = service_env_path();
+        let home = dirs::home_dir().unwrap().to_string_lossy().into_owned();
+        let local_bin = format!("{home}/.local/bin");
+        assert!(
+            path.split(':').any(|p| p == local_bin),
+            "~/.local/bin must be on the service PATH; got {path}"
+        );
+        // System dirs are still there, and user dirs come first so a local
+        // install wins like it would in a login shell.
+        assert!(path.split(':').any(|p| p == "/usr/bin"), "got {path}");
+        let first_sys = path.split(':').position(|p| p == "/usr/bin").unwrap();
+        let user = path.split(':').position(|p| p == local_bin).unwrap();
+        assert!(
+            user < first_sys,
+            "user bin dirs must precede system: {path}"
+        );
+    }
     use std::sync::Mutex;
     use tempfile::tempdir;
 

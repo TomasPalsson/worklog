@@ -125,6 +125,29 @@ pub fn set_personal(conn: &Connection, block_id: i64, is_personal: bool) -> Resu
     repo::get_block(conn, block_id)?.ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))
 }
 
+/// Mark every one of `day`'s blocks as exported for billing — the
+/// `exported_at` canary. Idempotent (AC-022): only blocks that haven't
+/// been marked yet (`exported_at` NULL or empty) are touched, so
+/// re-running `--mark` on an already-exported day leaves existing
+/// timestamps untouched. Mirrors `tempo_worklog_id` as a "has been
+/// billed" marker but is Tempo-independent — `purge` treats either as
+/// billed (see `purge::PURGEABLE_BLOCKS_WHERE`).
+///
+/// Returns the number of blocks newly marked (0 if the day was already
+/// fully exported, or has no blocks at all).
+pub fn mark_exported(conn: &Connection, day: &str) -> Result<usize> {
+    let n = conn
+        .execute(
+            "UPDATE blocks
+                SET exported_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+              WHERE day = ?1
+                AND (exported_at IS NULL OR exported_at = '')",
+            params![day],
+        )
+        .context("mark_exported")?;
+    Ok(n)
+}
+
 pub fn delete_block(conn: &Connection, block_id: i64) -> Result<()> {
     let n = conn
         .execute("DELETE FROM blocks WHERE id = ?1", params![block_id])
@@ -485,6 +508,75 @@ mod tests {
         let got = set_personal(&conn, id, true).unwrap();
         assert!(got.is_personal);
         assert_eq!(got.jira_issue.as_deref(), Some("PROJ-1"));
+    }
+
+    // ───────────────────────── mark_exported ─────────────────────────
+
+    #[test]
+    fn mark_exported_marks_all_blocks_for_the_day_and_is_idempotent() {
+        // B19, B20.
+        let conn = open_memory().unwrap();
+        let a = seed_at(
+            &conn,
+            "2026-04-18T09:00:00+00:00",
+            "2026-04-18T09:30:00+00:00",
+            1800,
+        );
+        let b = seed_at(
+            &conn,
+            "2026-04-18T10:00:00+00:00",
+            "2026-04-18T10:30:00+00:00",
+            1800,
+        );
+        let c = seed_at(
+            &conn,
+            "2026-04-18T11:00:00+00:00",
+            "2026-04-18T11:30:00+00:00",
+            1800,
+        );
+        // A block on a different day must be untouched.
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-19', '2026-04-19T09:00:00+00:00', '2026-04-19T09:30:00+00:00', 1800)",
+            [],
+        )
+        .unwrap();
+        let other_day_id = conn.last_insert_rowid();
+
+        let marked = mark_exported(&conn, "2026-04-18").unwrap();
+        assert_eq!(
+            marked, 3,
+            "all 3 of the day's blocks should be newly marked"
+        );
+        for id in [a, b, c] {
+            let got = repo::get_block(&conn, id).unwrap().unwrap();
+            assert!(
+                got.exported_at.is_some(),
+                "block {id} should have exported_at set"
+            );
+        }
+        let other = repo::get_block(&conn, other_day_id).unwrap().unwrap();
+        assert!(
+            other.exported_at.is_none(),
+            "a block on a different day must be untouched"
+        );
+
+        // Second call is a no-op: 0 newly marked, existing timestamps
+        // unchanged (AC-022).
+        let before: Vec<Option<String>> = [a, b, c]
+            .iter()
+            .map(|&id| repo::get_block(&conn, id).unwrap().unwrap().exported_at)
+            .collect();
+        let marked_again = mark_exported(&conn, "2026-04-18").unwrap();
+        assert_eq!(
+            marked_again, 0,
+            "re-marking an already-exported day marks nothing"
+        );
+        let after: Vec<Option<String>> = [a, b, c]
+            .iter()
+            .map(|&id| repo::get_block(&conn, id).unwrap().unwrap().exported_at)
+            .collect();
+        assert_eq!(before, after, "exported_at must not change when re-marking");
     }
 
     #[test]

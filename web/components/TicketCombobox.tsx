@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
-import { AlertCircle, ChevronDown, Loader2, Search, Ticket, X } from "lucide-react";
+import { AlertCircle, ChevronDown, Loader2, Plus, Search, Ticket, X } from "lucide-react";
 import type { JiraTicket } from "@/lib/types";
 import {
   assignTicket,
   assignExternalTicket,
   searchJiraTickets,
 } from "@/app/actions";
+import { CreateTicketDialog } from "@/components/CreateTicketDialog";
 import { toast } from "@/lib/toast";
 
 interface Props {
@@ -28,6 +29,7 @@ const SEARCH_MIN_LEN = 2;
 
 export function TicketCombobox({ blockId, current, tickets, day }: Props) {
   const [open, setOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
   const [isPending, startTransition] = useTransition();
@@ -390,6 +392,17 @@ export function TicketCombobox({ blockId, current, tickets, day }: Props) {
             )}
           </div>
 
+          <button
+            type="button"
+            className="combobox-create"
+            onClick={() => {
+              setOpen(false);
+              setCreateOpen(true);
+            }}
+          >
+            <Plus width={13} height={13} /> Create new ticket
+          </button>
+
           {current && (
             <button
               type="button"
@@ -401,6 +414,17 @@ export function TicketCombobox({ blockId, current, tickets, day }: Props) {
           )}
         </div>
       )}
+
+      <CreateTicketDialog
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        blockId={blockId}
+        day={day}
+        onCreated={() => {
+          setCreateOpen(false);
+          closeAndRestoreFocus();
+        }}
+      />
     </div>
   );
 }

@@ -364,7 +364,7 @@ mod macos {
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    <string>{path}</string>
   </dict>
 </dict>
 </plist>
@@ -374,6 +374,9 @@ mod macos {
             interval_secs = interval_secs,
             stdout = stdout.display(),
             stderr = stderr.display(),
+            // Scheduled collection shells out too, so it needs the same
+            // user bin dirs the daemon does — see daemon_service::service_path.
+            path = crate::daemon_service::service_env_path(),
         )
     }
 

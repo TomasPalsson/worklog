@@ -15,10 +15,37 @@ import {
   listBlockCommits as daemonListBlockCommits,
   searchTickets as daemonSearchTickets,
   rememberExternalTicket as daemonRememberExternalTicket,
+  loadSettings as daemonLoadSettings,
+  saveSettings as daemonSaveSettings,
+  listProjects as daemonListProjects,
+  listAccounts as daemonListAccounts,
+  createTicket as daemonCreateTicket,
+  exportBilling as daemonExportBilling,
+  markExported as daemonMarkExported,
+  loadBillingRegistry as daemonLoadBillingRegistry,
+  saveBillingCustomer as daemonSaveBillingCustomer,
+  deleteBillingCustomer as daemonDeleteBillingCustomer,
+  saveBillingFolder as daemonSaveBillingFolder,
+  deleteBillingFolder as daemonDeleteBillingFolder,
   mergeBlocks as daemonMergeBlocks,
   estimateBlock as daemonEstimateBlock,
 } from "@/lib/daemon";
-import type { CommitEntry, Event, JiraTicket } from "@/lib/types";
+import type {
+  BillingCustomer,
+  BillingFolderMap,
+  BillingRegistry,
+  CommitEntry,
+  CreateTicketInput,
+  Event,
+  ExportResponse,
+  JiraProject,
+  JiraTicket,
+  MarkExportResponse,
+  SettingsSaveResponse,
+  SettingsUpdate,
+  SettingsView,
+  TempoAccount,
+} from "@/lib/types";
 
 /**
  * Every Server Action returns one of these. `useTransition`'s `start()`
@@ -185,6 +212,120 @@ export async function assignExternalTicket(
   }, `/${day}`);
   return r.ok ? { ok: true, data: undefined } : r;
 }
+
+// ───────────────────────── create ticket ─────────────────────────
+
+/** Jira projects for the create-ticket project picker. Read-only. */
+export async function fetchProjects(): Promise<ActionResult<JiraProject[]>> {
+  return runAction(() => daemonListProjects());
+}
+
+/** Tempo accounts (the customer mapping) for the create-ticket account
+ * picker. Read-only. */
+export async function fetchAccounts(): Promise<ActionResult<TempoAccount[]>> {
+  return runAction(() => daemonListAccounts());
+}
+
+/**
+ * Create a Jira issue (setting its Tempo account so worklogs map to a
+ * customer), then assign it to the block in one round-trip. The created
+ * ticket is cached daemon-side, so the picker can render it afterwards.
+ */
+export async function createTicket(
+  input: CreateTicketInput,
+  blockId: number,
+  day: string,
+): Promise<ActionResult<JiraTicket>> {
+  return runAction(async () => {
+    const ticket = await daemonCreateTicket(input);
+    await daemonAssignTicket(blockId, ticket.key);
+    return ticket;
+  }, `/${day}`);
+}
+
+// ───────────────────────── billing export ─────────────────────────
+
+/**
+ * Compute the day's billing line items. Read-only, so no `revalidateOn` —
+ * mirrors `fetchProjects`/`fetchBlockEvents`. The panel calls this on
+ * open and after marking.
+ */
+export async function exportBilling(
+  day: string,
+): Promise<ActionResult<ExportResponse>> {
+  return runAction(() => daemonExportBilling(day));
+}
+
+/**
+ * Mark the day's blocks as exported/billed. A mutation — revalidates the
+ * day page so any surface showing export state refreshes.
+ */
+export async function markExported(
+  day: string,
+): Promise<ActionResult<MarkExportResponse>> {
+  return runAction(() => daemonMarkExported(day), `/${day}`);
+}
+
+// ─────────────────── billing registry (Settings → Billing) ───────────────────
+
+/** The registry + unmapped-folder discovery. Read-only, no revalidate. */
+export async function fetchBillingRegistry(): Promise<ActionResult<BillingRegistry>> {
+  return runAction(() => daemonLoadBillingRegistry());
+}
+
+/**
+ * Registry mutations revalidate the registry page they were made from.
+ *
+ * The day pages don't need invalidating: they're server-rendered on demand
+ * and re-read the registry from the daemon on every request, so a mapping
+ * change is already reflected the next time one is opened.
+ */
+const REGISTRY_PATH = "/billing";
+
+export async function saveBillingCustomer(
+  customer: BillingCustomer,
+): Promise<ActionResult<{ id: number }>> {
+  return runAction(() => daemonSaveBillingCustomer(customer), REGISTRY_PATH);
+}
+
+export async function deleteBillingCustomer(
+  id: number,
+): Promise<ActionResult<{ removed: boolean }>> {
+  return runAction(() => daemonDeleteBillingCustomer(id), REGISTRY_PATH);
+}
+
+export async function saveBillingFolder(
+  folder: BillingFolderMap,
+): Promise<ActionResult<{ id: number }>> {
+  return runAction(() => daemonSaveBillingFolder(folder), REGISTRY_PATH);
+}
+
+export async function deleteBillingFolder(
+  id: number,
+): Promise<ActionResult<{ removed: boolean }>> {
+  return runAction(() => daemonDeleteBillingFolder(id), REGISTRY_PATH);
+}
+
+// ───────────────────────── settings ─────────────────────────
+
+/** Load the settings snapshot for the panel. Read-only, no revalidate. */
+export async function fetchSettings(): Promise<ActionResult<SettingsView>> {
+  return runAction(() => daemonLoadSettings());
+}
+
+/**
+ * Persist a partial settings update. Revalidates the current day so a
+ * classification change (which reclassifies blocks) is reflected without
+ * a manual reload. `day` is the page the user saved from.
+ */
+export async function saveSettings(
+  update: SettingsUpdate,
+  day: string,
+): Promise<ActionResult<SettingsSaveResponse>> {
+  return runAction(() => daemonSaveSettings(update), `/${day}`);
+}
+
+// ───────────────────── group merge + describe (#23) ─────────────────────
 
 /**
  * Fold the rest of a ticket group into its first block. `primary` keeps
