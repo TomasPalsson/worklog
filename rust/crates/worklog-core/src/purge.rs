@@ -432,29 +432,60 @@ pub fn pruning_enabled() -> bool {
 /// silently fall back to their defaults (with a `tracing::warn!`) for
 /// anything outside this range; `daemon::post_settings` uses it to 400 a
 /// bad write before persisting it (spec 002 FR-017 / AC-018).
-pub fn is_valid_cycle_day(_day: u32) -> bool {
-    unimplemented!()
+pub fn is_valid_cycle_day(day: u32) -> bool {
+    (1..=31).contains(&day)
+}
+
+/// Shared resolution for both pruner-cycle-day settings: process env
+/// wins, then the persisted `.env` file, then `default` — mirroring
+/// `tz::configured_tz`'s precedence exactly, including its
+/// `#[cfg(not(test))]` guard on the file fallback so unit tests stay
+/// hermetic regardless of the dev's real `.env`. An unparseable or
+/// out-of-range stored value (from either source) falls back to
+/// `default` and emits a `tracing::warn!` naming the setting and the
+/// fallback, mirroring `tz::day_offset`'s handling of a bad
+/// `$WORKLOG_TZ` rather than failing silently (spec 002 §5.4).
+fn configured_cycle_day(env_key: &str, default: u32) -> u32 {
+    let raw: Option<String> = match std::env::var(env_key) {
+        Ok(v) if !v.trim().is_empty() => Some(v),
+        _ => {
+            #[cfg(not(test))]
+            {
+                crate::envfile::read(env_key)
+            }
+            #[cfg(test)]
+            {
+                None
+            }
+        }
+    };
+    match raw {
+        None => default,
+        Some(s) => match s.trim().parse::<u32>() {
+            Ok(day) if is_valid_cycle_day(day) => day,
+            _ => {
+                tracing::warn!(
+                    "{env_key}={s:?} is not a valid day 1..=31. \
+                     Falling back to {default}."
+                );
+                default
+            }
+        },
+    }
 }
 
 /// Day-of-month the billing cycle starts (`WORKLOG_BILLING_CYCLE_START_DAY`).
-/// Process env wins, then the persisted `.env` file, then
-/// [`DEFAULT_CYCLE_START_DAY`] — mirroring `tz::configured_tz`'s
-/// precedence exactly, including its `#[cfg(not(test))]` guard on the
-/// file fallback so unit tests stay hermetic. An unparseable or
-/// out-of-range stored value falls back to the default and emits a
-/// `tracing::warn!` naming the setting and the fallback, mirroring
-/// `tz::day_offset`'s handling of a bad `$WORKLOG_TZ` rather than
-/// failing silently.
+/// See [`configured_cycle_day`] for the resolution and fallback rules.
+/// Defaults to [`DEFAULT_CYCLE_START_DAY`].
 pub fn configured_cycle_start_day() -> u32 {
-    unimplemented!()
+    configured_cycle_day("WORKLOG_BILLING_CYCLE_START_DAY", DEFAULT_CYCLE_START_DAY)
 }
 
 /// Last day-of-month the just-closed cycle can still take hours
-/// (`WORKLOG_BILLING_CLOSE_DAY`). Same precedence and fallback-with-warn
-/// behaviour as [`configured_cycle_start_day`]; defaults to
-/// [`DEFAULT_CLOSE_DAY`].
+/// (`WORKLOG_BILLING_CLOSE_DAY`). Same resolution and fallback rules as
+/// [`configured_cycle_start_day`]; defaults to [`DEFAULT_CLOSE_DAY`].
 pub fn configured_close_day() -> u32 {
-    unimplemented!()
+    configured_cycle_day("WORKLOG_BILLING_CLOSE_DAY", DEFAULT_CLOSE_DAY)
 }
 
 #[cfg(test)]

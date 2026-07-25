@@ -1092,8 +1092,8 @@ fn cmd_db_purge<W: Write>(days: Option<i64>, dry_run: bool, out: &mut W, json: b
         Some(d) => worklog_core::purge::cutoff_for_days(today, d),
         None => worklog_core::purge::cutoff_for_cycle(
             today,
-            worklog_core::purge::DEFAULT_CYCLE_START_DAY,
-            worklog_core::purge::DEFAULT_CLOSE_DAY,
+            worklog_core::purge::configured_cycle_start_day(),
+            worklog_core::purge::configured_close_day(),
         ),
     };
     let snapshot_to = paths.data_dir.join("worklog.db.preprune");

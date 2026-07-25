@@ -287,8 +287,8 @@ async fn prune_due_check_once(state: Shared) {
             let today = crate::tz::local_date(chrono::Utc::now());
             let cutoff = crate::purge::cutoff_for_cycle(
                 today,
-                crate::purge::DEFAULT_CYCLE_START_DAY,
-                crate::purge::DEFAULT_CLOSE_DAY,
+                crate::purge::configured_cycle_start_day(),
+                crate::purge::configured_close_day(),
             );
             let snapshot_to = paths.data_dir.join("worklog.db.preprune");
             let opts = crate::purge::PruneOptions {

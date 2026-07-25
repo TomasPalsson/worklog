@@ -9,6 +9,7 @@
 //! `WORKLOG_ENV_FILE` comes back from `get`.
 
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
 fn write(path: &std::path::Path, body: &str) {
     if let Some(parent) = path.parent() {
@@ -17,8 +18,20 @@ fn write(path: &std::path::Path, body: &str) {
     std::fs::write(path, body).unwrap();
 }
 
+/// `WORKLOG_ENV_FILE` (and, for the first test, `WORKLOG_SECRETS_FILE`)
+/// are process-global, so the two tests in this file — run in parallel
+/// by default — must serialise their env mutation, mirroring
+/// `tz::test_env_lock` / `envfile::tests::lock`.
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static L: OnceLock<Mutex<()>> = OnceLock::new();
+    L.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+}
+
 #[test]
 fn get_reads_from_env_file_when_keychain_misses() {
+    let _g = env_lock();
     let tmp = tempfile::tempdir().unwrap();
     // Empty file-backed store → keychain misses.
     let store = tmp.path().join("secrets.json");
@@ -73,6 +86,7 @@ fn get_reads_from_env_file_when_keychain_misses() {
 /// "env wins over file" is provable at all.
 #[test]
 fn process_env_beats_env_file_for_billing_cycle_day_settings() {
+    let _g = env_lock();
     let tmp = tempfile::tempdir().unwrap();
     let env_file = tmp.path().join(".env");
     write(
