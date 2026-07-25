@@ -275,6 +275,40 @@ mod tests {
         .unwrap()
     }
 
+    /// Insert a block that references a Jira ticket by key (B14/B15) — the
+    /// column blocks and jira_tickets join on is `jira_issue` /
+    /// `jira_tickets.key`, confirmed against `billing::ticket_summary`.
+    fn insert_block_with_ticket(conn: &Connection, day: &str, jira_issue: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO blocks (day, jira_issue, started_at, ended_at, duration_seconds)
+             VALUES (?1, ?2, ?1 || 'T09:00:00+00:00', ?1 || 'T09:30:00+00:00', 1800)",
+            params![day, jira_issue],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    /// Insert a session row (B13). Nothing in worklog has ever deleted a
+    /// sessions row before this feature, so there is no existing helper.
+    fn insert_session(conn: &Connection, session_id: &str, started_at: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO sessions (session_id, started_at) VALUES (?1, ?2)",
+            params![session_id, started_at],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    /// Insert a Jira ticket cache row with an explicit `external` flag
+    /// (B14/B15/B16).
+    fn insert_ticket(conn: &Connection, key: &str, external: i64) {
+        conn.execute(
+            "INSERT INTO jira_tickets (key, summary, external) VALUES (?1, 'Test ticket', ?2)",
+            params![key, external],
+        )
+        .unwrap();
+    }
+
     fn link(conn: &Connection, block_id: i64, event_id: i64) {
         conn.execute(
             "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
@@ -451,5 +485,113 @@ mod tests {
         let report = purge_rows(&conn, cutoff, true).unwrap();
         assert_eq!(report.cutoff_date, "2026-06-20");
         assert_eq!(report.cutoff_date.len(), 10);
+    }
+
+    /// B13: a session before the cutoff and one after — only the older
+    /// one is deleted.
+    #[test]
+    fn b13_session_before_cutoff_deleted_session_after_survives() {
+        let conn = open_memory().unwrap();
+        let cutoff = date("2026-06-20");
+        insert_session(&conn, "sess-old", "2026-02-10T09:00:00+00:00");
+        insert_session(&conn, "sess-new", "2026-06-25T09:00:00+00:00");
+
+        let report = purge_rows(&conn, cutoff, false).unwrap();
+        assert_eq!(report.sessions_deleted, 1);
+        assert_eq!(count(&conn, "sessions"), 1);
+    }
+
+    /// B14: an `external = 1` ticket whose only referencing block is older
+    /// than the cutoff is deleted once that block is gone.
+    #[test]
+    fn b14_orphaned_external_ticket_deleted() {
+        let conn = open_memory().unwrap();
+        let cutoff = date("2026-06-20");
+        insert_ticket(&conn, "EXT-1", 1);
+        insert_block_with_ticket(&conn, "2026-02-10", "EXT-1");
+
+        let report = purge_rows(&conn, cutoff, false).unwrap();
+        assert_eq!(report.tickets_deleted, 1);
+        assert_eq!(count(&conn, "jira_tickets"), 0);
+    }
+
+    /// B15: an `external = 1` ticket referenced by a block NEWER than the
+    /// cutoff is kept.
+    #[test]
+    fn b15_external_ticket_referenced_by_surviving_block_kept() {
+        let conn = open_memory().unwrap();
+        let cutoff = date("2026-06-20");
+        insert_ticket(&conn, "EXT-2", 1);
+        insert_block_with_ticket(&conn, "2026-06-25", "EXT-2");
+
+        let report = purge_rows(&conn, cutoff, false).unwrap();
+        assert_eq!(report.tickets_deleted, 0);
+        assert_eq!(count(&conn, "jira_tickets"), 1);
+    }
+
+    /// B16: an `external = 0` cached ticket, ancient and unreferenced, is
+    /// never touched — the collector owns that cache's lifecycle.
+    #[test]
+    fn b16_cached_external_zero_ticket_never_touched() {
+        let conn = open_memory().unwrap();
+        let cutoff = date("2026-06-20");
+        insert_ticket(&conn, "CACHE-1", 0);
+
+        let report = purge_rows(&conn, cutoff, false).unwrap();
+        assert_eq!(report.tickets_deleted, 0);
+        assert_eq!(count(&conn, "jira_tickets"), 1);
+    }
+
+    /// B38: `billing_customers` and `billing_folder_map` are persistent,
+    /// UI-edited registry tables — CLAUDE.md forbids pruning them under
+    /// any cutoff, regardless of how old their rows are.
+    #[test]
+    fn b38_billing_registry_survives_every_prune() {
+        let conn = open_memory().unwrap();
+        let cutoff = date("2026-06-20");
+        let ancient = "2020-01-01T00:00:00.000Z";
+        conn.execute(
+            "INSERT INTO billing_customers (name, aliases, created_at)
+             VALUES ('Acme', 'acme,acme-corp', ?1)",
+            params![ancient],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO billing_folder_map (folder, customer, verkefni, billable, created_at)
+             VALUES ('acme-website', 'Acme', 'ACME-1', 1, ?1)",
+            params![ancient],
+        )
+        .unwrap();
+
+        let before_customers = count(&conn, "billing_customers");
+        let before_folder_map = count(&conn, "billing_folder_map");
+
+        purge_rows(&conn, cutoff, false).unwrap();
+
+        assert_eq!(count(&conn, "billing_customers"), before_customers);
+        assert_eq!(count(&conn, "billing_folder_map"), before_folder_map);
+    }
+
+    /// Plus: a dry run reports the sessions and tickets counts without
+    /// changing either table.
+    #[test]
+    fn dry_run_reports_sessions_and_tickets_without_changing_tables() {
+        let conn = open_memory().unwrap();
+        let cutoff = date("2026-06-20");
+        insert_session(&conn, "sess-old", "2026-02-10T09:00:00+00:00");
+        insert_session(&conn, "sess-new", "2026-06-25T09:00:00+00:00");
+        insert_ticket(&conn, "EXT-1", 1);
+        insert_block_with_ticket(&conn, "2026-02-10", "EXT-1");
+        insert_ticket(&conn, "CACHE-1", 0);
+
+        let before_sessions = count(&conn, "sessions");
+        let before_tickets = count(&conn, "jira_tickets");
+
+        let report = purge_rows(&conn, cutoff, true).unwrap();
+        assert!(report.dry_run);
+        assert_eq!(report.sessions_deleted, 1);
+        assert_eq!(report.tickets_deleted, 1);
+        assert_eq!(count(&conn, "sessions"), before_sessions);
+        assert_eq!(count(&conn, "jira_tickets"), before_tickets);
     }
 }
