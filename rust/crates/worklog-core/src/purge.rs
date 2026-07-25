@@ -271,12 +271,48 @@ pub fn purge_rows(conn: &Connection, cutoff: NaiveDate, dry_run: bool) -> Result
     })
 }
 
+/// Options for [`run`], the orchestrator that wraps [`purge_rows`] with a
+/// pre-delete snapshot and post-delete space reclamation.
+pub struct PruneOptions<'a> {
+    pub cutoff: NaiveDate,
+    pub dry_run: bool,
+    /// Where to write the pre-prune snapshot. `None` disables snapshotting.
+    pub snapshot_to: Option<&'a std::path::Path>,
+    /// The live database file, for measuring `bytes_freed`. `None` skips
+    /// measurement.
+    pub db_path: Option<&'a std::path::Path>,
+}
+
+/// Orchestrates a full prune: snapshot, delete, reclaim disk. Order matters
+/// (spec 002 §5.4):
+///
+/// 1. `dry_run` skips both the snapshot and the reclaim step entirely — it
+///    delegates straight to [`purge_rows`] and returns its simulated
+///    report.
+/// 2. Otherwise, the database is snapshotted FIRST via `VACUUM INTO`,
+///    before any delete. `VACUUM INTO` refuses to overwrite an existing
+///    file, so a stale snapshot from a previous prune is removed first. If
+///    the snapshot cannot be written, this returns `Err` without deleting
+///    anything — aborting is the specified behaviour.
+/// 3. The real transactional delete ([`purge_rows`]) runs.
+/// 4. A plain `VACUUM` shrinks the file in place. It cannot run inside a
+///    transaction (SQLite restriction), so it must follow the delete's
+///    commit. A `VACUUM` failure is not fatal — the deletes already
+///    landed — so `bytes_freed` simply stays `0`.
+/// 5. `bytes_freed` is the database file's size before step 2 minus its
+///    size after step 4, floored at zero, and only computed when
+///    `db_path` is `Some`.
+pub fn run(_conn: &Connection, _opts: &PruneOptions) -> Result<PurgeReport> {
+    unimplemented!()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::open_memory;
     use crate::models::Event;
     use crate::repo;
+    use tempfile::tempdir;
 
     /// Insert a block with every field the cutoff predicate could ever
     /// key off, aside from `dirty`/`is_personal` (see
@@ -314,6 +350,19 @@ mod tests {
              VALUES (?1, ?1 || 'T09:00:00+00:00', ?1 || 'T09:30:00+00:00',
                      1800, ?2, ?3, ?4)",
             params![day, tempo_id, dirty, is_personal],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    /// Insert a block carrying `filler` in its `description` — used to
+    /// bulk up a file-backed database with enough pages for a `VACUUM` to
+    /// meaningfully shrink (B21).
+    fn insert_bulky_block(conn: &Connection, day: &str, filler: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds, description)
+             VALUES (?1, ?1 || 'T09:00:00+00:00', ?1 || 'T09:30:00+00:00', 1800, ?2)",
+            params![day, filler],
         )
         .unwrap();
         conn.last_insert_rowid()
@@ -645,5 +694,170 @@ mod tests {
         assert_eq!(report.tickets_deleted, 1);
         assert_eq!(count(&conn, "sessions"), before_sessions);
         assert_eq!(count(&conn, "jira_tickets"), before_tickets);
+    }
+
+    /// B17: a deleting prune writes a snapshot that is itself a valid,
+    /// openable SQLite database CONTAINING the pre-prune rows — proof of a
+    /// real recovery artifact, not an empty placeholder file.
+    #[test]
+    fn b17_snapshot_is_a_valid_openable_db_containing_pre_prune_rows() {
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("worklog.db");
+        let conn = crate::db::open(&db_path).unwrap();
+        insert_block(&conn, "2026-02-10", Some("tempo-1"), None, None);
+        insert_block(&conn, "2026-02-11", None, None, None);
+
+        let snapshot_path = tmp.path().join("worklog.db.preprune");
+        let opts = PruneOptions {
+            cutoff: date("2026-06-20"),
+            dry_run: false,
+            snapshot_to: Some(snapshot_path.as_path()),
+            db_path: Some(db_path.as_path()),
+        };
+        let report = run(&conn, &opts).unwrap();
+        assert_eq!(report.blocks_deleted, 2);
+        assert!(snapshot_path.is_file());
+
+        // The snapshot is a self-contained, openable db with the rows the
+        // real database is about to lose.
+        let snap_conn = Connection::open(&snapshot_path).unwrap();
+        let blocks: i64 = snap_conn
+            .query_row("SELECT COUNT(*) FROM blocks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(blocks, 2);
+    }
+
+    /// B18: a pre-existing (stale) file at the snapshot path is replaced —
+    /// `VACUUM INTO` refuses to overwrite, so `run` must remove it first —
+    /// and exactly one generation exists afterwards.
+    #[test]
+    fn b18_pre_existing_snapshot_replaced_exactly_one_generation() {
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("worklog.db");
+        let conn = crate::db::open(&db_path).unwrap();
+        insert_block(&conn, "2026-02-10", Some("tempo-1"), None, None);
+
+        let snapshot_path = tmp.path().join("worklog.db.preprune");
+        std::fs::write(&snapshot_path, b"stale snapshot from a previous prune").unwrap();
+
+        let opts = PruneOptions {
+            cutoff: date("2026-06-20"),
+            dry_run: false,
+            snapshot_to: Some(snapshot_path.as_path()),
+            db_path: Some(db_path.as_path()),
+        };
+        run(&conn, &opts).unwrap();
+
+        // Replaced with a fresh, valid snapshot — not left as the stale
+        // placeholder and not appended to.
+        let snap_conn = Connection::open(&snapshot_path).unwrap();
+        let blocks: i64 = snap_conn
+            .query_row("SELECT COUNT(*) FROM blocks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(blocks, 1);
+
+        // Exactly one generation: no numbered/backup sibling files.
+        let siblings: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("worklog.db.preprune"))
+            .collect();
+        assert_eq!(
+            siblings.len(),
+            1,
+            "expected exactly one snapshot generation, got {siblings:?}"
+        );
+    }
+
+    /// B19: an unwritable snapshot target (parent directory does not
+    /// exist) makes `run` return `Err` AND leaves every table's row count
+    /// unchanged — the most important test in the slice, proving the
+    /// abort-before-delete ordering.
+    #[test]
+    fn b19_unwritable_snapshot_target_aborts_before_any_delete() {
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("worklog.db");
+        let conn = crate::db::open(&db_path).unwrap();
+        insert_block(&conn, "2026-02-10", Some("tempo-1"), None, None);
+        insert_session(&conn, "sess-old", "2026-02-10T09:00:00+00:00");
+        insert_ticket(&conn, "EXT-1", 1);
+        insert_block_with_ticket(&conn, "2026-02-10", "EXT-1");
+
+        let before_blocks = count(&conn, "blocks");
+        let before_sessions = count(&conn, "sessions");
+        let before_tickets = count(&conn, "jira_tickets");
+
+        let snapshot_path = tmp
+            .path()
+            .join("does-not-exist")
+            .join("worklog.db.preprune");
+        let opts = PruneOptions {
+            cutoff: date("2026-06-20"),
+            dry_run: false,
+            snapshot_to: Some(snapshot_path.as_path()),
+            db_path: Some(db_path.as_path()),
+        };
+        let result = run(&conn, &opts);
+        assert!(result.is_err());
+        assert_eq!(count(&conn, "blocks"), before_blocks);
+        assert_eq!(count(&conn, "sessions"), before_sessions);
+        assert_eq!(count(&conn, "jira_tickets"), before_tickets);
+    }
+
+    /// B20: a dry run writes no snapshot file at all.
+    #[test]
+    fn b20_dry_run_writes_no_snapshot() {
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("worklog.db");
+        let conn = crate::db::open(&db_path).unwrap();
+        insert_block(&conn, "2026-02-10", Some("tempo-1"), None, None);
+
+        let snapshot_path = tmp.path().join("worklog.db.preprune");
+        let opts = PruneOptions {
+            cutoff: date("2026-06-20"),
+            dry_run: true,
+            snapshot_to: Some(snapshot_path.as_path()),
+            db_path: Some(db_path.as_path()),
+        };
+        let report = run(&conn, &opts).unwrap();
+        assert!(report.dry_run);
+        assert!(report.snapshot_path.is_none());
+        assert!(!snapshot_path.exists());
+    }
+
+    /// B21: after a prune that deleted a meaningful number of rows,
+    /// `bytes_freed` is populated and non-negative, and the file is no
+    /// larger than before the prune. Bulked with enough filler data to
+    /// give `VACUUM` real pages to reclaim.
+    #[test]
+    fn b21_bytes_freed_populated_and_file_not_larger_after_prune() {
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("worklog.db");
+        let conn = crate::db::open(&db_path).unwrap();
+
+        let filler = "x".repeat(2000);
+        for i in 0..300 {
+            insert_bulky_block(&conn, "2026-02-10", &format!("{filler}-{i}"));
+        }
+
+        let size_before_delete = std::fs::metadata(&db_path).unwrap().len();
+
+        let snapshot_path = tmp.path().join("worklog.db.preprune");
+        let opts = PruneOptions {
+            cutoff: date("2026-06-20"),
+            dry_run: false,
+            snapshot_to: Some(snapshot_path.as_path()),
+            db_path: Some(db_path.as_path()),
+        };
+        let report = run(&conn, &opts).unwrap();
+
+        assert_eq!(report.blocks_deleted, 300);
+        assert!(report.bytes_freed >= 0);
+        let size_after = std::fs::metadata(&db_path).unwrap().len();
+        assert!(
+            size_after <= size_before_delete,
+            "file grew: before={size_before_delete} after={size_after}"
+        );
     }
 }
