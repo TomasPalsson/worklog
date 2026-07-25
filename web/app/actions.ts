@@ -20,13 +20,17 @@ import {
   listProjects as daemonListProjects,
   listAccounts as daemonListAccounts,
   createTicket as daemonCreateTicket,
+  exportBilling as daemonExportBilling,
+  markExported as daemonMarkExported,
 } from "@/lib/daemon";
 import type {
   CommitEntry,
   CreateTicketInput,
   Event,
+  ExportResponse,
   JiraProject,
   JiraTicket,
+  MarkExportResponse,
   SettingsSaveResponse,
   SettingsUpdate,
   SettingsView,
@@ -227,6 +231,29 @@ export async function createTicket(
     await daemonAssignTicket(blockId, ticket.key);
     return ticket;
   }, `/${day}`);
+}
+
+// ───────────────────────── billing export ─────────────────────────
+
+/**
+ * Compute the day's billing line items. Read-only, so no `revalidateOn` —
+ * mirrors `fetchProjects`/`fetchBlockEvents`. The panel calls this on
+ * open and after marking.
+ */
+export async function exportBilling(
+  day: string,
+): Promise<ActionResult<ExportResponse>> {
+  return runAction(() => daemonExportBilling(day));
+}
+
+/**
+ * Mark the day's blocks as exported/billed. A mutation — revalidates the
+ * day page so any surface showing export state refreshes.
+ */
+export async function markExported(
+  day: string,
+): Promise<ActionResult<MarkExportResponse>> {
+  return runAction(() => daemonMarkExported(day), `/${day}`);
 }
 
 // ───────────────────────── settings ─────────────────────────

@@ -89,8 +89,27 @@ let _runActionForTests: <T>(
   fn: () => Promise<T>,
   revalidateOn?: string,
 ) => Promise<{ ok: true; data: T } | { ok: false; error: string }>;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let actions: any;
+// The billing-export actions under test. Typed structurally rather than
+// via `typeof import("./actions")` so the test doesn't need the "use
+// server" module's full surface.
+let actions: {
+  exportBilling: (day: string) => Promise<
+    | {
+        ok: true;
+        data: {
+          day: string;
+          exported_at: string | null;
+          rows: { repo: string; kind: string }[];
+          rendered: { text: string; csv: string; json: string };
+        };
+      }
+    | { ok: false; error: string }
+  >;
+  markExported: (day: string) => Promise<
+    | { ok: true; data: { day: string; marked: number; exported_at: string | null } }
+    | { ok: false; error: string }
+  >;
+};
 
 beforeAll(async () => {
   const mod = await import("./actions");

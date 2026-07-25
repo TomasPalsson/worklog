@@ -172,8 +172,10 @@ import type {
   CommitEntry,
   CreateTicketInput,
   Event,
+  ExportResponse,
   JiraProject,
   JiraTicket,
+  MarkExportResponse,
   SettingsSaveResponse,
   SettingsUpdate,
   SettingsView,
@@ -264,6 +266,28 @@ export async function listBlockEvents(blockId: number): Promise<Event[]> {
  */
 export async function listBlockCommits(blockId: number): Promise<CommitEntry[]> {
   return call<CommitEntry[]>("GET", `/blocks/${blockId}/commits`);
+}
+
+// ───────────────────────── billing export ─────────────────────────
+
+/**
+ * A day's billing line items plus all three pre-rendered output formats.
+ * Read-only — computing an export never mutates anything, so it's safe to
+ * call on every panel open.
+ */
+export async function exportBilling(day: string): Promise<ExportResponse> {
+  return call<ExportResponse>("GET", `/export/${day}`);
+}
+
+/**
+ * Stamp `exported_at` on the day's blocks — the billing canary that both
+ * guards against double-billing and (unlike `tempo_worklog_id`, which
+ * nothing sets now that we're off Tempo) keeps `worklog db purge` able to
+ * retire old work. Idempotent: already-marked blocks keep their original
+ * timestamp and `marked` comes back 0.
+ */
+export async function markExported(day: string): Promise<MarkExportResponse> {
+  return call<MarkExportResponse>("POST", `/export/${day}/mark`);
 }
 
 // ───────────────────────── settings ─────────────────────────

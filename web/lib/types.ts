@@ -148,6 +148,52 @@ export interface SettingsSaveResponse extends SettingsView {
   reclassified: ReclassifyStats | null;
 }
 
+// ───────────────────────── billing export ─────────────────────────
+
+/**
+ * One billable line item for a day, as computed by the Rust
+ * `worklog-core::billing` module: a group of blocks sharing the same
+ * (dominant repo, task, kind).
+ *
+ * NOTE the field is `kind`, not `type` — that's the Rust struct field
+ * name and what `GET /export/:day` serialises on the structured rows.
+ * (The *rendered* CSV/JSON payloads use a `type` column, since that's
+ * the external billing system's vocabulary.) Getting this wrong renders
+ * a blank column rather than failing loudly, so it's asserted in
+ * `app/actions.test.ts`.
+ */
+export interface BillingRow {
+  /** Dominant repo across the group's events, or `"—"` when none. */
+  repo: string;
+  description: string;
+  kind: "Work" | "Personal";
+  /** Overlap-safe union of the group's block intervals, unrounded. */
+  seconds: number;
+  /** Half-hour-rounded billable hours (e.g. 4, 5.5). */
+  hours: number;
+}
+
+/**
+ * `GET /export/:day`. The daemon pre-renders all three output formats so
+ * the Rust renderers stay the single source of truth — the browser never
+ * re-derives the billing text it puts on the clipboard.
+ */
+export interface ExportResponse {
+  day: string;
+  /** Latest `exported_at` across the day's blocks; null if never marked. */
+  exported_at: string | null;
+  rows: BillingRow[];
+  rendered: { text: string; csv: string; json: string };
+}
+
+/** `POST /export/:day/mark` — `marked` is how many blocks were NEWLY
+ * marked (0 when the day was already fully exported). */
+export interface MarkExportResponse {
+  day: string;
+  marked: number;
+  exported_at: string | null;
+}
+
 export type SourceKind = "github" | "claude" | "gcal" | "jira" | "other";
 
 /** Collapse a raw DB `source` column into one of our display buckets. */
