@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 pub mod billing;
+pub mod billing_registry;
 pub mod block_service;
 pub mod browser;
 pub mod collectors;

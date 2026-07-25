@@ -213,9 +213,13 @@ fn export_day_returns_rows_and_rendered_formats() {
 
     let rows = v["rows"].as_array().expect("rows should be an array");
     assert!(!rows.is_empty(), "rows should not be empty: {v}");
-    assert!(rows[0].get("repo").is_some());
-    assert!(rows[0].get("description").is_some());
-    assert!(rows[0].get("hours").is_some());
+    // The invoicing-form shape: customer/verkefni may be null (the user
+    // fills those in), but the derived fields are always present.
+    assert!(rows[0].get("customer").is_some(), "row: {}", rows[0]);
+    assert!(rows[0].get("verkefni").is_some(), "row: {}", rows[0]);
+    assert!(rows[0].get("invoice_text").is_some(), "row: {}", rows[0]);
+    assert!(rows[0].get("hours").is_some(), "row: {}", rows[0]);
+    assert!(rows[0].get("billable").is_some(), "row: {}", rows[0]);
 
     let rendered = &v["rendered"];
     let text = rendered["text"]
@@ -227,8 +231,10 @@ fn export_day_returns_rows_and_rendered_formats() {
         .as_str()
         .expect("rendered.csv should be a string");
     assert!(
-        csv.starts_with("repo,description,hours,type"),
-        "csv should start with header row: {csv}"
+        csv.starts_with(
+            "dagsetning,vidskiptamadur,verkefni,tegund_skraningar,taxti,timar,reikningshaefi,texti_a_reikning"
+        ),
+        "csv should start with the invoicing-form header row: {csv}"
     );
 
     let json_str = rendered["json"]

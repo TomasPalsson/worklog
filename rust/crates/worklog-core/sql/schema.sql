@@ -101,3 +101,37 @@ CREATE TABLE IF NOT EXISTS jira_tickets (
 );
 
 CREATE INDEX IF NOT EXISTS idx_jira_tickets_updated ON jira_tickets(updated);
+
+-- ───────────────────────── billing registry ─────────────────────────
+-- Backs the billing export's Viðskiptamaður / Verkefni resolution.
+-- Lives in SQLite (not a config file) so it is edited entirely from the
+-- review UI's Settings → Billing section via the daemon.
+
+-- The customers time can be billed to. `aliases` is a newline-separated
+-- list matched case-insensitively against a block's Jira ticket summary
+-- and description — that is how a shared infra folder (e.g. genai-infra,
+-- which serves many customers) still resolves to the right customer.
+CREATE TABLE IF NOT EXISTS billing_customers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    aliases TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+-- Per-work-folder defaults. `folder` is the project root under the work
+-- prefix (worktrees and sub-dirs collapse to it — see
+-- billing::work_folder_for_path), e.g. `sjukra`, `apro-website`.
+--
+--   customer NULL → shared folder: resolve the customer from ticket /
+--                   description text instead of pinning one here.
+--   verkefni NULL → leave the accounting key blank for the user to pick
+--                   (never model-guessed).
+CREATE TABLE IF NOT EXISTS billing_folder_map (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    folder TEXT NOT NULL UNIQUE,
+    customer TEXT,
+    verkefni TEXT,
+    -- 1 = Reikningshæft (billable), 0 = Óreikningshæft.
+    billable INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);

@@ -1,68 +1,109 @@
-//! Billing export — turn a day's blocks into per-(repo, task, kind)
-//! line items for manual copy-paste into an external invoicing
-//! system.
+//! Billing export — turn a day's blocks into the line items the
+//! external invoicing system is filled in from.
 //!
-//! Slice 1 (walking skeleton) covered **Work** blocks only. Slice 2
-//! includes **Personal** blocks too (tagged `Kind::Personal`) and adds
-//! a deterministic, always-non-empty description fallback. CSV/JSON
-//! rendering and the `exported_at` "billed" marker are later slices —
-//! this module only grows new `Format` arms, it never changes the
-//! shape of an existing row.
+//! One row maps 1:1 onto one submission of the invoicing form:
+//!
+//! | form field          | source                                            |
+//! |---------------------|---------------------------------------------------|
+//! | Dagsetning          | the day being exported                            |
+//! | Viðskiptamaður      | folder pin, else customer alias found in the text |
+//! | Verkefni (deild)    | folder pin only — **never** guessed               |
+//! | Tegund skráningar   | [`TEGUND_SKRANINGAR`] (constant)                  |
+//! | Taxti               | [`TAXTI`] (constant)                              |
+//! | Tímar               | overlap-safe union of block time, ½h-rounded       |
+//! | Reikningshæfi       | folder pin, default Reikningshæft                 |
+//! | Texti á reikning    | the block description, as-is                      |
+//!
+//! Two rules keep this trustworthy: nothing that would land on an
+//! invoice is invented (an unresolved field comes out `None` for the
+//! user to fill in), and hours are the **union** of a group's intervals
+//! so overlapping blocks are never double-billed.
+//!
+//! Personal blocks are excluded outright — that time never goes into the
+//! invoicing system.
 
 use std::collections::HashMap;
 
 use anyhow::Result;
 use rusqlite::{params_from_iter, Connection};
 
+use crate::billing_registry::Registry;
 use crate::collectors::tempo::{round_to_half_hour, HALF_HOUR_SECONDS};
 use crate::models::Block;
 use crate::repo;
 
-/// The repo shown for a block/group that carries no repo signal at
-/// all.
-const NO_REPO: &str = "—";
+/// Shown wherever a field could not be resolved and the user must pick
+/// it in the form.
+pub const BLANK: &str = "—";
 
-/// Whether a billing row is billable Work or non-billable Personal
-/// time. Mirrors `Block::is_personal` (`false` → `Work`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
-pub enum Kind {
-    Work,
-    Personal,
-}
+/// `Tegund skráningar` — always a plain registration; the driving and
+/// on-call variants are never billed by this user.
+pub const TEGUND_SKRANINGAR: &str = "Almenn skráning";
 
-impl Kind {
-    /// The label used everywhere a `Kind` is rendered: `"Work"` /
-    /// `"Personal"`.
-    pub fn label(self) -> &'static str {
-        match self {
-            Kind::Work => "Work",
-            Kind::Personal => "Personal",
-        }
+/// `Taxti` — always day rate.
+pub const TAXTI: &str = "Dagvinna";
+
+/// The two `Reikningshæfi` values.
+pub const REIKNINGSHAEFT: &str = "Reikningshæft";
+pub const OREIKNINGSHAEFT: &str = "Óreikningshæft";
+
+/// `Reikningshæfi` label for a billable flag.
+pub fn reikningshaefi(billable: bool) -> &'static str {
+    if billable {
+        REIKNINGSHAEFT
+    } else {
+        OREIKNINGSHAEFT
     }
 }
 
-/// One billable line item for a day — a group of blocks sharing the
-/// same `(dominant repo, task, kind)`.
+/// One line item — one submission of the invoicing form.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BillingRow {
-    /// The block group's dominant repo, or `"—"` when none of the
-    /// group's blocks carry a repo.
-    pub repo: String,
-    /// The shared description, distinct descriptions joined with
-    /// `"; "`, or a deterministic fallback (see
-    /// [`fallback_description`]) when no block in the group has one.
-    pub description: String,
-    pub kind: Kind,
-    /// Overlap-safe union of the group's block intervals, in seconds
-    /// (unrounded).
+    /// ISO `YYYY-MM-DD`. Rendered as `dd.mm.yyyy` for the form.
+    pub day: String,
+    /// Resolved work folder. Context for the user (and the key the
+    /// registry maps), not itself a form field.
+    pub folder: String,
+    /// `Viðskiptamaður`; `None` when undetectable — the user fills it in.
+    pub customer: Option<String>,
+    /// `Verkefni (deild)`; `None` unless a folder pin supplied it.
+    pub verkefni: Option<String>,
+    /// The Jira key this line came from, when there was one. Context
+    /// only — helps the user recognise the line.
+    pub ticket: Option<String>,
+    /// Overlap-safe union of the group's block intervals, unrounded.
     pub seconds: i64,
-    /// `round_to_half_hour(seconds) / 3600.0` — the billable hours.
+    /// `Tímar` — `seconds` rounded to the nearest half hour.
     pub hours: f64,
+    /// `Reikningshæfi` as a bool; `true` = Reikningshæft.
+    pub billable: bool,
+    /// `Texti á reikning` — the block description, unmodified.
+    pub invoice_text: String,
 }
 
-/// Output format for [`render`]. `Csv` and `Json` (slice 3) render
-/// from the exact same [`BillingRow`] slice as `Text` — adding a
-/// format is a new variant plus a matching `render` arm only.
+impl BillingRow {
+    /// `Dagsetning` as the form wants it: `dd.mm.yyyy`.
+    pub fn date_display(&self) -> String {
+        match chrono::NaiveDate::parse_from_str(&self.day, "%Y-%m-%d") {
+            Ok(d) => d.format("%d.%m.%Y").to_string(),
+            // Unparseable day: show it verbatim rather than inventing one.
+            Err(_) => self.day.clone(),
+        }
+    }
+
+    /// `Tímar` as the form wants it: comma decimal, no trailing `,0`.
+    pub fn hours_display(&self) -> String {
+        format_hours(self.seconds)
+    }
+
+    /// True when the user still has to pick something for this line.
+    pub fn needs_input(&self) -> bool {
+        self.customer.is_none() || self.verkefni.is_none()
+    }
+}
+
+/// Output format for [`render`]. Adding a format is a new variant plus a
+/// matching `render` arm — row computation never changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Text,
@@ -70,23 +111,66 @@ pub enum Format {
     Json,
 }
 
-/// Last path segment of a filesystem path — the repo fallback when an
-/// event carries `project_path` but no explicit `repo`.
-fn basename(path: &str) -> Option<String> {
-    path.trim_end_matches('/')
-        .rsplit('/')
+/// The work-folder (project root) a `project_path` belongs to.
+///
+/// Two normalisations matter, because most real paths are neither plain
+/// nor stable:
+///
+/// * **worktrees** live at `<root>/.claude/worktrees/<name>`, so
+///   everything from `/.claude/` on is stripped — otherwise
+///   `sjukra/.claude/worktrees/mega-audit` would bill as `mega-audit`.
+/// * **sub-directories** collapse to the project root: the first segment
+///   beneath the work prefix wins, so `sjukra/app` is still `sjukra`.
+///
+/// Paths outside the work prefix fall back to their last segment, which
+/// keeps explicitly-configured work paths outside `~/Desktop/Work`
+/// working. `None` only for an unusable path.
+pub fn work_folder_for_path(path: &str) -> Option<String> {
+    // Drop the worktree / agent scaffolding.
+    let base = match path.find("/.claude/") {
+        Some(i) => &path[..i],
+        None => path,
+    };
+    let base = base.trim_end_matches('/');
+    if base.is_empty() {
+        return None;
+    }
+
+    if let Some(prefix) = work_prefix() {
+        if let Some(rest) = base.strip_prefix(&prefix) {
+            let rest = rest.trim_start_matches('/');
+            if !rest.is_empty() {
+                let first = rest.split('/').next().unwrap_or(rest);
+                if !first.is_empty() {
+                    return Some(first.to_owned());
+                }
+            }
+        }
+    }
+
+    base.rsplit('/')
         .next()
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
 }
 
-/// Most-frequent `COALESCE(events.repo, basename(events.project_path))`
-/// across a block's events. `None` when the block has no events
-/// carrying either. Mirrors `personal::dominant_project_path_for_block`'s
-/// query shape.
-pub fn dominant_repo_for_block(conn: &Connection, block_id: i64) -> Result<Option<String>> {
+/// `~/Desktop/Work`, expanded. Mirrors `personal::default_work_prefix` —
+/// the same prefix that decides work-vs-personal decides which path
+/// segment is the billable project root.
+fn work_prefix() -> Option<String> {
+    dirs::home_dir().map(|mut p| {
+        p.push("Desktop/Work");
+        p.to_string_lossy().into_owned()
+    })
+}
+
+/// Most-frequent work folder across a block's events, derived from
+/// `events.project_path` (with `events.repo` as a fallback for blocks
+/// whose events only carry a GitHub repo). `None` when the block has
+/// neither — e.g. a pure calendar or Jira block.
+pub fn work_folder_for_block(conn: &Connection, block_id: i64) -> Result<Option<String>> {
     let mut stmt = conn.prepare(
-        "SELECT e.repo, e.project_path
+        "SELECT e.project_path, e.repo
            FROM events e
            JOIN block_events be ON be.event_id = e.id
           WHERE be.block_id = ?1",
@@ -96,19 +180,30 @@ pub fn dominant_repo_for_block(conn: &Connection, block_id: i64) -> Result<Optio
         .collect::<std::result::Result<_, _>>()?;
 
     let mut counts: HashMap<String, u32> = HashMap::new();
-    for (repo_name, project_path) in rows {
-        let key = repo_name.or_else(|| project_path.as_deref().and_then(basename));
+    for (project_path, repo_name) in rows {
+        let key = project_path
+            .as_deref()
+            .and_then(work_folder_for_path)
+            // A GitHub repo like `aproorg/LibreChat` → `LibreChat`.
+            .or_else(|| {
+                repo_name
+                    .as_deref()
+                    .and_then(|r| r.rsplit('/').next())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+            });
         if let Some(key) = key {
             *counts.entry(key).or_insert(0) += 1;
         }
     }
-    Ok(counts.into_iter().max_by_key(|(_, n)| *n).map(|(k, _)| k))
+    // Ties break lexicographically so a day's rows are reproducible.
+    let mut ranked: Vec<(String, u32)> = counts.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    Ok(ranked.into_iter().next().map(|(k, _)| k))
 }
 
 /// Most-frequent non-empty `events.title` across a set of blocks'
-/// events (joined via `block_events`). `None` when none of the blocks
-/// have any events, or none of their events carry a non-empty title.
-/// Ties are broken lexicographically for determinism.
+/// events. Ties break lexicographically for determinism.
 fn dominant_title_for_blocks(conn: &Connection, block_ids: &[i64]) -> Result<Option<String>> {
     if block_ids.is_empty() {
         return Ok(None);
@@ -139,10 +234,25 @@ fn dominant_title_for_blocks(conn: &Connection, block_ids: &[i64]) -> Result<Opt
     Ok(ranked.into_iter().next().map(|(title, _)| title))
 }
 
+/// The Jira ticket summary for a block's ticket, when both exist. Feeds
+/// the customer alias match — summaries like "Document analyzer fyrir
+/// Sjúkra" are where the customer actually appears.
+fn ticket_summary(conn: &Connection, ticket: Option<&str>) -> Result<Option<String>> {
+    let Some(key) = ticket.filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    Ok(conn
+        .query_row(
+            "SELECT summary FROM jira_tickets WHERE key = ?1",
+            [key],
+            |r| r.get::<_, String>(0),
+        )
+        .ok())
+}
+
 /// A block's wall-clock interval as epoch seconds: `[start, start +
-/// duration)`. Mirrors `worklog_cli::cli::block_interval` exactly —
-/// duration (not `ended_at`) is the canonical "logged time" because
-/// the estimator writes `duration_seconds` independently of `ended_at`.
+/// duration)`. Duration — not `ended_at` — is the canonical logged time,
+/// matching `worklog_cli::cli::block_interval`.
 fn block_interval(block: &Block) -> (i64, i64) {
     let start = chrono::DateTime::parse_from_rfc3339(&block.started_at)
         .map(|d| d.timestamp())
@@ -151,9 +261,8 @@ fn block_interval(block: &Block) -> (i64, i64) {
 }
 
 /// Total length of the union of `[start, end)` intervals — stretches
-/// covered by more than one interval count once. Mirrors
-/// `worklog_cli::cli::union_seconds` exactly so a block that overlaps
-/// another (e.g. a meeting during coding) is never double-billed.
+/// covered twice count once, so a meeting held during coding is never
+/// double-billed. Mirrors `worklog_cli::cli::union_seconds`.
 fn union_seconds(mut intervals: Vec<(i64, i64)>) -> i64 {
     intervals.sort_by_key(|&(s, _)| s);
     let mut total = 0;
@@ -174,8 +283,9 @@ fn union_seconds(mut intervals: Vec<(i64, i64)>) -> i64 {
     total
 }
 
-/// The grouping key within a repo: `jira_issue` if present and
-/// non-empty, else the trimmed block description, else `block-{id}`.
+/// What distinguishes one line item from another: the Jira ticket if
+/// there is one, else the description, else the block id. Two different
+/// tickets for the same customer stay two lines.
 fn task_for_block(block: &Block) -> String {
     if let Some(issue) = block.jira_issue.as_deref().filter(|s| !s.is_empty()) {
         return issue.to_string();
@@ -191,95 +301,93 @@ fn task_for_block(block: &Block) -> String {
     format!("block-{}", block.id)
 }
 
-/// Accumulator for one `(repo, task, kind)` group while folding a
-/// day's blocks. Keying on `kind` too guarantees a group — and thus a
-/// row — is entirely Work or entirely Personal: a work block and a
-/// personal block that otherwise share `(repo, task)` never merge.
+/// Accumulator for one `(customer, verkefni, task)` group.
 struct GroupAcc {
-    repo: String,
-    kind: Kind,
+    folder: String,
+    customer: Option<String>,
+    verkefni: Option<String>,
+    ticket: Option<String>,
+    billable: bool,
     intervals: Vec<(i64, i64)>,
-    /// Distinct non-empty descriptions, in first-seen order.
+    /// Distinct non-empty descriptions in first-seen order.
     descriptions: Vec<String>,
-    /// Ids of the blocks folded into this group, used for the
-    /// description fallback's dominant-event-title lookup.
     block_ids: Vec<i64>,
 }
 
-/// Deterministic, always-non-empty description fallback for a group
-/// with no usable block description: the group's most-frequent event
-/// title, else `"Work in {repo}"`, else `"Untitled work"` when the
-/// group has no repo either (B9).
-fn fallback_description(conn: &Connection, acc: &GroupAcc) -> Result<String> {
+/// Deterministic, never-empty invoice text for a group whose blocks all
+/// lack a description: the group's most-frequent event title, else the
+/// folder name, else a neutral placeholder.
+fn fallback_invoice_text(conn: &Connection, acc: &GroupAcc) -> Result<String> {
     if let Some(title) = dominant_title_for_blocks(conn, &acc.block_ids)? {
         return Ok(title);
     }
-    Ok(if acc.repo == NO_REPO {
-        "Untitled work".to_string()
+    Ok(if acc.folder == BLANK {
+        "Unspecified work".to_string()
     } else {
-        format!("Work in {}", acc.repo)
+        format!("Work in {}", acc.folder)
     })
-}
-
-/// Fold a group's accumulator into its final [`BillingRow`].
-///
-/// `seconds` is the union of the group's block intervals (never a
-/// naive sum); `hours` is that union rounded to the nearest half hour.
-/// `description` is the single shared description when every block
-/// agrees, the distinct descriptions joined with `"; "` when they
-/// don't, or `fallback` (see [`fallback_description`]) when no block
-/// in the group has one.
-fn finish_group(acc: GroupAcc, fallback: Option<String>) -> BillingRow {
-    let seconds = union_seconds(acc.intervals);
-    let hours = round_to_half_hour(seconds) as f64 / 3600.0;
-    let description = if acc.descriptions.is_empty() {
-        fallback.expect("fallback description computed for a group with no descriptions")
-    } else {
-        acc.descriptions.join("; ")
-    };
-    BillingRow {
-        repo: acc.repo,
-        description,
-        kind: acc.kind,
-        seconds,
-        hours,
-    }
 }
 
 /// Compute a day's billing rows.
 ///
-/// All of the day's blocks are considered — Work and Personal alike.
-/// Blocks are grouped by `(dominant repo, task, kind)`, where `kind`
-/// is `Kind::Personal` for `is_personal` blocks and `Kind::Work`
-/// otherwise; each group's `seconds` is the union of its blocks'
-/// `[started_at, started_at + duration_seconds)` intervals (never a
-/// naive sum), and `hours` is that union rounded to the nearest half
-/// hour. Rows are sorted by `repo`, then by descending `seconds`, for
-/// deterministic output.
+/// Personal blocks are skipped entirely. Each remaining block resolves
+/// its folder → customer/verkefni/billable through the [`Registry`],
+/// then blocks are grouped by `(customer, verkefni, task)`. A group's
+/// `seconds` is the **union** of its blocks' intervals (never a naive
+/// sum) and `hours` is that union rounded to the nearest half hour.
+///
+/// Rows sort with the lines still needing input first (so the user sees
+/// what to fill), then by customer, then by descending time.
 pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
+    let registry = Registry::load(conn)?;
     let blocks = repo::list_blocks_for_day(conn, day)?;
 
-    let mut groups: HashMap<(String, String, Kind), GroupAcc> = HashMap::new();
-    let mut order: Vec<(String, String, Kind)> = Vec::new();
+    type Key = (String, String, String);
+    let mut groups: HashMap<Key, GroupAcc> = HashMap::new();
+    let mut order: Vec<Key> = Vec::new();
 
     for block in blocks.iter() {
-        let repo_name =
-            dominant_repo_for_block(conn, block.id)?.unwrap_or_else(|| NO_REPO.to_string());
-        let task = task_for_block(block);
-        let kind = if block.is_personal {
-            Kind::Personal
-        } else {
-            Kind::Work
-        };
-        let key = (repo_name.clone(), task.clone(), kind);
+        // Personal time never reaches the invoicing system.
+        if block.is_personal {
+            continue;
+        }
+
+        let folder = work_folder_for_block(conn, block.id)?.unwrap_or_else(|| BLANK.to_string());
+        let ticket = block
+            .jira_issue
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+
+        // The text the customer alias match runs against: the ticket
+        // summary (where customers are usually named) plus this block's
+        // own description.
+        let mut haystack = String::new();
+        if let Some(summary) = ticket_summary(conn, ticket.as_deref())? {
+            haystack.push_str(&summary);
+            haystack.push('\n');
+        }
+        if let Some(desc) = block.description.as_deref() {
+            haystack.push_str(desc);
+        }
+        let resolved = registry.resolve(&folder, &haystack);
+
+        let key = (
+            resolved.customer.clone().unwrap_or_default(),
+            resolved.verkefni.clone().unwrap_or_default(),
+            task_for_block(block),
+        );
 
         if !groups.contains_key(&key) {
             order.push(key.clone());
             groups.insert(
                 key.clone(),
                 GroupAcc {
-                    repo: repo_name,
-                    kind,
+                    folder,
+                    customer: resolved.customer,
+                    verkefni: resolved.verkefni,
+                    ticket,
+                    billable: resolved.billable,
                     intervals: Vec::new(),
                     descriptions: Vec::new(),
                     block_ids: Vec::new(),
@@ -305,20 +413,36 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
         .into_iter()
         .map(|key| -> Result<BillingRow> {
             let acc = groups.remove(&key).expect("group present for its own key");
-            let fallback = if acc.descriptions.is_empty() {
-                Some(fallback_description(conn, &acc)?)
+            let invoice_text = if acc.descriptions.is_empty() {
+                fallback_invoice_text(conn, &acc)?
             } else {
-                None
+                acc.descriptions.join("; ")
             };
-            Ok(finish_group(acc, fallback))
+            let seconds = union_seconds(acc.intervals);
+            Ok(BillingRow {
+                day: day.to_owned(),
+                folder: acc.folder,
+                customer: acc.customer,
+                verkefni: acc.verkefni,
+                ticket: acc.ticket,
+                seconds,
+                hours: round_to_half_hour(seconds) as f64 / 3600.0,
+                billable: acc.billable,
+                invoice_text,
+            })
         })
         .collect::<Result<Vec<_>>>()?;
 
-    rows.sort_by(|a, b| a.repo.cmp(&b.repo).then(b.seconds.cmp(&a.seconds)));
+    rows.sort_by(|a, b| {
+        b.needs_input()
+            .cmp(&a.needs_input())
+            .then_with(|| a.customer.cmp(&b.customer))
+            .then(b.seconds.cmp(&a.seconds))
+    });
     Ok(rows)
 }
 
-/// Render rounded seconds as a comma-decimal hour string using integer
+/// Render rounded seconds as comma-decimal hours using integer
 /// half-hour math — guarantees `5,5` / `4` with no float noise.
 fn format_hours(seconds: i64) -> String {
     let halves = round_to_half_hour(seconds) / HALF_HOUR_SECONDS;
@@ -330,28 +454,43 @@ fn format_hours(seconds: i64) -> String {
     }
 }
 
-fn render_text_line(row: &BillingRow) -> String {
-    format!(
-        "repo: {}  description: {}  time: {} hrs  type: {}",
-        row.repo,
-        row.description,
-        format_hours(row.seconds),
-        row.kind.label()
-    )
+fn or_blank(v: &Option<String>) -> &str {
+    v.as_deref().unwrap_or(BLANK)
 }
 
+/// Text: one aligned line per row, in form order, for scanning in a
+/// terminal. Unresolved fields show [`BLANK`].
 fn render_text(rows: &[BillingRow]) -> String {
+    let col_width = |f: &dyn Fn(&BillingRow) -> String| {
+        rows.iter().map(|r| f(r).chars().count()).max().unwrap_or(0)
+    };
+    let cw = col_width(&|r: &BillingRow| or_blank(&r.customer).to_owned());
+    let vw = col_width(&|r: &BillingRow| or_blank(&r.verkefni).to_owned());
+    let hw = col_width(&|r: &BillingRow| r.hours_display());
+
+    let pad = |s: &str, w: usize| {
+        let n = s.chars().count();
+        format!("{s}{}", " ".repeat(w.saturating_sub(n)))
+    };
+
     rows.iter()
-        .map(render_text_line)
+        .map(|r| {
+            format!(
+                "{}  {}  {}  {} hrs  {}  {}",
+                r.date_display(),
+                pad(or_blank(&r.customer), cw),
+                pad(or_blank(&r.verkefni), vw),
+                pad(&r.hours_display(), hw),
+                reikningshaefi(r.billable),
+                r.invoice_text,
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-/// NFR 5.2 CSV formula-injection guard: prefixes `field` with `'`
-/// when its first character could make a spreadsheet interpret the
-/// cell as a formula (`=`, `+`, `-`, `@`) or as a leading TAB/CR.
-/// Applied to the string fields (repo, description, type) only —
-/// never to the numeric-derived hours cell.
+/// NFR 5.2 CSV formula-injection guard: prefixes `'` when the first
+/// character could make a spreadsheet treat the cell as a formula.
 fn csv_guard(field: &str) -> String {
     match field.chars().next() {
         Some('=') | Some('+') | Some('-') | Some('@') | Some('\t') | Some('\r') => {
@@ -361,8 +500,8 @@ fn csv_guard(field: &str) -> String {
     }
 }
 
-/// RFC-4180 quoting: wraps `field` in double quotes (doubling any
-/// internal `"`) when it contains a comma, double-quote, CR, or LF.
+/// RFC-4180 quoting: wrap in `"` (doubling internal `"`) when the field
+/// contains a comma, quote, CR or LF.
 fn csv_quote(field: &str) -> String {
     if field.contains(['"', ',', '\r', '\n']) {
         format!("\"{}\"", field.replace('"', "\"\""))
@@ -371,25 +510,28 @@ fn csv_quote(field: &str) -> String {
     }
 }
 
-/// Formula-guards then RFC-4180-quotes a string field.
 fn csv_cell(field: &str) -> String {
     csv_quote(&csv_guard(field))
 }
 
-/// CSV: header `repo,description,hours,type` followed by one data
-/// row per `BillingRow`. `hours` reuses [`format_hours`] (the same
-/// comma-decimal text as the Text renderer) and is RFC-4180-quoted
-/// like any other cell (so `5,5` becomes `"5,5"`); it is never
-/// formula-guarded since it is derived, never user-authored text.
+/// CSV in the invoicing form's field order. Blanks are truly empty cells
+/// (not `—`) so a spreadsheet import doesn't inherit a dash.
 fn render_csv(rows: &[BillingRow]) -> String {
-    let mut lines = vec!["repo,description,hours,type".to_string()];
-    for row in rows {
+    let mut lines = vec![
+        "dagsetning,vidskiptamadur,verkefni,tegund_skraningar,taxti,timar,reikningshaefi,texti_a_reikning"
+            .to_string(),
+    ];
+    for r in rows {
         lines.push(
             [
-                csv_cell(&row.repo),
-                csv_cell(&row.description),
-                csv_quote(&format_hours(row.seconds)),
-                csv_cell(row.kind.label()),
+                csv_cell(&r.date_display()),
+                csv_cell(r.customer.as_deref().unwrap_or("")),
+                csv_cell(r.verkefni.as_deref().unwrap_or("")),
+                csv_cell(TEGUND_SKRANINGAR),
+                csv_cell(TAXTI),
+                csv_quote(&r.hours_display()),
+                csv_cell(reikningshaefi(r.billable)),
+                csv_cell(&r.invoice_text),
             ]
             .join(","),
         );
@@ -397,39 +539,49 @@ fn render_csv(rows: &[BillingRow]) -> String {
     lines.join("\n")
 }
 
-/// One JSON-rendered billing row: `hours` is the plain `f64` (dot
-/// decimal, e.g. `5.5`), `type` is `Kind::label()` under the `type`
-/// key (the wire name the export contract — and AC-006 — use).
+/// One JSON line item. `null` (not `"—"`) for unresolved fields so a
+/// consumer can tell "not known" from a literal dash.
 #[derive(serde::Serialize)]
 struct JsonRow<'a> {
-    repo: &'a str,
-    description: &'a str,
-    hours: f64,
+    dagsetning: String,
+    vidskiptamadur: Option<&'a str>,
+    verkefni: Option<&'a str>,
+    tegund_skraningar: &'static str,
+    taxti: &'static str,
+    timar: f64,
+    reikningshaefi: &'static str,
+    texti_a_reikning: &'a str,
+    // Context, not form fields.
+    day: &'a str,
+    folder: &'a str,
+    ticket: Option<&'a str>,
     seconds: i64,
-    #[serde(rename = "type")]
-    kind: &'static str,
 }
 
-/// JSON: a pretty-printed array of `{repo, description, hours,
-/// seconds, type}` objects, one per `BillingRow`.
 fn render_json(rows: &[BillingRow]) -> String {
     let json_rows: Vec<JsonRow> = rows
         .iter()
-        .map(|row| JsonRow {
-            repo: &row.repo,
-            description: &row.description,
-            hours: row.hours,
-            seconds: row.seconds,
-            kind: row.kind.label(),
+        .map(|r| JsonRow {
+            dagsetning: r.date_display(),
+            vidskiptamadur: r.customer.as_deref(),
+            verkefni: r.verkefni.as_deref(),
+            tegund_skraningar: TEGUND_SKRANINGAR,
+            taxti: TAXTI,
+            timar: r.hours,
+            reikningshaefi: reikningshaefi(r.billable),
+            texti_a_reikning: &r.invoice_text,
+            day: &r.day,
+            folder: &r.folder,
+            ticket: r.ticket.as_deref(),
+            seconds: r.seconds,
         })
         .collect();
     serde_json::to_string_pretty(&json_rows)
         .expect("billing rows are plain data and always serialize")
 }
 
-/// Render `rows` in the given `format`. [`Format::Text`]: one line per
-/// row — `repo: {repo}  description: {description}  time: {H} hrs  type: {Work|Personal}`.
-/// [`Format::Csv`]/[`Format::Json`]: see [`render_csv`]/[`render_json`].
+/// Render `rows` in `format`. All formats render from the same row slice
+/// — see [`render_text`], [`render_csv`], [`render_json`].
 pub fn render(rows: &[BillingRow], format: Format) -> String {
     match format {
         Format::Text => render_text(rows),
@@ -441,17 +593,23 @@ pub fn render(rows: &[BillingRow], format: Format) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::billing_registry::{upsert_customer, upsert_folder, Customer, FolderMap};
     use crate::db::open_memory;
     use crate::models::Event;
     use crate::repo as repository;
     use rusqlite::params;
 
-    /// Insert a block row directly (mirrors the `estimate.rs` /
-    /// `daemon.rs` test-fixture style) and return its id.
+    fn home() -> String {
+        dirs::home_dir().unwrap().to_string_lossy().into_owned()
+    }
+
+    fn work(sub: &str) -> String {
+        format!("{}/Desktop/Work/{sub}", home())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn seed_block(
         conn: &Connection,
-        day: &str,
         started_at: &str,
         duration_seconds: i64,
         jira_issue: Option<&str>,
@@ -461,9 +619,8 @@ mod tests {
         conn.execute(
             "INSERT INTO blocks
                 (day, jira_issue, started_at, ended_at, duration_seconds, description, is_personal)
-             VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6)",
+             VALUES ('2026-07-23', ?1, ?2, ?2, ?3, ?4, ?5)",
             params![
-                day,
                 jira_issue,
                 started_at,
                 duration_seconds,
@@ -475,40 +632,14 @@ mod tests {
         conn.last_insert_rowid()
     }
 
-    /// Insert an event carrying `repo`/`project_path` and link it to
-    /// `block_id` via `block_events`.
     fn seed_event(
         conn: &Connection,
         block_id: i64,
         source_id: &str,
-        repo: Option<&str>,
-        project_path: Option<&str>,
-    ) {
-        let mut ev = Event::minimal("github_commit", source_id, "2026-04-18T09:00:00Z", "commit");
-        ev.repo = repo.map(str::to_string);
-        ev.project_path = project_path.map(str::to_string);
-        let eid = repository::upsert_event(conn, &ev).unwrap();
-        conn.execute(
-            "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
-            params![block_id, eid],
-        )
-        .unwrap();
-    }
-
-    /// Like `seed_event`, but lets the test control the event's
-    /// `title` (used by the description-fallback tests, B9).
-    /// `seed_event` hardcodes title to `"commit"` since most tests
-    /// don't care.
-    fn seed_event_titled(
-        conn: &Connection,
-        block_id: i64,
-        source_id: &str,
-        repo: Option<&str>,
         project_path: Option<&str>,
         title: &str,
     ) {
-        let mut ev = Event::minimal("github_commit", source_id, "2026-04-18T09:00:00Z", title);
-        ev.repo = repo.map(str::to_string);
+        let mut ev = Event::minimal("claude", source_id, "2026-07-23T09:00:00Z", title);
         ev.project_path = project_path.map(str::to_string);
         let eid = repository::upsert_event(conn, &ev).unwrap();
         conn.execute(
@@ -518,452 +649,411 @@ mod tests {
         .unwrap();
     }
 
-    // ─────────────────────── dominant_repo_for_block ───────────────────────
+    fn pin(conn: &Connection, folder: &str, customer: Option<&str>, verkefni: Option<&str>) {
+        upsert_folder(
+            conn,
+            &FolderMap {
+                id: None,
+                folder: folder.into(),
+                customer: customer.map(str::to_owned),
+                verkefni: verkefni.map(str::to_owned),
+                billable: true,
+            },
+        )
+        .unwrap();
+    }
+
+    // ───────────── work_folder_for_path (the worktree/subdir fix) ─────────────
 
     #[test]
-    fn dominant_repo_picks_most_frequent_repo() {
-        // events repo A×2, B×1 → "A".
-        let conn = open_memory().unwrap();
-        let block_id = seed_block(
-            &conn,
-            "2026-04-18",
-            "2026-04-18T09:00:00+00:00",
-            3600,
-            None,
-            None,
-            false,
+    fn work_folder_collapses_worktrees_to_the_project_root() {
+        // Regression: the basename of a worktree path is the branch name,
+        // so `sjukra/.claude/worktrees/mega-audit` used to bill as
+        // "mega-audit" and fragment the customer's day.
+        assert_eq!(
+            work_folder_for_path(&work("sjukra/.claude/worktrees/mega-audit")),
+            Some("sjukra".into())
         );
-        seed_event(&conn, block_id, "e1", Some("A"), None);
-        seed_event(&conn, block_id, "e2", Some("A"), None);
-        seed_event(&conn, block_id, "e3", Some("B"), None);
-
-        let got = dominant_repo_for_block(&conn, block_id).unwrap();
-        assert_eq!(got.as_deref(), Some("A"));
     }
 
     #[test]
-    fn dominant_repo_is_none_without_any_repo_signal() {
-        let conn = open_memory().unwrap();
-        let block_id = seed_block(
-            &conn,
-            "2026-04-18",
-            "2026-04-18T09:00:00+00:00",
-            3600,
-            None,
-            None,
-            false,
+    fn work_folder_collapses_subdirs_to_the_project_root() {
+        assert_eq!(
+            work_folder_for_path(&work("sjukra/app")),
+            Some("sjukra".into())
         );
-        seed_event(&conn, block_id, "e1", None, None);
-
-        let got = dominant_repo_for_block(&conn, block_id).unwrap();
-        assert_eq!(got, None);
+        assert_eq!(
+            work_folder_for_path(&work("claude-exam/pro-practice")),
+            Some("claude-exam".into())
+        );
     }
 
-    // ─────────────────────────── rows_for_day ───────────────────────────
+    #[test]
+    fn work_folder_keeps_a_plain_work_folder() {
+        assert_eq!(
+            work_folder_for_path(&work("genai-infra")),
+            Some("genai-infra".into())
+        );
+    }
 
     #[test]
-    fn b1_two_work_blocks_same_repo_different_tickets_stay_separate_rows() {
-        // 2 work blocks, repo genai-infra, different tickets: 4h + 5h30m.
-        let conn = open_memory().unwrap();
-        let b1 = seed_block(
-            &conn,
-            "2026-04-18",
-            "2026-04-18T09:00:00+00:00",
-            14_400, // 4h
+    fn work_folder_outside_the_prefix_falls_back_to_the_last_segment() {
+        assert_eq!(
+            work_folder_for_path("/opt/contract/acme-api"),
+            Some("acme-api".into())
+        );
+        assert_eq!(work_folder_for_path(""), None);
+    }
+
+    #[test]
+    fn worktree_and_root_events_land_in_the_same_folder() {
+        let c = open_memory().unwrap();
+        let b = seed_block(
+            &c,
+            "2026-07-23T09:00:00+00:00",
+            3600,
+            None,
+            Some("w"),
+            false,
+        );
+        seed_event(&c, b, "e1", Some(&work("sjukra")), "commit");
+        seed_event(
+            &c,
+            b,
+            "e2",
+            Some(&work("sjukra/.claude/worktrees/thing")),
+            "commit",
+        );
+        assert_eq!(
+            work_folder_for_block(&c, b).unwrap(),
+            Some("sjukra".into()),
+            "a worktree event must not split the folder"
+        );
+    }
+
+    // ────────────────────────── row computation ──────────────────────────
+
+    #[test]
+    fn personal_blocks_never_appear() {
+        let c = open_memory().unwrap();
+        let b = seed_block(
+            &c,
+            "2026-07-23T09:00:00+00:00",
+            3600,
+            None,
+            Some("hobby"),
+            true,
+        );
+        seed_event(&c, b, "e1", Some("/Users/x/Desktop/Projects/toy"), "s");
+        assert!(rows_for_day(&c, "2026-07-23").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_pinned_folder_fills_customer_and_verkefni() {
+        let c = open_memory().unwrap();
+        pin(
+            &c,
+            "apro-website",
+            Some("APRÓ"),
+            Some("Vefsíður APRÓ og dótturfélaga"),
+        );
+        let b = seed_block(
+            &c,
+            "2026-07-23T09:00:00+00:00",
+            14400,
+            None,
+            Some("Website updates"),
+            false,
+        );
+        seed_event(&c, b, "e1", Some(&work("apro-website")), "s");
+
+        let rows = rows_for_day(&c, "2026-07-23").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].customer, Some("APRÓ".into()));
+        assert_eq!(
+            rows[0].verkefni,
+            Some("Vefsíður APRÓ og dótturfélaga".into())
+        );
+        assert_eq!(rows[0].hours, 4.0);
+        assert!(rows[0].billable);
+        assert!(!rows[0].needs_input());
+    }
+
+    #[test]
+    fn a_shared_folder_resolves_the_customer_from_the_ticket_summary() {
+        let c = open_memory().unwrap();
+        upsert_customer(
+            &c,
+            &Customer {
+                id: None,
+                name: "Sjúkra".into(),
+                aliases: vec![],
+            },
+        )
+        .unwrap();
+        pin(&c, "genai-infra", None, None); // shared
+        c.execute(
+            "INSERT INTO jira_tickets (key, summary) VALUES ('GENAI-1219', ?1)",
+            params!["Document analyzer fyrir Sjúkra"],
+        )
+        .unwrap();
+        let b = seed_block(
+            &c,
+            "2026-07-23T09:00:00+00:00",
+            7200,
+            Some("GENAI-1219"),
+            Some("Build the analyzer"),
+            false,
+        );
+        seed_event(&c, b, "e1", Some(&work("genai-infra")), "s");
+
+        let rows = rows_for_day(&c, "2026-07-23").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].customer, Some("Sjúkra".into()));
+        // The accounting key is never guessed.
+        assert_eq!(rows[0].verkefni, None);
+        assert!(rows[0].needs_input());
+        assert_eq!(rows[0].ticket, Some("GENAI-1219".into()));
+    }
+
+    #[test]
+    fn an_unresolvable_customer_is_left_blank() {
+        let c = open_memory().unwrap();
+        let b = seed_block(
+            &c,
+            "2026-07-23T09:00:00+00:00",
+            3600,
+            None,
+            Some("Mystery work"),
+            false,
+        );
+        seed_event(&c, b, "e1", Some("/somewhere/else/mystery"), "s");
+        let rows = rows_for_day(&c, "2026-07-23").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].customer, None);
+        assert!(rows[0].needs_input());
+    }
+
+    #[test]
+    fn distinct_tickets_stay_distinct_lines() {
+        let c = open_memory().unwrap();
+        seed_block(
+            &c,
+            "2026-07-23T09:00:00+00:00",
+            14400,
             Some("GENAI-1"),
-            Some("did the thing"),
+            Some("First task"),
             false,
         );
-        seed_event(&conn, b1, "e1", Some("genai-infra"), None);
-
-        let b2 = seed_block(
-            &conn,
-            "2026-04-18",
-            "2026-04-18T14:00:00+00:00",
-            19_800, // 5h30m
+        seed_block(
+            &c,
+            "2026-07-23T14:00:00+00:00",
+            19800,
             Some("GENAI-2"),
-            Some("did another thing"),
+            Some("Second task"),
             false,
         );
-        seed_event(&conn, b2, "e2", Some("genai-infra"), None);
-
-        let rows = rows_for_day(&conn, "2026-04-18").unwrap();
+        let rows = rows_for_day(&c, "2026-07-23").unwrap();
         assert_eq!(rows.len(), 2);
-        assert!(rows.iter().all(|r| r.repo == "genai-infra"));
-        assert!(rows.iter().all(|r| r.kind == Kind::Work));
-
-        let hours: Vec<f64> = rows.iter().map(|r| r.hours).collect();
-        assert!(hours.contains(&4.0), "expected a 4.0h row, got {hours:?}");
-        assert!(hours.contains(&5.5), "expected a 5.5h row, got {hours:?}");
+        let hours: Vec<String> = rows.iter().map(|r| r.hours_display()).collect();
+        assert!(hours.contains(&"4".to_string()), "got {hours:?}");
+        assert!(hours.contains(&"5,5".to_string()), "got {hours:?}");
     }
 
     #[test]
-    fn b2_same_repo_same_ticket_blocks_collapse_to_one_row() {
-        // 2 work blocks, same repo, same ticket, 1h + 1h (non-overlapping) → 2h.
-        let conn = open_memory().unwrap();
-        let b1 = seed_block(
-            &conn,
-            "2026-04-18",
-            "2026-04-18T09:00:00+00:00",
+    fn same_ticket_blocks_merge_and_overlaps_count_once() {
+        let c = open_memory().unwrap();
+        // Two 1h blocks on one ticket overlapping by 30m → 1.5h, not 2h.
+        seed_block(
+            &c,
+            "2026-07-23T10:00:00+00:00",
             3600,
             Some("GENAI-9"),
-            Some("same task"),
+            Some("Work"),
             false,
         );
-        seed_event(&conn, b1, "e1", Some("genai-infra"), None);
-
-        let b2 = seed_block(
-            &conn,
-            "2026-04-18",
-            "2026-04-18T11:00:00+00:00",
+        seed_block(
+            &c,
+            "2026-07-23T10:30:00+00:00",
             3600,
             Some("GENAI-9"),
-            Some("same task"),
+            Some("Work"),
             false,
         );
-        seed_event(&conn, b2, "e2", Some("genai-infra"), None);
-
-        let rows = rows_for_day(&conn, "2026-04-18").unwrap();
+        let rows = rows_for_day(&c, "2026-07-23").unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].hours, 2.0);
-        assert_eq!(rows[0].seconds, 7200);
-    }
-
-    #[test]
-    fn b3_overlapping_same_ticket_intervals_union_not_sum() {
-        // Same ticket, overlapping intervals: 1h@10:00 + 1h@10:30 → union
-        // 5400s = 1.5h, NOT the naive 2h sum.
-        let conn = open_memory().unwrap();
-        let b1 = seed_block(
-            &conn,
-            "2026-04-18",
-            "2026-04-18T10:00:00+00:00",
-            3600,
-            Some("GENAI-5"),
-            Some("overlap task"),
-            false,
-        );
-        seed_event(&conn, b1, "e1", Some("genai-infra"), None);
-
-        let b2 = seed_block(
-            &conn,
-            "2026-04-18",
-            "2026-04-18T10:30:00+00:00",
-            3600,
-            Some("GENAI-5"),
-            Some("overlap task"),
-            false,
-        );
-        seed_event(&conn, b2, "e2", Some("genai-infra"), None);
-
-        let rows = rows_for_day(&conn, "2026-04-18").unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].seconds, 5400);
+        assert_eq!(rows[0].seconds, 5400, "union, not sum");
         assert_eq!(rows[0].hours, 1.5);
     }
 
     #[test]
-    fn b4_block_with_repo_and_no_jira_uses_description_as_task() {
-        // A block with events on repo "foo" and no jira_issue: repo "foo",
-        // task/description derived from the block description.
-        let conn = open_memory().unwrap();
-        let b1 = seed_block(
-            &conn,
-            "2026-04-18",
-            "2026-04-18T09:00:00+00:00",
-            1800,
+    fn billable_flag_follows_the_folder_pin() {
+        let c = open_memory().unwrap();
+        upsert_folder(
+            &c,
+            &FolderMap {
+                id: None,
+                folder: "internal-admin".into(),
+                customer: Some("APRÓ".into()),
+                verkefni: Some("[O] Innra support".into()),
+                billable: false,
+            },
+        )
+        .unwrap();
+        let b = seed_block(
+            &c,
+            "2026-07-23T09:00:00+00:00",
+            3600,
             None,
-            Some("random work on foo"),
+            Some("Admin"),
             false,
         );
-        seed_event(&conn, b1, "e1", Some("foo"), None);
-
-        let rows = rows_for_day(&conn, "2026-04-18").unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].repo, "foo");
-        assert_eq!(rows[0].description, "random work on foo");
+        seed_event(&c, b, "e1", Some(&work("internal-admin")), "s");
+        let rows = rows_for_day(&c, "2026-07-23").unwrap();
+        assert!(!rows[0].billable);
+        assert_eq!(reikningshaefi(rows[0].billable), OREIKNINGSHAEFT);
     }
 
-    // Slice 1 excluded Personal blocks entirely (this test used to
-    // assert `rows.is_empty()`); slice 2 explicitly reverses that —
-    // see the "Behavioral changes" note in this module's doc-comment.
-    // Personal blocks now appear in `rows_for_day`'s output, tagged
-    // `Kind::Personal` (B7).
     #[test]
-    fn rows_for_day_includes_personal_blocks_as_of_slice_two() {
-        let conn = open_memory().unwrap();
-        let b1 = seed_block(
-            &conn,
-            "2026-04-18",
-            "2026-04-18T09:00:00+00:00",
-            3600,
-            None,
-            Some("personal errand"),
-            true,
-        );
-        seed_event(&conn, b1, "e1", Some("some-app"), None);
-
-        let rows = rows_for_day(&conn, "2026-04-18").unwrap();
-        assert_eq!(rows.len(), 1, "slice 2 includes personal blocks");
-        assert_eq!(rows[0].kind, Kind::Personal);
-        assert_eq!(rows[0].description, "personal errand");
+    fn missing_description_falls_back_to_the_event_title() {
+        let c = open_memory().unwrap();
+        let b = seed_block(&c, "2026-07-23T09:00:00+00:00", 3600, None, None, false);
+        seed_event(&c, b, "e1", Some("/x/some-folder"), "Standup");
+        let rows = rows_for_day(&c, "2026-07-23").unwrap();
+        assert_eq!(rows[0].invoice_text, "Standup");
     }
 
-    /// B7: a ~2h personal block on repo `some-app` with a description
-    /// yields one row tagged `Kind::Personal`, with that repo and
-    /// hours, and the rendered text line contains `type: Personal`.
     #[test]
-    fn b7_personal_block_yields_personal_row_with_repo_and_hours() {
-        let conn = open_memory().unwrap();
+    fn lines_needing_input_sort_first() {
+        let c = open_memory().unwrap();
+        pin(&c, "apro-website", Some("APRÓ"), Some("Vefsíður"));
         let b1 = seed_block(
-            &conn,
-            "2026-04-18",
-            "2026-04-18T09:00:00+00:00",
-            7200, // 2h
+            &c,
+            "2026-07-23T09:00:00+00:00",
+            14400,
             None,
-            Some("dentist appointment"),
-            true,
-        );
-        seed_event(&conn, b1, "e1", Some("some-app"), None);
-
-        let rows = rows_for_day(&conn, "2026-04-18").unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].kind, Kind::Personal);
-        assert_eq!(rows[0].repo, "some-app");
-        assert_eq!(rows[0].hours, 2.0);
-
-        let text = render(&rows, Format::Text);
-        assert!(
-            text.contains("type: Personal"),
-            "expected a Personal type line, got: {text}"
-        );
-    }
-
-    /// B8: a work block explicitly yields `Kind::Work`.
-    #[test]
-    fn b8_work_block_yields_work_row() {
-        let conn = open_memory().unwrap();
-        let b1 = seed_block(
-            &conn,
-            "2026-04-18",
-            "2026-04-18T09:00:00+00:00",
-            3600,
-            None,
-            Some("shipped a fix"),
+            Some("Resolved"),
             false,
         );
-        seed_event(&conn, b1, "e1", Some("some-app"), None);
-
-        let rows = rows_for_day(&conn, "2026-04-18").unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].kind, Kind::Work);
-    }
-
-    /// B9: a block with no description, whose only event is titled
-    /// "Standup", falls back to that event title as its description —
-    /// non-empty, deterministic.
-    #[test]
-    fn b9_missing_description_falls_back_to_dominant_event_title() {
-        let conn = open_memory().unwrap();
-        let b1 = seed_block(
-            &conn,
-            "2026-04-18",
-            "2026-04-18T09:00:00+00:00",
+        seed_event(&c, b1, "e1", Some(&work("apro-website")), "s");
+        let b2 = seed_block(
+            &c,
+            "2026-07-23T14:00:00+00:00",
             3600,
             None,
-            None,
-            true,
+            Some("Unresolved"),
+            false,
         );
-        seed_event_titled(&conn, b1, "e1", Some("some-app"), None, "Standup");
+        seed_event(&c, b2, "e2", Some("/elsewhere/unknown"), "s");
 
-        let rows = rows_for_day(&conn, "2026-04-18").unwrap();
-        assert_eq!(rows.len(), 1);
-        assert!(!rows[0].description.is_empty());
-        assert_eq!(rows[0].description, "Standup");
+        let rows = rows_for_day(&c, "2026-07-23").unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].needs_input(), "needs-input lines come first");
+        assert_eq!(rows[0].invoice_text, "Unresolved");
     }
 
-    /// B9 (fallback branch 2): no description and no usable event
-    /// title (blank title), but the block's event does carry a repo →
-    /// falls back to `"Work in {repo}"`.
-    #[test]
-    fn b9_missing_description_and_blank_title_falls_back_to_work_in_repo() {
-        let conn = open_memory().unwrap();
-        let b1 = seed_block(
-            &conn,
-            "2026-04-18",
-            "2026-04-18T09:00:00+00:00",
-            3600,
-            None,
-            None,
-            true,
-        );
-        seed_event_titled(&conn, b1, "e1", Some("some-app"), None, "");
+    // ──────────────────────────── rendering ────────────────────────────
 
-        let rows = rows_for_day(&conn, "2026-04-18").unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].description, "Work in some-app");
-    }
-
-    /// B9 (fallback branch 3): no description, no events at all (so
-    /// no repo either) → falls back to `"Untitled work"`.
-    #[test]
-    fn b9_missing_description_and_no_repo_falls_back_to_untitled_work() {
-        let conn = open_memory().unwrap();
-        seed_block(
-            &conn,
-            "2026-04-18",
-            "2026-04-18T09:00:00+00:00",
-            3600,
-            None,
-            None,
-            true,
-        );
-
-        let rows = rows_for_day(&conn, "2026-04-18").unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].description, "Untitled work");
-    }
-
-    // ───────────────────────────── render ─────────────────────────────
-
-    #[test]
-    fn render_text_matches_b1_exact_line_format() {
-        let rows = vec![
+    fn sample_rows() -> Vec<BillingRow> {
+        vec![
             BillingRow {
-                repo: "genai-infra".to_string(),
-                description: "did another thing".to_string(),
-                kind: Kind::Work,
-                seconds: 19_800,
+                day: "2026-07-23".into(),
+                folder: "sjukra".into(),
+                customer: Some("Sjúkra".into()),
+                verkefni: Some("[P] Vöktun".into()),
+                ticket: Some("GENAI-1219".into()),
+                seconds: 19800,
                 hours: 5.5,
+                billable: true,
+                invoice_text: "Document analyzer work".into(),
             },
             BillingRow {
-                repo: "genai-infra".to_string(),
-                description: "did the thing".to_string(),
-                kind: Kind::Work,
-                seconds: 14_400,
+                day: "2026-07-23".into(),
+                folder: "genai-infra".into(),
+                customer: None,
+                verkefni: None,
+                ticket: None,
+                seconds: 14400,
                 hours: 4.0,
+                billable: true,
+                invoice_text: "Infra work".into(),
             },
-        ];
-
-        let text = render(&rows, Format::Text);
-        let expected =
-            "repo: genai-infra  description: did another thing  time: 5,5 hrs  type: Work\n\
-             repo: genai-infra  description: did the thing  time: 4 hrs  type: Work";
-        assert_eq!(text, expected);
+        ]
     }
 
-    /// B10: `render(&rows, Format::Json)` is a JSON array; each object
-    /// carries repo/description/hours/seconds/type with the expected
-    /// values (hours as a plain JSON number, dot decimal).
     #[test]
-    fn b10_json_renderer_parses_into_array_of_expected_objects() {
-        let rows = vec![
-            BillingRow {
-                repo: "genai-infra".to_string(),
-                description: "did another thing".to_string(),
-                kind: Kind::Work,
-                seconds: 19_800,
-                hours: 5.5,
-            },
-            BillingRow {
-                repo: "genai-infra".to_string(),
-                description: "did the thing".to_string(),
-                kind: Kind::Work,
-                seconds: 14_400,
-                hours: 4.0,
-            },
-        ];
+    fn date_renders_in_the_forms_dd_mm_yyyy() {
+        assert_eq!(sample_rows()[0].date_display(), "23.07.2026");
+    }
 
-        let json = render(&rows, Format::Json);
-        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
-        let arr = parsed.as_array().expect("top-level JSON array");
+    #[test]
+    fn hours_render_with_a_comma_decimal() {
+        assert_eq!(sample_rows()[0].hours_display(), "5,5");
+        assert_eq!(sample_rows()[1].hours_display(), "4");
+    }
+
+    #[test]
+    fn text_shows_blanks_as_a_dash_and_includes_the_constants() {
+        let out = render(&sample_rows(), Format::Text);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("23.07.2026"));
+        assert!(lines[0].contains("Sjúkra"));
+        assert!(lines[0].contains("5,5 hrs"));
+        assert!(lines[0].contains(REIKNINGSHAEFT));
+        assert!(lines[1].contains(BLANK), "unresolved fields show a dash");
+    }
+
+    #[test]
+    fn csv_uses_the_form_field_order_and_empty_cells_for_blanks() {
+        let out = render(&sample_rows(), Format::Csv);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(
+            lines[0],
+            "dagsetning,vidskiptamadur,verkefni,tegund_skraningar,taxti,timar,reikningshaefi,texti_a_reikning"
+        );
+        assert!(lines[1].contains("Almenn skráning"));
+        assert!(lines[1].contains("Dagvinna"));
+        // The comma-decimal hours cell must be quoted.
+        assert!(lines[1].contains("\"5,5\""));
+        // A blank customer is an empty cell, never a dash.
+        assert!(lines[2].starts_with("23.07.2026,,,"), "got {}", lines[2]);
+    }
+
+    #[test]
+    fn csv_guards_formula_injection_in_the_invoice_text() {
+        let mut rows = sample_rows();
+        rows[0].invoice_text = "=SUM(A1)".into();
+        let out = render(&rows, Format::Csv);
+        assert!(out.contains("'=SUM(A1)"), "got: {out}");
+    }
+
+    #[test]
+    fn json_uses_null_for_unresolved_fields() {
+        let out = render(&sample_rows(), Format::Json);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let arr = v.as_array().unwrap();
         assert_eq!(arr.len(), 2);
-
-        let first = &arr[0];
-        assert_eq!(first["repo"], "genai-infra");
-        assert_eq!(first["description"], "did another thing");
-        assert_eq!(first["hours"].as_f64(), Some(5.5));
-        assert_eq!(first["seconds"].as_i64(), Some(19_800));
-        assert_eq!(first["type"], "Work");
+        assert_eq!(arr[0]["vidskiptamadur"], "Sjúkra");
+        assert_eq!(arr[0]["timar"], 5.5);
+        assert_eq!(arr[0]["dagsetning"], "23.07.2026");
+        assert_eq!(arr[0]["tegund_skraningar"], "Almenn skráning");
+        assert!(arr[1]["vidskiptamadur"].is_null(), "blank must be null");
+        assert!(arr[1]["verkefni"].is_null());
     }
 
-    /// B11 / NFR 5.2: a description starting with `=` gets the
-    /// formula-injection guard (`'` prefix); a description containing
-    /// a comma and a `"` gets RFC-4180 quoted with `""`-escaping. The
-    /// header line is exactly `repo,description,hours,type`.
     #[test]
-    fn b11_csv_renderer_guards_formula_injection_and_quotes_rfc4180() {
-        let rows = vec![
-            BillingRow {
-                repo: "genai-infra".to_string(),
-                description: "=SUM(A1)".to_string(),
-                kind: Kind::Work,
-                seconds: 3_600,
-                hours: 1.0,
-            },
-            BillingRow {
-                repo: "genai-infra".to_string(),
-                description: "has, a \"quote\"".to_string(),
-                kind: Kind::Work,
-                seconds: 19_800,
-                hours: 5.5,
-            },
-        ];
-
-        let csv = render(&rows, Format::Csv);
-        let lines: Vec<&str> = csv.lines().collect();
-        assert_eq!(lines[0], "repo,description,hours,type");
-        assert_eq!(
-            lines[1], "genai-infra,'=SUM(A1),1,Work",
-            "formula-guard prefixes the leading '='"
-        );
-        assert_eq!(
-            lines[2], "genai-infra,\"has, a \"\"quote\"\"\",\"5,5\",Work",
-            "comma+quote description AND the comma-decimal hours cell are both RFC-4180 quoted"
-        );
-    }
-
-    /// AC-008: the same rows contain the same N line items whether
-    /// rendered as text, csv, or json.
-    #[test]
-    fn ac008_text_csv_json_agree_on_row_count() {
-        let rows = vec![
-            BillingRow {
-                repo: "genai-infra".to_string(),
-                description: "did another thing".to_string(),
-                kind: Kind::Work,
-                seconds: 19_800,
-                hours: 5.5,
-            },
-            BillingRow {
-                repo: "genai-infra".to_string(),
-                description: "did the thing".to_string(),
-                kind: Kind::Work,
-                seconds: 14_400,
-                hours: 4.0,
-            },
-            BillingRow {
-                repo: "some-app".to_string(),
-                description: "dentist appointment".to_string(),
-                kind: Kind::Personal,
-                seconds: 7_200,
-                hours: 2.0,
-            },
-        ];
-
-        let text_lines = render(&rows, Format::Text)
-            .lines()
-            .filter(|l| !l.is_empty())
-            .count();
-        let csv_data_rows = render(&rows, Format::Csv).lines().count() - 1; // minus header
+    fn all_three_formats_agree_on_the_line_count() {
+        let rows = sample_rows();
+        let text_lines = render(&rows, Format::Text).lines().count();
+        let csv_data = render(&rows, Format::Csv).lines().count() - 1;
         let json_len = serde_json::from_str::<serde_json::Value>(&render(&rows, Format::Json))
-            .expect("valid JSON")
+            .unwrap()
             .as_array()
-            .expect("top-level JSON array")
+            .unwrap()
             .len();
-
         assert_eq!(text_lines, rows.len());
-        assert_eq!(csv_data_rows, rows.len());
+        assert_eq!(csv_data, rows.len());
         assert_eq!(json_len, rows.len());
     }
 }

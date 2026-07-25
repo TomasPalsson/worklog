@@ -15,7 +15,7 @@ pub const SCHEMA_SQL: &str = include_str!("../sql/schema.sql");
 /// Monotonic integer version of the schema, bumped by future migrations.
 /// Stored in `PRAGMA user_version` so we can detect stale dbs without adding
 /// a dedicated table.
-pub const SCHEMA_VERSION: i32 = 8;
+pub const SCHEMA_VERSION: i32 = 9;
 
 /// Open a connection at `path`, enable WAL + FK, and run migrations.
 pub fn open(path: &Path) -> Result<Connection> {
@@ -283,15 +283,17 @@ mod tests {
 
     #[test]
     fn schema_version_is_bumped_for_exported_at_migration() {
-        // B22. The exported_at migration bumps SCHEMA_VERSION — hardcode
-        // the literal target so this genuinely fails until the bump
-        // lands (comparing SCHEMA_VERSION to itself would be a no-op).
+        // B22. `exported_at` landed at v8, so the schema can never be
+        // older than that. A `>=` floor rather than an equality keeps the
+        // test meaningful without having to be edited by every later
+        // migration (the billing registry took it to v9).
         let conn = open_memory().unwrap();
-        assert_eq!(
-            current_version(&conn).unwrap(),
-            8,
-            "exported_at migration must bump SCHEMA_VERSION to 8"
+        let v = current_version(&conn).unwrap();
+        assert!(
+            v >= 8,
+            "exported_at shipped in schema v8; got v{v} — did SCHEMA_VERSION regress?"
         );
+        assert_eq!(v, SCHEMA_VERSION, "a fresh db is stamped current");
     }
 
     #[test]
