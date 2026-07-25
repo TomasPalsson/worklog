@@ -19,8 +19,36 @@ mock.module("next/cache", () => ({
   revalidatePath: (p: string) => revalidateImpl(p),
 }));
 
+// Controls the stubbed billing-export daemon calls per-test so we can
+// exercise both the happy path and the daemon-unreachable branch.
+const exportBillingImpl = mock(async (day: string) => ({
+  day,
+  exported_at: null as string | null,
+  rows: [
+    {
+      repo: "genai-infra",
+      description: "Create MCP server",
+      kind: "Work" as const,
+      seconds: 14400,
+      hours: 4,
+    },
+  ],
+  rendered: {
+    text: "repo: genai-infra  description: Create MCP server  time: 4 hrs  type: Work",
+    csv: "repo,description,hours,type\ngenai-infra,Create MCP server,4,Work",
+    json: '[{"repo":"genai-infra"}]',
+  },
+}));
+const markExportedImpl = mock(async (day: string) => ({
+  day,
+  marked: 3,
+  exported_at: "2026-07-23T18:00:00.000Z",
+}));
+
 // Stub the daemon so we never make real network calls from the unit test.
 mock.module("@/lib/daemon", () => ({
+  exportBilling: (day: string) => exportBillingImpl(day),
+  markExported: (day: string) => markExportedImpl(day),
   assignTicket: async () => ({}),
   setDuration: async () => ({}),
   setDescription: async () => ({}),
@@ -61,10 +89,13 @@ let _runActionForTests: <T>(
   fn: () => Promise<T>,
   revalidateOn?: string,
 ) => Promise<{ ok: true; data: T } | { ok: false; error: string }>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let actions: any;
 
 beforeAll(async () => {
   const mod = await import("./actions");
   _runActionForTests = mod._runActionForTests;
+  actions = mod;
 });
 
 afterAll(() => {
@@ -135,5 +166,53 @@ describe("runAction (ActionResult wrapper)", () => {
       throw new Error("nope");
     }, "/2026-04-18");
     expect(revalidateImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("billing export actions", () => {
+  it("B15: exportBilling returns the day's rows and pre-rendered formats", async () => {
+    revalidateImpl.mockImplementation(() => {});
+    const r = await actions.exportBilling("2026-07-23");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.data.day).toBe("2026-07-23");
+    expect(r.data.rows).toHaveLength(1);
+    expect(r.data.rows[0].repo).toBe("genai-infra");
+    // `kind` (not `type`) is what the daemon serialises on the structured
+    // rows — a mismatch here renders an empty column in the panel.
+    expect(r.data.rows[0].kind).toBe("Work");
+    expect(r.data.rendered.text).toContain("type: Work");
+    expect(r.data.rendered.csv.split("\n")[0]).toBe("repo,description,hours,type");
+  });
+
+  it("is a read-only action — does not revalidate the page", async () => {
+    revalidateImpl.mockReset();
+    await actions.exportBilling("2026-07-23");
+    expect(revalidateImpl).not.toHaveBeenCalled();
+  });
+
+  it("B18: surfaces a daemon failure as ok=false instead of throwing", async () => {
+    exportBillingImpl.mockImplementationOnce(async () => {
+      throw new Error("daemon request to /export/2026-07-23 timed out");
+    });
+    const r = await actions.exportBilling("2026-07-23");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("timed out");
+  });
+
+  it("markExported reports how many blocks were newly marked", async () => {
+    revalidateImpl.mockImplementation(() => {});
+    const r = await actions.markExported("2026-07-23");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.data.marked).toBe(3);
+    expect(r.data.exported_at).toBe("2026-07-23T18:00:00.000Z");
+  });
+
+  it("markExported is a mutation — revalidates the day page", async () => {
+    revalidateImpl.mockReset();
+    revalidateImpl.mockImplementation(() => {});
+    await actions.markExported("2026-07-23");
+    expect(revalidateImpl).toHaveBeenCalledWith("/2026-07-23");
   });
 });
