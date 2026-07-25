@@ -16,6 +16,12 @@ cargo fmt   --manifest-path rust/Cargo.toml --all -- --check
 cd web && bun test && bun run typecheck && bun run build
 ```
 
+`bun run build` and `next dev` share `web/.next`, so running the build
+while a dev server is up clobbers the running server's chunks — it then
+dies with `Cannot find module './vendor-chunks/*.js'`. Stop the dev
+server before a build, or recover with
+`pkill -f "next dev"; rm -rf web/.next` and restart it.
+
 Release smoke (no network, no tag push):
 
 ```bash
