@@ -157,6 +157,29 @@ pub fn work_folder_for_path(path: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The work folder for `path`, but **only** when `path` actually lives
+/// under the work prefix.
+///
+/// [`work_folder_for_path`] is deliberately lenient — it falls back to the
+/// last path segment so explicitly-configured work paths outside
+/// `~/Desktop/Work` still attribute. That leniency is wrong for
+/// *discovery*: it turns `~/dotfiles` and `~/Desktop/Projects/exam` into
+/// candidate billing folders, cluttering the "unmapped folders" list with
+/// personal work that can never be billed.
+pub fn billable_work_folder(path: &str) -> Option<String> {
+    let base = match path.find("/.claude/") {
+        Some(i) => &path[..i],
+        None => path,
+    };
+    let prefix = work_prefix()?;
+    let rest = base.trim_end_matches('/').strip_prefix(&prefix)?;
+    let rest = rest.trim_start_matches('/');
+    rest.split('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
 /// `~/Desktop/Work`, expanded. Mirrors `personal::default_work_prefix` —
 /// the same prefix that decides work-vs-personal decides which path
 /// segment is the billable project root.
@@ -1077,6 +1100,28 @@ mod tests {
         // Three disjoint 30-min blocks → 1.5h union.
         assert_eq!(rows[0].seconds, 5400);
         assert_eq!(rows[0].hours, 1.5);
+    }
+
+    #[test]
+    fn discovery_only_offers_folders_under_the_work_prefix() {
+        // Personal paths must not appear as candidate billing folders —
+        // ~/dotfiles and ~/Desktop/Projects/* can never be billed, and
+        // listing them buries the folders that matter.
+        assert_eq!(
+            billable_work_folder(&work("autofixer")),
+            Some("autofixer".into())
+        );
+        assert_eq!(
+            billable_work_folder(&work("sjukra/.claude/worktrees/x")),
+            Some("sjukra".into())
+        );
+        let home = dirs::home_dir().unwrap().to_string_lossy().into_owned();
+        assert_eq!(billable_work_folder(&format!("{home}/dotfiles")), None);
+        assert_eq!(
+            billable_work_folder(&format!("{home}/Desktop/Projects/exam")),
+            None
+        );
+        assert_eq!(billable_work_folder(&work("")), None);
     }
 
     #[test]

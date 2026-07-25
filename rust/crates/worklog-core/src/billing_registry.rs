@@ -319,7 +319,10 @@ pub fn unmapped_folders(conn: &Connection, days: i64) -> Result<Vec<(String, i64
 
     let mut counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
     for p in paths {
-        if let Some(folder) = crate::billing::work_folder_for_path(&p) {
+        // Only folders genuinely under the work prefix are billable — the
+        // lenient attribution fallback would otherwise offer `~/dotfiles`
+        // and `~/Desktop/Projects/*` as things to map.
+        if let Some(folder) = crate::billing::billable_work_folder(&p) {
             *counts.entry(folder).or_insert(0) += 1;
         }
     }
