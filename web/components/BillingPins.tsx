@@ -14,6 +14,7 @@
 // this line and every future day in that folder. The tooltips say so, because
 // a control that quietly changes tomorrow's output too would be a surprise.
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useTransition } from "react";
 
@@ -76,9 +77,9 @@ export function CustomerPin({
   if (!isMappable(pin.folder)) return <NoFolder />;
   if (customers.length === 0) {
     return (
-      <a className="billing-nofolder" href="/billing">
+      <Link className="billing-nofolder" href="/billing">
         add a customer first
-      </a>
+      </Link>
     );
   }
 

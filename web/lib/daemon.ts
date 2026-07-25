@@ -42,12 +42,17 @@ type FetchInit = Parameters<typeof fetch>[1];
  * Without this, a wedged daemon leaves the UI spinning forever.
  */
 function timeoutMs(path: string): number {
-  // Estimation is one `claude -p` per un-estimated block, run sequentially.
-  // Measured on a real 16-block day: 216s (~13s/block), so the old 60s cap
-  // failed every multi-block day even when the estimate itself succeeded —
-  // the daemon kept working and the UI reported a timeout. 10 minutes covers
-  // roughly 45 blocks; beyond that, run `worklog estimate` in a terminal.
-  if (path.startsWith("/estimate")) return 600_000;
+  // `includes` not `startsWith`: the per-block route is
+  // POST /blocks/:id/estimate, so a startsWith check would fall through to
+  // the 10s default and time out every Sparkles click.
+  //
+  // 10 minutes, not 60s: estimation is one `claude -p` per un-estimated
+  // block, run sequentially. Measured on a real 16-block day: 216s (~13s a
+  // block), so 60s failed every multi-block day even when the estimate
+  // itself succeeded — the daemon kept working and the UI reported a
+  // timeout. 10 minutes covers roughly 45 blocks; past that, run
+  // `worklog estimate` in a terminal, which has no HTTP timeout.
+  if (path.includes("/estimate")) return 600_000;
   if (path.startsWith("/sync")) return 30_000;
   if (path.startsWith("/jira/refresh")) return 30_000;
   if (path.startsWith("/infer")) return 30_000;
@@ -168,6 +173,34 @@ export async function runSync(day: string, dryRun = true) {
 
 export async function refreshJira() {
   return call<{ tickets_written: number; source: string }>("POST", "/jira/refresh");
+}
+
+/**
+ * Fold `absorb` blocks into the `primary` block. The primary survives
+ * (keeps its id, ticket, description, tempo_worklog_id). The daemon
+ * refuses cross-day merges and merges that would orphan a synced
+ * Tempo entry — surfaces as 400 with the message verbatim.
+ */
+export async function mergeBlocks(
+  primary: number,
+  absorb: number[],
+): Promise<{ merged: Block; absorbed: number[] }> {
+  return call("POST", "/blocks/merge", { primary, absorb });
+}
+
+/**
+ * Re-run Claude on a single block, OVERWRITING the description even if
+ * the block was previously hand-edited. Events + local git commits are
+ * both fed to the LLM. The daemon returns 400 for personal blocks and
+ * 404 for missing blocks.
+ */
+export async function estimateBlock(blockId: number): Promise<{
+  block_id: number;
+  description: string;
+  minutes: number;
+  jira_issue: string | null;
+}> {
+  return call("POST", `/blocks/${blockId}/estimate`);
 }
 
 // ───────────────────── reads (v0.6) ─────────────────────

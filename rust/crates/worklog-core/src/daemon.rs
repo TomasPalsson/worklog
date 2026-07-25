@@ -23,6 +23,7 @@
 //! * `POST /blocks/:id/split`            — { "first_minutes": 20 }
 //! * `POST /blocks/merge`                — { "primary": 1, "absorb": [2,3] }
 //! * `POST /blocks/auto-merge`           — { "day": "YYYY-MM-DD" }
+//! * `POST /blocks/:id/estimate`         — no body, re-runs Claude on one block
 //! * `GET  /blocks/:id/commits`          — commits in the window (work only)
 //! * `POST /infer`                       — { "day": "YYYY-MM-DD" }
 //! * `POST /jira/refresh`                — no body, refreshes open tickets
@@ -55,7 +56,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::NaiveDate;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::net::{TcpListener, UnixListener};
@@ -102,6 +103,7 @@ pub fn router(state: Shared) -> Router {
         .route("/blocks/:id/delete", post(delete_block))
         .route("/blocks/:id/personal", post(set_personal))
         .route("/blocks/:id/split", post(split_block))
+        .route("/blocks/:id/estimate", post(estimate_block))
         .route("/blocks/merge", post(merge_blocks))
         .route("/blocks/auto-merge", post(auto_merge))
         .route("/infer", post(run_infer))
@@ -254,6 +256,7 @@ pub fn socket_path() -> Result<PathBuf> {
 /// `ApiError::bad_request(...)` explicitly.
 pub enum ApiError {
     BadRequest(anyhow::Error),
+    NotFound(anyhow::Error),
     Internal(anyhow::Error),
 }
 
@@ -273,6 +276,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, err) = match self {
             ApiError::BadRequest(e) => (StatusCode::BAD_REQUEST, e),
+            ApiError::NotFound(e) => (StatusCode::NOT_FOUND, e),
             ApiError::Internal(e) => (StatusCode::INTERNAL_SERVER_ERROR, e),
         };
         // For 400, emit only the top-level message (no `{:#}` chain
@@ -283,7 +287,7 @@ impl IntoResponse for ApiError {
         // via `error!()` where the developer needs it, and the client
         // needs enough context to file a useful bug report.
         let (msg, log_msg) = match status {
-            StatusCode::BAD_REQUEST => (format!("{err}"), None),
+            StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND => (format!("{err}"), None),
             _ => (format!("{err:#}"), Some(format!("{err:#}"))),
         };
         if let Some(m) = log_msg {
@@ -954,6 +958,97 @@ async fn auto_merge(
     .await?;
     info!(day = %body.day, removed, "auto-merged adjacent same-ticket blocks");
     Ok(Json(json!({ "day": body.day, "removed": removed })))
+}
+
+/// Re-run Claude on a single block. Overwrites the block's description /
+/// duration / jira_issue / estimated_by — the user has explicitly asked
+/// for a re-describe, so the "skip manual" rule that `POST /estimate`
+/// enforces does NOT apply here. Includes local git commits in the LLM
+/// prompt alongside the linked events. Refuses personal blocks (400) and
+/// missing blocks (404).
+async fn estimate_block(
+    State(state): State<Shared>,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<Json<Value>, ApiError> {
+    // Pre-flight on the connection: 404 if the row's gone, 400 if it's
+    // personal. Also fetch the dominant project path so the async git
+    // call has a cwd to work with. Done on a separate `with_conn` so
+    // the connection lock is released before we shell out to git.
+    let pre = with_conn(state.clone(), move |c| {
+        // Mirror the same query estimate_block_with uses so the two
+        // paths agree about block-not-found semantics.
+        let row: Option<(i64, bool, String, String)> = c
+            .query_row(
+                "SELECT id, is_personal, started_at, ended_at
+                   FROM blocks WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get::<_, i64>(1)? != 0, r.get(2)?, r.get(3)?)),
+            )
+            .optional()?;
+        let Some((bid, is_personal, started_at, ended_at)) = row else {
+            return Ok::<_, anyhow::Error>(None);
+        };
+        // Personal blocks: no project_path lookup, no LLM call. Return
+        // the personal flag so the caller can 400.
+        if is_personal {
+            return Ok(Some((bid, true, None, started_at, ended_at)));
+        }
+        let project_path = personal::dominant_project_path_for_block(c, bid)?;
+        Ok(Some((bid, false, project_path, started_at, ended_at)))
+    })
+    .await?;
+
+    let Some((bid, is_personal, project_path, started_at, ended_at)) = pre else {
+        return Err(ApiError::NotFound(anyhow::anyhow!("block {id} not found")));
+    };
+    if is_personal {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "block {bid} is personal — toggle it back to work before \
+             re-describing with Claude"
+        )));
+    }
+
+    // Pull local git history inside the block's window. Soft-fail: an
+    // empty vec lets the estimator proceed with events-only context.
+    let commits = if let Some(path) = project_path.as_deref() {
+        git::git_log_in_window(std::path::Path::new(path), &started_at, &ended_at)
+            .await
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    // Re-acquire the connection on the blocking pool: the LLM provider's
+    // reqwest client is !Send and must live on the same thread as the
+    // sqlite connection (same dance run_sync does).
+    let outcome = with_conn(state, move |c| {
+        let provider = estimate::resolve_provider()?;
+        match provider {
+            estimate::ProviderChoice::ClaudeSubprocess => estimate::estimate_block_with(
+                c,
+                bid,
+                &commits,
+                &estimate::ClaudeSubprocess,
+                estimate::DEFAULT_MODEL,
+            ),
+            estimate::ProviderChoice::LiteLLM(inv) => {
+                estimate::estimate_block_with(c, bid, &commits, &inv, estimate::DEFAULT_MODEL)
+            }
+        }
+    })
+    .await?;
+
+    info!(
+        block_id = outcome.block_id,
+        minutes = outcome.minutes,
+        "re-estimated single block"
+    );
+    Ok(Json(json!({
+        "block_id":   outcome.block_id,
+        "description": outcome.description,
+        "minutes":     outcome.minutes,
+        "jira_issue":  outcome.jira_issue,
+    })))
 }
 
 #[derive(Deserialize)]
@@ -2421,6 +2516,61 @@ mod tests {
             out.status.success(),
             "git {args:?} failed: {}",
             String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    // ───────────── POST /blocks/:id/estimate (Phase 1) ─────────────
+
+    /// B7 at the wire: a missing block id surfaces as 404 with a body
+    /// the UI can show verbatim.
+    #[tokio::test(flavor = "current_thread")]
+    async fn estimate_block_endpoint_returns_404_for_missing_block() {
+        let app = router(state_with_block());
+        let resp = app
+            .oneshot(
+                Request::post("/blocks/9999/estimate")
+                    .header("content-type", "application/json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// B4 at the wire: a personal block surfaces as 400 — the UI can
+    /// show the message and hint the user to toggle to work first.
+    #[tokio::test(flavor = "current_thread")]
+    async fn estimate_block_endpoint_returns_400_for_personal_block() {
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds, is_personal)
+             VALUES ('2026-04-18', '2026-04-18T09:00:00+00:00', '2026-04-18T09:30:00+00:00', 1800, 1)",
+            [],
+        )
+        .unwrap();
+        let bid = conn.last_insert_rowid();
+        let state = Arc::new(AppState {
+            conn: Mutex::new(conn),
+        });
+        let resp = router(state)
+            .oneshot(
+                Request::post(format!("/blocks/{bid}/estimate"))
+                    .header("content-type", "application/json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let v = read_json(resp).await;
+        assert!(
+            v["error"]
+                .as_str()
+                .unwrap_or_default()
+                .to_lowercase()
+                .contains("personal"),
+            "error body must mention personal: {v}"
         );
     }
 }
