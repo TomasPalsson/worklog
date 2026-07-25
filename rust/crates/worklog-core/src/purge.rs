@@ -18,8 +18,8 @@
 //! personal blocks (which can never sync or export) immortal and made
 //! dirty blocks (which do carry a `tempo_worklog_id`) *more* likely to
 //! be deleted than protected. See spec 002-billing-cycle-pruner §1.1.
-//! Recoverability comes from a pre-prune snapshot (slice 3), not from
-//! exemptions.
+//! Recoverability comes from a pre-prune snapshot ([`run`]'s `VACUUM
+//! INTO` step), not from exemptions.
 //!
 //! `blocks_deleted_unbilled` on [`PurgeReport`] exists so that loss is
 //! visible: it counts deleted blocks that carried neither a Tempo id nor
@@ -56,9 +56,12 @@ pub struct PurgeReport {
     /// because no surviving block references them any more.
     /// Collector-owned (`external = 0`) entries are never touched.
     pub tickets_deleted: i64,
-    /// Disk space reclaimed, in bytes. Populated from slice 3.
+    /// Disk space reclaimed, in bytes. Left at the default of `0` by
+    /// [`purge_rows`] directly; populated by [`run`] after its post-delete
+    /// `VACUUM`.
     pub bytes_freed: i64,
-    /// Where the pre-prune snapshot was written. Populated from slice 3.
+    /// Where the pre-prune snapshot was written. Left at the default of
+    /// `None` by [`purge_rows`] directly; populated by [`run`].
     pub snapshot_path: Option<String>,
     /// If true, nothing was actually written to the database.
     pub dry_run: bool,
