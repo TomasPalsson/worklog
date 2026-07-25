@@ -21,9 +21,16 @@ interface Props {
   block: Block;
   tickets: JiraTicket[];
   day: string;
+  /**
+   * Hide the Jira ticket picker and the Tempo sync/dirty tags. Set in the
+   * billing view, where tickets and sync state are noise — the grouping is
+   * already by customer and nothing is being synced to Tempo. Everything
+   * else (description, duration, personal, delete) stays editable.
+   */
+  hideTicketing?: boolean;
 }
 
-export function BlockCard({ block, tickets, day }: Props) {
+export function BlockCard({ block, tickets, day, hideTicketing = false }: Props) {
   const [editingDur, setEditingDur] = useState(false);
   const [durVal, setDurVal] = useState(Math.round(block.duration_seconds / 60));
   const [isPending, start] = useTransition();
@@ -156,19 +163,21 @@ export function BlockCard({ block, tickets, day }: Props) {
 
       <div className="block-body">
         <div className="block-title-row">
-          <TicketCombobox
-            blockId={block.id}
-            current={block.jira_issue}
-            tickets={tickets}
-            day={day}
-          />
-          {synced && !dirty && (
+          {!hideTicketing && (
+            <TicketCombobox
+              blockId={block.id}
+              current={block.jira_issue}
+              tickets={tickets}
+              day={day}
+            />
+          )}
+          {!hideTicketing && synced && !dirty && (
             <span className="synced-tag" title={`Synced to Tempo · id ${block.tempo_worklog_id}`}>
               <Check />
               synced
             </span>
           )}
-          {dirty && (
+          {!hideTicketing && dirty && (
             <span
               className="dirty-tag"
               title={`Edited since last sync — click "Sync to Tempo" to update Tempo entry ${block.tempo_worklog_id}`}

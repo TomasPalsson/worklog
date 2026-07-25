@@ -1,9 +1,11 @@
 import Link from "next/link";
 import { ChevronLeft, ChevronRight, Wallet } from "lucide-react";
 import { mondayOf, shiftDay, todayISO } from "@/lib/format";
+import type { ViewMode } from "@/lib/view-mode";
 import { ThemeToggle } from "./ThemeToggle";
 import { SettingsPanel } from "./SettingsPanel";
 import { ExportPanel } from "./ExportPanel";
+import { ViewToggle } from "./ViewToggle";
 
 interface Props {
   day: string;
@@ -14,6 +16,8 @@ interface Props {
   /** Optional personal-only summary suffix, e.g. "2.3h personal" — when
    * present, rendered muted after the work total. */
   personalSummary?: string;
+  /** Current day-view mode, resolved server-side from the cookie. */
+  view: ViewMode;
 }
 
 export function DayHeader({
@@ -23,6 +27,7 @@ export function DayHeader({
   blockCount,
   unassigned,
   personalSummary,
+  view,
 }: Props) {
   const today = todayISO();
   const prev = shiftDay(day, -1);
@@ -52,6 +57,8 @@ export function DayHeader({
         </div>
       </div>
       <nav className="day-nav" aria-label="day navigation">
+        {/* First in the nav because it changes what every row below means. */}
+        <ViewToggle view={view} />
         <Link
           href={`/${prev}`}
           className="day-nav-btn"

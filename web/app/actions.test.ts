@@ -37,6 +37,11 @@ const exportBillingImpl = mock(async (day: string) => ({
       billable: true,
       invoice_text: "Document analyzer work",
       needs_description: false,
+      block_count: 2,
+      started_at: "2026-07-23T09:00:00Z",
+      ended_at: "2026-07-23T14:30:00Z",
+      paths: ["/Users/x/Desktop/Work/sjukra"],
+      block_ids: [1, 2],
     },
   ],
   rendered: {

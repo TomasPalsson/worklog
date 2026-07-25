@@ -152,15 +152,9 @@ export interface SettingsSaveResponse extends SettingsView {
 
 /**
  * One billable line item for a day, as computed by the Rust
- * `worklog-core::billing` module: a group of blocks sharing the same
- * (dominant repo, task, kind).
- *
- * NOTE the field is `kind`, not `type` — that's the Rust struct field
- * name and what `GET /export/:day` serialises on the structured rows.
- * (The *rendered* CSV/JSON payloads use a `type` column, since that's
- * the external billing system's vocabulary.) Getting this wrong renders
- * a blank column rather than failing loudly, so it's asserted in
- * `app/actions.test.ts`.
+ * `worklog-core::billing` module — a group of blocks sharing the same
+ * (customer, verkefni, ticket-or-folder). One row is one submission of the
+ * invoicing form.
  */
 export interface BillingRow {
   /** ISO day. Render as dd.mm.yyyy for the form's Dagsetning. */
@@ -188,6 +182,20 @@ export interface BillingRow {
    * explain that, instead of the fallback looking like a bug.
    */
   needs_description: boolean;
+  /** How many blocks folded into this line. */
+  block_count: number;
+  /** Earliest block start / latest block end in the group (ISO-8601). */
+  started_at: string;
+  ended_at: string;
+  /**
+   * Distinct project_paths behind the line, most-used first. The most useful
+   * hint for guessing a blank Viðskiptamaður — a folder name alone often
+   * isn't enough to recognise which customer's work this was.
+   */
+  paths: string[];
+  /** Ids of the blocks folded into this line — lets the day view group
+   * blocks the way the export bills them rather than by Jira ticket. */
+  block_ids: number[];
 }
 
 /** A customer time can be billed to. */

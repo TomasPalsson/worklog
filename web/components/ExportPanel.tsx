@@ -37,11 +37,22 @@ import {
   formFields,
   totalBilledHours,
 } from "@/lib/export";
+import { formatRange } from "@/lib/format";
 import { toast } from "@/lib/toast";
 import type { ExportResponse } from "@/lib/types";
 
 interface Props {
   day: string;
+}
+
+/**
+ * Longest `/Users/<name>` prefix we can infer client-side, so directories
+ * render as `~/Desktop/Work/...` instead of eating the whole line. Derived
+ * from the paths themselves — the browser has no $HOME.
+ */
+function inferHome(paths: string[]): string {
+  const m = /^(\/Users\/[^/]+|\/home\/[^/]+)\//.exec(paths[0] ?? "");
+  return m ? m[1] : "\u0000";
 }
 
 export function ExportPanel({ day }: Props) {
@@ -59,6 +70,7 @@ export function ExportPanel({ day }: Props) {
   const rows = useMemo(() => data?.rows ?? [], [data]);
   const current = rows[index];
   const fields = useMemo(() => (current ? formFields(current) : []), [current]);
+  const homePrefix = useMemo(() => inferHome(current?.paths ?? []), [current]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -164,7 +176,7 @@ export function ExportPanel({ day }: Props) {
           }}
         >
           <div
-            className="settings-dialog"
+            className="settings-dialog is-wide"
             role="dialog"
             aria-modal="true"
             aria-labelledby={titleId}
@@ -278,13 +290,50 @@ export function ExportPanel({ day }: Props) {
                   ))}
                 </dl>
 
-                {current?.ticket && (
-                  <p className="export-hint export-context">
-                    from {current.ticket} · {current.folder}
-                  </p>
+                {current && (
+                  /* Enough to recognise the work when Viðskiptamaður is
+                     blank: when it happened, how many blocks, which folder,
+                     and the actual directories the events came from. */
+                  <dl className="export-ctx">
+                    <div>
+                      <dt>When</dt>
+                      <dd>
+                        {formatRange(current.started_at, current.ended_at)} ·{" "}
+                        {current.block_count} block
+                        {current.block_count === 1 ? "" : "s"}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Folder</dt>
+                      <dd className="export-ctx-mono">{current.folder}</dd>
+                    </div>
+                    {current.ticket && (
+                      <div>
+                        <dt>Ticket</dt>
+                        <dd className="export-ctx-mono">{current.ticket}</dd>
+                      </div>
+                    )}
+                    {current.paths.length > 0 && (
+                      <div>
+                        <dt>Directory</dt>
+                        <dd className="export-ctx-mono export-ctx-paths">
+                          {current.paths.map((p) => (
+                            <span key={p}>{p.replace(homePrefix, "~")}</span>
+                          ))}
+                        </dd>
+                      </div>
+                    )}
+                  </dl>
                 )}
+              </div>
+            )}
 
-                <div className="export-nav">
+            {/* Pinned between the scrolling body and the footer. A long
+                invoice text plus several directories can make the body taller
+                than the dialog, and "Done → next" must never scroll out of
+                reach — it's the control the whole wizard turns on. */}
+            {!loading && !error && rows.length > 0 && (
+              <div className="export-nav is-pinned">
                   <button
                     type="button"
                     className="action-btn"
@@ -330,7 +379,6 @@ export function ExportPanel({ day }: Props) {
                       </li>
                     ))}
                   </ol>
-                </div>
               </div>
             )}
 

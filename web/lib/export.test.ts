@@ -25,6 +25,11 @@ const row = (over: Partial<BillingRow> = {}): BillingRow => ({
   billable: true,
   invoice_text: "Create MCP server",
   needs_description: false,
+  block_count: 1,
+  started_at: "2026-07-23T09:00:00Z",
+  ended_at: "2026-07-23T13:00:00Z",
+  paths: ["/Users/x/Desktop/Work/genai-infra"],
+  block_ids: [1],
   ...over,
 });
 

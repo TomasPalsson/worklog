@@ -88,6 +88,19 @@ pub struct BillingRow {
     /// the fallback looks like the export ignoring the descriptions it
     /// was supposed to use.
     pub needs_description: bool,
+    /// How many blocks folded into this line.
+    pub block_count: i64,
+    /// Earliest block start and latest block end in the group (ISO-8601).
+    /// Shown so the user can place the work in their day.
+    pub started_at: String,
+    pub ended_at: String,
+    /// Distinct `project_path`s behind the line, most-used first (capped).
+    /// The single most useful hint for guessing a blank Viðskiptamaður —
+    /// the folder name alone often isn't enough to recognise the work.
+    pub paths: Vec<String>,
+    /// Ids of the blocks folded into this line, so the review UI can group
+    /// a day exactly the way the export bills it instead of by Jira ticket.
+    pub block_ids: Vec<i64>,
 }
 
 impl BillingRow {
@@ -286,6 +299,36 @@ fn dominant_title_for_blocks(conn: &Connection, block_ids: &[i64]) -> Result<Opt
     Ok(ranked.into_iter().next().map(|(title, _)| title))
 }
 
+/// Distinct `project_path`s across a set of blocks' events, most-used
+/// first, capped so a busy group can't produce an unbounded list.
+///
+/// Aggregated in SQL rather than in Rust because a single block can carry
+/// thousands of Claude hook events.
+fn distinct_paths_for_blocks(conn: &Connection, block_ids: &[i64]) -> Result<Vec<String>> {
+    if block_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    const MAX_PATHS: usize = 4;
+    let placeholders = vec!["?"; block_ids.len()].join(",");
+    let sql = format!(
+        "SELECT e.project_path, COUNT(*) n
+           FROM events e
+           JOIN block_events be ON be.event_id = e.id
+          WHERE be.block_id IN ({placeholders})
+            AND e.project_path IS NOT NULL
+          GROUP BY e.project_path
+          ORDER BY n DESC, e.project_path
+          LIMIT {MAX_PATHS}"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let paths = stmt
+        .query_map(params_from_iter(block_ids.iter()), |r| {
+            r.get::<_, String>(0)
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(paths)
+}
+
 /// The Jira ticket summary for a block's ticket, when both exist. Feeds
 /// the customer alias match — summaries like "Document analyzer fyrir
 /// Sjúkra" are where the customer actually appears.
@@ -335,26 +378,22 @@ fn union_seconds(mut intervals: Vec<(i64, i64)>) -> i64 {
     total
 }
 
-/// What distinguishes one line item from another: the Jira ticket if
-/// there is one, else the description, else the work folder. Two
-/// different tickets for the same customer stay two lines.
+/// What distinguishes one line item from another: the Jira ticket if there
+/// is one, else the work folder.
 ///
-/// Falling back to the *folder* (not the block id) matters on days that
-/// never went through `worklog estimate`: those blocks have neither a
-/// ticket nor a description, and keying on the id would emit one line
-/// per block — 16 lines of half-hours for a single day's work. Collapsing
-/// them per folder gives one line whose union covers the real time.
+/// Deliberately **not** the description. Keying on description meant every
+/// distinct sentence became its own invoice line — a single estimated day
+/// produced 13 lines, seven of them the same customer at half an hour each,
+/// which is 13 trips through the invoicing form. Work in one folder for one
+/// customer is one line; the individual descriptions are joined into its
+/// `Texti á reikning`, so nothing is lost, it just reads as
+/// "fixed this; fixed that" the way a real invoice line does.
+///
+/// Distinct tickets still split, because a ticket is a real billing
+/// boundary in a way a sentence is not.
 fn task_for_block(block: &Block, folder: &str) -> String {
     if let Some(issue) = block.jira_issue.as_deref().filter(|s| !s.is_empty()) {
         return issue.to_string();
-    }
-    if let Some(desc) = block
-        .description
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        return desc.to_string();
     }
     folder.to_owned()
 }
@@ -370,13 +409,17 @@ struct GroupAcc {
     /// Distinct non-empty descriptions in first-seen order.
     descriptions: Vec<String>,
     block_ids: Vec<i64>,
+    /// Raw block bounds, so the line can report the span it covers.
+    starts: Vec<String>,
+    ends: Vec<String>,
 }
 
 /// Longest `Texti á reikning` we will build by joining a group's distinct
-/// block descriptions. A day's work on one ticket can span 20+ blocks, and
-/// joining them all produced a paragraph no one would put on an invoice.
-/// `tempo.rs` capped its aggregated descriptions for the same reason.
-const INVOICE_TEXT_MAX: usize = 180;
+/// block descriptions. Now that a line is "everything I did in this folder
+/// for this customer", the joined list *is* the invoice text, so the cap is
+/// generous enough that a normal day shows every item — but still bounded,
+/// because 20+ blocks on one ticket would otherwise be a paragraph.
+const INVOICE_TEXT_MAX: usize = 400;
 
 /// Join a group's distinct descriptions into one invoice line, stopping
 /// before it becomes a wall of text and saying how many were left out.
@@ -483,12 +526,16 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
                     intervals: Vec::new(),
                     descriptions: Vec::new(),
                     block_ids: Vec::new(),
+                    starts: Vec::new(),
+                    ends: Vec::new(),
                 },
             );
         }
         let acc = groups.get_mut(&key).expect("group just inserted");
         acc.intervals.push(block_interval(block));
         acc.block_ids.push(block.id);
+        acc.starts.push(block.started_at.clone());
+        acc.ends.push(block.ended_at.clone());
         if let Some(desc) = block
             .description
             .as_deref()
@@ -511,6 +558,10 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
             } else {
                 join_descriptions(&acc.descriptions)
             };
+            let block_count = acc.block_ids.len() as i64;
+            let started_at = acc.starts.iter().min().cloned().unwrap_or_default();
+            let ended_at = acc.ends.iter().max().cloned().unwrap_or_default();
+            let paths = distinct_paths_for_blocks(conn, &acc.block_ids)?;
             let seconds = union_seconds(acc.intervals);
             Ok(BillingRow {
                 day: day.to_owned(),
@@ -523,6 +574,11 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
                 billable: acc.billable,
                 invoice_text,
                 needs_description,
+                block_count,
+                started_at,
+                ended_at,
+                paths,
+                block_ids: acc.block_ids,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -655,6 +711,8 @@ struct JsonRow<'a> {
     folder: &'a str,
     ticket: Option<&'a str>,
     seconds: i64,
+    block_count: i64,
+    paths: &'a [String],
 }
 
 fn render_json(rows: &[BillingRow]) -> String {
@@ -673,6 +731,8 @@ fn render_json(rows: &[BillingRow]) -> String {
             folder: &r.folder,
             ticket: r.ticket.as_deref(),
             seconds: r.seconds,
+            block_count: r.block_count,
+            paths: &r.paths,
         })
         .collect();
     serde_json::to_string_pretty(&json_rows)
@@ -931,6 +991,43 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].customer, None);
         assert!(rows[0].needs_input());
+    }
+
+    #[test]
+    fn same_folder_different_descriptions_collapse_into_one_line() {
+        // 13 lines for one day (7 of them the same customer at half an hour
+        // each) came from keying the group on the description. Work in one
+        // folder for one customer is one invoice line; the descriptions are
+        // joined into its Texti á reikning.
+        let c = open_memory().unwrap();
+        for (i, (start, desc)) in [
+            (
+                "2026-07-23T09:00:00+00:00",
+                "Fix the poller sentinel orphan",
+            ),
+            ("2026-07-23T11:00:00+00:00", "Approve PR #152 for merge"),
+            ("2026-07-23T13:00:00+00:00", "Investigate case loading"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let b = seed_block(&c, start, 3600, None, Some(desc), false);
+            seed_event(&c, b, &format!("e{i}"), Some(&work("sjukra")), "PreToolUse");
+        }
+        let rows = rows_for_day(&c, "2026-07-23").unwrap();
+        assert_eq!(rows.len(), 1, "got {rows:#?}");
+        assert_eq!(rows[0].block_count, 3);
+        assert_eq!(rows[0].hours, 3.0);
+        for want in ["poller sentinel", "PR #152", "case loading"] {
+            assert!(
+                rows[0].invoice_text.contains(want),
+                "got {}",
+                rows[0].invoice_text
+            );
+        }
+        // Context for guessing a blank customer.
+        assert!(rows[0].paths.iter().any(|p| p.contains("sjukra")));
+        assert!(rows[0].started_at < rows[0].ended_at);
     }
 
     #[test]
@@ -1283,6 +1380,11 @@ mod tests {
                 billable: true,
                 invoice_text: "Document analyzer work".into(),
                 needs_description: false,
+                block_count: 3,
+                started_at: "2026-07-23T09:00:00Z".into(),
+                ended_at: "2026-07-23T14:30:00Z".into(),
+                paths: vec!["/Users/x/Desktop/Work/sjukra".into()],
+                block_ids: vec![1, 2, 3],
             },
             BillingRow {
                 day: "2026-07-23".into(),
@@ -1295,6 +1397,11 @@ mod tests {
                 billable: true,
                 invoice_text: "Infra work".into(),
                 needs_description: false,
+                block_count: 1,
+                started_at: "2026-07-23T15:00:00Z".into(),
+                ended_at: "2026-07-23T19:00:00Z".into(),
+                paths: vec!["/Users/x/Desktop/Work/genai-infra".into()],
+                block_ids: vec![4],
             },
         ]
     }
