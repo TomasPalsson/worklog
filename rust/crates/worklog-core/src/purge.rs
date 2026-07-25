@@ -426,6 +426,37 @@ pub fn pruning_enabled() -> bool {
     )
 }
 
+/// Whether `day` is legal for either pruner cycle-day setting
+/// (`cycle_start_day` or `close_day`): the plain calendar range
+/// `1..=31`. [`configured_cycle_start_day`] and [`configured_close_day`]
+/// silently fall back to their defaults (with a `tracing::warn!`) for
+/// anything outside this range; `daemon::post_settings` uses it to 400 a
+/// bad write before persisting it (spec 002 FR-017 / AC-018).
+pub fn is_valid_cycle_day(_day: u32) -> bool {
+    unimplemented!()
+}
+
+/// Day-of-month the billing cycle starts (`WORKLOG_BILLING_CYCLE_START_DAY`).
+/// Process env wins, then the persisted `.env` file, then
+/// [`DEFAULT_CYCLE_START_DAY`] — mirroring `tz::configured_tz`'s
+/// precedence exactly, including its `#[cfg(not(test))]` guard on the
+/// file fallback so unit tests stay hermetic. An unparseable or
+/// out-of-range stored value falls back to the default and emits a
+/// `tracing::warn!` naming the setting and the fallback, mirroring
+/// `tz::day_offset`'s handling of a bad `$WORKLOG_TZ` rather than
+/// failing silently.
+pub fn configured_cycle_start_day() -> u32 {
+    unimplemented!()
+}
+
+/// Last day-of-month the just-closed cycle can still take hours
+/// (`WORKLOG_BILLING_CLOSE_DAY`). Same precedence and fallback-with-warn
+/// behaviour as [`configured_cycle_start_day`]; defaults to
+/// [`DEFAULT_CLOSE_DAY`].
+pub fn configured_close_day() -> u32 {
+    unimplemented!()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1151,5 +1182,70 @@ mod tests {
             assert!(pruning_enabled(), "expected enabled for {v:?}");
         }
         std::env::remove_var("WORKLOG_PRUNE_ENABLED");
+    }
+
+    /// Serialises mutation of the two pruner-cycle-day env vars,
+    /// mirroring `prune_enabled_env_lock` above — process-global, so
+    /// concurrent tests setting them would otherwise race.
+    fn billing_day_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static L: OnceLock<Mutex<()>> = OnceLock::new();
+        L.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// B28-adjacent: the shared range predicate both settings validate
+    /// against.
+    #[test]
+    fn is_valid_cycle_day_accepts_1_through_31_only() {
+        assert!(is_valid_cycle_day(1));
+        assert!(is_valid_cycle_day(20));
+        assert!(is_valid_cycle_day(31));
+        assert!(!is_valid_cycle_day(0));
+        assert!(!is_valid_cycle_day(32));
+    }
+
+    /// B27: nothing configured anywhere — both accessors report their
+    /// documented defaults.
+    #[test]
+    fn configured_cycle_start_day_defaults_when_unset() {
+        let _g = billing_day_env_lock();
+        std::env::remove_var("WORKLOG_BILLING_CYCLE_START_DAY");
+        assert_eq!(configured_cycle_start_day(), DEFAULT_CYCLE_START_DAY);
+    }
+
+    #[test]
+    fn configured_close_day_defaults_when_unset() {
+        let _g = billing_day_env_lock();
+        std::env::remove_var("WORKLOG_BILLING_CLOSE_DAY");
+        assert_eq!(configured_close_day(), DEFAULT_CLOSE_DAY);
+    }
+
+    /// B29-adjacent: the process env is consulted at all (the settings
+    /// API round trip itself is proven at the daemon layer).
+    #[test]
+    fn configured_cycle_start_day_reads_process_env() {
+        let _g = billing_day_env_lock();
+        std::env::set_var("WORKLOG_BILLING_CYCLE_START_DAY", "15");
+        assert_eq!(configured_cycle_start_day(), 15);
+        std::env::remove_var("WORKLOG_BILLING_CYCLE_START_DAY");
+    }
+
+    /// Unparseable or out-of-range stored values fall back to the
+    /// default rather than propagating (spec 002 §5.4's "unparseable
+    /// pruner setting" row).
+    #[test]
+    fn configured_close_day_falls_back_on_unparseable_or_out_of_range_value() {
+        let _g = billing_day_env_lock();
+        for bad in ["abc", "0", "32", "-1"] {
+            std::env::set_var("WORKLOG_BILLING_CLOSE_DAY", bad);
+            assert_eq!(
+                configured_close_day(),
+                DEFAULT_CLOSE_DAY,
+                "bad value {bad:?} must fall back to the default"
+            );
+        }
+        std::env::remove_var("WORKLOG_BILLING_CLOSE_DAY");
     }
 }

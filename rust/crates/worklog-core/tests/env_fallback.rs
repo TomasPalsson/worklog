@@ -62,3 +62,39 @@ fn get_reads_from_env_file_when_keychain_misses() {
     std::env::remove_var("WORKLOG_ENV_FILE");
     let _: PathBuf = tmp.path().to_path_buf();
 }
+
+/// B30 (spec 002 AC-020): the process environment beats the persisted
+/// `.env` file for the two billing-cycle pruner day settings. This file
+/// is compiled with `cfg(test)` OFF for `worklog_core` (cargo
+/// integration-test mode), so — unlike `worklog_core::purge`'s own unit
+/// tests, which skip the file fallback entirely to stay hermetic — the
+/// real `.env`-reading code path in `configured_cycle_start_day` /
+/// `configured_close_day` actually runs here, making this the only place
+/// "env wins over file" is provable at all.
+#[test]
+fn process_env_beats_env_file_for_billing_cycle_day_settings() {
+    let tmp = tempfile::tempdir().unwrap();
+    let env_file = tmp.path().join(".env");
+    write(
+        &env_file,
+        "WORKLOG_BILLING_CYCLE_START_DAY=5\n\
+         WORKLOG_BILLING_CLOSE_DAY=8\n",
+    );
+    std::env::set_var("WORKLOG_ENV_FILE", &env_file);
+
+    // Neither process env var set yet — the file value comes through.
+    std::env::remove_var("WORKLOG_BILLING_CYCLE_START_DAY");
+    std::env::remove_var("WORKLOG_BILLING_CLOSE_DAY");
+    assert_eq!(worklog_core::purge::configured_cycle_start_day(), 5);
+    assert_eq!(worklog_core::purge::configured_close_day(), 8);
+
+    // Now set the process env to different values — it must win.
+    std::env::set_var("WORKLOG_BILLING_CYCLE_START_DAY", "22");
+    std::env::set_var("WORKLOG_BILLING_CLOSE_DAY", "25");
+    assert_eq!(worklog_core::purge::configured_cycle_start_day(), 22);
+    assert_eq!(worklog_core::purge::configured_close_day(), 25);
+
+    std::env::remove_var("WORKLOG_BILLING_CYCLE_START_DAY");
+    std::env::remove_var("WORKLOG_BILLING_CLOSE_DAY");
+    std::env::remove_var("WORKLOG_ENV_FILE");
+}
