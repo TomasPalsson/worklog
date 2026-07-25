@@ -24,6 +24,7 @@ const row = (over: Partial<BillingRow> = {}): BillingRow => ({
   hours: 4,
   billable: true,
   invoice_text: "Create MCP server",
+  needs_description: false,
   ...over,
 });
 

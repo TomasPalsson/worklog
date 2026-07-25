@@ -36,6 +36,7 @@ const exportBillingImpl = mock(async (day: string) => ({
       hours: 5.5,
       billable: true,
       invoice_text: "Document analyzer work",
+      needs_description: false,
     },
   ],
   rendered: {
@@ -140,19 +141,16 @@ let actions: {
       }>
     | Fail
   >;
-  saveBillingCustomer: (
-    c: { name: string; aliases: string[] },
-    day: string,
-  ) => Promise<Ok<{ id: number }> | Fail>;
-  saveBillingFolder: (
-    f: {
-      folder: string;
-      customer: string | null;
-      verkefni: string | null;
-      billable: boolean;
-    },
-    day: string,
-  ) => Promise<Ok<{ id: number }> | Fail>;
+  saveBillingCustomer: (c: {
+    name: string;
+    aliases: string[];
+  }) => Promise<Ok<{ id: number }> | Fail>;
+  saveBillingFolder: (f: {
+    folder: string;
+    customer: string | null;
+    verkefni: string | null;
+    billable: boolean;
+  }) => Promise<Ok<{ id: number }> | Fail>;
 };
 
 beforeAll(async () => {
@@ -294,24 +292,25 @@ describe("billing registry actions", () => {
     expect(revalidateImpl).not.toHaveBeenCalled();
   });
 
-  it("registry writes revalidate the day, since mappings change the export", async () => {
+  it("registry writes revalidate the registry page, not a day", async () => {
+    // The day pages are server-rendered on demand and re-read the registry
+    // from the daemon each time, so only the page being edited needs it.
     revalidateImpl.mockReset();
     revalidateImpl.mockImplementation(() => {});
-    await actions.saveBillingFolder(
-      { folder: "autofixer", customer: "APRÓ", verkefni: null, billable: true },
-      "2026-07-23",
-    );
-    expect(revalidateImpl).toHaveBeenCalledWith("/2026-07-23");
+    await actions.saveBillingFolder({
+      folder: "autofixer",
+      customer: "APRÓ",
+      verkefni: null,
+      billable: true,
+    });
+    expect(revalidateImpl).toHaveBeenCalledWith("/billing");
   });
 
   it("surfaces a registry write failure as ok=false", async () => {
     revalidateImpl.mockImplementation(() => {
       throw new Error("cache unavailable");
     });
-    const r = await actions.saveBillingCustomer(
-      { name: "Sensa", aliases: [] },
-      "2026-07-23",
-    );
+    const r = await actions.saveBillingCustomer({ name: "Sensa", aliases: [] });
     expect(r.ok).toBe(false);
     revalidateImpl.mockImplementation(() => {});
   });

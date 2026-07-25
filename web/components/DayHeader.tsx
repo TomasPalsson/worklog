@@ -1,10 +1,9 @@
 import Link from "next/link";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, Wallet } from "lucide-react";
 import { mondayOf, shiftDay, todayISO } from "@/lib/format";
 import { ThemeToggle } from "./ThemeToggle";
 import { SettingsPanel } from "./SettingsPanel";
 import { ExportPanel } from "./ExportPanel";
-import { BillingRegistryPanel } from "./BillingRegistryPanel";
 
 interface Props {
   day: string;
@@ -53,26 +52,44 @@ export function DayHeader({
         </div>
       </div>
       <nav className="day-nav" aria-label="day navigation">
-        <Link href={`/${prev}`} className="day-nav-btn" aria-label="previous day">
+        <Link
+          href={`/${prev}`}
+          className="day-nav-btn"
+          aria-label="previous day"
+          data-tip="Previous day"
+        >
           <ChevronLeft size={16} strokeWidth={1.75} />
         </Link>
         {!isToday && (
-          <Link href={`/${today}`} className="day-nav-btn today">
+          <Link href={`/${today}`} className="day-nav-btn today" data-tip="Jump to today">
             Today
           </Link>
         )}
-        <Link href={`/${next}`} className="day-nav-btn" aria-label="next day">
+        <Link
+          href={`/${next}`}
+          className="day-nav-btn"
+          aria-label="next day"
+          data-tip="Next day"
+        >
           <ChevronRight size={16} strokeWidth={1.75} />
         </Link>
         <Link
           href={`/week/${mondayOf(day)}`}
           className="day-nav-btn week-day-link"
           aria-label="switch to week view"
+          data-tip="Week view"
         >
           Week
         </Link>
         <ExportPanel day={day} />
-        <BillingRegistryPanel day={day} />
+        <Link
+          href={`/billing?from=${day}`}
+          className="theme-toggle"
+          aria-label="Billing registry"
+          data-tip="Billing registry — customers &amp; folder mappings"
+        >
+          <Wallet size={15} strokeWidth={1.75} />
+        </Link>
         <ThemeToggle />
         <SettingsPanel day={day} />
       </nav>

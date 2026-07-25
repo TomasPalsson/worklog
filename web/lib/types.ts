@@ -181,6 +181,13 @@ export interface BillingRow {
   billable: boolean;
   /** Texti á reikning — the block description, unmodified. */
   invoice_text: string;
+  /**
+   * True when no block in the group had a description, so `invoice_text` is
+   * a fallback ("Work in sjukra") rather than real work text — i.e. the day
+   * hasn't been through `worklog estimate` yet. Surfaced so the panel can
+   * explain that, instead of the fallback looking like a bug.
+   */
+  needs_description: boolean;
 }
 
 /** A customer time can be billed to. */

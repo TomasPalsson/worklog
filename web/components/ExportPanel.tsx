@@ -140,6 +140,9 @@ export function ExportPanel({ day }: Props) {
 
   const total = totalBilledHours(rows);
   const missingCount = rows.filter((r) => r.customer === null || r.verkefni === null).length;
+  // Lines whose Texti á reikning is a "Work in <folder>" fallback because the
+  // day was never estimated. Without saying so, that reads as a bug.
+  const undescribed = rows.filter((r) => r.needs_description).length;
 
   return (
     <>
@@ -148,7 +151,7 @@ export function ExportPanel({ day }: Props) {
         className="theme-toggle"
         onClick={() => setOpen(true)}
         aria-label="Open billing export"
-        title="Billing export — one line at a time, in form order"
+        data-tip="Billing export"
       >
         <Receipt size={15} strokeWidth={1.75} />
       </button>
@@ -219,6 +222,14 @@ export function ExportPanel({ day }: Props) {
                       <TriangleAlert size={12} /> {missingCount} need a pick
                     </span>
                   )}
+                  {undescribed > 0 && (
+                    <span
+                      className="export-missing-note"
+                      data-tip="Run “Estimate with Claude” to replace these with real descriptions"
+                    >
+                      <TriangleAlert size={12} /> {undescribed} need a description
+                    </span>
+                  )}
                   {data?.exported_at && (
                     <span className="export-stamp-inline">
                       <Check size={12} /> exported{" "}
@@ -243,11 +254,19 @@ export function ExportPanel({ day }: Props) {
                         ) : (
                           <span className="export-value">{f.value}</span>
                         )}
+                        {f.label === "Texti á reikning" && current?.needs_description && (
+                          <span
+                            className="export-fallback-tag"
+                            data-tip="No description yet — this is a placeholder from the folder name"
+                          >
+                            not estimated
+                          </span>
+                        )}
                         {f.copyable && !f.missing && (
                           <button
                             type="button"
                             className="export-copy"
-                            title={`Copy ${f.label}`}
+                            data-tip={`Copy ${f.label}`}
                             aria-label={`Copy ${f.label}`}
                             onClick={() => void copyValue(f.label, f.value)}
                           >
@@ -270,6 +289,7 @@ export function ExportPanel({ day }: Props) {
                     type="button"
                     className="action-btn"
                     disabled={index === 0}
+                    data-tip="Previous line"
                     onClick={() => setIndex((i) => Math.max(0, i - 1))}
                   >
                     <ChevronLeft size={14} />
@@ -279,7 +299,7 @@ export function ExportPanel({ day }: Props) {
                     type="button"
                     className="action-btn"
                     onClick={markLineDone}
-                    title="Tick this line off and jump to the next one still to do"
+                    data-tip="Tick off and go to the next outstanding line"
                   >
                     <Check size={14} />
                     {done.has(index) ? "Done" : "Done → next"}
@@ -288,6 +308,7 @@ export function ExportPanel({ day }: Props) {
                     type="button"
                     className="action-btn"
                     disabled={index >= rows.length - 1}
+                    data-tip="Next line"
                     onClick={() => setIndex((i) => Math.min(rows.length - 1, i + 1))}
                   >
                     Next
@@ -319,7 +340,7 @@ export function ExportPanel({ day }: Props) {
                 className="action-btn"
                 disabled={!data || rows.length === 0}
                 onClick={() => onDownload("csv")}
-                title="Download the whole day as CSV"
+                data-tip="Download the day as CSV"
               >
                 <FileSpreadsheet size={14} />
                 CSV
@@ -329,7 +350,7 @@ export function ExportPanel({ day }: Props) {
                 className="action-btn"
                 disabled={!data || rows.length === 0}
                 onClick={() => onDownload("json")}
-                title="Download the whole day as JSON"
+                data-tip="Download the day as JSON"
               >
                 <Download size={14} />
                 JSON
@@ -340,7 +361,7 @@ export function ExportPanel({ day }: Props) {
                 disabled={!data || rows.length === 0 || marking}
                 aria-busy={marking || undefined}
                 onClick={() => void onMark()}
-                title="Stamp these blocks as exported (guards against double-billing; lets purge retire them later)"
+                data-tip="Stamp as billed — guards against double-billing"
               >
                 {marking ? <Loader2 className="spin" size={14} /> : <Check size={14} />}
                 {marking ? "Marking…" : "Mark exported"}

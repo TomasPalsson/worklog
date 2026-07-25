@@ -2138,6 +2138,19 @@ button {
   font-size: 11px;
 }
 
+/* Marks a Texti á reikning that is a folder-name placeholder because the day
+   was never estimated — otherwise "Work in sjukra" reads as a bug. */
+.export-fallback-tag {
+  flex: none;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  color: var(--amber-ink);
+  background: var(--amber-bg);
+  border: 1px solid var(--amber);
+  white-space: nowrap;
+}
+
 .export-nav {
   display: flex;
   align-items: center;
@@ -2173,7 +2186,201 @@ button {
   outline-offset: 2px;
 }
 
-/* ───────────────────── billing registry editor ───────────────────── */
+/* ─────────────────────────── hover tooltips ───────────────────────────
+   Any element with `data-tip` gets a styled tooltip on hover and on
+   keyboard focus. Replaces the native `title=` attribute on icon-only
+   controls: `title` waits ~1s, can't be styled, and never appears for
+   keyboard users. Keep `aria-label` for the accessible name — this is
+   presentation only, so it is not exposed to assistive tech. */
+
+[data-tip] {
+  position: relative;
+}
+
+[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  /* Above the settings overlay (z-index 50) so tips work inside dialogs. */
+  z-index: 60;
+  top: calc(100% + 7px);
+  left: 50%;
+  margin-left: -0.5px;
+  translate: -50% -3px;
+  padding: 4px 8px;
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.35;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
+  color: var(--fg);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 14px oklch(0 0 0 / 0.18);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 110ms cubic-bezier(0.25, 1, 0.5, 1),
+              translate 110ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+[data-tip]:hover::after,
+[data-tip]:focus-visible::after {
+  opacity: 1;
+  translate: -50% 0;
+}
+
+/* A disabled control's tooltip would describe an action that can't happen. */
+[data-tip]:disabled::after {
+  display: none;
+}
+
+/* The day nav and the row action buttons sit against the right edge, so a
+   centred tooltip would overflow the viewport. Anchor those to the right. */
+.day-nav [data-tip]::after,
+.reg-actions [data-tip]::after {
+  left: auto;
+  right: 0;
+  translate: 0 -3px;
+}
+.day-nav [data-tip]:hover::after,
+.day-nav [data-tip]:focus-visible::after,
+.reg-actions [data-tip]:hover::after,
+.reg-actions [data-tip]:focus-visible::after {
+  translate: 0 0;
+}
+
+/* ───────────────────── billing registry page ───────────────────── */
+
+.reg-page {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 28px 24px 64px;
+}
+
+.reg-page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.reg-page-header h1 {
+  font-size: 22px;
+  font-weight: 600;
+  margin: 8px 0 4px;
+}
+
+.reg-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  text-decoration: none;
+}
+.reg-back:hover {
+  color: var(--fg);
+}
+
+.reg-section {
+  padding: 24px 0;
+  border-bottom: 1px solid var(--border);
+}
+.reg-section:last-child {
+  border-bottom: none;
+}
+
+.reg-section h2 {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  margin: 0 0 6px;
+}
+
+.reg-lede {
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  line-height: 1.55;
+  margin: 0 0 14px;
+  max-width: 74ch;
+}
+.reg-lede code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--bg-sunk);
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
+}
+
+.reg-table {
+  margin-bottom: 12px;
+}
+
+/* Column headers make an editable grid legible — the modal had none, which
+   is most of why it felt cramped. */
+.reg-head {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+
+.reg-row-folder {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr 1.5fr 56px 72px;
+  gap: 8px;
+  align-items: center;
+}
+
+.reg-row-customer {
+  display: grid;
+  grid-template-columns: 1fr 2fr 72px;
+  gap: 8px;
+  align-items: center;
+}
+
+.reg-row {
+  margin-bottom: 6px;
+}
+
+.reg-actions {
+  display: inline-flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.reg-mono {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+@media (max-width: 720px) {
+  /* Stack rather than squeeze: a 5-column grid at phone width is unusable. */
+  .reg-row-folder,
+  .reg-row-customer {
+    grid-template-columns: 1fr;
+  }
+  .reg-head {
+    display: none;
+  }
+  .reg-row {
+    padding-bottom: 12px;
+    margin-bottom: 12px;
+    border-bottom: 1px dashed var(--border);
+  }
+  .reg-actions {
+    justify-content: flex-start;
+  }
+}
 
 .reg-chips {
   display: flex;
@@ -2213,7 +2420,7 @@ button {
 }
 
 .reg-input {
-  flex: 1 1 0;
+  width: 100%;
   min-width: 0;
   font-size: 12.5px;
   padding: 5px 7px;
@@ -2227,26 +2434,15 @@ button {
   outline-offset: -1px;
 }
 
-/* The folder / customer-name column is the row's identity — give it a
-   little more room and the mono treatment paths get elsewhere. */
-.reg-folder {
-  flex: 0 0 26%;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-}
-
-.reg-aliases {
-  flex: 1 1 auto;
-}
-
 .reg-check {
-  flex: none;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 4px;
   font-size: 11px;
   color: var(--fg-muted);
   white-space: nowrap;
+  cursor: pointer;
 }
 
 .export-error {

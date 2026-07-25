@@ -272,35 +272,36 @@ export async function fetchBillingRegistry(): Promise<ActionResult<BillingRegist
 }
 
 /**
- * Registry mutations revalidate the day page because changing a mapping
- * changes how that day's export resolves.
+ * Registry mutations revalidate the registry page they were made from.
+ *
+ * The day pages don't need invalidating: they're server-rendered on demand
+ * and re-read the registry from the daemon on every request, so a mapping
+ * change is already reflected the next time one is opened.
  */
+const REGISTRY_PATH = "/billing";
+
 export async function saveBillingCustomer(
   customer: BillingCustomer,
-  day: string,
 ): Promise<ActionResult<{ id: number }>> {
-  return runAction(() => daemonSaveBillingCustomer(customer), `/${day}`);
+  return runAction(() => daemonSaveBillingCustomer(customer), REGISTRY_PATH);
 }
 
 export async function deleteBillingCustomer(
   id: number,
-  day: string,
 ): Promise<ActionResult<{ removed: boolean }>> {
-  return runAction(() => daemonDeleteBillingCustomer(id), `/${day}`);
+  return runAction(() => daemonDeleteBillingCustomer(id), REGISTRY_PATH);
 }
 
 export async function saveBillingFolder(
   folder: BillingFolderMap,
-  day: string,
 ): Promise<ActionResult<{ id: number }>> {
-  return runAction(() => daemonSaveBillingFolder(folder), `/${day}`);
+  return runAction(() => daemonSaveBillingFolder(folder), REGISTRY_PATH);
 }
 
 export async function deleteBillingFolder(
   id: number,
-  day: string,
 ): Promise<ActionResult<{ removed: boolean }>> {
-  return runAction(() => daemonDeleteBillingFolder(id), `/${day}`);
+  return runAction(() => daemonDeleteBillingFolder(id), REGISTRY_PATH);
 }
 
 // ───────────────────────── settings ─────────────────────────

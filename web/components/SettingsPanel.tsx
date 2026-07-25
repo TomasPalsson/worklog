@@ -256,7 +256,7 @@ export function SettingsPanel({ day }: Props) {
         className="theme-toggle"
         onClick={() => setOpen(true)}
         aria-label="Open settings"
-        title="Settings"
+        data-tip="Settings"
       >
         <Settings size={15} strokeWidth={1.75} />
       </button>
