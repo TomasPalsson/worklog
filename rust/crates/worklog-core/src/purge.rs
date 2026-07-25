@@ -1,30 +1,38 @@
-//! Retention policy — drop old events + blocks once they've been synced
-//! to Tempo. The billing cycle runs 20th-to-19th so by the time a block
-//! is >30 days old it's already invoiced; holding onto it forever just
-//! bloats the db and the UI's day-picker.
+//! Retention policy — billing-cycle-aligned, rail-free deletion.
 //!
-//! Safety rails:
-//! * Blocks with `estimated_by = 'manual'` are NEVER deleted — they're
-//!   the user's hand-edit and the ground truth.
-//! * Blocks with no `tempo_worklog_id` (empty string OR NULL, per
-//!   `normalise_tempo_id`) are kept unless they're explicitly a `'gap'`
-//!   — the user hasn't reviewed them yet.
-//! * Orphan events (not linked to any surviving block) are deleted too,
-//!   but only when *they* are older than the cutoff — we'd rather keep
-//!   an un-block'd event from yesterday than drop it silently.
+//! The owner bills in cycles that run `cycle_start_day` (default the
+//! 20th) through the day before `cycle_start_day` in the following
+//! month. Once a cycle's submission window has shut (the second business
+//! day after it ends, default the 23rd) nothing can add hours to it any
+//! more, so retaining its rows has no value. `cutoff_for_cycle` derives
+//! that boundary; `purge_rows` deletes every row strictly older than it
+//! from `blocks` (and, by cascade, `block_events`) and `events`.
 //!
-//! NOTE: the above rails are being replaced by a rail-free, billing-cycle
-//! aligned cutoff (see spec 002-billing-cycle-pruner). `cutoff_for_cycle`,
-//! `cutoff_for_days` and `purge_rows` are the new surface; `purge` and its
-//! supporting rail consts are still here only until the implementation
-//! lands.
+//! Deliberately rail-free: sync state (`tempo_worklog_id`), export state
+//! (`exported_at`), edit provenance (`estimated_by`), the pending-edit
+//! flag (`dirty`), and personal classification (`is_personal`) make no
+//! difference to what gets deleted. The previous version of this module
+//! exempted unsynced and hand-edited blocks; that exemption made
+//! personal blocks (which can never sync or export) immortal and made
+//! dirty blocks (which do carry a `tempo_worklog_id`) *more* likely to
+//! be deleted than protected. See spec 002-billing-cycle-pruner §1.1.
+//! Recoverability comes from a pre-prune snapshot (slice 3), not from
+//! exemptions.
+//!
+//! `blocks_deleted_unbilled` on [`PurgeReport`] exists so that loss is
+//! visible: it counts deleted blocks that carried neither a Tempo id nor
+//! an `exported_at` marker, i.e. work nobody will ever be paid for.
+//!
+//! `billing_customers` and `billing_folder_map` are never touched by any
+//! cutoff — they are persistent, UI-edited registry tables, not time
+//! data (CLAUDE.md).
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use rusqlite::{params, Connection};
 
-/// Default retention window. See `CLAUDE.md` — billing cycle is 20th to
-/// 19th, so anything >30 days old has been through a full sync cycle.
+/// Default retention window for the `--days` CLI override. Unrelated to
+/// the billing cycle; a plain rolling window.
 pub const DEFAULT_RETENTION_DAYS: i64 = 30;
 
 /// What the purge did (or would have done, if `dry_run`).
@@ -50,136 +58,6 @@ pub struct PurgeReport {
     pub snapshot_path: Option<String>,
     /// If true, nothing was actually written to the database.
     pub dry_run: bool,
-    /// Old blocks we kept because the user hasn't synced them yet. Only
-    /// populated by the legacy [`purge`] rail — dropped once that
-    /// function is deleted.
-    pub blocks_kept_unsynced: i64,
-    /// Old blocks we kept because the user hand-edited them. Only
-    /// populated by the legacy [`purge`] rail — dropped once that
-    /// function is deleted.
-    pub blocks_kept_manual: i64,
-}
-
-/// SQL fragment matching blocks that are old AND safe to delete:
-/// synced to Tempo, exported for billing, OR explicitly marked as
-/// `gap`, excluding manual edits. `exported_at` is the Tempo-independent
-/// "has been billed" marker (the team moved off Tempo — see CLAUDE.md /
-/// billing.rs) and is treated as full parity with `tempo_worklog_id`
-/// here. Kept as a named const so the delete + counting queries use
-/// identical logic and can't drift.
-const PURGEABLE_BLOCKS_WHERE: &str = "
-    day < ?1
-    AND (estimated_by IS NULL OR estimated_by != 'manual')
-    AND (
-        (tempo_worklog_id IS NOT NULL AND tempo_worklog_id != '')
-        OR (exported_at IS NOT NULL AND exported_at != '')
-        OR estimated_by = 'gap'
-    )
-";
-
-/// Blocks we decline to delete because the user hasn't synced (or
-/// reviewed, or exported) them yet. Counted for the report so the user
-/// can see why the rule preserved something.
-const KEPT_UNSYNCED_WHERE: &str = "
-    day < ?1
-    AND (estimated_by IS NULL OR estimated_by != 'manual')
-    AND (tempo_worklog_id IS NULL OR tempo_worklog_id = '')
-    AND (exported_at IS NULL OR exported_at = '')
-    AND (estimated_by IS NULL OR estimated_by != 'gap')
-";
-
-const KEPT_MANUAL_WHERE: &str = "
-    day < ?1 AND estimated_by = 'manual'
-";
-
-/// Purge everything older than `retention_days` that's safe to drop.
-/// Returns a report regardless of `dry_run` — callers render it for the
-/// user.
-pub fn purge(conn: &Connection, retention_days: i64, dry_run: bool) -> Result<PurgeReport> {
-    let cutoff = chrono::Utc::now().date_naive() - chrono::Duration::days(retention_days);
-    let cutoff_iso = cutoff.to_string();
-
-    // Count informational "kept" rows up front — these stay whether or
-    // not we're in dry-run. Purely for the user-facing report.
-    let blocks_kept_unsynced: i64 = conn
-        .query_row(
-            &format!("SELECT COUNT(*) FROM blocks WHERE {KEPT_UNSYNCED_WHERE}"),
-            params![cutoff_iso],
-            |r| r.get(0),
-        )
-        .context("counting unsynced blocks past cutoff")?;
-    let blocks_kept_manual: i64 = conn
-        .query_row(
-            &format!("SELECT COUNT(*) FROM blocks WHERE {KEPT_MANUAL_WHERE}"),
-            params![cutoff_iso],
-            |r| r.get(0),
-        )
-        .context("counting manual-edited blocks past cutoff")?;
-
-    // Count + delete purgeable blocks in one shot under a tx so the
-    // cascade on block_events lands atomically.
-    let blocks_deleted: i64 = conn
-        .query_row(
-            &format!("SELECT COUNT(*) FROM blocks WHERE {PURGEABLE_BLOCKS_WHERE}"),
-            params![cutoff_iso],
-            |r| r.get(0),
-        )
-        .context("counting purgeable blocks")?;
-
-    // An orphan event is one no surviving block references AND that itself
-    // is older than the cutoff. `substr(started_at, 1, 10)` lifts the date
-    // out of the ISO-8601 TEXT column — fast enough at our scale and
-    // matches how `load_day_events` already slices.
-    let events_deleted: i64 = conn
-        .query_row(
-            &format!(
-                "SELECT COUNT(*) FROM events
-                 WHERE substr(started_at, 1, 10) < ?1
-                   AND id NOT IN (
-                       SELECT event_id FROM block_events WHERE block_id IN (
-                           SELECT id FROM blocks WHERE NOT ({PURGEABLE_BLOCKS_WHERE})
-                       )
-                   )"
-            ),
-            params![cutoff_iso],
-            |r| r.get(0),
-        )
-        .context("counting orphan events past cutoff")?;
-
-    let report = PurgeReport {
-        cutoff_date: cutoff_iso.clone(),
-        blocks_deleted,
-        events_deleted,
-        blocks_kept_unsynced,
-        blocks_kept_manual,
-        dry_run,
-        ..Default::default()
-    };
-
-    if dry_run {
-        return Ok(report);
-    }
-
-    // Real run — do the deletes in a single transaction so a crash
-    // mid-purge doesn't leave block_events dangling (the FK cascade
-    // already handles that, but txn keeps counts consistent with what
-    // we reported).
-    let tx = conn.unchecked_transaction()?;
-    tx.execute(
-        &format!("DELETE FROM blocks WHERE {PURGEABLE_BLOCKS_WHERE}"),
-        params![cutoff_iso],
-    )
-    .context("deleting purgeable blocks")?;
-    tx.execute(
-        "DELETE FROM events
-         WHERE substr(started_at, 1, 10) < ?1
-           AND id NOT IN (SELECT event_id FROM block_events)",
-        params![cutoff_iso],
-    )
-    .context("deleting orphan events")?;
-    tx.commit()?;
-
-    Ok(report)
 }
 
 /// Billing cycles run `cycle_start_day` (default the 20th) through the
@@ -237,24 +115,108 @@ pub fn cycle_start_on_or_before(d: NaiveDate, cycle_start_day: u32) -> NaiveDate
 /// `grace = close_day - cycle_start_day + 1` (4 with the defaults);
 /// everything older than `cycle_start_on_or_before(today - grace days)`
 /// is fair game.
-pub fn cutoff_for_cycle(_today: NaiveDate, _cycle_start_day: u32, _close_day: u32) -> NaiveDate {
-    unimplemented!()
+pub fn cutoff_for_cycle(today: NaiveDate, cycle_start_day: u32, close_day: u32) -> NaiveDate {
+    let grace = close_day.saturating_sub(cycle_start_day) + 1;
+    let anchor = today - chrono::Duration::days(i64::from(grace));
+    cycle_start_on_or_before(anchor, cycle_start_day)
 }
 
 /// A plain rolling-window cutoff, `days` before `today` — the
 /// `--days` CLI override. No cycle alignment, but still rail-free once
 /// `purge_rows` runs against it.
-pub fn cutoff_for_days(_today: NaiveDate, _days: i64) -> NaiveDate {
-    unimplemented!()
+pub fn cutoff_for_days(today: NaiveDate, days: i64) -> NaiveDate {
+    today - chrono::Duration::days(days)
 }
 
 /// Delete every block (and, via cascade, its `block_events` rows) whose
 /// local `day` is before `cutoff`, plus every event before `cutoff` that
 /// no surviving block references. Rail-free: sync state, edit
 /// provenance, pending edits and personal classification make no
-/// difference. `dry_run` writes nothing and reports simulated counts.
-pub fn purge_rows(_conn: &Connection, _cutoff: NaiveDate, _dry_run: bool) -> Result<PurgeReport> {
-    unimplemented!()
+/// difference. `dry_run` writes nothing and reports simulated counts
+/// that mirror exactly what a real run would delete.
+pub fn purge_rows(conn: &Connection, cutoff: NaiveDate, dry_run: bool) -> Result<PurgeReport> {
+    let cutoff_iso = cutoff.to_string();
+    // The exact UTC instant of local midnight at the cutoff — events and
+    // sessions store UTC timestamps, so comparing them against a bare
+    // local-date string would skew by the configured offset. `day`, in
+    // contrast, is itself a local-date string and compares directly.
+    let instant_iso = crate::tz::utc_window_for_local_day(cutoff).0.to_rfc3339();
+
+    // Never-billed count is taken BEFORE any deletion — the rows (and
+    // the markers that would prove they were never billed) are gone
+    // once the delete runs.
+    let blocks_deleted_unbilled: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM blocks
+             WHERE day < ?1
+               AND (tempo_worklog_id IS NULL OR tempo_worklog_id = '')
+               AND (exported_at IS NULL OR exported_at = '')",
+            params![cutoff_iso],
+            |r| r.get(0),
+        )
+        .context("counting never-billed blocks past cutoff")?;
+
+    if dry_run {
+        let blocks_deleted: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM blocks WHERE day < ?1",
+                params![cutoff_iso],
+                |r| r.get(0),
+            )
+            .context("counting blocks past cutoff")?;
+        // Simulates the post-block-delete state: an event only survives
+        // if it's linked to a block that would survive (day >= cutoff).
+        let events_deleted: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events
+                 WHERE datetime(started_at) < datetime(?1)
+                   AND id NOT IN (
+                       SELECT event_id FROM block_events
+                        WHERE block_id IN (SELECT id FROM blocks WHERE day >= ?2)
+                   )",
+                params![instant_iso, cutoff_iso],
+                |r| r.get(0),
+            )
+            .context("counting orphan events past cutoff")?;
+        return Ok(PurgeReport {
+            cutoff_date: cutoff_iso,
+            blocks_deleted,
+            blocks_deleted_unbilled,
+            events_deleted,
+            dry_run,
+            ..Default::default()
+        });
+    }
+
+    // Real run — one transaction. block_events cascades away with its
+    // parent block (ON DELETE CASCADE in schema.sql, FK enforcement is
+    // enabled in db::configure), so once the block delete lands, any
+    // event still referenced by block_events belongs to a surviving
+    // block; everything else strictly older than the cutoff is an
+    // orphan and goes too. `execute()`'s rows-changed return value IS
+    // the count — no separate counting query to drift from the delete.
+    let tx = conn.unchecked_transaction()?;
+    let blocks_deleted = tx
+        .execute("DELETE FROM blocks WHERE day < ?1", params![cutoff_iso])
+        .context("deleting blocks past cutoff")? as i64;
+    let events_deleted = tx
+        .execute(
+            "DELETE FROM events
+             WHERE datetime(started_at) < datetime(?1)
+               AND id NOT IN (SELECT event_id FROM block_events)",
+            params![instant_iso],
+        )
+        .context("deleting orphan events past cutoff")? as i64;
+    tx.commit()?;
+
+    Ok(PurgeReport {
+        cutoff_date: cutoff_iso,
+        blocks_deleted,
+        blocks_deleted_unbilled,
+        events_deleted,
+        dry_run,
+        ..Default::default()
+    })
 }
 
 #[cfg(test)]

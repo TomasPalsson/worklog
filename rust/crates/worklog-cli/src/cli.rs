@@ -470,13 +470,18 @@ pub enum DbCmd {
     Info,
     /// Print the resolved db path.
     Path,
-    /// Drop events + blocks older than N days that have been synced to
-    /// Tempo (or explicitly marked as 'gap'). Preserves unsynced work and
-    /// manual edits regardless of age.
+    /// Delete blocks, their linked events, and orphan events older than
+    /// the cutoff. Rail-free: sync state, edit provenance, pending edits
+    /// and personal classification make no difference — once a block's
+    /// cycle has closed it goes regardless. With no `--days`, the cutoff
+    /// is the current billing cycle's close (20th → 19th by default);
+    /// `--days N` overrides it with a plain rolling window, equally
+    /// rail-free.
     Purge {
-        /// Retention window in days. Anything older is fair game.
-        #[arg(long, default_value_t = worklog_core::purge::DEFAULT_RETENTION_DAYS)]
-        days: i64,
+        /// Explicit rolling-window override in days. Omit for the
+        /// default billing-cycle cutoff.
+        #[arg(long)]
+        days: Option<i64>,
         /// Report what would be deleted without touching the database.
         #[arg(long)]
         dry_run: bool,
@@ -1076,13 +1081,22 @@ fn cmd_db_info<W: Write>(out: &mut W, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_db_purge<W: Write>(days: i64, dry_run: bool, out: &mut W, json: bool) -> Result<()> {
+fn cmd_db_purge<W: Write>(days: Option<i64>, dry_run: bool, out: &mut W, json: bool) -> Result<()> {
     let paths = Paths::resolve()?;
     if !paths.db_exists() {
         anyhow::bail!("db not initialized. Run `worklog db migrate` first.");
     }
     let conn = db::open(&paths.db)?;
-    let report = worklog_core::purge::purge(&conn, days, dry_run)?;
+    let today = worklog_core::tz::local_date(chrono::Utc::now());
+    let cutoff = match days {
+        Some(d) => worklog_core::purge::cutoff_for_days(today, d),
+        None => worklog_core::purge::cutoff_for_cycle(
+            today,
+            worklog_core::purge::DEFAULT_CYCLE_START_DAY,
+            worklog_core::purge::DEFAULT_CLOSE_DAY,
+        ),
+    };
+    let report = worklog_core::purge::purge_rows(&conn, cutoff, dry_run)?;
     if json {
         writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
         return Ok(());
@@ -1091,22 +1105,25 @@ fn cmd_db_purge<W: Write>(days: i64, dry_run: bool, out: &mut W, json: bool) -> 
     if report.blocks_deleted + report.events_deleted == 0 {
         style::info(
             out,
-            &format!(
-                "{prefix}nothing to purge before {} (kept: {} unsynced, {} manual)",
-                report.cutoff_date, report.blocks_kept_unsynced, report.blocks_kept_manual
-            ),
+            &format!("{prefix}nothing to purge before {}", report.cutoff_date),
         )?;
     } else {
         let verb = if dry_run { "would delete" } else { "deleted" };
         style::ok(
             out,
             &format!(
-                "{prefix}{verb} {} block(s) + {} event(s) before {} (kept: {} unsynced, {} manual)",
-                report.blocks_deleted,
-                report.events_deleted,
-                report.cutoff_date,
-                report.blocks_kept_unsynced,
-                report.blocks_kept_manual
+                "{prefix}{verb} {} block(s) + {} event(s) before {}",
+                report.blocks_deleted, report.events_deleted, report.cutoff_date
+            ),
+        )?;
+    }
+    if report.blocks_deleted_unbilled > 0 {
+        let verb = if dry_run { "would be" } else { "were" };
+        style::warn(
+            out,
+            &format!(
+                "{} never-billed block(s) {verb} deleted (no Tempo sync, no export marker)",
+                report.blocks_deleted_unbilled
             ),
         )?;
     }
