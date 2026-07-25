@@ -146,7 +146,7 @@ pub fn work_folder_for_path(path: &str) -> Option<String> {
     }
 
     if let Some(prefix) = work_prefix() {
-        if let Some(rest) = base.strip_prefix(&prefix) {
+        if let Some(rest) = base.strip_prefix(prefix) {
             let rest = rest.trim_start_matches('/');
             if rest.is_empty() {
                 // The work root itself is not a project — returning its
@@ -181,7 +181,7 @@ pub fn billable_work_folder(path: &str) -> Option<String> {
         None => path,
     };
     let prefix = work_prefix()?;
-    let rest = base.trim_end_matches('/').strip_prefix(&prefix)?;
+    let rest = base.trim_end_matches('/').strip_prefix(prefix)?;
     let rest = rest.trim_start_matches('/');
     rest.split('/')
         .next()
@@ -192,11 +192,19 @@ pub fn billable_work_folder(path: &str) -> Option<String> {
 /// `~/Desktop/Work`, expanded. Mirrors `personal::default_work_prefix` —
 /// the same prefix that decides work-vs-personal decides which path
 /// segment is the billable project root.
-fn work_prefix() -> Option<String> {
-    dirs::home_dir().map(|mut p| {
-        p.push("Desktop/Work");
-        p.to_string_lossy().into_owned()
-    })
+///
+/// Computed once: the folder-resolution helpers run per path, and resolving
+/// the home directory on every call turned a hot loop into a syscall storm.
+fn work_prefix() -> Option<&'static str> {
+    static PREFIX: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    PREFIX
+        .get_or_init(|| {
+            dirs::home_dir().map(|mut p| {
+                p.push("Desktop/Work");
+                p.to_string_lossy().into_owned()
+            })
+        })
+        .as_deref()
 }
 
 /// Most-frequent work folder across a block's events, derived from

@@ -13,7 +13,7 @@
 // finished one.
 
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, Plus, Save, Trash2 } from "lucide-react";
+import { Check, Loader2, Plus, Save, Trash2 } from "lucide-react";
 
 import {
   deleteBillingCustomer,
@@ -41,6 +41,9 @@ export function BillingRegistry() {
   const [customers, setCustomers] = useState<CustomerDraft[]>([]);
   const [folders, setFolders] = useState<FolderDraft[]>([]);
   const [unmapped, setUnmapped] = useState<UnmappedFolder[]>([]);
+  // Key of the row just added. Adding a row appends it further down a long
+  // page, so without this the click looks like it did nothing.
+  const [justAdded, setJustAdded] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -60,6 +63,28 @@ export function BillingRegistry() {
     void load();
   }, [load]);
 
+  // Take the user to the row they just created: scroll it into view, focus
+  // the first thing they still have to fill, and flash it briefly. Feedback
+  // that *moves you to the work* beats a message telling you it happened.
+  useEffect(() => {
+    if (!justAdded) return;
+    const row = document.querySelector<HTMLElement>(`[data-row-key="${justAdded}"]`);
+    if (!row) return;
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    row.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "center" });
+    // Focus the next actual decision. A row started from a chip already has
+    // its folder, so the customer dropdown is what's needed; an empty row
+    // needs the folder name typed first. (Checked via the live `value`
+    // property — React sets it there, not as an attribute.)
+    const folderInput = row.querySelector<HTMLInputElement>("input");
+    const target: HTMLElement | null = folderInput?.value.trim()
+      ? (row.querySelector<HTMLSelectElement>("select") ?? folderInput)
+      : (folderInput ?? null);
+    target?.focus({ preventScroll: true });
+    const t = setTimeout(() => setJustAdded(null), 1400);
+    return () => clearTimeout(t);
+  }, [justAdded]);
+
   /** Run one row mutation, then refresh so ids and ordering stay truthful. */
   async function mutate(
     key: string,
@@ -78,10 +103,24 @@ export function BillingRegistry() {
   }
 
   function addFolder(folder = "") {
+    const key = nextKey();
     setFolders((fs) => [
       ...fs,
-      { key: nextKey(), folder, customer: null, verkefni: null, billable: true },
+      { key, folder, customer: null, verkefni: null, billable: true },
     ]);
+    setJustAdded(key);
+    if (folder) toast.ok(`Mapping started for ${folder} — pick a customer`);
+  }
+
+  function addCustomer() {
+    const key = nextKey();
+    setCustomers((cs) => [...cs, { key, name: "", aliases: [] }]);
+    setJustAdded(key);
+  }
+
+  /** A chip whose folder already has an unsaved row below. */
+  function isQueued(folder: string) {
+    return folders.some((f) => f.id == null && f.folder === folder);
   }
 
   function patchFolder(key: string, patch: Partial<FolderDraft>) {
@@ -129,11 +168,15 @@ export function BillingRegistry() {
               <button
                 key={u.folder}
                 type="button"
-                className="reg-chip"
-                data-tip={`${u.events.toLocaleString()} events — click to map`}
+                className={`reg-chip${isQueued(u.folder) ? " is-queued" : ""}`}
+                data-tip={
+                  isQueued(u.folder)
+                    ? "Row started below — fill it in and save"
+                    : `${u.events.toLocaleString()} events — click to map`
+                }
                 onClick={() => addFolder(u.folder)}
               >
-                <Plus size={11} />
+                {isQueued(u.folder) ? <Check size={11} /> : <Plus size={11} />}
                 {u.folder}
                 <span className="reg-chip-count">{u.events.toLocaleString()}</span>
               </button>
@@ -162,7 +205,12 @@ export function BillingRegistry() {
           </div>
 
           {folders.map((f) => (
-            <div key={f.key} className="reg-row reg-row-folder" role="row">
+            <div
+              key={f.key}
+              data-row-key={f.key}
+              className={`reg-row reg-row-folder${justAdded === f.key ? " is-new" : ""}`}
+              role="row"
+            >
               <input
                 className="reg-input reg-mono"
                 placeholder="e.g. sjukra"
@@ -281,7 +329,12 @@ export function BillingRegistry() {
           </div>
 
           {customers.map((c) => (
-            <div key={c.key} className="reg-row reg-row-customer" role="row">
+            <div
+              key={c.key}
+              data-row-key={c.key}
+              className={`reg-row reg-row-customer${justAdded === c.key ? " is-new" : ""}`}
+              role="row"
+            >
               <input
                 className="reg-input"
                 placeholder="Customer name"
@@ -349,9 +402,7 @@ export function BillingRegistry() {
           type="button"
           className="action-btn"
           data-tip="Add an empty customer"
-          onClick={() =>
-            setCustomers((cs) => [...cs, { key: nextKey(), name: "", aliases: [] }])
-          }
+          onClick={addCustomer}
         >
           <Plus size={14} />
           Add customer

@@ -308,22 +308,30 @@ pub fn delete_folder(conn: &Connection, id: i64) -> Result<bool> {
 ///
 /// Returns `(folder, event_count)` most-active first.
 pub fn unmapped_folders(conn: &Connection, days: i64) -> Result<Vec<(String, i64)>> {
+    // GROUP BY in SQL, not in Rust. A busy month is hundreds of thousands of
+    // event rows but only a few hundred distinct `project_path` values, and
+    // the per-row version timed the daemon out at 10s on a real database —
+    // it materialised every row into a String and ran the path
+    // normalisation on each one.
     let mut stmt = conn.prepare(
-        "SELECT project_path FROM events
+        "SELECT project_path, COUNT(*) FROM events
           WHERE project_path IS NOT NULL
-            AND started_at >= date('now', ?1)",
+            AND started_at >= date('now', ?1)
+          GROUP BY project_path",
     )?;
     let paths = stmt
-        .query_map([format!("-{days} days")], |r| r.get::<_, String>(0))?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+        .query_map([format!("-{days} days")], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?
+        .collect::<std::result::Result<Vec<(String, i64)>, _>>()?;
 
     let mut counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-    for p in paths {
+    for (p, n) in paths {
         // Only folders genuinely under the work prefix are billable — the
         // lenient attribution fallback would otherwise offer `~/dotfiles`
         // and `~/Desktop/Projects/*` as things to map.
         if let Some(folder) = crate::billing::billable_work_folder(&p) {
-            *counts.entry(folder).or_insert(0) += 1;
+            *counts.entry(folder).or_insert(0) += n;
         }
     }
     for mapped in list_folders(conn)? {
