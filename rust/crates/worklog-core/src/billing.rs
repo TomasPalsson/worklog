@@ -139,11 +139,14 @@ pub fn work_folder_for_path(path: &str) -> Option<String> {
     if let Some(prefix) = work_prefix() {
         if let Some(rest) = base.strip_prefix(&prefix) {
             let rest = rest.trim_start_matches('/');
-            if !rest.is_empty() {
-                let first = rest.split('/').next().unwrap_or(rest);
-                if !first.is_empty() {
-                    return Some(first.to_owned());
-                }
+            if rest.is_empty() {
+                // The work root itself is not a project — returning its
+                // basename here produced the nonsense folder "Work".
+                return None;
+            }
+            let first = rest.split('/').next().unwrap_or(rest);
+            if !first.is_empty() {
+                return Some(first.to_owned());
             }
         }
     }
@@ -203,7 +206,15 @@ pub fn work_folder_for_block(conn: &Connection, block_id: i64) -> Result<Option<
 }
 
 /// Most-frequent non-empty `events.title` across a set of blocks'
-/// events. Ties break lexicographically for determinism.
+/// events, considering only sources whose title describes *work*. Ties
+/// break lexicographically for determinism.
+///
+/// Claude-Code hook events are excluded on purpose. Their title is the
+/// hook name (`PreToolUse`, `SessionEnd`, …), which is meaningless as
+/// invoice text — and worse, some carry captured terminal content
+/// (`UserPromptSubmit — … aws dynamodb query --region …`). Neither
+/// belongs on a customer's invoice, so only commit / PR / calendar /
+/// ticket titles are eligible.
 fn dominant_title_for_blocks(conn: &Connection, block_ids: &[i64]) -> Result<Option<String>> {
     if block_ids.is_empty() {
         return Ok(None);
@@ -213,7 +224,8 @@ fn dominant_title_for_blocks(conn: &Connection, block_ids: &[i64]) -> Result<Opt
         "SELECT e.title
            FROM events e
            JOIN block_events be ON be.event_id = e.id
-          WHERE be.block_id IN ({placeholders})"
+          WHERE be.block_id IN ({placeholders})
+            AND e.source NOT LIKE 'claude%'"
     );
     let mut stmt = conn.prepare(&sql)?;
     let titles: Vec<String> = stmt
@@ -284,9 +296,15 @@ fn union_seconds(mut intervals: Vec<(i64, i64)>) -> i64 {
 }
 
 /// What distinguishes one line item from another: the Jira ticket if
-/// there is one, else the description, else the block id. Two different
-/// tickets for the same customer stay two lines.
-fn task_for_block(block: &Block) -> String {
+/// there is one, else the description, else the work folder. Two
+/// different tickets for the same customer stay two lines.
+///
+/// Falling back to the *folder* (not the block id) matters on days that
+/// never went through `worklog estimate`: those blocks have neither a
+/// ticket nor a description, and keying on the id would emit one line
+/// per block — 16 lines of half-hours for a single day's work. Collapsing
+/// them per folder gives one line whose union covers the real time.
+fn task_for_block(block: &Block, folder: &str) -> String {
     if let Some(issue) = block.jira_issue.as_deref().filter(|s| !s.is_empty()) {
         return issue.to_string();
     }
@@ -298,7 +316,7 @@ fn task_for_block(block: &Block) -> String {
     {
         return desc.to_string();
     }
-    format!("block-{}", block.id)
+    folder.to_owned()
 }
 
 /// Accumulator for one `(customer, verkefni, task)` group.
@@ -312,6 +330,40 @@ struct GroupAcc {
     /// Distinct non-empty descriptions in first-seen order.
     descriptions: Vec<String>,
     block_ids: Vec<i64>,
+}
+
+/// Longest `Texti á reikning` we will build by joining a group's distinct
+/// block descriptions. A day's work on one ticket can span 20+ blocks, and
+/// joining them all produced a paragraph no one would put on an invoice.
+/// `tempo.rs` capped its aggregated descriptions for the same reason.
+const INVOICE_TEXT_MAX: usize = 180;
+
+/// Join a group's distinct descriptions into one invoice line, stopping
+/// before it becomes a wall of text and saying how many were left out.
+///
+/// Honest truncation over silent truncation: `(+N more)` tells the user
+/// there is detail they may want to summarise themselves, rather than
+/// implying the line is the whole story.
+fn join_descriptions(descriptions: &[String]) -> String {
+    let mut out = String::new();
+    let mut used = 0;
+    for d in descriptions {
+        // Always take the first, even if it alone exceeds the cap — a line
+        // must never be empty.
+        if used > 0 && out.chars().count() + d.chars().count() + 2 > INVOICE_TEXT_MAX {
+            break;
+        }
+        if used > 0 {
+            out.push_str("; ");
+        }
+        out.push_str(d);
+        used += 1;
+    }
+    let omitted = descriptions.len() - used;
+    if omitted > 0 {
+        out.push_str(&format!(" (+{omitted} more)"));
+    }
+    out
 }
 
 /// Deterministic, never-empty invoice text for a group whose blocks all
@@ -375,7 +427,7 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
         let key = (
             resolved.customer.clone().unwrap_or_default(),
             resolved.verkefni.clone().unwrap_or_default(),
-            task_for_block(block),
+            task_for_block(block, &folder),
         );
 
         if !groups.contains_key(&key) {
@@ -416,7 +468,7 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
             let invoice_text = if acc.descriptions.is_empty() {
                 fallback_invoice_text(conn, &acc)?
             } else {
-                acc.descriptions.join("; ")
+                join_descriptions(&acc.descriptions)
             };
             let seconds = union_seconds(acc.intervals);
             Ok(BillingRow {
@@ -432,6 +484,11 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
             })
         })
         .collect::<Result<Vec<_>>>()?;
+
+    // A group that rounds to 0 hours cannot be billed, and a wizard full
+    // of "0 hrs" lines is pure noise. Tempo sync already skipped
+    // sub-half-hour groups, so this keeps the two consistent.
+    rows.retain(|r| round_to_half_hour(r.seconds) > 0);
 
     rows.sort_by(|a, b| {
         b.needs_input()
@@ -916,11 +973,178 @@ mod tests {
 
     #[test]
     fn missing_description_falls_back_to_the_event_title() {
+        // A calendar title is real work description, so it is eligible —
+        // unlike a Claude hook title (see the exclusion test below).
         let c = open_memory().unwrap();
         let b = seed_block(&c, "2026-07-23T09:00:00+00:00", 3600, None, None, false);
-        seed_event(&c, b, "e1", Some("/x/some-folder"), "Standup");
+        let mut ev = Event::minimal("gcal", "g1", "2026-07-23T09:00:00Z", "Standup");
+        ev.project_path = Some("/x/some-folder".to_owned());
+        let eid = repository::upsert_event(&c, &ev).unwrap();
+        c.execute(
+            "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+            params![b, eid],
+        )
+        .unwrap();
         let rows = rows_for_day(&c, "2026-07-23").unwrap();
         assert_eq!(rows[0].invoice_text, "Standup");
+    }
+
+    // ───────── regressions found by running against the real database ─────────
+
+    #[test]
+    fn claude_hook_titles_never_become_invoice_text() {
+        // Regression: on a day that never went through `estimate`, the
+        // title fallback surfaced hook names ("PreToolUse", "SessionEnd")
+        // as Texti á reikning. Worse, some hook titles carry captured
+        // terminal content, which must never reach a customer invoice.
+        let c = open_memory().unwrap();
+        let b = seed_block(&c, "2026-07-23T09:00:00+00:00", 3600, None, None, false);
+        let mut ev = Event::minimal(
+            "claude",
+            "hook1",
+            "2026-07-23T09:00:00Z",
+            "UserPromptSubmit — aws dynamodb query --region eu-west-1",
+        );
+        ev.project_path = Some(work("sjukra"));
+        let eid = repository::upsert_event(&c, &ev).unwrap();
+        c.execute(
+            "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+            params![b, eid],
+        )
+        .unwrap();
+
+        let rows = rows_for_day(&c, "2026-07-23").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(
+            !rows[0].invoice_text.contains("UserPromptSubmit"),
+            "hook name leaked into invoice text: {}",
+            rows[0].invoice_text
+        );
+        assert!(
+            !rows[0].invoice_text.contains("dynamodb"),
+            "captured terminal content leaked into invoice text: {}",
+            rows[0].invoice_text
+        );
+        assert_eq!(rows[0].invoice_text, "Work in sjukra");
+    }
+
+    #[test]
+    fn a_commit_title_is_still_used_as_invoice_text() {
+        // The flip side of the exclusion above: real work titles (commits,
+        // PRs, calendar, tickets) remain a good fallback.
+        let c = open_memory().unwrap();
+        let b = seed_block(&c, "2026-07-23T09:00:00+00:00", 3600, None, None, false);
+        let mut ev = Event::minimal(
+            "github_commit",
+            "c1",
+            "2026-07-23T09:00:00Z",
+            "Add /practice route — random-question drill mode",
+        );
+        ev.project_path = Some(work("sjukra"));
+        let eid = repository::upsert_event(&c, &ev).unwrap();
+        c.execute(
+            "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+            params![b, eid],
+        )
+        .unwrap();
+
+        let rows = rows_for_day(&c, "2026-07-23").unwrap();
+        assert_eq!(
+            rows[0].invoice_text,
+            "Add /practice route — random-question drill mode"
+        );
+    }
+
+    #[test]
+    fn unestimated_blocks_collapse_into_one_line_per_folder() {
+        // Regression: an un-estimated day (no ticket, no description on any
+        // block) emitted one line PER BLOCK — 16 lines of half-hours for a
+        // single day. They must collapse per folder instead.
+        let c = open_memory().unwrap();
+        for (i, start) in [
+            "2026-07-23T09:00:00+00:00",
+            "2026-07-23T10:00:00+00:00",
+            "2026-07-23T11:00:00+00:00",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let b = seed_block(&c, start, 1800, None, None, false);
+            seed_event(&c, b, &format!("e{i}"), Some(&work("sjukra")), "PreToolUse");
+        }
+        let rows = rows_for_day(&c, "2026-07-23").unwrap();
+        assert_eq!(rows.len(), 1, "got {rows:#?}");
+        // Three disjoint 30-min blocks → 1.5h union.
+        assert_eq!(rows[0].seconds, 5400);
+        assert_eq!(rows[0].hours, 1.5);
+    }
+
+    #[test]
+    fn the_work_root_itself_is_not_a_folder() {
+        // Regression: a path sitting directly at ~/Desktop/Work produced
+        // the nonsense folder "Work", which surfaced as "Work in Work".
+        assert_eq!(work_folder_for_path(&work("")), None);
+        assert_eq!(
+            work_folder_for_path(
+                dirs::home_dir()
+                    .unwrap()
+                    .join("Desktop/Work")
+                    .to_str()
+                    .unwrap()
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn many_descriptions_are_capped_with_a_count_of_the_rest() {
+        // Regression: one ticket worked across 20+ blocks joined every
+        // description into a paragraph. Cap it and say what was left out.
+        let many: Vec<String> = (1..=20)
+            .map(|i| format!("Task number {i} with a reasonably long description"))
+            .collect();
+        let out = join_descriptions(&many);
+        assert!(
+            out.chars().count() < INVOICE_TEXT_MAX + 40,
+            "not capped: {} chars",
+            out.chars().count()
+        );
+        assert!(
+            out.contains("more)"),
+            "should report the omitted count: {out}"
+        );
+        assert!(out.starts_with("Task number 1"));
+    }
+
+    #[test]
+    fn a_single_description_is_used_verbatim() {
+        let one = vec!["Build the document analyzer".to_string()];
+        assert_eq!(join_descriptions(&one), "Build the document analyzer");
+    }
+
+    #[test]
+    fn one_very_long_description_is_still_kept() {
+        // Never emit an empty invoice line, even if the only description
+        // blows the cap on its own.
+        let long = vec!["x".repeat(400)];
+        assert_eq!(join_descriptions(&long).chars().count(), 400);
+    }
+
+    #[test]
+    fn rows_that_round_to_zero_hours_are_dropped() {
+        // A sub-15-minute group can't be billed, and a wizard full of
+        // "0 hrs" lines is noise. Mirrors the old Tempo sync's skip.
+        let c = open_memory().unwrap();
+        let b = seed_block(
+            &c,
+            "2026-07-23T09:00:00+00:00",
+            300, // 5 minutes
+            Some("TINY-1"),
+            Some("Blink"),
+            false,
+        );
+        seed_event(&c, b, "e1", Some(&work("sjukra")), "PreToolUse");
+        assert!(rows_for_day(&c, "2026-07-23").unwrap().is_empty());
     }
 
     #[test]
