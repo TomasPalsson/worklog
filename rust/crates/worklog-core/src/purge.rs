@@ -384,8 +384,17 @@ pub struct LastPrune {
 /// by [`prune_if_due`] under [`LAST_REPORT_KEY`] / [`LAST_RUN_KEY`].
 /// `None` when either key is absent — e.g. no automatic prune has ever
 /// run (spec 002 FR-024 / B34, B35, B40).
-pub fn last_prune(_conn: &Connection) -> Result<Option<LastPrune>> {
-    unimplemented!("RED stub (slice 6a)")
+pub fn last_prune(conn: &Connection) -> Result<Option<LastPrune>> {
+    let report_json = meta_get(conn, LAST_REPORT_KEY)?;
+    let ran_at = meta_get(conn, LAST_RUN_KEY)?;
+    match (report_json, ran_at) {
+        (Some(report_json), Some(ran_at)) => {
+            let report: PurgeReport =
+                serde_json::from_str(&report_json).context("deserialising last prune report")?;
+            Ok(Some(LastPrune { report, ran_at }))
+        }
+        _ => Ok(None),
+    }
 }
 
 /// Read a value from the `meta` table. `None` when `key` is absent.
@@ -426,7 +435,9 @@ pub fn prune_if_due(conn: &Connection, opts: &PruneOptions) -> Result<Option<Pur
     }
     let report = run(conn, opts)?;
     meta_set(conn, LATCH_KEY, &cutoff_iso)?;
-    // RED stub (slice 6a): persistence not yet implemented.
+    let report_json = serde_json::to_string(&report).context("serialising last prune report")?;
+    meta_set(conn, LAST_REPORT_KEY, &report_json)?;
+    meta_set(conn, LAST_RUN_KEY, &chrono::Utc::now().to_rfc3339())?;
     Ok(Some(report))
 }
 
