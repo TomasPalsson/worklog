@@ -4061,4 +4061,77 @@ mod tests {
             "must contain no digits that look like a date: {line}"
         );
     }
+
+    /// B36: no user-facing text anywhere in this crate or in the shipped
+    /// skill docs may still describe the retired rolling 30-day retention
+    /// rule as the pruner's policy — the pruner is now billing-cycle
+    /// aligned and rail-free. Reads the live files at test time (not a
+    /// frozen copy) so a regression is caught the moment it lands.
+    #[test]
+    fn b36_no_stale_thirty_day_retention_phrasing_survives() {
+        // `include_str!` embeds this whole file, including this test's own
+        // source — so the needles below are built by concatenation rather
+        // than written as contiguous literals, or the test would always
+        // fail by matching its own assertion strings.
+        let this_file = include_str!("cli.rs");
+        let stale_retention_phrase = format!("{}{}", "older than 30 days are ", "purged");
+        assert!(
+            !this_file.contains(&stale_retention_phrase),
+            "cli.rs still describes the retired rolling 30-day retention rule"
+        );
+        let removed_fn_ref = format!("{}{}", "purge::", "purge");
+        assert!(
+            !this_file.contains(&removed_fn_ref),
+            "cli.rs still references a purge function that no longer exists"
+        );
+
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+
+        let api_reference = std::fs::read_to_string(format!(
+            "{manifest_dir}/../../../skills/worklog/references/api-reference.md"
+        ))
+        .expect("api-reference.md must exist");
+        assert!(
+            !api_reference.contains("Safety rails baked in"),
+            "api-reference.md still claims safety rails that no longer exist"
+        );
+        assert!(
+            !api_reference.contains("never deletes unsynced"),
+            "api-reference.md still claims the retired unsynced-block rail"
+        );
+        assert!(
+            !api_reference.contains("blocks_kept_unsynced"),
+            "api-reference.md still shows the removed blocks_kept_unsynced field"
+        );
+        assert!(
+            !api_reference.contains("blocks_kept_manual"),
+            "api-reference.md still shows the removed blocks_kept_manual field"
+        );
+
+        let skill_md =
+            std::fs::read_to_string(format!("{manifest_dir}/../../../skills/worklog/SKILL.md"))
+                .expect("SKILL.md must exist");
+        assert!(
+            !skill_md.contains("`worklog db purge`, `worklog self-update`"),
+            "SKILL.md still lumps rail-free, irreversible db purge in with \
+             the same confirm strength as ordinary writes"
+        );
+
+        let purge_rs =
+            std::fs::read_to_string(format!("{manifest_dir}/../worklog-core/src/purge.rs"))
+                .expect("purge.rs must exist");
+        assert!(
+            !purge_rs.contains("v1 ships defaults only"),
+            "purge.rs still claims cycle settings aren't actually configurable"
+        );
+
+        let block_service_rs = std::fs::read_to_string(format!(
+            "{manifest_dir}/../worklog-core/src/block_service.rs"
+        ))
+        .expect("block_service.rs must exist");
+        assert!(
+            !block_service_rs.contains("PURGEABLE_BLOCKS_WHERE"),
+            "block_service.rs still points at a purge constant that no longer exists"
+        );
+    }
 }
