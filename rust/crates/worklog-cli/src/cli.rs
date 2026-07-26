@@ -1409,6 +1409,15 @@ fn cmd_schedule_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// The collector must never reach back past the pruner's cutoff, or a scheduled
+/// collect re-imports rows the last prune deleted. Only ever moves the start
+/// FORWARD — a lookback already inside the retention window is untouched.
+fn effective_since(requested: chrono::NaiveDate, _cutoff: chrono::NaiveDate) -> chrono::NaiveDate {
+    // RED stub: ignores the cutoff entirely. B41 (clamp) and the totality
+    // sweep must fail against this until the GREEN phase fixes it.
+    requested
+}
+
 fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bool) -> Result<()> {
     let paths = Paths::resolve()?;
     paths.ensure()?;
@@ -4138,5 +4147,69 @@ mod tests {
             !block_service_rs.contains("PURGEABLE_BLOCKS_WHERE"),
             "block_service.rs still points at a purge constant that no longer exists"
         );
+    }
+
+    /// B41: a lookback that would reach earlier than the pruner's cutoff is
+    /// clamped forward to the cutoff itself, so a scheduled collect right
+    /// after a rollover never re-imports rows the last prune deleted.
+    #[test]
+    fn b41_effective_since_clamps_forward_to_cutoff() {
+        let requested = chrono::NaiveDate::from_ymd_opt(2026, 7, 17).unwrap();
+        let cutoff = chrono::NaiveDate::from_ymd_opt(2026, 7, 20).unwrap();
+        assert_eq!(effective_since(requested, cutoff), cutoff);
+    }
+
+    /// B42: a lookback that already stays inside the retention window
+    /// (later than the cutoff) is left untouched — the clamp only ever
+    /// moves the start forward, never back.
+    #[test]
+    fn b42_effective_since_leaves_in_window_lookback_untouched() {
+        let requested = chrono::NaiveDate::from_ymd_opt(2026, 7, 18).unwrap();
+        let cutoff = chrono::NaiveDate::from_ymd_opt(2026, 6, 20).unwrap();
+        assert_eq!(effective_since(requested, cutoff), requested);
+    }
+
+    /// Boundary: requested == cutoff must return that exact date, with no
+    /// off-by-one nudging it a day later or earlier.
+    #[test]
+    fn effective_since_boundary_equal_dates_is_exact() {
+        let d = chrono::NaiveDate::from_ymd_opt(2026, 7, 20).unwrap();
+        assert_eq!(effective_since(d, d), d);
+    }
+
+    /// Totality: across a spread of ordered and reversed (requested, cutoff)
+    /// pairs — including a year boundary — the result is never earlier than
+    /// the cutoff.
+    #[test]
+    fn effective_since_never_earlier_than_cutoff() {
+        let pairs = [
+            (
+                chrono::NaiveDate::from_ymd_opt(2026, 7, 17).unwrap(),
+                chrono::NaiveDate::from_ymd_opt(2026, 7, 20).unwrap(),
+            ),
+            (
+                chrono::NaiveDate::from_ymd_opt(2026, 7, 20).unwrap(),
+                chrono::NaiveDate::from_ymd_opt(2026, 7, 17).unwrap(),
+            ),
+            (
+                chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                chrono::NaiveDate::from_ymd_opt(2025, 12, 20).unwrap(),
+            ),
+            (
+                chrono::NaiveDate::from_ymd_opt(2025, 12, 20).unwrap(),
+                chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+            ),
+            (
+                chrono::NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+                chrono::NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+            ),
+        ];
+        for (requested, cutoff) in pairs {
+            let result = effective_since(requested, cutoff);
+            assert!(
+                result >= cutoff,
+                "effective_since({requested}, {cutoff}) = {result}, earlier than cutoff"
+            );
+        }
     }
 }
