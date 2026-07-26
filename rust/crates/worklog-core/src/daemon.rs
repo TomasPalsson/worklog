@@ -274,9 +274,14 @@ pub fn spawn_prune_loop(state: Shared) -> tokio::task::JoinHandle<()> {
 
 /// One tick of [`spawn_prune_loop`]: resolve the current cycle cutoff
 /// and hand it to [`crate::purge::prune_if_due`], swallowing any
-/// failure. Never logs on a successful (or skipped) check — that
-/// belongs to the report-rendering surfaces added later; here the only
-/// observable-by-log outcome is a failure.
+/// failure. A real prune (the due path) logs exactly one `info!` line
+/// naming the cutoff and every deletion count, plus an additional
+/// `warn!` when any deleted block was never billed — that loss must not
+/// be silent (spec 002 §5.6, FR-018, FR-022 / B32). A not-due check logs
+/// nothing at `info` level — it fires on a 6h timer forever and would be
+/// pure noise (spec 002 §5.6 / B33) — only a `trace!` for anyone
+/// watching that closely. A failure logs `warn!` naming the failing
+/// stage, carried by the error's `anyhow::Context` chain.
 async fn prune_due_check_once(state: Shared) {
     if !crate::purge::pruning_enabled() {
         return;
@@ -303,7 +308,30 @@ async fn prune_due_check_once(state: Shared) {
         .await;
 
     match outcome {
-        Ok(Ok(_)) => {}
+        Ok(Ok(Some(report))) => {
+            info!(
+                cutoff = %report.cutoff_date,
+                blocks_deleted = report.blocks_deleted,
+                blocks_deleted_unbilled = report.blocks_deleted_unbilled,
+                events_deleted = report.events_deleted,
+                sessions_deleted = report.sessions_deleted,
+                tickets_deleted = report.tickets_deleted,
+                "billing-cycle prune completed"
+            );
+            if report.blocks_deleted_unbilled > 0 {
+                warn!(
+                    "billing-cycle prune deleted {} never-billed block(s) \
+                     (no Tempo id and no exported_at marker) — that work is gone",
+                    report.blocks_deleted_unbilled
+                );
+            }
+        }
+        Ok(Ok(None)) => {
+            // Not due — a total no-op. No `info!` here: this tick fires
+            // every 6h forever, so logging it at `info` would be pure
+            // noise (spec 002 §5.6).
+            tracing::trace!("billing-cycle prune due-check: not due, nothing to do");
+        }
         Ok(Err(e)) => warn!("billing-cycle prune due-check failed: {e:#}"),
         Err(e) => warn!("billing-cycle prune due-check task panicked: {e}"),
     }
