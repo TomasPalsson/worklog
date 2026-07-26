@@ -1412,10 +1412,8 @@ fn cmd_schedule_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
 /// The collector must never reach back past the pruner's cutoff, or a scheduled
 /// collect re-imports rows the last prune deleted. Only ever moves the start
 /// FORWARD — a lookback already inside the retention window is untouched.
-fn effective_since(requested: chrono::NaiveDate, _cutoff: chrono::NaiveDate) -> chrono::NaiveDate {
-    // RED stub: ignores the cutoff entirely. B41 (clamp) and the totality
-    // sweep must fail against this until the GREEN phase fixes it.
-    requested
+fn effective_since(requested: chrono::NaiveDate, cutoff: chrono::NaiveDate) -> chrono::NaiveDate {
+    requested.max(cutoff)
 }
 
 fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bool) -> Result<()> {
@@ -1424,7 +1422,24 @@ fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bo
     let conn = db::open(&paths.db)?;
     let client = http::client()?;
     let today = chrono::Utc::now().date_naive();
-    let since = today - chrono::Duration::days(days as i64);
+    let requested_since = today - chrono::Duration::days(days as i64);
+    // The pruner's cutoff is computed off the LOCAL day (matching what it
+    // actually deleted), even though `today` above stays UTC-derived —
+    // changing cmd_collect's own notion of "today" is a behaviour change
+    // beyond this slice.
+    let cutoff = worklog_core::purge::cutoff_for_cycle(
+        worklog_core::tz::local_date(chrono::Utc::now()),
+        worklog_core::purge::configured_cycle_start_day(),
+        worklog_core::purge::configured_close_day(),
+    );
+    let since = effective_since(requested_since, cutoff);
+    if since != requested_since {
+        tracing::debug!(
+            requested = %requested_since,
+            cutoff = %cutoff,
+            "collect: clamped lookback start forward to the prune cutoff"
+        );
+    }
 
     // Each report wrapped in an Option so we can still emit something
     // useful when a source's credentials aren't set.
