@@ -37,8 +37,10 @@ use rusqlite::{params, Connection, OptionalExtension};
 /// the billing cycle; a plain rolling window.
 pub const DEFAULT_RETENTION_DAYS: i64 = 30;
 
-/// What the purge did (or would have done, if `dry_run`).
-#[derive(Debug, Clone, Default, serde::Serialize)]
+/// What the purge did (or would have done, if `dry_run`). Deserialize is
+/// needed alongside Serialize so a report persisted to `meta` (see
+/// [`LAST_REPORT_KEY`], [`last_prune`]) round-trips.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PurgeReport {
     /// ISO `YYYY-MM-DD` — anything before this is fair game.
     pub cutoff_date: String,
@@ -360,6 +362,32 @@ pub fn run(conn: &Connection, opts: &PruneOptions) -> Result<PurgeReport> {
 /// successfully pruned to, in the `meta` key/value table.
 pub const LATCH_KEY: &str = "last_prune_cutoff";
 
+/// Key under which [`prune_if_due`] persists the JSON-serialised
+/// [`PurgeReport`] of the most recent successful automatic prune, in the
+/// `meta` key/value table (spec 002 FR-018, FR-024 / B32, B34, B40).
+pub const LAST_REPORT_KEY: &str = "last_prune_report";
+
+/// Key under which [`prune_if_due`] persists the RFC3339 UTC timestamp of
+/// the most recent successful automatic prune, in the `meta` key/value
+/// table (spec 002 FR-018, FR-024 / B32, B34, B40).
+pub const LAST_RUN_KEY: &str = "last_prune_at";
+
+/// The most recently persisted automatic-prune outcome, as read back by
+/// [`last_prune`] — the report itself plus when it ran.
+#[derive(Debug, Clone)]
+pub struct LastPrune {
+    pub report: PurgeReport,
+    pub ran_at: String,
+}
+
+/// Read back the last automatic prune's report and timestamp, persisted
+/// by [`prune_if_due`] under [`LAST_REPORT_KEY`] / [`LAST_RUN_KEY`].
+/// `None` when either key is absent — e.g. no automatic prune has ever
+/// run (spec 002 FR-024 / B34, B35, B40).
+pub fn last_prune(_conn: &Connection) -> Result<Option<LastPrune>> {
+    unimplemented!("RED stub (slice 6a)")
+}
+
 /// Read a value from the `meta` table. `None` when `key` is absent.
 pub fn meta_get(conn: &Connection, key: &str) -> Result<Option<String>> {
     conn.query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
@@ -383,10 +411,14 @@ pub fn meta_set(conn: &Connection, key: &str, value: &str) -> Result<()> {
 /// The daemon's due-check (spec 002 FR-009, Journey 1): run [`run`] only
 /// if `opts.cutoff` differs from the recorded [`LATCH_KEY`] latch.
 /// Returns `Ok(None)` — having done nothing at all — when the latch
-/// already matches. Otherwise delegates to [`run`] and, only on
-/// success, records the new cutoff as the latch; a failure propagates
-/// with the latch left untouched so the next check retries the same
-/// work.
+/// already matches; the not-due path writes nothing at all, not even the
+/// last-report/timestamp keys (spec 002 §5.6 / B33). Otherwise delegates
+/// to [`run`] and, only on success, records the new cutoff as the latch
+/// plus the JSON-serialised report ([`LAST_REPORT_KEY`]) and an RFC3339
+/// UTC timestamp ([`LAST_RUN_KEY`]) — both readable back via
+/// [`last_prune`] (spec 002 FR-018, FR-024 / B32). A failure propagates
+/// with the latch and both keys left untouched so the next check
+/// retries the same work.
 pub fn prune_if_due(conn: &Connection, opts: &PruneOptions) -> Result<Option<PurgeReport>> {
     let cutoff_iso = opts.cutoff.to_string();
     if meta_get(conn, LATCH_KEY)?.as_deref() == Some(cutoff_iso.as_str()) {
@@ -394,6 +426,7 @@ pub fn prune_if_due(conn: &Connection, opts: &PruneOptions) -> Result<Option<Pur
     }
     let report = run(conn, opts)?;
     meta_set(conn, LATCH_KEY, &cutoff_iso)?;
+    // RED stub (slice 6a): persistence not yet implemented.
     Ok(Some(report))
 }
 
@@ -1186,6 +1219,125 @@ mod tests {
             Some("2026-05-20".to_string()),
             "latch must remain at its previous value so the next check retries"
         );
+        assert_eq!(
+            meta_get(&conn, LAST_REPORT_KEY).unwrap(),
+            None,
+            "a failed prune must not persist a report either"
+        );
+        assert_eq!(
+            meta_get(&conn, LAST_RUN_KEY).unwrap(),
+            None,
+            "a failed prune must not persist a timestamp either"
+        );
+    }
+
+    /// B32: a successful automatic prune persists a report to
+    /// [`LAST_REPORT_KEY`] whose cutoff and counts match what
+    /// `prune_if_due` returned, plus a parseable RFC3339 timestamp to
+    /// [`LAST_RUN_KEY`] — both readable back via [`last_prune`].
+    #[test]
+    fn b32_successful_prune_persists_last_report_and_timestamp() {
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("worklog.db");
+        let conn = crate::db::open(&db_path).unwrap();
+        let cutoff = date("2026-06-20");
+        insert_block(&conn, "2026-02-10", Some("tempo-1"), None, None);
+        insert_block(&conn, "2026-02-11", None, None, None);
+
+        let snapshot_path = tmp.path().join("worklog.db.preprune");
+        let opts = PruneOptions {
+            cutoff,
+            dry_run: false,
+            snapshot_to: Some(snapshot_path.as_path()),
+            db_path: Some(db_path.as_path()),
+        };
+        let returned = prune_if_due(&conn, &opts).unwrap().unwrap();
+
+        let stored_json = meta_get(&conn, LAST_REPORT_KEY).unwrap().unwrap();
+        let stored: PurgeReport = serde_json::from_str(&stored_json).unwrap();
+        assert_eq!(stored.cutoff_date, returned.cutoff_date);
+        assert_eq!(stored.blocks_deleted, returned.blocks_deleted);
+        assert_eq!(stored.blocks_deleted, 2);
+
+        let ran_at = meta_get(&conn, LAST_RUN_KEY).unwrap().unwrap();
+        chrono::DateTime::parse_from_rfc3339(&ran_at)
+            .expect("last_prune_at must be a parseable RFC3339 timestamp");
+
+        let lp = last_prune(&conn).unwrap().unwrap();
+        assert_eq!(lp.report.cutoff_date, returned.cutoff_date);
+        assert_eq!(lp.report.blocks_deleted, returned.blocks_deleted);
+        assert_eq!(lp.ran_at, ran_at);
+    }
+
+    /// B33: a not-due `prune_if_due` (latch already equals the computed
+    /// cutoff) writes neither the report nor the timestamp key, and
+    /// leaves the latch itself untouched — the not-due path is a total
+    /// no-op, not merely delete-free.
+    #[test]
+    fn b33_not_due_prune_writes_neither_report_nor_timestamp() {
+        let conn = open_memory().unwrap();
+        let cutoff = date("2026-06-20");
+        meta_set(&conn, LATCH_KEY, "2026-06-20").unwrap();
+
+        let opts = PruneOptions {
+            cutoff,
+            dry_run: false,
+            snapshot_to: None,
+            db_path: None,
+        };
+        let result = prune_if_due(&conn, &opts).unwrap();
+        assert!(result.is_none());
+        assert_eq!(meta_get(&conn, LAST_REPORT_KEY).unwrap(), None);
+        assert_eq!(meta_get(&conn, LAST_RUN_KEY).unwrap(), None);
+        assert_eq!(
+            meta_get(&conn, LATCH_KEY).unwrap(),
+            Some("2026-06-20".to_string()),
+            "latch itself must stay untouched by a not-due check"
+        );
+    }
+
+    /// `last_prune` reports `None` when no automatic prune has ever run
+    /// — the absent-keys case B35's CLI rendering depends on.
+    #[test]
+    fn last_prune_returns_none_when_never_run() {
+        let conn = open_memory().unwrap();
+        assert!(last_prune(&conn).unwrap().is_none());
+    }
+
+    /// A `PurgeReport` serialised to `meta` JSON and read back equals
+    /// the original, field by field — the round-trip `Deserialize`
+    /// exists for.
+    #[test]
+    fn purge_report_round_trips_through_meta_json() {
+        let conn = open_memory().unwrap();
+        let report = PurgeReport {
+            cutoff_date: "2026-06-20".to_string(),
+            blocks_deleted: 12,
+            blocks_deleted_unbilled: 3,
+            events_deleted: 145,
+            sessions_deleted: 4,
+            tickets_deleted: 2,
+            bytes_freed: 4096,
+            snapshot_path: Some("/tmp/worklog.db.preprune".to_string()),
+            dry_run: false,
+        };
+        let json = serde_json::to_string(&report).unwrap();
+        meta_set(&conn, LAST_REPORT_KEY, &json).unwrap();
+
+        let stored_json = meta_get(&conn, LAST_REPORT_KEY).unwrap().unwrap();
+        let round_tripped: PurgeReport = serde_json::from_str(&stored_json).unwrap();
+        assert_eq!(round_tripped.cutoff_date, report.cutoff_date);
+        assert_eq!(round_tripped.blocks_deleted, report.blocks_deleted);
+        assert_eq!(
+            round_tripped.blocks_deleted_unbilled,
+            report.blocks_deleted_unbilled
+        );
+        assert_eq!(round_tripped.events_deleted, report.events_deleted);
+        assert_eq!(round_tripped.sessions_deleted, report.sessions_deleted);
+        assert_eq!(round_tripped.tickets_deleted, report.tickets_deleted);
+        assert_eq!(round_tripped.bytes_freed, report.bytes_freed);
+        assert_eq!(round_tripped.snapshot_path, report.snapshot_path);
+        assert_eq!(round_tripped.dry_run, report.dry_run);
     }
 
     #[test]
