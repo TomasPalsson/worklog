@@ -2650,6 +2650,14 @@ fn cmd_week<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()
     Ok(())
 }
 
+/// Renders the "last prune" status-table row: the cutoff, the total
+/// rows removed, and when it ran — or an explicit "never run" statement
+/// when no automatic prune has ever completed (spec 002 FR-024 / B34,
+/// B35, B40). Pure so it can be unit-tested without a database.
+fn last_prune_line(_lp: Option<&worklog_core::purge::LastPrune>) -> String {
+    unimplemented!("RED stub (slice 6a)")
+}
+
 /// `worklog status` — one screen folding the daemon / hook / schedule /
 /// web / database / secrets health checks (previously five separate
 /// `*-status` commands) plus today's tracked time. Read-only and fast.
@@ -2669,15 +2677,20 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
     let secrets_total = audit.len();
     let secrets_missing: Vec<&str> = audit.iter().filter(|s| !s.present).map(|s| s.key).collect();
 
-    // Database summary — only when the db file already exists.
+    // Database summary — only when the db file already exists. A missing
+    // db means "never run" for the last-prune row below too, not an
+    // error, so both are derived from the same guarded connection.
     let paths = Paths::resolve()?;
-    let db_summary = if paths.db_exists() {
-        db::open(&paths.db)
-            .ok()
-            .and_then(|c| db::summarize(&c).ok())
+    let db_conn = if paths.db_exists() {
+        db::open(&paths.db).ok()
     } else {
         None
     };
+    let db_summary = db_conn.as_ref().and_then(|c| db::summarize(c).ok());
+    let last_prune = db_conn
+        .as_ref()
+        .and_then(|c| worklog_core::purge::last_prune(c).ok())
+        .flatten();
 
     // Today's tracked time — only reachable when the daemon is up.
     let today = worklog_core::tz::local_date(chrono::Utc::now()).to_string();
@@ -2705,6 +2718,15 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
                     "schema_version": d.schema_version,
                     "events": d.events,
                     "blocks": d.blocks,
+                })),
+                "last_prune": last_prune.as_ref().map(|lp| serde_json::json!({
+                    "cutoff": lp.report.cutoff_date,
+                    "blocks_deleted": lp.report.blocks_deleted,
+                    "blocks_deleted_unbilled": lp.report.blocks_deleted_unbilled,
+                    "events_deleted": lp.report.events_deleted,
+                    "sessions_deleted": lp.report.sessions_deleted,
+                    "tickets_deleted": lp.report.tickets_deleted,
+                    "ran_at": lp.ran_at,
                 })),
                 "secrets": { "set": secrets_set, "total": secrets_total, "missing": secrets_missing },
                 "today": today_agg.as_ref().map(day_agg_json),
@@ -2775,6 +2797,7 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
             None => "not initialized — run `worklog setup`".to_owned(),
         },
     ]);
+    t.add_row(vec!["last prune".to_owned(), last_prune_line(last_prune.as_ref())]);
     t.add_row(vec![
         "secrets".to_owned(),
         if secrets_missing.is_empty() {
@@ -3973,5 +3996,55 @@ mod tests {
         let agg = aggregate_day("2026-05-16", &blocks);
         assert_eq!(agg.overlap_secs, 0);
         assert_eq!(agg.total_secs, 5400);
+    }
+
+    /// Builds a `LastPrune` with round, easy-to-spot counts for
+    /// `last_prune_line` assertions.
+    fn last_prune(cutoff: &str, ran_at: &str) -> worklog_core::purge::LastPrune {
+        worklog_core::purge::LastPrune {
+            report: worklog_core::purge::PurgeReport {
+                cutoff_date: cutoff.to_owned(),
+                blocks_deleted: 12,
+                blocks_deleted_unbilled: 1,
+                events_deleted: 145,
+                sessions_deleted: 3,
+                tickets_deleted: 2,
+                bytes_freed: 4096,
+                snapshot_path: Some("/tmp/worklog.db.preprune".to_owned()),
+                dry_run: false,
+            },
+            ran_at: ran_at.to_owned(),
+        }
+    }
+
+    /// B34/B40: a stored report's line names the cutoff, the total rows
+    /// removed (blocks + events + sessions + tickets), and the RFC3339
+    /// timestamp it ran at.
+    #[test]
+    fn last_prune_line_with_report_names_cutoff_total_and_timestamp() {
+        let lp = last_prune("2026-07-20", "2026-07-24T06:00:12+00:00");
+        let line = last_prune_line(Some(&lp));
+        assert!(line.contains("2026-07-20"), "must name the cutoff: {line}");
+        assert!(
+            line.contains("162"),
+            "must name the total rows removed (12+145+3+2=162): {line}"
+        );
+        assert!(
+            line.contains("2026-07-24T06:00:12+00:00"),
+            "must name when it ran: {line}"
+        );
+    }
+
+    /// B35: no stored report renders an explicit statement that pruning
+    /// has never run — exactly, and with no digits that could be
+    /// mistaken for a date.
+    #[test]
+    fn last_prune_line_without_report_says_never_run_exactly() {
+        let line = last_prune_line(None);
+        assert_eq!(line, "never run");
+        assert!(
+            !line.chars().any(|c| c.is_ascii_digit()),
+            "must contain no digits that look like a date: {line}"
+        );
     }
 }
