@@ -2654,8 +2654,19 @@ fn cmd_week<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()
 /// rows removed, and when it ran — or an explicit "never run" statement
 /// when no automatic prune has ever completed (spec 002 FR-024 / B34,
 /// B35, B40). Pure so it can be unit-tested without a database.
-fn last_prune_line(_lp: Option<&worklog_core::purge::LastPrune>) -> String {
-    unimplemented!("RED stub (slice 6a)")
+fn last_prune_line(lp: Option<&worklog_core::purge::LastPrune>) -> String {
+    match lp {
+        None => "never run".to_owned(),
+        Some(lp) => {
+            let r = &lp.report;
+            let total =
+                r.blocks_deleted + r.events_deleted + r.sessions_deleted + r.tickets_deleted;
+            format!(
+                "{} · {} blocks, {} events · {total} rows removed · {}",
+                r.cutoff_date, r.blocks_deleted, r.events_deleted, lp.ran_at
+            )
+        }
+    }
 }
 
 /// `worklog status` — one screen folding the daemon / hook / schedule /
@@ -2797,7 +2808,10 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
             None => "not initialized — run `worklog setup`".to_owned(),
         },
     ]);
-    t.add_row(vec!["last prune".to_owned(), last_prune_line(last_prune.as_ref())]);
+    t.add_row(vec![
+        "last prune".to_owned(),
+        last_prune_line(last_prune.as_ref()),
+    ]);
     t.add_row(vec![
         "secrets".to_owned(),
         if secrets_missing.is_empty() {
