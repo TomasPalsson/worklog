@@ -70,8 +70,8 @@ pub struct PurgeReport {
 }
 
 /// Billing cycles run `cycle_start_day` (default the 20th) through the
-/// day before `cycle_start_day` in the following month. Configurable in
-/// spirit, but v1 ships defaults only — see spec 002 §4.1.
+/// day before `cycle_start_day` in the following month. Configurable via
+/// the environment or `.env` file — see [`configured_cycle_start_day`].
 pub const DEFAULT_CYCLE_START_DAY: u32 = 20;
 /// Last day of the month on which hours can still be submitted against
 /// the cycle that just closed — default the 23rd (second business day

@@ -46,8 +46,9 @@ Read freely. Writes ALWAYS confirm. The user's standing rule:
 | Operation | Confirm? |
 |-----------|---------|
 | `worklog day --no-serve --json`, `collect`, `infer`, `estimate`, all GET endpoints, all `worklog *status`, `worklog tag list`, `worklog doctor`, `worklog secret list`, `worklog version` | **No** |
-| `POST /blocks/:id/{ticket,duration,description,delete}`, `worklog tag work/personal <glob>`, `worklog tag reclassify`, `worklog secret set/rm`, `worklog hook/schedule/daemon install/uninstall`, `worklog db purge`, `worklog self-update` | **Yes** |
+| `POST /blocks/:id/{ticket,duration,description,delete}`, `worklog tag work/personal <glob>`, `worklog tag reclassify`, `worklog secret set/rm`, `worklog hook/schedule/daemon install/uninstall`, `worklog self-update` | **Yes** |
 | `worklog sync` (without `--dry-run`) OR `POST /sync {dry_run: false}` | **ALWAYS** — irreversible Tempo writes; always show dry-run preview first |
+| `worklog db purge` (without `--dry-run`) | **ALWAYS** — rail-free: deletes hand-edited, unsynced, personal, and dirty blocks alike once their billing cycle has closed, no exemptions. Recoverable only from the pre-prune snapshot, not from the UI. Always show a `--dry-run` preview first |
 
 ## Non-negotiable invariants
 

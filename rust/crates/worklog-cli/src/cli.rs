@@ -2294,9 +2294,9 @@ fn fetch_day_blocks(day: &str) -> Result<Vec<worklog_core::models::Block>> {
 /// Empty-day footer for `worklog day`. The pipeline has just run, so a
 /// "run `worklog day --day X` to build blocks" hint would tell the user
 /// to do exactly what they just did. Pick the most specific cause we can
-/// name from the collector outcomes and the day's age vs the hook's
-/// 30-day retention window, and print one short `·` line pointing the
-/// user at the next concrete action.
+/// name from the collector outcomes and the day's age vs the billing-cycle
+/// pruner's cutoff, and print one short `·` line pointing the user at the
+/// next concrete action.
 fn print_day_empty_diagnostic<W: Write>(
     out: &mut W,
     day: chrono::NaiveDate,
@@ -2322,19 +2322,24 @@ fn print_day_empty_diagnostic<W: Write>(
         }
     }
 
-    // 2. Day is past the hook's default 30-day retention, so any Claude
-    //    Code activity for that day has already been purged. The cutoff
-    //    here mirrors `purge::purge` (UTC `today - retention`) so the
-    //    diagnostic flips on the same boundary the purger uses.
+    // 2. Day is past the billing-cycle pruner's cutoff, so any Claude Code
+    //    activity for that day has already been purged. The cutoff here
+    //    uses the SAME computation the pruner uses — `purge::cutoff_for_cycle`
+    //    over the configured cycle-start/close days — so the diagnostic
+    //    flips on the same boundary the pruner uses.
     let today = chrono::Utc::now().date_naive();
-    let retention = chrono::Duration::days(worklog_core::purge::DEFAULT_RETENTION_DAYS);
-    if day < today - retention {
+    let cutoff = worklog_core::purge::cutoff_for_cycle(
+        today,
+        worklog_core::purge::configured_cycle_start_day(),
+        worklog_core::purge::configured_close_day(),
+    );
+    if day < cutoff {
         style::info(
             out,
             &format!(
-                "no blocks for {day_str} — hook events older than {} days are purged, \
-                 so this day no longer has Claude Code activity on file.",
-                worklog_core::purge::DEFAULT_RETENTION_DAYS
+                "no blocks for {day_str} — its billing cycle has closed and the \
+                 pruner already removed data before {cutoff}, so this day no \
+                 longer has Claude Code activity on file."
             ),
         )?;
         return Ok(());
