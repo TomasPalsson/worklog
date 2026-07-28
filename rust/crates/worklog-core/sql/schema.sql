@@ -1,7 +1,11 @@
--- Worklog schema v8. Shared between Python and the Rust hook (include_str!).
+-- Worklog schema v10. Shared between Python and the Rust hook (include_str!).
 -- All CREATE statements are idempotent (IF NOT EXISTS) so the Rust hook can
 -- run this on every invocation with negligible cost.
 --
+-- v10 adds the meta key/value table — daemon-persisted state such as the
+-- billing-cycle pruner's last-run cutoff; see db.rs / purge.rs.
+-- v9 adds billing_customers and billing_folder_map — the billing export's
+-- customer/folder registry; see billing.rs / billing_registry.rs.
 -- v8 adds blocks.exported_at — billing-export canary; see billing.rs /
 -- purge.rs.
 -- v4 adds blocks.is_personal — auto-classified from the block's dominant
@@ -134,4 +138,13 @@ CREATE TABLE IF NOT EXISTS billing_folder_map (
     -- 1 = Reikningshæft (billable), 0 = Óreikningshæft.
     billable INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+-- ────────────────────────────── meta ──────────────────────────────
+-- Generic key/value store for daemon-persisted state that doesn't
+-- warrant its own table — currently just the billing-cycle pruner's
+-- latch (purge::LATCH_KEY = "last_prune_cutoff"); see purge.rs.
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );

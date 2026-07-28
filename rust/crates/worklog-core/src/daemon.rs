@@ -247,6 +247,117 @@ pub fn socket_path() -> Result<PathBuf> {
     Ok(crate::paths::Paths::resolve()?.socket)
 }
 
+/// How often the daemon's billing-cycle-prune due-check runs — once on
+/// start, then on this cadence forever after (spec 002 FR-023 / B39).
+/// Named + exported so a test can assert the value without waiting for
+/// it to elapse.
+pub const PRUNE_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
+
+/// Spawn the daemon's periodic billing-cycle prune due-check: runs once
+/// immediately, then every [`PRUNE_CHECK_INTERVAL`] thereafter, for as
+/// long as the returned handle lives. Skipped entirely — no db access,
+/// no path resolution — when [`crate::purge::pruning_enabled`] is
+/// `false`. The sqlite work runs on the blocking pool (mirroring
+/// [`with_conn`]) so rusqlite never runs directly on the async runtime;
+/// `state.conn`'s mutex is acquired only for the duration of that
+/// blocking call and released promptly afterwards. A prune failure is
+/// logged at `warn` and swallowed — it must never bring the daemon down
+/// or fail a request (spec 002 §5.3).
+/// `snapshot_to` and `db_path` are resolved ONCE by the caller and owned
+/// by the loop. They are deliberately not re-derived per tick from
+/// [`crate::paths::Paths::resolve`]: that reads the process-global
+/// `$WORKLOG_HOME`, and a test which cleared it between another test's
+/// `set_var` and this call once pointed a tick at the real
+/// `~/.local/share/worklog` and pruned it for real. A daemon's paths
+/// never change at runtime, so resolving them once is both safer and
+/// more honest about the dependency.
+pub fn spawn_prune_loop(
+    state: Shared,
+    snapshot_to: PathBuf,
+    db_path: PathBuf,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            prune_due_check_once(state.clone(), &snapshot_to, &db_path).await;
+            tokio::time::sleep(PRUNE_CHECK_INTERVAL).await;
+        }
+    })
+}
+
+/// Build shared state around an already-open connection. Lets a caller —
+/// in practice a test — bind to an explicit database instead of
+/// resolving one from the process environment.
+pub fn state_from_conn(conn: Connection) -> Shared {
+    Arc::new(AppState {
+        conn: Mutex::new(conn),
+    })
+}
+
+/// One tick of [`spawn_prune_loop`]: resolve the current cycle cutoff
+/// and hand it to [`crate::purge::prune_if_due`], swallowing any
+/// failure. A real prune (the due path) logs exactly one `info!` line
+/// naming the cutoff and every deletion count, plus an additional
+/// `warn!` when any deleted block was never billed — that loss must not
+/// be silent (spec 002 §5.6, FR-018, FR-022 / B32). A not-due check logs
+/// nothing at `info` level — it fires on a 6h timer forever and would be
+/// pure noise (spec 002 §5.6 / B33) — only a `trace!` for anyone
+/// watching that closely. A failure logs `warn!` naming the failing
+/// stage, carried by the error's `anyhow::Context` chain.
+async fn prune_due_check_once(state: Shared, snapshot_to: &Path, db_path: &Path) {
+    if !crate::purge::pruning_enabled() {
+        return;
+    }
+    let snapshot_to = snapshot_to.to_path_buf();
+    let db_path = db_path.to_path_buf();
+    let outcome =
+        tokio::task::spawn_blocking(move || -> Result<Option<crate::purge::PurgeReport>> {
+            let today = crate::tz::local_date(chrono::Utc::now());
+            let cutoff = crate::purge::cutoff_for_cycle(
+                today,
+                crate::purge::configured_cycle_start_day(),
+                crate::purge::configured_close_day(),
+            );
+            let opts = crate::purge::PruneOptions {
+                cutoff,
+                dry_run: false,
+                snapshot_to: Some(snapshot_to.as_path()),
+                db_path: Some(db_path.as_path()),
+            };
+            let conn = state.conn.blocking_lock();
+            crate::purge::prune_if_due(&conn, &opts)
+        })
+        .await;
+
+    match outcome {
+        Ok(Ok(Some(report))) => {
+            info!(
+                cutoff = %report.cutoff_date,
+                blocks_deleted = report.blocks_deleted,
+                blocks_deleted_unbilled = report.blocks_deleted_unbilled,
+                events_deleted = report.events_deleted,
+                sessions_deleted = report.sessions_deleted,
+                tickets_deleted = report.tickets_deleted,
+                "billing-cycle prune completed"
+            );
+            if report.blocks_deleted_unbilled > 0 {
+                warn!(
+                    "billing-cycle prune deleted {} never-billed block(s) \
+                     (no Tempo id and no exported_at marker) — that work is gone",
+                    report.blocks_deleted_unbilled
+                );
+            }
+        }
+        Ok(Ok(None)) => {
+            // Not due — a total no-op. No `info!` here: this tick fires
+            // every 6h forever, so logging it at `info` would be pure
+            // noise (spec 002 §5.6).
+            tracing::trace!("billing-cycle prune due-check: not due, nothing to do");
+        }
+        Ok(Err(e)) => warn!("billing-cycle prune due-check failed: {e:#}"),
+        Err(e) => warn!("billing-cycle prune due-check task panicked: {e}"),
+    }
+}
+
 // ───────────────────────── handlers ─────────────────────────
 
 /// Sentinel type so handlers stay concise. Variants map to HTTP status
@@ -1221,6 +1332,15 @@ pub struct SettingsView {
     pub secrets: Vec<SettingField>,
     pub timezone: String,
     pub personal_config_path: Option<String>,
+    /// Whether the billing-cycle pruner's automatic due-check runs at
+    /// all (spec 002 FR-011). Mirrors `crate::purge::pruning_enabled`.
+    pub prune_enabled: bool,
+    /// Day-of-month the billing cycle starts. Mirrors
+    /// `crate::purge::configured_cycle_start_day`; default 20.
+    pub cycle_start_day: u32,
+    /// Last day-of-month the just-closed cycle can still take hours.
+    /// Mirrors `crate::purge::configured_close_day`; default 23.
+    pub close_day: u32,
 }
 
 /// Token-like keys whose value must never be serialised to the browser.
@@ -1267,6 +1387,9 @@ fn current_settings() -> Result<SettingsView> {
         secrets,
         timezone: crate::tz::configured_tz().unwrap_or_default(),
         personal_config_path: cfg_path.map(|p| p.display().to_string()),
+        prune_enabled: crate::purge::pruning_enabled(),
+        cycle_start_day: crate::purge::configured_cycle_start_day(),
+        close_day: crate::purge::configured_close_day(),
     })
 }
 
@@ -1293,6 +1416,18 @@ pub struct SettingsUpdate {
     pub secrets: std::collections::HashMap<String, String>,
     /// Fixed-offset timezone (e.g. `+01:00`, `UTC`). `None` leaves as-is.
     pub timezone: Option<String>,
+    /// Enable/disable the billing-cycle pruner's automatic due-check.
+    /// `None` leaves the current setting untouched.
+    pub prune_enabled: Option<bool>,
+    /// Day-of-month the billing cycle starts. Accepted as a raw JSON
+    /// value rather than `Option<u32>` so a non-integer submission
+    /// (e.g. a string) reaches this endpoint's own validation as a 400
+    /// naming the valid range, instead of axum's generic deserialize-
+    /// error rejection.
+    pub cycle_start_day: Option<Value>,
+    /// Last day-of-month the just-closed cycle can still take hours.
+    /// Same non-`u32` typing rationale as `cycle_start_day`.
+    pub close_day: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -1304,24 +1439,77 @@ pub struct SettingsSaveResponse {
     pub reclassified: Option<personal::ReclassifyStats>,
 }
 
+/// Parse a submitted pruner-cycle-day field into a validated `u32`
+/// `1..=31` (spec 002 FR-017 / AC-018). `v` is a raw JSON value rather
+/// than an already-typed integer specifically so a non-integer
+/// submission (e.g. a string, a float, a negative number) is rejected
+/// here — as a 400 naming the valid range — rather than by axum's
+/// generic `Json<T>` deserialize-error rejection before this handler
+/// ever runs.
+fn parse_cycle_day(field: &str, v: &Value) -> Result<u32, ApiError> {
+    let day = v.as_i64().and_then(|n| u32::try_from(n).ok());
+    match day {
+        Some(d) if crate::purge::is_valid_cycle_day(d) => Ok(d),
+        _ => Err(ApiError::bad_request(anyhow::anyhow!(
+            "`{field}` must be an integer 1..=31 (got {v})"
+        ))),
+    }
+}
+
 async fn post_settings(
     State(state): State<Shared>,
     Json(body): Json<SettingsUpdate>,
 ) -> Result<Json<SettingsSaveResponse>, ApiError> {
-    // 1. Timezone → .env. Validate as a fixed offset first so a typo
-    //    returns 400 instead of silently bucketing days in UTC later.
-    if let Some(tz) = body.timezone.as_deref().map(str::trim) {
+    // ── Phase 1: validate every submitted field BEFORE persisting any
+    // of them (spec 002 AC-018 / FR-017: "one bad field among several
+    // good ones must persist nothing"). ──
+
+    // Timezone: validate as a fixed offset so a typo 400s instead of
+    // silently bucketing days in UTC later.
+    let tz = body.timezone.as_deref().map(str::trim);
+    if let Some(tz) = tz {
         if !crate::tz::is_valid_tz(tz) {
             return Err(ApiError::bad_request(anyhow::anyhow!(
                 "`{tz}` is not a fixed offset — use +HH:MM, -HH:MM, or UTC \
                  (named zones like America/New_York are not supported)"
             )));
         }
+    }
+
+    // Pruner cycle days: each field's own range first, then the
+    // cross-field relationship — a distinct message from the range
+    // one, since a close day earlier than the cycle's start day would
+    // collapse the grace period and delete the just-closed cycle
+    // immediately (spec 002 Appendix A).
+    let cycle_start_day = body
+        .cycle_start_day
+        .as_ref()
+        .map(|v| parse_cycle_day("cycle_start_day", v))
+        .transpose()?;
+    let close_day = body
+        .close_day
+        .as_ref()
+        .map(|v| parse_cycle_day("close_day", v))
+        .transpose()?;
+    let effective_start = cycle_start_day.unwrap_or_else(crate::purge::configured_cycle_start_day);
+    let effective_close = close_day.unwrap_or_else(crate::purge::configured_close_day);
+    if effective_close < effective_start {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "`close_day` ({effective_close}) must not be earlier than \
+             `cycle_start_day` ({effective_start}) — the grace period would \
+             collapse and the pruner would delete the just-closed cycle immediately"
+        )));
+    }
+
+    // ── Phase 2: persist. Nothing above returned early, so every
+    // submitted field is valid. ──
+
+    if let Some(tz) = tz {
         crate::envfile::upsert("WORKLOG_TZ", tz)?;
     }
 
-    // 2. Secrets → OS keychain. Empty value deletes. Unknown keys are
-    //    refused so a stale client can't scribble arbitrary entries.
+    // Secrets → OS keychain. Empty value deletes. Unknown keys are
+    // refused so a stale client can't scribble arbitrary entries.
     for (k, v) in &body.secrets {
         if !secrets::KNOWN_KEYS.contains(&k.as_str()) {
             warn!(key = %k, "ignoring unknown secret key in settings update");
@@ -1334,8 +1522,8 @@ async fn post_settings(
         }
     }
 
-    // 3. Personal patterns → personal.toml, then reclassify existing
-    //    blocks so the change shows up immediately, not just on next infer.
+    // Personal patterns → personal.toml, then reclassify existing
+    // blocks so the change shows up immediately, not just on next infer.
     let mut reclassified = None;
     if let Some(p) = body.personal {
         let path = personal::config_path()
@@ -1347,6 +1535,19 @@ async fn post_settings(
         personal::write_file(&path, &file)?;
         let stats = with_conn(state, move |c| personal::reclassify_blocks(c, None)).await?;
         reclassified = Some(stats);
+    }
+
+    if let Some(enabled) = body.prune_enabled {
+        crate::envfile::upsert(
+            "WORKLOG_PRUNE_ENABLED",
+            if enabled { "true" } else { "false" },
+        )?;
+    }
+    if let Some(day) = cycle_start_day {
+        crate::envfile::upsert("WORKLOG_BILLING_CYCLE_START_DAY", &day.to_string())?;
+    }
+    if let Some(day) = close_day {
+        crate::envfile::upsert("WORKLOG_BILLING_CLOSE_DAY", &day.to_string())?;
     }
 
     info!("settings updated");
@@ -1775,6 +1976,206 @@ mod tests {
             v["error"].as_str().unwrap().contains("fixed offset"),
             "error should explain the constraint: {v}"
         );
+    }
+
+    // ─────────────── billing-cycle pruner settings (slice 5) ───────────────
+    //
+    // `WORKLOG_ENV_FILE`, `WORKLOG_PRUNE_ENABLED`,
+    // `WORKLOG_BILLING_CYCLE_START_DAY` and `WORKLOG_BILLING_CLOSE_DAY` are
+    // all process-global. `WORKLOG_PRUNE_ENABLED` is already guarded by
+    // `PRUNE_ENV_LOCK` below (slice 4's b25/b39) — reusing that same lock
+    // here, rather than a second one, is what actually serialises against
+    // those tests instead of merely racing them under a different mutex.
+    // Any test that reaches `post_settings`'s persist phase also points
+    // `WORKLOG_ENV_FILE` at a tempdir first, exactly like `envfile.rs`'s
+    // own tests, so a real developer's `~/.config/worklog/.env` is never
+    // touched by the suite.
+    fn clear_pruner_env() {
+        std::env::remove_var("WORKLOG_PRUNE_ENABLED");
+        std::env::remove_var("WORKLOG_BILLING_CYCLE_START_DAY");
+        std::env::remove_var("WORKLOG_BILLING_CLOSE_DAY");
+    }
+
+    /// B27: nothing configured anywhere — `current_settings` reports the
+    /// documented defaults (spec 002 AC-017).
+    #[tokio::test(flavor = "current_thread")]
+    async fn b27_current_settings_reports_pruner_defaults_when_nothing_configured() {
+        let _g = prune_env_lock().await;
+        clear_pruner_env();
+
+        let view = current_settings().unwrap();
+        assert!(view.prune_enabled);
+        assert_eq!(view.cycle_start_day, crate::purge::DEFAULT_CYCLE_START_DAY);
+        assert_eq!(view.close_day, crate::purge::DEFAULT_CLOSE_DAY);
+    }
+
+    /// B28: `close_day` of 0, 32, or a non-integer are each rejected as a
+    /// bad request naming the valid range, and nothing is persisted.
+    #[tokio::test(flavor = "current_thread")]
+    async fn b28_close_day_out_of_range_or_non_integer_rejected_without_persisting() {
+        let _g = prune_env_lock().await;
+        clear_pruner_env();
+        let tmp = tempfile::tempdir().unwrap();
+        let env_file = tmp.path().join(".env");
+        std::env::set_var("WORKLOG_ENV_FILE", &env_file);
+
+        for bad_body in [
+            r#"{"close_day":0}"#,
+            r#"{"close_day":32}"#,
+            r#"{"close_day":"abc"}"#,
+        ] {
+            let app = router(state_with_block());
+            let resp = app
+                .oneshot(
+                    Request::post("/settings")
+                        .header("content-type", "application/json")
+                        .body(Body::from(bad_body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "body={bad_body}");
+            let v = read_json(resp).await;
+            assert!(
+                v["error"].as_str().unwrap().contains("1..=31"),
+                "error should name the valid range: {v}"
+            );
+        }
+
+        // Nothing was ever persisted — the file was never even created,
+        // since validation rejects before `envfile::upsert` is reached.
+        assert!(
+            !env_file.exists(),
+            "no field should have been written to the env file"
+        );
+
+        std::env::remove_var("WORKLOG_ENV_FILE");
+    }
+
+    /// B28: one bad field (`close_day`) among several otherwise-good ones
+    /// (`prune_enabled`, `cycle_start_day`) must persist NONE of them.
+    #[tokio::test(flavor = "current_thread")]
+    async fn b28_one_bad_field_among_several_good_ones_persists_nothing() {
+        let _g = prune_env_lock().await;
+        clear_pruner_env();
+        let tmp = tempfile::tempdir().unwrap();
+        let env_file = tmp.path().join(".env");
+        std::env::set_var("WORKLOG_ENV_FILE", &env_file);
+
+        let app = router(state_with_block());
+        let resp = app
+            .oneshot(
+                Request::post("/settings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"prune_enabled":false,"cycle_start_day":15,"close_day":32}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let view = current_settings().unwrap();
+        assert!(
+            view.prune_enabled,
+            "the otherwise-good prune_enabled must not have persisted"
+        );
+        assert_eq!(
+            view.cycle_start_day,
+            crate::purge::DEFAULT_CYCLE_START_DAY,
+            "the otherwise-good cycle_start_day must not have persisted"
+        );
+        assert_eq!(view.close_day, crate::purge::DEFAULT_CLOSE_DAY);
+
+        std::env::remove_var("WORKLOG_ENV_FILE");
+    }
+
+    /// B29: a valid `cycle_start_day` write succeeds, is actually
+    /// persisted, and changes the cutoff `cutoff_for_cycle` computes.
+    /// `configured_cycle_start_day` itself skips the `.env` file fallback
+    /// inside this crate's own `cfg(test)` build (mirroring
+    /// `tz::configured_tz`'s hermetic-test design — see its doc comment),
+    /// so the persisted value is verified the same way `envfile.rs`'s own
+    /// tests do: reading the file directly.
+    #[tokio::test(flavor = "current_thread")]
+    async fn b29_valid_cycle_start_day_persists_and_changes_the_cutoff() {
+        let _g = prune_env_lock().await;
+        clear_pruner_env();
+        let tmp = tempfile::tempdir().unwrap();
+        let env_file = tmp.path().join(".env");
+        std::env::set_var("WORKLOG_ENV_FILE", &env_file);
+
+        let app = router(state_with_block());
+        let resp = app
+            .oneshot(
+                Request::post("/settings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"cycle_start_day":15}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        assert_eq!(
+            crate::envfile::read("WORKLOG_BILLING_CYCLE_START_DAY").as_deref(),
+            Some("15"),
+            "the valid value must actually be written to the env file"
+        );
+
+        let today = NaiveDate::from_ymd_opt(2026, 7, 24).unwrap();
+        let default_cutoff = crate::purge::cutoff_for_cycle(
+            today,
+            crate::purge::DEFAULT_CYCLE_START_DAY,
+            crate::purge::DEFAULT_CLOSE_DAY,
+        );
+        let configured_cutoff =
+            crate::purge::cutoff_for_cycle(today, 15, crate::purge::DEFAULT_CLOSE_DAY);
+        assert_ne!(
+            default_cutoff, configured_cutoff,
+            "the configured start day must change the computed cutoff"
+        );
+
+        std::env::remove_var("WORKLOG_ENV_FILE");
+    }
+
+    /// Plus: `close_day` earlier than `cycle_start_day` is rejected with
+    /// its own distinct message — not the range message — since the
+    /// grace period would collapse and delete the just-closed cycle
+    /// immediately.
+    #[tokio::test(flavor = "current_thread")]
+    async fn close_day_earlier_than_cycle_start_day_rejected_with_distinct_message() {
+        let _g = prune_env_lock().await;
+        clear_pruner_env();
+        let tmp = tempfile::tempdir().unwrap();
+        let env_file = tmp.path().join(".env");
+        std::env::set_var("WORKLOG_ENV_FILE", &env_file);
+
+        let app = router(state_with_block());
+        let resp = app
+            .oneshot(
+                Request::post("/settings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"cycle_start_day":25,"close_day":20}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let v = read_json(resp).await;
+        let msg = v["error"].as_str().unwrap();
+        assert!(
+            msg.contains("close_day") && msg.contains("cycle_start_day"),
+            "should name both fields: {msg}"
+        );
+        assert!(
+            !msg.contains("1..=31"),
+            "must be a distinct message from the per-field range error: {msg}"
+        );
+        assert!(!env_file.exists(), "nothing may be persisted on rejection");
+
+        std::env::remove_var("WORKLOG_ENV_FILE");
     }
 
     #[test]
@@ -2571,6 +2972,167 @@ mod tests {
                 .to_lowercase()
                 .contains("personal"),
             "error body must mention personal: {v}"
+        );
+    }
+
+    // ───────────────── billing-cycle prune due-check (slice 4) ─────────────────
+    //
+    // `$WORKLOG_PRUNE_ENABLED` is process-global, so any test that flips
+    // it must hold this mutex. An async-aware `Mutex` (held across the
+    // `.await`s below) rather than a `std::sync::Mutex`, per
+    // `clippy::await_holding_lock`.
+    //
+    // These tests deliberately do NOT touch `$WORKLOG_HOME`. An earlier
+    // version set it to a tempdir and called `new_state()`, which resolves
+    // paths from that variable — but the variable is process-global and
+    // this mutex does not lock against `paths::ENV_LOCK`, whose own tests
+    // call `remove_var("WORKLOG_HOME")`. One such interleaving pointed the
+    // prune loop at the real `~/.local/share/worklog` and deleted 783
+    // blocks and ~392k events. The fix is not another mutex — the other
+    // lock holders would never take it — but binding every test to an
+    // explicit database via `state_from_conn` and passing explicit paths
+    // into `spawn_prune_loop`, so nothing here consults the environment
+    // for a path at all. `purge::run` carries a `#[cfg(test)]` backstop
+    // that refuses a `db_path` under the real data directory.
+    //
+    // `$WORKLOG_PRUNE_ENABLED` is safe to flip under this mutex: it is
+    // read by `purge::pruning_enabled` and cannot resolve to a path.
+    async fn prune_env_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        crate::envfile::ENV_TEST_LOCK.lock().await
+    }
+
+    /// B25: pruning disabled via the env var. The due-check must return
+    /// before ever touching the connection or resolving a real path —
+    /// no deletion, latch unchanged.
+    #[tokio::test(flavor = "current_thread")]
+    async fn b25_pruning_disabled_skips_the_check_entirely() {
+        let _g = prune_env_lock().await;
+        std::env::set_var("WORKLOG_PRUNE_ENABLED", "0");
+
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES ('2000-01-01', '2000-01-01T09:00:00+00:00', '2000-01-01T09:30:00+00:00', 1800)",
+            [],
+        )
+        .unwrap();
+        let state = state_from_conn(conn);
+
+        // Explicit tempdir paths: nothing here may resolve against the
+        // process environment, and the disabled check must not touch them
+        // anyway.
+        let tmp = tempfile::tempdir().unwrap();
+        let handle = spawn_prune_loop(
+            state.clone(),
+            tmp.path().join("worklog.db.preprune"),
+            tmp.path().join("worklog.db"),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        handle.abort();
+
+        let guard = state.conn.lock().await;
+        let count: i64 = guard
+            .query_row("SELECT COUNT(*) FROM blocks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "pruning disabled — nothing may be deleted");
+        assert!(
+            crate::purge::meta_get(&guard, crate::purge::LATCH_KEY)
+                .unwrap()
+                .is_none(),
+            "latch must stay unwritten while disabled"
+        );
+        drop(guard);
+
+        std::env::remove_var("WORKLOG_PRUNE_ENABLED");
+    }
+
+    /// B39: the check-interval is exactly 6 hours, and the loop performs
+    /// its first check on start — proven by observing a real deletion, a
+    /// fresh latch, and a snapshot file within a small, bounded amount
+    /// of real time, far less than the 6h interval. That would be
+    /// impossible if the loop slept before its first check.
+    #[tokio::test(flavor = "current_thread")]
+    async fn b39_interval_is_six_hours_and_loop_checks_on_start() {
+        assert_eq!(
+            PRUNE_CHECK_INTERVAL,
+            std::time::Duration::from_secs(6 * 60 * 60)
+        );
+
+        let _g = prune_env_lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("WORKLOG_PRUNE_ENABLED", "1");
+
+        // Bind to an explicit database rather than `new_state()`, which
+        // resolves one from the process-global `$WORKLOG_HOME`. Another
+        // test clearing that variable at the wrong moment once pointed
+        // this test at the real `~/.local/share/worklog` and pruned it.
+        let db_path = tmp.path().join("worklog.db");
+        let state = state_from_conn(crate::db::open(&db_path).unwrap());
+        {
+            let conn = state.conn.lock().await;
+            conn.execute(
+                "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+                 VALUES ('2000-01-01', '2000-01-01T09:00:00+00:00', '2000-01-01T09:30:00+00:00', 1800)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let snapshot_path = tmp.path().join("worklog.db.preprune");
+        let handle = spawn_prune_loop(state.clone(), snapshot_path.clone(), db_path.clone());
+        let step = std::time::Duration::from_millis(10);
+        let budget = std::time::Duration::from_millis(1000);
+        let mut waited = std::time::Duration::ZERO;
+        while !snapshot_path.exists() && waited < budget {
+            tokio::time::sleep(step).await;
+            waited += step;
+        }
+        handle.abort();
+
+        assert!(
+            snapshot_path.is_file(),
+            "expected the loop's first check to fire on start, well within \
+             {budget:?} — nowhere near the {PRUNE_CHECK_INTERVAL:?} interval"
+        );
+        let guard = state.conn.lock().await;
+        let count: i64 = guard
+            .query_row("SELECT COUNT(*) FROM blocks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "the old block must have been pruned on start");
+        assert!(
+            crate::purge::meta_get(&guard, crate::purge::LATCH_KEY)
+                .unwrap()
+                .is_some(),
+            "latch must be recorded after the on-start check"
+        );
+        drop(guard);
+
+        std::env::remove_var("WORKLOG_PRUNE_ENABLED");
+    }
+
+    /// The guard that exists because this actually happened: a test whose
+    /// paths resolved to the owner's real data directory pruned it for
+    /// real. `run` must refuse outright in test builds, before it writes a
+    /// snapshot or deletes a single row.
+    #[test]
+    fn run_refuses_to_touch_the_real_data_directory() {
+        let conn = open_memory().unwrap();
+        let real_db = dirs::home_dir()
+            .unwrap()
+            .join(".local/share/worklog/worklog.db");
+        let opts = crate::purge::PruneOptions {
+            cutoff: chrono::NaiveDate::from_ymd_opt(2026, 7, 20).unwrap(),
+            dry_run: false,
+            snapshot_to: None,
+            db_path: Some(real_db.as_path()),
+        };
+
+        let err = crate::purge::run(&conn, &opts)
+            .expect_err("run must refuse a db_path inside the real data directory");
+        assert!(
+            err.to_string()
+                .contains("refusing to prune the real data directory"),
+            "unexpected error: {err}"
         );
     }
 }

@@ -15,7 +15,7 @@ pub const SCHEMA_SQL: &str = include_str!("../sql/schema.sql");
 /// Monotonic integer version of the schema, bumped by future migrations.
 /// Stored in `PRAGMA user_version` so we can detect stale dbs without adding
 /// a dedicated table.
-pub const SCHEMA_VERSION: i32 = 9;
+pub const SCHEMA_VERSION: i32 = 10;
 
 /// Open a connection at `path`, enable WAL + FK, and run migrations.
 pub fn open(path: &Path) -> Result<Connection> {
@@ -380,6 +380,27 @@ mod tests {
             "pre-existing rows must backfill to NULL"
         );
         assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn meta_table_exists_and_schema_version_is_10() {
+        // B22. The pruner's latch lives in a new generic `meta` table
+        // (slice 002-billing-cycle-pruner §4), and the billing merge's
+        // registry tables took the schema to v9 — this feature bumps it
+        // to v10.
+        let conn = open_memory().unwrap();
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            tables.contains(&"meta".to_string()),
+            "missing meta table; got {tables:?}"
+        );
+        assert_eq!(current_version(&conn).unwrap(), 10);
     }
 
     #[test]

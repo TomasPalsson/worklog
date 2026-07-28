@@ -130,8 +130,10 @@ pub fn set_personal(conn: &Connection, block_id: i64, is_personal: bool) -> Resu
 /// been marked yet (`exported_at` NULL or empty) are touched, so
 /// re-running `--mark` on an already-exported day leaves existing
 /// timestamps untouched. Mirrors `tempo_worklog_id` as a "has been
-/// billed" marker but is Tempo-independent — `purge` treats either as
-/// billed (see `purge::PURGEABLE_BLOCKS_WHERE`).
+/// billed" marker but is Tempo-independent — `purge` is rail-free and
+/// deletes billed and unbilled blocks alike once their cycle closes, but
+/// counts deleted blocks carrying neither marker as `blocks_deleted_unbilled`
+/// (see the module doc on `purge`).
 ///
 /// Returns the number of blocks newly marked (0 if the day was already
 /// fully exported, or has no blocks at all).

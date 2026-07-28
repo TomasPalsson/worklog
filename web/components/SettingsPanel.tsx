@@ -89,6 +89,9 @@ export function SettingsPanel({ day }: Props) {
   const [work, setWork] = useState("");
   const [personal, setPersonal] = useState("");
   const [tz, setTz] = useState("");
+  const [pruneEnabled, setPruneEnabled] = useState(true);
+  const [cycleStartDay, setCycleStartDay] = useState("");
+  const [closeDay, setCloseDay] = useState("");
   const [secretInputs, setSecretInputs] = useState<Record<string, string>>({});
 
   const titleId = useId();
@@ -99,6 +102,9 @@ export function SettingsPanel({ day }: Props) {
     setWork(v.personal.work.join("\n"));
     setPersonal(v.personal.personal.join("\n"));
     setTz(v.timezone);
+    setPruneEnabled(v.prune_enabled);
+    setCycleStartDay(String(v.cycle_start_day));
+    setCloseDay(String(v.close_day));
     const inputs: Record<string, string> = {};
     for (const f of v.secrets) inputs[f.key] = initialInput(f);
     setSecretInputs(inputs);
@@ -147,6 +153,16 @@ export function SettingsPanel({ day }: Props) {
 
     if (tz.trim() !== view.timezone.trim()) update.timezone = tz.trim();
 
+    if (pruneEnabled !== view.prune_enabled) {
+      update.prune_enabled = pruneEnabled;
+    }
+    if (cycleStartDay.trim() !== String(view.cycle_start_day)) {
+      update.cycle_start_day = Number(cycleStartDay.trim());
+    }
+    if (closeDay.trim() !== String(view.close_day)) {
+      update.close_day = Number(closeDay.trim());
+    }
+
     const secrets: Record<string, string> = {};
     for (const f of view.secrets) {
       const initial = initialInput(f);
@@ -158,7 +174,10 @@ export function SettingsPanel({ day }: Props) {
     if (
       !update.personal &&
       update.timezone === undefined &&
-      !update.secrets
+      !update.secrets &&
+      update.prune_enabled === undefined &&
+      update.cycle_start_day === undefined &&
+      update.close_day === undefined
     ) {
       return null;
     }
@@ -349,6 +368,51 @@ export function SettingsPanel({ day }: Props) {
                       onChange={(e) => setTz(e.target.value)}
                     />
                   </label>
+                </section>
+
+                <section className="settings-section">
+                  <h3>Billing cycle pruner</h3>
+                  <p className="settings-hint">
+                    Automatically deletes work data once its billing cycle
+                    has closed. Cycles run from the start day through the
+                    day before the next month&rsquo;s start day; the close
+                    day is the last day hours can still be added to the
+                    cycle that just ended.
+                  </p>
+                  <label className="settings-field">
+                    <span>Enable automatic pruning</span>
+                    <input
+                      type="checkbox"
+                      checked={pruneEnabled}
+                      onChange={(e) => setPruneEnabled(e.target.checked)}
+                    />
+                  </label>
+                  <div className="settings-grid-2">
+                    <label className="settings-field settings-field-narrow">
+                      <span>Cycle start day</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={31}
+                        value={cycleStartDay}
+                        placeholder="20"
+                        autoComplete="off"
+                        onChange={(e) => setCycleStartDay(e.target.value)}
+                      />
+                    </label>
+                    <label className="settings-field settings-field-narrow">
+                      <span>Close day</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={31}
+                        value={closeDay}
+                        placeholder="23"
+                        autoComplete="off"
+                        onChange={(e) => setCloseDay(e.target.value)}
+                      />
+                    </label>
+                  </div>
                 </section>
 
                 {GROUPS.map((g) => {

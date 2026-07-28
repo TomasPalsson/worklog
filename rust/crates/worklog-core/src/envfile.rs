@@ -89,6 +89,23 @@ pub fn upsert(name: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// The single crate-wide guard for tests that manipulate the
+/// process-global environment the env-file and the pruner read:
+/// `WORKLOG_ENV_FILE`, `WORKLOG_PRUNE_ENABLED`, `WORKLOG_BILLING_*`.
+///
+/// One lock, deliberately. Per-module locks do not exclude each other,
+/// and that is not a theoretical concern: `daemon.rs`'s settings tests
+/// and this module's own tests both set `WORKLOG_ENV_FILE` and raced,
+/// and separately a `WORKLOG_HOME` race once pointed a prune at the
+/// owner's real database. Anything here that reaches `std::env` in a
+/// test must take THIS lock.
+///
+/// Async-aware so `#[tokio::test]` callers can hold it across `.await`
+/// without tripping `clippy::await_holding_lock`; synchronous `#[test]`
+/// callers use `blocking_lock()`, which is safe outside a runtime.
+#[cfg(test)]
+pub(crate) static ENV_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn strip_quotes(s: &str) -> &str {
     if s.len() >= 2
         && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
@@ -102,15 +119,13 @@ fn strip_quotes(s: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
 
-    // WORKLOG_ENV_FILE is process-global; serialise so concurrent tests
-    // don't clobber each other's override.
-    fn lock() -> std::sync::MutexGuard<'static, ()> {
-        static L: OnceLock<Mutex<()>> = OnceLock::new();
-        L.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+    // WORKLOG_ENV_FILE is process-global. Takes the crate-wide
+    // `ENV_TEST_LOCK` rather than a private one, so these tests exclude
+    // `daemon.rs`'s settings tests and `purge.rs`'s env tests too — they
+    // all write the same variable.
+    fn lock() -> tokio::sync::MutexGuard<'static, ()> {
+        ENV_TEST_LOCK.blocking_lock()
     }
 
     #[test]

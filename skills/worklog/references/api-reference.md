@@ -250,12 +250,18 @@ Does NOT check: daemon liveness, hook install, schedule install, `claude` binary
 ```
 {
   "cutoff_date":"2025-04-12",
-  "blocks_deleted":12,"events_deleted":145,
-  "blocks_kept_unsynced":3,"blocks_kept_manual":1,
+  "blocks_deleted":12,"blocks_deleted_unbilled":1,
+  "events_deleted":145,"sessions_deleted":8,"tickets_deleted":2,
+  "bytes_freed":40960,"snapshot_path":"/path/to/worklog.db.preprune",
   "dry_run":false
 }
 ```
-Safety rails baked in: never deletes unsynced blocks, never deletes `estimated_by = 'manual'`. Always run with `--dry-run` first.
+Rail-free: once a billing cycle has closed, its rows are deleted regardless of
+sync state, edit provenance, pending-edit flag, or personal classification —
+hand-edited, unsynced, personal, and dirty blocks are deleted right along with
+everything else. There is no exemption list. Recovery is only possible from
+the pre-prune snapshot at `<data_dir>/worklog.db.preprune`, refreshed on every
+prune. Always run with `--dry-run` first.
 
 ### `worklog secret list --json`
 ```
@@ -379,7 +385,7 @@ Auto-installs the daemon if not running (unless `--no-daemon`). Default port 333
 | `setup` | — | — | — | `--non-interactive`, `--skip-validate` |
 | `db migrate/info` | ✅ | — | — | — |
 | `db path` | — | — | — | always prints raw path |
-| `db purge` | ✅ | — | ✅ | `--days N` (default 30) |
+| `db purge` | ✅ | — | ✅ | Default: billing-cycle cutoff; `--days N` overrides with a rolling window |
 | `secret list/set/get/rm` | list✅ | — | — | `secret set --value` is insecure (use stdin) |
 | `hook install/uninstall/status` | ✅ | — | — | `install --command <CMD>` |
 | `schedule install/uninstall/status` | ✅ | — | — | `install --interval <I>`, `--command <CMD>` |

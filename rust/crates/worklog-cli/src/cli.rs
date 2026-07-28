@@ -470,13 +470,18 @@ pub enum DbCmd {
     Info,
     /// Print the resolved db path.
     Path,
-    /// Drop events + blocks older than N days that have been synced to
-    /// Tempo (or explicitly marked as 'gap'). Preserves unsynced work and
-    /// manual edits regardless of age.
+    /// Delete blocks, their linked events, and orphan events older than
+    /// the cutoff. Rail-free: sync state, edit provenance, pending edits
+    /// and personal classification make no difference — once a block's
+    /// cycle has closed it goes regardless. With no `--days`, the cutoff
+    /// is the current billing cycle's close (20th → 19th by default);
+    /// `--days N` overrides it with a plain rolling window, equally
+    /// rail-free.
     Purge {
-        /// Retention window in days. Anything older is fair game.
-        #[arg(long, default_value_t = worklog_core::purge::DEFAULT_RETENTION_DAYS)]
-        days: i64,
+        /// Explicit rolling-window override in days. Omit for the
+        /// default billing-cycle cutoff.
+        #[arg(long)]
+        days: Option<i64>,
         /// Report what would be deleted without touching the database.
         #[arg(long)]
         dry_run: bool,
@@ -1076,13 +1081,29 @@ fn cmd_db_info<W: Write>(out: &mut W, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_db_purge<W: Write>(days: i64, dry_run: bool, out: &mut W, json: bool) -> Result<()> {
+fn cmd_db_purge<W: Write>(days: Option<i64>, dry_run: bool, out: &mut W, json: bool) -> Result<()> {
     let paths = Paths::resolve()?;
     if !paths.db_exists() {
         anyhow::bail!("db not initialized. Run `worklog db migrate` first.");
     }
     let conn = db::open(&paths.db)?;
-    let report = worklog_core::purge::purge(&conn, days, dry_run)?;
+    let today = worklog_core::tz::local_date(chrono::Utc::now());
+    let cutoff = match days {
+        Some(d) => worklog_core::purge::cutoff_for_days(today, d),
+        None => worklog_core::purge::cutoff_for_cycle(
+            today,
+            worklog_core::purge::configured_cycle_start_day(),
+            worklog_core::purge::configured_close_day(),
+        ),
+    };
+    let snapshot_to = paths.data_dir.join("worklog.db.preprune");
+    let opts = worklog_core::purge::PruneOptions {
+        cutoff,
+        dry_run,
+        snapshot_to: Some(snapshot_to.as_path()),
+        db_path: Some(paths.db.as_path()),
+    };
+    let report = worklog_core::purge::run(&conn, &opts)?;
     if json {
         writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
         return Ok(());
@@ -1091,22 +1112,34 @@ fn cmd_db_purge<W: Write>(days: i64, dry_run: bool, out: &mut W, json: bool) -> 
     if report.blocks_deleted + report.events_deleted == 0 {
         style::info(
             out,
-            &format!(
-                "{prefix}nothing to purge before {} (kept: {} unsynced, {} manual)",
-                report.cutoff_date, report.blocks_kept_unsynced, report.blocks_kept_manual
-            ),
+            &format!("{prefix}nothing to purge before {}", report.cutoff_date),
         )?;
     } else {
         let verb = if dry_run { "would delete" } else { "deleted" };
         style::ok(
             out,
             &format!(
-                "{prefix}{verb} {} block(s) + {} event(s) before {} (kept: {} unsynced, {} manual)",
-                report.blocks_deleted,
-                report.events_deleted,
-                report.cutoff_date,
-                report.blocks_kept_unsynced,
-                report.blocks_kept_manual
+                "{prefix}{verb} {} block(s) + {} event(s) before {}",
+                report.blocks_deleted, report.events_deleted, report.cutoff_date
+            ),
+        )?;
+    }
+    if report.blocks_deleted_unbilled > 0 {
+        let verb = if dry_run { "would be" } else { "were" };
+        style::warn(
+            out,
+            &format!(
+                "{} never-billed block(s) {verb} deleted (no Tempo sync, no export marker)",
+                report.blocks_deleted_unbilled
+            ),
+        )?;
+    }
+    if let Some(snapshot_path) = &report.snapshot_path {
+        style::info(
+            out,
+            &format!(
+                "snapshot written to {snapshot_path} ({} bytes freed)",
+                report.bytes_freed
             ),
         )?;
     }
@@ -1376,13 +1409,37 @@ fn cmd_schedule_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// The collector must never reach back past the pruner's cutoff, or a scheduled
+/// collect re-imports rows the last prune deleted. Only ever moves the start
+/// FORWARD — a lookback already inside the retention window is untouched.
+fn effective_since(requested: chrono::NaiveDate, cutoff: chrono::NaiveDate) -> chrono::NaiveDate {
+    requested.max(cutoff)
+}
+
 fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bool) -> Result<()> {
     let paths = Paths::resolve()?;
     paths.ensure()?;
     let conn = db::open(&paths.db)?;
     let client = http::client()?;
     let today = chrono::Utc::now().date_naive();
-    let since = today - chrono::Duration::days(days as i64);
+    let requested_since = today - chrono::Duration::days(days as i64);
+    // The pruner's cutoff is computed off the LOCAL day (matching what it
+    // actually deleted), even though `today` above stays UTC-derived —
+    // changing cmd_collect's own notion of "today" is a behaviour change
+    // beyond this slice.
+    let cutoff = worklog_core::purge::cutoff_for_cycle(
+        worklog_core::tz::local_date(chrono::Utc::now()),
+        worklog_core::purge::configured_cycle_start_day(),
+        worklog_core::purge::configured_close_day(),
+    );
+    let since = effective_since(requested_since, cutoff);
+    if since != requested_since {
+        tracing::debug!(
+            requested = %requested_since,
+            cutoff = %cutoff,
+            "collect: clamped lookback start forward to the prune cutoff"
+        );
+    }
 
     // Each report wrapped in an Option so we can still emit something
     // useful when a source's credentials aren't set.
@@ -2261,9 +2318,9 @@ fn fetch_day_blocks(day: &str) -> Result<Vec<worklog_core::models::Block>> {
 /// Empty-day footer for `worklog day`. The pipeline has just run, so a
 /// "run `worklog day --day X` to build blocks" hint would tell the user
 /// to do exactly what they just did. Pick the most specific cause we can
-/// name from the collector outcomes and the day's age vs the hook's
-/// 30-day retention window, and print one short `·` line pointing the
-/// user at the next concrete action.
+/// name from the collector outcomes and the day's age vs the billing-cycle
+/// pruner's cutoff, and print one short `·` line pointing the user at the
+/// next concrete action.
 fn print_day_empty_diagnostic<W: Write>(
     out: &mut W,
     day: chrono::NaiveDate,
@@ -2289,19 +2346,24 @@ fn print_day_empty_diagnostic<W: Write>(
         }
     }
 
-    // 2. Day is past the hook's default 30-day retention, so any Claude
-    //    Code activity for that day has already been purged. The cutoff
-    //    here mirrors `purge::purge` (UTC `today - retention`) so the
-    //    diagnostic flips on the same boundary the purger uses.
+    // 2. Day is past the billing-cycle pruner's cutoff, so any Claude Code
+    //    activity for that day has already been purged. The cutoff here
+    //    uses the SAME computation the pruner uses — `purge::cutoff_for_cycle`
+    //    over the configured cycle-start/close days — so the diagnostic
+    //    flips on the same boundary the pruner uses.
     let today = chrono::Utc::now().date_naive();
-    let retention = chrono::Duration::days(worklog_core::purge::DEFAULT_RETENTION_DAYS);
-    if day < today - retention {
+    let cutoff = worklog_core::purge::cutoff_for_cycle(
+        today,
+        worklog_core::purge::configured_cycle_start_day(),
+        worklog_core::purge::configured_close_day(),
+    );
+    if day < cutoff {
         style::info(
             out,
             &format!(
-                "no blocks for {day_str} — hook events older than {} days are purged, \
-                 so this day no longer has Claude Code activity on file.",
-                worklog_core::purge::DEFAULT_RETENTION_DAYS
+                "no blocks for {day_str} — its billing cycle has closed and the \
+                 pruner already removed data before {cutoff}, so this day no \
+                 longer has Claude Code activity on file."
             ),
         )?;
         return Ok(());
@@ -2617,6 +2679,25 @@ fn cmd_week<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()
     Ok(())
 }
 
+/// Renders the "last prune" status-table row: the cutoff, the total
+/// rows removed, and when it ran — or an explicit "never run" statement
+/// when no automatic prune has ever completed (spec 002 FR-024 / B34,
+/// B35, B40). Pure so it can be unit-tested without a database.
+fn last_prune_line(lp: Option<&worklog_core::purge::LastPrune>) -> String {
+    match lp {
+        None => "never run".to_owned(),
+        Some(lp) => {
+            let r = &lp.report;
+            let total =
+                r.blocks_deleted + r.events_deleted + r.sessions_deleted + r.tickets_deleted;
+            format!(
+                "{} · {} blocks, {} events · {total} rows removed · {}",
+                r.cutoff_date, r.blocks_deleted, r.events_deleted, lp.ran_at
+            )
+        }
+    }
+}
+
 /// `worklog status` — one screen folding the daemon / hook / schedule /
 /// web / database / secrets health checks (previously five separate
 /// `*-status` commands) plus today's tracked time. Read-only and fast.
@@ -2636,15 +2717,20 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
     let secrets_total = audit.len();
     let secrets_missing: Vec<&str> = audit.iter().filter(|s| !s.present).map(|s| s.key).collect();
 
-    // Database summary — only when the db file already exists.
+    // Database summary — only when the db file already exists. A missing
+    // db means "never run" for the last-prune row below too, not an
+    // error, so both are derived from the same guarded connection.
     let paths = Paths::resolve()?;
-    let db_summary = if paths.db_exists() {
-        db::open(&paths.db)
-            .ok()
-            .and_then(|c| db::summarize(&c).ok())
+    let db_conn = if paths.db_exists() {
+        db::open(&paths.db).ok()
     } else {
         None
     };
+    let db_summary = db_conn.as_ref().and_then(|c| db::summarize(c).ok());
+    let last_prune = db_conn
+        .as_ref()
+        .and_then(|c| worklog_core::purge::last_prune(c).ok())
+        .flatten();
 
     // Today's tracked time — only reachable when the daemon is up.
     let today = worklog_core::tz::local_date(chrono::Utc::now()).to_string();
@@ -2672,6 +2758,15 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
                     "schema_version": d.schema_version,
                     "events": d.events,
                     "blocks": d.blocks,
+                })),
+                "last_prune": last_prune.as_ref().map(|lp| serde_json::json!({
+                    "cutoff": lp.report.cutoff_date,
+                    "blocks_deleted": lp.report.blocks_deleted,
+                    "blocks_deleted_unbilled": lp.report.blocks_deleted_unbilled,
+                    "events_deleted": lp.report.events_deleted,
+                    "sessions_deleted": lp.report.sessions_deleted,
+                    "tickets_deleted": lp.report.tickets_deleted,
+                    "ran_at": lp.ran_at,
                 })),
                 "secrets": { "set": secrets_set, "total": secrets_total, "missing": secrets_missing },
                 "today": today_agg.as_ref().map(day_agg_json),
@@ -2741,6 +2836,10 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
             ),
             None => "not initialized — run `worklog setup`".to_owned(),
         },
+    ]);
+    t.add_row(vec![
+        "last prune".to_owned(),
+        last_prune_line(last_prune.as_ref()),
     ]);
     t.add_row(vec![
         "secrets".to_owned(),
@@ -3258,6 +3357,21 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
         };
         eprintln!("→ socket {}", worklog_core::paths::short_display(&path));
 
+        // Billing-cycle prune due-check: one timer per process, spawned
+        // here (not inside `router()`/`serve_at`/`serve_tcp`) precisely
+        // because the daemon binds both a unix socket and a TCP port —
+        // spawning inside either of those would run the loop twice.
+        // Paths are resolved ONCE here and handed to the loop rather than
+        // re-derived per tick: `Paths::resolve` reads the process-global
+        // `$WORKLOG_HOME`, and depending on it at tick time is what let a
+        // test point a prune at the real data directory.
+        let prune_paths = Paths::resolve()?;
+        let prune_task = daemon_mod::spawn_prune_loop(
+            state.clone(),
+            prune_paths.data_dir.join("worklog.db.preprune"),
+            prune_paths.db.clone(),
+        );
+
         // Clone the router for the TCP task so the unix+TCP listeners
         // share the same Arc<AppState> — both mutate the same DB.
         let tcp_task = if tcp.is_empty() {
@@ -3279,6 +3393,7 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
         if let Some(t) = tcp_task {
             t.abort();
         }
+        prune_task.abort();
         unix_res
     })
 }
@@ -3933,5 +4048,192 @@ mod tests {
         let agg = aggregate_day("2026-05-16", &blocks);
         assert_eq!(agg.overlap_secs, 0);
         assert_eq!(agg.total_secs, 5400);
+    }
+
+    /// Builds a `LastPrune` with round, easy-to-spot counts for
+    /// `last_prune_line` assertions.
+    fn last_prune(cutoff: &str, ran_at: &str) -> worklog_core::purge::LastPrune {
+        worklog_core::purge::LastPrune {
+            report: worklog_core::purge::PurgeReport {
+                cutoff_date: cutoff.to_owned(),
+                blocks_deleted: 12,
+                blocks_deleted_unbilled: 1,
+                events_deleted: 145,
+                sessions_deleted: 3,
+                tickets_deleted: 2,
+                bytes_freed: 4096,
+                snapshot_path: Some("/tmp/worklog.db.preprune".to_owned()),
+                dry_run: false,
+            },
+            ran_at: ran_at.to_owned(),
+        }
+    }
+
+    /// B34/B40: a stored report's line names the cutoff, the total rows
+    /// removed (blocks + events + sessions + tickets), and the RFC3339
+    /// timestamp it ran at.
+    #[test]
+    fn last_prune_line_with_report_names_cutoff_total_and_timestamp() {
+        let lp = last_prune("2026-07-20", "2026-07-24T06:00:12+00:00");
+        let line = last_prune_line(Some(&lp));
+        assert!(line.contains("2026-07-20"), "must name the cutoff: {line}");
+        assert!(
+            line.contains("162"),
+            "must name the total rows removed (12+145+3+2=162): {line}"
+        );
+        assert!(
+            line.contains("2026-07-24T06:00:12+00:00"),
+            "must name when it ran: {line}"
+        );
+    }
+
+    /// B35: no stored report renders an explicit statement that pruning
+    /// has never run — exactly, and with no digits that could be
+    /// mistaken for a date.
+    #[test]
+    fn last_prune_line_without_report_says_never_run_exactly() {
+        let line = last_prune_line(None);
+        assert_eq!(line, "never run");
+        assert!(
+            !line.chars().any(|c| c.is_ascii_digit()),
+            "must contain no digits that look like a date: {line}"
+        );
+    }
+
+    /// B36: no user-facing text anywhere in this crate or in the shipped
+    /// skill docs may still describe the retired rolling 30-day retention
+    /// rule as the pruner's policy — the pruner is now billing-cycle
+    /// aligned and rail-free. Reads the live files at test time (not a
+    /// frozen copy) so a regression is caught the moment it lands.
+    #[test]
+    fn b36_no_stale_thirty_day_retention_phrasing_survives() {
+        // `include_str!` embeds this whole file, including this test's own
+        // source — so the needles below are built by concatenation rather
+        // than written as contiguous literals, or the test would always
+        // fail by matching its own assertion strings.
+        let this_file = include_str!("cli.rs");
+        let stale_retention_phrase = format!("{}{}", "older than 30 days are ", "purged");
+        assert!(
+            !this_file.contains(&stale_retention_phrase),
+            "cli.rs still describes the retired rolling 30-day retention rule"
+        );
+        let removed_fn_ref = format!("{}{}", "purge::", "purge");
+        assert!(
+            !this_file.contains(&removed_fn_ref),
+            "cli.rs still references a purge function that no longer exists"
+        );
+
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+
+        let api_reference = std::fs::read_to_string(format!(
+            "{manifest_dir}/../../../skills/worklog/references/api-reference.md"
+        ))
+        .expect("api-reference.md must exist");
+        assert!(
+            !api_reference.contains("Safety rails baked in"),
+            "api-reference.md still claims safety rails that no longer exist"
+        );
+        assert!(
+            !api_reference.contains("never deletes unsynced"),
+            "api-reference.md still claims the retired unsynced-block rail"
+        );
+        assert!(
+            !api_reference.contains("blocks_kept_unsynced"),
+            "api-reference.md still shows the removed blocks_kept_unsynced field"
+        );
+        assert!(
+            !api_reference.contains("blocks_kept_manual"),
+            "api-reference.md still shows the removed blocks_kept_manual field"
+        );
+
+        let skill_md =
+            std::fs::read_to_string(format!("{manifest_dir}/../../../skills/worklog/SKILL.md"))
+                .expect("SKILL.md must exist");
+        assert!(
+            !skill_md.contains("`worklog db purge`, `worklog self-update`"),
+            "SKILL.md still lumps rail-free, irreversible db purge in with \
+             the same confirm strength as ordinary writes"
+        );
+
+        let purge_rs =
+            std::fs::read_to_string(format!("{manifest_dir}/../worklog-core/src/purge.rs"))
+                .expect("purge.rs must exist");
+        assert!(
+            !purge_rs.contains("v1 ships defaults only"),
+            "purge.rs still claims cycle settings aren't actually configurable"
+        );
+
+        let block_service_rs = std::fs::read_to_string(format!(
+            "{manifest_dir}/../worklog-core/src/block_service.rs"
+        ))
+        .expect("block_service.rs must exist");
+        assert!(
+            !block_service_rs.contains("PURGEABLE_BLOCKS_WHERE"),
+            "block_service.rs still points at a purge constant that no longer exists"
+        );
+    }
+
+    /// B41: a lookback that would reach earlier than the pruner's cutoff is
+    /// clamped forward to the cutoff itself, so a scheduled collect right
+    /// after a rollover never re-imports rows the last prune deleted.
+    #[test]
+    fn b41_effective_since_clamps_forward_to_cutoff() {
+        let requested = chrono::NaiveDate::from_ymd_opt(2026, 7, 17).unwrap();
+        let cutoff = chrono::NaiveDate::from_ymd_opt(2026, 7, 20).unwrap();
+        assert_eq!(effective_since(requested, cutoff), cutoff);
+    }
+
+    /// B42: a lookback that already stays inside the retention window
+    /// (later than the cutoff) is left untouched — the clamp only ever
+    /// moves the start forward, never back.
+    #[test]
+    fn b42_effective_since_leaves_in_window_lookback_untouched() {
+        let requested = chrono::NaiveDate::from_ymd_opt(2026, 7, 18).unwrap();
+        let cutoff = chrono::NaiveDate::from_ymd_opt(2026, 6, 20).unwrap();
+        assert_eq!(effective_since(requested, cutoff), requested);
+    }
+
+    /// Boundary: requested == cutoff must return that exact date, with no
+    /// off-by-one nudging it a day later or earlier.
+    #[test]
+    fn effective_since_boundary_equal_dates_is_exact() {
+        let d = chrono::NaiveDate::from_ymd_opt(2026, 7, 20).unwrap();
+        assert_eq!(effective_since(d, d), d);
+    }
+
+    /// Totality: across a spread of ordered and reversed (requested, cutoff)
+    /// pairs — including a year boundary — the result is never earlier than
+    /// the cutoff.
+    #[test]
+    fn effective_since_never_earlier_than_cutoff() {
+        let pairs = [
+            (
+                chrono::NaiveDate::from_ymd_opt(2026, 7, 17).unwrap(),
+                chrono::NaiveDate::from_ymd_opt(2026, 7, 20).unwrap(),
+            ),
+            (
+                chrono::NaiveDate::from_ymd_opt(2026, 7, 20).unwrap(),
+                chrono::NaiveDate::from_ymd_opt(2026, 7, 17).unwrap(),
+            ),
+            (
+                chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                chrono::NaiveDate::from_ymd_opt(2025, 12, 20).unwrap(),
+            ),
+            (
+                chrono::NaiveDate::from_ymd_opt(2025, 12, 20).unwrap(),
+                chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+            ),
+            (
+                chrono::NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+                chrono::NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+            ),
+        ];
+        for (requested, cutoff) in pairs {
+            let result = effective_since(requested, cutoff);
+            assert!(
+                result >= cutoff,
+                "effective_since({requested}, {cutoff}) = {result}, earlier than cutoff"
+            );
+        }
     }
 }
