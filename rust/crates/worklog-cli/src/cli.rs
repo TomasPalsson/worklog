@@ -3361,7 +3361,16 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
         // here (not inside `router()`/`serve_at`/`serve_tcp`) precisely
         // because the daemon binds both a unix socket and a TCP port —
         // spawning inside either of those would run the loop twice.
-        let prune_task = daemon_mod::spawn_prune_loop(state.clone());
+        // Paths are resolved ONCE here and handed to the loop rather than
+        // re-derived per tick: `Paths::resolve` reads the process-global
+        // `$WORKLOG_HOME`, and depending on it at tick time is what let a
+        // test point a prune at the real data directory.
+        let prune_paths = Paths::resolve()?;
+        let prune_task = daemon_mod::spawn_prune_loop(
+            state.clone(),
+            prune_paths.data_dir.join("worklog.db.preprune"),
+            prune_paths.db.clone(),
+        );
 
         // Clone the router for the TCP task so the unix+TCP listeners
         // share the same Arc<AppState> — both mutate the same DB.

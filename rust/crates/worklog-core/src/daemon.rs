@@ -263,12 +263,33 @@ pub const PRUNE_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_
 /// blocking call and released promptly afterwards. A prune failure is
 /// logged at `warn` and swallowed — it must never bring the daemon down
 /// or fail a request (spec 002 §5.3).
-pub fn spawn_prune_loop(state: Shared) -> tokio::task::JoinHandle<()> {
+/// `snapshot_to` and `db_path` are resolved ONCE by the caller and owned
+/// by the loop. They are deliberately not re-derived per tick from
+/// [`crate::paths::Paths::resolve`]: that reads the process-global
+/// `$WORKLOG_HOME`, and a test which cleared it between another test's
+/// `set_var` and this call once pointed a tick at the real
+/// `~/.local/share/worklog` and pruned it for real. A daemon's paths
+/// never change at runtime, so resolving them once is both safer and
+/// more honest about the dependency.
+pub fn spawn_prune_loop(
+    state: Shared,
+    snapshot_to: PathBuf,
+    db_path: PathBuf,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
-            prune_due_check_once(state.clone()).await;
+            prune_due_check_once(state.clone(), &snapshot_to, &db_path).await;
             tokio::time::sleep(PRUNE_CHECK_INTERVAL).await;
         }
+    })
+}
+
+/// Build shared state around an already-open connection. Lets a caller —
+/// in practice a test — bind to an explicit database instead of
+/// resolving one from the process environment.
+pub fn state_from_conn(conn: Connection) -> Shared {
+    Arc::new(AppState {
+        conn: Mutex::new(conn),
     })
 }
 
@@ -282,25 +303,25 @@ pub fn spawn_prune_loop(state: Shared) -> tokio::task::JoinHandle<()> {
 /// pure noise (spec 002 §5.6 / B33) — only a `trace!` for anyone
 /// watching that closely. A failure logs `warn!` naming the failing
 /// stage, carried by the error's `anyhow::Context` chain.
-async fn prune_due_check_once(state: Shared) {
+async fn prune_due_check_once(state: Shared, snapshot_to: &Path, db_path: &Path) {
     if !crate::purge::pruning_enabled() {
         return;
     }
+    let snapshot_to = snapshot_to.to_path_buf();
+    let db_path = db_path.to_path_buf();
     let outcome =
         tokio::task::spawn_blocking(move || -> Result<Option<crate::purge::PurgeReport>> {
-            let paths = crate::paths::Paths::resolve()?;
             let today = crate::tz::local_date(chrono::Utc::now());
             let cutoff = crate::purge::cutoff_for_cycle(
                 today,
                 crate::purge::configured_cycle_start_day(),
                 crate::purge::configured_close_day(),
             );
-            let snapshot_to = paths.data_dir.join("worklog.db.preprune");
             let opts = crate::purge::PruneOptions {
                 cutoff,
                 dry_run: false,
                 snapshot_to: Some(snapshot_to.as_path()),
-                db_path: Some(paths.db.as_path()),
+                db_path: Some(db_path.as_path()),
             };
             let conn = state.conn.blocking_lock();
             crate::purge::prune_if_due(&conn, &opts)
@@ -2956,18 +2977,28 @@ mod tests {
 
     // ───────────────── billing-cycle prune due-check (slice 4) ─────────────────
     //
-    // `$WORKLOG_HOME` and `$WORKLOG_PRUNE_ENABLED` are process-global, so
-    // any test that flips them must hold this mutex — mirrors
-    // `tz::test_env_lock` / `schedule::ENV_LOCK` / `paths::ENV_LOCK`. An
-    // async-aware `Mutex` (held across the `.await`s below) rather than
-    // a `std::sync::Mutex`, per `clippy::await_holding_lock`.
-    // `b39_*` below sets `WORKLOG_HOME` to a fresh tempdir before ever
-    // spawning the loop, and clears it again before releasing the lock,
-    // so a real user's `~/.local/share/worklog` is never touched here.
-    static PRUNE_ENV_LOCK: Mutex<()> = Mutex::const_new(());
-
+    // `$WORKLOG_PRUNE_ENABLED` is process-global, so any test that flips
+    // it must hold this mutex. An async-aware `Mutex` (held across the
+    // `.await`s below) rather than a `std::sync::Mutex`, per
+    // `clippy::await_holding_lock`.
+    //
+    // These tests deliberately do NOT touch `$WORKLOG_HOME`. An earlier
+    // version set it to a tempdir and called `new_state()`, which resolves
+    // paths from that variable — but the variable is process-global and
+    // this mutex does not lock against `paths::ENV_LOCK`, whose own tests
+    // call `remove_var("WORKLOG_HOME")`. One such interleaving pointed the
+    // prune loop at the real `~/.local/share/worklog` and deleted 783
+    // blocks and ~392k events. The fix is not another mutex — the other
+    // lock holders would never take it — but binding every test to an
+    // explicit database via `state_from_conn` and passing explicit paths
+    // into `spawn_prune_loop`, so nothing here consults the environment
+    // for a path at all. `purge::run` carries a `#[cfg(test)]` backstop
+    // that refuses a `db_path` under the real data directory.
+    //
+    // `$WORKLOG_PRUNE_ENABLED` is safe to flip under this mutex: it is
+    // read by `purge::pruning_enabled` and cannot resolve to a path.
     async fn prune_env_lock() -> tokio::sync::MutexGuard<'static, ()> {
-        PRUNE_ENV_LOCK.lock().await
+        crate::envfile::ENV_TEST_LOCK.lock().await
     }
 
     /// B25: pruning disabled via the env var. The due-check must return
@@ -2985,11 +3016,17 @@ mod tests {
             [],
         )
         .unwrap();
-        let state = Arc::new(AppState {
-            conn: Mutex::new(conn),
-        });
+        let state = state_from_conn(conn);
 
-        let handle = spawn_prune_loop(state.clone());
+        // Explicit tempdir paths: nothing here may resolve against the
+        // process environment, and the disabled check must not touch them
+        // anyway.
+        let tmp = tempfile::tempdir().unwrap();
+        let handle = spawn_prune_loop(
+            state.clone(),
+            tmp.path().join("worklog.db.preprune"),
+            tmp.path().join("worklog.db"),
+        );
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         handle.abort();
 
@@ -3023,10 +3060,14 @@ mod tests {
 
         let _g = prune_env_lock().await;
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("WORKLOG_HOME", tmp.path());
         std::env::set_var("WORKLOG_PRUNE_ENABLED", "1");
 
-        let state = new_state().unwrap();
+        // Bind to an explicit database rather than `new_state()`, which
+        // resolves one from the process-global `$WORKLOG_HOME`. Another
+        // test clearing that variable at the wrong moment once pointed
+        // this test at the real `~/.local/share/worklog` and pruned it.
+        let db_path = tmp.path().join("worklog.db");
+        let state = state_from_conn(crate::db::open(&db_path).unwrap());
         {
             let conn = state.conn.lock().await;
             conn.execute(
@@ -3037,9 +3078,8 @@ mod tests {
             .unwrap();
         }
 
-        let handle = spawn_prune_loop(state.clone());
-
         let snapshot_path = tmp.path().join("worklog.db.preprune");
+        let handle = spawn_prune_loop(state.clone(), snapshot_path.clone(), db_path.clone());
         let step = std::time::Duration::from_millis(10);
         let budget = std::time::Duration::from_millis(1000);
         let mut waited = std::time::Duration::ZERO;
@@ -3068,6 +3108,31 @@ mod tests {
         drop(guard);
 
         std::env::remove_var("WORKLOG_PRUNE_ENABLED");
-        std::env::remove_var("WORKLOG_HOME");
+    }
+
+    /// The guard that exists because this actually happened: a test whose
+    /// paths resolved to the owner's real data directory pruned it for
+    /// real. `run` must refuse outright in test builds, before it writes a
+    /// snapshot or deletes a single row.
+    #[test]
+    fn run_refuses_to_touch_the_real_data_directory() {
+        let conn = open_memory().unwrap();
+        let real_db = dirs::home_dir()
+            .unwrap()
+            .join(".local/share/worklog/worklog.db");
+        let opts = crate::purge::PruneOptions {
+            cutoff: chrono::NaiveDate::from_ymd_opt(2026, 7, 20).unwrap(),
+            dry_run: false,
+            snapshot_to: None,
+            db_path: Some(real_db.as_path()),
+        };
+
+        let err = crate::purge::run(&conn, &opts)
+            .expect_err("run must refuse a db_path inside the real data directory");
+        assert!(
+            err.to_string()
+                .contains("refusing to prune the real data directory"),
+            "unexpected error: {err}"
+        );
     }
 }

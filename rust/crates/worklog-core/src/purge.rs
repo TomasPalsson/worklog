@@ -308,6 +308,28 @@ pub struct PruneOptions<'a> {
 ///    size after step 4, floored at zero, and only computed when
 ///    `db_path` is `Some`.
 pub fn run(conn: &Connection, opts: &PruneOptions) -> Result<PurgeReport> {
+    // Belt and braces, test builds only. `$WORKLOG_HOME` is process-global
+    // and worklog-core's tests guard it with several mutexes that do not
+    // lock against each other, so a test that resolves paths from the
+    // environment can be raced by another test clearing that variable and
+    // end up aimed at the owner's real database. That is not hypothetical:
+    // it happened, and it deleted 783 blocks and ~392k events before this
+    // guard existed. Production builds do not compile this.
+    #[cfg(test)]
+    {
+        if let Some(p) = opts.db_path {
+            if let Some(home) = dirs::home_dir() {
+                let real = home.join(".local/share/worklog");
+                if p.starts_with(&real) {
+                    anyhow::bail!(
+                        "refusing to prune the real data directory from a test: {}",
+                        p.display()
+                    );
+                }
+            }
+        }
+    }
+
     if opts.dry_run {
         return purge_rows(conn, opts.cutoff, true);
     }
@@ -1091,12 +1113,8 @@ mod tests {
     /// `tz::test_env_lock` / `schedule::ENV_LOCK` — this env var is
     /// process-global, so concurrent tests flipping it would otherwise
     /// race.
-    fn prune_enabled_env_lock() -> std::sync::MutexGuard<'static, ()> {
-        use std::sync::{Mutex, OnceLock};
-        static L: OnceLock<Mutex<()>> = OnceLock::new();
-        L.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+    fn prune_enabled_env_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        crate::envfile::ENV_TEST_LOCK.blocking_lock()
     }
 
     #[test]
@@ -1381,12 +1399,8 @@ mod tests {
     /// Serialises mutation of the two pruner-cycle-day env vars,
     /// mirroring `prune_enabled_env_lock` above — process-global, so
     /// concurrent tests setting them would otherwise race.
-    fn billing_day_env_lock() -> std::sync::MutexGuard<'static, ()> {
-        use std::sync::{Mutex, OnceLock};
-        static L: OnceLock<Mutex<()>> = OnceLock::new();
-        L.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+    fn billing_day_env_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        crate::envfile::ENV_TEST_LOCK.blocking_lock()
     }
 
     /// B28-adjacent: the shared range predicate both settings validate
