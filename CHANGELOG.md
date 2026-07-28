@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.11.0](https://github.com/TomasPalsson/worklog/compare/v0.10.0...v0.11.0) (2026-07-28)
+
+
+### Features
+
+* **billing:** invoicing-form export + UI-editable customer/folder registry ([#33](https://github.com/TomasPalsson/worklog/issues/33)) ([143f583](https://github.com/TomasPalsson/worklog/commit/143f58397dcf228da6b2fe954397edc3afa42728))
+* **cli:** UX overhaul phase 3 — auto-merge, status dashboard, Docker-free day ([1c45f27](https://github.com/TomasPalsson/worklog/commit/1c45f27a11a8d0e785bfdd82b7eabdb301fa9f02))
+* **cli:** UX overhaul phases 1-2 — block editing + day/week queries ([39a23e7](https://github.com/TomasPalsson/worklog/commit/39a23e78218f0e63b4ed014ffccce00a79f74cf2))
+* **cli:** worklog completions &lt;shell&gt; — shell completion scripts ([9f9ea23](https://github.com/TomasPalsson/worklog/commit/9f9ea2390c9cd8f287cbb9c7fd86c90a431d1f1f))
+* **daemon:** add /tickets/search + /tickets/external ([f55e04f](https://github.com/TomasPalsson/worklog/commit/f55e04f78f4c47acee4dfb90f27ee76e84470150))
+* merge same-ticket blocks and describe with Claude (events + commits) ([#23](https://github.com/TomasPalsson/worklog/issues/23)) ([0be24a5](https://github.com/TomasPalsson/worklog/commit/0be24a5ca5eb69f864f8e57f13d81bb8c6682836))
+* **purge:** automatic billing-cycle pruner ([#34](https://github.com/TomasPalsson/worklog/issues/34)) ([34cb176](https://github.com/TomasPalsson/worklog/commit/34cb176ee1cbfbdae7ff37015ccbaec04ae0b33e))
+* set a block personal/work from the review UI ([0503ea2](https://github.com/TomasPalsson/worklog/commit/0503ea2e885108fbc7f7b3a59540877656067cb2))
+* **skill:** bundled Claude Code skill for operating worklog ([641bd60](https://github.com/TomasPalsson/worklog/commit/641bd607596a41e29d54d94a1ef0a31c8058e891))
+* **sync:** aggregate same-ticket blocks into one Tempo worklog ([a0afbdf](https://github.com/TomasPalsson/worklog/commit/a0afbdf5224850549d6d9ddb2c7a310bb9e032da))
+* **web:** collapse day view into per-ticket groups ([80b8acb](https://github.com/TomasPalsson/worklog/commit/80b8acbf55a2232c4f7971135197da17bddccbcb))
+* **web:** live Jira ticket search in the picker ([07741b1](https://github.com/TomasPalsson/worklog/commit/07741b1aa6dcb65708d1e38f2f81c018ef9501c5))
+* **worklog-core:** external column + jira search backend ([4c80693](https://github.com/TomasPalsson/worklog/commit/4c806933ef7d5cd8c76aecb6cd377b6b867fe719))
+
+
+### Bug Fixes
+
+* **estimate:** redact code from event content before it reaches claude -p ([5a155f6](https://github.com/TomasPalsson/worklog/commit/5a155f6b4b118cb9b5a2e7b177befac4b695b08a))
+* **hook:** add hook_run::SUPPRESS_ENV the estimator references ([9bd4a5e](https://github.com/TomasPalsson/worklog/commit/9bd4a5ec9ac05bafacaa0fe93eeb57d4101ba14e))
+* **hook:** stop storing code in the events database ([08c63e6](https://github.com/TomasPalsson/worklog/commit/08c63e6e4795f9c9799f7ed205da52d63ba2f2d8))
+* **hook:** sweep worklog handlers off legacy event keys on install ([5166045](https://github.com/TomasPalsson/worklog/commit/5166045d58b67311a3adaa54a0ba2753ce23fd36))
+* **infer:** stop fragmenting long Claude turns into dropped 2-min slivers ([#21](https://github.com/TomasPalsson/worklog/issues/21)) ([7ca11cc](https://github.com/TomasPalsson/worklog/commit/7ca11cc1094bf5c9453e5e01f6947115ebbd4178))
+* reject phantom tickets (CRIT-1) and stop double-billing overlaps ([20fdb68](https://github.com/TomasPalsson/worklog/commit/20fdb68849b6715453da152cc0c262e4f5db55a0))
+* **tests:** serialise WORKLOG_HOME and unlock flock explicitly ([60b9897](https://github.com/TomasPalsson/worklog/commit/60b9897fd3958a3815c18288d179b1dd017dfd99))
+
 ## [0.10.0](https://github.com/TomasPalsson/worklog/compare/v0.9.0...v0.10.0) (2026-05-12)
 
 
