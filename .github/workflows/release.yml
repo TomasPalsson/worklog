@@ -25,12 +25,17 @@
 name: release
 
 # release-please-action creates and publishes the tag using
-# GITHUB_TOKEN; by GitHub policy that does not fire `push: tags` on
-# downstream workflows, so v0.7.0's binaries+manifest never built and
-# `worklog upgrade` 404'd on its manifest. Adding the `release: published`
-# trigger picks up release-please's publish event going forward, and
-# `workflow_dispatch` lets us replay a build for an existing tag
-# (`gh workflow run release.yml --ref vX.Y.Z`) without re-pushing it.
+# GITHUB_TOKEN; by GitHub policy that does not fire `push: tags` or
+# `release: published` on downstream workflows, so v0.7.0's and
+# v0.11.0's binaries+manifest never built and `worklog upgrade` 404'd
+# on the manifest. The fix: release-please.yml now `workflow_call`s
+# this workflow directly as part of its own run — that's not a new
+# event, so the GITHUB_TOKEN restriction doesn't apply, and it's now
+# the primary path. `push: tags` and `release: published` stay wired
+# for a human pushing a tag or publishing a release with their own
+# credentials, and `workflow_dispatch` lets us replay a build for an
+# existing tag (`gh workflow run release.yml --ref vX.Y.Z`) without
+# re-pushing it.
 on:
   push:
     tags:
@@ -48,9 +53,39 @@ on:
         description: "Tag to (re)build, e.g. v0.8.0. Defaults to the dispatched ref."
         required: false
         type: string
+  # Invoked by release-please.yml right after it creates a release, so
+  # the build runs as part of that workflow's own run (not a new
+  # event) and isn't subject to the GITHUB_TOKEN restriction above.
+  # `tag` is required here because `github.ref_name` resolves to the
+  # caller's ref (`main`), not a tag.
+  workflow_call:
+    inputs:
+      tag:
+        description: "Tag to build, e.g. v0.8.0."
+        required: true
+        type: string
+    secrets:
+      # Declared explicitly rather than relying on `secrets: inherit`, so
+      # this workflow's access is capped at the signing key alone. It runs
+      # `cargo build` over third-party crates and several third-party
+      # Actions; any future unrelated repo secret must not become visible
+      # here just because it was added.
+      WORKLOG_RELEASE_PRIVATE_KEY:
+        required: true
 
 permissions:
   contents: write   # `gh release create` needs this.
+
+# Two runs uploading to the same tag would interleave: `manifest.json`
+# embeds a live timestamp, so each run produces a byte-different
+# manifest and signature, and the 8-file `gh release upload --clobber`
+# is not atomic. A race could therefore leave a manifest whose .sig
+# doesn't verify — the exact failure this pipeline exists to prevent.
+# Queue instead of cancelling: a half-uploaded release is worse than a
+# slow one.
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   # ───────────────────────── per-target build ─────────────────────────
@@ -69,9 +104,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Check out the tag's source so workflow_dispatch rebuilds the
-          # right code. For push:tags and release:published, `inputs.tag`
-          # is empty and `github.ref_name` is already the tag.
+          # Check out the tag's source so workflow_dispatch/workflow_call
+          # rebuild the right code. For push:tags and release:published,
+          # `inputs.tag` is empty and `github.ref_name` is already the tag.
           ref: ${{ inputs.tag || github.ref_name }}
 
       - name: Install system deps (linux)
