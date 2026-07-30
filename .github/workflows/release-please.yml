@@ -9,9 +9,12 @@
 #
 # Flow after merge:
 #   release-please creates the Release (with changelog notes, zero
-#   binaries) → push of `vX.Y.Z` tag triggers `release.yml` → that
-#   workflow builds + signs the binaries and uploads them onto the
-#   already-created Release via `gh release upload --clobber`.
+#   binaries) → the `release` job below `workflow_call`s
+#   `release.yml` directly, as part of this same workflow run, so the
+#   GITHUB_TOKEN-authored tag/release doesn't need to trigger a
+#   separate event → that workflow builds + signs the binaries and
+#   uploads them onto the already-created Release via
+#   `gh release upload --clobber`.
 
 name: release-please
 
@@ -26,8 +29,28 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-24.04
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - uses: googleapis/release-please-action@v4
+        id: release
+        # Do NOT give this step a custom `token:`. It deliberately uses the
+        # default GITHUB_TOKEN: because GITHUB_TOKEN-authored events don't
+        # cascade, the tag push and release publish below can't re-trigger
+        # release.yml's `push: tags` / `release: published`. A PAT here
+        # would make both those paths fire *in addition* to the
+        # workflow_call, double-building the same tag.
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  release:
+    name: build + sign + release
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}
+    secrets:
+      WORKLOG_RELEASE_PRIVATE_KEY: ${{ secrets.WORKLOG_RELEASE_PRIVATE_KEY }}
