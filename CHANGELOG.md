@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.1](https://github.com/TomasPalsson/worklog/compare/v0.11.0...v0.11.1) (2026-07-31)
+
+
+### Bug Fixes
+
+* **ci:** chain release build off release-please via workflow_call ([#35](https://github.com/TomasPalsson/worklog/issues/35)) ([a968f46](https://github.com/TomasPalsson/worklog/commit/a968f46517c9882b626b906ff88a4b96c52edc7c))
+* **web:** stop serving a frozen web/ cache after upgrades ([#37](https://github.com/TomasPalsson/worklog/issues/37)) ([6c546f1](https://github.com/TomasPalsson/worklog/commit/6c546f16794f20dffc93392463a64cadda2a8cbf))
+
 ## [0.11.0](https://github.com/TomasPalsson/worklog/compare/v0.10.0...v0.11.0) (2026-07-28)
 
 
