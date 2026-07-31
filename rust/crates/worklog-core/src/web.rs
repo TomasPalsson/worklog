@@ -207,6 +207,38 @@ pub fn bun_status(paths: &Paths) -> WebStatus {
     }
 }
 
+/// Best-effort teardown of the pre-bun Docker container. Returns true
+/// only if a container was actually stopped.
+///
+/// The host-bun runner replaced Docker, but `bun_down` only ever kills
+/// the pidfile process — so a `worklog-web` container left behind by an
+/// older install keeps running and keeps its `127.0.0.1:<port>` binding.
+/// Bun binds the same port on IPv6, so both survive side by side and a
+/// browser resolving `localhost` to IPv4 silently gets the stale
+/// container while `curl` over IPv6 gets the real one. That divergence
+/// is very hard to spot, so `worklog web down` clears both.
+///
+/// Nothing here is fatal: no Docker installed, no such container, or a
+/// daemon that won't answer all just mean there's nothing to clean up.
+pub fn stop_legacy_container() -> bool {
+    // Check first: `docker stop` exits 0 for a container that was already
+    // stopped, so its exit code alone would claim a cleanup that didn't
+    // happen. `status()` distinguishes running / stopped / absent, and
+    // errors when the Docker daemon itself is unreachable — all three of
+    // which mean "nothing to do".
+    if !status().map(|s| s.running).unwrap_or(false) {
+        return false;
+    }
+    Command::new("docker")
+        .args(["stop", CONTAINER_NAME])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 fn read_bun_pid(paths: &Paths) -> Option<u32> {
     std::fs::read_to_string(bun_pid_path(paths))
         .ok()
