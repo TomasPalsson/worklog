@@ -2709,8 +2709,6 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
     let hook_on = hook.as_ref().is_some_and(|h| h.installed);
     let sched = schedule::status().ok();
     let sched_on = sched.as_ref().is_some_and(|s| s.installed);
-    let web = web_mod::status().ok();
-    let web_on = web.as_ref().is_some_and(|w| w.running);
 
     let audit = secrets::audit();
     let secrets_set = audit.iter().filter(|s| s.present).count();
@@ -2721,6 +2719,12 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
     // db means "never run" for the last-prune row below too, not an
     // error, so both are derived from the same guarded connection.
     let paths = Paths::resolve()?;
+    // The web UI is the host-bun runner, not the retired Docker
+    // container, so ask the pidfile rather than `docker inspect`.
+    // Querying Docker here reported "not running" for every bun-served
+    // UI — which is exactly how a leftover `worklog-web` container went
+    // unnoticed while it squatted the port for days.
+    let web_on = web_mod::bun_status(&paths).running;
     let db_conn = if paths.db_exists() {
         db::open(&paths.db).ok()
     } else {
@@ -3529,10 +3533,22 @@ fn cmd_web_up<W: Write>(
 fn cmd_web_down<W: Write>(out: &mut W, json: bool) -> Result<()> {
     let paths = Paths::resolve()?;
     web_mod::bun_down(&paths)?;
+    // Also clear any pre-bun container — see `stop_legacy_container`.
+    let legacy = web_mod::stop_legacy_container();
     if json {
-        writeln!(out, "{{\"ok\": true}}")?;
+        writeln!(
+            out,
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "ok": true,
+                "legacy_container_stopped": legacy,
+            }))?
+        )?;
     } else {
         writeln!(out, "✓ worklog-web stopped")?;
+        if legacy {
+            writeln!(out, "  also stopped the leftover docker container")?;
+        }
     }
     Ok(())
 }
