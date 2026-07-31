@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.2](https://github.com/TomasPalsson/worklog/compare/v0.11.1...v0.11.2) (2026-07-31)
+
+
+### Bug Fixes
+
+* **daemon:** vote the block label on project root so it matches billing ([#39](https://github.com/TomasPalsson/worklog/issues/39)) ([d863e89](https://github.com/TomasPalsson/worklog/commit/d863e899f1481fd95f45818cf93a1cd67a41a176))
+* **web:** report the bun UI in `worklog status`, clear legacy container on down ([#38](https://github.com/TomasPalsson/worklog/issues/38)) ([56bc456](https://github.com/TomasPalsson/worklog/commit/56bc456640e18eb289de554e6ef6e7f3dd7393f6))
+
 ## [0.11.1](https://github.com/TomasPalsson/worklog/compare/v0.11.0...v0.11.1) (2026-07-31)
 
 
