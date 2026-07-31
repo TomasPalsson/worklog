@@ -444,11 +444,19 @@ pub struct BlockSummary {
     pub block: Block,
     pub event_count: i64,
     pub sources: Vec<SourceCount>,
-    /// Dominant working directory across the block's events — the path
-    /// the bulk of its commands ran in. `None` when no event carried a
-    /// `project_path` (e.g. a pure calendar block). Surfaced in the
-    /// review UI so the user can tell at a glance which repo a block
-    /// belongs to.
+    /// Dominant working directory across the block's events. Chosen by a
+    /// PROJECT-ROOT vote using the *exact same* folder key as
+    /// [`crate::billing::work_folder_for_block`] — project_path folded via
+    /// [`crate::billing::work_folder_for_path`], falling back to the
+    /// GitHub repo basename when project_path can't place it, skipping
+    /// events that resolve neither. The winning folder is therefore always
+    /// identical to the billing group the block sits in. This field is
+    /// then a full path *inside* that winning folder — the exact path
+    /// with the most events among rows that had one — or `None` when the
+    /// winning folder was won entirely by repo-derived events with no
+    /// `project_path` at all (e.g. a pure-GitHub block). The UI can never
+    /// show a path that contradicts the billing group: it shows a path
+    /// from the right folder, or nothing.
     pub project_path: Option<String>,
 }
 
@@ -537,38 +545,111 @@ fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
             .push(SourceCount { source, n });
     }
 
-    // Dominant working directory per block in one query — mirrors
-    // `personal::dominant_project_path_for_block` but batched so the day
-    // load stays a fixed number of round-trips regardless of block count.
-    // For each block, the path that tags the most events wins.
+    // Dominant working directory per block in one query. Batched so the
+    // day load stays a fixed number of round-trips regardless of block
+    // count, mirroring `personal::dominant_project_path_for_block`'s
+    // per-block shape.
+    //
+    // The winner is picked by a two-stage vote using the *exact same*
+    // folder key as `billing::work_folder_for_block`, so the winning
+    // folder always agrees with the billing group the block sits in.
+    // Voting on the raw exact path lets a genai-infra path that's
+    // concentrated in one worktree beat a lyfjastofnun path that's split
+    // across several worktrees, even though lyfjastofnun has more events
+    // overall and is what billing bills the block under. And voting only
+    // on `project_path`, ignoring `repo`, silently disagreed with billing
+    // whenever GitHub-only events (which always carry `project_path =
+    // NULL`, `repo = Some("org/Name")`) outweighed the block's
+    // Claude-derived events — billing would fall back to the repo
+    // basename and bill under it while this label used a different
+    // folder entirely.
+    //
+    // Stage 1: for every (project_path, repo) row, compute the folder key
+    // the same way `billing::work_folder_for_block` does — fold
+    // `project_path` to its project root via `billing::work_folder_for_path`,
+    // falling back to the GitHub repo basename when that fails, and
+    // skipping the row entirely when neither resolves. Sum counts per
+    // folder key. The folder with the most events wins; ties break
+    // lexicographically by folder name, exactly like
+    // `billing::work_folder_for_block`, so the two never disagree.
+    //
+    // Stage 2: within the winning folder only, consider rows that have an
+    // actual `project_path` (repo-only rows have none to offer) and
+    // return the exact path with the most events as the representative
+    // `project_path` (the web UI needs a full path, not a bare folder
+    // name). Ties break by the lexicographically smallest path for
+    // determinism. When the winning folder has no row with a
+    // `project_path` at all — a pure-GitHub block, won on repo basename
+    // alone — there is no full path to show, so `project_path` stays
+    // `None` rather than a bare folder name or a misleading path from a
+    // losing folder.
     let path_sql = format!(
-        "SELECT be.block_id, e.project_path, COUNT(*)
+        "SELECT be.block_id, e.project_path, e.repo, COUNT(*)
            FROM block_events be
            JOIN events e ON e.id = be.event_id
           WHERE be.block_id IN ({placeholders})
-            AND e.project_path IS NOT NULL
-          GROUP BY be.block_id, e.project_path"
+            AND (e.project_path IS NOT NULL OR e.repo IS NOT NULL)
+          GROUP BY be.block_id, e.project_path, e.repo"
     );
     let mut path_stmt = conn.prepare(&path_sql)?;
-    let mut best_path: std::collections::HashMap<i64, (String, i64)> =
+    // [(exact_path, count), ..] — only rows that actually carried a
+    // project_path; repo-only rows contribute to the folder total but not
+    // to this list.
+    type PathCounts = Vec<(String, i64)>;
+    // folder_key -> (folder_total, exact-path counts)
+    type FolderVotes = std::collections::HashMap<String, (i64, PathCounts)>;
+    // block_id -> FolderVotes
+    let mut folder_votes: std::collections::HashMap<i64, FolderVotes> =
         std::collections::HashMap::new();
     let path_rows = path_stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| {
         Ok((
             r.get::<_, i64>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, i64>(2)?,
+            r.get::<_, Option<String>>(1)?,
+            r.get::<_, Option<String>>(2)?,
+            r.get::<_, i64>(3)?,
         ))
     })?;
     for row in path_rows {
-        let (bid, path, n) = row?;
-        best_path
+        let (bid, project_path, repo_name, n) = row?;
+        // Mirrors `billing::work_folder_for_block`'s vote key exactly.
+        let folder_key = project_path
+            .as_deref()
+            .and_then(crate::billing::work_folder_for_path)
+            .or_else(|| {
+                repo_name
+                    .as_deref()
+                    .and_then(|r| r.rsplit('/').next())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+            });
+        let Some(folder_key) = folder_key else {
+            continue;
+        };
+        let entry = folder_votes
             .entry(bid)
-            .and_modify(|cur| {
-                if n > cur.1 {
-                    *cur = (path.clone(), n);
-                }
-            })
-            .or_insert((path, n));
+            .or_default()
+            .entry(folder_key)
+            .or_insert((0, Vec::new()));
+        entry.0 += n;
+        if let Some(path) = project_path {
+            entry.1.push((path, n));
+        }
+    }
+
+    let mut best_path: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+    for (bid, folders) in folder_votes {
+        let mut folder_list: Vec<(String, i64, PathCounts)> = folders
+            .into_iter()
+            .map(|(folder, (total, paths))| (folder, total, paths))
+            .collect();
+        folder_list.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let Some((_, _, mut paths)) = folder_list.into_iter().next() else {
+            continue;
+        };
+        paths.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        if let Some((path, _)) = paths.into_iter().next() {
+            best_path.insert(bid, path);
+        }
     }
 
     let enriched = blocks
@@ -578,7 +659,7 @@ fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
             BlockSummary {
                 event_count: counts.get(&id).copied().unwrap_or(0),
                 sources: sources_by_block.remove(&id).unwrap_or_default(),
-                project_path: best_path.remove(&id).map(|(p, _)| p),
+                project_path: best_path.remove(&id),
                 block,
             }
         })
@@ -1924,6 +2005,194 @@ mod tests {
             summary.blocks[0].project_path.as_deref(),
             Some("/home/u/work/api"),
             "dominant path should be the one tagging the most events"
+        );
+    }
+
+    #[test]
+    fn day_summary_project_path_agrees_with_billing_folder_vote() {
+        // Regression for the 2026-07-28 defect: a block whose lyf events
+        // are spread over several worktree sub-paths (3 + 2 = 5) must
+        // still win the label over a genai path concentrated in a single
+        // sub-path (4), because `billing::work_folder_for_block` bills
+        // this block under lyf's project root. Voting on the raw exact
+        // path (the old behaviour) would pick the 4-event genai path
+        // instead, producing a UI card that disagrees with the billing
+        // group it sits in.
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-18', '2026-04-18T09:00:00+00:00', '2026-04-18T09:30:00+00:00', 1800)",
+            [],
+        )
+        .unwrap();
+        let bid = conn.last_insert_rowid();
+        let paths = [
+            "/home/u/Desktop/Work/lyf/.claude/worktrees/a",
+            "/home/u/Desktop/Work/lyf/.claude/worktrees/a",
+            "/home/u/Desktop/Work/lyf/.claude/worktrees/a",
+            "/home/u/Desktop/Work/lyf/.claude/worktrees/b",
+            "/home/u/Desktop/Work/lyf/.claude/worktrees/b",
+            "/home/u/Desktop/Work/genai/.claude/worktrees/c",
+            "/home/u/Desktop/Work/genai/.claude/worktrees/c",
+            "/home/u/Desktop/Work/genai/.claude/worktrees/c",
+            "/home/u/Desktop/Work/genai/.claude/worktrees/c",
+        ];
+        for (i, path) in paths.iter().enumerate() {
+            let mut ev = Event::minimal(
+                "claude",
+                format!("e{i}").as_str(),
+                "2026-04-18T09:05:00+00:00",
+                "prompt",
+            );
+            ev.project_path = Some(path.to_string());
+            let eid = repo::upsert_event(&conn, &ev).unwrap();
+            conn.execute(
+                "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+                params![bid, eid],
+            )
+            .unwrap();
+        }
+
+        let summary = stitch_day_summary(&conn, "2026-04-18").unwrap();
+        assert_eq!(summary.blocks.len(), 1);
+        assert_eq!(
+            summary.blocks[0].project_path.as_deref(),
+            Some("/home/u/Desktop/Work/lyf/.claude/worktrees/a"),
+            "the lyf project root has 5 events vs genai's 4, so the \
+             3-event lyf sub-path must win the label, not the 4-event \
+             genai path"
+        );
+    }
+
+    #[test]
+    fn day_summary_project_path_agrees_when_repo_folder_wins() {
+        // Regression for the confirmed defect: a block with 6 GitHub events
+        // (project_path NULL, repo "org/AcmeBackend") and 5 Claude events
+        // (project_path under .../acme/backend) must be billed under
+        // "AcmeBackend" by `billing::work_folder_for_block` — and the day
+        // summary must AGREE that "AcmeBackend" is the winning folder,
+        // which means it can offer no full path for it (no row in the
+        // winning folder carries a project_path), so project_path is None,
+        // not the acme/backend path from the losing folder.
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-18', '2026-04-18T09:00:00+00:00', '2026-04-18T09:30:00+00:00', 1800)",
+            [],
+        )
+        .unwrap();
+        let bid = conn.last_insert_rowid();
+
+        for i in 0..6 {
+            let mut ev = Event::minimal(
+                "github_commit",
+                format!("gh{i}").as_str(),
+                "2026-04-18T09:05:00+00:00",
+                "commit",
+            );
+            ev.repo = Some("org/AcmeBackend".to_string());
+            let eid = repo::upsert_event(&conn, &ev).unwrap();
+            conn.execute(
+                "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+                params![bid, eid],
+            )
+            .unwrap();
+        }
+        for i in 0..5 {
+            let mut ev = Event::minimal(
+                "claude",
+                format!("cl{i}").as_str(),
+                "2026-04-18T09:06:00+00:00",
+                "prompt",
+            );
+            ev.project_path = Some("/home/u/Desktop/Work/acme/backend".to_string());
+            let eid = repo::upsert_event(&conn, &ev).unwrap();
+            conn.execute(
+                "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+                params![bid, eid],
+            )
+            .unwrap();
+        }
+
+        let billing_folder = crate::billing::work_folder_for_block(&conn, bid).unwrap();
+        assert_eq!(
+            billing_folder.as_deref(),
+            Some("AcmeBackend"),
+            "billing bills this block under the repo-derived folder, which \
+             has 6 events vs the claude folder's 5"
+        );
+
+        let summary = stitch_day_summary(&conn, "2026-04-18").unwrap();
+        assert_eq!(summary.blocks.len(), 1);
+        assert_eq!(
+            summary.blocks[0].project_path, None,
+            "the winning folder (AcmeBackend) is repo-derived and has no \
+             row with a project_path, so the summary must show None \
+             rather than a path from a different, losing folder"
+        );
+    }
+
+    #[test]
+    fn day_summary_project_path_agrees_when_claude_folder_wins() {
+        // Mirror of the repo-folder-wins case: when the Claude-derived
+        // folder has more events than the GitHub repo folder, that folder
+        // wins both the billing vote and the day-summary vote, and the
+        // summary's project_path is a real path inside it.
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-18', '2026-04-18T09:00:00+00:00', '2026-04-18T09:30:00+00:00', 1800)",
+            [],
+        )
+        .unwrap();
+        let bid = conn.last_insert_rowid();
+
+        for i in 0..5 {
+            let mut ev = Event::minimal(
+                "github_commit",
+                format!("gh{i}").as_str(),
+                "2026-04-18T09:05:00+00:00",
+                "commit",
+            );
+            ev.repo = Some("org/AcmeBackend".to_string());
+            let eid = repo::upsert_event(&conn, &ev).unwrap();
+            conn.execute(
+                "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+                params![bid, eid],
+            )
+            .unwrap();
+        }
+        for i in 0..6 {
+            let mut ev = Event::minimal(
+                "claude",
+                format!("cl{i}").as_str(),
+                "2026-04-18T09:06:00+00:00",
+                "prompt",
+            );
+            ev.project_path = Some("/home/u/Desktop/Work/acme/backend".to_string());
+            let eid = repo::upsert_event(&conn, &ev).unwrap();
+            conn.execute(
+                "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+                params![bid, eid],
+            )
+            .unwrap();
+        }
+
+        let billing_folder = crate::billing::work_folder_for_block(&conn, bid).unwrap();
+        assert_eq!(
+            billing_folder.as_deref(),
+            Some("backend"),
+            "billing bills this block under the claude-derived folder, \
+             which has 6 events vs the repo folder's 5"
+        );
+
+        let summary = stitch_day_summary(&conn, "2026-04-18").unwrap();
+        assert_eq!(summary.blocks.len(), 1);
+        assert_eq!(
+            summary.blocks[0].project_path.as_deref(),
+            Some("/home/u/Desktop/Work/acme/backend"),
+            "the winning folder (backend) has a real project_path, so the \
+             summary must surface it"
         );
     }
 
