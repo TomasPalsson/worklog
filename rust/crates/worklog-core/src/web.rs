@@ -34,6 +34,31 @@ pub fn bun_log_path(paths: &Paths) -> PathBuf {
     paths.log_dir.join("web.log")
 }
 
+/// True when `bun install` needs to run before a build: either there's
+/// no `node_modules` at all, or a manifest (`package.json` / `bun.lock`)
+/// has been modified since the last install.
+///
+/// A bare "does node_modules exist" check isn't enough. Bun writes each
+/// dependency as a direct child of `node_modules`, which bumps that
+/// directory's own mtime, so comparing manifest mtimes against it
+/// catches the case that actually bites people: a dependency added to
+/// `package.json` after the last install leaves `node_modules` present
+/// but incomplete. That state used to sail past the existence check and
+/// then fail much later as an opaque type error inside `next build`.
+fn node_modules_stale(web_context: &Path) -> bool {
+    let installed =
+        match std::fs::metadata(web_context.join("node_modules")).and_then(|m| m.modified()) {
+            Ok(t) => t,
+            // Missing, or an mtime we can't read — install to be safe.
+            Err(_) => return true,
+        };
+    ["package.json", "bun.lock"].iter().any(|f| {
+        std::fs::metadata(web_context.join(f))
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| t > installed)
+    })
+}
+
 /// Start the Next.js UI as a host-side `bun` process (no Docker).
 ///
 /// `bun run start` requires a build, so we run `bun run build` first
@@ -69,9 +94,10 @@ pub fn bun_up(paths: &Paths, web_context: &Path, port: u16) -> Result<u32> {
         );
     }
 
-    // Run `bun install` if node_modules is missing — otherwise next-build
-    // will explode in a way that's hard to diagnose for a first-time user.
-    if !web_context.join("node_modules").is_dir() {
+    // Run `bun install` if node_modules is missing or has fallen behind
+    // the manifest — otherwise next-build explodes in a way that's hard
+    // to diagnose for a first-time user.
+    if node_modules_stale(web_context) {
         let mut cmd = Command::new("bun");
         cmd.current_dir(web_context)
             .args(["install", "--frozen-lockfile"]);
@@ -283,12 +309,23 @@ pub fn render_compose(paths: &Paths, port: u16, web_context: &Path) -> Result<Pa
 ///   1. `$WORKLOG_WEB_DIR` env override
 ///   2. `<cwd>/web` (most common: running from repo root)
 ///   3. walk up from cwd looking for a `web/Dockerfile`
-///   4. `<paths.data_dir>/web` (cache populated by `web::fetch`)
+///   4. `<paths.data_dir>/web` (cache populated by `web::fetch`) — used
+///      only when `fetch::cache_is_current` says the cache's
+///      `.fetched-version` stamp matches the running binary (with a
+///      24h TTL for dev/rc builds tracking `main`; see
+///      `fetch::MUTABLE_CACHE_TTL_HOURS`). A stale cache falls through
+///      to the next step instead of being served.
 ///   5. `/usr/local/share/worklog/web` (FHS system install)
 ///   6. *auto-fetch* the archive from GitHub into `<paths.data_dir>/web`
 ///
-/// Only step 6 hits the network; the other five are filesystem checks
-/// that complete in microseconds.
+/// Steps 1-5 are filesystem checks that complete in microseconds; step 6
+/// is the only one that normally hits the network. If step 6's fetch
+/// fails and step 4's cache exists (even though stale), we fall back to
+/// serving that stale cache rather than failing outright — an offline
+/// user with a working-but-old UI is better off than one with no UI at
+/// all. This is safe because `fetch_and_extract` only ever mutates the
+/// cache after a freshly-downloaded tree has been fully verified, so a
+/// failed fetch can never have damaged what's already on disk.
 pub fn resolve_web_context(paths: &Paths) -> Result<PathBuf> {
     if let Ok(dir) = std::env::var("WORKLOG_WEB_DIR") {
         let p = PathBuf::from(dir);
@@ -311,9 +348,13 @@ pub fn resolve_web_context(paths: &Paths) -> Result<PathBuf> {
     }
     // Cache populated by a previous `worklog web fetch` (or an earlier
     // auto-fetch). This is the warm path for users who installed via
-    // install.sh and never cloned the repo.
+    // install.sh and never cloned the repo — but only when the cache's
+    // stamp proves it matches the running binary; otherwise a frozen
+    // cache would serve a stale UI forever, including across upgrades.
+    let version = env!("CARGO_PKG_VERSION");
     let cache = fetch::cache_dir(paths);
-    if cache.join("Dockerfile").is_file() {
+    let cache_populated = cache.join("Dockerfile").is_file();
+    if cache_populated && fetch::cache_is_current(paths, version) {
         return std::fs::canonicalize(&cache).context("canonicalising web cache");
     }
     // FHS location for packaged installs (if a distro decides to ship
@@ -322,15 +363,24 @@ pub fn resolve_web_context(paths: &Paths) -> Result<PathBuf> {
     if prefix.join("Dockerfile").is_file() {
         return Ok(prefix);
     }
-    // Nothing on disk — pull from GitHub. One network hit per install
-    // or per upgrade, zero user effort.
-    let version = env!("CARGO_PKG_VERSION");
-    tracing::info!(version, "web: no local tree found, auto-fetching");
-    fetch::fetch_to_cache(paths, version).context(
-        "auto-fetching web/ from the github archive failed. \
-         Set $WORKLOG_WEB_DIR to a local checkout of the worklog repo, \
-         or run `worklog web fetch` manually once you have network.",
-    )
+    // Nothing current on disk — pull from GitHub. One network hit per
+    // install, per upgrade, or per TTL expiry, zero user effort.
+    tracing::info!(version, "web: no current local tree found, auto-fetching");
+    match fetch::fetch_to_cache(paths, version) {
+        Ok(p) => Ok(p),
+        Err(e) if cache_populated => {
+            tracing::warn!(
+                error = %format!("{e:#}"),
+                "web: fetch failed, serving stale cached web tree"
+            );
+            std::fs::canonicalize(&cache).context("canonicalising stale web cache")
+        }
+        Err(e) => Err(e).context(
+            "auto-fetching web/ from the github archive failed. \
+             Set $WORKLOG_WEB_DIR to a local checkout of the worklog repo, \
+             or run `worklog web fetch` manually once you have network.",
+        ),
+    }
 }
 
 /// `docker compose -f <path> up -d` — bring the service up.
@@ -490,6 +540,9 @@ mod tests {
 
     #[test]
     fn resolve_web_context_honours_env_var() {
+        let _guard = fetch::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
         let web = tmp.path().join("mysite");
         std::fs::create_dir_all(&web).unwrap();
@@ -502,22 +555,123 @@ mod tests {
     }
 
     #[test]
-    fn resolve_web_context_falls_back_to_cache_when_populated() {
-        // New behaviour: a populated cache dir rescues a user who isn't
-        // in the repo and hasn't set WORKLOG_WEB_DIR.
+    fn resolve_web_context_falls_back_to_cache_when_populated_and_current() {
+        // A populated cache dir rescues a user who isn't in the repo and
+        // hasn't set WORKLOG_WEB_DIR — but only when its stamp proves it
+        // matches the running binary. No network is involved: the cache
+        // is current, so `resolve_web_context` never needs to fetch.
+        let _guard = fetch::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("WORKLOG_WEB_DIR");
+        // Guarantee no real network is ever reachable even if this test
+        // regresses into hitting the fetch path.
+        std::env::set_var(
+            crate::web::fetch::ENV_ARCHIVE_URL,
+            "http://127.0.0.1:1/unreachable.tar.gz",
+        );
         let tmp = TempDir::new().unwrap();
         let prev = std::env::current_dir().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
         let paths = paths_in(&tmp);
-        // Pre-populate the cache path to simulate a prior fetch.
+        // Pre-populate the cache path with a VALID stamp to simulate a
+        // prior fetch that matches the running binary.
         let cache = fetch::cache_dir(&paths);
         std::fs::create_dir_all(&cache).unwrap();
         std::fs::write(cache.join("Dockerfile"), "FROM bun").unwrap();
+        let version = env!("CARGO_PKG_VERSION");
+        let stamp = format!("{version}\n{}\n", chrono::Utc::now().to_rfc3339());
+        std::fs::write(cache.join(".fetched-version"), stamp).unwrap();
 
         let got = resolve_web_context(&paths).unwrap();
         std::env::set_current_dir(prev).unwrap();
+        std::env::remove_var(crate::web::fetch::ENV_ARCHIVE_URL);
         assert_eq!(got, std::fs::canonicalize(&cache).unwrap());
+    }
+
+    #[test]
+    fn resolve_web_context_falls_back_to_stale_cache_when_refetch_fails() {
+        // The offline-fallback guarantee: a populated-but-stale cache
+        // (wrong version stamp) plus a re-fetch that fails (mocked 500)
+        // must still return Ok(stale cache path), never Err. This only
+        // holds because `fetch_and_extract` never damages `dest` on a
+        // failed fetch.
+        use httpmock::prelude::*;
+
+        let _guard = fetch::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("WORKLOG_WEB_DIR");
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET);
+            then.status(500);
+        });
+        std::env::set_var(
+            crate::web::fetch::ENV_ARCHIVE_URL,
+            format!("{}/fake.tar.gz", server.base_url()),
+        );
+
+        let tmp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let paths = paths_in(&tmp);
+        paths.ensure().unwrap();
+
+        // Populated but stale: wrong version in the stamp.
+        let cache = fetch::cache_dir(&paths);
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("Dockerfile"), "FROM bun # stale\n").unwrap();
+        std::fs::write(cache.join(".fetched-version"), "0.0.1-old\n").unwrap();
+
+        let got = resolve_web_context(&paths);
+        std::env::set_current_dir(prev).unwrap();
+        std::env::remove_var(crate::web::fetch::ENV_ARCHIVE_URL);
+
+        let got = got.expect("stale cache must be served when re-fetch fails");
+        assert_eq!(got, std::fs::canonicalize(&cache).unwrap());
+        // The stale tree itself must be untouched by the failed fetch.
+        assert_eq!(
+            std::fs::read_to_string(cache.join("Dockerfile")).unwrap(),
+            "FROM bun # stale\n"
+        );
+    }
+
+    #[test]
+    fn resolve_web_context_cwd_wins_over_populated_cache() {
+        // A user sitting inside the repo must keep resolving to their
+        // local tree regardless of cache state, even when the cache is
+        // populated (and would otherwise be current).
+        let _guard = fetch::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("WORKLOG_WEB_DIR");
+        std::env::set_var(
+            crate::web::fetch::ENV_ARCHIVE_URL,
+            "http://127.0.0.1:1/unreachable.tar.gz",
+        );
+
+        let tmp = TempDir::new().unwrap();
+        let repo_web = tmp.path().join("web");
+        std::fs::create_dir_all(&repo_web).unwrap();
+        std::fs::write(repo_web.join("Dockerfile"), "FROM local-repo\n").unwrap();
+
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let paths = paths_in(&tmp);
+
+        // Populate a fully current cache too — cwd must still win.
+        let cache = fetch::cache_dir(&paths);
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("Dockerfile"), "FROM cache\n").unwrap();
+        let version = env!("CARGO_PKG_VERSION");
+        let stamp = format!("{version}\n{}\n", chrono::Utc::now().to_rfc3339());
+        std::fs::write(cache.join(".fetched-version"), stamp).unwrap();
+
+        let got = resolve_web_context(&paths).unwrap();
+        std::env::set_current_dir(prev).unwrap();
+        std::env::remove_var(crate::web::fetch::ENV_ARCHIVE_URL);
+        assert_eq!(got, std::fs::canonicalize(&repo_web).unwrap());
     }
 
     #[test]
@@ -527,6 +681,41 @@ mod tests {
         let p = compose_path(&paths);
         assert!(p.starts_with(&paths.data_dir));
         assert!(p.ends_with("docker-compose.yml"));
+    }
+
+    #[test]
+    fn node_modules_stale_covers_missing_and_outdated_installs() {
+        let tmp = TempDir::new().unwrap();
+        let web = tmp.path().join("web");
+        std::fs::create_dir_all(&web).unwrap();
+        std::fs::write(web.join("package.json"), "{}").unwrap();
+
+        // No node_modules at all — must install.
+        assert!(
+            node_modules_stale(&web),
+            "missing node_modules should force an install"
+        );
+
+        // Freshly installed: node_modules newer than the manifest.
+        std::fs::create_dir_all(web.join("node_modules")).unwrap();
+        assert!(
+            !node_modules_stale(&web),
+            "a node_modules newer than the manifest should be considered current"
+        );
+
+        // A dependency gets added afterwards. This is the real-world case
+        // that used to slip through the old `is_dir()` check and then blow
+        // up inside `next build` on a missing module.
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        let manifest = std::fs::File::options()
+            .write(true)
+            .open(web.join("package.json"))
+            .unwrap();
+        manifest.set_modified(later).unwrap();
+        assert!(
+            node_modules_stale(&web),
+            "a package.json newer than node_modules should force a reinstall"
+        );
     }
 
     #[test]
