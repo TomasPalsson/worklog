@@ -177,12 +177,69 @@ fn scheduler_home() -> Result<PathBuf> {
 /// Default command the scheduler runs. In Stage 1 this is still
 /// `worklog collect all` (the Python collectors); Stage 2 swaps it for a
 /// native Rust entrypoint without touching the writer here.
+///
+/// Prefers `current_exe()` over a `$PATH` lookup. The plist stores an
+/// ABSOLUTE path and never revisits it, so whichever `worklog` happened
+/// to be first in `$PATH` at install time is the one the agent runs
+/// forever. On a machine with two installs (`~/.cargo/bin` from a
+/// `cargo install`, `~/.local/bin` from install.sh) that silently pinned
+/// the collector to a binary that `worklog upgrade` never touches —
+/// observed in the wild running 0.10.0 against a 0.11.2 database. The
+/// binary doing the installing is the honest answer.
 pub fn default_command() -> String {
+    if let Ok(p) = std::env::current_exe() {
+        return format!("{} collect all", p.display());
+    }
     if let Some(p) = which_ok("worklog") {
         format!("{} collect all", p.display())
     } else {
         "worklog collect all".to_owned()
     }
+}
+
+/// Outcome of [`repoint_if_installed`], mirroring
+/// [`crate::daemon_service::RestartOutcome`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepointOutcome {
+    /// The agent was rewritten to point at `binary` and reloaded.
+    Repointed,
+    /// Already pointed at `binary` — nothing to do.
+    AlreadyCurrent,
+    /// No scheduler unit installed. Not an error.
+    NotInstalled,
+    /// Platform has no scheduler integration.
+    Unsupported,
+}
+
+/// Re-point the collect agent at `binary` and reload it.
+///
+/// Called after an upgrade swaps the binary. The daemon is supervised
+/// and gets cycled by `restart_if_running`, but the collect agent stores
+/// an absolute path in its unit file — if that path is a DIFFERENT
+/// install than the one being upgraded, it keeps running old code
+/// against the new database indefinitely.
+///
+/// Preserves the installed interval; only the command path changes.
+pub fn repoint_if_installed(binary: &Path) -> Result<RepointOutcome> {
+    if Platform::current() == Platform::Unsupported {
+        return Ok(RepointOutcome::Unsupported);
+    }
+    let current = status()?;
+    if !current.installed {
+        return Ok(RepointOutcome::NotInstalled);
+    }
+    let want = format!("{} collect all", binary.display());
+    if current.command.as_deref() == Some(want.as_str()) {
+        return Ok(RepointOutcome::AlreadyCurrent);
+    }
+    // Keep whatever cadence the user chose; only the path moves.
+    let interval = current
+        .interval_secs
+        .map(Interval)
+        .unwrap_or(Interval::FIFTEEN_MIN);
+    install(interval, &want)?;
+    Ok(RepointOutcome::Repointed)
 }
 
 fn which_ok(bin: &str) -> Option<PathBuf> {
@@ -589,6 +646,73 @@ mod tests {
         assert!(!s2.installed);
         assert!(!plist.exists());
         restore();
+    }
+
+    /// The plist stores an absolute path forever, so the command must
+    /// name the binary that is doing the installing — not whichever
+    /// `worklog` happens to win a `$PATH` race. Two installs on one box
+    /// (`~/.cargo/bin` + `~/.local/bin`) otherwise pin the collector to
+    /// a binary `worklog upgrade` never touches.
+    #[test]
+    fn default_command_uses_the_running_binary_not_path() {
+        let cmd = default_command();
+        let exe = std::env::current_exe().unwrap();
+        assert!(
+            cmd.starts_with(&exe.display().to_string()),
+            "expected {cmd:?} to start with the running exe {exe:?}"
+        );
+        assert!(cmd.ends_with(" collect all"), "unexpected command: {cmd}");
+    }
+
+    #[test]
+    fn repoint_reports_not_installed_when_no_unit() {
+        let tmp = tempdir().unwrap();
+        let _g = redirect(tmp.path());
+        let out = repoint_if_installed(Path::new("/somewhere/worklog")).unwrap();
+        restore();
+        assert_eq!(out, RepointOutcome::NotInstalled);
+    }
+
+    /// The upgrade case: an agent pinned to a stale install gets moved
+    /// onto the upgraded binary, and its cadence survives.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn repoint_moves_stale_binary_path_and_keeps_interval() {
+        let tmp = tempdir().unwrap();
+        let _g = redirect(tmp.path());
+        // Simulate the observed wild state: agent pinned to an old
+        // cargo install while the upgrade lands in ~/.local/bin.
+        install(Interval::HOURLY, "/Users/x/.cargo/bin/worklog collect all").unwrap();
+
+        let new_binary = Path::new("/Users/x/.local/bin/worklog");
+        let out = repoint_if_installed(new_binary).unwrap();
+        let st = status().unwrap();
+        restore();
+
+        assert_eq!(out, RepointOutcome::Repointed);
+        assert_eq!(
+            st.command.as_deref(),
+            Some("/Users/x/.local/bin/worklog collect all")
+        );
+        assert_eq!(st.interval_secs, Some(3600), "cadence must be preserved");
+    }
+
+    /// Re-running an upgrade must not churn the unit file.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn repoint_is_a_noop_when_already_current() {
+        let tmp = tempdir().unwrap();
+        let _g = redirect(tmp.path());
+        let bin = Path::new("/Users/x/.local/bin/worklog");
+        install(
+            Interval::FIFTEEN_MIN,
+            "/Users/x/.local/bin/worklog collect all",
+        )
+        .unwrap();
+
+        let out = repoint_if_installed(bin).unwrap();
+        restore();
+        assert_eq!(out, RepointOutcome::AlreadyCurrent);
     }
 
     #[cfg(target_os = "linux")]

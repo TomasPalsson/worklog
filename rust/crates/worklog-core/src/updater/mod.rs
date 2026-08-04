@@ -93,6 +93,66 @@ pub struct UpdateReport {
     pub daemon_restart: Option<crate::daemon_service::RestartOutcome>,
 }
 
+/// Result of [`refresh_services`] — the long-lived helpers that had to be
+/// brought onto the new binary after a swap.
+#[derive(Debug, Default)]
+pub struct ServiceRefresh {
+    /// Whether the bun web runner was cycled onto the new version.
+    pub web_restart: Option<crate::web::WebRestartOutcome>,
+    /// Whether the collect agent's unit file was re-pointed at the
+    /// upgraded binary.
+    pub schedule_repoint: Option<crate::schedule::RepointOutcome>,
+}
+
+/// Bring every long-lived resource onto `binary` after a successful swap.
+///
+/// Deliberately NOT called from [`run_update`]. `run_update` is unit
+/// tested with fake binaries in tempdirs, and these calls mutate real
+/// user state — the launchd plist and the running web server. Wiring
+/// them into `run_update` meant `cargo test` rewrote the developer's own
+/// collect agent to point at a tempdir that no longer existed and killed
+/// their web UI. The CLI is the only caller, so a test can never trip it.
+///
+/// Both steps are best-effort: the binary is already in place, so a
+/// failure here leaves a stale helper the user can cycle by hand — it
+/// must never fail the upgrade.
+///
+/// The daemon is not handled here; it is supervised and already cycled
+/// inside [`run_update`] via `daemon_service::restart_if_running`, which
+/// guards itself against test runs.
+pub fn refresh_services(binary: &Path) -> ServiceRefresh {
+    let web_restart = match crate::paths::Paths::resolve()
+        .and_then(|p| crate::web::restart_if_running(&p, binary))
+    {
+        Ok(o) => Some(o),
+        Err(e) => {
+            tracing::warn!(
+                error = %format!("{e:#}"),
+                "post-upgrade web restart failed — the review UI is still \
+                 serving the previous version. Cycle it with \
+                 `worklog web down && worklog web up`."
+            );
+            None
+        }
+    };
+    let schedule_repoint = match crate::schedule::repoint_if_installed(binary) {
+        Ok(o) => Some(o),
+        Err(e) => {
+            tracing::warn!(
+                error = %format!("{e:#}"),
+                "post-upgrade schedule re-point failed — the collect agent \
+                 may still run an older binary. Re-run \
+                 `worklog schedule install`."
+            );
+            None
+        }
+    };
+    ServiceRefresh {
+        web_restart,
+        schedule_repoint,
+    }
+}
+
 /// Run the whole update flow: fetch manifest → verify → pick asset →
 /// download → apply delta (if any) → decompress → swap with rollback.
 pub fn run_update(req: &UpdateRequest) -> Result<UpdateReport> {
