@@ -3777,6 +3777,16 @@ fn cmd_self_update<W: Write>(
     }
 
     let report = upd::run_update(&req)?;
+
+    // Bring the rest of the install onto the new binary. Only meaningful
+    // once the swap actually landed: a dry-run changed nothing, and a
+    // rollback means the old binary is still the live one.
+    let refresh = if report.dry_run || report.rolled_back || report.install.is_none() {
+        upd::ServiceRefresh::default()
+    } else {
+        upd::refresh_services(&req.current_binary)
+    };
+
     if json {
         writeln!(
             out,
@@ -3788,7 +3798,9 @@ fn cmd_self_update<W: Write>(
                 "asset_bytes":    report.asset_bytes,
                 "dry_run":        report.dry_run,
                 "rolled_back":    report.rolled_back,
-                "daemon_restart": report.daemon_restart,
+                "daemon_restart":    report.daemon_restart,
+                "web_restart":       refresh.web_restart,
+                "schedule_repoint":  refresh.schedule_repoint,
             }))?
         )?;
     } else if report.rolled_back {
@@ -3811,31 +3823,48 @@ fn cmd_self_update<W: Write>(
     } else {
         writeln!(
             out,
-            "✓ updated {} → {} ({} bytes{}){}",
+            "✓ updated {} → {} ({} bytes{})",
             report.from,
             report.to,
             report.asset_bytes,
             if report.used_delta { ", delta" } else { "" },
-            restart_suffix(report.daemon_restart.as_ref()),
         )?;
+        for line in refreshed_lines(&report, &refresh) {
+            writeln!(out, "  {line}")?;
+        }
     }
     Ok(())
 }
 
-/// Render a short phrase describing whether the supervised daemon was
-/// cycled. Appended to the "updated" line so the user knows without
-/// having to check `worklog daemon status` after the fact.
-fn restart_suffix(outcome: Option<&worklog_core::daemon_service::RestartOutcome>) -> &'static str {
+/// One line per long-lived resource the upgrade touched, so the user can
+/// see at a glance that nothing is left on the old version. Anything
+/// that wasn't installed or isn't running is omitted rather than shown
+/// as a non-event.
+fn refreshed_lines(report: &upd::UpdateReport, refresh: &upd::ServiceRefresh) -> Vec<String> {
     use worklog_core::daemon_service::RestartOutcome;
-    match outcome {
-        Some(RestartOutcome::Restarted) => " · daemon restarted",
+    use worklog_core::schedule::RepointOutcome;
+    use worklog_core::web::WebRestartOutcome;
+
+    let mut lines = Vec::new();
+    match report.daemon_restart {
+        Some(RestartOutcome::Restarted) => lines.push("· daemon restarted".into()),
         Some(RestartOutcome::NotRunning) => {
-            " · daemon service not running — start with `worklog daemon`"
+            lines.push("· daemon service not running — start with `worklog daemon`".into())
         }
-        Some(RestartOutcome::NotInstalled) => "",
-        Some(RestartOutcome::Unsupported) => "",
-        None => "",
+        _ => {}
     }
+    match refresh.web_restart {
+        Some(WebRestartOutcome::Restarted) => {
+            lines.push("· web UI restarted on the new version".into())
+        }
+        // Deliberately silent when nothing was running: starting a web
+        // UI the user hadn't started is not this command's business.
+        Some(WebRestartOutcome::NotRunning) | None => {}
+    }
+    if let Some(RepointOutcome::Repointed) = refresh.schedule_repoint {
+        lines.push("· collect agent re-pointed at the upgraded binary".into());
+    }
+    lines
 }
 
 fn cmd_dev_keygen<W: Write>(

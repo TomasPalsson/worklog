@@ -207,6 +207,58 @@ pub fn bun_status(paths: &Paths) -> WebStatus {
     }
 }
 
+/// Outcome of [`restart_if_running`], mirroring
+/// [`crate::daemon_service::RestartOutcome`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebRestartOutcome {
+    /// The bun runner was stopped and started again on the new binary.
+    Restarted,
+    /// Nothing was running — starting one is the user's call.
+    NotRunning,
+}
+
+/// Default port `worklog web up` binds. Used when restarting a runner
+/// whose port we can't recover (the pid file stores only a pid).
+pub const DEFAULT_PORT: u16 = 3333;
+
+/// Cycle the bun web runner so it serves the upgraded version.
+///
+/// A plain process restart is NOT enough here, and that is the whole
+/// reason this exists: [`resolve_web_context`] picks the web tree by
+/// comparing the cache stamp against `env!("CARGO_PKG_VERSION")` — a
+/// COMPILE-TIME constant. During `worklog upgrade` the running process
+/// is still the OLD binary, so resolving in-process would re-select the
+/// old tree and rebuild the same UI. We therefore shell out to
+/// `new_binary`, which reports the new version, finds its cache stale,
+/// and fetches the matching tree.
+///
+/// `bun_up` refuses to double-start, so this is stop-then-start rather
+/// than a signal.
+pub fn restart_if_running(paths: &Paths, new_binary: &Path) -> Result<WebRestartOutcome> {
+    if !bun_status(paths).running {
+        return Ok(WebRestartOutcome::NotRunning);
+    }
+    bun_down(paths)?;
+    let status = Command::new(new_binary)
+        .args([
+            "web",
+            "up",
+            "--no-open",
+            // The daemon is cycled separately by the updater and may
+            // still be coming back up; don't block the restart on it.
+            "--no-daemon",
+            "--port",
+            &DEFAULT_PORT.to_string(),
+        ])
+        .status()
+        .context("spawning `worklog web up` from the upgraded binary")?;
+    if !status.success() {
+        anyhow::bail!("`worklog web up` exited {status}");
+    }
+    Ok(WebRestartOutcome::Restarted)
+}
+
 /// Best-effort teardown of the pre-bun Docker container. Returns true
 /// only if a container was actually stopped.
 ///
