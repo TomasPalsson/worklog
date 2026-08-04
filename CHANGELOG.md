@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.0](https://github.com/TomasPalsson/worklog/compare/v0.11.2...v0.12.0) (2026-08-04)
+
+
+### Features
+
+* **upgrade:** bring the web UI and collect agent onto the new binary ([#43](https://github.com/TomasPalsson/worklog/issues/43)) ([d1fc7dc](https://github.com/TomasPalsson/worklog/commit/d1fc7dc7bca94862617c3ea3e3d1695e09ea98b8))
+
+
+### Bug Fixes
+
+* **daemon:** stop holding the sqlite mutex across the claude shell-out ([#41](https://github.com/TomasPalsson/worklog/issues/41)) ([5d16542](https://github.com/TomasPalsson/worklog/commit/5d16542a16a119bad8467683b17fe928c05fc419))
+
 ## [0.11.2](https://github.com/TomasPalsson/worklog/compare/v0.11.1...v0.11.2) (2026-07-31)
 
 
