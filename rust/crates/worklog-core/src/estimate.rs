@@ -219,32 +219,58 @@ impl ModelInvoker for ClaudeSubprocess {
             .spawn()
             .context("spawning `claude`")?;
 
-        // Write prompt, then close stdin so the process can finish.
+        // Drain both pipes on their own threads, starting BEFORE we wait.
+        // A piped child that outgrows the OS pipe buffer (64 KiB on macOS)
+        // blocks forever on write until the parent reads; the poll loop
+        // below only reads once the child has already exited, so reading
+        // there alone would deadlock every large response into the timeout.
+        let mut out_pipe = child.stdout.take().context("`claude` stdout missing")?;
+        let mut err_pipe = child.stderr.take().context("`claude` stderr missing")?;
+        let out_handle = std::thread::spawn(move || {
+            use std::io::Read;
+            let mut s = String::new();
+            let _ = out_pipe.read_to_string(&mut s);
+            s
+        });
+        let err_handle = std::thread::spawn(move || {
+            use std::io::Read;
+            let mut s = String::new();
+            let _ = err_pipe.read_to_string(&mut s);
+            s
+        });
+
+        // Write prompt, then close stdin so the process can finish. On a
+        // write failure the child is already running, so kill and reap it
+        // rather than leaking a live `claude` for the daemon's lifetime.
         if let Some(mut stdin) = child.stdin.take() {
             use std::io::Write;
-            stdin.write_all(user.as_bytes())?;
+            if let Err(e) = stdin.write_all(user.as_bytes()) {
+                drop(stdin);
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(anyhow::Error::from(e).context("writing prompt to `claude` stdin"));
+            }
         }
 
-        // Simple wall-clock timeout via a thread (claude -p is fast on
-        // haiku; 60s is generous). If it hangs, kill.
+        // Simple wall-clock timeout (claude -p is fast on haiku; 60s is
+        // generous). If it hangs, kill.
         let wait_start = std::time::Instant::now();
         loop {
             match child.try_wait()? {
                 Some(status) => {
-                    let mut stdout = String::new();
-                    let mut stderr = String::new();
-                    use std::io::Read;
-                    if let Some(mut o) = child.stdout.take() {
-                        o.read_to_string(&mut stdout).ok();
-                    }
-                    if let Some(mut e) = child.stderr.take() {
-                        e.read_to_string(&mut stderr).ok();
-                    }
+                    let stdout = out_handle.join().unwrap_or_default();
+                    let stderr = err_handle.join().unwrap_or_default();
                     if !status.success() {
+                        // `claude -p --output-format json` reports its own
+                        // failures (prompt too long, rate limit, auth) as
+                        // JSON on STDOUT and leaves stderr empty, so a
+                        // stderr-only message logs a bare "exited 1 — "
+                        // and throws the actual reason away. Carry both.
                         anyhow::bail!(
-                            "claude -p exited {} — {}",
+                            "claude -p exited {} — stderr: {} | stdout: {}",
                             status.code().unwrap_or(-1),
-                            stderr.chars().take(500).collect::<String>()
+                            stderr.trim().chars().take(500).collect::<String>(),
+                            stdout.trim().chars().take(500).collect::<String>(),
                         );
                     }
                     return parse_response(&stdout);
@@ -252,6 +278,10 @@ impl ModelInvoker for ClaudeSubprocess {
                 None => {
                     if wait_start.elapsed().as_secs() > SUBPROCESS_TIMEOUT_SECS {
                         let _ = child.kill();
+                        // kill() only signals; without wait() the corpse is
+                        // never reaped and every timeout leaks a zombie for
+                        // as long as the daemon lives.
+                        let _ = child.wait();
                         anyhow::bail!("claude -p timed out after {SUBPROCESS_TIMEOUT_SECS}s");
                     }
                     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -645,6 +675,62 @@ pub fn estimate_block_with<I: ModelInvoker>(
     invoker: &I,
     model: &str,
 ) -> Result<EstimatedBlock> {
+    let prep = prepare_block_estimate(conn, block_id, commits)?;
+    let reply = invoke_block_estimate(&prep, invoker, model)?;
+    commit_block_estimate(conn, &prep, reply)
+}
+
+/// Hard cap on how many of a block's events we forward to the LLM.
+///
+/// Commits have had [`MAX_COMMITS_IN_PROMPT`] since forever; events had
+/// no bound at all. In the wild that let block 1275 carry 7,700 events
+/// (~95 KiB of titles + details) into a single prompt, which `claude -p`
+/// rejects with a non-zero exit — and because the daemon held the sqlite
+/// mutex across that shell-out, the whole daemon stalled behind it.
+///
+/// Past the cap we sample at an even stride instead of truncating to the
+/// first N: the tail of a block describes the work just as well as its
+/// head, and `&events[..N]` would summarise only the opening minutes of
+/// an eight-hour block.
+const MAX_EVENTS_IN_PROMPT: usize = 400;
+
+/// Everything [`invoke_block_estimate`] needs, read from sqlite up front
+/// so the caller can drop its database lock for the whole LLM round
+/// trip. Fields are private: callers only ferry this between phases.
+pub struct BlockEstimatePrep {
+    block: BlockRow,
+    open_tickets: Vec<Candidate>,
+    literals: Vec<String>,
+    user_msg: String,
+}
+
+impl BlockEstimatePrep {
+    /// Id of the block this prep was built for.
+    pub fn block_id(&self) -> i64 {
+        self.block.id
+    }
+}
+
+/// A model reply that has already been parsed and validated, ready to be
+/// written by [`commit_block_estimate`].
+pub struct BlockEstimateReply {
+    description: String,
+    minutes: u32,
+    ticket: Option<String>,
+}
+
+/// Phase 1 of a single-block estimate: read every input the model needs.
+///
+/// Split out from [`estimate_block_with`] so a caller holding a shared
+/// connection (the daemon holds exactly one, behind a mutex) can release
+/// it before [`invoke_block_estimate`] blocks for up to
+/// [`SUBPROCESS_TIMEOUT_SECS`]. Holding it across the shell-out stalls
+/// every other request on the process.
+pub fn prepare_block_estimate(
+    conn: &Connection,
+    block_id: i64,
+    commits: &[crate::git::CommitEntry],
+) -> Result<BlockEstimatePrep> {
     // Load the block row. We need started_at / ended_at / is_personal up
     // front so we can refuse personal before paying for an LLM round trip.
     let block: BlockRow = conn
@@ -679,6 +765,9 @@ pub fn estimate_block_with<I: ModelInvoker>(
 
     let open_tickets = load_open_tickets(conn)?;
     let events = load_block_events(conn, block.id)?;
+    // Literals come from the FULL event set, never the capped slice: they
+    // gate ticket validation below, and dropping one because it happened
+    // to fall between stride samples would silently lose a real ticket.
     let literals = collect_literal_matches(&events);
     // Cap the commit slice we ship to the LLM. The first 50 chronological
     // commits are plenty of signal for a single block; an unbounded slice
@@ -689,9 +778,41 @@ pub fn estimate_block_with<I: ModelInvoker>(
     } else {
         commits
     };
-    let user_msg = build_user_message(&block, &events, &open_tickets, &literals, capped_commits);
+    let capped_events: Vec<EventRow> = if events.len() > MAX_EVENTS_IN_PROMPT {
+        let stride = events.len().div_ceil(MAX_EVENTS_IN_PROMPT);
+        events.iter().step_by(stride).cloned().collect()
+    } else {
+        events
+    };
+    let user_msg = build_user_message(
+        &block,
+        &capped_events,
+        &open_tickets,
+        &literals,
+        capped_commits,
+    );
 
-    let reply = invoker.invoke(SYSTEM_PROMPT, &user_msg, &response_schema(), model)?;
+    Ok(BlockEstimatePrep {
+        block,
+        open_tickets,
+        literals,
+        user_msg,
+    })
+}
+
+/// Phase 2: the LLM round trip. Deliberately takes no [`Connection`] —
+/// this is the call that can block for [`SUBPROCESS_TIMEOUT_SECS`], and
+/// the type signature is what stops a future caller from holding a
+/// database lock across it.
+pub fn invoke_block_estimate<I: ModelInvoker>(
+    prep: &BlockEstimatePrep,
+    invoker: &I,
+    model: &str,
+) -> Result<BlockEstimateReply> {
+    let block = &prep.block;
+    let block_id = block.id;
+
+    let reply = invoker.invoke(SYSTEM_PROMPT, &prep.user_msg, &response_schema(), model)?;
     let parsed: Reply = serde_json::from_value(reply.clone())
         .with_context(|| format!("bad reply shape: {reply}"))?;
 
@@ -706,18 +827,48 @@ pub fn estimate_block_with<I: ModelInvoker>(
     let raw_minutes = round_up_minutes(
         parsed
             .minutes
-            .unwrap_or_else(|| fallback_block_minutes(&block)),
+            .unwrap_or_else(|| fallback_block_minutes(block)),
     );
     let minutes: u32 = u32::try_from(raw_minutes)
-        .unwrap_or_else(|_| u32::try_from(fallback_block_minutes(&block)).unwrap_or(0));
+        .unwrap_or_else(|_| u32::try_from(fallback_block_minutes(block)).unwrap_or(0));
 
     // Ticket validation mirrors `estimate_day_with`: prefer Claude's
     // pick; if it's null, fall back to the block's inferred ticket only
     // when that key is itself a real candidate.
-    let mut ticket = validate_ticket(parsed.jira_issue.as_deref(), &open_tickets, &literals);
+    let mut ticket = validate_ticket(
+        parsed.jira_issue.as_deref(),
+        &prep.open_tickets,
+        &prep.literals,
+    );
     if ticket.is_none() && block.jira_issue.is_some() {
-        ticket = validate_ticket(block.jira_issue.as_deref(), &open_tickets, &literals);
+        ticket = validate_ticket(
+            block.jira_issue.as_deref(),
+            &prep.open_tickets,
+            &prep.literals,
+        );
     }
+
+    Ok(BlockEstimateReply {
+        description,
+        minutes,
+        ticket,
+    })
+}
+
+/// Phase 3: persist the validated reply. Re-acquires the database only
+/// after the LLM call has finished.
+pub fn commit_block_estimate(
+    conn: &Connection,
+    prep: &BlockEstimatePrep,
+    reply: BlockEstimateReply,
+) -> Result<EstimatedBlock> {
+    let block = &prep.block;
+    let block_id = block.id;
+    let BlockEstimateReply {
+        description,
+        minutes,
+        ticket,
+    } = reply;
 
     // Catch the deleted-during-LLM-call race: a Sparkles click holds no
     // lock during the 30-60s claude-p shell-out, so another browser tab
@@ -2435,6 +2586,104 @@ mod tests {
         assert_eq!(block.jira_issue.as_deref(), Some("PROJ-1"));
         assert_eq!(block.estimated_by.as_deref(), Some("claude_p"));
         assert_eq!(block.duration_seconds, 30 * 60);
+    }
+
+    /// Seed `n` linked events on `bid`, numbering each title so the test
+    /// can tell which survived sampling.
+    fn seed_events(conn: &Connection, bid: i64, n: usize) {
+        for i in 0..n {
+            let eid = repo::upsert_event(
+                conn,
+                &Event::minimal(
+                    "claude",
+                    format!("evt-{i}"),
+                    "2026-04-18T09:00:00+00:00",
+                    format!("event number {i}"),
+                ),
+            )
+            .unwrap();
+            link(conn, bid, eid);
+        }
+    }
+
+    /// Regression: an unbounded event list is what wedged the daemon in
+    /// the wild. Block 1275 carried 7,700 events (~95 KiB) into a single
+    /// `claude -p` prompt, which exited non-zero — and because the daemon
+    /// held its sqlite mutex across the shell-out, every other request
+    /// stalled behind it. Commits were capped; events were not.
+    #[test]
+    fn prepare_block_estimate_caps_events_in_prompt() {
+        let conn = open_memory().unwrap();
+        let bid = insert_block(&conn);
+        seed_events(&conn, bid, MAX_EVENTS_IN_PROMPT * 3);
+
+        let prep = prepare_block_estimate(&conn, bid, &[]).unwrap();
+        let payload: Value = serde_json::from_str(&prep.user_msg).unwrap();
+        let events = payload["events"].as_array().unwrap();
+
+        assert!(
+            events.len() <= MAX_EVENTS_IN_PROMPT,
+            "prompt carried {} events, cap is {MAX_EVENTS_IN_PROMPT}",
+            events.len()
+        );
+        assert!(!events.is_empty(), "capping must not empty the prompt");
+    }
+
+    /// The cap samples at a stride rather than truncating, so the prompt
+    /// still describes the END of a long block, not just its first
+    /// minutes. Guards against a future `&events[..N]` "simplification".
+    #[test]
+    fn prepare_block_estimate_samples_across_the_whole_block() {
+        let conn = open_memory().unwrap();
+        let bid = insert_block(&conn);
+        let total = MAX_EVENTS_IN_PROMPT * 3;
+        seed_events(&conn, bid, total);
+
+        let prep = prepare_block_estimate(&conn, bid, &[]).unwrap();
+        let payload: Value = serde_json::from_str(&prep.user_msg).unwrap();
+        let rendered = payload["events"].to_string();
+
+        // Something from the last third must survive; a head-truncating
+        // cap would keep only `event number 0..MAX`.
+        let late = format!("event number {}", total - 3);
+        let late_present =
+            (total - 6..total).any(|i| rendered.contains(&format!("event number {i}")));
+        assert!(
+            late_present,
+            "no event from the block's tail reached the prompt (looked for ~{late})"
+        );
+    }
+
+    /// Ticket literals are collected from the FULL event set, never the
+    /// sampled slice. A key mentioned once, in an event that happens to
+    /// fall between stride samples, must still validate — otherwise
+    /// capping would silently drop real ticket assignments.
+    #[test]
+    fn prepare_block_estimate_keeps_literals_from_uncapped_events() {
+        let conn = open_memory().unwrap();
+        let bid = insert_block(&conn);
+        seed_events(&conn, bid, MAX_EVENTS_IN_PROMPT * 3);
+
+        // One extra event, last in the ordering, carrying the only
+        // mention of this key anywhere in the block.
+        let eid = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                "claude",
+                "evt-tail-ticket",
+                "2026-04-18T09:29:59+00:00",
+                "wrapping up ZED-4242 before the break",
+            ),
+        )
+        .unwrap();
+        link(&conn, bid, eid);
+
+        let prep = prepare_block_estimate(&conn, bid, &[]).unwrap();
+        assert!(
+            prep.literals.iter().any(|l| l == "ZED-4242"),
+            "literal from a non-sampled event was lost: {:?}",
+            prep.literals
+        );
     }
 
     /// B3: a `manual` block IS overwritten by per-block estimate. The

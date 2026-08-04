@@ -1210,23 +1210,42 @@ async fn estimate_block(
         Vec::new()
     };
 
-    // Re-acquire the connection on the blocking pool: the LLM provider's
-    // reqwest client is !Send and must live on the same thread as the
-    // sqlite connection (same dance run_sync does).
-    let outcome = with_conn(state, move |c| {
-        let provider = estimate::resolve_provider()?;
-        match provider {
-            estimate::ProviderChoice::ClaudeSubprocess => estimate::estimate_block_with(
-                c,
-                bid,
-                &commits,
+    // Three phases, and the split is load-bearing: `with_conn` holds
+    // `state.conn` — the daemon's ONE sqlite connection — for as long as
+    // its closure runs. Running the estimate inside a single `with_conn`
+    // held that mutex across a `claude -p` shell-out worth up to 60s, so
+    // every other request (including the web UI's `/days/:day`, which
+    // gives up after 10s) queued behind it and the daemon looked dead.
+    // Read under the lock, release it for the LLM call, take it again to
+    // write.
+    let prep = with_conn(state.clone(), move |c| {
+        estimate::prepare_block_estimate(c, bid, &commits)
+    })
+    .await?;
+
+    // No lock held here. `prep` is moved into the blocking closure and
+    // handed back out so the write phase can still use it — borrowing it
+    // across the thread boundary wouldn't compile. The LLM provider's
+    // reqwest client is !Send, so it is built and dropped entirely inside
+    // this closure and never crosses an await.
+    let (prep, reply) = tokio::task::spawn_blocking(move || {
+        let reply = match estimate::resolve_provider()? {
+            estimate::ProviderChoice::ClaudeSubprocess => estimate::invoke_block_estimate(
+                &prep,
                 &estimate::ClaudeSubprocess,
                 estimate::DEFAULT_MODEL,
             ),
             estimate::ProviderChoice::LiteLLM(inv) => {
-                estimate::estimate_block_with(c, bid, &commits, &inv, estimate::DEFAULT_MODEL)
+                estimate::invoke_block_estimate(&prep, &inv, estimate::DEFAULT_MODEL)
             }
-        }
+        }?;
+        Ok::<_, anyhow::Error>((prep, reply))
+    })
+    .await
+    .context("spawn_blocking")??;
+
+    let outcome = with_conn(state, move |c| {
+        estimate::commit_block_estimate(c, &prep, reply)
     })
     .await?;
 
