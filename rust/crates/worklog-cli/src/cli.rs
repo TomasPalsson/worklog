@@ -14,8 +14,9 @@ use worklog_core::{
         gcal as gcal_col, github as gh, jira as jira_col, slack as slack_col, tempo as tempo_col,
     },
     daemon as daemon_mod, db, estimate, hook, hook_run, http, infer,
+    laya::LayaClassifier,
     paths::Paths,
-    personal as personal_mod, schedule, secrets, skill as skill_mod, updater as upd,
+    personal as personal_mod, routing, schedule, secrets, skill as skill_mod, updater as upd,
     web as web_mod,
 };
 
@@ -1545,6 +1546,20 @@ fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bo
             Ok(r) => reports.push(r),
             Err(msg) if !json => style::info(out, &format!("slack {msg}"))?,
             Err(_) => (),
+        }
+    }
+
+    if matches!(target, CollectTarget::All) {
+        let classifier = LayaClassifier::new();
+        let threshold = daemon_mod::configured_route_threshold();
+        let mut d = since;
+        while d <= today {
+            if let Err(e) = routing::route_day(&conn, d, &classifier, threshold) {
+                if !json {
+                    style::info(out, &format!("routing {d}: {e}"))?;
+                }
+            }
+            d += chrono::Duration::days(1);
         }
     }
 

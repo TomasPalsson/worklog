@@ -74,6 +74,7 @@ use crate::billing_registry;
 use crate::browser_ingest;
 use crate::collectors::{jira, tempo};
 use crate::git::{self, CommitEntry};
+use crate::laya::LayaClassifier;
 use crate::personal;
 use crate::routing;
 use crate::routing_contract;
@@ -1299,7 +1300,24 @@ async fn run_infer(
 ) -> Result<Json<InferResponse>, ApiError> {
     let day = NaiveDate::parse_from_str(&body.day, "%Y-%m-%d")
         .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{}`: {e}", body.day)))?;
+
+    // Route before building blocks (design decision 4, PR #41): three
+    // phases, mirroring `run_estimate`, so the sqlite mutex is never held
+    // across the (slow, network) classifier call.
+    let (rule_hits, pending) =
+        with_conn(state.clone(), move |c| routing::load_pending(c, day)).await?;
+    let guesses = tokio::task::spawn_blocking(move || {
+        routing::decide(
+            &pending,
+            &LayaClassifier::new(),
+            configured_route_threshold(),
+        )
+    })
+    .await
+    .context("spawn_blocking")?;
+
     let (count, minutes) = with_conn(state, move |c| {
+        routing::commit_labels(c, &rule_hits, &guesses)?;
         let events = infer::load_day_events(c, day)?;
         let blocks = infer::build_blocks(events);
         let total: i64 = blocks.iter().map(|b| b.duration_seconds).sum();
@@ -1547,7 +1565,7 @@ fn configured_work_hours() -> browser_ingest::WorkHours {
 /// Minimum model confidence to accept a routing guess, from
 /// `ROUTE_THRESHOLD_KEY` via envfile. Out-of-range or unparseable falls
 /// back to `DEFAULT_ROUTE_THRESHOLD`.
-fn configured_route_threshold() -> f64 {
+pub fn configured_route_threshold() -> f64 {
     crate::envfile::read(routing_contract::ROUTE_THRESHOLD_KEY)
         .and_then(|s| s.trim().parse::<f64>().ok())
         .filter(|v| (0.0..=1.0).contains(v))
@@ -3105,6 +3123,84 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn infer_routes_rule_hits_before_building_blocks() {
+        // T007: /infer must route unsorted browser/Slack events (rule hits
+        // only here — the laya helper is never running under test) before
+        // clustering, so a rule-matched event's project_path lands on the
+        // block it joins in the same request.
+        let conn = open_memory().unwrap();
+        billing_registry::upsert_folder(
+            &conn,
+            &billing_registry::FolderMap {
+                id: None,
+                folder: "X".into(),
+                customer: None,
+                verkefni: None,
+                billable: true,
+            },
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO routing_rules (kind, pattern, folder) VALUES ('domain', 'aws.tomasari.is', 'X')",
+            [],
+        )
+        .unwrap();
+        // 5 events a minute apart so the resulting block clears
+        // MIN_BLOCK_MINUTES (a single rule-matched event would land under
+        // the 5-minute floor and never form a block at all).
+        for i in 0..5 {
+            let ts = format!("2026-04-20T09:0{i}:00+00:00");
+            let eid = repo::upsert_event(
+                &conn,
+                &Event::minimal(
+                    routing_contract::SOURCE_FIREFOX,
+                    format!("e{i}"),
+                    &ts,
+                    "AWS Console",
+                ),
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE events SET details = 'https://aws.tomasari.is/console' WHERE id = ?1",
+                params![eid],
+            )
+            .unwrap();
+        }
+
+        let state = state_from_conn(conn);
+        let app = router(state.clone());
+        let body = Body::from(serde_json::to_vec(&json!({"day": "2026-04-20"})).unwrap());
+        let resp = app
+            .oneshot(
+                Request::post("/infer")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let guard = state.conn.lock().await;
+        let (label_origin, project_path): (Option<String>, String) = guard
+            .query_row(
+                "SELECT e.label_origin, e.project_path
+                   FROM events e
+                   JOIN block_events be ON be.event_id = e.id
+                   JOIN blocks b ON b.id = be.block_id
+                  WHERE b.day = '2026-04-20'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(label_origin.as_deref(), Some("rule"));
+        assert_eq!(
+            project_path,
+            format!("{}/X", crate::billing::work_prefix().unwrap())
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
