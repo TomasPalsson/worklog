@@ -33,3 +33,14 @@
   `CollectTarget`) so the new Shell/Reflog branches and the CLI-name-parsing
   test (`collect_targets_include_shell_and_reflog`) share one place to
   check "does this target run that source" instead of re-deriving it.
+
+- 2026-09-23: L4 (shell/reflog events join blocks) done — **no infer.rs
+  production code changed**, only the two tests were added.
+  `build_blocks`/`split_by_project` already key off `InferEvent.source`/
+  `project_path` generically; since fish.rs and reflog.rs (L1/L2) already
+  populate `project_path` on `shell`/`git_reflog` events the same way
+  every other collector does, the existing gap-timeout + project-split
+  logic clusters and splits them for free. `infer.rs` is already ~1200
+  lines (pre-existing, flagged by size-guard) — out of scope for this
+  item since the loop's file allowlist is `infer.rs` only and no
+  production line changed.

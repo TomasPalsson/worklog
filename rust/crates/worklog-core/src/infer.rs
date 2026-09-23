@@ -1186,4 +1186,62 @@ mod tests {
         assert_eq!(stored[0].description.as_deref(), Some("reviewed"));
         assert_eq!(stored[0].estimated_by.as_deref(), Some("manual"));
     }
+
+    #[test]
+    fn shell_and_reflog_events_form_a_project_block() {
+        let project = "/Users/dev/Desktop/Work/vitinn-infra";
+        let mut events: Vec<InferEvent> = (0..10)
+            .map(|i| ev_project(9, i * 2, "shell", project))
+            .collect();
+        events.push(ev_project(9, 19, "git_reflog", project));
+        let blocks = build_blocks(events);
+        assert_eq!(
+            blocks.len(),
+            1,
+            "shell + reflog events under one project must form a single block"
+        );
+        let dur_min = blocks[0].duration_seconds / 60;
+        assert!(
+            (15..=25).contains(&dur_min),
+            "block duration should be 15-25 min, got {dur_min}"
+        );
+        assert_eq!(blocks[0].dominant_project_path().as_deref(), Some(project));
+    }
+
+    #[test]
+    fn reflog_checkout_switches_project() {
+        let repo_a = "/Users/dev/Desktop/Work/repo-a";
+        let repo_b = "/Users/dev/Desktop/Projects/repo-b";
+        let mut events: Vec<InferEvent> = vec![
+            ev_project(9, 40, "shell", repo_a),
+            ev_project(9, 45, "shell", repo_a),
+            ev_project(9, 50, "shell", repo_a),
+            ev_project(9, 55, "shell", repo_a),
+            ev_project(10, 0, "shell", repo_a),
+            ev_project(10, 5, "shell", repo_a),
+            ev_project(10, 10, "shell", repo_a),
+        ];
+        events.push(ev_project(10, 14, "git_reflog", repo_b));
+        events.extend([
+            ev_project(10, 16, "shell", repo_b),
+            ev_project(10, 18, "shell", repo_b),
+            ev_project(10, 20, "shell", repo_b),
+            ev_project(10, 22, "shell", repo_b),
+        ]);
+
+        let blocks = build_blocks(events);
+        assert_eq!(
+            blocks.len(),
+            2,
+            "reflog checkout into a different repo must split the block"
+        );
+        assert!(
+            blocks[0].ended_at <= at(10, 15),
+            "repo A's block should end by 10:15, ended at {:?}",
+            blocks[0].ended_at
+        );
+        assert_eq!(blocks[0].dominant_project_path().as_deref(), Some(repo_a));
+        assert_eq!(blocks[1].dominant_project_path().as_deref(), Some(repo_b));
+        assert!(blocks[1].started_at >= at(10, 14));
+    }
 }

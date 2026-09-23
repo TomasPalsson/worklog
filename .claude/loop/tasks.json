@@ -37,7 +37,7 @@
         "rust/crates/worklog-core/src/infer.rs"
       ],
       "verify": "out=$(cargo test --manifest-path rust/Cargo.toml -p worklog-core infer::tests:: 2>&1); echo \"$out\" | grep -q 'shell_and_reflog_events_form_a_project_block ... ok' && echo \"$out\" | grep -q 'reflog_checkout_switches_project ... ok'",
-      "passes": false
+      "passes": true
     },
     {
       "id": "L5",
