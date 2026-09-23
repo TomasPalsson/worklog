@@ -362,6 +362,75 @@ fn label_event_does_not_partial_commit_when_always_rule_fails() {
 }
 
 #[test]
+fn label_event_rejects_domain_rule_on_non_firefox_event() {
+    let conn = open_memory().unwrap();
+    pin(&conn, "somefolder", None);
+    let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+    let eid = repo::upsert_event(
+        &conn,
+        &Event::minimal(SOURCE_SLACK, "e1", "2026-04-20T09:00:00+00:00", "chan"),
+    )
+    .unwrap();
+    // Free-text Slack message content that happens to contain a URL must
+    // not become a domain rule — that rule would then silently apply to
+    // unrelated Firefox browsing history.
+    set_details(&conn, eid, "check http://internal.tool/status please");
+
+    let err = label_event(
+        &conn,
+        eid,
+        &LabelRequest {
+            folder: "somefolder".into(),
+            always: Some(RuleKind::Domain),
+        },
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("firefox"), "err = {err}");
+
+    let rules = list_rules(&conn).unwrap();
+    assert!(
+        rules.is_empty(),
+        "a domain rule must not be created from a non-firefox event"
+    );
+
+    let routed = routed_for_day(&conn, day).unwrap();
+    let ev = routed.iter().find(|r| r.id == eid).unwrap();
+    assert_eq!(
+        ev.folder, None,
+        "label_event must not partially commit the fix label when the always-rule step fails"
+    );
+}
+
+#[test]
+fn label_event_rejects_slack_channel_rule_on_non_slack_event() {
+    let conn = open_memory().unwrap();
+    pin(&conn, "somefolder", None);
+    let eid = repo::upsert_event(
+        &conn,
+        &Event::minimal(SOURCE_FIREFOX, "e1", "2026-04-20T09:00:00+00:00", "general"),
+    )
+    .unwrap();
+    set_details(&conn, eid, "https://example.com");
+
+    let err = label_event(
+        &conn,
+        eid,
+        &LabelRequest {
+            folder: "somefolder".into(),
+            always: Some(RuleKind::SlackChannel),
+        },
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("slack"), "err = {err}");
+
+    let rules = list_rules(&conn).unwrap();
+    assert!(
+        rules.is_empty(),
+        "a slack_channel rule must not be created from a non-slack event"
+    );
+}
+
+#[test]
 fn container_narrows_options() {
     let conn = open_memory().unwrap();
     upsert_customer(

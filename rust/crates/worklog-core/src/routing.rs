@@ -220,15 +220,27 @@ pub fn route_day(
     commit_labels(conn, &rule_hits, &guesses)
 }
 
-/// What a hard rule of `kind` keys on, read off `row`.
+/// What a hard rule of `kind` keys on, read off `row`. `kind` must match
+/// `row.source` (Domain⇔firefox, SlackChannel⇔slack) — `kind_matches`
+/// only re-checks this at apply-time, so a rule created against the wrong
+/// source would silently misfire on unrelated events of its real source.
 fn rule_pattern(row: &EventRow, kind: RuleKind) -> Result<String> {
     match kind {
-        RuleKind::Domain => row
-            .details
-            .as_deref()
-            .and_then(domain_of)
-            .ok_or_else(|| anyhow::anyhow!("event has no URL to key a domain rule on")),
-        RuleKind::SlackChannel => Ok(row.title.clone()),
+        RuleKind::Domain => {
+            if row.source != SOURCE_FIREFOX {
+                anyhow::bail!("domain rules only apply to firefox events");
+            }
+            row.details
+                .as_deref()
+                .and_then(domain_of)
+                .ok_or_else(|| anyhow::anyhow!("event has no URL to key a domain rule on"))
+        }
+        RuleKind::SlackChannel => {
+            if row.source != SOURCE_SLACK {
+                anyhow::bail!("slack_channel rules only apply to slack events");
+            }
+            Ok(row.title.clone())
+        }
         RuleKind::Container => row
             .container
             .clone()
