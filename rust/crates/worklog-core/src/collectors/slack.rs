@@ -210,7 +210,8 @@ fn fetch_user_name(client: &Client, base_url: &str, token: &str, user_id: &str) 
     let profile = body.user.map(|u| u.profile).unwrap_or_default();
     Ok(profile
         .real_name
-        .or(profile.display_name)
+        .filter(|s| !s.is_empty())
+        .or_else(|| profile.display_name.filter(|s| !s.is_empty()))
         .unwrap_or_else(|| user_id.to_string()))
 }
 

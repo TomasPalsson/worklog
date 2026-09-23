@@ -355,6 +355,96 @@ fn collect_titles_dm_falls_back_to_display_name() {
 }
 
 #[test]
+fn collect_titles_dm_skips_empty_real_name_for_display_name() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/search.messages");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "messages": {
+                "matches": [
+                    {
+                        "channel": { "id": "D1", "name": "U999", "is_im": true },
+                        "ts": "1776513600.000100",
+                        "text": "hey"
+                    }
+                ]
+            }
+        }));
+    });
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/users.info")
+            .query_param("user", "U999");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "user": { "profile": { "real_name": "", "display_name": "janed" } }
+        }));
+    });
+
+    let conn = open_memory().unwrap();
+    let since = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+    let until = NaiveDate::from_ymd_opt(2026, 4, 19).unwrap();
+    collect_with(
+        &conn,
+        &auth(),
+        since,
+        until,
+        &http::client().unwrap(),
+        &server.base_url(),
+    )
+    .unwrap();
+
+    let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+    assert_eq!(events[0].title, "janed");
+}
+
+#[test]
+fn collect_titles_dm_falls_back_to_id_when_both_names_empty() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/search.messages");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "messages": {
+                "matches": [
+                    {
+                        "channel": { "id": "D1", "name": "U999", "is_im": true },
+                        "ts": "1776513600.000100",
+                        "text": "hey"
+                    }
+                ]
+            }
+        }));
+    });
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/users.info")
+            .query_param("user", "U999");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "user": { "profile": { "real_name": "", "display_name": "" } }
+        }));
+    });
+
+    let conn = open_memory().unwrap();
+    let since = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+    let until = NaiveDate::from_ymd_opt(2026, 4, 19).unwrap();
+    collect_with(
+        &conn,
+        &auth(),
+        since,
+        until,
+        &http::client().unwrap(),
+        &server.base_url(),
+    )
+    .unwrap();
+
+    let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+    assert_eq!(events[0].title, "U999");
+}
+
+#[test]
 fn collect_titles_dm_falls_back_to_id_on_lookup_failure_and_continues() {
     let server = MockServer::start();
     server.mock(|when, then| {
