@@ -95,8 +95,18 @@ function buildStripData(blocks: StripBlock[], gaps: StripGap[], window_: TrackWi
   };
 }
 
-export function DayStrip({ blocks, gaps }: Props) {
+export function DayStrip({ blocks: allBlocks, gaps: allGaps }: Props) {
+  // Work-only: personal time never shows — not as a segment, a legend row or
+  // by stretching the time axis — and only gaps inside the work day remain.
+  const blocks = allBlocks.filter((b) => !b.is_personal);
   const window_ = computeTrackWindow(blocks);
+  const gaps = window_
+    ? allGaps.filter(
+        (g) =>
+          new Date(g.started_at).getTime() >= window_.startMs &&
+          new Date(g.ended_at).getTime() <= window_.endMs,
+      )
+    : [];
   const [expanded, toggleExpanded] = useExpanded();
   const [focusKey, setFocusKey] = useState<string | null>(null);
   const [openTip, setOpenTip] = useState<string | null>(null);

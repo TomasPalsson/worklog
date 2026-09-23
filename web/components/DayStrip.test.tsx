@@ -32,6 +32,24 @@ function makeBlock(overrides: Partial<StripBlock> & { id: number }): StripBlock 
   };
 }
 
+describe("DayStrip is work-only", () => {
+  it("leaves personal blocks off the strip, the legend and the time axis", () => {
+    render(
+      <DayStrip
+        blocks={[
+          makeBlock({ id: 1, started_at: at(9, 0), ended_at: at(10, 0), project_path: "/x/alpha" }),
+          makeBlock({ id: 2, started_at: at(19, 0), ended_at: at(21, 0), project_path: null, is_personal: true }),
+        ]}
+        gaps={[]}
+      />,
+    );
+    expect(screen.queryByText(/personal/i)).toBeNull();
+    expect(screen.queryByText(/other/i)).toBeNull();
+    expect(screen.queryByText("20:00")).toBeNull();
+    expect(screen.getByText(/alpha/)).toBeTruthy();
+  });
+});
+
 describe("DayStrip expand toggle", () => {
   it("shows a single bar by default, swaps to one lane per project on Expand, and back on Collapse", () => {
     const blocks: StripBlock[] = [
