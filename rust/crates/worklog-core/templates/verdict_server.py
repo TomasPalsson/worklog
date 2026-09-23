@@ -30,7 +30,12 @@ ENGINE = None
 
 
 def split_groups(options):
-    return [options[i : i + MAX_GROUP_SIZE] for i in range(0, len(options), MAX_GROUP_SIZE)]
+    groups = [options[i : i + MAX_GROUP_SIZE] for i in range(0, len(options), MAX_GROUP_SIZE)]
+    # A Choice needs at least 2 options: borrow one from the previous full group.
+    if len(groups) > 1 and len(groups[-1]) == 1:
+        groups[-1] = groups[-2][-1:] + groups[-1]
+        groups[-2] = groups[-2][:-1]
+    return groups
 
 
 def merge_groups(group_probabilities):
@@ -69,9 +74,23 @@ def _load_engine():
 
 
 def classify(state, options):
-    from rlcd import Choice, Option
+    from rlcd import Choice, Noul, Option
 
     context = json.dumps(state)
+    if len(options) == 1:
+        # Choice needs 2+ options, so a lone candidate is asked as a true/false proposition.
+        proposition = Noul(
+            id="0",
+            proposition=f"This work activity belongs to the project {options[0]}.",
+            semantics="conditional_on_sufficient_evidence_v2",
+        )
+        probabilities = ENGINE.evaluate(context, [proposition]).results[0].probabilities
+        return (
+            options[0],
+            probabilities.get("true", 0.0),
+            probabilities.get("false", 0.0),
+            probabilities.get(INSUFFICIENT_EVIDENCE_ID, 0.0),
+        )
     queries = [
         Choice(
             id=str(index),
@@ -129,6 +148,11 @@ def self_test():
     groups = split_groups(options)
     assert [len(group) for group in groups] == [24, 20]
     assert sorted(option for group in groups for option in group) == sorted(options)
+    assert [len(group) for group in split_groups(options[:25])] == [23, 2]
+    assert [len(group) for group in split_groups(options[:2])] == [2]
+    grouped = split_groups([f"project-{i}" for i in range(49)])
+    assert [len(group) for group in grouped] == [24, 23, 2]
+    assert [option for group in grouped for option in group] == [f"project-{i}" for i in range(49)]
 
     winner, probability, runner_up, abstain = merge_groups(
         [
