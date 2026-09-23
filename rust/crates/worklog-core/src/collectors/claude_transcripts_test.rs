@@ -87,9 +87,21 @@ fn counts_only_lines_the_owner_typed() {
         )
     };
     let lines = [
-        base(r#","origin":{"kind":"human"},"promptSource":"typed""#, "typed", r#""fix the bug""#),
-        base(r#","origin":{"kind":"task-notification"}"#, "notif", r#""<task-notification>done</task-notification>""#),
-        base(r#","entrypoint":"sdk-cli","origin":{"kind":"human"}"#, "headless", r#""estimate this block""#),
+        base(
+            r#","origin":{"kind":"human"},"promptSource":"typed""#,
+            "typed",
+            r#""fix the bug""#,
+        ),
+        base(
+            r#","origin":{"kind":"task-notification"}"#,
+            "notif",
+            r#""<task-notification>done</task-notification>""#,
+        ),
+        base(
+            r#","entrypoint":"sdk-cli","origin":{"kind":"human"}"#,
+            "headless",
+            r#""estimate this block""#,
+        ),
         base(r#","isMeta":true"#, "meta", r#""Caveat: local command""#),
         base("", "old-tag", r#""<command-name>/clear</command-name>""#),
         base("", "old-plain", r#""plain prompt from an older version""#),
@@ -100,7 +112,10 @@ fn counts_only_lines_the_owner_typed() {
     let since = NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
     let until = NaiveDate::from_ymd_opt(2100, 1, 1).unwrap();
     let report = collect_from_dir(&conn, tmp.path(), since, until).unwrap();
-    assert_eq!(report.events_written, 2, "only the typed prompt and the old plain prompt count");
+    assert_eq!(
+        report.events_written, 2,
+        "only the typed prompt and the old plain prompt count"
+    );
     let ids: Vec<String> = conn
         .prepare("SELECT source_id FROM events ORDER BY source_id")
         .unwrap()
@@ -108,7 +123,10 @@ fn counts_only_lines_the_owner_typed() {
         .unwrap()
         .map(Result::unwrap)
         .collect();
-    assert_eq!(ids, vec!["s1:old-plain".to_string(), "s1:typed".to_string()]);
+    assert_eq!(
+        ids,
+        vec!["s1:old-plain".to_string(), "s1:typed".to_string()]
+    );
 }
 
 #[test]

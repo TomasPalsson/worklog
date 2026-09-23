@@ -195,7 +195,11 @@ fn is_owner_typed(line: &Value) -> bool {
     {
         return false;
     }
-    match line.get("origin").and_then(|o| o.get("kind")).and_then(Value::as_str) {
+    match line
+        .get("origin")
+        .and_then(|o| o.get("kind"))
+        .and_then(Value::as_str)
+    {
         Some(kind) => kind == "human",
         None => !matches!(
             line.get("message").and_then(|m| m.get("content")),
