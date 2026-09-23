@@ -22,9 +22,9 @@ pub const DEFAULT_WORK_HOURS: &str = "Mon-Fri 09:00-17:00";
 /// Loopback address of the optional Verdict classifier helper process.
 pub const CLASSIFIER_ADDR: &str = "127.0.0.1:9324";
 /// Envfile key: how many times higher than the abstain score the winner
-/// must be, e.g. `1.05`.
+/// must be, e.g. `1.20`.
 pub const ABSTAIN_MARGIN_KEY: &str = "WORKLOG_ROUTE_ABSTAIN_MARGIN";
-pub const DEFAULT_ABSTAIN_MARGIN: f64 = 1.05;
+pub const DEFAULT_ABSTAIN_MARGIN: f64 = 1.20;
 /// Envfile key: how many times higher than the runner-up the winner must
 /// be, e.g. `1.10`.
 pub const RUNNER_UP_RATIO_KEY: &str = "WORKLOG_ROUTE_RUNNER_UP_RATIO";

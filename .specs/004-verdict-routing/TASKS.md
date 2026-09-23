@@ -10,6 +10,7 @@ Spec: spec.md · Design: design.md · Base: 21f964f · Route: dispatch · Test: 
 | B4 (P0) | Given the helper is unreachable, errors, or names a non-project, when routing runs, then the event stays unsorted | T002, T003 | verdict::tests::unreachable_is_none, routing_test::unsorted_when_choice_not_an_option |
 | B5 (P0) | Given 44 projects, when the helper decides, then any of the 44 can win | T002 | verdict_server.py --self-test |
 | B6 (P0) | Given a ratio of 0.9 or 5.5, when POSTed to /settings, then 400 and the stored value is unchanged | T005 | daemon::tests::settings_rejects_out_of_range_ratio |
+| B8 (P0) | Given a Slack message linking github.com/<org>/vitinn-infra/pull/802, when routing runs, then it is filed to vitinn-infra with origin rule and the model is not asked | T007 | routing_test::exact_repo_mention_files_by_rule |
 | B7 (P1) | Given `worklog verdict serve`, when the uv command is built, then it carries the pinned git rev and model revision | T004 | cli verdict_serve_args_pin_revisions |
 
 ## Phase 1 — Verdict decides
@@ -20,6 +21,7 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml && ! grep -rqi lay
 - [ ] T003 [P] Relative filing rule (B1, B2, B3, B4) — files: rust/crates/worklog-core/src/routing.rs, rust/crates/worklog-core/src/routing_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core routing` — after: T001
 - [ ] T004 [P] Verdict serve and status commands (B7) — files: rust/crates/worklog-cli/src/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-cli verdict` — after: T001
 - [ ] T005 [P] Daemon ratio settings (B6) — files: rust/crates/worklog-core/src/daemon.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core daemon::` — after: T001
+- [ ] T007 Exact repo or path mention files by rule (FR-10) — files: rust/crates/worklog-core/src/routing.rs, rust/crates/worklog-core/src/routing_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core routing` — after: T003
 
 ## Phase 2 — Settings and a real day
 Goal: the owner tunes both ratios in Settings, and a real day's events are filed with 0 wrong filings.

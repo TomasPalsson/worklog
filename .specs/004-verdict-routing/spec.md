@@ -134,3 +134,17 @@ The owner opens the day page and finds browser tabs and Slack messages filed und
 | runner-up ratio | how many times higher than the runner-up the winner must be; default ×1.10 |
 | filed | the event gets a project with origin `guess` |
 | Unsorted | a firefox/slack event with no project |
+
+## Amendment 2026-09-23
+
+Real-day run through the daemon (keys serialised in sorted order, the model repo's published
+calibrator) showed the ratios cannot separate a wrong pick ("The Morning Checkup", claude.ai →
+claude-3p-config, ×1.16 vs abstain) from right ones (×1.06–×1.23). Every right pick named the repo
+outright. Changes:
+- FR-10 (MUST): an event whose title or details name exactly one project as
+  `github.com/<org>/<project>` or `Desktop/Work/<project>` is filed by rule (origin `rule`) before
+  the model is asked; two different named projects → no match.
+- DEFAULT abstain margin raises from ×1.05 to ×1.20 (runner-up stays ×1.10). On 2026-09-23: 4 right
+  by FR-10, 0 filed by the model, 0 wrong.
+- A lone candidate option is never guessed (measured: the model favours a lone named option
+  whatever the text says).

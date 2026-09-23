@@ -18,7 +18,7 @@ Declarations T001 puts in `routing_contract.rs` (replacing `ROUTE_THRESHOLD_KEY`
 ```rust
 pub const CLASSIFIER_ADDR: &str = "127.0.0.1:9324";
 pub const ABSTAIN_MARGIN_KEY: &str = "WORKLOG_ROUTE_ABSTAIN_MARGIN";
-pub const DEFAULT_ABSTAIN_MARGIN: f64 = 1.05;
+pub const DEFAULT_ABSTAIN_MARGIN: f64 = 1.20;
 pub const RUNNER_UP_RATIO_KEY: &str = "WORKLOG_ROUTE_RUNNER_UP_RATIO";
 pub const DEFAULT_RUNNER_UP_RATIO: f64 = 1.10;
 /// Both ratios must lie in this closed range.
@@ -105,4 +105,10 @@ THE FIVE   (1) NEVER invent an error type, field name or result shape that alrea
 ## Contract for T006 — Web ratio settings
 NAMES      `abstain_margin`, `runner_up_ratio` (SettingsView/SettingsUpdate), `classifier_reachable`; UI text says "Verdict", never "Laya".
 CALLS      two number inputs (step 0.01, min 1, max 5) replace the route-threshold input; a blank input sends nothing for that field.
+THE FIVE   (1) NEVER invent an error type, field name or result shape that already exists in the contract — copy the literal declaration. (2) NEVER type a boundary function's parameter as the narrow type; the narrow type is only ever the RETURN of a fallible function. (3) NEVER add a mode, flag or extra required parameter to a shared abstraction the design handed you — duplicate it inside your task and say so. (4) NEVER refactor or rename outside the task's `files:` list — a change to an unlisted file is a defect. (5) NEVER abbreviate inside an identifier. Spell the word.
+
+## Contract for T007 — Exact repo or path mention files by rule
+CONTRACT   rust/crates/worklog-core/src/routing_contract.rs — import `LabelOrigin`, `DEFAULT_ABSTAIN_MARGIN` (now 1.20). A type you need that is not there is an escalation.
+CALLS      private `fn named_project(row: &EventRow, options: &[String]) -> Option<String>` in routing.rs: scan `row.title` and `row.details` for `github.com/<org>/<key>` and `Desktop/Work/<key>` where `<key>` is followed by `/`, `|`, `>`, `)`, whitespace, a quote, `` ` `` or end of text, and `<key>` is in `options` (exact, case-sensitive). Exactly one distinct key → Some(key); zero or two+ → None. In `load_pending`, after `matching_rule` and before building a `Pending`, a `Some(key)` goes to `rule_hits` (so it is committed with origin `rule`, never sent to the classifier). Update B1's test values so they still clear the new 1.20 default (e.g. abstain 0.060) — the spec amendment changed the default; do not weaken any other assertion.
+TESTS      exact_repo_mention_files_by_rule (PR link → vitinn-infra, classifier never called — assert with a classifier that panics), path_mention_files_by_rule (`cd ~/Desktop/Work/vitinn-infra`), two_named_projects_is_no_match, prefix_is_not_a_match (`vitinn-infra-old` must not match `vitinn-infra`), unknown_repo_is_no_match.
 THE FIVE   (1) NEVER invent an error type, field name or result shape that already exists in the contract — copy the literal declaration. (2) NEVER type a boundary function's parameter as the narrow type; the narrow type is only ever the RETURN of a fallible function. (3) NEVER add a mode, flag or extra required parameter to a shared abstraction the design handed you — duplicate it inside your task and say so. (4) NEVER refactor or rename outside the task's `files:` list — a change to an unlisted file is a defect. (5) NEVER abbreviate inside an identifier. Spell the word.

@@ -1,0 +1,1070 @@
+e751ddb test(daemon): T005 assert in-range ratios are read back by configured_route_rule
+6faf2db feat(verdict): T002 helper script and client (probability, runner_up, abstain)
+03d9a70 feat(daemon): T005 ratio settings (abstain_margin + runner_up_ratio)
+2909ea6 feat(routing): T003 relative filing rule (abstain margin + runner-up ratio)
+27a12db feat(cli): T004 verdict serve pins git rev + huggingface_hub
+
+ rust/crates/worklog-cli/src/cli.rs                 |  65 ++++++++--
+ rust/crates/worklog-core/src/daemon.rs             | 132 +++++++++++++++++----
+ rust/crates/worklog-core/src/routing.rs            |  17 +--
+ rust/crates/worklog-core/src/routing_test.rs       | 118 ++++++++++++++----
+ rust/crates/worklog-core/src/verdict.rs            |  22 ++--
+ .../worklog-core/templates/verdict_server.py       | 127 +++++++++++++++++---
+ 6 files changed, 388 insertions(+), 93 deletions(-)
+
+diff --git a/rust/crates/worklog-cli/src/cli.rs b/rust/crates/worklog-cli/src/cli.rs
+index f9bed35..7c87da1 100644
+--- a/rust/crates/worklog-cli/src/cli.rs
++++ b/rust/crates/worklog-cli/src/cli.rs
+@@ -367,22 +367,22 @@ pub enum DaemonCmd {
+     },
+     /// Remove the service unit (and stop the supervisor-managed process).
+     Uninstall,
+     /// Report whether the service unit is installed and where it lives.
+     Status,
+ }
+ 
+ #[derive(Subcommand, Debug)]
+ pub enum VerdictCmd {
+     /// Foreground: write the embedded helper script to the data dir and
+-    /// run it via `uv run --with verdict python <script>`, bound to
+-    /// 127.0.0.1 only.
++    /// run it via `uv run --with <VERDICT_GIT_URL>@<VERDICT_GIT_REV>
++    /// --with huggingface_hub python <script>`, bound to 127.0.0.1 only.
+     Serve,
+     /// Report whether the helper is reachable on `CLASSIFIER_ADDR`.
+     Status,
+ }
+ 
+ #[derive(Subcommand, Debug)]
+ pub enum DevCmd {
+     /// Generate a fresh Ed25519 release keypair and print the public
+     /// key constant to paste into worklog-core::updater::pubkey.
+     Keygen {
+@@ -3456,38 +3456,69 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
+ 
+         let unix_res = daemon_mod::serve_at(&path, router).await;
+         if let Some(t) = tcp_task {
+             t.abort();
+         }
+         prune_task.abort();
+         unix_res
+     })
+ }
+ 
++/// `uv run` args to launch the helper script pinned to the Verdict git
++/// revision + huggingface_hub, so a test can assert the pins never
++/// drift to a loose package name.
++fn verdict_uv_args(script_path: &std::path::Path) -> Vec<String> {
++    vec![
++        "run".to_string(),
++        "--with".to_string(),
++        format!(
++            "{}@{}",
++            worklog_core::routing_contract::VERDICT_GIT_URL,
++            worklog_core::routing_contract::VERDICT_GIT_REV
++        ),
++        "--with".to_string(),
++        "huggingface_hub".to_string(),
++        "python".to_string(),
++        script_path.display().to_string(),
++    ]
++}
++
+ /// Write the embedded helper script to `<data>/verdict_server.py` and run
+-/// it in the foreground via `uv run --with verdict`. Blocks until the
+-/// child exits; `Ctrl-C` kills it like any other foreground process.
++/// it in the foreground via `uv run --with <VERDICT_GIT_URL>@<VERDICT_GIT_REV>
++/// --with huggingface_hub`. Blocks until the child exits; `Ctrl-C` kills it
++/// like any other foreground process.
+ fn cmd_verdict_serve() -> Result<()> {
+     let paths = Paths::resolve()?;
+     paths.ensure()?;
+     let script_path = paths.data_dir.join("verdict_server.py");
+     std::fs::write(&script_path, worklog_core::verdict::SERVER_SCRIPT)
+         .with_context(|| format!("writing {}", script_path.display()))?;
+     eprintln!(
+         "→ verdict http://{}",
+         worklog_core::routing_contract::CLASSIFIER_ADDR
+     );
+     let status = std::process::Command::new("uv")
+-        .args(["run", "--with", "verdict", "python"])
+-        .arg(&script_path)
++        .args(verdict_uv_args(&script_path))
++        .env(
++            "WORKLOG_VERDICT_MODEL_DIR",
++            paths.data_dir.join("verdict-model"),
++        )
++        .env(
++            "WORKLOG_VERDICT_MODEL_REPO",
++            worklog_core::routing_contract::VERDICT_MODEL_REPO,
++        )
++        .env(
++            "WORKLOG_VERDICT_MODEL_REVISION",
++            worklog_core::routing_contract::VERDICT_MODEL_REVISION,
++        )
+         .status()
+-        .context("spawning `uv run --with verdict python` — is uv installed?")?;
++        .context("spawning `uv run` — is uv installed?")?;
+     if !status.success() {
+         anyhow::bail!("verdict server exited {status}");
+     }
+     Ok(())
+ }
+ 
+ fn cmd_verdict_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
+     let reachable = worklog_core::daemon_service::is_running(
+         worklog_core::routing_contract::CLASSIFIER_ADDR,
+         std::time::Duration::from_secs(2),
+@@ -4382,11 +4413,31 @@ mod tests {
+             ),
+         ];
+         for (requested, cutoff) in pairs {
+             let result = effective_since(requested, cutoff);
+             assert!(
+                 result >= cutoff,
+                 "effective_since({requested}, {cutoff}) = {result}, earlier than cutoff"
+             );
+         }
+     }
++
++    /// B7: `worklog verdict serve` must carry the pinned Verdict git
++    /// revision and huggingface_hub dependency, not a loose package name.
++    #[test]
++    fn verdict_serve_args_pin_revisions() {
++        let args = verdict_uv_args(std::path::Path::new("/tmp/verdict_server.py"));
++        assert_eq!(
++            args,
++            vec![
++                "run".to_string(),
++                "--with".to_string(),
++                "git+https://github.com/Heman10x-NGU/Verdict-open-jev@30f15564821626ca5c1ad5b2638c4eb7078787dd"
++                    .to_string(),
++                "--with".to_string(),
++                "huggingface_hub".to_string(),
++                "python".to_string(),
++                "/tmp/verdict_server.py".to_string(),
++            ]
++        );
++    }
+ }
+diff --git a/rust/crates/worklog-core/src/daemon.rs b/rust/crates/worklog-core/src/daemon.rs
+index ab25096..12413ec 100644
+--- a/rust/crates/worklog-core/src/daemon.rs
++++ b/rust/crates/worklog-core/src/daemon.rs
+@@ -1475,25 +1475,28 @@ pub struct SettingsView {
+     /// Day-of-month the billing cycle starts. Mirrors
+     /// `crate::purge::configured_cycle_start_day`; default 20.
+     pub cycle_start_day: u32,
+     /// Last day-of-month the just-closed cycle can still take hours.
+     /// Mirrors `crate::purge::configured_close_day`; default 23.
+     pub close_day: u32,
+     /// Editable work-hours window for browser heartbeat ingest, e.g.
+     /// `Mon-Fri 09:00-17:00`. Mirrors `WORK_HOURS_KEY` via envfile;
+     /// defaults to `DEFAULT_WORK_HOURS`.
+     pub work_hours: String,
+-    /// Minimum model confidence (0.0-1.0) to accept a routing guess.
++    /// How many times higher than the abstain score the winner must be.
+     /// Mirrors `ABSTAIN_MARGIN_KEY` via envfile; defaults to
+-    /// `DEFAULT_ABSTAIN_MARGIN`. T005 replaces this with the two Verdict
+-    /// ratios.
+-    pub route_threshold: f64,
++    /// `DEFAULT_ABSTAIN_MARGIN`.
++    pub abstain_margin: f64,
++    /// How many times higher than the runner-up the winner must be.
++    /// Mirrors `RUNNER_UP_RATIO_KEY` via envfile; defaults to
++    /// `DEFAULT_RUNNER_UP_RATIO`.
++    pub runner_up_ratio: f64,
+ }
+ 
+ /// Token-like keys whose value must never be serialised to the browser.
+ /// Everything else (emails, base URLs, account ids, usernames, the
+ /// estimator provider choice, model names) is safe to echo so the form
+ /// can show what's configured.
+ fn is_sensitive_secret(key: &str) -> bool {
+     matches!(
+         key,
+         "jira_api_token"
+@@ -1519,33 +1522,35 @@ fn current_settings() -> Result<SettingsView> {
+             let stored = secrets::get(k).ok().flatten().filter(|s| !s.is_empty());
+             let sensitive = is_sensitive_secret(k);
+             SettingField {
+                 key: k,
+                 present: stored.is_some(),
+                 sensitive,
+                 value: if sensitive { None } else { stored },
+             }
+         })
+         .collect();
++    let rule = configured_route_rule();
+     Ok(SettingsView {
+         personal: PersonalPatterns {
+             work: file.work,
+             personal: file.personal,
+         },
+         secrets,
+         timezone: crate::tz::configured_tz().unwrap_or_default(),
+         personal_config_path: cfg_path.map(|p| p.display().to_string()),
+         prune_enabled: crate::purge::pruning_enabled(),
+         cycle_start_day: crate::purge::configured_cycle_start_day(),
+         close_day: crate::purge::configured_close_day(),
+         work_hours: configured_work_hours_raw(),
+-        route_threshold: configured_route_rule().abstain_margin,
++        abstain_margin: rule.abstain_margin,
++        runner_up_ratio: rule.runner_up_ratio,
+     })
+ }
+ 
+ /// Raw `WORK_HOURS_KEY` envfile value, or `DEFAULT_WORK_HOURS` when unset.
+ fn configured_work_hours_raw() -> String {
+     crate::envfile::read(routing_contract::WORK_HOURS_KEY)
+         .unwrap_or_else(|| routing_contract::DEFAULT_WORK_HOURS.to_owned())
+ }
+ 
+ /// Parsed work-hours window for heartbeat ingest. An unparseable stored
+@@ -1557,25 +1562,50 @@ fn configured_work_hours() -> browser_ingest::WorkHours {
+         warn!(
+             "{}={raw:?} invalid ({e}); falling back to default",
+             routing_contract::WORK_HOURS_KEY
+         );
+         browser_ingest::WorkHours::parse(routing_contract::DEFAULT_WORK_HOURS)
+             .expect("DEFAULT_WORK_HOURS must parse")
+     })
+ }
+ 
+ /// The abstain-margin/runner-up-ratio rule a routing guess must clear.
+-/// Returns the defaults for now; T005 reads both envfile keys.
++/// Reads both envfile keys independently; an unparseable or
++/// out-of-`RATIO_RANGE` stored value falls back to that key's default
++/// and emits a `warn!` naming the key and the fallback, mirroring
++/// `purge::configured_cycle_day`'s handling of a bad pruner setting.
+ pub fn configured_route_rule() -> RouteRule {
+     RouteRule {
+-        abstain_margin: routing_contract::DEFAULT_ABSTAIN_MARGIN,
+-        runner_up_ratio: routing_contract::DEFAULT_RUNNER_UP_RATIO,
++        abstain_margin: configured_ratio(
++            routing_contract::ABSTAIN_MARGIN_KEY,
++            routing_contract::DEFAULT_ABSTAIN_MARGIN,
++        ),
++        runner_up_ratio: configured_ratio(
++            routing_contract::RUNNER_UP_RATIO_KEY,
++            routing_contract::DEFAULT_RUNNER_UP_RATIO,
++        ),
++    }
++}
++
++fn configured_ratio(key: &str, default: f64) -> f64 {
++    let (lo, hi) = routing_contract::RATIO_RANGE;
++    match crate::envfile::read(key) {
++        None => default,
++        Some(raw) => {
++            match raw.trim().parse::<f64>() {
++                Ok(v) if (lo..=hi).contains(&v) => v,
++                _ => {
++                    warn!("{key}={raw:?} is not a valid ratio in {lo}..={hi}. Falling back to {default}.");
++                    default
++                }
++            }
++        }
+     }
+ }
+ 
+ async fn get_settings() -> Result<Json<SettingsView>, ApiError> {
+     Ok(Json(current_settings()?))
+ }
+ 
+ #[derive(Deserialize)]
+ pub struct PersonalPatternsIn {
+     #[serde(default)]
+@@ -1603,23 +1633,26 @@ pub struct SettingsUpdate {
+     /// (e.g. a string) reaches this endpoint's own validation as a 400
+     /// naming the valid range, instead of axum's generic deserialize-
+     /// error rejection.
+     pub cycle_start_day: Option<Value>,
+     /// Last day-of-month the just-closed cycle can still take hours.
+     /// Same non-`u32` typing rationale as `cycle_start_day`.
+     pub close_day: Option<Value>,
+     /// Replace the browser heartbeat work-hours window, e.g.
+     /// `Mon-Fri 09:00-17:00`. `None` leaves it untouched.
+     pub work_hours: Option<String>,
+-    /// Replace the minimum model confidence (0.0-1.0) to accept a
+-    /// routing guess. `None` leaves it untouched.
+-    pub route_threshold: Option<f64>,
++    /// Replace how many times higher than the abstain score the winner
++    /// must be (`RATIO_RANGE`). `None` leaves it untouched.
++    pub abstain_margin: Option<f64>,
++    /// Replace how many times higher than the runner-up the winner must
++    /// be (`RATIO_RANGE`). `None` leaves it untouched.
++    pub runner_up_ratio: Option<f64>,
+ }
+ 
+ #[derive(Serialize)]
+ pub struct SettingsSaveResponse {
+     #[serde(flatten)]
+     pub settings: SettingsView,
+     /// Present only when classification patterns changed and existing
+     /// blocks were reclassified against the new rules.
+     pub reclassified: Option<personal::ReclassifyStats>,
+ }
+@@ -1690,26 +1723,32 @@ async fn post_settings(
+     // so a typo 400s here instead of silently falling back later.
+     let work_hours = body.work_hours.as_deref().map(str::trim);
+     if let Some(wh) = work_hours {
+         browser_ingest::WorkHours::parse(wh).map_err(|e| {
+             ApiError::bad_request(anyhow::anyhow!(
+                 "`{wh}` is not a valid work-hours window: {e}"
+             ))
+         })?;
+     }
+ 
+-    // Route threshold: a confidence, so it must be 0.0-1.0.
+-    if let Some(t) = body.route_threshold {
+-        if !(0.0..=1.0).contains(&t) {
+-            return Err(ApiError::bad_request(anyhow::anyhow!(
+-                "`route_threshold` must be between 0.0 and 1.0 (got {t})"
+-            )));
++    // Route ratios: each must lie in RATIO_RANGE.
++    let (ratio_lo, ratio_hi) = routing_contract::RATIO_RANGE;
++    for (field, v) in [
++        ("abstain_margin", body.abstain_margin),
++        ("runner_up_ratio", body.runner_up_ratio),
++    ] {
++        if let Some(v) = v {
++            if !(ratio_lo..=ratio_hi).contains(&v) {
++                return Err(ApiError::bad_request(anyhow::anyhow!(
++                    "`{field}` must be between {ratio_lo} and {ratio_hi} (got {v})"
++                )));
++            }
+         }
+     }
+ 
+     // ── Phase 2: persist. Nothing above returned early, so every
+     // submitted field is valid. ──
+ 
+     if let Some(tz) = tz {
+         crate::envfile::upsert("WORKLOG_TZ", tz)?;
+     }
+ 
+@@ -1750,22 +1789,25 @@ async fn post_settings(
+     }
+     if let Some(day) = cycle_start_day {
+         crate::envfile::upsert("WORKLOG_BILLING_CYCLE_START_DAY", &day.to_string())?;
+     }
+     if let Some(day) = close_day {
+         crate::envfile::upsert("WORKLOG_BILLING_CLOSE_DAY", &day.to_string())?;
+     }
+     if let Some(wh) = work_hours {
+         crate::envfile::upsert(routing_contract::WORK_HOURS_KEY, wh)?;
+     }
+-    if let Some(t) = body.route_threshold {
+-        crate::envfile::upsert(routing_contract::ABSTAIN_MARGIN_KEY, &t.to_string())?;
++    if let Some(v) = body.abstain_margin {
++        crate::envfile::upsert(routing_contract::ABSTAIN_MARGIN_KEY, &v.to_string())?;
++    }
++    if let Some(v) = body.runner_up_ratio {
++        crate::envfile::upsert(routing_contract::RUNNER_UP_RATIO_KEY, &v.to_string())?;
+     }
+ 
+     info!("settings updated");
+     Ok(Json(SettingsSaveResponse {
+         settings: current_settings()?,
+         reclassified,
+     }))
+ }
+ 
+ /// Trim each glob and drop blank entries — the textarea UI sends one
+@@ -4133,81 +4175,119 @@ mod tests {
+         let v = read_json(resp).await;
+         assert_eq!(v["last_heartbeat"], "2026-04-14T10:30:00+00:00");
+         assert_eq!(v["last_slack"], "2026-04-14T11:00:00+00:00");
+         assert_eq!(
+             v["classifier_reachable"], false,
+             "no Verdict helper is running under test"
+         );
+     }
+ 
+     #[tokio::test(flavor = "current_thread")]
+-    async fn settings_reports_work_hours_and_route_threshold_defaults() {
++    async fn settings_reports_work_hours_and_ratio_defaults() {
+         let _g = prune_env_lock().await;
+         let tmp = tempfile::tempdir().unwrap();
+         std::env::set_var("WORKLOG_ENV_FILE", tmp.path().join(".env"));
+ 
+         let view = current_settings().unwrap();
+         assert_eq!(view.work_hours, routing_contract::DEFAULT_WORK_HOURS);
+         assert_eq!(
+-            view.route_threshold,
++            view.abstain_margin,
+             routing_contract::DEFAULT_ABSTAIN_MARGIN
+         );
++        assert_eq!(
++            view.runner_up_ratio,
++            routing_contract::DEFAULT_RUNNER_UP_RATIO
++        );
+ 
+         std::env::remove_var("WORKLOG_ENV_FILE");
+     }
+ 
+     #[tokio::test(flavor = "current_thread")]
+-    async fn settings_post_rejects_bad_work_hours_or_threshold_without_persisting() {
++    async fn settings_post_rejects_bad_work_hours_or_ratios_without_persisting() {
+         let _g = prune_env_lock().await;
+         let tmp = tempfile::tempdir().unwrap();
+         let env_file = tmp.path().join(".env");
+         std::env::set_var("WORKLOG_ENV_FILE", &env_file);
+ 
+-        for bad_body in [r#"{"work_hours":"garbage"}"#, r#"{"route_threshold":1.5}"#] {
++        for bad_body in [
++            r#"{"work_hours":"garbage"}"#,
++            r#"{"abstain_margin":0.5}"#,
++            r#"{"runner_up_ratio":9.0}"#,
++        ] {
+             let app = router(state_with_block());
+             let resp = app
+                 .oneshot(
+                     Request::post("/settings")
+                         .header("content-type", "application/json")
+                         .body(Body::from(bad_body))
+                         .unwrap(),
+                 )
+                 .await
+                 .unwrap();
+             assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "body={bad_body}");
+         }
+         assert!(!env_file.exists());
+ 
+         std::env::remove_var("WORKLOG_ENV_FILE");
+     }
+ 
+     #[tokio::test(flavor = "current_thread")]
+-    async fn settings_post_persists_valid_work_hours_and_route_threshold() {
++    async fn settings_post_persists_valid_work_hours_and_ratios() {
+         let _g = prune_env_lock().await;
+         let tmp = tempfile::tempdir().unwrap();
+         std::env::set_var("WORKLOG_ENV_FILE", tmp.path().join(".env"));
+ 
+         let app = router(state_with_block());
+         let resp = app
+             .oneshot(
+                 Request::post("/settings")
+                     .header("content-type", "application/json")
+                     .body(Body::from(
+-                        r#"{"work_hours":"Mon-Fri 08:00-16:00","route_threshold":0.75}"#,
++                        r#"{"work_hours":"Mon-Fri 08:00-16:00","abstain_margin":1.2,"runner_up_ratio":1.3}"#,
+                     ))
+                     .unwrap(),
+             )
+             .await
+             .unwrap();
+         assert_eq!(resp.status(), StatusCode::OK);
+         assert_eq!(
+             crate::envfile::read(routing_contract::WORK_HOURS_KEY).as_deref(),
+             Some("Mon-Fri 08:00-16:00")
+         );
+         assert_eq!(
+             crate::envfile::read(routing_contract::ABSTAIN_MARGIN_KEY).as_deref(),
+-            Some("0.75")
++            Some("1.2")
++        );
++        assert_eq!(
++            crate::envfile::read(routing_contract::RUNNER_UP_RATIO_KEY).as_deref(),
++            Some("1.3")
++        );
++        let rule = configured_route_rule();
++        assert_eq!(rule.abstain_margin, 1.2);
++        assert_eq!(rule.runner_up_ratio, 1.3);
++
++        std::env::remove_var("WORKLOG_ENV_FILE");
++    }
++
++    #[tokio::test(flavor = "current_thread")]
++    async fn configured_route_rule_falls_back_to_defaults_on_bad_envfile_values() {
++        let _g = prune_env_lock().await;
++        let tmp = tempfile::tempdir().unwrap();
++        let env_file = tmp.path().join(".env");
++        std::env::set_var("WORKLOG_ENV_FILE", &env_file);
++
++        crate::envfile::upsert(routing_contract::ABSTAIN_MARGIN_KEY, "not-a-number").unwrap();
++        crate::envfile::upsert(routing_contract::RUNNER_UP_RATIO_KEY, "9.0").unwrap();
++
++        let rule = configured_route_rule();
++        assert_eq!(
++            rule.abstain_margin,
++            routing_contract::DEFAULT_ABSTAIN_MARGIN
++        );
++        assert_eq!(
++            rule.runner_up_ratio,
++            routing_contract::DEFAULT_RUNNER_UP_RATIO
+         );
+ 
+         std::env::remove_var("WORKLOG_ENV_FILE");
+     }
+ }
+diff --git a/rust/crates/worklog-core/src/routing.rs b/rust/crates/worklog-core/src/routing.rs
+index 91efcf3..2cbff5f 100644
+--- a/rust/crates/worklog-core/src/routing.rs
++++ b/rust/crates/worklog-core/src/routing.rs
+@@ -158,36 +158,39 @@ pub fn load_pending(conn: &Connection, day: NaiveDate) -> Result<(RuleHits, Vec<
+         let event = to_routed(row);
+         pending.push(Pending {
+             event,
+             options,
+             state,
+         });
+     }
+     Ok((rule_hits, pending))
+ }
+ 
+-/// Ask the classifier for each pending event; keep guesses clearing
+-/// `rule.abstain_margin` that name one of the event's own options. No
+-/// connection arg — the slow model call must never hold the sqlite lock.
+-/// This is today's single-threshold body, adapted to the new signature so
+-/// callers compile; T003 replaces it with the real relative-scores rule.
++/// Ask the classifier for each pending event; keep guesses that name one of
++/// the event's own options and whose winner clears both the abstain score
++/// (by `rule.abstain_margin`) and the runner-up score (by
++/// `rule.runner_up_ratio`) — never a single absolute-confidence threshold,
++/// since the model's raw confidence is uncalibrated (spec 004 FR-01/FR-02).
++/// No connection arg — the slow model call must never hold the sqlite lock.
+ pub fn decide(
+     pending: &[Pending],
+     classifier: &dyn Classifier,
+     rule: RouteRule,
+ ) -> Vec<(i64, Guess)> {
+     pending
+         .iter()
+         .filter_map(|p| {
+             let guess = classifier.classify(&p.state, &p.options).ok().flatten()?;
+-            (guess.confidence >= rule.abstain_margin && p.options.contains(&guess.folder))
+-                .then_some((p.event.id, guess))
++            let accepted = p.options.contains(&guess.folder)
++                && guess.confidence >= guess.abstain * rule.abstain_margin
++                && guess.confidence >= guess.runner_up * rule.runner_up_ratio;
++            accepted.then_some((p.event.id, guess))
+         })
+         .collect()
+ }
+ 
+ /// Persist rule hits and accepted guesses.
+ pub fn commit_labels(
+     conn: &Connection,
+     rule_hits: &[(i64, String)],
+     guesses: &[(i64, Guess)],
+ ) -> Result<RouteStats> {
+diff --git a/rust/crates/worklog-core/src/routing_test.rs b/rust/crates/worklog-core/src/routing_test.rs
+index 8b4a263..681608c 100644
+--- a/rust/crates/worklog-core/src/routing_test.rs
++++ b/rust/crates/worklog-core/src/routing_test.rs
+@@ -42,40 +42,69 @@ fn fix(conn: &Connection, id: i64, folder: &str) -> RoutedEvent {
+             folder: folder.into(),
+             always: None,
+         },
+     )
+     .unwrap()
+ }
+ 
+ struct FixedGuess {
+     folder: String,
+     confidence: f64,
++    runner_up: f64,
++    abstain: f64,
+ }
+ 
+ impl Classifier for FixedGuess {
+     fn classify(&self, _state: &Value, _options: &[String]) -> Result<Option<Guess>> {
+         Ok(Some(Guess {
+             folder: self.folder.clone(),
+             confidence: self.confidence,
+-            runner_up: 0.0,
+-            abstain: 0.0,
++            runner_up: self.runner_up,
++            abstain: self.abstain,
+         }))
+     }
+ }
+ 
+ fn rule(abstain_margin: f64) -> RouteRule {
+     RouteRule {
+         abstain_margin,
+         runner_up_ratio: 0.0,
+     }
+ }
+ 
++fn default_rule() -> RouteRule {
++    RouteRule {
++        abstain_margin: crate::routing_contract::DEFAULT_ABSTAIN_MARGIN,
++        runner_up_ratio: crate::routing_contract::DEFAULT_RUNNER_UP_RATIO,
++    }
++}
++
++/// A single pending event offering `options`, for testing `decide` in
++/// isolation without a database.
++fn pending_with_options(options: Vec<&str>) -> Pending {
++    Pending {
++        event: RoutedEvent {
++            id: 1,
++            source: SOURCE_FIREFOX.into(),
++            started_at: "2026-04-20T09:00:00+00:00".into(),
++            title: "t".into(),
++            details: None,
++            container: None,
++            folder: None,
++            label_origin: None,
++            label_confidence: None,
++        },
++        options: options.into_iter().map(str::to_owned).collect(),
++        state: serde_json::json!({}),
++    }
++}
++
+ #[test]
+ fn rule_beats_model() {
+     let conn = open_memory().unwrap();
+     pin(&conn, "aws-cert", None);
+     conn.execute(
+         "INSERT INTO routing_rules (kind, pattern, folder) VALUES ('domain', 'aws.tomasari.is', 'aws-cert')",
+         [],
+     )
+     .unwrap();
+ 
+@@ -90,79 +119,114 @@ fn rule_beats_model() {
+         ),
+     )
+     .unwrap();
+     set_details(&conn, eid, "https://aws.tomasari.is/console");
+ 
+     // Model would say "other-folder" with high confidence — the rule must
+     // still win because a rule-matched event never reaches the classifier.
+     let model = FixedGuess {
+         folder: "other-folder".into(),
+         confidence: 0.99,
++        runner_up: 0.0,
++        abstain: 0.0,
+     };
+     let stats = route_day(&conn, day, &model, rule(0.9)).unwrap();
+     assert_eq!(stats.rules_applied, 1);
+     assert_eq!(stats.guesses_applied, 0);
+ 
+     let routed = routed_for_day(&conn, day).unwrap();
+     assert_eq!(routed.len(), 1);
+     assert_eq!(routed[0].folder.as_deref(), Some("aws-cert"));
+     assert_eq!(routed[0].label_origin, Some(LabelOrigin::Rule));
+ }
+ 
++// B1-B4 (spec 004): a guess is filed only when the winner clears both the
++// abstain margin and the runner-up ratio against the model's own scores,
++// never a single absolute-confidence threshold. Scores are the exact ones
++// measured in spec.md's FR-01/FR-02 examples.
++
+ #[test]
+-fn threshold_applies() {
++fn files_when_winner_beats_abstain_and_runner_up() {
+     let conn = open_memory().unwrap();
+     pin(&conn, "aws-cert", None);
+     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+     repo::upsert_event(
+         &conn,
+         &Event::minimal(
+             SOURCE_FIREFOX,
+             "e1",
+             "2026-04-20T09:00:00+00:00",
+             "New site",
+         ),
+     )
+     .unwrap();
+ 
+-    let above = FixedGuess {
++    let model = FixedGuess {
+         folder: "aws-cert".into(),
+-        confidence: 0.95,
++        confidence: 0.079,
++        runner_up: 0.065,
++        abstain: 0.067,
+     };
+-    let stats = route_day(&conn, day, &above, rule(0.9)).unwrap();
++    let stats = route_day(&conn, day, &model, default_rule()).unwrap();
+     assert_eq!(stats.guesses_applied, 1);
+     let routed = routed_for_day(&conn, day).unwrap();
+     assert_eq!(routed[0].label_origin, Some(LabelOrigin::Guess));
+-    assert_eq!(routed[0].label_confidence, Some(0.95));
++    assert_eq!(routed[0].label_confidence, Some(0.079));
+     assert_eq!(routed[0].folder.as_deref(), Some("aws-cert"));
++}
+ 
+-    let conn2 = open_memory().unwrap();
+-    pin(&conn2, "aws-cert", None);
+-    repo::upsert_event(
+-        &conn2,
+-        &Event::minimal(
+-            SOURCE_FIREFOX,
+-            "e2",
+-            "2026-04-20T09:00:00+00:00",
+-            "New site",
+-        ),
+-    )
+-    .unwrap();
+-    let below = FixedGuess {
++#[test]
++fn unsorted_when_winner_ties_abstain() {
++    let items = vec![pending_with_options(vec!["aws-cert"])];
++    let model = FixedGuess {
+         folder: "aws-cert".into(),
+-        confidence: 0.5,
++        confidence: 0.070,
++        runner_up: 0.054,
++        abstain: 0.070,
+     };
+-    let stats2 = route_day(&conn2, day, &below, rule(0.9)).unwrap();
+-    assert_eq!(stats2.guesses_applied, 0);
+-    let routed2 = routed_for_day(&conn2, day).unwrap();
+-    assert_eq!(routed2[0].folder, None);
+-    assert_eq!(routed2[0].label_origin, None);
++    let guesses = decide(&items, &model, default_rule());
++    assert!(
++        guesses.is_empty(),
++        "winner must clear the abstain score by the margin, not just tie it"
++    );
++}
++
++#[test]
++fn unsorted_when_runner_up_too_close() {
++    let items = vec![pending_with_options(vec!["aws-cert"])];
++    let model = FixedGuess {
++        folder: "aws-cert".into(),
++        confidence: 0.054,
++        runner_up: 0.053,
++        abstain: 0.050,
++    };
++    let guesses = decide(&items, &model, default_rule());
++    assert!(
++        guesses.is_empty(),
++        "winner clears the abstain score but not the runner-up ratio"
++    );
++}
++
++#[test]
++fn unsorted_when_choice_not_an_option() {
++    let items = vec![pending_with_options(vec!["aws-cert"])];
++    let model = FixedGuess {
++        folder: "not-a-project".into(),
++        confidence: 0.99,
++        runner_up: 0.01,
++        abstain: 0.01,
++    };
++    let guesses = decide(&items, &model, default_rule());
++    assert!(
++        guesses.is_empty(),
++        "a folder the helper names outside the options list must never be filed"
++    );
+ }
+ 
+ #[test]
+ fn unsorted_excluded_labelled_joins_block() {
+     let conn = open_memory().unwrap();
+     pin(&conn, "aws-cert", None);
+     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+ 
+     let mut ids = Vec::new();
+     for i in 0..5 {
+@@ -324,20 +388,22 @@ fn decide_drops_guess_outside_narrowed_options() {
+         event,
+         options: vec!["sjukra-portal".into()],
+         state: serde_json::json!({}),
+     }];
+     // Confidence clears the threshold, but the folder isn't one of this
+     // event's narrowed options — B10 requires the guess be dropped, not
+     // just that `options` itself was narrowed.
+     let model = FixedGuess {
+         folder: "mms-portal".into(),
+         confidence: 0.99,
++        runner_up: 0.0,
++        abstain: 0.0,
+     };
+     let guesses = decide(&pending, &model, rule(0.9));
+     assert!(
+         guesses.is_empty(),
+         "a guess naming a folder outside the narrowed options must be dropped"
+     );
+ }
+ 
+ #[test]
+ fn label_event_does_not_partial_commit_when_always_rule_fails() {
+diff --git a/rust/crates/worklog-core/src/verdict.rs b/rust/crates/worklog-core/src/verdict.rs
+index 6c3ac47..6adb447 100644
+--- a/rust/crates/worklog-core/src/verdict.rs
++++ b/rust/crates/worklog-core/src/verdict.rs
+@@ -47,47 +47,47 @@ impl Default for VerdictClassifier {
+ 
+ #[derive(Serialize)]
+ struct ClassifyRequest<'a> {
+     state: &'a Value,
+     options: &'a [String],
+ }
+ 
+ #[derive(Deserialize)]
+ struct ClassifyResponse {
+     choice: String,
+-    confidence: f64,
++    probability: f64,
++    runner_up: f64,
++    abstain: f64,
+ }
+ 
+ impl Classifier for VerdictClassifier {
+     fn classify(&self, state: &Value, options: &[String]) -> Result<Option<Guess>> {
+         let sent = self
+             .client
+             .post(format!("{}/classify", self.base_url))
+             .json(&ClassifyRequest { state, options })
+             .send();
+         let resp = match sent {
+             Ok(r) => r,
+             // Helper not running / connect timeout — leave the event
+             // unsorted rather than failing the whole day's routing.
+             Err(_) => return Ok(None),
+         };
+         if !resp.status().is_success() {
+             return Ok(None);
+         }
+         match resp.json::<ClassifyResponse>() {
+-            // T002 replaces this with the real {choice, probability,
+-            // runner_up, abstain} response shape.
+             Ok(body) => Ok(Some(Guess {
+                 folder: body.choice,
+-                confidence: body.confidence,
+-                runner_up: 0.0,
+-                abstain: 0.0,
++                confidence: body.probability,
++                runner_up: body.runner_up,
++                abstain: body.abstain,
+             })),
+             Err(_) => Ok(None),
+         }
+     }
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     use httpmock::prelude::*;
+@@ -112,31 +112,37 @@ mod tests {
+         assert_eq!(classifier.classify(&state, &options).unwrap(), None);
+     }
+ 
+     #[test]
+     fn classify_returns_guess_on_success() {
+         let server = MockServer::start();
+         server.mock(|when, then| {
+             when.method(POST).path("/classify").json_body(
+                 json!({"state": {"title": "aws console"}, "options": ["aws-cert", "worklog"]}),
+             );
+-            then.status(200)
+-                .json_body(json!({"choice": "aws-cert", "confidence": 0.97}));
++            then.status(200).json_body(json!({
++                "choice": "aws-cert",
++                "probability": 0.97,
++                "runner_up": 0.4,
++                "abstain": 0.1
++            }));
+         });
+ 
+         let classifier =
+             VerdictClassifier::with_client(Client::builder().build().unwrap(), server.base_url());
+         let state = json!({"title": "aws console"});
+         let options = vec!["aws-cert".to_string(), "worklog".to_string()];
+         let guess = classifier.classify(&state, &options).unwrap().unwrap();
+         assert_eq!(guess.folder, "aws-cert");
+         assert_eq!(guess.confidence, 0.97);
++        assert_eq!(guess.runner_up, 0.4);
++        assert_eq!(guess.abstain, 0.1);
+     }
+ 
+     #[test]
+     fn classify_returns_none_on_error_status() {
+         let server = MockServer::start();
+         server.mock(|when, then| {
+             when.method(POST).path("/classify");
+             then.status(500);
+         });
+ 
+diff --git a/rust/crates/worklog-core/templates/verdict_server.py b/rust/crates/worklog-core/templates/verdict_server.py
+index 6089d3e..276c899 100644
+--- a/rust/crates/worklog-core/templates/verdict_server.py
++++ b/rust/crates/worklog-core/templates/verdict_server.py
+@@ -1,43 +1,94 @@
+ #!/usr/bin/env python3
+ """Verdict classifier helper — run via `worklog verdict serve`.
+ 
+ Binds 127.0.0.1 only. Endpoints:
+   GET  /health    -> 200 (liveness probe used by `worklog verdict status`)
+   POST /classify  -> body {"state": <json>, "options": [<folder>, ...]}
+-                     response {"choice": <one of options>, "confidence": <0..1>}
++                     response {"choice": <one of options>, "probability": <0..1>,
++                                "runner_up": <0..1>, "abstain": <0..1>}
+                      empty options -> 400
++
++Verdict caps a single Choice query at 24 real options (plus its
++abstention option). `split_groups`/`merge_groups` below split larger
++option lists into groups and merge the per-group results back into one
++winner/runner-up/abstain triple, compared by raw probability across
++groups (no renormalisation). `--self-test` exercises those two pure
++functions on fakes, so it runs with the system python3 — it never
++imports rlcd.
+ """
+ import json
++import os
++import sys
+ from http.server import BaseHTTPRequestHandler, HTTPServer
+ 
+-from verdict import Router
+-
+ HOST = "127.0.0.1"
+ PORT = 9324
++MAX_GROUP_SIZE = 24
++INSUFFICIENT_EVIDENCE_ID = "__insufficient_evidence__"
++
++ENGINE = None
++
++
++def split_groups(options):
++    return [options[i : i + MAX_GROUP_SIZE] for i in range(0, len(options), MAX_GROUP_SIZE)]
++
++
++def merge_groups(group_probabilities):
++    winner_id, winner_prob, runner_up, abstain = None, 0.0, 0.0, 0.0
++    for probabilities in group_probabilities:
++        abstain = max(abstain, probabilities.get(INSUFFICIENT_EVIDENCE_ID, 0.0))
++        for option_id, probability in probabilities.items():
++            if option_id == INSUFFICIENT_EVIDENCE_ID:
++                continue
++            if probability > winner_prob:
++                winner_id, winner_prob, runner_up = option_id, probability, winner_prob
++            elif probability > runner_up:
++                runner_up = probability
++    return winner_id, winner_prob, runner_up, abstain
++
++
++def _load_engine():
++    from huggingface_hub import snapshot_download
++    from rlcd import DecisionEngine
+ 
+-# Loaded once at process startup, not per request — the model load is
+-# the expensive part (spec 003 A5).
+-router = Router(preload=True)
++    model_dir = os.environ["WORKLOG_VERDICT_MODEL_DIR"]
++    snapshot_download(
++        os.environ["WORKLOG_VERDICT_MODEL_REPO"],
++        revision=os.environ["WORKLOG_VERDICT_MODEL_REVISION"],
++        local_dir=model_dir,
++        allow_patterns=[
++            "config.json",
++            "model.safetensors",
++            "model.onnx",
++            "tokenizer.json",
++            "tokenizer_config.json",
++            "calibrator.json",
++        ],
++    )
++    return DecisionEngine(model_name_or_path=model_dir, device="cpu")
+ 
+ 
+ def classify(state, options):
+-    questions = {
+-        "project": {
+-            "type": "choice",
+-            "instructions": "Which project does this work activity belong to?",
+-            "criteria": {option: option for option in options},
+-        }
+-    }
+-    result = router.predict(state, questions)
+-    answer = result["answers"]["project"]
+-    return answer["choice"], answer["confidence"]
++    from rlcd import Choice, Option
++
++    context = json.dumps(state)
++    queries = [
++        Choice(
++            id=str(index),
++            question="Which project does this work activity belong to?",
++            options=tuple(Option(id=option, description=option) for option in group),
++        )
++        for index, group in enumerate(split_groups(options))
++    ]
++    batch = ENGINE.evaluate(context, queries)
++    return merge_groups(result.probabilities for result in batch.results)
+ 
+ 
+ class Handler(BaseHTTPRequestHandler):
+     def do_GET(self):
+         if self.path != "/health":
+             self.send_response(404)
+             self.end_headers()
+             return
+         self.send_response(200)
+         self.end_headers()
+@@ -47,24 +98,62 @@ class Handler(BaseHTTPRequestHandler):
+             self.send_response(404)
+             self.end_headers()
+             return
+         length = int(self.headers.get("Content-Length", 0))
+         body = json.loads(self.rfile.read(length) or b"{}")
+         options = body.get("options", [])
+         if not options:
+             self.send_response(400)
+             self.end_headers()
+             return
+-        choice, confidence = classify(body.get("state", {}), options)
+-        payload = json.dumps({"choice": choice, "confidence": confidence}).encode()
++        choice, probability, runner_up, abstain = classify(body.get("state", {}), options)
++        payload = json.dumps(
++            {
++                "choice": choice,
++                "probability": probability,
++                "runner_up": runner_up,
++                "abstain": abstain,
++            }
++        ).encode()
+         self.send_response(200)
+         self.send_header("Content-Type", "application/json")
+         self.send_header("Content-Length", str(len(payload)))
+         self.end_headers()
+         self.wfile.write(payload)
+ 
+     def log_message(self, format, *args):  # noqa: A002 - stdlib hook signature
+         pass
+ 
+ 
+-if __name__ == "__main__":
++def self_test():
++    options = [f"project-{i}" for i in range(44)]
++    groups = split_groups(options)
++    assert [len(group) for group in groups] == [24, 20]
++    assert sorted(option for group in groups for option in group) == sorted(options)
++
++    winner, probability, runner_up, abstain = merge_groups(
++        [
++            {"project-0": 0.9, "project-1": 0.05, INSUFFICIENT_EVIDENCE_ID: 0.05},
++            {"project-30": 0.6, "project-31": 0.1, INSUFFICIENT_EVIDENCE_ID: 0.3},
++        ]
++    )
++    assert winner == "project-0"
++    assert probability == 0.9
++    assert runner_up == 0.6
++    assert abstain == 0.3
++
++    print("verdict_server self-test OK")
++
++
++def main():
++    if "--self-test" in sys.argv:
++        self_test()
++        return
++    global ENGINE
++    # Loaded once at process startup, not per request — the model load is
++    # the expensive part (spec 003 A5).
++    ENGINE = _load_engine()
+     HTTPServer((HOST, PORT), Handler).serve_forever()
++
++
++if __name__ == "__main__":
++    main()

@@ -1603,7 +1603,15 @@ fn configured_ratio(key: &str, default: f64) -> f64 {
 }
 
 async fn get_settings() -> Result<Json<SettingsView>, ApiError> {
-    Ok(Json(current_settings()?))
+    Ok(Json(settings_off_runtime().await?))
+}
+
+/// `current_settings` reads the OS keychain, which can block on a permission
+/// dialog; run it off the async workers so a pending prompt can't stall the daemon.
+async fn settings_off_runtime() -> Result<SettingsView> {
+    tokio::task::spawn_blocking(current_settings)
+        .await
+        .context("spawn_blocking")?
 }
 
 #[derive(Deserialize)]
@@ -1805,7 +1813,7 @@ async fn post_settings(
 
     info!("settings updated");
     Ok(Json(SettingsSaveResponse {
-        settings: current_settings()?,
+        settings: settings_off_runtime().await?,
         reclassified,
     }))
 }
