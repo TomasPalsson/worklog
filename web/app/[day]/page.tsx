@@ -8,11 +8,12 @@ import {
   loadDaySummary,
   routedForDay,
 } from "@/lib/daemon";
-import { formatDayHeading, formatGapRow, formatTotalHours } from "@/lib/format";
+import { formatDayHeading, formatTotalHours } from "@/lib/format";
 import { DayHeader } from "@/components/DayHeader";
 import { ActionBar } from "@/components/ActionBar";
 import { BillingGroup } from "@/components/BillingGroup";
 import { BlockCard } from "@/components/BlockCard";
+import { DayStrip } from "@/components/DayStrip";
 import { EmptyState } from "@/components/EmptyState";
 import { TicketGroup } from "@/components/TicketGroup";
 import { UnsortedList } from "@/components/UnsortedList";
@@ -145,16 +146,8 @@ export default async function DayPage({
         view={view}
       />
       <ActionBar day={day} cacheCount={cache.count} cacheLast={cache.last_fetched} />
+      <DayStrip blocks={blocks} gaps={gaps} />
       <UnsortedList key={day} day={day} events={routedEvents} folderOptions={folderOptions} />
-      {gaps.length > 0 && (
-        <ul className="day-gaps" role="list">
-          {gaps.map((g) => (
-            <li key={g.started_at} className="day-gap">
-              {formatGapRow(g)}
-            </li>
-          ))}
-        </ul>
-      )}
       {blocks.length === 0 ? (
         <EmptyState day={day} />
       ) : (

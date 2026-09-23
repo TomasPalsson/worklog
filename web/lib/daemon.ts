@@ -147,9 +147,7 @@ export async function setPersonal(blockId: number, isPersonal: boolean) {
 }
 
 export async function runInfer(day: string) {
-  return call<{ day: string; blocks: number; minutes: number }>("POST", "/infer", {
-    day,
-  });
+  return call<{ day: string; blocks: number; minutes: number }>("POST", "/infer", { day });
 }
 
 export async function runEstimate(day: string, model?: string) {
@@ -181,10 +179,7 @@ export async function refreshJira() {
  * refuses cross-day merges and merges that would orphan a synced
  * Tempo entry — surfaces as 400 with the message verbatim.
  */
-export async function mergeBlocks(
-  primary: number,
-  absorb: number[],
-): Promise<{ merged: Block; absorbed: number[] }> {
+export async function mergeBlocks(primary: number, absorb: number[]): Promise<{ merged: Block; absorbed: number[] }> {
   return call("POST", "/blocks/merge", { primary, absorb });
 }
 
@@ -388,6 +383,9 @@ export async function routedForDay(day: string): Promise<RoutedEvent[]> {
 export async function labelEvent(id: number, folder: string, always: RuleKind | null) {
   const body: LabelRequest = { folder, always };
   return call<RoutedEvent>("POST", `/events/${id}/label`, body);
+}
+export async function dismissEvent(id: number, ruleKind: RuleKind | null) {
+  return call<RoutedEvent>("POST", `/events/${id}/dismiss`, { rule_kind: ruleKind });
 }
 export async function routingRules(): Promise<Rule[]> {
   return call<Rule[]>("GET", "/routing/rules");

@@ -46,6 +46,9 @@
                                               off-center from indigo */
   --violet-bg:  oklch(0.95 0.02 290);
 
+  /* Day strip project fill — hue supplied per segment via --h. */
+  --project-fill: oklch(0.72 0.11 var(--h));
+
   /* shape */
   --radius-sm: 4px;
   --radius-md: 8px;
@@ -106,6 +109,8 @@
     --violet:     oklch(0.70 0.085 290);   /* was 0.65 */
     --violet-bg:  oklch(0.24 0.03 290);
 
+    --project-fill: oklch(0.62 0.10 var(--h));
+
     --ring: 0 0 0 3px oklch(0.62 0.08 85); /* was 0.42 — 3:1 vs dark bg */
     --elevation-1: none;
   }
@@ -138,6 +143,8 @@
 
   --violet:     oklch(0.70 0.085 290);
   --violet-bg:  oklch(0.24 0.03 290);
+
+  --project-fill: oklch(0.62 0.10 var(--h));
 
   --ring: 0 0 0 3px oklch(0.62 0.08 85);
   --elevation-1: none;
@@ -446,6 +453,437 @@ button {
   color: var(--fg-muted);
   font-style: italic;
   padding: 8px 0;
+}
+
+/* ─────────────────────────── day strip ───────────────────────────
+   One horizontal timeline replacing the old bare gaps <ul>. Segments
+   are absolutely positioned by left/width % computed in lib/dayStrip.ts;
+   colour comes from the per-segment --h custom property feeding
+   --project-fill (defined per theme above). */
+
+.day-strip {
+  margin-bottom: 28px;
+}
+
+.day-strip-track {
+  position: relative;
+  height: 28px;
+  border-radius: var(--radius-md);
+  background: var(--bg-sunk);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.day-strip-seg {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.day-strip-seg + .day-strip-seg {
+  border-left: 1px solid var(--bg-sunk);
+}
+
+.day-strip-block {
+  background: var(--project-fill);
+}
+
+.day-strip-block[data-slate] {
+  background: var(--slate);
+}
+
+.day-strip-gap {
+  background-image: repeating-linear-gradient(
+    45deg,
+    var(--border-strong) 0,
+    var(--border-strong) 2px,
+    transparent 2px,
+    transparent 8px
+  );
+}
+
+.day-strip-gap-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 4px;
+}
+
+.day-strip-ticks {
+  position: relative;
+  height: 14px;
+  margin-top: 4px;
+}
+
+.day-strip-tick {
+  position: absolute;
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-subtle);
+  white-space: nowrap;
+}
+
+.day-strip-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  list-style: none;
+}
+
+.day-strip-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.day-strip-swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  display: inline-block;
+  background: var(--project-fill);
+  flex-shrink: 0;
+}
+
+.day-strip-swatch[data-slate] {
+  background: var(--slate);
+}
+
+.day-strip-swatch-away {
+  background-image: repeating-linear-gradient(
+    45deg,
+    var(--border-strong) 0,
+    var(--border-strong) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+}
+
+/* Highlight pulse when a strip segment scrolls its BlockCard into view. */
+@keyframes wl-block-flash {
+  from { box-shadow: var(--ring); }
+  to { box-shadow: none; }
+}
+
+.block.block-flash {
+  animation: wl-block-flash 1.2s ease-out;
+}
+
+/* ─────────────────────────── sort tray ───────────────────────────
+   Grouped unsorted browser/Slack events — one card, one hairline-
+   separated row per group. Pattern parallels .ticket-group: native
+   <details>, no client JS for the collapse/chevron. */
+
+.sort-tray {
+  margin-bottom: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-raised);
+}
+
+.sort-tray > summary {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 14px 16px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.sort-tray > summary::-webkit-details-marker {
+  display: none;
+}
+
+.sort-tray-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.sort-tray-count {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.sort-tray-hint {
+  font-size: 12px;
+  color: var(--fg-subtle);
+  flex-basis: 100%;
+}
+
+.sort-tray-empty {
+  padding: 0 16px 14px;
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+.sort-tray-body {
+  list-style: none;
+  border-top: 1px solid var(--border);
+}
+
+.sort-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  padding: 10px 16px;
+  min-height: 44px;
+  transition: opacity 150ms ease-out, max-height 150ms ease-out;
+}
+
+.sort-row + .sort-row {
+  border-top: 1px solid var(--border);
+}
+
+.sort-row-exit {
+  opacity: 0;
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+}
+
+.sort-row-disclosure {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.sort-row-disclosure > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  min-width: 0;
+}
+
+.sort-row-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.sort-row-disclosure summary .disclosure-chev,
+.auto-filed summary .disclosure-chev {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  transition: transform 150ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.sort-row-disclosure[open] > summary .disclosure-chev {
+  transform: rotate(90deg);
+}
+
+.sort-row-name {
+  font-weight: 500;
+  color: var(--fg);
+}
+
+.sort-row-count {
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.sort-row-range {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.sort-row-preview {
+  font-size: 13px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.sort-row-events {
+  list-style: none;
+  margin-top: 8px;
+  padding-left: 21px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sort-row-event {
+  display: flex;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+.sort-row-event-time {
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+
+.sort-row-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.sort-row-always {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.sort-row-dismiss {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.sort-row-dismiss:hover {
+  color: var(--terracotta);
+  background: var(--terracotta-bg);
+}
+
+.sort-tray-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.sort-tray-dismiss-rest,
+.sort-tray-confirm-yes,
+.sort-tray-confirm-no {
+  font-size: 12px;
+  color: var(--fg-muted);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.sort-tray-dismiss-rest:hover,
+.sort-tray-confirm-no:hover {
+  background: var(--bg-sunk);
+  color: var(--fg);
+}
+
+.sort-tray-confirm-text {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.sort-tray-confirm-yes {
+  color: var(--terracotta);
+  font-weight: 500;
+}
+
+.sort-tray-confirm-yes:hover {
+  background: var(--terracotta-bg);
+}
+
+/* ─────────────────────────── auto-filed ───────────────────────────
+   Filed events tucked away under the tray — collapsed by default. */
+
+.auto-filed {
+  margin-bottom: 28px;
+}
+
+.auto-filed > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  list-style: none;
+  padding: 4px 0;
+}
+
+.auto-filed > summary::-webkit-details-marker {
+  display: none;
+}
+
+.auto-filed[open] > summary .disclosure-chev {
+  transform: rotate(90deg);
+}
+
+.auto-filed-list {
+  list-style: none;
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.auto-filed-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--fg-muted);
+  padding: 3px 0;
+}
+
+.auto-filed-time {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.auto-filed-title {
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.auto-filed-project {
+  font-weight: 500;
+  color: var(--fg);
+  white-space: nowrap;
+}
+
+.origin-chip {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.origin-rule,
+.origin-link,
+.origin-fix {
+  background: var(--sage-bg);
+  color: var(--sage-ink);
+}
+
+.origin-context,
+.origin-guess,
+.origin-dismissed {
+  background: var(--slate-bg);
+  color: var(--slate);
 }
 
 /* Collapsible ticket groups — one row per (day, jira_issue) mirrors

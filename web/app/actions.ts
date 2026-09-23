@@ -31,6 +31,7 @@ import {
   estimateBlock as daemonEstimateBlock,
   routedForDay as daemonRoutedForDay,
   labelEvent as daemonLabelEvent,
+  dismissEvent as daemonDismissEvent,
   routingRules as daemonRoutingRules,
   deleteRule as daemonDeleteRule,
   routingStatus as daemonRoutingStatus,
@@ -385,6 +386,9 @@ export async function fetchRoutingStatus(): Promise<ActionResult<RoutingStatus>>
 }
 export async function labelEvent(id: number, folder: string, always: RuleKind | null, day: string) {
   return runAction(() => daemonLabelEvent(id, folder, always), `/${day}`);
+}
+export async function dismissEvent(id: number, ruleKind: RuleKind | null, day: string) {
+  return runAction(() => daemonDismissEvent(id, ruleKind), `/${day}`);
 }
 export async function deleteRule(id: number, day: string): Promise<ActionResult<{ removed: boolean }>> {
   return runAction(() => daemonDeleteRule(id), `/${day}`);

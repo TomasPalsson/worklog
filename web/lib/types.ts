@@ -292,8 +292,11 @@ export interface MarkExportResponse {
 
 /** Where a routed event's project label came from (`routing_contract::LabelOrigin`).
  * `link` = the event's own text named the project (an exact repo/path mention).
- * `context` = the day's claude/shell/git_reflog activity around the event's time named it. */
-export type LabelOrigin = "rule" | "link" | "context" | "fix" | "guess";
+ * `context` = the day's claude/shell/git_reflog activity around the event's time named it.
+ * `dismissed` = the owner marked it "not work" — `GET /days/:day/routed` stops
+ * returning these, so the UI only sees this value in a dismiss action's own
+ * response, never in a routed-events list. */
+export type LabelOrigin = "rule" | "link" | "context" | "fix" | "guess" | "dismissed";
 
 /** What a hard rule matches on (`routing_contract::RuleKind`). */
 export type RuleKind = "domain" | "slack_channel" | "container";

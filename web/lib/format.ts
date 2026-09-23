@@ -17,12 +17,19 @@ export function formatRange(start: string, end: string): string {
 const LUNCH_HOUR = 11;
 const LUNCH_MINUTE = 30;
 
-/** A day-gap row's text, e.g. "No activity 12:05–12:50 (45 min)", or "Lunch …" when it covers 11:30. */
-export function formatGapRow(gap: { started_at: string; ended_at: string; minutes: number }): string {
+/** True when a gap's window covers the owner's 11:30 local lunch. Shared by
+ * `formatGapRow` and the day strip, which both need the same "is this the
+ * lunch gap" call. */
+export function isLunchGap(gap: { started_at: string; ended_at: string }): boolean {
   const start = new Date(gap.started_at);
   const lunch = new Date(start);
   lunch.setHours(LUNCH_HOUR, LUNCH_MINUTE, 0, 0);
-  const isLunch = start <= lunch && lunch < new Date(gap.ended_at);
+  return start <= lunch && lunch < new Date(gap.ended_at);
+}
+
+/** A day-gap row's text, e.g. "No activity 12:05–12:50 (45 min)", or "Lunch …" when it covers 11:30. */
+export function formatGapRow(gap: { started_at: string; ended_at: string; minutes: number }): string {
+  const isLunch = isLunchGap(gap);
   return `${isLunch ? "Lunch" : "No activity"} ${formatRange(gap.started_at, gap.ended_at)} (${gap.minutes} min)`;
 }
 

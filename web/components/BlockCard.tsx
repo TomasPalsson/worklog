@@ -158,7 +158,7 @@ export function BlockCard({
   );
 
   return (
-    <article className={cls} aria-label={ariaLabel}>
+    <article id={`block-${block.id}`} className={cls} aria-label={ariaLabel}>
       <div className="block-time">
         <span className="range" aria-label={`time range ${timeRangeLabel}`}>
           {timeRangeLabel}
