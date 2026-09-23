@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
+use regex::Regex;
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use serde_json::Value;
@@ -116,6 +117,27 @@ fn matching_rule(rules: &[Rule], row: &EventRow) -> Option<String> {
         .map(|rule| rule.folder.clone())
 }
 
+/// An event whose title or details name exactly one of `options` as
+/// `github.com/<org>/<key>` or `Desktop/Work/<key>` (FR-10, spec 004
+/// amendment 2026-09-23) — filed by rule, never sent to the classifier.
+/// Zero or two-plus distinct named options is `None`.
+fn named_project(row: &EventRow, options: &[String]) -> Option<String> {
+    let text = format!("{} {}", row.title, row.details.as_deref().unwrap_or(""));
+    let re = Regex::new(r"(?:github\.com/[^/\s]+/|Desktop/Work/)([^/|>)\s'\x60]+)").unwrap();
+    let mut found = BTreeSet::new();
+    for cap in re.captures_iter(&text) {
+        let key = cap.get(1).unwrap().as_str();
+        if options.iter().any(|o| o == key) {
+            found.insert(key);
+        }
+    }
+    let mut hits = found.into_iter();
+    match (hits.next(), hits.next()) {
+        (Some(key), None) => Some(key.to_owned()),
+        _ => None,
+    }
+}
+
 /// A container naming exactly one customer narrows to that customer's
 /// pinned folders (B10); otherwise every project key is a candidate.
 fn narrowed_options(registry: &Registry, row: &EventRow, all: &[String]) -> Vec<String> {
@@ -145,6 +167,10 @@ pub fn load_pending(conn: &Connection, day: NaiveDate) -> Result<(RuleHits, Vec<
 
     for row in rows {
         if let Some(folder) = matching_rule(&rules, &row) {
+            rule_hits.push((row.id, folder));
+            continue;
+        }
+        if let Some(folder) = named_project(&row, &all_options) {
             rule_hits.push((row.id, folder));
             continue;
         }

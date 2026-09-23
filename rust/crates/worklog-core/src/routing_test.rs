@@ -46,6 +46,14 @@ fn fix(conn: &Connection, id: i64, folder: &str) -> RoutedEvent {
     .unwrap()
 }
 
+struct PanicsIfCalled;
+
+impl Classifier for PanicsIfCalled {
+    fn classify(&self, _state: &Value, _options: &[String]) -> Result<Option<Guess>> {
+        panic!("classifier must not be called for an event named by rule (FR-10)");
+    }
+}
+
 struct FixedGuess {
     folder: String,
     confidence: f64,
@@ -164,7 +172,7 @@ fn files_when_winner_beats_abstain_and_runner_up() {
         folder: "aws-cert".into(),
         confidence: 0.079,
         runner_up: 0.065,
-        abstain: 0.067,
+        abstain: 0.060,
     };
     let stats = route_day(&conn, day, &model, default_rule()).unwrap();
     assert_eq!(stats.guesses_applied, 1);
@@ -223,6 +231,126 @@ fn unsorted_when_runner_up_too_close() {
         guesses.is_empty(),
         "winner clears the abstain score but not the runner-up ratio"
     );
+}
+
+// FR-10 (spec 004 amendment 2026-09-23): an event whose title or details
+// name exactly one project by an exact `github.com/<org>/<key>` or
+// `Desktop/Work/<key>` mention is filed by rule, never sent to the model.
+
+#[test]
+fn exact_repo_mention_files_by_rule() {
+    let conn = open_memory().unwrap();
+    pin(&conn, "vitinn-infra", None);
+    let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+    let eid = repo::upsert_event(
+        &conn,
+        &Event::minimal(SOURCE_SLACK, "e1", "2026-04-20T09:00:00+00:00", "deploy"),
+    )
+    .unwrap();
+    set_details(
+        &conn,
+        eid,
+        "PR link → https://github.com/Heman10x/vitinn-infra/pull/42",
+    );
+
+    let stats = route_day(&conn, day, &PanicsIfCalled, default_rule()).unwrap();
+    assert_eq!(stats.rules_applied, 1);
+    assert_eq!(stats.guesses_applied, 0);
+
+    let routed = routed_for_day(&conn, day).unwrap();
+    assert_eq!(routed[0].folder.as_deref(), Some("vitinn-infra"));
+    assert_eq!(routed[0].label_origin, Some(LabelOrigin::Rule));
+}
+
+#[test]
+fn path_mention_files_by_rule() {
+    let conn = open_memory().unwrap();
+    pin(&conn, "vitinn-infra", None);
+    let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+    let eid = repo::upsert_event(
+        &conn,
+        &Event::minimal(
+            SOURCE_FIREFOX,
+            "e1",
+            "2026-04-20T09:00:00+00:00",
+            "terminal",
+        ),
+    )
+    .unwrap();
+    set_details(&conn, eid, "cd ~/Desktop/Work/vitinn-infra");
+
+    let stats = route_day(&conn, day, &PanicsIfCalled, default_rule()).unwrap();
+    assert_eq!(stats.rules_applied, 1);
+    assert_eq!(stats.guesses_applied, 0);
+
+    let routed = routed_for_day(&conn, day).unwrap();
+    assert_eq!(routed[0].folder.as_deref(), Some("vitinn-infra"));
+    assert_eq!(routed[0].label_origin, Some(LabelOrigin::Rule));
+}
+
+#[test]
+fn two_named_projects_is_no_match() {
+    let conn = open_memory().unwrap();
+    pin(&conn, "vitinn-infra", None);
+    pin(&conn, "other-repo", None);
+    let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+    let eid = repo::upsert_event(
+        &conn,
+        &Event::minimal(SOURCE_SLACK, "e1", "2026-04-20T09:00:00+00:00", "deploy"),
+    )
+    .unwrap();
+    set_details(
+        &conn,
+        eid,
+        "https://github.com/org/vitinn-infra and https://github.com/org/other-repo",
+    );
+
+    let (rule_hits, pending) = load_pending(&conn, day).unwrap();
+    assert!(
+        rule_hits.is_empty(),
+        "two distinct named projects must not be filed by rule"
+    );
+    assert_eq!(pending.len(), 1);
+}
+
+#[test]
+fn prefix_is_not_a_match() {
+    let conn = open_memory().unwrap();
+    pin(&conn, "vitinn-infra", None);
+    let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+    let eid = repo::upsert_event(
+        &conn,
+        &Event::minimal(SOURCE_SLACK, "e1", "2026-04-20T09:00:00+00:00", "deploy"),
+    )
+    .unwrap();
+    set_details(&conn, eid, "https://github.com/org/vitinn-infra-old/pull/1");
+
+    let (rule_hits, pending) = load_pending(&conn, day).unwrap();
+    assert!(
+        rule_hits.is_empty(),
+        "vitinn-infra-old must not match the vitinn-infra option"
+    );
+    assert_eq!(pending.len(), 1);
+}
+
+#[test]
+fn unknown_repo_is_no_match() {
+    let conn = open_memory().unwrap();
+    pin(&conn, "vitinn-infra", None);
+    let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+    let eid = repo::upsert_event(
+        &conn,
+        &Event::minimal(SOURCE_SLACK, "e1", "2026-04-20T09:00:00+00:00", "deploy"),
+    )
+    .unwrap();
+    set_details(&conn, eid, "https://github.com/org/some-unknown-repo");
+
+    let (rule_hits, pending) = load_pending(&conn, day).unwrap();
+    assert!(
+        rule_hits.is_empty(),
+        "a mentioned repo that isn't a known project key must not be filed by rule"
+    );
+    assert_eq!(pending.len(), 1);
 }
 
 // The options-narrowing check is unchanged by T003 (`p.options.contains`
