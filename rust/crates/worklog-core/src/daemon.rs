@@ -131,7 +131,10 @@ pub fn router(state: Shared) -> Router {
         .route("/billing/folders", post(billing_folder_upsert))
         .route("/billing/folders/:id/delete", post(billing_folder_delete))
         .route("/settings", get(get_settings).post(post_settings))
-        .route("/browser/heartbeat", post(browser_heartbeat))
+        .route(
+            "/browser/heartbeat",
+            post(browser_heartbeat).options(browser_heartbeat_preflight),
+        )
         .route("/days/:day/routed", get(routed_events))
         .route("/events/:id/label", post(set_event_label))
         .route("/routing/rules", get(routing_rules_list))
@@ -1865,15 +1868,11 @@ async fn mark_export(
 
 // ───────────────────────── browser + Slack routing ─────────────────────────
 
-/// The Firefox add-on's heartbeat endpoint. Only the add-on itself can send
-/// an `Origin: moz-extension://...` header — an ordinary web page can't
-/// forge it — so that check is the whole authentication story
-/// (design.md decision 5).
-async fn browser_heartbeat(
-    State(state): State<Shared>,
-    headers: HeaderMap,
-    Json(hb): Json<routing_contract::Heartbeat>,
-) -> Result<Json<Value>, ApiError> {
+/// Only the add-on itself can send an `Origin: moz-extension://...` header
+/// — an ordinary web page can't forge it — so this check is the whole
+/// authentication story (design.md decision 5). Shared by the preflight
+/// and the POST handler so both enforce exactly the same rule.
+fn require_extension_origin(headers: &HeaderMap) -> Result<&str, ApiError> {
     let origin = headers
         .get(axum::http::header::ORIGIN)
         .and_then(|v| v.to_str().ok())
@@ -1883,6 +1882,37 @@ async fn browser_heartbeat(
             "origin {origin:?} is not a moz-extension:// origin"
         )));
     }
+    Ok(origin)
+}
+
+/// Firefox sends `OPTIONS /browser/heartbeat` before every heartbeat POST;
+/// without an answer here the browser never issues the POST at all.
+async fn browser_heartbeat_preflight(headers: HeaderMap) -> Result<Response, ApiError> {
+    let origin = require_extension_origin(&headers)?.to_string();
+    Ok((
+        StatusCode::OK,
+        [
+            (axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, origin),
+            (
+                axum::http::header::ACCESS_CONTROL_ALLOW_METHODS,
+                "POST".to_string(),
+            ),
+            (
+                axum::http::header::ACCESS_CONTROL_ALLOW_HEADERS,
+                "content-type".to_string(),
+            ),
+        ],
+    )
+        .into_response())
+}
+
+/// The Firefox add-on's heartbeat endpoint.
+async fn browser_heartbeat(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Json(hb): Json<routing_contract::Heartbeat>,
+) -> Result<Response, ApiError> {
+    let origin = require_extension_origin(&headers)?.to_string();
 
     let hours = configured_work_hours();
     let offset = crate::tz::day_offset();
@@ -1895,7 +1925,11 @@ async fn browser_heartbeat(
         browser_ingest::IngestOutcome::Stored(_) => (true, None),
         browser_ingest::IngestOutcome::Filtered(reason) => (false, Some(reason)),
     };
-    Ok(Json(json!({ "stored": stored, "reason": reason })))
+    Ok((
+        [(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, origin)],
+        Json(json!({ "stored": stored, "reason": reason })),
+    )
+        .into_response())
 }
 
 async fn routed_events(
@@ -3828,6 +3862,71 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    /// B13: Firefox sends `OPTIONS /browser/heartbeat` before every POST.
+    /// A `moz-extension://` origin gets the three CORS headers back; any
+    /// other origin gets the same 403 the POST route already gives (B3).
+    #[tokio::test(flavor = "current_thread")]
+    async fn heartbeat_preflight_allows_moz_extension_origin() {
+        let app = router(state_from_conn(open_memory().unwrap()));
+        let resp = app
+            .oneshot(
+                Request::options("/browser/heartbeat")
+                    .header("origin", "moz-extension://abc-123")
+                    .header("access-control-request-headers", "content-type")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let headers = resp.headers();
+        assert_eq!(
+            headers.get("access-control-allow-origin").unwrap(),
+            "moz-extension://abc-123"
+        );
+        assert_eq!(headers.get("access-control-allow-methods").unwrap(), "POST");
+        assert_eq!(
+            headers.get("access-control-allow-headers").unwrap(),
+            "content-type"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn heartbeat_preflight_rejects_other_origin() {
+        let app = router(state_from_conn(open_memory().unwrap()));
+        let resp = app
+            .oneshot(
+                Request::options("/browser/heartbeat")
+                    .header("origin", "https://evil.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert!(resp.headers().get("access-control-allow-origin").is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn heartbeat_preflight_success_response_carries_allow_origin() {
+        let app = router(state_from_conn(open_memory().unwrap()));
+        let resp = app
+            .oneshot(
+                Request::post("/browser/heartbeat")
+                    .header("content-type", "application/json")
+                    .header("origin", "moz-extension://abc-123")
+                    .body(Body::from(HB_BODY))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get("access-control-allow-origin").unwrap(),
+            "moz-extension://abc-123"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
