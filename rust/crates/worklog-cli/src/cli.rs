@@ -374,8 +374,8 @@ pub enum DaemonCmd {
 #[derive(Subcommand, Debug)]
 pub enum VerdictCmd {
     /// Foreground: write the embedded helper script to the data dir and
-    /// run it via `uv run --with verdict python <script>`, bound to
-    /// 127.0.0.1 only.
+    /// run it via `uv run --with <VERDICT_GIT_URL>@<VERDICT_GIT_REV>
+    /// --with huggingface_hub python <script>`, bound to 127.0.0.1 only.
     Serve,
     /// Report whether the helper is reachable on `CLASSIFIER_ADDR`.
     Status,
@@ -3463,9 +3463,29 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
     })
 }
 
+/// `uv run` args to launch the helper script pinned to the Verdict git
+/// revision + huggingface_hub, so a test can assert the pins never
+/// drift to a loose package name.
+fn verdict_uv_args(script_path: &std::path::Path) -> Vec<String> {
+    vec![
+        "run".to_string(),
+        "--with".to_string(),
+        format!(
+            "{}@{}",
+            worklog_core::routing_contract::VERDICT_GIT_URL,
+            worklog_core::routing_contract::VERDICT_GIT_REV
+        ),
+        "--with".to_string(),
+        "huggingface_hub".to_string(),
+        "python".to_string(),
+        script_path.display().to_string(),
+    ]
+}
+
 /// Write the embedded helper script to `<data>/verdict_server.py` and run
-/// it in the foreground via `uv run --with verdict`. Blocks until the
-/// child exits; `Ctrl-C` kills it like any other foreground process.
+/// it in the foreground via `uv run --with <VERDICT_GIT_URL>@<VERDICT_GIT_REV>
+/// --with huggingface_hub`. Blocks until the child exits; `Ctrl-C` kills it
+/// like any other foreground process.
 fn cmd_verdict_serve() -> Result<()> {
     let paths = Paths::resolve()?;
     paths.ensure()?;
@@ -3477,10 +3497,21 @@ fn cmd_verdict_serve() -> Result<()> {
         worklog_core::routing_contract::CLASSIFIER_ADDR
     );
     let status = std::process::Command::new("uv")
-        .args(["run", "--with", "verdict", "python"])
-        .arg(&script_path)
+        .args(verdict_uv_args(&script_path))
+        .env(
+            "WORKLOG_VERDICT_MODEL_DIR",
+            paths.data_dir.join("verdict-model"),
+        )
+        .env(
+            "WORKLOG_VERDICT_MODEL_REPO",
+            worklog_core::routing_contract::VERDICT_MODEL_REPO,
+        )
+        .env(
+            "WORKLOG_VERDICT_MODEL_REVISION",
+            worklog_core::routing_contract::VERDICT_MODEL_REVISION,
+        )
         .status()
-        .context("spawning `uv run --with verdict python` — is uv installed?")?;
+        .context("spawning `uv run` — is uv installed?")?;
     if !status.success() {
         anyhow::bail!("verdict server exited {status}");
     }
@@ -4388,5 +4419,25 @@ mod tests {
                 "effective_since({requested}, {cutoff}) = {result}, earlier than cutoff"
             );
         }
+    }
+
+    /// B7: `worklog verdict serve` must carry the pinned Verdict git
+    /// revision and huggingface_hub dependency, not a loose package name.
+    #[test]
+    fn verdict_serve_args_pin_revisions() {
+        let args = verdict_uv_args(std::path::Path::new("/tmp/verdict_server.py"));
+        assert_eq!(
+            args,
+            vec![
+                "run".to_string(),
+                "--with".to_string(),
+                "git+https://github.com/Heman10x-NGU/Verdict-open-jev@30f15564821626ca5c1ad5b2638c4eb7078787dd"
+                    .to_string(),
+                "--with".to_string(),
+                "huggingface_hub".to_string(),
+                "python".to_string(),
+                "/tmp/verdict_server.py".to_string(),
+            ]
+        );
     }
 }
