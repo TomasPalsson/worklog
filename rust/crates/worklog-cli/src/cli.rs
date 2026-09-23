@@ -1451,11 +1451,155 @@ fn wants(target: CollectTarget, source: CollectTarget) -> bool {
     target == CollectTarget::All || target == source
 }
 
-fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bool) -> Result<()> {
+/// Every collectible source, in fetch order. `collect_target_list` filters
+/// this through `wants()` so both `collect_targets` and its tests can name
+/// "what does `target` collect" without re-deriving the filter.
+const COLLECT_SOURCES: [CollectTarget; 6] = [
+    CollectTarget::Jira,
+    CollectTarget::Github,
+    CollectTarget::Gcal,
+    CollectTarget::Slack,
+    CollectTarget::Shell,
+    CollectTarget::Reflog,
+];
+
+/// The sources `collect_targets(target, …)` will attempt, in order.
+fn collect_target_list(target: CollectTarget) -> Vec<CollectTarget> {
+    COLLECT_SOURCES
+        .into_iter()
+        .filter(|&source| wants(target, source))
+        .collect()
+}
+
+fn source_label(target: CollectTarget) -> &'static str {
+    match target {
+        CollectTarget::All => "all",
+        CollectTarget::Jira => "jira",
+        CollectTarget::Github => "github",
+        CollectTarget::Gcal => "gcal",
+        CollectTarget::Slack => "slack",
+        CollectTarget::Shell => "shell",
+        CollectTarget::Reflog => "reflog",
+    }
+}
+
+/// One source's outcome from `collect_targets`. `Warn` vs `Skip` matters to
+/// `cmd_day`'s empty-day diagnostic: `Skip` means the source isn't
+/// configured at all, `Warn` means credentials resolved but the fetch
+/// itself failed.
+enum CollectOutcome {
+    // The reflog collector's `CollectReport.source` is `"git_reflog"`, not
+    // `"reflog"` — keying on `CollectTarget` (rather than the report's own
+    // source string, or the display label) sidesteps that mismatch.
+    Ok(CollectTarget, worklog_core::collectors::CollectReport),
+    Warn {
+        source: CollectTarget,
+        message: String,
+    },
+    Skip {
+        source: CollectTarget,
+        message: String,
+    },
+    RoutingFailed {
+        day: chrono::NaiveDate,
+        message: String,
+    },
+}
+
+/// Collect every source `target` wants — jira, github, gcal, slack, shell,
+/// reflog — over `[since, until)`, then, for the umbrella `all` target,
+/// route + absorb each day in that range. Shared by `collect all` and
+/// `worklog day` so the launchd schedule (`worklog day` every 15 min)
+/// can't silently drop a source the way it did when `day` had its own
+/// hand-rolled jira+github+gcal-only collect step. Opens its own db
+/// connection + http client so callers never juggle those types.
+fn collect_targets(
+    target: CollectTarget,
+    since: chrono::NaiveDate,
+    until: chrono::NaiveDate,
+) -> Result<Vec<CollectOutcome>> {
     let paths = Paths::resolve()?;
     paths.ensure()?;
     let conn = db::open(&paths.db)?;
     let client = http::client()?;
+
+    let mut outcomes = Vec::new();
+    for source in collect_target_list(target) {
+        let label = source_label(source);
+        let pb = style::spinner(&format!("{label} …"));
+        let result = match source {
+            CollectTarget::Jira => match jira_col::JiraAuth::from_secrets() {
+                Ok(auth) => jira_col::fetch_open_tickets_with(&conn, &auth, &client)
+                    .map_err(|e| format!("fetch: {e}")),
+                Err(e) => Err(format!("skipped: {e}")),
+            },
+            CollectTarget::Github => match gh::GitHubAuth::from_secrets() {
+                Ok(auth) => gh::collect_with(&conn, &auth, since, until, &client)
+                    .map_err(|e| format!("fetch: {e}")),
+                Err(e) => Err(format!("skipped: {e}")),
+            },
+            CollectTarget::Gcal => match gcal_col::GcalAuth::from_paths() {
+                Ok(auth) => gcal_col::collect_with(&conn, &auth, since, until, &client)
+                    .map_err(|e| format!("fetch: {e}")),
+                Err(e) => Err(format!("skipped: {e}")),
+            },
+            CollectTarget::Slack => match slack_col::SlackAuth::from_secrets() {
+                Ok(auth) => slack_col::collect_with(
+                    &conn,
+                    &auth,
+                    since,
+                    until,
+                    &client,
+                    slack_col::SLACK_API,
+                )
+                .map_err(|e| format!("fetch: {e}")),
+                Err(e) => Err(format!("skipped: {e}")),
+            },
+            CollectTarget::Shell => {
+                fish_col::collect(&conn, since, until).map_err(|e| format!("fetch: {e}"))
+            }
+            CollectTarget::Reflog => {
+                reflog_col::collect(&conn, since, until).map_err(|e| format!("fetch: {e}"))
+            }
+            CollectTarget::All => unreachable!("collect_target_list only yields concrete sources"),
+        };
+        pb.finish_and_clear();
+        outcomes.push(match result {
+            Ok(r) => CollectOutcome::Ok(source, r),
+            Err(msg) => match msg.strip_prefix("skipped: ") {
+                Some(reason) => CollectOutcome::Skip {
+                    source,
+                    message: reason.to_string(),
+                },
+                None => CollectOutcome::Warn {
+                    source,
+                    message: msg.strip_prefix("fetch: ").unwrap_or(&msg).to_string(),
+                },
+            },
+        });
+    }
+
+    if matches!(target, CollectTarget::All) {
+        let classifier = VerdictClassifier::new();
+        let rule = daemon_mod::configured_route_rule();
+        let mut d = since;
+        while d < until {
+            let routed = routing::route_day(&conn, d, &classifier, rule)
+                .and_then(|_| routing_absorb::absorb_and_noise(&conn, d));
+            if let Err(e) = routed {
+                outcomes.push(CollectOutcome::RoutingFailed {
+                    day: d,
+                    message: e.to_string(),
+                });
+            }
+            d += chrono::Duration::days(1);
+        }
+    }
+
+    Ok(outcomes)
+}
+
+fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bool) -> Result<()> {
     let today = chrono::Utc::now().date_naive();
     let requested_since = today - chrono::Duration::days(days as i64);
     // The pruner's cutoff is computed off the LOCAL day (matching what it
@@ -1476,126 +1620,25 @@ fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bo
         );
     }
 
-    // Each report wrapped in an Option so we can still emit something
-    // useful when a source's credentials aren't set.
+    let outcomes = collect_targets(target, since, today + chrono::Duration::days(1))?;
+
     let mut reports: Vec<worklog_core::collectors::CollectReport> = Vec::new();
-
-    if wants(target, CollectTarget::Jira) {
-        let pb = style::spinner("jira …");
-        let result = match jira_col::JiraAuth::from_secrets() {
-            Ok(auth) => jira_col::fetch_open_tickets_with(&conn, &auth, &client)
-                .map_err(|e| format!("fetch: {e}")),
-            Err(e) => Err(format!("skipped: {e}")),
-        };
-        pb.finish_and_clear();
-        match result {
-            Ok(r) => reports.push(r),
-            Err(msg) if !json => style::info(out, &format!("jira {msg}"))?,
-            Err(_) => (),
-        }
-    }
-
-    if wants(target, CollectTarget::Github) {
-        let pb = style::spinner("github …");
-        let result = match gh::GitHubAuth::from_secrets() {
-            Ok(auth) => gh::collect_with(
-                &conn,
-                &auth,
-                since,
-                today + chrono::Duration::days(1),
-                &client,
-            )
-            .map_err(|e| format!("fetch: {e}")),
-            Err(e) => Err(format!("skipped: {e}")),
-        };
-        pb.finish_and_clear();
-        match result {
-            Ok(r) => reports.push(r),
-            Err(msg) if !json => style::info(out, &format!("github {msg}"))?,
-            Err(_) => (),
-        }
-    }
-
-    if wants(target, CollectTarget::Gcal) {
-        let pb = style::spinner("gcal …");
-        let result = match gcal_col::GcalAuth::from_paths() {
-            Ok(auth) => gcal_col::collect_with(
-                &conn,
-                &auth,
-                since,
-                today + chrono::Duration::days(1),
-                &client,
-            )
-            .map_err(|e| format!("fetch: {e}")),
-            Err(e) => Err(format!("skipped: {e}")),
-        };
-        pb.finish_and_clear();
-        match result {
-            Ok(r) => reports.push(r),
-            Err(msg) if !json => style::info(out, &format!("gcal {msg}"))?,
-            Err(_) => (),
-        }
-    }
-
-    if wants(target, CollectTarget::Slack) {
-        let pb = style::spinner("slack …");
-        let result = match slack_col::SlackAuth::from_secrets() {
-            Ok(auth) => slack_col::collect_with(
-                &conn,
-                &auth,
-                since,
-                today + chrono::Duration::days(1),
-                &client,
-                slack_col::SLACK_API,
-            )
-            .map_err(|e| format!("fetch: {e}")),
-            Err(e) => Err(format!("skipped: {e}")),
-        };
-        pb.finish_and_clear();
-        match result {
-            Ok(r) => reports.push(r),
-            Err(msg) if !json => style::info(out, &format!("slack {msg}"))?,
-            Err(_) => (),
-        }
-    }
-
-    if wants(target, CollectTarget::Shell) {
-        let pb = style::spinner("shell …");
-        let result = fish_col::collect(&conn, since, today + chrono::Duration::days(1))
-            .map_err(|e| format!("fetch: {e}"));
-        pb.finish_and_clear();
-        match result {
-            Ok(r) => reports.push(r),
-            Err(msg) if !json => style::info(out, &format!("shell {msg}"))?,
-            Err(_) => (),
-        }
-    }
-
-    if wants(target, CollectTarget::Reflog) {
-        let pb = style::spinner("reflog …");
-        let result = reflog_col::collect(&conn, since, today + chrono::Duration::days(1))
-            .map_err(|e| format!("fetch: {e}"));
-        pb.finish_and_clear();
-        match result {
-            Ok(r) => reports.push(r),
-            Err(msg) if !json => style::info(out, &format!("reflog {msg}"))?,
-            Err(_) => (),
-        }
-    }
-
-    if matches!(target, CollectTarget::All) {
-        let classifier = VerdictClassifier::new();
-        let rule = daemon_mod::configured_route_rule();
-        let mut d = since;
-        while d <= today {
-            let routed = routing::route_day(&conn, d, &classifier, rule)
-                .and_then(|_| routing_absorb::absorb_and_noise(&conn, d));
-            if let Err(e) = routed {
-                if !json {
-                    style::info(out, &format!("routing {d}: {e}"))?;
-                }
+    for outcome in &outcomes {
+        match outcome {
+            CollectOutcome::Ok(_, r) => reports.push(r.clone()),
+            CollectOutcome::Skip { source, message } if !json => {
+                style::info(
+                    out,
+                    &format!("{} skipped: {message}", source_label(*source)),
+                )?;
             }
-            d += chrono::Duration::days(1);
+            CollectOutcome::Warn { source, message } if !json => {
+                style::info(out, &format!("{} fetch: {message}", source_label(*source)))?;
+            }
+            CollectOutcome::RoutingFailed { day, message } if !json => {
+                style::info(out, &format!("routing {day}: {message}"))?;
+            }
+            _ => (),
         }
     }
 
@@ -3186,69 +3229,58 @@ fn cmd_day<W: Write>(
     let conn = db::open(&paths.db)?;
     let day_parsed = parse_day(day.as_deref())?;
 
-    // --- collect --------------------------------------------------------
+    // --- collect + route --------------------------------------------------
     // Collect for the requested day, not "now" — lets `worklog day --day
     // 2026-04-01` pull the right slice instead of dumping today's data
-    // into last month's folder.
-    style::step(out, "collecting github + jira + gcal …")?;
-    let client = http::client()?;
+    // into last month's folder. Goes through the same `collect_targets`
+    // path `collect all` uses — jira, github, gcal, slack, shell, reflog,
+    // then route_day + absorb_and_noise for the day — so `worklog day`
+    // (which the launchd schedule now runs every 15 min) can't silently
+    // drop a source the way it did when this function hand-rolled its own
+    // jira+github+gcal-only collect step.
+    style::step(
+        out,
+        "collecting jira + github + gcal + slack + shell + reflog …",
+    )?;
     let since = day_parsed;
     let until = day_parsed + chrono::Duration::days(1);
+    let outcomes = collect_targets(CollectTarget::All, since, until)?;
 
-    // Each collector gets its own spinner + ok/warn line so a stall on
-    // one source doesn't look like the whole pipeline has hung. A Jira
-    // outage shouldn't block the rest of the flow. The outcomes are
-    // kept after rendering so the empty-day diagnostic below can name
-    // the specific collector that failed.
-    let jira_outcome = run_with_spinner("jira", || match jira_col::JiraAuth::from_secrets() {
-        Ok(auth) => match jira_col::fetch_open_tickets_with(&conn, &auth, &client) {
-            Ok(r) => StepOutcome::Ok(format!(
-                "jira:   tickets={} events={}",
-                r.tickets_written, r.events_written
-            )),
-            Err(e) => StepOutcome::Warn(format!("jira:   {e}")),
-        },
-        Err(e) => StepOutcome::Info(format!("jira skipped: {e}")),
-    });
-    jira_outcome.render(out)?;
-
-    let github_outcome = run_with_spinner("github", || match gh::GitHubAuth::from_secrets() {
-        Ok(auth) => match gh::collect_with(&conn, &auth, since, until, &client) {
-            Ok(r) => StepOutcome::Ok(format!("github: events={}", r.events_written)),
-            Err(e) => StepOutcome::Warn(format!("github: {e}")),
-        },
-        Err(e) => StepOutcome::Info(format!("github skipped: {e}")),
-    });
-    github_outcome.render(out)?;
-
-    let gcal_outcome = run_with_spinner("gcal", || match gcal_col::GcalAuth::from_paths() {
-        Ok(auth) => match gcal_col::collect_with(&conn, &auth, since, until, &client) {
-            Ok(r) => StepOutcome::Ok(format!("gcal:   events={}", r.events_written)),
-            Err(e) => StepOutcome::Warn(format!("gcal:   {e}")),
-        },
-        Err(e) => StepOutcome::Info(format!("gcal skipped: {e}")),
-    });
-    gcal_outcome.render(out)?;
-
-    // --- route ------------------------------------------------------------
-    // Owner rules → Link → Slack time-context → Verdict → absorb + noise
-    // (zero-touch day, spec 004): every firefox/slack event ends up
-    // attributed or hidden before inference ever sees it.
-    style::step(out, "routing browser/Slack events …")?;
-    let classifier = VerdictClassifier::new();
-    let route_rule = daemon_mod::configured_route_rule();
-    match routing::route_day(&conn, day_parsed, &classifier, route_rule)
-        .and_then(|stats| routing_absorb::absorb_and_noise(&conn, day_parsed).map(|_| stats))
-    {
-        Ok(stats) => style::ok(
-            out,
-            &format!(
-                "rules={} guesses={}",
-                stats.rules_applied, stats.guesses_applied
-            ),
-        )?,
-        Err(e) => style::warn(out, &format!("routing: {e}"))?,
+    // Turn a source's `CollectOutcome` into the `StepOutcome` the empty-day
+    // diagnostic below expects; absence (source wasn't attempted) can't
+    // happen here since `target` is always `All`, but is handled anyway.
+    let step_outcome_for = |target: CollectTarget| -> StepOutcome {
+        let label = source_label(target);
+        for outcome in &outcomes {
+            match outcome {
+                CollectOutcome::Ok(s, r) if *s == target => {
+                    return StepOutcome::Ok(format!(
+                        "{label}: tickets={} events={}",
+                        r.tickets_written, r.events_written
+                    ));
+                }
+                CollectOutcome::Warn { source, message } if *source == target => {
+                    return StepOutcome::Warn(format!("{label}:   {message}"));
+                }
+                CollectOutcome::Skip { source, message } if *source == target => {
+                    return StepOutcome::Info(format!("{label} skipped: {message}"));
+                }
+                _ => (),
+            }
+        }
+        StepOutcome::Info(format!("{label}: not collected"))
+    };
+    for target in COLLECT_SOURCES {
+        step_outcome_for(target).render(out)?;
     }
+    for outcome in &outcomes {
+        if let CollectOutcome::RoutingFailed { message, .. } = outcome {
+            style::warn(out, &format!("routing: {message}"))?;
+        }
+    }
+    let jira_outcome = step_outcome_for(CollectTarget::Jira);
+    let github_outcome = step_outcome_for(CollectTarget::Github);
+    let gcal_outcome = step_outcome_for(CollectTarget::Gcal);
 
     // --- infer ----------------------------------------------------------
     style::step(out, "inferring blocks …")?;
@@ -3374,19 +3406,6 @@ impl StepOutcome {
             _ => None,
         }
     }
-}
-
-/// Run a closure with a spinner labelled `label`; clear the spinner
-/// before the outcome line prints so the spinner frame doesn't ghost
-/// under the ✓ / ! / · marker.
-fn run_with_spinner<F>(label: &str, f: F) -> StepOutcome
-where
-    F: FnOnce() -> StepOutcome,
-{
-    let pb = style::spinner(&format!("{label} …"));
-    let out = f();
-    pb.finish_and_clear();
-    out
 }
 
 fn cmd_hook_run() -> Result<()> {
@@ -4268,6 +4287,32 @@ mod tests {
         assert!(wants(CollectTarget::Shell, CollectTarget::Shell));
         assert!(wants(CollectTarget::Reflog, CollectTarget::Reflog));
         assert!(!wants(CollectTarget::Shell, CollectTarget::Reflog));
+    }
+
+    /// Regression test for the bug where `cmd_day` hand-rolled its own
+    /// jira+github+gcal-only collect step: since `worklog day` always
+    /// asks `collect_targets` for `CollectTarget::All` — the same target
+    /// `worklog collect all` uses — the source list for `All` must be the
+    /// full six, including Slack, Shell, and Reflog.
+    #[test]
+    fn day_collects_same_targets_as_collect_all() {
+        let day_sources = collect_target_list(CollectTarget::All);
+        let collect_all_sources = collect_target_list(CollectTarget::All);
+        assert_eq!(day_sources, collect_all_sources);
+        assert_eq!(
+            day_sources,
+            vec![
+                CollectTarget::Jira,
+                CollectTarget::Github,
+                CollectTarget::Gcal,
+                CollectTarget::Slack,
+                CollectTarget::Shell,
+                CollectTarget::Reflog,
+            ]
+        );
+        assert!(day_sources.contains(&CollectTarget::Slack));
+        assert!(day_sources.contains(&CollectTarget::Shell));
+        assert!(day_sources.contains(&CollectTarget::Reflog));
     }
 
     #[test]
