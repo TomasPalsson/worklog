@@ -131,6 +131,11 @@ export interface SettingsView {
   /** Last day-of-month the just-closed cycle can still take hours (1-31).
    * Default 23. */
   close_day: number;
+  /** Editable work-hours window for browser heartbeat ingest, e.g.
+   * "Mon-Fri 09:00-17:00". */
+  work_hours: string;
+  /** Minimum model confidence (0.0-1.0) to accept a routing guess. */
+  route_threshold: number;
 }
 
 /** Partial update sent to `POST /settings`. Omitted groups are left
@@ -146,6 +151,10 @@ export interface SettingsUpdate {
   cycle_start_day?: number;
   /** Omitted leaves the current close day untouched. */
   close_day?: number;
+  /** Omitted leaves the work-hours window untouched. */
+  work_hours?: string;
+  /** Omitted leaves the route threshold untouched. */
+  route_threshold?: number;
 }
 
 export interface ReclassifyStats {
