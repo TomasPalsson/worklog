@@ -13,9 +13,17 @@ export function formatRange(start: string, end: string): string {
   return `${formatClock(start)}–${formatClock(end)}`;
 }
 
-/** A day-gap row's text, e.g. "No activity 12:05–12:50 (45 min)". */
+// ponytail: the owner's lunch is 11:30 local; make it a setting if that ever changes.
+const LUNCH_HOUR = 11;
+const LUNCH_MINUTE = 30;
+
+/** A day-gap row's text, e.g. "No activity 12:05–12:50 (45 min)", or "Lunch …" when it covers 11:30. */
 export function formatGapRow(gap: { started_at: string; ended_at: string; minutes: number }): string {
-  return `No activity ${formatRange(gap.started_at, gap.ended_at)} (${gap.minutes} min)`;
+  const start = new Date(gap.started_at);
+  const lunch = new Date(start);
+  lunch.setHours(LUNCH_HOUR, LUNCH_MINUTE, 0, 0);
+  const isLunch = start <= lunch && lunch < new Date(gap.ended_at);
+  return `${isLunch ? "Lunch" : "No activity"} ${formatRange(gap.started_at, gap.ended_at)} (${gap.minutes} min)`;
 }
 
 export function formatDuration(seconds: number): string {

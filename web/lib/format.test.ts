@@ -135,6 +135,16 @@ describe("formatGapRow", () => {
     });
     expect(v).toMatch(/^No activity \d{2}:\d{2}–\d{2}:\d{2} \(45 min\)$/);
   });
+
+  it("calls a gap that covers 11:30 local time lunch", () => {
+    const at = (h: number, m: number) => new Date(2026, 8, 23, h, m).toISOString();
+    expect(formatGapRow({ started_at: at(11, 23), ended_at: at(11, 59), minutes: 36 })).toBe(
+      "Lunch 11:23–11:59 (36 min)",
+    );
+    expect(formatGapRow({ started_at: at(14, 6), ended_at: at(14, 41), minutes: 35 })).toBe(
+      "No activity 14:06–14:41 (35 min)",
+    );
+  });
 });
 
 describe("mondayOf", () => {
