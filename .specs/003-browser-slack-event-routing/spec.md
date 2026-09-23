@@ -154,3 +154,22 @@ None — every category was settled in PREP.md.
 | Unsorted | A browser/Slack event with no label; excluded from blocks |
 | Heartbeat | One add-on report: this tab was focused and the consultant active in this minute |
 | Hard rule | "always" mapping from a domain, Slack channel or container to a project |
+
+## Amendment 2026-09-23
+
+What changed and why: CHK002 run on real data (verify/CHK002.md) found two defects.
+
+1. Firefox 156 sends a CORS preflight (`OPTIONS /browser/heartbeat`, `Origin: moz-extension://…`, `Access-Control-Request-Headers: content-type`) before every heartbeat. The daemon answered 405, so no heartbeat was ever stored.
+2. Slack DM events store the counterpart's user id (e.g. `U06815WTGSE`) as their title, because `search.messages` reports a DM channel's name as that id.
+
+Added requirements:
+- FR-A1: `OPTIONS /browser/heartbeat` from an Origin starting `moz-extension://` → 200 with `Access-Control-Allow-Origin: <that origin>`, `Access-Control-Allow-Methods: POST`, `Access-Control-Allow-Headers: content-type`. The POST response carries the same `Access-Control-Allow-Origin`. Any other Origin (or none) → 403, no CORS headers.
+- FR-A2: a Slack DM (`channel.is_im`) is stored with the counterpart's name (`users.info` → profile real name, else display name) as its title. At most one `users.info` call per user per collect run.
+- FR-A3: a failed name lookup (network, `missing_scope`, `user_not_found`) keeps the user id as the title, counts one entry in `CollectReport.errors`, and the collect still succeeds.
+
+Accepted positions (discovery 2026-09-23, "all good"):
+- Non-goals: no general CORS allow-list — only `moz-extension://` origins; no name lookup for group DMs or channels; no new dependency or tower-http feature — a hand-written OPTIONS handler.
+- Name lookup needs the `users:read` user scope on the consultant's Slack app; until it is added FR-A3 applies.
+- Old DM rows are fixed by re-running `worklog collect slack --days 7` (upsert already overwrites `title`); no migration.
+- A Slack "always" rule on a DM matches the person's name; two people with the same full name share a rule (A10, High).
+- Proof: daemon tests for preflight allow/deny, collector tests with an httpmock DM (named, and lookup failing), then CHK003 on real data.

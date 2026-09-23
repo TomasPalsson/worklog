@@ -14,3 +14,5 @@ Discovered: T011 review F2 — firefox/slack detection repeated in EventList/Sou
 Discovered: T012 review F3 — SettingsPanel function still 145 lines vs 60-line size gate despite the split (re-scored 78, below keep line) — defer (gates)
 Discovered: T011 minors — PalettePicker closes on a rejected pick (spec Journey 3 says it stays open); page.tsx Promise.all drops routed events if loadBillingRegistry fails; T011 day-change test passes key itself so it guards the React contract, not page.tsx — defer (CHK002 / gates)
 Discovered: a T012 reviewer left stash entry "t012-review-wip" (853fd70) on the shared stash stack; worktree verified intact — defer (user drops it)
+Discovered: CHK002 — Firefox 156 sends a CORS preflight (OPTIONS /browser/heartbeat, Origin moz-extension://…, Access-Control-Request-Headers: content-type); daemon answers 405 (allow: POST), so no heartbeat is ever stored. Captured raw in verify/CHK002.md — fold into new task (daemon answers preflight for moz-extension origins)
+Discovered: CHK002 — Slack DM events land with title = raw user id (e.g. U06815WTGSE) and no rule/fix/guess tag (laya_reachable=false, no rules yet) — decide at amend

@@ -17,6 +17,8 @@ Spec: spec.md · Design: design.md · Base: 0fa7830 · Route: dispatch · Test: 
 | B10 (P0) | Given a container naming exactly one customer, when routed, then the model only sees that customer's folders | T005 | routing::tests::container_narrows_options |
 | B11 (P0) | Given the add-on, when a normal tab is focused and the user active, then it posts once per 60 s; paused/idle/incognito/Personal → no post | T008 | extension/firefox/heartbeat.test.js |
 | B12 (P0) | Given a day with routed events, when the day page loads, then unsorted events are listed and every routed event shows source + origin | T011 | web/components/UnsortedList.test.tsx |
+| B13 (P0) | Given a CORS preflight to /browser/heartbeat, when its Origin is moz-extension://…, then 200 with allow-origin/methods/headers; any other Origin → 403 | T013 | daemon::tests::heartbeat_preflight_allows_extension_origin |
+| B14 (P0) | Given a sent Slack DM, when collected, then its title is the counterpart's name; a failed lookup keeps the id and the collect succeeds | T014 | collectors::slack::tests::dm_title_is_counterpart_name |
 
 ## Phase 1 — Capture and storage
 Goal: browser heartbeats and sent Slack messages land in the database, filtered and deduplicated.
@@ -45,7 +47,14 @@ Independent test: `cd web && bun test && bun run typecheck` — green against a 
 - [x] T010 Web types, daemon client and server actions — files: web/lib/types.ts, web/lib/daemon.ts, web/app/actions.ts, web/lib/types.test.ts — verify: `cd web && bun test lib/types.test.ts && bun run typecheck` — after: T003 — done: 70fdecf
 - [x] T011 [P] Unsorted list, label picker with "always", source + origin badges (B12) — files: web/components/UnsortedList.tsx, web/components/UnsortedList.test.tsx, web/components/EventList.tsx, web/components/SourceBadges.tsx, web/app/[day]/page.tsx — verify: `cd web && bun test components/UnsortedList.test.tsx` — after: T010 — done: 0b5f04f
 - [x] T012 [P] Settings: work hours, threshold, Slack token, rules list, source status; Billing label copy for named projects — files: web/components/SettingsPanel.tsx, web/components/SettingsPanel.test.tsx, web/components/BillingRegistry.tsx — verify: `cd web && bun test components/SettingsPanel.test.tsx` — after: T010 — done: e17d9a6
-- [ ] CHK002 human-verify the day page with real data — files: web/components/UnsortedList.tsx — verify: human: user sees a day's Firefox and Slack events with container/channel and rule/fix/guess tags, sorts one unsorted event, and it moves into a block — after: T011, T012, T007
+- [~] CHK002 human-verify the day page with real data — files: web/components/UnsortedList.tsx — verify: human: user sees a day's Firefox and Slack events with container/channel and rule/fix/guess tags, sorts one unsorted event, and it moves into a block — after: T011, T012, T007 — dropped: failed on real data (verify/CHK002.md); superseded by CHK003 after the 2026-09-23 amendment
+
+## Phase 5 — Amendment: heartbeats reach the daemon, DMs show names
+Goal: Firefox heartbeats are stored from a real install, and Slack DMs show the person's name.
+Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core daemon:: slack` — green with no network.
+- [ ] T013 [P] Daemon answers the CORS preflight for moz-extension origins (B13) — files: rust/crates/worklog-core/src/daemon.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core daemon::tests::heartbeat_preflight` — after: T003
+- [ ] T014 [P] Slack DMs titled with the counterpart's name via users.info (B14) — files: rust/crates/worklog-core/src/collectors/slack.rs, rust/crates/worklog-core/src/collectors/slack_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core slack` — after: T004
+- [ ] CHK003 human-verify the day page with real data — files: web/components/UnsortedList.tsx — verify: human: user sees a day's Firefox and Slack events with container/channel (DMs by name) and rule/fix/guess tags, sorts one unsorted event, and it moves into a block — after: T011, T012, T007, T013, T014
 
 ## Gates
 - [ ] G001 project gates clean — files: . — verify: `flow check --fix`

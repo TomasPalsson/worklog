@@ -122,3 +122,13 @@ CALLS      `fetch("http://127.0.0.1:9323/browser/heartbeat", {method:"POST", hea
 MODULE     heartbeat.js exports pure fns only (no `browser.*`): `shouldSend({paused, incognito, containerName, idleState, windowFocused}) -> boolean` (false when paused, incognito, containerName === "Personal", idleState !== "active", or no focused window) · `buildHeartbeat(tab, containerName, now: Date) -> Heartbeat` · background.js wires `browser.*` to them
 RULES      Work hours are enforced by the daemon (single editable setting); the add-on does not duplicate them. A failed POST is dropped silently (daemon down = no data, never a retry queue). README.md: load via about:debugging, build with `web-ext build`, sign with `web-ext sign --channel unlisted`.
 THE FIVE   (1)–(5) as in T001.
+
+## Contract for T013 — Heartbeat CORS preflight
+CONTRACT   rust/crates/worklog-core/src/daemon.rs — route table + `browser_heartbeat`.
+CALLS      `.route("/browser/heartbeat", post(browser_heartbeat).options(browser_heartbeat_preflight))` · preflight: Origin starts `moz-extension://` → 200, headers `access-control-allow-origin: <origin>`, `access-control-allow-methods: POST`, `access-control-allow-headers: content-type`; else `ApiError::Forbidden` (403), no CORS headers · `browser_heartbeat` success response also sets `access-control-allow-origin: <origin>`
+THE FIVE   (1) no new crate or tower-http feature (2) the POST 403 rule (B3) is unchanged (3) origin check is one shared helper used by both handlers (4) no wildcard `*` origin ever (5) tests use `Request::options` / `Request::post` like the existing daemon tests.
+
+## Contract for T014 — Slack DM names
+CONTRACT   rust/crates/worklog-core/src/collectors/slack.rs
+CALLS      `MatchChannel` gains `#[serde(default)] is_im: bool` · for `is_im` matches, `GET {base_url}/users.info?user=<channel.name>` (bearer token) → `user.profile.real_name`, else `user.profile.display_name`, else keep the id · per-run `HashMap<String, String>` cache, one call per user id · lookup failure (HTTP error, `ok:false`) → title = id, push `"users.info <id>: <err>"` to `report.errors`, continue
+THE FIVE   (1) `collect_with` signature unchanged (2) non-DM titles unchanged (3) source_id unchanged, so re-collect upserts over old rows (4) a lookup failure never fails the collect (5) tests in slack_test.rs with httpmock, mirroring the existing ones.
