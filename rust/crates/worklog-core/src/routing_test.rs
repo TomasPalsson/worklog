@@ -353,6 +353,49 @@ fn unknown_repo_is_no_match() {
     assert_eq!(pending.len(), 1);
 }
 
+// Security fix: a firefox event's `title` is the visited page's <title>,
+// which any website controls — a page must not be able to get itself filed
+// under a real project just by naming it in its own title. Only `details`
+// (the URL the user actually visited) may be scanned.
+struct AlwaysNone;
+
+impl Classifier for AlwaysNone {
+    fn classify(&self, _state: &Value, _options: &[String]) -> Result<Option<Guess>> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn title_only_mention_is_not_a_match() {
+    let conn = open_memory().unwrap();
+    pin(&conn, "vitinn-infra", None);
+    let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+    let eid = repo::upsert_event(
+        &conn,
+        &Event::minimal(
+            SOURCE_FIREFOX,
+            "e1",
+            "2026-04-20T09:00:00+00:00",
+            "github.com/aproorg/vitinn-infra/pull/1",
+        ),
+    )
+    .unwrap();
+    set_details(&conn, eid, "https://example.com/");
+
+    let stats = route_day(&conn, day, &AlwaysNone, default_rule()).unwrap();
+    assert_eq!(
+        stats.rules_applied, 0,
+        "a project mention in the page-controlled title, absent from details, must not be filed by rule"
+    );
+
+    let routed = routed_for_day(&conn, day).unwrap();
+    assert_ne!(
+        routed[0].label_origin,
+        Some(LabelOrigin::Rule),
+        "title-only mention must not be labelled by rule"
+    );
+}
+
 // The options-narrowing check is unchanged by T003 (`p.options.contains`
 // gated the pre-fix body too), so both bodies always agree here — this
 // can never be red-first against the pre-fix code. It's kept as a direct

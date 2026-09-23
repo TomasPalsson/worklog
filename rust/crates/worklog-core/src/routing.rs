@@ -117,15 +117,15 @@ fn matching_rule(rules: &[Rule], row: &EventRow) -> Option<String> {
         .map(|rule| rule.folder.clone())
 }
 
-/// An event whose title or details name exactly one of `options` as
-/// `github.com/<org>/<key>` or `Desktop/Work/<key>` (FR-10, spec 004
-/// amendment 2026-09-23) — filed by rule, never sent to the classifier.
-/// Zero or two-plus distinct named options is `None`.
+/// An event whose details name exactly one of `options` as `github.com/<org>/<key>` or
+/// `Desktop/Work/<key>` (FR-10, spec 004 amendment 2026-09-23) — filed by rule, never sent
+/// to the classifier; zero or two-plus named options is `None`. Scans `details` only, never
+/// `title` (a firefox page's attacker-set `<title>`) — `details` is the URL visited or the user's own sent message (slack).
 fn named_project(row: &EventRow, options: &[String]) -> Option<String> {
-    let text = format!("{} {}", row.title, row.details.as_deref().unwrap_or(""));
+    let text = row.details.as_deref().unwrap_or("");
     let re = Regex::new(r"(?:github\.com/[^/\s]+/|Desktop/Work/)([^/|>)\s'\x60]+)").unwrap();
     let mut found = BTreeSet::new();
-    for cap in re.captures_iter(&text) {
+    for cap in re.captures_iter(text) {
         let key = cap.get(1).unwrap().as_str();
         if options.iter().any(|o| o == key) {
             found.insert(key);
