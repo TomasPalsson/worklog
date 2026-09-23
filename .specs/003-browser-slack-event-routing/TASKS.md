@@ -43,8 +43,8 @@ Independent test: `bun test extension/firefox` — green with no daemon running.
 Goal: the user sees every browser/Slack event with its source, sorts the unsorted ones, and manages rules and settings.
 Independent test: `cd web && bun test && bun run typecheck` — green against a stubbed daemon.
 - [x] T010 Web types, daemon client and server actions — files: web/lib/types.ts, web/lib/daemon.ts, web/app/actions.ts, web/lib/types.test.ts — verify: `cd web && bun test lib/types.test.ts && bun run typecheck` — after: T003 — done: 70fdecf
-- [ ] T011 [P] Unsorted list, label picker with "always", source + origin badges (B12) — files: web/components/UnsortedList.tsx, web/components/UnsortedList.test.tsx, web/components/EventList.tsx, web/components/SourceBadges.tsx, web/app/[day]/page.tsx — verify: `cd web && bun test components/UnsortedList.test.tsx` — after: T010
-- [ ] T012 [P] Settings: work hours, threshold, Slack token, rules list, source status; Billing label copy for named projects — files: web/components/SettingsPanel.tsx, web/components/SettingsPanel.test.tsx, web/components/BillingRegistry.tsx — verify: `cd web && bun test components/SettingsPanel.test.tsx` — after: T010
+- [x] T011 [P] Unsorted list, label picker with "always", source + origin badges (B12) — files: web/components/UnsortedList.tsx, web/components/UnsortedList.test.tsx, web/components/EventList.tsx, web/components/SourceBadges.tsx, web/app/[day]/page.tsx — verify: `cd web && bun test components/UnsortedList.test.tsx` — after: T010 — done: 0b5f04f
+- [x] T012 [P] Settings: work hours, threshold, Slack token, rules list, source status; Billing label copy for named projects — files: web/components/SettingsPanel.tsx, web/components/SettingsPanel.test.tsx, web/components/BillingRegistry.tsx — verify: `cd web && bun test components/SettingsPanel.test.tsx` — after: T010 — done: e17d9a6
 - [ ] CHK002 human-verify the day page with real data — files: web/components/UnsortedList.tsx — verify: human: user sees a day's Firefox and Slack events with container/channel and rule/fix/guess tags, sorts one unsorted event, and it moves into a block — after: T011, T012, T007
 
 ## Gates
