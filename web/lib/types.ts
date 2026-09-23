@@ -290,8 +290,10 @@ export interface MarkExportResponse {
 
 // ───────────────────── browser + Slack routing ─────────────────────
 
-/** Where a routed event's project label came from (`routing_contract::LabelOrigin`). */
-export type LabelOrigin = "rule" | "fix" | "guess";
+/** Where a routed event's project label came from (`routing_contract::LabelOrigin`).
+ * `link` = the event's own text named the project (an exact repo/path mention).
+ * `context` = the day's claude/shell/git_reflog activity around the event's time named it. */
+export type LabelOrigin = "rule" | "link" | "context" | "fix" | "guess";
 
 /** What a hard rule matches on (`routing_contract::RuleKind`). */
 export type RuleKind = "domain" | "slack_channel" | "container";

@@ -134,6 +134,7 @@ function UnsortedRow({
 }
 
 function RoutedRow({ event }: { event: RoutedEvent }) {
+  const { preview } = previewDetails(event.details, 120);
   return (
     <li className="event-row routed-row" data-source={event.source}>
       <SourceTag event={event} />
@@ -142,11 +143,10 @@ function RoutedRow({ event }: { event: RoutedEvent }) {
           <span className="event-title">{event.title}</span>
           <span className="event-time">{formatEventTime(event.started_at)}</span>
         </div>
+        {preview && <div className="event-preview">{preview}</div>}
       </div>
       <span className="folder-label">{event.folder}</span>
-      {event.label_origin && (
-        <OriginBadge origin={event.label_origin} confidence={event.label_confidence} />
-      )}
+      {event.label_origin && <OriginBadge origin={event.label_origin} folder={event.folder} />}
     </li>
   );
 }
@@ -168,16 +168,23 @@ function SourceTag({ event }: { event: RoutedEvent }) {
   );
 }
 
-function OriginBadge({
-  origin,
-  confidence,
-}: {
-  origin: LabelOrigin;
-  confidence: number | null;
-}) {
-  const text =
-    origin === "guess" && confidence != null
-      ? `guess ${Math.round(confidence * 100)}%`
-      : origin;
-  return <span className={`origin-badge origin-${origin}`}>{text}</span>;
+/** Plain-language badge text — the owner never wrote a "rule", so the badge
+ * never claims they did. */
+function originText(origin: LabelOrigin, folder: string | null): string {
+  switch (origin) {
+    case "rule":
+      return "your rule";
+    case "link":
+      return "names the repo";
+    case "context":
+      return `you were in ${folder ?? "this folder"} then`;
+    case "guess":
+      return "model guess";
+    case "fix":
+      return "you sorted";
+  }
+}
+
+function OriginBadge({ origin, folder }: { origin: LabelOrigin; folder: string | null }) {
+  return <span className={`origin-badge origin-${origin}`}>{originText(origin, folder)}</span>;
 }

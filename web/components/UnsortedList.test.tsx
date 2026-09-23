@@ -55,6 +55,42 @@ const guessLabelled: RoutedEvent = {
   label_confidence: 0.93,
 };
 
+const linkLabelled: RoutedEvent = {
+  id: 5,
+  source: "slack",
+  started_at: "2026-07-25T15:00:00Z",
+  title: "deploy",
+  details: "https://github.com/org/vitinn-infra/pull/9",
+  container: null,
+  folder: "vitinn-infra",
+  label_origin: "link",
+  label_confidence: null,
+};
+
+const contextLabelled: RoutedEvent = {
+  id: 6,
+  source: "slack",
+  started_at: "2026-07-25T15:10:00Z",
+  title: "standup",
+  details: "on it",
+  container: null,
+  folder: "sjukra",
+  label_origin: "context",
+  label_confidence: null,
+};
+
+const fixLabelled: RoutedEvent = {
+  id: 7,
+  source: "firefox",
+  started_at: "2026-07-25T15:20:00Z",
+  title: "Internal tool",
+  details: "https://internal.tool/status",
+  container: null,
+  folder: "lighthouse",
+  label_origin: "fix",
+  label_confidence: null,
+};
+
 const labelEventCalls: Array<[number, string, RuleKind | null, string]> = [];
 const labelEventImpl = mock(
   async (id: number, folder: string, always: RuleKind | null, day: string) => {
@@ -124,9 +160,39 @@ describe("UnsortedList (B12)", () => {
     expect(labelledFirefoxRow).toBeTruthy();
     expect(within(labelledFirefoxRow as HTMLElement).getByText(/firefox/i)).toBeTruthy();
 
-    const guessRow = slackRows.find((r) => within(r as HTMLElement).queryByText(/93%/));
+    const guessRow = slackRows.find((r) => within(r as HTMLElement).queryByText(/model guess/i));
     expect(guessRow).toBeTruthy();
     expect(within(guessRow as HTMLElement).getByText(/slack/i)).toBeTruthy();
+  });
+
+  it("uses plain-language badge text for every label origin", () => {
+    render(
+      <UnsortedList
+        day="2026-07-25"
+        events={[ruleLabelled, linkLabelled, contextLabelled, guessLabelled, fixLabelled]}
+        folderOptions={["AWS cert", "sjukra", "lighthouse", "vitinn-infra"]}
+      />,
+    );
+
+    expect(screen.getByText("your rule")).toBeTruthy();
+    expect(screen.getByText("names the repo")).toBeTruthy();
+    expect(screen.getByText("you were in sjukra then")).toBeTruthy();
+    expect(screen.getByText("model guess")).toBeTruthy();
+    expect(screen.getByText("you sorted")).toBeTruthy();
+  });
+
+  it("shows the event time and the message/URL preview on a filed (routed) row", () => {
+    render(
+      <UnsortedList
+        day="2026-07-25"
+        events={[ruleLabelled]}
+        folderOptions={["AWS cert"]}
+      />,
+    );
+
+    const row = screen.getByText("AWS Certified Solutions Architect").closest("li")!;
+    expect(within(row as HTMLElement).getByText("https://aws.tomasari.is/other")).toBeTruthy();
+    expect(within(row as HTMLElement).getByText(/^\d{2}:\d{2}$/)).toBeTruthy();
   });
 
   it("picking a project for an unsorted event without ticking always labels it with no rule kind", async () => {
