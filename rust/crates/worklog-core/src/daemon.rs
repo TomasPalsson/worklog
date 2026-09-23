@@ -1457,6 +1457,7 @@ fn is_sensitive_secret(key: &str) -> bool {
             | "google_refresh_token"
             | "anthropic_api_key"
             | "litellm_api_key"
+            | "slack_user_token"
     )
 }
 
@@ -2489,6 +2490,16 @@ mod tests {
         assert!(token.sensitive, "api token must be sensitive");
         let email = view.secrets.iter().find(|f| f.key == "jira_email").unwrap();
         assert!(!email.sensitive, "email is not a secret value");
+        let slack_token = view
+            .secrets
+            .iter()
+            .find(|f| f.key == "slack_user_token")
+            .unwrap();
+        assert!(slack_token.sensitive, "slack user token must be sensitive");
+        assert!(
+            slack_token.value.is_none(),
+            "slack user token must not echo its value"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
