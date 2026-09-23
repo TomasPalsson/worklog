@@ -8,9 +8,13 @@ NOTES Ruling.
 ## State
 - Branch `flow/verdict-routing` (local; push blocked by auto mode — owner to push or allow).
 - Base 21f964f. Spec/design/TASKS at eb435ef. DATA-SOURCES f3bed27. USER-STORIES ca18a09.
-- Wave 1: T001 dispatched (developer, brief review/T001-brief.md).
-- Next waves: T002–T005 [P] (build-slices workflow), then T006, then CHK001 (owner delegated →
-  Mr Claude runs real-day check, evidence in verify/), gates, PR against flow/browser-slack-event-routing.
+- T001–T005 done and ticked. Real-day run found: settings keychain hang (fixed 1f8013d), ratios
+  can't separate a wrong pick → amendment FR-10 + default abstain ×1.20.
+- In flight: T007 (exact repo/path rule) and T006 (web) — parallel developers.
+- Live test rig: branch daemon on :9323, `worklog verdict serve` on :9324 (model in
+  ~/.local/share/worklog/verdict-model), DB backup ~/.local/share/worklog/worklog-pre-004.db.
+  Score script: ~/.claude/jobs/aa6acbea/tmp/helper_scores.py (sorted keys = daemon order).
+- Next: re-run real day (expect 4 right by rule, 0 by model, 0 wrong) → verify/CHK001.md, gates, PR.
 
 ## After 004
 - Loop per USER-STORIES.md: gcal (needs owner OAuth file), fish history, git reflog, Firefox
