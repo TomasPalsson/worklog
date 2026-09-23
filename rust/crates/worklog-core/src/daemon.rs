@@ -4261,6 +4261,9 @@ mod tests {
             crate::envfile::read(routing_contract::RUNNER_UP_RATIO_KEY).as_deref(),
             Some("1.3")
         );
+        let rule = configured_route_rule();
+        assert_eq!(rule.abstain_margin, 1.2);
+        assert_eq!(rule.runner_up_ratio, 1.3);
 
         std::env::remove_var("WORKLOG_ENV_FILE");
     }
