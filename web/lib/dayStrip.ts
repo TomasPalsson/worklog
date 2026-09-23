@@ -13,6 +13,9 @@ export interface StripBlock {
   project_path: string | null;
   is_personal: boolean;
   confidence: "high" | "medium" | "low";
+  /** Optional so existing StripBlock literals in tests don't all need
+   * updating — buildSegments treats a missing value as `null`. */
+  description?: string | null;
 }
 
 export interface StripGap {
@@ -135,7 +138,7 @@ export function confidenceOpacity(confidence: StripBlock["confidence"]): number 
   }
 }
 
-function clock(ms: number): string {
+export function clock(ms: number): string {
   const d = new Date(ms);
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
@@ -158,6 +161,11 @@ export type TrackSegment =
       slate: boolean;
       opacity: number;
       ariaLabel: string;
+      /** First block's description — merging never overwrites it. */
+      description: string | null;
+      /** How many original blocks are folded into this segment (>1 once
+       * mergeAdjacentBlocks has joined neighbours). */
+      mergedCount: number;
     }
   | {
       kind: "gap";
@@ -211,6 +219,8 @@ export function buildSegments(
       slate,
       opacity: confidenceOpacity(b.confidence),
       ariaLabel: `${label} ${clock(startMs)}–${clock(endMs)}, ${minutes} min, ${b.confidence} confidence`,
+      description: b.description ?? null,
+      mergedCount: 1,
     };
   });
 
@@ -334,6 +344,9 @@ export function mergeAdjacentBlocks(segments: TrackSegment[]): TrackSegment[] {
         widthPct: rightPct - prev.leftPct,
         opacity: Math.max(prev.opacity, seg.opacity),
         ariaLabel: `${prev.label} ${clock(prev.startMs)}–${clock(endMs)}, ${minutesBetween(prev.startMs, endMs)} min`,
+        // Keep the first block's description; just tally how many blocks
+        // are now folded into this stretch for the tooltip's "and N more".
+        mergedCount: prev.mergedCount + seg.mergedCount,
       };
       continue;
     }
@@ -358,3 +371,6 @@ export function compactLegend(legend: LegendEntry[]): LegendEntry[] {
     out.push({ key: "other", label: "Other", totalSeconds: sum(other), hue: null, slate: true, away: false, title: other.map((e) => e.label).join(", ") });
   return [...out, ...away];
 }
+
+// The "lanes" expanded view + legend-focus interaction live in
+// ./dayStripLanes — see that module for `Lane`, `buildLanes`, `isFocused`.
