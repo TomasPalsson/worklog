@@ -235,10 +235,11 @@ fn unsorted_when_runner_up_too_close() {
 
 // FR-10 (spec 004 amendment 2026-09-23): an event whose title or details
 // name exactly one project by an exact `github.com/<org>/<key>` or
-// `Desktop/Work/<key>` mention is filed by rule, never sent to the model.
+// `Desktop/Work/<key>` mention is filed with origin Link, never sent to the model —
+// the owner never created a rule, so the badge must not call it one (2026-09-23 amendment).
 
 #[test]
-fn exact_repo_mention_files_by_rule() {
+fn exact_repo_mention_files_by_link() {
     let conn = open_memory().unwrap();
     pin(&conn, "vitinn-infra", None);
     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
@@ -259,11 +260,14 @@ fn exact_repo_mention_files_by_rule() {
 
     let routed = routed_for_day(&conn, day).unwrap();
     assert_eq!(routed[0].folder.as_deref(), Some("vitinn-infra"));
-    assert_eq!(routed[0].label_origin, Some(LabelOrigin::Rule));
+    // Named-project hits are `Link`, not `Rule` — the owner never created a
+    // rule; the event's own text named the repo (spec: browser/Slack event
+    // routing, item B).
+    assert_eq!(routed[0].label_origin, Some(LabelOrigin::Link));
 }
 
 #[test]
-fn path_mention_files_by_rule() {
+fn path_mention_files_by_link() {
     let conn = open_memory().unwrap();
     pin(&conn, "vitinn-infra", None);
     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
@@ -285,7 +289,7 @@ fn path_mention_files_by_rule() {
 
     let routed = routed_for_day(&conn, day).unwrap();
     assert_eq!(routed[0].folder.as_deref(), Some("vitinn-infra"));
-    assert_eq!(routed[0].label_origin, Some(LabelOrigin::Rule));
+    assert_eq!(routed[0].label_origin, Some(LabelOrigin::Link));
 }
 
 #[test]
@@ -737,6 +741,77 @@ fn container_narrows_options() {
     assert!(rule_hits.is_empty());
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].options, vec!["sjukra-portal".to_string()]);
+}
+
+// Time-context step (2026-09-23 amendment): a Slack event with no rule/link
+// hit gets filed under the project the owner's claude/shell/git_reflog
+// activity dominantly named in the ±10 minute window around it.
+
+fn claude_at(conn: &Connection, id: &str, ts: &str, project_path: &str) {
+    let mut ev = Event::minimal("claude", id, ts, "x");
+    ev.project_path = Some(project_path.into());
+    repo::upsert_event(conn, &ev).unwrap();
+}
+
+#[test]
+fn slack_context_files_from_dominant_recent_activity() {
+    let conn = open_memory().unwrap();
+    pin(&conn, "sjukra", None);
+    let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+    let home = dirs::home_dir().unwrap().to_string_lossy().into_owned();
+    let path = format!("{home}/Desktop/Work/sjukra");
+    claude_at(&conn, "c1", "2026-04-20T08:55:00+00:00", &path);
+    claude_at(&conn, "c2", "2026-04-20T08:57:00+00:00", &path);
+    claude_at(&conn, "c3", "2026-04-20T09:02:00+00:00", &path);
+
+    let eid = repo::upsert_event(
+        &conn,
+        &Event::minimal(SOURCE_SLACK, "e1", "2026-04-20T09:00:00+00:00", "chat"),
+    )
+    .unwrap();
+    set_details(&conn, eid, "status update, nothing project-specific");
+
+    let stats = route_day(&conn, day, &PanicsIfCalled, default_rule()).unwrap();
+    assert_eq!(
+        stats.rules_applied, 1,
+        "the context step must not reach the classifier"
+    );
+
+    let routed = routed_for_day(&conn, day).unwrap();
+    let ev = routed.iter().find(|r| r.id == eid).unwrap();
+    assert_eq!(ev.folder.as_deref(), Some("sjukra"));
+    assert_eq!(ev.label_origin, Some(LabelOrigin::Context));
+    assert_eq!(ev.label_confidence, None);
+}
+
+#[test]
+fn firefox_events_never_get_context_origin() {
+    let conn = open_memory().unwrap();
+    pin(&conn, "sjukra", None);
+    let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+    let home = dirs::home_dir().unwrap().to_string_lossy().into_owned();
+    let path = format!("{home}/Desktop/Work/sjukra");
+    claude_at(&conn, "c1", "2026-04-20T08:55:00+00:00", &path);
+    claude_at(&conn, "c2", "2026-04-20T08:57:00+00:00", &path);
+
+    let eid = repo::upsert_event(
+        &conn,
+        &Event::minimal(
+            SOURCE_FIREFOX,
+            "e1",
+            "2026-04-20T09:00:00+00:00",
+            "some page",
+        ),
+    )
+    .unwrap();
+    set_details(&conn, eid, "https://example.com/");
+
+    let (rule_hits, pending) = load_pending(&conn, day).unwrap();
+    assert!(
+        rule_hits.is_empty(),
+        "a firefox event must never be filed by the time-context step"
+    );
+    assert_eq!(pending.len(), 1);
 }
 
 #[test]

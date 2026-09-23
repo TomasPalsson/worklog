@@ -42,10 +42,19 @@ pub const MAX_HINT_EXAMPLES: usize = 5;
 
 /// Where an event's project label came from. Stored in
 /// `events.label_origin` as the lowercase string.
+///
+/// `Link` = the event's own text named the project (an exact
+/// `github.com/<org>/<key>` or `Desktop/Work/<key>` mention — `named_project`
+/// in routing.rs). `Context` = the day's `claude`/`shell`/`git_reflog`
+/// activity around the event's time named it (routing_context.rs); its
+/// `label_confidence` is always `NULL`. Both are automatic, same as `Rule`
+/// and `Guess` — only `Fix` is a hand label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LabelOrigin {
     Rule,
+    Link,
+    Context,
     Fix,
     Guess,
 }
@@ -54,6 +63,8 @@ impl LabelOrigin {
     pub fn as_str(self) -> &'static str {
         match self {
             LabelOrigin::Rule => "rule",
+            LabelOrigin::Link => "link",
+            LabelOrigin::Context => "context",
             LabelOrigin::Fix => "fix",
             LabelOrigin::Guess => "guess",
         }
@@ -62,6 +73,8 @@ impl LabelOrigin {
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "rule" => Some(LabelOrigin::Rule),
+            "link" => Some(LabelOrigin::Link),
+            "context" => Some(LabelOrigin::Context),
             "fix" => Some(LabelOrigin::Fix),
             "guess" => Some(LabelOrigin::Guess),
             _ => None,
