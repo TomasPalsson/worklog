@@ -1,4 +1,6 @@
 # Tasks — Verdict routing
+Approved: 2026-09-23 by user
+Verified: 2026-09-23 by user
 Spec: spec.md · Design: design.md · Base: 21f964f · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && (cd web && bun test)`
 
 ## Behaviors
@@ -27,9 +29,9 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml && ! grep -rqi lay
 Goal: the owner tunes both ratios in Settings, and a real day's events are filed with 0 wrong filings.
 Independent test: `cd web && bun test && bun run typecheck && ! grep -rqi laya lib components app` — green with the daemon untouched.
 - [x] T006 Web ratio settings and Verdict naming — files: web/lib/types.ts, web/lib/settingsForm.ts, web/components/RoutingSettings.tsx, web/components/SettingsPanel.test.tsx, web/lib/types.test.ts, web/app/actions.test.ts — verify: `cd web && bun test && bun run typecheck && ! grep -rqi laya lib components app` — after: T005 — done: e40a8e7
-- [ ] CHK001 human-verify a real day sorted by Verdict — files: rust/crates/worklog-core/templates/verdict_server.py — verify: human: owner runs `worklog verdict serve`, rebuilds a real day, sees clear-clue events filed and no-clue events in Unsorted with 0 wrong filings; warm per-event ≤ 0.5 s and later starts ≤ 10 s recorded — after: T002, T003, T004, T005, T006
+- [x] CHK001 human-verify a real day sorted by Verdict — files: rust/crates/worklog-core/templates/verdict_server.py — verify: human: owner runs `worklog verdict serve`, rebuilds a real day, sees clear-clue events filed and no-clue events in Unsorted with 0 wrong filings; warm per-event ≤ 0.5 s and later starts ≤ 10 s recorded — after: T002, T003, T004, T005, T006 — done: fbefc11 by user
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `flow check --fix`
-- [ ] G002 branch review clean — files: . — verify: `test -f PASS-$(git rev-parse --short HEAD).md`
-- [ ] G003 verification evidence exists — files: . — verify: `test -s verify/`
+- [x] G001 project gates clean — files: . — verify: `flow check --fix` — done: fb3a1a9
+- [x] G002 branch review clean — files: . — verify: `test -f PASS-$(git rev-parse --short HEAD).md` — done: fb3a1a9
+- [x] G003 verification evidence exists — files: . — verify: `test -s verify/` — done: fb3a1a9
