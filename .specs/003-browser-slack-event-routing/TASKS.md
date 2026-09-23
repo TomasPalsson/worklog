@@ -54,7 +54,7 @@ Goal: Firefox heartbeats are stored from a real install, and Slack DMs show the 
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core daemon:: slack` — green with no network.
 - [x] T013 [P] Daemon answers the CORS preflight for moz-extension origins (B13) — files: rust/crates/worklog-core/src/daemon.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core daemon::tests::heartbeat_preflight` — after: T003 — done: 69880ae
 - [x] T014 [P] Slack DMs titled with the counterpart's name via users.info (B14) — files: rust/crates/worklog-core/src/collectors/slack.rs, rust/crates/worklog-core/src/collectors/slack_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core slack` — after: T004 — done: ff91dac
-- [ ] CHK003 human-verify the day page with real data — files: web/components/UnsortedList.tsx — verify: human: user sees a day's Firefox and Slack events with container/channel (DMs by name) and rule/fix/guess tags, sorts one unsorted event, and it moves into a block — after: T011, T012, T007, T013, T014
+- [x] CHK003 human-verify the day page with real data — files: web/components/UnsortedList.tsx — verify: human: user sees a day's Firefox and Slack events with container/channel (DMs by name) and rule/fix/guess tags, sorts one unsorted event, and it moves into a block — after: T011, T012, T007, T013, T014 — done: 3fcdff5 by user
 
 ## Gates
 - [ ] G001 project gates clean — files: . — verify: `flow check --fix`
