@@ -24,6 +24,7 @@ pub mod paths;
 pub mod personal;
 pub mod purge;
 pub mod repo;
+pub mod routing_contract;
 pub mod schedule;
 pub mod secrets;
 pub mod sessions;
