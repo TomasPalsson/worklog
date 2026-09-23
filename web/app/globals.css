@@ -47,7 +47,8 @@
   --violet-bg:  oklch(0.95 0.02 290);
 
   /* Day strip project fill — hue supplied per segment via --h. */
-  --project-fill: oklch(0.72 0.11 var(--h));
+  --project-l: 0.72; /* the hue comes from each segment's --h */
+  --project-c: 0.11;
 
   /* shape */
   --radius-sm: 4px;
@@ -109,7 +110,8 @@
     --violet:     oklch(0.70 0.085 290);   /* was 0.65 */
     --violet-bg:  oklch(0.24 0.03 290);
 
-    --project-fill: oklch(0.62 0.10 var(--h));
+    --project-l: 0.62;
+    --project-c: 0.10;
 
     --ring: 0 0 0 3px oklch(0.62 0.08 85); /* was 0.42 — 3:1 vs dark bg */
     --elevation-1: none;
@@ -144,7 +146,8 @@
   --violet:     oklch(0.70 0.085 290);
   --violet-bg:  oklch(0.24 0.03 290);
 
-  --project-fill: oklch(0.62 0.10 var(--h));
+  --project-l: 0.62;
+    --project-c: 0.10;
 
   --ring: 0 0 0 3px oklch(0.62 0.08 85);
   --elevation-1: none;
@@ -481,7 +484,7 @@ button {
    One horizontal timeline replacing the old bare gaps <ul>. Segments
    are absolutely positioned by left/width % computed in lib/dayStrip.ts;
    colour comes from the per-segment --h custom property feeding
-   --project-fill (defined per theme above). */
+   oklch(--project-l --project-c --h), with l/c per theme above. */
 
 .day-strip {
   margin-bottom: 28px;
@@ -510,7 +513,7 @@ button {
 }
 
 .day-strip-block {
-  background: var(--project-fill);
+  background: oklch(var(--project-l) var(--project-c) var(--h));
 }
 
 .day-strip-block[data-slate] {
@@ -573,7 +576,7 @@ button {
   height: 9px;
   border-radius: 2px;
   display: inline-block;
-  background: var(--project-fill);
+  background: oklch(var(--project-l) var(--project-c) var(--h));
   flex-shrink: 0;
 }
 

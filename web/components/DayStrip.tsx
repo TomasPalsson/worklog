@@ -105,9 +105,9 @@ function TrackSegmentButton({ seg }: { seg: TrackSegment }) {
       aria-label={seg.ariaLabel}
       title={seg.ariaLabel}
     >
-      {seg.showLabel && (
+      {seg.showShortLabel && (
         <span className="day-strip-gap-label">
-          {seg.label} · {formatDuration(seg.minutes * 60)}
+          {seg.showLabel ? `${seg.label} · ${formatDuration(seg.minutes * 60)}` : seg.label}
         </span>
       )}
     </button>

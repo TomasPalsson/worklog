@@ -118,6 +118,19 @@ describe("buildSegments", () => {
     if (gapSeg.kind === "gap") expect(gapSeg.showLabel).toBe(false);
   });
 
+  it("shows a short label for a lunch gap between 3% and 6% of the track", () => {
+    // 11:23–11:59 on an 08:00–20:00 track is 5% wide: too narrow for "Lunch · 36m", wide enough for "Lunch".
+    const dayWindow = { startMs: new Date(at(8, 0)).getTime(), endMs: new Date(at(20, 0)).getTime() };
+    const lunch: StripGap[] = [{ started_at: at(11, 23), ended_at: at(11, 59), minutes: 36 }];
+    const gapSeg = buildSegments(blocks, lunch, dayWindow).find((s) => s.kind === "gap");
+    expect(gapSeg?.kind).toBe("gap");
+    if (gapSeg?.kind === "gap") {
+      expect(gapSeg.showLabel).toBe(false);
+      expect(gapSeg.showShortLabel).toBe(true);
+      expect(gapSeg.label).toBe("Lunch");
+    }
+  });
+
   it("uses --slate (no hue) for personal/unassigned blocks", () => {
     const personalBlocks: StripBlock[] = [
       { id: 3, started_at: at(9, 0), ended_at: at(10, 0), project_path: null, is_personal: true, confidence: "high" },

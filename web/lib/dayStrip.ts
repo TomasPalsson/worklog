@@ -169,12 +169,15 @@ export type TrackSegment =
       isLunch: boolean;
       label: string;
       showLabel: boolean;
+      /** Room for the bare label ("Lunch") but not the minutes. */
+      showShortLabel: boolean;
       ariaLabel: string;
     };
 
 /** Gap centre labels only show once the segment is wide enough to hold
  * them — below this the text would overflow its own segment. */
 const GAP_LABEL_MIN_WIDTH_PCT = 6;
+const GAP_SHORT_LABEL_MIN_WIDTH_PCT = 3;
 
 /** Lay out every block and gap as a percentage-positioned segment of the
  * track, in chronological order. */
@@ -227,6 +230,7 @@ export function buildSegments(
       isLunch,
       label,
       showLabel: widthPct >= GAP_LABEL_MIN_WIDTH_PCT,
+      showShortLabel: widthPct >= GAP_SHORT_LABEL_MIN_WIDTH_PCT,
       ariaLabel: `${label} ${clock(startMs)}–${clock(endMs)}, ${g.minutes} min`,
     };
   });
