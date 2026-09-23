@@ -115,3 +115,10 @@ THE FIVE   (1)–(5) as in T001.
 CONTRACT   web/lib/types.ts mirrors routing_contract.rs field-for-field.
 CALLS      daemon.ts: `daemonRoutedForDay(day)`, `daemonLabelEvent(id, folder, always)`, `daemonRoutingRules()`, `daemonDeleteRule(id)`, `daemonRoutingStatus()` · actions.ts server actions wrapping each, revalidating the day path
 THE FIVE   (1)–(5) as in T001.
+
+## Contract for T008 — Firefox add-on
+CONTRACT   body = `Heartbeat` in rust/crates/worklog-core/src/routing_contract.rs, JSON field-for-field: `{"ts": ISO-8601 UTC, "url": string, "title": string, "container": string|null, "incognito": bool}`
+CALLS      `fetch("http://127.0.0.1:9323/browser/heartbeat", {method:"POST", headers:{"Content-Type":"application/json"}, body})` from the background script (the browser adds the `moz-extension://` Origin; never set it by hand) · Manifest V2, `browser_specific_settings.gecko.id = "worklog@tomasari.is"`, permissions: tabs, idle, alarms, storage, contextualIdentities, cookies, `http://127.0.0.1:9323/*` · `browser.alarms` every 1 min · `browser.idle.setDetectionInterval(120)` · container name via `browser.contextualIdentities.get(tab.cookieStoreId)` (default container → null) · pause flag in `browser.storage.local` key `paused`, toggled from popup.html
+MODULE     heartbeat.js exports pure fns only (no `browser.*`): `shouldSend({paused, incognito, containerName, idleState, windowFocused}) -> boolean` (false when paused, incognito, containerName === "Personal", idleState !== "active", or no focused window) · `buildHeartbeat(tab, containerName, now: Date) -> Heartbeat` · background.js wires `browser.*` to them
+RULES      Work hours are enforced by the daemon (single editable setting); the add-on does not duplicate them. A failed POST is dropped silently (daemon down = no data, never a retry queue). README.md: load via about:debugging, build with `web-ext build`, sign with `web-ext sign --channel unlisted`.
+THE FIVE   (1)–(5) as in T001.
