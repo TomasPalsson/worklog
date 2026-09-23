@@ -68,7 +68,7 @@
         "web/app/[day]/page.tsx"
       ],
       "verify": "cd web && bun test components/BlockCard.test.tsx 2>&1 | grep -qE '[1-9][0-9]* pass' && bun test 2>&1 | grep -qE ' 0 fail' && bun run typecheck",
-      "passes": false
+      "passes": true
     }
   ]
 }

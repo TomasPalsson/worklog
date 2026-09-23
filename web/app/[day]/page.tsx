@@ -8,7 +8,7 @@ import {
   loadDaySummary,
   routedForDay,
 } from "@/lib/daemon";
-import { formatDayHeading, formatTotalHours } from "@/lib/format";
+import { formatDayHeading, formatGapRow, formatTotalHours } from "@/lib/format";
 import { DayHeader } from "@/components/DayHeader";
 import { ActionBar } from "@/components/ActionBar";
 import { BillingGroup } from "@/components/BillingGroup";
@@ -59,7 +59,7 @@ export default async function DayPage({
     throw e;
   }
 
-  const { blocks, total_seconds: total } = summary;
+  const { blocks, total_seconds: total, gaps } = summary;
   const { tickets, meta: cache } = ticketsResp;
 
   // Browser/Slack events for the day (B12) — degrades to an empty feed on
@@ -146,6 +146,15 @@ export default async function DayPage({
       />
       <ActionBar day={day} cacheCount={cache.count} cacheLast={cache.last_fetched} />
       <UnsortedList key={day} day={day} events={routedEvents} folderOptions={folderOptions} />
+      {gaps.length > 0 && (
+        <ul className="day-gaps" role="list">
+          {gaps.map((g) => (
+            <li key={g.started_at} className="day-gap">
+              {formatGapRow(g)}
+            </li>
+          ))}
+        </ul>
+      )}
       {blocks.length === 0 ? (
         <EmptyState day={day} />
       ) : (

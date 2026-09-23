@@ -251,6 +251,13 @@ export function BlockCard({
         </div>
 
         <div className="block-meta">
+          <span
+            className="confidence-badge"
+            data-level={block.confidence}
+            aria-label={`${block.confidence} confidence`}
+          >
+            {block.confidence} confidence
+          </span>
           <SourceBadges sources={block.sources} />
           <EstBadge kind={block.estimated_by} />
           {block.project_path && (

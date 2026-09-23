@@ -212,6 +212,7 @@ import type {
   Block,
   CommitEntry,
   CreateTicketInput,
+  DayGap,
   Event,
   ExportResponse,
   JiraProject,
@@ -233,6 +234,7 @@ interface DaySummary {
   day: string;
   total_seconds: number;
   blocks: Block[];
+  gaps: DayGap[];
 }
 
 /**

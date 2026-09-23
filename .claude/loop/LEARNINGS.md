@@ -67,3 +67,24 @@
   does still flag oversized *functions* — factoring the new test's block+
   event seeding into a small `seed_block` helper kept the test under the
   60-line function cap.
+
+- 2026-09-23: L7 (web: confidence badge + day gaps) done. `Block` in
+  `lib/types.ts` already mirrors the daemon's flattened `BlockSummary`
+  (event_count/sources/project_path live there), so `confidence` was
+  added to `Block` itself rather than inventing a separate
+  `BlockSummary` type; `DaySummary` is a local interface in
+  `lib/daemon.ts` (not exported from types.ts) — added `gaps: DayGap[]`
+  there, with `DayGap` as a new exported type in types.ts. `page.tsx`
+  is an async server component (uses `next/headers`), so it isn't
+  unit-testable with bun:test/testing-library like client components
+  are — pulled the gap row's text into a pure `formatGapRow` helper in
+  `lib/format.ts` (reusing `formatRange`) and tested that in
+  `lib/format.test.ts` instead of rendering the page. `BlockCard.tsx`
+  statically imports `TicketCombobox` → `CreateTicketDialog`, which
+  pull in `createTicket`/`fetchAccounts`/`fetchProjects`/
+  `assignTicket`/`assignExternalTicket`/`searchJiraTickets` from
+  `@/app/actions` regardless of the `hideTicketing` prop (ES imports
+  are static) — `mock.module("@/app/actions", ...)` in a component test
+  must stub every export reachable from the whole import graph, not
+  just the ones the test's props path uses, or bun throws "Export
+  named 'X' not found".

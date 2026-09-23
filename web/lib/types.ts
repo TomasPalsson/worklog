@@ -41,11 +41,20 @@ export interface Block {
    * bulk of its commands ran in. Null for blocks with no cwd (pure
    * calendar / PR-review blocks). */
   project_path: string | null;
+  /** "high"/"medium"/"low", from how many distinct sources fed the block. */
+  confidence: "high" | "medium" | "low";
 }
 
 export interface SourceCount {
   source: string; // e.g. "github_commit", "claude_prompt", "gcal_event"
   n: number;
+}
+
+/** A gap of at least 30 minutes between two consecutive blocks on a day. */
+export interface DayGap {
+  started_at: string; // ISO-8601 UTC
+  ended_at: string; // ISO-8601 UTC
+  minutes: number;
 }
 
 export interface JiraTicket {

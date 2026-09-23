@@ -13,6 +13,11 @@ export function formatRange(start: string, end: string): string {
   return `${formatClock(start)}–${formatClock(end)}`;
 }
 
+/** A day-gap row's text, e.g. "No activity 12:05–12:50 (45 min)". */
+export function formatGapRow(gap: { started_at: string; ended_at: string; minutes: number }): string {
+  return `No activity ${formatRange(gap.started_at, gap.ended_at)} (${gap.minutes} min)`;
+}
+
 export function formatDuration(seconds: number): string {
   const totalMin = Math.round(seconds / 60);
   const h = Math.floor(totalMin / 60);
