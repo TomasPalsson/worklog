@@ -30,6 +30,22 @@ repo/path mentions, Verdict for the rest).
 2. **Full Disk Access** for the terminal → knowledgeC.db per-app focus intervals.
 3. Firefox add-on now covers browsing from 15:44 on; future days fill without action.
 
-## Not done yet (next loop)
-- Wire `timeline::block_confidence` / `day_gaps` into `GET /days/:day` and show them on the day
-  page (S7–S9 in the UI). The helpers exist and are tested; the day page does not use them yet.
+## Loop 2 (L6–L7) — day page
+- `GET /days/:day` now returns per-block `confidence` and the day's `gaps` (252c1d5); the day page
+  shows a confidence badge per block and "No activity HH:MM–HH:MM (N min)" rows (2969486).
+- Checked on the real day: API gaps 35/34/49/133 min and 8 high / 5 medium / 3 low — identical to an
+  independent script. Screenshot: `timeline-day-page.jpeg`.
+
+## Branch review (fb3a1a9..43e4c4d, 15 agents, 7 dropped)
+- Kept (95/100): `AWS_SECRET_ACCESS_KEY=… aws …` stored the secret as the shell title. Fixed in
+  7612edf (env assignments and wrappers skipped, basename only, else `shell`). Real DB re-collected:
+  85 rows, 0 unsafe titles, 0 details, 0 bad paths. No secret had been stored (the 2 odd titles were
+  script paths).
+
+## Gates at 7612edf
+fmt 0 · clippy 0 · cargo test 636 passed / 0 failed · web 117 pass · typecheck 0 · build 0 ·
+verdict self-test OK · extension tests 0.
+
+## Open
+- fish.rs is 517 lines and daemon.rs ~4300 vs the 400-line size guard — split in their own change.
+- Gap rows render as a list above the blocks, not interleaved between them (cosmetic).
