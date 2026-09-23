@@ -240,6 +240,15 @@ pub fn work_folder_for_block(conn: &Connection, block_id: i64) -> Result<Option<
         let key = project_path
             .as_deref()
             .and_then(work_folder_for_path)
+            // A submodule declared in some work folder's `.gitmodules`
+            // whose URL names this repo, e.g. `aproorg/code-interpreter`
+            // → the `vitinn-infra` folder that vendors it as a submodule.
+            .or_else(|| {
+                repo_name
+                    .as_deref()
+                    .and_then(|r| r.rsplit('/').next())
+                    .and_then(|name| submodule_repo_map().get(name).cloned())
+            })
             // A GitHub repo like `aproorg/LibreChat` → `LibreChat`.
             .or_else(|| {
                 repo_name
@@ -256,6 +265,62 @@ pub fn work_folder_for_block(conn: &Connection, block_id: i64) -> Result<Option<
     let mut ranked: Vec<(String, u32)> = counts.into_iter().collect();
     ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     Ok(ranked.into_iter().next().map(|(k, _)| k))
+}
+
+/// `<url-basename-without-.git> -> <work folder key>` across every
+/// `.gitmodules` directly under the work prefix, e.g. a
+/// `~/Desktop/Work/vitinn-infra/.gitmodules` submodule url ending in
+/// `code-interpreter.git` maps `"code-interpreter" -> "vitinn-infra"`.
+/// Scanned once per process — the repo fallback runs on every billing
+/// group, and re-reading every work folder's `.gitmodules` on each call
+/// would turn that into a lot of avoidable disk I/O.
+fn submodule_repo_map() -> &'static HashMap<String, String> {
+    static MAP: std::sync::OnceLock<HashMap<String, String>> = std::sync::OnceLock::new();
+    MAP.get_or_init(|| match work_prefix() {
+        Some(prefix) => submodule_repo_map_under(std::path::Path::new(prefix)),
+        None => HashMap::new(),
+    })
+}
+
+/// Test-injectable, uncached variant of [`submodule_repo_map`]: scans
+/// `<root>/*/.gitmodules` for `url = ...` lines and maps each submodule's
+/// url basename (`.git` stripped) to the work folder that declares it.
+fn submodule_repo_map_under(root: &std::path::Path) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return map;
+    };
+    for entry in entries.flatten() {
+        let folder_path = entry.path();
+        if !folder_path.is_dir() {
+            continue;
+        }
+        let Some(folder_name) = folder_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+        else {
+            continue;
+        };
+        let Ok(content) = std::fs::read_to_string(folder_path.join(".gitmodules")) else {
+            continue;
+        };
+        for line in content.lines() {
+            let line = line.trim();
+            let Some(url) = line
+                .strip_prefix("url = ")
+                .or_else(|| line.strip_prefix("url="))
+            else {
+                continue;
+            };
+            let url = url.trim().trim_end_matches('/');
+            let name = url.rsplit('/').next().unwrap_or("");
+            let name = name.strip_suffix(".git").unwrap_or(name);
+            if !name.is_empty() {
+                map.insert(name.to_string(), folder_name.clone());
+            }
+        }
+    }
+    map
 }
 
 /// Most-frequent non-empty `events.title` across a set of blocks'
@@ -887,6 +952,89 @@ mod tests {
             work_folder_for_block(&c, b).unwrap(),
             Some("sjukra".into()),
             "a worktree event must not split the folder"
+        );
+    }
+
+    // ───────────── submodule_repo_map (repo → vendoring work folder) ─────────────
+
+    #[test]
+    fn submodule_repo_map_maps_a_dot_git_url_to_its_declaring_folder() {
+        // The confirmed defect: a `github_pr` event for
+        // `aproorg/code-interpreter` fell back to the basename
+        // "code-interpreter" instead of billing under vitinn-infra, the
+        // repo that vendors it as a submodule at `tools/code-interpreter`.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_dir = tmp.path().join("vitinn-infra");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        std::fs::write(
+            repo_dir.join(".gitmodules"),
+            "[submodule \"tools/code-interpreter\"]\n\
+             \tpath = tools/code-interpreter\n\
+             \turl = git@github.com:aproorg/code-interpreter.git\n",
+        )
+        .unwrap();
+
+        let map = submodule_repo_map_under(tmp.path());
+        assert_eq!(
+            map.get("code-interpreter").map(String::as_str),
+            Some("vitinn-infra")
+        );
+    }
+
+    #[test]
+    fn submodule_repo_map_maps_a_url_without_the_dot_git_suffix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_dir = tmp.path().join("genai-infra");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        std::fs::write(
+            repo_dir.join(".gitmodules"),
+            "[submodule \"lib\"]\n\turl = https://github.com/aproorg/shared-lib\n",
+        )
+        .unwrap();
+
+        let map = submodule_repo_map_under(tmp.path());
+        assert_eq!(
+            map.get("shared-lib").map(String::as_str),
+            Some("genai-infra")
+        );
+    }
+
+    #[test]
+    fn submodule_repo_map_ignores_folders_without_gitmodules() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("plain-folder")).unwrap();
+        assert!(submodule_repo_map_under(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn work_folder_for_block_falls_back_to_the_submodule_map_before_the_bare_basename() {
+        // Direct regression for the diagnosed defect, exercised through
+        // the same repo-name extraction `work_folder_for_block` performs
+        // (basename of `org/name`) against a map built from a temp root —
+        // proves the fallback order without touching the real machine's
+        // `~/Desktop/Work`.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_dir = tmp.path().join("vitinn-infra");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        std::fs::write(
+            repo_dir.join(".gitmodules"),
+            "[submodule \"tools/code-interpreter\"]\n\turl = git@github.com:aproorg/code-interpreter.git\n",
+        )
+        .unwrap();
+        let map = submodule_repo_map_under(tmp.path());
+
+        let repo = "aproorg/code-interpreter";
+        let name = repo.rsplit('/').next().unwrap();
+        let resolved = map.get(name).cloned().or_else(|| {
+            repo.rsplit('/')
+                .next()
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+        });
+        assert_eq!(
+            resolved.as_deref(),
+            Some("vitinn-infra"),
+            "the submodule map must win over the bare repo basename"
         );
     }
 
