@@ -16,9 +16,10 @@ import {
   ruleKindOnFirst,
   type EventGroup,
 } from "@/lib/sortGroups";
-import type { RoutedEvent } from "@/lib/types";
+import type { LabelOrigin, RoutedEvent } from "@/lib/types";
 import { PalettePicker } from "./PalettePicker";
 import { AutoFiled } from "./AutoFiled";
+import { ReviewDrawer } from "./ReviewDrawer";
 
 interface Props {
   day: string;
@@ -26,26 +27,55 @@ interface Props {
   folderOptions: string[];
 }
 
-export function UnsortedList({ day, events, folderOptions }: Props) {
-  const [rows, setRows] = useState(events);
-  // Snapshot once at mount — the tray shouldn't force itself back open (or
-  // closed) just because filing a group shrank the unsorted count.
-  const [initialOpen] = useState(() => events.some((e) => e.folder === null));
-  if (rows.length === 0) return null;
+/** Origins the daemon hides by default — never something to sort, only
+ * something the review drawer can reverse. */
+const HIDDEN_ORIGINS = new Set<LabelOrigin>(["noise", "dismissed"]);
 
-  const unsorted = rows.filter((e) => e.folder === null);
-  const filed = rows.filter((e) => e.folder !== null);
-  const groups = groupEvents(unsorted);
+function isHidden(e: RoutedEvent): boolean {
+  return e.label_origin !== null && HIDDEN_ORIGINS.has(e.label_origin);
+}
 
+/** Split the day's routed events into the three buckets the tray/drawer
+ * branch on. Pulled out of the component so its body stays short. */
+function splitRoutedEvents(rows: RoutedEvent[]) {
+  return {
+    unsorted: rows.filter((e) => e.folder === null && !isHidden(e)),
+    filed: rows.filter((e) => e.folder !== null),
+    hidden: rows.filter((e) => e.folder === null && isHidden(e)),
+  };
+}
+
+/** Not a hook (no hook calls inside) despite the shape — named this way
+ * only to group the two setRows-closing setters used by GroupRow/DismissRest. */
+function makeRowMutators(setRows: (fn: (prev: RoutedEvent[]) => RoutedEvent[]) => void) {
   function replaceEvents(updated: RoutedEvent[]) {
     const byId = new Map(updated.map((e) => [e.id, e]));
     setRows((prev) => prev.map((e) => byId.get(e.id) ?? e));
   }
-
   function removeEvents(ids: number[]) {
     const idSet = new Set(ids);
     setRows((prev) => prev.filter((e) => !idSet.has(e.id)));
   }
+  return { replaceEvents, removeEvents };
+}
+
+export function UnsortedList({ day, events, folderOptions }: Props) {
+  const [rows, setRows] = useState(events);
+  // Snapshot once at mount — the tray shouldn't force itself back open (or
+  // closed) just because filing a group shrank the unsorted count.
+  const [initialOpen] = useState(() => events.some((e) => e.folder === null && !isHidden(e)));
+  if (rows.length === 0) return null;
+
+  const { unsorted, filed, hidden } = splitRoutedEvents(rows);
+
+  // Zero-touch default: nothing left for the owner to sort. Replace the
+  // tray + AutoFiled disclosure with the quiet summary line + Review drawer.
+  if (unsorted.length === 0) {
+    return <ReviewDrawer day={day} filed={filed} hidden={hidden} folderOptions={folderOptions} />;
+  }
+
+  const groups = groupEvents(unsorted);
+  const { replaceEvents, removeEvents } = makeRowMutators(setRows);
 
   return (
     <>

@@ -29,7 +29,9 @@ export function AutoFiled({ events }: Props) {
   );
 }
 
-function AutoFiledRow({ event }: { event: RoutedEvent }) {
+/** Exported so the review drawer's "Filed" section can reuse the exact
+ * same row markup instead of a second lookalike. */
+export function AutoFiledRow({ event }: { event: RoutedEvent }) {
   return (
     <li className="auto-filed-row" data-source={event.source}>
       <span className="auto-filed-time">{formatEventTime(event.started_at)}</span>
@@ -65,5 +67,7 @@ function originText(origin: LabelOrigin, folder: string | null): string {
       return "you sorted";
     case "dismissed":
       return "not work";
+    case "noise":
+      return "noise";
   }
 }

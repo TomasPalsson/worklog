@@ -455,6 +455,28 @@ button {
   padding: 8px 0;
 }
 
+/* Exceptions-only attention line — a block with no ticket, surfaced once
+   above the block list rather than nagged per-card. */
+.attention-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+  padding: 8px 14px;
+  border-radius: var(--radius-md);
+  background: var(--amber-bg);
+  color: var(--amber-ink);
+  font-size: 13px;
+}
+
+.attention-show {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--amber-ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 /* ─────────────────────────── day strip ───────────────────────────
    One horizontal timeline replacing the old bare gaps <ul>. Segments
    are absolutely positioned by left/width % computed in lib/dayStrip.ts;
@@ -881,9 +903,76 @@ button {
 
 .origin-context,
 .origin-guess,
-.origin-dismissed {
+.origin-dismissed,
+.origin-noise {
   background: var(--slate-bg);
   color: var(--slate);
+}
+
+/* ─────────────────────────── review drawer ───────────────────────────
+   Zero-touch default: the quiet summary line + in-page Review panel that
+   replace the sort tray + auto-filed disclosure once nothing is left to
+   sort. */
+
+.review-line {
+  margin-bottom: 20px;
+}
+
+.review-summary {
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+.review-toggle {
+  margin-left: 8px;
+  font-size: 13px;
+  color: var(--fg-muted);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.review-toggle:hover {
+  color: var(--fg);
+}
+
+.review-drawer {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-raised);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.review-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  margin-bottom: 6px;
+}
+
+.review-section-empty {
+  font-size: 13px;
+  color: var(--fg-subtle);
+  font-style: italic;
+}
+
+.review-hidden-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.review-hidden-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--fg-muted);
+  padding: 3px 0;
 }
 
 /* Collapsible ticket groups — one row per (day, jira_issue) mirrors
@@ -1119,6 +1208,7 @@ button {
 .block-description {
   font-size: 15px;
   line-height: 1.45;
+  font-weight: 500;
   color: var(--fg);
   white-space: pre-wrap;
 }
@@ -1126,6 +1216,12 @@ button {
 .block-description.empty {
   color: var(--fg-subtle);
   font-style: italic;
+  font-weight: 400;
+}
+
+.block-clue-line {
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 .block-description[contenteditable="true"] {

@@ -2,7 +2,7 @@
 // aria-label for every confidence level the daemon can send.
 
 import { afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import type { Block, JiraTicket } from "@/lib/types";
 
 mock.module("@/app/actions", () => ({
@@ -60,6 +60,75 @@ function makeBlock(overrides: Partial<Block>): Block {
     ...overrides,
   };
 }
+
+describe("BlockCard description + clue line", () => {
+  it("renders the description as the primary line, ahead of the ticket row", () => {
+    render(
+      <BlockCard
+        block={makeBlock({ description: "Review vitinn-infra PR #802" })}
+        tickets={[]}
+        day="2026-07-25"
+        hideTicketing
+      />,
+    );
+    const body = document.querySelector(".block-body") as HTMLElement;
+    const desc = within(body).getByText("Review vitinn-infra PR #802");
+    const titleRow = body.querySelector(".block-title-row") as HTMLElement;
+    // compareDocumentPosition: DOCUMENT_POSITION_FOLLOWING (4) means titleRow
+    // comes after desc in the tree — description is the primary line.
+    expect(desc.compareDocumentPosition(titleRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('shows "Describing…" when there is no description and no estimated_by', () => {
+    render(
+      <BlockCard
+        block={makeBlock({ description: null, estimated_by: null })}
+        tickets={[]}
+        day="2026-07-25"
+        hideTicketing
+      />,
+    );
+    expect(screen.getByText("Describing…")).toBeTruthy();
+  });
+
+  it("shows the existing placeholder when there is no description but the block was estimated", () => {
+    render(
+      <BlockCard
+        block={makeBlock({ description: null, estimated_by: "gap" })}
+        tickets={[]}
+        day="2026-07-25"
+        hideTicketing
+      />,
+    );
+    expect(screen.getByText("Click to add a description…")).toBeTruthy();
+  });
+
+  it("builds the clue line from per-source counts with mapped human names, busiest first", () => {
+    render(
+      <BlockCard
+        block={makeBlock({
+          sources: [
+            { source: "slack", n: 3 },
+            { source: "shell", n: 12 },
+            { source: "firefox", n: 2 },
+            { source: "github_pr", n: 1 },
+          ],
+        })}
+        tickets={[]}
+        day="2026-07-25"
+        hideTicketing
+      />,
+    );
+    expect(screen.getByText("12 shell · 3 Slack · 2 web · 1 PR")).toBeTruthy();
+  });
+
+  it("omits the clue line when the block has no sources", () => {
+    render(
+      <BlockCard block={makeBlock({ sources: [] })} tickets={[]} day="2026-07-25" hideTicketing />,
+    );
+    expect(document.querySelector(".block-clue-line")).toBeNull();
+  });
+});
 
 describe("BlockCard confidence badge", () => {
   it.each(["high", "medium", "low"] as const)(

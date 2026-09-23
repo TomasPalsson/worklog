@@ -11,6 +11,7 @@ import {
 import { formatDayHeading, formatTotalHours } from "@/lib/format";
 import { DayHeader } from "@/components/DayHeader";
 import { ActionBar } from "@/components/ActionBar";
+import { AttentionLine } from "@/components/AttentionLine";
 import { BillingGroup } from "@/components/BillingGroup";
 import { BlockCard } from "@/components/BlockCard";
 import { DayStrip } from "@/components/DayStrip";
@@ -65,11 +66,16 @@ export default async function DayPage({
 
   // Browser/Slack events for the day (B12) — degrades to an empty feed on
   // a daemon hiccup rather than failing the whole page. The registry also
-  // backs the billing view below, so it's fetched once here.
+  // backs the billing view below, so it's fetched once here. `includeHidden`
+  // pulls in noise + dismissed events too, so the zero-touch summary line
+  // can report a hidden count without a second round trip when Review opens.
   let routedEvents: RoutedEvent[] = [];
   let registry: BillingRegistry | null = null;
   try {
-    [routedEvents, registry] = await Promise.all([routedForDay(day), loadBillingRegistry()]);
+    [routedEvents, registry] = await Promise.all([
+      routedForDay(day, true),
+      loadBillingRegistry(),
+    ]);
   } catch {
     routedEvents = [];
     registry = null;
@@ -88,7 +94,8 @@ export default async function DayPage({
   // that nag fires for *work* blocks the user still needs to assign.
   const workBlocks = blocks.filter((b) => !b.is_personal);
   const personalBlocks = blocks.filter((b) => b.is_personal);
-  const unassigned = workBlocks.filter((b) => !b.jira_issue).length;
+  const noTicketBlocks = workBlocks.filter((b) => !b.jira_issue);
+  const unassigned = noTicketBlocks.length;
 
   // Header total reflects work-only hours; personal time gets a
   // muted annotation so the focus is on billable time.
@@ -148,6 +155,7 @@ export default async function DayPage({
       <ActionBar day={day} cacheCount={cache.count} cacheLast={cache.last_fetched} />
       <DayStrip blocks={blocks} gaps={gaps} />
       <UnsortedList key={day} day={day} events={routedEvents} folderOptions={folderOptions} />
+      <AttentionLine count={unassigned} firstBlockId={noTicketBlocks[0]?.id ?? null} />
       {blocks.length === 0 ? (
         <EmptyState day={day} />
       ) : (

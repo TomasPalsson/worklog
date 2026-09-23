@@ -2,7 +2,7 @@
 
 import { useRef, useState, useTransition } from "react";
 import { Check, Coffee, FolderGit2, Sparkles, Trash2 } from "lucide-react";
-import type { Block, JiraTicket } from "@/lib/types";
+import type { Block, JiraTicket, SourceCount } from "@/lib/types";
 import { formatDuration, formatProjectPath, formatRange } from "@/lib/format";
 import {
   deleteBlock,
@@ -13,7 +13,6 @@ import {
 } from "@/app/actions";
 import { shouldShowSparkles } from "@/lib/group-actions";
 import { toast } from "@/lib/toast";
-import { SourceBadges } from "./SourceBadges";
 import { EstBadge } from "./EstBadge";
 import { TicketCombobox } from "./TicketCombobox";
 import { EventList } from "./EventList";
@@ -196,6 +195,29 @@ export function BlockCard({
       </div>
 
       <div className="block-body">
+        <div
+          ref={descRef}
+          className={`block-description ${!block.description ? "empty" : ""}`}
+          contentEditable={!isPending}
+          suppressContentEditableWarning
+          spellCheck={false}
+          role="textbox"
+          aria-multiline="true"
+          aria-label="Block description — click to edit"
+          aria-busy={isPending || undefined}
+          onBlur={commitDescription}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              (e.target as HTMLDivElement).blur();
+            }
+          }}
+        >
+          {block.description ?? (block.estimated_by ? "Click to add a description…" : "Describing…")}
+        </div>
+
+        {block.sources.length > 0 && <p className="block-clue-line">{clueLine(block.sources)}</p>}
+
         <div className="block-title-row">
           {!hideTicketing && (
             <TicketCombobox
@@ -229,27 +251,6 @@ export function BlockCard({
           )}
         </div>
 
-        <div
-          ref={descRef}
-          className={`block-description ${!block.description ? "empty" : ""}`}
-          contentEditable={!isPending}
-          suppressContentEditableWarning
-          spellCheck={false}
-          role="textbox"
-          aria-multiline="true"
-          aria-label="Block description — click to edit"
-          aria-busy={isPending || undefined}
-          onBlur={commitDescription}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              (e.target as HTMLDivElement).blur();
-            }
-          }}
-        >
-          {block.description ?? "Click to add a description…"}
-        </div>
-
         <div className="block-meta">
           <span
             className="confidence-badge"
@@ -258,7 +259,6 @@ export function BlockCard({
           >
             {block.confidence} confidence
           </span>
-          <SourceBadges sources={block.sources} />
           <EstBadge kind={block.estimated_by} />
           {block.project_path && (
             <span
@@ -325,4 +325,26 @@ export function BlockCard({
       </div>
     </article>
   );
+}
+
+/** Short human names for the clue line under the description — mirrors
+ * how the daemon actually names sources, not the display-bucket collapse
+ * `SourceBadges` used (that badge row is gone; this text line replaced it). */
+const SOURCE_LABELS: Record<string, string> = {
+  claude: "Claude",
+  shell: "shell",
+  git_reflog: "git",
+  github_commit: "commit",
+  github_pr: "PR",
+  slack: "Slack",
+  firefox: "web",
+  gcal: "meeting",
+};
+
+/** "12 shell · 3 Slack · 2 web · 1 PR" — busiest source first. */
+function clueLine(sources: SourceCount[]): string {
+  return [...sources]
+    .sort((a, b) => b.n - a.n)
+    .map((s) => `${s.n} ${SOURCE_LABELS[s.source] ?? s.source}`)
+    .join(" · ");
 }

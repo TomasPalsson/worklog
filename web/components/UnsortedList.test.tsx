@@ -290,6 +290,92 @@ describe("filed events", () => {
   });
 });
 
+const noiseEvent: RoutedEvent = {
+  id: 10,
+  source: "firefox",
+  started_at: "2026-07-25T20:00:00Z",
+  title: "Random news",
+  details: "https://news.example.com/",
+  container: null,
+  folder: null,
+  label_origin: "noise",
+  label_confidence: null,
+};
+const dismissedEvent: RoutedEvent = {
+  id: 11,
+  source: "slack",
+  started_at: "2026-07-25T21:00:00Z",
+  title: "off-topic banter",
+  details: "not work",
+  container: null,
+  folder: null,
+  label_origin: "dismissed",
+  label_confidence: null,
+};
+
+describe("zero-touch default (no unsorted events)", () => {
+  it("renders no tray, only the quiet summary line with correct filed/hidden counts", () => {
+    render(
+      <UnsortedList
+        day="2026-07-25"
+        events={[ruleLabelled, noiseEvent, dismissedEvent]}
+        folderOptions={["sjukra", "AWS cert"]}
+      />,
+    );
+    expect(screen.queryByText("To sort")).toBeNull();
+    expect(document.querySelector(".sort-tray")).toBeNull();
+    expect(document.querySelector(".auto-filed")).toBeNull();
+    expect(screen.getByText(/1 Slack and web clue folded into your blocks/)).toBeTruthy();
+    expect(screen.getByText(/2 hidden as noise/)).toBeTruthy();
+  });
+
+  it('"Review" opens the drawer with filed and hidden sections', async () => {
+    render(
+      <UnsortedList
+        day="2026-07-25"
+        events={[ruleLabelled, noiseEvent]}
+        folderOptions={["sjukra", "AWS cert"]}
+      />,
+    );
+    expect(screen.queryByRole("region", { name: /review/i })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+
+    const drawer = screen.getByRole("region", { name: /review/i });
+    expect(within(drawer).getByText(ruleLabelled.title)).toBeTruthy();
+    expect(within(drawer).getByText(noiseEvent.title)).toBeTruthy();
+    // Hidden rows get the project picker; filed rows don't need one.
+    expect(
+      within(drawer).getByRole("button", { name: `Project for ${noiseEvent.title}` }),
+    ).toBeTruthy();
+  });
+
+  it("filing a hidden row from the drawer labels it (no rule kind) and drops it from Hidden", async () => {
+    render(
+      <UnsortedList day="2026-07-25" events={[noiseEvent]} folderOptions={["sjukra"]} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    const drawer = screen.getByRole("region", { name: /review/i });
+    fireEvent.click(
+      within(drawer).getByRole("button", { name: `Project for ${noiseEvent.title}` }),
+    );
+    fireEvent.click(await within(drawer).findByRole("option", { name: "sjukra" }));
+
+    await waitFor(() => expect(labelEventCalls.length).toBe(1));
+    expect(labelEventCalls[0]).toEqual([noiseEvent.id, "sjukra", null, "2026-07-25"]);
+    await waitFor(() => expect(within(drawer).queryByText(noiseEvent.title)).toBeNull());
+  });
+});
+
+describe("fallback tray (unlabelled events still exist)", () => {
+  it("shows the grouped tray and no Review summary, even alongside hidden events", () => {
+    render(
+      <UnsortedList day="2026-07-25" events={[slack1, noiseEvent]} folderOptions={["sjukra"]} />,
+    );
+    expect(screen.getByText("To sort")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Review" })).toBeNull();
+  });
+});
+
 describe("drops previous day's rows on navigation", () => {
   it("re-mounting with a new day and events shows only the new day's groups", () => {
     const dayBEvent: RoutedEvent = {
