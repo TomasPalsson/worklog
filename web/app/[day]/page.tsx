@@ -6,6 +6,7 @@ import {
   listTickets,
   loadBillingRegistry,
   loadDaySummary,
+  routedForDay,
 } from "@/lib/daemon";
 import { formatDayHeading, formatTotalHours } from "@/lib/format";
 import { DayHeader } from "@/components/DayHeader";
@@ -14,7 +15,8 @@ import { BillingGroup } from "@/components/BillingGroup";
 import { BlockCard } from "@/components/BlockCard";
 import { EmptyState } from "@/components/EmptyState";
 import { TicketGroup } from "@/components/TicketGroup";
-import type { Block, BillingCustomer, BillingRow } from "@/lib/types";
+import { UnsortedList } from "@/components/UnsortedList";
+import type { Block, BillingCustomer, BillingRegistry, BillingRow, RoutedEvent } from "@/lib/types";
 import { COOKIE_NAME as VIEW_COOKIE, normaliseView } from "@/lib/view-mode";
 
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -60,6 +62,26 @@ export default async function DayPage({
   const { blocks, total_seconds: total } = summary;
   const { tickets, meta: cache } = ticketsResp;
 
+  // Browser/Slack events for the day (B12) — degrades to an empty feed on
+  // a daemon hiccup rather than failing the whole page. The registry also
+  // backs the billing view below, so it's fetched once here.
+  let routedEvents: RoutedEvent[] = [];
+  let registry: BillingRegistry | null = null;
+  try {
+    [routedEvents, registry] = await Promise.all([routedForDay(day), loadBillingRegistry()]);
+  } catch {
+    routedEvents = [];
+    registry = null;
+  }
+  const folderOptions = registry
+    ? Array.from(
+        new Set([
+          ...registry.folders.map((f) => f.folder),
+          ...registry.unmapped.map((u) => u.folder),
+        ]),
+      ).sort()
+    : [];
+
   // Split work vs personal. Personal blocks aren't candidates for
   // Jira/Tempo, so they don't count toward the unassigned amber-nag —
   // that nag fires for *work* blocks the user still needs to assign.
@@ -93,21 +115,19 @@ export default async function DayPage({
   let knownVerkefni: string[] = [];
   if (view === "billing") {
     try {
-      const [ex, registry] = await Promise.all([
-        exportBilling(day),
-        loadBillingRegistry(),
-      ]);
-      billingRows = ex.rows;
-      billingCustomers = registry.customers;
-      // Verkefni keys already pinned anywhere become suggestions, so the
-      // second time you bill a project you pick instead of retyping.
-      knownVerkefni = Array.from(
-        new Set(
-          registry.folders
-            .map((f) => f.verkefni)
-            .filter((v): v is string => !!v && v.trim() !== ""),
-        ),
-      ).sort();
+      billingRows = (await exportBilling(day)).rows;
+      if (registry) {
+        billingCustomers = registry.customers;
+        // Verkefni keys already pinned anywhere become suggestions, so the
+        // second time you bill a project you pick instead of retyping.
+        knownVerkefni = Array.from(
+          new Set(
+            registry.folders
+              .map((f) => f.verkefni)
+              .filter((v): v is string => !!v && v.trim() !== ""),
+          ),
+        ).sort();
+      }
     } catch {
       billingRows = null;
     }
@@ -125,6 +145,7 @@ export default async function DayPage({
         view={view}
       />
       <ActionBar day={day} cacheCount={cache.count} cacheLast={cache.last_fetched} />
+      <UnsortedList day={day} events={routedEvents} folderOptions={folderOptions} />
       {blocks.length === 0 ? (
         <EmptyState day={day} />
       ) : (

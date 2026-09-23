@@ -8,6 +8,8 @@ import {
   Calendar,
   Briefcase,
   Circle,
+  Globe,
+  Slack,
 } from "lucide-react";
 import type { Event } from "@/lib/types";
 import { sourceKind } from "@/lib/types";
@@ -101,11 +103,16 @@ function EventRow({ event }: { event: Event }) {
   const kind = sourceKind(event.source);
   const { preview, truncated } = previewDetails(event.details, 160);
   const time = formatEventTime(event.started_at);
+  // firefox/slack aren't in the shared SourceKind bucket set (they get
+  // their own source + origin display in UnsortedList); here they just
+  // need a recognisable icon/label once a labelled event joins a block.
+  const label =
+    event.source === "firefox" ? "Firefox" : event.source === "slack" ? "Slack" : sourceLabel(kind);
 
   return (
     <li className="event-row" data-source={kind}>
-      <span className="event-source" aria-label={sourceLabel(kind)} title={sourceLabel(kind)}>
-        {iconFor(kind)}
+      <span className="event-source" aria-label={label} title={label}>
+        {iconFor(event.source, kind)}
       </span>
       <div className="event-main">
         <div className="event-head">
@@ -136,8 +143,10 @@ function EventRow({ event }: { event: Event }) {
   );
 }
 
-function iconFor(kind: ReturnType<typeof sourceKind>) {
+function iconFor(source: string, kind: ReturnType<typeof sourceKind>) {
   const size = 13;
+  if (source === "firefox") return <Globe width={size} height={size} strokeWidth={1.75} />;
+  if (source === "slack") return <Slack width={size} height={size} strokeWidth={1.75} />;
   switch (kind) {
     case "github":
       return <GitCommit width={size} height={size} strokeWidth={1.75} />;
