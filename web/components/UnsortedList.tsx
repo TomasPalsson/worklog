@@ -87,7 +87,7 @@ export function UnsortedList({ day, events, folderOptions }: Props) {
             {groups.length === 1 ? "" : "s"}
           </span>
           <span className="sort-tray-hint">
-            Pick a project once for the whole group. Tick "always" and future ones sort
+            Pick a project once for the whole group. Tick “always” and future ones sort
             themselves.
           </span>
         </summary>
