@@ -41,6 +41,12 @@ export interface Block {
    * bulk of its commands ran in. Null for blocks with no cwd (pure
    * calendar / PR-review blocks). */
   project_path: string | null;
+  /** Repo-level folder key from the daemon, with `/.claude/worktrees/*`
+   * already folded server-side (e.g. a block under
+   * `…/lyfjastofnun/.claude/worktrees/ci-on-codebuild` has project
+   * "lyfjastofnun"). Optional/absent on older daemon versions — callers
+   * fall back to deriving the same key from `project_path`. */
+  project?: string | null;
   /** "high"/"medium"/"low", from how many distinct sources fed the block. */
   confidence: "high" | "medium" | "low";
 }

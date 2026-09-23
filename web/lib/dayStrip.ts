@@ -16,6 +16,10 @@ export interface StripBlock {
   /** Optional so existing StripBlock literals in tests don't all need
    * updating — buildSegments treats a missing value as `null`. */
   description?: string | null;
+  /** Repo-level folder key from the daemon, `/.claude/worktrees/*` already
+   * folded. Optional — absent (older daemon) falls back to deriving the
+   * same key from `project_path` in `projectKey`. */
+  project?: string | null;
 }
 
 export interface StripGap {
@@ -90,13 +94,24 @@ export function hourTicks(window: TrackWindow): HourTick[] {
   return ticks;
 }
 
-/** Grouping key for colour + legend: the last path segment of a work
- * block's project_path, "personal" for personal blocks (regardless of
- * path), or "unassigned" when there's no path at all. */
-export function projectKey(block: Pick<StripBlock, "project_path" | "is_personal">): string {
+/** A worktree's project_path is `<repo>/.claude/worktrees/<branch>[/...]` —
+ * fold it back to `<repo>` so old data (predating the daemon's `project`
+ * field) still groups by repo, not by branch name. */
+function foldWorktreePath(path: string): string {
+  const idx = path.indexOf("/.claude/worktrees/");
+  return idx === -1 ? path : path.slice(0, idx);
+}
+
+/** Grouping key for colour + legend: the daemon's `project` when present
+ * (already repo-folded server-side), else the last path segment of
+ * `project_path` — folding `/.claude/worktrees/*` first so a worktree
+ * path groups under its repo, not its branch. "personal" for personal
+ * blocks (regardless of path), "unassigned" when there's no path at all. */
+export function projectKey(block: Pick<StripBlock, "project_path" | "is_personal" | "project">): string {
   if (block.is_personal) return "personal";
+  if (block.project) return block.project;
   if (!block.project_path) return "unassigned";
-  const trimmed = block.project_path.replace(/\/+$/, "");
+  const trimmed = foldWorktreePath(block.project_path).replace(/\/+$/, "");
   const segments = trimmed.split("/").filter(Boolean);
   return segments[segments.length - 1] ?? "unassigned";
 }

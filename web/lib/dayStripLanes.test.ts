@@ -53,6 +53,21 @@ describe("buildLanes", () => {
     );
     expect(buildLanes(s2, l2).map((l) => l.key)).toEqual(["alpha"]);
   });
+
+  it("puts a plain-path block and a worktree-path block from the same repo in one lane", () => {
+    const repoBlocks: StripBlock[] = [
+      { id: 10, started_at: at(9, 0), ended_at: at(9, 30), project_path: "/Users/tomas/Desktop/Work/lyfjastofnun", is_personal: false, confidence: "high" },
+      { id: 11, started_at: at(9, 30), ended_at: at(10, 0), project_path: "/Users/tomas/Desktop/Work/lyfjastofnun/.claude/worktrees/ci-on-codebuild", is_personal: false, confidence: "high" },
+    ];
+    const repoWindow = { startMs: new Date(at(9, 0)).getTime(), endMs: new Date(at(10, 0)).getTime() };
+    const { segments: rs, legend: rl } = withLegendHues(
+      buildSegments(repoBlocks, [], repoWindow),
+      buildLegend(repoBlocks, []),
+    );
+    const lanes = buildLanes(rs, rl);
+    expect(lanes.map((l) => l.key)).toEqual(["lyfjastofnun"]);
+    expect(lanes[0].segments.length).toBe(2);
+  });
 });
 
 describe("isFocused", () => {

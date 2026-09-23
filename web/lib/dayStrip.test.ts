@@ -6,6 +6,7 @@ import {
   computeTrackWindow,
   hourTicks,
   projectHue,
+  projectKey,
   withLegendHues,
   mergeAdjacentBlocks,
   compactLegend,
@@ -167,6 +168,46 @@ describe("buildLegend", () => {
   it("omits Away entirely when there are no gaps", () => {
     const legend = buildLegend(blocks, []);
     expect(legend.some((e) => e.away)).toBe(false);
+  });
+
+  it("groups a plain-path block and a worktree-path block under the same repo into one entry", () => {
+    const repoBlocks: StripBlock[] = [
+      { id: 1, started_at: at(9, 0), ended_at: at(9, 30), project_path: "/Users/tomas/Desktop/Work/lyfjastofnun", is_personal: false, confidence: "high" },
+      { id: 2, started_at: at(9, 30), ended_at: at(10, 0), project_path: "/Users/tomas/Desktop/Work/lyfjastofnun/.claude/worktrees/ci-on-codebuild", is_personal: false, confidence: "high" },
+    ];
+    const legend = buildLegend(repoBlocks, []);
+    expect(legend.map((e) => e.label)).toEqual(["lyfjastofnun"]);
+    expect(legend[0].totalSeconds).toBe(3600);
+  });
+});
+
+describe("projectKey", () => {
+  it("uses the daemon's project field when present, ignoring project_path", () => {
+    expect(
+      projectKey({ project_path: "/x/anything", is_personal: false, project: "lyfjastofnun" }),
+    ).toBe("lyfjastofnun");
+  });
+
+  it("falls back to project_path's last segment when project is absent", () => {
+    expect(projectKey({ project_path: "/x/vitinn-infra", is_personal: false, project: null })).toBe(
+      "vitinn-infra",
+    );
+  });
+
+  it("folds /.claude/worktrees/<branch> back to the repo name in the fallback", () => {
+    expect(
+      projectKey({
+        project_path: "/Users/tomas/Desktop/Work/lyfjastofnun/.claude/worktrees/ci-on-codebuild",
+        is_personal: false,
+        project: null,
+      }),
+    ).toBe("lyfjastofnun");
+  });
+
+  it("personal still wins over any project field", () => {
+    expect(projectKey({ project_path: null, is_personal: true, project: "lyfjastofnun" })).toBe(
+      "personal",
+    );
   });
 });
 
