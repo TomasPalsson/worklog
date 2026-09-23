@@ -11,4 +11,17 @@
   (worktree-collapse copied from billing.rs, both prefixes, returns
   `<prefix>/<key>`). Reuse that helper (or lift it to a shared spot) for
   L2's reflog collector instead of re-deriving it.
+- 2026-09-23: L2 (git reflog collector) done. Didn't end up needing
+  `fish::repo_root_for` — reflog only walks repos **directly** under
+  each root (`read_dir(root)` + check for a dir), so the repo dir found
+  during traversal already **is** the project root; no path-prefix
+  resolution needed. Reflog line parsing: split on the first `\t` to
+  separate `<old> <new> <name> <<email>> <epoch> <tz>` from the
+  message, then take `tokens[1]` (new sha) and the last two
+  whitespace-split tokens (epoch, tz) — author name/email can contain
+  spaces so don't assume fixed field count from the front. Only
+  `checkout`/`merge` need their target parsed out of the message
+  (`moving from X to Y` / `merge <branch>: ...`); everything else
+  collapses to a bare action word so no commit-message text ever lands
+  in `title`.
 

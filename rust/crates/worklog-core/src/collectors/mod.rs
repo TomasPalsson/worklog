@@ -10,6 +10,7 @@ pub mod fish;
 pub mod gcal;
 pub mod github;
 pub mod jira;
+pub mod reflog;
 pub mod slack;
 pub mod tempo;
 
