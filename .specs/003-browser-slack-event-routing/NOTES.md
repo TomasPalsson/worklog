@@ -1,0 +1,2 @@
+Ruling: T001 loosened db::tests::meta_table_exists_and_schema_version_is_10 from ==10 to >=10 — kept — exact pin now lives in routing_rules_table_exists_and_schema_version_is_11 (==11), same floor pattern as schema_version_is_bumped_for_exported_at_migration — cost if wrong: none, version still pinned exactly once
+Discovered: flow new-spec moved the worktree onto branch flow/browser-slack-event-routing; history is linear — defer (push under that name)

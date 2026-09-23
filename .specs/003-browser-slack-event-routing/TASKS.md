@@ -21,7 +21,7 @@ Spec: spec.md · Design: design.md · Base: 0fa7830 · Route: dispatch · Test: 
 ## Phase 1 — Capture and storage
 Goal: browser heartbeats and sent Slack messages land in the database, filtered and deduplicated.
 Independent test: `cargo test --manifest-path rust/Cargo.toml browser_ingest slack db::` — green with no UI.
-- [ ] T001 Schema v11 and module stubs — files: rust/crates/worklog-core/sql/schema.sql, rust/crates/worklog-core/src/db.rs, rust/crates/worklog-core/src/lib.rs, rust/crates/worklog-core/src/browser_ingest.rs, rust/crates/worklog-core/src/routing.rs, rust/crates/worklog-core/src/laya.rs, rust/crates/worklog-core/src/collectors/mod.rs, rust/crates/worklog-core/src/collectors/slack.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core db::`
+- [x] T001 Schema v11 and module stubs — files: rust/crates/worklog-core/sql/schema.sql, rust/crates/worklog-core/src/db.rs, rust/crates/worklog-core/src/lib.rs, rust/crates/worklog-core/src/browser_ingest.rs, rust/crates/worklog-core/src/routing.rs, rust/crates/worklog-core/src/laya.rs, rust/crates/worklog-core/src/collectors/mod.rs, rust/crates/worklog-core/src/collectors/slack.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core db::` — done: 799fa76
 - [ ] T002 [P] Heartbeat ingest with work-hours and privacy filters (B1, B2) — files: rust/crates/worklog-core/src/browser_ingest.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core browser_ingest` — after: T001
 - [ ] T004 [P] Slack collector for the user's sent messages (B4) — files: rust/crates/worklog-core/src/collectors/slack.rs, rust/crates/worklog-core/src/secrets.rs, rust/crates/worklog-cli/src/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml slack` — after: T001
 
@@ -36,7 +36,7 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core ro
 ## Phase 3 — Firefox add-on
 Goal: an installable add-on that reports focused, active, work-hours tab time and can be paused.
 Independent test: `bun test extension/firefox` — green with no daemon running.
-- [ ] T008 [P] Firefox add-on: heartbeat logic, container/incognito skip, idle, pause popup (B11) — files: extension/firefox/manifest.json, extension/firefox/background.js, extension/firefox/heartbeat.js, extension/firefox/heartbeat.test.js, extension/firefox/popup.html, extension/firefox/popup.js, extension/firefox/README.md — verify: `bun test extension/firefox`
+- [x] T008 [P] Firefox add-on: heartbeat logic, container/incognito skip, idle, pause popup (B11) — files: extension/firefox/manifest.json, extension/firefox/background.js, extension/firefox/heartbeat.js, extension/firefox/heartbeat.test.js, extension/firefox/popup.html, extension/firefox/popup.js, extension/firefox/README.md — verify: `bun test extension/firefox` — done: ce802a2
 - [ ] CHK001 human-verify the signed add-on installs in normal Firefox and survives a restart — files: extension/firefox/manifest.json — verify: human: user runs `web-ext sign --channel unlisted` with their AMO keys, installs the .xpi, restarts Firefox, the add-on is still enabled — after: T008
 
 ## Phase 4 — Review UI

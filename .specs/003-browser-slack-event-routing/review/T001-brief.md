@@ -1,5 +1,5 @@
 # Brief — T001
-Base: ccb6bb0
+Base: 3238b06
 Feature: /Users/tomas/Desktop/Projects/worklog/.claude/worktrees/prep-event-routing/.specs/003-browser-slack-event-routing
 Approved: 2026-09-23 by user
 Spec: spec.md
