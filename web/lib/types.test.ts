@@ -72,8 +72,8 @@ describe("routing types", () => {
     const status: RoutingStatus = {
       last_heartbeat: null,
       last_slack: "2026-04-14T10:00:00Z",
-      laya_reachable: false,
+      classifier_reachable: false,
     };
-    expect(status.laya_reachable).toBe(false);
+    expect(status.classifier_reachable).toBe(false);
   });
 });

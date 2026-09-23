@@ -134,8 +134,10 @@ export interface SettingsView {
   /** Editable work-hours window for browser heartbeat ingest, e.g.
    * "Mon-Fri 09:00-17:00". */
   work_hours: string;
-  /** Minimum model confidence (0.0-1.0) to accept a routing guess. */
-  route_threshold: number;
+  /** Minimum ratio the winner must beat "not enough evidence" by (RATIO_RANGE 1.0-5.0). */
+  abstain_margin: number;
+  /** Minimum ratio the winner must beat the runner-up by (RATIO_RANGE 1.0-5.0). */
+  runner_up_ratio: number;
 }
 
 /** Partial update sent to `POST /settings`. Omitted groups are left
@@ -153,8 +155,10 @@ export interface SettingsUpdate {
   close_day?: number;
   /** Omitted leaves the work-hours window untouched. */
   work_hours?: string;
-  /** Omitted leaves the route threshold untouched. */
-  route_threshold?: number;
+  /** Omitted leaves the abstain margin untouched. */
+  abstain_margin?: number;
+  /** Omitted leaves the runner-up ratio untouched. */
+  runner_up_ratio?: number;
 }
 
 export interface ReclassifyStats {
@@ -316,7 +320,7 @@ export interface RoutedEvent {
 export interface RoutingStatus {
   last_heartbeat: string | null;
   last_slack: string | null;
-  laya_reachable: boolean;
+  classifier_reachable: boolean;
 }
 
 export type SourceKind = "github" | "claude" | "gcal" | "jira" | "other";

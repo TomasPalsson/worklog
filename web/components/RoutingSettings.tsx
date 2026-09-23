@@ -16,17 +16,21 @@ import { toast } from "@/lib/toast";
 interface FieldsProps {
   workHours: string;
   onWorkHoursChange: (v: string) => void;
-  routeThreshold: string;
-  onRouteThresholdChange: (v: string) => void;
+  abstainMargin: string;
+  onAbstainMarginChange: (v: string) => void;
+  runnerUpRatio: string;
+  onRunnerUpRatioChange: (v: string) => void;
 }
 
-/** Work-hours window (FR-04) and model-guess threshold (FR-08). Plain
- * controlled inputs — the parent settings form owns save/hydrate. */
+/** Work-hours window (FR-04) and Verdict's two filing ratios (FR-05).
+ * Plain controlled inputs — the parent settings form owns save/hydrate. */
 export function RoutingFields({
   workHours,
   onWorkHoursChange,
-  routeThreshold,
-  onRouteThresholdChange,
+  abstainMargin,
+  onAbstainMarginChange,
+  runnerUpRatio,
+  onRunnerUpRatioChange,
 }: FieldsProps) {
   return (
     <div className="settings-grid-2">
@@ -41,15 +45,27 @@ export function RoutingFields({
         />
       </label>
       <label className="settings-field settings-field-narrow">
-        <span>Match threshold (0–1)</span>
+        <span>Abstain margin</span>
         <input
           type="number"
-          min={0}
-          max={1}
+          min={1}
+          max={5}
           step={0.01}
-          value={routeThreshold}
+          value={abstainMargin}
           autoComplete="off"
-          onChange={(e) => onRouteThresholdChange(e.target.value)}
+          onChange={(e) => onAbstainMarginChange(e.target.value)}
+        />
+      </label>
+      <label className="settings-field settings-field-narrow">
+        <span>Runner-up ratio</span>
+        <input
+          type="number"
+          min={1}
+          max={5}
+          step={0.01}
+          value={runnerUpRatio}
+          autoComplete="off"
+          onChange={(e) => onRunnerUpRatioChange(e.target.value)}
         />
       </label>
     </div>
@@ -65,7 +81,7 @@ function StatusList({ status }: { status: RoutingStatus | null }) {
     <ul className="settings-hint">
       <li>Last heartbeat: {formatStatusTime(status?.last_heartbeat ?? null)}</li>
       <li>Last Slack collect: {formatStatusTime(status?.last_slack ?? null)}</li>
-      <li>Model helper: {status?.laya_reachable ? "reachable" : "unreachable"}</li>
+      <li>Model helper: {status?.classifier_reachable ? "reachable" : "unreachable"}</li>
     </ul>
   );
 }

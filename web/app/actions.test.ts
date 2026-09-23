@@ -148,7 +148,7 @@ mock.module("@/lib/daemon", () => ({
   routingStatus: async () => ({
     last_heartbeat: null,
     last_slack: null,
-    laya_reachable: false,
+    classifier_reachable: false,
   }),
 }));
 

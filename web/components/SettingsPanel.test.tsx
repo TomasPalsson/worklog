@@ -17,14 +17,15 @@ const initialView: SettingsView = {
   cycle_start_day: 20,
   close_day: 23,
   work_hours: "Mon-Fri 09:00-17:00",
-  route_threshold: 0.9,
+  abstain_margin: 1.2,
+  runner_up_ratio: 1.1,
 };
 
 const initialRules: Rule[] = [];
 const initialStatus: RoutingStatus = {
   last_heartbeat: null,
   last_slack: null,
-  laya_reachable: false,
+  classifier_reachable: false,
 };
 
 const fetchSettingsImpl = mock(async () => ({ ok: true as const, data: initialView }));
@@ -119,24 +120,30 @@ describe("SettingsPanel pruner controls (B31)", () => {
 });
 
 describe("SettingsPanel browser/Slack routing controls (T012)", () => {
-  it("renders work hours and match threshold with current values", async () => {
+  it("renders work hours and both ratios with current values", async () => {
     await openPanel();
 
     const workHoursInput = screen.getByLabelText(/work hours/i);
     expect((workHoursInput as HTMLInputElement).value).toBe("Mon-Fri 09:00-17:00");
 
-    const thresholdInput = screen.getByLabelText(/match threshold/i);
-    expect((thresholdInput as HTMLInputElement).value).toBe("0.9");
+    const abstainMarginInput = screen.getByLabelText(/abstain margin/i);
+    expect((abstainMarginInput as HTMLInputElement).value).toBe("1.2");
+
+    const runnerUpRatioInput = screen.getByLabelText(/runner-up ratio/i);
+    expect((runnerUpRatioInput as HTMLInputElement).value).toBe("1.1");
   });
 
-  it("saving after changing work hours and threshold sends both values", async () => {
+  it("saving after changing work hours and both ratios sends all three values", async () => {
     await openPanel();
 
     fireEvent.change(screen.getByLabelText(/work hours/i), {
       target: { value: "Mon-Fri 08:00-18:00" },
     });
-    fireEvent.change(screen.getByLabelText(/match threshold/i), {
-      target: { value: "0.75" },
+    fireEvent.change(screen.getByLabelText(/abstain margin/i), {
+      target: { value: "1.3" },
+    });
+    fireEvent.change(screen.getByLabelText(/runner-up ratio/i), {
+      target: { value: "1.15" },
     });
 
     fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
@@ -144,28 +151,30 @@ describe("SettingsPanel browser/Slack routing controls (T012)", () => {
     await waitFor(() => expect(saveSettingsCalls.length).toBe(1));
     expect(saveSettingsCalls[0]).toMatchObject({
       work_hours: "Mon-Fri 08:00-18:00",
-      route_threshold: 0.75,
+      abstain_margin: 1.3,
+      runner_up_ratio: 1.15,
     });
   });
 
-  it("clearing the match threshold sends no route_threshold change", async () => {
+  it("clearing one ratio field sends no change for it, but keeps the other", async () => {
     await openPanel();
 
-    // Blank the threshold field but change something else too, so a save
-    // still happens — the blank field must be treated as "no change", not
-    // as 0 (Number("") === 0, which would auto-accept every model guess).
-    fireEvent.change(screen.getByLabelText(/match threshold/i), {
+    // Blank the abstain margin field but change the runner-up ratio too, so
+    // a save still happens — the blank field must be treated as "no
+    // change", not as 0 (Number("") === 0, which would auto-accept every
+    // model guess).
+    fireEvent.change(screen.getByLabelText(/abstain margin/i), {
       target: { value: "" },
     });
-    fireEvent.change(screen.getByLabelText(/work hours/i), {
-      target: { value: "Mon-Fri 08:00-18:00" },
+    fireEvent.change(screen.getByLabelText(/runner-up ratio/i), {
+      target: { value: "1.15" },
     });
 
     fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
 
     await waitFor(() => expect(saveSettingsCalls.length).toBe(1));
-    expect(saveSettingsCalls[0].work_hours).toBe("Mon-Fri 08:00-18:00");
-    expect(saveSettingsCalls[0].route_threshold).toBeUndefined();
+    expect(saveSettingsCalls[0].runner_up_ratio).toBe(1.15);
+    expect(saveSettingsCalls[0].abstain_margin).toBeUndefined();
   });
 
   it("renders the Slack user token as a secret field", async () => {
@@ -191,7 +200,7 @@ describe("SettingsPanel browser/Slack routing controls (T012)", () => {
       data: {
         last_heartbeat: "2026-07-25T10:00:00Z",
         last_slack: null,
-        laya_reachable: true,
+        classifier_reachable: true,
       },
     }));
 
@@ -199,7 +208,7 @@ describe("SettingsPanel browser/Slack routing controls (T012)", () => {
 
     await waitFor(() => expect(fetchRoutingStatusImpl).toHaveBeenCalled());
     // Exact text, not /reachable/i — that regex also matches "unreachable"
-    // and could never fail if laya_reachable were false.
+    // and could never fail if classifier_reachable were false.
     expect(await screen.findByText("Model helper: reachable")).toBeTruthy();
   });
 
