@@ -48,7 +48,7 @@ commands by area\x1b[0m
   data collection      \x1b[32mcollect  infer  estimate  hook\x1b[0m
   review UI            \x1b[32mweb  serve\x1b[0m
   setup & diagnostics  \x1b[32msetup  status  doctor  db  secret  completions  version\x1b[0m
-  daemon & schedule    \x1b[32mdaemon  schedule\x1b[0m
+  daemon & schedule    \x1b[32mdaemon  schedule  laya\x1b[0m
   release ops          \x1b[32mself-update  upgrade  dev\x1b[0m
 ";
 
@@ -300,6 +300,13 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
         tcp: String,
     },
 
+    /// Manage the optional Laya classifier helper used to guess a
+    /// project for browser/Slack events that no hard rule matches.
+    Laya {
+        #[command(subcommand)]
+        sub: LayaCmd,
+    },
+
     /// Run the dockerised Next.js review UI (http://localhost:3333).
     Web {
         #[command(subcommand)]
@@ -360,6 +367,16 @@ pub enum DaemonCmd {
     /// Remove the service unit (and stop the supervisor-managed process).
     Uninstall,
     /// Report whether the service unit is installed and where it lives.
+    Status,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum LayaCmd {
+    /// Foreground: write the embedded helper script to the data dir and
+    /// run it via `uv run --with laya python <script>`, bound to
+    /// 127.0.0.1 only.
+    Serve,
+    /// Report whether the helper is reachable on `LAYA_ADDR`.
     Status,
 }
 
@@ -811,6 +828,10 @@ pub fn run_with<W: Write>(
             Some(DaemonCmd::Install { command }) => cmd_daemon_install(command, out, cli.json),
             Some(DaemonCmd::Uninstall) => cmd_daemon_uninstall(out, cli.json),
             Some(DaemonCmd::Status) => cmd_daemon_status(out, cli.json),
+        },
+        Cmd::Laya { sub } => match sub {
+            LayaCmd::Serve => cmd_laya_serve(),
+            LayaCmd::Status => cmd_laya_status(out, cli.json),
         },
         Cmd::Web { sub } => match sub {
             WebCmd::Up {
@@ -3425,6 +3446,53 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
         prune_task.abort();
         unix_res
     })
+}
+
+/// Write the embedded helper script to `<data>/laya_server.py` and run
+/// it in the foreground via `uv run --with laya`. Blocks until the
+/// child exits; `Ctrl-C` kills it like any other foreground process.
+fn cmd_laya_serve() -> Result<()> {
+    let paths = Paths::resolve()?;
+    paths.ensure()?;
+    let script_path = paths.data_dir.join("laya_server.py");
+    std::fs::write(&script_path, worklog_core::laya::SERVER_SCRIPT)
+        .with_context(|| format!("writing {}", script_path.display()))?;
+    eprintln!(
+        "→ laya http://{}",
+        worklog_core::routing_contract::LAYA_ADDR
+    );
+    let status = std::process::Command::new("uv")
+        .args(["run", "--with", "laya", "python"])
+        .arg(&script_path)
+        .status()
+        .context("spawning `uv run --with laya python` — is uv installed?")?;
+    if !status.success() {
+        anyhow::bail!("laya server exited {status}");
+    }
+    Ok(())
+}
+
+fn cmd_laya_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
+    let reachable = worklog_core::daemon_service::is_running(
+        worklog_core::routing_contract::LAYA_ADDR,
+        std::time::Duration::from_secs(2),
+    );
+    if json {
+        writeln!(out, "{}", serde_json::json!({ "reachable": reachable }))?;
+        return Ok(());
+    }
+    if reachable {
+        style::ok(
+            out,
+            &format!(
+                "laya reachable at {}",
+                worklog_core::routing_contract::LAYA_ADDR
+            ),
+        )?;
+    } else {
+        style::warn(out, "laya not reachable — run `worklog laya serve`")?;
+    }
+    Ok(())
 }
 
 fn cmd_secret_list<W: Write>(out: &mut W, json: bool) -> Result<()> {
