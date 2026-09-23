@@ -20,7 +20,6 @@ pub mod hook;
 pub mod hook_run;
 pub mod http;
 pub mod infer;
-pub mod laya;
 pub mod models;
 pub mod paths;
 pub mod personal;
@@ -34,6 +33,7 @@ pub mod sessions;
 pub mod skill;
 pub mod tz;
 pub mod updater;
+pub mod verdict;
 pub mod web;
 
 pub use crate::paths::Paths;

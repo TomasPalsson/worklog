@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Laya classifier helper — run via `worklog laya serve`.
+"""Verdict classifier helper — run via `worklog verdict serve`.
 
 Binds 127.0.0.1 only. Endpoints:
-  GET  /health    -> 200 (liveness probe used by `worklog laya status`)
+  GET  /health    -> 200 (liveness probe used by `worklog verdict status`)
   POST /classify  -> body {"state": <json>, "options": [<folder>, ...]}
                      response {"choice": <one of options>, "confidence": <0..1>}
                      empty options -> 400
@@ -10,7 +10,7 @@ Binds 127.0.0.1 only. Endpoints:
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from laya import Router
+from verdict import Router
 
 HOST = "127.0.0.1"
 PORT = 9324

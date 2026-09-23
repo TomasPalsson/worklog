@@ -14,9 +14,9 @@ use worklog_core::{
         gcal as gcal_col, github as gh, jira as jira_col, slack as slack_col, tempo as tempo_col,
     },
     daemon as daemon_mod, db, estimate, hook, hook_run, http, infer,
-    laya::LayaClassifier,
     paths::Paths,
     personal as personal_mod, routing, schedule, secrets, skill as skill_mod, updater as upd,
+    verdict::VerdictClassifier,
     web as web_mod,
 };
 
@@ -49,7 +49,7 @@ commands by area\x1b[0m
   data collection      \x1b[32mcollect  infer  estimate  hook\x1b[0m
   review UI            \x1b[32mweb  serve\x1b[0m
   setup & diagnostics  \x1b[32msetup  status  doctor  db  secret  completions  version\x1b[0m
-  daemon & schedule    \x1b[32mdaemon  schedule  laya\x1b[0m
+  daemon & schedule    \x1b[32mdaemon  schedule  verdict\x1b[0m
   release ops          \x1b[32mself-update  upgrade  dev\x1b[0m
 ";
 
@@ -301,11 +301,11 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
         tcp: String,
     },
 
-    /// Manage the optional Laya classifier helper used to guess a
+    /// Manage the optional Verdict classifier helper used to guess a
     /// project for browser/Slack events that no hard rule matches.
-    Laya {
+    Verdict {
         #[command(subcommand)]
-        sub: LayaCmd,
+        sub: VerdictCmd,
     },
 
     /// Run the dockerised Next.js review UI (http://localhost:3333).
@@ -372,12 +372,12 @@ pub enum DaemonCmd {
 }
 
 #[derive(Subcommand, Debug)]
-pub enum LayaCmd {
+pub enum VerdictCmd {
     /// Foreground: write the embedded helper script to the data dir and
-    /// run it via `uv run --with laya python <script>`, bound to
+    /// run it via `uv run --with verdict python <script>`, bound to
     /// 127.0.0.1 only.
     Serve,
-    /// Report whether the helper is reachable on `LAYA_ADDR`.
+    /// Report whether the helper is reachable on `CLASSIFIER_ADDR`.
     Status,
 }
 
@@ -830,9 +830,9 @@ pub fn run_with<W: Write>(
             Some(DaemonCmd::Uninstall) => cmd_daemon_uninstall(out, cli.json),
             Some(DaemonCmd::Status) => cmd_daemon_status(out, cli.json),
         },
-        Cmd::Laya { sub } => match sub {
-            LayaCmd::Serve => cmd_laya_serve(),
-            LayaCmd::Status => cmd_laya_status(out, cli.json),
+        Cmd::Verdict { sub } => match sub {
+            VerdictCmd::Serve => cmd_verdict_serve(),
+            VerdictCmd::Status => cmd_verdict_status(out, cli.json),
         },
         Cmd::Web { sub } => match sub {
             WebCmd::Up {
@@ -1550,11 +1550,11 @@ fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bo
     }
 
     if matches!(target, CollectTarget::All) {
-        let classifier = LayaClassifier::new();
-        let threshold = daemon_mod::configured_route_threshold();
+        let classifier = VerdictClassifier::new();
+        let rule = daemon_mod::configured_route_rule();
         let mut d = since;
         while d <= today {
-            if let Err(e) = routing::route_day(&conn, d, &classifier, threshold) {
+            if let Err(e) = routing::route_day(&conn, d, &classifier, rule) {
                 if !json {
                     style::info(out, &format!("routing {d}: {e}"))?;
                 }
@@ -3463,33 +3463,33 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
     })
 }
 
-/// Write the embedded helper script to `<data>/laya_server.py` and run
-/// it in the foreground via `uv run --with laya`. Blocks until the
+/// Write the embedded helper script to `<data>/verdict_server.py` and run
+/// it in the foreground via `uv run --with verdict`. Blocks until the
 /// child exits; `Ctrl-C` kills it like any other foreground process.
-fn cmd_laya_serve() -> Result<()> {
+fn cmd_verdict_serve() -> Result<()> {
     let paths = Paths::resolve()?;
     paths.ensure()?;
-    let script_path = paths.data_dir.join("laya_server.py");
-    std::fs::write(&script_path, worklog_core::laya::SERVER_SCRIPT)
+    let script_path = paths.data_dir.join("verdict_server.py");
+    std::fs::write(&script_path, worklog_core::verdict::SERVER_SCRIPT)
         .with_context(|| format!("writing {}", script_path.display()))?;
     eprintln!(
-        "→ laya http://{}",
-        worklog_core::routing_contract::LAYA_ADDR
+        "→ verdict http://{}",
+        worklog_core::routing_contract::CLASSIFIER_ADDR
     );
     let status = std::process::Command::new("uv")
-        .args(["run", "--with", "laya", "python"])
+        .args(["run", "--with", "verdict", "python"])
         .arg(&script_path)
         .status()
-        .context("spawning `uv run --with laya python` — is uv installed?")?;
+        .context("spawning `uv run --with verdict python` — is uv installed?")?;
     if !status.success() {
-        anyhow::bail!("laya server exited {status}");
+        anyhow::bail!("verdict server exited {status}");
     }
     Ok(())
 }
 
-fn cmd_laya_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
+fn cmd_verdict_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
     let reachable = worklog_core::daemon_service::is_running(
-        worklog_core::routing_contract::LAYA_ADDR,
+        worklog_core::routing_contract::CLASSIFIER_ADDR,
         std::time::Duration::from_secs(2),
     );
     if json {
@@ -3500,12 +3500,12 @@ fn cmd_laya_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
         style::ok(
             out,
             &format!(
-                "laya reachable at {}",
-                worklog_core::routing_contract::LAYA_ADDR
+                "verdict reachable at {}",
+                worklog_core::routing_contract::CLASSIFIER_ADDR
             ),
         )?;
     } else {
-        style::warn(out, "laya not reachable — run `worklog laya serve`")?;
+        style::warn(out, "verdict not reachable — run `worklog verdict serve`")?;
     }
     Ok(())
 }

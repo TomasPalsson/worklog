@@ -19,11 +19,22 @@ pub const SLACK_TOKEN_KEY: &str = "slack_user_token";
 /// Envfile key: work-hours window, e.g. `Mon-Fri 09:00-17:00`.
 pub const WORK_HOURS_KEY: &str = "WORKLOG_WORK_HOURS";
 pub const DEFAULT_WORK_HOURS: &str = "Mon-Fri 09:00-17:00";
-/// Envfile key: minimum model confidence to apply a guess, e.g. `0.90`.
-pub const ROUTE_THRESHOLD_KEY: &str = "WORKLOG_ROUTE_THRESHOLD";
-pub const DEFAULT_ROUTE_THRESHOLD: f64 = 0.90;
-/// Loopback address of the optional Laya helper process.
-pub const LAYA_ADDR: &str = "127.0.0.1:9324";
+/// Loopback address of the optional Verdict classifier helper process.
+pub const CLASSIFIER_ADDR: &str = "127.0.0.1:9324";
+/// Envfile key: how many times higher than the abstain score the winner
+/// must be, e.g. `1.05`.
+pub const ABSTAIN_MARGIN_KEY: &str = "WORKLOG_ROUTE_ABSTAIN_MARGIN";
+pub const DEFAULT_ABSTAIN_MARGIN: f64 = 1.05;
+/// Envfile key: how many times higher than the runner-up the winner must
+/// be, e.g. `1.10`.
+pub const RUNNER_UP_RATIO_KEY: &str = "WORKLOG_ROUTE_RUNNER_UP_RATIO";
+pub const DEFAULT_RUNNER_UP_RATIO: f64 = 1.10;
+/// Both ratios must lie in this closed range.
+pub const RATIO_RANGE: (f64, f64) = (1.0, 5.0);
+pub const VERDICT_GIT_URL: &str = "git+https://github.com/Heman10x-NGU/Verdict-open-jev";
+pub const VERDICT_GIT_REV: &str = "30f15564821626ca5c1ad5b2638c4eb7078787dd";
+pub const VERDICT_MODEL_REPO: &str = "heman10x/rlcd-modernbert-151m";
+pub const VERDICT_MODEL_REVISION: &str = "8af2496eb63c7fa66d7d234e1f62629380030eb4";
 /// Container whose tabs are never recorded (D-08).
 pub const PERSONAL_CONTAINER: &str = "Personal";
 /// Max recent fixes passed to the model as hints (FR-20).
@@ -138,9 +149,19 @@ pub struct RoutedEvent {
 pub struct Guess {
     pub folder: String,
     pub confidence: f64,
+    pub runner_up: f64,
+    pub abstain: f64,
+}
+// `confidence` = the winner's probability. All three are model probabilities in 0.0–1.0.
+
+/// The two owner-tunable ratios a guess's scores must clear to be filed.
+#[derive(Debug, Clone, Copy)]
+pub struct RouteRule {
+    pub abstain_margin: f64,
+    pub runner_up_ratio: f64,
 }
 
-/// Test seam for the model. Production: the Laya helper over HTTP.
+/// Test seam for the model. Production: the Verdict helper over HTTP.
 /// `Ok(None)` = helper unreachable; the caller leaves the event unsorted.
 pub trait Classifier {
     fn classify(&self, state: &Value, options: &[String]) -> Result<Option<Guess>>;

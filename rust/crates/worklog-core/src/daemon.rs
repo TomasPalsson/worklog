@@ -41,7 +41,7 @@
 //! * `POST /events/:id/label`            — { LabelRequest } manual label, optionally creating a rule
 //! * `GET  /routing/rules`                — hard rules list
 //! * `POST /routing/rules/:id/delete`    — no body
-//! * `GET  /routing/status`               — last heartbeat/Slack timestamps + Laya reachability
+//! * `GET  /routing/status`               — last heartbeat/Slack timestamps + Verdict reachability
 //!
 //! Unix-socket file perms default to `0666` so the containerised UI can
 //! connect across Docker Desktop's VM (same user, same host — the data
@@ -74,11 +74,12 @@ use crate::billing_registry;
 use crate::browser_ingest;
 use crate::collectors::{jira, tempo};
 use crate::git::{self, CommitEntry};
-use crate::laya::LayaClassifier;
 use crate::personal;
 use crate::routing;
 use crate::routing_contract;
+use crate::routing_contract::RouteRule;
 use crate::secrets;
+use crate::verdict::VerdictClassifier;
 use crate::{
     block_service, db, estimate, infer,
     models::{Block, Event},
@@ -1310,11 +1311,7 @@ async fn run_infer(
     let (rule_hits, pending) =
         with_conn(state.clone(), move |c| routing::load_pending(c, day)).await?;
     let guesses = tokio::task::spawn_blocking(move || {
-        routing::decide(
-            &pending,
-            &LayaClassifier::new(),
-            configured_route_threshold(),
-        )
+        routing::decide(&pending, &VerdictClassifier::new(), configured_route_rule())
     })
     .await
     .context("spawn_blocking")?;
@@ -1486,8 +1483,9 @@ pub struct SettingsView {
     /// defaults to `DEFAULT_WORK_HOURS`.
     pub work_hours: String,
     /// Minimum model confidence (0.0-1.0) to accept a routing guess.
-    /// Mirrors `ROUTE_THRESHOLD_KEY` via envfile; defaults to
-    /// `DEFAULT_ROUTE_THRESHOLD`.
+    /// Mirrors `ABSTAIN_MARGIN_KEY` via envfile; defaults to
+    /// `DEFAULT_ABSTAIN_MARGIN`. T005 replaces this with the two Verdict
+    /// ratios.
     pub route_threshold: f64,
 }
 
@@ -1540,7 +1538,7 @@ fn current_settings() -> Result<SettingsView> {
         cycle_start_day: crate::purge::configured_cycle_start_day(),
         close_day: crate::purge::configured_close_day(),
         work_hours: configured_work_hours_raw(),
-        route_threshold: configured_route_threshold(),
+        route_threshold: configured_route_rule().abstain_margin,
     })
 }
 
@@ -1565,14 +1563,13 @@ fn configured_work_hours() -> browser_ingest::WorkHours {
     })
 }
 
-/// Minimum model confidence to accept a routing guess, from
-/// `ROUTE_THRESHOLD_KEY` via envfile. Out-of-range or unparseable falls
-/// back to `DEFAULT_ROUTE_THRESHOLD`.
-pub fn configured_route_threshold() -> f64 {
-    crate::envfile::read(routing_contract::ROUTE_THRESHOLD_KEY)
-        .and_then(|s| s.trim().parse::<f64>().ok())
-        .filter(|v| (0.0..=1.0).contains(v))
-        .unwrap_or(routing_contract::DEFAULT_ROUTE_THRESHOLD)
+/// The abstain-margin/runner-up-ratio rule a routing guess must clear.
+/// Returns the defaults for now; T005 reads both envfile keys.
+pub fn configured_route_rule() -> RouteRule {
+    RouteRule {
+        abstain_margin: routing_contract::DEFAULT_ABSTAIN_MARGIN,
+        runner_up_ratio: routing_contract::DEFAULT_RUNNER_UP_RATIO,
+    }
 }
 
 async fn get_settings() -> Result<Json<SettingsView>, ApiError> {
@@ -1761,7 +1758,7 @@ async fn post_settings(
         crate::envfile::upsert(routing_contract::WORK_HOURS_KEY, wh)?;
     }
     if let Some(t) = body.route_threshold {
-        crate::envfile::upsert(routing_contract::ROUTE_THRESHOLD_KEY, &t.to_string())?;
+        crate::envfile::upsert(routing_contract::ABSTAIN_MARGIN_KEY, &t.to_string())?;
     }
 
     info!("settings updated");
@@ -1984,7 +1981,7 @@ async fn routing_rule_delete(
 struct RoutingStatus {
     last_heartbeat: Option<String>,
     last_slack: Option<String>,
-    laya_reachable: bool,
+    classifier_reachable: bool,
 }
 
 async fn routing_status(State(state): State<Shared>) -> Result<Json<RoutingStatus>, ApiError> {
@@ -2003,11 +2000,11 @@ async fn routing_status(State(state): State<Shared>) -> Result<Json<RoutingStatu
     })
     .await?;
 
-    // Off the connection lock — a slow/hung Laya process must not stall
+    // Off the connection lock — a slow/hung Verdict process must not stall
     // every other request.
-    let laya_reachable = tokio::task::spawn_blocking(|| {
+    let classifier_reachable = tokio::task::spawn_blocking(|| {
         crate::daemon_service::is_running(
-            routing_contract::LAYA_ADDR,
+            routing_contract::CLASSIFIER_ADDR,
             std::time::Duration::from_secs(2),
         )
     })
@@ -2017,7 +2014,7 @@ async fn routing_status(State(state): State<Shared>) -> Result<Json<RoutingStatu
     Ok(Json(RoutingStatus {
         last_heartbeat,
         last_slack,
-        laya_reachable,
+        classifier_reachable,
     }))
 }
 
@@ -3162,7 +3159,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn infer_routes_rule_hits_before_building_blocks() {
         // T007: /infer must route unsorted browser/Slack events (rule hits
-        // only here — the laya helper is never running under test) before
+        // only here — the Verdict helper is never running under test) before
         // clustering, so a rule-matched event's project_path lands on the
         // block it joins in the same request.
         let conn = open_memory().unwrap();
@@ -4137,8 +4134,8 @@ mod tests {
         assert_eq!(v["last_heartbeat"], "2026-04-14T10:30:00+00:00");
         assert_eq!(v["last_slack"], "2026-04-14T11:00:00+00:00");
         assert_eq!(
-            v["laya_reachable"], false,
-            "no Laya helper is running under test"
+            v["classifier_reachable"], false,
+            "no Verdict helper is running under test"
         );
     }
 
@@ -4152,7 +4149,7 @@ mod tests {
         assert_eq!(view.work_hours, routing_contract::DEFAULT_WORK_HOURS);
         assert_eq!(
             view.route_threshold,
-            routing_contract::DEFAULT_ROUTE_THRESHOLD
+            routing_contract::DEFAULT_ABSTAIN_MARGIN
         );
 
         std::env::remove_var("WORKLOG_ENV_FILE");
@@ -4207,7 +4204,7 @@ mod tests {
             Some("Mon-Fri 08:00-16:00")
         );
         assert_eq!(
-            crate::envfile::read(routing_contract::ROUTE_THRESHOLD_KEY).as_deref(),
+            crate::envfile::read(routing_contract::ABSTAIN_MARGIN_KEY).as_deref(),
             Some("0.75")
         );
 

@@ -56,7 +56,16 @@ impl Classifier for FixedGuess {
         Ok(Some(Guess {
             folder: self.folder.clone(),
             confidence: self.confidence,
+            runner_up: 0.0,
+            abstain: 0.0,
         }))
+    }
+}
+
+fn rule(abstain_margin: f64) -> RouteRule {
+    RouteRule {
+        abstain_margin,
+        runner_up_ratio: 0.0,
     }
 }
 
@@ -89,7 +98,7 @@ fn rule_beats_model() {
         folder: "other-folder".into(),
         confidence: 0.99,
     };
-    let stats = route_day(&conn, day, &model, 0.9).unwrap();
+    let stats = route_day(&conn, day, &model, rule(0.9)).unwrap();
     assert_eq!(stats.rules_applied, 1);
     assert_eq!(stats.guesses_applied, 0);
 
@@ -119,7 +128,7 @@ fn threshold_applies() {
         folder: "aws-cert".into(),
         confidence: 0.95,
     };
-    let stats = route_day(&conn, day, &above, 0.9).unwrap();
+    let stats = route_day(&conn, day, &above, rule(0.9)).unwrap();
     assert_eq!(stats.guesses_applied, 1);
     let routed = routed_for_day(&conn, day).unwrap();
     assert_eq!(routed[0].label_origin, Some(LabelOrigin::Guess));
@@ -142,7 +151,7 @@ fn threshold_applies() {
         folder: "aws-cert".into(),
         confidence: 0.5,
     };
-    let stats2 = route_day(&conn2, day, &below, 0.9).unwrap();
+    let stats2 = route_day(&conn2, day, &below, rule(0.9)).unwrap();
     assert_eq!(stats2.guesses_applied, 0);
     let routed2 = routed_for_day(&conn2, day).unwrap();
     assert_eq!(routed2[0].folder, None);
@@ -275,6 +284,8 @@ fn always_rule_relabels_previously_guessed_events() {
             Guess {
                 folder: "other".into(),
                 confidence: 0.95,
+                runner_up: 0.0,
+                abstain: 0.0,
             },
         )],
     )
@@ -321,7 +332,7 @@ fn decide_drops_guess_outside_narrowed_options() {
         folder: "mms-portal".into(),
         confidence: 0.99,
     };
-    let guesses = decide(&pending, &model, 0.9);
+    let guesses = decide(&pending, &model, rule(0.9));
     assert!(
         guesses.is_empty(),
         "a guess naming a folder outside the narrowed options must be dropped"

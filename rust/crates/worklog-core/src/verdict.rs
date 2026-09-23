@@ -1,8 +1,8 @@
-//! Client for the optional Laya classifier helper.
+//! Client for the optional Verdict classifier helper.
 //!
-//! Laya runs as a local `uv run --with laya` process on `LAYA_ADDR`; a
-//! connection failure is treated as "no guess available", not an error.
-//! See spec 003 T006.
+//! Verdict runs as a local `worklog verdict serve` process on
+//! `CLASSIFIER_ADDR`; a connection failure is treated as "no guess
+//! available", not an error. See spec 004.
 
 use std::time::Duration;
 
@@ -11,26 +11,27 @@ use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::routing_contract::{Classifier, Guess, LAYA_ADDR};
+use crate::routing_contract::{Classifier, Guess, CLASSIFIER_ADDR};
 
-/// Embedded helper script for `worklog laya serve`.
-pub const SERVER_SCRIPT: &str = include_str!("../templates/laya_server.py");
+/// Embedded helper script for `worklog verdict serve`.
+pub const SERVER_SCRIPT: &str = include_str!("../templates/verdict_server.py");
 
-/// HTTP client for the Laya helper. Production points at `LAYA_ADDR`;
-/// tests point `base_url` at an httpmock server via [`Self::with_client`].
-pub struct LayaClassifier {
+/// HTTP client for the Verdict helper. Production points at
+/// `CLASSIFIER_ADDR`; tests point `base_url` at an httpmock server via
+/// [`Self::with_client`].
+pub struct VerdictClassifier {
     client: Client,
     base_url: String,
 }
 
-impl LayaClassifier {
-    /// Production client: `http://LAYA_ADDR`, 10 s timeout.
+impl VerdictClassifier {
+    /// Production client: `http://CLASSIFIER_ADDR`, 10 s timeout.
     pub fn new() -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(10))
             .build()
             .unwrap_or_default();
-        Self::with_client(client, format!("http://{LAYA_ADDR}"))
+        Self::with_client(client, format!("http://{CLASSIFIER_ADDR}"))
     }
 
     pub fn with_client(client: Client, base_url: String) -> Self {
@@ -38,7 +39,7 @@ impl LayaClassifier {
     }
 }
 
-impl Default for LayaClassifier {
+impl Default for VerdictClassifier {
     fn default() -> Self {
         Self::new()
     }
@@ -56,7 +57,7 @@ struct ClassifyResponse {
     confidence: f64,
 }
 
-impl Classifier for LayaClassifier {
+impl Classifier for VerdictClassifier {
     fn classify(&self, state: &Value, options: &[String]) -> Result<Option<Guess>> {
         let sent = self
             .client
@@ -73,9 +74,13 @@ impl Classifier for LayaClassifier {
             return Ok(None);
         }
         match resp.json::<ClassifyResponse>() {
+            // T002 replaces this with the real {choice, probability,
+            // runner_up, abstain} response shape.
             Ok(body) => Ok(Some(Guess {
                 folder: body.choice,
                 confidence: body.confidence,
+                runner_up: 0.0,
+                abstain: 0.0,
             })),
             Err(_) => Ok(None),
         }
@@ -95,7 +100,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let classifier = LayaClassifier::with_client(
+        let classifier = VerdictClassifier::with_client(
             Client::builder()
                 .timeout(Duration::from_secs(1))
                 .build()
@@ -119,7 +124,7 @@ mod tests {
         });
 
         let classifier =
-            LayaClassifier::with_client(Client::builder().build().unwrap(), server.base_url());
+            VerdictClassifier::with_client(Client::builder().build().unwrap(), server.base_url());
         let state = json!({"title": "aws console"});
         let options = vec!["aws-cert".to_string(), "worklog".to_string()];
         let guess = classifier.classify(&state, &options).unwrap().unwrap();
@@ -136,7 +141,7 @@ mod tests {
         });
 
         let classifier =
-            LayaClassifier::with_client(Client::builder().build().unwrap(), server.base_url());
+            VerdictClassifier::with_client(Client::builder().build().unwrap(), server.base_url());
         let state = json!({"title": "aws console"});
         let options = vec!["aws-cert".to_string()];
         assert_eq!(classifier.classify(&state, &options).unwrap(), None);

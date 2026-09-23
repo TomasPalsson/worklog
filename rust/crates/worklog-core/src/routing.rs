@@ -16,8 +16,8 @@ use serde_json::Value;
 
 use crate::billing_registry::Registry;
 use crate::routing_contract::{
-    Classifier, Guess, LabelOrigin, LabelRequest, RoutedEvent, Rule, RuleKind, SOURCE_FIREFOX,
-    SOURCE_SLACK,
+    Classifier, Guess, LabelOrigin, LabelRequest, RouteRule, RoutedEvent, Rule, RuleKind,
+    SOURCE_FIREFOX, SOURCE_SLACK,
 };
 #[path = "routing_rows.rs"]
 mod rows;
@@ -166,18 +166,20 @@ pub fn load_pending(conn: &Connection, day: NaiveDate) -> Result<(RuleHits, Vec<
 }
 
 /// Ask the classifier for each pending event; keep guesses clearing
-/// `threshold` that name one of the event's own options. No connection
-/// arg — the slow model call must never hold the sqlite lock.
+/// `rule.abstain_margin` that name one of the event's own options. No
+/// connection arg — the slow model call must never hold the sqlite lock.
+/// This is today's single-threshold body, adapted to the new signature so
+/// callers compile; T003 replaces it with the real relative-scores rule.
 pub fn decide(
     pending: &[Pending],
     classifier: &dyn Classifier,
-    threshold: f64,
+    rule: RouteRule,
 ) -> Vec<(i64, Guess)> {
     pending
         .iter()
         .filter_map(|p| {
             let guess = classifier.classify(&p.state, &p.options).ok().flatten()?;
-            (guess.confidence >= threshold && p.options.contains(&guess.folder))
+            (guess.confidence >= rule.abstain_margin && p.options.contains(&guess.folder))
                 .then_some((p.event.id, guess))
         })
         .collect()
@@ -213,10 +215,10 @@ pub fn route_day(
     conn: &Connection,
     day: NaiveDate,
     classifier: &dyn Classifier,
-    threshold: f64,
+    rule: RouteRule,
 ) -> Result<RouteStats> {
     let (rule_hits, pending) = load_pending(conn, day)?;
-    let guesses = decide(&pending, classifier, threshold);
+    let guesses = decide(&pending, classifier, rule);
     commit_labels(conn, &rule_hits, &guesses)
 }
 
