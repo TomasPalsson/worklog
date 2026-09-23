@@ -37,6 +37,9 @@ pub const VERDICT_MODEL_REPO: &str = "heman10x/rlcd-modernbert-151m";
 pub const VERDICT_MODEL_REVISION: &str = "8af2496eb63c7fa66d7d234e1f62629380030eb4";
 /// Container whose tabs are never recorded (D-08).
 pub const PERSONAL_CONTAINER: &str = "Personal";
+/// Sentinel `routing_rules.folder` value meaning "dismiss on match" rather
+/// than file under a real project (never a real project-key folder name).
+pub const IGNORE_FOLDER: &str = "__ignore__";
 /// Max recent fixes passed to the model as hints (FR-20).
 pub const MAX_HINT_EXAMPLES: usize = 5;
 
@@ -47,8 +50,10 @@ pub const MAX_HINT_EXAMPLES: usize = 5;
 /// `github.com/<org>/<key>` or `Desktop/Work/<key>` mention — `named_project`
 /// in routing.rs). `Context` = the day's `claude`/`shell`/`git_reflog`
 /// activity around the event's time named it (routing_context.rs); its
-/// `label_confidence` is always `NULL`. Both are automatic, same as `Rule`
-/// and `Guess` — only `Fix` is a hand label.
+/// `label_confidence` is always `NULL`. `Dismissed` = the owner (or an
+/// `__ignore__` rule) marked the event as noise — never sorted, never
+/// counted as work time; its `project_path`/`label_confidence` are always
+/// `NULL`. All but `Fix` and `Dismissed` are automatic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LabelOrigin {
@@ -57,6 +62,7 @@ pub enum LabelOrigin {
     Context,
     Fix,
     Guess,
+    Dismissed,
 }
 
 impl LabelOrigin {
@@ -67,6 +73,7 @@ impl LabelOrigin {
             LabelOrigin::Context => "context",
             LabelOrigin::Fix => "fix",
             LabelOrigin::Guess => "guess",
+            LabelOrigin::Dismissed => "dismissed",
         }
     }
 
@@ -77,6 +84,7 @@ impl LabelOrigin {
             "context" => Some(LabelOrigin::Context),
             "fix" => Some(LabelOrigin::Fix),
             "guess" => Some(LabelOrigin::Guess),
+            "dismissed" => Some(LabelOrigin::Dismissed),
             _ => None,
         }
     }
@@ -140,6 +148,15 @@ pub struct LabelRequest {
     pub folder: String,
     /// `Some(kind)` = also create an "always" rule of this kind.
     pub always: Option<RuleKind>,
+}
+
+/// Body of `POST /events/:id/dismiss`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DismissRequest {
+    /// `Some(Domain | SlackChannel)` = also create an `__ignore__` rule of
+    /// this kind. `Container` is not a valid dismiss rule kind.
+    #[serde(default)]
+    pub rule_kind: Option<RuleKind>,
 }
 
 /// A browser/Slack event as the UI sees it (`GET /days/:day/routed`).

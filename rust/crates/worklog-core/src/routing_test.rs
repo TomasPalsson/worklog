@@ -889,3 +889,46 @@ fn editing_rule_folder_relabels_rule_labelled_events() {
     let a = routed.iter().find(|r| r.id == ids[0]).unwrap();
     assert_eq!(a.folder.as_deref(), Some("folder1"), "hand fixes stay");
 }
+
+#[test]
+fn ignore_rule_dismisses_matching_event_on_route_day() {
+    let conn = open_memory().unwrap();
+    conn.execute(
+        "INSERT INTO routing_rules (kind, pattern, folder) VALUES ('slack_channel', '#random', '__ignore__')",
+        [],
+    )
+    .unwrap();
+    let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+    let id = repo::upsert_event(
+        &conn,
+        &Event::minimal(SOURCE_SLACK, "s1", "2026-04-20T09:00:00+00:00", "#random"),
+    )
+    .unwrap();
+
+    let model = PanicsIfCalled;
+    let stats = route_day(&conn, day, &model, default_rule()).unwrap();
+    assert_eq!(stats.rules_applied, 1);
+
+    let row = fetch_event(&conn, id).unwrap().unwrap();
+    assert_eq!(row.label_origin.as_deref(), Some("dismissed"));
+    assert!(row.project_path.is_none());
+    assert!(row.label_confidence.is_none());
+}
+
+#[test]
+fn routed_for_day_excludes_dismissed_events() {
+    let conn = open_memory().unwrap();
+    let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+    let id = repo::upsert_event(
+        &conn,
+        &Event::minimal(SOURCE_SLACK, "s1", "2026-04-20T09:00:00+00:00", "#random"),
+    )
+    .unwrap();
+    crate::routing_dismiss::dismiss_event(&conn, id, None).unwrap();
+
+    let routed = routed_for_day(&conn, day).unwrap();
+    assert!(
+        routed.is_empty(),
+        "a dismissed event must not appear in the routed list"
+    );
+}

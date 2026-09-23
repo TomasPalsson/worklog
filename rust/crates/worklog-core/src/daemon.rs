@@ -39,6 +39,7 @@
 //! * `POST /browser/heartbeat`           — { Heartbeat } from the add-on, requires moz-extension:// Origin
 //! * `GET  /days/:day/routed`             — browser/Slack events for a day, routed or not
 //! * `POST /events/:id/label`            — { LabelRequest } manual label, optionally creating a rule
+//! * `POST /events/:id/dismiss`           — { DismissRequest } mark noise, optionally creating an `__ignore__` rule
 //! * `GET  /routing/rules`                — hard rules list
 //! * `POST /routing/rules/:id/delete`    — no body
 //! * `GET  /routing/status`               — last heartbeat/Slack timestamps + Verdict reachability
@@ -78,6 +79,7 @@ use crate::personal;
 use crate::routing;
 use crate::routing_contract;
 use crate::routing_contract::RouteRule;
+use crate::routing_dismiss;
 use crate::secrets;
 use crate::verdict::VerdictClassifier;
 use crate::{
@@ -138,6 +140,7 @@ pub fn router(state: Shared) -> Router {
         )
         .route("/days/:day/routed", get(routed_events))
         .route("/events/:id/label", post(set_event_label))
+        .route("/events/:id/dismiss", post(dismiss_event_handler))
         .route("/routing/rules", get(routing_rules_list))
         .route("/routing/rules/:id/delete", post(routing_rule_delete))
         .route("/routing/status", get(routing_status))
@@ -2042,6 +2045,30 @@ async fn set_event_label(
     let routed = with_conn(state, move |c| routing::label_event(c, id, &body))
         .await
         .map_err(ApiError::bad_request)?;
+    Ok(Json(routed))
+}
+
+async fn dismiss_event_handler(
+    State(state): State<Shared>,
+    AxumPath(id): AxumPath<i64>,
+    Json(body): Json<routing_contract::DismissRequest>,
+) -> Result<Json<routing_contract::RoutedEvent>, ApiError> {
+    let exists: bool = with_conn(state.clone(), move |c| {
+        Ok(c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM events WHERE id = ?1)",
+            [id],
+            |r| r.get(0),
+        )?)
+    })
+    .await?;
+    if !exists {
+        return Err(ApiError::NotFound(anyhow::anyhow!("event {id} not found")));
+    }
+    let routed = with_conn(state, move |c| {
+        routing_dismiss::dismiss_event(c, id, body.rule_kind)
+    })
+    .await
+    .map_err(ApiError::bad_request)?;
     Ok(Json(routed))
 }
 
@@ -4213,6 +4240,147 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dismiss_event_clears_label_and_returns_routed_shape() {
+        let conn = open_memory().unwrap();
+        let id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                routing_contract::SOURCE_SLACK,
+                "s1",
+                "2026-04-14T10:30:00+00:00",
+                "#random",
+            ),
+        )
+        .unwrap();
+
+        let app = router(state_from_conn(conn));
+        let resp = app
+            .oneshot(
+                Request::post(format!("/events/{id}/dismiss"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"rule_kind":null}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["id"], id);
+        assert_eq!(v["folder"], Value::Null);
+        assert_eq!(v["label_origin"], "dismissed");
+        assert_eq!(v["label_confidence"], Value::Null);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dismiss_event_404s_an_unknown_event() {
+        let app = router(state_from_conn(open_memory().unwrap()));
+        let resp = app
+            .oneshot(
+                Request::post("/events/999999/dismiss")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"rule_kind":null}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dismiss_event_400s_a_rule_kind_that_does_not_fit_the_source() {
+        let conn = open_memory().unwrap();
+        let id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                routing_contract::SOURCE_SLACK,
+                "s1",
+                "2026-04-14T10:30:00+00:00",
+                "#random",
+            ),
+        )
+        .unwrap();
+
+        let app = router(state_from_conn(conn));
+        let resp = app
+            .oneshot(
+                Request::post(format!("/events/{id}/dismiss"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"rule_kind":"domain"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dismiss_event_with_rule_kind_creates_ignore_rule_listed_by_routing_rules() {
+        let conn = open_memory().unwrap();
+        let id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                routing_contract::SOURCE_SLACK,
+                "s1",
+                "2026-04-14T10:30:00+00:00",
+                "#random",
+            ),
+        )
+        .unwrap();
+
+        let app = router(state_from_conn(conn));
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/events/{id}/dismiss"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"rule_kind":"slack_channel"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let resp = app
+            .oneshot(Request::get("/routing/rules").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["pattern"], "#random");
+        assert_eq!(arr[0]["folder"], "__ignore__");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn routed_events_excludes_dismissed() {
+        let conn = open_memory().unwrap();
+        let id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                routing_contract::SOURCE_FIREFOX,
+                "e1",
+                "2026-04-14T10:30:00+00:00",
+                "news site",
+            ),
+        )
+        .unwrap();
+        crate::routing_dismiss::dismiss_event(&conn, id, None).unwrap();
+
+        let app = router(state_from_conn(conn));
+        let resp = app
+            .oneshot(
+                Request::get("/days/2026-04-14/routed")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v.as_array().unwrap().len(), 0);
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -393,11 +393,12 @@ pub fn load_day_events(conn: &Connection, day: NaiveDate) -> Result<Vec<InferEve
     // Firefox/Slack events without a label are unsorted (spec 003, routing
     // decision 3): they must never inherit a neighbour's project_path, so
     // they're excluded here rather than let through with project_path NULL.
+    // Dismissed events (noise the owner threw away) are excluded the same way.
     let mut stmt = conn.prepare(
         "SELECT id, source, started_at, duration_seconds, jira_issue, project_path
            FROM events
           WHERE started_at >= ?1 AND started_at < ?2
-            AND NOT (source IN (?3, ?4) AND label_origin IS NULL)
+            AND NOT (source IN (?3, ?4) AND (label_origin IS NULL OR label_origin = ?5))
           ORDER BY started_at",
     )?;
     // started_at is ISO-8601 string; we compare lexicographically which works
@@ -410,7 +411,8 @@ pub fn load_day_events(conn: &Connection, day: NaiveDate) -> Result<Vec<InferEve
             start,
             end,
             crate::routing_contract::SOURCE_FIREFOX,
-            crate::routing_contract::SOURCE_SLACK
+            crate::routing_contract::SOURCE_SLACK,
+            crate::routing_contract::LabelOrigin::Dismissed.as_str()
         ],
         |r| {
             let iso: String = r.get(2)?;
@@ -1094,6 +1096,44 @@ mod tests {
         );
 
         std::env::remove_var("WORKLOG_TZ");
+    }
+
+    #[test]
+    fn load_day_events_excludes_dismissed_firefox_and_slack_events() {
+        // Dismissed noise (a random DM, a news site) must never become block
+        // time, same as an unlabelled event — but here the event HAS a
+        // label_origin (it's just "dismissed"), so the existing
+        // `label_origin IS NULL` check alone would let it through.
+        let conn = open_memory().unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let firefox_id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                crate::routing_contract::SOURCE_FIREFOX,
+                "f1",
+                "2026-04-18T09:00:00+00:00",
+                "news site",
+            ),
+        )
+        .unwrap();
+        let slack_id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                crate::routing_contract::SOURCE_SLACK,
+                "s1",
+                "2026-04-18T09:05:00+00:00",
+                "#random",
+            ),
+        )
+        .unwrap();
+        crate::routing_dismiss::dismiss_event(&conn, firefox_id, None).unwrap();
+        crate::routing_dismiss::dismiss_event(&conn, slack_id, None).unwrap();
+
+        let events = load_day_events(&conn, day).unwrap();
+        assert!(
+            events.is_empty(),
+            "dismissed firefox/slack events must never reach inference"
+        );
     }
 
     #[test]
