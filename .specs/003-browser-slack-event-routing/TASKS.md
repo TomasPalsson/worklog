@@ -57,6 +57,6 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core da
 - [x] CHK003 human-verify the day page with real data — files: web/components/UnsortedList.tsx — verify: human: user sees a day's Firefox and Slack events with container/channel (DMs by name) and rule/fix/guess tags, sorts one unsorted event, and it moves into a block — after: T011, T012, T007, T013, T014 — done: 3fcdff5 by user
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `flow check --fix`
-- [ ] G002 branch review clean — files: . — verify: `test -f PASS-$(git rev-parse --short HEAD).md`
-- [ ] G003 verification evidence exists — files: . — verify: `test -s verify/`
+- [x] G001 project gates clean — files: . — verify: `flow check --fix` — done: 4709a48
+- [x] G002 branch review clean — files: . — verify: `test -f PASS-$(git rev-parse --short HEAD).md` — done: 4709a48
+- [x] G003 verification evidence exists — files: . — verify: `test -s verify/` — done: 4709a48
