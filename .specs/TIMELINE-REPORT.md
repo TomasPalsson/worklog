@@ -46,6 +46,20 @@ repo/path mentions, Verdict for the rest).
 fmt 0 · clippy 0 · cargo test 636 passed / 0 failed · web 117 pass · typecheck 0 · build 0 ·
 verdict self-test OK · extension tests 0.
 
+## Gap audit — every readable local source (read-only, counts only)
+
+| gap (UTC) | Firefox visits (any) | naming a project | shell commands | reading |
+|---|---|---|---|---|
+| 11:23–11:59 | 14 | 0 | 0 | non-work browsing — break |
+| 14:06–14:41 | 0 | 0 | 0 | away from the machine (meeting?) |
+| 16:23–17:13 | 2 | 0 | 0 | away / meeting |
+| 17:36–19:49 | 8 over 2 h | 0 | 0 | end of the work day |
+
+Firefox history (697 visits today, 62 naming a project) has **no project visit inside any gap**, so a
+places.sqlite backfill would add privacy risk and zero coverage — not built. On-machine work is fully
+attributed; the gaps are periods with (almost) no machine activity. Only the calendar can say
+meeting vs break → the gcal collector (owner OAuth) is the one remaining source that changes the answer.
+
 ## Open
 - fish.rs is 517 lines and daemon.rs ~4300 vs the 400-line size guard — split in their own change.
 - Gap rows render as a list above the blocks, not interleaved between them (cosmetic).
