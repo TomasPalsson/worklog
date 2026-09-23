@@ -10,7 +10,9 @@ use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 use worklog_core::{
     billing, block_service,
-    collectors::{gcal as gcal_col, github as gh, jira as jira_col, tempo as tempo_col},
+    collectors::{
+        gcal as gcal_col, github as gh, jira as jira_col, slack as slack_col, tempo as tempo_col,
+    },
     daemon as daemon_mod, db, estimate, hook, hook_run, http, infer,
     paths::Paths,
     personal as personal_mod, schedule, secrets, skill as skill_mod, updater as upd,
@@ -452,6 +454,7 @@ pub enum CollectTarget {
     Jira,
     Github,
     Gcal,
+    Slack,
 }
 
 /// `worklog export --format`. Maps 1:1 onto `billing::Format`.
@@ -1498,6 +1501,28 @@ fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bo
         match result {
             Ok(r) => reports.push(r),
             Err(msg) if !json => style::info(out, &format!("gcal {msg}"))?,
+            Err(_) => (),
+        }
+    }
+
+    if matches!(target, CollectTarget::All | CollectTarget::Slack) {
+        let pb = style::spinner("slack …");
+        let result = match slack_col::SlackAuth::from_secrets() {
+            Ok(auth) => slack_col::collect_with(
+                &conn,
+                &auth,
+                since,
+                today + chrono::Duration::days(1),
+                &client,
+                slack_col::SLACK_API,
+            )
+            .map_err(|e| format!("fetch: {e}")),
+            Err(e) => Err(format!("skipped: {e}")),
+        };
+        pb.finish_and_clear();
+        match result {
+            Ok(r) => reports.push(r),
+            Err(msg) if !json => style::info(out, &format!("slack {msg}"))?,
             Err(_) => (),
         }
     }
