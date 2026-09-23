@@ -245,6 +245,123 @@ fn always_creates_rule_and_applies() {
 }
 
 #[test]
+fn always_rule_relabels_previously_guessed_events() {
+    let conn = open_memory().unwrap();
+    pin(&conn, "lighthouse", None);
+    pin(&conn, "other", None);
+    let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+
+    let e1 = repo::upsert_event(
+        &conn,
+        &Event::minimal(SOURCE_FIREFOX, "e1", "2026-04-20T09:00:00+00:00", "GH"),
+    )
+    .unwrap();
+    set_details(&conn, e1, "https://github.com/x/y");
+
+    let e2 = repo::upsert_event(
+        &conn,
+        &Event::minimal(SOURCE_FIREFOX, "e2", "2026-04-20T09:05:00+00:00", "GH2"),
+    )
+    .unwrap();
+    set_details(&conn, e2, "https://github.com/x/z");
+
+    // e2 already carries a model guess — the new "always" rule must still
+    // retroactively correct it (B9), not just events that are still NULL.
+    commit_labels(
+        &conn,
+        &[],
+        &[(
+            e2,
+            Guess {
+                folder: "other".into(),
+                confidence: 0.95,
+            },
+        )],
+    )
+    .unwrap();
+
+    label_event(
+        &conn,
+        e1,
+        &LabelRequest {
+            folder: "lighthouse".into(),
+            always: Some(RuleKind::Domain),
+        },
+    )
+    .unwrap();
+
+    let routed = routed_for_day(&conn, day).unwrap();
+    let ev2 = routed.iter().find(|r| r.id == e2).unwrap();
+    assert_eq!(ev2.folder.as_deref(), Some("lighthouse"));
+    assert_eq!(ev2.label_origin, Some(LabelOrigin::Rule));
+}
+
+#[test]
+fn decide_drops_guess_outside_narrowed_options() {
+    let event = RoutedEvent {
+        id: 1,
+        source: SOURCE_FIREFOX.into(),
+        started_at: "2026-04-20T09:00:00+00:00".into(),
+        title: "portal".into(),
+        details: None,
+        container: Some("Sjúkra".into()),
+        folder: None,
+        label_origin: None,
+        label_confidence: None,
+    };
+    let pending = vec![Pending {
+        event,
+        options: vec!["sjukra-portal".into()],
+        state: serde_json::json!({}),
+    }];
+    // Confidence clears the threshold, but the folder isn't one of this
+    // event's narrowed options — B10 requires the guess be dropped, not
+    // just that `options` itself was narrowed.
+    let model = FixedGuess {
+        folder: "mms-portal".into(),
+        confidence: 0.99,
+    };
+    let guesses = decide(&pending, &model, 0.9);
+    assert!(
+        guesses.is_empty(),
+        "a guess naming a folder outside the narrowed options must be dropped"
+    );
+}
+
+#[test]
+fn label_event_does_not_partial_commit_when_always_rule_fails() {
+    let conn = open_memory().unwrap();
+    pin(&conn, "somefolder", None);
+    let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+    let eid = repo::upsert_event(
+        &conn,
+        &Event::minimal(SOURCE_SLACK, "e1", "2026-04-20T09:00:00+00:00", "chan"),
+    )
+    .unwrap();
+    // No container set — a Container-kind rule can't be derived from this
+    // event, so rule_pattern() must fail before anything is written.
+
+    let err = label_event(
+        &conn,
+        eid,
+        &LabelRequest {
+            folder: "somefolder".into(),
+            always: Some(RuleKind::Container),
+        },
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("container"));
+
+    let routed = routed_for_day(&conn, day).unwrap();
+    let ev = routed.iter().find(|r| r.id == eid).unwrap();
+    assert_eq!(
+        ev.folder, None,
+        "label_event must not partially commit the fix label when the always-rule step fails"
+    );
+    assert_eq!(ev.label_origin, None);
+}
+
+#[test]
 fn container_narrows_options() {
     let conn = open_memory().unwrap();
     upsert_customer(

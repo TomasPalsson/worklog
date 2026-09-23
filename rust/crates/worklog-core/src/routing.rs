@@ -281,10 +281,17 @@ pub fn label_event(conn: &Connection, id: i64, req: &LabelRequest) -> Result<Rou
     }
     let row = fetch_event(conn, id)?.ok_or_else(|| anyhow::anyhow!("event {id} not found"))?;
 
+    // Resolve the rule pattern before writing anything — a failure here
+    // must leave the event untouched, not the label committed with the
+    // rule silently missing.
+    let rule = req
+        .always
+        .map(|kind| rule_pattern(&row, kind).map(|pattern| (kind, pattern)))
+        .transpose()?;
+
     set_label(conn, id, folder, LabelOrigin::Fix, None)?;
 
-    if let Some(kind) = req.always {
-        let pattern = rule_pattern(&row, kind)?;
+    if let Some((kind, pattern)) = rule {
         upsert_rule(conn, kind, &pattern, folder)?;
         apply_rule_to_existing(conn, kind, &pattern, folder, id)?;
     }
