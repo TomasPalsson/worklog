@@ -261,3 +261,229 @@ fn collect_skips_malformed_timestamp_and_continues() {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].source_id, "C1:1776513600.000100");
 }
+
+#[test]
+fn collect_titles_dm_with_real_name_via_users_info() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/search.messages");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "messages": {
+                "matches": [
+                    {
+                        "channel": { "id": "D1", "name": "U999", "is_im": true },
+                        "ts": "1776513600.000100",
+                        "text": "hey"
+                    }
+                ]
+            }
+        }));
+    });
+    let users_info = server.mock(|when, then| {
+        when.method(GET)
+            .path("/users.info")
+            .query_param("user", "U999");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "user": { "profile": { "real_name": "Jane Doe", "display_name": "janed" } }
+        }));
+    });
+
+    let conn = open_memory().unwrap();
+    let since = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+    let until = NaiveDate::from_ymd_opt(2026, 4, 19).unwrap();
+    collect_with(
+        &conn,
+        &auth(),
+        since,
+        until,
+        &http::client().unwrap(),
+        &server.base_url(),
+    )
+    .unwrap();
+
+    users_info.assert_hits(1);
+    let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].title, "Jane Doe");
+}
+
+#[test]
+fn collect_titles_dm_falls_back_to_display_name() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/search.messages");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "messages": {
+                "matches": [
+                    {
+                        "channel": { "id": "D1", "name": "U999", "is_im": true },
+                        "ts": "1776513600.000100",
+                        "text": "hey"
+                    }
+                ]
+            }
+        }));
+    });
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/users.info")
+            .query_param("user", "U999");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "user": { "profile": { "display_name": "janed" } }
+        }));
+    });
+
+    let conn = open_memory().unwrap();
+    let since = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+    let until = NaiveDate::from_ymd_opt(2026, 4, 19).unwrap();
+    collect_with(
+        &conn,
+        &auth(),
+        since,
+        until,
+        &http::client().unwrap(),
+        &server.base_url(),
+    )
+    .unwrap();
+
+    let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+    assert_eq!(events[0].title, "janed");
+}
+
+#[test]
+fn collect_titles_dm_falls_back_to_id_on_lookup_failure_and_continues() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/search.messages");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "messages": {
+                "matches": [
+                    {
+                        "channel": { "id": "D1", "name": "U999", "is_im": true },
+                        "ts": "1776513600.000100",
+                        "text": "hey"
+                    }
+                ]
+            }
+        }));
+    });
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/users.info")
+            .query_param("user", "U999");
+        then.status(200)
+            .json_body(json!({ "ok": false, "error": "user_not_found" }));
+    });
+
+    let conn = open_memory().unwrap();
+    let since = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+    let until = NaiveDate::from_ymd_opt(2026, 4, 19).unwrap();
+    let report = collect_with(
+        &conn,
+        &auth(),
+        since,
+        until,
+        &http::client().unwrap(),
+        &server.base_url(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        report.events_written, 1,
+        "lookup failure must not fail the collect"
+    );
+    assert_eq!(report.errors, vec!["users.info U999: user_not_found"]);
+    let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+    assert_eq!(events[0].title, "U999");
+}
+
+#[test]
+fn collect_caches_users_info_lookup_per_user_id() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/search.messages");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "messages": {
+                "matches": [
+                    {
+                        "channel": { "id": "D1", "name": "U999", "is_im": true },
+                        "ts": "1776513600.000100",
+                        "text": "first"
+                    },
+                    {
+                        "channel": { "id": "D1", "name": "U999", "is_im": true },
+                        "ts": "1776513700.000100",
+                        "text": "second"
+                    }
+                ]
+            }
+        }));
+    });
+    let users_info = server.mock(|when, then| {
+        when.method(GET)
+            .path("/users.info")
+            .query_param("user", "U999");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "user": { "profile": { "real_name": "Jane Doe" } }
+        }));
+    });
+
+    let conn = open_memory().unwrap();
+    let since = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+    let until = NaiveDate::from_ymd_opt(2026, 4, 19).unwrap();
+    let report = collect_with(
+        &conn,
+        &auth(),
+        since,
+        until,
+        &http::client().unwrap(),
+        &server.base_url(),
+    )
+    .unwrap();
+
+    assert_eq!(report.events_written, 2);
+    users_info.assert_hits(1);
+}
+
+#[test]
+fn collect_leaves_non_dm_title_as_channel_name() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/search.messages");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "messages": {
+                "matches": [
+                    {
+                        "channel": { "id": "C1", "name": "eng" },
+                        "ts": "1776513600.000100",
+                        "text": "hi"
+                    }
+                ]
+            }
+        }));
+    });
+
+    let conn = open_memory().unwrap();
+    let since = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+    let until = NaiveDate::from_ymd_opt(2026, 4, 19).unwrap();
+    collect_with(
+        &conn,
+        &auth(),
+        since,
+        until,
+        &http::client().unwrap(),
+        &server.base_url(),
+    )
+    .unwrap();
+
+    let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+    assert_eq!(events[0].title, "eng");
+}

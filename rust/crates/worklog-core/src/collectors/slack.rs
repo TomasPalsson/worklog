@@ -7,6 +7,8 @@
 //! in. Slack signals errors with HTTP 200 + `"ok": false`, so a manual
 //! check of that field sits alongside the usual status-code check.
 
+use std::collections::HashMap;
+
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, NaiveDate, SecondsFormat, Utc};
 use reqwest::blocking::Client;
@@ -71,6 +73,10 @@ pub fn collect_with(
     );
     let url = format!("{base_url}/search.messages");
 
+    // DM channel names resolve to the counterpart's user id; cache the
+    // users.info lookup per run so a chatty DM doesn't refetch per message.
+    let mut dm_names: HashMap<String, String> = HashMap::new();
+
     let mut page = 1u32;
     loop {
         let page_str = page.to_string();
@@ -109,6 +115,18 @@ pub fn collect_with(
                     continue;
                 }
             };
+            let title = if m.channel.is_im {
+                resolve_dm_name(
+                    client,
+                    base_url,
+                    &auth.token,
+                    &m.channel.name,
+                    &mut dm_names,
+                    &mut report.errors,
+                )
+            } else {
+                m.channel.name.clone()
+            };
             let ev = Event {
                 id: None,
                 source: SOURCE_SLACK.into(),
@@ -116,7 +134,7 @@ pub fn collect_with(
                 started_at,
                 ended_at: None,
                 duration_seconds: None,
-                title: m.channel.name,
+                title,
                 details: Some(m.text),
                 repo: None,
                 project_path: None,
@@ -150,6 +168,50 @@ fn parse_slack_ts(ts: &str) -> Result<String> {
     let dt = DateTime::<Utc>::from_timestamp(secs, nanos)
         .ok_or_else(|| anyhow::anyhow!("invalid slack ts {ts}"))?;
     Ok(dt.to_rfc3339_opts(SecondsFormat::Secs, true))
+}
+
+/// Resolves a DM counterpart's display name via `users.info`, caching per
+/// run. A lookup failure falls back to `user_id` and is recorded in
+/// `errors` rather than failing the whole collect.
+fn resolve_dm_name(
+    client: &Client,
+    base_url: &str,
+    token: &str,
+    user_id: &str,
+    cache: &mut HashMap<String, String>,
+    errors: &mut Vec<String>,
+) -> String {
+    if let Some(name) = cache.get(user_id) {
+        return name.clone();
+    }
+    let name = match fetch_user_name(client, base_url, token, user_id) {
+        Ok(name) => name,
+        Err(e) => {
+            errors.push(format!("users.info {user_id}: {e:#}"));
+            user_id.to_string()
+        }
+    };
+    cache.insert(user_id.to_string(), name.clone());
+    name
+}
+
+fn fetch_user_name(client: &Client, base_url: &str, token: &str, user_id: &str) -> Result<String> {
+    let url = format!("{base_url}/users.info");
+    let body: UsersInfoResponse = client
+        .get(&url)
+        .bearer_auth(token)
+        .query(&[("user", user_id)])
+        .json_ok()
+        .context("slack users.info")?;
+
+    if !body.ok {
+        anyhow::bail!("{}", body.error.as_deref().unwrap_or("unknown error"));
+    }
+    let profile = body.user.map(|u| u.profile).unwrap_or_default();
+    Ok(profile
+        .real_name
+        .or(profile.display_name)
+        .unwrap_or_else(|| user_id.to_string()))
 }
 
 // ───────────────────────── JSON shapes ─────────────────────────
@@ -189,6 +251,31 @@ struct MatchChannel {
     id: String,
     #[serde(default)]
     name: String,
+    #[serde(default)]
+    is_im: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct UsersInfoResponse {
+    ok: bool,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    user: Option<UserInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UserInfo {
+    #[serde(default)]
+    profile: UserProfile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct UserProfile {
+    #[serde(default)]
+    real_name: Option<String>,
+    #[serde(default)]
+    display_name: Option<String>,
 }
 
 // Tests live in slack_test.rs (same module, split file for line budget).
