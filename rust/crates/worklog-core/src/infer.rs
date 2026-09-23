@@ -390,10 +390,14 @@ pub fn load_day_events(conn: &Connection, day: NaiveDate) -> Result<Vec<InferEve
     let (start_utc, end_utc) = crate::tz::utc_window_for_local_day(day);
     let start = start_utc.to_rfc3339();
     let end = end_utc.to_rfc3339();
+    // Firefox/Slack events without a label are unsorted (spec 003, routing
+    // decision 3): they must never inherit a neighbour's project_path, so
+    // they're excluded here rather than let through with project_path NULL.
     let mut stmt = conn.prepare(
         "SELECT id, source, started_at, duration_seconds, jira_issue, project_path
            FROM events
           WHERE started_at >= ?1 AND started_at < ?2
+            AND NOT (source IN (?3, ?4) AND label_origin IS NULL)
           ORDER BY started_at",
     )?;
     // started_at is ISO-8601 string; we compare lexicographically which works
@@ -401,20 +405,28 @@ pub fn load_day_events(conn: &Connection, day: NaiveDate) -> Result<Vec<InferEve
     // the Python code exactly.
     let start = iso_prefix(&start);
     let end = iso_prefix(&end);
-    let iter = stmt.query_map(params![start, end], |r| {
-        let iso: String = r.get(2)?;
-        let ts = chrono::DateTime::parse_from_rfc3339(&iso)
-            .map(|t| t.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now());
-        Ok(InferEvent {
-            event_id: Some(r.get(0)?),
-            source: r.get(1)?,
-            ts,
-            duration_seconds: r.get(3)?,
-            jira_issue: r.get(4)?,
-            project_path: r.get(5)?,
-        })
-    })?;
+    let iter = stmt.query_map(
+        params![
+            start,
+            end,
+            crate::routing_contract::SOURCE_FIREFOX,
+            crate::routing_contract::SOURCE_SLACK
+        ],
+        |r| {
+            let iso: String = r.get(2)?;
+            let ts = chrono::DateTime::parse_from_rfc3339(&iso)
+                .map(|t| t.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            Ok(InferEvent {
+                event_id: Some(r.get(0)?),
+                source: r.get(1)?,
+                ts,
+                duration_seconds: r.get(3)?,
+                jira_issue: r.get(4)?,
+                project_path: r.get(5)?,
+            })
+        },
+    )?;
     iter.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 

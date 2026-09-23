@@ -208,7 +208,7 @@ pub fn billable_work_folder(path: &str) -> Option<String> {
 ///
 /// Computed once: the folder-resolution helpers run per path, and resolving
 /// the home directory on every call turned a hot loop into a syscall storm.
-fn work_prefix() -> Option<&'static str> {
+pub(crate) fn work_prefix() -> Option<&'static str> {
     static PREFIX: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     PREFIX
         .get_or_init(|| {
