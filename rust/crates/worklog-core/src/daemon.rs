@@ -486,6 +486,14 @@ pub struct BlockSummary {
     /// show a path that contradicts the billing group: it shows a path
     /// from the right folder, or nothing.
     pub project_path: Option<String>,
+    /// The folded billing folder key that won the same vote as
+    /// `project_path` (see above) — e.g. `lyfjastofnun` for a block whose
+    /// events live under `.../lyfjastofnun/.claude/worktrees/ci-on-codebuild`.
+    /// Always [`crate::billing::work_folder_for_block`]'s answer for this
+    /// block, so the UI can show the billing group even when
+    /// `project_path` itself is a worktree/branch path a user wouldn't
+    /// recognise as the project name.
+    pub project: Option<String>,
     /// "high"/"medium"/"low" from [`crate::timeline::block_confidence`],
     /// keyed off how many distinct sources fed the block.
     pub confidence: String,
@@ -679,15 +687,17 @@ fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
     }
 
     let mut best_path: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+    let mut best_folder: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
     for (bid, folders) in folder_votes {
         let mut folder_list: Vec<(String, i64, PathCounts)> = folders
             .into_iter()
             .map(|(folder, (total, paths))| (folder, total, paths))
             .collect();
         folder_list.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        let Some((_, _, mut paths)) = folder_list.into_iter().next() else {
+        let Some((folder_key, _, mut paths)) = folder_list.into_iter().next() else {
             continue;
         };
+        best_folder.insert(bid, folder_key);
         paths.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         if let Some((path, _)) = paths.into_iter().next() {
             best_path.insert(bid, path);
@@ -721,6 +731,7 @@ fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
                 confidence: crate::timeline::block_confidence(sources.len()).to_owned(),
                 sources,
                 project_path: best_path.remove(&id),
+                project: best_folder.remove(&id),
                 block,
             }
         })
@@ -2708,6 +2719,46 @@ mod tests {
         let summary = stitch_day_summary(&conn, "2026-04-18").unwrap();
         assert_eq!(summary.blocks.len(), 1);
         assert_eq!(summary.blocks[0].project_path, None);
+    }
+
+    #[test]
+    fn day_summary_project_reports_the_folded_billing_folder() {
+        // The UI shows worktree branch names (e.g. `ci-on-codebuild`) as
+        // projects because `project_path` is the raw exact path. `project`
+        // must carry the folded billing folder key instead — `lyfjastofnun`
+        // for a block whose events live under
+        // `.../lyfjastofnun/.claude/worktrees/ci-on-codebuild`.
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-18', '2026-04-18T09:00:00+00:00', '2026-04-18T09:30:00+00:00', 1800)",
+            [],
+        )
+        .unwrap();
+        let bid = conn.last_insert_rowid();
+        let path = "/home/u/Desktop/Work/lyfjastofnun/.claude/worktrees/ci-on-codebuild";
+        let mut ev = Event::minimal("claude", "e0", "2026-04-18T09:05:00+00:00", "prompt");
+        ev.project_path = Some(path.to_string());
+        let eid = repo::upsert_event(&conn, &ev).unwrap();
+        conn.execute(
+            "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+            params![bid, eid],
+        )
+        .unwrap();
+
+        let summary = stitch_day_summary(&conn, "2026-04-18").unwrap();
+        assert_eq!(summary.blocks.len(), 1);
+        assert_eq!(
+            summary.blocks[0].project_path.as_deref(),
+            Some(path),
+            "project_path keeps showing the raw path for the UI's path chip"
+        );
+        assert_eq!(
+            summary.blocks[0].project.as_deref(),
+            Some("lyfjastofnun"),
+            "project must be the folded billing folder, not the worktree \
+             branch name"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
