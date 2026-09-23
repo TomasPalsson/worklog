@@ -172,7 +172,9 @@ mod tests {
     fn collect_writes_events_with_channel_and_text() {
         let server = MockServer::start();
         server.mock(|when, then| {
-            when.method(GET).path("/search.messages");
+            when.method(GET)
+                .path("/search.messages")
+                .query_param("query", "from:me after:2026-04-17 before:2026-04-19");
             then.status(200).json_body(json!({
                 "ok": true,
                 "messages": {
