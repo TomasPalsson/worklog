@@ -28,7 +28,7 @@
         "rust/crates/worklog-cli/src/cli.rs"
       ],
       "verify": "cargo test --manifest-path rust/Cargo.toml -p worklog-cli collect_targets_include_shell_and_reflog 2>&1 | grep -qE 'test result: ok\\. [1-9][0-9]* passed'",
-      "passes": false
+      "passes": true
     },
     {
       "id": "L4",

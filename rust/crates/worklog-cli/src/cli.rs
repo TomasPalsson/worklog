@@ -11,7 +11,8 @@ use clap::{CommandFactory, Parser, Subcommand};
 use worklog_core::{
     billing, block_service,
     collectors::{
-        gcal as gcal_col, github as gh, jira as jira_col, slack as slack_col, tempo as tempo_col,
+        fish as fish_col, gcal as gcal_col, github as gh, jira as jira_col, reflog as reflog_col,
+        slack as slack_col, tempo as tempo_col,
     },
     daemon as daemon_mod, db, estimate, hook, hook_run, http, infer,
     paths::Paths,
@@ -466,13 +467,15 @@ pub enum WebCmd {
     },
 }
 
-#[derive(clap::ValueEnum, Debug, Clone, Copy)]
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CollectTarget {
     All,
     Jira,
     Github,
     Gcal,
     Slack,
+    Shell,
+    Reflog,
 }
 
 /// `worklog export --format`. Maps 1:1 onto `billing::Format`.
@@ -1441,6 +1444,12 @@ fn effective_since(requested: chrono::NaiveDate, cutoff: chrono::NaiveDate) -> c
     requested.max(cutoff)
 }
 
+/// True when `worklog collect <target>` should run `source`: either the
+/// umbrella `all`, or `target` naming `source` directly.
+fn wants(target: CollectTarget, source: CollectTarget) -> bool {
+    target == CollectTarget::All || target == source
+}
+
 fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bool) -> Result<()> {
     let paths = Paths::resolve()?;
     paths.ensure()?;
@@ -1470,7 +1479,7 @@ fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bo
     // useful when a source's credentials aren't set.
     let mut reports: Vec<worklog_core::collectors::CollectReport> = Vec::new();
 
-    if matches!(target, CollectTarget::All | CollectTarget::Jira) {
+    if wants(target, CollectTarget::Jira) {
         let pb = style::spinner("jira …");
         let result = match jira_col::JiraAuth::from_secrets() {
             Ok(auth) => jira_col::fetch_open_tickets_with(&conn, &auth, &client)
@@ -1485,7 +1494,7 @@ fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bo
         }
     }
 
-    if matches!(target, CollectTarget::All | CollectTarget::Github) {
+    if wants(target, CollectTarget::Github) {
         let pb = style::spinner("github …");
         let result = match gh::GitHubAuth::from_secrets() {
             Ok(auth) => gh::collect_with(
@@ -1506,7 +1515,7 @@ fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bo
         }
     }
 
-    if matches!(target, CollectTarget::All | CollectTarget::Gcal) {
+    if wants(target, CollectTarget::Gcal) {
         let pb = style::spinner("gcal …");
         let result = match gcal_col::GcalAuth::from_paths() {
             Ok(auth) => gcal_col::collect_with(
@@ -1527,7 +1536,7 @@ fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bo
         }
     }
 
-    if matches!(target, CollectTarget::All | CollectTarget::Slack) {
+    if wants(target, CollectTarget::Slack) {
         let pb = style::spinner("slack …");
         let result = match slack_col::SlackAuth::from_secrets() {
             Ok(auth) => slack_col::collect_with(
@@ -1545,6 +1554,30 @@ fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bo
         match result {
             Ok(r) => reports.push(r),
             Err(msg) if !json => style::info(out, &format!("slack {msg}"))?,
+            Err(_) => (),
+        }
+    }
+
+    if wants(target, CollectTarget::Shell) {
+        let pb = style::spinner("shell …");
+        let result = fish_col::collect(&conn, since, today + chrono::Duration::days(1))
+            .map_err(|e| format!("fetch: {e}"));
+        pb.finish_and_clear();
+        match result {
+            Ok(r) => reports.push(r),
+            Err(msg) if !json => style::info(out, &format!("shell {msg}"))?,
+            Err(_) => (),
+        }
+    }
+
+    if wants(target, CollectTarget::Reflog) {
+        let pb = style::spinner("reflog …");
+        let result = reflog_col::collect(&conn, since, today + chrono::Duration::days(1))
+            .map_err(|e| format!("fetch: {e}"));
+        pb.finish_and_clear();
+        match result {
+            Ok(r) => reports.push(r),
+            Err(msg) if !json => style::info(out, &format!("reflog {msg}"))?,
             Err(_) => (),
         }
     }
@@ -4186,6 +4219,32 @@ mod tests {
             dirty: false,
             exported_at: None,
         }
+    }
+
+    #[test]
+    fn collect_targets_include_shell_and_reflog() {
+        let cli = Cli::try_parse_from(["worklog", "collect", "shell"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Cmd::Collect {
+                target: CollectTarget::Shell,
+                ..
+            }
+        ));
+        let cli = Cli::try_parse_from(["worklog", "collect", "reflog"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Cmd::Collect {
+                target: CollectTarget::Reflog,
+                ..
+            }
+        ));
+
+        assert!(wants(CollectTarget::All, CollectTarget::Shell));
+        assert!(wants(CollectTarget::All, CollectTarget::Reflog));
+        assert!(wants(CollectTarget::Shell, CollectTarget::Shell));
+        assert!(wants(CollectTarget::Reflog, CollectTarget::Reflog));
+        assert!(!wants(CollectTarget::Shell, CollectTarget::Reflog));
     }
 
     #[test]

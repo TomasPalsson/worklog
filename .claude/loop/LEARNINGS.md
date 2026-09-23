@@ -25,3 +25,11 @@
   collapses to a bare action word so no commit-message text ever lands
   in `title`.
 
+- 2026-09-23: L3 (CLI wiring for shell/reflog) done. `fish::collect` and
+  `reflog::collect` both take just `(conn, since, until)` with defaults
+  baked in — no client/auth arg to plumb, unlike jira/github/gcal/slack.
+  Replaced the repeated `matches!(target, CollectTarget::All | CollectTarget::X)`
+  idiom with a `wants(target, source)` helper (needs `PartialEq` on
+  `CollectTarget`) so the new Shell/Reflog branches and the CLI-name-parsing
+  test (`collect_targets_include_shell_and_reflog`) share one place to
+  check "does this target run that source" instead of re-deriving it.
