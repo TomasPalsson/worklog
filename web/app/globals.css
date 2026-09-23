@@ -861,6 +861,37 @@ button {
   flex: 1 1 auto;
 }
 
+/* Title over a one-line gist of what the message said / where the visit went. */
+.event-what {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.event-gist {
+  font-size: 12px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auto-filed-row,
+.review-hidden-row {
+  align-items: flex-start;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+
+.auto-filed-row > .auto-filed-time,
+.review-hidden-row > .auto-filed-time,
+.auto-filed-row > svg,
+.review-hidden-row > svg {
+  margin-top: 2px;
+}
+
 .auto-filed-project {
   font-weight: 500;
   color: var(--fg);

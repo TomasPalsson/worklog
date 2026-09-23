@@ -6,7 +6,7 @@
 
 import { ChevronRight, Globe, Slack } from "lucide-react";
 import type { LabelOrigin, RoutedEvent } from "@/lib/types";
-import { formatEventTime } from "@/lib/format-event";
+import { eventGist, formatEventTime } from "@/lib/format-event";
 
 interface Props {
   events: RoutedEvent[];
@@ -37,8 +37,11 @@ export function AutoFiledRow({ event }: { event: RoutedEvent }) {
       <span className="auto-filed-time">{formatEventTime(event.started_at)}</span>
       {event.source === "firefox" && <Globe width={13} height={13} strokeWidth={1.75} />}
       {event.source === "slack" && <Slack width={13} height={13} strokeWidth={1.75} />}
-      <span className="auto-filed-title" title={event.title}>
-        {event.title}
+      <span className="event-what">
+        <span className="auto-filed-title" title={event.title}>
+          {event.title}
+        </span>
+        <EventGist event={event} />
       </span>
       <span aria-hidden="true">→</span>
       <span className="auto-filed-project">{event.folder}</span>
@@ -53,7 +56,7 @@ export function AutoFiledRow({ event }: { event: RoutedEvent }) {
 
 /** Plain-language reason text — the owner never wrote a "rule", so the
  * chip never claims they did. Mirrors the old UnsortedList badge copy. */
-function originText(origin: LabelOrigin, folder: string | null): string {
+export function originText(origin: LabelOrigin, folder: string | null): string {
   switch (origin) {
     case "rule":
       return "your rule";
@@ -66,8 +69,20 @@ function originText(origin: LabelOrigin, folder: string | null): string {
     case "fix":
       return "you sorted";
     case "dismissed":
-      return "not work";
+      return "you said not work";
     case "noise":
-      return "noise";
+      return "no work nearby";
   }
+}
+
+/** The second line of a clue row: what the message said or where the visit
+ * went, so a row is never just a name. Full text on hover. */
+export function EventGist({ event }: { event: RoutedEvent }) {
+  const gist = eventGist(event.source, event.details);
+  if (!gist) return null;
+  return (
+    <span className="event-gist" title={event.details ?? undefined}>
+      {gist}
+    </span>
+  );
 }

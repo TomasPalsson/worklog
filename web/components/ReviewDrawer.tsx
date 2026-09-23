@@ -11,7 +11,7 @@ import { Globe, Slack } from "lucide-react";
 import { labelEvent } from "@/app/actions";
 import { toast } from "@/lib/toast";
 import { formatEventTime } from "@/lib/format-event";
-import { AutoFiledRow } from "./AutoFiled";
+import { AutoFiledRow, EventGist, originText } from "./AutoFiled";
 import { PalettePicker } from "./PalettePicker";
 import type { RoutedEvent } from "@/lib/types";
 
@@ -113,9 +113,17 @@ function HiddenRow({ event, day, folderOptions, onFiled }: HiddenRowProps) {
       <span className="auto-filed-time">{formatEventTime(event.started_at)}</span>
       {event.source === "firefox" && <Globe width={13} height={13} strokeWidth={1.75} />}
       {event.source === "slack" && <Slack width={13} height={13} strokeWidth={1.75} />}
-      <span className="auto-filed-title" title={event.title}>
-        {event.title}
+      <span className="event-what">
+        <span className="auto-filed-title" title={event.title}>
+          {event.title}
+        </span>
+        <EventGist event={event} />
       </span>
+      {event.label_origin && (
+        <span className={`origin-chip origin-${event.label_origin}`}>
+          {originText(event.label_origin, event.folder)}
+        </span>
+      )}
       <PalettePicker
         value={null}
         options={folderOptions}
