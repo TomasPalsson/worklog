@@ -77,10 +77,17 @@ pub fn collect_from_path(
 
         let Some(when) = when else { continue };
 
-        let first_token = cmd.split_whitespace().next().unwrap_or("");
-        if first_token == "cd" {
-            let arg = cmd["cd".len()..].trim();
-            cwd = resolve_cwd(cwd.as_deref(), arg, home.as_deref());
+        let segments = split_command_segments(&cmd);
+        let first_token = segments
+            .first()
+            .and_then(|s| s.split_whitespace().next())
+            .unwrap_or("");
+        for segment in &segments {
+            let mut tokens = segment.splitn(2, char::is_whitespace);
+            if tokens.next() == Some("cd") {
+                let arg = parse_cd_target(tokens.next().unwrap_or(""));
+                cwd = resolve_cwd(cwd.as_deref(), &arg, home.as_deref());
+            }
         }
 
         if when < since_ts || when >= until_ts {
@@ -115,6 +122,50 @@ pub fn collect_from_path(
     }
 
     Ok(report)
+}
+
+/// Split a (possibly multi-line, `fish_history`-escaped) command entry
+/// into its individual command segments, so each `cd` only ever tracks
+/// the cwd for its own segment, never for text that follows a `&&`,
+/// `||`, `;`, `|`, `&` or a line break (real or the `\n` escape).
+fn split_command_segments(cmd: &str) -> Vec<String> {
+    let chars: Vec<char> = cmd.chars().collect();
+    let mut segments = Vec::new();
+    let mut cur = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let two = (c, chars.get(i + 1).copied());
+        let (advance, split) = match two {
+            ('\\', Some('n')) => (2, true),
+            ('\n', _) => (1, true),
+            ('&', Some('&')) => (2, true),
+            ('|', Some('|')) => (2, true),
+            (';', _) | ('|', _) | ('&', _) => (1, true),
+            _ => (1, false),
+        };
+        if split {
+            segments.push(std::mem::take(&mut cur).trim().to_string());
+        } else {
+            cur.push(c);
+        }
+        i += advance;
+    }
+    segments.push(cur.trim().to_string());
+    segments.retain(|s| !s.is_empty());
+    segments
+}
+
+/// Parse a `cd` argument, ending at the first whitespace or shell
+/// operator, or (for a quoted target) the closing quote.
+fn parse_cd_target(arg: &str) -> String {
+    let arg = arg.trim_start();
+    if let Some(q) = arg.chars().next().filter(|c| *c == '\'' || *c == '"') {
+        return arg[1..].split(q).next().unwrap_or("").to_string();
+    }
+    arg.chars()
+        .take_while(|c| !matches!(c, ' ' | '\t' | ';' | '&' | '|' | ')'))
+        .collect()
 }
 
 /// Resolve a `cd` argument (absolute, `~`-relative, or relative to
@@ -229,6 +280,97 @@ mod tests {
         let events = repo::load_day_events(&conn, "2023-11-14").unwrap();
         let cargo_ev = events.iter().find(|e| e.title == "cargo").unwrap();
         assert_eq!(cargo_ev.project_path.as_deref(), Some(repo_dir.as_str()));
+    }
+
+    #[test]
+    fn escaped_newline_cd_then_git_does_not_leak_command_into_project_path() {
+        let home = home();
+        let fixture = write_fixture(&format!(
+            "- cmd: cd {home}/Desktop/Work/vitinn-infra\\ngit switch feature-branch\n  when: 1700000000\n"
+        ));
+        let conn = open_memory().unwrap();
+        let since = NaiveDate::from_ymd_opt(2023, 1, 1).unwrap();
+        let until = NaiveDate::from_ymd_opt(2023, 12, 1).unwrap();
+        collect_from_path(&conn, fixture.path(), since, until).unwrap();
+        let events = repo::load_day_events(&conn, "2023-11-14").unwrap();
+        assert_eq!(events.len(), 1);
+        let ev = &events[0];
+        assert_eq!(
+            ev.project_path.as_deref(),
+            Some(format!("{home}/Desktop/Work/vitinn-infra").as_str())
+        );
+        let haystack = format!(
+            "{}{}{}",
+            ev.title,
+            ev.details.clone().unwrap_or_default(),
+            ev.project_path.clone().unwrap_or_default()
+        );
+        assert!(!haystack.contains("git switch"));
+        assert!(!haystack.contains("&&"));
+    }
+
+    #[test]
+    fn cd_and_next_command_joined_by_and_and_does_not_leak_command_into_project_path() {
+        let home = home();
+        let fixture = write_fixture(&format!(
+            "- cmd: cd {home}/Desktop/Work/LibreChat && claude --resume f82b0366-1234\n  when: 1700000000\n"
+        ));
+        let conn = open_memory().unwrap();
+        let since = NaiveDate::from_ymd_opt(2023, 1, 1).unwrap();
+        let until = NaiveDate::from_ymd_opt(2023, 12, 1).unwrap();
+        collect_from_path(&conn, fixture.path(), since, until).unwrap();
+        let events = repo::load_day_events(&conn, "2023-11-14").unwrap();
+        assert_eq!(events.len(), 1);
+        let ev = &events[0];
+        assert_eq!(
+            ev.project_path.as_deref(),
+            Some(format!("{home}/Desktop/Work/LibreChat").as_str())
+        );
+        let haystack = format!(
+            "{}{}{}",
+            ev.title,
+            ev.details.clone().unwrap_or_default(),
+            ev.project_path.clone().unwrap_or_default()
+        );
+        assert!(!haystack.contains("claude"));
+        assert!(!haystack.contains("--resume"));
+        assert!(!haystack.contains("&&"));
+    }
+
+    #[test]
+    fn cd_quoted_target_resolves_to_repo_root() {
+        let home = home();
+        let fixture = write_fixture(&format!(
+            "- cmd: cd \"{home}/Desktop/Work/quotedproj\"\n  when: 1700000000\n- cmd: cargo test\n  when: 1700000100\n"
+        ));
+        let conn = open_memory().unwrap();
+        let since = NaiveDate::from_ymd_opt(2023, 1, 1).unwrap();
+        let until = NaiveDate::from_ymd_opt(2023, 12, 1).unwrap();
+        collect_from_path(&conn, fixture.path(), since, until).unwrap();
+        let events = repo::load_day_events(&conn, "2023-11-14").unwrap();
+        let cargo_ev = events.iter().find(|e| e.title == "cargo").unwrap();
+        assert_eq!(
+            cargo_ev.project_path.as_deref(),
+            Some(format!("{home}/Desktop/Work/quotedproj").as_str())
+        );
+    }
+
+    #[test]
+    fn cd_into_nested_subdirectory_collapses_to_repo_root() {
+        let home = home();
+        let fixture = write_fixture(&format!(
+            "- cmd: cd {home}/Desktop/Work/vitinn-infra/src/module\n  when: 1700000000\n- cmd: cargo build\n  when: 1700000100\n"
+        ));
+        let conn = open_memory().unwrap();
+        let since = NaiveDate::from_ymd_opt(2023, 1, 1).unwrap();
+        let until = NaiveDate::from_ymd_opt(2023, 12, 1).unwrap();
+        collect_from_path(&conn, fixture.path(), since, until).unwrap();
+        let events = repo::load_day_events(&conn, "2023-11-14").unwrap();
+        let cargo_ev = events.iter().find(|e| e.title == "cargo").unwrap();
+        assert_eq!(
+            cargo_ev.project_path.as_deref(),
+            Some(format!("{home}/Desktop/Work/vitinn-infra").as_str())
+        );
     }
 
     #[test]
