@@ -1482,11 +1482,14 @@ pub struct SettingsView {
     /// `Mon-Fri 09:00-17:00`. Mirrors `WORK_HOURS_KEY` via envfile;
     /// defaults to `DEFAULT_WORK_HOURS`.
     pub work_hours: String,
-    /// Minimum model confidence (0.0-1.0) to accept a routing guess.
+    /// How many times higher than the abstain score the winner must be.
     /// Mirrors `ABSTAIN_MARGIN_KEY` via envfile; defaults to
-    /// `DEFAULT_ABSTAIN_MARGIN`. T005 replaces this with the two Verdict
-    /// ratios.
-    pub route_threshold: f64,
+    /// `DEFAULT_ABSTAIN_MARGIN`.
+    pub abstain_margin: f64,
+    /// How many times higher than the runner-up the winner must be.
+    /// Mirrors `RUNNER_UP_RATIO_KEY` via envfile; defaults to
+    /// `DEFAULT_RUNNER_UP_RATIO`.
+    pub runner_up_ratio: f64,
 }
 
 /// Token-like keys whose value must never be serialised to the browser.
@@ -1526,6 +1529,7 @@ fn current_settings() -> Result<SettingsView> {
             }
         })
         .collect();
+    let rule = configured_route_rule();
     Ok(SettingsView {
         personal: PersonalPatterns {
             work: file.work,
@@ -1538,7 +1542,8 @@ fn current_settings() -> Result<SettingsView> {
         cycle_start_day: crate::purge::configured_cycle_start_day(),
         close_day: crate::purge::configured_close_day(),
         work_hours: configured_work_hours_raw(),
-        route_threshold: configured_route_rule().abstain_margin,
+        abstain_margin: rule.abstain_margin,
+        runner_up_ratio: rule.runner_up_ratio,
     })
 }
 
@@ -1564,11 +1569,36 @@ fn configured_work_hours() -> browser_ingest::WorkHours {
 }
 
 /// The abstain-margin/runner-up-ratio rule a routing guess must clear.
-/// Returns the defaults for now; T005 reads both envfile keys.
+/// Reads both envfile keys independently; an unparseable or
+/// out-of-`RATIO_RANGE` stored value falls back to that key's default
+/// and emits a `warn!` naming the key and the fallback, mirroring
+/// `purge::configured_cycle_day`'s handling of a bad pruner setting.
 pub fn configured_route_rule() -> RouteRule {
     RouteRule {
-        abstain_margin: routing_contract::DEFAULT_ABSTAIN_MARGIN,
-        runner_up_ratio: routing_contract::DEFAULT_RUNNER_UP_RATIO,
+        abstain_margin: configured_ratio(
+            routing_contract::ABSTAIN_MARGIN_KEY,
+            routing_contract::DEFAULT_ABSTAIN_MARGIN,
+        ),
+        runner_up_ratio: configured_ratio(
+            routing_contract::RUNNER_UP_RATIO_KEY,
+            routing_contract::DEFAULT_RUNNER_UP_RATIO,
+        ),
+    }
+}
+
+fn configured_ratio(key: &str, default: f64) -> f64 {
+    let (lo, hi) = routing_contract::RATIO_RANGE;
+    match crate::envfile::read(key) {
+        None => default,
+        Some(raw) => {
+            match raw.trim().parse::<f64>() {
+                Ok(v) if (lo..=hi).contains(&v) => v,
+                _ => {
+                    warn!("{key}={raw:?} is not a valid ratio in {lo}..={hi}. Falling back to {default}.");
+                    default
+                }
+            }
+        }
     }
 }
 
@@ -1610,9 +1640,12 @@ pub struct SettingsUpdate {
     /// Replace the browser heartbeat work-hours window, e.g.
     /// `Mon-Fri 09:00-17:00`. `None` leaves it untouched.
     pub work_hours: Option<String>,
-    /// Replace the minimum model confidence (0.0-1.0) to accept a
-    /// routing guess. `None` leaves it untouched.
-    pub route_threshold: Option<f64>,
+    /// Replace how many times higher than the abstain score the winner
+    /// must be (`RATIO_RANGE`). `None` leaves it untouched.
+    pub abstain_margin: Option<f64>,
+    /// Replace how many times higher than the runner-up the winner must
+    /// be (`RATIO_RANGE`). `None` leaves it untouched.
+    pub runner_up_ratio: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -1697,12 +1730,18 @@ async fn post_settings(
         })?;
     }
 
-    // Route threshold: a confidence, so it must be 0.0-1.0.
-    if let Some(t) = body.route_threshold {
-        if !(0.0..=1.0).contains(&t) {
-            return Err(ApiError::bad_request(anyhow::anyhow!(
-                "`route_threshold` must be between 0.0 and 1.0 (got {t})"
-            )));
+    // Route ratios: each must lie in RATIO_RANGE.
+    let (ratio_lo, ratio_hi) = routing_contract::RATIO_RANGE;
+    for (field, v) in [
+        ("abstain_margin", body.abstain_margin),
+        ("runner_up_ratio", body.runner_up_ratio),
+    ] {
+        if let Some(v) = v {
+            if !(ratio_lo..=ratio_hi).contains(&v) {
+                return Err(ApiError::bad_request(anyhow::anyhow!(
+                    "`{field}` must be between {ratio_lo} and {ratio_hi} (got {v})"
+                )));
+            }
         }
     }
 
@@ -1757,8 +1796,11 @@ async fn post_settings(
     if let Some(wh) = work_hours {
         crate::envfile::upsert(routing_contract::WORK_HOURS_KEY, wh)?;
     }
-    if let Some(t) = body.route_threshold {
-        crate::envfile::upsert(routing_contract::ABSTAIN_MARGIN_KEY, &t.to_string())?;
+    if let Some(v) = body.abstain_margin {
+        crate::envfile::upsert(routing_contract::ABSTAIN_MARGIN_KEY, &v.to_string())?;
+    }
+    if let Some(v) = body.runner_up_ratio {
+        crate::envfile::upsert(routing_contract::RUNNER_UP_RATIO_KEY, &v.to_string())?;
     }
 
     info!("settings updated");
@@ -4140,7 +4182,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn settings_reports_work_hours_and_route_threshold_defaults() {
+    async fn settings_reports_work_hours_and_ratio_defaults() {
         let _g = prune_env_lock().await;
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("WORKLOG_ENV_FILE", tmp.path().join(".env"));
@@ -4148,21 +4190,29 @@ mod tests {
         let view = current_settings().unwrap();
         assert_eq!(view.work_hours, routing_contract::DEFAULT_WORK_HOURS);
         assert_eq!(
-            view.route_threshold,
+            view.abstain_margin,
             routing_contract::DEFAULT_ABSTAIN_MARGIN
+        );
+        assert_eq!(
+            view.runner_up_ratio,
+            routing_contract::DEFAULT_RUNNER_UP_RATIO
         );
 
         std::env::remove_var("WORKLOG_ENV_FILE");
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn settings_post_rejects_bad_work_hours_or_threshold_without_persisting() {
+    async fn settings_post_rejects_bad_work_hours_or_ratios_without_persisting() {
         let _g = prune_env_lock().await;
         let tmp = tempfile::tempdir().unwrap();
         let env_file = tmp.path().join(".env");
         std::env::set_var("WORKLOG_ENV_FILE", &env_file);
 
-        for bad_body in [r#"{"work_hours":"garbage"}"#, r#"{"route_threshold":1.5}"#] {
+        for bad_body in [
+            r#"{"work_hours":"garbage"}"#,
+            r#"{"abstain_margin":0.5}"#,
+            r#"{"runner_up_ratio":9.0}"#,
+        ] {
             let app = router(state_with_block());
             let resp = app
                 .oneshot(
@@ -4181,7 +4231,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn settings_post_persists_valid_work_hours_and_route_threshold() {
+    async fn settings_post_persists_valid_work_hours_and_ratios() {
         let _g = prune_env_lock().await;
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("WORKLOG_ENV_FILE", tmp.path().join(".env"));
@@ -4192,7 +4242,7 @@ mod tests {
                 Request::post("/settings")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"work_hours":"Mon-Fri 08:00-16:00","route_threshold":0.75}"#,
+                        r#"{"work_hours":"Mon-Fri 08:00-16:00","abstain_margin":1.2,"runner_up_ratio":1.3}"#,
                     ))
                     .unwrap(),
             )
@@ -4205,7 +4255,34 @@ mod tests {
         );
         assert_eq!(
             crate::envfile::read(routing_contract::ABSTAIN_MARGIN_KEY).as_deref(),
-            Some("0.75")
+            Some("1.2")
+        );
+        assert_eq!(
+            crate::envfile::read(routing_contract::RUNNER_UP_RATIO_KEY).as_deref(),
+            Some("1.3")
+        );
+
+        std::env::remove_var("WORKLOG_ENV_FILE");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn configured_route_rule_falls_back_to_defaults_on_bad_envfile_values() {
+        let _g = prune_env_lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let env_file = tmp.path().join(".env");
+        std::env::set_var("WORKLOG_ENV_FILE", &env_file);
+
+        crate::envfile::upsert(routing_contract::ABSTAIN_MARGIN_KEY, "not-a-number").unwrap();
+        crate::envfile::upsert(routing_contract::RUNNER_UP_RATIO_KEY, "9.0").unwrap();
+
+        let rule = configured_route_rule();
+        assert_eq!(
+            rule.abstain_margin,
+            routing_contract::DEFAULT_ABSTAIN_MARGIN
+        );
+        assert_eq!(
+            rule.runner_up_ratio,
+            routing_contract::DEFAULT_RUNNER_UP_RATIO
         );
 
         std::env::remove_var("WORKLOG_ENV_FILE");
