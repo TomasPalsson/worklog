@@ -145,7 +145,7 @@ export default async function DayPage({
         view={view}
       />
       <ActionBar day={day} cacheCount={cache.count} cacheLast={cache.last_fetched} />
-      <UnsortedList day={day} events={routedEvents} folderOptions={folderOptions} />
+      <UnsortedList key={day} day={day} events={routedEvents} folderOptions={folderOptions} />
       {blocks.length === 0 ? (
         <EmptyState day={day} />
       ) : (

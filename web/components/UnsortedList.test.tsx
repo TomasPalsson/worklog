@@ -199,4 +199,32 @@ describe("UnsortedList (B12)", () => {
     // The event stayed unsorted — still rendered with a picker, not a folder label.
     expect(within(row).getByRole("button", { name: /project for/i })).toBeTruthy();
   });
+
+  it("drops the previous day's rows when the day page navigates to another day", () => {
+    const dayBEvent: RoutedEvent = {
+      id: 99,
+      source: "slack",
+      started_at: "2026-07-26T09:00:00Z",
+      title: "day-b-only-event",
+      details: null,
+      container: null,
+      folder: null,
+      label_origin: null,
+      label_confidence: null,
+    };
+
+    // Mirrors app/[day]/page.tsx's usage: navigating to a new day re-renders
+    // <UnsortedList> at the same JSX position with fresh `day`/`events` props
+    // (a Link/soft-nav, not a remount) — internal state must not carry over.
+    // `key={day}` (matching page.tsx) is what forces the remount.
+    const { rerender } = render(
+      <UnsortedList key="2026-07-25" day="2026-07-25" events={[unsortedFirefox]} folderOptions={[]} />,
+    );
+    expect(screen.getByText("AWS Certified Solutions Architect")).toBeTruthy();
+
+    rerender(<UnsortedList key="2026-07-26" day="2026-07-26" events={[dayBEvent]} folderOptions={[]} />);
+
+    expect(screen.queryByText("AWS Certified Solutions Architect")).toBeNull();
+    expect(screen.getByText("day-b-only-event")).toBeTruthy();
+  });
 });
