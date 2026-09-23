@@ -23,12 +23,13 @@ use crate::routing_contract::LabelOrigin;
 /// "Other-source work activity" sources for the absorb step — wider than
 /// `routing_context`'s Slack-only three: a GitHub commit/PR also anchors a
 /// stretch.
-const WORK_SOURCES: [&str; 5] = [
+const WORK_SOURCES: [&str; 6] = [
     "claude",
     "shell",
     "git_reflog",
     "github_commit",
     "github_pr",
+    "claude_turn",
 ];
 /// How far from the unlabelled event a work event may lie, on each side,
 /// and still bracket it inside a stretch.
@@ -48,7 +49,7 @@ fn work_activity_for_day(
     let (start, end) = crate::tz::utc_window_for_local_day(day);
     let mut stmt = conn.prepare(
         "SELECT started_at, project_path FROM events
-          WHERE source IN (?1, ?2, ?3, ?4, ?5) AND started_at >= ?6 AND started_at < ?7
+          WHERE source IN (?1, ?2, ?3, ?4, ?5, ?6) AND started_at >= ?7 AND started_at < ?8
             AND project_path IS NOT NULL",
     )?;
     let rows = stmt
@@ -59,6 +60,7 @@ fn work_activity_for_day(
                 WORK_SOURCES[2],
                 WORK_SOURCES[3],
                 WORK_SOURCES[4],
+                WORK_SOURCES[5],
                 start.to_rfc3339(),
                 end.to_rfc3339(),
             ],

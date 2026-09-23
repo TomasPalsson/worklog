@@ -11,8 +11,9 @@ use clap::{CommandFactory, Parser, Subcommand};
 use worklog_core::{
     billing, block_service,
     collectors::{
-        fish as fish_col, gcal as gcal_col, github as gh, jira as jira_col, reflog as reflog_col,
-        slack as slack_col, tempo as tempo_col,
+        claude_transcripts as claude_transcripts_col, fish as fish_col, gcal as gcal_col,
+        github as gh, jira as jira_col, reflog as reflog_col, slack as slack_col,
+        tempo as tempo_col,
     },
     daemon as daemon_mod, db, estimate, hook, hook_run, http, infer,
     paths::Paths,
@@ -477,6 +478,9 @@ pub enum CollectTarget {
     Slack,
     Shell,
     Reflog,
+    /// Claude Code transcript turns (`~/.claude/projects/*/*.jsonl`).
+    #[value(name = "transcripts")]
+    ClaudeTranscripts,
 }
 
 /// `worklog export --format`. Maps 1:1 onto `billing::Format`.
@@ -1454,13 +1458,14 @@ fn wants(target: CollectTarget, source: CollectTarget) -> bool {
 /// Every collectible source, in fetch order. `collect_target_list` filters
 /// this through `wants()` so both `collect_targets` and its tests can name
 /// "what does `target` collect" without re-deriving the filter.
-const COLLECT_SOURCES: [CollectTarget; 6] = [
+const COLLECT_SOURCES: [CollectTarget; 7] = [
     CollectTarget::Jira,
     CollectTarget::Github,
     CollectTarget::Gcal,
     CollectTarget::Slack,
     CollectTarget::Shell,
     CollectTarget::Reflog,
+    CollectTarget::ClaudeTranscripts,
 ];
 
 /// The sources `collect_targets(target, …)` will attempt, in order.
@@ -1480,6 +1485,7 @@ fn source_label(target: CollectTarget) -> &'static str {
         CollectTarget::Slack => "slack",
         CollectTarget::Shell => "shell",
         CollectTarget::Reflog => "reflog",
+        CollectTarget::ClaudeTranscripts => "transcripts",
     }
 }
 
@@ -1507,9 +1513,9 @@ enum CollectOutcome {
 }
 
 /// Collect every source `target` wants — jira, github, gcal, slack, shell,
-/// reflog — over `[since, until)`, then, for the umbrella `all` target,
-/// route + absorb each day in that range. Shared by `collect all` and
-/// `worklog day` so the launchd schedule (`worklog day` every 15 min)
+/// reflog, transcripts — over `[since, until)`, then, for the umbrella `all`
+/// target, route + absorb each day in that range. Shared by `collect all`
+/// and `worklog day` so the launchd schedule (`worklog day` every 15 min)
 /// can't silently drop a source the way it did when `day` had its own
 /// hand-rolled jira+github+gcal-only collect step. Opens its own db
 /// connection + http client so callers never juggle those types.
@@ -1560,6 +1566,10 @@ fn collect_targets(
             }
             CollectTarget::Reflog => {
                 reflog_col::collect(&conn, since, until).map_err(|e| format!("fetch: {e}"))
+            }
+            CollectTarget::ClaudeTranscripts => {
+                claude_transcripts_col::collect(&conn, since, until)
+                    .map_err(|e| format!("fetch: {e}"))
             }
             CollectTarget::All => unreachable!("collect_target_list only yields concrete sources"),
         };
@@ -3234,13 +3244,13 @@ fn cmd_day<W: Write>(
     // 2026-04-01` pull the right slice instead of dumping today's data
     // into last month's folder. Goes through the same `collect_targets`
     // path `collect all` uses — jira, github, gcal, slack, shell, reflog,
-    // then route_day + absorb_and_noise for the day — so `worklog day`
-    // (which the launchd schedule now runs every 15 min) can't silently
-    // drop a source the way it did when this function hand-rolled its own
-    // jira+github+gcal-only collect step.
+    // transcripts, then route_day + absorb_and_noise for the day — so
+    // `worklog day` (which the launchd schedule now runs every 15 min)
+    // can't silently drop a source the way it did when this function
+    // hand-rolled its own jira+github+gcal-only collect step.
     style::step(
         out,
-        "collecting jira + github + gcal + slack + shell + reflog …",
+        "collecting jira + github + gcal + slack + shell + reflog + transcripts …",
     )?;
     let since = day_parsed;
     let until = day_parsed + chrono::Duration::days(1);
@@ -4293,7 +4303,7 @@ mod tests {
     /// jira+github+gcal-only collect step: since `worklog day` always
     /// asks `collect_targets` for `CollectTarget::All` — the same target
     /// `worklog collect all` uses — the source list for `All` must be the
-    /// full six, including Slack, Shell, and Reflog.
+    /// full seven, including Slack, Shell, Reflog, and ClaudeTranscripts.
     #[test]
     fn day_collects_same_targets_as_collect_all() {
         let day_sources = collect_target_list(CollectTarget::All);
@@ -4308,11 +4318,34 @@ mod tests {
                 CollectTarget::Slack,
                 CollectTarget::Shell,
                 CollectTarget::Reflog,
+                CollectTarget::ClaudeTranscripts,
             ]
         );
         assert!(day_sources.contains(&CollectTarget::Slack));
         assert!(day_sources.contains(&CollectTarget::Shell));
         assert!(day_sources.contains(&CollectTarget::Reflog));
+        assert!(day_sources.contains(&CollectTarget::ClaudeTranscripts));
+    }
+
+    #[test]
+    fn collect_target_transcripts_parses_and_is_wanted_only_by_itself_and_all() {
+        let cli = Cli::try_parse_from(["worklog", "collect", "transcripts"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Cmd::Collect {
+                target: CollectTarget::ClaudeTranscripts,
+                ..
+            }
+        ));
+        assert!(wants(CollectTarget::All, CollectTarget::ClaudeTranscripts));
+        assert!(wants(
+            CollectTarget::ClaudeTranscripts,
+            CollectTarget::ClaudeTranscripts
+        ));
+        assert!(!wants(
+            CollectTarget::Shell,
+            CollectTarget::ClaudeTranscripts
+        ));
     }
 
     #[test]
