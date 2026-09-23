@@ -165,11 +165,12 @@ pub fn load_pending(conn: &Connection, day: NaiveDate) -> Result<(RuleHits, Vec<
     Ok((rule_hits, pending))
 }
 
-/// Ask the classifier for each pending event; keep guesses clearing
-/// `rule.abstain_margin` that name one of the event's own options. No
-/// connection arg — the slow model call must never hold the sqlite lock.
-/// This is today's single-threshold body, adapted to the new signature so
-/// callers compile; T003 replaces it with the real relative-scores rule.
+/// Ask the classifier for each pending event; keep guesses that name one of
+/// the event's own options and whose winner clears both the abstain score
+/// (by `rule.abstain_margin`) and the runner-up score (by
+/// `rule.runner_up_ratio`) — never a single absolute-confidence threshold,
+/// since the model's raw confidence is uncalibrated (spec 004 FR-01/FR-02).
+/// No connection arg — the slow model call must never hold the sqlite lock.
 pub fn decide(
     pending: &[Pending],
     classifier: &dyn Classifier,
@@ -179,8 +180,10 @@ pub fn decide(
         .iter()
         .filter_map(|p| {
             let guess = classifier.classify(&p.state, &p.options).ok().flatten()?;
-            (guess.confidence >= rule.abstain_margin && p.options.contains(&guess.folder))
-                .then_some((p.event.id, guess))
+            let accepted = p.options.contains(&guess.folder)
+                && guess.confidence >= guess.abstain * rule.abstain_margin
+                && guess.confidence >= guess.runner_up * rule.runner_up_ratio;
+            accepted.then_some((p.event.id, guess))
         })
         .collect()
 }

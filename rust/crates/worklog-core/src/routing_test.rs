@@ -49,6 +49,8 @@ fn fix(conn: &Connection, id: i64, folder: &str) -> RoutedEvent {
 struct FixedGuess {
     folder: String,
     confidence: f64,
+    runner_up: f64,
+    abstain: f64,
 }
 
 impl Classifier for FixedGuess {
@@ -56,8 +58,8 @@ impl Classifier for FixedGuess {
         Ok(Some(Guess {
             folder: self.folder.clone(),
             confidence: self.confidence,
-            runner_up: 0.0,
-            abstain: 0.0,
+            runner_up: self.runner_up,
+            abstain: self.abstain,
         }))
     }
 }
@@ -66,6 +68,33 @@ fn rule(abstain_margin: f64) -> RouteRule {
     RouteRule {
         abstain_margin,
         runner_up_ratio: 0.0,
+    }
+}
+
+fn default_rule() -> RouteRule {
+    RouteRule {
+        abstain_margin: crate::routing_contract::DEFAULT_ABSTAIN_MARGIN,
+        runner_up_ratio: crate::routing_contract::DEFAULT_RUNNER_UP_RATIO,
+    }
+}
+
+/// A single pending event offering `options`, for testing `decide` in
+/// isolation without a database.
+fn pending_with_options(options: Vec<&str>) -> Pending {
+    Pending {
+        event: RoutedEvent {
+            id: 1,
+            source: SOURCE_FIREFOX.into(),
+            started_at: "2026-04-20T09:00:00+00:00".into(),
+            title: "t".into(),
+            details: None,
+            container: None,
+            folder: None,
+            label_origin: None,
+            label_confidence: None,
+        },
+        options: options.into_iter().map(str::to_owned).collect(),
+        state: serde_json::json!({}),
     }
 }
 
@@ -97,6 +126,8 @@ fn rule_beats_model() {
     let model = FixedGuess {
         folder: "other-folder".into(),
         confidence: 0.99,
+        runner_up: 0.0,
+        abstain: 0.0,
     };
     let stats = route_day(&conn, day, &model, rule(0.9)).unwrap();
     assert_eq!(stats.rules_applied, 1);
@@ -108,8 +139,13 @@ fn rule_beats_model() {
     assert_eq!(routed[0].label_origin, Some(LabelOrigin::Rule));
 }
 
+// B1-B4 (spec 004): a guess is filed only when the winner clears both the
+// abstain margin and the runner-up ratio against the model's own scores,
+// never a single absolute-confidence threshold. Scores are the exact ones
+// measured in spec.md's FR-01/FR-02 examples.
+
 #[test]
-fn threshold_applies() {
+fn files_when_winner_beats_abstain_and_runner_up() {
     let conn = open_memory().unwrap();
     pin(&conn, "aws-cert", None);
     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
@@ -124,38 +160,66 @@ fn threshold_applies() {
     )
     .unwrap();
 
-    let above = FixedGuess {
+    let model = FixedGuess {
         folder: "aws-cert".into(),
-        confidence: 0.95,
+        confidence: 0.079,
+        runner_up: 0.065,
+        abstain: 0.067,
     };
-    let stats = route_day(&conn, day, &above, rule(0.9)).unwrap();
+    let stats = route_day(&conn, day, &model, default_rule()).unwrap();
     assert_eq!(stats.guesses_applied, 1);
     let routed = routed_for_day(&conn, day).unwrap();
     assert_eq!(routed[0].label_origin, Some(LabelOrigin::Guess));
-    assert_eq!(routed[0].label_confidence, Some(0.95));
+    assert_eq!(routed[0].label_confidence, Some(0.079));
     assert_eq!(routed[0].folder.as_deref(), Some("aws-cert"));
+}
 
-    let conn2 = open_memory().unwrap();
-    pin(&conn2, "aws-cert", None);
-    repo::upsert_event(
-        &conn2,
-        &Event::minimal(
-            SOURCE_FIREFOX,
-            "e2",
-            "2026-04-20T09:00:00+00:00",
-            "New site",
-        ),
-    )
-    .unwrap();
-    let below = FixedGuess {
+#[test]
+fn unsorted_when_winner_ties_abstain() {
+    let items = vec![pending_with_options(vec!["aws-cert"])];
+    let model = FixedGuess {
         folder: "aws-cert".into(),
-        confidence: 0.5,
+        confidence: 0.070,
+        runner_up: 0.054,
+        abstain: 0.070,
     };
-    let stats2 = route_day(&conn2, day, &below, rule(0.9)).unwrap();
-    assert_eq!(stats2.guesses_applied, 0);
-    let routed2 = routed_for_day(&conn2, day).unwrap();
-    assert_eq!(routed2[0].folder, None);
-    assert_eq!(routed2[0].label_origin, None);
+    let guesses = decide(&items, &model, default_rule());
+    assert!(
+        guesses.is_empty(),
+        "winner must clear the abstain score by the margin, not just tie it"
+    );
+}
+
+#[test]
+fn unsorted_when_runner_up_too_close() {
+    let items = vec![pending_with_options(vec!["aws-cert"])];
+    let model = FixedGuess {
+        folder: "aws-cert".into(),
+        confidence: 0.054,
+        runner_up: 0.053,
+        abstain: 0.050,
+    };
+    let guesses = decide(&items, &model, default_rule());
+    assert!(
+        guesses.is_empty(),
+        "winner clears the abstain score but not the runner-up ratio"
+    );
+}
+
+#[test]
+fn unsorted_when_choice_not_an_option() {
+    let items = vec![pending_with_options(vec!["aws-cert"])];
+    let model = FixedGuess {
+        folder: "not-a-project".into(),
+        confidence: 0.99,
+        runner_up: 0.01,
+        abstain: 0.01,
+    };
+    let guesses = decide(&items, &model, default_rule());
+    assert!(
+        guesses.is_empty(),
+        "a folder the helper names outside the options list must never be filed"
+    );
 }
 
 #[test]
@@ -331,6 +395,8 @@ fn decide_drops_guess_outside_narrowed_options() {
     let model = FixedGuess {
         folder: "mms-portal".into(),
         confidence: 0.99,
+        runner_up: 0.0,
+        abstain: 0.0,
     };
     let guesses = decide(&pending, &model, rule(0.9));
     assert!(
