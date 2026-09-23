@@ -37,7 +37,7 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core ro
 Goal: an installable add-on that reports focused, active, work-hours tab time and can be paused.
 Independent test: `bun test extension/firefox` — green with no daemon running.
 - [x] T008 [P] Firefox add-on: heartbeat logic, container/incognito skip, idle, pause popup (B11) — files: extension/firefox/manifest.json, extension/firefox/background.js, extension/firefox/heartbeat.js, extension/firefox/heartbeat.test.js, extension/firefox/popup.html, extension/firefox/popup.js, extension/firefox/README.md — verify: `bun test extension/firefox` — done: ce802a2
-- [x] CHK001 human-verify the signed add-on installs in normal Firefox and survives a restart — files: extension/firefox/manifest.json — verify: human: user runs `web-ext sign --channel unlisted` with their AMO keys, installs the .xpi, restarts Firefox, the add-on is still enabled — after: T008 — done: 6d8b882 by user
+- [x] CHK001 human-verify the signed add-on installs in normal Firefox and survives a restart — files: extension/firefox/manifest.json — verify: human: user runs `web-ext sign --channel unlisted` with their AMO keys, installs the .xpi, restarts Firefox, the add-on is still enabled — after: T008 — done: ce802a2 by user
 
 ## Phase 4 — Review UI
 Goal: the user sees every browser/Slack event with its source, sorts the unsorted ones, and manages rules and settings.
