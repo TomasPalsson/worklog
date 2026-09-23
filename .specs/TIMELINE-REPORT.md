@@ -60,6 +60,10 @@ places.sqlite backfill would add privacy risk and zero coverage — not built. O
 attributed; the gaps are periods with (almost) no machine activity. Only the calendar can say
 meeting vs break → the gcal collector (owner OAuth) is the one remaining source that changes the answer.
 
+Owner confirmed (2026-09-23): the calendar is essentially empty and email is not a work channel, so
+the gaps are non-work time. Conclusion: the day's work timeline is complete from local sources —
+gcal/Gmail/knowledgeC are not needed for this owner.
+
 ## Open
 - fish.rs is 517 lines and daemon.rs ~4300 vs the 400-line size guard — split in their own change.
 - Gap rows render as a list above the blocks, not interleaved between them (cosmetic).
