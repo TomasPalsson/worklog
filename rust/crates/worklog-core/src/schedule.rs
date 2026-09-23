@@ -174,9 +174,10 @@ fn scheduler_home() -> Result<PathBuf> {
     dirs::home_dir().context("no home directory")
 }
 
-/// Default command the scheduler runs. In Stage 1 this is still
-/// `worklog collect all` (the Python collectors); Stage 2 swaps it for a
-/// native Rust entrypoint without touching the writer here.
+/// Default command the scheduler runs: the full `collect → infer (routing,
+/// including absorb + noise) → estimate` pipeline, so the unattended agent
+/// never leaves a day half-processed the way a bare `collect all` did
+/// (zero-touch day, spec 004).
 ///
 /// Prefers `current_exe()` over a `$PATH` lookup. The plist stores an
 /// ABSOLUTE path and never revisits it, so whichever `worklog` happened
@@ -188,12 +189,12 @@ fn scheduler_home() -> Result<PathBuf> {
 /// binary doing the installing is the honest answer.
 pub fn default_command() -> String {
     if let Ok(p) = std::env::current_exe() {
-        return format!("{} collect all", p.display());
+        return format!("{} day", p.display());
     }
     if let Some(p) = which_ok("worklog") {
-        format!("{} collect all", p.display())
+        format!("{} day", p.display())
     } else {
-        "worklog collect all".to_owned()
+        "worklog day".to_owned()
     }
 }
 
@@ -229,7 +230,7 @@ pub fn repoint_if_installed(binary: &Path) -> Result<RepointOutcome> {
     if !current.installed {
         return Ok(RepointOutcome::NotInstalled);
     }
-    let want = format!("{} collect all", binary.display());
+    let want = format!("{} day", binary.display());
     if current.command.as_deref() == Some(want.as_str()) {
         return Ok(RepointOutcome::AlreadyCurrent);
     }
@@ -661,7 +662,7 @@ mod tests {
             cmd.starts_with(&exe.display().to_string()),
             "expected {cmd:?} to start with the running exe {exe:?}"
         );
-        assert!(cmd.ends_with(" collect all"), "unexpected command: {cmd}");
+        assert!(cmd.ends_with(" day"), "unexpected command: {cmd}");
     }
 
     #[test]
@@ -692,7 +693,7 @@ mod tests {
         assert_eq!(out, RepointOutcome::Repointed);
         assert_eq!(
             st.command.as_deref(),
-            Some("/Users/x/.local/bin/worklog collect all")
+            Some("/Users/x/.local/bin/worklog day")
         );
         assert_eq!(st.interval_secs, Some(3600), "cadence must be preserved");
     }
@@ -704,11 +705,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let _g = redirect(tmp.path());
         let bin = Path::new("/Users/x/.local/bin/worklog");
-        install(
-            Interval::FIFTEEN_MIN,
-            "/Users/x/.local/bin/worklog collect all",
-        )
-        .unwrap();
+        install(Interval::FIFTEEN_MIN, "/Users/x/.local/bin/worklog day").unwrap();
 
         let out = repoint_if_installed(bin).unwrap();
         restore();

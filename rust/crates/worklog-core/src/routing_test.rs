@@ -141,7 +141,7 @@ fn rule_beats_model() {
     assert_eq!(stats.rules_applied, 1);
     assert_eq!(stats.guesses_applied, 0);
 
-    let routed = routed_for_day(&conn, day).unwrap();
+    let routed = routed_for_day(&conn, day, false).unwrap();
     assert_eq!(routed.len(), 1);
     assert_eq!(routed[0].folder.as_deref(), Some("aws-cert"));
     assert_eq!(routed[0].label_origin, Some(LabelOrigin::Rule));
@@ -176,7 +176,7 @@ fn files_when_winner_beats_abstain_and_runner_up() {
     };
     let stats = route_day(&conn, day, &model, default_rule()).unwrap();
     assert_eq!(stats.guesses_applied, 1);
-    let routed = routed_for_day(&conn, day).unwrap();
+    let routed = routed_for_day(&conn, day, false).unwrap();
     assert_eq!(routed[0].label_origin, Some(LabelOrigin::Guess));
     assert_eq!(routed[0].label_confidence, Some(0.079));
     assert_eq!(routed[0].folder.as_deref(), Some("aws-cert"));
@@ -258,7 +258,7 @@ fn exact_repo_mention_files_by_link() {
     assert_eq!(stats.rules_applied, 1);
     assert_eq!(stats.guesses_applied, 0);
 
-    let routed = routed_for_day(&conn, day).unwrap();
+    let routed = routed_for_day(&conn, day, false).unwrap();
     assert_eq!(routed[0].folder.as_deref(), Some("vitinn-infra"));
     // Named-project hits are `Link`, not `Rule` — the owner never created a
     // rule; the event's own text named the repo (spec: browser/Slack event
@@ -287,7 +287,7 @@ fn path_mention_files_by_link() {
     assert_eq!(stats.rules_applied, 1);
     assert_eq!(stats.guesses_applied, 0);
 
-    let routed = routed_for_day(&conn, day).unwrap();
+    let routed = routed_for_day(&conn, day, false).unwrap();
     assert_eq!(routed[0].folder.as_deref(), Some("vitinn-infra"));
     assert_eq!(routed[0].label_origin, Some(LabelOrigin::Link));
 }
@@ -392,7 +392,7 @@ fn title_only_mention_is_not_a_match() {
         "a project mention in the page-controlled title, absent from details, must not be filed by rule"
     );
 
-    let routed = routed_for_day(&conn, day).unwrap();
+    let routed = routed_for_day(&conn, day, false).unwrap();
     assert_ne!(
         routed[0].label_origin,
         Some(LabelOrigin::Rule),
@@ -501,7 +501,7 @@ fn always_creates_rule_and_applies() {
     assert_eq!(rules[0].pattern, "github.com");
     assert_eq!(rules[0].folder, "lighthouse");
 
-    let routed = routed_for_day(&conn, day).unwrap();
+    let routed = routed_for_day(&conn, day, false).unwrap();
     let ev2 = routed.iter().find(|r| r.id == e2).unwrap();
     assert_eq!(ev2.folder.as_deref(), Some("lighthouse"));
     assert_eq!(ev2.label_origin, Some(LabelOrigin::Rule));
@@ -563,7 +563,7 @@ fn always_rule_relabels_previously_guessed_events() {
     )
     .unwrap();
 
-    let routed = routed_for_day(&conn, day).unwrap();
+    let routed = routed_for_day(&conn, day, false).unwrap();
     let ev2 = routed.iter().find(|r| r.id == e2).unwrap();
     assert_eq!(ev2.folder.as_deref(), Some("lighthouse"));
     assert_eq!(ev2.label_origin, Some(LabelOrigin::Rule));
@@ -627,7 +627,7 @@ fn label_event_does_not_partial_commit_when_always_rule_fails() {
     .unwrap_err();
     assert!(err.to_string().contains("container"));
 
-    let routed = routed_for_day(&conn, day).unwrap();
+    let routed = routed_for_day(&conn, day, false).unwrap();
     let ev = routed.iter().find(|r| r.id == eid).unwrap();
     assert_eq!(
         ev.folder, None,
@@ -668,7 +668,7 @@ fn label_event_rejects_domain_rule_on_non_firefox_event() {
         "a domain rule must not be created from a non-firefox event"
     );
 
-    let routed = routed_for_day(&conn, day).unwrap();
+    let routed = routed_for_day(&conn, day, false).unwrap();
     let ev = routed.iter().find(|r| r.id == eid).unwrap();
     assert_eq!(
         ev.folder, None,
@@ -777,7 +777,7 @@ fn slack_context_files_from_dominant_recent_activity() {
         "the context step must not reach the classifier"
     );
 
-    let routed = routed_for_day(&conn, day).unwrap();
+    let routed = routed_for_day(&conn, day, false).unwrap();
     let ev = routed.iter().find(|r| r.id == eid).unwrap();
     assert_eq!(ev.folder.as_deref(), Some("sjukra"));
     assert_eq!(ev.label_origin, Some(LabelOrigin::Context));
@@ -873,7 +873,7 @@ fn editing_rule_folder_relabels_rule_labelled_events() {
         .unwrap();
     };
     always(ids[0], "folder1");
-    let routed = routed_for_day(&conn, day).unwrap();
+    let routed = routed_for_day(&conn, day, false).unwrap();
     let b = routed.iter().find(|r| r.id == ids[1]).unwrap();
     assert_eq!(b.label_origin, Some(LabelOrigin::Rule));
 
@@ -882,7 +882,7 @@ fn editing_rule_folder_relabels_rule_labelled_events() {
     assert_eq!(rules.len(), 1);
     assert_eq!(rules[0].folder, "folder2");
 
-    let routed = routed_for_day(&conn, day).unwrap();
+    let routed = routed_for_day(&conn, day, false).unwrap();
     let b = routed.iter().find(|r| r.id == ids[1]).unwrap();
     assert_eq!(b.folder.as_deref(), Some("folder2"));
     assert_eq!(b.label_origin, Some(LabelOrigin::Rule));
@@ -926,9 +926,41 @@ fn routed_for_day_excludes_dismissed_events() {
     .unwrap();
     crate::routing_dismiss::dismiss_event(&conn, id, None).unwrap();
 
-    let routed = routed_for_day(&conn, day).unwrap();
+    let routed = routed_for_day(&conn, day, false).unwrap();
     assert!(
         routed.is_empty(),
         "a dismissed event must not appear in the routed list"
     );
+}
+
+#[test]
+fn routed_for_day_include_hidden_returns_dismissed_and_noise() {
+    let conn = open_memory().unwrap();
+    let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+    let dismissed_id = repo::upsert_event(
+        &conn,
+        &Event::minimal(SOURCE_SLACK, "s1", "2026-04-20T09:00:00+00:00", "#random"),
+    )
+    .unwrap();
+    crate::routing_dismiss::dismiss_event(&conn, dismissed_id, None).unwrap();
+    let noise_id = repo::upsert_event(
+        &conn,
+        &Event::minimal(SOURCE_FIREFOX, "f1", "2026-04-20T09:05:00+00:00", "news"),
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE events SET label_origin = 'noise' WHERE id = ?1",
+        params![noise_id],
+    )
+    .unwrap();
+
+    assert!(
+        routed_for_day(&conn, day, false).unwrap().is_empty(),
+        "default list must exclude both dismissed and noise"
+    );
+
+    let hidden = routed_for_day(&conn, day, true).unwrap();
+    let ids: Vec<i64> = hidden.iter().map(|e| e.id).collect();
+    assert!(ids.contains(&dismissed_id));
+    assert!(ids.contains(&noise_id));
 }

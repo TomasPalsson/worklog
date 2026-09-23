@@ -18,11 +18,11 @@ use crate::routing_contract::{
     IGNORE_FOLDER, SOURCE_FIREFOX, SOURCE_SLACK,
 };
 #[path = "routing_context.rs"]
-mod context;
+pub(crate) mod context;
 #[path = "routing_rows.rs"]
 mod rows;
-use rows::{events_in_window, row_from, EventRow, EVENT_COLUMNS};
-pub(crate) use rows::{fetch_event, to_routed}; // shared with routing_dismiss.rs
+pub(crate) use rows::{events_in_window, fetch_event, is_hidden, narrowed_options, to_routed};
+use rows::{row_from, EventRow, EVENT_COLUMNS}; // shared with routing_dismiss.rs / routing_absorb.rs
 
 /// Automatically-resolved events: `(id, folder, origin)`, origin `Rule`/`Link`/`Context`.
 type RuleHits = Vec<(i64, String, LabelOrigin)>;
@@ -67,7 +67,7 @@ fn folder_path(folder: &str) -> String {
     }
 }
 
-fn set_label(
+pub(crate) fn set_label(
     conn: &Connection,
     id: i64,
     folder: &str,
@@ -132,21 +132,6 @@ fn named_project(row: &EventRow, options: &[String]) -> Option<String> {
         (Some(key), None) => Some(key.to_owned()),
         _ => None,
     }
-}
-
-/// A container naming exactly one customer narrows to that customer's pinned folders (B10); otherwise every project key is a candidate.
-fn narrowed_options(registry: &Registry, row: &EventRow, all: &[String]) -> Vec<String> {
-    if let Some(container) = row.container.as_deref() {
-        if let Some(customer) = registry.customer_in_text(container) {
-            return registry
-                .folders
-                .iter()
-                .filter(|f| f.customer.as_deref() == Some(customer.as_str()))
-                .map(|f| f.folder.clone())
-                .collect();
-        }
-    }
-    all.to_vec()
 }
 
 /// Load a day's unlabelled browser/Slack events: rule hits (resolved) and events still needing a model decision.
@@ -294,8 +279,10 @@ pub(crate) fn upsert_rule(
 }
 
 /// Apply a fresh or edited "always" rule to every other automatically-labelled event that
-/// matches it (B9); hand-fixed/dismissed events keep their label. `IGNORE_FOLDER` dismisses
-/// instead of filing. ponytail: full unresolved-event scan, not source-scoped — fine at single-user scale.
+/// matches it (B9); hand-fixed/dismissed events keep their label. Noise IS retroactively
+/// re-labelled — that's how the owner reclaims a wrongly-hidden event. `IGNORE_FOLDER`
+/// dismisses instead of filing. ponytail: full unresolved-event scan, not source-scoped —
+/// fine at single-user scale.
 pub(crate) fn apply_rule_to_existing(
     conn: &Connection,
     kind: RuleKind,
@@ -304,7 +291,7 @@ pub(crate) fn apply_rule_to_existing(
 ) -> Result<()> {
     let sql = format!(
         "SELECT {EVENT_COLUMNS} FROM events
-          WHERE id != ?1 AND (label_origin IS NULL OR label_origin IN ('guess', 'rule', 'link', 'context'))"
+          WHERE id != ?1 AND (label_origin IS NULL OR label_origin IN ('guess', 'rule', 'link', 'context', 'noise'))"
     );
     let mut stmt = conn.prepare(&sql)?;
     let candidates = stmt
@@ -390,13 +377,20 @@ pub fn delete_rule(conn: &Connection, id: i64) -> Result<bool> {
     Ok(n > 0)
 }
 
-/// Every browser/Slack event for `day`, as the review UI sees it (dismissed excluded).
-pub fn routed_for_day(conn: &Connection, day: NaiveDate) -> Result<Vec<RoutedEvent>> {
-    Ok(events_in_window(conn, day, false)?
+/// Every browser/Slack event for `day`, as the review UI sees it — dismissed and noise
+/// excluded unless `include_hidden` (the review drawer's request for the full picture).
+pub fn routed_for_day(
+    conn: &Connection,
+    day: NaiveDate,
+    include_hidden: bool,
+) -> Result<Vec<RoutedEvent>> {
+    let events = events_in_window(conn, day, false)?
         .into_iter()
-        .map(to_routed)
-        .filter(|e| e.label_origin != Some(LabelOrigin::Dismissed))
-        .collect())
+        .map(to_routed);
+    if include_hidden {
+        return Ok(events.collect());
+    }
+    Ok(events.filter(|e| !is_hidden(e.label_origin)).collect())
 }
 
 // Tests live in routing_test.rs (same module, split file for line budget).

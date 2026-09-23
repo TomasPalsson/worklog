@@ -393,12 +393,13 @@ pub fn load_day_events(conn: &Connection, day: NaiveDate) -> Result<Vec<InferEve
     // Firefox/Slack events without a label are unsorted (spec 003, routing
     // decision 3): they must never inherit a neighbour's project_path, so
     // they're excluded here rather than let through with project_path NULL.
-    // Dismissed events (noise the owner threw away) are excluded the same way.
+    // Dismissed and noise events (thrown away by the owner or by the
+    // end-of-day absorb step) are excluded the same way.
     let mut stmt = conn.prepare(
         "SELECT id, source, started_at, duration_seconds, jira_issue, project_path
            FROM events
           WHERE started_at >= ?1 AND started_at < ?2
-            AND NOT (source IN (?3, ?4) AND (label_origin IS NULL OR label_origin = ?5))
+            AND NOT (source IN (?3, ?4) AND (label_origin IS NULL OR label_origin IN (?5, ?6)))
           ORDER BY started_at",
     )?;
     // started_at is ISO-8601 string; we compare lexicographically which works
@@ -412,7 +413,8 @@ pub fn load_day_events(conn: &Connection, day: NaiveDate) -> Result<Vec<InferEve
             end,
             crate::routing_contract::SOURCE_FIREFOX,
             crate::routing_contract::SOURCE_SLACK,
-            crate::routing_contract::LabelOrigin::Dismissed.as_str()
+            crate::routing_contract::LabelOrigin::Dismissed.as_str(),
+            crate::routing_contract::LabelOrigin::Noise.as_str()
         ],
         |r| {
             let iso: String = r.get(2)?;
@@ -1133,6 +1135,36 @@ mod tests {
         assert!(
             events.is_empty(),
             "dismissed firefox/slack events must never reach inference"
+        );
+    }
+
+    #[test]
+    fn load_day_events_excludes_noise_firefox_and_slack_events() {
+        // Noise (the absorb step's last resort, spec 004) must be treated
+        // exactly like dismissed: never block time, even though its
+        // label_origin is non-NULL.
+        let conn = open_memory().unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let firefox_id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                crate::routing_contract::SOURCE_FIREFOX,
+                "f1",
+                "2026-04-18T09:00:00+00:00",
+                "news site",
+            ),
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE events SET label_origin = 'noise' WHERE id = ?1",
+            [firefox_id],
+        )
+        .unwrap();
+
+        let events = load_day_events(&conn, day).unwrap();
+        assert!(
+            events.is_empty(),
+            "noise firefox/slack events must never reach inference"
         );
     }
 

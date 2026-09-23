@@ -49,11 +49,16 @@ pub const MAX_HINT_EXAMPLES: usize = 5;
 /// `Link` = the event's own text named the project (an exact
 /// `github.com/<org>/<key>` or `Desktop/Work/<key>` mention — `named_project`
 /// in routing.rs). `Context` = the day's `claude`/`shell`/`git_reflog`
-/// activity around the event's time named it (routing_context.rs); its
-/// `label_confidence` is always `NULL`. `Dismissed` = the owner (or an
-/// `__ignore__` rule) marked the event as noise — never sorted, never
-/// counted as work time; its `project_path`/`label_confidence` are always
-/// `NULL`. All but `Fix` and `Dismissed` are automatic.
+/// activity around the event's time named it (routing_context.rs), OR the
+/// end-of-day absorb step filed it inside a stretch of other-source work
+/// activity (routing_absorb.rs); either way `label_confidence` is always
+/// `NULL`. `Dismissed` = the owner (or an `__ignore__` rule) marked the
+/// event as noise — never sorted, never counted as work time; its
+/// `project_path`/`label_confidence` are always `NULL`. `Noise` = the
+/// absorb step's last resort: nothing labelled it and no work stretch
+/// bracketed it, so it's auto-hidden the same way `Dismissed` is — but
+/// still an owner rule/fix away from being re-labelled. All but `Fix`,
+/// `Dismissed` and `Noise` are automatic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LabelOrigin {
@@ -63,6 +68,7 @@ pub enum LabelOrigin {
     Fix,
     Guess,
     Dismissed,
+    Noise,
 }
 
 impl LabelOrigin {
@@ -74,6 +80,7 @@ impl LabelOrigin {
             LabelOrigin::Fix => "fix",
             LabelOrigin::Guess => "guess",
             LabelOrigin::Dismissed => "dismissed",
+            LabelOrigin::Noise => "noise",
         }
     }
 
@@ -85,6 +92,7 @@ impl LabelOrigin {
             "fix" => Some(LabelOrigin::Fix),
             "guess" => Some(LabelOrigin::Guess),
             "dismissed" => Some(LabelOrigin::Dismissed),
+            "noise" => Some(LabelOrigin::Noise),
             _ => None,
         }
     }

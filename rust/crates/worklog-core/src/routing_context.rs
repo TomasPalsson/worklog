@@ -22,7 +22,7 @@ const CONTEXT_SOURCES: [&str; 3] = ["claude", "shell", "git_reflog"];
 /// segment under `~/Desktop/Work` or `~/Desktop/Projects`, stripping
 /// worktree scaffolding (`/.claude/worktrees/...`) first — mirrors
 /// `collectors::fish::repo_root_for`. `None` outside both roots.
-fn context_key(path: &str, home: &str) -> Option<String> {
+pub(crate) fn context_key(path: &str, home: &str) -> Option<String> {
     let base = match path.find("/.claude/") {
         Some(i) => &path[..i],
         None => path,
@@ -95,7 +95,18 @@ pub(crate) fn dominant_key(
     event_time: DateTime<Utc>,
     context: &[(DateTime<Utc>, String)],
 ) -> Option<String> {
-    let window_secs = WINDOW_MINUTES * 60;
+    dominant_key_within(event_time, context, WINDOW_MINUTES)
+}
+
+/// Same dominance rule as [`dominant_key`], with a caller-supplied window
+/// (minutes on each side) instead of the fixed 10-minute Slack-context one.
+/// Shared with `routing_absorb`'s 5-minute stretch check.
+pub(crate) fn dominant_key_within(
+    event_time: DateTime<Utc>,
+    context: &[(DateTime<Utc>, String)],
+    window_minutes: i64,
+) -> Option<String> {
+    let window_secs = window_minutes * 60;
     let mut counts: HashMap<&str, u32> = HashMap::new();
     for (t, key) in context {
         if (*t - event_time).num_seconds().abs() <= window_secs {

@@ -16,7 +16,8 @@ use worklog_core::{
     },
     daemon as daemon_mod, db, estimate, hook, hook_run, http, infer,
     paths::Paths,
-    personal as personal_mod, routing, schedule, secrets, skill as skill_mod, updater as upd,
+    personal as personal_mod, routing, routing_absorb, schedule, secrets, skill as skill_mod,
+    updater as upd,
     verdict::VerdictClassifier,
     web as web_mod,
 };
@@ -1587,7 +1588,9 @@ fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bo
         let rule = daemon_mod::configured_route_rule();
         let mut d = since;
         while d <= today {
-            if let Err(e) = routing::route_day(&conn, d, &classifier, rule) {
+            let routed = routing::route_day(&conn, d, &classifier, rule)
+                .and_then(|_| routing_absorb::absorb_and_noise(&conn, d));
+            if let Err(e) = routed {
                 if !json {
                     style::info(out, &format!("routing {d}: {e}"))?;
                 }
@@ -3226,6 +3229,26 @@ fn cmd_day<W: Write>(
         Err(e) => StepOutcome::Info(format!("gcal skipped: {e}")),
     });
     gcal_outcome.render(out)?;
+
+    // --- route ------------------------------------------------------------
+    // Owner rules → Link → Slack time-context → Verdict → absorb + noise
+    // (zero-touch day, spec 004): every firefox/slack event ends up
+    // attributed or hidden before inference ever sees it.
+    style::step(out, "routing browser/Slack events …")?;
+    let classifier = VerdictClassifier::new();
+    let route_rule = daemon_mod::configured_route_rule();
+    match routing::route_day(&conn, day_parsed, &classifier, route_rule)
+        .and_then(|stats| routing_absorb::absorb_and_noise(&conn, day_parsed).map(|_| stats))
+    {
+        Ok(stats) => style::ok(
+            out,
+            &format!(
+                "rules={} guesses={}",
+                stats.rules_applied, stats.guesses_applied
+            ),
+        )?,
+        Err(e) => style::warn(out, &format!("routing: {e}"))?,
+    }
 
     // --- infer ----------------------------------------------------------
     style::step(out, "inferring blocks …")?;

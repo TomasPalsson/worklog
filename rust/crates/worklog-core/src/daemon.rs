@@ -37,7 +37,7 @@
 //! * `GET  /export/:day`                 — billing rows + rendered text/csv/json for a day
 //! * `POST /export/:day/mark`            — mark a day's blocks as billed (idempotent)
 //! * `POST /browser/heartbeat`           — { Heartbeat } from the add-on, requires moz-extension:// Origin
-//! * `GET  /days/:day/routed`             — browser/Slack events for a day, routed or not
+//! * `GET  /days/:day/routed?include_hidden=` — browser/Slack events for a day (default excludes dismissed/noise)
 //! * `POST /events/:id/label`            — { LabelRequest } manual label, optionally creating a rule
 //! * `POST /events/:id/dismiss`           — { DismissRequest } mark noise, optionally creating an `__ignore__` rule
 //! * `GET  /routing/rules`                — hard rules list
@@ -77,6 +77,7 @@ use crate::collectors::{jira, tempo};
 use crate::git::{self, CommitEntry};
 use crate::personal;
 use crate::routing;
+use crate::routing_absorb;
 use crate::routing_contract;
 use crate::routing_contract::RouteRule;
 use crate::routing_dismiss;
@@ -1355,6 +1356,7 @@ async fn run_infer(
 
     let (count, minutes) = with_conn(state, move |c| {
         routing::commit_labels(c, &rule_hits, &guesses)?;
+        routing_absorb::absorb_and_noise(c, day)?;
         let events = infer::load_day_events(c, day)?;
         let blocks = infer::build_blocks(events);
         let total: i64 = blocks.iter().map(|b| b.duration_seconds).sum();
@@ -2016,13 +2018,24 @@ async fn browser_heartbeat(
         .into_response())
 }
 
+#[derive(Deserialize)]
+pub struct RoutedQuery {
+    /// Include dismissed/noise events too — the review drawer's request.
+    #[serde(default)]
+    pub include_hidden: bool,
+}
+
 async fn routed_events(
     State(state): State<Shared>,
     AxumPath(day): AxumPath<String>,
+    axum::extract::Query(q): axum::extract::Query<RoutedQuery>,
 ) -> Result<Json<Vec<routing_contract::RoutedEvent>>, ApiError> {
     let parsed = NaiveDate::parse_from_str(&day, "%Y-%m-%d")
         .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{}`: {e}", day)))?;
-    let events = with_conn(state, move |c| routing::routed_for_day(c, parsed)).await?;
+    let events = with_conn(state, move |c| {
+        routing::routed_for_day(c, parsed, q.include_hidden)
+    })
+    .await?;
     Ok(Json(events))
 }
 
@@ -4381,6 +4394,35 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let v = read_json(resp).await;
         assert_eq!(v.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn routed_events_include_hidden_returns_dismissed() {
+        let conn = open_memory().unwrap();
+        let id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                routing_contract::SOURCE_FIREFOX,
+                "e1",
+                "2026-04-14T10:30:00+00:00",
+                "news site",
+            ),
+        )
+        .unwrap();
+        crate::routing_dismiss::dismiss_event(&conn, id, None).unwrap();
+
+        let app = router(state_from_conn(conn));
+        let resp = app
+            .oneshot(
+                Request::get("/days/2026-04-14/routed?include_hidden=true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v.as_array().unwrap().len(), 1);
     }
 
     #[tokio::test(flavor = "current_thread")]
