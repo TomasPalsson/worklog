@@ -1383,6 +1383,30 @@ button {
   background: var(--bg-raised);
 }
 
+.unsorted-row {
+  grid-template-columns: 72px 1fr;
+}
+
+.unsorted-row > :not(.event-source) {
+  grid-column: 2;
+}
+
+.unsorted-row .event-source {
+  width: 100%;
+  justify-content: flex-start;
+  gap: 4px;
+  padding: 0 6px;
+  font-size: 12px;
+}
+
+.unsorted-always {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
 .event-source {
   display: inline-flex;
   align-items: center;

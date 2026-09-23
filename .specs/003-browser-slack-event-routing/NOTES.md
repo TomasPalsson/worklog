@@ -19,3 +19,4 @@ Discovered: CHK002 — Slack DM events land with title = raw user id (e.g. U0681
 Discovered: T014 review F2 (re-scored 75, below keep line) — collect_leaves_non_dm_title_as_channel_name passes with the is_im gate removed (unmocked users.info 404 falls back to "eng"); an assert_hits(0) mock would pin it — defer (gates)
 Discovered: Phase 5 Independent test `cargo test ... daemon:: slack` is not a valid cargo filter (one positional only); ran `daemon::` (65 pass) and `slack` (15 pass) separately — defer
 Discovered: brief asks for `scripts/slop-check`, which does not exist in this repo — defer
+Discovered: CHK003 — Unsorted row layout broken: `.event-row` grid is `22px 1fr` (globals.css:1373) but UnsortedList renders 4 children, so "always for this channel" wraps into the 22px column; no `.unsorted-row`/`.unsorted-always` CSS exists — fixed directly per user (no spec task), unsorted-row CSS
