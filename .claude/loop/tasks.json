@@ -1,0 +1,53 @@
+{
+  "goal": "Widen the timeline: shell history and git reflog become project-attributed events, and each day exposes per-block confidence and gaps (USER-STORIES S3, S4, S7, S8, S9).",
+  "items": [
+    {
+      "id": "L1",
+      "desc": "fish shell history collector. New module collectors/fish.rs, registered in collectors/mod.rs. Parse ~/.local/share/fish/fish_history (entries '- cmd: <text>' then '  when: <epoch>' and optional '  paths:' list). Track the working directory across entries from `cd <abs|~|relative>` commands. PRIVACY: never store the command text — title = the program name only (first token, e.g. `git`, `cargo`), details = None. project_path = the repo root when the tracked cwd or an absolute/~ path argument lies under ~/Desktop/Work/<key> or ~/Desktop/Projects/<key> (collapse /.claude/worktrees/* like billing::work_folder_for_path), else None. source = \"shell\", source_id = \"<when>:<entry index>\", upsert via repo::upsert_event (idempotent). Expose collect_from_path(conn, path, since, until) -> Result<CollectReport> for tests. Inline #[cfg(test)] tests with a temp fixture file: parses entries, keeps only since..until, cd tracking attributes a later `cargo test` to the repo, no command text stored, re-run inserts 0 new rows.",
+      "files": [
+        "rust/crates/worklog-core/src/collectors/mod.rs",
+        "rust/crates/worklog-core/src/collectors/fish.rs"
+      ],
+      "verify": "cargo test --manifest-path rust/Cargo.toml -p worklog-core collectors::fish 2>&1 | grep -qE 'test result: ok\\. [1-9][0-9]* passed'",
+      "passes": true
+    },
+    {
+      "id": "L2",
+      "desc": "git reflog collector. New module collectors/reflog.rs, registered in collectors/mod.rs. For each repo directly under the given roots (default ~/Desktop/Work and ~/Desktop/Projects; a repo = dir with .git), read .git/logs/HEAD lines '<old> <new> <name> <<email>> <epoch> <tz>\\t<message>'. Keep entries in since..until. source = \"git_reflog\", source_id = \"<repo dir name>:<epoch>:<new sha>\", started_at = epoch UTC, title = the action + target only (`checkout <branch>`, `commit`, `merge <branch>`, `rebase`, `pull`, `reset` — never the commit message body), project_path = the repo root. Read files only; never run the git CLI. Expose collect_from_roots(conn, roots, since, until). Inline tests with a temp dir holding two fake repos: parses both, filters by time, titles carry no commit message text, idempotent re-run.",
+      "files": [
+        "rust/crates/worklog-core/src/collectors/reflog.rs",
+        "rust/crates/worklog-core/src/collectors/mod.rs"
+      ],
+      "verify": "cargo test --manifest-path rust/Cargo.toml -p worklog-core collectors::reflog 2>&1 | grep -qE 'test result: ok\\. [1-9][0-9]* passed'",
+      "passes": false
+    },
+    {
+      "id": "L3",
+      "desc": "CLI wiring: add Shell and Reflog to CollectTarget in worklog-cli, dispatch to the L1/L2 collectors with default paths, and include both in `collect all`. Never print to stdout from hook-run. Add a unit test named collect_targets_include_shell_and_reflog asserting both variants parse from their CLI names (`shell`, `reflog`) and that `all` runs them (assert via the function that lists the targets `all` runs, extracting one if needed).",
+      "files": [
+        "rust/crates/worklog-cli/src/cli.rs"
+      ],
+      "verify": "cargo test --manifest-path rust/Cargo.toml -p worklog-cli collect_targets_include_shell_and_reflog 2>&1 | grep -qE 'test result: ok\\. [1-9][0-9]* passed'",
+      "passes": false
+    },
+    {
+      "id": "L4",
+      "desc": "Prove shell and git_reflog events join blocks: add infer tests shell_and_reflog_events_form_a_project_block (20 min of `shell` events every 2 min under ~/Desktop/Work/vitinn-infra plus one git_reflog checkout → one block with that project_path, 15–25 min) and reflog_checkout_switches_project (repo A shell events, then a git_reflog checkout in repo B at 10:14 followed by B shell events → A's block ends by 10:15 and a B block starts). Change infer.rs only if a test fails.",
+      "files": [
+        "rust/crates/worklog-core/src/infer.rs"
+      ],
+      "verify": "out=$(cargo test --manifest-path rust/Cargo.toml -p worklog-core infer::tests:: 2>&1); echo \"$out\" | grep -q 'shell_and_reflog_events_form_a_project_block ... ok' && echo \"$out\" | grep -q 'reflog_checkout_switches_project ... ok'",
+      "passes": false
+    },
+    {
+      "id": "L5",
+      "desc": "New module timeline.rs (registered in lib.rs) with pure functions: block_confidence(distinct_sources: usize) -> &'static str (\"high\" for >=3, \"medium\" for 2, \"low\" for <=1) and day_gaps(blocks: &[(DateTime<Utc>, DateTime<Utc>)], min_gap: Duration) -> Vec<(DateTime<Utc>, DateTime<Utc>)> returning gaps >= min_gap between consecutive (sorted) blocks, overlap-safe. Inline tests: thresholds, a 45-min gap reported, a 10-min gap not reported at min 30, overlapping blocks produce no gap.",
+      "files": [
+        "rust/crates/worklog-core/src/timeline.rs",
+        "rust/crates/worklog-core/src/lib.rs"
+      ],
+      "verify": "cargo test --manifest-path rust/Cargo.toml -p worklog-core timeline:: 2>&1 | grep -qE 'test result: ok\\. [1-9][0-9]* passed'",
+      "passes": false
+    }
+  ]
+}
