@@ -36,6 +36,12 @@
 //! * `POST /sync`                        — { "day": "YYYY-MM-DD", "dry_run": true }
 //! * `GET  /export/:day`                 — billing rows + rendered text/csv/json for a day
 //! * `POST /export/:day/mark`            — mark a day's blocks as billed (idempotent)
+//! * `POST /browser/heartbeat`           — { Heartbeat } from the add-on, requires moz-extension:// Origin
+//! * `GET  /days/:day/routed`             — browser/Slack events for a day, routed or not
+//! * `POST /events/:id/label`            — { LabelRequest } manual label, optionally creating a rule
+//! * `GET  /routing/rules`                — hard rules list
+//! * `POST /routing/rules/:id/delete`    — no body
+//! * `GET  /routing/status`               — last heartbeat/Slack timestamps + Laya reachability
 //!
 //! Unix-socket file perms default to `0666` so the containerised UI can
 //! connect across Docker Desktop's VM (same user, same host — the data
@@ -51,7 +57,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::extract::{Path as AxumPath, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -65,9 +71,12 @@ use tracing::{error, info, warn};
 
 use crate::billing;
 use crate::billing_registry;
+use crate::browser_ingest;
 use crate::collectors::{jira, tempo};
 use crate::git::{self, CommitEntry};
 use crate::personal;
+use crate::routing;
+use crate::routing_contract;
 use crate::secrets;
 use crate::{
     block_service, db, estimate, infer,
@@ -121,6 +130,12 @@ pub fn router(state: Shared) -> Router {
         .route("/billing/folders", post(billing_folder_upsert))
         .route("/billing/folders/:id/delete", post(billing_folder_delete))
         .route("/settings", get(get_settings).post(post_settings))
+        .route("/browser/heartbeat", post(browser_heartbeat))
+        .route("/days/:day/routed", get(routed_events))
+        .route("/events/:id/label", post(set_event_label))
+        .route("/routing/rules", get(routing_rules_list))
+        .route("/routing/rules/:id/delete", post(routing_rule_delete))
+        .route("/routing/status", get(routing_status))
         .with_state(state)
 }
 
@@ -368,6 +383,7 @@ async fn prune_due_check_once(state: Shared, snapshot_to: &Path, db_path: &Path)
 pub enum ApiError {
     BadRequest(anyhow::Error),
     NotFound(anyhow::Error),
+    Forbidden(anyhow::Error),
     Internal(anyhow::Error),
 }
 
@@ -388,6 +404,7 @@ impl IntoResponse for ApiError {
         let (status, err) = match self {
             ApiError::BadRequest(e) => (StatusCode::BAD_REQUEST, e),
             ApiError::NotFound(e) => (StatusCode::NOT_FOUND, e),
+            ApiError::Forbidden(e) => (StatusCode::FORBIDDEN, e),
             ApiError::Internal(e) => (StatusCode::INTERNAL_SERVER_ERROR, e),
         };
         // For 400, emit only the top-level message (no `{:#}` chain
@@ -398,7 +415,9 @@ impl IntoResponse for ApiError {
         // via `error!()` where the developer needs it, and the client
         // needs enough context to file a useful bug report.
         let (msg, log_msg) = match status {
-            StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND => (format!("{err}"), None),
+            StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND | StatusCode::FORBIDDEN => {
+                (format!("{err}"), None)
+            }
             _ => (format!("{err:#}"), Some(format!("{err:#}"))),
         };
         if let Some(m) = log_msg {
@@ -1441,6 +1460,14 @@ pub struct SettingsView {
     /// Last day-of-month the just-closed cycle can still take hours.
     /// Mirrors `crate::purge::configured_close_day`; default 23.
     pub close_day: u32,
+    /// Editable work-hours window for browser heartbeat ingest, e.g.
+    /// `Mon-Fri 09:00-17:00`. Mirrors `WORK_HOURS_KEY` via envfile;
+    /// defaults to `DEFAULT_WORK_HOURS`.
+    pub work_hours: String,
+    /// Minimum model confidence (0.0-1.0) to accept a routing guess.
+    /// Mirrors `ROUTE_THRESHOLD_KEY` via envfile; defaults to
+    /// `DEFAULT_ROUTE_THRESHOLD`.
+    pub route_threshold: f64,
 }
 
 /// Token-like keys whose value must never be serialised to the browser.
@@ -1491,7 +1518,40 @@ fn current_settings() -> Result<SettingsView> {
         prune_enabled: crate::purge::pruning_enabled(),
         cycle_start_day: crate::purge::configured_cycle_start_day(),
         close_day: crate::purge::configured_close_day(),
+        work_hours: configured_work_hours_raw(),
+        route_threshold: configured_route_threshold(),
     })
+}
+
+/// Raw `WORK_HOURS_KEY` envfile value, or `DEFAULT_WORK_HOURS` when unset.
+fn configured_work_hours_raw() -> String {
+    crate::envfile::read(routing_contract::WORK_HOURS_KEY)
+        .unwrap_or_else(|| routing_contract::DEFAULT_WORK_HOURS.to_owned())
+}
+
+/// Parsed work-hours window for heartbeat ingest. An unparseable stored
+/// value (should never happen — `post_settings` validates before writing)
+/// falls back to the default rather than 500ing every heartbeat.
+fn configured_work_hours() -> browser_ingest::WorkHours {
+    let raw = configured_work_hours_raw();
+    browser_ingest::WorkHours::parse(&raw).unwrap_or_else(|e| {
+        warn!(
+            "{}={raw:?} invalid ({e}); falling back to default",
+            routing_contract::WORK_HOURS_KEY
+        );
+        browser_ingest::WorkHours::parse(routing_contract::DEFAULT_WORK_HOURS)
+            .expect("DEFAULT_WORK_HOURS must parse")
+    })
+}
+
+/// Minimum model confidence to accept a routing guess, from
+/// `ROUTE_THRESHOLD_KEY` via envfile. Out-of-range or unparseable falls
+/// back to `DEFAULT_ROUTE_THRESHOLD`.
+fn configured_route_threshold() -> f64 {
+    crate::envfile::read(routing_contract::ROUTE_THRESHOLD_KEY)
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .filter(|v| (0.0..=1.0).contains(v))
+        .unwrap_or(routing_contract::DEFAULT_ROUTE_THRESHOLD)
 }
 
 async fn get_settings() -> Result<Json<SettingsView>, ApiError> {
@@ -1529,6 +1589,12 @@ pub struct SettingsUpdate {
     /// Last day-of-month the just-closed cycle can still take hours.
     /// Same non-`u32` typing rationale as `cycle_start_day`.
     pub close_day: Option<Value>,
+    /// Replace the browser heartbeat work-hours window, e.g.
+    /// `Mon-Fri 09:00-17:00`. `None` leaves it untouched.
+    pub work_hours: Option<String>,
+    /// Replace the minimum model confidence (0.0-1.0) to accept a
+    /// routing guess. `None` leaves it untouched.
+    pub route_threshold: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -1602,6 +1668,26 @@ async fn post_settings(
         )));
     }
 
+    // Work hours: validate the same parser the heartbeat handler uses,
+    // so a typo 400s here instead of silently falling back later.
+    let work_hours = body.work_hours.as_deref().map(str::trim);
+    if let Some(wh) = work_hours {
+        browser_ingest::WorkHours::parse(wh).map_err(|e| {
+            ApiError::bad_request(anyhow::anyhow!(
+                "`{wh}` is not a valid work-hours window: {e}"
+            ))
+        })?;
+    }
+
+    // Route threshold: a confidence, so it must be 0.0-1.0.
+    if let Some(t) = body.route_threshold {
+        if !(0.0..=1.0).contains(&t) {
+            return Err(ApiError::bad_request(anyhow::anyhow!(
+                "`route_threshold` must be between 0.0 and 1.0 (got {t})"
+            )));
+        }
+    }
+
     // ── Phase 2: persist. Nothing above returned early, so every
     // submitted field is valid. ──
 
@@ -1649,6 +1735,12 @@ async fn post_settings(
     }
     if let Some(day) = close_day {
         crate::envfile::upsert("WORKLOG_BILLING_CLOSE_DAY", &day.to_string())?;
+    }
+    if let Some(wh) = work_hours {
+        crate::envfile::upsert(routing_contract::WORK_HOURS_KEY, wh)?;
+    }
+    if let Some(t) = body.route_threshold {
+        crate::envfile::upsert(routing_contract::ROUTE_THRESHOLD_KEY, &t.to_string())?;
     }
 
     info!("settings updated");
@@ -1751,6 +1843,130 @@ async fn mark_export(
         "marked": marked,
         "exported_at": exported_at,
     })))
+}
+
+// ───────────────────────── browser + Slack routing ─────────────────────────
+
+/// The Firefox add-on's heartbeat endpoint. Only the add-on itself can send
+/// an `Origin: moz-extension://...` header — an ordinary web page can't
+/// forge it — so that check is the whole authentication story
+/// (design.md decision 5).
+async fn browser_heartbeat(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Json(hb): Json<routing_contract::Heartbeat>,
+) -> Result<Json<Value>, ApiError> {
+    let origin = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !origin.starts_with("moz-extension://") {
+        return Err(ApiError::Forbidden(anyhow::anyhow!(
+            "origin {origin:?} is not a moz-extension:// origin"
+        )));
+    }
+
+    let hours = configured_work_hours();
+    let offset = crate::tz::day_offset();
+    let outcome = with_conn(state, move |c| {
+        browser_ingest::ingest_heartbeat(c, &hb, &hours, offset)
+    })
+    .await?;
+
+    let (stored, reason) = match outcome {
+        browser_ingest::IngestOutcome::Stored(_) => (true, None),
+        browser_ingest::IngestOutcome::Filtered(reason) => (false, Some(reason)),
+    };
+    Ok(Json(json!({ "stored": stored, "reason": reason })))
+}
+
+async fn routed_events(
+    State(state): State<Shared>,
+    AxumPath(day): AxumPath<String>,
+) -> Result<Json<Vec<routing_contract::RoutedEvent>>, ApiError> {
+    let parsed = NaiveDate::parse_from_str(&day, "%Y-%m-%d")
+        .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{}`: {e}", day)))?;
+    let events = with_conn(state, move |c| routing::routed_for_day(c, parsed)).await?;
+    Ok(Json(events))
+}
+
+async fn set_event_label(
+    State(state): State<Shared>,
+    AxumPath(id): AxumPath<i64>,
+    Json(body): Json<routing_contract::LabelRequest>,
+) -> Result<Json<routing_contract::RoutedEvent>, ApiError> {
+    let exists: bool = with_conn(state.clone(), move |c| {
+        Ok(c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM events WHERE id = ?1)",
+            [id],
+            |r| r.get(0),
+        )?)
+    })
+    .await?;
+    if !exists {
+        return Err(ApiError::NotFound(anyhow::anyhow!("event {id} not found")));
+    }
+    let routed = with_conn(state, move |c| routing::label_event(c, id, &body))
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(routed))
+}
+
+async fn routing_rules_list(
+    State(state): State<Shared>,
+) -> Result<Json<Vec<routing_contract::Rule>>, ApiError> {
+    let rules = with_conn(state, routing::list_rules).await?;
+    Ok(Json(rules))
+}
+
+async fn routing_rule_delete(
+    State(state): State<Shared>,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<Json<Value>, ApiError> {
+    let removed = with_conn(state, move |c| routing::delete_rule(c, id)).await?;
+    info!(id, removed, "deleted routing rule");
+    Ok(Json(json!({ "removed": removed })))
+}
+
+#[derive(Serialize)]
+struct RoutingStatus {
+    last_heartbeat: Option<String>,
+    last_slack: Option<String>,
+    laya_reachable: bool,
+}
+
+async fn routing_status(State(state): State<Shared>) -> Result<Json<RoutingStatus>, ApiError> {
+    let (last_heartbeat, last_slack) = with_conn(state, |c| {
+        let last_heartbeat: Option<String> = c.query_row(
+            "SELECT MAX(started_at) FROM events WHERE source = ?1",
+            [routing_contract::SOURCE_FIREFOX],
+            |r| r.get(0),
+        )?;
+        let last_slack: Option<String> = c.query_row(
+            "SELECT MAX(started_at) FROM events WHERE source = ?1",
+            [routing_contract::SOURCE_SLACK],
+            |r| r.get(0),
+        )?;
+        Ok((last_heartbeat, last_slack))
+    })
+    .await?;
+
+    // Off the connection lock — a slow/hung Laya process must not stall
+    // every other request.
+    let laya_reachable = tokio::task::spawn_blocking(|| {
+        crate::daemon_service::is_running(
+            routing_contract::LAYA_ADDR,
+            std::time::Duration::from_secs(2),
+        )
+    })
+    .await
+    .unwrap_or(false);
+
+    Ok(Json(RoutingStatus {
+        last_heartbeat,
+        last_slack,
+        laya_reachable,
+    }))
 }
 
 // ───────────────────────── billing registry ─────────────────────────
@@ -3433,5 +3649,373 @@ mod tests {
                 .contains("refusing to prune the real data directory"),
             "unexpected error: {err}"
         );
+    }
+
+    // ─────────────── browser + Slack routing (T003) ───────────────
+
+    const HB_BODY: &str = r#"{"ts":"2026-04-14T10:30:12Z","url":"https://aws.tomasari.is/cert","title":"AWS cert study","container":null,"incognito":false}"#;
+    const HB_BODY_INCOGNITO: &str = r#"{"ts":"2026-04-14T10:30:12Z","url":"https://aws.tomasari.is/cert","title":"AWS cert study","container":null,"incognito":true}"#;
+
+    /// B3: no `moz-extension://` Origin — 403, nothing stored. Only a
+    /// real Firefox add-on can send that Origin; any other page is
+    /// rejected before the body is ever ingested.
+    #[tokio::test(flavor = "current_thread")]
+    async fn heartbeat_rejects_web_origin() {
+        let state = state_from_conn(open_memory().unwrap());
+        let app = router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::post("/browser/heartbeat")
+                    .header("content-type", "application/json")
+                    .header("origin", "https://evil.example")
+                    .body(Body::from(HB_BODY))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+        let guard = state.conn.lock().await;
+        let count: i64 = guard
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "nothing may be stored on a rejected origin");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn heartbeat_stores_with_moz_extension_origin() {
+        let state = state_from_conn(open_memory().unwrap());
+        let app = router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::post("/browser/heartbeat")
+                    .header("content-type", "application/json")
+                    .header("origin", "moz-extension://abc-123")
+                    .body(Body::from(HB_BODY))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["stored"], true);
+        assert_eq!(v["reason"], Value::Null);
+
+        let guard = state.conn.lock().await;
+        let count: i64 = guard
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn heartbeat_reports_filtered_reason_and_stores_nothing() {
+        let state = state_from_conn(open_memory().unwrap());
+        let app = router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::post("/browser/heartbeat")
+                    .header("content-type", "application/json")
+                    .header("origin", "moz-extension://abc-123")
+                    .body(Body::from(HB_BODY_INCOGNITO))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["stored"], false);
+        assert_eq!(v["reason"], "incognito");
+
+        let guard = state.conn.lock().await;
+        let count: i64 = guard
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn routed_events_rejects_bad_day() {
+        let app = router(state_from_conn(open_memory().unwrap()));
+        let resp = app
+            .oneshot(
+                Request::get("/days/not-a-day/routed")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn routed_events_returns_the_days_unsorted_event() {
+        let conn = open_memory().unwrap();
+        repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                routing_contract::SOURCE_FIREFOX,
+                "e1",
+                "2026-04-14T10:30:00+00:00",
+                "AWS cert study",
+            ),
+        )
+        .unwrap();
+
+        let app = router(state_from_conn(conn));
+        let resp = app
+            .oneshot(
+                Request::get("/days/2026-04-14/routed")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["source"], routing_contract::SOURCE_FIREFOX);
+        assert_eq!(arr[0]["folder"], Value::Null);
+        assert_eq!(arr[0]["label_origin"], Value::Null);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn set_event_label_labels_an_existing_event() {
+        let conn = open_memory().unwrap();
+        billing_registry::upsert_folder(
+            &conn,
+            &billing_registry::FolderMap {
+                id: None,
+                folder: "demo-project".into(),
+                customer: None,
+                verkefni: None,
+                billable: true,
+            },
+        )
+        .unwrap();
+        let id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                routing_contract::SOURCE_SLACK,
+                "s1",
+                "2026-04-14T10:30:00+00:00",
+                "#eng",
+            ),
+        )
+        .unwrap();
+
+        let app = router(state_from_conn(conn));
+        let resp = app
+            .oneshot(
+                Request::post(format!("/events/{id}/label"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"folder":"demo-project","always":null}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["folder"], "demo-project");
+        assert_eq!(v["label_origin"], "fix");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn set_event_label_404s_an_unknown_event() {
+        let app = router(state_from_conn(open_memory().unwrap()));
+        let resp = app
+            .oneshot(
+                Request::post("/events/999999/label")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"folder":"demo-project","always":null}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn set_event_label_400s_an_unknown_folder() {
+        let conn = open_memory().unwrap();
+        let id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                routing_contract::SOURCE_FIREFOX,
+                "e1",
+                "2026-04-14T10:30:00+00:00",
+                "x",
+            ),
+        )
+        .unwrap();
+
+        let app = router(state_from_conn(conn));
+        let resp = app
+            .oneshot(
+                Request::post(format!("/events/{id}/label"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"folder":"ghost-project","always":null}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn routing_rules_list_and_delete_round_trip() {
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO routing_rules (kind, pattern, folder)
+             VALUES ('domain', 'aws.tomasari.is', 'aws-cert')",
+            [],
+        )
+        .unwrap();
+        let rule_id = conn.last_insert_rowid();
+
+        let app = router(state_from_conn(conn));
+
+        let resp = app
+            .clone()
+            .oneshot(Request::get("/routing/rules").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["pattern"], "aws.tomasari.is");
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/routing/rules/{rule_id}/delete"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["removed"], true);
+
+        let resp = app
+            .oneshot(Request::get("/routing/rules").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        assert_eq!(v.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn routing_status_reports_last_heartbeat_and_last_slack() {
+        let conn = open_memory().unwrap();
+        repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                routing_contract::SOURCE_FIREFOX,
+                "e1",
+                "2026-04-14T10:30:00+00:00",
+                "x",
+            ),
+        )
+        .unwrap();
+        repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                routing_contract::SOURCE_SLACK,
+                "s1",
+                "2026-04-14T11:00:00+00:00",
+                "#eng",
+            ),
+        )
+        .unwrap();
+
+        let app = router(state_from_conn(conn));
+        let resp = app
+            .oneshot(Request::get("/routing/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["last_heartbeat"], "2026-04-14T10:30:00+00:00");
+        assert_eq!(v["last_slack"], "2026-04-14T11:00:00+00:00");
+        assert_eq!(
+            v["laya_reachable"], false,
+            "no Laya helper is running under test"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn settings_reports_work_hours_and_route_threshold_defaults() {
+        let _g = prune_env_lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("WORKLOG_ENV_FILE", tmp.path().join(".env"));
+
+        let view = current_settings().unwrap();
+        assert_eq!(view.work_hours, routing_contract::DEFAULT_WORK_HOURS);
+        assert_eq!(
+            view.route_threshold,
+            routing_contract::DEFAULT_ROUTE_THRESHOLD
+        );
+
+        std::env::remove_var("WORKLOG_ENV_FILE");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn settings_post_rejects_bad_work_hours_or_threshold_without_persisting() {
+        let _g = prune_env_lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let env_file = tmp.path().join(".env");
+        std::env::set_var("WORKLOG_ENV_FILE", &env_file);
+
+        for bad_body in [r#"{"work_hours":"garbage"}"#, r#"{"route_threshold":1.5}"#] {
+            let app = router(state_with_block());
+            let resp = app
+                .oneshot(
+                    Request::post("/settings")
+                        .header("content-type", "application/json")
+                        .body(Body::from(bad_body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "body={bad_body}");
+        }
+        assert!(!env_file.exists());
+
+        std::env::remove_var("WORKLOG_ENV_FILE");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn settings_post_persists_valid_work_hours_and_route_threshold() {
+        let _g = prune_env_lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("WORKLOG_ENV_FILE", tmp.path().join(".env"));
+
+        let app = router(state_with_block());
+        let resp = app
+            .oneshot(
+                Request::post("/settings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"work_hours":"Mon-Fri 08:00-16:00","route_threshold":0.75}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            crate::envfile::read(routing_contract::WORK_HOURS_KEY).as_deref(),
+            Some("Mon-Fri 08:00-16:00")
+        );
+        assert_eq!(
+            crate::envfile::read(routing_contract::ROUTE_THRESHOLD_KEY).as_deref(),
+            Some("0.75")
+        );
+
+        std::env::remove_var("WORKLOG_ENV_FILE");
     }
 }
