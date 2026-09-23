@@ -17,3 +17,5 @@ Discovered: a T012 reviewer left stash entry "t012-review-wip" (853fd70) on the 
 Discovered: CHK002 — Firefox 156 sends a CORS preflight (OPTIONS /browser/heartbeat, Origin moz-extension://…, Access-Control-Request-Headers: content-type); daemon answers 405 (allow: POST), so no heartbeat is ever stored. Captured raw in verify/CHK002.md — fold into new task (daemon answers preflight for moz-extension origins)
 Discovered: CHK002 — Slack DM events land with title = raw user id (e.g. U06815WTGSE) and no rule/fix/guess tag (laya_reachable=false, no rules yet) — decide at amend
 Discovered: T014 review F2 (re-scored 75, below keep line) — collect_leaves_non_dm_title_as_channel_name passes with the is_im gate removed (unmocked users.info 404 falls back to "eng"); an assert_hits(0) mock would pin it — defer (gates)
+Discovered: Phase 5 Independent test `cargo test ... daemon:: slack` is not a valid cargo filter (one positional only); ran `daemon::` (65 pass) and `slack` (15 pass) separately — defer
+Discovered: brief asks for `scripts/slop-check`, which does not exist in this repo — defer
