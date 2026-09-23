@@ -52,3 +52,18 @@
   extend-or-push), then reports gaps only between the merged pairs —
   that's what makes overlapping input blocks produce zero gaps for
   free instead of needing a special case.
+
+- 2026-09-23: L6 (daemon: confidence + gaps on /days/:day) done.
+  `BlockSummary.confidence` = `timeline::block_confidence(sources.len())`
+  where `sources` is the already-grouped-by-source `Vec<SourceCount>` built
+  in `stitch_day_summary` — distinct source count is just its length, no
+  new query. `DaySummary.gaps` comes from `timeline::day_gaps` fed the
+  day's `(started_at, ended_at)` parsed via
+  `chrono::DateTime::parse_from_rfc3339(..).to_utc()` (same pattern as
+  `billing::block_interval`), min_gap 30 min, formatted back with
+  `.to_rfc3339()`. Kept `stitch_day_summary` and the file's overall size
+  as-is per the loop's explicit instruction not to split daemon.rs; the
+  size-guard hook's file-length complaint is expected noise here, but it
+  does still flag oversized *functions* — factoring the new test's block+
+  event seeding into a small `seed_block` helper kept the test under the
+  60-line function cap.

@@ -12,6 +12,11 @@ Pick the FIRST item whose `passes` is false. Do only that item:
    describes the change (never the item id alone), append one dated line to
    `.claude/loop/LEARNINGS.md`, and stop.
 
+Web items (L7): `web/` is Next.js + Bun; run `cd web && bun test && bun run typecheck`; never
+run `bun run build`. The day data comes from the daemon's `GET /days/:day` (`web/lib/daemon.ts`).
+A size-guard hook complains that daemon.rs is over 400 lines — it was ~4300 before this loop;
+make the minimal change there and do not split the file.
+
 Privacy is part of every item: never store shell command text, commit message bodies, or anything
 outside the owner's machine. Never run the `git` CLI against other repos — read `.git/logs/HEAD`
 files directly. Never edit an existing test's assertion to make it pass.

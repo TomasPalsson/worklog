@@ -1,5 +1,5 @@
 {
-  "goal": "Widen the timeline: shell history and git reflog become project-attributed events, and each day exposes per-block confidence and gaps (USER-STORIES S3, S4, S7, S8, S9).",
+  "goal": "The day page shows per-block confidence and the day's gaps, from the timeline helpers (USER-STORIES S7-S9).",
   "items": [
     {
       "id": "L1",
@@ -48,6 +48,27 @@
       ],
       "verify": "cargo test --manifest-path rust/Cargo.toml -p worklog-core timeline:: 2>&1 | grep -qE 'test result: ok\\. [1-9][0-9]* passed'",
       "passes": true
+    },
+    {
+      "id": "L6",
+      "desc": "Daemon: in daemon.rs stitch_day_summary, add `confidence: String` to each BlockSummary = timeline::block_confidence(number of distinct sources in that block's sources list), and add `gaps: Vec<DayGap>` to DaySummary where DayGap { started_at: String, ended_at: String, minutes: i64 } comes from timeline::day_gaps over the day's block intervals with min_gap 30 minutes (RFC3339 UTC strings like the blocks use). Add a daemon test named day_summary_reports_block_confidence_and_gaps: two blocks 45 minutes apart, one with events from 3 sources (expect \"high\") and one with 1 source (expect \"low\"), and exactly one gap of 45 minutes. Keep the change minimal: daemon.rs is already very large; do not refactor it.",
+      "files": [
+        "rust/crates/worklog-core/src/daemon.rs"
+      ],
+      "verify": "cargo test --manifest-path rust/Cargo.toml -p worklog-core day_summary_reports_block_confidence_and_gaps 2>&1 | grep -qE 'test result: ok\\. [1-9][0-9]* passed'",
+      "passes": true
+    },
+    {
+      "id": "L7",
+      "desc": "Web: mirror the new fields in web/lib/types.ts (BlockSummary.confidence: 'high'|'medium'|'low'; DaySummary.gaps: {started_at, ended_at, minutes}[]). BlockCard shows a small confidence badge with visible text (e.g. 'high confidence') and an aria-label; the day page lists each gap between blocks as a muted row 'No activity HH:MM–HH:MM (N min)' in local time, and gaps add 0 minutes to any total. Add bun tests: web/components/BlockCard.test.tsx asserts the badge text for each level, and a gap-row test asserts the row text. Run `cd web && bun test && bun run typecheck`. Never run `bun run build`.",
+      "files": [
+        "web/lib/types.ts",
+        "web/components/BlockCard.tsx",
+        "web/components/BlockCard.test.tsx",
+        "web/app/[day]/page.tsx"
+      ],
+      "verify": "cd web && bun test components/BlockCard.test.tsx 2>&1 | grep -qE '[1-9][0-9]* pass' && bun test 2>&1 | grep -qE ' 0 fail' && bun run typecheck",
+      "passes": false
     }
   ]
 }

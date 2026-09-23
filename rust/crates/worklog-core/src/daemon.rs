@@ -482,6 +482,18 @@ pub struct BlockSummary {
     /// show a path that contradicts the billing group: it shows a path
     /// from the right folder, or nothing.
     pub project_path: Option<String>,
+    /// "high"/"medium"/"low" from [`crate::timeline::block_confidence`],
+    /// keyed off how many distinct sources fed the block.
+    pub confidence: String,
+}
+
+/// A gap of at least 30 minutes between two consecutive blocks on a day,
+/// from [`crate::timeline::day_gaps`].
+#[derive(Serialize)]
+pub struct DayGap {
+    pub started_at: String,
+    pub ended_at: String,
+    pub minutes: i64,
 }
 
 #[derive(Serialize)]
@@ -489,6 +501,7 @@ pub struct DaySummary {
     pub day: String,
     pub total_seconds: i64,
     pub blocks: Vec<BlockSummary>,
+    pub gaps: Vec<DayGap>,
 }
 
 #[derive(Serialize)]
@@ -521,6 +534,7 @@ fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
             day: day.to_owned(),
             total_seconds: 0,
             blocks: vec![],
+            gaps: vec![],
         });
     }
 
@@ -676,13 +690,32 @@ fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
         }
     }
 
+    let intervals: Vec<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)> = blocks
+        .iter()
+        .filter_map(|b| {
+            let start = chrono::DateTime::parse_from_rfc3339(&b.started_at).ok()?;
+            let end = chrono::DateTime::parse_from_rfc3339(&b.ended_at).ok()?;
+            Some((start.to_utc(), end.to_utc()))
+        })
+        .collect();
+    let gaps = crate::timeline::day_gaps(&intervals, chrono::Duration::minutes(30))
+        .into_iter()
+        .map(|(start, end)| DayGap {
+            started_at: start.to_rfc3339(),
+            ended_at: end.to_rfc3339(),
+            minutes: (end - start).num_minutes(),
+        })
+        .collect();
+
     let enriched = blocks
         .into_iter()
         .map(|block| {
             let id = block.id;
+            let sources = sources_by_block.remove(&id).unwrap_or_default();
             BlockSummary {
                 event_count: counts.get(&id).copied().unwrap_or(0),
-                sources: sources_by_block.remove(&id).unwrap_or_default(),
+                confidence: crate::timeline::block_confidence(sources.len()).to_owned(),
+                sources,
                 project_path: best_path.remove(&id),
                 block,
             }
@@ -693,6 +726,7 @@ fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
         day: day.to_owned(),
         total_seconds,
         blocks: enriched,
+        gaps,
     })
 }
 
@@ -2275,6 +2309,82 @@ mod tests {
             .collect();
         assert!(src_set.contains("github_commit"));
         assert!(src_set.contains("claude"));
+    }
+
+    /// Inserts a block plus one event per `(source, source_id, ts)` tuple,
+    /// linked via `block_events`. Shared by the confidence/gaps test below.
+    fn seed_block(
+        conn: &Connection,
+        start: &str,
+        end: &str,
+        dur: i64,
+        events: &[(&str, &str, &str)],
+    ) {
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-18', ?1, ?2, ?3)",
+            params![start, end, dur],
+        )
+        .unwrap();
+        let block_id = conn.last_insert_rowid();
+        for (source, source_id, ts) in events {
+            let eid =
+                repo::upsert_event(conn, &Event::minimal(*source, *source_id, *ts, "x")).unwrap();
+            conn.execute(
+                "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+                params![block_id, eid],
+            )
+            .unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn day_summary_reports_block_confidence_and_gaps() {
+        // L6: each block's confidence label comes from its distinct source
+        // count, and gaps >=30min between blocks are surfaced for the day.
+        let conn = open_memory().unwrap();
+        seed_block(
+            &conn,
+            "2026-04-18T09:00:00+00:00",
+            "2026-04-18T09:30:00+00:00",
+            1800,
+            &[
+                ("github_commit", "a", "2026-04-18T09:05:00+00:00"),
+                ("claude", "b", "2026-04-18T09:10:00+00:00"),
+                ("jira", "c", "2026-04-18T09:15:00+00:00"),
+            ],
+        );
+        seed_block(
+            &conn,
+            "2026-04-18T10:15:00+00:00",
+            "2026-04-18T10:30:00+00:00",
+            900,
+            &[("claude", "d", "2026-04-18T10:20:00+00:00")],
+        );
+
+        let app = router(Arc::new(AppState {
+            conn: Mutex::new(conn),
+        }));
+        let resp = app
+            .oneshot(
+                Request::get("/days/2026-04-18")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        let blocks = v["blocks"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        let high = blocks.iter().find(|b| b["event_count"] == 3).unwrap();
+        assert_eq!(high["confidence"], "high");
+        let low = blocks.iter().find(|b| b["event_count"] == 1).unwrap();
+        assert_eq!(low["confidence"], "low");
+
+        let gaps = v["gaps"].as_array().unwrap();
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0]["minutes"], 45);
     }
 
     #[tokio::test(flavor = "current_thread")]
