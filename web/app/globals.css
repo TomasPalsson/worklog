@@ -458,28 +458,6 @@ button {
   padding: 8px 0;
 }
 
-/* Exceptions-only attention line — a block with no ticket, surfaced once
-   above the block list rather than nagged per-card. */
-.attention-line {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 20px;
-  padding: 8px 14px;
-  border-radius: var(--radius-md);
-  background: var(--amber-bg);
-  color: var(--amber-ink);
-  font-size: 13px;
-}
-
-.attention-show {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--amber-ink);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
 /* ─────────────────────────── day strip ───────────────────────────
    One horizontal timeline replacing the old bare gaps <ul>. Segments
    are absolutely positioned by left/width % computed in lib/dayStrip.ts;

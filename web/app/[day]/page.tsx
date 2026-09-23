@@ -11,7 +11,6 @@ import {
 import { formatDayHeading, formatTotalHours } from "@/lib/format";
 import { DayHeader } from "@/components/DayHeader";
 import { ActionBar } from "@/components/ActionBar";
-import { AttentionLine } from "@/components/AttentionLine";
 import { BillingGroup } from "@/components/BillingGroup";
 import { BlockCard } from "@/components/BlockCard";
 import { DayStrip } from "@/components/DayStrip";
@@ -155,7 +154,6 @@ export default async function DayPage({
       <ActionBar day={day} cacheCount={cache.count} cacheLast={cache.last_fetched} />
       <DayStrip blocks={blocks} gaps={gaps} />
       <UnsortedList key={day} day={day} events={routedEvents} folderOptions={folderOptions} />
-      <AttentionLine count={unassigned} firstBlockId={noTicketBlocks[0]?.id ?? null} />
       {blocks.length === 0 ? (
         <EmptyState day={day} />
       ) : (
