@@ -1,2 +1,6 @@
 Ruling: T001 loosened db::tests::meta_table_exists_and_schema_version_is_10 from ==10 to >=10 — kept — exact pin now lives in routing_rules_table_exists_and_schema_version_is_11 (==11), same floor pattern as schema_version_is_bumped_for_exported_at_migration — cost if wrong: none, version still pinned exactly once
 Discovered: flow new-spec moved the worktree onto branch flow/browser-slack-event-routing; history is linear — defer (push under that name)
+Discovered: repo::upsert_event overwrote project_path on conflict, wiping routing labels on same-minute heartbeat re-upsert — fold into T002 (fixed in 5be7681, repo.rs outside T002 files:, regression test in browser_ingest.rs)
+Discovered: GET /settings echoed slack_user_token in plaintext; is_sensitive_secret now lists it — fold into T004 (fixed in f867a21, daemon.rs outside T004 files:; T003 owns daemon.rs next wave)
+Discovered: tests split into sibling files routing_test.rs, collectors/slack_test.rs and helper routing_rows.rs for the file-size guard; Behaviors test names differ (e.g. collect_is_idempotent_by_source_id, ingest_filters_*) — defer (align Behaviors table at next --amend)
+Ruling: build-slices review diffs used one wave base, so each T00N.diff bundled sibling tasks' commits — kept — adversaries still reviewed every line; cost if wrong: none, whole-branch review at gates re-covers it
