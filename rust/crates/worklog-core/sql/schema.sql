@@ -1,7 +1,10 @@
--- Worklog schema v10. Shared between Python and the Rust hook (include_str!).
+-- Worklog schema v11. Shared between Python and the Rust hook (include_str!).
 -- All CREATE statements are idempotent (IF NOT EXISTS) so the Rust hook can
 -- run this on every invocation with negligible cost.
 --
+-- v11 adds events.container/label_origin/label_confidence and the
+-- routing_rules table — browser/Slack event routing; see db.rs / routing.rs
+-- / routing_contract.rs.
 -- v10 adds the meta key/value table — daemon-persisted state such as the
 -- billing-cycle pruner's last-run cutoff; see db.rs / purge.rs.
 -- v9 adds billing_customers and billing_folder_map — the billing export's
@@ -30,6 +33,13 @@ CREATE TABLE IF NOT EXISTS events (
     session_id TEXT,
     tempo_worklog_id TEXT,
     raw_json TEXT,
+    -- Firefox container name, e.g. "Personal" (routing v11).
+    container TEXT,
+    -- Where events.project_path's label came from: 'rule' | 'fix' | 'guess'
+    -- (routing_contract::LabelOrigin). NULL = unsorted.
+    label_origin TEXT,
+    -- Model confidence when label_origin = 'guess'. NULL otherwise.
+    label_confidence REAL,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE(source, source_id)
 );
@@ -147,4 +157,17 @@ CREATE TABLE IF NOT EXISTS billing_folder_map (
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+-- ─────────────────────────── routing rules ───────────────────────────
+-- Hard rules for browser/Slack event routing (routing_contract::RuleKind /
+-- Rule). A rule always wins over a model guess; see routing.rs.
+CREATE TABLE IF NOT EXISTS routing_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- 'domain' | 'slack_channel' | 'container' (RuleKind).
+    kind TEXT NOT NULL,
+    pattern TEXT NOT NULL,
+    folder TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(kind, pattern)
 );

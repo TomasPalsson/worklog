@@ -15,7 +15,7 @@ pub const SCHEMA_SQL: &str = include_str!("../sql/schema.sql");
 /// Monotonic integer version of the schema, bumped by future migrations.
 /// Stored in `PRAGMA user_version` so we can detect stale dbs without adding
 /// a dedicated table.
-pub const SCHEMA_VERSION: i32 = 10;
+pub const SCHEMA_VERSION: i32 = 11;
 
 /// Open a connection at `path`, enable WAL + FK, and run migrations.
 pub fn open(path: &Path) -> Result<Connection> {
@@ -76,6 +76,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     ensure_blocks_exported_at(conn).context("ensuring blocks.exported_at")?;
     ensure_jira_tickets_issue_id(conn).context("ensuring jira_tickets.issue_id")?;
     ensure_jira_tickets_external(conn).context("ensuring jira_tickets.external")?;
+    ensure_events_routing_columns(conn).context("ensuring events routing columns")?;
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)
         .context("stamping user_version")?;
     Ok(())
@@ -156,6 +157,26 @@ fn ensure_jira_tickets_external(conn: &Connection) -> Result<()> {
             [],
         )
         .context("ALTER TABLE jira_tickets ADD external")?;
+    }
+    Ok(())
+}
+
+fn ensure_events_routing_columns(conn: &Connection) -> Result<()> {
+    let cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(events)")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if !cols.iter().any(|c| c == "container") {
+        conn.execute("ALTER TABLE events ADD COLUMN container TEXT", [])
+            .context("ALTER TABLE events ADD container")?;
+    }
+    if !cols.iter().any(|c| c == "label_origin") {
+        conn.execute("ALTER TABLE events ADD COLUMN label_origin TEXT", [])
+            .context("ALTER TABLE events ADD label_origin")?;
+    }
+    if !cols.iter().any(|c| c == "label_confidence") {
+        conn.execute("ALTER TABLE events ADD COLUMN label_confidence REAL", [])
+            .context("ALTER TABLE events ADD label_confidence")?;
     }
     Ok(())
 }
@@ -387,7 +408,9 @@ mod tests {
         // B22. The pruner's latch lives in a new generic `meta` table
         // (slice 002-billing-cycle-pruner §4), and the billing merge's
         // registry tables took the schema to v9 — this feature bumps it
-        // to v10.
+        // to v10. A `>=` floor (like the exported_at test) keeps this
+        // meaningful without an edit on every later migration — routing
+        // took it to v11.
         let conn = open_memory().unwrap();
         let tables: Vec<String> = conn
             .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
@@ -400,7 +423,109 @@ mod tests {
             tables.contains(&"meta".to_string()),
             "missing meta table; got {tables:?}"
         );
-        assert_eq!(current_version(&conn).unwrap(), 10);
+        let v = current_version(&conn).unwrap();
+        assert!(v >= 10, "meta table shipped at v10; got v{v}");
+    }
+
+    #[test]
+    fn routing_rules_table_exists_and_schema_version_is_11() {
+        // Spec 003 T001: browser/Slack event routing needs a rules table
+        // and takes the schema to v11.
+        let conn = open_memory().unwrap();
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            tables.contains(&"routing_rules".to_string()),
+            "missing routing_rules table; got {tables:?}"
+        );
+        assert_eq!(current_version(&conn).unwrap(), 11);
+    }
+
+    #[test]
+    fn fresh_db_events_table_has_routing_columns() {
+        // Spec 003 T001.
+        let conn = open_memory().unwrap();
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(events)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for expected in ["container", "label_origin", "label_confidence"] {
+            assert!(
+                cols.contains(&expected.to_string()),
+                "fresh db must have events.{expected}; got {cols:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn migrate_adds_routing_columns_to_legacy_events_table_and_backfills_null() {
+        // Spec 003 T001. Simulate a pre-v11 DB: an events table without
+        // container/label_origin/label_confidence, insert a row, then run
+        // migrate() and assert the columns appear with NULL for the
+        // pre-existing row.
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                duration_seconds INTEGER,
+                title TEXT NOT NULL,
+                details TEXT,
+                repo TEXT,
+                project_path TEXT,
+                jira_issue TEXT,
+                session_id TEXT,
+                tempo_worklog_id TEXT,
+                raw_json TEXT,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                UNIQUE(source, source_id)
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO events (source, source_id, started_at, title)
+             VALUES ('github', 'abc', '2026-04-18T09:00:00+00:00', 'a commit')",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 10).unwrap();
+
+        migrate(&conn).unwrap();
+
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(events)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for expected in ["container", "label_origin", "label_confidence"] {
+            assert!(
+                cols.contains(&expected.to_string()),
+                "events.{expected} missing after migrate; got {cols:?}"
+            );
+        }
+
+        let container: Option<String> = conn
+            .query_row("SELECT container FROM events LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert!(
+            container.is_none(),
+            "pre-existing rows must backfill to NULL"
+        );
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
     }
 
     #[test]

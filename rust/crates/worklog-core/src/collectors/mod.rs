@@ -9,6 +9,7 @@
 pub mod gcal;
 pub mod github;
 pub mod jira;
+pub mod slack;
 pub mod tempo;
 
 /// Shared snapshot returned by every collector's public entrypoint.
