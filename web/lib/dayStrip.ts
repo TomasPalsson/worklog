@@ -283,3 +283,28 @@ export function buildLegend(blocks: StripBlock[], gaps: StripGap[]): LegendEntry
 
   return entries;
 }
+
+/** Golden-angle spacing keeps any two of the day's projects far apart on the
+ * colour wheel; a name hash alone can land two busy projects on one teal. */
+const GOLDEN_ANGLE = 137.508;
+const HUE_OFFSET = 40;
+
+/** Re-hue the legend by rank (busiest project first) and colour each block
+ * segment with its project's legend hue, so strip and legend always agree. */
+export function withLegendHues(
+  segments: TrackSegment[],
+  legend: LegendEntry[],
+): { segments: TrackSegment[]; legend: LegendEntry[] } {
+  let rank = 0;
+  const hueByKey = new Map<string, number>();
+  const hued = legend.map((e) => {
+    if (e.slate || e.away) return e;
+    const hue = Math.round((HUE_OFFSET + rank++ * GOLDEN_ANGLE) % 360);
+    hueByKey.set(e.key, hue);
+    return { ...e, hue };
+  });
+  const recoloured = segments.map((s) =>
+    s.kind === "block" && hueByKey.has(s.key) ? { ...s, hue: hueByKey.get(s.key) as number } : s,
+  );
+  return { segments: recoloured, legend: hued };
+}

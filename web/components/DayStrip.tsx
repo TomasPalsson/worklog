@@ -9,6 +9,7 @@ import { formatDuration } from "@/lib/format";
 import {
   buildLegend,
   buildSegments,
+  withLegendHues,
   computeTrackWindow,
   hourTicks,
   type StripBlock,
@@ -35,9 +36,11 @@ export function DayStrip({ blocks, gaps }: Props) {
   const window_ = computeTrackWindow(blocks);
   if (!window_) return null;
 
-  const segments = buildSegments(blocks, gaps, window_);
+  const { segments, legend } = withLegendHues(
+    buildSegments(blocks, gaps, window_),
+    buildLegend(blocks, gaps),
+  );
   const ticks = hourTicks(window_);
-  const legend = buildLegend(blocks, gaps);
 
   return (
     <section className="day-strip" aria-label="Day timeline">

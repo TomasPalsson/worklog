@@ -6,6 +6,7 @@ import {
   computeTrackWindow,
   hourTicks,
   projectHue,
+  withLegendHues,
   type StripBlock,
   type StripGap,
 } from "./dayStrip";
@@ -174,5 +175,29 @@ describe("isLunchGap (reused from lib/format)", () => {
 
   it("is false for a gap that doesn't cover 11:30", () => {
     expect(isLunchGap({ started_at: at(14, 6), ended_at: at(14, 41) })).toBe(false);
+  });
+});
+
+describe("withLegendHues", () => {
+  it("spreads the day's projects around the colour wheel and colours segments to match", () => {
+    const keys = ["vitinn-infra", "genai-infra", "lyfjastofnun", "LibreChat"];
+    const blocks: StripBlock[] = keys.map((k, i) => ({
+      id: i + 1,
+      started_at: at(9 + i, 0),
+      ended_at: at(9 + i, 50 - i * 10),
+      project_path: `/x/${k}`,
+      is_personal: false,
+      confidence: "high",
+    }));
+    const window = { startMs: new Date(at(8, 0)).getTime(), endMs: new Date(at(14, 0)).getTime() };
+    const { segments, legend } = withLegendHues(buildSegments(blocks, [], window), buildLegend(blocks, []));
+    const hues = legend.filter((e) => !e.slate).map((e) => e.hue as number);
+    for (let i = 0; i < hues.length; i++)
+      for (let j = i + 1; j < hues.length; j++) {
+        const d = Math.abs(hues[i] - hues[j]) % 360;
+        expect(Math.min(d, 360 - d)).toBeGreaterThanOrEqual(40);
+      }
+    for (const seg of segments)
+      if (seg.kind === "block") expect(seg.hue).toBe(legend.find((e) => e.key === seg.key)?.hue as number);
   });
 });
