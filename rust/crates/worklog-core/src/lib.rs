@@ -20,6 +20,7 @@ pub mod hook;
 pub mod hook_run;
 pub mod http;
 pub mod infer;
+pub mod infer_lanes;
 pub mod models;
 pub mod paths;
 pub mod personal;

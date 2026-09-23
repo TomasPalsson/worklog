@@ -156,7 +156,13 @@ fn finalize(mut block: InferBlock) -> Option<InferBlock> {
 }
 
 /// Pure clustering over a day's events. Input order doesn't matter.
+/// One lane per repo (see `infer_lanes`), each clustered by
+/// [`build_blocks_sequential`].
 pub fn build_blocks(events: Vec<InferEvent>) -> Vec<InferBlock> {
+    crate::infer_lanes::build_blocks_by_project(events, build_blocks_sequential)
+}
+
+fn build_blocks_sequential(events: Vec<InferEvent>) -> Vec<InferBlock> {
     let mut usable = events;
     usable.sort_by_key(|e| e.ts);
 
