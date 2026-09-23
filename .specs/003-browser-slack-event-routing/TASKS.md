@@ -1,5 +1,6 @@
 # Tasks — Browser + Slack events routed to the right block
-Spec: spec.md · Design: design.md · Base: 73e0a7f · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && (cd web && bun test) && bun test extension/firefox`
+Approved: 2026-09-23 by user
+Spec: spec.md · Design: design.md · Base: 0fa7830 · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && (cd web && bun test) && bun test extension/firefox`
 
 ## Behaviors
 | ID | Given / When / Then | Task | Proven by |
