@@ -7,6 +7,8 @@ import {
   hourTicks,
   projectHue,
   withLegendHues,
+  mergeAdjacentBlocks,
+  compactLegend,
   type StripBlock,
   type StripGap,
 } from "./dayStrip";
@@ -199,5 +201,63 @@ describe("withLegendHues", () => {
       }
     for (const seg of segments)
       if (seg.kind === "block") expect(seg.hue).toBe(legend.find((e) => e.key === seg.key)?.hue as number);
+  });
+});
+
+describe("mergeAdjacentBlocks", () => {
+  const window = { startMs: new Date(at(9, 0)).getTime(), endMs: new Date(at(13, 0)).getTime() };
+  it("joins same-project blocks under 10 min apart and keeps others separate", () => {
+    const blocks: StripBlock[] = [
+      { id: 1, started_at: at(9, 0), ended_at: at(9, 40), project_path: "/x/vitinn-infra", is_personal: false, confidence: "low" },
+      { id: 2, started_at: at(9, 45), ended_at: at(10, 20), project_path: "/x/vitinn-infra", is_personal: false, confidence: "high" },
+      { id: 3, started_at: at(10, 20), ended_at: at(10, 50), project_path: "/x/genai-infra", is_personal: false, confidence: "high" },
+      { id: 4, started_at: at(11, 30), ended_at: at(12, 0), project_path: "/x/genai-infra", is_personal: false, confidence: "high" },
+    ];
+    const merged = mergeAdjacentBlocks(buildSegments(blocks, [], window));
+    expect(merged.map((s) => (s.kind === "block" ? s.key : s.kind))).toEqual(["vitinn-infra", "genai-infra", "genai-infra"]);
+    const first = merged[0];
+    if (first.kind === "block") {
+      expect(first.leftPct).toBeCloseTo(0, 5);
+      expect(first.widthPct).toBeCloseTo((80 / 240) * 100, 5);
+      expect(first.opacity).toBe(1);
+    }
+  });
+});
+
+describe("compactLegend", () => {
+  it("keeps the top 4 projects, folds the rest into +N more and personal/unassigned into Other, Away last", () => {
+    const names = ["a", "b", "c", "d", "e", "f"];
+    const legend = [
+      ...names.map((k, i) => ({ key: k, label: k, totalSeconds: (10 - i) * 600, hue: i * 60, slate: false, away: false })),
+      { key: "personal", label: "Personal", totalSeconds: 3000, hue: null, slate: true, away: false },
+      { key: "unassigned", label: "Unassigned", totalSeconds: 1200, hue: null, slate: true, away: false },
+      { key: "away", label: "Away", totalSeconds: 9000, hue: null, slate: true, away: true },
+    ];
+    const out = compactLegend(legend);
+    expect(out.map((e) => e.label)).toEqual(["a", "b", "c", "d", "+2 more", "Other", "Away"]);
+    const more = out.find((e) => e.key === "more")!;
+    expect(more.totalSeconds).toBe((6 + 5) * 600);
+    expect(more.title).toBe("e, f");
+    expect(out.find((e) => e.key === "other")!.totalSeconds).toBe(4200);
+  });
+
+  it("adds nothing extra for a small day", () => {
+    const legend = [{ key: "a", label: "a", totalSeconds: 600, hue: 40, slate: false, away: false }];
+    expect(compactLegend(legend).map((e) => e.label)).toEqual(["a"]);
+  });
+});
+
+describe("gap labels only when they fit", () => {
+  const window = { startMs: new Date(at(8, 0)).getTime(), endMs: new Date(at(20, 0)).getTime() };
+  const blocks: StripBlock[] = [
+    { id: 1, started_at: at(8, 0), ended_at: at(9, 0), project_path: "/x/a", is_personal: false, confidence: "high" },
+  ];
+  it("7% wide gets only the short label, 12% gets the full one", () => {
+    const seven = buildSegments(blocks, [{ started_at: at(14, 0), ended_at: at(14, 50), minutes: 50 }], window).find((s) => s.kind === "gap");
+    const twelve = buildSegments(blocks, [{ started_at: at(15, 0), ended_at: at(16, 30), minutes: 90 }], window).find((s) => s.kind === "gap");
+    if (seven?.kind === "gap") { expect(seven.showLabel).toBe(false); expect(seven.showShortLabel).toBe(true); }
+    if (twelve?.kind === "gap") expect(twelve.showLabel).toBe(true);
+    expect(seven?.kind).toBe("gap");
+    expect(twelve?.kind).toBe("gap");
   });
 });

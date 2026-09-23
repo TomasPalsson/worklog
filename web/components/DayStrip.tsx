@@ -10,6 +10,8 @@ import {
   buildLegend,
   buildSegments,
   withLegendHues,
+  mergeAdjacentBlocks,
+  compactLegend,
   computeTrackWindow,
   hourTicks,
   type StripBlock,
@@ -36,10 +38,9 @@ export function DayStrip({ blocks, gaps }: Props) {
   const window_ = computeTrackWindow(blocks);
   if (!window_) return null;
 
-  const { segments, legend } = withLegendHues(
-    buildSegments(blocks, gaps, window_),
-    buildLegend(blocks, gaps),
-  );
+  const hued = withLegendHues(buildSegments(blocks, gaps, window_), buildLegend(blocks, gaps));
+  const segments = mergeAdjacentBlocks(hued.segments);
+  const legend = compactLegend(hued.legend);
   const ticks = hourTicks(window_);
 
   return (
@@ -60,7 +61,7 @@ export function DayStrip({ blocks, gaps }: Props) {
 
       <ul className="day-strip-legend" role="list">
         {legend.map((e) => (
-          <li key={e.key} className="day-strip-legend-item">
+          <li key={e.key} className="day-strip-legend-item" title={e.title}>
             <span
               className={`day-strip-swatch ${e.away ? "day-strip-swatch-away" : ""}`}
               data-slate={e.slate || undefined}

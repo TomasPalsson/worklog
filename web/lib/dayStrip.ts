@@ -176,8 +176,8 @@ export type TrackSegment =
 
 /** Gap centre labels only show once the segment is wide enough to hold
  * them — below this the text would overflow its own segment. */
-const GAP_LABEL_MIN_WIDTH_PCT = 6;
-const GAP_SHORT_LABEL_MIN_WIDTH_PCT = 3;
+const GAP_LABEL_MIN_WIDTH_PCT = 10;
+const GAP_SHORT_LABEL_MIN_WIDTH_PCT = 4;
 
 /** Lay out every block and gap as a percentage-positioned segment of the
  * track, in chronological order. */
@@ -245,6 +245,8 @@ export interface LegendEntry {
   hue: number | null;
   slate: boolean;
   away: boolean;
+  /** Hover text, e.g. the projects folded into "+2 more". */
+  title?: string;
 }
 
 /** Legend rows: one per project (by total desc), then "Away" last with the
@@ -307,4 +309,52 @@ export function withLegendHues(
     s.kind === "block" && hueByKey.has(s.key) ? { ...s, hue: hueByKey.get(s.key) as number } : s,
   );
   return { segments: recoloured, legend: hued };
+}
+
+/** Same-project blocks closer than this read as one stretch of work. */
+const MERGE_GAP_MS = 10 * 60 * 1000;
+
+/** Join consecutive same-project block segments (no gap segment between,
+ * under MERGE_GAP_MS apart) so the strip shows stretches, not fragments. */
+export function mergeAdjacentBlocks(segments: TrackSegment[]): TrackSegment[] {
+  const out: TrackSegment[] = [];
+  for (const seg of segments) {
+    const prev = out[out.length - 1];
+    if (
+      seg.kind === "block" &&
+      prev?.kind === "block" &&
+      prev.key === seg.key &&
+      seg.startMs - prev.endMs < MERGE_GAP_MS
+    ) {
+      const endMs = Math.max(prev.endMs, seg.endMs);
+      const rightPct = Math.max(prev.leftPct + prev.widthPct, seg.leftPct + seg.widthPct);
+      out[out.length - 1] = {
+        ...prev,
+        endMs,
+        widthPct: rightPct - prev.leftPct,
+        opacity: Math.max(prev.opacity, seg.opacity),
+        ariaLabel: `${prev.label} ${clock(prev.startMs)}–${clock(endMs)}, ${minutesBetween(prev.startMs, endMs)} min`,
+      };
+      continue;
+    }
+    out.push(seg);
+  }
+  return out;
+}
+
+const LEGEND_TOP_PROJECTS = 4;
+
+/** Top projects, then "+N more", then personal/unassigned as "Other", then Away. */
+export function compactLegend(legend: LegendEntry[]): LegendEntry[] {
+  const projects = legend.filter((e) => !e.slate && !e.away);
+  const other = legend.filter((e) => e.slate && !e.away);
+  const away = legend.filter((e) => e.away);
+  const out = projects.slice(0, LEGEND_TOP_PROJECTS);
+  const rest = projects.slice(LEGEND_TOP_PROJECTS);
+  const sum = (es: LegendEntry[]) => es.reduce((a, e) => a + e.totalSeconds, 0);
+  if (rest.length > 0)
+    out.push({ key: "more", label: `+${rest.length} more`, totalSeconds: sum(rest), hue: null, slate: true, away: false, title: rest.map((e) => e.label).join(", ") });
+  if (other.length > 0)
+    out.push({ key: "other", label: "Other", totalSeconds: sum(other), hue: null, slate: true, away: false, title: other.map((e) => e.label).join(", ") });
+  return [...out, ...away];
 }
