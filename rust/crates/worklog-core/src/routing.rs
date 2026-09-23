@@ -258,28 +258,33 @@ fn upsert_rule(conn: &Connection, kind: RuleKind, pattern: &str, folder: &str) -
     Ok(())
 }
 
-/// Apply a fresh "always" rule to every other unsorted/guessed event that
-/// matches it (B9); hand-fixed events keep their label.
+/// Apply a fresh or edited "always" rule to every other unsorted, guessed or
+/// rule-labelled event that matches it (B9); hand-fixed events keep their
+/// label. The folder is resolved against the whole rule table, as
+/// `load_pending` does, so an edited rule's new target propagates.
 /// ponytail: full unresolved-event scan, not source-scoped — fine at
 /// single-user scale, add an index path if that ever changes.
 fn apply_rule_to_existing(
     conn: &Connection,
     kind: RuleKind,
     pattern: &str,
-    folder: &str,
     exclude_id: i64,
 ) -> Result<()> {
     let sql = format!(
         "SELECT {EVENT_COLUMNS} FROM events
-          WHERE id != ?1 AND (label_origin IS NULL OR label_origin = 'guess')"
+          WHERE id != ?1 AND (label_origin IS NULL OR label_origin IN ('guess', 'rule'))"
     );
     let mut stmt = conn.prepare(&sql)?;
     let candidates = stmt
         .query_map(params![exclude_id], row_from)?
         .collect::<std::result::Result<Vec<_>, _>>()?;
+    let rules = list_rules(conn)?;
     for row in candidates {
-        if kind_matches(kind, pattern, &row) {
-            set_label(conn, row.id, folder, LabelOrigin::Rule, None)?;
+        if !kind_matches(kind, pattern, &row) {
+            continue;
+        }
+        if let Some(folder) = matching_rule(&rules, &row) {
+            set_label(conn, row.id, &folder, LabelOrigin::Rule, None)?;
         }
     }
     Ok(())
@@ -305,7 +310,7 @@ pub fn label_event(conn: &Connection, id: i64, req: &LabelRequest) -> Result<Rou
 
     if let Some((kind, pattern)) = rule {
         upsert_rule(conn, kind, &pattern, folder)?;
-        apply_rule_to_existing(conn, kind, &pattern, folder, id)?;
+        apply_rule_to_existing(conn, kind, &pattern, id)?;
     }
 
     fetch_event(conn, id)?

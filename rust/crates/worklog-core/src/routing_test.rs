@@ -495,3 +495,51 @@ fn label_event_rejects_an_unknown_folder() {
     .unwrap_err();
     assert!(err.to_string().contains("no longer exists"));
 }
+
+#[test]
+fn editing_rule_folder_relabels_rule_labelled_events() {
+    let conn = open_memory().unwrap();
+    pin(&conn, "folder1", None);
+    pin(&conn, "folder2", None);
+    let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+
+    let ids: Vec<i64> = ["a", "b", "c"]
+        .iter()
+        .enumerate()
+        .map(|(i, sid)| {
+            let at = format!("2026-04-20T09:0{i}:00+00:00");
+            let id =
+                repo::upsert_event(&conn, &Event::minimal(SOURCE_FIREFOX, *sid, &at, "X")).unwrap();
+            set_details(&conn, id, "https://x.example.com/p");
+            id
+        })
+        .collect();
+
+    let always = |id: i64, folder: &str| {
+        label_event(
+            &conn,
+            id,
+            &LabelRequest {
+                folder: folder.into(),
+                always: Some(RuleKind::Domain),
+            },
+        )
+        .unwrap();
+    };
+    always(ids[0], "folder1");
+    let routed = routed_for_day(&conn, day).unwrap();
+    let b = routed.iter().find(|r| r.id == ids[1]).unwrap();
+    assert_eq!(b.label_origin, Some(LabelOrigin::Rule));
+
+    always(ids[2], "folder2");
+    let rules = list_rules(&conn).unwrap();
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0].folder, "folder2");
+
+    let routed = routed_for_day(&conn, day).unwrap();
+    let b = routed.iter().find(|r| r.id == ids[1]).unwrap();
+    assert_eq!(b.folder.as_deref(), Some("folder2"));
+    assert_eq!(b.label_origin, Some(LabelOrigin::Rule));
+    let a = routed.iter().find(|r| r.id == ids[0]).unwrap();
+    assert_eq!(a.folder.as_deref(), Some("folder1"), "hand fixes stay");
+}
