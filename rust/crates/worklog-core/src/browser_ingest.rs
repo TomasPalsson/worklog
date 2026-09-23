@@ -259,6 +259,39 @@ mod tests {
     }
 
     #[test]
+    fn ingest_preserves_routing_label_on_second_heartbeat_same_minute() {
+        // A second heartbeat in the same minute bucket upserts the same
+        // row (dedupe key: source + minute-truncated source_id). Routing
+        // (T005) may have already labelled that row in between — the
+        // re-upsert must not wipe project_path back to NULL.
+        let conn = db::open_memory().unwrap();
+        let hours = WorkHours::parse(DEFAULT_WORK_HOURS).unwrap();
+        let first = Utc.with_ymd_and_hms(2026, 4, 14, 10, 30, 0).unwrap();
+        let second = Utc.with_ymd_and_hms(2026, 4, 14, 10, 30, 45).unwrap();
+        let id = match ingest_heartbeat(&conn, &hb(first), &hours, utc()).unwrap() {
+            IngestOutcome::Stored(id) => id,
+            IngestOutcome::Filtered(reason) => panic!("expected stored, got filtered: {reason}"),
+        };
+        conn.execute(
+            "UPDATE events SET project_path = '/Work/aws-cert', label_origin = 'rule' WHERE id = ?1",
+            params![id],
+        )
+        .unwrap();
+
+        ingest_heartbeat(&conn, &hb(second), &hours, utc()).unwrap();
+
+        let (project_path, label_origin): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT project_path, label_origin FROM events WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(project_path.as_deref(), Some("/Work/aws-cert"));
+        assert_eq!(label_origin.as_deref(), Some("rule"));
+    }
+
+    #[test]
     fn ingest_filters_outside_work_hours() {
         let conn = db::open_memory().unwrap();
         let hours = WorkHours::parse(DEFAULT_WORK_HOURS).unwrap();
