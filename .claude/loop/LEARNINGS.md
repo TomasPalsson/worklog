@@ -44,3 +44,11 @@
   lines (pre-existing, flagged by size-guard) — out of scope for this
   item since the loop's file allowlist is `infer.rs` only and no
   production line changed.
+
+- 2026-09-23: L5 (timeline.rs: block_confidence + day_gaps) done. New
+  standalone module, no dependency on infer.rs or collectors — just
+  `chrono::{DateTime, Duration, Utc}` like the rest of the crate.
+  `day_gaps` merges overlapping/adjacent blocks first (sort by start,
+  extend-or-push), then reports gaps only between the merged pairs —
+  that's what makes overlapping input blocks produce zero gaps for
+  free instead of needing a special case.
