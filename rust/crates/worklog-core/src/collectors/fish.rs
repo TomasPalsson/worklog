@@ -78,10 +78,10 @@ pub fn collect_from_path(
         let Some(when) = when else { continue };
 
         let segments = split_command_segments(&cmd);
-        let first_token = segments
+        let title = segments
             .first()
-            .and_then(|s| s.split_whitespace().next())
-            .unwrap_or("");
+            .map(|s| program_name(s))
+            .unwrap_or_else(|| "shell".to_string());
         for segment in &segments {
             let mut tokens = segment.splitn(2, char::is_whitespace);
             if tokens.next() == Some("cd") {
@@ -108,7 +108,7 @@ pub fn collect_from_path(
             started_at,
             ended_at: None,
             duration_seconds: None,
-            title: first_token.to_string(),
+            title,
             details: None,
             repo: None,
             project_path,
@@ -154,6 +154,82 @@ fn split_command_segments(cmd: &str) -> Vec<String> {
     segments.push(cur.trim().to_string());
     segments.retain(|s| !s.is_empty());
     segments
+}
+
+/// Wrapper words whose own leading flags/env-assignments are skipped
+/// along with the wrapper itself, per the "title = program name only"
+/// invariant.
+const WRAPPER_WORDS: [&str; 8] = [
+    "env", "sudo", "command", "builtin", "exec", "time", "nohup", "nice",
+];
+
+/// `true` if `tok` is a `NAME=value` env assignment (`NAME` matching
+/// `[A-Za-z_][A-Za-z0-9_]*`).
+fn is_env_assignment(tok: &str) -> bool {
+    let mut chars = tok.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    let mut saw_eq = false;
+    for c in chars {
+        if c == '=' {
+            saw_eq = true;
+            break;
+        }
+        if !(c.is_ascii_alphanumeric() || c == '_') {
+            return false;
+        }
+    }
+    saw_eq
+}
+
+/// Derive a sanitised program name for a command `segment`: never lets
+/// an env value, argument, or path directory reach the result.
+///
+/// 1. Skip leading env assignments.
+/// 2. Skip leading wrapper words (and their own flags/env assignments).
+/// 3. Take the basename of what remains.
+/// 4. Fall back to the literal `shell` unless the basename is 1-40
+///    chars of `[A-Za-z0-9._+-]`.
+fn program_name(segment: &str) -> String {
+    let mut tokens = segment.split_whitespace().peekable();
+    loop {
+        let mut progressed = false;
+        while tokens.peek().is_some_and(|t| is_env_assignment(t)) {
+            tokens.next();
+            progressed = true;
+        }
+        if tokens.peek().is_some_and(|t| WRAPPER_WORDS.contains(t)) {
+            tokens.next();
+            progressed = true;
+            while tokens
+                .peek()
+                .is_some_and(|t| t.starts_with('-') || is_env_assignment(t))
+            {
+                tokens.next();
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+
+    let Some(prog) = tokens.next() else {
+        return "shell".to_string();
+    };
+    let basename = prog.rsplit('/').next().unwrap_or(prog);
+    let valid = !basename.is_empty()
+        && basename.len() <= 40
+        && basename
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'));
+
+    if valid {
+        basename.to_string()
+    } else {
+        "shell".to_string()
+    }
 }
 
 /// Parse a `cd` argument, ending at the first whitespace or shell
@@ -238,6 +314,59 @@ mod tests {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(contents.as_bytes()).unwrap();
         f
+    }
+
+    #[test]
+    fn program_name_skips_env_assignment_prefix() {
+        assert_eq!(
+            program_name("AWS_SECRET_ACCESS_KEY=sk-live-superSecret123 aws configure"),
+            "aws"
+        );
+    }
+
+    #[test]
+    fn program_name_skips_env_wrapper_and_its_assignments() {
+        assert_eq!(program_name("env FOO=bar BAZ=qux cargo test"), "cargo");
+    }
+
+    #[test]
+    fn program_name_skips_sudo_flags() {
+        assert_eq!(program_name("sudo -E npm i"), "npm");
+    }
+
+    #[test]
+    fn program_name_takes_basename_of_path() {
+        assert_eq!(program_name("~/.local/bin/worklog day"), "worklog");
+    }
+
+    #[test]
+    fn program_name_env_assignment_alone_is_shell() {
+        assert_eq!(program_name("FOO=bar"), "shell");
+    }
+
+    #[test]
+    fn program_name_rejects_invalid_characters() {
+        assert_eq!(program_name("'weird$(name)' x"), "shell");
+    }
+
+    #[test]
+    fn env_assignment_secret_never_reaches_stored_event() {
+        let fixture = write_fixture(
+            "- cmd: AWS_SECRET_ACCESS_KEY=sk-live-superSecret123 aws configure\n  when: 1700000000\n",
+        );
+        let conn = open_memory().unwrap();
+        let since = NaiveDate::from_ymd_opt(2023, 1, 1).unwrap();
+        let until = NaiveDate::from_ymd_opt(2023, 12, 1).unwrap();
+        collect_from_path(&conn, fixture.path(), since, until).unwrap();
+        let events = repo::load_day_events(&conn, "2023-11-14").unwrap();
+        assert_eq!(events[0].title, "aws");
+        let haystack = format!(
+            "{}{}{}",
+            events[0].title,
+            events[0].details.clone().unwrap_or_default(),
+            events[0].project_path.clone().unwrap_or_default()
+        );
+        assert!(!haystack.contains("sk-live"));
     }
 
     #[test]
