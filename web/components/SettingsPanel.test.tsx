@@ -148,6 +148,26 @@ describe("SettingsPanel browser/Slack routing controls (T012)", () => {
     });
   });
 
+  it("clearing the match threshold sends no route_threshold change", async () => {
+    await openPanel();
+
+    // Blank the threshold field but change something else too, so a save
+    // still happens — the blank field must be treated as "no change", not
+    // as 0 (Number("") === 0, which would auto-accept every model guess).
+    fireEvent.change(screen.getByLabelText(/match threshold/i), {
+      target: { value: "" },
+    });
+    fireEvent.change(screen.getByLabelText(/work hours/i), {
+      target: { value: "Mon-Fri 08:00-18:00" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() => expect(saveSettingsCalls.length).toBe(1));
+    expect(saveSettingsCalls[0].work_hours).toBe("Mon-Fri 08:00-18:00");
+    expect(saveSettingsCalls[0].route_threshold).toBeUndefined();
+  });
+
   it("renders the Slack user token as a secret field", async () => {
     fetchSettingsImpl.mockImplementationOnce(async () => ({
       ok: true as const,
@@ -178,7 +198,9 @@ describe("SettingsPanel browser/Slack routing controls (T012)", () => {
     await openPanel();
 
     await waitFor(() => expect(fetchRoutingStatusImpl).toHaveBeenCalled());
-    expect(await screen.findByText(/reachable/i)).toBeTruthy();
+    // Exact text, not /reachable/i — that regex also matches "unreachable"
+    // and could never fail if laya_reachable were false.
+    expect(await screen.findByText("Model helper: reachable")).toBeTruthy();
   });
 
   it("lists hard rules and deletes one", async () => {

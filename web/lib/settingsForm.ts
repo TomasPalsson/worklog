@@ -74,9 +74,16 @@ export function buildSettingsUpdate(
   if (form.workHours.trim() !== view.work_hours.trim()) {
     update.work_hours = form.workHours.trim();
   }
-  const thresholdNum = Number(form.routeThreshold.trim());
-  if (!Number.isNaN(thresholdNum) && thresholdNum !== view.route_threshold) {
-    update.route_threshold = thresholdNum;
+  // A blank field means "no change" — Number("") is 0, not NaN, so an
+  // empty trimmed string must be excluded before the numeric check or
+  // clearing the input would silently save a 0.0 threshold (auto-accepting
+  // every model guess).
+  const routeThresholdTrimmed = form.routeThreshold.trim();
+  if (routeThresholdTrimmed !== "") {
+    const thresholdNum = Number(routeThresholdTrimmed);
+    if (!Number.isNaN(thresholdNum) && thresholdNum !== view.route_threshold) {
+      update.route_threshold = thresholdNum;
+    }
   }
 
   const secrets: Record<string, string> = {};
