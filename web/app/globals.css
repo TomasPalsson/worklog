@@ -1383,15 +1383,18 @@ button {
   background: var(--bg-raised);
 }
 
-.unsorted-row {
+.unsorted-row,
+.routed-row {
   grid-template-columns: 72px 1fr;
 }
 
-.unsorted-row > :not(.event-source) {
+.unsorted-row > :not(.event-source),
+.routed-row > :not(.event-source) {
   grid-column: 2;
 }
 
-.unsorted-row .event-source {
+.unsorted-row .event-source,
+.routed-row .event-source {
   width: 100%;
   justify-content: flex-start;
   gap: 4px;
