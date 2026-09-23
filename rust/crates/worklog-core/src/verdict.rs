@@ -54,7 +54,9 @@ struct ClassifyRequest<'a> {
 #[derive(Deserialize)]
 struct ClassifyResponse {
     choice: String,
-    confidence: f64,
+    probability: f64,
+    runner_up: f64,
+    abstain: f64,
 }
 
 impl Classifier for VerdictClassifier {
@@ -74,13 +76,11 @@ impl Classifier for VerdictClassifier {
             return Ok(None);
         }
         match resp.json::<ClassifyResponse>() {
-            // T002 replaces this with the real {choice, probability,
-            // runner_up, abstain} response shape.
             Ok(body) => Ok(Some(Guess {
                 folder: body.choice,
-                confidence: body.confidence,
-                runner_up: 0.0,
-                abstain: 0.0,
+                confidence: body.probability,
+                runner_up: body.runner_up,
+                abstain: body.abstain,
             })),
             Err(_) => Ok(None),
         }
@@ -119,8 +119,12 @@ mod tests {
             when.method(POST).path("/classify").json_body(
                 json!({"state": {"title": "aws console"}, "options": ["aws-cert", "worklog"]}),
             );
-            then.status(200)
-                .json_body(json!({"choice": "aws-cert", "confidence": 0.97}));
+            then.status(200).json_body(json!({
+                "choice": "aws-cert",
+                "probability": 0.97,
+                "runner_up": 0.4,
+                "abstain": 0.1
+            }));
         });
 
         let classifier =
@@ -130,6 +134,8 @@ mod tests {
         let guess = classifier.classify(&state, &options).unwrap().unwrap();
         assert_eq!(guess.folder, "aws-cert");
         assert_eq!(guess.confidence, 0.97);
+        assert_eq!(guess.runner_up, 0.4);
+        assert_eq!(guess.abstain, 0.1);
     }
 
     #[test]
