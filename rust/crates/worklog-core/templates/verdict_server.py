@@ -25,6 +25,8 @@ HOST = "127.0.0.1"
 PORT = 9324
 MAX_GROUP_SIZE = 24
 INSUFFICIENT_EVIDENCE_ID = "__insufficient_evidence__"
+# The wording the 4-right / 0-wrong measurement used; the default ratios are tuned to it.
+QUESTION = "Which project folder does this work activity belong to? Links, repo names and paths are the strongest evidence."
 
 ENGINE = None
 
@@ -74,28 +76,18 @@ def _load_engine():
 
 
 def classify(state, options):
-    from rlcd import Choice, Noul, Option
+    if len(options) == 1:
+        # Verdict favours a lone named option whatever the text says (measured: a PR link
+        # 0.63 vs "pool" 0.56), so one candidate is never guessed — a rule covers it.
+        return options[0], 0.0, 0.0, 1.0
+    from rlcd import Choice, Option
 
     context = json.dumps(state)
-    if len(options) == 1:
-        # Choice needs 2+ options, so a lone candidate is asked as a true/false proposition.
-        proposition = Noul(
-            id="0",
-            proposition=f"This work activity belongs to the project {options[0]}.",
-            semantics="conditional_on_sufficient_evidence_v2",
-        )
-        probabilities = ENGINE.evaluate(context, [proposition]).results[0].probabilities
-        return (
-            options[0],
-            probabilities.get("true", 0.0),
-            probabilities.get("false", 0.0),
-            probabilities.get(INSUFFICIENT_EVIDENCE_ID, 0.0),
-        )
     queries = [
         Choice(
             id=str(index),
-            question="Which project does this work activity belong to?",
-            options=tuple(Option(id=option, description=option) for option in group),
+            question=QUESTION,
+            options=tuple(Option(id=option, description=f"work in the project folder ~/Desktop/Work/{option}") for option in group),
         )
         for index, group in enumerate(split_groups(options))
     ]
@@ -164,6 +156,8 @@ def self_test():
     assert probability == 0.9
     assert runner_up == 0.6
     assert abstain == 0.3
+
+    assert classify({}, ["only-one"]) == ("only-one", 0.0, 0.0, 1.0)
 
     print("verdict_server self-test OK")
 
