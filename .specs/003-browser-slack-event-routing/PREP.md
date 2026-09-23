@@ -1,5 +1,6 @@
 # Prep — Browser + Slack events routed to the right block
-Gathered: 2026-09-23 · Questions: 17 of 12 (user lifted the cap: "don't feel capped") · Route: dispatch · Status: interviewing
+Gathered: 2026-09-23 · Questions: 17 of 12 (user lifted the cap: "don't feel capped") · Route: dispatch · Status: ready for spec
+Lint override: prep-lint rejects 17 > 12 questions; user chose to keep one PREP.md over splitting — user, 2026-09-23
 
 ## Decisions
 - D-01 The router labels each browser/Slack event with a project; worklog's normal inference (`split_by_project`) builds the blocks. It never picks a block id. — user, Q1
