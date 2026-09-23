@@ -216,7 +216,12 @@ import type {
   ExportResponse,
   JiraProject,
   JiraTicket,
+  LabelRequest,
   MarkExportResponse,
+  RoutedEvent,
+  RoutingStatus,
+  Rule,
+  RuleKind,
   SettingsSaveResponse,
   SettingsUpdate,
   SettingsView,
@@ -371,4 +376,23 @@ export async function saveSettings(
   update: SettingsUpdate,
 ): Promise<SettingsSaveResponse> {
   return call<SettingsSaveResponse>("POST", "/settings", update);
+}
+
+// ───────────────────── browser + Slack routing ─────────────────────
+
+export async function routedForDay(day: string): Promise<RoutedEvent[]> {
+  return call<RoutedEvent[]>("GET", `/days/${day}/routed`);
+}
+export async function labelEvent(id: number, folder: string, always: RuleKind | null) {
+  const body: LabelRequest = { folder, always };
+  return call<RoutedEvent>("POST", `/events/${id}/label`, body);
+}
+export async function routingRules(): Promise<Rule[]> {
+  return call<Rule[]>("GET", "/routing/rules");
+}
+export async function deleteRule(id: number): Promise<{ removed: boolean }> {
+  return call("POST", `/routing/rules/${id}/delete`);
+}
+export async function routingStatus(): Promise<RoutingStatus> {
+  return call<RoutingStatus>("GET", "/routing/status");
 }

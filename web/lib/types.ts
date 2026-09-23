@@ -266,6 +266,50 @@ export interface MarkExportResponse {
   exported_at: string | null;
 }
 
+// ───────────────────── browser + Slack routing ─────────────────────
+
+/** Where a routed event's project label came from (`routing_contract::LabelOrigin`). */
+export type LabelOrigin = "rule" | "fix" | "guess";
+
+/** What a hard rule matches on (`routing_contract::RuleKind`). */
+export type RuleKind = "domain" | "slack_channel" | "container";
+
+/** One row of `routing_rules` (`GET /routing/rules`). */
+export interface Rule {
+  id: number;
+  kind: RuleKind;
+  pattern: string;
+  folder: string;
+  created_at: string;
+}
+
+/** Body of `POST /events/:id/label`. `always` also creates a hard rule of that kind. */
+export interface LabelRequest {
+  folder: string;
+  always: RuleKind | null;
+}
+
+/** A browser/Slack event as the UI sees it (`GET /days/:day/routed`). */
+export interface RoutedEvent {
+  id: number;
+  source: string;
+  started_at: string; // ISO-8601
+  title: string;
+  details: string | null;
+  container: string | null;
+  /** `null` = unsorted. */
+  folder: string | null;
+  label_origin: LabelOrigin | null;
+  label_confidence: number | null;
+}
+
+/** `GET /routing/status`. */
+export interface RoutingStatus {
+  last_heartbeat: string | null;
+  last_slack: string | null;
+  laya_reachable: boolean;
+}
+
 export type SourceKind = "github" | "claude" | "gcal" | "jira" | "other";
 
 /** Collapse a raw DB `source` column into one of our display buckets. */
