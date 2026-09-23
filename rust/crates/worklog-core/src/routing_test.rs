@@ -174,6 +174,16 @@ fn files_when_winner_beats_abstain_and_runner_up() {
     assert_eq!(routed[0].folder.as_deref(), Some("aws-cert"));
 }
 
+// The pre-fix body was `confidence >= rule.abstain_margin` — it ignores
+// `guess.abstain` entirely. Since abstain is always <= 1.0, that raw check
+// is provably at least as strict as `confidence >= abstain * margin` for
+// any margin (abstain * margin <= margin <= confidence whenever the raw
+// check holds), so no valid scores can make the raw check accept while the
+// new abstain-margin check rejects. This scenario is spec.md's own
+// FR-01/edge-case example (winner beats runner-up ×1.29 but only ties
+// abstain) verified by hand computation; it can't be red-first against the
+// pre-fix code for the reason above, only `unsorted_when_runner_up_too_close`
+// (below) can be, because the pre-fix code never reads `runner_up_ratio` at all.
 #[test]
 fn unsorted_when_winner_ties_abstain() {
     let items = vec![pending_with_options(vec!["aws-cert"])];
@@ -193,19 +203,32 @@ fn unsorted_when_winner_ties_abstain() {
 #[test]
 fn unsorted_when_runner_up_too_close() {
     let items = vec![pending_with_options(vec!["aws-cert"])];
+    // abstain_margin is deliberately far below the default (1.05) so the
+    // pre-fix body (`confidence >= rule.abstain_margin`, blind to
+    // `runner_up_ratio`) would accept this guess — proving this test
+    // actually exercises the new runner-up check, not a vacuously-high
+    // margin no real confidence could ever reach.
+    let rule = RouteRule {
+        abstain_margin: 0.05,
+        runner_up_ratio: 1.10,
+    };
     let model = FixedGuess {
         folder: "aws-cert".into(),
-        confidence: 0.054,
-        runner_up: 0.053,
-        abstain: 0.050,
+        confidence: 0.20,
+        runner_up: 0.19,
+        abstain: 0.01,
     };
-    let guesses = decide(&items, &model, default_rule());
+    let guesses = decide(&items, &model, rule);
     assert!(
         guesses.is_empty(),
         "winner clears the abstain score but not the runner-up ratio"
     );
 }
 
+// The options-narrowing check is unchanged by T003 (`p.options.contains`
+// gated the pre-fix body too), so both bodies always agree here — this
+// can never be red-first against the pre-fix code. It's kept as a direct
+// `decide()`-level regression alongside `decide_drops_guess_outside_narrowed_options`.
 #[test]
 fn unsorted_when_choice_not_an_option() {
     let items = vec![pending_with_options(vec!["aws-cert"])];
