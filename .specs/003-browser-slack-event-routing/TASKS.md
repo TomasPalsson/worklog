@@ -31,7 +31,7 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core ro
 - [x] T005 [P] Router core: rules, container narrowing, threshold, labels, infer exclusion (B5, B6, B7, B9, B10) — files: rust/crates/worklog-core/src/routing.rs, rust/crates/worklog-core/src/infer.rs, rust/crates/worklog-core/src/billing.rs, rust/crates/worklog-core/src/billing_registry.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core routing` — after: T001 — done: c9bab1a
 - [x] T006 Laya client, helper script and `worklog laya serve|status` (B8) — files: rust/crates/worklog-core/src/laya.rs, rust/crates/worklog-core/templates/laya_server.py, rust/crates/worklog-cli/src/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml laya` — after: T001, T004 — done: 718f692
 - [x] T003 Daemon routes: heartbeat, routed events, label, rules, status, settings keys (B3) — files: rust/crates/worklog-core/src/daemon.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core daemon::` — after: T002, T005, T006 — done: ac97b1a
-- [ ] T007 Route before inference in `collect all` and `POST /infer` — files: rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-core/src/daemon.rs — verify: `cargo test --manifest-path rust/Cargo.toml` — after: T003, T004, T006
+- [x] T007 Route before inference in `collect all` and `POST /infer` — files: rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-core/src/daemon.rs — verify: `cargo test --manifest-path rust/Cargo.toml` — after: T003, T004, T006 — done: acdbeec
 
 ## Phase 3 — Firefox add-on
 Goal: an installable add-on that reports focused, active, work-hours tab time and can be paused.
