@@ -5,7 +5,14 @@
 // opened (anchored to the selection) once the drag ends. Split out of
 // DayStripLanesView.tsx to stay under the file/function-length guard.
 
-import { findExactAllocation, projectsActiveInRange, type Selection } from "@/lib/dayStripSelection";
+import type { Lane } from "@/lib/dayStripLanes";
+import {
+  currentShares,
+  workedMinutes,
+  findExactAllocation,
+  projectsActiveInRange,
+  type Selection,
+} from "@/lib/dayStripSelection";
 import { selectionOverlap } from "@/lib/dayStripOverlaps";
 import type { ProjectActivity, SavedAllocation } from "@/lib/types";
 import { OverlapPopover } from "./OverlapPopover";
@@ -16,6 +23,8 @@ export function SelectionOverlay({
   committed,
   activity,
   allocations,
+  lanes,
+  hues,
   onCloseCommitted,
 }: {
   day: string;
@@ -23,6 +32,8 @@ export function SelectionOverlay({
   committed: Selection | null;
   activity: ProjectActivity[];
   allocations: SavedAllocation[];
+  lanes: Lane[];
+  hues: Record<string, number>;
   onCloseCommitted: () => void;
 }) {
   const committedProjects = committed
@@ -49,15 +60,25 @@ export function SelectionOverlay({
         </>
       )}
       {committed && committedProjects.length > 0 && (
+        // Keep the picked range visible while its split box is open.
+        <div className="day-strip-selection" style={{ left: `${committed.leftPct}%`, width: `${committed.widthPct}%` }} />
+      )}
+      {committed && committedProjects.length > 0 && (
         <div className="day-strip-selection-popover-anchor" style={{ left: `${committed.leftPct}%` }}>
           <OverlapPopover
             day={day}
-            overlap={selectionOverlap(
-              committed.startMs,
-              committed.endMs,
-              committedProjects,
-              findExactAllocation(allocations, committed.startMs, committed.endMs),
-            )}
+            overlap={{
+              ...selectionOverlap(
+                committed.startMs,
+                committed.endMs,
+                committedProjects,
+                findExactAllocation(allocations, committed.startMs, committed.endMs),
+              ),
+              // The split divides worked minutes only, so show times of those.
+              minutes: workedMinutes(lanes, committedProjects, committed.startMs, committed.endMs),
+            }}
+            initialShares={currentShares(lanes, committedProjects, committed.startMs, committed.endMs)}
+            hues={hues}
             onClose={onCloseCommitted}
           />
         </div>

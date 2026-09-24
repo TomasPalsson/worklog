@@ -3,19 +3,19 @@
 // Render-only body of OverlapPopover, split out to stay under the
 // function-length guard. All state/daemon calls live in the parent.
 
-import { formatDuration } from "@/lib/format";
-import { giveAllShares, percentsToShares } from "@/lib/dayStripOverlaps";
+import type { CSSProperties } from "react";
+import { X } from "lucide-react";
+import { formatDuration, formatRange } from "@/lib/format";
+import { giveAllShares, rebalancePercents } from "@/lib/dayStripOverlaps";
 import type { Overlap } from "@/lib/types";
 
 interface Props {
   overlap: Overlap;
   projects: string[];
+  hues: Record<string, number>;
   pending: boolean;
-  pctA: number;
-  setPctA: (v: number) => void;
   percents: number[];
   setPercents: (v: number[]) => void;
-  canSave: boolean;
   hasExisting: boolean;
   onGiveAll: (shares: Record<string, number>) => void;
   onReset: () => void;
@@ -26,117 +26,76 @@ interface Props {
 export function OverlapPopoverControls({
   overlap,
   projects,
+  hues,
   pending,
-  pctA,
-  setPctA,
   percents,
   setPercents,
-  canSave,
   hasExisting,
   onGiveAll,
   onReset,
   onSave,
   onCancel,
 }: Props) {
-  const twoWay = projects.length === 2;
   return (
     <>
-      <div className="overlap-popover-give-all">
-        {overlap.projects.map((p) => (
-          <button
-            key={p.project}
-            type="button"
-            disabled={pending}
-            onClick={() => onGiveAll(giveAllShares(p.project))}
-          >
-            Give all to {p.project}
-          </button>
+      <header className="overlap-popover-head">
+        <span>
+          {formatRange(overlap.started_at, overlap.ended_at)}
+          <span className="overlap-popover-worked"> · {formatDuration(overlap.minutes * 60)} worked</span>
+        </span>
+        <button type="button" className="overlap-popover-x" aria-label="Close" onClick={onCancel}>
+          <X />
+        </button>
+      </header>
+
+      <ul className="overlap-popover-rows">
+        {projects.map((p, i) => (
+          <li key={p} className="overlap-popover-row" style={{ "--h": hues[p] ?? 0 } as CSSProperties}>
+            <span className="overlap-popover-name">
+              <span className="overlap-popover-dot" aria-hidden="true" />
+              {p}
+            </span>
+            <span className="overlap-popover-amount">
+              {percents[i]}% · {formatDuration(overlap.minutes * 60 * (percents[i] / 100))}
+            </span>
+            <button
+              type="button"
+              className="overlap-popover-all"
+              aria-label={`Give all to ${p}`}
+              title={`Give all to ${p}`}
+              disabled={pending}
+              onClick={() => onGiveAll(giveAllShares(p))}
+            >
+              all
+            </button>
+            {/* Linked: moving one slider rebalances the others, so the
+               total is always 100 and Save can never be invalid. */}
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={percents[i]}
+              aria-label={`${p} share`}
+              onChange={(e) => setPercents(rebalancePercents(percents, i, Number(e.target.value)))}
+            />
+          </li>
         ))}
-      </div>
+      </ul>
 
-      {twoWay ? (
-        <TwoWaySlider overlap={overlap} projects={projects} pctA={pctA} setPctA={setPctA} />
-      ) : (
-        <MultiWayInputs projects={projects} percents={percents} setPercents={setPercents} />
-      )}
-
-      {hasExisting && (
-        <button type="button" className="overlap-popover-reset" disabled={pending} onClick={onReset}>
-          Reset to automatic
-        </button>
-      )}
-
-      <div className="overlap-popover-actions">
-        <button type="button" disabled={pending || !canSave} onClick={onSave}>
-          Save
-        </button>
+      <footer className="overlap-popover-actions">
+        {hasExisting && (
+          <button type="button" className="overlap-popover-reset" disabled={pending} onClick={onReset}>
+            Reset to automatic
+          </button>
+        )}
         <button type="button" className="overlap-popover-cancel" disabled={pending} onClick={onCancel}>
           Cancel
         </button>
-      </div>
+        <button type="button" className="overlap-popover-save" disabled={pending} onClick={onSave}>
+          Save
+        </button>
+      </footer>
     </>
-  );
-}
-
-function TwoWaySlider({
-  overlap,
-  projects,
-  pctA,
-  setPctA,
-}: {
-  overlap: Overlap;
-  projects: string[];
-  pctA: number;
-  setPctA: (v: number) => void;
-}) {
-  const shares = percentsToShares(projects, [pctA, 100 - pctA]);
-  return (
-    <label className="overlap-popover-slider">
-      <input
-        type="range"
-        min={0}
-        max={100}
-        step={5}
-        value={pctA}
-        onChange={(e) => setPctA(Number(e.target.value))}
-      />
-      <span>
-        {projects[0]} {pctA}% · {formatDuration(overlap.minutes * 60 * (shares[projects[0]] ?? 0))}
-        {" / "}
-        {projects[1]} {100 - pctA}% · {formatDuration(overlap.minutes * 60 * (shares[projects[1]] ?? 0))}
-      </span>
-    </label>
-  );
-}
-
-function MultiWayInputs({
-  projects,
-  percents,
-  setPercents,
-}: {
-  projects: string[];
-  percents: number[];
-  setPercents: (v: number[]) => void;
-}) {
-  return (
-    <div className="overlap-popover-inputs">
-      {projects.map((p, i) => (
-        <label key={p}>
-          {p}
-          <input
-            type="number"
-            min={0}
-            max={100}
-            value={percents[i]}
-            onChange={(e) => {
-              const next = [...percents];
-              next[i] = Number(e.target.value);
-              setPercents(next);
-            }}
-          />
-          %
-        </label>
-      ))}
-    </div>
   );
 }

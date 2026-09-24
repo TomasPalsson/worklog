@@ -66,6 +66,39 @@ export function projectsActiveInRange(
     .map((a) => a.project);
 }
 
+type LaneLike = { key: string; segments: { kind: string; startMs: number; endMs: number }[] };
+
+/** Ms each project's blocks own inside the range, in `projects` order. */
+function ownedMs(lanes: LaneLike[], projects: string[], startMs: number, endMs: number): number[] {
+  return projects.map((p) =>
+    (lanes.find((l) => l.key === p)?.segments ?? [])
+      .filter((s) => s.kind === "block")
+      .reduce((sum, s) => sum + Math.max(0, Math.min(endMs, s.endMs) - Math.max(startMs, s.startMs)), 0),
+  );
+}
+
+/** Worked (owned) minutes in the range — what a saved split divides up;
+ * idle minutes stay idle. */
+export function workedMinutes(lanes: LaneLike[], projects: string[], startMs: number, endMs: number): number {
+  return Math.round(ownedMs(lanes, projects, startMs, endMs).reduce((a, b) => a + b, 0) / MS_PER_MIN);
+}
+
+/** How the range is split right now: each project's share of the minutes
+ * its lane's blocks own inside `[startMs, endMs)`. Seeds the sliders so the
+ * owner starts from today's split, not an even one. `null` if no one owns
+ * a minute there. */
+export function currentShares(
+  lanes: LaneLike[],
+  projects: string[],
+  startMs: number,
+  endMs: number,
+): Record<string, number> | null {
+  const owned = ownedMs(lanes, projects, startMs, endMs);
+  const total = owned.reduce((a, b) => a + b, 0);
+  if (total <= 0) return null;
+  return Object.fromEntries(projects.map((p, i) => [p, owned[i] / total]));
+}
+
 /** The saved allocation whose window exactly matches this selection, if
  * any — prefills the popover's split and shows "Reset to automatic"
  * when re-dragging over an already-set window. */
@@ -97,7 +130,9 @@ function useDragHandlers(
 ) {
   const fracFromClientX = useCallback(
     (clientX: number) => {
-      const rect = containerRef.current?.getBoundingClientRect();
+      // Measure a track, not the container: the container also holds the
+      // lane-name column, which would shift every picked time right.
+      const rect = containerRef.current?.querySelector(".day-strip-lane-track")?.getBoundingClientRect();
       if (!rect || rect.width === 0) return 0;
       return (clientX - rect.left) / rect.width;
     },

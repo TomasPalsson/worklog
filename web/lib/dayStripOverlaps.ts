@@ -80,6 +80,32 @@ export function percentsSumToHundred(percents: number[]): boolean {
   return percents.reduce((a, b) => a + b, 0) === 100;
 }
 
+/** Linked sliders: set project `i` to `value` and spread the rest over
+ * the others in proportion to what they had (evenly if they were all 0).
+ * Whole numbers, always summing to 100 (largest-remainder rounding). */
+export function rebalancePercents(percents: number[], i: number, value: number): number[] {
+  const v = Math.max(0, Math.min(100, Math.round(value)));
+  const others = percents.map((p, j) => (j === i ? 0 : p));
+  const othersSum = others.reduce((a, b) => a + b, 0);
+  const n = percents.length - 1;
+  const raw = others.map((p, j) =>
+    j === i ? 0 : ((othersSum > 0 ? p / othersSum : 1 / n) * (100 - v)),
+  );
+  const out = raw.map(Math.floor);
+  let left = 100 - v - out.reduce((a, b) => a + b, 0);
+  const order = raw
+    .map((r, j) => ({ j, frac: r - Math.floor(r) }))
+    .filter(({ j }) => j !== i)
+    .sort((a, b) => b.frac - a.frac);
+  for (const { j } of order) {
+    if (left <= 0) break;
+    out[j] += 1;
+    left -= 1;
+  }
+  out[i] = v;
+  return out;
+}
+
 /** A drag-selected window, shaped like an `Overlap` so it can reuse
  * <OverlapPopover> unchanged — `human_events`/`background_events` aren't
  * shown for a selection so they're just 0. `existingShares` prefills the

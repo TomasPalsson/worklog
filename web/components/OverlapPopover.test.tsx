@@ -1,7 +1,7 @@
 // Behaviour of the overlap split popover (opened by clicking a band on
 // the day strip): "Give all to X" sends {X:1}, the two-way slider sends
 // the split it shows, "Reset to automatic" deletes the saved allocation,
-// and a 3+-project form only enables Save once its percents sum to 100.
+// and with 3+ projects moving one slider rebalances the others.
 
 import { afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -31,6 +31,7 @@ let OverlapPopover: (props: {
   day: string;
   overlap: Overlap;
   onClose: () => void;
+  initialShares?: Record<string, number> | null;
 }) => React.JSX.Element;
 
 beforeAll(async () => {
@@ -75,7 +76,8 @@ describe("OverlapPopover — two-way slider", () => {
     render(<OverlapPopover day={DAY} overlap={twoProjectOverlap()} onClose={() => {}} />);
     const slider = document.querySelector('input[type="range"]') as HTMLInputElement;
     fireEvent.change(slider, { target: { value: "70" } });
-    expect(screen.getByText(/vitinn-infra 70%/)).toBeTruthy();
+    expect(screen.getByText("70% · 42m")).toBeTruthy();
+    expect(screen.getByText("30% · 18m")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(allocateCalls).toEqual([
       [
@@ -133,22 +135,47 @@ describe("OverlapPopover — 3+ projects", () => {
     };
   }
 
-  it("disables Save until the percents sum to 100", () => {
+  it("moving one slider moves the others so the total stays 100", () => {
     render(<OverlapPopover day={DAY} overlap={threeProjectOverlap()} onClose={() => {}} />);
-    const inputs = document.querySelectorAll('input[type="number"]');
-    expect(inputs.length).toBe(3);
-    const saveBtn = screen.getByRole("button", { name: "Save" }) as HTMLButtonElement;
+    const sliders = document.querySelectorAll('input[type="range"]');
+    expect(sliders.length).toBe(3);
+    expect(document.querySelectorAll('input[type="number"]').length).toBe(0);
 
-    fireEvent.change(inputs[0], { target: { value: "50" } });
-    fireEvent.change(inputs[1], { target: { value: "30" } });
-    fireEvent.change(inputs[2], { target: { value: "10" } }); // sums to 90
-    expect(saveBtn.disabled).toBe(true);
+    fireEvent.change(sliders[0], { target: { value: "50" } });
+    expect((sliders[1] as HTMLInputElement).value).toBe("25");
+    expect((sliders[2] as HTMLInputElement).value).toBe("25");
 
-    fireEvent.change(inputs[2], { target: { value: "20" } }); // sums to 100
-    expect(saveBtn.disabled).toBe(false);
-    fireEvent.click(saveBtn);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(allocateCalls).toEqual([
-      [DAY, "2026-09-24T10:00:00Z", "2026-09-24T11:00:00Z", { a: 0.5, b: 0.3, c: 0.2 }],
+      [DAY, "2026-09-24T10:00:00Z", "2026-09-24T11:00:00Z", { a: 0.5, b: 0.25, c: 0.25 }],
     ]);
+  });
+});
+
+describe("OverlapPopover — zero shares", () => {
+  it("leaves 0% projects out of the save (the daemon rejects a 0 share)", () => {
+    render(<OverlapPopover day={DAY} overlap={twoProjectOverlap()} onClose={() => {}} />);
+    const slider = document.querySelector('input[type="range"]') as HTMLInputElement;
+    fireEvent.change(slider, { target: { value: "100" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(allocateCalls).toEqual([
+      [DAY, "2026-09-24T10:00:00Z", "2026-09-24T11:00:00Z", { "vitinn-infra": 1 }],
+    ]);
+  });
+});
+
+describe("OverlapPopover — starting split", () => {
+  it("starts the sliders at the given current split when nothing is saved", () => {
+    render(
+      <OverlapPopover
+        day={DAY}
+        overlap={twoProjectOverlap()}
+        initialShares={{ "vitinn-infra": 0.8, lyfjastofnun: 0.2 }}
+        onClose={() => {}}
+      />,
+    );
+    const sliders = document.querySelectorAll('input[type="range"]');
+    expect((sliders[0] as HTMLInputElement).value).toBe("80");
+    expect((sliders[1] as HTMLInputElement).value).toBe("20");
   });
 });

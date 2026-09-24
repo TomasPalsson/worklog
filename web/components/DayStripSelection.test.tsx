@@ -82,13 +82,19 @@ function renderExpandedLanes(allocations: SavedAllocation[] = []) {
   render(<DayStrip day="2026-09-23" blocks={blocks} gaps={[]} activity={activity} allocations={allocations} />);
   fireEvent.click(screen.getByRole("button", { name: /expand/i }));
   const lanes = document.querySelector(".day-strip-lanes") as HTMLElement;
-  lanes.getBoundingClientRect = () =>
-    ({ left: 0, width: 1000, top: 0, bottom: 0, right: 1000, height: 0, x: 0, y: 0, toJSON() {} }) as DOMRect;
+  const rect = (left: number, width: number) =>
+    ({ left, width, top: 0, bottom: 0, right: left + width, height: 0, x: left, y: 0, toJSON() {} }) as DOMRect;
+  // Like the real layout: a 160px name column, then the 1000px tracks.
+  lanes.getBoundingClientRect = () => rect(0, LABEL_W + 1000);
+  lanes.querySelectorAll<HTMLElement>(".day-strip-lane-track").forEach((t) => {
+    t.getBoundingClientRect = () => rect(LABEL_W, 1000);
+  });
   return lanes;
 }
 
-/** clientX for a fraction (0..1) of the mocked 1000px-wide container. */
-const clientXFor = (frac: number) => Math.round(frac * 1000);
+const LABEL_W = 160;
+/** clientX for a fraction (0..1) along the mocked 1000px-wide tracks. */
+const clientXFor = (frac: number) => LABEL_W + Math.round(frac * 1000);
 
 describe("DayStrip selection drag", () => {
   it("dragging over empty track opens the split popover listing every active project", () => {

@@ -44,6 +44,7 @@ export function LanesView({
 }) {
   const drag = useDragSelection(window);
   const allocationBands = buildAllocationBands(allocations, window);
+  const hues = Object.fromEntries(lanes.filter((l) => l.hue !== null).map((l) => [l.key, l.hue as number]));
   return (
     <div
       className="day-strip-lanes"
@@ -69,13 +70,21 @@ export function LanesView({
           />
         ))}
       </div>
-      <OverlapBands bands={bands} day={day} openOverlap={openOverlap} onToggleOverlap={onToggleOverlap} />
+      <OverlapBands
+        bands={bands}
+        day={day}
+        hues={hues}
+        openOverlap={openOverlap}
+        onToggleOverlap={onToggleOverlap}
+      />
       <SelectionOverlay
         day={day}
         live={drag.live}
         committed={drag.committed}
         activity={activity}
         allocations={allocations}
+        lanes={lanes}
+        hues={hues}
         onCloseCommitted={drag.closeCommitted}
       />
     </div>

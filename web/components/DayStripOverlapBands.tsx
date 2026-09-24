@@ -21,11 +21,13 @@ export function overlapKey(o: Overlap): string {
 export function OverlapBands({
   bands,
   day,
+  hues,
   openOverlap,
   onToggleOverlap,
 }: {
   bands: OverlapBand[];
   day: string;
+  hues: Record<string, number>;
   openOverlap: string | null;
   onToggleOverlap: (key: string) => void;
 }) {
@@ -36,6 +38,7 @@ export function OverlapBands({
           key={overlapKey(band.overlap)}
           band={band}
           day={day}
+          hues={hues}
           open={openOverlap === overlapKey(band.overlap)}
           onToggle={onToggleOverlap}
         />
@@ -47,11 +50,13 @@ export function OverlapBands({
 function OverlapBandButton({
   band,
   day,
+  hues,
   open,
   onToggle,
 }: {
   band: OverlapBand;
   day: string;
+  hues: Record<string, number>;
   open: boolean;
   onToggle: (key: string) => void;
 }) {
@@ -71,7 +76,7 @@ function OverlapBandButton({
       </button>
       {open && (
         <div className="day-strip-overlap-popover-anchor">
-          <OverlapPopover day={day} overlap={band.overlap} onClose={() => onToggle(key)} />
+          <OverlapPopover day={day} overlap={band.overlap} hues={hues} onClose={() => onToggle(key)} />
         </div>
       )}
     </div>

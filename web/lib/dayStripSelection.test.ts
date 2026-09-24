@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import type { TrackWindow } from "./dayStrip";
 import {
+  currentShares,
+  workedMinutes,
   findExactAllocation,
   projectsActiveInRange,
   selectionFromFractions,
@@ -82,5 +84,31 @@ describe("findExactAllocation", () => {
     const startMs = new Date(at(10, 5)).getTime();
     const endMs = new Date(at(11, 0)).getTime();
     expect(findExactAllocation(allocations, startMs, endMs)).toBeNull();
+  });
+});
+
+const MIN = 60_000;
+
+describe("currentShares", () => {
+  const seg = (key: string, startMs: number, endMs: number) => ({ kind: "block" as const, key, startMs, endMs });
+  const lanes = [
+    { key: "a", segments: [seg("a", 0, 60 * MIN)] },
+    { key: "b", segments: [seg("b", 60 * MIN, 80 * MIN)] },
+  ];
+
+  it("splits by the minutes each project owns inside the range", () => {
+    expect(currentShares(lanes, ["a", "b"], 30 * MIN, 90 * MIN)).toEqual({ a: 0.6, b: 0.4 });
+  });
+
+  it("gives 0 to an active project that owns nothing there", () => {
+    expect(currentShares(lanes, ["a", "b", "c"], 0, 60 * MIN)).toEqual({ a: 1, b: 0, c: 0 });
+  });
+
+  it("counts only worked minutes, not the idle ones", () => {
+    expect(workedMinutes(lanes, ["a", "b"], 30 * MIN, 120 * MIN)).toBe(50);
+  });
+
+  it("is null when nobody owns a minute there", () => {
+    expect(currentShares(lanes, ["a", "b"], 100 * MIN, 200 * MIN)).toBeNull();
   });
 });

@@ -7,6 +7,7 @@ import {
   overlapsInWindow,
   percentsSumToHundred,
   percentsToShares,
+  rebalancePercents,
   selectionOverlap,
 } from "./dayStripOverlaps";
 import type { Overlap } from "./types";
@@ -100,5 +101,26 @@ describe("selectionOverlap", () => {
   it("prefills the allocation when existing shares are given", () => {
     const o = selectionOverlap(0, 60_000, ["vitinn-infra"], { "vitinn-infra": 1 });
     expect(o.allocation).toEqual({ shares: { "vitinn-infra": 1 } });
+  });
+});
+
+describe("rebalancePercents", () => {
+  it("moves the others in proportion so the total stays 100", () => {
+    expect(rebalancePercents([50, 30, 20], 0, 80)).toEqual([80, 12, 8]);
+  });
+
+  it("splits evenly when the others were all at 0", () => {
+    expect(rebalancePercents([100, 0, 0], 0, 40)).toEqual([40, 30, 30]);
+  });
+
+  it("keeps whole numbers that still sum to 100", () => {
+    const r = rebalancePercents([34, 33, 33], 1, 50);
+    expect(r[1]).toBe(50);
+    expect(r.reduce((a, b) => a + b, 0)).toBe(100);
+    expect(r.every(Number.isInteger)).toBe(true);
+  });
+
+  it("two projects: the other one is the rest", () => {
+    expect(rebalancePercents([50, 50], 1, 90)).toEqual([10, 90]);
   });
 });
