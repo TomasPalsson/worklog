@@ -39,6 +39,16 @@ Schedule change: the launchd/systemd job runs `worklog day` instead of `worklog 
 - Next: rebuild web (`worklog web down; WORKLOG_WEB_DIR=<loop>/web worklog web up`), screenshot
   bar + lanes, run gates.sh, push.
 
+## Status 2 (2026-09-24)
+- Missing vitinn-infra time fixed: claude_transcripts collector (typed prompts = claude_turn,
+  Claude busy = claude_work 1/min, no text), reflog reads worktrees+submodules, day summary
+  `project` folds worktrees, submodule→repo map, infer_lanes: one owner per minute (focus follows
+  latest human action ≤15 min, work before personal, background fills idle) — b40dc92.
+- In flight: owner-adjustable overlap split (overlaps on /days/:day, overlap_allocations table,
+  POST /days/:day/allocations, lanes-view amber bands + popover slider) — developer.
+- Verify after: gates.sh, then ~/.claude/jobs/aa6acbea/tmp/vitinn_e2e.sh (install + worklog day +
+  per-project minutes), screenshot lanes view.
+
 ## Guardrails
 - Nothing leaves the machine except the estimator's existing `claude -p` call (already in use).
 - Noise is reversible: the review drawer can un-hide and file any event.
