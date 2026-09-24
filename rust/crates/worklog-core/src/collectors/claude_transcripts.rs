@@ -78,7 +78,9 @@ pub fn collect_from_dir(
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0);
-            if modified_ts < since_ts || modified_ts >= until_ts {
+            // Only files untouched since before the window can be skipped: a
+            // session still writing after `until` holds lines from inside it.
+            if modified_ts < since_ts {
                 continue;
             }
             collect_file(

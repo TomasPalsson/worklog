@@ -7,6 +7,27 @@ fn write_transcript(dir: &Path, project: &str, session: &str, lines: &str) {
     std::fs::write(project_dir.join(format!("{session}.jsonl")), lines).unwrap();
 }
 
+#[test]
+fn reads_a_transcript_touched_after_the_day_it_covers() {
+    // A long session keeps writing past midnight: the file's mtime is after
+    // `until`, but its earlier lines still belong to the day.
+    let tmp = tempfile::tempdir().unwrap();
+    let line = user_line(
+        "2026-04-18T15:00:00Z",
+        "s1",
+        "u1",
+        "/home/x/Desktop/Work/widget",
+        r#""keep going""#,
+    );
+    write_transcript(tmp.path(), "proj", "s1", &format!("{line}\n"));
+
+    let conn = open_memory().unwrap();
+    let since = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+    let until = NaiveDate::from_ymd_opt(2026, 4, 19).unwrap();
+    let report = collect_from_dir(&conn, tmp.path(), since, until).unwrap();
+    assert_eq!(report.events_written, 1);
+}
+
 fn user_line(ts: &str, session: &str, uuid: &str, cwd: &str, content: &str) -> String {
     format!(
         r#"{{"type":"user","timestamp":"{ts}","sessionId":"{session}","uuid":"{uuid}","cwd":"{cwd}","message":{{"role":"user","content":{content}}}}}"#
