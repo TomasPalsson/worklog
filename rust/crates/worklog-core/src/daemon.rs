@@ -26,6 +26,8 @@
 //! * `POST /blocks/:id/estimate`         — no body, re-runs Claude on one block
 //! * `GET  /blocks/:id/commits`          — commits in the window (work only)
 //! * `POST /infer`                       — { "day": "YYYY-MM-DD" }
+//! * `POST /days/:day/allocations`       — { started_at, ended_at, shares: {project: fraction} } — re-runs infer
+//! * `POST /days/:day/allocations/delete` — { started_at, ended_at } — re-runs infer
 //! * `POST /jira/refresh`                — no body, refreshes open tickets
 //! * `GET  /tickets/search?q=&limit=`    — live Jira search (no persistence)
 //! * `POST /tickets/external`            — cache a manually-picked ticket
@@ -62,7 +64,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -84,9 +86,9 @@ use crate::routing_dismiss;
 use crate::secrets;
 use crate::verdict::VerdictClassifier;
 use crate::{
-    block_service, db, estimate, infer,
+    block_service, db, estimate, infer, infer_allocations,
     models::{Block, Event},
-    repo,
+    overlaps, repo,
 };
 
 pub struct AppState {
@@ -121,6 +123,11 @@ pub fn router(state: Shared) -> Router {
         .route("/blocks/merge", post(merge_blocks))
         .route("/blocks/auto-merge", post(auto_merge))
         .route("/infer", post(run_infer))
+        .route("/days/:day/allocations", post(save_allocation_handler))
+        .route(
+            "/days/:day/allocations/delete",
+            post(delete_allocation_handler),
+        )
         .route("/jira/refresh", post(refresh_jira))
         .route("/estimate", post(run_estimate))
         .route("/sync", post(run_sync))
@@ -514,6 +521,10 @@ pub struct DaySummary {
     pub total_seconds: i64,
     pub blocks: Vec<BlockSummary>,
     pub gaps: Vec<DayGap>,
+    /// Windows where ≥2 work projects were both active — see
+    /// `overlaps::day_overlaps`. The day strip renders these as a band the
+    /// owner can click to rebalance the automatic split.
+    pub overlaps: Vec<overlaps::Overlap>,
 }
 
 #[derive(Serialize)]
@@ -541,12 +552,18 @@ async fn day_summary(
 /// future sync caller share the same aggregation.
 fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
     let blocks = repo::list_blocks_for_day(conn, day)?;
+    let day_parsed = NaiveDate::parse_from_str(day, "%Y-%m-%d").ok();
+    let overlaps = day_parsed
+        .map(|d| overlaps::day_overlaps(conn, d))
+        .transpose()?
+        .unwrap_or_default();
     if blocks.is_empty() {
         return Ok(DaySummary {
             day: day.to_owned(),
             total_seconds: 0,
             blocks: vec![],
             gaps: vec![],
+            overlaps,
         });
     }
 
@@ -742,6 +759,7 @@ fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
         total_seconds,
         blocks: enriched,
         gaps,
+        overlaps,
     })
 }
 
@@ -1347,13 +1365,11 @@ pub struct InferResponse {
     pub minutes: i64,
 }
 
-async fn run_infer(
-    State(state): State<Shared>,
-    Json(body): Json<InferBody>,
-) -> Result<Json<InferResponse>, ApiError> {
-    let day = NaiveDate::parse_from_str(&body.day, "%Y-%m-%d")
-        .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{}`: {e}", body.day)))?;
-
+/// Route, absorb, build blocks (honouring any saved overlap allocations)
+/// and persist — the full `POST /infer` pipeline. Shared with the
+/// allocation save/delete handlers, which must re-run it so blocks
+/// reflect the owner's choice (or its removal) immediately.
+async fn reinfer_day(state: Shared, day: NaiveDate) -> Result<(usize, i64), ApiError> {
     // Route before building blocks (design decision 4, PR #41): three
     // phases, mirroring `run_estimate`, so the sqlite mutex is never held
     // across the (slow, network) classifier call.
@@ -1369,17 +1385,145 @@ async fn run_infer(
         routing::commit_labels(c, &rule_hits, &guesses)?;
         routing_absorb::absorb_and_noise(c, day)?;
         let events = infer::load_day_events(c, day)?;
-        let blocks = infer::build_blocks(events);
+        let allocations: Vec<infer_allocations::AllocationWindow> =
+            overlaps::load_allocations(c, day)?
+                .into_iter()
+                .map(
+                    |(started_at, ended_at, shares)| infer_allocations::AllocationWindow {
+                        started_at,
+                        ended_at,
+                        shares,
+                    },
+                )
+                .collect();
+        let blocks = infer::build_blocks_with_allocations(events, &allocations);
         let total: i64 = blocks.iter().map(|b| b.duration_seconds).sum();
         infer::persist_blocks(c, day, &blocks)?;
         Ok::<_, anyhow::Error>((blocks.len(), total / 60))
     })
     .await?;
+    Ok((count, minutes))
+}
+
+async fn run_infer(
+    State(state): State<Shared>,
+    Json(body): Json<InferBody>,
+) -> Result<Json<InferResponse>, ApiError> {
+    let day = NaiveDate::parse_from_str(&body.day, "%Y-%m-%d")
+        .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{}`: {e}", body.day)))?;
+    let (count, minutes) = reinfer_day(state, day).await?;
     Ok(Json(InferResponse {
         day: body.day,
         blocks: count,
         minutes,
     }))
+}
+
+#[derive(Deserialize)]
+pub struct AllocationBody {
+    pub started_at: String,
+    pub ended_at: String,
+    pub shares: std::collections::BTreeMap<String, f64>,
+}
+
+/// Save the owner's manual split of an overlap window, then re-run infer
+/// (the `POST /infer` pipeline) so blocks reflect it immediately. 400s:
+/// bad day/timestamps, shares that are empty, non-positive, don't sum to
+/// 1 (±0.001), or name a project that isn't part of this overlap.
+async fn save_allocation_handler(
+    State(state): State<Shared>,
+    AxumPath(day): AxumPath<String>,
+    Json(body): Json<AllocationBody>,
+) -> Result<Json<InferResponse>, ApiError> {
+    let day_parsed = NaiveDate::parse_from_str(&day, "%Y-%m-%d")
+        .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{day}`: {e}")))?;
+    let started_at = parse_allocation_ts(&body.started_at)?;
+    let ended_at = parse_allocation_ts(&body.ended_at)?;
+    validate_shares(&body.shares)?;
+
+    let shares = body.shares.clone();
+    with_conn(state.clone(), move |c| {
+        let day_overlaps = overlaps::day_overlaps(c, day_parsed)?;
+        let matching = day_overlaps
+            .iter()
+            .find(|o| o.started_at == started_at && o.ended_at == ended_at)
+            .ok_or_else(|| anyhow::anyhow!("no overlap at {started_at}–{ended_at}"))?;
+        let valid: std::collections::BTreeSet<&str> = matching
+            .projects
+            .iter()
+            .map(|p| p.project.as_str())
+            .collect();
+        for project in shares.keys() {
+            if !valid.contains(project.as_str()) {
+                anyhow::bail!("project `{project}` is not part of this overlap");
+            }
+        }
+        overlaps::save_allocation(c, day_parsed, started_at, ended_at, &shares)
+    })
+    .await
+    .map_err(ApiError::bad_request)?;
+
+    let (count, minutes) = reinfer_day(state, day_parsed).await?;
+    Ok(Json(InferResponse {
+        day,
+        blocks: count,
+        minutes,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct DeleteAllocationBody {
+    pub started_at: String,
+    pub ended_at: String,
+}
+
+/// Drop a saved allocation and re-run infer so the automatic split comes
+/// back for that window.
+async fn delete_allocation_handler(
+    State(state): State<Shared>,
+    AxumPath(day): AxumPath<String>,
+    Json(body): Json<DeleteAllocationBody>,
+) -> Result<Json<InferResponse>, ApiError> {
+    let day_parsed = NaiveDate::parse_from_str(&day, "%Y-%m-%d")
+        .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{day}`: {e}")))?;
+    let started_at = parse_allocation_ts(&body.started_at)?;
+    let ended_at = parse_allocation_ts(&body.ended_at)?;
+    with_conn(state.clone(), move |c| {
+        overlaps::delete_allocation(c, day_parsed, started_at, ended_at)
+    })
+    .await?;
+    let (count, minutes) = reinfer_day(state, day_parsed).await?;
+    Ok(Json(InferResponse {
+        day,
+        blocks: count,
+        minutes,
+    }))
+}
+
+fn parse_allocation_ts(s: &str) -> Result<DateTime<Utc>, ApiError> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .map(|d| d.with_timezone(&Utc))
+        .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid timestamp `{s}`: {e}")))
+}
+
+fn validate_shares(shares: &std::collections::BTreeMap<String, f64>) -> Result<(), ApiError> {
+    if shares.is_empty() {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "shares must not be empty"
+        )));
+    }
+    if shares.values().any(|f| *f <= 0.0) {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "every share must be > 0"
+        )));
+    }
+    let sum: f64 = shares.values().sum();
+    if (sum - 1.0).abs() > 0.001 {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "shares must sum to 1.0 (±0.001), got {sum}"
+        )));
+    }
+    Ok(())
 }
 
 async fn refresh_jira(State(state): State<Shared>) -> Result<Json<Value>, ApiError> {
@@ -3274,6 +3418,211 @@ mod tests {
         let v = read_json(resp).await;
         assert_eq!(v["day"], "2026-04-18");
         assert_eq!(v["blocks"], 1);
+    }
+
+    /// Two WORK projects with interleaved activity across the same hour —
+    /// `GET /days/:day` should report exactly one overlap spanning both.
+    fn state_with_overlap() -> Shared {
+        let conn = open_memory().unwrap();
+        for i in 0..20i64 {
+            let ts = format!("2026-04-18T10:{:02}:00+00:00", i * 3);
+            let mut e = Event::minimal("claude_turn", format!("a{i}"), ts, "work");
+            e.project_path = Some("/Users/dev/Desktop/Work/alpha".to_string());
+            repo::upsert_event(&conn, &e).unwrap();
+        }
+        for i in 0..20i64 {
+            let ts = format!("2026-04-18T10:{:02}:00+00:00", i * 3);
+            let mut e = Event::minimal("claude_work", format!("b{i}"), ts, "work");
+            e.project_path = Some("/Users/dev/Desktop/Work/beta".to_string());
+            repo::upsert_event(&conn, &e).unwrap();
+        }
+        Arc::new(AppState {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn day_summary_reports_the_overlap() {
+        let state = state_with_overlap();
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::get("/days/2026-04-18")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        let overlaps = v["overlaps"].as_array().unwrap();
+        assert_eq!(overlaps.len(), 1, "{v}");
+        assert!(overlaps[0]["minutes"].as_i64().unwrap() >= 10);
+        assert_eq!(overlaps[0]["projects"].as_array().unwrap().len(), 2);
+        assert!(overlaps[0]["allocation"].is_null());
+    }
+
+    /// `(started_at, ended_at, project names)` for the day's one overlap.
+    async fn fetch_overlap_window(state: &Shared) -> (String, String, Vec<String>) {
+        let resp = router(state.clone())
+            .oneshot(
+                Request::get("/days/2026-04-18")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        let overlap = &v["overlaps"][0];
+        let started_at = overlap["started_at"].as_str().unwrap().to_string();
+        let ended_at = overlap["ended_at"].as_str().unwrap().to_string();
+        let projects: Vec<String> = overlap["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["project"].as_str().unwrap().to_string())
+            .collect();
+        (started_at, ended_at, projects)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn allocations_endpoint_saves_split_and_reinfers() {
+        let state = state_with_overlap();
+        let (started_at, ended_at, projects) = fetch_overlap_window(&state).await;
+        assert_eq!(projects.len(), 2);
+
+        let body = Body::from(
+            serde_json::to_vec(&json!({
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "shares": { projects[0].clone(): 0.7, projects[1].clone(): 0.3 },
+            }))
+            .unwrap(),
+        );
+        let resp = router(state.clone())
+            .oneshot(
+                Request::post("/days/2026-04-18/allocations")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{:?}", read_json(resp).await);
+
+        let (_, _, _) = fetch_overlap_window(&state).await; // sanity: still one overlap
+        let resp = router(state)
+            .oneshot(
+                Request::get("/days/2026-04-18")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        let overlap = &v["overlaps"][0];
+        assert_eq!(overlap["allocation"]["shares"][&projects[0]], 0.7);
+        assert_eq!(overlap["allocation"]["shares"][&projects[1]], 0.3);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn allocations_delete_endpoint_restores_the_automatic_split() {
+        let state = state_with_overlap();
+        let (started_at, ended_at, projects) = fetch_overlap_window(&state).await;
+
+        let body = Body::from(
+            serde_json::to_vec(&json!({
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "shares": { projects[0].clone(): 1.0 },
+            }))
+            .unwrap(),
+        );
+        let resp = router(state.clone())
+            .oneshot(
+                Request::post("/days/2026-04-18/allocations")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = Body::from(
+            serde_json::to_vec(&json!({ "started_at": started_at, "ended_at": ended_at })).unwrap(),
+        );
+        let resp = router(state.clone())
+            .oneshot(
+                Request::post("/days/2026-04-18/allocations/delete")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let resp = router(state)
+            .oneshot(
+                Request::get("/days/2026-04-18")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        assert!(v["overlaps"][0]["allocation"].is_null());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn allocations_endpoint_rejects_shares_that_dont_sum_to_one() {
+        let state = state_with_overlap();
+        let (started_at, ended_at, projects) = fetch_overlap_window(&state).await;
+
+        let body = Body::from(
+            serde_json::to_vec(&json!({
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "shares": { projects[0].clone(): 0.5 },
+            }))
+            .unwrap(),
+        );
+        let resp = router(state)
+            .oneshot(
+                Request::post("/days/2026-04-18/allocations")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn allocations_endpoint_rejects_a_project_not_in_the_overlap() {
+        let state = state_with_overlap();
+        let (started_at, ended_at, _) = fetch_overlap_window(&state).await;
+
+        let body = Body::from(
+            serde_json::to_vec(&json!({
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "shares": { "not-a-real-project": 1.0 },
+            }))
+            .unwrap(),
+        );
+        let resp = router(state)
+            .oneshot(
+                Request::post("/days/2026-04-18/allocations")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test(flavor = "current_thread")]
