@@ -15,7 +15,7 @@ pub const SCHEMA_SQL: &str = include_str!("../sql/schema.sql");
 /// Monotonic integer version of the schema, bumped by future migrations.
 /// Stored in `PRAGMA user_version` so we can detect stale dbs without adding
 /// a dedicated table.
-pub const SCHEMA_VERSION: i32 = 11;
+pub const SCHEMA_VERSION: i32 = 12;
 
 /// Open a connection at `path`, enable WAL + FK, and run migrations.
 pub fn open(path: &Path) -> Result<Connection> {
@@ -443,7 +443,9 @@ mod tests {
             tables.contains(&"routing_rules".to_string()),
             "missing routing_rules table; got {tables:?}"
         );
-        assert_eq!(current_version(&conn).unwrap(), 11);
+        // `>=` floor, not `==`: overlap_allocations took it to v12 — see
+        // the `overlap_allocations_table_exists...` test below.
+        assert!(current_version(&conn).unwrap() >= 11);
     }
 
     #[test]
@@ -526,6 +528,25 @@ mod tests {
             "pre-existing rows must backfill to NULL"
         );
         assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn overlap_allocations_table_exists_and_schema_version_is_12() {
+        // Overlap-split UI: the owner's manual share of an overlap window,
+        // read back by infer_allocations. Takes the schema to v12.
+        let conn = open_memory().unwrap();
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            tables.contains(&"overlap_allocations".to_string()),
+            "missing overlap_allocations table; got {tables:?}"
+        );
+        assert_eq!(current_version(&conn).unwrap(), 12);
     }
 
     #[test]

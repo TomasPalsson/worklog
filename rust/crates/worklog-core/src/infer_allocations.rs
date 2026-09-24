@@ -1,0 +1,112 @@
+//! Manual overrides for `infer_lanes::owner_runs`.
+//!
+//! The owner sometimes disagrees with the automatic per-minute project
+//! split inside an overlap window (see `overlaps`) — "put more of that hour
+//! on vitinn-infra, less on lyfjastofnun". An [`AllocationWindow`] records
+//! that choice; `apply_allocations` overwrites the automatic owner for every
+//! minute in its range, split into contiguous chunks by share.
+
+use std::collections::BTreeMap;
+
+use chrono::{DateTime, Utc};
+
+use crate::infer_lanes::minute;
+
+/// A user-chosen split of an overlap window — every minute in
+/// `[started_at, ended_at)` is handed out to `shares` in alphabetical
+/// project order (a `BTreeMap` iterates that way), each getting
+/// `share * window_minutes` minutes (the last project absorbs any
+/// rounding remainder). Overrides `owner_runs`'s automatic decision for
+/// those minutes outright.
+#[derive(Debug, Clone)]
+pub struct AllocationWindow {
+    pub started_at: DateTime<Utc>,
+    pub ended_at: DateTime<Utc>,
+    pub shares: BTreeMap<String, f64>,
+}
+
+/// Overwrite `owners[i]` for every minute inside an allocation window with
+/// the chunk its share assigns. `owners[i]` corresponds to minute `first + i`.
+pub(crate) fn apply_allocations(
+    owners: &mut [Option<String>],
+    first: i64,
+    allocations: &[AllocationWindow],
+) {
+    for alloc in allocations {
+        let start_minute = minute(alloc.started_at);
+        let total_minutes = (alloc.ended_at - alloc.started_at).num_minutes();
+        if total_minutes <= 0 || alloc.shares.is_empty() {
+            continue;
+        }
+        let mut assigned: i64 = 0;
+        let mut cum_frac = 0.0;
+        let n = alloc.shares.len();
+        for (i, (project, frac)) in alloc.shares.iter().enumerate() {
+            cum_frac += frac;
+            let target = if i + 1 == n {
+                total_minutes
+            } else {
+                (cum_frac * total_minutes as f64).round() as i64
+            };
+            let chunk_end = target.clamp(0, total_minutes);
+            for m in (start_minute + assigned)..(start_minute + chunk_end) {
+                let idx = m - first;
+                if idx >= 0 && (idx as usize) < owners.len() {
+                    owners[idx as usize] = Some(project.clone());
+                }
+            }
+            assigned = chunk_end;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn at(h: u32, m: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 9, 23, h, m, 0).unwrap()
+    }
+
+    #[test]
+    fn hundred_percent_to_one_project_fills_the_whole_window() {
+        let first = minute(at(9, 0));
+        let mut owners: Vec<Option<String>> = vec![None; 60];
+        let mut shares = BTreeMap::new();
+        shares.insert("A".to_string(), 1.0);
+        let allocations = vec![AllocationWindow {
+            started_at: at(9, 0),
+            ended_at: at(10, 0),
+            shares,
+        }];
+        apply_allocations(&mut owners, first, &allocations);
+        assert!(owners.iter().all(|o| o.as_deref() == Some("A")));
+    }
+
+    #[test]
+    fn seventy_thirty_split_gives_forty_two_eighteen() {
+        let first = minute(at(9, 0));
+        let mut owners: Vec<Option<String>> = vec![None; 60];
+        let mut shares = BTreeMap::new();
+        shares.insert("A".to_string(), 0.7);
+        shares.insert("B".to_string(), 0.3);
+        let allocations = vec![AllocationWindow {
+            started_at: at(9, 0),
+            ended_at: at(10, 0),
+            shares,
+        }];
+        apply_allocations(&mut owners, first, &allocations);
+        let a = owners.iter().filter(|o| o.as_deref() == Some("A")).count();
+        let b = owners.iter().filter(|o| o.as_deref() == Some("B")).count();
+        assert_eq!(a, 42, "70% of 60 minutes");
+        assert_eq!(b, 18, "30% of 60 minutes");
+        // Contiguous: A's minutes all come before B's.
+        let last_a = owners.iter().rposition(|o| o.as_deref() == Some("A"));
+        let first_b = owners.iter().position(|o| o.as_deref() == Some("B"));
+        assert!(
+            last_a < first_b,
+            "each project's minutes must be one contiguous chunk"
+        );
+    }
+}
