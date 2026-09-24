@@ -1018,12 +1018,34 @@ fn jira_cache_meta(conn: &Connection) -> Result<TicketCacheMeta> {
     })
 }
 
+/// An event plus, for the owner's own prompts, a short snippet read live
+/// from the local transcript (never stored — see `prompt_snippets`).
+#[derive(Serialize)]
+struct EventView {
+    #[serde(flatten)]
+    event: Event,
+    snippet: Option<String>,
+}
+
 async fn block_events(
     State(state): State<Shared>,
     AxumPath(id): AxumPath<i64>,
-) -> Result<Json<Vec<Event>>, ApiError> {
+) -> Result<Json<Vec<EventView>>, ApiError> {
     let events = with_conn(state, move |c| repo::list_events_for_block(c, id)).await?;
-    Ok(Json(events))
+    // Transcript files can be MBs: read them off the connection lock.
+    let views = tokio::task::spawn_blocking(move || {
+        let mut snippets = crate::prompt_snippets::for_events(&events);
+        events
+            .into_iter()
+            .map(|event| EventView {
+                snippet: event.id.and_then(|i| snippets.remove(&i)),
+                event,
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .map_err(anyhow::Error::from)?;
+    Ok(Json(views))
 }
 
 /// Per-block commit sidecar — returns the commits that landed inside

@@ -2,18 +2,19 @@
 
 import { useState, useTransition } from "react";
 import {
-  ChevronRight,
-  GitCommit,
-  MessageSquare,
+  Bot,
   Calendar,
-  Briefcase,
+  ChevronRight,
   Circle,
+  GitBranch,
+  GitCommit,
   Globe,
+  MessageSquareText,
   Slack,
+  Terminal,
 } from "lucide-react";
 import type { Event } from "@/lib/types";
-import { sourceKind } from "@/lib/types";
-import { formatEventTime, previewDetails, sourceLabel } from "@/lib/format-event";
+import { eventRows, type EventRow, type RowKind } from "@/lib/eventRows";
 import { fetchBlockEvents } from "@/app/actions";
 import { toast } from "@/lib/toast";
 
@@ -23,24 +24,15 @@ interface Props {
 }
 
 /**
- * Per-block drill-down. Collapsed by default; clicking the disclosure
- * triggers a one-time fetch of the events via Server Action and keeps
- * the result cached on the component for subsequent toggles.
- *
- * Design note: the expanded list renders inline under the block meta
- * row. An alternative was a side drawer — rejected because it breaks
- * the user's reading position and creates a focus trap for keyboard
- * users. Progressive disclosure in-place keeps Jakob's Law on side
- * and costs no layout shift when collapsed.
+ * Per-block drill-down: a readable timeline of what happened — your
+ * prompts (first words), each stretch of Claude working (branch, tools,
+ * files), shell commands and the rest. Fetched once on first expand.
  */
 export function EventList({ blockId, eventCount }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [events, setEvents] = useState<Event[] | null>(null);
   const [isPending, start] = useTransition();
 
-  // Zero-event blocks still get a disabled chip so the spot in the meta
-  // row is visually consistent across all cards — but clicking does
-  // nothing, and the ARIA state says so.
   if (eventCount === 0) {
     return (
       <span className="events-disclosure empty" aria-disabled="true">
@@ -54,12 +46,8 @@ export function EventList({ blockId, eventCount }: Props) {
     if (!expanded && events === null) {
       start(async () => {
         const r = await fetchBlockEvents(blockId);
-        if (r.ok) {
-          setEvents(r.data);
-        } else {
-          toast.error(`Load events failed — ${r.error}`);
-          return;
-        }
+        if (r.ok) setEvents(r.data);
+        else toast.error(`Load events failed — ${r.error}`);
       });
     }
     setExpanded((v) => !v);
@@ -76,87 +64,48 @@ export function EventList({ blockId, eventCount }: Props) {
         onClick={toggle}
       >
         <ChevronRight className={`disclosure-chev ${expanded ? "open" : ""}`} />
-        {eventCount} event{eventCount === 1 ? "" : "s"}
+        {expanded ? "Hide what happened" : "What happened"}
       </button>
 
       {expanded && (
-        <ul
-          className="events-list"
-          id={`events-list-${blockId}`}
-          role="list"
-        >
+        <ol className="ev-timeline" id={`events-list-${blockId}`}>
           {events === null ? (
             <li className="events-loading" aria-live="polite">
               loading…
             </li>
           ) : (
-            events.map((e) => <EventRow key={e.id} event={e} />)
+            eventRows(events).map((row) => <TimelineRow key={row.key} row={row} />)
           )}
-        </ul>
+        </ol>
       )}
     </div>
   );
 }
 
-function EventRow({ event }: { event: Event }) {
-  const [detailsOpen, setDetailsOpen] = useState(false);
-  const kind = sourceKind(event.source);
-  const { preview, truncated } = previewDetails(event.details, 160);
-  const time = formatEventTime(event.started_at);
-  // firefox/slack aren't in the shared SourceKind bucket set (they get
-  // their own source + origin display in UnsortedList); here they just
-  // need a recognisable icon/label once a labelled event joins a block.
-  const label =
-    event.source === "firefox" ? "Firefox" : event.source === "slack" ? "Slack" : sourceLabel(kind);
+const ICONS: Record<RowKind, typeof Circle> = {
+  prompt: MessageSquareText,
+  claude: Bot,
+  shell: Terminal,
+  git: GitBranch,
+  github: GitCommit,
+  slack: Slack,
+  web: Globe,
+  meeting: Calendar,
+  other: Circle,
+};
 
+function TimelineRow({ row }: { row: EventRow }) {
+  const Icon = ICONS[row.kind];
   return (
-    <li className="event-row" data-source={kind}>
-      <span className="event-source" aria-label={label} title={label}>
-        {iconFor(event.source, kind)}
+    <li className="ev-row" data-kind={row.kind}>
+      <time className="ev-time">{row.time}</time>
+      <span className="ev-icon" aria-hidden="true">
+        <Icon width={13} height={13} strokeWidth={1.75} />
       </span>
-      <div className="event-main">
-        <div className="event-head">
-          <span className="event-title">{event.title}</span>
-          <span className="event-time" aria-label={`at ${time}`}>
-            {time}
-          </span>
-        </div>
-        {preview && (
-          <div className="event-preview">
-            <span className={detailsOpen ? "preview-text open" : "preview-text"}>
-              {detailsOpen ? event.details : preview}
-            </span>
-            {truncated && (
-              <button
-                type="button"
-                className="event-expand"
-                aria-expanded={detailsOpen}
-                onClick={() => setDetailsOpen((v) => !v)}
-              >
-                {detailsOpen ? "Show less" : "Show more"}
-              </button>
-            )}
-          </div>
-        )}
+      <div className="ev-body">
+        <p className={row.kind === "prompt" ? "ev-text ev-prompt" : "ev-text"}>{row.text}</p>
+        {row.detail && <p className="ev-detail">{row.detail}</p>}
       </div>
     </li>
   );
-}
-
-function iconFor(source: string, kind: ReturnType<typeof sourceKind>) {
-  const size = 13;
-  if (source === "firefox") return <Globe width={size} height={size} strokeWidth={1.75} />;
-  if (source === "slack") return <Slack width={size} height={size} strokeWidth={1.75} />;
-  switch (kind) {
-    case "github":
-      return <GitCommit width={size} height={size} strokeWidth={1.75} />;
-    case "claude":
-      return <MessageSquare width={size} height={size} strokeWidth={1.75} />;
-    case "gcal":
-      return <Calendar width={size} height={size} strokeWidth={1.75} />;
-    case "jira":
-      return <Briefcase width={size} height={size} strokeWidth={1.75} />;
-    default:
-      return <Circle width={size} height={size} strokeWidth={1.75} />;
-  }
 }

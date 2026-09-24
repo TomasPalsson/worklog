@@ -17,6 +17,7 @@ export interface Event {
   session_id: string | null;
   tempo_worklog_id: string | null;
   raw_json: string | null;
+  snippet?: string | null; // prompt's first words, read live by the daemon, never stored
 }
 
 export interface Block {

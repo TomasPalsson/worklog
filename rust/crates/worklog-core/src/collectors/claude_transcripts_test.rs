@@ -299,3 +299,67 @@ fn re_run_inserts_no_new_rows() {
     let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
     assert_eq!(events.len(), 1, "dedupe on (source, source_id)");
 }
+
+#[test]
+fn claude_working_records_branch_tools_and_edited_files_never_commands() {
+    // What the owner needs to recognise a stretch of Claude working: the
+    // branch, which tools ran and which files changed. Never the command.
+    let tmp = tempfile::tempdir().unwrap();
+    let a = r#"{"type":"assistant","timestamp":"2026-04-18T09:00:05Z","sessionId":"s1","uuid":"a1","cwd":"/home/x/Desktop/Work/widget","gitBranch":"fix-login","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"SECRET=hunter2 make deploy"}}]}}"#;
+    let b = r#"{"type":"assistant","timestamp":"2026-04-18T09:00:40Z","sessionId":"s1","uuid":"a2","cwd":"/home/x/Desktop/Work/widget","gitBranch":"fix-login","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/home/x/Desktop/Work/widget/src/login.rs","old_string":"x","new_string":"y"}},{"type":"tool_use","name":"Bash","input":{"command":"cargo test"}}]}}"#;
+    write_transcript(tmp.path(), "proj", "s1", &format!("{a}\n{b}\n"));
+
+    let conn = open_memory().unwrap();
+    let since = NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
+    let until = NaiveDate::from_ymd_opt(2100, 1, 1).unwrap();
+    collect_from_dir(&conn, tmp.path(), since, until).unwrap();
+    let details: Option<String> = conn
+        .query_row(
+            "SELECT details FROM events WHERE source = 'claude_work'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let d = details.expect("a working minute says what happened");
+    assert!(d.contains("fix-login"), "{d}");
+    assert!(d.contains("Bash ×2"), "{d}");
+    assert!(d.contains("Edit"), "{d}");
+    assert!(d.contains("src/login.rs"), "{d}");
+    let all: String = conn
+        .query_row(
+            "SELECT group_concat(coalesce(details,'') || title) FROM events",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    for secret in ["hunter2", "make deploy", "cargo test"] {
+        assert!(!all.contains(secret), "command text leaked: {secret}");
+    }
+}
+
+#[test]
+fn a_session_copied_into_a_second_file_counts_once() {
+    // Resuming a session writes its history into a new file with the same
+    // line uuids; that is one Claude working, not two.
+    let tmp = tempfile::tempdir().unwrap();
+    let line = |session: &str| {
+        format!(
+            r#"{{"type":"assistant","timestamp":"2026-04-18T09:00:00Z","sessionId":"{session}","uuid":"same","cwd":"/home/x/Desktop/Work/widget","message":{{"role":"assistant","content":[{{"type":"text","text":"x"}}]}}}}"#
+        )
+    };
+    write_transcript(tmp.path(), "p1", "s1", &format!("{}\n", line("s1")));
+    write_transcript(tmp.path(), "p2", "s2", &format!("{}\n", line("s2")));
+
+    let conn = open_memory().unwrap();
+    let since = NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
+    let until = NaiveDate::from_ymd_opt(2100, 1, 1).unwrap();
+    collect_from_dir(&conn, tmp.path(), since, until).unwrap();
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE source = 'claude_work'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 1);
+}

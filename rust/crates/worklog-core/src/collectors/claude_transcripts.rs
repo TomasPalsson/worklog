@@ -11,7 +11,10 @@
 //!
 //! PRIVACY: only the fact that a prompt happened is recorded — the prompt
 //! text (`message.content`) is never read into an `Event` field. `title`
-//! is always the literal `"prompt"`; `details` is always `None`.
+//! is always the literal `"prompt"`; `details` is always `None`. A
+//! "claude working" minute stores only names and paths in `details`: the
+//! git branch, the tool names used and the files it edited — never a
+//! command, a reply or any other text.
 
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
@@ -49,6 +52,9 @@ pub fn collect_from_dir(
     };
     let home = dirs::home_dir().map(|p| p.to_string_lossy().into_owned());
 
+    // A resumed session copies its history into a new file with the same
+    // line uuids: count each line once across every file.
+    let mut seen = std::collections::HashSet::new();
     let since_ts = since.and_time(NaiveTime::MIN).and_utc().timestamp();
     let until_ts = until.and_time(NaiveTime::MIN).and_utc().timestamp();
 
@@ -89,6 +95,7 @@ pub fn collect_from_dir(
                 since_ts,
                 until_ts,
                 home.as_deref(),
+                &mut seen,
                 &mut report,
             )?;
         }
@@ -102,12 +109,14 @@ fn collect_file(
     since_ts: i64,
     until_ts: i64,
     home: Option<&str>,
+    seen: &mut std::collections::HashSet<String>,
     report: &mut CollectReport,
 ) -> Result<()> {
     let Ok(content) = std::fs::read_to_string(path) else {
         return Ok(());
     };
-    let mut working_minutes = std::collections::HashSet::new();
+    // One marker per session-minute, summarising every line in it.
+    let mut working: std::collections::BTreeMap<(String, i64), WorkMinute> = Default::default();
 
     for line in content.lines() {
         let line = line.trim();
@@ -119,10 +128,10 @@ fn collect_file(
         };
         // Claude working in the owner's interactive session is time on that
         // project too; one marker per minute, never the reply text.
-        let working = value.get("type").and_then(Value::as_str) == Some("assistant")
+        let is_work = value.get("type").and_then(Value::as_str) == Some("assistant")
             && value.get("entrypoint").and_then(Value::as_str) != Some("sdk-cli")
             && value.get("isSidechain").and_then(Value::as_bool) != Some(true);
-        if !working {
+        if !is_work {
             if value.get("type").and_then(Value::as_str) != Some("user") {
                 continue;
             }
@@ -150,34 +159,29 @@ fn collect_file(
         let Some(uuid) = value.get("uuid").and_then(Value::as_str) else {
             continue;
         };
-        let (source_id, title) = if working {
-            if !working_minutes.insert((session_id.to_string(), epoch / 60)) {
-                continue;
-            }
-            (format!("{session_id}:m{}", epoch / 60), "claude working")
-        } else {
-            (format!("{session_id}:{uuid}"), "prompt")
-        };
+        if !seen.insert(uuid.to_string()) {
+            continue;
+        }
         let project_path = value
             .get("cwd")
             .and_then(Value::as_str)
             .and_then(|cwd| repo_root_for(cwd, home));
+        if is_work {
+            working
+                .entry((session_id.to_string(), epoch / 60))
+                .or_insert_with(|| WorkMinute::new(ts_utc, project_path.clone()))
+                .add(&value);
+            continue;
+        }
 
         let ev = Event {
             id: None,
-            // "claude_work" (Claude busy) is kept apart from "claude_turn" (the
-            // owner typed) so attention can outweigh background activity.
-            source: if working {
-                "claude_work"
-            } else {
-                "claude_turn"
-            }
-            .into(),
-            source_id,
+            source: "claude_turn".into(),
+            source_id: format!("{session_id}:{uuid}"),
             started_at: ts_utc.to_rfc3339(),
             ended_at: None,
             duration_seconds: None,
-            title: title.into(),
+            title: "prompt".into(),
             details: None,
             repo: None,
             project_path,
@@ -190,7 +194,119 @@ fn collect_file(
         report.events_written += 1;
     }
 
+    // "claude_work" (Claude busy) is kept apart from "claude_turn" (the owner
+    // typed) so attention can outweigh background activity.
+    for ((session_id, minute), w) in working {
+        let ev = Event {
+            id: None,
+            source: "claude_work".into(),
+            source_id: format!("{session_id}:m{minute}"),
+            started_at: w.first.to_rfc3339(),
+            ended_at: None,
+            duration_seconds: None,
+            title: "claude working".into(),
+            details: w.summary(),
+            repo: None,
+            project_path: w.project_path.clone(),
+            jira_issue: None,
+            session_id: Some(session_id),
+            tempo_worklog_id: None,
+            raw_json: None,
+        };
+        repo::upsert_event(conn, &ev)?;
+        report.events_written += 1;
+    }
     Ok(())
+}
+
+/// What Claude did in one minute, as names and paths only.
+struct WorkMinute {
+    first: DateTime<Utc>,
+    project_path: Option<String>,
+    branch: Option<String>,
+    tools: std::collections::BTreeMap<String, u32>,
+    edited: std::collections::BTreeSet<String>,
+}
+
+/// Tools whose `file_path` is a file Claude changed.
+const EDIT_TOOLS: [&str; 4] = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
+
+impl WorkMinute {
+    fn new(first: DateTime<Utc>, project_path: Option<String>) -> Self {
+        Self {
+            first,
+            project_path,
+            branch: None,
+            tools: Default::default(),
+            edited: Default::default(),
+        }
+    }
+
+    fn add(&mut self, line: &Value) {
+        if let Some(b) = line.get("gitBranch").and_then(Value::as_str) {
+            if !b.is_empty() && b != "HEAD" {
+                self.branch = Some(b.to_string());
+            }
+        }
+        let content = line.pointer("/message/content").and_then(Value::as_array);
+        for item in content.into_iter().flatten() {
+            if item.get("type").and_then(Value::as_str) != Some("tool_use") {
+                continue;
+            }
+            let Some(name) = item.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            *self.tools.entry(name.to_string()).or_default() += 1;
+            if EDIT_TOOLS.contains(&name) {
+                if let Some(p) = item.pointer("/input/file_path").and_then(Value::as_str) {
+                    // Relative to the repo root, else to the session's folder.
+                    let cwd = line.get("cwd").and_then(Value::as_str);
+                    let rel = [self.project_path.as_deref(), cwd]
+                        .into_iter()
+                        .flatten()
+                        .find_map(|r| p.strip_prefix(&format!("{r}/")).map(str::to_string));
+                    self.edited.insert(
+                        rel.unwrap_or_else(|| p.rsplit('/').next().unwrap_or(p).to_string()),
+                    );
+                }
+            }
+        }
+    }
+
+    /// "branch fix-login · Bash ×2, Edit · edited src/login.rs", or `None`
+    /// when there is nothing but text (no branch, no tools).
+    fn summary(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(b) = &self.branch {
+            parts.push(format!("branch {b}"));
+        }
+        if !self.tools.is_empty() {
+            let mut tools: Vec<(&String, &u32)> = self.tools.iter().collect();
+            tools.sort_by(|a, b| b.1.cmp(a.1));
+            let names: Vec<String> = tools
+                .iter()
+                .map(|(n, c)| {
+                    if **c > 1 {
+                        format!("{n} ×{c}")
+                    } else {
+                        n.to_string()
+                    }
+                })
+                .collect();
+            parts.push(names.join(", "));
+        }
+        if !self.edited.is_empty() {
+            let files: Vec<&str> = self.edited.iter().map(String::as_str).collect();
+            let shown = files.iter().take(3).copied().collect::<Vec<_>>().join(", ");
+            let more = files.len().saturating_sub(3);
+            parts.push(if more > 0 {
+                format!("edited {shown} +{more}")
+            } else {
+                format!("edited {shown}")
+            });
+        }
+        (!parts.is_empty()).then(|| parts.join(" · "))
+    }
 }
 
 /// A "real" user prompt: plain string content, or a content array that

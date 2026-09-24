@@ -28,6 +28,7 @@ pub mod overlap_store;
 pub mod overlaps;
 pub mod paths;
 pub mod personal;
+pub mod prompt_snippets;
 pub mod purge;
 pub mod repo;
 pub mod routing;
