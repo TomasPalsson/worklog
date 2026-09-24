@@ -21,11 +21,20 @@ const WINDOW_MINUTES: i64 = 5;
 const BRIDGE_MINUTES: i64 = 10;
 
 /// Lane key for an event: its repo folder, `None` for folderless events.
+/// Personal (non-`~/Desktop/Work`) keys carry a marker so they can never
+/// be mistaken for client work — `work_folder_for_path` basenames them too.
 fn lane_key(e: &InferEvent) -> Option<String> {
-    e.project_path
-        .as_deref()
-        .map(|p| work_folder_for_path(p).unwrap_or_else(|| p.to_string()))
+    e.project_path.as_deref().map(|p| {
+        let folder = work_folder_for_path(p).unwrap_or_else(|| p.to_string());
+        if p.contains("/Desktop/Work/") {
+            folder
+        } else {
+            format!("{PERSONAL_MARK}{folder}")
+        }
+    })
 }
+
+const PERSONAL_MARK: &str = "personal:";
 
 pub(crate) fn build_blocks_by_project(
     events: Vec<InferEvent>,
@@ -72,6 +81,12 @@ pub(crate) fn build_blocks_by_project(
     blocks
 }
 
+/// Client work lives under `~/Desktop/Work`; everything else (e.g.
+/// `~/Desktop/Projects`) is the owner's own and yields to it.
+fn is_work(key: &str) -> bool {
+    !key.starts_with(PERSONAL_MARK)
+}
+
 fn minute(ts: DateTime<Utc>) -> i64 {
     ts.timestamp().div_euclid(60)
 }
@@ -88,6 +103,11 @@ fn owner_runs(keyed: &[(i64, String)]) -> Vec<(String, i64, i64)> {
             if (t - m).abs() <= WINDOW_MINUTES {
                 *counts.entry(k).or_default() += 1;
             }
+        }
+        // Work first: a minute with any work activity belongs to work, so a
+        // busy personal side project never swallows client time.
+        if counts.keys().any(|k| is_work(k)) {
+            counts.retain(|k, _| is_work(k));
         }
         let best = counts.values().copied().max();
         let owner = best.and_then(|b| {
@@ -240,6 +260,26 @@ mod tests {
             .find(|b| b.started_at.format("%H").to_string() == "09")
             .unwrap();
         assert_eq!(morning.dominant_project_path().as_deref(), Some(A));
+    }
+
+    #[test]
+    fn work_outranks_personal_in_the_same_minutes() {
+        // A light work session (every 6 min) beside a very busy personal one (every minute).
+        let mut events: Vec<InferEvent> = (0..10)
+            .map(|i| ev(12, i * 6, "claude_turn", Some(A)))
+            .collect();
+        events.extend((0..60).map(|i| ev(12, i, "claude", Some(B))));
+        let blocks = build_blocks(events);
+        assert_no_overlap(&blocks);
+        let work: i64 = blocks
+            .iter()
+            .filter(|b| b.dominant_project_path().as_deref() == Some(A))
+            .map(|b| b.duration_seconds / 60)
+            .sum();
+        assert!(
+            work >= 50,
+            "any work activity claims the minute, got {work}m"
+        );
     }
 
     #[test]
