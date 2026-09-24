@@ -15,8 +15,25 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::billing::work_folder_for_path;
 use crate::infer::{InferBlock, InferEvent};
 
-/// Activity within this many minutes of a minute counts toward its owner.
+/// Background activity within this many minutes of a minute counts toward its owner.
 const WINDOW_MINUTES: i64 = 5;
+/// The owner's own actions reach further: attention stays on a project for a
+/// while after typing into it.
+const HUMAN_WINDOW_MINUTES: i64 = 15;
+
+/// Sources that are the owner acting, not a tool working on their behalf.
+fn is_human(source: &str) -> bool {
+    matches!(
+        source,
+        "claude_turn"
+            | "shell"
+            | "git_reflog"
+            | "github_commit"
+            | "github_pr"
+            | "slack"
+            | "firefox"
+    )
+}
 /// Silent runs shorter than this between the same owner are bridged.
 const BRIDGE_MINUTES: i64 = 10;
 
@@ -36,16 +53,25 @@ fn lane_key(e: &InferEvent) -> Option<String> {
 
 const PERSONAL_MARK: &str = "personal:";
 
+/// (minute, lane key, is the owner acting).
+type Keyed = (i64, String, bool);
+
 pub(crate) fn build_blocks_by_project(
     events: Vec<InferEvent>,
     build: fn(Vec<InferEvent>) -> Vec<InferBlock>,
 ) -> Vec<InferBlock> {
-    let keyed: Vec<(i64, String)> = events
+    let keyed: Vec<Keyed> = events
         .iter()
         .filter(|e| !e.is_calendar())
-        .filter_map(|e| lane_key(e).map(|k| (minute(e.ts), k)))
+        .filter_map(|e| lane_key(e).map(|k| (minute(e.ts), k, is_human(&e.source))))
         .collect();
-    if keyed.iter().map(|(_, k)| k).collect::<BTreeSet<_>>().len() < 2 {
+    if keyed
+        .iter()
+        .map(|(_, k, _)| k)
+        .collect::<BTreeSet<_>>()
+        .len()
+        < 2
+    {
         return build(events);
     }
     let runs = owner_runs(&keyed);
@@ -92,14 +118,22 @@ fn minute(ts: DateTime<Utc>) -> i64 {
 }
 
 /// Contiguous (owner, first minute, last minute) runs over the day.
-fn owner_runs(keyed: &[(i64, String)]) -> Vec<(String, i64, i64)> {
-    let first = keyed.iter().map(|(m, _)| *m).min().unwrap_or(0);
-    let last = keyed.iter().map(|(m, _)| *m).max().unwrap_or(0);
+fn owner_runs(keyed: &[Keyed]) -> Vec<(String, i64, i64)> {
+    let first = keyed.iter().map(|(m, _, _)| *m).min().unwrap_or(0);
+    let last = keyed.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
     let mut owners: Vec<Option<String>> = Vec::new();
     let mut prev: Option<String> = None;
     for m in first..=last {
+        // Focus follows the owner's latest action: the project of the most
+        // recent human event at or before this minute (within the human
+        // window) owns it outright — work before personal.
+        if let Some(focus) = latest_human(keyed, m) {
+            prev = Some(focus.clone());
+            owners.push(Some(focus));
+            continue;
+        }
         let mut counts: BTreeMap<&String, usize> = BTreeMap::new();
-        for (t, k) in keyed {
+        for (t, k, _) in keyed {
             if (t - m).abs() <= WINDOW_MINUTES {
                 *counts.entry(k).or_default() += 1;
             }
@@ -139,6 +173,22 @@ fn owner_runs(keyed: &[(i64, String)]) -> Vec<(String, i64, i64)> {
         }
     }
     runs
+}
+
+/// Project of the owner's most recent action in (m − HUMAN_WINDOW, m],
+/// preferring work: the latest work action wins; a personal action only
+/// when no work action is in the window.
+fn latest_human(keyed: &[Keyed], m: i64) -> Option<String> {
+    let recent = |work: bool| {
+        keyed
+            .iter()
+            .filter(|(t, k, human)| {
+                *human && *t <= m && m - t <= HUMAN_WINDOW_MINUTES && is_work(k) == work
+            })
+            .max_by_key(|(t, _, _)| *t)
+            .map(|(_, k, _)| k.clone())
+    };
+    recent(true).or_else(|| recent(false))
 }
 
 /// Fill silent stretches shorter than BRIDGE_MINUTES between the same owner.
@@ -280,6 +330,25 @@ mod tests {
             work >= 50,
             "any work activity claims the minute, got {work}m"
         );
+    }
+
+    #[test]
+    fn your_typing_outweighs_claude_working_elsewhere() {
+        // Owner types into A every 8 min for 2 h; Claude works in another work
+        // repo every minute the whole time. The owner's attention wins.
+        const C: &str = "/Users/dev/Desktop/Work/lyfjastofnun";
+        let mut events: Vec<InferEvent> = (0..16)
+            .map(|i| ev(10 + (i * 8) / 60, (i * 8) % 60, "claude_turn", Some(A)))
+            .collect();
+        events.extend((0..120).map(|i| ev(10 + i / 60, i % 60, "claude_work", Some(C))));
+        let blocks = build_blocks(events);
+        assert_no_overlap(&blocks);
+        let a: i64 = blocks
+            .iter()
+            .filter(|b| b.dominant_project_path().as_deref() == Some(A))
+            .map(|b| b.duration_seconds / 60)
+            .sum();
+        assert!(a >= 110, "attention decides, got {a}m of 120");
     }
 
     #[test]

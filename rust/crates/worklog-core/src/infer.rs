@@ -1289,7 +1289,10 @@ mod tests {
     #[test]
     fn reflog_checkout_switches_project() {
         let repo_a = "/Users/dev/Desktop/Work/repo-a";
-        let repo_b = "/Users/dev/Desktop/Projects/repo-b";
+        // Both client repos: a switch between work repos must split. (A switch
+        // from work to a personal ~/Desktop/Projects repo deliberately does
+        // not — work outranks personal, see infer_lanes.)
+        let repo_b = "/Users/dev/Desktop/Work/repo-b";
         let mut events: Vec<InferEvent> = vec![
             ev_project(9, 40, "shell", repo_a),
             ev_project(9, 45, "shell", repo_a),

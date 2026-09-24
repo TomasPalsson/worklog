@@ -165,7 +165,14 @@ fn collect_file(
 
         let ev = Event {
             id: None,
-            source: "claude_turn".into(),
+            // "claude_work" (Claude busy) is kept apart from "claude_turn" (the
+            // owner typed) so attention can outweigh background activity.
+            source: if working {
+                "claude_work"
+            } else {
+                "claude_turn"
+            }
+            .into(),
             source_id,
             started_at: ts_utc.to_rfc3339(),
             ended_at: None,
