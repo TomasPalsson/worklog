@@ -59,7 +59,8 @@ function timeoutMs(path: string): number {
   return 10_000;
 }
 
-async function call<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+/** Exported for `lib/daemonOverlaps.ts`'s client fns — same transport/timeout. */
+export async function call<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
   const t = transport();
   const signal = AbortSignal.timeout(timeoutMs(path));
   const init: FetchInit & { unix?: string } = {
@@ -210,6 +211,7 @@ import type {
   JiraTicket,
   LabelRequest,
   MarkExportResponse,
+  Overlap,
   RoutedEvent,
   RoutingStatus,
   Rule,
@@ -226,13 +228,11 @@ interface DaySummary {
   total_seconds: number;
   blocks: Block[];
   gaps: DayGap[];
+  overlaps: Overlap[];
 }
 
-/**
- * One-shot day load: blocks enriched with event_count + sources, plus
- * the total seconds for the header. Replaces four separate direct-DB
- * queries with a single round-trip.
- */
+/** One-shot day load: blocks enriched with event_count + sources, the
+ * total seconds for the header, and windows of overlapping work. */
 export async function loadDaySummary(day: string): Promise<DaySummary> {
   return call<DaySummary>("GET", `/days/${day}`);
 }

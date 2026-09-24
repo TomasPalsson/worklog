@@ -63,6 +63,31 @@ export interface DayGap {
   minutes: number;
 }
 
+/** One project's activity inside an `Overlap` window. */
+export interface OverlapProject {
+  project: string;
+  human_events: number;
+  background_events: number;
+}
+
+/** The owner's saved manual split of an `Overlap` window — fractions
+ * keyed by project name, summing to 1. `null` on `Overlap.allocation`
+ * means the automatic per-minute split still applies. */
+export interface Allocation {
+  shares: Record<string, number>;
+}
+
+/** A ≥10-minute window where ≥2 work projects were both active
+ * (`GET /days/:day`'s `overlaps`) — the owner can rebalance which project
+ * gets which minutes via `POST /days/:day/allocations`. */
+export interface Overlap {
+  started_at: string; // ISO-8601 UTC
+  ended_at: string; // ISO-8601 UTC
+  minutes: number;
+  projects: OverlapProject[];
+  allocation: Allocation | null;
+}
+
 export interface JiraTicket {
   key: string;
   summary: string | null;
