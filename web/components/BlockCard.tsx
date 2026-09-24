@@ -332,6 +332,8 @@ export function BlockCard({
  * `SourceBadges` used (that badge row is gone; this text line replaced it). */
 const SOURCE_LABELS: Record<string, string> = {
   claude: "Claude",
+  claude_turn: "prompts",
+  claude_work: "min Claude working",
   shell: "shell",
   git_reflog: "git",
   github_commit: "commit",

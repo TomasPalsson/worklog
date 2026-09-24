@@ -122,6 +122,23 @@ describe("BlockCard description + clue line", () => {
     expect(screen.getByText("12 shell · 3 Slack · 2 web · 1 PR")).toBeTruthy();
   });
 
+  it("names the Claude transcript sources in plain words", () => {
+    render(
+      <BlockCard
+        block={makeBlock({
+          sources: [
+            { source: "claude_work", n: 14 },
+            { source: "claude_turn", n: 2 },
+          ],
+        })}
+        tickets={[]}
+        day="2026-07-25"
+        hideTicketing
+      />,
+    );
+    expect(screen.getByText("14 min Claude working · 2 prompts")).toBeTruthy();
+  });
+
   it("omits the clue line when the block has no sources", () => {
     render(
       <BlockCard block={makeBlock({ sources: [] })} tickets={[]} day="2026-07-25" hideTicketing />,
