@@ -302,56 +302,8 @@ mod tests {
             .iter()
             .any(|b| b.dominant_project_path().as_deref() == Some(C)));
     }
-
-    /// Every path that rebuilds a day (daemon, `worklog infer`, `worklog
-    /// day` on the 15-min schedule) must honour a saved split — the CLI
-    /// used to rebuild without it and undo the owner's choice.
-    #[test]
-    fn day_rebuild_reads_the_saved_split() {
-        use crate::models::Event;
-        let conn = crate::db::open_memory().unwrap();
-        let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
-        for i in 0..30u32 {
-            let p = if i < 10 { A } else { C };
-            let mut e = Event::minimal(
-                "claude_turn",
-                format!("t{i}"),
-                at(9, i * 2).to_rfc3339(),
-                "prompt",
-            );
-            e.project_path = Some(p.into());
-            crate::repo::upsert_event(&conn, &e).unwrap();
-        }
-        let s = shares(&[("vitinn-infra", 1.0)]);
-        crate::overlaps::save_allocation(&conn, day, at(9, 0), at(10, 0), &s).unwrap();
-
-        let blocks = build_day_blocks(&conn, day).unwrap();
-        // The project must survive saving: it is read back from the
-        // block's linked events, not from anything held in memory.
-        crate::infer::persist_blocks(&conn, day, &blocks).unwrap();
-        let ids: Vec<i64> = conn
-            .prepare("SELECT id FROM blocks WHERE day = ?1")
-            .unwrap()
-            .query_map([day.to_string()], |r| r.get(0))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
-        assert!(!ids.is_empty());
-        for id in ids {
-            let p = crate::personal::dominant_project_path_for_block(&conn, id).unwrap();
-            assert_eq!(
-                p.as_deref(),
-                Some(A),
-                "saved block {id} must read as vitinn-infra"
-            );
-        }
-        assert!(blocks
-            .iter()
-            .all(|b| b.dominant_project_path().as_deref() == Some(A)));
-        let total: i64 = blocks.iter().map(|b| b.duration_seconds).sum();
-        assert!(
-            total >= 55 * 60,
-            "the saved 100% split must hold, got {total}s"
-        );
-    }
 }
+
+#[cfg(test)]
+#[path = "infer_allocations_db_test.rs"]
+mod db_tests;
