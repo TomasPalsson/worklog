@@ -35,6 +35,29 @@ export function previewDetails(details: string | null, maxChars: number = 160): 
   return { preview: `${preview}…`, truncated: true };
 }
 
+const GIST_MAX_CHARS = 120;
+
+/**
+ * One-line "what was it" for a Slack message or web visit: the message
+ * text with Slack's `<url|label>` markup reduced to the label (or to the
+ * bare host/path), or a visit's host + path without scheme or query.
+ */
+export function eventGist(source: string, details: string | null): string {
+  if (!details) return "";
+  const noScheme = (u: string) =>
+    u.replace(/^https?:\/\//, "").replace(/[?#].*$/, "").replace(/\/$/, "");
+  const text =
+    source === "firefox"
+      ? noScheme(details.trim())
+      : details
+          .replace(/<(https?:\/\/[^|>]+)\|([^>]+)>/g, "$2")
+          .replace(/<(https?:\/\/[^>]+)>/g, (_, u: string) => noScheme(u))
+          .replace(/\\n|\s+/g, " ")
+          .trim();
+  const chars = [...text];
+  return chars.length > GIST_MAX_CHARS ? `${chars.slice(0, GIST_MAX_CHARS).join("")}…` : text;
+}
+
 /**
  * Human-readable source label shown next to each event row. Mirrors
  * the display buckets in `./types.ts::sourceKind`, but adds words — the

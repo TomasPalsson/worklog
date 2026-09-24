@@ -141,7 +141,7 @@ fn rule_beats_model() {
     assert_eq!(stats.rules_applied, 1);
     assert_eq!(stats.guesses_applied, 0);
 
-    let routed = routed_for_day(&conn, day).unwrap();
+    let routed = routed_for_day(&conn, day, false).unwrap();
     assert_eq!(routed.len(), 1);
     assert_eq!(routed[0].folder.as_deref(), Some("aws-cert"));
     assert_eq!(routed[0].label_origin, Some(LabelOrigin::Rule));
@@ -176,7 +176,7 @@ fn files_when_winner_beats_abstain_and_runner_up() {
     };
     let stats = route_day(&conn, day, &model, default_rule()).unwrap();
     assert_eq!(stats.guesses_applied, 1);
-    let routed = routed_for_day(&conn, day).unwrap();
+    let routed = routed_for_day(&conn, day, false).unwrap();
     assert_eq!(routed[0].label_origin, Some(LabelOrigin::Guess));
     assert_eq!(routed[0].label_confidence, Some(0.079));
     assert_eq!(routed[0].folder.as_deref(), Some("aws-cert"));
@@ -235,10 +235,11 @@ fn unsorted_when_runner_up_too_close() {
 
 // FR-10 (spec 004 amendment 2026-09-23): an event whose title or details
 // name exactly one project by an exact `github.com/<org>/<key>` or
-// `Desktop/Work/<key>` mention is filed by rule, never sent to the model.
+// `Desktop/Work/<key>` mention is filed with origin Link, never sent to the model —
+// the owner never created a rule, so the badge must not call it one (2026-09-23 amendment).
 
 #[test]
-fn exact_repo_mention_files_by_rule() {
+fn exact_repo_mention_files_by_link() {
     let conn = open_memory().unwrap();
     pin(&conn, "vitinn-infra", None);
     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
@@ -257,13 +258,16 @@ fn exact_repo_mention_files_by_rule() {
     assert_eq!(stats.rules_applied, 1);
     assert_eq!(stats.guesses_applied, 0);
 
-    let routed = routed_for_day(&conn, day).unwrap();
+    let routed = routed_for_day(&conn, day, false).unwrap();
     assert_eq!(routed[0].folder.as_deref(), Some("vitinn-infra"));
-    assert_eq!(routed[0].label_origin, Some(LabelOrigin::Rule));
+    // Named-project hits are `Link`, not `Rule` — the owner never created a
+    // rule; the event's own text named the repo (spec: browser/Slack event
+    // routing, item B).
+    assert_eq!(routed[0].label_origin, Some(LabelOrigin::Link));
 }
 
 #[test]
-fn path_mention_files_by_rule() {
+fn path_mention_files_by_link() {
     let conn = open_memory().unwrap();
     pin(&conn, "vitinn-infra", None);
     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
@@ -283,9 +287,9 @@ fn path_mention_files_by_rule() {
     assert_eq!(stats.rules_applied, 1);
     assert_eq!(stats.guesses_applied, 0);
 
-    let routed = routed_for_day(&conn, day).unwrap();
+    let routed = routed_for_day(&conn, day, false).unwrap();
     assert_eq!(routed[0].folder.as_deref(), Some("vitinn-infra"));
-    assert_eq!(routed[0].label_origin, Some(LabelOrigin::Rule));
+    assert_eq!(routed[0].label_origin, Some(LabelOrigin::Link));
 }
 
 #[test]
@@ -388,7 +392,7 @@ fn title_only_mention_is_not_a_match() {
         "a project mention in the page-controlled title, absent from details, must not be filed by rule"
     );
 
-    let routed = routed_for_day(&conn, day).unwrap();
+    let routed = routed_for_day(&conn, day, false).unwrap();
     assert_ne!(
         routed[0].label_origin,
         Some(LabelOrigin::Rule),
@@ -497,7 +501,7 @@ fn always_creates_rule_and_applies() {
     assert_eq!(rules[0].pattern, "github.com");
     assert_eq!(rules[0].folder, "lighthouse");
 
-    let routed = routed_for_day(&conn, day).unwrap();
+    let routed = routed_for_day(&conn, day, false).unwrap();
     let ev2 = routed.iter().find(|r| r.id == e2).unwrap();
     assert_eq!(ev2.folder.as_deref(), Some("lighthouse"));
     assert_eq!(ev2.label_origin, Some(LabelOrigin::Rule));
@@ -559,7 +563,7 @@ fn always_rule_relabels_previously_guessed_events() {
     )
     .unwrap();
 
-    let routed = routed_for_day(&conn, day).unwrap();
+    let routed = routed_for_day(&conn, day, false).unwrap();
     let ev2 = routed.iter().find(|r| r.id == e2).unwrap();
     assert_eq!(ev2.folder.as_deref(), Some("lighthouse"));
     assert_eq!(ev2.label_origin, Some(LabelOrigin::Rule));
@@ -623,7 +627,7 @@ fn label_event_does_not_partial_commit_when_always_rule_fails() {
     .unwrap_err();
     assert!(err.to_string().contains("container"));
 
-    let routed = routed_for_day(&conn, day).unwrap();
+    let routed = routed_for_day(&conn, day, false).unwrap();
     let ev = routed.iter().find(|r| r.id == eid).unwrap();
     assert_eq!(
         ev.folder, None,
@@ -664,7 +668,7 @@ fn label_event_rejects_domain_rule_on_non_firefox_event() {
         "a domain rule must not be created from a non-firefox event"
     );
 
-    let routed = routed_for_day(&conn, day).unwrap();
+    let routed = routed_for_day(&conn, day, false).unwrap();
     let ev = routed.iter().find(|r| r.id == eid).unwrap();
     assert_eq!(
         ev.folder, None,
@@ -739,6 +743,77 @@ fn container_narrows_options() {
     assert_eq!(pending[0].options, vec!["sjukra-portal".to_string()]);
 }
 
+// Time-context step (2026-09-23 amendment): a Slack event with no rule/link
+// hit gets filed under the project the owner's claude/shell/git_reflog
+// activity dominantly named in the ±10 minute window around it.
+
+fn claude_at(conn: &Connection, id: &str, ts: &str, project_path: &str) {
+    let mut ev = Event::minimal("claude", id, ts, "x");
+    ev.project_path = Some(project_path.into());
+    repo::upsert_event(conn, &ev).unwrap();
+}
+
+#[test]
+fn slack_context_files_from_dominant_recent_activity() {
+    let conn = open_memory().unwrap();
+    pin(&conn, "sjukra", None);
+    let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+    let home = dirs::home_dir().unwrap().to_string_lossy().into_owned();
+    let path = format!("{home}/Desktop/Work/sjukra");
+    claude_at(&conn, "c1", "2026-04-20T08:55:00+00:00", &path);
+    claude_at(&conn, "c2", "2026-04-20T08:57:00+00:00", &path);
+    claude_at(&conn, "c3", "2026-04-20T09:02:00+00:00", &path);
+
+    let eid = repo::upsert_event(
+        &conn,
+        &Event::minimal(SOURCE_SLACK, "e1", "2026-04-20T09:00:00+00:00", "chat"),
+    )
+    .unwrap();
+    set_details(&conn, eid, "status update, nothing project-specific");
+
+    let stats = route_day(&conn, day, &PanicsIfCalled, default_rule()).unwrap();
+    assert_eq!(
+        stats.rules_applied, 1,
+        "the context step must not reach the classifier"
+    );
+
+    let routed = routed_for_day(&conn, day, false).unwrap();
+    let ev = routed.iter().find(|r| r.id == eid).unwrap();
+    assert_eq!(ev.folder.as_deref(), Some("sjukra"));
+    assert_eq!(ev.label_origin, Some(LabelOrigin::Context));
+    assert_eq!(ev.label_confidence, None);
+}
+
+#[test]
+fn firefox_events_never_get_context_origin() {
+    let conn = open_memory().unwrap();
+    pin(&conn, "sjukra", None);
+    let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+    let home = dirs::home_dir().unwrap().to_string_lossy().into_owned();
+    let path = format!("{home}/Desktop/Work/sjukra");
+    claude_at(&conn, "c1", "2026-04-20T08:55:00+00:00", &path);
+    claude_at(&conn, "c2", "2026-04-20T08:57:00+00:00", &path);
+
+    let eid = repo::upsert_event(
+        &conn,
+        &Event::minimal(
+            SOURCE_FIREFOX,
+            "e1",
+            "2026-04-20T09:00:00+00:00",
+            "some page",
+        ),
+    )
+    .unwrap();
+    set_details(&conn, eid, "https://example.com/");
+
+    let (rule_hits, pending) = load_pending(&conn, day).unwrap();
+    assert!(
+        rule_hits.is_empty(),
+        "a firefox event must never be filed by the time-context step"
+    );
+    assert_eq!(pending.len(), 1);
+}
+
 #[test]
 fn project_keys_include_billing_folder_pins() {
     let conn = open_memory().unwrap();
@@ -798,7 +873,7 @@ fn editing_rule_folder_relabels_rule_labelled_events() {
         .unwrap();
     };
     always(ids[0], "folder1");
-    let routed = routed_for_day(&conn, day).unwrap();
+    let routed = routed_for_day(&conn, day, false).unwrap();
     let b = routed.iter().find(|r| r.id == ids[1]).unwrap();
     assert_eq!(b.label_origin, Some(LabelOrigin::Rule));
 
@@ -807,10 +882,85 @@ fn editing_rule_folder_relabels_rule_labelled_events() {
     assert_eq!(rules.len(), 1);
     assert_eq!(rules[0].folder, "folder2");
 
-    let routed = routed_for_day(&conn, day).unwrap();
+    let routed = routed_for_day(&conn, day, false).unwrap();
     let b = routed.iter().find(|r| r.id == ids[1]).unwrap();
     assert_eq!(b.folder.as_deref(), Some("folder2"));
     assert_eq!(b.label_origin, Some(LabelOrigin::Rule));
     let a = routed.iter().find(|r| r.id == ids[0]).unwrap();
     assert_eq!(a.folder.as_deref(), Some("folder1"), "hand fixes stay");
+}
+
+#[test]
+fn ignore_rule_dismisses_matching_event_on_route_day() {
+    let conn = open_memory().unwrap();
+    conn.execute(
+        "INSERT INTO routing_rules (kind, pattern, folder) VALUES ('slack_channel', '#random', '__ignore__')",
+        [],
+    )
+    .unwrap();
+    let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+    let id = repo::upsert_event(
+        &conn,
+        &Event::minimal(SOURCE_SLACK, "s1", "2026-04-20T09:00:00+00:00", "#random"),
+    )
+    .unwrap();
+
+    let model = PanicsIfCalled;
+    let stats = route_day(&conn, day, &model, default_rule()).unwrap();
+    assert_eq!(stats.rules_applied, 1);
+
+    let row = fetch_event(&conn, id).unwrap().unwrap();
+    assert_eq!(row.label_origin.as_deref(), Some("dismissed"));
+    assert!(row.project_path.is_none());
+    assert!(row.label_confidence.is_none());
+}
+
+#[test]
+fn routed_for_day_excludes_dismissed_events() {
+    let conn = open_memory().unwrap();
+    let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+    let id = repo::upsert_event(
+        &conn,
+        &Event::minimal(SOURCE_SLACK, "s1", "2026-04-20T09:00:00+00:00", "#random"),
+    )
+    .unwrap();
+    crate::routing_dismiss::dismiss_event(&conn, id, None).unwrap();
+
+    let routed = routed_for_day(&conn, day, false).unwrap();
+    assert!(
+        routed.is_empty(),
+        "a dismissed event must not appear in the routed list"
+    );
+}
+
+#[test]
+fn routed_for_day_include_hidden_returns_dismissed_and_noise() {
+    let conn = open_memory().unwrap();
+    let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+    let dismissed_id = repo::upsert_event(
+        &conn,
+        &Event::minimal(SOURCE_SLACK, "s1", "2026-04-20T09:00:00+00:00", "#random"),
+    )
+    .unwrap();
+    crate::routing_dismiss::dismiss_event(&conn, dismissed_id, None).unwrap();
+    let noise_id = repo::upsert_event(
+        &conn,
+        &Event::minimal(SOURCE_FIREFOX, "f1", "2026-04-20T09:05:00+00:00", "news"),
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE events SET label_origin = 'noise' WHERE id = ?1",
+        params![noise_id],
+    )
+    .unwrap();
+
+    assert!(
+        routed_for_day(&conn, day, false).unwrap().is_empty(),
+        "default list must exclude both dismissed and noise"
+    );
+
+    let hidden = routed_for_day(&conn, day, true).unwrap();
+    let ids: Vec<i64> = hidden.iter().map(|e| e.id).collect();
+    assert!(ids.contains(&dismissed_id));
+    assert!(ids.contains(&noise_id));
 }

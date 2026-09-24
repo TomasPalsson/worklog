@@ -171,3 +171,17 @@ CREATE TABLE IF NOT EXISTS routing_rules (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE(kind, pattern)
 );
+
+-- ───────────────────────── overlap allocations ─────────────────────────
+-- The owner's manual split of a `overlaps::Overlap` window — "70% on
+-- vitinn-infra, 30% on lyfjastofnun" — read back by `infer_allocations`
+-- so re-inferring the day honours the choice instead of the automatic
+-- per-minute owner. See overlaps.rs / overlap_store.rs.
+CREATE TABLE IF NOT EXISTS overlap_allocations (
+    day TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT NOT NULL,
+    shares TEXT NOT NULL, -- JSON object {project: fraction}
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(day, started_at, ended_at)
+);

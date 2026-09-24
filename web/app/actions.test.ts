@@ -143,6 +143,17 @@ mock.module("@/lib/daemon", () => ({
     label_origin: "fix",
     label_confidence: null,
   }),
+  dismissEvent: async () => ({
+    id: 1,
+    source: "firefox",
+    started_at: "2026-04-14T10:00:00Z",
+    title: "x",
+    details: null,
+    container: null,
+    folder: null,
+    label_origin: "dismissed",
+    label_confidence: null,
+  }),
   routingRules: async () => [],
   deleteRule: async () => ({ removed: true }),
   routingStatus: async () => ({

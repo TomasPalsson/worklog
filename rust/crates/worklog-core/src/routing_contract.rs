@@ -37,33 +37,62 @@ pub const VERDICT_MODEL_REPO: &str = "heman10x/rlcd-modernbert-151m";
 pub const VERDICT_MODEL_REVISION: &str = "8af2496eb63c7fa66d7d234e1f62629380030eb4";
 /// Container whose tabs are never recorded (D-08).
 pub const PERSONAL_CONTAINER: &str = "Personal";
+/// Sentinel `routing_rules.folder` value meaning "dismiss on match" rather
+/// than file under a real project (never a real project-key folder name).
+pub const IGNORE_FOLDER: &str = "__ignore__";
 /// Max recent fixes passed to the model as hints (FR-20).
 pub const MAX_HINT_EXAMPLES: usize = 5;
 
 /// Where an event's project label came from. Stored in
 /// `events.label_origin` as the lowercase string.
+///
+/// `Link` = the event's own text named the project (an exact
+/// `github.com/<org>/<key>` or `Desktop/Work/<key>` mention — `named_project`
+/// in routing.rs). `Context` = the day's `claude`/`shell`/`git_reflog`
+/// activity around the event's time named it (routing_context.rs), OR the
+/// end-of-day absorb step filed it inside a stretch of other-source work
+/// activity (routing_absorb.rs); either way `label_confidence` is always
+/// `NULL`. `Dismissed` = the owner (or an `__ignore__` rule) marked the
+/// event as noise — never sorted, never counted as work time; its
+/// `project_path`/`label_confidence` are always `NULL`. `Noise` = the
+/// absorb step's last resort: nothing labelled it and no work stretch
+/// bracketed it, so it's auto-hidden the same way `Dismissed` is — but
+/// still an owner rule/fix away from being re-labelled. All but `Fix`,
+/// `Dismissed` and `Noise` are automatic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LabelOrigin {
     Rule,
+    Link,
+    Context,
     Fix,
     Guess,
+    Dismissed,
+    Noise,
 }
 
 impl LabelOrigin {
     pub fn as_str(self) -> &'static str {
         match self {
             LabelOrigin::Rule => "rule",
+            LabelOrigin::Link => "link",
+            LabelOrigin::Context => "context",
             LabelOrigin::Fix => "fix",
             LabelOrigin::Guess => "guess",
+            LabelOrigin::Dismissed => "dismissed",
+            LabelOrigin::Noise => "noise",
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "rule" => Some(LabelOrigin::Rule),
+            "link" => Some(LabelOrigin::Link),
+            "context" => Some(LabelOrigin::Context),
             "fix" => Some(LabelOrigin::Fix),
             "guess" => Some(LabelOrigin::Guess),
+            "dismissed" => Some(LabelOrigin::Dismissed),
+            "noise" => Some(LabelOrigin::Noise),
             _ => None,
         }
     }
@@ -127,6 +156,15 @@ pub struct LabelRequest {
     pub folder: String,
     /// `Some(kind)` = also create an "always" rule of this kind.
     pub always: Option<RuleKind>,
+}
+
+/// Body of `POST /events/:id/dismiss`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DismissRequest {
+    /// `Some(Domain | SlackChannel)` = also create an `__ignore__` rule of
+    /// this kind. `Container` is not a valid dismiss rule kind.
+    #[serde(default)]
+    pub rule_kind: Option<RuleKind>,
 }
 
 /// A browser/Slack event as the UI sees it (`GET /days/:day/routed`).
