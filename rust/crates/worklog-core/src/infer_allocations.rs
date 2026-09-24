@@ -39,11 +39,15 @@ pub(crate) fn apply_allocations(
     for alloc in allocations {
         let start = minute(alloc.started_at) - first;
         let end = minute(alloc.ended_at) - first;
-        // Only the minutes someone actually worked are split, so a share
-        // is a share of real time wherever the idle stretches fall.
+        // Only WORK minutes someone actually worked are split: a share is
+        // a share of real work time, and personal time is never touched.
         let worked: Vec<usize> = (start.max(0)..end.min(owners.len() as i64))
             .map(|i| i as usize)
-            .filter(|&i| owners[i].is_some())
+            .filter(|&i| {
+                owners[i]
+                    .as_deref()
+                    .is_some_and(crate::infer_lanes::is_work)
+            })
             .collect();
         let total = worked.len();
         if total == 0 || alloc.shares.is_empty() {
@@ -148,6 +152,33 @@ mod tests {
         assert_eq!(count("A"), 15);
         assert_eq!(count("B"), 15);
         assert_eq!(owners.iter().filter(|o| o.is_none()).count(), 10);
+    }
+
+    #[test]
+    fn personal_minutes_are_never_turned_into_work() {
+        let first = minute(at(9, 0));
+        // 0..10 work, 10..20 personal. 100% to A must only take the work.
+        let mut owners: Vec<Option<String>> = (0..20)
+            .map(|i| {
+                Some(if i < 10 {
+                    "orig".to_string()
+                } else {
+                    "personal:home".to_string()
+                })
+            })
+            .collect();
+        let mut shares = BTreeMap::new();
+        shares.insert("A".to_string(), 1.0);
+        let allocations = vec![AllocationWindow {
+            started_at: at(9, 0),
+            ended_at: at(9, 20),
+            shares,
+        }];
+        apply_allocations(&mut owners, first, &allocations);
+        assert!(owners[..10].iter().all(|o| o.as_deref() == Some("A")));
+        assert!(owners[10..]
+            .iter()
+            .all(|o| o.as_deref() == Some("personal:home")));
     }
 
     #[test]
