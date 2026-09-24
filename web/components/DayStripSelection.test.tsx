@@ -161,14 +161,17 @@ describe("DayStrip selection drag", () => {
 });
 
 describe("DayStrip saved allocation bracket", () => {
-  it("renders a bracket with the split ratio and a working reset", () => {
+  it("spells out each saved split (range, project, percent) with a working reset", () => {
     const allocation: SavedAllocation = {
       started_at: at(9, 30),
       ended_at: at(10, 30),
       shares: { alpha: 0.9, beta: 0.1 },
     };
     renderExpandedLanes([allocation]);
-    expect(screen.getByText("you set 90/10")).toBeTruthy();
+    const chip = screen.getByRole("list", { name: "Your saved splits" });
+    expect(chip.textContent).toContain("09:30–10:30");
+    expect(chip.textContent).toContain("alpha 90%");
+    expect(chip.textContent).toContain("beta 10%");
 
     fireEvent.click(screen.getByRole("button", { name: "reset" }));
     expect(deleteCalls).toEqual([

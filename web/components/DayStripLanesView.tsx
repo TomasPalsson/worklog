@@ -44,7 +44,9 @@ export function LanesView({
 }) {
   const drag = useDragSelection(window);
   const allocationBands = buildAllocationBands(allocations, window);
-  const hues = Object.fromEntries(lanes.filter((l) => l.hue !== null).map((l) => [l.key, l.hue as number]));
+  const hues = Object.fromEntries(
+    lanes.filter((l) => l.hue !== null).map((l) => [l.key, l.hue as number]),
+  );
   return (
     <div
       className="day-strip-lanes"
@@ -54,7 +56,7 @@ export function LanesView({
       onPointerUp={drag.handlers.onPointerUp}
       onKeyDown={drag.handlers.onKeyDown}
     >
-      <AllocationBrackets bands={allocationBands} day={day} />
+      <AllocationBrackets bands={allocationBands} hues={hues} />
       {lanes.map((lane) => (
         <LaneRow key={lane.key} lane={lane} segProps={segProps} />
       ))}
@@ -94,7 +96,10 @@ export function LanesView({
 function LaneRow({ lane, segProps }: { lane: Lane; segProps: SegProps }) {
   return (
     <div className="day-strip-lane-row" data-testid="lane-row">
-      <div className="day-strip-lane-label" title={`${lane.label} ${formatDuration(lane.totalSeconds)}`}>
+      <div
+        className="day-strip-lane-label"
+        title={`${lane.label} ${formatDuration(lane.totalSeconds)}`}
+      >
         <span className="day-strip-lane-name">{lane.label}</span>
         <span className="day-strip-lane-total">
           {formatDuration(lane.totalSeconds)}
@@ -111,7 +116,13 @@ function LaneRow({ lane, segProps }: { lane: Lane; segProps: SegProps }) {
           <span
             key={`activity-${b.leftPct}-${b.widthPct}`}
             className="day-strip-lane-activity"
-            style={{ left: `${b.leftPct}%`, width: `${b.widthPct}%`, "--h": lane.hue ?? 0 } as CSSProperties}
+            style={
+              {
+                left: `${b.leftPct}%`,
+                width: `${b.widthPct}%`,
+                "--h": lane.hue ?? 0,
+              } as CSSProperties
+            }
             aria-hidden="true"
           />
         ))}

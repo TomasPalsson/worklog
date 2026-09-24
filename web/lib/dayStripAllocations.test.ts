@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { TrackWindow } from "./dayStrip";
-import { buildAllocationBands, formatSharesRatio } from "./dayStripAllocations";
+import { buildAllocationBands, sharesByLargest } from "./dayStripAllocations";
 import type { SavedAllocation } from "./types";
 
 const at = (h: number, m: number) => new Date(2026, 8, 23, h, m).toISOString();
@@ -10,10 +10,12 @@ const window: TrackWindow = {
   endMs: new Date(at(15, 0)).getTime(),
 };
 
-describe("formatSharesRatio", () => {
-  it("formats percentages largest first", () => {
-    expect(formatSharesRatio({ alpha: 0.9, beta: 0.1 })).toBe("you set 90/10");
-    expect(formatSharesRatio({ alpha: 0.3, beta: 0.7 })).toBe("you set 70/30");
+describe("sharesByLargest", () => {
+  it("names each project with its whole percent, biggest first", () => {
+    expect(sharesByLargest({ alpha: 0.3, beta: 0.7 })).toEqual([
+      ["beta", 70],
+      ["alpha", 30],
+    ]);
   });
 });
 
@@ -26,7 +28,6 @@ describe("buildAllocationBands", () => {
     };
     const bands = buildAllocationBands([allocation], window);
     expect(bands).toHaveLength(1);
-    expect(bands[0].ratioLabel).toBe("you set 60/40");
     expect(bands[0].leftPct).toBeGreaterThan(0);
     expect(bands[0].widthPct).toBeGreaterThan(0);
   });

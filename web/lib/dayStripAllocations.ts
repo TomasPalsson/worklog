@@ -1,7 +1,6 @@
-// Pure helpers for the lanes view's saved-allocation brackets — a thin
-// strip above the tracks showing "you set 90/10" for any window the owner
-// has manually split (drag-selected or from an overlap band), with the
-// same fully-inside-the-window clipping convention `overlapsInWindow` uses.
+// Pure helpers for the lanes view's saved splits — where each saved range
+// sits on the track and who got what, with the same fully-inside-the-window
+// clipping convention `overlapsInWindow` uses.
 
 import type { TrackWindow } from "./dayStrip";
 import type { SavedAllocation } from "./types";
@@ -10,15 +9,13 @@ export interface AllocationBand {
   allocation: SavedAllocation;
   leftPct: number;
   widthPct: number;
-  ratioLabel: string;
 }
 
-/** "you set 90/10" — shares' percentages, largest first. */
-export function formatSharesRatio(shares: Record<string, number>): string {
-  const pcts = Object.values(shares)
-    .map((f) => Math.round(f * 100))
-    .sort((a, b) => b - a);
-  return `you set ${pcts.join("/")}`;
+/** `[project, whole percent]` pairs, the biggest share first. */
+export function sharesByLargest(shares: Record<string, number>): [string, number][] {
+  return Object.entries(shares)
+    .map(([p, f]): [string, number] => [p, Math.round(f * 100)])
+    .sort((a, b) => b[1] - a[1]);
 }
 
 export function buildAllocationBands(
@@ -41,7 +38,6 @@ export function buildAllocationBands(
         allocation,
         leftPct: pct(startMs),
         widthPct: pct(endMs) - pct(startMs),
-        ratioLabel: formatSharesRatio(allocation.shares),
       };
     });
 }

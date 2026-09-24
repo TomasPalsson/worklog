@@ -31,6 +31,8 @@ import {
 import { buildLanes, isFocused } from "@/lib/dayStripLanes";
 import { buildOverlapBands, overlapsInWindow } from "@/lib/dayStripOverlaps";
 import { LanesView } from "./DayStripLanesView";
+import { AllocationChips } from "./DayStripAllocationBrackets";
+import { buildAllocationBands } from "@/lib/dayStripAllocations";
 import type { Overlap, ProjectActivity, SavedAllocation } from "@/lib/types";
 
 interface Props {
@@ -94,7 +96,10 @@ function buildStripData(
   activity: ProjectActivity[],
   window_: TrackWindow,
 ) {
-  const hued = withLegendHues(buildSegments(blocks, gaps, window_), buildLegend(blocks, gaps));
+  const hued = withLegendHues(
+    buildSegments(blocks, gaps, window_),
+    buildLegend(blocks, gaps),
+  );
   const segments = mergeAdjacentBlocks(hued.segments);
   const gapSegments = segments.filter(
     (s): s is Extract<TrackSegment, { kind: "gap" }> => s.kind === "gap",
@@ -107,7 +112,11 @@ function buildStripData(
     ticks: hourTicks(window_),
     gapSegments,
     lanes,
-    bands: buildOverlapBands(overlaps, window_, lanes.map((l) => l.key)),
+    bands: buildOverlapBands(
+      overlaps,
+      window_,
+      lanes.map((l) => l.key),
+    ),
   };
 }
 
@@ -167,7 +176,9 @@ export function DayStrip({
           activity={activity}
           allocations={allocations}
           openOverlap={openOverlap}
-          onToggleOverlap={(key) => setOpenOverlap((cur) => (cur === key ? null : key))}
+          onToggleOverlap={(key) =>
+            setOpenOverlap((cur) => (cur === key ? null : key))
+          }
         />
       ) : (
         <div className="day-strip-track">
@@ -179,6 +190,17 @@ export function DayStrip({
 
       <Ticks ticks={data.ticks} expanded={expanded} />
       <LegendList legend={data.legend} onFocus={setFocusKey} />
+      {expanded && (
+        <AllocationChips
+          bands={buildAllocationBands(allocations, window_)}
+          day={day}
+          hues={Object.fromEntries(
+            data.lanes
+              .filter((l) => l.hue !== null)
+              .map((l) => [l.key, l.hue as number]),
+          )}
+        />
+      )}
     </section>
   );
 }
@@ -197,7 +219,11 @@ function DayStripToolbar({
   return (
     <div className="day-strip-toolbar">
       {overlapCount > 0 && (
-        <button type="button" className="day-strip-overlap-chip" onClick={onExpand}>
+        <button
+          type="button"
+          className="day-strip-overlap-chip"
+          onClick={onExpand}
+        >
           {overlapCount} overlap{overlapCount === 1 ? "" : "s"}
         </button>
       )}
@@ -207,7 +233,11 @@ function DayStripToolbar({
         aria-expanded={expanded}
         onClick={onToggle}
       >
-        {expanded ? <ChevronUp size={14} strokeWidth={1.75} /> : <ChevronDown size={14} strokeWidth={1.75} />}
+        {expanded ? (
+          <ChevronUp size={14} strokeWidth={1.75} />
+        ) : (
+          <ChevronDown size={14} strokeWidth={1.75} />
+        )}
         {expanded ? "Collapse" : "Expand"}
       </button>
     </div>
@@ -216,9 +246,15 @@ function DayStripToolbar({
 
 function Ticks({ ticks, expanded }: { ticks: HourTick[]; expanded: boolean }) {
   return (
-    <div className={`day-strip-ticks${expanded ? " day-strip-ticks-lanes" : ""}`}>
+    <div
+      className={`day-strip-ticks${expanded ? " day-strip-ticks-lanes" : ""}`}
+    >
       {ticks.map((t) => (
-        <span key={t.ms} className="day-strip-tick" style={{ left: `${t.pct}%` }}>
+        <span
+          key={t.ms}
+          className="day-strip-tick"
+          style={{ left: `${t.pct}%` }}
+        >
           {t.label}
         </span>
       ))}
@@ -257,7 +293,9 @@ function LegendList({
           <span
             className={`day-strip-swatch ${e.away ? "day-strip-swatch-away" : ""}`}
             data-slate={e.slate || undefined}
-            style={e.hue !== null ? ({ "--h": e.hue } as CSSProperties) : undefined}
+            style={
+              e.hue !== null ? ({ "--h": e.hue } as CSSProperties) : undefined
+            }
             aria-hidden="true"
           />
           {e.label} {formatDuration(e.totalSeconds)}
@@ -313,7 +351,11 @@ export function TrackSegmentButton({
   );
 }
 
-function GapSegmentButton({ seg }: { seg: Extract<TrackSegment, { kind: "gap" }> }) {
+function GapSegmentButton({
+  seg,
+}: {
+  seg: Extract<TrackSegment, { kind: "gap" }>;
+}) {
   return (
     <button
       type="button"
@@ -324,14 +366,20 @@ function GapSegmentButton({ seg }: { seg: Extract<TrackSegment, { kind: "gap" }>
     >
       {seg.showShortLabel && (
         <span className="day-strip-gap-label">
-          {seg.showLabel ? `${seg.label} · ${formatDuration(seg.minutes * 60)}` : seg.label}
+          {seg.showLabel
+            ? `${seg.label} · ${formatDuration(seg.minutes * 60)}`
+            : seg.label}
         </span>
       )}
     </button>
   );
 }
 
-function SegmentTooltip({ seg }: { seg: Extract<TrackSegment, { kind: "block" }> }) {
+function SegmentTooltip({
+  seg,
+}: {
+  seg: Extract<TrackSegment, { kind: "block" }>;
+}) {
   const seconds = (seg.endMs - seg.startMs) / 1000;
   return (
     <div className="day-strip-tooltip" role="tooltip">
