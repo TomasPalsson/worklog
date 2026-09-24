@@ -1421,19 +1421,7 @@ async fn reinfer_day(state: Shared, day: NaiveDate) -> Result<(usize, i64), ApiE
     let (count, minutes) = with_conn(state, move |c| {
         routing::commit_labels(c, &rule_hits, &guesses)?;
         routing_absorb::absorb_and_noise(c, day)?;
-        let events = infer::load_day_events(c, day)?;
-        let allocations: Vec<infer_allocations::AllocationWindow> =
-            overlaps::load_allocations(c, day)?
-                .into_iter()
-                .map(
-                    |(started_at, ended_at, shares)| infer_allocations::AllocationWindow {
-                        started_at,
-                        ended_at,
-                        shares,
-                    },
-                )
-                .collect();
-        let blocks = infer::build_blocks_with_allocations(events, &allocations);
+        let blocks = infer_allocations::build_day_blocks(c, day)?;
         let total: i64 = blocks.iter().map(|b| b.duration_seconds).sum();
         infer::persist_blocks(c, day, &blocks)?;
         Ok::<_, anyhow::Error>((blocks.len(), total / 60))

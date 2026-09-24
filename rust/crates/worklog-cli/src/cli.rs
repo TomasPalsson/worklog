@@ -3166,8 +3166,8 @@ fn cmd_infer<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<(
     paths.ensure()?;
     let conn = db::open(&paths.db)?;
     let day = parse_day(day.as_deref())?;
-    let events = infer::load_day_events(&conn, day)?;
-    let blocks = infer::build_blocks(events);
+    // Saved splits included — a rebuild must never undo the owner's choice.
+    let blocks = worklog_core::infer_allocations::build_day_blocks(&conn, day)?;
     infer::persist_blocks(&conn, day, &blocks)?;
 
     if json {
@@ -3294,8 +3294,7 @@ fn cmd_day<W: Write>(
 
     // --- infer ----------------------------------------------------------
     style::step(out, "inferring blocks …")?;
-    let events = infer::load_day_events(&conn, day_parsed)?;
-    let blocks = infer::build_blocks(events);
+    let blocks = worklog_core::infer_allocations::build_day_blocks(&conn, day_parsed)?;
     infer::persist_blocks(&conn, day_parsed, &blocks)?;
     let total_min: i64 = blocks.iter().map(|b| b.duration_seconds).sum::<i64>() / 60;
     style::ok(

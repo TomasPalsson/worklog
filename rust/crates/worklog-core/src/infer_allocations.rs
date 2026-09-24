@@ -72,6 +72,27 @@ pub(crate) fn apply_allocations(
     }
 }
 
+/// A day's blocks with its saved splits applied — the ONE rebuild every
+/// caller uses (daemon, `worklog infer`, `worklog day`), so no path can
+/// quietly undo the owner's choice.
+pub fn build_day_blocks(
+    conn: &rusqlite::Connection,
+    day: chrono::NaiveDate,
+) -> anyhow::Result<Vec<InferBlock>> {
+    let events = crate::infer::load_day_events(conn, day)?;
+    let windows: Vec<AllocationWindow> = crate::overlaps::load_allocations(conn, day)?
+        .into_iter()
+        .map(|(started_at, ended_at, shares)| AllocationWindow {
+            started_at,
+            ended_at,
+            shares,
+        })
+        .collect();
+    Ok(crate::infer::build_blocks_with_allocations(
+        events, &windows,
+    ))
+}
+
 /// Does the inclusive minute run `[start, end]` touch a saved split?
 pub(crate) fn in_allocation(allocations: &[AllocationWindow], start: i64, end: i64) -> bool {
     allocations
@@ -310,5 +331,45 @@ mod tests {
             "vitinn-infra gets the whole hour, got {total}s"
         );
         assert!(total <= auto_total.max(60 * 60), "no time is invented");
+    }
+
+    /// Every path that rebuilds a day (daemon, `worklog infer`, `worklog
+    /// day` on the 15-min schedule) must honour a saved split — the CLI
+    /// used to rebuild without it and undo the owner's choice.
+    #[test]
+    fn day_rebuild_reads_the_saved_split() {
+        use crate::models::Event;
+        let conn = crate::db::open_memory().unwrap();
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
+        let path = |p: &str| format!("/Users/dev/Desktop/Work/{p}");
+        for i in 0..30u32 {
+            let p = if i < 10 {
+                "vitinn-infra"
+            } else {
+                "lyfjastofnun"
+            };
+            let mut e = Event::minimal(
+                "claude_turn",
+                format!("t{i}"),
+                at(9, i * 2).to_rfc3339(),
+                "prompt",
+            );
+            e.project_path = Some(path(p));
+            crate::repo::upsert_event(&conn, &e).unwrap();
+        }
+        let mut shares = BTreeMap::new();
+        shares.insert("vitinn-infra".to_string(), 1.0);
+        crate::overlaps::save_allocation(&conn, day, at(9, 0), at(10, 0), &shares).unwrap();
+
+        let blocks = build_day_blocks(&conn, day).unwrap();
+        let vitinn = path("vitinn-infra");
+        assert!(blocks
+            .iter()
+            .all(|b| b.dominant_project_path().as_deref() == Some(vitinn.as_str())));
+        let total: i64 = blocks.iter().map(|b| b.duration_seconds).sum();
+        assert!(
+            total >= 55 * 60,
+            "the saved 100% split must hold, got {total}s"
+        );
     }
 }
