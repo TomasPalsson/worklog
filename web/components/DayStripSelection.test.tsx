@@ -122,6 +122,30 @@ describe("DayStrip selection drag", () => {
     ]);
   });
 
+  // A real press fires pointerdown before click/change. Pressing inside the
+  // split box must not start a new drag (which closed the box mid-click).
+  it("pressing a slider or 'all' inside the box keeps it open and works", () => {
+    const lanes = renderExpandedLanes();
+    fireEvent.pointerDown(lanes, { button: 0, clientX: clientXFor(0.25), pointerId: 1 });
+    fireEvent.pointerMove(lanes, { clientX: clientXFor(0.75), pointerId: 1 });
+    fireEvent.pointerUp(lanes, { clientX: clientXFor(0.75), pointerId: 1 });
+
+    const slider = document.querySelector('.overlap-popover input[type="range"]') as HTMLInputElement;
+    fireEvent.pointerDown(slider, { button: 0, clientX: clientXFor(0.5), pointerId: 1 });
+    fireEvent.change(slider, { target: { value: "80" } });
+    fireEvent.pointerUp(slider, { clientX: clientXFor(0.6), pointerId: 1 });
+    expect(screen.getByRole("dialog", { name: /split this overlap/i })).toBeTruthy();
+    expect(slider.value).toBe("80");
+
+    const all = screen.getByRole("button", { name: "Give all to alpha" });
+    fireEvent.pointerDown(all, { button: 0, clientX: clientXFor(0.5), pointerId: 1 });
+    fireEvent.pointerUp(all, { clientX: clientXFor(0.5), pointerId: 1 });
+    fireEvent.click(all);
+    expect(allocateCalls).toEqual([
+      ["2026-09-23", new Date(at(9, 30)).toISOString(), new Date(at(10, 30)).toISOString(), { alpha: 1 }],
+    ]);
+  });
+
   it("Escape cancels the in-progress drag before it's released", () => {
     const lanes = renderExpandedLanes();
     fireEvent.pointerDown(lanes, { button: 0, clientX: clientXFor(0.25), pointerId: 1 });

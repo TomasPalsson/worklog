@@ -114,8 +114,12 @@ export function findExactAllocation(
 }
 
 /** Elements whose own click/hover behaviour a drag-select must not
- * hijack — block/gap segments and the overlap band button. */
-const INTERACTIVE_SELECTOR = ".day-strip-seg, .day-strip-overlap-inner";
+ * hijack — block/gap segments, the overlap band button, the saved-split
+ * brackets, and the split box itself (its sliders and buttons live inside
+ * the lanes container, so a press there would start a new drag and close
+ * the box mid-click). */
+const INTERACTIVE_SELECTOR =
+  ".day-strip-seg, .day-strip-overlap-inner, .overlap-popover, .day-strip-allocations-row";
 
 /** The four pointer/keyboard handlers `useDragSelection` wires to the
  * lanes container — split out so that hook stays under the size guard.
