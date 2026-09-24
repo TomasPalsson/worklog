@@ -211,6 +211,9 @@ pub enum RepointOutcome {
     NotInstalled,
     /// Platform has no scheduler integration.
     Unsupported,
+    /// `binary` lives under the OS temp dir (a test or scratch build) —
+    /// never written into the owner's real unit.
+    TempBinary,
 }
 
 /// Re-point the collect agent at `binary` and reload it.
@@ -223,6 +226,13 @@ pub enum RepointOutcome {
 ///
 /// Preserves the installed interval; only the command path changes.
 pub fn repoint_if_installed(binary: &Path) -> Result<RepointOutcome> {
+    // Updater tests swap in binaries under the temp dir; pointing the real
+    // agent there breaks scheduled collection once the temp dir is gone.
+    let temp = std::env::temp_dir();
+    let temp = temp.canonicalize().unwrap_or(temp);
+    if binary.starts_with(&temp) || binary.starts_with(std::env::temp_dir()) {
+        return Ok(RepointOutcome::TempBinary);
+    }
     if Platform::current() == Platform::Unsupported {
         return Ok(RepointOutcome::Unsupported);
     }
@@ -582,6 +592,17 @@ mod linux {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn never_repoints_the_real_schedule_at_a_temp_binary() {
+        // Updater tests swap in a binary under the OS temp dir; that must
+        // never be written into the owner's real launchd/systemd unit.
+        let temp_binary = std::env::temp_dir().join(".tmpUpdaterTest/worklog");
+        assert_eq!(
+            super::repoint_if_installed(&temp_binary).unwrap(),
+            super::RepointOutcome::TempBinary
+        );
+    }
+
     use super::*;
     use std::sync::Mutex;
     use tempfile::tempdir;
