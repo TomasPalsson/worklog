@@ -17,6 +17,7 @@ export interface Event {
   session_id: string | null;
   tempo_worklog_id: string | null;
   raw_json: string | null;
+  snippet?: string | null; // prompt's first words, read live by the daemon, never stored
 }
 
 export interface Block {
@@ -41,11 +42,77 @@ export interface Block {
    * bulk of its commands ran in. Null for blocks with no cwd (pure
    * calendar / PR-review blocks). */
   project_path: string | null;
+  /** Repo-level folder key from the daemon, with `/.claude/worktrees/*`
+   * already folded server-side (e.g. a block under
+   * `…/lyfjastofnun/.claude/worktrees/ci-on-codebuild` has project
+   * "lyfjastofnun"). Optional/absent on older daemon versions — callers
+   * fall back to deriving the same key from `project_path`. */
+  project?: string | null;
+  /** "high"/"medium"/"low", from how many distinct sources fed the block. */
+  confidence: "high" | "medium" | "low";
 }
 
 export interface SourceCount {
   source: string; // e.g. "github_commit", "claude_prompt", "gcal_event"
   n: number;
+}
+
+/** A gap of at least 30 minutes between two consecutive blocks on a day. */
+export interface DayGap {
+  started_at: string; // ISO-8601 UTC
+  ended_at: string; // ISO-8601 UTC
+  minutes: number;
+}
+
+/** One project's activity inside an `Overlap` window. */
+export interface OverlapProject {
+  project: string;
+  human_events: number;
+  background_events: number;
+}
+
+/** The owner's saved manual split of an `Overlap` window — fractions
+ * keyed by project name, summing to 1. `null` on `Overlap.allocation`
+ * means the automatic per-minute split still applies. */
+export interface Allocation {
+  shares: Record<string, number>;
+}
+
+/** A ≥10-minute window where ≥2 work projects were both active
+ * (`GET /days/:day`'s `overlaps`) — the owner can rebalance which project
+ * gets which minutes via `POST /days/:day/allocations`. */
+export interface Overlap {
+  started_at: string; // ISO-8601 UTC
+  ended_at: string; // ISO-8601 UTC
+  minutes: number;
+  projects: OverlapProject[];
+  allocation: Allocation | null;
+}
+
+/** One gap-bridged stretch of a project's activity. */
+export interface ActivitySpan {
+  started_at: string; // ISO-8601 UTC
+  ended_at: string; // ISO-8601 UTC
+}
+
+/** A work project's full activity for the day (`GET /days/:day`'s
+ * `activity`) — unlike blocks, which assign each minute to one owning
+ * project, this is every project's actual spans, so the lanes view can
+ * show a project's full activity even where another project owns the
+ * block. */
+export interface ProjectActivity {
+  project: string;
+  spans: ActivitySpan[];
+}
+
+/** A saved manual split of ANY time window (`GET /days/:day`'s
+ * `allocations`) — not just windows matching a detected `Overlap`; the
+ * lanes view's click-and-drag selection saves arbitrary ranges too. The
+ * lanes view shows each as a thin bracket over the tracks it spans. */
+export interface SavedAllocation {
+  started_at: string; // ISO-8601 UTC
+  ended_at: string; // ISO-8601 UTC
+  shares: Record<string, number>;
 }
 
 export interface JiraTicket {
@@ -131,6 +198,13 @@ export interface SettingsView {
   /** Last day-of-month the just-closed cycle can still take hours (1-31).
    * Default 23. */
   close_day: number;
+  /** Editable work-hours window for browser heartbeat ingest, e.g.
+   * "Mon-Fri 09:00-17:00". */
+  work_hours: string;
+  /** Minimum ratio the winner must beat "not enough evidence" by (RATIO_RANGE 1.0-5.0). */
+  abstain_margin: number;
+  /** Minimum ratio the winner must beat the runner-up by (RATIO_RANGE 1.0-5.0). */
+  runner_up_ratio: number;
 }
 
 /** Partial update sent to `POST /settings`. Omitted groups are left
@@ -146,6 +220,12 @@ export interface SettingsUpdate {
   cycle_start_day?: number;
   /** Omitted leaves the current close day untouched. */
   close_day?: number;
+  /** Omitted leaves the work-hours window untouched. */
+  work_hours?: string;
+  /** Omitted leaves the abstain margin untouched. */
+  abstain_margin?: number;
+  /** Omitted leaves the runner-up ratio untouched. */
+  runner_up_ratio?: number;
 }
 
 export interface ReclassifyStats {
@@ -264,6 +344,56 @@ export interface MarkExportResponse {
   day: string;
   marked: number;
   exported_at: string | null;
+}
+
+// ───────────────────── browser + Slack routing ─────────────────────
+
+/** Where a routed event's project label came from (`routing_contract::LabelOrigin`).
+ * `link` = the event's own text named the project (an exact repo/path mention).
+ * `context` = the day's claude/shell/git_reflog activity around the event's time named it.
+ * `dismissed` = the owner marked it "not work". `noise` = the daemon auto-labelled
+ * it as not-work (after-hours DM, unrelated browsing) with no owner action. Both
+ * are hidden by default — `GET /days/:day/routed` excludes them unless called with
+ * `?include_hidden=true`. */
+export type LabelOrigin = "rule" | "link" | "context" | "fix" | "guess" | "dismissed" | "noise";
+
+/** What a hard rule matches on (`routing_contract::RuleKind`). */
+export type RuleKind = "domain" | "slack_channel" | "container";
+
+/** One row of `routing_rules` (`GET /routing/rules`). */
+export interface Rule {
+  id: number;
+  kind: RuleKind;
+  pattern: string;
+  folder: string;
+  created_at: string;
+}
+
+/** Body of `POST /events/:id/label`. `always` also creates a hard rule of that kind. */
+export interface LabelRequest {
+  folder: string;
+  always: RuleKind | null;
+}
+
+/** A browser/Slack event as the UI sees it (`GET /days/:day/routed`). */
+export interface RoutedEvent {
+  id: number;
+  source: string;
+  started_at: string; // ISO-8601
+  title: string;
+  details: string | null;
+  container: string | null;
+  /** `null` = unsorted. */
+  folder: string | null;
+  label_origin: LabelOrigin | null;
+  label_confidence: number | null;
+}
+
+/** `GET /routing/status`. */
+export interface RoutingStatus {
+  last_heartbeat: string | null;
+  last_slack: string | null;
+  classifier_reachable: boolean;
 }
 
 export type SourceKind = "github" | "claude" | "gcal" | "jira" | "other";

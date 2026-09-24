@@ -6,15 +6,18 @@ import {
   listTickets,
   loadBillingRegistry,
   loadDaySummary,
+  routedForDay,
 } from "@/lib/daemon";
 import { formatDayHeading, formatTotalHours } from "@/lib/format";
 import { DayHeader } from "@/components/DayHeader";
 import { ActionBar } from "@/components/ActionBar";
 import { BillingGroup } from "@/components/BillingGroup";
 import { BlockCard } from "@/components/BlockCard";
+import { DayStrip } from "@/components/DayStrip";
 import { EmptyState } from "@/components/EmptyState";
 import { TicketGroup } from "@/components/TicketGroup";
-import type { Block, BillingCustomer, BillingRow } from "@/lib/types";
+import { UnsortedList } from "@/components/UnsortedList";
+import type { Block, BillingCustomer, BillingRegistry, BillingRow, RoutedEvent } from "@/lib/types";
 import { COOKIE_NAME as VIEW_COOKIE, normaliseView } from "@/lib/view-mode";
 
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -57,15 +60,41 @@ export default async function DayPage({
     throw e;
   }
 
-  const { blocks, total_seconds: total } = summary;
+  const { blocks, total_seconds: total, gaps, overlaps, activity, allocations } = summary;
   const { tickets, meta: cache } = ticketsResp;
+
+  // Browser/Slack events for the day (B12) — degrades to an empty feed on
+  // a daemon hiccup rather than failing the whole page. The registry also
+  // backs the billing view below, so it's fetched once here. `includeHidden`
+  // pulls in noise + dismissed events too, so the zero-touch summary line
+  // can report a hidden count without a second round trip when Review opens.
+  let routedEvents: RoutedEvent[] = [];
+  let registry: BillingRegistry | null = null;
+  try {
+    [routedEvents, registry] = await Promise.all([
+      routedForDay(day, true),
+      loadBillingRegistry(),
+    ]);
+  } catch {
+    routedEvents = [];
+    registry = null;
+  }
+  const folderOptions = registry
+    ? Array.from(
+        new Set([
+          ...registry.folders.map((f) => f.folder),
+          ...registry.unmapped.map((u) => u.folder),
+        ]),
+      ).sort()
+    : [];
 
   // Split work vs personal. Personal blocks aren't candidates for
   // Jira/Tempo, so they don't count toward the unassigned amber-nag —
   // that nag fires for *work* blocks the user still needs to assign.
   const workBlocks = blocks.filter((b) => !b.is_personal);
   const personalBlocks = blocks.filter((b) => b.is_personal);
-  const unassigned = workBlocks.filter((b) => !b.jira_issue).length;
+  const noTicketBlocks = workBlocks.filter((b) => !b.jira_issue);
+  const unassigned = noTicketBlocks.length;
 
   // Header total reflects work-only hours; personal time gets a
   // muted annotation so the focus is on billable time.
@@ -93,21 +122,19 @@ export default async function DayPage({
   let knownVerkefni: string[] = [];
   if (view === "billing") {
     try {
-      const [ex, registry] = await Promise.all([
-        exportBilling(day),
-        loadBillingRegistry(),
-      ]);
-      billingRows = ex.rows;
-      billingCustomers = registry.customers;
-      // Verkefni keys already pinned anywhere become suggestions, so the
-      // second time you bill a project you pick instead of retyping.
-      knownVerkefni = Array.from(
-        new Set(
-          registry.folders
-            .map((f) => f.verkefni)
-            .filter((v): v is string => !!v && v.trim() !== ""),
-        ),
-      ).sort();
+      billingRows = (await exportBilling(day)).rows;
+      if (registry) {
+        billingCustomers = registry.customers;
+        // Verkefni keys already pinned anywhere become suggestions, so the
+        // second time you bill a project you pick instead of retyping.
+        knownVerkefni = Array.from(
+          new Set(
+            registry.folders
+              .map((f) => f.verkefni)
+              .filter((v): v is string => !!v && v.trim() !== ""),
+          ),
+        ).sort();
+      }
     } catch {
       billingRows = null;
     }
@@ -125,6 +152,15 @@ export default async function DayPage({
         view={view}
       />
       <ActionBar day={day} cacheCount={cache.count} cacheLast={cache.last_fetched} />
+      <DayStrip
+        day={day}
+        blocks={blocks}
+        gaps={gaps}
+        overlaps={overlaps}
+        activity={activity}
+        allocations={allocations}
+      />
+      <UnsortedList key={day} day={day} events={routedEvents} folderOptions={folderOptions} />
       {blocks.length === 0 ? (
         <EmptyState day={day} />
       ) : (

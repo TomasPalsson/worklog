@@ -357,10 +357,16 @@ fn day_no_serve_runs_full_pipeline_on_empty_day() {
     // No creds → collectors skip; no blocks → infer=0, estimate=0. The test
     // asserts that every stage heading appears and the command exits 0
     // without waiting on Docker or opening a browser.
+    //
+    // Uses a day far in the future: `day` now also runs the shell + reflog
+    // collectors (see `collect_targets`), and those read the *real* fish
+    // history / git reflogs on whatever machine runs this test — a past
+    // day could pick up genuine history and stop being "empty". A day that
+    // hasn't happened yet can't have any.
     let home = TempDir::new().unwrap();
     cmd(&home).args(["db", "migrate"]).assert().success();
     cmd(&home)
-        .args(["day", "--day", "2026-04-18", "--no-serve"])
+        .args(["day", "--day", "2099-01-01", "--no-serve"])
         .assert()
         .success()
         .stdout(predicate::str::contains("collecting"))

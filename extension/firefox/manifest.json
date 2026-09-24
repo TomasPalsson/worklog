@@ -1,0 +1,26 @@
+{
+  "manifest_version": 2,
+  "name": "Worklog",
+  "version": "0.1.0",
+  "description": "Reports active-tab time to the local worklog daemon during work hours.",
+  "browser_specific_settings": {
+    "gecko": { "id": "worklog@tomasari.is" }
+  },
+  "permissions": [
+    "tabs",
+    "idle",
+    "alarms",
+    "storage",
+    "contextualIdentities",
+    "cookies",
+    "http://127.0.0.1:9323/*"
+  ],
+  "background": {
+    "scripts": ["background.js"],
+    "type": "module"
+  },
+  "browser_action": {
+    "default_popup": "popup.html",
+    "default_title": "Worklog"
+  }
+}

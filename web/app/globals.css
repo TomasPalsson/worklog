@@ -46,6 +46,10 @@
                                               off-center from indigo */
   --violet-bg:  oklch(0.95 0.02 290);
 
+  /* Day strip project fill — hue supplied per segment via --h. */
+  --project-l: 0.72; /* the hue comes from each segment's --h */
+  --project-c: 0.11;
+
   /* shape */
   --radius-sm: 4px;
   --radius-md: 8px;
@@ -106,6 +110,9 @@
     --violet:     oklch(0.70 0.085 290);   /* was 0.65 */
     --violet-bg:  oklch(0.24 0.03 290);
 
+    --project-l: 0.62;
+    --project-c: 0.10;
+
     --ring: 0 0 0 3px oklch(0.62 0.08 85); /* was 0.42 — 3:1 vs dark bg */
     --elevation-1: none;
   }
@@ -138,6 +145,9 @@
 
   --violet:     oklch(0.70 0.085 290);
   --violet-bg:  oklch(0.24 0.03 290);
+
+  --project-l: 0.62;
+    --project-c: 0.10;
 
   --ring: 0 0 0 3px oklch(0.62 0.08 85);
   --elevation-1: none;
@@ -448,6 +458,999 @@ button {
   padding: 8px 0;
 }
 
+/* ─────────────────────────── day strip ───────────────────────────
+   One horizontal timeline replacing the old bare gaps <ul>. Segments
+   are absolutely positioned by left/width % computed in lib/dayStrip.ts;
+   colour comes from the per-segment --h custom property feeding
+   oklch(--project-l --project-c --h), with l/c per theme above. */
+
+.day-strip {
+  margin-bottom: 28px;
+}
+
+.day-strip-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.day-strip-overlap-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: var(--amber-bg);
+  color: var(--amber-ink);
+  border: 1px solid var(--amber);
+}
+
+.day-strip-expand-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--fg-muted);
+  transition: background 120ms cubic-bezier(0.25, 1, 0.5, 1),
+              color 120ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.day-strip-expand-btn:hover {
+  background: var(--bg-sunk);
+  color: var(--fg);
+}
+
+.day-strip-expand-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+.day-strip-track {
+  position: relative;
+  height: 40px;
+  border-radius: var(--radius-md);
+  background: var(--bg-sunk);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.day-strip-seg {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.day-strip-seg + .day-strip-seg {
+  border-left: 1px solid var(--bg-sunk);
+}
+
+.day-strip-block {
+  background: oklch(var(--project-l) var(--project-c) var(--h));
+  transition: opacity 120ms ease-out;
+}
+
+.day-strip-block[data-slate] {
+  background: var(--slate);
+}
+
+.day-strip-block[data-legend-focused] {
+  outline: 1px solid var(--fg);
+  outline-offset: -1px;
+}
+
+.day-strip-gap {
+  background-image: repeating-linear-gradient(
+    45deg,
+    var(--border-strong) 0,
+    var(--border-strong) 2px,
+    transparent 2px,
+    transparent 8px
+  );
+}
+
+.day-strip-gap-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  padding: 0 4px;
+}
+
+/* Lanes (expanded) view — one flex row per project: label + track are two
+   children of the SAME row element, so they can never fall out of
+   alignment (the old shared CSS grid let a spanning gap-band row confuse
+   the auto-placement algorithm and push tracks a row below their label).
+   The gap bands and overlap bands each get ONE absolutely-positioned
+   overlay layer on top of the tracks column (offset by --lane-label-w so
+   their left/width % still line up), never a lane row of their own. */
+.day-strip-lanes {
+  --lane-label-w: 160px;
+  --lane-gap: 8px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  row-gap: 6px;
+}
+
+.day-strip-lane-row {
+  display: flex;
+  align-items: center;
+  gap: var(--lane-gap);
+}
+
+.day-strip-lane-label {
+  flex: 0 0 var(--lane-label-w);
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+  font-size: 13px;
+  color: var(--fg);
+  overflow: hidden;
+}
+
+.day-strip-lane-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.day-strip-lane-total {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.day-strip-lane-active {
+  color: var(--fg-muted);
+}
+
+.day-strip-lane-track {
+  flex: 1 1 auto;
+  position: relative;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunk);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+/* A project's FULL activity (infer_lanes only ever assigns a minute to one
+   owner), behind its owned block segments — rendered first in DOM order,
+   same hue as the lane's segments at low opacity. */
+.day-strip-lane-activity {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: oklch(var(--project-l) var(--project-c) var(--h) / 18%);
+  pointer-events: none;
+}
+
+.day-strip-lanes-overlay,
+.day-strip-overlap-layer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--lane-label-w) + var(--lane-gap));
+  right: 0;
+  pointer-events: none;
+}
+
+.day-strip-gap-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  opacity: 0.35;
+  background-image: repeating-linear-gradient(
+    45deg,
+    var(--border-strong) 0,
+    var(--border-strong) 1px,
+    transparent 1px,
+    transparent 8px
+  );
+}
+
+/* Amber band spanning the full lanes height — simpler than measuring the
+   exact lane rows an overlap touches, and the label + popover already say
+   which projects are involved. left/width % set inline per band. */
+.day-strip-overlap-band {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  pointer-events: auto;
+}
+
+.day-strip-overlap-inner {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--amber-bg);
+  border: 1px dashed var(--amber);
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.day-strip-overlap-label {
+  font-size: 10px;
+  color: var(--amber-ink);
+  white-space: nowrap;
+  padding: 1px 4px;
+}
+
+.day-strip-overlap-popover-anchor {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 10;
+  margin-top: 4px;
+}
+
+.overlap-popover {
+  width: 320px;
+  padding: 12px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-1);
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.overlap-popover-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 500;
+}
+
+.overlap-popover-worked {
+  font-weight: 400;
+  color: var(--fg-muted);
+}
+
+.overlap-popover-x {
+  display: inline-flex;
+  padding: 2px;
+  color: var(--fg-muted);
+  border-radius: var(--radius-sm);
+}
+
+.overlap-popover-x svg {
+  width: 14px;
+  height: 14px;
+}
+
+.overlap-popover-x:hover {
+  color: var(--fg);
+}
+
+.overlap-popover-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* name · amount · "all" on one line, the slider full-width under it. */
+.overlap-popover-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 2px;
+}
+
+.overlap-popover-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overlap-popover-dot {
+  flex: 0 0 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: oklch(var(--project-l) var(--project-c) var(--h));
+}
+
+.overlap-popover-amount {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.overlap-popover-all {
+  font-size: 11px;
+  padding: 0 6px;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.overlap-popover-all:hover {
+  color: var(--fg);
+  border-color: var(--border-strong);
+}
+
+.overlap-popover-row input[type="range"] {
+  grid-column: 1 / -1;
+  width: 100%;
+  margin: 0;
+  accent-color: oklch(var(--project-l) var(--project-c) var(--h));
+}
+
+.overlap-popover-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.overlap-popover-reset {
+  margin-right: auto;
+  font-size: 12px;
+  color: var(--fg-muted);
+  text-decoration: underline;
+}
+
+.overlap-popover-cancel {
+  padding: 4px 10px;
+  color: var(--fg-muted);
+}
+
+.overlap-popover-save {
+  padding: 4px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--amber-bg);
+  color: var(--amber-ink);
+  border: 1px solid var(--amber);
+}
+
+.overlap-popover-save:hover {
+  background: var(--amber);
+  color: var(--bg);
+}
+
+/* Saved-allocation brackets — a thin row above the lane tracks reading
+   "you set 90/10" for any window the owner has manually split (a drag
+   selection or an overlap band), with a reset affordance. Same
+   label-column + tracks-column split as a lane row, but no border/
+   background of its own — it's a bracket, not another lane. */
+.day-strip-allocations-row {
+  min-height: 16px;
+}
+
+.day-strip-allocations-track {
+  height: 16px;
+  background: none;
+  border: none;
+}
+
+/* A bar per saved range, in the colour of the project that got most of it. */
+.day-strip-allocation-bracket {
+  position: absolute;
+  top: 6px;
+  height: 4px;
+  border-radius: 2px;
+  background: oklch(var(--project-l) var(--project-c) var(--h));
+}
+
+.day-strip-allocation-chips {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.day-strip-allocation-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+}
+
+.day-strip-allocation-when {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.day-strip-allocation-share {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.day-strip-allocation-reset {
+  font-size: 11px;
+  color: var(--fg-muted);
+  text-decoration: underline;
+}
+
+/* Click-and-drag time-range selection — one overlay layer over the
+   tracks column (same geometry as the gap/overlap overlays), the
+   rectangle shown while dragging plus the popover anchored to it once
+   the drag ends. Pointer handlers live on `.day-strip-lanes` itself
+   (see DayStripLanesView.tsx), not this layer, so segment/band clicks
+   are unaffected. */
+.day-strip-selection-layer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--lane-label-w) + var(--lane-gap));
+  right: 0;
+  pointer-events: none;
+}
+
+.day-strip-selection {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--fg);
+  opacity: 0.12;
+  border: 1px dashed var(--fg-muted);
+}
+
+.day-strip-selection-label {
+  position: absolute;
+  top: 0;
+  display: flex;
+  justify-content: center;
+  font-size: 10px;
+  color: var(--fg);
+  background: var(--bg);
+  white-space: nowrap;
+  padding: 1px 4px;
+  pointer-events: none;
+}
+
+.day-strip-selection-popover-anchor {
+  position: absolute;
+  top: 100%;
+  z-index: 10;
+  margin-top: 4px;
+  pointer-events: auto;
+}
+
+.day-strip-ticks {
+  position: relative;
+  height: 14px;
+  margin-top: 4px;
+}
+
+.day-strip-ticks-lanes {
+  margin-left: 168px; /* label column (160px) + column-gap (8px) */
+}
+
+.day-strip-tick {
+  position: absolute;
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-subtle);
+  white-space: nowrap;
+}
+
+.day-strip-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  list-style: none;
+}
+
+.day-strip-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.day-strip-swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  display: inline-block;
+  background: oklch(var(--project-l) var(--project-c) var(--h));
+  flex-shrink: 0;
+}
+
+.day-strip-swatch[data-slate] {
+  background: var(--slate);
+}
+
+.day-strip-swatch-away {
+  background-image: repeating-linear-gradient(
+    45deg,
+    var(--border-strong) 0,
+    var(--border-strong) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+}
+
+.day-strip-tooltip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  min-width: 160px;
+  max-width: 260px;
+  padding: 8px 10px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-1);
+  font-size: 12px;
+  text-align: left;
+  white-space: normal;
+  pointer-events: none;
+}
+
+.day-strip-tooltip-title {
+  font-weight: 500;
+  color: var(--fg);
+  margin-bottom: 2px;
+}
+
+.day-strip-tooltip-range {
+  font-family: var(--font-mono);
+  color: var(--fg-muted);
+  margin-bottom: 4px;
+}
+
+.day-strip-tooltip-desc {
+  color: var(--fg-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Highlight pulse when a strip segment scrolls its BlockCard into view. */
+@keyframes wl-block-flash {
+  from { box-shadow: var(--ring); }
+  to { box-shadow: none; }
+}
+
+.block.block-flash {
+  animation: wl-block-flash 1.2s ease-out;
+}
+
+/* ─────────────────────────── sort tray ───────────────────────────
+   Grouped unsorted browser/Slack events — one card, one hairline-
+   separated row per group. Pattern parallels .ticket-group: native
+   <details>, no client JS for the collapse/chevron. */
+
+.sort-tray {
+  margin-bottom: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-raised);
+}
+
+.sort-tray > summary {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 14px 16px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.sort-tray > summary::-webkit-details-marker {
+  display: none;
+}
+
+.sort-tray-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.sort-tray-count {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.sort-tray-hint {
+  font-size: 12px;
+  color: var(--fg-subtle);
+  flex-basis: 100%;
+}
+
+.sort-tray-empty {
+  padding: 0 16px 14px;
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+.sort-tray-body {
+  list-style: none;
+  border-top: 1px solid var(--border);
+}
+
+.sort-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  padding: 10px 16px;
+  min-height: 44px;
+  transition: opacity 150ms ease-out, max-height 150ms ease-out;
+}
+
+.sort-row + .sort-row {
+  border-top: 1px solid var(--border);
+}
+
+.sort-row-exit {
+  opacity: 0;
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+}
+
+.sort-row-disclosure {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.sort-row-disclosure > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  min-width: 0;
+}
+
+.sort-row-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.sort-row-disclosure summary .disclosure-chev,
+.auto-filed summary .disclosure-chev {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  transition: transform 150ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.sort-row-disclosure[open] > summary .disclosure-chev {
+  transform: rotate(90deg);
+}
+
+.sort-row-name {
+  font-weight: 500;
+  color: var(--fg);
+}
+
+.sort-row-count {
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.sort-row-range {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.sort-row-preview {
+  font-size: 13px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.sort-row-events {
+  list-style: none;
+  margin-top: 8px;
+  padding-left: 21px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sort-row-event {
+  display: flex;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+.sort-row-event-time {
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+
+.sort-row-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.sort-row-always {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.sort-row-dismiss {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.sort-row-dismiss:hover {
+  color: var(--terracotta);
+  background: var(--terracotta-bg);
+}
+
+.sort-tray-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.sort-tray-dismiss-rest,
+.sort-tray-confirm-yes,
+.sort-tray-confirm-no {
+  font-size: 12px;
+  color: var(--fg-muted);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.sort-tray-dismiss-rest:hover,
+.sort-tray-confirm-no:hover {
+  background: var(--bg-sunk);
+  color: var(--fg);
+}
+
+.sort-tray-confirm-text {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.sort-tray-confirm-yes {
+  color: var(--terracotta);
+  font-weight: 500;
+}
+
+.sort-tray-confirm-yes:hover {
+  background: var(--terracotta-bg);
+}
+
+/* ─────────────────────────── auto-filed ───────────────────────────
+   Filed events tucked away under the tray — collapsed by default. */
+
+.auto-filed {
+  margin-bottom: 28px;
+}
+
+.auto-filed > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  list-style: none;
+  padding: 4px 0;
+}
+
+.auto-filed > summary::-webkit-details-marker {
+  display: none;
+}
+
+.auto-filed[open] > summary .disclosure-chev {
+  transform: rotate(90deg);
+}
+
+.auto-filed-list {
+  list-style: none;
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.auto-filed-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--fg-muted);
+  padding: 3px 0;
+}
+
+.auto-filed-time {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.auto-filed-title {
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+/* Title over a one-line gist of what the message said / where the visit went. */
+.event-what {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.event-gist {
+  font-size: 12px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auto-filed-row,
+.review-hidden-row {
+  align-items: flex-start;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+
+.auto-filed-row > .auto-filed-time,
+.review-hidden-row > .auto-filed-time,
+.auto-filed-row > svg,
+.review-hidden-row > svg {
+  margin-top: 2px;
+}
+
+.auto-filed-project {
+  font-weight: 500;
+  color: var(--fg);
+  white-space: nowrap;
+}
+
+.origin-chip {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.origin-rule,
+.origin-link,
+.origin-fix {
+  background: var(--sage-bg);
+  color: var(--sage-ink);
+}
+
+.origin-context,
+.origin-guess,
+.origin-dismissed,
+.origin-noise {
+  background: var(--slate-bg);
+  color: var(--slate);
+}
+
+/* ─────────────────────────── review drawer ───────────────────────────
+   Zero-touch default: the quiet summary line + in-page Review panel that
+   replace the sort tray + auto-filed disclosure once nothing is left to
+   sort. */
+
+.review-line {
+  margin-bottom: 20px;
+}
+
+.review-summary {
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+.review-toggle {
+  margin-left: 8px;
+  font-size: 13px;
+  color: var(--fg-muted);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.review-toggle:hover {
+  color: var(--fg);
+}
+
+.review-drawer {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-raised);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.review-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  margin-bottom: 6px;
+}
+
+.review-section-empty {
+  font-size: 13px;
+  color: var(--fg-subtle);
+  font-style: italic;
+}
+
+.review-hidden-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.review-hidden-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--fg-muted);
+  padding: 3px 0;
+}
+
 /* Collapsible ticket groups — one row per (day, jira_issue) mirrors
    how Tempo will see the day after `worklog sync` aggregates. Pattern
    parallels .personal-section: native <details>, no client JS. */
@@ -681,6 +1684,7 @@ button {
 .block-description {
   font-size: 15px;
   line-height: 1.45;
+  font-weight: 500;
   color: var(--fg);
   white-space: pre-wrap;
 }
@@ -688,6 +1692,12 @@ button {
 .block-description.empty {
   color: var(--fg-subtle);
   font-style: italic;
+  font-weight: 400;
+}
+
+.block-clue-line {
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 .block-description[contenteditable="true"] {
@@ -1381,6 +2391,33 @@ button {
 
 .event-row:focus-within {
   background: var(--bg-raised);
+}
+
+.unsorted-row,
+.routed-row {
+  grid-template-columns: 72px 1fr;
+}
+
+.unsorted-row > :not(.event-source),
+.routed-row > :not(.event-source) {
+  grid-column: 2;
+}
+
+.unsorted-row .event-source,
+.routed-row .event-source {
+  width: 100%;
+  justify-content: flex-start;
+  gap: 4px;
+  padding: 0 6px;
+  font-size: 12px;
+}
+
+.unsorted-always {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 .event-source {
@@ -2784,4 +3821,75 @@ button {
 .action-btn.primary:hover {
   filter: brightness(0.97);
   background: var(--sage);
+}
+
+/* "What happened" timeline under a block — full width below the meta
+   row, one line per thing: time · icon · what. Your prompts read as
+   quotes; Claude stretches carry branch/tools/files underneath. */
+.ev-timeline {
+  flex-basis: 100%;
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 4px 0;
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
+.ev-row {
+  display: grid;
+  grid-template-columns: 92px 22px 1fr;
+  align-items: start;
+  column-gap: 8px;
+  padding: 5px 8px 5px 0;
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.ev-time {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 20px;
+  color: var(--fg-subtle);
+  font-variant-numeric: tabular-nums;
+}
+
+.ev-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--bg-sunk);
+  color: var(--fg-muted);
+}
+
+.ev-row[data-kind="prompt"] .ev-icon { background: var(--amber-bg); color: var(--amber-ink); }
+.ev-row[data-kind="claude"] .ev-icon { background: var(--violet-bg); color: var(--violet); }
+.ev-row[data-kind="github"] .ev-icon,
+.ev-row[data-kind="git"] .ev-icon { background: var(--sage-bg); color: var(--sage-ink); }
+
+.ev-body {
+  min-width: 0;
+}
+
+.ev-text {
+  margin: 0;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+}
+
+.ev-prompt {
+  padding-left: 8px;
+  border-left: 2px solid var(--amber);
+  color: var(--fg);
+}
+
+.ev-detail {
+  margin: 1px 0 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
 }

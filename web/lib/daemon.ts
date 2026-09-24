@@ -1,22 +1,18 @@
 // HTTP client for the worklog Rust daemon.
 //
-// Both reads and writes go through the daemon. Reads used to hit
-// bun:sqlite directly for raw speed, but that path was quietly broken on
-// Docker Desktop — the container's read-only connection couldn't see WAL
-// writes the host daemon had just committed, so unassign → re-assign
-// looked like it failed until a hard reload. Routing reads through the
-// daemon fixes it permanently and keeps the two paths on the same
-// connection view.
+// Both reads and writes go through the daemon. Reads used to hit bun:sqlite
+// directly for raw speed, but that path was quietly broken on Docker
+// Desktop — the container's read-only connection couldn't see WAL writes
+// the host daemon had just committed, so unassign → re-assign looked like
+// it failed until a hard reload. Routing reads through the daemon fixes it
+// permanently and keeps the two paths on the same connection view.
 //
-// Two transports supported:
-//   1. WORKLOG_DAEMON_URL — TCP (used by the dockerised web UI, since
-//      Docker Desktop on macOS can't proxy unix sockets through its VM
-//      bind mounts). Example: http://host.docker.internal:9323
-//   2. Unix socket at WORKLOG_SOCKET or ~/.local/share/worklog/api.sock
-//      (used for host-local clients — lower overhead, no port collision).
-//
-// Bun's global `fetch` accepts a `unix` option so the unix transport
-// stays boringly idiomatic.
+// Two transports: (1) WORKLOG_DAEMON_URL — TCP, used by the dockerised web
+// UI since Docker Desktop on macOS can't proxy unix sockets through its VM
+// bind mounts, e.g. http://host.docker.internal:9323; (2) a unix socket at
+// WORKLOG_SOCKET or ~/.local/share/worklog/api.sock for host-local clients
+// — lower overhead, no port collision. Bun's global `fetch` accepts a
+// `unix` option so the unix transport stays boringly idiomatic.
 
 type Transport =
   | { kind: "tcp"; base: string }
@@ -63,7 +59,8 @@ function timeoutMs(path: string): number {
   return 10_000;
 }
 
-async function call<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+/** Exported for `lib/daemonOverlaps.ts`'s client fns — same transport/timeout. */
+export async function call<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
   const t = transport();
   const signal = AbortSignal.timeout(timeoutMs(path));
   const init: FetchInit & { unix?: string } = {
@@ -147,9 +144,7 @@ export async function setPersonal(blockId: number, isPersonal: boolean) {
 }
 
 export async function runInfer(day: string) {
-  return call<{ day: string; blocks: number; minutes: number }>("POST", "/infer", {
-    day,
-  });
+  return call<{ day: string; blocks: number; minutes: number }>("POST", "/infer", { day });
 }
 
 export async function runEstimate(day: string, model?: string) {
@@ -181,10 +176,7 @@ export async function refreshJira() {
  * refuses cross-day merges and merges that would orphan a synced
  * Tempo entry — surfaces as 400 with the message verbatim.
  */
-export async function mergeBlocks(
-  primary: number,
-  absorb: number[],
-): Promise<{ merged: Block; absorbed: number[] }> {
+export async function mergeBlocks(primary: number, absorb: number[]): Promise<{ merged: Block; absorbed: number[] }> {
   return call("POST", "/blocks/merge", { primary, absorb });
 }
 
@@ -212,11 +204,20 @@ import type {
   Block,
   CommitEntry,
   CreateTicketInput,
+  DayGap,
   Event,
   ExportResponse,
   JiraProject,
   JiraTicket,
+  LabelRequest,
   MarkExportResponse,
+  Overlap,
+  ProjectActivity,
+  RoutedEvent,
+  RoutingStatus,
+  Rule,
+  RuleKind,
+  SavedAllocation,
   SettingsSaveResponse,
   SettingsUpdate,
   SettingsView,
@@ -228,13 +229,14 @@ interface DaySummary {
   day: string;
   total_seconds: number;
   blocks: Block[];
+  gaps: DayGap[];
+  overlaps: Overlap[];
+  activity: ProjectActivity[];
+  allocations: SavedAllocation[];
 }
 
-/**
- * One-shot day load: blocks enriched with event_count + sources, plus
- * the total seconds for the header. Replaces four separate direct-DB
- * queries with a single round-trip.
- */
+/** One-shot day load: blocks enriched with event_count + sources, the
+ * total seconds for the header, and windows of overlapping work. */
 export async function loadDaySummary(day: string): Promise<DaySummary> {
   return call<DaySummary>("GET", `/days/${day}`);
 }
@@ -371,4 +373,31 @@ export async function saveSettings(
   update: SettingsUpdate,
 ): Promise<SettingsSaveResponse> {
   return call<SettingsSaveResponse>("POST", "/settings", update);
+}
+
+// ───────────────────── browser + Slack routing ─────────────────────
+
+/** `includeHidden` also returns dismissed + noise events (`?include_hidden=true`) —
+ * the review drawer's only use for it; the default view never sets it. */
+export async function routedForDay(day: string, includeHidden = false): Promise<RoutedEvent[]> {
+  return call<RoutedEvent[]>(
+    "GET",
+    `/days/${day}/routed${includeHidden ? "?include_hidden=true" : ""}`,
+  );
+}
+export async function labelEvent(id: number, folder: string, always: RuleKind | null) {
+  const body: LabelRequest = { folder, always };
+  return call<RoutedEvent>("POST", `/events/${id}/label`, body);
+}
+export async function dismissEvent(id: number, ruleKind: RuleKind | null) {
+  return call<RoutedEvent>("POST", `/events/${id}/dismiss`, { rule_kind: ruleKind });
+}
+export async function routingRules(): Promise<Rule[]> {
+  return call<Rule[]>("GET", "/routing/rules");
+}
+export async function deleteRule(id: number): Promise<{ removed: boolean }> {
+  return call("POST", `/routing/rules/${id}/delete`);
+}
+export async function routingStatus(): Promise<RoutingStatus> {
+  return call<RoutingStatus>("GET", "/routing/status");
 }

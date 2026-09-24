@@ -29,6 +29,12 @@ import {
   deleteBillingFolder as daemonDeleteBillingFolder,
   mergeBlocks as daemonMergeBlocks,
   estimateBlock as daemonEstimateBlock,
+  routedForDay as daemonRoutedForDay,
+  labelEvent as daemonLabelEvent,
+  dismissEvent as daemonDismissEvent,
+  routingRules as daemonRoutingRules,
+  deleteRule as daemonDeleteRule,
+  routingStatus as daemonRoutingStatus,
 } from "@/lib/daemon";
 import type {
   BillingCustomer,
@@ -41,6 +47,10 @@ import type {
   JiraProject,
   JiraTicket,
   MarkExportResponse,
+  RoutedEvent,
+  RoutingStatus,
+  Rule,
+  RuleKind,
   SettingsSaveResponse,
   SettingsUpdate,
   SettingsView,
@@ -362,6 +372,26 @@ export async function describeBlock(
   }>
 > {
   return runAction(() => daemonEstimateBlock(blockId), `/${day}`);
+}
+
+// browser + Slack routing — queries have no revalidate; mutations revalidate the day page.
+export async function fetchRoutedEvents(day: string): Promise<ActionResult<RoutedEvent[]>> {
+  return runAction(() => daemonRoutedForDay(day));
+}
+export async function fetchRoutingRules(): Promise<ActionResult<Rule[]>> {
+  return runAction(() => daemonRoutingRules());
+}
+export async function fetchRoutingStatus(): Promise<ActionResult<RoutingStatus>> {
+  return runAction(() => daemonRoutingStatus());
+}
+export async function labelEvent(id: number, folder: string, always: RuleKind | null, day: string) {
+  return runAction(() => daemonLabelEvent(id, folder, always), `/${day}`);
+}
+export async function dismissEvent(id: number, ruleKind: RuleKind | null, day: string) {
+  return runAction(() => daemonDismissEvent(id, ruleKind), `/${day}`);
+}
+export async function deleteRule(id: number, day: string): Promise<ActionResult<{ removed: boolean }>> {
+  return runAction(() => daemonDeleteRule(id), `/${day}`);
 }
 
 // Exported for tests. Not used by callers — they use the CRUD/query

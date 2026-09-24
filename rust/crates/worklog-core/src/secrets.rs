@@ -26,6 +26,8 @@ pub const KNOWN_KEYS: &[&str] = &[
     // GitHub
     "github_token",
     "github_user",
+    // Slack (user token, needs search:read for the sent-messages collector)
+    "slack_user_token",
     // Google Calendar (OAuth installed-app flow)
     "google_client_id",
     "google_client_secret",
@@ -53,6 +55,7 @@ fn env_var_for(key: &str) -> Option<&'static str> {
         "jira_account_field_id" => "WORKLOG_JIRA_ACCOUNT_FIELD_ID",
         "github_token" => "WORKLOG_GITHUB_TOKEN",
         "github_user" => "WORKLOG_GITHUB_USER",
+        "slack_user_token" => "WORKLOG_SLACK_TOKEN",
         "tempo_api_token" => "WORKLOG_TEMPO_TOKEN",
         "google_client_id" => "WORKLOG_GOOGLE_CLIENT_ID",
         "google_client_secret" => "WORKLOG_GOOGLE_CLIENT_SECRET",

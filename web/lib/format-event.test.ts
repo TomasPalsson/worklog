@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatEventTime, previewDetails, sourceLabel } from "./format-event";
+import { eventGist, formatEventTime, previewDetails, sourceLabel } from "./format-event";
 
 describe("formatEventTime", () => {
   test("returns HH:MM for a valid RFC3339 timestamp", () => {
@@ -54,5 +54,25 @@ describe("sourceLabel", () => {
     expect(sourceLabel("gcal")).toBe("Calendar");
     expect(sourceLabel("jira")).toBe("Jira");
     expect(sourceLabel("other")).toBe("other");
+  });
+});
+
+describe("eventGist", () => {
+  test("Slack: shows the message, with <url|label> links reduced to the label", () => {
+    expect(eventGist("slack", "Look at <https://github.com/aproorg/vitinn-infra/pull/802/|github.com/aproorg/vitinn-infra/pull/802> pls")).toBe(
+      "Look at github.com/aproorg/vitinn-infra/pull/802 pls",
+    );
+  });
+  test("Slack: bare <url> links lose the angle brackets and scheme, newlines become spaces", () => {
+    expect(eventGist("slack", "<https://aws.amazon.com/blogs/x>\nnice")).toBe("aws.amazon.com/blogs/x nice");
+  });
+  test("Firefox: host and path, no scheme, no query", () => {
+    expect(eventGist("firefox", "https://app.slack.com/app-settings/T067Y77167P/A0C3SNKQC4V/oauth?x=1")).toBe(
+      "app.slack.com/app-settings/T067Y77167P/A0C3SNKQC4V/oauth",
+    );
+  });
+  test("caps long text with an ellipsis and handles empty details", () => {
+    expect(eventGist("slack", "x".repeat(200)).length).toBe(121);
+    expect(eventGist("slack", null)).toBe("");
   });
 });

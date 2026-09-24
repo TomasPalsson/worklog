@@ -131,6 +131,36 @@ mock.module("@/lib/daemon", () => ({
   }),
   mergeBlocks: (primary: number, absorb: number[]) => mergeBlocksImpl(primary, absorb),
   estimateBlock: (blockId: number) => estimateBlockImpl(blockId),
+  routedForDay: async () => [],
+  labelEvent: async () => ({
+    id: 1,
+    source: "firefox",
+    started_at: "2026-04-14T10:00:00Z",
+    title: "x",
+    details: null,
+    container: null,
+    folder: "aws-cert",
+    label_origin: "fix",
+    label_confidence: null,
+  }),
+  dismissEvent: async () => ({
+    id: 1,
+    source: "firefox",
+    started_at: "2026-04-14T10:00:00Z",
+    title: "x",
+    details: null,
+    container: null,
+    folder: null,
+    label_origin: "dismissed",
+    label_confidence: null,
+  }),
+  routingRules: async () => [],
+  deleteRule: async () => ({ removed: true }),
+  routingStatus: async () => ({
+    last_heartbeat: null,
+    last_slack: null,
+    classifier_reachable: false,
+  }),
 }));
 
 let _runActionForTests: <T>(

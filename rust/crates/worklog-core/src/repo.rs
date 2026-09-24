@@ -30,7 +30,11 @@ pub fn upsert_event(conn: &Connection, e: &Event) -> Result<i64> {
             title            = excluded.title,
             details          = excluded.details,
             repo             = excluded.repo,
-            project_path     = excluded.project_path,
+            -- project_path: routing::set_label writes this via a raw
+            -- UPDATE, never through this function. Collectors always
+            -- pass None here, so unconditional overwrite would wipe a
+            -- routing label on every re-collect of the same event.
+            project_path     = COALESCE(excluded.project_path, events.project_path),
             jira_issue       = excluded.jira_issue,
             -- session_id: preserve existing when the new side doesn't
             -- carry one — matches Python and prevents e.g. a GitHub
@@ -399,6 +403,36 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored.as_deref(), Some("sess-a"));
+    }
+
+    #[test]
+    fn upsert_event_preserves_project_path_on_re_collect() {
+        // routing::set_label writes project_path via a raw UPDATE, never
+        // through upsert_event. A later re-collect (rolling-window collect,
+        // a resent heartbeat) calls upsert_event with project_path=None on
+        // the Event struct — that must not wipe the routing label.
+        let c = fresh();
+        let e = Event::minimal("firefox", "tab-1", "2026-04-18T09:00:00Z", "first");
+        let id = upsert_event(&c, &e).unwrap();
+        c.execute(
+            "UPDATE events SET project_path = 'aws-cert', label_origin = 'rule' WHERE id = ?1",
+            params![id],
+        )
+        .unwrap();
+        assert!(e.project_path.is_none());
+        upsert_event(&c, &e).unwrap();
+        let stored: Option<String> = c
+            .query_row(
+                "SELECT project_path FROM events WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stored.as_deref(),
+            Some("aws-cert"),
+            "project_path label must survive re-collect"
+        );
     }
 
     #[test]

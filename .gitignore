@@ -25,3 +25,5 @@ web/.bun/
 # QA / agent run artifacts (not source)
 .claude/quality/
 .qa-report/
+.claude/loop/*
+!.claude/loop/LEARNINGS.md
