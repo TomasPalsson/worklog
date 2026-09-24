@@ -171,9 +171,9 @@ pub fn build_blocks_with_allocations(
     if allocations.is_empty() {
         return crate::infer_lanes::build_blocks_by_project(events, build_blocks_sequential);
     }
-    let paths = crate::infer_allocations::owner_paths(&events);
+    let by_key = crate::infer_allocations::events_by_key(&events);
     let auto = crate::infer_lanes::build_blocks_by_project(events, build_blocks_sequential);
-    crate::infer_allocations::apply_split(auto, allocations, &paths)
+    crate::infer_allocations::apply_split(auto, allocations, &by_key)
 }
 
 fn build_blocks_sequential(events: Vec<InferEvent>) -> Vec<InferBlock> {

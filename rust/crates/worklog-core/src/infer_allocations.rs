@@ -45,26 +45,27 @@ pub fn build_day_blocks(
     ))
 }
 
-/// A real folder path per lane key, so a re-cut piece can say which
-/// project it belongs to.
-pub(crate) fn owner_paths(events: &[InferEvent]) -> BTreeMap<String, String> {
-    let mut paths = BTreeMap::new();
+/// Every event of the day per lane key, so a re-cut piece can link real
+/// events of the project it was given (a block's project is read from its
+/// linked events everywhere — billing, estimates, the day page).
+pub(crate) fn events_by_key(events: &[InferEvent]) -> BTreeMap<String, Vec<InferEvent>> {
+    let mut by_key: BTreeMap<String, Vec<InferEvent>> = BTreeMap::new();
     for e in events {
-        if let (Some(k), Some(p)) = (crate::infer_lanes::lane_key(e), &e.project_path) {
-            paths.entry(k).or_insert_with(|| p.clone());
+        if let Some(k) = crate::infer_lanes::lane_key(e) {
+            by_key.entry(k).or_default().push(e.clone());
         }
     }
-    paths
+    by_key
 }
 
 /// Re-cut the automatic blocks inside every saved window (see module doc).
 pub(crate) fn apply_split(
     mut blocks: Vec<InferBlock>,
     windows: &[AllocationWindow],
-    paths: &BTreeMap<String, String>,
+    by_key: &BTreeMap<String, Vec<InferEvent>>,
 ) -> Vec<InferBlock> {
     for w in windows {
-        blocks = split_window(blocks, w, paths);
+        blocks = split_window(blocks, w, by_key);
     }
     blocks.sort_by_key(|b| b.started_at);
     blocks
@@ -75,64 +76,50 @@ fn is_work_block(b: &InferBlock) -> bool {
         .is_some_and(|p| p.contains("/Desktop/Work/"))
 }
 
+fn events_between(events: &[InferEvent], s: DateTime<Utc>, e: DateTime<Utc>) -> Vec<InferEvent> {
+    events
+        .iter()
+        .filter(|x| x.ts >= s && x.ts < e)
+        .cloned()
+        .collect()
+}
+
 fn split_window(
     blocks: Vec<InferBlock>,
     w: &AllocationWindow,
-    paths: &BTreeMap<String, String>,
+    by_key: &BTreeMap<String, Vec<InferEvent>>,
 ) -> Vec<InferBlock> {
     let (ws, we) = (w.started_at, w.ended_at);
     let mut out = Vec::new();
     let mut inside: Vec<(DateTime<Utc>, DateTime<Utc>)> = Vec::new();
-    let mut inside_events: Vec<InferEvent> = Vec::new();
+    let mut folderless: Vec<InferEvent> = Vec::new();
     for b in blocks {
         if !is_work_block(&b) || b.ended_at <= ws || b.started_at >= we {
             out.push(b);
             continue;
         }
         // The parts outside the window stay the block's own.
-        let own = b.dominant_project_path();
-        let events_in = |s: DateTime<Utc>, e: DateTime<Utc>| -> Vec<InferEvent> {
-            b.events
-                .iter()
-                .filter(|x| x.ts >= s && x.ts < e)
-                .cloned()
-                .collect()
-        };
         if b.started_at < ws {
-            out.extend(piece(
-                events_in(b.started_at, ws),
-                b.started_at,
-                ws,
-                own.as_deref(),
-                false,
-            ));
+            let evs = events_between(&b.events, b.started_at, ws);
+            out.extend(piece(evs, b.started_at, ws, &b.events));
         }
         if b.ended_at > we {
-            out.extend(piece(
-                events_in(we, b.ended_at),
-                we,
-                b.ended_at,
-                own.as_deref(),
-                false,
-            ));
+            let evs = events_between(&b.events, we, b.ended_at);
+            out.extend(piece(evs, we, b.ended_at, &b.events));
         }
         let (s, e) = (b.started_at.max(ws), b.ended_at.min(we));
         inside.push((s, e));
-        inside_events.extend(events_in(s, e));
+        folderless.extend(
+            events_between(&b.events, s, e)
+                .into_iter()
+                .filter(|x| x.project_path.is_none()),
+        );
     }
     for (project, s, e) in split_intervals(&inside, &w.shares) {
-        let evs = inside_events
-            .iter()
-            .filter(|x| x.ts >= s && x.ts < e)
-            .cloned()
-            .collect();
-        out.extend(piece(
-            evs,
-            s,
-            e,
-            paths.get(&project).map(String::as_str),
-            true,
-        ));
+        let own = by_key.get(&project).map(Vec::as_slice).unwrap_or(&[]);
+        let mut evs = events_between(own, s, e);
+        evs.extend(events_between(&folderless, s, e));
+        out.extend(piece(evs, s, e, own));
     }
     out
 }
@@ -175,33 +162,23 @@ fn split_intervals(
     out
 }
 
-/// A block spanning exactly `[s, e)`. `retag` hands its events to `path`
-/// (a re-cut piece belongs to the project it was given); a piece with no
-/// events of its own gets a path-only anchor so it still reads as that
-/// project's.
+/// A block spanning exactly `[s, e)` with `events` linked. A piece with
+/// none of its own links the nearest of `fallback` (the project's other
+/// events), so it still reads as that project's.
 // ponytail: a piece under MIN_BLOCK (a 1–2% sliver) is dropped by
 // finalize; fold slivers into a neighbour if that ever matters.
 fn piece(
     mut events: Vec<InferEvent>,
     s: DateTime<Utc>,
     e: DateTime<Utc>,
-    path: Option<&str>,
-    retag: bool,
+    fallback: &[InferEvent],
 ) -> Option<InferBlock> {
-    if let (true, Some(p)) = (retag, path) {
-        events
-            .iter_mut()
-            .for_each(|x| x.project_path = Some(p.to_string()));
-    }
-    if events.is_empty() {
-        events.push(InferEvent {
-            ts: s,
-            source: "split".into(),
-            duration_seconds: None,
-            jira_issue: None,
-            event_id: None,
-            project_path: Some(path?.to_string()),
-        });
+    if !events.iter().any(|x| x.project_path.is_some()) {
+        let nearest = fallback
+            .iter()
+            .filter(|x| x.project_path.is_some())
+            .min_by_key(|x| (x.ts - s).num_seconds().abs())?;
+        events.push(nearest.clone());
     }
     events.sort_by_key(|x| x.ts);
     let (first, rest) = events.split_first()?;
@@ -310,9 +287,10 @@ mod tests {
             ended_at: at(10, 0),
             shares: shares(&[("lyfjastofnun", 1.0)]),
         };
-        let mut paths = owner_paths(&events);
-        paths.insert("lyfjastofnun".into(), C.into());
-        let blocks = apply_split(auto.clone(), &[window], &paths);
+        // lyfjastofnun has one event elsewhere in the day to link.
+        let mut day = events.clone();
+        day.push(ev(59, C));
+        let blocks = apply_split(auto.clone(), &[window], &events_by_key(&day));
         let personal = |bs: &[InferBlock]| -> Vec<(DateTime<Utc>, DateTime<Utc>)> {
             bs.iter()
                 .filter(|b| b.dominant_project_path().as_deref() == Some(P))
@@ -348,6 +326,25 @@ mod tests {
         crate::overlaps::save_allocation(&conn, day, at(9, 0), at(10, 0), &s).unwrap();
 
         let blocks = build_day_blocks(&conn, day).unwrap();
+        // The project must survive saving: it is read back from the
+        // block's linked events, not from anything held in memory.
+        crate::infer::persist_blocks(&conn, day, &blocks).unwrap();
+        let ids: Vec<i64> = conn
+            .prepare("SELECT id FROM blocks WHERE day = ?1")
+            .unwrap()
+            .query_map([day.to_string()], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(!ids.is_empty());
+        for id in ids {
+            let p = crate::personal::dominant_project_path_for_block(&conn, id).unwrap();
+            assert_eq!(
+                p.as_deref(),
+                Some(A),
+                "saved block {id} must read as vitinn-infra"
+            );
+        }
         assert!(blocks
             .iter()
             .all(|b| b.dominant_project_path().as_deref() == Some(A)));
