@@ -12,10 +12,10 @@ use chrono::{DateTime, Utc};
 
 use crate::infer_lanes::minute;
 
-/// A user-chosen split of an overlap window — every minute in
+/// A user-chosen split of an overlap window — every worked minute in
 /// `[started_at, ended_at)` is handed out to `shares` in alphabetical
 /// project order (a `BTreeMap` iterates that way), each getting
-/// `share * window_minutes` minutes (the last project absorbs any
+/// `share * worked_minutes` minutes (the last project absorbs any
 /// rounding remainder). Overrides `owner_runs`'s automatic decision for
 /// those minutes outright.
 #[derive(Debug, Clone)]
@@ -37,29 +37,32 @@ pub(crate) fn apply_allocations(
     allocations: &[AllocationWindow],
 ) {
     for alloc in allocations {
-        let start_minute = minute(alloc.started_at);
-        let total_minutes = (alloc.ended_at - alloc.started_at).num_minutes();
-        if total_minutes <= 0 || alloc.shares.is_empty() {
+        let start = minute(alloc.started_at) - first;
+        let end = minute(alloc.ended_at) - first;
+        // Only the minutes someone actually worked are split, so a share
+        // is a share of real time wherever the idle stretches fall.
+        let worked: Vec<usize> = (start.max(0)..end.min(owners.len() as i64))
+            .map(|i| i as usize)
+            .filter(|&i| owners[i].is_some())
+            .collect();
+        let total = worked.len();
+        if total == 0 || alloc.shares.is_empty() {
             continue;
         }
-        let mut assigned: i64 = 0;
+        let mut assigned = 0usize;
         let mut cum_frac = 0.0;
         let n = alloc.shares.len();
         for (i, (project, frac)) in alloc.shares.iter().enumerate() {
             cum_frac += frac;
             let target = if i + 1 == n {
-                total_minutes
+                total
             } else {
-                (cum_frac * total_minutes as f64).round() as i64
+                ((cum_frac * total as f64).round() as usize).min(total)
             };
-            let chunk_end = target.clamp(0, total_minutes);
-            for m in (start_minute + assigned)..(start_minute + chunk_end) {
-                let idx = m - first;
-                if idx >= 0 && (idx as usize) < owners.len() && owners[idx as usize].is_some() {
-                    owners[idx as usize] = Some(project.clone());
-                }
+            for &idx in &worked[assigned..target.max(assigned)] {
+                owners[idx] = Some(project.clone());
             }
-            assigned = chunk_end;
+            assigned = target.max(assigned);
         }
     }
 }
@@ -121,6 +124,30 @@ mod tests {
             last_a < first_b,
             "each project's minutes must be one contiguous chunk"
         );
+    }
+
+    #[test]
+    fn shares_split_the_worked_minutes_not_the_idle_ones() {
+        let first = minute(at(9, 0));
+        // Worked 0..10 and 20..40, idle 10..20. A 50/50 split must give
+        // each project 15 of the 30 worked minutes — not A 0..20 (of
+        // which only 10 are worked) and B 20..40 (all 20 worked).
+        let mut owners: Vec<Option<String>> = (0..40)
+            .map(|i| (!(10..20).contains(&i)).then(|| "orig".to_string()))
+            .collect();
+        let mut shares = BTreeMap::new();
+        shares.insert("A".to_string(), 0.5);
+        shares.insert("B".to_string(), 0.5);
+        let allocations = vec![AllocationWindow {
+            started_at: at(9, 0),
+            ended_at: at(9, 40),
+            shares,
+        }];
+        apply_allocations(&mut owners, first, &allocations);
+        let count = |p: &str| owners.iter().filter(|o| o.as_deref() == Some(p)).count();
+        assert_eq!(count("A"), 15);
+        assert_eq!(count("B"), 15);
+        assert_eq!(owners.iter().filter(|o| o.is_none()).count(), 10);
     }
 
     #[test]
