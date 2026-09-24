@@ -159,7 +159,19 @@ fn finalize(mut block: InferBlock) -> Option<InferBlock> {
 /// One lane per repo (see `infer_lanes`), each clustered by
 /// [`build_blocks_sequential`].
 pub fn build_blocks(events: Vec<InferEvent>) -> Vec<InferBlock> {
-    crate::infer_lanes::build_blocks_by_project(events, build_blocks_sequential)
+    build_blocks_with_allocations(events, &[])
+}
+
+/// Same as [`build_blocks`], but minutes inside an
+/// [`crate::infer_allocations::AllocationWindow`] are handed to their
+/// share's project outright, overriding the automatic owner. Used by the
+/// daemon's infer entry point, which is the one place that already holds a
+/// `Connection` to load the day's saved allocations.
+pub fn build_blocks_with_allocations(
+    events: Vec<InferEvent>,
+    allocations: &[crate::infer_allocations::AllocationWindow],
+) -> Vec<InferBlock> {
+    crate::infer_lanes::build_blocks_by_project(events, build_blocks_sequential, allocations)
 }
 
 fn build_blocks_sequential(events: Vec<InferEvent>) -> Vec<InferBlock> {

@@ -14,15 +14,22 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::billing::work_folder_for_path;
 use crate::infer::{InferBlock, InferEvent};
+use crate::infer_allocations::AllocationWindow;
 
 /// Background activity within this many minutes of a minute counts toward its owner.
-const WINDOW_MINUTES: i64 = 5;
+/// Also the max gap `overlaps::project_intervals` bridges inside one
+/// project's activity — the two "5 minutes of quiet is still the same
+/// stretch of work" rules should agree.
+pub(crate) const WINDOW_MINUTES: i64 = 5;
 /// The owner's own actions reach further: attention stays on a project for a
 /// while after typing into it.
 const HUMAN_WINDOW_MINUTES: i64 = 15;
 
 /// Sources that are the owner acting, not a tool working on their behalf.
-fn is_human(source: &str) -> bool {
+/// Exposed to `overlaps` so its per-project human/background event split
+/// uses the exact same rule this module owns and elsewhere every minute
+/// belongs to one project.
+pub(crate) fn is_human(source: &str) -> bool {
     matches!(
         source,
         "claude_turn"
@@ -40,7 +47,9 @@ const BRIDGE_MINUTES: i64 = 10;
 /// Lane key for an event: its repo folder, `None` for folderless events.
 /// Personal (non-`~/Desktop/Work`) keys carry a marker so they can never
 /// be mistaken for client work — `work_folder_for_path` basenames them too.
-fn lane_key(e: &InferEvent) -> Option<String> {
+/// `pub(crate)` so `overlaps` folds project keys identically instead of
+/// duplicating this logic.
+pub(crate) fn lane_key(e: &InferEvent) -> Option<String> {
     e.project_path.as_deref().map(|p| {
         let folder = work_folder_for_path(p).unwrap_or_else(|| p.to_string());
         if p.contains("/Desktop/Work/") {
@@ -59,6 +68,7 @@ type Keyed = (i64, String, bool);
 pub(crate) fn build_blocks_by_project(
     events: Vec<InferEvent>,
     build: fn(Vec<InferEvent>) -> Vec<InferBlock>,
+    allocations: &[AllocationWindow],
 ) -> Vec<InferBlock> {
     let keyed: Vec<Keyed> = events
         .iter()
@@ -74,7 +84,7 @@ pub(crate) fn build_blocks_by_project(
     {
         return build(events);
     }
-    let runs = owner_runs(&keyed);
+    let runs = owner_runs(&keyed, allocations);
 
     // Every event lands in at most one bucket: calendar alone, a run whose
     // window contains it (project events only into their own project's run),
@@ -108,17 +118,22 @@ pub(crate) fn build_blocks_by_project(
 }
 
 /// Client work lives under `~/Desktop/Work`; everything else (e.g.
-/// `~/Desktop/Projects`) is the owner's own and yields to it.
-fn is_work(key: &str) -> bool {
+/// `~/Desktop/Projects`) is the owner's own and yields to it. `pub(crate)`
+/// so `overlaps` only ever considers WORK projects for a split.
+pub(crate) fn is_work(key: &str) -> bool {
     !key.starts_with(PERSONAL_MARK)
 }
 
-fn minute(ts: DateTime<Utc>) -> i64 {
+pub(crate) fn minute(ts: DateTime<Utc>) -> i64 {
     ts.timestamp().div_euclid(60)
 }
 
 /// Contiguous (owner, first minute, last minute) runs over the day.
-fn owner_runs(keyed: &[Keyed]) -> Vec<(String, i64, i64)> {
+/// `allocations` overrides the automatic per-minute owner inside its
+/// windows outright (see `infer_allocations`) — applied after the owner
+/// pass and before bridging, so those minutes are never `None` and never
+/// get swept into a neighbouring bridge.
+fn owner_runs(keyed: &[Keyed], allocations: &[AllocationWindow]) -> Vec<(String, i64, i64)> {
     let first = keyed.iter().map(|(m, _, _)| *m).min().unwrap_or(0);
     let last = keyed.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
     let mut owners: Vec<Option<String>> = Vec::new();
@@ -161,6 +176,7 @@ fn owner_runs(keyed: &[Keyed]) -> Vec<(String, i64, i64)> {
         }
         owners.push(owner);
     }
+    crate::infer_allocations::apply_allocations(&mut owners, first, allocations);
     bridge(&mut owners);
 
     let mut runs: Vec<(String, i64, i64)> = Vec::new();
