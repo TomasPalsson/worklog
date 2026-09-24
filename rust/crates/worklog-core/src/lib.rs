@@ -21,6 +21,7 @@ pub mod hook_run;
 pub mod http;
 pub mod infer;
 pub mod infer_allocations;
+mod infer_carry;
 pub mod infer_lanes;
 pub mod models;
 pub mod overlap_store;

@@ -502,6 +502,16 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
             prior_list.push(row);
         }
     }
+    // Two ticketed blocks fused into one would keep only one ticket: cut
+    // such a block where each later ticketed block began (see infer_carry).
+    let ticketed: Vec<crate::infer_carry::Ticketed> = prior_list
+        .iter()
+        .filter_map(|c| {
+            let (s, e) = parse_pair(&c.started_at, &c.ended_at)?;
+            Some((s, e, c.jira_issue.clone()?))
+        })
+        .collect();
+    let blocks = crate::infer_carry::cut_at_ticket_edges(blocks, &ticketed);
     // Track which fallback rows we've already claimed so two new blocks
     // can't both inherit the same prior state.
     let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -510,17 +520,22 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
     tx.execute("DELETE FROM blocks WHERE day = ?1", params![day_iso])
         .context("clearing stale blocks")?;
 
-    for b in blocks {
+    for b in &blocks {
         let started_key = block_iso(b.started_at);
         let ended_key = block_iso(b.ended_at);
         let carry: Option<&CarryRow> = prior.get(&started_key).or_else(|| {
             // Overlap fallback: if no exact-start match, find one prior
-            // block whose time range overlaps the new block's. Must not
-            // already be claimed by a different new block.
-            prior_list.iter().find(|c| {
+            // block whose time range overlaps the new block's — a ticketed
+            // one first. Must not already be claimed by a different new block.
+            let open = |c: &&CarryRow| {
                 !claimed.contains(&c.started_at)
                     && ranges_overlap(&c.started_at, &c.ended_at, &started_key, &ended_key)
-            })
+            };
+            prior_list
+                .iter()
+                .filter(open)
+                .find(|c| c.jira_issue.is_some())
+                .or_else(|| prior_list.iter().find(open))
         });
         if let Some(c) = carry {
             claimed.insert(c.started_at.clone());
