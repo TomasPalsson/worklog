@@ -28,16 +28,17 @@ import {
   type TrackSegment,
   type TrackWindow,
 } from "@/lib/dayStrip";
-import { buildLanes, isFocused, type Lane } from "@/lib/dayStripLanes";
-import { buildOverlapBands, overlapsInWindow, type OverlapBand } from "@/lib/dayStripOverlaps";
-import { OverlapBands } from "./DayStripOverlapBands";
-import type { Overlap } from "@/lib/types";
+import { buildLanes, isFocused } from "@/lib/dayStripLanes";
+import { buildOverlapBands, overlapsInWindow } from "@/lib/dayStripOverlaps";
+import { LanesView } from "./DayStripLanesView";
+import type { Overlap, ProjectActivity } from "@/lib/types";
 
 interface Props {
   day: string;
   blocks: StripBlock[];
   gaps: StripGap[];
   overlaps?: Overlap[];
+  activity?: ProjectActivity[];
 }
 
 const EXPANDED_STORAGE_KEY = "worklog.dayStrip.expanded";
@@ -89,6 +90,7 @@ function buildStripData(
   blocks: StripBlock[],
   gaps: StripGap[],
   overlaps: Overlap[],
+  activity: ProjectActivity[],
   window_: TrackWindow,
 ) {
   const hued = withLegendHues(buildSegments(blocks, gaps, window_), buildLegend(blocks, gaps));
@@ -96,7 +98,7 @@ function buildStripData(
   const gapSegments = segments.filter(
     (s): s is Extract<TrackSegment, { kind: "gap" }> => s.kind === "gap",
   );
-  const lanes = buildLanes(segments, hued.legend);
+  const lanes = buildLanes(segments, hued.legend, window_, activity);
   return {
     segments,
     fullLegend: hued.legend,
@@ -108,7 +110,13 @@ function buildStripData(
   };
 }
 
-export function DayStrip({ day, blocks: allBlocks, gaps: allGaps, overlaps: allOverlaps = [] }: Props) {
+export function DayStrip({
+  day,
+  blocks: allBlocks,
+  gaps: allGaps,
+  overlaps: allOverlaps = [],
+  activity = [],
+}: Props) {
   // Work-only: personal time never shows — not as a segment, a legend row or
   // by stretching the time axis — and only gaps inside the work day remain.
   const blocks = allBlocks.filter((b) => !b.is_personal);
@@ -128,7 +136,7 @@ export function DayStrip({ day, blocks: allBlocks, gaps: allGaps, overlaps: allO
 
   if (!window_) return null;
 
-  const data = buildStripData(blocks, gaps, overlaps, window_);
+  const data = buildStripData(blocks, gaps, overlaps, activity, window_);
   const segProps: SegProps = {
     legend: data.legend,
     focusKey,
@@ -213,64 +221,12 @@ function Ticks({ ticks, expanded }: { ticks: HourTick[]; expanded: boolean }) {
   );
 }
 
-interface SegProps {
+export interface SegProps {
   legend: LegendEntry[];
   focusKey: string | null;
   openTip: string | null;
   onOpenTip: (key: string) => void;
   onCloseTip: (key: string) => void;
-}
-
-function LanesView({
-  lanes,
-  gapSegments,
-  segProps,
-  bands,
-  day,
-  openOverlap,
-  onToggleOverlap,
-}: {
-  lanes: Lane[];
-  gapSegments: Extract<TrackSegment, { kind: "gap" }>[];
-  segProps: SegProps;
-  bands: OverlapBand[];
-  day: string;
-  openOverlap: string | null;
-  onToggleOverlap: (key: string) => void;
-}) {
-  return (
-    <div className="day-strip-lanes">
-      <div className="day-strip-lane-gapband" aria-hidden="true">
-        {gapSegments.map((g) => (
-          <span
-            key={`gapband-${g.startMs}`}
-            className="day-strip-gap-band"
-            style={{ left: `${g.leftPct}%`, width: `${g.widthPct}%` }}
-          />
-        ))}
-      </div>
-      {lanes.map((lane) => (
-        <LaneRow key={lane.key} lane={lane} segProps={segProps} />
-      ))}
-      <OverlapBands bands={bands} day={day} openOverlap={openOverlap} onToggleOverlap={onToggleOverlap} />
-    </div>
-  );
-}
-
-function LaneRow({ lane, segProps }: { lane: Lane; segProps: SegProps }) {
-  return (
-    <>
-      <div className="day-strip-lane-label" title={`${lane.label} ${formatDuration(lane.totalSeconds)}`}>
-        <span className="day-strip-lane-name">{lane.label}</span>
-        <span className="day-strip-lane-total">{formatDuration(lane.totalSeconds)}</span>
-      </div>
-      <div className="day-strip-lane-track">
-        {lane.segments.map((seg) => (
-          <TrackSegmentButton key={segKey(seg)} seg={seg} {...segProps} />
-        ))}
-      </div>
-    </>
-  );
 }
 
 function LegendList({
@@ -306,11 +262,11 @@ function LegendList({
   );
 }
 
-function segKey(seg: TrackSegment): string {
+export function segKey(seg: TrackSegment): string {
   return seg.kind === "block" ? `block-${seg.blockId}` : `gap-${seg.startMs}`;
 }
 
-function TrackSegmentButton({
+export function TrackSegmentButton({
   seg,
   legend,
   focusKey,

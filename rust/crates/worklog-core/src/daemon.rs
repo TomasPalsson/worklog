@@ -525,6 +525,11 @@ pub struct DaySummary {
     /// `overlaps::day_overlaps`. The day strip renders these as a band the
     /// owner can click to rebalance the automatic split.
     pub overlaps: Vec<overlaps::Overlap>,
+    /// Every work project's full gap-bridged activity for the day — see
+    /// `overlaps::day_activity`. The lanes view draws this as a faint fill
+    /// behind each lane's owned block segments, since `infer_lanes` picks
+    /// one owner per minute and would otherwise hide the rest.
+    pub activity: Vec<overlaps::ProjectActivity>,
 }
 
 #[derive(Serialize)]
@@ -557,6 +562,10 @@ fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
         .map(|d| overlaps::day_overlaps(conn, d))
         .transpose()?
         .unwrap_or_default();
+    let activity = day_parsed
+        .map(|d| overlaps::day_activity(conn, d))
+        .transpose()?
+        .unwrap_or_default();
     if blocks.is_empty() {
         return Ok(DaySummary {
             day: day.to_owned(),
@@ -564,6 +573,7 @@ fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
             blocks: vec![],
             gaps: vec![],
             overlaps,
+            activity,
         });
     }
 
@@ -760,6 +770,7 @@ fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
         blocks: enriched,
         gaps,
         overlaps,
+        activity,
     })
 }
 
@@ -3460,6 +3471,40 @@ mod tests {
         assert!(overlaps[0]["minutes"].as_i64().unwrap() >= 10);
         assert_eq!(overlaps[0]["projects"].as_array().unwrap().len(), 2);
         assert!(overlaps[0]["allocation"].is_null());
+    }
+
+    /// The two interleaved projects from `state_with_overlap` should each
+    /// get their own gap-bridged activity spans, not just the overlap they
+    /// share — the lanes view needs a project's FULL activity, since
+    /// `infer_lanes` only ever assigns a minute to one owner.
+    #[tokio::test(flavor = "current_thread")]
+    async fn day_summary_reports_activity_for_both_projects() {
+        let state = state_with_overlap();
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::get("/days/2026-04-18")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        let activity = v["activity"].as_array().unwrap();
+        assert_eq!(activity.len(), 2, "{v}");
+        let projects: Vec<&str> = activity
+            .iter()
+            .map(|p| p["project"].as_str().unwrap())
+            .collect();
+        assert!(projects.contains(&"alpha"), "{projects:?}");
+        assert!(projects.contains(&"beta"), "{projects:?}");
+        for p in activity {
+            let spans = p["spans"].as_array().unwrap();
+            assert_eq!(spans.len(), 1, "{p}");
+            assert!(!spans[0]["started_at"].as_str().unwrap().is_empty());
+            assert!(!spans[0]["ended_at"].as_str().unwrap().is_empty());
+        }
     }
 
     /// `(started_at, ended_at, project names)` for the day's one overlap.

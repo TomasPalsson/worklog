@@ -88,6 +88,22 @@ export interface Overlap {
   allocation: Allocation | null;
 }
 
+/** One gap-bridged stretch of a project's activity. */
+export interface ActivitySpan {
+  started_at: string; // ISO-8601 UTC
+  ended_at: string; // ISO-8601 UTC
+}
+
+/** A work project's full activity for the day (`GET /days/:day`'s
+ * `activity`) — unlike blocks, which assign each minute to one owning
+ * project, this is every project's actual spans, so the lanes view can
+ * show a project's full activity even where another project owns the
+ * block. */
+export interface ProjectActivity {
+  project: string;
+  spans: ActivitySpan[];
+}
+
 export interface JiraTicket {
   key: string;
   summary: string | null;

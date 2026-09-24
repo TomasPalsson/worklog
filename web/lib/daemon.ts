@@ -212,6 +212,7 @@ import type {
   LabelRequest,
   MarkExportResponse,
   Overlap,
+  ProjectActivity,
   RoutedEvent,
   RoutingStatus,
   Rule,
@@ -229,6 +230,7 @@ interface DaySummary {
   blocks: Block[];
   gaps: DayGap[];
   overlaps: Overlap[];
+  activity: ProjectActivity[];
 }
 
 /** One-shot day load: blocks enriched with event_count + sources, the

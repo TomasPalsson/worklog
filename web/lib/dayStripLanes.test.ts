@@ -54,6 +54,30 @@ describe("buildLanes", () => {
     expect(buildLanes(s2, l2).map((l) => l.key)).toEqual(["alpha"]);
   });
 
+  it("attaches a lane's activity bands + total seconds from the day summary's activity", () => {
+    const activity = [
+      { project: "alpha", spans: [{ started_at: at(9, 0), ended_at: at(9, 20) }, { started_at: at(9, 40), ended_at: at(10, 0) }] },
+    ];
+    const lanes = buildLanes(segments, legend, window, activity);
+    const alpha = lanes.find((l) => l.key === "alpha")!;
+    expect(alpha.activityBands.length).toBe(2);
+    expect(alpha.activitySeconds).toBe(20 * 60 + 20 * 60);
+    const beta = lanes.find((l) => l.key === "beta")!;
+    expect(beta.activityBands).toEqual([]);
+    expect(beta.activitySeconds).toBe(0);
+  });
+
+  it("drops activity spans that fall outside the track window", () => {
+    const activity = [{ project: "alpha", spans: [{ started_at: at(8, 0), ended_at: at(9, 20) }] }];
+    const lanes = buildLanes(segments, legend, window, activity);
+    expect(lanes.find((l) => l.key === "alpha")!.activityBands).toEqual([]);
+  });
+
+  it("defaults to no activity bands when window/activity aren't passed (back-compat)", () => {
+    const lanes = buildLanes(segments, legend);
+    expect(lanes.every((l) => l.activityBands.length === 0 && l.activitySeconds === 0)).toBe(true);
+  });
+
   it("puts a plain-path block and a worktree-path block from the same repo in one lane", () => {
     const repoBlocks: StripBlock[] = [
       { id: 10, started_at: at(9, 0), ended_at: at(9, 30), project_path: "/Users/tomas/Desktop/Work/lyfjastofnun", is_personal: false, confidence: "high" },

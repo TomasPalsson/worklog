@@ -2,16 +2,29 @@
 // expand/collapse toggle swapping bar <-> lanes, legend hover dimming
 // other projects' segments, and the rich tooltip's show/hide lifecycle.
 
-import { afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { StripBlock, StripGap } from "@/lib/dayStrip";
-import type { Overlap } from "@/lib/types";
+import type { Overlap, ProjectActivity } from "@/lib/types";
+
+// The lanes view's overlap bands open <OverlapPopover>, which reads
+// next/navigation's router and calls the allocate/reset server actions —
+// same mocks as OverlapPopover.test.tsx, needed here since clicking a band
+// mounts it.
+mock.module("next/navigation", () => ({
+  useRouter: () => ({ refresh: mock(() => {}) }),
+}));
+mock.module("@/app/actions-overlaps", () => ({
+  allocateOverlap: mock(async () => ({ ok: true as const, data: undefined })),
+  resetOverlapAllocation: mock(async () => ({ ok: true as const, data: undefined })),
+}));
 
 let DayStrip: (props: {
   day: string;
   blocks: StripBlock[];
   gaps: StripGap[];
   overlaps?: Overlap[];
+  activity?: ProjectActivity[];
 }) => React.JSX.Element | null;
 
 beforeAll(async () => {
@@ -163,5 +176,63 @@ describe("DayStrip overlaps", () => {
   it("shows no chip and no bands when there are no overlaps", () => {
     render(<DayStrip day="2026-09-23" blocks={blocks} gaps={[]} overlaps={[]} />);
     expect(screen.queryByRole("button", { name: /overlap/i })).toBeNull();
+  });
+
+  it("bands share one overlay layer, not a lane row of their own, and open the split popover on click", () => {
+    render(<DayStrip day="2026-09-23" blocks={blocks} gaps={[]} overlaps={[overlap]} />);
+    fireEvent.click(screen.getByRole("button", { name: /expand/i }));
+
+    const layers = document.querySelectorAll(".day-strip-overlap-layer");
+    expect(layers.length).toBe(1);
+    expect(layers[0].querySelectorAll(".day-strip-overlap-band").length).toBe(1);
+
+    expect(screen.queryByRole("dialog", { name: /split this overlap/i })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Overlap 09:15–09:45/i }));
+    expect(screen.getByRole("dialog", { name: /split this overlap/i })).toBeTruthy();
+  });
+});
+
+describe("DayStrip lanes layout", () => {
+  const blocks: StripBlock[] = [
+    makeBlock({ id: 1, started_at: at(9, 0), ended_at: at(9, 30), project_path: "/x/alpha" }),
+    makeBlock({ id: 2, started_at: at(9, 30), ended_at: at(10, 0), project_path: "/x/beta" }),
+  ];
+
+  it("keeps each lane's label and track as children of the same row element", () => {
+    render(<DayStrip day="2026-09-23" blocks={blocks} gaps={[]} />);
+    fireEvent.click(screen.getByRole("button", { name: /expand/i }));
+
+    const rows = document.querySelectorAll('[data-testid="lane-row"]');
+    expect(rows.length).toBe(2);
+    for (const row of rows) {
+      expect(row.querySelector(".day-strip-lane-label")).toBeTruthy();
+      expect(row.querySelector(".day-strip-lane-track")).toBeTruthy();
+    }
+  });
+
+  it("renders a lane's activity spans behind its owned segments, in the same track", () => {
+    const activity: ProjectActivity[] = [
+      { project: "alpha", spans: [{ started_at: at(9, 0), ended_at: at(9, 50) }] },
+    ];
+    render(<DayStrip day="2026-09-23" blocks={blocks} gaps={[]} activity={activity} />);
+    fireEvent.click(screen.getByRole("button", { name: /expand/i }));
+
+    const alphaRow = Array.from(document.querySelectorAll('[data-testid="lane-row"]')).find((r) =>
+      r.textContent?.includes("alpha"),
+    )!;
+    const track = alphaRow.querySelector(".day-strip-lane-track")!;
+    const children = Array.from(track.children);
+    const activityIdx = children.findIndex((c) => c.classList.contains("day-strip-lane-activity"));
+    const segmentIdx = children.findIndex((c) => c.classList.contains("day-strip-block"));
+    expect(activityIdx).toBeGreaterThanOrEqual(0);
+    expect(segmentIdx).toBeGreaterThan(activityIdx);
+    expect(screen.getByText(/· active/)).toBeTruthy();
+  });
+
+  it("omits the activity fill and the muted active total when no activity data is given", () => {
+    render(<DayStrip day="2026-09-23" blocks={blocks} gaps={[]} />);
+    fireEvent.click(screen.getByRole("button", { name: /expand/i }));
+    expect(document.querySelector(".day-strip-lane-activity")).toBeNull();
+    expect(screen.queryByText(/· active/)).toBeNull();
   });
 });

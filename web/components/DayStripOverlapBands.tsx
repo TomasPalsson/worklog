@@ -1,9 +1,14 @@
 "use client";
 
 // The amber overlap bands drawn over the lanes view (DayStrip.tsx) —
-// split out to stay under the file/function-length guard. Each band spans
-// the lane rows its projects touch (CSS grid-row) and opens an
+// split out to stay under the file/function-length guard. All bands share
+// ONE absolutely-positioned overlay layer over the tracks column (so they
+// can never turn into a lane row of their own); each spans the full lanes
+// height — simpler than measuring the exact lane rows it touches, and the
+// label + popover already say which projects are involved. Opens an
 // OverlapPopover on click.
+
+const OVERLAP_LABEL_MIN_WIDTH_PCT = 4;
 
 import type { OverlapBand } from "@/lib/dayStripOverlaps";
 import type { Overlap } from "@/lib/types";
@@ -25,7 +30,7 @@ export function OverlapBands({
   onToggleOverlap: (key: string) => void;
 }) {
   return (
-    <>
+    <div className="day-strip-overlap-layer" aria-hidden={bands.length === 0 || undefined}>
       {bands.map((band) => (
         <OverlapBandButton
           key={overlapKey(band.overlap)}
@@ -35,7 +40,7 @@ export function OverlapBands({
           onToggle={onToggleOverlap}
         />
       ))}
-    </>
+    </div>
   );
 }
 
@@ -52,22 +57,20 @@ function OverlapBandButton({
 }) {
   if (!band.laneRange) return null;
   const key = overlapKey(band.overlap);
+  const showLabel = band.widthPct >= OVERLAP_LABEL_MIN_WIDTH_PCT;
   return (
-    <div
-      className="day-strip-overlap-band"
-      style={{ gridRow: `${band.laneRange[0] + 1} / ${band.laneRange[1] + 2}` }}
-    >
+    <div className="day-strip-overlap-band" style={{ left: `${band.leftPct}%`, width: `${band.widthPct}%` }}>
       <button
         type="button"
         className="day-strip-overlap-inner"
-        style={{ left: `${band.leftPct}%`, width: `${band.widthPct}%` }}
         aria-label={band.label}
+        title={band.label}
         onClick={() => onToggle(key)}
       >
-        <span className="day-strip-overlap-label">{band.label}</span>
+        {showLabel && <span className="day-strip-overlap-label">{band.label}</span>}
       </button>
       {open && (
-        <div className="day-strip-overlap-popover-anchor" style={{ left: `${band.leftPct}%` }}>
+        <div className="day-strip-overlap-popover-anchor">
           <OverlapPopover day={day} overlap={band.overlap} onClose={() => onToggle(key)} />
         </div>
       )}
