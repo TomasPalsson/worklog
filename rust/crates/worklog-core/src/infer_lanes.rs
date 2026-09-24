@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::billing::work_folder_for_path;
 use crate::infer::{InferBlock, InferEvent};
-use crate::infer_allocations::AllocationWindow;
+use crate::infer_allocations::{allocated_block, in_allocation, owner_paths, AllocationWindow};
 
 /// Background activity within this many minutes of a minute counts toward its owner.
 /// Also the max gap `overlaps::project_intervals` bridges inside one
@@ -85,6 +85,13 @@ pub(crate) fn build_blocks_by_project(
         return build(events);
     }
     let runs = owner_runs(&keyed, allocations);
+    // Runs a saved split decided take every work event in their minutes and
+    // span those minutes exactly, so the blocks follow the split.
+    let allocated: Vec<bool> = runs
+        .iter()
+        .map(|(_, s, e)| in_allocation(allocations, *s, *e))
+        .collect();
+    let paths = owner_paths(&events);
 
     // Every event lands in at most one bucket: calendar alone, a run whose
     // window contains it (project events only into their own project's run),
@@ -99,8 +106,12 @@ pub(crate) fn build_blocks_by_project(
         }
         let m = minute(e.ts);
         let key = lane_key(&e);
-        let hit = runs.iter().position(|(owner, start, end)| {
-            m >= *start && m <= *end && key.as_ref().is_none_or(|k| k == owner)
+        let hit = (0..runs.len()).find(|&i| {
+            let (owner, start, end) = &runs[i];
+            m >= *start
+                && m <= *end
+                && (key.as_ref().is_none_or(|k| k == owner)
+                    || (allocated[i] && key.as_deref().is_some_and(is_work)))
         });
         match hit {
             Some(i) => buckets.entry(i).or_default().push(e),
@@ -110,7 +121,19 @@ pub(crate) fn build_blocks_by_project(
             None => leftovers.push(e),
         }
     }
-    let mut blocks: Vec<InferBlock> = buckets.into_values().flat_map(build).collect();
+    let mut blocks: Vec<InferBlock> = buckets
+        .into_iter()
+        .flat_map(|(i, evs)| {
+            let (owner, start, end) = &runs[i];
+            if allocated[i] {
+                allocated_block(paths.get(owner).map(String::as_str), *start, *end, evs)
+                    .into_iter()
+                    .collect()
+            } else {
+                build(evs)
+            }
+        })
+        .collect();
     blocks.extend(build(calendar));
     blocks.extend(build(leftovers));
     blocks.sort_by_key(|b| b.started_at);

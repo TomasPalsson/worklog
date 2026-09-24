@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 
+use crate::infer::{InferBlock, InferEvent};
 use crate::infer_lanes::minute;
 
 /// A user-chosen split of an overlap window — every worked minute in
@@ -69,6 +70,53 @@ pub(crate) fn apply_allocations(
             assigned = target.max(assigned);
         }
     }
+}
+
+/// Does the inclusive minute run `[start, end]` touch a saved split?
+pub(crate) fn in_allocation(allocations: &[AllocationWindow], start: i64, end: i64) -> bool {
+    allocations
+        .iter()
+        .any(|a| minute(a.started_at) <= end && start < minute(a.ended_at))
+}
+
+/// A real folder path per lane key, so an allocated block's events can be
+/// retagged to the project they were handed to.
+pub(crate) fn owner_paths(events: &[InferEvent]) -> BTreeMap<String, String> {
+    let mut paths = BTreeMap::new();
+    for e in events {
+        if let (Some(k), Some(p)) = (crate::infer_lanes::lane_key(e), &e.project_path) {
+            paths.entry(k).or_insert_with(|| p.clone());
+        }
+    }
+    paths
+}
+
+/// The block for a run a saved split handed to one project: it spans the
+/// run's minutes exactly (the time follows the split, not the event
+/// timestamps) and carries the events inside, retagged to `path` so the
+/// block reads as that project's. `None` when the run holds no events.
+// ponytail: a run with no events of its own, or one under MIN_BLOCK
+// (a 1–2% sliver), builds nothing; fold slivers into a neighbour if it matters.
+pub(crate) fn allocated_block(
+    path: Option<&str>,
+    start: i64,
+    end: i64,
+    mut events: Vec<InferEvent>,
+) -> Option<InferBlock> {
+    if let Some(p) = path {
+        events
+            .iter_mut()
+            .for_each(|e| e.project_path = Some(p.to_string()));
+    }
+    events.sort_by_key(|e| e.ts);
+    let (first, rest) = events.split_first()?;
+    let mut block = crate::infer::new_block(first);
+    rest.iter()
+        .for_each(|e| crate::infer::extend_block(&mut block, e));
+    block.started_at = DateTime::from_timestamp(start * 60, 0)?;
+    block.ended_at = DateTime::from_timestamp((end + 1) * 60, 0)?;
+    block.duration_seconds = (end + 1 - start) * 60;
+    crate::infer::finalize(block)
 }
 
 #[cfg(test)]
@@ -215,5 +263,52 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// End to end through block building: the blocks must follow the saved
+    /// split, not just the per-minute labels.
+    #[test]
+    fn blocks_follow_a_saved_split() {
+        use crate::infer::{build_blocks, build_blocks_with_allocations, InferEvent};
+        const A: &str = "/Users/dev/Desktop/Work/vitinn-infra";
+        const C: &str = "/Users/dev/Desktop/Work/lyfjastofnun";
+        let ev = |m: u32, path: &str| InferEvent {
+            ts: at(9, m),
+            source: "claude_turn".into(),
+            duration_seconds: None,
+            jira_issue: None,
+            event_id: None,
+            project_path: Some(path.into()),
+        };
+        // A typed 9:00–9:18, C typed 9:20–9:58.
+        let events: Vec<InferEvent> = (0..10)
+            .map(|i| ev(i * 2, A))
+            .chain((10..30).map(|i| ev(i * 2, C)))
+            .collect();
+        let auto_total: i64 = build_blocks(events.clone())
+            .iter()
+            .map(|b| b.duration_seconds)
+            .sum();
+
+        let mut shares = BTreeMap::new();
+        shares.insert("vitinn-infra".to_string(), 1.0);
+        let window = AllocationWindow {
+            started_at: at(9, 0),
+            ended_at: at(10, 0),
+            shares,
+        };
+        let blocks = build_blocks_with_allocations(events, &[window]);
+        let total: i64 = blocks.iter().map(|b| b.duration_seconds).sum();
+        assert!(
+            blocks
+                .iter()
+                .all(|b| b.dominant_project_path().as_deref() == Some(A)),
+            "every block in the window must be vitinn-infra's"
+        );
+        assert!(
+            total >= 55 * 60,
+            "vitinn-infra gets the whole hour, got {total}s"
+        );
+        assert!(total <= auto_total.max(60 * 60), "no time is invented");
     }
 }

@@ -104,7 +104,7 @@ impl InferBlock {
     }
 }
 
-fn new_block(e: &InferEvent) -> InferBlock {
+pub(crate) fn new_block(e: &InferEvent) -> InferBlock {
     let end = e.end();
     InferBlock {
         // Bucket the block on the user's LOCAL day (driven by
@@ -123,7 +123,7 @@ fn new_block(e: &InferEvent) -> InferBlock {
     }
 }
 
-fn extend_block(block: &mut InferBlock, e: &InferEvent) {
+pub(crate) fn extend_block(block: &mut InferBlock, e: &InferEvent) {
     let end = e.end().max(block.ended_at);
     block.ended_at = end;
     block.duration_seconds = (end - block.started_at).num_seconds();
@@ -134,7 +134,7 @@ fn extend_block(block: &mut InferBlock, e: &InferEvent) {
     block.events.push(e.clone());
 }
 
-fn finalize(mut block: InferBlock) -> Option<InferBlock> {
+pub(crate) fn finalize(mut block: InferBlock) -> Option<InferBlock> {
     let duration = block.ended_at - block.started_at;
     if duration < Duration::minutes(MIN_BLOCK_MINUTES) {
         return None;
