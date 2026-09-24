@@ -26,7 +26,8 @@ const EMPTY_FORM: SettingsFormState = {
   cycleStartDay: "",
   closeDay: "",
   workHours: "",
-  routeThreshold: "",
+  abstainMargin: "",
+  runnerUpRatio: "",
   secretInputs: {},
 };
 

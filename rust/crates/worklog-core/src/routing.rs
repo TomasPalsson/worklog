@@ -1,31 +1,31 @@
-//! Routes browser/Slack `events` rows to a project folder. A hard rule
-//! wins over a model guess; guesses below the confidence threshold leave
-//! the event unsorted. See spec 003 T005.
-//!
-//! The label lives on the event itself (design.md decision 1):
-//! `events.project_path = <work_prefix>/<folder>` plus `label_origin` /
-//! `label_confidence` — keeps `infer`/`personal`/`billing` unchanged.
+//! Routes browser/Slack `events` rows to a project folder. A hard rule wins
+//! over a model guess; guesses below the confidence threshold leave the
+//! event unsorted (spec 003 T005). The label lives on the event itself:
+//! `project_path`/`label_origin`/`label_confidence` — keeps `infer`/`personal`/`billing` unchanged.
 
 use std::collections::BTreeSet;
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
+use regex::Regex;
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::billing_registry::Registry;
 use crate::routing_contract::{
-    Classifier, Guess, LabelOrigin, LabelRequest, RoutedEvent, Rule, RuleKind, SOURCE_FIREFOX,
-    SOURCE_SLACK,
+    Classifier, Guess, LabelOrigin, LabelRequest, RouteRule, RoutedEvent, Rule, RuleKind,
+    IGNORE_FOLDER, SOURCE_FIREFOX, SOURCE_SLACK,
 };
+#[path = "routing_context.rs"]
+pub(crate) mod context;
 #[path = "routing_rows.rs"]
 mod rows;
-use rows::{events_in_window, fetch_event, row_from, to_routed, EventRow, EVENT_COLUMNS};
+pub(crate) use rows::{events_in_window, fetch_event, is_hidden, narrowed_options, to_routed};
+use rows::{row_from, EventRow, EVENT_COLUMNS}; // shared with routing_dismiss.rs / routing_absorb.rs
 
-/// Rule-matched events: `(event id, resolved folder)`. A type alias, not
-/// a new shape — `load_pending`'s contract return type is unchanged.
-type RuleHits = Vec<(i64, String)>;
+/// Automatically-resolved events: `(id, folder, origin)`, origin `Rule`/`Link`/`Context`.
+type RuleHits = Vec<(i64, String, LabelOrigin)>;
 
 /// An event still waiting on a label: candidate folders + classifier state.
 #[derive(Debug, Clone)]
@@ -42,8 +42,7 @@ pub struct RouteStats {
     pub guesses_applied: usize,
 }
 
-/// Every labellable project key: billing-registry folder pins plus every
-/// directory under the work prefix. Sorted and deduped.
+/// Every labellable project key: billing-registry pins + every dir under the work prefix.
 pub fn project_keys(conn: &Connection) -> Result<Vec<String>> {
     let mut keys: BTreeSet<String> = crate::billing_registry::list_folders(conn)?
         .into_iter()
@@ -68,7 +67,7 @@ fn folder_path(folder: &str) -> String {
     }
 }
 
-fn set_label(
+pub(crate) fn set_label(
     conn: &Connection,
     id: i64,
     folder: &str,
@@ -116,39 +115,52 @@ fn matching_rule(rules: &[Rule], row: &EventRow) -> Option<String> {
         .map(|rule| rule.folder.clone())
 }
 
-/// A container naming exactly one customer narrows to that customer's
-/// pinned folders (B10); otherwise every project key is a candidate.
-fn narrowed_options(registry: &Registry, row: &EventRow, all: &[String]) -> Vec<String> {
-    if let Some(container) = row.container.as_deref() {
-        if let Some(customer) = registry.customer_in_text(container) {
-            return registry
-                .folders
-                .iter()
-                .filter(|f| f.customer.as_deref() == Some(customer.as_str()))
-                .map(|f| f.folder.clone())
-                .collect();
+/// An event whose details name exactly one of `options` as `github.com/<org>/<key>` or `Desktop/Work/<key>`
+/// (FR-10, origin Link, never classified); zero/two-plus hits is `None`. `details` only, never `title` (attacker-set).
+fn named_project(row: &EventRow, options: &[String]) -> Option<String> {
+    let text = row.details.as_deref().unwrap_or("");
+    let re = Regex::new(r"(?:github\.com/[^/\s]+/|Desktop/Work/)([^/|>)\s'\x60]+)").unwrap();
+    let mut found = BTreeSet::new();
+    for cap in re.captures_iter(text) {
+        let key = cap.get(1).unwrap().as_str();
+        if options.iter().any(|o| o == key) {
+            found.insert(key);
         }
     }
-    all.to_vec()
+    let mut hits = found.into_iter();
+    match (hits.next(), hits.next()) {
+        (Some(key), None) => Some(key.to_owned()),
+        _ => None,
+    }
 }
 
-/// Load a day's unlabelled browser/Slack events: rule hits (resolved) and
-/// events still needing a model decision.
+/// Load a day's unlabelled browser/Slack events: rule hits (resolved) and events still needing a model decision.
 pub fn load_pending(conn: &Connection, day: NaiveDate) -> Result<(RuleHits, Vec<Pending>)> {
     let rows = events_in_window(conn, day, true)?;
     let rules = list_rules(conn)?;
     let registry = Registry::load(conn)?;
     let all_options = project_keys(conn)?;
+    let ctx_events = context::context_events_for_day(conn, day)?;
 
     let mut rule_hits = Vec::new();
     let mut pending = Vec::new();
 
     for row in rows {
         if let Some(folder) = matching_rule(&rules, &row) {
-            rule_hits.push((row.id, folder));
+            rule_hits.push((row.id, folder, LabelOrigin::Rule));
+            continue;
+        }
+        if let Some(folder) = named_project(&row, &all_options) {
+            rule_hits.push((row.id, folder, LabelOrigin::Link));
             continue;
         }
         let options = narrowed_options(&registry, &row, &all_options);
+        if row.source == SOURCE_SLACK {
+            if let Some(folder) = context::context_hit(&row.started_at, &options, &ctx_events) {
+                rule_hits.push((row.id, folder, LabelOrigin::Context));
+                continue;
+            }
+        }
         let state = serde_json::json!({
             "source": row.source,
             "title": row.title,
@@ -165,32 +177,38 @@ pub fn load_pending(conn: &Connection, day: NaiveDate) -> Result<(RuleHits, Vec<
     Ok((rule_hits, pending))
 }
 
-/// Ask the classifier for each pending event; keep guesses clearing
-/// `threshold` that name one of the event's own options. No connection
-/// arg — the slow model call must never hold the sqlite lock.
+/// Ask the classifier for each pending event; keep guesses that name one of the event's own
+/// options and clear both the abstain margin and the runner-up ratio (spec 004 FR-01/FR-02),
+/// never a single raw-confidence threshold. No connection arg — the slow model call must never hold the sqlite lock.
 pub fn decide(
     pending: &[Pending],
     classifier: &dyn Classifier,
-    threshold: f64,
+    rule: RouteRule,
 ) -> Vec<(i64, Guess)> {
     pending
         .iter()
         .filter_map(|p| {
             let guess = classifier.classify(&p.state, &p.options).ok().flatten()?;
-            (guess.confidence >= threshold && p.options.contains(&guess.folder))
-                .then_some((p.event.id, guess))
+            let accepted = p.options.contains(&guess.folder)
+                && guess.confidence >= guess.abstain * rule.abstain_margin
+                && guess.confidence >= guess.runner_up * rule.runner_up_ratio;
+            accepted.then_some((p.event.id, guess))
         })
         .collect()
 }
 
-/// Persist rule hits and accepted guesses.
+/// Persist rule hits (each with its own origin) and accepted guesses.
 pub fn commit_labels(
     conn: &Connection,
-    rule_hits: &[(i64, String)],
+    rule_hits: &[(i64, String, LabelOrigin)],
     guesses: &[(i64, Guess)],
 ) -> Result<RouteStats> {
-    for (id, folder) in rule_hits {
-        set_label(conn, *id, folder, LabelOrigin::Rule, None)?;
+    for (id, folder, origin) in rule_hits {
+        if folder == IGNORE_FOLDER {
+            crate::routing_dismiss::set_dismissed(conn, *id)?;
+        } else {
+            set_label(conn, *id, folder, *origin, None)?;
+        }
     }
     for (id, guess) in guesses {
         set_label(
@@ -207,24 +225,21 @@ pub fn commit_labels(
     })
 }
 
-/// CLI convenience: `load_pending` (locked) → `decide` (unlocked) →
-/// `commit_labels` (locked), mirroring `estimate::prepare/invoke/commit`.
+/// CLI convenience: `load_pending` (locked) → `decide` (unlocked) → `commit_labels` (locked), mirroring `estimate::prepare/invoke/commit`.
 pub fn route_day(
     conn: &Connection,
     day: NaiveDate,
     classifier: &dyn Classifier,
-    threshold: f64,
+    rule: RouteRule,
 ) -> Result<RouteStats> {
     let (rule_hits, pending) = load_pending(conn, day)?;
-    let guesses = decide(&pending, classifier, threshold);
+    let guesses = decide(&pending, classifier, rule);
     commit_labels(conn, &rule_hits, &guesses)
 }
 
-/// What a hard rule of `kind` keys on, read off `row`. `kind` must match
-/// `row.source` (Domain⇔firefox, SlackChannel⇔slack) — `kind_matches`
-/// only re-checks this at apply-time, so a rule created against the wrong
-/// source would silently misfire on unrelated events of its real source.
-fn rule_pattern(row: &EventRow, kind: RuleKind) -> Result<String> {
+/// What a hard rule of `kind` keys on, read off `row`. `kind` must match `row.source` (Domain⇔firefox,
+/// SlackChannel⇔slack) — `kind_matches` re-checks this at apply-time too, so a wrong-source rule can't misfire.
+pub(crate) fn rule_pattern(row: &EventRow, kind: RuleKind) -> Result<String> {
     match kind {
         RuleKind::Domain => {
             if row.source != SOURCE_FIREFOX {
@@ -248,7 +263,12 @@ fn rule_pattern(row: &EventRow, kind: RuleKind) -> Result<String> {
     }
 }
 
-fn upsert_rule(conn: &Connection, kind: RuleKind, pattern: &str, folder: &str) -> Result<()> {
+pub(crate) fn upsert_rule(
+    conn: &Connection,
+    kind: RuleKind,
+    pattern: &str,
+    folder: &str,
+) -> Result<()> {
     conn.execute(
         "INSERT INTO routing_rules (kind, pattern, folder) VALUES (?1, ?2, ?3)
          ON CONFLICT(kind, pattern) DO UPDATE SET folder = excluded.folder",
@@ -258,13 +278,12 @@ fn upsert_rule(conn: &Connection, kind: RuleKind, pattern: &str, folder: &str) -
     Ok(())
 }
 
-/// Apply a fresh or edited "always" rule to every other unsorted, guessed or
-/// rule-labelled event that matches it (B9); hand-fixed events keep their
-/// label. The folder is resolved against the whole rule table, as
-/// `load_pending` does, so an edited rule's new target propagates.
-/// ponytail: full unresolved-event scan, not source-scoped — fine at
-/// single-user scale, add an index path if that ever changes.
-fn apply_rule_to_existing(
+/// Apply a fresh or edited "always" rule to every other automatically-labelled event that
+/// matches it (B9); hand-fixed/dismissed events keep their label. Noise IS retroactively
+/// re-labelled — that's how the owner reclaims a wrongly-hidden event. `IGNORE_FOLDER`
+/// dismisses instead of filing. ponytail: full unresolved-event scan, not source-scoped —
+/// fine at single-user scale.
+pub(crate) fn apply_rule_to_existing(
     conn: &Connection,
     kind: RuleKind,
     pattern: &str,
@@ -272,7 +291,7 @@ fn apply_rule_to_existing(
 ) -> Result<()> {
     let sql = format!(
         "SELECT {EVENT_COLUMNS} FROM events
-          WHERE id != ?1 AND (label_origin IS NULL OR label_origin IN ('guess', 'rule'))"
+          WHERE id != ?1 AND (label_origin IS NULL OR label_origin IN ('guess', 'rule', 'link', 'context', 'noise'))"
     );
     let mut stmt = conn.prepare(&sql)?;
     let candidates = stmt
@@ -284,7 +303,11 @@ fn apply_rule_to_existing(
             continue;
         }
         if let Some(folder) = matching_rule(&rules, &row) {
-            set_label(conn, row.id, &folder, LabelOrigin::Rule, None)?;
+            if folder == IGNORE_FOLDER {
+                crate::routing_dismiss::set_dismissed(conn, row.id)?;
+            } else {
+                set_label(conn, row.id, &folder, LabelOrigin::Rule, None)?;
+            }
         }
     }
     Ok(())
@@ -298,9 +321,8 @@ pub fn label_event(conn: &Connection, id: i64, req: &LabelRequest) -> Result<Rou
     }
     let row = fetch_event(conn, id)?.ok_or_else(|| anyhow::anyhow!("event {id} not found"))?;
 
-    // Resolve the rule pattern before writing anything — a failure here
-    // must leave the event untouched, not the label committed with the
-    // rule silently missing.
+    // Resolve the rule pattern before writing anything — a failure here must
+    // leave the event untouched, not the label committed with the rule missing.
     let rule = req
         .always
         .map(|kind| rule_pattern(&row, kind).map(|pattern| (kind, pattern)))
@@ -355,12 +377,20 @@ pub fn delete_rule(conn: &Connection, id: i64) -> Result<bool> {
     Ok(n > 0)
 }
 
-/// Every browser/Slack event for `day`, as the review UI sees it.
-pub fn routed_for_day(conn: &Connection, day: NaiveDate) -> Result<Vec<RoutedEvent>> {
-    Ok(events_in_window(conn, day, false)?
+/// Every browser/Slack event for `day`, as the review UI sees it — dismissed and noise
+/// excluded unless `include_hidden` (the review drawer's request for the full picture).
+pub fn routed_for_day(
+    conn: &Connection,
+    day: NaiveDate,
+    include_hidden: bool,
+) -> Result<Vec<RoutedEvent>> {
+    let events = events_in_window(conn, day, false)?
         .into_iter()
-        .map(to_routed)
-        .collect())
+        .map(to_routed);
+    if include_hidden {
+        return Ok(events.collect());
+    }
+    Ok(events.filter(|e| !is_hidden(e.label_origin)).collect())
 }
 
 // Tests live in routing_test.rs (same module, split file for line budget).

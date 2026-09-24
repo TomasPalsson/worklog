@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
   formatBilledHours,
   formatDuration,
+  formatGapRow,
   formatProjectPath,
   formatRange,
   formatTotalHours,
@@ -122,6 +123,27 @@ describe("formatRange", () => {
       "2026-04-18T09:30:00Z",
     );
     expect(v).toMatch(/^\d{2}:\d{2}–\d{2}:\d{2}$/);
+  });
+});
+
+describe("formatGapRow", () => {
+  it("renders the gap window and minutes as a muted row's text", () => {
+    const v = formatGapRow({
+      started_at: "2026-04-18T09:00:00Z",
+      ended_at: "2026-04-18T09:45:00Z",
+      minutes: 45,
+    });
+    expect(v).toMatch(/^No activity \d{2}:\d{2}–\d{2}:\d{2} \(45 min\)$/);
+  });
+
+  it("calls a gap that covers 11:30 local time lunch", () => {
+    const at = (h: number, m: number) => new Date(2026, 8, 23, h, m).toISOString();
+    expect(formatGapRow({ started_at: at(11, 23), ended_at: at(11, 59), minutes: 36 })).toBe(
+      "Lunch 11:23–11:59 (36 min)",
+    );
+    expect(formatGapRow({ started_at: at(14, 6), ended_at: at(14, 41), minutes: 35 })).toBe(
+      "No activity 14:06–14:41 (35 min)",
+    );
   });
 });
 

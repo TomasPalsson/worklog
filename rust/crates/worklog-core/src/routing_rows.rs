@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use rusqlite::{params, Connection, OptionalExtension};
 
+use crate::billing_registry::Registry;
 use crate::routing_contract::{LabelOrigin, RoutedEvent, SOURCE_FIREFOX, SOURCE_SLACK};
 
 pub(crate) const EVENT_COLUMNS: &str =
@@ -55,6 +56,12 @@ pub(crate) fn to_routed(row: EventRow) -> RoutedEvent {
     }
 }
 
+/// Whether `origin` marks an event hidden from the default routed/inferred
+/// view — shared by `routing::routed_for_day` and anything that mirrors it.
+pub(crate) fn is_hidden(origin: Option<LabelOrigin>) -> bool {
+    matches!(origin, Some(LabelOrigin::Dismissed | LabelOrigin::Noise))
+}
+
 pub(crate) fn fetch_event(conn: &Connection, id: i64) -> Result<Option<EventRow>> {
     let sql = format!("SELECT {EVENT_COLUMNS} FROM events WHERE id = ?1");
     conn.query_row(&sql, params![id], row_from)
@@ -92,4 +99,21 @@ pub(crate) fn events_in_window(
     )?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(Into::into)
+}
+
+/// A container naming exactly one customer narrows to that customer's pinned folders (B10);
+/// otherwise every project key is a candidate. Shared by `routing::load_pending` and
+/// `routing_absorb`'s absorb step, both of which need an event's own option list.
+pub(crate) fn narrowed_options(registry: &Registry, row: &EventRow, all: &[String]) -> Vec<String> {
+    if let Some(container) = row.container.as_deref() {
+        if let Some(customer) = registry.customer_in_text(container) {
+            return registry
+                .folders
+                .iter()
+                .filter(|f| f.customer.as_deref() == Some(customer.as_str()))
+                .map(|f| f.folder.clone())
+                .collect();
+        }
+    }
+    all.to_vec()
 }

@@ -82,7 +82,7 @@ pub struct InferBlock {
     #[serde(skip)]
     is_calendar: bool,
     #[serde(skip)]
-    events: Vec<InferEvent>,
+    pub(crate) events: Vec<InferEvent>,
 }
 
 impl InferBlock {
@@ -104,7 +104,7 @@ impl InferBlock {
     }
 }
 
-fn new_block(e: &InferEvent) -> InferBlock {
+pub(crate) fn new_block(e: &InferEvent) -> InferBlock {
     let end = e.end();
     InferBlock {
         // Bucket the block on the user's LOCAL day (driven by
@@ -123,7 +123,7 @@ fn new_block(e: &InferEvent) -> InferBlock {
     }
 }
 
-fn extend_block(block: &mut InferBlock, e: &InferEvent) {
+pub(crate) fn extend_block(block: &mut InferBlock, e: &InferEvent) {
     let end = e.end().max(block.ended_at);
     block.ended_at = end;
     block.duration_seconds = (end - block.started_at).num_seconds();
@@ -134,7 +134,7 @@ fn extend_block(block: &mut InferBlock, e: &InferEvent) {
     block.events.push(e.clone());
 }
 
-fn finalize(mut block: InferBlock) -> Option<InferBlock> {
+pub(crate) fn finalize(mut block: InferBlock) -> Option<InferBlock> {
     let duration = block.ended_at - block.started_at;
     if duration < Duration::minutes(MIN_BLOCK_MINUTES) {
         return None;
@@ -156,7 +156,27 @@ fn finalize(mut block: InferBlock) -> Option<InferBlock> {
 }
 
 /// Pure clustering over a day's events. Input order doesn't matter.
+/// One lane per repo (see `infer_lanes`), each clustered by
+/// [`build_blocks_sequential`].
 pub fn build_blocks(events: Vec<InferEvent>) -> Vec<InferBlock> {
+    build_blocks_with_allocations(events, &[])
+}
+
+/// Same as [`build_blocks`], then the work time inside each saved
+/// [`crate::infer_allocations::AllocationWindow`] is re-cut by its shares.
+pub fn build_blocks_with_allocations(
+    events: Vec<InferEvent>,
+    allocations: &[crate::infer_allocations::AllocationWindow],
+) -> Vec<InferBlock> {
+    if allocations.is_empty() {
+        return crate::infer_lanes::build_blocks_by_project(events, build_blocks_sequential);
+    }
+    let by_key = crate::infer_allocations::events_by_key(&events);
+    let auto = crate::infer_lanes::build_blocks_by_project(events, build_blocks_sequential);
+    crate::infer_allocations::apply_split(auto, allocations, &by_key)
+}
+
+fn build_blocks_sequential(events: Vec<InferEvent>) -> Vec<InferBlock> {
     let mut usable = events;
     usable.sort_by_key(|e| e.ts);
 
@@ -393,11 +413,13 @@ pub fn load_day_events(conn: &Connection, day: NaiveDate) -> Result<Vec<InferEve
     // Firefox/Slack events without a label are unsorted (spec 003, routing
     // decision 3): they must never inherit a neighbour's project_path, so
     // they're excluded here rather than let through with project_path NULL.
+    // Dismissed and noise events (thrown away by the owner or by the
+    // end-of-day absorb step) are excluded the same way.
     let mut stmt = conn.prepare(
         "SELECT id, source, started_at, duration_seconds, jira_issue, project_path
            FROM events
           WHERE started_at >= ?1 AND started_at < ?2
-            AND NOT (source IN (?3, ?4) AND label_origin IS NULL)
+            AND NOT (source IN (?3, ?4) AND (label_origin IS NULL OR label_origin IN (?5, ?6)))
           ORDER BY started_at",
     )?;
     // started_at is ISO-8601 string; we compare lexicographically which works
@@ -410,7 +432,9 @@ pub fn load_day_events(conn: &Connection, day: NaiveDate) -> Result<Vec<InferEve
             start,
             end,
             crate::routing_contract::SOURCE_FIREFOX,
-            crate::routing_contract::SOURCE_SLACK
+            crate::routing_contract::SOURCE_SLACK,
+            crate::routing_contract::LabelOrigin::Dismissed.as_str(),
+            crate::routing_contract::LabelOrigin::Noise.as_str()
         ],
         |r| {
             let iso: String = r.get(2)?;
@@ -478,6 +502,16 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
             prior_list.push(row);
         }
     }
+    // Two ticketed blocks fused into one would keep only one ticket: cut
+    // such a block where each later ticketed block began (see infer_carry).
+    let ticketed: Vec<crate::infer_carry::Ticketed> = prior_list
+        .iter()
+        .filter_map(|c| {
+            let (s, e) = parse_pair(&c.started_at, &c.ended_at)?;
+            Some((s, e, c.jira_issue.clone()?))
+        })
+        .collect();
+    let blocks = crate::infer_carry::cut_at_ticket_edges(blocks, &ticketed);
     // Track which fallback rows we've already claimed so two new blocks
     // can't both inherit the same prior state.
     let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -486,17 +520,22 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
     tx.execute("DELETE FROM blocks WHERE day = ?1", params![day_iso])
         .context("clearing stale blocks")?;
 
-    for b in blocks {
+    for b in &blocks {
         let started_key = block_iso(b.started_at);
         let ended_key = block_iso(b.ended_at);
         let carry: Option<&CarryRow> = prior.get(&started_key).or_else(|| {
             // Overlap fallback: if no exact-start match, find one prior
-            // block whose time range overlaps the new block's. Must not
-            // already be claimed by a different new block.
-            prior_list.iter().find(|c| {
+            // block whose time range overlaps the new block's — a ticketed
+            // one first. Must not already be claimed by a different new block.
+            let open = |c: &&CarryRow| {
                 !claimed.contains(&c.started_at)
                     && ranges_overlap(&c.started_at, &c.ended_at, &started_key, &ended_key)
-            })
+            };
+            prior_list
+                .iter()
+                .filter(open)
+                .find(|c| c.jira_issue.is_some())
+                .or_else(|| prior_list.iter().find(open))
         });
         if let Some(c) = carry {
             claimed.insert(c.started_at.clone());
@@ -1097,6 +1136,74 @@ mod tests {
     }
 
     #[test]
+    fn load_day_events_excludes_dismissed_firefox_and_slack_events() {
+        // Dismissed noise (a random DM, a news site) must never become block
+        // time, same as an unlabelled event — but here the event HAS a
+        // label_origin (it's just "dismissed"), so the existing
+        // `label_origin IS NULL` check alone would let it through.
+        let conn = open_memory().unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let firefox_id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                crate::routing_contract::SOURCE_FIREFOX,
+                "f1",
+                "2026-04-18T09:00:00+00:00",
+                "news site",
+            ),
+        )
+        .unwrap();
+        let slack_id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                crate::routing_contract::SOURCE_SLACK,
+                "s1",
+                "2026-04-18T09:05:00+00:00",
+                "#random",
+            ),
+        )
+        .unwrap();
+        crate::routing_dismiss::dismiss_event(&conn, firefox_id, None).unwrap();
+        crate::routing_dismiss::dismiss_event(&conn, slack_id, None).unwrap();
+
+        let events = load_day_events(&conn, day).unwrap();
+        assert!(
+            events.is_empty(),
+            "dismissed firefox/slack events must never reach inference"
+        );
+    }
+
+    #[test]
+    fn load_day_events_excludes_noise_firefox_and_slack_events() {
+        // Noise (the absorb step's last resort, spec 004) must be treated
+        // exactly like dismissed: never block time, even though its
+        // label_origin is non-NULL.
+        let conn = open_memory().unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let firefox_id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                crate::routing_contract::SOURCE_FIREFOX,
+                "f1",
+                "2026-04-18T09:00:00+00:00",
+                "news site",
+            ),
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE events SET label_origin = 'noise' WHERE id = ?1",
+            [firefox_id],
+        )
+        .unwrap();
+
+        let events = load_day_events(&conn, day).unwrap();
+        assert!(
+            events.is_empty(),
+            "noise firefox/slack events must never reach inference"
+        );
+    }
+
+    #[test]
     fn block_day_respects_worklog_tz() {
         // Regression for H4: without WORKLOG_TZ, a 23:30 local event in
         // UTC-5 (=04:30Z the next day) would land on the WRONG day's
@@ -1185,5 +1292,66 @@ mod tests {
         assert_eq!(stored[0].jira_issue.as_deref(), Some("PROJ-3"));
         assert_eq!(stored[0].description.as_deref(), Some("reviewed"));
         assert_eq!(stored[0].estimated_by.as_deref(), Some("manual"));
+    }
+
+    #[test]
+    fn shell_and_reflog_events_form_a_project_block() {
+        let project = "/Users/dev/Desktop/Work/vitinn-infra";
+        let mut events: Vec<InferEvent> = (0..10)
+            .map(|i| ev_project(9, i * 2, "shell", project))
+            .collect();
+        events.push(ev_project(9, 19, "git_reflog", project));
+        let blocks = build_blocks(events);
+        assert_eq!(
+            blocks.len(),
+            1,
+            "shell + reflog events under one project must form a single block"
+        );
+        let dur_min = blocks[0].duration_seconds / 60;
+        assert!(
+            (15..=25).contains(&dur_min),
+            "block duration should be 15-25 min, got {dur_min}"
+        );
+        assert_eq!(blocks[0].dominant_project_path().as_deref(), Some(project));
+    }
+
+    #[test]
+    fn reflog_checkout_switches_project() {
+        let repo_a = "/Users/dev/Desktop/Work/repo-a";
+        // Both client repos: a switch between work repos must split. (A switch
+        // from work to a personal ~/Desktop/Projects repo deliberately does
+        // not — work outranks personal, see infer_lanes.)
+        let repo_b = "/Users/dev/Desktop/Work/repo-b";
+        let mut events: Vec<InferEvent> = vec![
+            ev_project(9, 40, "shell", repo_a),
+            ev_project(9, 45, "shell", repo_a),
+            ev_project(9, 50, "shell", repo_a),
+            ev_project(9, 55, "shell", repo_a),
+            ev_project(10, 0, "shell", repo_a),
+            ev_project(10, 5, "shell", repo_a),
+            ev_project(10, 10, "shell", repo_a),
+        ];
+        events.push(ev_project(10, 14, "git_reflog", repo_b));
+        events.extend([
+            ev_project(10, 16, "shell", repo_b),
+            ev_project(10, 18, "shell", repo_b),
+            ev_project(10, 20, "shell", repo_b),
+            ev_project(10, 22, "shell", repo_b),
+        ]);
+
+        let blocks = build_blocks(events);
+        assert_eq!(
+            blocks.len(),
+            2,
+            "reflog checkout into a different repo must split the block"
+        );
+        assert!(
+            blocks[0].ended_at <= at(10, 15),
+            "repo A's block should end by 10:15, ended at {:?}",
+            blocks[0].ended_at
+        );
+        assert_eq!(blocks[0].dominant_project_path().as_deref(), Some(repo_a));
+        assert_eq!(blocks[1].dominant_project_path().as_deref(), Some(repo_b));
+        assert!(blocks[1].started_at >= at(10, 14));
     }
 }

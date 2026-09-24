@@ -12,7 +12,8 @@ export interface SettingsFormState {
   cycleStartDay: string;
   closeDay: string;
   workHours: string;
-  routeThreshold: string;
+  abstainMargin: string;
+  runnerUpRatio: string;
   secretInputs: Record<string, string>;
 }
 
@@ -42,7 +43,8 @@ export function formStateFromView(v: SettingsView): SettingsFormState {
     cycleStartDay: String(v.cycle_start_day),
     closeDay: String(v.close_day),
     workHours: v.work_hours,
-    routeThreshold: String(v.route_threshold),
+    abstainMargin: String(v.abstain_margin),
+    runnerUpRatio: String(v.runner_up_ratio),
     secretInputs,
   };
 }
@@ -76,13 +78,20 @@ export function buildSettingsUpdate(
   }
   // A blank field means "no change" — Number("") is 0, not NaN, so an
   // empty trimmed string must be excluded before the numeric check or
-  // clearing the input would silently save a 0.0 threshold (auto-accepting
-  // every model guess).
-  const routeThresholdTrimmed = form.routeThreshold.trim();
-  if (routeThresholdTrimmed !== "") {
-    const thresholdNum = Number(routeThresholdTrimmed);
-    if (!Number.isNaN(thresholdNum) && thresholdNum !== view.route_threshold) {
-      update.route_threshold = thresholdNum;
+  // clearing the input would silently save 0.0 (auto-accepting every
+  // model guess).
+  const abstainMarginTrimmed = form.abstainMargin.trim();
+  if (abstainMarginTrimmed !== "") {
+    const abstainMarginNum = Number(abstainMarginTrimmed);
+    if (!Number.isNaN(abstainMarginNum) && abstainMarginNum !== view.abstain_margin) {
+      update.abstain_margin = abstainMarginNum;
+    }
+  }
+  const runnerUpRatioTrimmed = form.runnerUpRatio.trim();
+  if (runnerUpRatioTrimmed !== "") {
+    const runnerUpRatioNum = Number(runnerUpRatioTrimmed);
+    if (!Number.isNaN(runnerUpRatioNum) && runnerUpRatioNum !== view.runner_up_ratio) {
+      update.runner_up_ratio = runnerUpRatioNum;
     }
   }
 
@@ -102,7 +111,8 @@ export function buildSettingsUpdate(
     update.cycle_start_day === undefined &&
     update.close_day === undefined &&
     update.work_hours === undefined &&
-    update.route_threshold === undefined;
+    update.abstain_margin === undefined &&
+    update.runner_up_ratio === undefined;
 
   return nothingChanged ? null : update;
 }

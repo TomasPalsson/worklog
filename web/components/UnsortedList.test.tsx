@@ -1,17 +1,40 @@
-// B12: given a day with routed events, when the day page loads, unsorted
-// events are listed and every routed event shows its source + origin.
-// Mirrors SettingsPanel.test.tsx's convention: mock the @/app/actions
-// boundary, no real daemon/server-action runtime needed.
+// SortTray (rewritten UnsortedList): groups unsorted browser/Slack events
+// by channel/DM/site, files or dismisses a whole group at once, and tucks
+// filed events away under <AutoFiled>. Mirrors SettingsPanel.test.tsx's
+// convention: mock the @/app/actions boundary, no real daemon/server-action
+// runtime needed.
 
 import { afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { RoutedEvent, RuleKind } from "@/lib/types";
 
-const unsortedFirefox: RoutedEvent = {
+const slack1: RoutedEvent = {
   id: 1,
+  source: "slack",
+  started_at: "2026-07-25T09:00:00Z",
+  title: "sjukra",
+  details: "first message",
+  container: null,
+  folder: null,
+  label_origin: null,
+  label_confidence: null,
+};
+const slack2: RoutedEvent = {
+  id: 2,
+  source: "slack",
+  started_at: "2026-07-25T14:10:00Z",
+  title: "sjukra",
+  details: "second message",
+  container: null,
+  folder: null,
+  label_origin: null,
+  label_confidence: null,
+};
+const firefox1: RoutedEvent = {
+  id: 3,
   source: "firefox",
   started_at: "2026-07-25T10:00:00Z",
-  title: "AWS Certified Solutions Architect",
+  title: "AWS docs",
   details: "https://aws.tomasari.is/path",
   container: null,
   folder: null,
@@ -19,20 +42,8 @@ const unsortedFirefox: RoutedEvent = {
   label_confidence: null,
 };
 
-const unsortedSlack: RoutedEvent = {
-  id: 2,
-  source: "slack",
-  started_at: "2026-07-25T14:10:00Z",
-  title: "sjukra",
-  details: "here's the status update",
-  container: null,
-  folder: null,
-  label_origin: null,
-  label_confidence: null,
-};
-
 const ruleLabelled: RoutedEvent = {
-  id: 3,
+  id: 4,
   source: "firefox",
   started_at: "2026-07-25T09:00:00Z",
   title: "AWS Certified Solutions Architect",
@@ -41,18 +52,6 @@ const ruleLabelled: RoutedEvent = {
   folder: "AWS cert",
   label_origin: "rule",
   label_confidence: null,
-};
-
-const guessLabelled: RoutedEvent = {
-  id: 4,
-  source: "slack",
-  started_at: "2026-07-25T14:20:00Z",
-  title: "sjukra",
-  details: "another message",
-  container: null,
-  folder: "sjukra",
-  label_origin: "guess",
-  label_confidence: 0.93,
 };
 
 const labelEventCalls: Array<[number, string, RuleKind | null, string]> = [];
@@ -64,14 +63,25 @@ const labelEventImpl = mock(
     }
     return {
       ok: true as const,
-      data: { ...unsortedFirefox, id, folder, label_origin: "fix" as const },
+      data: { id, source: "slack", started_at: "x", title: "x", details: null, container: null, folder, label_origin: "fix" as const, label_confidence: null },
     };
   },
 );
 
+const dismissEventCalls: Array<[number, RuleKind | null, string]> = [];
+const dismissEventImpl = mock(async (id: number, ruleKind: RuleKind | null, day: string) => {
+  dismissEventCalls.push([id, ruleKind, day]);
+  return {
+    ok: true as const,
+    data: { id, source: "slack", started_at: "x", title: "x", details: null, container: null, folder: null, label_origin: "dismissed" as const, label_confidence: null },
+  };
+});
+
 mock.module("@/app/actions", () => ({
   labelEvent: (id: number, folder: string, always: RuleKind | null, day: string) =>
     labelEventImpl(id, folder, always, day),
+  dismissEvent: (id: number, ruleKind: RuleKind | null, day: string) =>
+    dismissEventImpl(id, ruleKind, day),
 }));
 
 let UnsortedList: (props: {
@@ -88,143 +98,307 @@ beforeAll(async () => {
 afterEach(() => {
   cleanup();
   labelEventImpl.mockClear();
+  dismissEventImpl.mockClear();
   labelEventCalls.length = 0;
+  dismissEventCalls.length = 0;
 });
 
-function rowFor(title: string): HTMLElement {
-  const el = screen.getByText(title).closest("li");
-  if (!el) throw new Error(`no <li> ancestor for "${title}"`);
+function rowFor(groupLabel: string): HTMLElement {
+  const el = screen.getByText(groupLabel).closest("li");
+  if (!el) throw new Error(`no <li> ancestor for "${groupLabel}"`);
   return el as HTMLElement;
 }
 
-describe("UnsortedList (B12)", () => {
-  it("lists unsorted events with their source, and shows source + origin on every routed event", () => {
+describe("SortTray grouping", () => {
+  it("groups events by channel/site into one row per group, with a count pill", () => {
     render(
       <UnsortedList
         day="2026-07-25"
-        events={[unsortedFirefox, unsortedSlack, ruleLabelled, guessLabelled]}
-        folderOptions={["AWS cert", "sjukra", "lighthouse"]}
+        events={[slack1, slack2, firefox1]}
+        folderOptions={["sjukra", "AWS cert"]}
       />,
     );
 
-    // Unsorted events are listed, each with its source.
-    const firefoxRows = screen.getAllByText("AWS Certified Solutions Architect").map((n) => n.closest("li")!);
-    const unsortedFirefoxRow = firefoxRows.find((r) => within(r as HTMLElement).queryByRole("button", { name: /project for/i }));
-    expect(unsortedFirefoxRow).toBeTruthy();
-    expect(within(unsortedFirefoxRow as HTMLElement).getByText(/firefox/i)).toBeTruthy();
+    // "23 events · 9 groups" style pill.
+    expect(screen.getByText(/3 events · 2 groups/)).toBeTruthy();
 
-    const slackRows = screen.getAllByText("sjukra").map((n) => n.closest("li")!);
-    const unsortedSlackRow = slackRows.find((r) => within(r as HTMLElement).queryByRole("button", { name: /project for/i }));
-    expect(unsortedSlackRow).toBeTruthy();
-    expect(within(unsortedSlackRow as HTMLElement).getByText(/slack/i)).toBeTruthy();
+    const sjukraRow = rowFor("sjukra");
+    expect(within(sjukraRow).getByText("2 messages")).toBeTruthy();
+    expect(within(sjukraRow).getByText(/09:00–14:10/)).toBeTruthy();
 
-    // Every routed event — including already-labelled ones — shows its
-    // source and label origin.
-    const labelledFirefoxRow = firefoxRows.find((r) => within(r as HTMLElement).queryByText(/rule/i));
-    expect(labelledFirefoxRow).toBeTruthy();
-    expect(within(labelledFirefoxRow as HTMLElement).getByText(/firefox/i)).toBeTruthy();
-
-    const guessRow = slackRows.find((r) => within(r as HTMLElement).queryByText(/93%/));
-    expect(guessRow).toBeTruthy();
-    expect(within(guessRow as HTMLElement).getByText(/slack/i)).toBeTruthy();
+    const awsRow = rowFor("aws.tomasari.is");
+    expect(within(awsRow).getByText("1 visit")).toBeTruthy();
   });
 
-  it("picking a project for an unsorted event without ticking always labels it with no rule kind", async () => {
+  it("sorts groups by count desc", () => {
     render(
       <UnsortedList
         day="2026-07-25"
-        events={[unsortedFirefox]}
-        folderOptions={["AWS cert", "sjukra"]}
+        events={[firefox1, slack1, slack2]}
+        folderOptions={["sjukra", "AWS cert"]}
       />,
     );
-
-    const row = rowFor("AWS Certified Solutions Architect");
-    fireEvent.click(within(row).getByRole("button", { name: /project for/i }));
-    fireEvent.click(await within(row).findByRole("option", { name: "AWS cert" }));
-
-    await waitFor(() => expect(labelEventCalls.length).toBe(1));
-    expect(labelEventCalls[0]).toEqual([1, "AWS cert", null, "2026-07-25"]);
+    const names = screen.getAllByText(/sjukra|aws\.tomasari\.is/).map((n) => n.textContent);
+    expect(names[0]).toBe("sjukra");
   });
 
-  it('ticking "always" sends the domain rule kind for a firefox event', async () => {
+  it("expanding a group's disclosure shows its individual events", async () => {
     render(
       <UnsortedList
         day="2026-07-25"
-        events={[unsortedFirefox]}
-        folderOptions={["AWS cert"]}
+        events={[slack1, slack2]}
+        folderOptions={["sjukra"]}
       />,
     );
+    const row = rowFor("sjukra");
+    // The individual events sit inside a native <details> that starts
+    // closed — assert on `.open`, not DOM presence (collapsed content is
+    // still in the tree, just CSS-hidden by the browser's UA stylesheet).
+    const disclosure = row.querySelector("details.sort-row-disclosure") as HTMLDetailsElement;
+    expect(disclosure.open).toBe(false);
+    fireEvent.click(within(row).getByText("sjukra"));
+    expect(disclosure.open).toBe(true);
+    // Scope to the expanded list, not the whole row — the row's one-line
+    // summary already shows the group's latest preview ("second message").
+    const eventsList = disclosure.querySelector(".sort-row-events") as HTMLElement;
+    expect(within(eventsList).getByText("first message")).toBeTruthy();
+    expect(within(eventsList).getByText("second message")).toBeTruthy();
+  });
+});
 
-    const row = rowFor("AWS Certified Solutions Architect");
+describe("filing a group", () => {
+  it("picking a project labels every event in the group, no rule kind by default", async () => {
+    render(
+      <UnsortedList day="2026-07-25" events={[slack1, slack2]} folderOptions={["sjukra"]} />,
+    );
+    const row = rowFor("sjukra");
+    fireEvent.click(within(row).getByRole("button", { name: /project for sjukra/i }));
+    fireEvent.click(await within(row).findByRole("option", { name: "sjukra" }));
+
+    await waitFor(() => expect(labelEventCalls.length).toBe(2));
+    expect(labelEventCalls).toEqual([
+      [1, "sjukra", null, "2026-07-25"],
+      [2, "sjukra", null, "2026-07-25"],
+    ]);
+  });
+
+  it('ticking "always" sends the rule kind on the first call only', async () => {
+    render(
+      <UnsortedList day="2026-07-25" events={[slack1, slack2]} folderOptions={["sjukra"]} />,
+    );
+    const row = rowFor("sjukra");
     fireEvent.click(within(row).getByRole("checkbox"));
-    fireEvent.click(within(row).getByRole("button", { name: /project for/i }));
-    fireEvent.click(await within(row).findByRole("option", { name: "AWS cert" }));
+    fireEvent.click(within(row).getByRole("button", { name: /project for sjukra/i }));
+    fireEvent.click(await within(row).findByRole("option", { name: "sjukra" }));
 
-    await waitFor(() => expect(labelEventCalls.length).toBe(1));
-    expect(labelEventCalls[0]).toEqual([1, "AWS cert", "domain", "2026-07-25"]);
+    await waitFor(() => expect(labelEventCalls.length).toBe(2));
+    expect(labelEventCalls).toEqual([
+      [1, "sjukra", "slack_channel", "2026-07-25"],
+      [2, "sjukra", null, "2026-07-25"],
+    ]);
   });
 
-  it('ticking "always" sends the slack_channel rule kind for a slack event', async () => {
+  it("shows an inline error and keeps the group when a project no longer exists", async () => {
+    render(
+      <UnsortedList day="2026-07-25" events={[slack1]} folderOptions={["ghost-project"]} />,
+    );
+    const row = rowFor("sjukra");
+    fireEvent.click(within(row).getByRole("button", { name: /project for sjukra/i }));
+    fireEvent.click(await within(row).findByRole("option", { name: "ghost-project" }));
+
+    await screen.findByText(/project no longer exists/i);
+    expect(within(row).getByRole("button", { name: /project for sjukra/i })).toBeTruthy();
+  });
+});
+
+describe("dismissing a group", () => {
+  it('"Not work" dismisses every event in the group with no rule kind by default', async () => {
+    render(
+      <UnsortedList day="2026-07-25" events={[slack1, slack2]} folderOptions={["sjukra"]} />,
+    );
+    const row = rowFor("sjukra");
+    fireEvent.click(within(row).getByRole("button", { name: /not work/i }));
+
+    await waitFor(() => expect(dismissEventCalls.length).toBe(2));
+    expect(dismissEventCalls).toEqual([
+      [1, null, "2026-07-25"],
+      [2, null, "2026-07-25"],
+    ]);
+  });
+
+  it('ticking "always" sends the rule kind on the first dismiss call only', async () => {
+    render(
+      <UnsortedList day="2026-07-25" events={[slack1, slack2]} folderOptions={["sjukra"]} />,
+    );
+    const row = rowFor("sjukra");
+    fireEvent.click(within(row).getByRole("checkbox"));
+    fireEvent.click(within(row).getByRole("button", { name: /not work/i }));
+
+    await waitFor(() => expect(dismissEventCalls.length).toBe(2));
+    expect(dismissEventCalls).toEqual([
+      [1, "slack_channel", "2026-07-25"],
+      [2, null, "2026-07-25"],
+    ]);
+  });
+});
+
+describe("Dismiss the rest", () => {
+  it("requires an in-place confirm before dismissing every remaining group", async () => {
     render(
       <UnsortedList
         day="2026-07-25"
-        events={[unsortedSlack]}
+        events={[slack1, slack2, firefox1]}
         folderOptions={["sjukra"]}
       />,
     );
 
-    const row = rowFor("sjukra");
-    fireEvent.click(within(row).getByRole("checkbox"));
-    fireEvent.click(within(row).getByRole("button", { name: /project for/i }));
-    fireEvent.click(await within(row).findByRole("option", { name: "sjukra" }));
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss the rest" }));
+    expect(screen.getByText(/Dismiss 2 groups\?/)).toBeTruthy();
+    expect(dismissEventCalls.length).toBe(0);
 
-    await waitFor(() => expect(labelEventCalls.length).toBe(1));
-    expect(labelEventCalls[0]).toEqual([2, "sjukra", "slack_channel", "2026-07-25"]);
+    fireEvent.click(screen.getByRole("button", { name: "Yes" }));
+    await waitFor(() => expect(dismissEventCalls.length).toBe(3));
+    const ids = dismissEventCalls.map((c) => c[0]).sort();
+    expect(ids).toEqual([1, 2, 3]);
+    // Bulk dismiss never carries a rule kind.
+    expect(dismissEventCalls.every((c) => c[1] === null)).toBe(true);
   });
 
-  it("shows the inline error and keeps the event unsorted when the project no longer exists", async () => {
+  it("Cancel backs out of the confirm without dismissing anything", () => {
+    render(<UnsortedList day="2026-07-25" events={[slack1]} folderOptions={["sjukra"]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss the rest" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "Dismiss the rest" })).toBeTruthy();
+    expect(dismissEventCalls.length).toBe(0);
+  });
+});
+
+describe("filed events", () => {
+  it("shows filed events collapsed under Auto-filed, not in the tray", () => {
     render(
       <UnsortedList
         day="2026-07-25"
-        events={[unsortedFirefox]}
-        folderOptions={["ghost-project"]}
+        events={[slack1, ruleLabelled]}
+        folderOptions={["sjukra", "AWS cert"]}
       />,
     );
+    expect(screen.getByText(/Auto-filed · 1/)).toBeTruthy();
+    // Collapsed by default — assert on `.open`, not DOM presence (the row
+    // is still in the tree, just CSS-hidden by the browser).
+    const disclosure = document.querySelector("details.auto-filed") as HTMLDetailsElement;
+    expect(disclosure.open).toBe(false);
+  });
+});
 
-    const row = rowFor("AWS Certified Solutions Architect");
-    fireEvent.click(within(row).getByRole("button", { name: /project for/i }));
-    fireEvent.click(await within(row).findByRole("option", { name: "ghost-project" }));
+const noiseEvent: RoutedEvent = {
+  id: 10,
+  source: "firefox",
+  started_at: "2026-07-25T20:00:00Z",
+  title: "Random news",
+  details: "https://news.example.com/",
+  container: null,
+  folder: null,
+  label_origin: "noise",
+  label_confidence: null,
+};
+const dismissedEvent: RoutedEvent = {
+  id: 11,
+  source: "slack",
+  started_at: "2026-07-25T21:00:00Z",
+  title: "off-topic banter",
+  details: "not work",
+  container: null,
+  folder: null,
+  label_origin: "dismissed",
+  label_confidence: null,
+};
 
-    await screen.findByText(/project no longer exists/i);
-    // The event stayed unsorted — still rendered with a picker, not a folder label.
-    expect(within(row).getByRole("button", { name: /project for/i })).toBeTruthy();
+describe("zero-touch default (no unsorted events)", () => {
+  it("renders no tray, only the quiet summary line with correct filed/hidden counts", () => {
+    render(
+      <UnsortedList
+        day="2026-07-25"
+        events={[ruleLabelled, noiseEvent, dismissedEvent]}
+        folderOptions={["sjukra", "AWS cert"]}
+      />,
+    );
+    expect(screen.queryByText("To sort")).toBeNull();
+    expect(document.querySelector(".sort-tray")).toBeNull();
+    expect(document.querySelector(".auto-filed")).toBeNull();
+    expect(screen.getByText(/1 Slack and web clue folded into your blocks/)).toBeTruthy();
+    expect(screen.getByText(/2 hidden as noise/)).toBeTruthy();
   });
 
-  it("drops the previous day's rows when the day page navigates to another day", () => {
+  it('"Review" opens the drawer with filed and hidden sections', async () => {
+    render(
+      <UnsortedList
+        day="2026-07-25"
+        events={[ruleLabelled, noiseEvent]}
+        folderOptions={["sjukra", "AWS cert"]}
+      />,
+    );
+    expect(screen.queryByRole("region", { name: /review/i })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+
+    const drawer = screen.getByRole("region", { name: /review/i });
+    expect(within(drawer).getByText(ruleLabelled.title)).toBeTruthy();
+    expect(within(drawer).getByText(noiseEvent.title)).toBeTruthy();
+    // Hidden rows get the project picker; filed rows don't need one.
+    expect(
+      within(drawer).getByRole("button", { name: `Project for ${noiseEvent.title}` }),
+    ).toBeTruthy();
+  });
+
+  it("filing a hidden row from the drawer labels it (no rule kind) and drops it from Hidden", async () => {
+    render(
+      <UnsortedList day="2026-07-25" events={[noiseEvent]} folderOptions={["sjukra"]} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    const drawer = screen.getByRole("region", { name: /review/i });
+    fireEvent.click(
+      within(drawer).getByRole("button", { name: `Project for ${noiseEvent.title}` }),
+    );
+    fireEvent.click(await within(drawer).findByRole("option", { name: "sjukra" }));
+
+    await waitFor(() => expect(labelEventCalls.length).toBe(1));
+    expect(labelEventCalls[0]).toEqual([noiseEvent.id, "sjukra", null, "2026-07-25"]);
+    await waitFor(() => expect(within(drawer).queryByText(noiseEvent.title)).toBeNull());
+  });
+});
+
+describe("fallback tray (unlabelled events still exist)", () => {
+  it("shows the grouped tray and no Review summary, even alongside hidden events", () => {
+    render(
+      <UnsortedList day="2026-07-25" events={[slack1, noiseEvent]} folderOptions={["sjukra"]} />,
+    );
+    expect(screen.getByText("To sort")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Review" })).toBeNull();
+  });
+});
+
+describe("drops previous day's rows on navigation", () => {
+  it("re-mounting with a new day and events shows only the new day's groups", () => {
     const dayBEvent: RoutedEvent = {
       id: 99,
       source: "slack",
       started_at: "2026-07-26T09:00:00Z",
-      title: "day-b-only-event",
+      title: "day-b-channel",
       details: null,
       container: null,
       folder: null,
       label_origin: null,
       label_confidence: null,
     };
-
-    // Mirrors app/[day]/page.tsx's usage: navigating to a new day re-renders
-    // <UnsortedList> at the same JSX position with fresh `day`/`events` props
-    // (a Link/soft-nav, not a remount) — internal state must not carry over.
-    // `key={day}` (matching page.tsx) is what forces the remount.
     const { rerender } = render(
-      <UnsortedList key="2026-07-25" day="2026-07-25" events={[unsortedFirefox]} folderOptions={[]} />,
+      <UnsortedList key="2026-07-25" day="2026-07-25" events={[slack1]} folderOptions={[]} />,
     );
-    expect(screen.getByText("AWS Certified Solutions Architect")).toBeTruthy();
+    expect(screen.getByText("sjukra")).toBeTruthy();
 
-    rerender(<UnsortedList key="2026-07-26" day="2026-07-26" events={[dayBEvent]} folderOptions={[]} />);
+    rerender(
+      <UnsortedList key="2026-07-26" day="2026-07-26" events={[dayBEvent]} folderOptions={[]} />,
+    );
 
-    expect(screen.queryByText("AWS Certified Solutions Architect")).toBeNull();
-    expect(screen.getByText("day-b-only-event")).toBeTruthy();
+    expect(screen.queryByText("sjukra")).toBeNull();
+    expect(screen.getByText("day-b-channel")).toBeTruthy();
   });
 });

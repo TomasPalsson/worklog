@@ -26,6 +26,8 @@
 //! * `POST /blocks/:id/estimate`         — no body, re-runs Claude on one block
 //! * `GET  /blocks/:id/commits`          — commits in the window (work only)
 //! * `POST /infer`                       — { "day": "YYYY-MM-DD" }
+//! * `POST /days/:day/allocations`       — { started_at, ended_at, shares: {project: fraction} } — re-runs infer
+//! * `POST /days/:day/allocations/delete` — { started_at, ended_at } — re-runs infer
 //! * `POST /jira/refresh`                — no body, refreshes open tickets
 //! * `GET  /tickets/search?q=&limit=`    — live Jira search (no persistence)
 //! * `POST /tickets/external`            — cache a manually-picked ticket
@@ -37,11 +39,12 @@
 //! * `GET  /export/:day`                 — billing rows + rendered text/csv/json for a day
 //! * `POST /export/:day/mark`            — mark a day's blocks as billed (idempotent)
 //! * `POST /browser/heartbeat`           — { Heartbeat } from the add-on, requires moz-extension:// Origin
-//! * `GET  /days/:day/routed`             — browser/Slack events for a day, routed or not
+//! * `GET  /days/:day/routed?include_hidden=` — browser/Slack events for a day (default excludes dismissed/noise)
 //! * `POST /events/:id/label`            — { LabelRequest } manual label, optionally creating a rule
+//! * `POST /events/:id/dismiss`           — { DismissRequest } mark noise, optionally creating an `__ignore__` rule
 //! * `GET  /routing/rules`                — hard rules list
 //! * `POST /routing/rules/:id/delete`    — no body
-//! * `GET  /routing/status`               — last heartbeat/Slack timestamps + Laya reachability
+//! * `GET  /routing/status`               — last heartbeat/Slack timestamps + Verdict reachability
 //!
 //! Unix-socket file perms default to `0666` so the containerised UI can
 //! connect across Docker Desktop's VM (same user, same host — the data
@@ -61,7 +64,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -74,15 +77,18 @@ use crate::billing_registry;
 use crate::browser_ingest;
 use crate::collectors::{jira, tempo};
 use crate::git::{self, CommitEntry};
-use crate::laya::LayaClassifier;
 use crate::personal;
 use crate::routing;
+use crate::routing_absorb;
 use crate::routing_contract;
+use crate::routing_contract::RouteRule;
+use crate::routing_dismiss;
 use crate::secrets;
+use crate::verdict::VerdictClassifier;
 use crate::{
-    block_service, db, estimate, infer,
+    block_service, db, estimate, infer, infer_allocations,
     models::{Block, Event},
-    repo,
+    overlaps, repo,
 };
 
 pub struct AppState {
@@ -117,6 +123,11 @@ pub fn router(state: Shared) -> Router {
         .route("/blocks/merge", post(merge_blocks))
         .route("/blocks/auto-merge", post(auto_merge))
         .route("/infer", post(run_infer))
+        .route("/days/:day/allocations", post(save_allocation_handler))
+        .route(
+            "/days/:day/allocations/delete",
+            post(delete_allocation_handler),
+        )
         .route("/jira/refresh", post(refresh_jira))
         .route("/estimate", post(run_estimate))
         .route("/sync", post(run_sync))
@@ -137,6 +148,7 @@ pub fn router(state: Shared) -> Router {
         )
         .route("/days/:day/routed", get(routed_events))
         .route("/events/:id/label", post(set_event_label))
+        .route("/events/:id/dismiss", post(dismiss_event_handler))
         .route("/routing/rules", get(routing_rules_list))
         .route("/routing/rules/:id/delete", post(routing_rule_delete))
         .route("/routing/status", get(routing_status))
@@ -481,6 +493,36 @@ pub struct BlockSummary {
     /// show a path that contradicts the billing group: it shows a path
     /// from the right folder, or nothing.
     pub project_path: Option<String>,
+    /// The folded billing folder key that won the same vote as
+    /// `project_path` (see above) — e.g. `lyfjastofnun` for a block whose
+    /// events live under `.../lyfjastofnun/.claude/worktrees/ci-on-codebuild`.
+    /// Always [`crate::billing::work_folder_for_block`]'s answer for this
+    /// block, so the UI can show the billing group even when
+    /// `project_path` itself is a worktree/branch path a user wouldn't
+    /// recognise as the project name.
+    pub project: Option<String>,
+    /// "high"/"medium"/"low" from [`crate::timeline::block_confidence`],
+    /// keyed off how many distinct sources fed the block.
+    pub confidence: String,
+}
+
+/// A gap of at least 30 minutes between two consecutive blocks on a day,
+/// from [`crate::timeline::day_gaps`].
+#[derive(Serialize)]
+pub struct DayGap {
+    pub started_at: String,
+    pub ended_at: String,
+    pub minutes: i64,
+}
+
+/// A saved allocation, as the lanes view shows it — every one, not just
+/// ones matching a detected overlap window (the click-and-drag selection
+/// saves arbitrary windows too).
+#[derive(Serialize)]
+pub struct SavedAllocation {
+    pub started_at: DateTime<Utc>,
+    pub ended_at: DateTime<Utc>,
+    pub shares: std::collections::BTreeMap<String, f64>,
 }
 
 #[derive(Serialize)]
@@ -488,6 +530,19 @@ pub struct DaySummary {
     pub day: String,
     pub total_seconds: i64,
     pub blocks: Vec<BlockSummary>,
+    pub gaps: Vec<DayGap>,
+    /// Windows where ≥2 work projects were both active — see
+    /// `overlaps::day_overlaps`. The day strip renders these as a band the
+    /// owner can click to rebalance the automatic split.
+    pub overlaps: Vec<overlaps::Overlap>,
+    /// Every work project's full gap-bridged activity for the day — see
+    /// `overlaps::day_activity`. The lanes view draws this as a faint fill
+    /// behind each lane's owned block segments, since `infer_lanes` picks
+    /// one owner per minute and would otherwise hide the rest.
+    pub activity: Vec<overlaps::ProjectActivity>,
+    /// Every saved allocation for the day (see `SavedAllocation`) — the
+    /// lanes view draws each as a thin bracket over the tracks it spans.
+    pub allocations: Vec<SavedAllocation>,
 }
 
 #[derive(Serialize)]
@@ -515,11 +570,35 @@ async fn day_summary(
 /// future sync caller share the same aggregation.
 fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
     let blocks = repo::list_blocks_for_day(conn, day)?;
+    let day_parsed = NaiveDate::parse_from_str(day, "%Y-%m-%d").ok();
+    let overlaps = day_parsed
+        .map(|d| overlaps::day_overlaps(conn, d))
+        .transpose()?
+        .unwrap_or_default();
+    let activity = day_parsed
+        .map(|d| overlaps::day_activity(conn, d))
+        .transpose()?
+        .unwrap_or_default();
+    let allocations: Vec<SavedAllocation> = day_parsed
+        .map(|d| overlaps::load_allocations(conn, d))
+        .transpose()?
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(started_at, ended_at, shares)| SavedAllocation {
+            started_at,
+            ended_at,
+            shares,
+        })
+        .collect();
     if blocks.is_empty() {
         return Ok(DaySummary {
             day: day.to_owned(),
             total_seconds: 0,
             blocks: vec![],
+            gaps: vec![],
+            overlaps,
+            activity,
+            allocations,
         });
     }
 
@@ -660,29 +739,51 @@ fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
     }
 
     let mut best_path: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+    let mut best_folder: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
     for (bid, folders) in folder_votes {
         let mut folder_list: Vec<(String, i64, PathCounts)> = folders
             .into_iter()
             .map(|(folder, (total, paths))| (folder, total, paths))
             .collect();
         folder_list.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        let Some((_, _, mut paths)) = folder_list.into_iter().next() else {
+        let Some((folder_key, _, mut paths)) = folder_list.into_iter().next() else {
             continue;
         };
+        best_folder.insert(bid, folder_key);
         paths.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         if let Some((path, _)) = paths.into_iter().next() {
             best_path.insert(bid, path);
         }
     }
 
+    let intervals: Vec<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)> = blocks
+        .iter()
+        .filter_map(|b| {
+            let start = chrono::DateTime::parse_from_rfc3339(&b.started_at).ok()?;
+            let end = chrono::DateTime::parse_from_rfc3339(&b.ended_at).ok()?;
+            Some((start.to_utc(), end.to_utc()))
+        })
+        .collect();
+    let gaps = crate::timeline::day_gaps(&intervals, chrono::Duration::minutes(30))
+        .into_iter()
+        .map(|(start, end)| DayGap {
+            started_at: start.to_rfc3339(),
+            ended_at: end.to_rfc3339(),
+            minutes: (end - start).num_minutes(),
+        })
+        .collect();
+
     let enriched = blocks
         .into_iter()
         .map(|block| {
             let id = block.id;
+            let sources = sources_by_block.remove(&id).unwrap_or_default();
             BlockSummary {
                 event_count: counts.get(&id).copied().unwrap_or(0),
-                sources: sources_by_block.remove(&id).unwrap_or_default(),
+                confidence: crate::timeline::block_confidence(sources.len()).to_owned(),
+                sources,
                 project_path: best_path.remove(&id),
+                project: best_folder.remove(&id),
                 block,
             }
         })
@@ -692,6 +793,10 @@ fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
         day: day.to_owned(),
         total_seconds,
         blocks: enriched,
+        gaps,
+        overlaps,
+        activity,
+        allocations,
     })
 }
 
@@ -913,12 +1018,34 @@ fn jira_cache_meta(conn: &Connection) -> Result<TicketCacheMeta> {
     })
 }
 
+/// An event plus, for the owner's own prompts, a short snippet read live
+/// from the local transcript (never stored — see `prompt_snippets`).
+#[derive(Serialize)]
+struct EventView {
+    #[serde(flatten)]
+    event: Event,
+    snippet: Option<String>,
+}
+
 async fn block_events(
     State(state): State<Shared>,
     AxumPath(id): AxumPath<i64>,
-) -> Result<Json<Vec<Event>>, ApiError> {
+) -> Result<Json<Vec<EventView>>, ApiError> {
     let events = with_conn(state, move |c| repo::list_events_for_block(c, id)).await?;
-    Ok(Json(events))
+    // Transcript files can be MBs: read them off the connection lock.
+    let views = tokio::task::spawn_blocking(move || {
+        let mut snippets = crate::prompt_snippets::for_events(&events);
+        events
+            .into_iter()
+            .map(|event| EventView {
+                snippet: event.id.and_then(|i| snippets.remove(&i)),
+                event,
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .map_err(anyhow::Error::from)?;
+    Ok(Json(views))
 }
 
 /// Per-block commit sidecar — returns the commits that landed inside
@@ -1297,42 +1424,173 @@ pub struct InferResponse {
     pub minutes: i64,
 }
 
-async fn run_infer(
-    State(state): State<Shared>,
-    Json(body): Json<InferBody>,
-) -> Result<Json<InferResponse>, ApiError> {
-    let day = NaiveDate::parse_from_str(&body.day, "%Y-%m-%d")
-        .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{}`: {e}", body.day)))?;
-
+/// Route, absorb, build blocks (honouring any saved overlap allocations)
+/// and persist — the full `POST /infer` pipeline. Shared with the
+/// allocation save/delete handlers, which must re-run it so blocks
+/// reflect the owner's choice (or its removal) immediately.
+async fn reinfer_day(state: Shared, day: NaiveDate) -> Result<(usize, i64), ApiError> {
     // Route before building blocks (design decision 4, PR #41): three
     // phases, mirroring `run_estimate`, so the sqlite mutex is never held
     // across the (slow, network) classifier call.
     let (rule_hits, pending) =
         with_conn(state.clone(), move |c| routing::load_pending(c, day)).await?;
     let guesses = tokio::task::spawn_blocking(move || {
-        routing::decide(
-            &pending,
-            &LayaClassifier::new(),
-            configured_route_threshold(),
-        )
+        routing::decide(&pending, &VerdictClassifier::new(), configured_route_rule())
     })
     .await
     .context("spawn_blocking")?;
 
     let (count, minutes) = with_conn(state, move |c| {
         routing::commit_labels(c, &rule_hits, &guesses)?;
-        let events = infer::load_day_events(c, day)?;
-        let blocks = infer::build_blocks(events);
+        routing_absorb::absorb_and_noise(c, day)?;
+        let blocks = infer_allocations::build_day_blocks(c, day)?;
         let total: i64 = blocks.iter().map(|b| b.duration_seconds).sum();
         infer::persist_blocks(c, day, &blocks)?;
         Ok::<_, anyhow::Error>((blocks.len(), total / 60))
     })
     .await?;
+    Ok((count, minutes))
+}
+
+async fn run_infer(
+    State(state): State<Shared>,
+    Json(body): Json<InferBody>,
+) -> Result<Json<InferResponse>, ApiError> {
+    let day = NaiveDate::parse_from_str(&body.day, "%Y-%m-%d")
+        .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{}`: {e}", body.day)))?;
+    let (count, minutes) = reinfer_day(state, day).await?;
     Ok(Json(InferResponse {
         day: body.day,
         blocks: count,
         minutes,
     }))
+}
+
+#[derive(Deserialize)]
+pub struct AllocationBody {
+    pub started_at: String,
+    pub ended_at: String,
+    pub shares: std::collections::BTreeMap<String, f64>,
+}
+
+/// Save the owner's manual split of a time window — any window, not only
+/// a detected overlap (the lanes view's click-and-drag selection picks an
+/// arbitrary range) — then re-run infer (the `POST /infer` pipeline) so
+/// blocks reflect it immediately. A new allocation replaces any saved
+/// allocation it overlaps (deleted, then this one inserted), so saved
+/// windows never conflict. 400s: bad day/timestamps, a window shorter
+/// than a minute or outside the day, shares that are empty, non-positive,
+/// don't sum to 1 (±0.001), or name a project with no activity anywhere
+/// in the window.
+async fn save_allocation_handler(
+    State(state): State<Shared>,
+    AxumPath(day): AxumPath<String>,
+    Json(body): Json<AllocationBody>,
+) -> Result<Json<InferResponse>, ApiError> {
+    let day_parsed = NaiveDate::parse_from_str(&day, "%Y-%m-%d")
+        .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{day}`: {e}")))?;
+    let started_at = parse_allocation_ts(&body.started_at)?;
+    let ended_at = parse_allocation_ts(&body.ended_at)?;
+    if ended_at - started_at < chrono::Duration::minutes(1) {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "window must be at least 1 minute"
+        )));
+    }
+    let (day_start, day_end) = crate::tz::utc_window_for_local_day(day_parsed);
+    if started_at < day_start || ended_at > day_end {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "window must be inside the day"
+        )));
+    }
+    validate_shares(&body.shares)?;
+
+    let shares = body.shares.clone();
+    with_conn(state.clone(), move |c| {
+        let activity = overlaps::day_activity(c, day_parsed)?;
+        for project in shares.keys() {
+            let active = activity.iter().any(|a| {
+                &a.project == project
+                    && a.spans
+                        .iter()
+                        .any(|s| s.started_at < ended_at && s.ended_at > started_at)
+            });
+            if !active {
+                anyhow::bail!("project `{project}` has no activity in {started_at}–{ended_at}");
+            }
+        }
+        // A new allocation replaces any saved allocation it overlaps, so
+        // two saved windows never conflict over the same minute.
+        for (s, e, _) in overlaps::load_allocations(c, day_parsed)? {
+            if s < ended_at && e > started_at {
+                overlaps::delete_allocation(c, day_parsed, s, e)?;
+            }
+        }
+        overlaps::save_allocation(c, day_parsed, started_at, ended_at, &shares)
+    })
+    .await
+    .map_err(ApiError::bad_request)?;
+
+    let (count, minutes) = reinfer_day(state, day_parsed).await?;
+    Ok(Json(InferResponse {
+        day,
+        blocks: count,
+        minutes,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct DeleteAllocationBody {
+    pub started_at: String,
+    pub ended_at: String,
+}
+
+/// Drop a saved allocation and re-run infer so the automatic split comes
+/// back for that window.
+async fn delete_allocation_handler(
+    State(state): State<Shared>,
+    AxumPath(day): AxumPath<String>,
+    Json(body): Json<DeleteAllocationBody>,
+) -> Result<Json<InferResponse>, ApiError> {
+    let day_parsed = NaiveDate::parse_from_str(&day, "%Y-%m-%d")
+        .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{day}`: {e}")))?;
+    let started_at = parse_allocation_ts(&body.started_at)?;
+    let ended_at = parse_allocation_ts(&body.ended_at)?;
+    with_conn(state.clone(), move |c| {
+        overlaps::delete_allocation(c, day_parsed, started_at, ended_at)
+    })
+    .await?;
+    let (count, minutes) = reinfer_day(state, day_parsed).await?;
+    Ok(Json(InferResponse {
+        day,
+        blocks: count,
+        minutes,
+    }))
+}
+
+fn parse_allocation_ts(s: &str) -> Result<DateTime<Utc>, ApiError> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .map(|d| d.with_timezone(&Utc))
+        .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid timestamp `{s}`: {e}")))
+}
+
+fn validate_shares(shares: &std::collections::BTreeMap<String, f64>) -> Result<(), ApiError> {
+    if shares.is_empty() {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "shares must not be empty"
+        )));
+    }
+    if shares.values().any(|f| *f <= 0.0) {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "every share must be > 0"
+        )));
+    }
+    let sum: f64 = shares.values().sum();
+    if (sum - 1.0).abs() > 0.001 {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "shares must sum to 1.0 (±0.001), got {sum}"
+        )));
+    }
+    Ok(())
 }
 
 async fn refresh_jira(State(state): State<Shared>) -> Result<Json<Value>, ApiError> {
@@ -1485,10 +1743,14 @@ pub struct SettingsView {
     /// `Mon-Fri 09:00-17:00`. Mirrors `WORK_HOURS_KEY` via envfile;
     /// defaults to `DEFAULT_WORK_HOURS`.
     pub work_hours: String,
-    /// Minimum model confidence (0.0-1.0) to accept a routing guess.
-    /// Mirrors `ROUTE_THRESHOLD_KEY` via envfile; defaults to
-    /// `DEFAULT_ROUTE_THRESHOLD`.
-    pub route_threshold: f64,
+    /// How many times higher than the abstain score the winner must be.
+    /// Mirrors `ABSTAIN_MARGIN_KEY` via envfile; defaults to
+    /// `DEFAULT_ABSTAIN_MARGIN`.
+    pub abstain_margin: f64,
+    /// How many times higher than the runner-up the winner must be.
+    /// Mirrors `RUNNER_UP_RATIO_KEY` via envfile; defaults to
+    /// `DEFAULT_RUNNER_UP_RATIO`.
+    pub runner_up_ratio: f64,
 }
 
 /// Token-like keys whose value must never be serialised to the browser.
@@ -1528,6 +1790,7 @@ fn current_settings() -> Result<SettingsView> {
             }
         })
         .collect();
+    let rule = configured_route_rule();
     Ok(SettingsView {
         personal: PersonalPatterns {
             work: file.work,
@@ -1540,7 +1803,8 @@ fn current_settings() -> Result<SettingsView> {
         cycle_start_day: crate::purge::configured_cycle_start_day(),
         close_day: crate::purge::configured_close_day(),
         work_hours: configured_work_hours_raw(),
-        route_threshold: configured_route_threshold(),
+        abstain_margin: rule.abstain_margin,
+        runner_up_ratio: rule.runner_up_ratio,
     })
 }
 
@@ -1565,18 +1829,50 @@ fn configured_work_hours() -> browser_ingest::WorkHours {
     })
 }
 
-/// Minimum model confidence to accept a routing guess, from
-/// `ROUTE_THRESHOLD_KEY` via envfile. Out-of-range or unparseable falls
-/// back to `DEFAULT_ROUTE_THRESHOLD`.
-pub fn configured_route_threshold() -> f64 {
-    crate::envfile::read(routing_contract::ROUTE_THRESHOLD_KEY)
-        .and_then(|s| s.trim().parse::<f64>().ok())
-        .filter(|v| (0.0..=1.0).contains(v))
-        .unwrap_or(routing_contract::DEFAULT_ROUTE_THRESHOLD)
+/// The abstain-margin/runner-up-ratio rule a routing guess must clear.
+/// Reads both envfile keys independently; an unparseable or
+/// out-of-`RATIO_RANGE` stored value falls back to that key's default
+/// and emits a `warn!` naming the key and the fallback, mirroring
+/// `purge::configured_cycle_day`'s handling of a bad pruner setting.
+pub fn configured_route_rule() -> RouteRule {
+    RouteRule {
+        abstain_margin: configured_ratio(
+            routing_contract::ABSTAIN_MARGIN_KEY,
+            routing_contract::DEFAULT_ABSTAIN_MARGIN,
+        ),
+        runner_up_ratio: configured_ratio(
+            routing_contract::RUNNER_UP_RATIO_KEY,
+            routing_contract::DEFAULT_RUNNER_UP_RATIO,
+        ),
+    }
+}
+
+fn configured_ratio(key: &str, default: f64) -> f64 {
+    let (lo, hi) = routing_contract::RATIO_RANGE;
+    match crate::envfile::read(key) {
+        None => default,
+        Some(raw) => {
+            match raw.trim().parse::<f64>() {
+                Ok(v) if (lo..=hi).contains(&v) => v,
+                _ => {
+                    warn!("{key}={raw:?} is not a valid ratio in {lo}..={hi}. Falling back to {default}.");
+                    default
+                }
+            }
+        }
+    }
 }
 
 async fn get_settings() -> Result<Json<SettingsView>, ApiError> {
-    Ok(Json(current_settings()?))
+    Ok(Json(settings_off_runtime().await?))
+}
+
+/// `current_settings` reads the OS keychain, which can block on a permission
+/// dialog; run it off the async workers so a pending prompt can't stall the daemon.
+async fn settings_off_runtime() -> Result<SettingsView> {
+    tokio::task::spawn_blocking(current_settings)
+        .await
+        .context("spawn_blocking")?
 }
 
 #[derive(Deserialize)]
@@ -1613,9 +1909,12 @@ pub struct SettingsUpdate {
     /// Replace the browser heartbeat work-hours window, e.g.
     /// `Mon-Fri 09:00-17:00`. `None` leaves it untouched.
     pub work_hours: Option<String>,
-    /// Replace the minimum model confidence (0.0-1.0) to accept a
-    /// routing guess. `None` leaves it untouched.
-    pub route_threshold: Option<f64>,
+    /// Replace how many times higher than the abstain score the winner
+    /// must be (`RATIO_RANGE`). `None` leaves it untouched.
+    pub abstain_margin: Option<f64>,
+    /// Replace how many times higher than the runner-up the winner must
+    /// be (`RATIO_RANGE`). `None` leaves it untouched.
+    pub runner_up_ratio: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -1700,12 +1999,18 @@ async fn post_settings(
         })?;
     }
 
-    // Route threshold: a confidence, so it must be 0.0-1.0.
-    if let Some(t) = body.route_threshold {
-        if !(0.0..=1.0).contains(&t) {
-            return Err(ApiError::bad_request(anyhow::anyhow!(
-                "`route_threshold` must be between 0.0 and 1.0 (got {t})"
-            )));
+    // Route ratios: each must lie in RATIO_RANGE.
+    let (ratio_lo, ratio_hi) = routing_contract::RATIO_RANGE;
+    for (field, v) in [
+        ("abstain_margin", body.abstain_margin),
+        ("runner_up_ratio", body.runner_up_ratio),
+    ] {
+        if let Some(v) = v {
+            if !(ratio_lo..=ratio_hi).contains(&v) {
+                return Err(ApiError::bad_request(anyhow::anyhow!(
+                    "`{field}` must be between {ratio_lo} and {ratio_hi} (got {v})"
+                )));
+            }
         }
     }
 
@@ -1760,13 +2065,16 @@ async fn post_settings(
     if let Some(wh) = work_hours {
         crate::envfile::upsert(routing_contract::WORK_HOURS_KEY, wh)?;
     }
-    if let Some(t) = body.route_threshold {
-        crate::envfile::upsert(routing_contract::ROUTE_THRESHOLD_KEY, &t.to_string())?;
+    if let Some(v) = body.abstain_margin {
+        crate::envfile::upsert(routing_contract::ABSTAIN_MARGIN_KEY, &v.to_string())?;
+    }
+    if let Some(v) = body.runner_up_ratio {
+        crate::envfile::upsert(routing_contract::RUNNER_UP_RATIO_KEY, &v.to_string())?;
     }
 
     info!("settings updated");
     Ok(Json(SettingsSaveResponse {
-        settings: current_settings()?,
+        settings: settings_off_runtime().await?,
         reclassified,
     }))
 }
@@ -1932,13 +2240,24 @@ async fn browser_heartbeat(
         .into_response())
 }
 
+#[derive(Deserialize)]
+pub struct RoutedQuery {
+    /// Include dismissed/noise events too — the review drawer's request.
+    #[serde(default)]
+    pub include_hidden: bool,
+}
+
 async fn routed_events(
     State(state): State<Shared>,
     AxumPath(day): AxumPath<String>,
+    axum::extract::Query(q): axum::extract::Query<RoutedQuery>,
 ) -> Result<Json<Vec<routing_contract::RoutedEvent>>, ApiError> {
     let parsed = NaiveDate::parse_from_str(&day, "%Y-%m-%d")
         .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{}`: {e}", day)))?;
-    let events = with_conn(state, move |c| routing::routed_for_day(c, parsed)).await?;
+    let events = with_conn(state, move |c| {
+        routing::routed_for_day(c, parsed, q.include_hidden)
+    })
+    .await?;
     Ok(Json(events))
 }
 
@@ -1964,6 +2283,30 @@ async fn set_event_label(
     Ok(Json(routed))
 }
 
+async fn dismiss_event_handler(
+    State(state): State<Shared>,
+    AxumPath(id): AxumPath<i64>,
+    Json(body): Json<routing_contract::DismissRequest>,
+) -> Result<Json<routing_contract::RoutedEvent>, ApiError> {
+    let exists: bool = with_conn(state.clone(), move |c| {
+        Ok(c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM events WHERE id = ?1)",
+            [id],
+            |r| r.get(0),
+        )?)
+    })
+    .await?;
+    if !exists {
+        return Err(ApiError::NotFound(anyhow::anyhow!("event {id} not found")));
+    }
+    let routed = with_conn(state, move |c| {
+        routing_dismiss::dismiss_event(c, id, body.rule_kind)
+    })
+    .await
+    .map_err(ApiError::bad_request)?;
+    Ok(Json(routed))
+}
+
 async fn routing_rules_list(
     State(state): State<Shared>,
 ) -> Result<Json<Vec<routing_contract::Rule>>, ApiError> {
@@ -1984,7 +2327,7 @@ async fn routing_rule_delete(
 struct RoutingStatus {
     last_heartbeat: Option<String>,
     last_slack: Option<String>,
-    laya_reachable: bool,
+    classifier_reachable: bool,
 }
 
 async fn routing_status(State(state): State<Shared>) -> Result<Json<RoutingStatus>, ApiError> {
@@ -2003,11 +2346,11 @@ async fn routing_status(State(state): State<Shared>) -> Result<Json<RoutingStatu
     })
     .await?;
 
-    // Off the connection lock — a slow/hung Laya process must not stall
+    // Off the connection lock — a slow/hung Verdict process must not stall
     // every other request.
-    let laya_reachable = tokio::task::spawn_blocking(|| {
+    let classifier_reachable = tokio::task::spawn_blocking(|| {
         crate::daemon_service::is_running(
-            routing_contract::LAYA_ADDR,
+            routing_contract::CLASSIFIER_ADDR,
             std::time::Duration::from_secs(2),
         )
     })
@@ -2017,7 +2360,7 @@ async fn routing_status(State(state): State<Shared>) -> Result<Json<RoutingStatu
     Ok(Json(RoutingStatus {
         last_heartbeat,
         last_slack,
-        laya_reachable,
+        classifier_reachable,
     }))
 }
 
@@ -2228,6 +2571,82 @@ mod tests {
             .collect();
         assert!(src_set.contains("github_commit"));
         assert!(src_set.contains("claude"));
+    }
+
+    /// Inserts a block plus one event per `(source, source_id, ts)` tuple,
+    /// linked via `block_events`. Shared by the confidence/gaps test below.
+    fn seed_block(
+        conn: &Connection,
+        start: &str,
+        end: &str,
+        dur: i64,
+        events: &[(&str, &str, &str)],
+    ) {
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-18', ?1, ?2, ?3)",
+            params![start, end, dur],
+        )
+        .unwrap();
+        let block_id = conn.last_insert_rowid();
+        for (source, source_id, ts) in events {
+            let eid =
+                repo::upsert_event(conn, &Event::minimal(*source, *source_id, *ts, "x")).unwrap();
+            conn.execute(
+                "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+                params![block_id, eid],
+            )
+            .unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn day_summary_reports_block_confidence_and_gaps() {
+        // L6: each block's confidence label comes from its distinct source
+        // count, and gaps >=30min between blocks are surfaced for the day.
+        let conn = open_memory().unwrap();
+        seed_block(
+            &conn,
+            "2026-04-18T09:00:00+00:00",
+            "2026-04-18T09:30:00+00:00",
+            1800,
+            &[
+                ("github_commit", "a", "2026-04-18T09:05:00+00:00"),
+                ("claude", "b", "2026-04-18T09:10:00+00:00"),
+                ("jira", "c", "2026-04-18T09:15:00+00:00"),
+            ],
+        );
+        seed_block(
+            &conn,
+            "2026-04-18T10:15:00+00:00",
+            "2026-04-18T10:30:00+00:00",
+            900,
+            &[("claude", "d", "2026-04-18T10:20:00+00:00")],
+        );
+
+        let app = router(Arc::new(AppState {
+            conn: Mutex::new(conn),
+        }));
+        let resp = app
+            .oneshot(
+                Request::get("/days/2026-04-18")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        let blocks = v["blocks"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        let high = blocks.iter().find(|b| b["event_count"] == 3).unwrap();
+        assert_eq!(high["confidence"], "high");
+        let low = blocks.iter().find(|b| b["event_count"] == 1).unwrap();
+        assert_eq!(low["confidence"], "low");
+
+        let gaps = v["gaps"].as_array().unwrap();
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0]["minutes"], 45);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2511,6 +2930,46 @@ mod tests {
         let summary = stitch_day_summary(&conn, "2026-04-18").unwrap();
         assert_eq!(summary.blocks.len(), 1);
         assert_eq!(summary.blocks[0].project_path, None);
+    }
+
+    #[test]
+    fn day_summary_project_reports_the_folded_billing_folder() {
+        // The UI shows worktree branch names (e.g. `ci-on-codebuild`) as
+        // projects because `project_path` is the raw exact path. `project`
+        // must carry the folded billing folder key instead — `lyfjastofnun`
+        // for a block whose events live under
+        // `.../lyfjastofnun/.claude/worktrees/ci-on-codebuild`.
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-18', '2026-04-18T09:00:00+00:00', '2026-04-18T09:30:00+00:00', 1800)",
+            [],
+        )
+        .unwrap();
+        let bid = conn.last_insert_rowid();
+        let path = "/home/u/Desktop/Work/lyfjastofnun/.claude/worktrees/ci-on-codebuild";
+        let mut ev = Event::minimal("claude", "e0", "2026-04-18T09:05:00+00:00", "prompt");
+        ev.project_path = Some(path.to_string());
+        let eid = repo::upsert_event(&conn, &ev).unwrap();
+        conn.execute(
+            "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+            params![bid, eid],
+        )
+        .unwrap();
+
+        let summary = stitch_day_summary(&conn, "2026-04-18").unwrap();
+        assert_eq!(summary.blocks.len(), 1);
+        assert_eq!(
+            summary.blocks[0].project_path.as_deref(),
+            Some(path),
+            "project_path keeps showing the raw path for the UI's path chip"
+        );
+        assert_eq!(
+            summary.blocks[0].project.as_deref(),
+            Some("lyfjastofnun"),
+            "project must be the folded billing folder, not the worktree \
+             branch name"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3028,6 +3487,465 @@ mod tests {
         assert_eq!(v["blocks"], 1);
     }
 
+    /// Two WORK projects with interleaved activity across the same hour —
+    /// `GET /days/:day` should report exactly one overlap spanning both.
+    fn state_with_overlap() -> Shared {
+        let conn = open_memory().unwrap();
+        for i in 0..20i64 {
+            let ts = format!("2026-04-18T10:{:02}:00+00:00", i * 3);
+            let mut e = Event::minimal("claude_turn", format!("a{i}"), ts, "work");
+            e.project_path = Some("/Users/dev/Desktop/Work/alpha".to_string());
+            repo::upsert_event(&conn, &e).unwrap();
+        }
+        for i in 0..20i64 {
+            let ts = format!("2026-04-18T10:{:02}:00+00:00", i * 3);
+            let mut e = Event::minimal("claude_work", format!("b{i}"), ts, "work");
+            e.project_path = Some("/Users/dev/Desktop/Work/beta".to_string());
+            repo::upsert_event(&conn, &e).unwrap();
+        }
+        Arc::new(AppState {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn day_summary_reports_the_overlap() {
+        let state = state_with_overlap();
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::get("/days/2026-04-18")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        let overlaps = v["overlaps"].as_array().unwrap();
+        assert_eq!(overlaps.len(), 1, "{v}");
+        assert!(overlaps[0]["minutes"].as_i64().unwrap() >= 10);
+        assert_eq!(overlaps[0]["projects"].as_array().unwrap().len(), 2);
+        assert!(overlaps[0]["allocation"].is_null());
+    }
+
+    /// The two interleaved projects from `state_with_overlap` should each
+    /// get their own gap-bridged activity spans, not just the overlap they
+    /// share — the lanes view needs a project's FULL activity, since
+    /// `infer_lanes` only ever assigns a minute to one owner.
+    #[tokio::test(flavor = "current_thread")]
+    async fn day_summary_reports_activity_for_both_projects() {
+        let state = state_with_overlap();
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::get("/days/2026-04-18")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        let activity = v["activity"].as_array().unwrap();
+        assert_eq!(activity.len(), 2, "{v}");
+        let projects: Vec<&str> = activity
+            .iter()
+            .map(|p| p["project"].as_str().unwrap())
+            .collect();
+        assert!(projects.contains(&"alpha"), "{projects:?}");
+        assert!(projects.contains(&"beta"), "{projects:?}");
+        for p in activity {
+            let spans = p["spans"].as_array().unwrap();
+            assert_eq!(spans.len(), 1, "{p}");
+            assert!(!spans[0]["started_at"].as_str().unwrap().is_empty());
+            assert!(!spans[0]["ended_at"].as_str().unwrap().is_empty());
+        }
+    }
+
+    /// `(started_at, ended_at, project names)` for the day's one overlap.
+    async fn fetch_overlap_window(state: &Shared) -> (String, String, Vec<String>) {
+        let resp = router(state.clone())
+            .oneshot(
+                Request::get("/days/2026-04-18")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        let overlap = &v["overlaps"][0];
+        let started_at = overlap["started_at"].as_str().unwrap().to_string();
+        let ended_at = overlap["ended_at"].as_str().unwrap().to_string();
+        let projects: Vec<String> = overlap["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["project"].as_str().unwrap().to_string())
+            .collect();
+        (started_at, ended_at, projects)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn allocations_endpoint_saves_split_and_reinfers() {
+        let state = state_with_overlap();
+        let (started_at, ended_at, projects) = fetch_overlap_window(&state).await;
+        assert_eq!(projects.len(), 2);
+
+        let body = Body::from(
+            serde_json::to_vec(&json!({
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "shares": { projects[0].clone(): 0.7, projects[1].clone(): 0.3 },
+            }))
+            .unwrap(),
+        );
+        let resp = router(state.clone())
+            .oneshot(
+                Request::post("/days/2026-04-18/allocations")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{:?}", read_json(resp).await);
+
+        let (_, _, _) = fetch_overlap_window(&state).await; // sanity: still one overlap
+        let resp = router(state)
+            .oneshot(
+                Request::get("/days/2026-04-18")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        let overlap = &v["overlaps"][0];
+        assert_eq!(overlap["allocation"]["shares"][&projects[0]], 0.7);
+        assert_eq!(overlap["allocation"]["shares"][&projects[1]], 0.3);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn allocations_delete_endpoint_restores_the_automatic_split() {
+        let state = state_with_overlap();
+        let (started_at, ended_at, projects) = fetch_overlap_window(&state).await;
+
+        let body = Body::from(
+            serde_json::to_vec(&json!({
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "shares": { projects[0].clone(): 1.0 },
+            }))
+            .unwrap(),
+        );
+        let resp = router(state.clone())
+            .oneshot(
+                Request::post("/days/2026-04-18/allocations")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = Body::from(
+            serde_json::to_vec(&json!({ "started_at": started_at, "ended_at": ended_at })).unwrap(),
+        );
+        let resp = router(state.clone())
+            .oneshot(
+                Request::post("/days/2026-04-18/allocations/delete")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let resp = router(state)
+            .oneshot(
+                Request::get("/days/2026-04-18")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        assert!(v["overlaps"][0]["allocation"].is_null());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn allocations_endpoint_rejects_shares_that_dont_sum_to_one() {
+        let state = state_with_overlap();
+        let (started_at, ended_at, projects) = fetch_overlap_window(&state).await;
+
+        let body = Body::from(
+            serde_json::to_vec(&json!({
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "shares": { projects[0].clone(): 0.5 },
+            }))
+            .unwrap(),
+        );
+        let resp = router(state)
+            .oneshot(
+                Request::post("/days/2026-04-18/allocations")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn allocations_endpoint_rejects_a_project_not_in_the_overlap() {
+        let state = state_with_overlap();
+        let (started_at, ended_at, _) = fetch_overlap_window(&state).await;
+
+        let body = Body::from(
+            serde_json::to_vec(&json!({
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "shares": { "not-a-real-project": 1.0 },
+            }))
+            .unwrap(),
+        );
+        let resp = router(state)
+            .oneshot(
+                Request::post("/days/2026-04-18/allocations")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn allocations_endpoint_accepts_a_custom_window_not_matching_any_overlap() {
+        let state = state_with_overlap();
+        // A sub-range of the full-hour overlap `state_with_overlap` builds
+        // (10:00–10:59) — not equal to the detected overlap's own bounds,
+        // proving the endpoint no longer requires an exact overlap match.
+        let body = Body::from(
+            serde_json::to_vec(&json!({
+                "started_at": "2026-04-18T10:10:00+00:00",
+                "ended_at": "2026-04-18T10:20:00+00:00",
+                "shares": { "alpha": 0.6, "beta": 0.4 },
+            }))
+            .unwrap(),
+        );
+        let resp = router(state.clone())
+            .oneshot(
+                Request::post("/days/2026-04-18/allocations")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{:?}", read_json(resp).await);
+
+        let resp = router(state)
+            .oneshot(
+                Request::get("/days/2026-04-18")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        let allocations = v["allocations"].as_array().unwrap();
+        assert_eq!(allocations.len(), 1, "{v}");
+        assert_eq!(
+            allocations[0]["started_at"].as_str().unwrap(),
+            "2026-04-18T10:10:00Z"
+        );
+        assert_eq!(allocations[0]["shares"]["alpha"], 0.6);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn allocations_endpoint_replaces_an_overlapping_saved_allocation() {
+        let state = state_with_overlap();
+        let first = Body::from(
+            serde_json::to_vec(&json!({
+                "started_at": "2026-04-18T10:00:00+00:00",
+                "ended_at": "2026-04-18T10:20:00+00:00",
+                "shares": { "alpha": 1.0 },
+            }))
+            .unwrap(),
+        );
+        let resp = router(state.clone())
+            .oneshot(
+                Request::post("/days/2026-04-18/allocations")
+                    .header("content-type", "application/json")
+                    .body(first)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Overlaps the first window's back half — must replace it, not
+        // coexist with it.
+        let second = Body::from(
+            serde_json::to_vec(&json!({
+                "started_at": "2026-04-18T10:10:00+00:00",
+                "ended_at": "2026-04-18T10:30:00+00:00",
+                "shares": { "beta": 1.0 },
+            }))
+            .unwrap(),
+        );
+        let resp = router(state.clone())
+            .oneshot(
+                Request::post("/days/2026-04-18/allocations")
+                    .header("content-type", "application/json")
+                    .body(second)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{:?}", read_json(resp).await);
+
+        let resp = router(state)
+            .oneshot(
+                Request::get("/days/2026-04-18")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        let allocations = v["allocations"].as_array().unwrap();
+        assert_eq!(
+            allocations.len(),
+            1,
+            "the first window must be replaced, not kept alongside: {v}"
+        );
+        assert_eq!(
+            allocations[0]["started_at"].as_str().unwrap(),
+            "2026-04-18T10:10:00Z"
+        );
+        assert_eq!(allocations[0]["shares"]["beta"], 1.0);
+    }
+
+    /// alpha + beta overlap 10:00–10:12, then a genuine 30-minute idle
+    /// stretch (nobody active), then alpha alone again 10:42–10:54 — for
+    /// the "infer honours a custom-range allocation, idle stays idle"
+    /// test below. Every event uses a BACKGROUND source (`claude_work`,
+    /// not `is_human`) so ownership only ever reaches ±5 minutes (the
+    /// `WINDOW_MINUTES` background rule) rather than the much longer
+    /// 15-minute human-attention window — otherwise the "idle" stretch
+    /// would be attention-bridged and never actually idle.
+    fn state_with_idle_gap() -> Shared {
+        let conn = open_memory().unwrap();
+        for i in 0..6i64 {
+            let ts = format!("2026-04-18T10:{:02}:00+00:00", i * 2);
+            let mut e = Event::minimal("claude_work", format!("a{i}"), ts, "work");
+            e.project_path = Some("/Users/dev/Desktop/Work/alpha".to_string());
+            repo::upsert_event(&conn, &e).unwrap();
+        }
+        for i in 0..6i64 {
+            let ts = format!("2026-04-18T10:{:02}:00+00:00", i * 2);
+            let mut e = Event::minimal("claude_work", format!("b{i}"), ts, "work");
+            e.project_path = Some("/Users/dev/Desktop/Work/beta".to_string());
+            repo::upsert_event(&conn, &e).unwrap();
+        }
+        for i in 0..6i64 {
+            let ts = format!("2026-04-18T10:{:02}:00+00:00", 42 + i * 2);
+            let mut e = Event::minimal("claude_work", format!("c{i}"), ts, "work");
+            e.project_path = Some("/Users/dev/Desktop/Work/alpha".to_string());
+            repo::upsert_event(&conn, &e).unwrap();
+        }
+        Arc::new(AppState {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn allocations_endpoint_rejects_a_project_with_no_activity_in_the_window() {
+        let state = state_with_idle_gap();
+        // Squarely inside the idle stretch — nobody, including alpha, has
+        // any activity here.
+        let body = Body::from(
+            serde_json::to_vec(&json!({
+                "started_at": "2026-04-18T10:15:00+00:00",
+                "ended_at": "2026-04-18T10:25:00+00:00",
+                "shares": { "alpha": 1.0 },
+            }))
+            .unwrap(),
+        );
+        let resp = router(state)
+            .oneshot(
+                Request::post("/days/2026-04-18/allocations")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn infer_honours_a_custom_range_allocation_without_inventing_idle_time() {
+        let state = state_with_idle_gap();
+        let body = Body::from(
+            serde_json::to_vec(&json!({
+                "started_at": "2026-04-18T10:00:00+00:00",
+                "ended_at": "2026-04-18T10:56:00+00:00",
+                "shares": { "alpha": 1.0 },
+            }))
+            .unwrap(),
+        );
+        let resp = router(state.clone())
+            .oneshot(
+                Request::post("/days/2026-04-18/allocations")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{:?}", read_json(resp).await);
+
+        let resp = router(state)
+            .oneshot(
+                Request::get("/days/2026-04-18")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        let blocks = v["blocks"].as_array().unwrap();
+        assert!(!blocks.is_empty(), "{v}");
+        // Every minute either project owned gets reassigned to alpha —
+        // beta must own nothing left in the day.
+        for b in blocks {
+            assert_eq!(b["project"].as_str(), Some("alpha"), "{v}");
+        }
+        // But the real 30-minute idle stretch must not be invented into
+        // one giant block spanning the full 56-minute window.
+        let total: i64 = blocks
+            .iter()
+            .map(|b| b["duration_seconds"].as_i64().unwrap())
+            .sum();
+        assert!(
+            total < 40 * 60,
+            "idle stretch must not be filled, got {total}s of blocks: {v}"
+        );
+        assert!(
+            total > 15 * 60,
+            "real activity must still be captured, got {total}s: {v}"
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn delete_endpoint_removes_block() {
         let state = state_with_block();
@@ -3162,7 +4080,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn infer_routes_rule_hits_before_building_blocks() {
         // T007: /infer must route unsorted browser/Slack events (rule hits
-        // only here — the laya helper is never running under test) before
+        // only here — the Verdict helper is never running under test) before
         // clustering, so a rule-matched event's project_path lands on the
         // block it joins in the same request.
         let conn = open_memory().unwrap();
@@ -4059,6 +4977,176 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn dismiss_event_clears_label_and_returns_routed_shape() {
+        let conn = open_memory().unwrap();
+        let id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                routing_contract::SOURCE_SLACK,
+                "s1",
+                "2026-04-14T10:30:00+00:00",
+                "#random",
+            ),
+        )
+        .unwrap();
+
+        let app = router(state_from_conn(conn));
+        let resp = app
+            .oneshot(
+                Request::post(format!("/events/{id}/dismiss"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"rule_kind":null}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["id"], id);
+        assert_eq!(v["folder"], Value::Null);
+        assert_eq!(v["label_origin"], "dismissed");
+        assert_eq!(v["label_confidence"], Value::Null);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dismiss_event_404s_an_unknown_event() {
+        let app = router(state_from_conn(open_memory().unwrap()));
+        let resp = app
+            .oneshot(
+                Request::post("/events/999999/dismiss")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"rule_kind":null}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dismiss_event_400s_a_rule_kind_that_does_not_fit_the_source() {
+        let conn = open_memory().unwrap();
+        let id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                routing_contract::SOURCE_SLACK,
+                "s1",
+                "2026-04-14T10:30:00+00:00",
+                "#random",
+            ),
+        )
+        .unwrap();
+
+        let app = router(state_from_conn(conn));
+        let resp = app
+            .oneshot(
+                Request::post(format!("/events/{id}/dismiss"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"rule_kind":"domain"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dismiss_event_with_rule_kind_creates_ignore_rule_listed_by_routing_rules() {
+        let conn = open_memory().unwrap();
+        let id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                routing_contract::SOURCE_SLACK,
+                "s1",
+                "2026-04-14T10:30:00+00:00",
+                "#random",
+            ),
+        )
+        .unwrap();
+
+        let app = router(state_from_conn(conn));
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/events/{id}/dismiss"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"rule_kind":"slack_channel"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let resp = app
+            .oneshot(Request::get("/routing/rules").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["pattern"], "#random");
+        assert_eq!(arr[0]["folder"], "__ignore__");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn routed_events_excludes_dismissed() {
+        let conn = open_memory().unwrap();
+        let id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                routing_contract::SOURCE_FIREFOX,
+                "e1",
+                "2026-04-14T10:30:00+00:00",
+                "news site",
+            ),
+        )
+        .unwrap();
+        crate::routing_dismiss::dismiss_event(&conn, id, None).unwrap();
+
+        let app = router(state_from_conn(conn));
+        let resp = app
+            .oneshot(
+                Request::get("/days/2026-04-14/routed")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn routed_events_include_hidden_returns_dismissed() {
+        let conn = open_memory().unwrap();
+        let id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                routing_contract::SOURCE_FIREFOX,
+                "e1",
+                "2026-04-14T10:30:00+00:00",
+                "news site",
+            ),
+        )
+        .unwrap();
+        crate::routing_dismiss::dismiss_event(&conn, id, None).unwrap();
+
+        let app = router(state_from_conn(conn));
+        let resp = app
+            .oneshot(
+                Request::get("/days/2026-04-14/routed?include_hidden=true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v.as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn routing_rules_list_and_delete_round_trip() {
         let conn = open_memory().unwrap();
         conn.execute(
@@ -4136,14 +5224,21 @@ mod tests {
         let v = read_json(resp).await;
         assert_eq!(v["last_heartbeat"], "2026-04-14T10:30:00+00:00");
         assert_eq!(v["last_slack"], "2026-04-14T11:00:00+00:00");
-        assert_eq!(
-            v["laya_reachable"], false,
-            "no Laya helper is running under test"
-        );
+        // The owner's real Verdict helper may be up on this port, so compare
+        // with a live probe instead of assuming it is down.
+        let live = tokio::task::spawn_blocking(|| {
+            crate::daemon_service::is_running(
+                routing_contract::CLASSIFIER_ADDR,
+                std::time::Duration::from_secs(2),
+            )
+        })
+        .await
+        .unwrap();
+        assert_eq!(v["classifier_reachable"], live);
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn settings_reports_work_hours_and_route_threshold_defaults() {
+    async fn settings_reports_work_hours_and_ratio_defaults() {
         let _g = prune_env_lock().await;
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("WORKLOG_ENV_FILE", tmp.path().join(".env"));
@@ -4151,21 +5246,29 @@ mod tests {
         let view = current_settings().unwrap();
         assert_eq!(view.work_hours, routing_contract::DEFAULT_WORK_HOURS);
         assert_eq!(
-            view.route_threshold,
-            routing_contract::DEFAULT_ROUTE_THRESHOLD
+            view.abstain_margin,
+            routing_contract::DEFAULT_ABSTAIN_MARGIN
+        );
+        assert_eq!(
+            view.runner_up_ratio,
+            routing_contract::DEFAULT_RUNNER_UP_RATIO
         );
 
         std::env::remove_var("WORKLOG_ENV_FILE");
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn settings_post_rejects_bad_work_hours_or_threshold_without_persisting() {
+    async fn settings_post_rejects_bad_work_hours_or_ratios_without_persisting() {
         let _g = prune_env_lock().await;
         let tmp = tempfile::tempdir().unwrap();
         let env_file = tmp.path().join(".env");
         std::env::set_var("WORKLOG_ENV_FILE", &env_file);
 
-        for bad_body in [r#"{"work_hours":"garbage"}"#, r#"{"route_threshold":1.5}"#] {
+        for bad_body in [
+            r#"{"work_hours":"garbage"}"#,
+            r#"{"abstain_margin":0.5}"#,
+            r#"{"runner_up_ratio":9.0}"#,
+        ] {
             let app = router(state_with_block());
             let resp = app
                 .oneshot(
@@ -4184,7 +5287,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn settings_post_persists_valid_work_hours_and_route_threshold() {
+    async fn settings_post_persists_valid_work_hours_and_ratios() {
         let _g = prune_env_lock().await;
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("WORKLOG_ENV_FILE", tmp.path().join(".env"));
@@ -4195,7 +5298,7 @@ mod tests {
                 Request::post("/settings")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"work_hours":"Mon-Fri 08:00-16:00","route_threshold":0.75}"#,
+                        r#"{"work_hours":"Mon-Fri 08:00-16:00","abstain_margin":1.2,"runner_up_ratio":1.3}"#,
                     ))
                     .unwrap(),
             )
@@ -4207,8 +5310,38 @@ mod tests {
             Some("Mon-Fri 08:00-16:00")
         );
         assert_eq!(
-            crate::envfile::read(routing_contract::ROUTE_THRESHOLD_KEY).as_deref(),
-            Some("0.75")
+            crate::envfile::read(routing_contract::ABSTAIN_MARGIN_KEY).as_deref(),
+            Some("1.2")
+        );
+        assert_eq!(
+            crate::envfile::read(routing_contract::RUNNER_UP_RATIO_KEY).as_deref(),
+            Some("1.3")
+        );
+        let rule = configured_route_rule();
+        assert_eq!(rule.abstain_margin, 1.2);
+        assert_eq!(rule.runner_up_ratio, 1.3);
+
+        std::env::remove_var("WORKLOG_ENV_FILE");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn configured_route_rule_falls_back_to_defaults_on_bad_envfile_values() {
+        let _g = prune_env_lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let env_file = tmp.path().join(".env");
+        std::env::set_var("WORKLOG_ENV_FILE", &env_file);
+
+        crate::envfile::upsert(routing_contract::ABSTAIN_MARGIN_KEY, "not-a-number").unwrap();
+        crate::envfile::upsert(routing_contract::RUNNER_UP_RATIO_KEY, "9.0").unwrap();
+
+        let rule = configured_route_rule();
+        assert_eq!(
+            rule.abstain_margin,
+            routing_contract::DEFAULT_ABSTAIN_MARGIN
+        );
+        assert_eq!(
+            rule.runner_up_ratio,
+            routing_contract::DEFAULT_RUNNER_UP_RATIO
         );
 
         std::env::remove_var("WORKLOG_ENV_FILE");

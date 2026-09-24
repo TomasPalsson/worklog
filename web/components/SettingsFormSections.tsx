@@ -159,8 +159,10 @@ function RoutingSection({
       <RoutingFields
         workHours={form.workHours}
         onWorkHoursChange={(v) => patch({ workHours: v })}
-        routeThreshold={form.routeThreshold}
-        onRouteThresholdChange={(v) => patch({ routeThreshold: v })}
+        abstainMargin={form.abstainMargin}
+        onAbstainMarginChange={(v) => patch({ abstainMargin: v })}
+        runnerUpRatio={form.runnerUpRatio}
+        onRunnerUpRatioChange={(v) => patch({ runnerUpRatio: v })}
       />
       <RoutingStatusAndRules day={day} />
     </section>
