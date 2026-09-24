@@ -82,7 +82,7 @@ pub struct InferBlock {
     #[serde(skip)]
     is_calendar: bool,
     #[serde(skip)]
-    events: Vec<InferEvent>,
+    pub(crate) events: Vec<InferEvent>,
 }
 
 impl InferBlock {
@@ -162,16 +162,18 @@ pub fn build_blocks(events: Vec<InferEvent>) -> Vec<InferBlock> {
     build_blocks_with_allocations(events, &[])
 }
 
-/// Same as [`build_blocks`], but minutes inside an
-/// [`crate::infer_allocations::AllocationWindow`] are handed to their
-/// share's project outright, overriding the automatic owner. Used by the
-/// daemon's infer entry point, which is the one place that already holds a
-/// `Connection` to load the day's saved allocations.
+/// Same as [`build_blocks`], then the work time inside each saved
+/// [`crate::infer_allocations::AllocationWindow`] is re-cut by its shares.
 pub fn build_blocks_with_allocations(
     events: Vec<InferEvent>,
     allocations: &[crate::infer_allocations::AllocationWindow],
 ) -> Vec<InferBlock> {
-    crate::infer_lanes::build_blocks_by_project(events, build_blocks_sequential, allocations)
+    if allocations.is_empty() {
+        return crate::infer_lanes::build_blocks_by_project(events, build_blocks_sequential);
+    }
+    let paths = crate::infer_allocations::owner_paths(&events);
+    let auto = crate::infer_lanes::build_blocks_by_project(events, build_blocks_sequential);
+    crate::infer_allocations::apply_split(auto, allocations, &paths)
 }
 
 fn build_blocks_sequential(events: Vec<InferEvent>) -> Vec<InferBlock> {

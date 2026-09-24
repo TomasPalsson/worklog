@@ -14,7 +14,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::billing::work_folder_for_path;
 use crate::infer::{InferBlock, InferEvent};
-use crate::infer_allocations::{allocated_block, in_allocation, owner_paths, AllocationWindow};
 
 /// Background activity within this many minutes of a minute counts toward its owner.
 /// Also the max gap `overlaps::project_intervals` bridges inside one
@@ -68,7 +67,6 @@ type Keyed = (i64, String, bool);
 pub(crate) fn build_blocks_by_project(
     events: Vec<InferEvent>,
     build: fn(Vec<InferEvent>) -> Vec<InferBlock>,
-    allocations: &[AllocationWindow],
 ) -> Vec<InferBlock> {
     let keyed: Vec<Keyed> = events
         .iter()
@@ -84,14 +82,7 @@ pub(crate) fn build_blocks_by_project(
     {
         return build(events);
     }
-    let runs = owner_runs(&keyed, allocations);
-    // Runs a saved split decided take every work event in their minutes and
-    // span those minutes exactly, so the blocks follow the split.
-    let allocated: Vec<bool> = runs
-        .iter()
-        .map(|(_, s, e)| in_allocation(allocations, *s, *e))
-        .collect();
-    let paths = owner_paths(&events);
+    let runs = owner_runs(&keyed);
 
     // Every event lands in at most one bucket: calendar alone, a run whose
     // window contains it (project events only into their own project's run),
@@ -106,12 +97,8 @@ pub(crate) fn build_blocks_by_project(
         }
         let m = minute(e.ts);
         let key = lane_key(&e);
-        let hit = (0..runs.len()).find(|&i| {
-            let (owner, start, end) = &runs[i];
-            m >= *start
-                && m <= *end
-                && (key.as_ref().is_none_or(|k| k == owner)
-                    || (allocated[i] && key.as_deref().is_some_and(is_work)))
+        let hit = runs.iter().position(|(owner, start, end)| {
+            m >= *start && m <= *end && key.as_ref().is_none_or(|k| k == owner)
         });
         match hit {
             Some(i) => buckets.entry(i).or_default().push(e),
@@ -121,19 +108,7 @@ pub(crate) fn build_blocks_by_project(
             None => leftovers.push(e),
         }
     }
-    let mut blocks: Vec<InferBlock> = buckets
-        .into_iter()
-        .flat_map(|(i, evs)| {
-            let (owner, start, end) = &runs[i];
-            if allocated[i] {
-                allocated_block(paths.get(owner).map(String::as_str), *start, *end, evs)
-                    .into_iter()
-                    .collect()
-            } else {
-                build(evs)
-            }
-        })
-        .collect();
+    let mut blocks: Vec<InferBlock> = buckets.into_values().flat_map(build).collect();
     blocks.extend(build(calendar));
     blocks.extend(build(leftovers));
     blocks.sort_by_key(|b| b.started_at);
@@ -152,11 +127,7 @@ pub(crate) fn minute(ts: DateTime<Utc>) -> i64 {
 }
 
 /// Contiguous (owner, first minute, last minute) runs over the day.
-/// `allocations` overrides the automatic per-minute owner inside its
-/// windows outright (see `infer_allocations`) — applied after the owner
-/// pass and before bridging, so those minutes are never `None` and never
-/// get swept into a neighbouring bridge.
-fn owner_runs(keyed: &[Keyed], allocations: &[AllocationWindow]) -> Vec<(String, i64, i64)> {
+fn owner_runs(keyed: &[Keyed]) -> Vec<(String, i64, i64)> {
     let first = keyed.iter().map(|(m, _, _)| *m).min().unwrap_or(0);
     let last = keyed.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
     let mut owners: Vec<Option<String>> = Vec::new();
@@ -199,7 +170,6 @@ fn owner_runs(keyed: &[Keyed], allocations: &[AllocationWindow]) -> Vec<(String,
         }
         owners.push(owner);
     }
-    crate::infer_allocations::apply_allocations(&mut owners, first, allocations);
     bridge(&mut owners);
 
     let mut runs: Vec<(String, i64, i64)> = Vec::new();
