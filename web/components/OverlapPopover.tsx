@@ -71,6 +71,7 @@ export function OverlapPopover({ day, overlap, onClose }: Props) {
         onGiveAll={save}
         onReset={reset}
         onSave={() => save(shares)}
+        onCancel={onClose}
       />
     </div>
   );

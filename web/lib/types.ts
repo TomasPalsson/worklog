@@ -104,6 +104,16 @@ export interface ProjectActivity {
   spans: ActivitySpan[];
 }
 
+/** A saved manual split of ANY time window (`GET /days/:day`'s
+ * `allocations`) — not just windows matching a detected `Overlap`; the
+ * lanes view's click-and-drag selection saves arbitrary ranges too. The
+ * lanes view shows each as a thin bracket over the tracks it spans. */
+export interface SavedAllocation {
+  started_at: string; // ISO-8601 UTC
+  ended_at: string; // ISO-8601 UTC
+  shares: Record<string, number>;
+}
+
 export interface JiraTicket {
   key: string;
   summary: string | null;

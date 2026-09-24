@@ -31,7 +31,7 @@ import {
 import { buildLanes, isFocused } from "@/lib/dayStripLanes";
 import { buildOverlapBands, overlapsInWindow } from "@/lib/dayStripOverlaps";
 import { LanesView } from "./DayStripLanesView";
-import type { Overlap, ProjectActivity } from "@/lib/types";
+import type { Overlap, ProjectActivity, SavedAllocation } from "@/lib/types";
 
 interface Props {
   day: string;
@@ -39,6 +39,7 @@ interface Props {
   gaps: StripGap[];
   overlaps?: Overlap[];
   activity?: ProjectActivity[];
+  allocations?: SavedAllocation[];
 }
 
 const EXPANDED_STORAGE_KEY = "worklog.dayStrip.expanded";
@@ -116,6 +117,7 @@ export function DayStrip({
   gaps: allGaps,
   overlaps: allOverlaps = [],
   activity = [],
+  allocations = [],
 }: Props) {
   // Work-only: personal time never shows — not as a segment, a legend row or
   // by stretching the time axis — and only gaps inside the work day remain.
@@ -161,6 +163,9 @@ export function DayStrip({
           segProps={segProps}
           bands={data.bands}
           day={day}
+          window={window_}
+          activity={activity}
+          allocations={allocations}
           openOverlap={openOverlap}
           onToggleOverlap={(key) => setOpenOverlap((cur) => (cur === key ? null : key))}
         />

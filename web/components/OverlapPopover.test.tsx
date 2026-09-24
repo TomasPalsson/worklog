@@ -88,6 +88,17 @@ describe("OverlapPopover — two-way slider", () => {
   });
 });
 
+describe("OverlapPopover — cancel", () => {
+  it("calls onClose without saving or resetting anything", () => {
+    const onClose = mock(() => {});
+    render(<OverlapPopover day={DAY} overlap={twoProjectOverlap()} onClose={onClose} />);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(allocateCalls).toEqual([]);
+    expect(deleteCalls).toEqual([]);
+  });
+});
+
 describe("OverlapPopover — reset", () => {
   it("shows a reset link only when an allocation is saved, and it deletes", () => {
     const { rerender } = render(

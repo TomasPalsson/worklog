@@ -515,6 +515,16 @@ pub struct DayGap {
     pub minutes: i64,
 }
 
+/// A saved allocation, as the lanes view shows it — every one, not just
+/// ones matching a detected overlap window (the click-and-drag selection
+/// saves arbitrary windows too).
+#[derive(Serialize)]
+pub struct SavedAllocation {
+    pub started_at: DateTime<Utc>,
+    pub ended_at: DateTime<Utc>,
+    pub shares: std::collections::BTreeMap<String, f64>,
+}
+
 #[derive(Serialize)]
 pub struct DaySummary {
     pub day: String,
@@ -530,6 +540,9 @@ pub struct DaySummary {
     /// behind each lane's owned block segments, since `infer_lanes` picks
     /// one owner per minute and would otherwise hide the rest.
     pub activity: Vec<overlaps::ProjectActivity>,
+    /// Every saved allocation for the day (see `SavedAllocation`) — the
+    /// lanes view draws each as a thin bracket over the tracks it spans.
+    pub allocations: Vec<SavedAllocation>,
 }
 
 #[derive(Serialize)]
@@ -566,6 +579,17 @@ fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
         .map(|d| overlaps::day_activity(conn, d))
         .transpose()?
         .unwrap_or_default();
+    let allocations: Vec<SavedAllocation> = day_parsed
+        .map(|d| overlaps::load_allocations(conn, d))
+        .transpose()?
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(started_at, ended_at, shares)| SavedAllocation {
+            started_at,
+            ended_at,
+            shares,
+        })
+        .collect();
     if blocks.is_empty() {
         return Ok(DaySummary {
             day: day.to_owned(),
@@ -574,6 +598,7 @@ fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
             gaps: vec![],
             overlaps,
             activity,
+            allocations,
         });
     }
 
@@ -771,6 +796,7 @@ fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
         gaps,
         overlaps,
         activity,
+        allocations,
     })
 }
 
@@ -1437,10 +1463,15 @@ pub struct AllocationBody {
     pub shares: std::collections::BTreeMap<String, f64>,
 }
 
-/// Save the owner's manual split of an overlap window, then re-run infer
-/// (the `POST /infer` pipeline) so blocks reflect it immediately. 400s:
-/// bad day/timestamps, shares that are empty, non-positive, don't sum to
-/// 1 (±0.001), or name a project that isn't part of this overlap.
+/// Save the owner's manual split of a time window — any window, not only
+/// a detected overlap (the lanes view's click-and-drag selection picks an
+/// arbitrary range) — then re-run infer (the `POST /infer` pipeline) so
+/// blocks reflect it immediately. A new allocation replaces any saved
+/// allocation it overlaps (deleted, then this one inserted), so saved
+/// windows never conflict. 400s: bad day/timestamps, a window shorter
+/// than a minute or outside the day, shares that are empty, non-positive,
+/// don't sum to 1 (±0.001), or name a project with no activity anywhere
+/// in the window.
 async fn save_allocation_handler(
     State(state): State<Shared>,
     AxumPath(day): AxumPath<String>,
@@ -1450,23 +1481,38 @@ async fn save_allocation_handler(
         .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{day}`: {e}")))?;
     let started_at = parse_allocation_ts(&body.started_at)?;
     let ended_at = parse_allocation_ts(&body.ended_at)?;
+    if ended_at - started_at < chrono::Duration::minutes(1) {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "window must be at least 1 minute"
+        )));
+    }
+    let (day_start, day_end) = crate::tz::utc_window_for_local_day(day_parsed);
+    if started_at < day_start || ended_at > day_end {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "window must be inside the day"
+        )));
+    }
     validate_shares(&body.shares)?;
 
     let shares = body.shares.clone();
     with_conn(state.clone(), move |c| {
-        let day_overlaps = overlaps::day_overlaps(c, day_parsed)?;
-        let matching = day_overlaps
-            .iter()
-            .find(|o| o.started_at == started_at && o.ended_at == ended_at)
-            .ok_or_else(|| anyhow::anyhow!("no overlap at {started_at}–{ended_at}"))?;
-        let valid: std::collections::BTreeSet<&str> = matching
-            .projects
-            .iter()
-            .map(|p| p.project.as_str())
-            .collect();
+        let activity = overlaps::day_activity(c, day_parsed)?;
         for project in shares.keys() {
-            if !valid.contains(project.as_str()) {
-                anyhow::bail!("project `{project}` is not part of this overlap");
+            let active = activity.iter().any(|a| {
+                &a.project == project
+                    && a.spans
+                        .iter()
+                        .any(|s| s.started_at < ended_at && s.ended_at > started_at)
+            });
+            if !active {
+                anyhow::bail!("project `{project}` has no activity in {started_at}–{ended_at}");
+            }
+        }
+        // A new allocation replaces any saved allocation it overlaps, so
+        // two saved windows never conflict over the same minute.
+        for (s, e, _) in overlaps::load_allocations(c, day_parsed)? {
+            if s < ended_at && e > started_at {
+                overlaps::delete_allocation(c, day_parsed, s, e)?;
             }
         }
         overlaps::save_allocation(c, day_parsed, started_at, ended_at, &shares)
@@ -3668,6 +3714,226 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn allocations_endpoint_accepts_a_custom_window_not_matching_any_overlap() {
+        let state = state_with_overlap();
+        // A sub-range of the full-hour overlap `state_with_overlap` builds
+        // (10:00–10:59) — not equal to the detected overlap's own bounds,
+        // proving the endpoint no longer requires an exact overlap match.
+        let body = Body::from(
+            serde_json::to_vec(&json!({
+                "started_at": "2026-04-18T10:10:00+00:00",
+                "ended_at": "2026-04-18T10:20:00+00:00",
+                "shares": { "alpha": 0.6, "beta": 0.4 },
+            }))
+            .unwrap(),
+        );
+        let resp = router(state.clone())
+            .oneshot(
+                Request::post("/days/2026-04-18/allocations")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{:?}", read_json(resp).await);
+
+        let resp = router(state)
+            .oneshot(
+                Request::get("/days/2026-04-18")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        let allocations = v["allocations"].as_array().unwrap();
+        assert_eq!(allocations.len(), 1, "{v}");
+        assert_eq!(
+            allocations[0]["started_at"].as_str().unwrap(),
+            "2026-04-18T10:10:00Z"
+        );
+        assert_eq!(allocations[0]["shares"]["alpha"], 0.6);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn allocations_endpoint_replaces_an_overlapping_saved_allocation() {
+        let state = state_with_overlap();
+        let first = Body::from(
+            serde_json::to_vec(&json!({
+                "started_at": "2026-04-18T10:00:00+00:00",
+                "ended_at": "2026-04-18T10:20:00+00:00",
+                "shares": { "alpha": 1.0 },
+            }))
+            .unwrap(),
+        );
+        let resp = router(state.clone())
+            .oneshot(
+                Request::post("/days/2026-04-18/allocations")
+                    .header("content-type", "application/json")
+                    .body(first)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Overlaps the first window's back half — must replace it, not
+        // coexist with it.
+        let second = Body::from(
+            serde_json::to_vec(&json!({
+                "started_at": "2026-04-18T10:10:00+00:00",
+                "ended_at": "2026-04-18T10:30:00+00:00",
+                "shares": { "beta": 1.0 },
+            }))
+            .unwrap(),
+        );
+        let resp = router(state.clone())
+            .oneshot(
+                Request::post("/days/2026-04-18/allocations")
+                    .header("content-type", "application/json")
+                    .body(second)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{:?}", read_json(resp).await);
+
+        let resp = router(state)
+            .oneshot(
+                Request::get("/days/2026-04-18")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        let allocations = v["allocations"].as_array().unwrap();
+        assert_eq!(
+            allocations.len(),
+            1,
+            "the first window must be replaced, not kept alongside: {v}"
+        );
+        assert_eq!(
+            allocations[0]["started_at"].as_str().unwrap(),
+            "2026-04-18T10:10:00Z"
+        );
+        assert_eq!(allocations[0]["shares"]["beta"], 1.0);
+    }
+
+    /// alpha + beta overlap 10:00–10:12, then a genuine 30-minute idle
+    /// stretch (nobody active), then alpha alone again 10:42–10:54 — for
+    /// the "infer honours a custom-range allocation, idle stays idle"
+    /// test below. Every event uses a BACKGROUND source (`claude_work`,
+    /// not `is_human`) so ownership only ever reaches ±5 minutes (the
+    /// `WINDOW_MINUTES` background rule) rather than the much longer
+    /// 15-minute human-attention window — otherwise the "idle" stretch
+    /// would be attention-bridged and never actually idle.
+    fn state_with_idle_gap() -> Shared {
+        let conn = open_memory().unwrap();
+        for i in 0..6i64 {
+            let ts = format!("2026-04-18T10:{:02}:00+00:00", i * 2);
+            let mut e = Event::minimal("claude_work", format!("a{i}"), ts, "work");
+            e.project_path = Some("/Users/dev/Desktop/Work/alpha".to_string());
+            repo::upsert_event(&conn, &e).unwrap();
+        }
+        for i in 0..6i64 {
+            let ts = format!("2026-04-18T10:{:02}:00+00:00", i * 2);
+            let mut e = Event::minimal("claude_work", format!("b{i}"), ts, "work");
+            e.project_path = Some("/Users/dev/Desktop/Work/beta".to_string());
+            repo::upsert_event(&conn, &e).unwrap();
+        }
+        for i in 0..6i64 {
+            let ts = format!("2026-04-18T10:{:02}:00+00:00", 42 + i * 2);
+            let mut e = Event::minimal("claude_work", format!("c{i}"), ts, "work");
+            e.project_path = Some("/Users/dev/Desktop/Work/alpha".to_string());
+            repo::upsert_event(&conn, &e).unwrap();
+        }
+        Arc::new(AppState {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn allocations_endpoint_rejects_a_project_with_no_activity_in_the_window() {
+        let state = state_with_idle_gap();
+        // Squarely inside the idle stretch — nobody, including alpha, has
+        // any activity here.
+        let body = Body::from(
+            serde_json::to_vec(&json!({
+                "started_at": "2026-04-18T10:15:00+00:00",
+                "ended_at": "2026-04-18T10:25:00+00:00",
+                "shares": { "alpha": 1.0 },
+            }))
+            .unwrap(),
+        );
+        let resp = router(state)
+            .oneshot(
+                Request::post("/days/2026-04-18/allocations")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn infer_honours_a_custom_range_allocation_without_inventing_idle_time() {
+        let state = state_with_idle_gap();
+        let body = Body::from(
+            serde_json::to_vec(&json!({
+                "started_at": "2026-04-18T10:00:00+00:00",
+                "ended_at": "2026-04-18T10:56:00+00:00",
+                "shares": { "alpha": 1.0 },
+            }))
+            .unwrap(),
+        );
+        let resp = router(state.clone())
+            .oneshot(
+                Request::post("/days/2026-04-18/allocations")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{:?}", read_json(resp).await);
+
+        let resp = router(state)
+            .oneshot(
+                Request::get("/days/2026-04-18")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        let blocks = v["blocks"].as_array().unwrap();
+        assert!(!blocks.is_empty(), "{v}");
+        // Every minute either project owned gets reassigned to alpha —
+        // beta must own nothing left in the day.
+        for b in blocks {
+            assert_eq!(b["project"].as_str(), Some("alpha"), "{v}");
+        }
+        // But the real 30-minute idle stretch must not be invented into
+        // one giant block spanning the full 56-minute window.
+        let total: i64 = blocks
+            .iter()
+            .map(|b| b["duration_seconds"].as_i64().unwrap())
+            .sum();
+        assert!(
+            total < 40 * 60,
+            "idle stretch must not be filled, got {total}s of blocks: {v}"
+        );
+        assert!(
+            total > 15 * 60,
+            "real activity must still be captured, got {total}s: {v}"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

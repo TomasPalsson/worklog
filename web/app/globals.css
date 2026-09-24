@@ -737,6 +737,103 @@ button {
   text-decoration: underline;
 }
 
+.overlap-popover-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.overlap-popover-cancel {
+  color: var(--fg-muted);
+}
+
+/* Saved-allocation brackets — a thin row above the lane tracks reading
+   "you set 90/10" for any window the owner has manually split (a drag
+   selection or an overlap band), with a reset affordance. Same
+   label-column + tracks-column split as a lane row, but no border/
+   background of its own — it's a bracket, not another lane. */
+.day-strip-allocations-row {
+  min-height: 16px;
+}
+
+.day-strip-allocations-track {
+  height: 16px;
+  background: none;
+  border: none;
+}
+
+.day-strip-allocation-bracket {
+  position: absolute;
+  top: 4px;
+  bottom: 0;
+  border-left: 1px solid var(--fg-muted);
+  border-right: 1px solid var(--fg-muted);
+  border-top: 1px solid var(--fg-muted);
+  display: flex;
+  justify-content: center;
+}
+
+.day-strip-allocation-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  transform: translateY(-50%);
+  background: var(--bg);
+  padding: 0 4px;
+}
+
+.day-strip-allocation-reset {
+  text-decoration: underline;
+}
+
+/* Click-and-drag time-range selection — one overlay layer over the
+   tracks column (same geometry as the gap/overlap overlays), the
+   rectangle shown while dragging plus the popover anchored to it once
+   the drag ends. Pointer handlers live on `.day-strip-lanes` itself
+   (see DayStripLanesView.tsx), not this layer, so segment/band clicks
+   are unaffected. */
+.day-strip-selection-layer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--lane-label-w) + var(--lane-gap));
+  right: 0;
+  pointer-events: none;
+}
+
+.day-strip-selection {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--fg);
+  opacity: 0.12;
+  border: 1px dashed var(--fg-muted);
+}
+
+.day-strip-selection-label {
+  position: absolute;
+  top: 0;
+  display: flex;
+  justify-content: center;
+  font-size: 10px;
+  color: var(--fg);
+  background: var(--bg);
+  white-space: nowrap;
+  padding: 1px 4px;
+  pointer-events: none;
+}
+
+.day-strip-selection-popover-anchor {
+  position: absolute;
+  top: 100%;
+  z-index: 10;
+  margin-top: 4px;
+  pointer-events: auto;
+}
+
 .day-strip-ticks {
   position: relative;
   height: 14px;

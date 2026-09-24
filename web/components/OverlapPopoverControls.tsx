@@ -20,6 +20,7 @@ interface Props {
   onGiveAll: (shares: Record<string, number>) => void;
   onReset: () => void;
   onSave: () => void;
+  onCancel: () => void;
 }
 
 export function OverlapPopoverControls({
@@ -35,6 +36,7 @@ export function OverlapPopoverControls({
   onGiveAll,
   onReset,
   onSave,
+  onCancel,
 }: Props) {
   const twoWay = projects.length === 2;
   return (
@@ -64,9 +66,14 @@ export function OverlapPopoverControls({
         </button>
       )}
 
-      <button type="button" disabled={pending || !canSave} onClick={onSave}>
-        Save
-      </button>
+      <div className="overlap-popover-actions">
+        <button type="button" disabled={pending || !canSave} onClick={onSave}>
+          Save
+        </button>
+        <button type="button" className="overlap-popover-cancel" disabled={pending} onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
     </>
   );
 }

@@ -25,8 +25,12 @@ pub struct AllocationWindow {
     pub shares: BTreeMap<String, f64>,
 }
 
-/// Overwrite `owners[i]` for every minute inside an allocation window with
-/// the chunk its share assigns. `owners[i]` corresponds to minute `first + i`.
+/// Overwrite `owners[i]` for every ALREADY-OWNED minute inside an
+/// allocation window with the chunk its share assigns. `owners[i]`
+/// corresponds to minute `first + i`. A minute that's `None` (no project
+/// had any activity there at all — genuinely idle) is left `None`: the
+/// owner can rebalance a window's real activity between projects, but an
+/// allocation must never invent time nobody actually spent.
 pub(crate) fn apply_allocations(
     owners: &mut [Option<String>],
     first: i64,
@@ -51,7 +55,7 @@ pub(crate) fn apply_allocations(
             let chunk_end = target.clamp(0, total_minutes);
             for m in (start_minute + assigned)..(start_minute + chunk_end) {
                 let idx = m - first;
-                if idx >= 0 && (idx as usize) < owners.len() {
+                if idx >= 0 && (idx as usize) < owners.len() && owners[idx as usize].is_some() {
                     owners[idx as usize] = Some(project.clone());
                 }
             }
@@ -69,10 +73,19 @@ mod tests {
         Utc.with_ymd_and_hms(2026, 9, 23, h, m, 0).unwrap()
     }
 
+    /// Every minute in `apply_allocations`'s tests starts already "owned"
+    /// (`Some("orig")`) — that's the realistic precondition: allocations
+    /// only ever run over minutes the automatic pass already assigned to
+    /// SOME project. `idle_minutes_are_never_invented_into_activity` below
+    /// covers the genuinely-idle (`None`) case.
+    fn all_owned(n: usize) -> Vec<Option<String>> {
+        vec![Some("orig".to_string()); n]
+    }
+
     #[test]
     fn hundred_percent_to_one_project_fills_the_whole_window() {
         let first = minute(at(9, 0));
-        let mut owners: Vec<Option<String>> = vec![None; 60];
+        let mut owners = all_owned(60);
         let mut shares = BTreeMap::new();
         shares.insert("A".to_string(), 1.0);
         let allocations = vec![AllocationWindow {
@@ -87,7 +100,7 @@ mod tests {
     #[test]
     fn seventy_thirty_split_gives_forty_two_eighteen() {
         let first = minute(at(9, 0));
-        let mut owners: Vec<Option<String>> = vec![None; 60];
+        let mut owners = all_owned(60);
         let mut shares = BTreeMap::new();
         shares.insert("A".to_string(), 0.7);
         shares.insert("B".to_string(), 0.3);
@@ -108,5 +121,41 @@ mod tests {
             last_a < first_b,
             "each project's minutes must be one contiguous chunk"
         );
+    }
+
+    #[test]
+    fn idle_minutes_are_never_invented_into_activity() {
+        let first = minute(at(9, 0));
+        // Active 0..10, genuinely idle (no activity at all) 10..20, active
+        // again 20..30 — a 100%-to-A allocation over the whole [0,30)
+        // window must skip the idle stretch outright.
+        let mut owners: Vec<Option<String>> = (0..30)
+            .map(|i| {
+                if (10..20).contains(&i) {
+                    None
+                } else {
+                    Some("orig".to_string())
+                }
+            })
+            .collect();
+        let mut shares = BTreeMap::new();
+        shares.insert("A".to_string(), 1.0);
+        let allocations = vec![AllocationWindow {
+            started_at: at(9, 0),
+            ended_at: at(9, 30),
+            shares,
+        }];
+        apply_allocations(&mut owners, first, &allocations);
+        for (i, o) in owners.iter().enumerate() {
+            if (10..20).contains(&i) {
+                assert_eq!(*o, None, "idle minute {i} must stay idle");
+            } else {
+                assert_eq!(
+                    o.as_deref(),
+                    Some("A"),
+                    "active minute {i} must be reassigned"
+                );
+            }
+        }
     }
 }

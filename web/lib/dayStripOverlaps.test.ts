@@ -7,6 +7,7 @@ import {
   overlapsInWindow,
   percentsSumToHundred,
   percentsToShares,
+  selectionOverlap,
 } from "./dayStripOverlaps";
 import type { Overlap } from "./types";
 
@@ -81,5 +82,23 @@ describe("percentsToShares / percentsSumToHundred", () => {
 
   it("rejects percents that don't sum to 100", () => {
     expect(percentsSumToHundred([70, 20])).toBe(false);
+  });
+});
+
+describe("selectionOverlap", () => {
+  it("builds an Overlap-shaped object from a selection, no existing shares", () => {
+    const startMs = new Date(at(10, 45)).getTime();
+    const endMs = new Date(at(12, 15)).getTime();
+    const o = selectionOverlap(startMs, endMs, ["vitinn-infra", "lyfjastofnun"], null);
+    expect(o.started_at).toBe(new Date(startMs).toISOString());
+    expect(o.ended_at).toBe(new Date(endMs).toISOString());
+    expect(o.minutes).toBe(90);
+    expect(o.projects.map((p) => p.project)).toEqual(["vitinn-infra", "lyfjastofnun"]);
+    expect(o.allocation).toBeNull();
+  });
+
+  it("prefills the allocation when existing shares are given", () => {
+    const o = selectionOverlap(0, 60_000, ["vitinn-infra"], { "vitinn-infra": 1 });
+    expect(o.allocation).toEqual({ shares: { "vitinn-infra": 1 } });
   });
 });

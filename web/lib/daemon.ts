@@ -217,6 +217,7 @@ import type {
   RoutingStatus,
   Rule,
   RuleKind,
+  SavedAllocation,
   SettingsSaveResponse,
   SettingsUpdate,
   SettingsView,
@@ -231,6 +232,7 @@ interface DaySummary {
   gaps: DayGap[];
   overlaps: Overlap[];
   activity: ProjectActivity[];
+  allocations: SavedAllocation[];
 }
 
 /** One-shot day load: blocks enriched with event_count + sources, the

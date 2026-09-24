@@ -79,3 +79,23 @@ export function percentsToShares(projects: string[], percents: number[]): Record
 export function percentsSumToHundred(percents: number[]): boolean {
   return percents.reduce((a, b) => a + b, 0) === 100;
 }
+
+/** A drag-selected window, shaped like an `Overlap` so it can reuse
+ * <OverlapPopover> unchanged — `human_events`/`background_events` aren't
+ * shown for a selection so they're just 0. `existingShares` prefills the
+ * split (and shows "Reset to automatic") when the selection exactly
+ * matches an already-saved allocation. */
+export function selectionOverlap(
+  startMs: number,
+  endMs: number,
+  projects: string[],
+  existingShares: Record<string, number> | null,
+): Overlap {
+  return {
+    started_at: new Date(startMs).toISOString(),
+    ended_at: new Date(endMs).toISOString(),
+    minutes: Math.round((endMs - startMs) / 60_000),
+    projects: projects.map((project) => ({ project, human_events: 0, background_events: 0 })),
+    allocation: existingShares ? { shares: existingShares } : null,
+  };
+}

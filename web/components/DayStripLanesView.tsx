@@ -9,10 +9,15 @@
 import { CSSProperties } from "react";
 import { formatDuration } from "@/lib/format";
 import { segKey, TrackSegmentButton, type SegProps } from "./DayStrip";
-import type { TrackSegment } from "@/lib/dayStrip";
+import type { TrackSegment, TrackWindow } from "@/lib/dayStrip";
+import { buildAllocationBands } from "@/lib/dayStripAllocations";
 import type { Lane } from "@/lib/dayStripLanes";
 import type { OverlapBand } from "@/lib/dayStripOverlaps";
+import { useDragSelection } from "@/lib/dayStripSelection";
+import type { ProjectActivity, SavedAllocation } from "@/lib/types";
+import { AllocationBrackets } from "./DayStripAllocationBrackets";
 import { OverlapBands } from "./DayStripOverlapBands";
+import { SelectionOverlay } from "./DayStripSelectionOverlay";
 
 export function LanesView({
   lanes,
@@ -20,6 +25,9 @@ export function LanesView({
   segProps,
   bands,
   day,
+  window,
+  activity,
+  allocations,
   openOverlap,
   onToggleOverlap,
 }: {
@@ -28,11 +36,24 @@ export function LanesView({
   segProps: SegProps;
   bands: OverlapBand[];
   day: string;
+  window: TrackWindow;
+  activity: ProjectActivity[];
+  allocations: SavedAllocation[];
   openOverlap: string | null;
   onToggleOverlap: (key: string) => void;
 }) {
+  const drag = useDragSelection(window);
+  const allocationBands = buildAllocationBands(allocations, window);
   return (
-    <div className="day-strip-lanes">
+    <div
+      className="day-strip-lanes"
+      ref={drag.containerRef}
+      onPointerDown={drag.handlers.onPointerDown}
+      onPointerMove={drag.handlers.onPointerMove}
+      onPointerUp={drag.handlers.onPointerUp}
+      onKeyDown={drag.handlers.onKeyDown}
+    >
+      <AllocationBrackets bands={allocationBands} day={day} />
       {lanes.map((lane) => (
         <LaneRow key={lane.key} lane={lane} segProps={segProps} />
       ))}
@@ -49,6 +70,14 @@ export function LanesView({
         ))}
       </div>
       <OverlapBands bands={bands} day={day} openOverlap={openOverlap} onToggleOverlap={onToggleOverlap} />
+      <SelectionOverlay
+        day={day}
+        live={drag.live}
+        committed={drag.committed}
+        activity={activity}
+        allocations={allocations}
+        onCloseCommitted={drag.closeCommitted}
+      />
     </div>
   );
 }
