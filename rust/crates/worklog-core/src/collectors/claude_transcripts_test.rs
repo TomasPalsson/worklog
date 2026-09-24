@@ -8,6 +8,41 @@ fn write_transcript(dir: &Path, project: &str, session: &str, lines: &str) {
 }
 
 #[test]
+fn claude_working_in_an_interactive_session_counts_once_per_minute() {
+    // Claude works for 10 minutes between two prompts (replies every 30 s);
+    // a headless `claude -p` run in the same folder must add nothing.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut lines = Vec::new();
+    for i in 0..20 {
+        let (m, s) = (i / 2, (i % 2) * 30);
+        lines.push(format!(
+            r#"{{"type":"assistant","timestamp":"2026-04-18T09:{m:02}:{s:02}Z","sessionId":"s1","uuid":"a{i}","cwd":"/home/x/Desktop/Work/widget","entrypoint":"cli","message":{{"role":"assistant","content":[{{"type":"text","text":"working"}}]}}}}"#
+        ));
+        lines.push(format!(
+            r#"{{"type":"assistant","timestamp":"2026-04-18T09:{m:02}:{s:02}Z","sessionId":"s2","uuid":"h{i}","cwd":"/home/x/Desktop/Work/widget","entrypoint":"sdk-cli","message":{{"role":"assistant","content":[{{"type":"text","text":"estimate"}}]}}}}"#
+        ));
+    }
+    write_transcript(tmp.path(), "proj", "s1", &format!("{}\n", lines.join("\n")));
+
+    let conn = open_memory().unwrap();
+    let since = NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
+    let until = NaiveDate::from_ymd_opt(2100, 1, 1).unwrap();
+    let report = collect_from_dir(&conn, tmp.path(), since, until).unwrap();
+    assert_eq!(
+        report.events_written, 10,
+        "one per minute, headless run ignored"
+    );
+    let leaked: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE title <> 'claude working' OR details IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(leaked, 0, "no reply text is ever stored");
+}
+
+#[test]
 fn reads_a_transcript_touched_after_the_day_it_covers() {
     // A long session keeps writing past midnight: the file's mtime is after
     // `until`, but its earlier lines still belong to the day.
@@ -151,7 +186,10 @@ fn counts_only_lines_the_owner_typed() {
 }
 
 #[test]
-fn skips_assistant_lines() {
+fn assistant_line_counts_as_claude_working_not_a_prompt() {
+    // Behaviour change (owner, 2026-09-24): Claude working in an interactive
+    // session is time on that project; it is recorded as "claude working",
+    // never as a prompt, and never with its text.
     let tmp = tempfile::tempdir().unwrap();
     let line = r#"{"type":"assistant","timestamp":"2026-04-18T09:00:00Z","sessionId":"s1","uuid":"u1","cwd":"/home/x/Desktop/Work/widget","message":{"role":"assistant","content":[{"type":"text","text":"sure"}]}}"#;
     write_transcript(tmp.path(), "proj", "s1", &format!("{line}\n"));
@@ -160,7 +198,14 @@ fn skips_assistant_lines() {
     let since = NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
     let until = NaiveDate::from_ymd_opt(2100, 1, 1).unwrap();
     let report = collect_from_dir(&conn, tmp.path(), since, until).unwrap();
-    assert_eq!(report.events_written, 0);
+    assert_eq!(report.events_written, 1);
+    let (title, details): (String, Option<String>) = conn
+        .query_row("SELECT title, details FROM events", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(title, "claude working");
+    assert_eq!(details, None);
 }
 
 #[test]

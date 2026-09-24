@@ -107,6 +107,7 @@ fn collect_file(
     let Ok(content) = std::fs::read_to_string(path) else {
         return Ok(());
     };
+    let mut working_minutes = std::collections::HashSet::new();
 
     for line in content.lines() {
         let line = line.trim();
@@ -116,14 +117,21 @@ fn collect_file(
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        if value.get("type").and_then(Value::as_str) != Some("user") {
-            continue;
-        }
-        let Some(message) = value.get("message") else {
-            continue;
-        };
-        if !is_owner_typed(&value) || !is_real_prompt(message) {
-            continue;
+        // Claude working in the owner's interactive session is time on that
+        // project too; one marker per minute, never the reply text.
+        let working = value.get("type").and_then(Value::as_str) == Some("assistant")
+            && value.get("entrypoint").and_then(Value::as_str) != Some("sdk-cli")
+            && value.get("isSidechain").and_then(Value::as_bool) != Some(true);
+        if !working {
+            if value.get("type").and_then(Value::as_str) != Some("user") {
+                continue;
+            }
+            let Some(message) = value.get("message") else {
+                continue;
+            };
+            if !is_owner_typed(&value) || !is_real_prompt(message) {
+                continue;
+            }
         }
         let Some(timestamp) = value.get("timestamp").and_then(Value::as_str) else {
             continue;
@@ -142,6 +150,14 @@ fn collect_file(
         let Some(uuid) = value.get("uuid").and_then(Value::as_str) else {
             continue;
         };
+        let (source_id, title) = if working {
+            if !working_minutes.insert((session_id.to_string(), epoch / 60)) {
+                continue;
+            }
+            (format!("{session_id}:m{}", epoch / 60), "claude working")
+        } else {
+            (format!("{session_id}:{uuid}"), "prompt")
+        };
         let project_path = value
             .get("cwd")
             .and_then(Value::as_str)
@@ -150,11 +166,11 @@ fn collect_file(
         let ev = Event {
             id: None,
             source: "claude_turn".into(),
-            source_id: format!("{session_id}:{uuid}"),
+            source_id,
             started_at: ts_utc.to_rfc3339(),
             ended_at: None,
             duration_seconds: None,
-            title: "prompt".into(),
+            title: title.into(),
             details: None,
             repo: None,
             project_path,
