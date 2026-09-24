@@ -5,8 +5,14 @@
 import { afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { StripBlock, StripGap } from "@/lib/dayStrip";
+import type { Overlap } from "@/lib/types";
 
-let DayStrip: (props: { blocks: StripBlock[]; gaps: StripGap[] }) => React.JSX.Element | null;
+let DayStrip: (props: {
+  day: string;
+  blocks: StripBlock[];
+  gaps: StripGap[];
+  overlaps?: Overlap[];
+}) => React.JSX.Element | null;
 
 beforeAll(async () => {
   const mod = await import("./DayStrip");
@@ -36,6 +42,7 @@ describe("DayStrip is work-only", () => {
   it("leaves personal blocks off the strip, the legend and the time axis", () => {
     render(
       <DayStrip
+        day="2026-09-23"
         blocks={[
           makeBlock({ id: 1, started_at: at(9, 0), ended_at: at(10, 0), project_path: "/x/alpha" }),
           makeBlock({ id: 2, started_at: at(19, 0), ended_at: at(21, 0), project_path: null, is_personal: true }),
@@ -56,7 +63,7 @@ describe("DayStrip expand toggle", () => {
       makeBlock({ id: 1, project_path: "/x/alpha" }),
       makeBlock({ id: 2, started_at: at(10, 30), ended_at: at(11, 0), project_path: "/x/beta" }),
     ];
-    render(<DayStrip blocks={blocks} gaps={[]} />);
+    render(<DayStrip day="2026-09-23" blocks={blocks} gaps={[]} />);
 
     expect(document.querySelector(".day-strip-track")).toBeTruthy();
     expect(document.querySelector(".day-strip-lanes")).toBeNull();
@@ -77,7 +84,7 @@ describe("DayStrip legend focus", () => {
       makeBlock({ id: 1, project_path: "/x/alpha" }), // 1h — busiest, legend row 0
       makeBlock({ id: 2, started_at: at(10, 30), ended_at: at(11, 0), project_path: "/x/beta" }), // 30m
     ];
-    render(<DayStrip blocks={blocks} gaps={[]} />);
+    render(<DayStrip day="2026-09-23" blocks={blocks} gaps={[]} />);
 
     const legendItems = document.querySelectorAll(".day-strip-legend-item");
     expect(legendItems.length).toBe(2);
@@ -102,7 +109,7 @@ describe("DayStrip tooltip", () => {
     const blocks: StripBlock[] = [
       makeBlock({ id: 1, project_path: "/x/alpha", description: "Review PR #12" }),
     ];
-    render(<DayStrip blocks={blocks} gaps={[]} />);
+    render(<DayStrip day="2026-09-23" blocks={blocks} gaps={[]} />);
     const seg = document.querySelector(".day-strip-block") as HTMLElement;
 
     expect(document.querySelector(".day-strip-tooltip")).toBeNull();
@@ -121,5 +128,40 @@ describe("DayStrip tooltip", () => {
     expect(screen.getByText("Review PR #12")).toBeTruthy();
     fireEvent.blur(seg);
     expect(document.querySelector(".day-strip-tooltip")).toBeNull();
+  });
+});
+
+describe("DayStrip overlaps", () => {
+  const overlap: Overlap = {
+    started_at: at(9, 15),
+    ended_at: at(9, 45),
+    minutes: 30,
+    projects: [
+      { project: "alpha", human_events: 5, background_events: 1 },
+      { project: "beta", human_events: 2, background_events: 4 },
+    ],
+    allocation: null,
+  };
+  const blocks: StripBlock[] = [
+    makeBlock({ id: 1, started_at: at(9, 0), ended_at: at(10, 0), project_path: "/x/alpha" }),
+    makeBlock({ id: 2, started_at: at(10, 0), ended_at: at(11, 0), project_path: "/x/beta" }),
+  ];
+
+  it("shows an overlap count chip in bar view that expands to lanes on click", () => {
+    render(<DayStrip day="2026-09-23" blocks={blocks} gaps={[]} overlaps={[overlap]} />);
+    expect(document.querySelector(".day-strip-lanes")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /1 overlap/i }));
+    expect(document.querySelector(".day-strip-lanes")).toBeTruthy();
+  });
+
+  it("renders a band per overlap with its label in the lanes view", () => {
+    render(<DayStrip day="2026-09-23" blocks={blocks} gaps={[]} overlaps={[overlap]} />);
+    fireEvent.click(screen.getByRole("button", { name: /expand/i }));
+    expect(screen.getByText(/Overlap 09:15–09:45/)).toBeTruthy();
+  });
+
+  it("shows no chip and no bands when there are no overlaps", () => {
+    render(<DayStrip day="2026-09-23" blocks={blocks} gaps={[]} overlaps={[]} />);
+    expect(screen.queryByRole("button", { name: /overlap/i })).toBeNull();
   });
 });

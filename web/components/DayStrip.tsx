@@ -29,10 +29,15 @@ import {
   type TrackWindow,
 } from "@/lib/dayStrip";
 import { buildLanes, isFocused, type Lane } from "@/lib/dayStripLanes";
+import { buildOverlapBands, overlapsInWindow, type OverlapBand } from "@/lib/dayStripOverlaps";
+import { OverlapBands } from "./DayStripOverlapBands";
+import type { Overlap } from "@/lib/types";
 
 interface Props {
+  day: string;
   blocks: StripBlock[];
   gaps: StripGap[];
+  overlaps?: Overlap[];
 }
 
 const EXPANDED_STORAGE_KEY = "worklog.dayStrip.expanded";
@@ -80,22 +85,30 @@ function useExpanded(): [boolean, () => void] {
   return [expanded, toggle];
 }
 
-function buildStripData(blocks: StripBlock[], gaps: StripGap[], window_: TrackWindow) {
+function buildStripData(
+  blocks: StripBlock[],
+  gaps: StripGap[],
+  overlaps: Overlap[],
+  window_: TrackWindow,
+) {
   const hued = withLegendHues(buildSegments(blocks, gaps, window_), buildLegend(blocks, gaps));
   const segments = mergeAdjacentBlocks(hued.segments);
   const gapSegments = segments.filter(
     (s): s is Extract<TrackSegment, { kind: "gap" }> => s.kind === "gap",
   );
+  const lanes = buildLanes(segments, hued.legend);
   return {
     segments,
     fullLegend: hued.legend,
     legend: compactLegend(hued.legend),
     ticks: hourTicks(window_),
     gapSegments,
+    lanes,
+    bands: buildOverlapBands(overlaps, window_, lanes.map((l) => l.key)),
   };
 }
 
-export function DayStrip({ blocks: allBlocks, gaps: allGaps }: Props) {
+export function DayStrip({ day, blocks: allBlocks, gaps: allGaps, overlaps: allOverlaps = [] }: Props) {
   // Work-only: personal time never shows — not as a segment, a legend row or
   // by stretching the time axis — and only gaps inside the work day remain.
   const blocks = allBlocks.filter((b) => !b.is_personal);
@@ -107,13 +120,15 @@ export function DayStrip({ blocks: allBlocks, gaps: allGaps }: Props) {
           new Date(g.ended_at).getTime() <= window_.endMs,
       )
     : [];
+  const overlaps = window_ ? overlapsInWindow(allOverlaps, window_) : [];
   const [expanded, toggleExpanded] = useExpanded();
   const [focusKey, setFocusKey] = useState<string | null>(null);
   const [openTip, setOpenTip] = useState<string | null>(null);
+  const [openOverlap, setOpenOverlap] = useState<string | null>(null);
 
   if (!window_) return null;
 
-  const data = buildStripData(blocks, gaps, window_);
+  const data = buildStripData(blocks, gaps, overlaps, window_);
   const segProps: SegProps = {
     legend: data.legend,
     focusKey,
@@ -124,13 +139,22 @@ export function DayStrip({ blocks: allBlocks, gaps: allGaps }: Props) {
 
   return (
     <section className="day-strip" aria-label="Day timeline">
-      <DayStripToolbar expanded={expanded} onToggle={toggleExpanded} />
+      <DayStripToolbar
+        expanded={expanded}
+        onToggle={toggleExpanded}
+        onExpand={() => !expanded && toggleExpanded()}
+        overlapCount={overlaps.length}
+      />
 
       {expanded ? (
         <LanesView
-          lanes={buildLanes(data.segments, data.fullLegend)}
+          lanes={data.lanes}
           gapSegments={data.gapSegments}
           segProps={segProps}
+          bands={data.bands}
+          day={day}
+          openOverlap={openOverlap}
+          onToggleOverlap={(key) => setOpenOverlap((cur) => (cur === key ? null : key))}
         />
       ) : (
         <div className="day-strip-track">
@@ -146,9 +170,24 @@ export function DayStrip({ blocks: allBlocks, gaps: allGaps }: Props) {
   );
 }
 
-function DayStripToolbar({ expanded, onToggle }: { expanded: boolean; onToggle: () => void }) {
+function DayStripToolbar({
+  expanded,
+  onToggle,
+  onExpand,
+  overlapCount,
+}: {
+  expanded: boolean;
+  onToggle: () => void;
+  onExpand: () => void;
+  overlapCount: number;
+}) {
   return (
     <div className="day-strip-toolbar">
+      {overlapCount > 0 && (
+        <button type="button" className="day-strip-overlap-chip" onClick={onExpand}>
+          {overlapCount} overlap{overlapCount === 1 ? "" : "s"}
+        </button>
+      )}
       <button
         type="button"
         className="day-strip-expand-btn"
@@ -186,10 +225,18 @@ function LanesView({
   lanes,
   gapSegments,
   segProps,
+  bands,
+  day,
+  openOverlap,
+  onToggleOverlap,
 }: {
   lanes: Lane[];
   gapSegments: Extract<TrackSegment, { kind: "gap" }>[];
   segProps: SegProps;
+  bands: OverlapBand[];
+  day: string;
+  openOverlap: string | null;
+  onToggleOverlap: (key: string) => void;
 }) {
   return (
     <div className="day-strip-lanes">
@@ -205,6 +252,7 @@ function LanesView({
       {lanes.map((lane) => (
         <LaneRow key={lane.key} lane={lane} segProps={segProps} />
       ))}
+      <OverlapBands bands={bands} day={day} openOverlap={openOverlap} onToggleOverlap={onToggleOverlap} />
     </div>
   );
 }

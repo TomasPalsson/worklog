@@ -60,7 +60,7 @@ export default async function DayPage({
     throw e;
   }
 
-  const { blocks, total_seconds: total, gaps } = summary;
+  const { blocks, total_seconds: total, gaps, overlaps } = summary;
   const { tickets, meta: cache } = ticketsResp;
 
   // Browser/Slack events for the day (B12) — degrades to an empty feed on
@@ -152,7 +152,7 @@ export default async function DayPage({
         view={view}
       />
       <ActionBar day={day} cacheCount={cache.count} cacheLast={cache.last_fetched} />
-      <DayStrip blocks={blocks} gaps={gaps} />
+      <DayStrip day={day} blocks={blocks} gaps={gaps} overlaps={overlaps} />
       <UnsortedList key={day} day={day} events={routedEvents} folderOptions={folderOptions} />
       {blocks.length === 0 ? (
         <EmptyState day={day} />

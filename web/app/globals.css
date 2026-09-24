@@ -471,7 +471,18 @@ button {
 .day-strip-toolbar {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
   margin-bottom: 4px;
+}
+
+.day-strip-overlap-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: var(--amber-bg);
+  color: var(--amber-ink);
+  border: 1px solid var(--amber);
 }
 
 .day-strip-expand-btn {
@@ -617,6 +628,84 @@ button {
   background: var(--bg-sunk);
   border: 1px solid var(--border);
   overflow: hidden;
+}
+
+/* Amber band over the lanes an overlap spans — grid-row set inline
+   (per-band, from OverlapBand.laneRange), left/width % inline too. */
+.day-strip-overlap-band {
+  grid-column: 2;
+  position: relative;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.day-strip-overlap-inner {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  background: var(--amber-bg);
+  border: 1px dashed var(--amber);
+  border-radius: var(--radius-sm);
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.day-strip-overlap-label {
+  font-size: 10px;
+  color: var(--amber-ink);
+  white-space: nowrap;
+  padding: 1px 4px;
+}
+
+.day-strip-overlap-popover-anchor {
+  position: absolute;
+  top: 100%;
+  z-index: 10;
+  margin-top: 4px;
+}
+
+.overlap-popover {
+  width: 280px;
+  padding: 10px 12px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-1);
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.overlap-popover-give-all {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.overlap-popover-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.overlap-popover-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.overlap-popover-inputs input {
+  width: 48px;
+}
+
+.overlap-popover-reset {
+  align-self: flex-start;
+  color: var(--fg-muted);
+  text-decoration: underline;
 }
 
 .day-strip-ticks {
