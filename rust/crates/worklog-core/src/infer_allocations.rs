@@ -101,11 +101,11 @@ fn split_window(
         // The parts outside the window stay the block's own.
         if b.started_at < ws {
             let evs = events_between(&b.events, b.started_at, ws);
-            out.extend(piece(evs, b.started_at, ws, &b.events));
+            out.extend(span_block(evs, b.started_at, ws, &b.events));
         }
         if b.ended_at > we {
             let evs = events_between(&b.events, we, b.ended_at);
-            out.extend(piece(evs, we, b.ended_at, &b.events));
+            out.extend(span_block(evs, we, b.ended_at, &b.events));
         }
         let (s, e) = (b.started_at.max(ws), b.ended_at.min(we));
         inside.push((s, e));
@@ -119,7 +119,7 @@ fn split_window(
         let own = by_key.get(&project).map(Vec::as_slice).unwrap_or(&[]);
         let mut evs = events_between(own, s, e);
         evs.extend(events_between(&folderless, s, e));
-        out.extend(piece(evs, s, e, own));
+        out.extend(span_block(evs, s, e, own));
     }
     out
 }
@@ -167,7 +167,7 @@ fn split_intervals(
 /// events), so it still reads as that project's.
 // ponytail: a piece under MIN_BLOCK (a 1–2% sliver) is dropped by
 // finalize; fold slivers into a neighbour if that ever matters.
-fn piece(
+pub(crate) fn span_block(
     mut events: Vec<InferEvent>,
     s: DateTime<Utc>,
     e: DateTime<Utc>,

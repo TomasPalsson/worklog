@@ -6,8 +6,9 @@
 //! double-counted the same hour for two customers. Instead every minute is
 //! owned by exactly ONE project: the one with the most activity within
 //! ±`WINDOW_MINUTES`. Short silent stretches between the same owner are
-//! bridged; each run of one owner is then clustered by the normal
-//! gap-timeout builder. Blocks never overlap, so nothing is billed twice.
+//! bridged, and a run under `MIN_RUN_MINUTES` joins its neighbour. Each
+//! run becomes one block spanning exactly the minutes it owns, so every
+//! owned minute is counted once and blocks never overlap.
 
 use chrono::{DateTime, Duration, Utc};
 use std::collections::{BTreeMap, BTreeSet};
@@ -23,6 +24,9 @@ pub(crate) const WINDOW_MINUTES: i64 = 5;
 /// The owner's own actions reach further: attention stays on a project for a
 /// while after typing into it.
 const HUMAN_WINDOW_MINUTES: i64 = 15;
+/// A run shorter than this (a quick hop to another project) joins its
+/// neighbour instead of becoming a sliver block that gets dropped.
+const MIN_RUN_MINUTES: i64 = 5;
 
 /// Sources that are the owner acting, not a tool working on their behalf.
 /// Exposed to `overlaps` so its per-project human/background event split
@@ -82,7 +86,8 @@ pub(crate) fn build_blocks_by_project(
     {
         return build(events);
     }
-    let runs = owner_runs(&keyed);
+    let runs = fold_short_runs(owner_runs(&keyed));
+    let by_key = crate::infer_allocations::events_by_key(&events);
 
     // Every event lands in at most one bucket: calendar alone, a run whose
     // window contains it (project events only into their own project's run),
@@ -108,7 +113,18 @@ pub(crate) fn build_blocks_by_project(
             None => leftovers.push(e),
         }
     }
-    let mut blocks: Vec<InferBlock> = buckets.into_values().flat_map(build).collect();
+    // One block per run, spanning the minutes it owns; a run holding none
+    // of its owner's events links the nearest one so it reads as theirs.
+    let mut blocks: Vec<InferBlock> = runs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (owner, s, e))| {
+            let evs = buckets.remove(&i).unwrap_or_default();
+            let own = by_key.get(owner).map(Vec::as_slice).unwrap_or(&[]);
+            let at = |m: i64| DateTime::from_timestamp(m * 60, 0);
+            crate::infer_allocations::span_block(evs, at(*s)?, at(*e + 1)?, own)
+        })
+        .collect();
     blocks.extend(build(calendar));
     blocks.extend(build(leftovers));
     blocks.sort_by_key(|b| b.started_at);
@@ -201,6 +217,29 @@ fn latest_human(keyed: &[Keyed], m: i64) -> Option<String> {
 }
 
 /// Fill silent stretches shorter than BRIDGE_MINUTES between the same owner.
+/// Fold runs under `MIN_RUN_MINUTES` into a touching neighbour of the same
+/// kind (work into work, personal into personal — never across), then
+/// merge touching runs that now share an owner.
+fn fold_short_runs(runs: Vec<(String, i64, i64)>) -> Vec<(String, i64, i64)> {
+    let short = |r: &(String, i64, i64)| r.2 - r.1 + 1 < MIN_RUN_MINUTES;
+    let joins = |a: &(String, i64, i64), b: &(String, i64, i64)| {
+        a.2 + 1 == b.1 && is_work(&a.0) == is_work(&b.0)
+    };
+    let mut out: Vec<(String, i64, i64)> = Vec::new();
+    for r in runs {
+        match out.last_mut() {
+            Some(prev) if joins(prev, &r) && (short(&r) || prev.0 == r.0) => prev.2 = r.2,
+            // A short run with nothing before it hands its minutes forward.
+            Some(prev) if joins(prev, &r) && short(prev) => {
+                prev.0 = r.0.clone();
+                prev.2 = r.2;
+            }
+            _ => out.push(r),
+        }
+    }
+    out
+}
+
 fn bridge(owners: &mut [Option<String>]) {
     let bridge = Duration::minutes(BRIDGE_MINUTES).num_minutes() as usize;
     let mut i = 0;
@@ -221,148 +260,5 @@ fn bridge(owners: &mut [Option<String>]) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::infer::build_blocks;
-    use chrono::{TimeZone, Utc};
-
-    fn ev(h: u32, m: u32, source: &str, project: Option<&str>) -> InferEvent {
-        InferEvent {
-            ts: Utc.with_ymd_and_hms(2026, 9, 23, h, m, 0).unwrap(),
-            source: source.into(),
-            duration_seconds: None,
-            jira_issue: None,
-            event_id: None,
-            project_path: project.map(str::to_string),
-        }
-    }
-
-    const A: &str = "/Users/dev/Desktop/Work/vitinn-infra";
-    const A_WT: &str = "/Users/dev/Desktop/Work/vitinn-infra/.claude/worktrees/sandbox-runner";
-    const B: &str = "/Users/dev/Desktop/Projects/worklog";
-
-    fn total_minutes(blocks: &[InferBlock]) -> i64 {
-        blocks.iter().map(|b| b.duration_seconds / 60).sum()
-    }
-
-    fn assert_no_overlap(blocks: &[InferBlock]) {
-        for w in blocks.windows(2) {
-            assert!(
-                w[0].ended_at <= w[1].started_at,
-                "blocks overlap: {:?}–{:?} vs {:?}",
-                w[0].started_at,
-                w[0].ended_at,
-                w[1].started_at
-            );
-        }
-    }
-
-    #[test]
-    fn parallel_sessions_never_overlap_or_double_count() {
-        // A busy (every 2 min, worktree + main) while B pings every 7 min for the same hour.
-        let mut events: Vec<InferEvent> = (0..30)
-            .map(|i| {
-                ev(
-                    12,
-                    i * 2,
-                    "claude_turn",
-                    Some(if i % 2 == 0 { A } else { A_WT }),
-                )
-            })
-            .collect();
-        events.extend((0..9).map(|i| ev(12, i * 7, "claude_turn", Some(B))));
-        let blocks = build_blocks(events);
-        assert_no_overlap(&blocks);
-        assert!(
-            total_minutes(&blocks) <= 62,
-            "never more than the wall-clock hour, got {}",
-            total_minutes(&blocks)
-        );
-        let a_minutes: i64 = blocks
-            .iter()
-            .filter(|b| {
-                b.dominant_project_path()
-                    .as_deref()
-                    .is_some_and(|p| p.starts_with(A))
-            })
-            .map(|b| b.duration_seconds / 60)
-            .sum();
-        assert!(
-            a_minutes >= 45,
-            "the busy project owns most of the hour, got {a_minutes}"
-        );
-    }
-
-    #[test]
-    fn handover_between_projects_splits_the_time() {
-        let mut events: Vec<InferEvent> = (0..15)
-            .map(|i| ev(9, i * 2, "claude_turn", Some(A)))
-            .collect();
-        events.extend((0..15).map(|i| ev(9, 30 + i * 2, "claude_turn", Some(B))));
-        let blocks = build_blocks(events);
-        assert_no_overlap(&blocks);
-        assert_eq!(blocks.len(), 2);
-        assert!(blocks[0].dominant_project_path().as_deref() == Some(A));
-    }
-
-    #[test]
-    fn folderless_event_joins_the_owning_project() {
-        let mut events: Vec<InferEvent> = (0..10)
-            .map(|i| ev(9, i * 3, "claude_turn", Some(A)))
-            .collect();
-        events.extend((0..10).map(|i| ev(14, i * 3, "claude_turn", Some(B))));
-        events.push(ev(9, 20, "github_pr", None));
-        let blocks = build_blocks(events);
-        assert_eq!(blocks.len(), 2);
-        let morning = blocks
-            .iter()
-            .find(|b| b.started_at.format("%H").to_string() == "09")
-            .unwrap();
-        assert_eq!(morning.dominant_project_path().as_deref(), Some(A));
-    }
-
-    #[test]
-    fn work_outranks_personal_in_the_same_minutes() {
-        // A light work session (every 6 min) beside a very busy personal one (every minute).
-        let mut events: Vec<InferEvent> = (0..10)
-            .map(|i| ev(12, i * 6, "claude_turn", Some(A)))
-            .collect();
-        events.extend((0..60).map(|i| ev(12, i, "claude", Some(B))));
-        let blocks = build_blocks(events);
-        assert_no_overlap(&blocks);
-        let work: i64 = blocks
-            .iter()
-            .filter(|b| b.dominant_project_path().as_deref() == Some(A))
-            .map(|b| b.duration_seconds / 60)
-            .sum();
-        assert!(
-            work >= 50,
-            "any work activity claims the minute, got {work}m"
-        );
-    }
-
-    #[test]
-    fn your_typing_outweighs_claude_working_elsewhere() {
-        // Owner types into A every 8 min for 2 h; Claude works in another work
-        // repo every minute the whole time. The owner's attention wins.
-        const C: &str = "/Users/dev/Desktop/Work/lyfjastofnun";
-        let mut events: Vec<InferEvent> = (0..16)
-            .map(|i| ev(10 + (i * 8) / 60, (i * 8) % 60, "claude_turn", Some(A)))
-            .collect();
-        events.extend((0..120).map(|i| ev(10 + i / 60, i % 60, "claude_work", Some(C))));
-        let blocks = build_blocks(events);
-        assert_no_overlap(&blocks);
-        let a: i64 = blocks
-            .iter()
-            .filter(|b| b.dominant_project_path().as_deref() == Some(A))
-            .map(|b| b.duration_seconds / 60)
-            .sum();
-        assert!(a >= 110, "attention decides, got {a}m of 120");
-    }
-
-    #[test]
-    fn a_single_project_day_is_unchanged() {
-        let events: Vec<InferEvent> = (0..10).map(|i| ev(9, i * 2, "shell", Some(A))).collect();
-        assert_eq!(build_blocks(events).len(), 1);
-    }
-}
+#[path = "infer_lanes_test.rs"]
+mod tests;
