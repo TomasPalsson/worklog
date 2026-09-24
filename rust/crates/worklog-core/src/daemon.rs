@@ -5214,10 +5214,17 @@ mod tests {
         let v = read_json(resp).await;
         assert_eq!(v["last_heartbeat"], "2026-04-14T10:30:00+00:00");
         assert_eq!(v["last_slack"], "2026-04-14T11:00:00+00:00");
-        assert_eq!(
-            v["classifier_reachable"], false,
-            "no Verdict helper is running under test"
-        );
+        // The owner's real Verdict helper may be up on this port, so compare
+        // with a live probe instead of assuming it is down.
+        let live = tokio::task::spawn_blocking(|| {
+            crate::daemon_service::is_running(
+                routing_contract::CLASSIFIER_ADDR,
+                std::time::Duration::from_secs(2),
+            )
+        })
+        .await
+        .unwrap();
+        assert_eq!(v["classifier_reachable"], live);
     }
 
     #[tokio::test(flavor = "current_thread")]
