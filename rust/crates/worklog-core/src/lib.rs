@@ -40,6 +40,7 @@ pub mod secrets;
 pub mod sessions;
 pub mod skill;
 pub mod timeline;
+pub mod tenant_contract;
 pub mod tz;
 pub mod updater;
 pub mod verdict;
