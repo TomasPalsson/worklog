@@ -29,10 +29,17 @@ const saveTenantLinkImpl = mock(async (link: TenantLink) => {
 
 // BillingTenantSection talks to @/app/tenant-actions directly — mock that
 // boundary so no real daemon call (or Next.js server-action runtime) is
-// needed.
+// needed. Bun's `mock.module` replaces the module for the whole test run,
+// not just this file, so this also has to cover the exports
+// BlockCustomerSplit.test.tsx needs from the same specifier — otherwise
+// whichever file's mock registers first "wins" for every importer and the
+// other file's tests fail to link.
 mock.module("@/app/tenant-actions", () => ({
   fetchTenants: () => fetchTenantsImpl(),
   saveTenantLink: (link: TenantLink) => saveTenantLinkImpl(link),
+  fetchCustomerSlices: async () => ({ ok: true as const, data: [] }),
+  saveCustomerShares: async () => ({ ok: true as const }),
+  clearCustomerShares: async () => ({ ok: true as const }),
 }));
 
 let BillingTenantSection: (props: { customers: BillingCustomer[] }) => React.JSX.Element | null;

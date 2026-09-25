@@ -114,21 +114,18 @@ function MultiTenantToggle({
   }
 
   return (
-    <span
-      className="reg-check-group"
-      style={{ display: "inline-flex", alignItems: "center", gap: 4, minWidth: 168 }}
-    >
+    <span className="reg-check-group">
       <label
         className="reg-check"
         data-tip="This folder holds several customers' work; time is split between them"
       >
         <input
           type="checkbox"
+          aria-label="Many customers"
           checked={folder.multi_tenant ?? false}
           disabled={folder.folder.trim() === "" || status === "saving"}
           onChange={(e) => void handleChange(e.target.checked)}
         />
-        Many customers
       </label>
       {status === "saving" && <Loader2 className="spin" size={12} />}
       {status === "saved" && <span className="settings-hint">Saved</span>}
@@ -266,7 +263,7 @@ export function FolderMappingsSection({
             <span role="columnheader">Viðskiptamaður</span>
             <span role="columnheader">Verkefni (deild)</span>
             <span role="columnheader">Reikn.</span>
-            <span />
+            <span role="columnheader">Many customers</span>
             <span />
           </div>
 

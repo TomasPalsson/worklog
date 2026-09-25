@@ -65,7 +65,23 @@ pub async fn customer_slices(
             return Ok(Vec::new());
         };
         let registry = Registry::load(c)?;
-        Ok(tenant_slices_for_block(c, &block, &folder, &registry)?.unwrap_or_default())
+        let slices = tenant_slices_for_block(c, &block, &folder, &registry)?.unwrap_or_default();
+        // A `Fallback` slice with no clue-resolved customer bills to the
+        // folder's normal (pin/text) resolution — same as billing.rs
+        // `rows_for_day` — so the card shows the truth instead of
+        // "Unresolved".
+        let text = block.description.as_deref().unwrap_or("");
+        let fallback_customer = registry.resolve(&folder, text).customer;
+        let slices = slices
+            .into_iter()
+            .map(|mut slice| {
+                if slice.customer.is_none() {
+                    slice.customer = fallback_customer.clone();
+                }
+                slice
+            })
+            .collect();
+        Ok(slices)
     })
     .await?;
     Ok(Json(slices))

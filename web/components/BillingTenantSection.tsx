@@ -50,10 +50,12 @@ function TenantRow({
   const isAlias = tenant.origin === "alias";
   const status = rowState?.status;
   return (
-    <div className="reg-row">
-      <span className="reg-mono">{tenant.name}</span>
+    <div className="tenant-row">
+      <span className="tenant-row-name reg-mono" title={tenant.name}>
+        {tenant.name}
+      </span>
       <select
-        className="reg-input"
+        className="reg-input tenant-row-select"
         aria-label={`Customer for ${tenant.name}`}
         value={selectValue(tenant)}
         disabled={status === "saving"}
@@ -75,14 +77,16 @@ function TenantRow({
           ))}
         <option value={IGNORE}>Not a customer</option>
       </select>
-      {isAlias && status === undefined && <span className="settings-hint">auto</span>}
-      {status === "saving" && <Loader2 className="spin" size={12} />}
-      {status === "saved" && <span className="settings-hint">Saved</span>}
-      {status === "error" && (
-        <span className="export-error" role="alert">
-          {rowState?.error}
-        </span>
-      )}
+      <span className="tenant-row-status">
+        {isAlias && status === undefined && <span className="settings-hint">auto</span>}
+        {status === "saving" && <Loader2 className="spin" size={12} />}
+        {status === "saved" && <span className="settings-hint">Saved</span>}
+        {status === "error" && (
+          <span className="export-error" role="alert">
+            {rowState?.error}
+          </span>
+        )}
+      </span>
     </div>
   );
 }
@@ -240,6 +244,14 @@ export function BillingTenantSection({ customers }: { customers: BillingCustomer
 
   return (
     <>
+      <section className="reg-section">
+        <h2>Tenants</h2>
+        <p className="reg-lede">
+          Folders inside a many-customers folder. Pick who each one belongs
+          to — you only do this once. Missing a customer? Add it under
+          Customers above.
+        </p>
+      </section>
       {[...groupByFolder(tenants).entries()].map(([folder, folderTenants]) => (
         <FolderCard
           key={folder}

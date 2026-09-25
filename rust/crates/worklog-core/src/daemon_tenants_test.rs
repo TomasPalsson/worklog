@@ -208,3 +208,70 @@ async fn tenant_routes_round_trip() {
     assert_eq!(slices[0]["origin"], "fallback");
     assert!(slices[0]["customer"].is_null());
 }
+
+/// A fallback slice (no timestamped clue, and the description doesn't
+/// unambiguously name a non-house customer) still bills to the folder's
+/// normal pin/text resolution — same ladder as `billing::rows_for_day` —
+/// so the card shows "APRÓ · guess" instead of "Unresolved".
+#[tokio::test(flavor = "current_thread")]
+async fn fallback_slice_fills_customer_from_registry_resolution() {
+    let conn = open_memory().unwrap();
+    crate::billing_registry::upsert_folder(
+        &conn,
+        &FolderMap {
+            id: None,
+            folder: "vitinn-infra".into(),
+            customer: None,
+            verkefni: None,
+            billable: true,
+            multi_tenant: true,
+        },
+    )
+    .unwrap();
+    // "APRÓ" is the House customer — `summary_customer` filters it out
+    // when computing the split's own Fallback customer, so it stays
+    // `None` there; the folder's normal `registry.resolve` (unfiltered)
+    // does still find it in the description.
+    crate::billing_registry::upsert_customer(
+        &conn,
+        &Customer {
+            id: None,
+            name: "APRÓ".into(),
+            aliases: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO blocks (day, started_at, ended_at, duration_seconds, description)
+         VALUES ('2026-04-18', '2026-04-18T09:00:00+00:00', '2026-04-18T09:30:00+00:00', 1800, 'APRÓ analyzer')",
+        [],
+    )
+    .unwrap();
+    let block_id = conn.last_insert_rowid();
+
+    let mut event = Event::minimal("claude", "a", "2026-04-18T09:05:00+00:00", "worked");
+    event.project_path = Some("vitinn-infra".into());
+    let event_id = repo::upsert_event(&conn, &event).unwrap();
+    conn.execute(
+        "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+        params![block_id, event_id],
+    )
+    .unwrap();
+
+    let state = state_from_conn(conn);
+    let resp = router(state)
+        .oneshot(
+            Request::get(format!("/blocks/{block_id}/customer-slices"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = read_json(resp).await;
+    let slices = v.as_array().unwrap();
+    assert_eq!(slices.len(), 1);
+    assert_eq!(slices[0]["origin"], "fallback");
+    assert_eq!(slices[0]["customer"], "APRÓ");
+}

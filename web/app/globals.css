@@ -1700,6 +1700,105 @@ button {
   color: var(--fg-muted);
 }
 
+/* Block card customer split (spec 005, B17): one compact line — split % ·
+   origin tag · optional proportion bar · "Change" — never a stack of
+   bordered buttons. */
+.customer-split {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.customer-split-origin {
+  color: var(--fg-subtle);
+}
+
+.customer-split-bar {
+  display: flex;
+  height: 4px;
+  width: 100%;
+  max-width: 160px;
+  flex: 0 1 160px;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+/* Small text-link, not a bordered .action-btn — this sits inline in a
+   sentence, not in a toolbar. */
+.customer-split-change {
+  font-size: 12px;
+  color: var(--fg-muted);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+  padding: 0;
+  background: none;
+  border: none;
+}
+.customer-split-change:hover {
+  color: var(--fg);
+}
+
+/* Split editor: a compact grid rather than the registry's generic
+   `.reg-row` proportions — a customer name column that never wraps, a
+   narrow %, a muted duration estimate, then remove. */
+.customer-split-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.split-row-name,
+.split-row-name-picker {
+  width: 140px;
+  flex: 0 0 140px;
+  white-space: nowrap;
+}
+
+.split-row-pct {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.split-row-pct input {
+  width: 56px;
+}
+
+.split-row-approx {
+  font-size: 11px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.customer-split-editor .icon-btn {
+  width: 22px;
+  height: 22px;
+}
+
+.customer-split-editor .split-add-select {
+  width: 220px;
+  flex: 0 0 220px;
+}
+
+.split-editor-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 420px) {
+  .split-row-name,
+  .split-row-name-picker,
+  .customer-split-editor .split-add-select {
+    width: 100%;
+    flex: 1 1 100%;
+  }
+}
+
 .block-description[contenteditable="true"] {
   cursor: text;
   border-radius: var(--radius-sm);
@@ -3665,9 +3764,15 @@ button {
 
 .reg-row-folder {
   display: grid;
-  grid-template-columns: 1.1fr 1fr 1.5fr 56px 72px;
+  grid-template-columns: 1.1fr 1fr 1.5fr 56px 130px 72px;
   gap: 8px;
   align-items: center;
+}
+
+.reg-row-folder .reg-check-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .reg-row-customer {
@@ -3675,6 +3780,44 @@ button {
   grid-template-columns: 1fr 2fr 72px;
   gap: 8px;
   align-items: center;
+}
+
+/* Tenant links (Billing → Tenants, spec 005 B16): tenant name column fixed
+   so a long directory name never pushes the select or status out of
+   alignment across rows. */
+.tenant-row {
+  display: grid;
+  grid-template-columns: 180px 260px auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.tenant-row-name {
+  width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tenant-row-select {
+  width: 260px;
+}
+
+.tenant-row-status {
+  display: inline-flex;
+  align-items: center;
+  min-width: 60px;
+}
+
+@media (max-width: 420px) {
+  .tenant-row {
+    grid-template-columns: 1fr;
+  }
+  .tenant-row-name,
+  .tenant-row-select {
+    width: 100%;
+  }
 }
 
 .reg-row {
