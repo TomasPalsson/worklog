@@ -596,9 +596,18 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
             };
 
         for (customer, intervals) in contributions {
+            // The folder pin's Verkefni belongs to the folder's own
+            // customer. A slice billed to a different customer (a
+            // multi-tenant split) must not inherit it — that would put an
+            // invented Verkefni on another customer's invoice.
+            let verkefni = if customer == resolved.customer {
+                resolved.verkefni.clone()
+            } else {
+                None
+            };
             let key = (
                 customer.clone().unwrap_or_default(),
-                resolved.verkefni.clone().unwrap_or_default(),
+                verkefni.clone().unwrap_or_default(),
                 task_for_block(block, &folder),
             );
 
@@ -609,7 +618,7 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
                     GroupAcc {
                         folder: folder.clone(),
                         customer,
-                        verkefni: resolved.verkefni.clone(),
+                        verkefni,
                         ticket: ticket.clone(),
                         billable: resolved.billable,
                         intervals: Vec::new(),

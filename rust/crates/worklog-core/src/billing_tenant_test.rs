@@ -165,6 +165,90 @@ fn mixed_day_exports_customer_lines() {
     assert_eq!(house_row.hours, 1.0);
 }
 
+// Verkefni comes only from an explicit pin, and the pin belongs to the
+// folder's own customer, not to every slice split out of it. A Sjúkra
+// slice of an APRÓ-pinned multi-tenant folder must not inherit APRÓ's
+// Verkefni — that would land an invented line item on Sjúkra's invoice.
+#[test]
+fn split_slice_for_other_customer_gets_no_verkefni() {
+    let c = open_memory().unwrap();
+    upsert_customer(
+        &c,
+        &Customer {
+            id: None,
+            name: "Sjúkra".into(),
+            aliases: vec!["Sjukra".into()],
+        },
+    )
+    .unwrap();
+    upsert_folder(
+        &c,
+        &FolderMap {
+            id: None,
+            folder: "vitinn-infra".into(),
+            customer: Some(HOUSE_CUSTOMER.to_string()),
+            verkefni: Some("[P] Rekstur".into()),
+            billable: true,
+            multi_tenant: true,
+        },
+    )
+    .unwrap();
+
+    // 2.5h of Sjúkra-branch work.
+    let sjukra_block = seed_block(
+        &c,
+        "2026-09-24T09:00:00+00:00",
+        9000,
+        Some("Sjukra tenant work"),
+    );
+    seed_event(
+        &c,
+        sjukra_block,
+        "e1",
+        &work("vitinn-infra"),
+        "checkout sjukra",
+        "2026-09-24T09:00:00+00:00",
+    );
+
+    // 1h with no clue at all -> the folder's own House pin, Verkefni intact.
+    let house_block = seed_block(
+        &c,
+        "2026-09-24T13:00:00+00:00",
+        3600,
+        Some("General maintenance"),
+    );
+    seed_event(
+        &c,
+        house_block,
+        "e2",
+        &work("vitinn-infra"),
+        "commit",
+        "2026-09-24T13:00:00+00:00",
+    );
+
+    let rows = rows_for_day(&c, "2026-09-24").unwrap();
+    assert_eq!(rows.len(), 2);
+
+    let sjukra_row = rows
+        .iter()
+        .find(|r| r.customer.as_deref() == Some("Sjúkra"))
+        .expect("a Sjúkra line");
+    assert_eq!(
+        sjukra_row.verkefni, None,
+        "a Sjúkra slice must not inherit APRÓ's Verkefni"
+    );
+
+    let house_row = rows
+        .iter()
+        .find(|r| r.customer.as_deref() == Some(HOUSE_CUSTOMER))
+        .expect("an APRÓ line");
+    assert_eq!(
+        house_row.verkefni,
+        Some("[P] Rekstur".into()),
+        "the folder's own customer keeps its pinned Verkefni"
+    );
+}
+
 // B14 / §5: a 30-block, ~2000-event multi-tenant day must still export
 // under 500ms — the per-block slice lookup must not turn into an O(n^2) scan.
 #[test]
