@@ -1,5 +1,6 @@
 # Tasks — Multi-tenant infra folders
-Spec: spec.md · Design: design.md · Base: 9d2df6b · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && cd web && bun test`
+Approved: 2026-09-25 by user
+Spec: spec.md · Design: design.md · Base: 79ce984 · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && cd web && bun test`
 
 ## Behaviors
 | ID | Given / When / Then | Task | Proven by |
@@ -41,7 +42,7 @@ Goal: the Owner can tick a folder multi-tenant, link leftover tenants, and adjus
 Independent test: `cd web && bun test && bun run typecheck` — green.
 - [ ] T007 Billing panel: multi-tenant tick and tenant list (B16) — files: web/lib/tenants.ts, web/app/tenant-actions.ts, web/components/BillingTenantSection.tsx, web/components/BillingTenantSection.test.tsx, web/components/BillingFolderSection.tsx, web/components/BillingRegistry.tsx, web/lib/types.ts — verify: `cd web && bun test components/BillingTenantSection.test.tsx && bun run typecheck` — after: T006
 - [ ] T008 Block customer split editor (B17) — files: web/components/BlockCustomerSplit.tsx, web/components/BlockCustomerSplit.test.tsx, web/components/BlockCard.tsx — verify: `cd web && bun test components/BlockCustomerSplit.test.tsx && bun run typecheck` — after: T007
-- [ ] CHK001 human-verify yesterday's export — files: web/components/ExportPanel.tsx — verify: human: re-run 2026-09-24; export shows a Sjúkra line for blocks 4098, 4101, 4102 (~2.5 h) and an APRÓ line for the rest of vitinn-infra; change one block's split, re-estimate, the split is still there
+- [ ] CHK001 human-verify yesterday's export — files: web/components/ExportPanel.tsx — verify: human: re-run 2026-09-24; export shows a Sjúkra line for blocks 4098, 4101, 4102 (~2.5 h) and an APRÓ line for the rest of vitinn-infra; change one block's split, re-estimate, the split is still there — after: T008
 
 ## Gates
 - [ ] G001 project gates clean — files: . — verify: `flow check --fix`
