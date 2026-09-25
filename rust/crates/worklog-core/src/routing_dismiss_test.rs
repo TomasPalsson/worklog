@@ -81,6 +81,7 @@ fn dismiss_retroactively_dismisses_same_channel_events_but_skips_fix() {
             customer: None,
             verkefni: None,
             billable: true,
+            multi_tenant: false,
         },
     )
     .unwrap();

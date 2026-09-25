@@ -147,6 +147,9 @@ CREATE TABLE IF NOT EXISTS billing_folder_map (
     verkefni TEXT,
     -- 1 = Reikningshæft (billable), 0 = Óreikningshæft.
     billable INTEGER NOT NULL DEFAULT 1,
+    -- 1 = the folder holds many customers' tenants (spec 005); the export
+    -- splits each block between customers instead of billing this pin.
+    multi_tenant INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -184,4 +187,45 @@ CREATE TABLE IF NOT EXISTS overlap_allocations (
     shares TEXT NOT NULL, -- JSON object {project: fraction}
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE(day, started_at, ended_at)
+);
+
+-- ───────────────────────────── tenants (spec 005) ─────────────────────────────
+-- Multi-tenant infra folders (e.g. `vitinn-infra`, `genai-infra`) serve many
+-- customers' tenants under one work folder; see billing_folder_map.multi_tenant,
+-- tenants.rs and tenant_contract.rs.
+
+-- Tenant roots under a multi-tenant folder (tenant_contract::TenantRoot).
+-- `root` is `/`-separated relative to the folder; a `*` segment matches
+-- exactly one directory name.
+CREATE TABLE IF NOT EXISTS billing_tenant_roots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    folder TEXT NOT NULL,
+    root TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(folder, root)
+);
+
+-- The owner's hand-set tenant → customer links (tenant_contract::TenantLink).
+-- `customer NULL` + `ignored = 0` means "not yet linked" (Unmatched);
+-- `ignored = 1` means "not a customer" and gives no clue.
+CREATE TABLE IF NOT EXISTS billing_tenant_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    folder TEXT NOT NULL,
+    tenant TEXT NOT NULL,
+    customer TEXT,
+    ignored INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(folder, tenant)
+);
+
+-- The owner's hand-set customer split for one block (tenant_contract::
+-- CustomerShares), keyed by day + started_at so it survives re-infer
+-- rebuilding block ids. `shares` is a JSON object {customer: fraction}.
+CREATE TABLE IF NOT EXISTS block_customer_shares (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    day TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    shares TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(day, started_at)
 );

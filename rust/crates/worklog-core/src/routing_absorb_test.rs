@@ -15,6 +15,7 @@ fn pin(conn: &Connection, folder: &str) {
             customer: None,
             verkefni: None,
             billable: true,
+            multi_tenant: false,
         },
     )
     .unwrap();

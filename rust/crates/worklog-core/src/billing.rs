@@ -882,6 +882,7 @@ mod tests {
                 customer: customer.map(str::to_owned),
                 verkefni: verkefni.map(str::to_owned),
                 billable: true,
+                multi_tenant: false,
             },
         )
         .unwrap();
@@ -1241,6 +1242,7 @@ mod tests {
                 customer: Some("APRÓ".into()),
                 verkefni: Some("[O] Innra support".into()),
                 billable: false,
+                multi_tenant: false,
             },
         )
         .unwrap();

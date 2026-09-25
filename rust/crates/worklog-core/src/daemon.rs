@@ -4092,6 +4092,7 @@ mod tests {
                 customer: None,
                 verkefni: None,
                 billable: true,
+                multi_tenant: false,
             },
         )
         .unwrap();
@@ -4904,6 +4905,7 @@ mod tests {
                 customer: None,
                 verkefni: None,
                 billable: true,
+                multi_tenant: false,
             },
         )
         .unwrap();
