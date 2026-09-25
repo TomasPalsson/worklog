@@ -5,7 +5,9 @@
 // its own; the parent (useBillingRegistry) owns folders/customers and all
 // mutations.
 
+import { useState } from "react";
 import { Check, Loader2, Plus, Save, Trash2 } from "lucide-react";
+import type { ActionResult } from "@/app/actions";
 import type { CustomerDraft, FolderDraft } from "@/lib/billingRegistryDrafts";
 import type { UnmappedFolder } from "@/lib/types";
 
@@ -88,6 +90,57 @@ function FolderActions({
   );
 }
 
+function MultiTenantToggle({
+  folder,
+  onToggle,
+}: {
+  folder: FolderDraft;
+  onToggle: (checked: boolean) => Promise<ActionResult<{ id: number }>>;
+}) {
+  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleChange(checked: boolean) {
+    setStatus("saving");
+    setError(null);
+    const r = await onToggle(checked);
+    if (!r.ok) {
+      setStatus("error");
+      setError(r.error);
+      return;
+    }
+    setStatus("saved");
+    setTimeout(() => setStatus("idle"), 1500);
+  }
+
+  return (
+    <span
+      className="reg-check-group"
+      style={{ display: "inline-flex", alignItems: "center", gap: 4, minWidth: 168 }}
+    >
+      <label
+        className="reg-check"
+        data-tip="This folder holds several customers' work; time is split between them"
+      >
+        <input
+          type="checkbox"
+          checked={folder.multi_tenant ?? false}
+          disabled={folder.folder.trim() === "" || status === "saving"}
+          onChange={(e) => void handleChange(e.target.checked)}
+        />
+        Many customers
+      </label>
+      {status === "saving" && <Loader2 className="spin" size={12} />}
+      {status === "saved" && <span className="settings-hint">Saved</span>}
+      {status === "error" && (
+        <span className="export-error" role="alert">
+          {error}
+        </span>
+      )}
+    </span>
+  );
+}
+
 function FolderRow({
   folder,
   customers,
@@ -96,6 +149,7 @@ function FolderRow({
   onPatch,
   onSave,
   onDelete,
+  onToggleMultiTenant,
 }: {
   folder: FolderDraft;
   customers: CustomerDraft[];
@@ -104,6 +158,7 @@ function FolderRow({
   onPatch: (patch: Partial<FolderDraft>) => void;
   onSave: () => void;
   onDelete: () => void;
+  onToggleMultiTenant: (checked: boolean) => Promise<ActionResult<{ id: number }>>;
 }) {
   return (
     <div
@@ -153,6 +208,7 @@ function FolderRow({
           onChange={(e) => onPatch({ billable: e.target.checked })}
         />
       </label>
+      <MultiTenantToggle folder={folder} onToggle={onToggleMultiTenant} />
       <FolderActions folder={folder} busy={busy} onSave={onSave} onDelete={onDelete} />
     </div>
   );
@@ -170,6 +226,7 @@ export function FolderMappingsSection({
   onSave,
   onDelete,
   onAdd,
+  onToggleMultiTenant,
 }: {
   unmapped: UnmappedFolder[];
   folders: FolderDraft[];
@@ -182,6 +239,10 @@ export function FolderMappingsSection({
   onSave: (folder: FolderDraft) => void;
   onDelete: (folder: FolderDraft) => void;
   onAdd: () => void;
+  onToggleMultiTenant: (
+    folder: FolderDraft,
+    checked: boolean,
+  ) => Promise<ActionResult<{ id: number }>>;
 }) {
   return (
     <>
@@ -206,6 +267,7 @@ export function FolderMappingsSection({
             <span role="columnheader">Verkefni (deild)</span>
             <span role="columnheader">Reikn.</span>
             <span />
+            <span />
           </div>
 
           {folders.map((f) => (
@@ -218,6 +280,7 @@ export function FolderMappingsSection({
               onPatch={(patch) => onPatch(f.key, patch)}
               onSave={() => onSave(f)}
               onDelete={() => onDelete(f)}
+              onToggleMultiTenant={(checked) => onToggleMultiTenant(f, checked)}
             />
           ))}
         </div>
