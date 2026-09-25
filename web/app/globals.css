@@ -1779,7 +1779,7 @@ button {
 
 .customer-split-editor .split-add-select {
   width: 220px;
-  flex: 0 0 220px;
+  align-self: flex-start;
 }
 
 .split-editor-footer {
@@ -3910,7 +3910,7 @@ button {
   color: var(--fg-muted);
 }
 
-.reg-row {
+.split-row {
   display: flex;
   align-items: center;
   gap: 6px;
