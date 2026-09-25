@@ -34,7 +34,7 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core te
 Goal: a multi-tenant block turns into per-customer slices, and the billing export bills each customer its own time.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core` — green with the web UI untouched.
 - [x] T003 Clues and the split rules (B5–B9) — files: rust/crates/worklog-core/src/tenant_clues.rs, rust/crates/worklog-core/src/tenant_split.rs, rust/crates/worklog-core/src/tenant_split_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core tenant_split` — after: T002, T004 — done: 539777d
-- [ ] T005 [P] Billing export uses slices (B8, B12–B14) — files: rust/crates/worklog-core/src/billing.rs, rust/crates/worklog-core/src/billing_tenant_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core billing` — after: T003
+- [x] T005 [P] Billing export uses slices (B8, B12–B14) — files: rust/crates/worklog-core/src/billing.rs, rust/crates/worklog-core/src/billing_tenant_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core billing` — after: T003 — done: 0f80a1a
 - [x] T006 [P] Daemon routes for tenants and shares (B15) — files: rust/crates/worklog-core/src/daemon.rs, rust/crates/worklog-core/src/daemon_tenants.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core daemon_tenants` — after: T003 — done: 09a6efb
 
 ## Phase 3 — Review UI
