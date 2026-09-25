@@ -67,9 +67,13 @@ fn list_tenants_under_discovers_plain_and_wildcard_roots_and_matches_aliases() {
     std::fs::create_dir_all(base.join("genai-infra/terraform/workspaces/staging")).unwrap();
     // A file next to the workspace dirs must never be treated as a tenant.
     std::fs::write(base.join("genai-infra/terraform/workspaces/README.md"), "x").unwrap();
+    // Nor a hidden directory like terraform's own `.terraform` cache.
+    std::fs::create_dir_all(base.join("genai-infra/terraform/workspaces/prod/.terraform")).unwrap();
 
     let mut tenants = list_tenants_under(&conn, base).unwrap();
-    tenants.sort_by(|a, b| (a.folder.as_str(), a.name.as_str()).cmp(&(b.folder.as_str(), b.name.as_str())));
+    tenants.sort_by(|a, b| {
+        (a.folder.as_str(), a.name.as_str()).cmp(&(b.folder.as_str(), b.name.as_str()))
+    });
 
     assert_eq!(
         tenants,

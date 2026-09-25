@@ -36,12 +36,7 @@ fn root_dirs(base: &Path, root: &str) -> Vec<PathBuf> {
                 let Ok(entries) = std::fs::read_dir(dir) else {
                     continue;
                 };
-                next.extend(
-                    entries
-                        .flatten()
-                        .map(|e| e.path())
-                        .filter(|p| p.is_dir()),
-                );
+                next.extend(entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()));
             } else {
                 let candidate = dir.join(segment);
                 if candidate.is_dir() {
@@ -64,6 +59,7 @@ fn tenant_names(folder_base: &Path, root: &str) -> Vec<String> {
         .flatten()
         .filter(|e| e.path().is_dir())
         .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|name| !name.starts_with('.'))
         .collect();
     names.sort();
     names.dedup();
