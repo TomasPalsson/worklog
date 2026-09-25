@@ -1,5 +1,6 @@
 # Tasks — Multi-tenant infra folders
 Approved: 2026-09-25 by user
+Verified: 2026-09-25 by user
 Spec: spec.md · Design: design.md · Base: 79ce984 · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && cd web && bun test`
 
 ## Behaviors
