@@ -411,6 +411,32 @@ fn ticket_summary(conn: &Connection, ticket: Option<&str>) -> Result<Option<Stri
         .ok())
 }
 
+/// A block's registry resolution, built from the same haystack everywhere:
+/// the block's Jira ticket summary (where a customer is usually named)
+/// plus its own description. Shared by [`rows_for_day`] and the
+/// `/blocks/:id/customer-slices` route so a shared/multi-tenant folder's
+/// `Fallback` slice resolves its customer identically to the export —
+/// diverging haystacks (e.g. the route ignoring the ticket summary) made
+/// the card preview disagree with what actually gets billed.
+pub(crate) fn resolve_block(
+    conn: &Connection,
+    block: &Block,
+    folder: &str,
+    registry: &Registry,
+) -> Result<crate::billing_registry::Resolved> {
+    let mut haystack = String::new();
+    if let Some(summary) =
+        ticket_summary(conn, block.jira_issue.as_deref().filter(|s| !s.is_empty()))?
+    {
+        haystack.push_str(&summary);
+        haystack.push('\n');
+    }
+    if let Some(desc) = block.description.as_deref() {
+        haystack.push_str(desc);
+    }
+    Ok(registry.resolve(folder, &haystack))
+}
+
 /// A block's wall-clock interval as epoch seconds: `[start, start +
 /// duration)`. Duration — not `ended_at` — is the canonical logged time,
 /// matching `worklog_cli::cli::block_interval`.
@@ -565,18 +591,7 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
             .filter(|s| !s.is_empty())
             .map(str::to_owned);
 
-        // The text the customer alias match runs against: the ticket
-        // summary (where customers are usually named) plus this block's
-        // own description.
-        let mut haystack = String::new();
-        if let Some(summary) = ticket_summary(conn, ticket.as_deref())? {
-            haystack.push_str(&summary);
-            haystack.push('\n');
-        }
-        if let Some(desc) = block.description.as_deref() {
-            haystack.push_str(desc);
-        }
-        let resolved = registry.resolve(&folder, &haystack);
+        let resolved = resolve_block(conn, block, &folder, &registry)?;
 
         // A multi-tenant folder's block splits into one contribution per
         // customer slice; a non-multi-tenant folder (`None`) keeps today's

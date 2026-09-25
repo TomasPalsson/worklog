@@ -275,3 +275,75 @@ async fn fallback_slice_fills_customer_from_registry_resolution() {
     assert_eq!(slices[0]["origin"], "fallback");
     assert_eq!(slices[0]["customer"], "APRÓ");
 }
+
+/// A `Fallback` slice's customer must resolve exactly like
+/// `billing::rows_for_day`: from the Jira ticket summary when the block
+/// itself has no description. Before the fix the route only looked at
+/// `block.description`, so a ticket-summary-only match billed one customer
+/// on export while the review card showed no customer at all.
+#[tokio::test(flavor = "current_thread")]
+async fn fallback_slice_uses_ticket_summary_like_billing() {
+    let conn = open_memory().unwrap();
+    crate::billing_registry::upsert_folder(
+        &conn,
+        &FolderMap {
+            id: None,
+            folder: "genai-infra".into(),
+            customer: None,
+            verkefni: None,
+            billable: true,
+            multi_tenant: true,
+        },
+    )
+    .unwrap();
+    crate::billing_registry::upsert_customer(
+        &conn,
+        &Customer {
+            id: None,
+            name: "Sjúkra".into(),
+            aliases: Vec::new(),
+        },
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO jira_tickets (key, summary) VALUES ('GENAI-1219', ?1)",
+        params!["Document analyzer fyrir Sjúkra"],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO blocks (day, jira_issue, started_at, ended_at, duration_seconds)
+         VALUES ('2026-04-18', 'GENAI-1219', '2026-04-18T09:00:00+00:00', '2026-04-18T09:30:00+00:00', 1800)",
+        [],
+    )
+    .unwrap();
+    let block_id = conn.last_insert_rowid();
+
+    let mut event = Event::minimal("claude", "a", "2026-04-18T09:05:00+00:00", "worked");
+    event.project_path = Some("genai-infra".into());
+    let event_id = repo::upsert_event(&conn, &event).unwrap();
+    conn.execute(
+        "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+        params![block_id, event_id],
+    )
+    .unwrap();
+
+    let state = state_from_conn(conn);
+    let resp = router(state)
+        .oneshot(
+            Request::get(format!("/blocks/{block_id}/customer-slices"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = read_json(resp).await;
+    let slices = v.as_array().unwrap();
+    assert_eq!(slices.len(), 1);
+    assert_eq!(slices[0]["origin"], "fallback");
+    assert_eq!(
+        slices[0]["customer"], "Sjúkra",
+        "route must resolve the same customer billing::rows_for_day would: {v:#?}"
+    );
+}

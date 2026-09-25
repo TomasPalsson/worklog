@@ -67,11 +67,11 @@ pub async fn customer_slices(
         let registry = Registry::load(c)?;
         let slices = tenant_slices_for_block(c, &block, &folder, &registry)?.unwrap_or_default();
         // A `Fallback` slice with no clue-resolved customer bills to the
-        // folder's normal (pin/text) resolution — same as billing.rs
+        // folder's normal (pin/text) resolution — same haystack (ticket
+        // summary + description) and the same call as billing.rs
         // `rows_for_day` — so the card shows the truth instead of
         // "Unresolved".
-        let text = block.description.as_deref().unwrap_or("");
-        let fallback_customer = registry.resolve(&folder, text).customer;
+        let fallback_customer = billing::resolve_block(c, &block, &folder, &registry)?.customer;
         let slices = slices
             .into_iter()
             .map(|mut slice| {

@@ -1,6 +1,8 @@
 use super::*;
-use crate::billing_registry::Customer;
+use crate::billing_registry::{upsert_customer, upsert_folder, Customer, FolderMap};
 use crate::db::open_memory;
+use crate::models::Event;
+use crate::repo;
 
 fn registry(names: &[&str]) -> Registry {
     Registry {
@@ -134,4 +136,156 @@ fn slices_from_shares_last_slice_absorbs_the_rounding_remainder() {
         .sum();
     assert_eq!(total, 10);
     assert_eq!(slices.last().unwrap().intervals[0].1, 10);
+}
+
+// ───────── FR-11 (B10): a hand-set split survives re-inference keyed on
+// (day, started_at) — and does NOT follow a block whose start moved ─────────
+
+fn work(sub: &str) -> String {
+    format!(
+        "{}/Desktop/Work/{sub}",
+        dirs::home_dir().unwrap().to_string_lossy()
+    )
+}
+
+fn seed_claude_event(conn: &Connection, source_id: &str, started_at: &str, folder: &str) {
+    let mut ev = Event::minimal("claude", source_id, started_at, "worked");
+    ev.project_path = Some(work(folder));
+    // `infer::load_day_events` reads straight from `events`; no block_events
+    // row is needed until `persist_blocks` creates one.
+    repo::upsert_event(conn, &ev).unwrap();
+}
+
+/// Multi-tenant `vitinn-infra` folder with customer `Acme`, wired the way
+/// `worklog infer` / the daemon rebuild actually resolves a block's
+/// customer split.
+fn seed_multi_tenant_folder(conn: &Connection) {
+    upsert_folder(
+        conn,
+        &FolderMap {
+            id: None,
+            folder: "vitinn-infra".into(),
+            customer: None,
+            verkefni: None,
+            billable: true,
+            multi_tenant: true,
+        },
+    )
+    .unwrap();
+    upsert_customer(
+        conn,
+        &Customer {
+            id: None,
+            name: "Acme".into(),
+            aliases: Vec::new(),
+        },
+    )
+    .unwrap();
+}
+
+/// Runs the same rebuild `worklog infer` / the daemon use: clustering, then
+/// persisting (which deletes and reinserts the day's blocks).
+fn reinfer(conn: &Connection, day: chrono::NaiveDate) {
+    let blocks = crate::infer_allocations::build_day_blocks(conn, day).unwrap();
+    crate::infer::persist_blocks(conn, day, &blocks).unwrap();
+}
+
+#[test]
+fn shares_survive_reinfer() {
+    let conn = open_memory().unwrap();
+    seed_multi_tenant_folder(&conn);
+    // Two events 3 minutes apart cluster into one >=5-minute block.
+    seed_claude_event(&conn, "e1", "2026-07-23T09:00:00Z", "vitinn-infra");
+    seed_claude_event(&conn, "e2", "2026-07-23T09:03:00Z", "vitinn-infra");
+
+    let day = chrono::NaiveDate::from_ymd_opt(2026, 7, 23).unwrap();
+    reinfer(&conn, day);
+
+    let day_blocks = repo::list_blocks_for_day(&conn, "2026-07-23").unwrap();
+    assert_eq!(day_blocks.len(), 1, "got {day_blocks:#?}");
+    let started_at = day_blocks[0].started_at.clone();
+
+    let reg = Registry::load(&conn).unwrap();
+    save_shares(
+        &conn,
+        &shares("2026-07-23", &started_at, &[("Acme", 1.0)]),
+        &reg,
+    )
+    .unwrap();
+
+    // Re-run the day's inference the way the app does — same events, same
+    // clustering, so the block's start is unchanged even though its id
+    // (and every other in-memory struct) is rebuilt from scratch.
+    reinfer(&conn, day);
+
+    let day_blocks = repo::list_blocks_for_day(&conn, "2026-07-23").unwrap();
+    assert_eq!(day_blocks.len(), 1, "got {day_blocks:#?}");
+    let block = &day_blocks[0];
+    assert_eq!(
+        block.started_at, started_at,
+        "re-infer must not have moved this block's start"
+    );
+
+    let folder = crate::billing::work_folder_for_block(&conn, block.id)
+        .unwrap()
+        .unwrap();
+    let slices = crate::tenant_split::tenant_slices_for_block(&conn, block, &folder, &reg)
+        .unwrap()
+        .expect("vitinn-infra is multi-tenant");
+    assert!(!slices.is_empty());
+    for slice in &slices {
+        assert_eq!(
+            slice.origin,
+            SplitOrigin::Manual,
+            "hand-set shares must survive a same-start re-infer: {slices:#?}"
+        );
+    }
+    assert_eq!(slices[0].customer, Some("Acme".to_string()));
+}
+
+#[test]
+fn shares_dropped_when_block_start_moves() {
+    let conn = open_memory().unwrap();
+    seed_multi_tenant_folder(&conn);
+    seed_claude_event(&conn, "e1", "2026-07-23T09:00:00Z", "vitinn-infra");
+    seed_claude_event(&conn, "e2", "2026-07-23T09:03:00Z", "vitinn-infra");
+
+    let day = chrono::NaiveDate::from_ymd_opt(2026, 7, 23).unwrap();
+    reinfer(&conn, day);
+
+    let day_blocks = repo::list_blocks_for_day(&conn, "2026-07-23").unwrap();
+    assert_eq!(day_blocks.len(), 1, "got {day_blocks:#?}");
+    let started_at = day_blocks[0].started_at.clone();
+
+    let reg = Registry::load(&conn).unwrap();
+    save_shares(
+        &conn,
+        &shares("2026-07-23", &started_at, &[("Acme", 1.0)]),
+        &reg,
+    )
+    .unwrap();
+
+    // A backfilled earlier event (same lane, well inside the timeout)
+    // extends the cluster backwards, moving the block's started_at.
+    seed_claude_event(&conn, "e0", "2026-07-23T08:50:00Z", "vitinn-infra");
+    reinfer(&conn, day);
+
+    let day_blocks = repo::list_blocks_for_day(&conn, "2026-07-23").unwrap();
+    assert_eq!(day_blocks.len(), 1, "got {day_blocks:#?}");
+    let block = &day_blocks[0];
+    assert_ne!(
+        block.started_at, started_at,
+        "test is only meaningful if the start actually moved"
+    );
+
+    let folder = crate::billing::work_folder_for_block(&conn, block.id)
+        .unwrap()
+        .unwrap();
+    let slices = crate::tenant_split::tenant_slices_for_block(&conn, block, &folder, &reg)
+        .unwrap()
+        .expect("vitinn-infra is multi-tenant");
+    assert!(
+        !slices.iter().any(|s| s.origin == SplitOrigin::Manual),
+        "shares keyed to the old start must not apply to the moved block: {slices:#?}"
+    );
 }
