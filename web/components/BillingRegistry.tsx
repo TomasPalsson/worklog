@@ -17,9 +17,35 @@
 // thin composition of the three.
 
 import { Loader2 } from "lucide-react";
+import { saveBillingFolder } from "@/app/actions";
+import type { FolderDraft } from "@/lib/billingRegistryDrafts";
 import { useBillingRegistry } from "@/lib/useBillingRegistry";
+import { BillingTenantSection } from "./BillingTenantSection";
 import { CustomerSection } from "./BillingCustomerSection";
 import { FolderMappingsSection } from "./BillingFolderSection";
+
+/** Saves immediately (no Save button) — the row's normal Save/Delete
+ * pathway (`folderSavePayload`) doesn't carry `multi_tenant`, so this
+ * always sends the full row itself. */
+async function toggleMultiTenant(
+  patchFolder: (key: string, patch: Partial<FolderDraft>) => void,
+  folder: FolderDraft,
+  checked: boolean,
+) {
+  patchFolder(folder.key, { multi_tenant: checked });
+  const r = await saveBillingFolder({
+    id: folder.id,
+    folder: folder.folder,
+    customer: folder.customer,
+    verkefni: folder.verkefni,
+    billable: folder.billable,
+    multi_tenant: checked,
+  });
+  if (!r.ok) {
+    patchFolder(folder.key, { multi_tenant: !checked });
+  }
+  return r;
+}
 
 export function BillingRegistry() {
   const reg = useBillingRegistry();
@@ -61,6 +87,9 @@ export function BillingRegistry() {
         onSave={reg.saveFolder}
         onDelete={reg.deleteFolder}
         onAdd={() => reg.addFolder()}
+        onToggleMultiTenant={(folder, checked) =>
+          toggleMultiTenant(reg.patchFolder, folder, checked)
+        }
       />
       <CustomerSection
         customers={reg.customers}
@@ -71,6 +100,7 @@ export function BillingRegistry() {
         onDelete={reg.deleteCustomer}
         onAdd={reg.addCustomer}
       />
+      <BillingTenantSection customers={reg.customers} />
     </>
   );
 }

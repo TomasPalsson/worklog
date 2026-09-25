@@ -17,6 +17,7 @@ import { EstBadge } from "./EstBadge";
 import { TicketCombobox } from "./TicketCombobox";
 import { EventList } from "./EventList";
 import { CommitList } from "./CommitList";
+import { BlockCustomerSplit } from "./BlockCustomerSplit";
 
 interface Props {
   block: Block;
@@ -217,6 +218,8 @@ export function BlockCard({
         </div>
 
         {block.sources.length > 0 && <p className="block-clue-line">{clueLine(block.sources)}</p>}
+
+        <BlockCustomerSplit blockId={block.id} />
 
         <div className="block-title-row">
           {!hideTicketing && (

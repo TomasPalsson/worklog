@@ -310,6 +310,8 @@ export interface BillingFolderMap {
   customer: string | null;
   verkefni: string | null;
   billable: boolean;
+  /** Splits time by tenant instead of one pin (spec 005); missing = false. */
+  multi_tenant?: boolean;
 }
 
 /** A work folder seen in recent events with no mapping yet. */

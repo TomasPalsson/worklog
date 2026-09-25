@@ -91,6 +91,9 @@ use crate::{
     overlaps, repo,
 };
 
+#[path = "daemon_tenants.rs"]
+mod daemon_tenants;
+
 pub struct AppState {
     /// Single shared connection — SQLite + rusqlite is !Send, so we keep
     /// exactly one and serialise access. Cheap compared to the code path
@@ -141,6 +144,20 @@ pub fn router(state: Shared) -> Router {
         )
         .route("/billing/folders", post(billing_folder_upsert))
         .route("/billing/folders/:id/delete", post(billing_folder_delete))
+        .route("/billing/tenants", get(daemon_tenants::list_tenants))
+        .route("/billing/tenants/link", post(daemon_tenants::link_tenant))
+        .route(
+            "/blocks/:id/customer-slices",
+            get(daemon_tenants::customer_slices),
+        )
+        .route(
+            "/blocks/:id/customer-shares",
+            post(daemon_tenants::save_customer_shares),
+        )
+        .route(
+            "/blocks/:id/customer-shares/clear",
+            post(daemon_tenants::clear_customer_shares),
+        )
         .route("/settings", get(get_settings).post(post_settings))
         .route(
             "/browser/heartbeat",
@@ -4092,6 +4109,7 @@ mod tests {
                 customer: None,
                 verkefni: None,
                 billable: true,
+                multi_tenant: false,
             },
         )
         .unwrap();
@@ -4904,6 +4922,7 @@ mod tests {
                 customer: None,
                 verkefni: None,
                 billable: true,
+                multi_tenant: false,
             },
         )
         .unwrap();

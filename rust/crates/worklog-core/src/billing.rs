@@ -31,6 +31,7 @@ use crate::billing_registry::Registry;
 use crate::collectors::tempo::{round_to_half_hour, HALF_HOUR_SECONDS};
 use crate::models::Block;
 use crate::repo;
+use crate::tenant_split::tenant_slices_for_block;
 
 /// Shown wherever a field could not be resolved and the user must pick
 /// it in the form.
@@ -410,6 +411,32 @@ fn ticket_summary(conn: &Connection, ticket: Option<&str>) -> Result<Option<Stri
         .ok())
 }
 
+/// A block's registry resolution, built from the same haystack everywhere:
+/// the block's Jira ticket summary (where a customer is usually named)
+/// plus its own description. Shared by [`rows_for_day`] and the
+/// `/blocks/:id/customer-slices` route so a shared/multi-tenant folder's
+/// `Fallback` slice resolves its customer identically to the export —
+/// diverging haystacks (e.g. the route ignoring the ticket summary) made
+/// the card preview disagree with what actually gets billed.
+pub(crate) fn resolve_block(
+    conn: &Connection,
+    block: &Block,
+    folder: &str,
+    registry: &Registry,
+) -> Result<crate::billing_registry::Resolved> {
+    let mut haystack = String::new();
+    if let Some(summary) =
+        ticket_summary(conn, block.jira_issue.as_deref().filter(|s| !s.is_empty()))?
+    {
+        haystack.push_str(&summary);
+        haystack.push('\n');
+    }
+    if let Some(desc) = block.description.as_deref() {
+        haystack.push_str(desc);
+    }
+    Ok(registry.resolve(folder, &haystack))
+}
+
 /// A block's wall-clock interval as epoch seconds: `[start, start +
 /// duration)`. Duration — not `ended_at` — is the canonical logged time,
 /// matching `worklog_cli::cli::block_interval`.
@@ -546,6 +573,11 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
     let mut groups: HashMap<Key, GroupAcc> = HashMap::new();
     let mut order: Vec<Key> = Vec::new();
 
+    // One block's contribution to a group: the customer it billed to (from
+    // a slice, or the folder's own resolution) and the interval(s) it
+    // covers.
+    type Contribution = (Option<String>, Vec<(i64, i64)>);
+
     for block in blocks.iter() {
         // Personal time never reaches the invoicing system.
         if block.is_personal {
@@ -559,56 +591,73 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
             .filter(|s| !s.is_empty())
             .map(str::to_owned);
 
-        // The text the customer alias match runs against: the ticket
-        // summary (where customers are usually named) plus this block's
-        // own description.
-        let mut haystack = String::new();
-        if let Some(summary) = ticket_summary(conn, ticket.as_deref())? {
-            haystack.push_str(&summary);
-            haystack.push('\n');
-        }
-        if let Some(desc) = block.description.as_deref() {
-            haystack.push_str(desc);
-        }
-        let resolved = registry.resolve(&folder, &haystack);
+        let resolved = resolve_block(conn, block, &folder, &registry)?;
 
-        let key = (
-            resolved.customer.clone().unwrap_or_default(),
-            resolved.verkefni.clone().unwrap_or_default(),
-            task_for_block(block, &folder),
-        );
+        // A multi-tenant folder's block splits into one contribution per
+        // customer slice; a non-multi-tenant folder (`None`) keeps today's
+        // single whole-block contribution untouched.
+        let contributions: Vec<Contribution> =
+            match tenant_slices_for_block(conn, block, &folder, &registry)? {
+                None => vec![(resolved.customer.clone(), vec![block_interval(block)])],
+                Some(slices) => slices
+                    .into_iter()
+                    .map(|slice| {
+                        // A Fallback slice with nothing resolved goes through
+                        // today's registry resolution, same as an unsplit block.
+                        let customer = slice.customer.or_else(|| resolved.customer.clone());
+                        (customer, slice.intervals)
+                    })
+                    .collect(),
+            };
 
-        if !groups.contains_key(&key) {
-            order.push(key.clone());
-            groups.insert(
-                key.clone(),
-                GroupAcc {
-                    folder,
-                    customer: resolved.customer,
-                    verkefni: resolved.verkefni,
-                    ticket,
-                    billable: resolved.billable,
-                    intervals: Vec::new(),
-                    descriptions: Vec::new(),
-                    block_ids: Vec::new(),
-                    starts: Vec::new(),
-                    ends: Vec::new(),
-                },
+        for (customer, intervals) in contributions {
+            // The folder pin's Verkefni belongs to the folder's own
+            // customer. A slice billed to a different customer (a
+            // multi-tenant split) must not inherit it — that would put an
+            // invented Verkefni on another customer's invoice.
+            let verkefni = if customer == resolved.customer {
+                resolved.verkefni.clone()
+            } else {
+                None
+            };
+            let key = (
+                customer.clone().unwrap_or_default(),
+                verkefni.clone().unwrap_or_default(),
+                task_for_block(block, &folder),
             );
-        }
-        let acc = groups.get_mut(&key).expect("group just inserted");
-        acc.intervals.push(block_interval(block));
-        acc.block_ids.push(block.id);
-        acc.starts.push(block.started_at.clone());
-        acc.ends.push(block.ended_at.clone());
-        if let Some(desc) = block
-            .description
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            if !acc.descriptions.iter().any(|d| d == desc) {
-                acc.descriptions.push(desc.to_string());
+
+            if !groups.contains_key(&key) {
+                order.push(key.clone());
+                groups.insert(
+                    key.clone(),
+                    GroupAcc {
+                        folder: folder.clone(),
+                        customer,
+                        verkefni,
+                        ticket: ticket.clone(),
+                        billable: resolved.billable,
+                        intervals: Vec::new(),
+                        descriptions: Vec::new(),
+                        block_ids: Vec::new(),
+                        starts: Vec::new(),
+                        ends: Vec::new(),
+                    },
+                );
+            }
+            let acc = groups.get_mut(&key).expect("group just inserted");
+            acc.intervals.extend(intervals);
+            acc.block_ids.push(block.id);
+            acc.starts.push(block.started_at.clone());
+            acc.ends.push(block.ended_at.clone());
+            if let Some(desc) = block
+                .description
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                if !acc.descriptions.iter().any(|d| d == desc) {
+                    acc.descriptions.push(desc.to_string());
+                }
             }
         }
     }
@@ -882,6 +931,7 @@ mod tests {
                 customer: customer.map(str::to_owned),
                 verkefni: verkefni.map(str::to_owned),
                 billable: true,
+                multi_tenant: false,
             },
         )
         .unwrap();
@@ -1241,6 +1291,7 @@ mod tests {
                 customer: Some("APRÓ".into()),
                 verkefni: Some("[O] Innra support".into()),
                 billable: false,
+                multi_tenant: false,
             },
         )
         .unwrap();
@@ -1630,3 +1681,7 @@ mod tests {
         assert_eq!(json_len, rows.len());
     }
 }
+
+#[cfg(test)]
+#[path = "billing_tenant_test.rs"]
+mod billing_tenant_tests;

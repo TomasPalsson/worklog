@@ -51,6 +51,10 @@ pub struct FolderMap {
     /// `false` → Óreikningshæft.
     #[serde(default = "default_billable")]
     pub billable: bool,
+    /// The folder holds many customers' tenants (spec 005) — the export
+    /// splits each block between customers instead of billing this pin.
+    #[serde(default)]
+    pub multi_tenant: bool,
 }
 
 fn default_billable() -> bool {
@@ -241,7 +245,7 @@ pub fn delete_customer(conn: &Connection, id: i64) -> Result<bool> {
 
 pub fn list_folders(conn: &Connection) -> Result<Vec<FolderMap>> {
     let mut stmt = conn.prepare(
-        "SELECT id, folder, customer, verkefni, billable
+        "SELECT id, folder, customer, verkefni, billable, multi_tenant
            FROM billing_folder_map ORDER BY folder COLLATE NOCASE",
     )?;
     let rows = stmt
@@ -252,6 +256,7 @@ pub fn list_folders(conn: &Connection) -> Result<Vec<FolderMap>> {
                 customer: r.get(2)?,
                 verkefni: r.get(3)?,
                 billable: r.get::<_, i64>(4)? != 0,
+                multi_tenant: r.get::<_, i64>(5)? != 0,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -273,17 +278,19 @@ pub fn upsert_folder(conn: &Connection, f: &FolderMap) -> Result<i64> {
             .map(str::to_owned)
     };
     conn.execute(
-        "INSERT INTO billing_folder_map (folder, customer, verkefni, billable)
-              VALUES (?1, ?2, ?3, ?4)
+        "INSERT INTO billing_folder_map (folder, customer, verkefni, billable, multi_tenant)
+              VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(folder) DO UPDATE SET
               customer = excluded.customer,
               verkefni = excluded.verkefni,
-              billable = excluded.billable",
+              billable = excluded.billable,
+              multi_tenant = excluded.multi_tenant",
         params![
             folder,
             blank_to_none(&f.customer),
             blank_to_none(&f.verkefni),
             i64::from(f.billable),
+            i64::from(f.multi_tenant),
         ],
     )
     .context("upsert_folder")?;
@@ -406,8 +413,63 @@ pub fn seed_if_empty(conn: &Connection) -> Result<bool> {
                 customer: customer.map(str::to_owned),
                 verkefni: verkefni.map(str::to_owned),
                 billable: true,
+                multi_tenant: false,
             },
         )?;
+    }
+    Ok(true)
+}
+
+/// Seed the tenant roots for the two known multi-tenant infra folders
+/// (`vitinn-infra`, `genai-infra`), so multi-tenant billing works without a
+/// setup step. Guarded on `billing_tenant_roots` being empty — like
+/// `seed_if_empty`, it never re-adds a root the user deleted. A missing
+/// folder row is inserted pinned to the house customer; an existing folder
+/// row only gets `multi_tenant` flipped on — its pin is never touched.
+pub fn seed_tenant_roots_if_empty(conn: &Connection) -> Result<bool> {
+    let roots: i64 = conn.query_row("SELECT COUNT(*) FROM billing_tenant_roots", [], |r| {
+        r.get(0)
+    })?;
+    if roots > 0 {
+        return Ok(false);
+    }
+
+    const SEED_ROOTS: &[(&str, &str)] = &[
+        ("vitinn-infra", "tenants"),
+        ("genai-infra", "terraform/workspaces/*"),
+    ];
+    for (folder, root) in SEED_ROOTS {
+        conn.execute(
+            "INSERT INTO billing_tenant_roots (folder, root) VALUES (?1, ?2)
+             ON CONFLICT(folder, root) DO NOTHING",
+            params![folder, root],
+        )
+        .context("seed billing_tenant_roots")?;
+
+        let exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM billing_folder_map WHERE folder = ?1",
+            params![folder],
+            |r| r.get(0),
+        )?;
+        if exists == 0 {
+            upsert_folder(
+                conn,
+                &FolderMap {
+                    id: None,
+                    folder: (*folder).to_owned(),
+                    customer: Some(crate::tenant_contract::HOUSE_CUSTOMER.to_owned()),
+                    verkefni: None,
+                    billable: true,
+                    multi_tenant: true,
+                },
+            )?;
+        } else {
+            conn.execute(
+                "UPDATE billing_folder_map SET multi_tenant = 1 WHERE folder = ?1",
+                params![folder],
+            )
+            .context("flip multi_tenant on an existing folder pin")?;
+        }
     }
     Ok(true)
 }
@@ -479,6 +541,7 @@ mod tests {
                 customer: Some("Sjúkra".into()),
                 verkefni: Some("[P] Vöktun".into()),
                 billable: true,
+                multi_tenant: false,
             }],
         };
         // Text mentions MMS but the folder is pinned to Sjúkra.
@@ -502,6 +565,7 @@ mod tests {
                 customer: None, // shared
                 verkefni: None,
                 billable: true,
+                multi_tenant: false,
             }],
         };
         let r = reg.resolve("genai-infra", "Sensa - Deploy Jira MCP í Vitinn-umhverfi");
@@ -565,6 +629,7 @@ mod tests {
                 customer: Some("   ".into()),
                 verkefni: Some("".into()),
                 billable: false,
+                multi_tenant: false,
             },
         )
         .unwrap();
@@ -601,6 +666,7 @@ mod tests {
                 customer: Some("Edited".into()),
                 verkefni: None,
                 billable: true,
+                multi_tenant: false,
             },
         )
         .unwrap();
@@ -612,5 +678,75 @@ mod tests {
             Some("Edited".into()),
             "seed must not clobber a user edit"
         );
+    }
+
+    #[test]
+    fn seed_tenant_roots_flags_vitinn_and_genai_infra_multi_tenant() {
+        // FR-01, FR-02: a fresh db lists both folders flagged multi_tenant
+        // with their tenant roots.
+        let c = conn();
+        assert!(seed_tenant_roots_if_empty(&c).unwrap(), "first call seeds");
+
+        let roots: Vec<(String, String)> = c
+            .prepare("SELECT folder, root FROM billing_tenant_roots ORDER BY folder")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            roots,
+            vec![
+                (
+                    "genai-infra".to_string(),
+                    "terraform/workspaces/*".to_string()
+                ),
+                ("vitinn-infra".to_string(), "tenants".to_string()),
+            ]
+        );
+
+        let folders = list_folders(&c).unwrap();
+        let vitinn = folders.iter().find(|f| f.folder == "vitinn-infra").unwrap();
+        assert!(vitinn.multi_tenant);
+        assert_eq!(
+            vitinn.customer,
+            Some("APRÓ".into()),
+            "missing pin defaults to the house customer"
+        );
+
+        let genai = folders.iter().find(|f| f.folder == "genai-infra").unwrap();
+        assert!(genai.multi_tenant);
+
+        // A second call is a no-op.
+        assert!(
+            !seed_tenant_roots_if_empty(&c).unwrap(),
+            "second call does nothing"
+        );
+    }
+
+    #[test]
+    fn seed_tenant_roots_never_overwrites_an_existing_pin() {
+        // A2/A1: a folder already pinned by the user (or an earlier
+        // seed_if_empty) keeps its customer — only multi_tenant flips on.
+        let c = conn();
+        upsert_folder(
+            &c,
+            &FolderMap {
+                id: None,
+                folder: "genai-infra".into(),
+                customer: None, // shared, as seed_if_empty leaves it
+                verkefni: None,
+                billable: true,
+                multi_tenant: false,
+            },
+        )
+        .unwrap();
+
+        assert!(seed_tenant_roots_if_empty(&c).unwrap());
+
+        let folders = list_folders(&c).unwrap();
+        let genai = folders.iter().find(|f| f.folder == "genai-infra").unwrap();
+        assert_eq!(genai.customer, None, "existing pin must not be overwritten");
+        assert!(genai.multi_tenant);
     }
 }

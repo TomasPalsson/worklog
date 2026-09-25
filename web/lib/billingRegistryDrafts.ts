@@ -8,7 +8,7 @@ export type FolderDraft = BillingFolderMap & { key: string };
 export type CustomerDraft = BillingCustomer & { key: string };
 
 export function newFolderDraft(key: string, folder = ""): FolderDraft {
-  return { key, folder, customer: null, verkefni: null, billable: true };
+  return { key, folder, customer: null, verkefni: null, billable: true, multi_tenant: false };
 }
 
 export function newCustomerDraft(key: string): CustomerDraft {
@@ -21,7 +21,14 @@ export function isFolderQueued(folders: FolderDraft[], folder: string): boolean 
 }
 
 export function folderSavePayload(f: FolderDraft): BillingFolderMap {
-  return { id: f.id, folder: f.folder, customer: f.customer, verkefni: f.verkefni, billable: f.billable };
+  return {
+    id: f.id,
+    folder: f.folder,
+    customer: f.customer,
+    verkefni: f.verkefni,
+    billable: f.billable,
+    multi_tenant: f.multi_tenant ?? false,
+  };
 }
 
 export function customerSavePayload(c: CustomerDraft): BillingCustomer {

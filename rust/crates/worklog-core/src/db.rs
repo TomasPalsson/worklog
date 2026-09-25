@@ -15,7 +15,7 @@ pub const SCHEMA_SQL: &str = include_str!("../sql/schema.sql");
 /// Monotonic integer version of the schema, bumped by future migrations.
 /// Stored in `PRAGMA user_version` so we can detect stale dbs without adding
 /// a dedicated table.
-pub const SCHEMA_VERSION: i32 = 12;
+pub const SCHEMA_VERSION: i32 = 13;
 
 /// Open a connection at `path`, enable WAL + FK, and run migrations.
 pub fn open(path: &Path) -> Result<Connection> {
@@ -38,6 +38,7 @@ pub fn open(path: &Path) -> Result<Connection> {
     // could match a seeded alias by accident. Real databases seed; test
     // databases stay empty.
     crate::billing_registry::seed_if_empty(&conn).context("seeding billing registry")?;
+    crate::billing_registry::seed_tenant_roots_if_empty(&conn).context("seeding tenant roots")?;
     Ok(conn)
 }
 
@@ -77,6 +78,8 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     ensure_jira_tickets_issue_id(conn).context("ensuring jira_tickets.issue_id")?;
     ensure_jira_tickets_external(conn).context("ensuring jira_tickets.external")?;
     ensure_events_routing_columns(conn).context("ensuring events routing columns")?;
+    ensure_billing_folder_map_multi_tenant(conn)
+        .context("ensuring billing_folder_map.multi_tenant")?;
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)
         .context("stamping user_version")?;
     Ok(())
@@ -177,6 +180,23 @@ fn ensure_events_routing_columns(conn: &Connection) -> Result<()> {
     if !cols.iter().any(|c| c == "label_confidence") {
         conn.execute("ALTER TABLE events ADD COLUMN label_confidence REAL", [])
             .context("ALTER TABLE events ADD label_confidence")?;
+    }
+    Ok(())
+}
+
+fn ensure_billing_folder_map_multi_tenant(conn: &Connection) -> Result<()> {
+    let has: bool = conn
+        .prepare("PRAGMA table_info(billing_folder_map)")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter()
+        .any(|c| c == "multi_tenant");
+    if !has {
+        conn.execute(
+            "ALTER TABLE billing_folder_map ADD COLUMN multi_tenant INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .context("ALTER TABLE billing_folder_map ADD multi_tenant")?;
     }
     Ok(())
 }
@@ -546,7 +566,102 @@ mod tests {
             tables.contains(&"overlap_allocations".to_string()),
             "missing overlap_allocations table; got {tables:?}"
         );
-        assert_eq!(current_version(&conn).unwrap(), 12);
+        // `>=` floor, not `==`: spec 005's tenant tables took it to v13 —
+        // see the `billing_tenant_tables_exist...` test below.
+        assert!(current_version(&conn).unwrap() >= 12);
+    }
+
+    #[test]
+    fn billing_tenant_tables_exist_and_schema_version_is_13() {
+        // Spec 005 T001: multi-tenant infra folders need tenant roots,
+        // tenant links and hand-set customer shares tables. Takes the
+        // schema to v13.
+        let conn = open_memory().unwrap();
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for expected in [
+            "billing_tenant_roots",
+            "billing_tenant_links",
+            "block_customer_shares",
+        ] {
+            assert!(
+                tables.contains(&expected.to_string()),
+                "missing {expected} table; got {tables:?}"
+            );
+        }
+        assert_eq!(current_version(&conn).unwrap(), 13);
+    }
+
+    #[test]
+    fn fresh_db_billing_folder_map_has_multi_tenant_column() {
+        // Spec 005 T001.
+        let conn = open_memory().unwrap();
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(billing_folder_map)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            cols.contains(&"multi_tenant".to_string()),
+            "fresh db must have billing_folder_map.multi_tenant; got {cols:?}"
+        );
+    }
+
+    #[test]
+    fn migrate_adds_multi_tenant_to_legacy_billing_folder_map_table_and_backfills_zero() {
+        // Spec 005 T001. Simulate a pre-v13 billing_folder_map: no
+        // multi_tenant column, insert a row, then run migrate() and assert
+        // the column appears defaulting to 0 for the pre-existing row.
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE billing_folder_map (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                folder TEXT NOT NULL UNIQUE,
+                customer TEXT,
+                verkefni TEXT,
+                billable INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO billing_folder_map (folder, customer) VALUES ('sjukra', 'Sjúkra')",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 12).unwrap();
+
+        migrate(&conn).unwrap();
+
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(billing_folder_map)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            cols.contains(&"multi_tenant".to_string()),
+            "multi_tenant missing after migrate; got {cols:?}"
+        );
+
+        let multi_tenant: i64 = conn
+            .query_row(
+                "SELECT multi_tenant FROM billing_folder_map LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(multi_tenant, 0, "pre-existing rows must backfill to 0");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
     }
 
     #[test]

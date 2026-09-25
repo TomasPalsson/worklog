@@ -13,6 +13,7 @@ fn pin(conn: &Connection, folder: &str, customer: Option<&str>) {
             customer: customer.map(str::to_owned),
             verkefni: None,
             billable: true,
+            multi_tenant: false,
         },
     )
     .unwrap();
