@@ -45,6 +45,6 @@ Independent test: `cd web && bun test && bun run typecheck` — green.
 - [x] CHK001 human-verify yesterday's export — files: web/components/BlockCustomerSplit.tsx — verify: human: re-run 2026-09-24; export shows a Sjúkra line for blocks 4098, 4101, 4102 (~2.5 h) and an APRÓ line for the rest of vitinn-infra; change one block's split, re-estimate, the split is still there — after: T008 — done: a468db1 by user
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `flow check --fix`
-- [ ] G002 branch review clean — files: . — verify: `test -f PASS-$(git rev-parse --short HEAD).md`
-- [ ] G003 verification evidence exists — files: . — verify: `test -s verify/`
+- [x] G001 project gates clean — files: . — verify: `flow check --fix` — done: 4e8bf30
+- [x] G002 branch review clean — files: . — verify: `test -f PASS-$(git rev-parse --short HEAD).md` — done: 4e8bf30
+- [x] G003 verification evidence exists — files: . — verify: `test -s verify/` — done: 4e8bf30
