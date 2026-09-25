@@ -31,6 +31,7 @@ use crate::billing_registry::Registry;
 use crate::collectors::tempo::{round_to_half_hour, HALF_HOUR_SECONDS};
 use crate::models::Block;
 use crate::repo;
+use crate::tenant_split::tenant_slices_for_block;
 
 /// Shown wherever a field could not be resolved and the user must pick
 /// it in the form.
@@ -546,6 +547,11 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
     let mut groups: HashMap<Key, GroupAcc> = HashMap::new();
     let mut order: Vec<Key> = Vec::new();
 
+    // One block's contribution to a group: the customer it billed to (from
+    // a slice, or the folder's own resolution) and the interval(s) it
+    // covers.
+    type Contribution = (Option<String>, Vec<(i64, i64)>);
+
     for block in blocks.iter() {
         // Personal time never reaches the invoicing system.
         if block.is_personal {
@@ -572,43 +578,62 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
         }
         let resolved = registry.resolve(&folder, &haystack);
 
-        let key = (
-            resolved.customer.clone().unwrap_or_default(),
-            resolved.verkefni.clone().unwrap_or_default(),
-            task_for_block(block, &folder),
-        );
+        // A multi-tenant folder's block splits into one contribution per
+        // customer slice; a non-multi-tenant folder (`None`) keeps today's
+        // single whole-block contribution untouched.
+        let contributions: Vec<Contribution> =
+            match tenant_slices_for_block(conn, block, &folder, &registry)? {
+                None => vec![(resolved.customer.clone(), vec![block_interval(block)])],
+                Some(slices) => slices
+                    .into_iter()
+                    .map(|slice| {
+                        // A Fallback slice with nothing resolved goes through
+                        // today's registry resolution, same as an unsplit block.
+                        let customer = slice.customer.or_else(|| resolved.customer.clone());
+                        (customer, slice.intervals)
+                    })
+                    .collect(),
+            };
 
-        if !groups.contains_key(&key) {
-            order.push(key.clone());
-            groups.insert(
-                key.clone(),
-                GroupAcc {
-                    folder,
-                    customer: resolved.customer,
-                    verkefni: resolved.verkefni,
-                    ticket,
-                    billable: resolved.billable,
-                    intervals: Vec::new(),
-                    descriptions: Vec::new(),
-                    block_ids: Vec::new(),
-                    starts: Vec::new(),
-                    ends: Vec::new(),
-                },
+        for (customer, intervals) in contributions {
+            let key = (
+                customer.clone().unwrap_or_default(),
+                resolved.verkefni.clone().unwrap_or_default(),
+                task_for_block(block, &folder),
             );
-        }
-        let acc = groups.get_mut(&key).expect("group just inserted");
-        acc.intervals.push(block_interval(block));
-        acc.block_ids.push(block.id);
-        acc.starts.push(block.started_at.clone());
-        acc.ends.push(block.ended_at.clone());
-        if let Some(desc) = block
-            .description
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            if !acc.descriptions.iter().any(|d| d == desc) {
-                acc.descriptions.push(desc.to_string());
+
+            if !groups.contains_key(&key) {
+                order.push(key.clone());
+                groups.insert(
+                    key.clone(),
+                    GroupAcc {
+                        folder: folder.clone(),
+                        customer,
+                        verkefni: resolved.verkefni.clone(),
+                        ticket: ticket.clone(),
+                        billable: resolved.billable,
+                        intervals: Vec::new(),
+                        descriptions: Vec::new(),
+                        block_ids: Vec::new(),
+                        starts: Vec::new(),
+                        ends: Vec::new(),
+                    },
+                );
+            }
+            let acc = groups.get_mut(&key).expect("group just inserted");
+            acc.intervals.extend(intervals);
+            acc.block_ids.push(block.id);
+            acc.starts.push(block.started_at.clone());
+            acc.ends.push(block.ended_at.clone());
+            if let Some(desc) = block
+                .description
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                if !acc.descriptions.iter().any(|d| d == desc) {
+                    acc.descriptions.push(desc.to_string());
+                }
             }
         }
     }
@@ -1632,3 +1657,7 @@ mod tests {
         assert_eq!(json_len, rows.len());
     }
 }
+
+#[cfg(test)]
+#[path = "billing_tenant_test.rs"]
+mod billing_tenant_tests;
