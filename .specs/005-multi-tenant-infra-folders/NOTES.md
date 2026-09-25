@@ -7,3 +7,4 @@ Discovered: UI review on sandbox data — fallback slice showed "Unresolved" tho
 Ruling: the polish pass may import fetchBillingRegistry from web/app/actions.ts and edit globals.css and daemon_tenants.rs — needed for the fixes above.
 Discovered: branch review (review-diff, 1 kept ≥80, 4 dropped) — customer-slices route resolved fallback from description only while billing also reads the ticket summary; preview and export could disagree — fold in (gate fix dispatch, shared resolver in billing.rs)
 Discovered: converge — B10 (shares survive re-infer / dropped on moved start) had no test — fold in (same gate fix dispatch)
+Ruling: CHK001 files: pointed at ExportPanel.tsx, which the feature never needed to change; repointed to BlockCustomerSplit.tsx (the UI the check exercises).

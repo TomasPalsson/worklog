@@ -42,7 +42,7 @@ Goal: the Owner can tick a folder multi-tenant, link leftover tenants, and adjus
 Independent test: `cd web && bun test && bun run typecheck` — green.
 - [x] T007 Billing panel: multi-tenant tick and tenant list (B16) — files: web/lib/tenants.ts, web/app/tenant-actions.ts, web/components/BillingTenantSection.tsx, web/components/BillingTenantSection.test.tsx, web/components/BillingFolderSection.tsx, web/components/BillingRegistry.tsx, web/lib/types.ts — verify: `cd web && bun test components/BillingTenantSection.test.tsx && bun run typecheck` — after: T006 — done: 8f01b28
 - [x] T008 Block customer split editor (B17) — files: web/components/BlockCustomerSplit.tsx, web/components/BlockCustomerSplit.test.tsx, web/components/BlockCard.tsx — verify: `cd web && bun test components/BlockCustomerSplit.test.tsx && bun run typecheck` — after: T007 — done: 111f6a5
-- [x] CHK001 human-verify yesterday's export — files: web/components/ExportPanel.tsx — verify: human: re-run 2026-09-24; export shows a Sjúkra line for blocks 4098, 4101, 4102 (~2.5 h) and an APRÓ line for the rest of vitinn-infra; change one block's split, re-estimate, the split is still there — after: T008 — done: f10ab29 by user
+- [x] CHK001 human-verify yesterday's export — files: web/components/BlockCustomerSplit.tsx — verify: human: re-run 2026-09-24; export shows a Sjúkra line for blocks 4098, 4101, 4102 (~2.5 h) and an APRÓ line for the rest of vitinn-infra; change one block's split, re-estimate, the split is still there — after: T008 — done: a468db1 by user
 
 ## Gates
 - [ ] G001 project gates clean — files: . — verify: `flow check --fix`
