@@ -47,7 +47,7 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core ch
 - [ ] T012 Change routes (B11) — files: rust/crates/worklog-core/src/daemon.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core daemon::tests::changes` — after: T011
 - [ ] T013 Live pop-ups and catch-up (B10, B11, B15) — files: web/components/ChangeNotices.tsx, web/components/ChangeNotices.test.tsx, web/lib/toast.ts, web/components/ToastHost.tsx, web/app/layout.tsx, web/lib/daemon.ts, web/app/actions.ts, web/app/globals.css — verify: `cd web && bun test components/ChangeNotices.test.tsx && bun run typecheck` — after: T012, T004
 - [ ] T014 [P] Amend the CLAUDE.md billing rule for keyword-guessed deildir — files: CLAUDE.md — verify: `grep -q "keyword" CLAUDE.md` — after: T001
-- [ ] CHK001 human-verify on 2026-09-25 real data — files: . — verify: human: add deildir to Sjúkra and APRÓ; the Billing view shows one line per (customer, deild); split one vitinn-infra block Sjúkra·Rekstur 50 / APRÓ·AI hraðall 50 and both lines update; re-run estimate → one batched pop-up naming Claude, hand-set split unchanged
+- [ ] CHK001 human-verify on 2026-09-25 real data — files: . — verify: human: add deildir to Sjúkra and APRÓ; the Billing view shows one line per (customer, deild); split one vitinn-infra block Sjúkra·Rekstur 50 / APRÓ·AI hraðall 50 and both lines update; re-run estimate → one batched pop-up naming Claude, hand-set split unchanged — after: T013, T014
 
 ## Gates
 - [ ] G001 project gates clean — files: . — verify: `flow check --fix`
