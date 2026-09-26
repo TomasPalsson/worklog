@@ -27,11 +27,15 @@ use std::collections::HashMap;
 use anyhow::Result;
 use rusqlite::{params_from_iter, Connection};
 
+use crate::billing_deildir;
 use crate::billing_registry::Registry;
 use crate::collectors::tempo::{round_to_half_hour, HALF_HOUR_SECONDS};
 use crate::models::Block;
 use crate::repo;
-use crate::tenant_split::tenant_slices_for_block;
+
+#[path = "billing_deild.rs"]
+mod billing_deild;
+pub use billing_deild::resolve_block_slices;
 
 /// Shown wherever a field could not be resolved and the user must pick
 /// it in the form.
@@ -424,6 +428,15 @@ pub(crate) fn resolve_block(
     folder: &str,
     registry: &Registry,
 ) -> Result<crate::billing_registry::Resolved> {
+    let haystack = block_haystack(conn, block)?;
+    Ok(registry.resolve(folder, &haystack))
+}
+
+/// The haystack [`resolve_block`] matches customers/verkefni against, split
+/// out so [`billing_deild::resolve_block_slices`] can match a deild's
+/// keywords against the exact same text — a second, diverging haystack
+/// would let a keyword match text the folder/customer resolution never saw.
+pub(crate) fn block_haystack(conn: &Connection, block: &Block) -> Result<String> {
     let mut haystack = String::new();
     if let Some(summary) =
         ticket_summary(conn, block.jira_issue.as_deref().filter(|s| !s.is_empty()))?
@@ -434,13 +447,13 @@ pub(crate) fn resolve_block(
     if let Some(desc) = block.description.as_deref() {
         haystack.push_str(desc);
     }
-    Ok(registry.resolve(folder, &haystack))
+    Ok(haystack)
 }
 
 /// A block's wall-clock interval as epoch seconds: `[start, start +
 /// duration)`. Duration — not `ended_at` — is the canonical logged time,
 /// matching `worklog_cli::cli::block_interval`.
-fn block_interval(block: &Block) -> (i64, i64) {
+pub(crate) fn block_interval(block: &Block) -> (i64, i64) {
     let start = chrono::DateTime::parse_from_rfc3339(&block.started_at)
         .map(|d| d.timestamp())
         .unwrap_or(0);
@@ -470,32 +483,18 @@ fn union_seconds(mut intervals: Vec<(i64, i64)>) -> i64 {
     total
 }
 
-/// What distinguishes one line item from another: the Jira ticket if there
-/// is one, else the work folder.
-///
-/// Deliberately **not** the description. Keying on description meant every
-/// distinct sentence became its own invoice line — a single estimated day
-/// produced 13 lines, seven of them the same customer at half an hour each,
-/// which is 13 trips through the invoicing form. Work in one folder for one
-/// customer is one line; the individual descriptions are joined into its
-/// `Texti á reikning`, so nothing is lost, it just reads as
-/// "fixed this; fixed that" the way a real invoice line does.
-///
-/// Distinct tickets still split, because a ticket is a real billing
-/// boundary in a way a sentence is not.
-fn task_for_block(block: &Block, folder: &str) -> String {
-    if let Some(issue) = block.jira_issue.as_deref().filter(|s| !s.is_empty()) {
-        return issue.to_string();
-    }
-    folder.to_owned()
-}
-
-/// Accumulator for one `(customer, verkefni, task)` group.
+/// Accumulator for one super block: every slice sharing a `(customer,
+/// deild)` when the deild is set, else every slice sharing a `(customer,
+/// folder)` (FR-06 — a Jira ticket never splits a line).
 struct GroupAcc {
     folder: String,
     customer: Option<String>,
     verkefni: Option<String>,
     ticket: Option<String>,
+    /// Set once a second block contributes a different ticket than the
+    /// group's first — `BillingRow.ticket` then reports `None` rather than
+    /// an arbitrary one of the two (D-03's super block has no single ticket).
+    ticket_mixed: bool,
     billable: bool,
     intervals: Vec<(i64, i64)>,
     /// Distinct non-empty descriptions in first-seen order.
@@ -557,26 +556,27 @@ fn fallback_invoice_text(conn: &Connection, acc: &GroupAcc) -> Result<String> {
 
 /// Compute a day's billing rows.
 ///
-/// Personal blocks are skipped entirely. Each remaining block resolves
-/// its folder → customer/verkefni/billable through the [`Registry`],
-/// then blocks are grouped by `(customer, verkefni, task)`. A group's
-/// `seconds` is the **union** of its blocks' intervals (never a naive
-/// sum) and `hours` is that union rounded to the nearest half hour.
+/// Personal blocks are skipped entirely. Each remaining block resolves into
+/// one or more [`BillingSlice`](crate::deild_contract::BillingSlice)s via
+/// [`resolve_block_slices`], then slices are grouped into super blocks: by
+/// `(customer, deild)` when the slice has a deild, else by `(customer,
+/// folder)` (FR-06 — a Jira ticket never splits a line; a group's `ticket`
+/// is the shared one, or `None` when its blocks disagree). A group's
+/// `seconds` is the **union** of its slices' intervals (never a naive sum)
+/// and `hours` is that union rounded to the nearest half hour.
 ///
 /// Rows sort with the lines still needing input first (so the user sees
 /// what to fill), then by customer, then by descending time.
 pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
     let registry = Registry::load(conn)?;
+    let deildir = billing_deildir::list_deildir(conn)?;
     let blocks = repo::list_blocks_for_day(conn, day)?;
 
-    type Key = (String, String, String);
+    // (customer, has_deild, deild-or-folder) — `has_deild` keeps a deild
+    // name from ever colliding with a folder name of the same text.
+    type Key = (String, bool, String);
     let mut groups: HashMap<Key, GroupAcc> = HashMap::new();
     let mut order: Vec<Key> = Vec::new();
-
-    // One block's contribution to a group: the customer it billed to (from
-    // a slice, or the folder's own resolution) and the interval(s) it
-    // covers.
-    type Contribution = (Option<String>, Vec<(i64, i64)>);
 
     for block in blocks.iter() {
         // Personal time never reaches the invoicing system.
@@ -592,39 +592,17 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
             .map(str::to_owned);
 
         let resolved = resolve_block(conn, block, &folder, &registry)?;
+        let slices = resolve_block_slices(conn, block, &folder, &registry, &deildir)?;
 
-        // A multi-tenant folder's block splits into one contribution per
-        // customer slice; a non-multi-tenant folder (`None`) keeps today's
-        // single whole-block contribution untouched.
-        let contributions: Vec<Contribution> =
-            match tenant_slices_for_block(conn, block, &folder, &registry)? {
-                None => vec![(resolved.customer.clone(), vec![block_interval(block)])],
-                Some(slices) => slices
-                    .into_iter()
-                    .map(|slice| {
-                        // A Fallback slice with nothing resolved goes through
-                        // today's registry resolution, same as an unsplit block.
-                        let customer = slice.customer.or_else(|| resolved.customer.clone());
-                        (customer, slice.intervals)
-                    })
-                    .collect(),
+        for slice in slices {
+            let key: Key = match &slice.deild {
+                Some(d) => (slice.customer.clone().unwrap_or_default(), true, d.clone()),
+                None => (
+                    slice.customer.clone().unwrap_or_default(),
+                    false,
+                    folder.clone(),
+                ),
             };
-
-        for (customer, intervals) in contributions {
-            // The folder pin's Verkefni belongs to the folder's own
-            // customer. A slice billed to a different customer (a
-            // multi-tenant split) must not inherit it — that would put an
-            // invented Verkefni on another customer's invoice.
-            let verkefni = if customer == resolved.customer {
-                resolved.verkefni.clone()
-            } else {
-                None
-            };
-            let key = (
-                customer.clone().unwrap_or_default(),
-                verkefni.clone().unwrap_or_default(),
-                task_for_block(block, &folder),
-            );
 
             if !groups.contains_key(&key) {
                 order.push(key.clone());
@@ -632,9 +610,10 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
                     key.clone(),
                     GroupAcc {
                         folder: folder.clone(),
-                        customer,
-                        verkefni,
+                        customer: slice.customer.clone(),
+                        verkefni: slice.deild.clone(),
                         ticket: ticket.clone(),
+                        ticket_mixed: false,
                         billable: resolved.billable,
                         intervals: Vec::new(),
                         descriptions: Vec::new(),
@@ -645,7 +624,10 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
                 );
             }
             let acc = groups.get_mut(&key).expect("group just inserted");
-            acc.intervals.extend(intervals);
+            if acc.ticket != ticket {
+                acc.ticket_mixed = true;
+            }
+            acc.intervals.extend(slice.intervals);
             acc.block_ids.push(block.id);
             acc.starts.push(block.started_at.clone());
             acc.ends.push(block.ended_at.clone());
@@ -682,7 +664,7 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
                 folder: acc.folder,
                 customer: acc.customer,
                 verkefni: acc.verkefni,
-                ticket: acc.ticket,
+                ticket: if acc.ticket_mixed { None } else { acc.ticket },
                 seconds,
                 hours: round_to_half_hour(seconds) as f64 / 3600.0,
                 billable: acc.billable,
@@ -866,10 +848,13 @@ pub fn render(rows: &[BillingRow], format: Format) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::billing_deildir::{list_deildir, upsert_deild};
     use crate::billing_registry::{upsert_customer, upsert_folder, Customer, FolderMap};
     use crate::db::open_memory;
+    use crate::deild_contract::{BlockShares, Deild, DeildOrigin, ShareRow};
     use crate::models::Event;
     use crate::repo as repository;
+    use crate::tenant_shares::save_rows;
     use rusqlite::params;
 
     fn home() -> String {
@@ -1229,7 +1214,11 @@ mod tests {
     }
 
     #[test]
-    fn distinct_tickets_stay_distinct_lines() {
+    fn tickets_never_split_a_line() {
+        // FR-06 (was `distinct_tickets_stay_distinct_lines`, spec 005):
+        // distinct Jira tickets used to force two lines; a ticket is no
+        // longer part of the grouping key, so both fold into one line and
+        // the mixed ticket reports blank rather than either value.
         let c = open_memory().unwrap();
         seed_block(
             &c,
@@ -1248,10 +1237,13 @@ mod tests {
             false,
         );
         let rows = rows_for_day(&c, "2026-07-23").unwrap();
-        assert_eq!(rows.len(), 2);
-        let hours: Vec<String> = rows.iter().map(|r| r.hours_display()).collect();
-        assert!(hours.contains(&"4".to_string()), "got {hours:?}");
-        assert!(hours.contains(&"5,5".to_string()), "got {hours:?}");
+        assert_eq!(rows.len(), 1, "a ticket must never split a line");
+        assert_eq!(rows[0].block_count, 2);
+        assert_eq!(rows[0].hours_display(), "9,5");
+        assert_eq!(
+            rows[0].ticket, None,
+            "a mixed-ticket group reports blank, not either value"
+        );
     }
 
     #[test]
@@ -1679,6 +1671,320 @@ mod tests {
         assert_eq!(text_lines, rows.len());
         assert_eq!(csv_data, rows.len());
         assert_eq!(json_len, rows.len());
+    }
+
+    // ───────────────────────── deild ladder (FR-03) ─────────────────────────
+
+    #[test]
+    fn deild_ladder_manual_row_wins_outright() {
+        let c = open_memory().unwrap();
+        upsert_customer(
+            &c,
+            &Customer {
+                id: None,
+                name: "Sjúkra".into(),
+                aliases: vec![],
+            },
+        )
+        .unwrap();
+        // Both later rungs would pick something else — proves manual wins.
+        upsert_deild(
+            &c,
+            &Deild {
+                id: None,
+                customer: "Sjúkra".into(),
+                name: "Rekstur".into(),
+                keywords: vec!["ops".into()],
+            },
+        )
+        .unwrap();
+        pin(&c, "vitinn-infra", Some("Sjúkra"), Some("Old pin verkefni"));
+        let b_id = seed_block(
+            &c,
+            "2026-07-23T09:00:00+00:00",
+            3600,
+            None,
+            Some("ops work"),
+            false,
+        );
+        let block = repository::get_block(&c, b_id).unwrap().unwrap();
+        let registry = Registry::load(&c).unwrap();
+        save_rows(
+            &c,
+            &BlockShares {
+                day: block.day.clone(),
+                started_at: block.started_at.clone(),
+                rows: vec![ShareRow {
+                    customer: "Sjúkra".into(),
+                    deild: Some("Áskrift".into()),
+                    fraction: 1.0,
+                }],
+            },
+            &registry,
+        )
+        .unwrap();
+
+        let deildir = list_deildir(&c).unwrap();
+        let slices = resolve_block_slices(&c, &block, "vitinn-infra", &registry, &deildir).unwrap();
+        assert_eq!(slices.len(), 1);
+        assert_eq!(slices[0].customer.as_deref(), Some("Sjúkra"));
+        assert_eq!(slices[0].deild.as_deref(), Some("Áskrift"));
+        assert_eq!(slices[0].deild_origin, DeildOrigin::Manual);
+    }
+
+    #[test]
+    fn deild_ladder_single_keyword_match() {
+        let c = open_memory().unwrap();
+        upsert_customer(
+            &c,
+            &Customer {
+                id: None,
+                name: "Sjúkra".into(),
+                aliases: vec![],
+            },
+        )
+        .unwrap();
+        upsert_deild(
+            &c,
+            &Deild {
+                id: None,
+                customer: "Sjúkra".into(),
+                name: "Rekstur".into(),
+                keywords: vec!["ops".into()],
+            },
+        )
+        .unwrap();
+        // The folder default would win at the next rung — proves the
+        // keyword match is tried, and wins, first.
+        pin(&c, "genai-infra", Some("Sjúkra"), Some("Fallback verkefni"));
+        let b_id = seed_block(
+            &c,
+            "2026-07-23T09:00:00+00:00",
+            3600,
+            None,
+            Some("ops ticket work"),
+            false,
+        );
+        let block = repository::get_block(&c, b_id).unwrap().unwrap();
+        let registry = Registry::load(&c).unwrap();
+        let deildir = list_deildir(&c).unwrap();
+
+        let slices = resolve_block_slices(&c, &block, "genai-infra", &registry, &deildir).unwrap();
+        assert_eq!(slices.len(), 1);
+        assert_eq!(slices[0].deild.as_deref(), Some("Rekstur"));
+        assert_eq!(slices[0].deild_origin, DeildOrigin::Keyword);
+    }
+
+    fn pinned_multi_tenant_house_folder(c: &Connection) {
+        upsert_customer(
+            c,
+            &Customer {
+                id: None,
+                name: "Sjúkra".into(),
+                aliases: vec!["Sjukra".into()],
+            },
+        )
+        .unwrap();
+        upsert_folder(
+            c,
+            &FolderMap {
+                id: None,
+                folder: "vitinn-infra".into(),
+                customer: Some(crate::tenant_contract::HOUSE_CUSTOMER.to_string()),
+                verkefni: Some("[P] Rekstur".into()),
+                billable: true,
+                multi_tenant: true,
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn deild_ladder_folder_default_skipped_for_another_customers_slice() {
+        let c = open_memory().unwrap();
+        pinned_multi_tenant_house_folder(&c);
+
+        // A Sjúkra-branch clue: the slice customer differs from the
+        // folder's own pinned customer (APRÓ) — no folder default.
+        let sjukra_id = seed_block(
+            &c,
+            "2026-07-23T09:00:00+00:00",
+            9000,
+            None,
+            Some("Sjukra tenant work"),
+            false,
+        );
+        seed_event(
+            &c,
+            sjukra_id,
+            "e1",
+            Some(&work("vitinn-infra")),
+            "checkout sjukra",
+        );
+        let sjukra_block = repository::get_block(&c, sjukra_id).unwrap().unwrap();
+
+        let registry = Registry::load(&c).unwrap();
+        let deildir: Vec<Deild> = Vec::new();
+        let sjukra_slices =
+            resolve_block_slices(&c, &sjukra_block, "vitinn-infra", &registry, &deildir).unwrap();
+        assert!(
+            sjukra_slices
+                .iter()
+                .any(|s| s.customer.as_deref() == Some("Sjúkra") && s.deild.is_none()),
+            "got {sjukra_slices:#?}"
+        );
+    }
+
+    #[test]
+    fn deild_ladder_folder_default_applies_when_slice_customer_matches_pin() {
+        let c = open_memory().unwrap();
+        pinned_multi_tenant_house_folder(&c);
+
+        // No clue at all: the slice inherits the folder's own customer
+        // (APRÓ), which does match the pin — folder default applies.
+        let house_id = seed_block(
+            &c,
+            "2026-07-23T13:00:00+00:00",
+            3600,
+            None,
+            Some("General maintenance"),
+            false,
+        );
+        seed_event(&c, house_id, "e2", Some(&work("vitinn-infra")), "commit");
+        let house_block = repository::get_block(&c, house_id).unwrap().unwrap();
+
+        let registry = Registry::load(&c).unwrap();
+        let deildir: Vec<Deild> = Vec::new();
+        let house_slices =
+            resolve_block_slices(&c, &house_block, "vitinn-infra", &registry, &deildir).unwrap();
+        assert_eq!(house_slices.len(), 1);
+        assert_eq!(
+            house_slices[0].customer.as_deref(),
+            Some(crate::tenant_contract::HOUSE_CUSTOMER)
+        );
+        assert_eq!(house_slices[0].deild.as_deref(), Some("[P] Rekstur"));
+        assert_eq!(house_slices[0].deild_origin, DeildOrigin::FolderDefault);
+    }
+
+    #[test]
+    fn deild_ladder_blank_when_nothing_resolves() {
+        let c = open_memory().unwrap();
+        let b_id = seed_block(
+            &c,
+            "2026-07-23T09:00:00+00:00",
+            3600,
+            None,
+            Some("Mystery work"),
+            false,
+        );
+        let block = repository::get_block(&c, b_id).unwrap().unwrap();
+        let registry = Registry::load(&c).unwrap();
+        let deildir: Vec<Deild> = Vec::new();
+
+        let slices = resolve_block_slices(&c, &block, "unmapped", &registry, &deildir).unwrap();
+        assert_eq!(slices.len(), 1);
+        assert_eq!(slices[0].customer, None);
+        assert_eq!(slices[0].deild, None);
+        assert_eq!(slices[0].deild_origin, DeildOrigin::Blank);
+    }
+
+    // ───────────────────── super blocks (FR-06, FR-07, J2) ─────────────────────
+
+    #[test]
+    fn super_blocks_group_by_customer_and_deild() {
+        // The 2026-09-25 shape: four blocks resolve to APRÓ·AI hraðall
+        // across two folders and two tickets — one line, ticket blank.
+        let c = open_memory().unwrap();
+        pin(&c, "apro-ai-1", Some("APRÓ"), Some("AI hraðall"));
+        pin(&c, "apro-ai-2", Some("APRÓ"), Some("AI hraðall"));
+
+        let specs = [
+            ("2026-07-23T09:00:00+00:00", "apro-ai-1", "AI-1"),
+            ("2026-07-23T10:00:00+00:00", "apro-ai-2", "AI-2"),
+            ("2026-07-23T11:00:00+00:00", "apro-ai-1", "AI-1"),
+            ("2026-07-23T12:00:00+00:00", "apro-ai-2", "AI-2"),
+        ];
+        for (i, (start, folder, ticket)) in specs.iter().enumerate() {
+            let b = seed_block(&c, start, 1800, Some(ticket), Some("hraðall work"), false);
+            seed_event(&c, b, &format!("e{i}"), Some(&work(folder)), "s");
+        }
+
+        // Two more blocks, unresolved, in different folders — a blank
+        // deild groups by (customer, folder), never merged together.
+        let b5 = seed_block(
+            &c,
+            "2026-07-23T14:00:00+00:00",
+            1800,
+            None,
+            Some("misc a"),
+            false,
+        );
+        seed_event(&c, b5, "e5", Some("/elsewhere/folder-a"), "s");
+        let b6 = seed_block(
+            &c,
+            "2026-07-23T15:00:00+00:00",
+            1800,
+            None,
+            Some("misc b"),
+            false,
+        );
+        seed_event(&c, b6, "e6", Some("/elsewhere/folder-b"), "s");
+
+        let rows = rows_for_day(&c, "2026-07-23").unwrap();
+
+        let apro_row = rows
+            .iter()
+            .find(|r| r.customer.as_deref() == Some("APRÓ"))
+            .expect("one APRÓ·AI hraðall line");
+        assert_eq!(apro_row.verkefni.as_deref(), Some("AI hraðall"));
+        assert_eq!(
+            apro_row.block_count, 4,
+            "two folders and two tickets still fold into one line"
+        );
+        assert_eq!(
+            apro_row.ticket, None,
+            "a mixed-ticket group shows no single ticket"
+        );
+        assert_eq!(apro_row.hours, 2.0, "4 * 30min disjoint blocks");
+
+        let blank_rows: Vec<_> = rows.iter().filter(|r| r.customer.is_none()).collect();
+        assert_eq!(
+            blank_rows.len(),
+            2,
+            "blank deild groups by (customer, folder), not merged"
+        );
+    }
+
+    #[test]
+    fn super_block_hours_are_a_union() {
+        // J2 edge: two blocks on the same (customer, deild) line, on
+        // different tickets, overlap by 30 min — the overlap counts once.
+        let c = open_memory().unwrap();
+        pin(&c, "apro-ai", Some("APRÓ"), Some("AI hraðall"));
+        let b1 = seed_block(
+            &c,
+            "2026-07-23T10:00:00+00:00",
+            3600,
+            Some("AI-1"),
+            Some("work"),
+            false,
+        );
+        seed_event(&c, b1, "e1", Some(&work("apro-ai")), "s");
+        let b2 = seed_block(
+            &c,
+            "2026-07-23T10:30:00+00:00",
+            3600,
+            Some("AI-2"),
+            Some("work"),
+            false,
+        );
+        seed_event(&c, b2, "e2", Some(&work("apro-ai")), "s");
+
+        let rows = rows_for_day(&c, "2026-07-23").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].verkefni.as_deref(), Some("AI hraðall"));
+        assert_eq!(rows[0].seconds, 5400, "union, not sum");
+        assert_eq!(rows[0].hours, 1.5);
     }
 }
 
