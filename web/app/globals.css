@@ -1740,62 +1740,123 @@ button {
   color: var(--fg);
 }
 
-/* Split editor: a compact grid rather than the registry's generic
-   `.reg-row` proportions — a customer name column that never wraps, a
-   narrow %, a muted duration estimate, then remove. */
+/* Split editor: one grid for the whole editor so every row's columns line
+   up — customer · deild · share · time · remove. Rows are
+   `display: contents` so their cells join the editor's grid. */
 .customer-split-editor {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  display: grid;
+  grid-template-columns: minmax(80px, max-content) minmax(0, 1fr) 76px 56px 24px;
+  column-gap: 8px;
+  row-gap: 6px;
+  align-items: center;
+  max-width: 620px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-sunk);
 }
-
-.split-row-name,
-.split-row-name-picker {
-  width: 140px;
-  flex: 0 0 140px;
+.customer-split-editor .split-row {
+  display: contents;
+}
+.split-head span {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-subtle);
+}
+.split-head .split-head-num {
+  text-align: right;
+}
+.split-row-name {
+  font-size: 12.5px;
+  font-weight: 500;
   white-space: nowrap;
 }
-
 .split-row-pct {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--fg-muted);
 }
-.split-row-pct input {
-  width: 56px;
+.split-row-pct-input {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+  appearance: textfield;
 }
-
+.split-row-pct-input::-webkit-inner-spin-button,
+.split-row-pct-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
 .split-row-approx {
-  font-size: 11px;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
   color: var(--fg-muted);
   white-space: nowrap;
 }
-
 .customer-split-editor .icon-btn {
   width: 22px;
   height: 22px;
+  justify-self: end;
 }
-
 .customer-split-editor .split-add-select {
-  width: 220px;
-  align-self: flex-start;
+  grid-column: 1 / 3;
+  justify-self: start;
+  width: auto;
+  min-width: 160px;
+  color: var(--fg-muted);
+  border-style: dashed;
+  background: transparent;
 }
-
 .split-editor-footer {
+  grid-column: 1 / -1;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+  padding-top: 8px;
+  margin-top: 2px;
+  border-top: 1px solid var(--border);
+}
+.split-editor-footer .action-btn {
+  padding: 5px 11px;
+  font-size: 12.5px;
+}
+.split-total {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+.split-total.is-off {
+  color: var(--terracotta);
+}
+.split-error {
+  grid-column: 1 / -1;
+  margin: 0;
 }
 
-@media (max-width: 420px) {
-  .split-row-name,
-  .split-row-name-picker,
+@media (max-width: 520px) {
+  /* Phone: the customer takes its own line; deild · share · remove below. */
+  .customer-split-editor {
+    grid-template-columns: minmax(0, 1fr) 76px 24px;
+  }
+  .split-head,
+  .split-row-approx {
+    display: none !important;
+  }
+  .split-row-name {
+    grid-column: 1 / -1;
+  }
   .customer-split-editor .split-add-select {
-    width: 100%;
-    flex: 1 1 100%;
+    grid-column: 1 / -1;
   }
 }
 
@@ -3993,13 +4054,6 @@ button {
   font-family: var(--font-sans, inherit);
   font-size: 10.5px;
   color: var(--fg-muted);
-}
-
-.split-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
 }
 
 .reg-input {
