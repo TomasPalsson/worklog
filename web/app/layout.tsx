@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import { ToastHost } from "@/components/ToastHost";
+import { ChangeNotices } from "@/components/ChangeNotices";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -61,6 +62,7 @@ export default async function RootLayout({
       </head>
       <body>
         <main className="page">{children}</main>
+        <ChangeNotices />
         <ToastHost />
       </body>
     </html>

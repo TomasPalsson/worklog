@@ -27,6 +27,11 @@ export function ToastHost() {
         {ok.map((m) => (
           <div key={m.id} className="toast ok">
             {m.text}
+            {m.action && (
+              <button type="button" className="toast-action" onClick={m.action.onClick}>
+                {m.action.label}
+              </button>
+            )}
           </div>
         ))}
       </div>
@@ -34,6 +39,11 @@ export function ToastHost() {
         {err.map((m) => (
           <div key={m.id} className="toast error">
             {m.text}
+            {m.action && (
+              <button type="button" className="toast-action" onClick={m.action.onClick}>
+                {m.action.label}
+              </button>
+            )}
           </div>
         ))}
       </div>

@@ -197,7 +197,7 @@ export async function estimateBlock(blockId: number): Promise<{
 
 // ───────────────────── reads (v0.6) ─────────────────────
 
-import type { Deild } from "./deildir";
+import type { ChangeFeed, Deild } from "./deildir";
 import type {
   BillingCustomer,
   BillingFolderMap,
@@ -369,6 +369,23 @@ export async function saveDeild(d: Deild): Promise<{ id: number }> {
 
 export async function deleteDeild(id: number): Promise<{ removed: boolean }> {
   return call("POST", `/billing/deildir/${id}/delete`);
+}
+
+// ───────────────────────── change log (spec 006) ─────────────────────────
+
+/** Changes after `after` (exclusive), for the live poll. */
+export async function loadChanges(after: number): Promise<ChangeFeed> {
+  return call<ChangeFeed>("GET", `/changes?after=${after}`);
+}
+
+/** Changes not yet marked seen, for the catch-up on mount. */
+export async function loadUnseenChanges(): Promise<ChangeFeed> {
+  return call<ChangeFeed>("GET", "/changes/unseen");
+}
+
+/** Marks every change up to and including `upTo` as seen. */
+export async function markChangesSeen(upTo: number): Promise<{ marked: number }> {
+  return call("POST", "/changes/seen", { up_to: upTo });
 }
 
 // ───────────────────────── settings ─────────────────────────

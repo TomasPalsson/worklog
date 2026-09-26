@@ -29,6 +29,9 @@ import {
   deleteBillingFolder as daemonDeleteBillingFolder,
   saveDeild as daemonSaveDeild,
   deleteDeild as daemonDeleteDeild,
+  loadChanges as daemonLoadChanges,
+  loadUnseenChanges as daemonLoadUnseenChanges,
+  markChangesSeen as daemonMarkChangesSeen,
   mergeBlocks as daemonMergeBlocks,
   estimateBlock as daemonEstimateBlock,
   routedForDay as daemonRoutedForDay,
@@ -38,7 +41,7 @@ import {
   deleteRule as daemonDeleteRule,
   routingStatus as daemonRoutingStatus,
 } from "@/lib/daemon";
-import type { Deild } from "@/lib/deildir";
+import type { ChangeFeed, Deild } from "@/lib/deildir";
 import type {
   BillingCustomer,
   BillingFolderMap,
@@ -327,6 +330,22 @@ export async function deleteDeild(
   id: number,
 ): Promise<ActionResult<{ removed: boolean }>> {
   return runAction(() => daemonDeleteDeild(id), REGISTRY_PATH);
+}
+
+// ───────────────────────── change log (spec 006) ─────────────────────────
+
+/** Live poll + catch-up reads. No revalidate — ChangeNotices holds its own
+ * client-side cursor/seen state rather than driving page content. */
+export async function fetchChanges(after: number): Promise<ActionResult<ChangeFeed>> {
+  return runAction(() => daemonLoadChanges(after));
+}
+
+export async function fetchUnseenChanges(): Promise<ActionResult<ChangeFeed>> {
+  return runAction(() => daemonLoadUnseenChanges());
+}
+
+export async function markChangesSeen(upTo: number): Promise<ActionResult<{ marked: number }>> {
+  return runAction(() => daemonMarkChangesSeen(upTo));
 }
 
 // ───────────────────────── settings ─────────────────────────
