@@ -48,7 +48,7 @@ const EXPANDED_STORAGE_KEY = "worklog.dayStrip.expanded";
 
 /** Clicking a block segment scrolls its BlockCard into view and flashes it
  * for a moment so the owner can find it in the list below. */
-function scrollToBlock(blockId: number) {
+export function scrollToBlock(blockId: number) {
   const el = document.getElementById(`block-${blockId}`);
   if (!el) return;
   el.scrollIntoView({ behavior: "smooth", block: "center" });

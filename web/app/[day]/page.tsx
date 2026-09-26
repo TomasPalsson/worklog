@@ -181,7 +181,13 @@ export default async function DayPage({
                       <ul className="blocks" role="list">
                         {members.map((b) => (
                           <li key={b.id}>
-                            <BlockCard block={b} tickets={tickets} day={day} hideTicketing />
+                            <BlockCard
+                              block={b}
+                              tickets={tickets}
+                              day={day}
+                              hideTicketing
+                              billingCustomer={row.customer}
+                            />
                           </li>
                         ))}
                       </ul>

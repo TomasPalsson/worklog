@@ -2,7 +2,8 @@
 // aria-label for every confidence level the daemon can send.
 
 import { afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { subscribe, type ToastMsg } from "@/lib/toast";
 import type { Block, JiraTicket } from "@/lib/types";
 
 mock.module("@/app/actions", () => ({
@@ -29,6 +30,7 @@ let BlockCard: (props: {
   tickets: JiraTicket[];
   day: string;
   hideTicketing?: boolean;
+  billingCustomer?: string | null;
 }) => React.JSX.Element;
 
 beforeAll(async () => {
@@ -163,4 +165,32 @@ describe("BlockCard confidence badge", () => {
       expect(badge.textContent).toBe(`${level} confidence`);
     },
   );
+});
+
+describe("BlockCard billing move alert", () => {
+  it("tells the owner and shows the card when a description edit moves it to another customer", async () => {
+    let toasts: ToastMsg[] = [];
+    const unsub = subscribe((m) => (toasts = m));
+    const before = makeBlock({ id: 7, description: "infra work" });
+    const { rerender } = render(
+      <BlockCard block={before} tickets={[]} day="2026-07-25" hideTicketing billingCustomer="Apro" />,
+    );
+    const desc = screen.getByRole("textbox", { name: /Block description/ });
+    desc.innerText = "infra work for sjukra";
+    fireEvent.blur(desc);
+    await waitFor(() => expect(desc.getAttribute("aria-busy")).toBeNull());
+
+    // The revalidated page re-renders the card under the Sjúkra group.
+    rerender(
+      <BlockCard
+        block={{ ...before, description: "infra work for sjukra" }}
+        tickets={[]}
+        day="2026-07-25"
+        hideTicketing
+        billingCustomer="Sjúkra"
+      />,
+    );
+    await waitFor(() => expect(toasts.map((t) => t.text)).toContain("Moved from Apro to Sjúkra"));
+    unsub();
+  });
 });
