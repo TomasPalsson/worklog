@@ -197,6 +197,7 @@ export async function estimateBlock(blockId: number): Promise<{
 
 // ───────────────────── reads (v0.6) ─────────────────────
 
+import type { ChangeFeed, Deild } from "./deildir";
 import type {
   BillingCustomer,
   BillingFolderMap,
@@ -357,6 +358,34 @@ export async function saveBillingFolder(f: BillingFolderMap): Promise<{ id: numb
 
 export async function deleteBillingFolder(id: number): Promise<{ removed: boolean }> {
   return call("POST", `/billing/folders/${id}/delete`);
+}
+
+/** Insert or update a deild (Verkefni) under a customer, keyed on
+ * (customer, name). The daemon returns 400 for an empty name or a
+ * duplicate name under the same customer, with the message verbatim. */
+export async function saveDeild(d: Deild): Promise<{ id: number }> {
+  return call("POST", "/billing/deildir", d);
+}
+
+export async function deleteDeild(id: number): Promise<{ removed: boolean }> {
+  return call("POST", `/billing/deildir/${id}/delete`);
+}
+
+// ───────────────────────── change log (spec 006) ─────────────────────────
+
+/** Changes after `after` (exclusive), for the live poll. */
+export async function loadChanges(after: number): Promise<ChangeFeed> {
+  return call<ChangeFeed>("GET", `/changes?after=${after}`);
+}
+
+/** Changes not yet marked seen, for the catch-up on mount. */
+export async function loadUnseenChanges(): Promise<ChangeFeed> {
+  return call<ChangeFeed>("GET", "/changes/unseen");
+}
+
+/** Marks every change up to and including `upTo` as seen. */
+export async function markChangesSeen(upTo: number): Promise<{ marked: number }> {
+  return call("POST", "/changes/seen", { up_to: upTo });
 }
 
 // ───────────────────────── settings ─────────────────────────

@@ -120,6 +120,7 @@ export default async function DayPage({
   let billingRows: BillingRow[] | null = null;
   let billingCustomers: BillingCustomer[] = [];
   let knownVerkefni: string[] = [];
+  let deildirByCustomer: Record<string, string[]> = {};
   if (view === "billing") {
     try {
       billingRows = (await exportBilling(day)).rows;
@@ -134,6 +135,11 @@ export default async function DayPage({
               .filter((v): v is string => !!v && v.trim() !== ""),
           ),
         ).sort();
+        // A customer's deildir names, so a line's Verkefni cell can offer
+        // "move this super block to another deild" (FR-13).
+        for (const d of registry.deildir) {
+          (deildirByCustomer[d.customer] ??= []).push(d.name);
+        }
       }
     } catch {
       billingRows = null;
@@ -178,6 +184,7 @@ export default async function DayPage({
                       folderPin={registry?.folders.find((f) => f.folder === row.folder) ?? null}
                       customers={billingCustomers}
                       knownVerkefni={knownVerkefni}
+                      deildirByCustomer={deildirByCustomer}
                     >
                       <ul className="blocks" role="list">
                         {members.map((b) => (

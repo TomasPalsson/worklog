@@ -583,6 +583,15 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
         }
     }
     tx.commit().context("committing block persistence")?;
+
+    // One batch for this rebuild (D-07); a refresh failure must not fail
+    // the rebuild — the write above already committed.
+    crate::change_log::refresh_day_logged(
+        conn,
+        &day_iso,
+        crate::deild_contract::ChangeSource::Rebuild,
+    );
+
     Ok(())
 }
 

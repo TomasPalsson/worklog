@@ -5,10 +5,17 @@
 
 export type Tone = "ok" | "error";
 
+/** A clickable button rendered alongside the toast text. */
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 export interface ToastMsg {
   id: number;
   tone: Tone;
   text: string;
+  action?: ToastAction;
 }
 
 type Listener = (msgs: ToastMsg[]) => void;
@@ -21,8 +28,8 @@ function emit() {
   for (const l of listeners) l(queue);
 }
 
-function push(tone: Tone, text: string, ttlMs = 3500) {
-  const msg = { id: nextId++, tone, text };
+function push(tone: Tone, text: string, ttlMs = 3500, action?: ToastAction) {
+  const msg = { id: nextId++, tone, text, action };
   queue = [...queue, msg];
   emit();
   // Auto-dismiss after ttl.
@@ -33,8 +40,11 @@ function push(tone: Tone, text: string, ttlMs = 3500) {
 }
 
 export const toast = {
-  ok: (text: string) => push("ok", text),
-  error: (text: string) => push("error", text, 6000),
+  ok: (text: string, action?: ToastAction) => push("ok", text, 3500, action),
+  error: (text: string, action?: ToastAction) => push("error", text, 6000, action),
+  // Change-batch pop-ups (FR-10): longer-lived than a plain ok toast so
+  // there's time to click "Show" before it auto-dismisses.
+  notice: (text: string, action?: ToastAction) => push("ok", text, 10000, action),
 };
 
 export function subscribe(listener: Listener): () => void {

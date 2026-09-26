@@ -19,6 +19,12 @@ import { useRouter } from "next/navigation";
 import { useTransition } from "react";
 
 import { saveBillingFolder } from "@/app/actions";
+// Namespace import: other test files (outside this unit) mock
+// `@/app/tenant-actions` with their own partial export set, and a named
+// import's static binding check would fail to link against that at
+// module-load time (see `lib/useCustomerSplit.ts`). A namespace object
+// degrades to `undefined` on a missing key instead.
+import * as tenantActions from "@/app/tenant-actions";
 import { toast } from "@/lib/toast";
 import type { BillingCustomer } from "@/lib/types";
 import { PalettePicker } from "./PalettePicker";
@@ -132,6 +138,61 @@ export function VerkefniPin({ known, ...pin }: PinProps & { known: string[] }) {
       busy={pending}
       onPick={(v) => void save({ verkefni: v }, `${pin.folder} → ${v}`)}
       onClear={() => void save({ verkefni: null }, `Cleared Verkefni for ${pin.folder}`)}
+    />
+  );
+}
+
+// ───────────────────────────── deild mover (FR-13) ─────────────────────────────
+
+/** Moves a super block: every block on this billing line whose slice names
+ * `customer`+`current` moves to the picked deild instead. Shown only when
+ * the customer has deildir configured — otherwise there is nothing to move
+ * to and the line falls back to the folder's own Verkefni pin.
+ *
+ * `moveLineDeild` is injectable (defaults to the real server action) so
+ * tests can supply their own spy directly: `@/app/tenant-actions` is also
+ * mocked by other unrelated test files, and Bun's `mock.module` replaces a
+ * specifier for the whole test run, not just one file — a prop sidesteps
+ * that collision entirely. */
+export function DeildMover({
+  day,
+  blockIds,
+  customer,
+  current,
+  options,
+  moveLineDeild = tenantActions.moveLineDeild,
+}: {
+  day: string;
+  blockIds: number[];
+  customer: string;
+  current: string | null;
+  options: string[];
+  moveLineDeild?: typeof tenantActions.moveLineDeild;
+}) {
+  const router = useRouter();
+  const [pending, start] = useTransition();
+
+  async function move(toDeild: string | null, message: string) {
+    const r = await moveLineDeild({ day, blockIds, customer, fromDeild: current, toDeild });
+    if (!r.ok) {
+      toast.error(`Couldn't move — ${r.error}`);
+      return;
+    }
+    toast.ok(message);
+    start(() => router.refresh());
+  }
+
+  return (
+    <PalettePicker
+      value={current}
+      options={options}
+      placeholder="Pick Verkefni"
+      searchPlaceholder="Search deildir…"
+      label={`Verkefni for ${customer}`}
+      tip={`Moves every block on this line to ${customer}'s new deild`}
+      busy={pending}
+      onPick={(v) => void move(v, `${customer} → ${v}`)}
+      onClear={current ? () => void move(null, `Cleared deild for ${customer}`) : undefined}
     />
   );
 }

@@ -10,6 +10,15 @@ const saveBillingFolder = mock(async (_f: BillingFolderMap) => ({
   ok: true as const,
   data: { id: 1 },
 }));
+// Passed straight in as `<BillingGroup moveLineDeild={moveLineDeild}>` (a
+// prop, not a `mock.module`): `@/app/tenant-actions` is also mocked by
+// unrelated test files, and Bun's `mock.module` replaces a specifier for
+// the whole test run, not just this file — a prop sidesteps that collision
+// entirely (see `DeildMover`'s doc comment in BillingPins.tsx).
+const moveLineDeild = mock(async (_args: unknown) => ({
+  ok: true as const,
+  data: { ok: true as const },
+}));
 mock.module("next/navigation", () => ({
   useRouter: () => ({ refresh: mock(() => {}) }),
 }));
@@ -24,6 +33,7 @@ beforeAll(async () => {
 afterEach(() => {
   cleanup();
   saveBillingFolder.mockClear();
+  moveLineDeild.mockClear();
 });
 
 function row(overrides: Partial<BillingRow>): BillingRow {
@@ -41,6 +51,7 @@ function row(overrides: Partial<BillingRow>): BillingRow {
     block_count: 7,
     started_at: "2026-09-25T09:00:00Z",
     ended_at: "2026-09-25T10:00:00Z",
+    block_ids: [11, 22],
     ...overrides,
   } as BillingRow;
 }
@@ -105,5 +116,77 @@ describe("BillingGroup pins", () => {
     );
     expect(screen.queryByLabelText(/Viðskiptamaður for vitinn-infra/)).toBeNull();
     expect(screen.getByText("Sjúkra")).toBeTruthy();
+  });
+});
+
+describe("BillingGroup deild mover (FR-13)", () => {
+  it("moves every block on the line when the customer has deildir configured", async () => {
+    render(
+      <BillingGroup
+        row={row({})}
+        folderPin={pin}
+        customers={customers}
+        knownVerkefni={["[O] AI hraðall - rekstur", "[P] Vöktun"]}
+        deildirByCustomer={{ APRÓ: ["[O] AI hraðall - rekstur", "Rekstur"] }}
+        moveLineDeild={moveLineDeild}
+      >
+        {null}
+      </BillingGroup>,
+    );
+    fireEvent.click(screen.getByLabelText(/Verkefni for APRÓ — currently/));
+    fireEvent.click(screen.getByRole("option", { name: "Rekstur" }));
+    await waitFor(() => expect(moveLineDeild).toHaveBeenCalled());
+    expect(moveLineDeild.mock.calls[0][0]).toEqual({
+      day: "2026-09-25",
+      blockIds: [11, 22],
+      customer: "APRÓ",
+      fromDeild: "[O] AI hraðall - rekstur",
+      toDeild: "Rekstur",
+    });
+    // The folder pin action must not fire — this line's own blocks move,
+    // not tomorrow's folder default.
+    expect(saveBillingFolder).not.toHaveBeenCalled();
+  });
+
+  it("clears the deild by picking blank", async () => {
+    render(
+      <BillingGroup
+        row={row({})}
+        folderPin={pin}
+        customers={customers}
+        knownVerkefni={[]}
+        deildirByCustomer={{ APRÓ: ["[O] AI hraðall - rekstur", "Rekstur"] }}
+        moveLineDeild={moveLineDeild}
+      >
+        {null}
+      </BillingGroup>,
+    );
+    fireEvent.click(screen.getByLabelText(/Verkefni for APRÓ — currently/));
+    fireEvent.click(screen.getByText(/Clear/));
+    await waitFor(() => expect(moveLineDeild).toHaveBeenCalled());
+    expect(moveLineDeild.mock.calls[0][0]).toEqual({
+      day: "2026-09-25",
+      blockIds: [11, 22],
+      customer: "APRÓ",
+      fromDeild: "[O] AI hraðall - rekstur",
+      toDeild: null,
+    });
+  });
+
+  it("falls back to the folder Verkefni pin when the customer has no deildir", async () => {
+    render(
+      <BillingGroup
+        row={row({})}
+        folderPin={pin}
+        customers={customers}
+        knownVerkefni={["[O] AI hraðall - rekstur"]}
+      >
+        {null}
+      </BillingGroup>,
+    );
+    fireEvent.click(screen.getByLabelText(/Verkefni for vitinn-infra — currently/));
+    fireEvent.click(screen.getByRole("option", { name: "[O] AI hraðall - rekstur" }));
+    await waitFor(() => expect(saveBillingFolder).toHaveBeenCalled());
+    expect(moveLineDeild).not.toHaveBeenCalled();
   });
 });

@@ -1,6 +1,7 @@
 use super::*;
 use crate::billing_registry::{upsert_customer, upsert_folder, Customer, FolderMap};
 use crate::db::open_memory;
+use crate::deild_contract::ChangeField;
 use crate::models::Event;
 use crate::repo;
 
@@ -964,4 +965,57 @@ fn routed_for_day_include_hidden_returns_dismissed_and_noise() {
     let ids: Vec<i64> = hidden.iter().map(|e| e.id).collect();
     assert!(ids.contains(&dismissed_id));
     assert!(ids.contains(&noise_id));
+}
+
+/// B9: a hard rule resolving a block's only event moves the block's
+/// customer from unresolved to the folder's pin — logged as one Customer
+/// change with source Verdict.
+#[test]
+fn route_day_moving_a_block_customer_is_logged_as_verdict() {
+    let conn = open_memory().unwrap();
+    pin(&conn, "aws-cert", Some("APRÓ"));
+    conn.execute(
+        "INSERT INTO routing_rules (kind, pattern, folder) VALUES ('domain', 'aws.tomasari.is', 'aws-cert')",
+        [],
+    )
+    .unwrap();
+
+    let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+    let eid = repo::upsert_event(
+        &conn,
+        &Event::minimal(
+            SOURCE_FIREFOX,
+            "e1",
+            "2026-04-20T09:00:00+00:00",
+            "AWS Console",
+        ),
+    )
+    .unwrap();
+    set_details(&conn, eid, "https://aws.tomasari.is/console");
+
+    conn.execute(
+        "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+         VALUES ('2026-04-20', '2026-04-20T09:00:00+00:00', '2026-04-20T09:30:00+00:00', 1800)",
+        [],
+    )
+    .unwrap();
+    let block_id = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+        params![block_id, eid],
+    )
+    .unwrap();
+
+    // Seed the pre-route snapshot: the event is still unlabelled, so the
+    // block's customer is unresolved.
+    change_log::refresh_day(&conn, "2026-04-20", ChangeSource::Rebuild, "seed").unwrap();
+
+    let stats = route_day(&conn, day, &PanicsIfCalled, default_rule()).unwrap();
+    assert_eq!(stats.rules_applied, 1);
+
+    let changes = change_log::feed(&conn, 0).unwrap().changes;
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].field, ChangeField::Customer);
+    assert_eq!(changes[0].source, ChangeSource::Verdict);
+    assert_eq!(changes[0].new.as_deref(), Some("APRÓ 100%"));
 }
