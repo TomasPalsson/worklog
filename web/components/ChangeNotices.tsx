@@ -79,7 +79,9 @@ export function ChangeNotices({
           const batchChanges = r.data.changes.filter((c) => c.batch === batch.batch);
           toast.notice(`${CHANGE_SOURCE_LABELS[batch.source]} changed ${batch.count} blocks`, {
             label: "Show",
-            onClick: () => openList(batchChanges),
+            // The toast's Show only opens the list — it must not mark the
+            // catch-up's older unseen changes seen or clear its chip.
+            onClick: () => setListChanges(batchChanges),
           });
         }
       })();
@@ -87,17 +89,20 @@ export function ChangeNotices({
     return () => clearInterval(id);
   }, [fetchChanges]);
 
-  function openList(changes: BlockChange[]) {
-    setListChanges(changes);
+  // Opening the catch-up chip is what marks its changes seen — the live
+  // toast's own "Show" (above) never touches seen state or this chip.
+  function openCatchUp() {
+    if (!catchUp) return;
+    setListChanges(catchUp);
     setCatchUp(null);
-    const upTo = Math.max(...changes.map((c) => c.id));
+    const upTo = Math.max(...catchUp.map((c) => c.id));
     void markChangesSeen(upTo);
   }
 
   return (
     <>
       {catchUp && catchUp.length > 0 && (
-        <button type="button" className="change-chip" onClick={() => openList(catchUp)}>
+        <button type="button" className="change-chip" onClick={openCatchUp}>
           {catchUp.length} changes since your last visit
         </button>
       )}

@@ -158,6 +158,75 @@ describe("ChangeNotices", () => {
     expect(screen.queryByText("3 changes since your last visit")).toBeNull();
   });
 
+  it("a live toast's Show only opens the list — it does not mark the catch-up seen or clear its chip (F5)", async () => {
+    restoreInterval = installIntervalSpy();
+    const unseen = [
+      change({ id: 1, source: "verdict" }),
+      change({ id: 2, source: "verdict" }),
+      change({ id: 3, source: "verdict" }),
+    ];
+    const fetchUnseenChanges = mock(async (): Promise<ActionResult<ChangeFeed>> =>
+      ok({ changes: unseen, batches: [{ batch: "b", source: "verdict", count: 3 }], cursor: 3 }),
+    );
+    const fetchChanges = mock(async (): Promise<ActionResult<ChangeFeed>> =>
+      ok({
+        changes: [change({ id: 4, source: "claude", batch: "live-1" })],
+        batches: [{ batch: "live-1", source: "claude", count: 1 }],
+        cursor: 4,
+      }),
+    );
+    const markChangesSeen = mock(async (): Promise<ActionResult<{ marked: number }>> => ok({ marked: 0 }));
+
+    render(
+      <ChangeNotices
+        fetchChanges={fetchChanges}
+        fetchUnseenChanges={fetchUnseenChanges}
+        markChangesSeen={markChangesSeen}
+      />,
+    );
+    await flush();
+    expect(screen.getByText("3 changes since your last visit")).not.toBeNull();
+
+    const toasts = captureToasts();
+    await tick();
+    const added = toasts.added();
+    expect(added.length).toBe(1);
+    toasts.stop();
+
+    added[0].action?.onClick();
+
+    expect(markChangesSeen).not.toHaveBeenCalled();
+    expect(screen.queryByText("3 changes since your last visit")).not.toBeNull();
+  });
+
+  it("opening the catch-up chip marks seen up to the chip's own max id (F5)", async () => {
+    restoreInterval = installIntervalSpy();
+    const unseen = [
+      change({ id: 1, source: "verdict" }),
+      change({ id: 2, source: "verdict" }),
+      change({ id: 3, source: "verdict" }),
+    ];
+    const fetchUnseenChanges = mock(async (): Promise<ActionResult<ChangeFeed>> =>
+      ok({ changes: unseen, batches: [{ batch: "b", source: "verdict", count: 3 }], cursor: 3 }),
+    );
+    const fetchChanges = mock(async (): Promise<ActionResult<ChangeFeed>> => ok({ changes: [], batches: [], cursor: 3 }));
+    const markChangesSeen = mock(async (): Promise<ActionResult<{ marked: number }>> => ok({ marked: 3 }));
+
+    render(
+      <ChangeNotices
+        fetchChanges={fetchChanges}
+        fetchUnseenChanges={fetchUnseenChanges}
+        markChangesSeen={markChangesSeen}
+      />,
+    );
+
+    const chip = await screen.findByText("3 changes since your last visit");
+    fireEvent.click(chip);
+
+    expect(markChangesSeen).toHaveBeenCalledWith(3);
+    expect(screen.queryByText("3 changes since your last visit")).toBeNull();
+  });
+
   it("never toasts a user-source batch, but it stays in the catch-up (B15)", async () => {
     restoreInterval = installIntervalSpy();
     const userChange = change({ id: 9, source: "user", batch: "u1" });
