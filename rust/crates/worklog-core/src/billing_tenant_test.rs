@@ -3,11 +3,14 @@
 // themselves.
 
 use super::*;
+use crate::billing_deildir::upsert_deild;
 use crate::billing_registry::{upsert_customer, upsert_folder, Customer, FolderMap};
 use crate::db::open_memory;
+use crate::deild_contract::{BlockShares, Deild, ShareRow};
 use crate::models::Event;
 use crate::repo as repository;
 use crate::tenant_contract::HOUSE_CUSTOMER;
+use crate::tenant_shares::save_rows;
 use rusqlite::params;
 
 fn home() -> String {
@@ -283,5 +286,106 @@ fn export_latency_under_500ms() {
     assert!(
         elapsed.as_millis() < 500,
         "export took {elapsed:?}, want < 500ms"
+    );
+}
+
+// §5: the same 30-block, ~2000-event day, now with the deildir keyword
+// ladder and a few hand-set splits in play, must still resolve under
+// 200ms — deild resolution and saved-split lookups must not turn the
+// per-block work into an O(n^2) scan either.
+#[test]
+fn rows_for_day_with_deildir_under_200ms() {
+    let c = open_memory().unwrap();
+    upsert_folder(
+        &c,
+        &multi_tenant_folder("vitinn-infra", Some(HOUSE_CUSTOMER)),
+    )
+    .unwrap();
+    upsert_customer(
+        &c,
+        &Customer {
+            id: None,
+            name: HOUSE_CUSTOMER.to_string(),
+            aliases: vec![],
+        },
+    )
+    .unwrap();
+    upsert_customer(
+        &c,
+        &Customer {
+            id: None,
+            name: "Sjúkra".into(),
+            aliases: vec!["Sjukra".into()],
+        },
+    )
+    .unwrap();
+    upsert_deild(
+        &c,
+        &Deild {
+            id: None,
+            customer: HOUSE_CUSTOMER.to_string(),
+            name: "Rekstur".into(),
+            keywords: vec!["deploy".into()],
+        },
+    )
+    .unwrap();
+
+    let registry = crate::billing_registry::Registry::load(&c).unwrap();
+
+    for b in 0..30 {
+        let started_at = format!("2026-09-24T{:02}:00:00+00:00", b % 24);
+        let description = if b % 3 == 0 {
+            "Routine deploy work"
+        } else {
+            "Routine work"
+        };
+        let block_id = seed_block(&c, &started_at, 1800, Some(description));
+        for e in 0..67 {
+            seed_event(
+                &c,
+                block_id,
+                &format!("e{b}-{e}"),
+                &work("vitinn-infra"),
+                "commit",
+                &started_at,
+            );
+        }
+        if b % 10 == 0 {
+            save_rows(
+                &c,
+                &BlockShares {
+                    day: "2026-09-24".into(),
+                    started_at: started_at.clone(),
+                    rows: vec![
+                        ShareRow {
+                            customer: HOUSE_CUSTOMER.to_string(),
+                            deild: Some("Rekstur".into()),
+                            fraction: 0.6,
+                        },
+                        ShareRow {
+                            customer: "Sjúkra".into(),
+                            deild: None,
+                            fraction: 0.4,
+                        },
+                    ],
+                },
+                &registry,
+            )
+            .unwrap();
+        }
+    }
+
+    let start = std::time::Instant::now();
+    let rows = rows_for_day(&c, "2026-09-24").unwrap();
+    let elapsed = start.elapsed();
+
+    assert!(!rows.is_empty());
+    assert!(
+        rows.iter().any(|r| r.verkefni.is_some()),
+        "at least one row should have a resolved verkefni"
+    );
+    assert!(
+        elapsed.as_millis() <= 200,
+        "rows_for_day took {elapsed:?}, want <= 200ms"
     );
 }
