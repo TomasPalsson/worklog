@@ -331,6 +331,12 @@ fn feed_groups_changes_into_one_batch_per_run() {
         "the batch touched two distinct blocks"
     );
     assert_eq!(result.cursor, result.changes.last().unwrap().id);
+
+    // Nothing newer: the cursor stays put, never drops back to 0 (a live
+    // poller treats 0 as "first poll" and would swallow the next batch).
+    let empty = feed(&conn, result.cursor).unwrap();
+    assert!(empty.changes.is_empty());
+    assert_eq!(empty.cursor, result.cursor);
 }
 
 #[test]

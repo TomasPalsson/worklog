@@ -68,12 +68,15 @@ pub fn refresh_day(
 /// Changes with `id > after`, all sources, plus one summary per batch
 /// (D-07) ordered by that batch's first change id.
 pub fn feed(conn: &Connection, after: i64) -> Result<ChangeFeed> {
-    query_feed(
+    let mut f = query_feed(
         conn,
         "SELECT id, day, started_at, field, old_value, new_value, source, batch, created_at, seen_at
            FROM block_changes WHERE id > ?1 ORDER BY id",
         params![after],
-    )
+    )?;
+    // An empty poll keeps the caller's place instead of resetting to 0.
+    f.cursor = f.cursor.max(after);
+    Ok(f)
 }
 
 /// The catch-up: every change not yet marked seen (FR-11), all sources —
@@ -87,8 +90,7 @@ pub fn unseen(conn: &Connection) -> Result<ChangeFeed> {
     )
 }
 
-/// Marks every unseen change with `id <= up_to` seen (FR-11: opening the
-/// catch-up marks it seen). Returns the number of rows marked.
+/// Marks unseen changes with `id <= up_to` seen (FR-11). Returns rows marked.
 pub fn mark_seen(conn: &Connection, up_to: i64) -> Result<usize> {
     conn.execute(
         "UPDATE block_changes SET seen_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -98,8 +100,7 @@ pub fn mark_seen(conn: &Connection, up_to: i64) -> Result<usize> {
     .context("marking block_changes seen")
 }
 
-/// Drops changes older than [`CHANGE_RETENTION_DAYS`] (§5 retention).
-/// Returns the number of rows purged.
+/// Drops changes older than [`CHANGE_RETENTION_DAYS`]. Returns rows purged.
 pub fn purge_old(conn: &Connection) -> Result<usize> {
     let cutoff = (Utc::now() - Duration::days(CHANGE_RETENTION_DAYS))
         .format("%Y-%m-%dT%H:%M:%S%.3fZ")
@@ -268,9 +269,8 @@ fn fraction_list(rows: &[ShareRow]) -> Vec<(&str, Option<&str>, String)> {
     v
 }
 
-/// `"Sjúkra·Rekstur 50% · APRÓ·AI hraðall 50%"` — the shared old/new
-/// display for Customer, Deild and Split changes (design.md §6: built
-/// separately from the TS formatter, no shared code).
+/// `"Sjúkra·Rekstur 50% · APRÓ·AI hraðall 50%"` — old/new display for
+/// Customer, Deild and Split changes (design.md §6: no shared TS formatter).
 fn format_parts(parts: &[ShareRow]) -> String {
     parts
         .iter()
