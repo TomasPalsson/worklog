@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { Check, Coffee, FolderGit2, Sparkles, Trash2 } from "lucide-react";
 import type { Block, JiraTicket, SourceCount } from "@/lib/types";
 import { formatDuration, formatProjectPath, formatRange } from "@/lib/format";
@@ -18,6 +18,7 @@ import { TicketCombobox } from "./TicketCombobox";
 import { EventList } from "./EventList";
 import { CommitList } from "./CommitList";
 import { BlockCustomerSplit } from "./BlockCustomerSplit";
+import { scrollToBlock } from "@/lib/scrollToBlock";
 
 interface Props {
   block: Block;
@@ -40,7 +41,18 @@ interface Props {
    * Sparkles affordance would be misleading.
    */
   isSoleInGroup?: boolean;
+  /**
+   * The billing group's customer this card renders under. Billing view
+   * only; `undefined` elsewhere. Lets a description edit that re-resolves
+   * the customer announce the move instead of the card silently vanishing.
+   */
+  billingCustomer?: string | null;
 }
+
+/** Block id → billing customer it had when its description was saved. The
+ * card remounts under its new group after revalidation, so this has to
+ * outlive the component instance. */
+const customerBeforeEdit = new Map<number, string | null>();
 
 export function BlockCard({
   block,
@@ -48,6 +60,7 @@ export function BlockCard({
   day,
   hideTicketing = false,
   isSoleInGroup = false,
+  billingCustomer,
 }: Props) {
   const [editingDur, setEditingDur] = useState(false);
   const [durVal, setDurVal] = useState(Math.round(block.duration_seconds / 60));
@@ -72,13 +85,30 @@ export function BlockCard({
   // Article label for screen readers — useful info, not "block 42".
   const ariaLabel = `${timeRangeLabel} · ${block.jira_issue ?? "unassigned"} · ${durationLabel}`;
 
+  // After a description save re-renders the day, say so if the block landed
+  // under another customer, and bring it into view (opening its group).
+  useEffect(() => {
+    if (!customerBeforeEdit.has(block.id)) return;
+    const from = customerBeforeEdit.get(block.id) ?? null;
+    customerBeforeEdit.delete(block.id);
+    if (from === (billingCustomer ?? null)) return;
+    toast.ok(`Moved from ${from ?? "Unresolved"} to ${billingCustomer ?? "Unresolved"}`);
+    const group = document.getElementById(`block-${block.id}`)?.closest("details");
+    if (group) group.open = true;
+    scrollToBlock(block.id);
+  }, [block.id, block.description, billingCustomer]);
+
   const commitDescription = () => {
     const previous = block.description ?? "";
     const next = (descRef.current?.innerText ?? "").trim();
     if (next === previous) return;
+    // Recorded before the save: the revalidated render can land before
+    // the action's promise resolves.
+    if (billingCustomer !== undefined) customerBeforeEdit.set(block.id, billingCustomer);
     start(async () => {
       const r = await setDescription(block.id, next, day);
       if (!r.ok) {
+        customerBeforeEdit.delete(block.id);
         toast.error(`Save description failed — ${r.error}`);
         // Revert the visible text so the user sees the real DB state,
         // not their unsaved edit. Without this the UI silently disagrees

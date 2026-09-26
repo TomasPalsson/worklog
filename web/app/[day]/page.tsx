@@ -175,13 +175,20 @@ export default async function DayPage({
                     <BillingGroup
                       key={`${row.customer ?? "?"}-${row.folder}-${i}`}
                       row={row}
+                      folderPin={registry?.folders.find((f) => f.folder === row.folder) ?? null}
                       customers={billingCustomers}
                       knownVerkefni={knownVerkefni}
                     >
                       <ul className="blocks" role="list">
                         {members.map((b) => (
                           <li key={b.id}>
-                            <BlockCard block={b} tickets={tickets} day={day} hideTicketing />
+                            <BlockCard
+                              block={b}
+                              tickets={tickets}
+                              day={day}
+                              hideTicketing
+                              billingCustomer={row.customer}
+                            />
                           </li>
                         ))}
                       </ul>
