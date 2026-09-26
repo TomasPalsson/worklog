@@ -82,12 +82,12 @@ function SplitEditorRow({
   // label — an edge case the Owner resolves by picking a deild first.
   const rowLabel = row.deild ? `${label} · ${row.deild}` : label;
   return (
-    <div className="reg-row split-row">
+    <div className="split-row">
       {row.customer ? (
         <span className="split-row-name">{row.customer}</span>
       ) : (
         <select
-          className="reg-input split-row-name-picker"
+          className="reg-input split-row-name"
           aria-label="Choose a customer"
           value=""
           onChange={(e) => onSetCustomer(e.target.value)}
@@ -111,7 +111,7 @@ function SplitEditorRow({
       </select>
       <span className="split-row-pct">
         <input
-          className="reg-input"
+          className="reg-input split-row-pct-input"
           type="number"
           step={5}
           min={0}
@@ -176,6 +176,13 @@ function SplitEditor({
         if (e.key === "Escape") onCancel();
       }}
     >
+      <div className="split-row split-head" aria-hidden="true">
+        <span>Customer</span>
+        <span>Deild</span>
+        <span className="split-head-num">Share</span>
+        <span className="split-head-num">Time</span>
+        <span />
+      </div>
       {rows.map((row, i) => (
         <SplitEditorRow
           key={i}
@@ -202,11 +209,11 @@ function SplitEditor({
         ))}
       </select>
 
-      {total !== 100 && <p className="export-error" role="alert">Shares must add up to 100%</p>}
-      {error && <p className="export-error" role="alert">{error}</p>}
-
       <div className="split-editor-footer">
-        <p className={total === 100 ? "settings-hint" : "export-error"}>Total: {total}%</p>
+        <span className={total === 100 ? "split-total" : "split-total is-off"}>
+          <span>Total: {total}%</span>
+          {total !== 100 && <span role="alert">Shares must add up to 100%</span>}
+        </span>
         <div className="reg-actions">
           <button type="button" className="action-btn" onClick={onSplitEvenly}>Split evenly</button>
           {origin === "manual" && (
@@ -216,6 +223,7 @@ function SplitEditor({
           <button type="button" className="action-btn primary" disabled={!canSave || isPending} onClick={onSave}>Save</button>
         </div>
       </div>
+      {error && <p className="export-error split-error" role="alert">{error}</p>}
     </div>
   );
 }
