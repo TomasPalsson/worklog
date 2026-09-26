@@ -1,4 +1,5 @@
 Approved: 2026-09-26 by user
+Verified: 2026-09-26 by user
 Base: f9b8044
 # Tasks — Billing deildir and super blocks
 Spec: spec.md · Design: design.md · Base: 370947d · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && (cd web && bun test)`
