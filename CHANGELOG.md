@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.13.0](https://github.com/TomasPalsson/worklog/compare/v0.12.0...v0.13.0) (2026-09-26)
+
+
+### Features
+
+* **005/T001:** schema, seed and multi_tenant flag for tenant folders ([f45ac05](https://github.com/TomasPalsson/worklog/commit/f45ac05a7405906de3d73c80743a9497370bcedc))
+* **005/T002:** tenant discovery and links ([f5b179e](https://github.com/TomasPalsson/worklog/commit/f5b179eaff0af433906b68adce4a31ff60872338))
+* **005/T003:** clue extraction and the per-block split rules ([539777d](https://github.com/TomasPalsson/worklog/commit/539777d9ab92fe7dbf189f06fdc71aafc0126cf7))
+* **005/T004:** hand-set customer shares storage and carving ([90d7225](https://github.com/TomasPalsson/worklog/commit/90d7225d42ccf2b5050e4a7a4d69c29622c11cde))
+* **005/T005:** billing export bills each customer its own slice ([5fdacde](https://github.com/TomasPalsson/worklog/commit/5fdacded7be776ac40f4719f3a767ea9617fc4d3))
+* **005/T006:** daemon routes for tenants and shares ([09a6efb](https://github.com/TomasPalsson/worklog/commit/09a6efb4c3fb5c37506caa1b1029d61f4243cef9))
+* **005/T007:** Billing panel multi-tenant tick and tenant list ([8f01b28](https://github.com/TomasPalsson/worklog/commit/8f01b2860c1c88ffa2bbd5634b7129ab0d2093d9))
+* **005/T008:** Block customer split editor (B17) ([111f6a5](https://github.com/TomasPalsson/worklog/commit/111f6a58dbb81414fdf5485cd8b3944c2fe0478c))
+* **006/T002:** deild registry CRUD + keyword matching ([1b36ab9](https://github.com/TomasPalsson/worklog/commit/1b36ab9d14712a243e9e80805c00568c63a54982))
+* **006/T003:** deild daemon routes ([dc0b670](https://github.com/TomasPalsson/worklog/commit/dc0b67044ed1ff12ed92560cd93a905ee531ac00))
+* **006/T004:** deildir editor in Settings -&gt; Billing ([37817cd](https://github.com/TomasPalsson/worklog/commit/37817cd9cf732042b10fd38f5eb6277edfb5dca7))
+* **006/T006:** deild resolution ladder + super-block grouping ([c6a27ce](https://github.com/TomasPalsson/worklog/commit/c6a27ceed8281c2b76fba4035b1e939f834ee2af))
+* **006/T007:** split routes v2 for every non-personal work block ([f39f95a](https://github.com/TomasPalsson/worklog/commit/f39f95a0b26d62f6dd6ea74f1f828f0c8bef4fde))
+* **006/T008:** split editor rows customer + deild + % ([28af5c3](https://github.com/TomasPalsson/worklog/commit/28af5c302f2c998f1768a4e8732dbea717722d5d))
+* **006/T009:** move a super block's deild from its line header ([b1d1141](https://github.com/TomasPalsson/worklog/commit/b1d114156016042d628a839e93f574a7fd4891f6))
+* **006/T010:** change log — snapshot, diff, feed ([a845235](https://github.com/TomasPalsson/worklog/commit/a8452355919a69ae2a239a6456b3a231b4028111))
+* **006/T011:** wire every writer to the change log ([43371e1](https://github.com/TomasPalsson/worklog/commit/43371e1c2fab24ef802495020601e432f146c69c))
+* **006/T012:** wire the change-log routes (B11) ([cf1ef07](https://github.com/TomasPalsson/worklog/commit/cf1ef076adfd13ee3d3ae90df4f263a08a6ff1c1))
+* **006/T013:** live change pop-ups and catch-up (B10, B11, B15) ([0d77815](https://github.com/TomasPalsson/worklog/commit/0d77815d68828fdcc728e1a2f9730bc4cc7f3867))
+
+
+### Bug Fixes
+
+* **billing:** a multi-tenant slice's Verkefni only survives for its own customer ([0f80a1a](https://github.com/TomasPalsson/worklog/commit/0f80a1ac2b6759d33026c65dfb5ae95836e5c7d1))
+* **billing:** fallback customer slice matches the ticket-summary haystack rows_for_day uses ([a9bbc1c](https://github.com/TomasPalsson/worklog/commit/a9bbc1c199c96bb4709fe683cda41af8cf1c9353))
+* **billing:** folderSavePayload no longer drops multi_tenant on save ([b25349a](https://github.com/TomasPalsson/worklog/commit/b25349abcfca45403dd38c5de7a3bb1c93a71699))
+* **change-log:** correct notification source and drop duration-driven noise ([419b3a3](https://github.com/TomasPalsson/worklog/commit/419b3a3b9d49caeb47d2be6444c07fe652f5cc01))
+* **estimate:** protect hand-set splits from same-ticket merges ([99a39a2](https://github.com/TomasPalsson/worklog/commit/99a39a20fbcff3e1beae8453e2f83dfb7cceb82d))
+* **multi-tenant:** billing correctness + split/tenant UI polish ([a468db1](https://github.com/TomasPalsson/worklog/commit/a468db17af9575efe3beec3fcfefec2538e6d292))
+* **tenants:** skip hidden directories like .terraform when discovering tenants ([30c67ef](https://github.com/TomasPalsson/worklog/commit/30c67ef6db1bda263878860934f5e4874f3a80b2))
+* **web:** a live toast's Show no longer marks the catch-up seen ([5013d06](https://github.com/TomasPalsson/worklog/commit/5013d0668d96e47f231f1c2f1aa463f18e242740))
+* **web:** keep the add-customer picker compact and stop split-row styles overriding the registry grid ([2d5b9d5](https://github.com/TomasPalsson/worklog/commit/2d5b9d57325f5eea662aae1e2894164278d11254))
+
 ## [0.12.0](https://github.com/TomasPalsson/worklog/compare/v0.11.2...v0.12.0) (2026-09-24)
 
 
