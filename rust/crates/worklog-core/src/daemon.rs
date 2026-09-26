@@ -73,6 +73,7 @@ use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 use crate::billing;
+use crate::billing_deildir;
 use crate::billing_registry;
 use crate::browser_ingest;
 use crate::collectors::{jira, tempo};
@@ -93,6 +94,9 @@ use crate::{
 
 #[path = "daemon_tenants.rs"]
 mod daemon_tenants;
+
+#[path = "daemon_deildir.rs"]
+mod daemon_deildir;
 
 pub struct AppState {
     /// Single shared connection — SQLite + rusqlite is !Send, so we keep
@@ -144,6 +148,11 @@ pub fn router(state: Shared) -> Router {
         )
         .route("/billing/folders", post(billing_folder_upsert))
         .route("/billing/folders/:id/delete", post(billing_folder_delete))
+        .route("/billing/deildir", post(daemon_deildir::upsert_deild))
+        .route(
+            "/billing/deildir/:id/delete",
+            post(daemon_deildir::delete_deild),
+        )
         .route("/billing/tenants", get(daemon_tenants::list_tenants))
         .route("/billing/tenants/link", post(daemon_tenants::link_tenant))
         .route(
@@ -2391,11 +2400,12 @@ const UNMAPPED_LOOKBACK_DAYS: i64 = 30;
 /// The whole registry plus the work folders seen recently that still have
 /// no mapping — everything Settings → Billing needs in one round trip.
 async fn billing_registry_get(State(state): State<Shared>) -> Result<Json<Value>, ApiError> {
-    let (customers, folders, unmapped) = with_conn(state, move |c| {
+    let (customers, folders, unmapped, deildir) = with_conn(state, move |c| {
         Ok((
             billing_registry::list_customers(c)?,
             billing_registry::list_folders(c)?,
             billing_registry::unmapped_folders(c, UNMAPPED_LOOKBACK_DAYS)?,
+            billing_deildir::list_deildir(c)?,
         ))
     })
     .await?;
@@ -2409,6 +2419,7 @@ async fn billing_registry_get(State(state): State<Shared>) -> Result<Json<Value>
         "customers": customers,
         "folders": folders,
         "unmapped": unmapped,
+        "deildir": deildir,
     })))
 }
 
@@ -2460,6 +2471,10 @@ mod tests {
 
     use crate::db::open_memory;
     use crate::models::{Event, JiraTicket};
+
+    mod deild {
+        include!("daemon_deildir_test.rs");
+    }
 
     fn state_with_block() -> Shared {
         let conn = open_memory().unwrap();

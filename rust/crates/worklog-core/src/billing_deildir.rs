@@ -97,34 +97,6 @@ pub fn delete_deild(conn: &Connection, id: i64) -> Result<bool> {
     Ok(n > 0)
 }
 
-/// Case-insensitive, word-boundary-aware substring match. Identical
-/// semantics to `billing_registry::alias_matches` (private to that
-/// module) — kept in sync by `deild_in_text_needs_an_unambiguous_hit`'s
-/// boundary cases below.
-fn keyword_matches(haystack: &str, keyword: &str) -> bool {
-    let keyword = keyword.trim();
-    if keyword.is_empty() {
-        return false;
-    }
-    let hay: Vec<char> = haystack.to_lowercase().chars().collect();
-    let needle: Vec<char> = keyword.to_lowercase().chars().collect();
-    if needle.len() > hay.len() {
-        return false;
-    }
-    for start in 0..=(hay.len() - needle.len()) {
-        if hay[start..start + needle.len()] != needle[..] {
-            continue;
-        }
-        let before_ok = start == 0 || !hay[start - 1].is_alphanumeric();
-        let after_idx = start + needle.len();
-        let after_ok = after_idx == hay.len() || !hay[after_idx].is_alphanumeric();
-        if before_ok && after_ok {
-            return true;
-        }
-    }
-    false
-}
-
 /// Find the single deild of `customer` whose keywords appear in `text`.
 /// `None` when no deild of that customer matches, or when more than one
 /// does — an ambiguous line is left for the Owner rather than guessed
@@ -132,7 +104,10 @@ fn keyword_matches(haystack: &str, keyword: &str) -> bool {
 pub fn deild_in_text(deildir: &[Deild], customer: &str, text: &str) -> Option<String> {
     let mut hits: Vec<&str> = Vec::new();
     for d in deildir.iter().filter(|d| d.customer == customer) {
-        let matched = d.keywords.iter().any(|k| keyword_matches(text, k));
+        let matched = d
+            .keywords
+            .iter()
+            .any(|k| crate::billing_registry::alias_matches(text, k));
         if matched && !hits.contains(&d.name.as_str()) {
             hits.push(&d.name);
         }

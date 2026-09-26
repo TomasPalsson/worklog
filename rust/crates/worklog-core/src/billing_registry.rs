@@ -114,7 +114,7 @@ fn join_aliases(aliases: &[String]) -> String {
 /// fire on "t**ru**e" or "**RU**N", and `HÍ` must not fire on
 /// "**hí**býli". A boundary is the start/end of the haystack or any
 /// non-alphanumeric character.
-fn alias_matches(haystack: &str, alias: &str) -> bool {
+pub(crate) fn alias_matches(haystack: &str, alias: &str) -> bool {
     let alias = alias.trim();
     if alias.is_empty() {
         return false;
