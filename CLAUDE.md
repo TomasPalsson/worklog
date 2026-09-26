@@ -52,7 +52,10 @@ bash tests/install/smoke.sh
   external invoicing form, not Tempo. Two rules are load-bearing:
   nothing that lands on an invoice is invented — `Viðskiptamaður` comes
   from a folder pin or an unambiguous customer-alias match, `Verkefni`
-  **only** from an explicit pin, and anything unresolved stays `None`
+  (the deild) **only** from the Owner's own config — a hand-set split
+  row, exactly one matching keyword on that customer's deildir
+  (`billing_deildir`), or the folder pin's default when the customer is
+  the pinned one — and anything unresolved stays `None`
   for the user to fill in; and a line's hours are the **union** of its
   blocks' intervals (`round_to_half_hour`), never a naive sum, so
   overlapping blocks can't be double-billed. Personal blocks are
