@@ -28,6 +28,7 @@ interface PinProps {
   customer: string | null;
   verkefni: string | null;
   billable: boolean;
+  multi_tenant: boolean;
 }
 
 /** A line with no working directory has no key to hang a mapping on. */
@@ -54,6 +55,9 @@ function useSavePin(pin: PinProps) {
       customer: patch.customer !== undefined ? patch.customer : pin.customer,
       verkefni: patch.verkefni !== undefined ? patch.verkefni : pin.verkefni,
       billable: patch.billable !== undefined ? patch.billable : pin.billable,
+      // Omitted, the daemon's upsert defaults it to false and silently
+      // stops the folder's tenant split.
+      multi_tenant: pin.multi_tenant,
     });
     if (!r.ok) {
       toast.error(`Couldn't save — ${r.error}`);
@@ -68,10 +72,13 @@ function useSavePin(pin: PinProps) {
 
 // ───────────────────────────── customer ─────────────────────────────
 
+/** `shown` is the line's customer, which may be resolved from text rather
+ * than pinned; `pin.customer` is only what the folder has saved. */
 export function CustomerPin({
   customers,
+  shown,
   ...pin
-}: PinProps & { customers: BillingCustomer[] }) {
+}: PinProps & { customers: BillingCustomer[]; shown: string | null }) {
   const { save, pending } = useSavePin(pin);
 
   if (!isMappable(pin.folder)) return <NoFolder />;
@@ -85,7 +92,7 @@ export function CustomerPin({
 
   return (
     <PalettePicker
-      value={pin.customer}
+      value={shown}
       options={customers.map((c) => c.name)}
       placeholder="Pick customer"
       searchPlaceholder="Search customers…"
@@ -95,7 +102,11 @@ export function CustomerPin({
       onPick={(name) =>
         void save({ customer: name }, `${pin.folder} → ${name} · applies to future days too`)
       }
-      onClear={() => void save({ customer: null }, `Cleared customer for ${pin.folder}`)}
+      onClear={
+        pin.customer
+          ? () => void save({ customer: null }, `Cleared customer for ${pin.folder}`)
+          : undefined
+      }
     />
   );
 }

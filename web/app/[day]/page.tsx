@@ -175,6 +175,7 @@ export default async function DayPage({
                     <BillingGroup
                       key={`${row.customer ?? "?"}-${row.folder}-${i}`}
                       row={row}
+                      folderPin={registry?.folders.find((f) => f.folder === row.folder) ?? null}
                       customers={billingCustomers}
                       knownVerkefni={knownVerkefni}
                     >

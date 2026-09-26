@@ -1,11 +1,15 @@
 import { ReactNode } from "react";
 
 import { formatExportHours, reikningshaefi } from "@/lib/export";
-import type { BillingCustomer, BillingRow } from "@/lib/types";
+import type { BillingCustomer, BillingFolderMap, BillingRow } from "@/lib/types";
 import { CustomerPin, VerkefniPin } from "./BillingPins";
 
 interface Props {
   row: BillingRow;
+  /** The folder's saved mapping, if any. The pins edit this, not `row`:
+   * a row's customer may be resolved from text, and writing that back
+   * would pin a guess onto the whole folder. */
+  folderPin: BillingFolderMap | null;
   customers: BillingCustomer[];
   /** Verkefni keys already in the registry, offered as suggestions. */
   knownVerkefni: string[];
@@ -23,38 +27,22 @@ interface Props {
  * dashes, and billed hours sit in a fixed right-aligned tabular column so the
  * figures line up down the day.
  */
-export function BillingGroup({ row, customers, knownVerkefni, children }: Props) {
+export function BillingGroup({ row, folderPin, customers, knownVerkefni, children }: Props) {
   const needsCustomer = row.customer === null;
   const needsVerkefni = row.verkefni === null;
   const needsInput = needsCustomer || needsVerkefni;
   const blockNoun = row.block_count === 1 ? "block" : "blocks";
 
-  const pin = {
-    folder: row.folder,
-    customer: row.customer,
-    verkefni: row.verkefni,
-    billable: row.billable,
-  };
-
   return (
     <details className={`billing-group ${needsInput ? "needs-input" : "complete"}`}>
       <summary>
         <span className="billing-head">
-          <span className="billing-cell">
-            {row.customer ? (
-              <span className="billing-customer">{row.customer}</span>
-            ) : (
-              <CustomerPin {...pin} customers={customers} />
-            )}
-          </span>
-
-          <span className="billing-cell">
-            {row.verkefni ? (
-              <span className="billing-verkefni">{row.verkefni}</span>
-            ) : (
-              <VerkefniPin {...pin} known={knownVerkefni} />
-            )}
-          </span>
+          <PinCells
+            row={row}
+            folderPin={folderPin}
+            customers={customers}
+            knownVerkefni={knownVerkefni}
+          />
 
           {/* Fixed, right-aligned, tabular — the figures align down the day. */}
           <span className="billing-cell-hours">
@@ -82,5 +70,42 @@ export function BillingGroup({ row, customers, knownVerkefni, children }: Props)
 
       <div className="billing-body">{children}</div>
     </details>
+  );
+}
+
+/** Viðskiptamaður + Verkefni cells: pickers that edit the folder's pin. */
+function PinCells({ row, folderPin, customers, knownVerkefni }: Omit<Props, "children">) {
+  const pin = {
+    folder: row.folder,
+    customer: folderPin?.customer ?? null,
+    verkefni: folderPin?.verkefni ?? null,
+    billable: folderPin?.billable ?? row.billable,
+    multi_tenant: folderPin?.multi_tenant ?? false,
+  };
+  // A multi-tenant split slice billed to another customer isn't this
+  // folder's pin, so editing the pin from here would change a different
+  // line. That slice is changed on the block instead.
+  const editable = !pin.customer || row.customer === null || row.customer === pin.customer;
+
+  return (
+    <>
+      <span className="billing-cell">
+        {editable ? (
+          <CustomerPin {...pin} shown={row.customer} customers={customers} />
+        ) : (
+          <span className="billing-customer" title="Split from the block — change it there">
+            {row.customer}
+          </span>
+        )}
+      </span>
+
+      <span className="billing-cell">
+        {editable ? (
+          <VerkefniPin {...pin} known={knownVerkefni} />
+        ) : (
+          <span className="billing-verkefni">{row.verkefni ?? "—"}</span>
+        )}
+      </span>
+    </>
   );
 }
