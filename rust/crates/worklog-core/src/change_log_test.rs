@@ -35,6 +35,23 @@ fn seed_event(conn: &Connection, block_id: i64, source_id: &str, project_path: &
     .unwrap();
 }
 
+fn seed_clue_event(
+    conn: &Connection,
+    block_id: i64,
+    source_id: &str,
+    title: &str,
+    started_at: &str,
+) {
+    let mut ev = Event::minimal("claude", source_id, started_at, title);
+    ev.project_path = Some("/tmp/vitinn-infra".into());
+    let eid = repo::upsert_event(conn, &ev).unwrap();
+    conn.execute(
+        "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+        params![block_id, eid],
+    )
+    .unwrap();
+}
+
 fn pin(conn: &Connection, folder: &str, customer: Option<&str>, verkefni: Option<&str>) {
     upsert_folder(
         conn,
@@ -383,4 +400,67 @@ fn purge_old_removes_changes_past_retention() {
         .query_row("SELECT COUNT(*) FROM block_changes", [], |r| r.get(0))
         .unwrap();
     assert_eq!(remaining, 1);
+}
+
+/// F9/FR-12: a clue split's fractions drift whenever the block's own
+/// duration changes (the last clue's slice grows or shrinks with it) —
+/// that drift is not an edit, so it must never be notified.
+#[test]
+fn duration_only_change_on_a_clue_split_logs_nothing() {
+    let conn = open_memory().unwrap();
+    upsert_customer(
+        &conn,
+        &Customer {
+            id: None,
+            name: "Sjúkra".into(),
+            aliases: vec!["Sjukra".into()],
+        },
+    )
+    .unwrap();
+    customer(&conn, "MMS");
+    upsert_folder(
+        &conn,
+        &FolderMap {
+            id: None,
+            folder: "vitinn-infra".into(),
+            customer: None,
+            verkefni: None,
+            billable: true,
+            multi_tenant: true,
+        },
+    )
+    .unwrap();
+
+    let started_at = "2026-09-24T09:00:00+00:00";
+    let block = seed_block(&conn, started_at, 7200, Some("mixed tenant work"));
+    seed_clue_event(
+        &conn,
+        block,
+        "e1",
+        "checkout sjukra",
+        "2026-09-24T09:15:00+00:00",
+    );
+    seed_clue_event(
+        &conn,
+        block,
+        "e2",
+        "checkout mms",
+        "2026-09-24T10:00:00+00:00",
+    );
+    refresh_day(&conn, DAY, ChangeSource::Rebuild, "seed").unwrap();
+
+    // Duration only — stretch the block by an hour. The trailing (MMS)
+    // clue slice grows with it, shifting both fractions even though
+    // neither customer nor deild changed.
+    conn.execute(
+        "UPDATE blocks SET duration_seconds = 10800 WHERE id = ?1",
+        params![block],
+    )
+    .unwrap();
+
+    let logged = refresh_day(&conn, DAY, ChangeSource::Claude, "b2").unwrap();
+    assert_eq!(
+        logged, 0,
+        "a duration-driven fraction drift on a clue split must not be notified"
+    );
 }

@@ -239,10 +239,7 @@ pub fn route_day(
     let stats = commit_labels(conn, &rule_hits, &guesses)?;
     // One batch per run (D-07); a refresh failure must not fail the route.
     let day_iso = day.to_string();
-    let batch = change_log::new_batch(ChangeSource::Verdict);
-    if let Err(e) = change_log::refresh_day(conn, &day_iso, ChangeSource::Verdict, &batch) {
-        tracing::warn!(error = %e, day = %day_iso, "change log refresh failed");
-    }
+    change_log::refresh_day_logged(conn, &day_iso, ChangeSource::Verdict);
     Ok(stats)
 }
 

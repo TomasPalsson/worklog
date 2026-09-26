@@ -8,18 +8,19 @@ use std::collections::{BTreeSet, HashMap};
 use anyhow::{Context, Result};
 use chrono::{Duration, Utc};
 use rusqlite::{params, Connection};
-use serde::de::DeserializeOwned;
-use serde::Serialize;
+use tracing::warn;
 
 use crate::billing::{resolve_block_slices, work_folder_for_block, BLANK};
 use crate::billing_deildir::list_deildir;
 use crate::billing_registry::Registry;
+use crate::change_log_column::{column_error, from_col, to_col};
 use crate::deild_contract::{
     BillingSlice, BlockChange, ChangeBatch, ChangeFeed, ChangeField, ChangeSource,
     ResolutionSnapshot, ShareRow, CHANGE_RETENTION_DAYS,
 };
 use crate::models::Block;
 use crate::repo;
+use crate::tenant_contract::SplitOrigin;
 
 /// One run of one writer — the pop-up unit (D-07).
 pub fn new_batch(source: ChangeSource) -> String {
@@ -52,7 +53,7 @@ pub fn refresh_day(
         match load_snapshot(conn, day, &block.started_at)? {
             None => store_snapshot(conn, &snapshot)?,
             Some(old) => {
-                logged += diff_and_log(conn, &old, &snapshot, source, batch)?;
+                logged += diff_and_log(conn, &old, &snapshot, &slices, source, batch)?;
                 store_snapshot(conn, &snapshot)?;
             }
         }
@@ -63,6 +64,16 @@ pub fn refresh_day(
         }
     }
     Ok(logged)
+}
+
+/// `new_batch` + `refresh_day`, warning (never failing) on a refresh error
+/// — the shape every owner-write and registry-write call site needs. Not
+/// for a run that must share one batch across several calls (`estimate_day_with`).
+pub fn refresh_day_logged(conn: &Connection, day: &str, source: ChangeSource) {
+    let batch = new_batch(source);
+    if let Err(e) = refresh_day(conn, day, source, &batch) {
+        warn!(error = %e, day, "change log refresh failed");
+    }
 }
 
 /// Changes with `id > after`, all sources, plus one summary per batch
@@ -210,17 +221,26 @@ fn diff_and_log(
     conn: &Connection,
     old: &ResolutionSnapshot,
     new: &ResolutionSnapshot,
+    new_slices: &[BillingSlice],
     source: ChangeSource,
     batch: &str,
 ) -> Result<usize> {
     let mut logged = 0;
     if let Some(field) = structural_diff(&old.parts, &new.parts) {
-        let (o, n) = (
-            Some(format_parts(&old.parts)),
-            Some(format_parts(&new.parts)),
-        );
-        insert_change(conn, new, field, o, n, source, batch)?;
-        logged += 1;
+        // FR-12: duration alone is never notified. A Split diff on a
+        // non-manual split is exactly that — fraction drift as a clue's
+        // timestamp or the block's own duration shifts, not an edit — so
+        // it only logs when every new slice is a hand-set (Manual) split.
+        let loggable = field != ChangeField::Split
+            || new_slices.iter().all(|s| s.origin == SplitOrigin::Manual);
+        if loggable {
+            let (o, n) = (
+                Some(format_parts(&old.parts)),
+                Some(format_parts(&new.parts)),
+            );
+            insert_change(conn, new, field, o, n, source, batch)?;
+            logged += 1;
+        }
     }
     if old.description != new.description {
         let (o, n) = (old.description.clone(), new.description.clone());
@@ -316,12 +336,6 @@ fn insert_change(
     Ok(())
 }
 
-/// A malformed `field`/`source` column fails the whole row the same way a
-/// SQLite type mismatch would — both mean the row can't be trusted.
-fn column_error(e: anyhow::Error) -> rusqlite::Error {
-    rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, e.into())
-}
-
 fn parse_row(r: &rusqlite::Row) -> rusqlite::Result<BlockChange> {
     let field: String = r.get(3)?;
     let source: String = r.get(6)?;
@@ -379,20 +393,6 @@ fn changes_to_feed(changes: Vec<BlockChange>) -> ChangeFeed {
         batches,
         cursor,
     }
-}
-
-/// Round-trips an enum through its own `serde(rename_all = "snake_case")`
-/// so the `TEXT` column and any JSON wire form can never drift apart.
-fn to_col<T: Serialize>(value: T) -> String {
-    match serde_json::to_value(value).expect("contract enums always serialize") {
-        serde_json::Value::String(s) => s,
-        _ => unreachable!("contract enums serialize to a JSON string"),
-    }
-}
-
-fn from_col<T: DeserializeOwned>(raw: &str) -> Result<T> {
-    serde_json::from_value(serde_json::Value::String(raw.to_string()))
-        .with_context(|| format!("unknown change-log column value '{raw}'"))
 }
 
 #[cfg(test)]

@@ -1480,6 +1480,10 @@ async fn reinfer_day(state: Shared, day: NaiveDate) -> Result<(usize, i64), ApiE
 
     let (count, minutes) = with_conn(state, move |c| {
         routing::commit_labels(c, &rule_hits, &guesses)?;
+        // Diff the labels' own effect before the rebuild's diff can claim
+        // it — otherwise a Verdict relabel that moves a block's customer
+        // gets logged as Rebuild once persist_blocks runs its own refresh.
+        change_log::refresh_day_logged(c, &day.to_string(), deild_contract::ChangeSource::Verdict);
         routing_absorb::absorb_and_noise(c, day)?;
         let blocks = infer_allocations::build_day_blocks(c, day)?;
         let total: i64 = blocks.iter().map(|b| b.duration_seconds).sum();
@@ -2315,10 +2319,32 @@ async fn set_event_label(
     if !exists {
         return Err(ApiError::NotFound(anyhow::anyhow!("event {id} not found")));
     }
-    let routed = with_conn(state, move |c| routing::label_event(c, id, &body))
-        .await
-        .map_err(ApiError::bad_request)?;
+    let routed = with_conn(state, move |c| {
+        let routed = routing::label_event(c, id, &body)?;
+        // The Owner's own re-label — logged under their own source, right
+        // after the write (a refresh failure must not fail the label).
+        for day in event_block_days(c, id)? {
+            change_log::refresh_day_logged(c, &day, deild_contract::ChangeSource::User);
+        }
+        Ok(routed)
+    })
+    .await
+    .map_err(ApiError::bad_request)?;
     Ok(Json(routed))
+}
+
+/// Distinct days of every block that links to event `id` — the days a
+/// relabel of that event can move a block's resolved customer/deild on.
+fn event_block_days(conn: &Connection, event_id: i64) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT b.day FROM blocks b
+           JOIN block_events be ON be.block_id = b.id
+          WHERE be.event_id = ?1",
+    )?;
+    let days = stmt
+        .query_map(rusqlite::params![event_id], |r| r.get::<_, String>(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(days)
 }
 
 async fn dismiss_event_handler(
@@ -4235,6 +4261,107 @@ mod tests {
         assert_eq!(
             project_path,
             format!("{}/X", crate::billing::work_prefix().unwrap())
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reinfer_relabel_that_moves_a_block_customer_is_logged_as_verdict() {
+        // F3: reinfer_day must diff the rule's own effect (Verdict) before
+        // persist_blocks' rebuild diff (Rebuild) can claim the same change.
+        let conn = open_memory().unwrap();
+        billing_registry::upsert_folder(
+            &conn,
+            &billing_registry::FolderMap {
+                id: None,
+                folder: "X".into(),
+                customer: Some("APRÓ".into()),
+                verkefni: None,
+                billable: true,
+                multi_tenant: false,
+            },
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO routing_rules (kind, pattern, folder) VALUES ('domain', 'aws.tomasari.is', 'X')",
+            [],
+        )
+        .unwrap();
+
+        // 5 unlabelled events a minute apart — enough to clear
+        // MIN_BLOCK_MINUTES once clustered.
+        let mut event_ids = Vec::new();
+        for i in 0..5 {
+            let ts = format!("2026-04-20T09:0{i}:00+00:00");
+            let eid = repo::upsert_event(
+                &conn,
+                &Event::minimal(
+                    routing_contract::SOURCE_FIREFOX,
+                    format!("e{i}"),
+                    &ts,
+                    "AWS",
+                ),
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE events SET details = 'https://aws.tomasari.is/console' WHERE id = ?1",
+                params![eid],
+            )
+            .unwrap();
+            event_ids.push(eid);
+        }
+
+        // A pre-existing block already covering those events, still
+        // unlabelled — what reinfer_day will rebuild in place. Seeding its
+        // snapshot here (unresolved customer) is what the rule's own
+        // relabel, below, diffs against.
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-20', '2026-04-20T09:00:00+00:00', '2026-04-20T09:05:00+00:00', 300)",
+            [],
+        )
+        .unwrap();
+        let block_id = conn.last_insert_rowid();
+        for eid in &event_ids {
+            conn.execute(
+                "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+                params![block_id, eid],
+            )
+            .unwrap();
+        }
+        change_log::refresh_day(
+            &conn,
+            "2026-04-20",
+            deild_contract::ChangeSource::Rebuild,
+            "seed",
+        )
+        .unwrap();
+
+        let state = state_from_conn(conn);
+        let app = router(state.clone());
+        let body = Body::from(serde_json::to_vec(&json!({"day": "2026-04-20"})).unwrap());
+        let resp = app
+            .oneshot(
+                Request::post("/infer")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let guard = state.conn.lock().await;
+        let changes = change_log::feed(&guard, 0).unwrap().changes;
+        assert_eq!(
+            changes.len(),
+            1,
+            "exactly one customer change, not one per writer"
+        );
+        assert_eq!(changes[0].field, deild_contract::ChangeField::Customer);
+        assert_eq!(
+            changes[0].source,
+            deild_contract::ChangeSource::Verdict,
+            "a rule relabel that moves a block's customer must be logged as Verdict, not Rebuild"
         );
     }
 

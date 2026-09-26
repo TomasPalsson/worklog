@@ -8,7 +8,6 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{params, Connection};
-use tracing::warn;
 
 use crate::change_log;
 use crate::deild_contract::ChangeSource;
@@ -51,7 +50,10 @@ pub fn assign_ticket(conn: &Connection, block_id: i64, key: Option<&str>) -> Res
         )
         .context("assign_ticket")?;
     }
-    repo::get_block(conn, block_id)?.ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))
+    let block = repo::get_block(conn, block_id)?
+        .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
+    change_log::refresh_day_logged(conn, &block.day, ChangeSource::User);
+    Ok(block)
 }
 
 pub fn set_duration(conn: &Connection, block_id: i64, minutes: u32) -> Result<Block> {
@@ -80,7 +82,10 @@ pub fn set_duration(conn: &Connection, block_id: i64, minutes: u32) -> Result<Bl
         params![minutes as i64 * 60, new_end, block_id],
     )
     .context("set_duration")?;
-    repo::get_block(conn, block_id)?.ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))
+    let block = repo::get_block(conn, block_id)?
+        .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
+    change_log::refresh_day_logged(conn, &block.day, ChangeSource::User);
+    Ok(block)
 }
 
 /// Compute the canonical ended_at string from started_at (ISO-8601) and
@@ -110,11 +115,7 @@ pub fn set_description(conn: &Connection, block_id: i64, description: &str) -> R
     .context("set_description")?;
     let block = repo::get_block(conn, block_id)?
         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
-    // One batch per edit (D-07); a refresh failure must not fail the edit.
-    let batch = change_log::new_batch(ChangeSource::User);
-    if let Err(e) = change_log::refresh_day(conn, &block.day, ChangeSource::User, &batch) {
-        warn!(error = %e, block_id, "change log refresh failed");
-    }
+    change_log::refresh_day_logged(conn, &block.day, ChangeSource::User);
     Ok(block)
 }
 
@@ -134,11 +135,7 @@ pub fn set_personal(conn: &Connection, block_id: i64, is_personal: bool) -> Resu
     .context("set_personal")?;
     let block = repo::get_block(conn, block_id)?
         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
-    // One batch per edit (D-07); a refresh failure must not fail the edit.
-    let batch = change_log::new_batch(ChangeSource::User);
-    if let Err(e) = change_log::refresh_day(conn, &block.day, ChangeSource::User, &batch) {
-        warn!(error = %e, block_id, "change log refresh failed");
-    }
+    change_log::refresh_day_logged(conn, &block.day, ChangeSource::User);
     Ok(block)
 }
 
@@ -295,6 +292,7 @@ pub fn merge_blocks(
 
     let merged = repo::get_block(conn, primary_id)?
         .ok_or_else(|| anyhow::anyhow!("block {primary_id} not found"))?;
+    change_log::refresh_day_logged(conn, &merged.day, ChangeSource::User);
     Ok(MergeOutcome {
         merged,
         absorbed: others.iter().map(|b| b.id).collect(),
@@ -380,17 +378,20 @@ pub fn split_block(conn: &Connection, block_id: i64, first_minutes: u32) -> Resu
     .context("split_block: re-bucketing events")?;
     tx.commit().context("split_block: commit")?;
 
-    Ok(SplitOutcome {
+    let outcome = SplitOutcome {
         first: repo::get_block(conn, block_id)?
             .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?,
         second: repo::get_block(conn, second_id)?
             .ok_or_else(|| anyhow::anyhow!("block {second_id} not found"))?,
-    })
+    };
+    change_log::refresh_day_logged(conn, &outcome.first.day, ChangeSource::User);
+    Ok(outcome)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::billing_registry;
     use crate::db::open_memory;
     use crate::deild_contract::ChangeField;
 
@@ -442,6 +443,47 @@ mod tests {
         let got = assign_ticket(&conn, id, None).unwrap();
         assert!(got.jira_issue.is_none());
         assert!(!got.is_personal, "clearing must not toggle is_personal");
+    }
+
+    /// F2: assign_ticket resolves the block's customer via the newly
+    /// assigned ticket's summary alias and logs it right away, under its
+    /// own source User — not left for the next automatic writer to claim.
+    #[test]
+    fn assign_ticket_logs_a_user_change() {
+        let conn = open_memory().unwrap();
+        let id = seed(&conn);
+        billing_registry::upsert_customer(
+            &conn,
+            &billing_registry::Customer {
+                id: None,
+                name: "Sjúkra".into(),
+                aliases: vec!["Sjukra".into()],
+            },
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO jira_tickets (key, summary) VALUES ('PROJ-1', 'Sjukra outage triage')",
+            [],
+        )
+        .unwrap();
+        change_log::refresh_day(&conn, "2026-04-18", ChangeSource::Rebuild, "seed").unwrap();
+
+        assign_ticket(&conn, id, Some("PROJ-1")).unwrap();
+
+        let changes = change_log::feed(&conn, 0).unwrap().changes;
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].field, ChangeField::Customer);
+        assert_eq!(changes[0].source, ChangeSource::User);
+
+        // A following Claude refresh finds nothing left to report — the
+        // resolution already matches what assign_ticket just logged.
+        change_log::refresh_day(&conn, "2026-04-18", ChangeSource::Claude, "claude-batch").unwrap();
+        let changes = change_log::feed(&conn, 0).unwrap().changes;
+        assert_eq!(
+            changes.len(),
+            1,
+            "a later Claude refresh must log nothing more"
+        );
     }
 
     #[test]
