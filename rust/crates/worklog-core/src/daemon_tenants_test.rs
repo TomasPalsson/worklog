@@ -532,6 +532,172 @@ async fn save_customer_shares_normalises_blank_deild_to_null() {
     );
 }
 
+fn insert_bare_block(conn: &rusqlite::Connection, started_at: &str, ended_at: &str) -> i64 {
+    conn.execute(
+        "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+         VALUES ('2026-04-18', ?1, ?2, 1800)",
+        params![started_at, ended_at],
+    )
+    .unwrap();
+    conn.last_insert_rowid()
+}
+
+async fn set_rows(state: &Shared, block_id: i64, rows_json: &str) {
+    let resp = router(state.clone())
+        .oneshot(
+            Request::post(format!("/blocks/{block_id}/customer-shares"))
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"rows":{rows_json}}}"#)))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+/// FR-13/B13: moving a super block's deild from its line header moves
+/// every slice on that line — two whole blocks land fully on the new
+/// deild, and a split block only moves the part naming that customer,
+/// leaving its other customer's share untouched.
+#[tokio::test(flavor = "current_thread")]
+async fn move_line_deild_moves_every_slice_on_the_line() {
+    let conn = open_memory().unwrap();
+    let state = state_from_conn(conn);
+    upsert_customer(&state, "APRÓ").await;
+    upsert_customer(&state, "Sjúkra").await;
+
+    let (block_a, block_b, block_c) = {
+        let conn = state.conn.lock().await;
+        (
+            insert_bare_block(
+                &conn,
+                "2026-04-18T09:00:00+00:00",
+                "2026-04-18T09:30:00+00:00",
+            ),
+            insert_bare_block(
+                &conn,
+                "2026-04-18T10:00:00+00:00",
+                "2026-04-18T10:30:00+00:00",
+            ),
+            insert_bare_block(
+                &conn,
+                "2026-04-18T11:00:00+00:00",
+                "2026-04-18T11:30:00+00:00",
+            ),
+        )
+    };
+
+    set_rows(
+        &state,
+        block_a,
+        r#"[{"customer":"APRÓ","deild":"AI hraðall","fraction":1.0}]"#,
+    )
+    .await;
+    set_rows(
+        &state,
+        block_b,
+        r#"[{"customer":"APRÓ","deild":"AI hraðall","fraction":1.0}]"#,
+    )
+    .await;
+    set_rows(
+        &state,
+        block_c,
+        r#"[{"customer":"APRÓ","deild":"AI hraðall","fraction":0.5},
+            {"customer":"Sjúkra","deild":"Rekstur","fraction":0.5}]"#,
+    )
+    .await;
+
+    let resp = router(state.clone())
+        .oneshot(
+            Request::post("/billing/lines/deild")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"day":"2026-04-18","block_ids":[{block_a},{block_b},{block_c}],
+                        "customer":"APRÓ","from_deild":"AI hraðall","to_deild":"Rekstur"}}"#
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = read_json(resp).await;
+    assert_eq!(status, StatusCode::OK, "{body:#?}");
+
+    let rows = {
+        let conn = state.conn.lock().await;
+        crate::billing::rows_for_day(&conn, "2026-04-18").unwrap()
+    };
+
+    assert!(
+        !rows
+            .iter()
+            .any(|r| r.verkefni.as_deref() == Some("AI hraðall")),
+        "AI hraðall line must be gone: {rows:#?}"
+    );
+
+    let apro_rekstur = rows
+        .iter()
+        .find(|r| r.customer.as_deref() == Some("APRÓ") && r.verkefni.as_deref() == Some("Rekstur"))
+        .unwrap_or_else(|| panic!("no APRÓ·Rekstur line: {rows:#?}"));
+    assert_eq!(apro_rekstur.block_count, 3, "{rows:#?}");
+    assert_eq!(apro_rekstur.seconds, 1800 + 1800 + 900, "{rows:#?}");
+
+    let sjukra_rekstur = rows
+        .iter()
+        .find(|r| r.customer.as_deref() == Some("Sjúkra"))
+        .unwrap_or_else(|| panic!("no Sjúkra line: {rows:#?}"));
+    assert_eq!(sjukra_rekstur.verkefni.as_deref(), Some("Rekstur"));
+    assert_eq!(sjukra_rekstur.block_count, 1, "{rows:#?}");
+    assert_eq!(sjukra_rekstur.seconds, 900, "{rows:#?}");
+}
+
+/// A block whose customer-A slice resolves with no customer at all (a
+/// blank fallback, not a saved split) can't become a manual row, so the
+/// move must fail loudly rather than drop that block's time.
+#[tokio::test(flavor = "current_thread")]
+async fn move_line_deild_rejects_block_with_unresolved_slice() {
+    let conn = open_memory().unwrap();
+    let state = state_from_conn(conn);
+    upsert_customer(&state, "APRÓ").await;
+
+    let block_id = {
+        let conn = state.conn.lock().await;
+        insert_bare_block(
+            &conn,
+            "2026-04-18T09:00:00+00:00",
+            "2026-04-18T09:30:00+00:00",
+        )
+    };
+
+    let resp = router(state.clone())
+        .oneshot(
+            Request::post("/billing/lines/deild")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"day":"2026-04-18","block_ids":[{block_id}],
+                        "customer":"APRÓ","from_deild":null,"to_deild":"Rekstur"}}"#
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    let conn = state.conn.lock().await;
+    let rows: Option<String> = conn
+        .query_row(
+            "SELECT rows_json FROM block_customer_shares WHERE day = '2026-04-18'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap();
+    assert!(
+        rows.is_none(),
+        "a rejected move must write nothing: {rows:?}"
+    );
+}
+
 /// Personal blocks never reach the split routes — both GET and POST
 /// refuse them with the same 400.
 #[tokio::test(flavor = "current_thread")]

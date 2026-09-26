@@ -53,3 +53,24 @@ export async function saveCustomerShares(
 export async function clearCustomerShares(blockId: number): Promise<ActionResult<{ ok: true }>> {
   return run(() => daemonClearCustomerShares(blockId));
 }
+
+/** FR-13: move a whole super block's deild from its line header — every
+ * slice on the line naming `customer`+`fromDeild` moves to `toDeild`,
+ * saved as a manual row set per block. */
+export async function moveLineDeild(args: {
+  day: string;
+  blockIds: number[];
+  customer: string;
+  fromDeild: string | null;
+  toDeild: string | null;
+}): Promise<ActionResult<{ ok: true }>> {
+  return run(() =>
+    call<{ ok: true }>("POST", "/billing/lines/deild", {
+      day: args.day,
+      block_ids: args.blockIds,
+      customer: args.customer,
+      from_deild: args.fromDeild,
+      to_deild: args.toDeild,
+    }),
+  );
+}

@@ -120,6 +120,93 @@ pub async fn save_customer_shares(
     Ok(Json(json!({ "ok": true })))
 }
 
+#[derive(Deserialize)]
+pub struct MoveLineDeildBody {
+    pub day: String,
+    pub block_ids: Vec<i64>,
+    pub customer: String,
+    pub from_deild: Option<String>,
+    pub to_deild: Option<String>,
+}
+
+/// FR-13: move a whole super block's deild from its line header. For each
+/// block on the line, every slice naming `customer`+`from_deild` is
+/// repointed to `to_deild`; every other slice on that block keeps its own
+/// (customer, deild) — a shared block split across customers only moves
+/// the part that named this line's customer. The result is saved as a
+/// manual row set, same as the split editor.
+pub async fn move_line_deild(
+    State(state): State<Shared>,
+    Json(body): Json<MoveLineDeildBody>,
+) -> Result<Json<Value>, ApiError> {
+    let day = body.day.clone();
+    let customer = body.customer.clone();
+    with_conn(state, move |c| {
+        let registry = Registry::load(c)?;
+        let deildir = billing_deildir::list_deildir(c)?;
+        for &block_id in &body.block_ids {
+            let block = crate::repo::get_block(c, block_id)?
+                .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
+            let folder = billing::work_folder_for_block(c, block_id)?
+                .unwrap_or_else(|| billing::BLANK.to_string());
+            let slices =
+                billing::resolve_block_slices(c, &block, &folder, &registry, &deildir)?;
+            let (start, end) = billing::block_interval(&block);
+            let total = (end - start).max(1) as f64;
+
+            let mut rows: Vec<ShareRow> = Vec::new();
+            for slice in &slices {
+                let Some(customer) = slice.customer.clone() else {
+                    anyhow::bail!("block {block_id} has a slice with no customer, fill it in before moving this line");
+                };
+                let deild = if customer == body.customer && slice.deild == body.from_deild {
+                    body.to_deild.clone()
+                } else {
+                    slice.deild.clone()
+                };
+                let seconds: i64 = slice.intervals.iter().map(|(s, e)| e - s).sum();
+                let fraction = seconds as f64 / total;
+                match rows
+                    .iter_mut()
+                    .find(|r| r.customer == customer && r.deild == deild)
+                {
+                    Some(existing) => existing.fraction += fraction,
+                    None => rows.push(ShareRow {
+                        customer,
+                        deild,
+                        fraction,
+                    }),
+                }
+            }
+            // The last row absorbs whatever second the earlier ones'
+            // rounding leaves over, so `validate_rows` always accepts it.
+            let n = rows.len();
+            if n > 0 {
+                let sum_rest: f64 = rows[..n - 1].iter().map(|r| r.fraction).sum();
+                rows[n - 1].fraction = (1.0 - sum_rest).max(0.0);
+            }
+
+            let shares = BlockShares {
+                day: block.day.clone(),
+                started_at: block.started_at.clone(),
+                rows,
+            };
+            tenant_shares::save_rows(c, &shares, &registry)?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| {
+        if e.to_string().contains("has a slice with no customer") {
+            ApiError::bad_request(e)
+        } else {
+            tenant_bad_request(e)
+        }
+    })?;
+    info!(day, customer, "moved line deild");
+    Ok(Json(json!({ "ok": true })))
+}
+
 pub async fn clear_customer_shares(
     State(state): State<Shared>,
     AxumPath(id): AxumPath<i64>,

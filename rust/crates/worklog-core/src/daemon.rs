@@ -167,6 +167,10 @@ pub fn router(state: Shared) -> Router {
             "/blocks/:id/customer-shares/clear",
             post(daemon_tenants::clear_customer_shares),
         )
+        .route(
+            "/billing/lines/deild",
+            post(daemon_tenants::move_line_deild),
+        )
         .route("/settings", get(get_settings).post(post_settings))
         .route(
             "/browser/heartbeat",

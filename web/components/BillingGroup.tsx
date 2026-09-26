@@ -1,8 +1,8 @@
-import { ReactNode } from "react";
+import { ComponentProps, ReactNode } from "react";
 
 import { formatExportHours, reikningshaefi } from "@/lib/export";
 import type { BillingCustomer, BillingFolderMap, BillingRow } from "@/lib/types";
-import { CustomerPin, VerkefniPin } from "./BillingPins";
+import { CustomerPin, DeildMover, VerkefniPin } from "./BillingPins";
 
 interface Props {
   row: BillingRow;
@@ -13,6 +13,13 @@ interface Props {
   customers: BillingCustomer[];
   /** Verkefni keys already in the registry, offered as suggestions. */
   knownVerkefni: string[];
+  /** Every registry customer's deildir names, keyed by customer (FR-13).
+   * A line whose customer has any lands the mover instead of the plain
+   * folder Verkefni pin. */
+  deildirByCustomer?: Record<string, string[]>;
+  /** Test-only override for `DeildMover`'s server action call — see its
+   * own doc comment. */
+  moveLineDeild?: ComponentProps<typeof DeildMover>["moveLineDeild"];
   children: ReactNode;
 }
 
@@ -27,7 +34,15 @@ interface Props {
  * dashes, and billed hours sit in a fixed right-aligned tabular column so the
  * figures line up down the day.
  */
-export function BillingGroup({ row, folderPin, customers, knownVerkefni, children }: Props) {
+export function BillingGroup({
+  row,
+  folderPin,
+  customers,
+  knownVerkefni,
+  deildirByCustomer = {},
+  moveLineDeild,
+  children,
+}: Props) {
   const needsCustomer = row.customer === null;
   const needsVerkefni = row.verkefni === null;
   const needsInput = needsCustomer || needsVerkefni;
@@ -42,6 +57,8 @@ export function BillingGroup({ row, folderPin, customers, knownVerkefni, childre
             folderPin={folderPin}
             customers={customers}
             knownVerkefni={knownVerkefni}
+            deildirByCustomer={deildirByCustomer}
+            moveLineDeild={moveLineDeild}
           />
 
           {/* Fixed, right-aligned, tabular — the figures align down the day. */}
@@ -73,8 +90,17 @@ export function BillingGroup({ row, folderPin, customers, knownVerkefni, childre
   );
 }
 
-/** Viðskiptamaður + Verkefni cells: pickers that edit the folder's pin. */
-function PinCells({ row, folderPin, customers, knownVerkefni }: Omit<Props, "children">) {
+/** Viðskiptamaður + Verkefni cells: pickers that edit the folder's pin,
+ * except Verkefni on a line whose customer has deildir configured — there
+ * it moves the whole super block instead (FR-13). */
+function PinCells({
+  row,
+  folderPin,
+  customers,
+  knownVerkefni,
+  deildirByCustomer = {},
+  moveLineDeild,
+}: Omit<Props, "children">) {
   const pin = {
     folder: row.folder,
     customer: folderPin?.customer ?? null,
@@ -86,6 +112,8 @@ function PinCells({ row, folderPin, customers, knownVerkefni }: Omit<Props, "chi
   // folder's pin, so editing the pin from here would change a different
   // line. That slice is changed on the block instead.
   const editable = !pin.customer || row.customer === null || row.customer === pin.customer;
+  const deildOptions = row.customer ? deildirByCustomer[row.customer] ?? [] : [];
+  const canMoveDeild = row.customer !== null && deildOptions.length > 0;
 
   return (
     <>
@@ -100,7 +128,16 @@ function PinCells({ row, folderPin, customers, knownVerkefni }: Omit<Props, "chi
       </span>
 
       <span className="billing-cell">
-        {editable ? (
+        {canMoveDeild ? (
+          <DeildMover
+            day={row.day}
+            blockIds={row.block_ids}
+            customer={row.customer as string}
+            current={row.verkefni}
+            options={deildOptions}
+            moveLineDeild={moveLineDeild}
+          />
+        ) : editable ? (
           <VerkefniPin {...pin} known={knownVerkefni} />
         ) : (
           <span className="billing-verkefni">{row.verkefni ?? "—"}</span>
