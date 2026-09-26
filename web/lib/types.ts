@@ -1,6 +1,8 @@
 // Shared types mirroring the Rust models in worklog-core. Kept thin on
 // purpose — we only list the columns the UI actually reads.
 
+import type { Deild } from "./deildir";
+
 /** A row from the `events` table as the daemon returns it. */
 export interface Event {
   id: number;
@@ -325,6 +327,7 @@ export interface BillingRegistry {
   customers: BillingCustomer[];
   folders: BillingFolderMap[];
   unmapped: UnmappedFolder[];
+  deildir: Deild[];
 }
 
 /**

@@ -27,6 +27,8 @@ import {
   deleteBillingCustomer as daemonDeleteBillingCustomer,
   saveBillingFolder as daemonSaveBillingFolder,
   deleteBillingFolder as daemonDeleteBillingFolder,
+  saveDeild as daemonSaveDeild,
+  deleteDeild as daemonDeleteDeild,
   mergeBlocks as daemonMergeBlocks,
   estimateBlock as daemonEstimateBlock,
   routedForDay as daemonRoutedForDay,
@@ -36,6 +38,7 @@ import {
   deleteRule as daemonDeleteRule,
   routingStatus as daemonRoutingStatus,
 } from "@/lib/daemon";
+import type { Deild } from "@/lib/deildir";
 import type {
   BillingCustomer,
   BillingFolderMap,
@@ -314,6 +317,16 @@ export async function deleteBillingFolder(
   id: number,
 ): Promise<ActionResult<{ removed: boolean }>> {
   return runAction(() => daemonDeleteBillingFolder(id), REGISTRY_PATH);
+}
+
+export async function saveDeild(d: Deild): Promise<ActionResult<{ id: number }>> {
+  return runAction(() => daemonSaveDeild(d), REGISTRY_PATH);
+}
+
+export async function deleteDeild(
+  id: number,
+): Promise<ActionResult<{ removed: boolean }>> {
+  return runAction(() => daemonDeleteDeild(id), REGISTRY_PATH);
 }
 
 // ───────────────────────── settings ─────────────────────────

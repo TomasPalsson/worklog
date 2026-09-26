@@ -6,6 +6,8 @@
 
 import { Loader2, Plus, Save, Trash2 } from "lucide-react";
 import type { CustomerDraft } from "@/lib/billingRegistryDrafts";
+import { useDeildir } from "@/lib/useBillingRegistry";
+import { BillingDeildir } from "./BillingDeildir";
 
 function CustomerActions({
   customer,
@@ -108,6 +110,8 @@ export function CustomerSection({
   onDelete: (customer: CustomerDraft) => void;
   onAdd: () => void;
 }) {
+  const deildState = useDeildir();
+
   return (
     <section className="reg-section">
       <h2>Customers</h2>
@@ -127,15 +131,28 @@ export function CustomerSection({
         </div>
 
         {customers.map((c) => (
-          <CustomerRow
-            key={c.key}
-            customer={c}
-            busy={busy}
-            isNew={justAdded === c.key}
-            onPatch={(patch) => onPatch(c.key, patch)}
-            onSave={() => onSave(c)}
-            onDelete={() => onDelete(c)}
-          />
+          <div key={c.key}>
+            <CustomerRow
+              customer={c}
+              busy={busy}
+              isNew={justAdded === c.key}
+              onPatch={(patch) => onPatch(c.key, patch)}
+              onSave={() => onSave(c)}
+              onDelete={() => onDelete(c)}
+            />
+            {c.name.trim() !== "" && (
+              <BillingDeildir
+                customer={c.name}
+                deildir={deildState.deildir}
+                busy={deildState.busy}
+                justAdded={deildState.justAdded}
+                onPatch={deildState.patchDeild}
+                onSave={deildState.saveDeild}
+                onDelete={deildState.deleteDeild}
+                onAdd={deildState.addDeild}
+              />
+            )}
+          </div>
         ))}
       </div>
 
