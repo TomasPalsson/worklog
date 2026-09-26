@@ -18,7 +18,7 @@ import { TicketCombobox } from "./TicketCombobox";
 import { EventList } from "./EventList";
 import { CommitList } from "./CommitList";
 import { BlockCustomerSplit } from "./BlockCustomerSplit";
-import { scrollToBlock } from "./DayStrip";
+import { scrollToBlock } from "@/lib/scrollToBlock";
 
 interface Props {
   block: Block;

@@ -75,7 +75,12 @@ const estimateBlockImpl = mock(async (blockId: number) => {
 });
 
 // Stub the daemon so we never make real network calls from the unit test.
+// bun's mock.module is process-wide, so exports not stubbed here (e.g.
+// `call`, used by tenant-actions) keep their real value — dropping them
+// broke other test files that share the run.
+const realDaemon = { ...(await import("@/lib/daemon")) };
 mock.module("@/lib/daemon", () => ({
+  ...realDaemon,
   exportBilling: (day: string) => exportBillingImpl(day),
   markExported: (day: string) => markExportedImpl(day),
   loadBillingRegistry: async () => ({

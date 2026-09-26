@@ -33,6 +33,7 @@ import { buildOverlapBands, overlapsInWindow } from "@/lib/dayStripOverlaps";
 import { LanesView } from "./DayStripLanesView";
 import { AllocationChips } from "./DayStripAllocationBrackets";
 import { buildAllocationBands } from "@/lib/dayStripAllocations";
+import { scrollToBlock } from "@/lib/scrollToBlock";
 import type { Overlap, ProjectActivity, SavedAllocation } from "@/lib/types";
 
 interface Props {
@@ -45,16 +46,6 @@ interface Props {
 }
 
 const EXPANDED_STORAGE_KEY = "worklog.dayStrip.expanded";
-
-/** Clicking a block segment scrolls its BlockCard into view and flashes it
- * for a moment so the owner can find it in the list below. */
-export function scrollToBlock(blockId: number) {
-  const el = document.getElementById(`block-${blockId}`);
-  if (!el) return;
-  el.scrollIntoView({ behavior: "smooth", block: "center" });
-  el.classList.add("block-flash");
-  window.setTimeout(() => el.classList.remove("block-flash"), 1200);
-}
 
 function readStoredExpanded(): boolean {
   try {
