@@ -6,11 +6,11 @@
 import {
   listTenants as daemonListTenants,
   linkTenant as daemonLinkTenant,
-  getCustomerSlices as daemonGetCustomerSlices,
-  saveCustomerShares as daemonSaveCustomerShares,
   clearCustomerShares as daemonClearCustomerShares,
 } from "@/lib/tenants";
-import type { CustomerSlice, Tenant, TenantLink } from "@/lib/tenants";
+import type { Tenant, TenantLink } from "@/lib/tenants";
+import { call } from "@/lib/daemon";
+import type { BillingSlice, ShareRow } from "@/lib/deildir";
 import type { ActionResult } from "./actions";
 
 async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
@@ -33,19 +33,20 @@ export async function saveTenantLink(link: TenantLink): Promise<ActionResult<{ o
   return run(() => daemonLinkTenant(link));
 }
 
-/** A block's customer split for the card's split line + editor (B17). Empty
- * array means the block's folder isn't multi-tenant — render nothing. */
-export async function fetchCustomerSlices(blockId: number): Promise<ActionResult<CustomerSlice[]>> {
-  return run(() => daemonGetCustomerSlices(blockId));
+/** A block's customer split for the card's split line + editor (B17, spec
+ * 006 super blocks) — one slice per (customer, deild), returned for every
+ * non-personal block. */
+export async function fetchCustomerSlices(blockId: number): Promise<ActionResult<BillingSlice[]>> {
+  return run(() => call<BillingSlice[]>("GET", `/blocks/${blockId}/customer-slices`));
 }
 
-/** Save the Owner's hand-set split, in fractions derived from the editor's
- * percent inputs. */
+/** Save the Owner's hand-set split rows, in fractions derived from the
+ * editor's percent inputs (FR-04/FR-05). */
 export async function saveCustomerShares(
   blockId: number,
-  shares: Record<string, number>,
+  rows: ShareRow[],
 ): Promise<ActionResult<{ ok: true }>> {
-  return run(() => daemonSaveCustomerShares(blockId, shares));
+  return run(() => call<{ ok: true }>("POST", `/blocks/${blockId}/customer-shares`, { rows }));
 }
 
 /** Clear a hand-set split — the block goes back to the automatic split. */
