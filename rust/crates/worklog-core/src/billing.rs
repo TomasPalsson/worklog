@@ -572,9 +572,10 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
     let deildir = billing_deildir::list_deildir(conn)?;
     let blocks = repo::list_blocks_for_day(conn, day)?;
 
-    // (customer, has_deild, deild-or-folder) — `has_deild` keeps a deild
-    // name from ever colliding with a folder name of the same text.
-    type Key = (String, bool, String);
+    // (customer, has_deild, deild-or-folder, billable) — `has_deild` keeps a
+    // deild name from ever colliding with a folder name of the same text;
+    // `billable` keeps a non-billable folder's time off a billable line.
+    type Key = (String, bool, String, bool);
     let mut groups: HashMap<Key, GroupAcc> = HashMap::new();
     let mut order: Vec<Key> = Vec::new();
 
@@ -594,14 +595,13 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
         let resolved = resolve_block(conn, block, &folder, &registry)?;
         let slices = resolve_block_slices(conn, block, &folder, &registry, &deildir)?;
 
-        for slice in slices {
+        for mut slice in slices {
+            // A blank-string deild is no deild: it must group and flag as one.
+            slice.deild = slice.deild.filter(|d| !d.trim().is_empty());
+            let customer = slice.customer.clone().unwrap_or_default();
             let key: Key = match &slice.deild {
-                Some(d) => (slice.customer.clone().unwrap_or_default(), true, d.clone()),
-                None => (
-                    slice.customer.clone().unwrap_or_default(),
-                    false,
-                    folder.clone(),
-                ),
+                Some(d) => (customer, true, d.clone(), resolved.billable),
+                None => (customer, false, folder.clone(), resolved.billable),
             };
 
             if !groups.contains_key(&key) {
@@ -628,6 +628,10 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
                 acc.ticket_mixed = true;
             }
             acc.intervals.extend(slice.intervals);
+            // Two split rows of one block can land on the same line.
+            if acc.block_ids.last() == Some(&block.id) {
+                continue;
+            }
             acc.block_ids.push(block.id);
             acc.starts.push(block.started_at.clone());
             acc.ends.push(block.ended_at.clone());
@@ -1985,6 +1989,81 @@ mod tests {
         assert_eq!(rows[0].verkefni.as_deref(), Some("AI hraðall"));
         assert_eq!(rows[0].seconds, 5400, "union, not sum");
         assert_eq!(rows[0].hours, 1.5);
+    }
+
+    #[test]
+    fn super_block_never_mixes_billable_and_non_billable_folders() {
+        // A non-billable folder's hour must not ride a billable line
+        // (Reikningshæfi comes from the line's `billable`).
+        let c = open_memory().unwrap();
+        pin(&c, "apro-a", Some("APRÓ"), Some("AI hraðall"));
+        upsert_folder(
+            &c,
+            &FolderMap {
+                id: None,
+                folder: "apro-b".into(),
+                customer: Some("APRÓ".into()),
+                verkefni: Some("AI hraðall".into()),
+                billable: false,
+                multi_tenant: false,
+            },
+        )
+        .unwrap();
+        let b1 = seed_block(
+            &c,
+            "2026-07-23T09:00:00+00:00",
+            3600,
+            None,
+            Some("a"),
+            false,
+        );
+        seed_event(&c, b1, "e1", Some(&work("apro-a")), "s");
+        let b2 = seed_block(
+            &c,
+            "2026-07-23T11:00:00+00:00",
+            3600,
+            None,
+            Some("b"),
+            false,
+        );
+        seed_event(&c, b2, "e2", Some(&work("apro-b")), "s");
+
+        let rows = rows_for_day(&c, "2026-07-23").unwrap();
+        assert_eq!(rows.len(), 2);
+        let billable: Vec<(bool, i64)> = rows.iter().map(|r| (r.billable, r.seconds)).collect();
+        assert!(billable.contains(&(true, 3600)) && billable.contains(&(false, 3600)));
+    }
+
+    #[test]
+    fn split_rows_on_one_line_count_the_block_once_and_blank_deild_needs_input() {
+        let c = open_memory().unwrap();
+        pin(&c, "sjukra", Some("Sjúkra"), None);
+        let b = seed_block(
+            &c,
+            "2026-07-23T09:00:00+00:00",
+            3600,
+            None,
+            Some("w"),
+            false,
+        );
+        seed_event(&c, b, "e1", Some(&work("sjukra")), "s");
+        let row = |deild: Option<&str>| crate::deild_contract::ShareRow {
+            customer: "Sjúkra".into(),
+            deild: deild.map(str::to_owned),
+            fraction: 0.5,
+        };
+        c.execute(
+            "INSERT INTO block_customer_shares (day, started_at, shares, rows_json)
+             VALUES ('2026-07-23', '2026-07-23T09:00:00+00:00', '{}', ?1)",
+            [serde_json::to_string(&vec![row(Some("")), row(None)]).unwrap()],
+        )
+        .unwrap();
+
+        let rows = rows_for_day(&c, "2026-07-23").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].block_count, 1);
+        assert_eq!(rows[0].verkefni, None);
+        assert!(rows[0].needs_input());
     }
 }
 

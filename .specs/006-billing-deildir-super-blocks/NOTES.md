@@ -1,1 +1,4 @@
 Discovered: db.rs tests moved to db_test.rs (size-guard, 887 > 400 lines); seed gated to the v14 upgrade so a deleted seeded deild stays deleted — fold into T001
+Discovered: T002 duplicated billing_registry::alias_matches as a private keyword_matches (file ownership) — fold into T003 (expose alias_matches, delete the copy)
+Ruling: size-guard on pre-existing oversized files (daemon.rs 5368, billing.rs 1687, billing_registry.rs 752 lines) — new code goes in new sibling files (#[path] modules like daemon_tenants.rs), big files only get wiring lines; splitting them is out of scope — cost if wrong: files stay big
+Ruling: folder-default deild applies when slice customer == resolved.customer (pin OR alias-matched), not strictly the pinned customer (FR-03 wording) — parked — pre-existing behaviour from before spec 006, only hits a folder pinned with Verkefni but no customer — cost if wrong: an alias-matched customer on such a folder gets that folder's Verkefni
