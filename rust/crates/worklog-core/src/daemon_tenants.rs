@@ -3,8 +3,6 @@
 //! `daemon.rs` (via `#[path]`) so it reuses its private `with_conn`/
 //! `ApiError` — see design.md §4.
 
-use std::collections::BTreeMap;
-
 use axum::extract::{Path as AxumPath, State};
 use axum::Json;
 use serde::Deserialize;
@@ -12,22 +10,24 @@ use serde_json::{json, Value};
 use tracing::info;
 
 use crate::billing;
+use crate::billing_deildir;
 use crate::billing_registry::Registry;
-use crate::tenant_contract::{CustomerShares, CustomerSlice, Tenant, TenantLink};
+use crate::deild_contract::{BillingSlice, BlockShares, ShareRow};
+use crate::tenant_contract::{Tenant, TenantLink};
 use crate::tenant_shares;
-use crate::tenant_split::tenant_slices_for_block;
 use crate::tenants;
 
 use super::{with_conn, ApiError, Shared};
 
-/// The four exact `anyhow::bail!` messages design.md §3 maps to 400;
+/// The five exact `anyhow::bail!` messages design.md §3 maps to 400;
 /// anything else (a real db/io failure) stays 500.
 fn tenant_bad_request(e: anyhow::Error) -> ApiError {
-    const BAD_REQUESTS: [&str; 4] = [
+    const BAD_REQUESTS: [&str; 5] = [
         "Customer no longer exists",
         "Folder is not multi-tenant",
         "Shares must add up to 100%",
         "Share must be above 0",
+        "Block is personal",
     ];
     if BAD_REQUESTS.contains(&e.to_string().as_str()) {
         ApiError::bad_request(e)
@@ -57,39 +57,32 @@ pub async fn link_tenant(
 pub async fn customer_slices(
     State(state): State<Shared>,
     AxumPath(id): AxumPath<i64>,
-) -> Result<Json<Vec<CustomerSlice>>, ApiError> {
+) -> Result<Json<Vec<BillingSlice>>, ApiError> {
     let slices = with_conn(state, move |c| {
         let block = crate::repo::get_block(c, id)?
             .ok_or_else(|| anyhow::anyhow!("block {id} not found"))?;
-        let Some(folder) = billing::work_folder_for_block(c, id)? else {
-            return Ok(Vec::new());
-        };
+        if block.is_personal {
+            anyhow::bail!("Block is personal");
+        }
+        // A folder-less block (e.g. pure calendar/Jira, no events) still
+        // gets its saved split — `resolve_block_slices` checks that before
+        // ever looking at the folder — so it must run for every block, not
+        // just ones with a resolvable folder. `BLANK` mirrors the folder
+        // `rows_for_day` uses for the same case.
+        let folder =
+            billing::work_folder_for_block(c, id)?.unwrap_or_else(|| billing::BLANK.to_string());
         let registry = Registry::load(c)?;
-        let slices = tenant_slices_for_block(c, &block, &folder, &registry)?.unwrap_or_default();
-        // A `Fallback` slice with no clue-resolved customer bills to the
-        // folder's normal (pin/text) resolution — same haystack (ticket
-        // summary + description) and the same call as billing.rs
-        // `rows_for_day` — so the card shows the truth instead of
-        // "Unresolved".
-        let fallback_customer = billing::resolve_block(c, &block, &folder, &registry)?.customer;
-        let slices = slices
-            .into_iter()
-            .map(|mut slice| {
-                if slice.customer.is_none() {
-                    slice.customer = fallback_customer.clone();
-                }
-                slice
-            })
-            .collect();
-        Ok(slices)
+        let deildir = billing_deildir::list_deildir(c)?;
+        billing::resolve_block_slices(c, &block, &folder, &registry, &deildir)
     })
-    .await?;
+    .await
+    .map_err(tenant_bad_request)?;
     Ok(Json(slices))
 }
 
 #[derive(Deserialize)]
 pub struct CustomerSharesBody {
-    pub shares: BTreeMap<String, f64>,
+    pub rows: Vec<ShareRow>,
 }
 
 pub async fn save_customer_shares(
@@ -100,26 +93,26 @@ pub async fn save_customer_shares(
     with_conn(state, move |c| {
         let block = crate::repo::get_block(c, id)?
             .ok_or_else(|| anyhow::anyhow!("block {id} not found"))?;
-        let registry = Registry::load(c)?;
-        let folder = billing::work_folder_for_block(c, id)?;
-        let multi_tenant = folder
-            .as_deref()
-            .map(|f| {
-                registry
-                    .folders
-                    .iter()
-                    .any(|m| m.folder == f && m.multi_tenant)
-            })
-            .unwrap_or(false);
-        if !multi_tenant {
-            anyhow::bail!("Folder is not multi-tenant");
+        if block.is_personal {
+            anyhow::bail!("Block is personal");
         }
-        let shares = CustomerShares {
+        let registry = Registry::load(c)?;
+        // A blank-string deild is no deild — store it as `None`, same as
+        // how a blank deild reads back everywhere else.
+        let rows = body
+            .rows
+            .into_iter()
+            .map(|mut row| {
+                row.deild = row.deild.filter(|d| !d.is_empty());
+                row
+            })
+            .collect();
+        let shares = BlockShares {
             day: block.day,
             started_at: block.started_at,
-            shares: body.shares,
+            rows,
         };
-        tenant_shares::save_shares(c, &shares, &registry)
+        tenant_shares::save_rows(c, &shares, &registry)
     })
     .await
     .map_err(tenant_bad_request)?;

@@ -1,7 +1,7 @@
 use super::*;
 use axum::body::{self, Body};
 use axum::http::{Request, StatusCode};
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use tower::ServiceExt; // for `.oneshot`
 
 use crate::billing_registry::{Customer, FolderMap};
@@ -137,12 +137,14 @@ async fn tenant_routes_round_trip() {
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(read_json(resp).await.as_array().unwrap().is_empty());
 
-    // Round trip: save customer shares, then read them back as slices.
+    // Round trip: save customer shares (v2 rows), then read them back as slices.
     let resp = router(state.clone())
         .oneshot(
             Request::post(format!("/blocks/{block_id}/customer-shares"))
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"shares":{"Acme":1.0}}"#))
+                .body(Body::from(
+                    r#"{"rows":[{"customer":"Acme","deild":null,"fraction":1.0}]}"#,
+                ))
                 .unwrap(),
         )
         .await
@@ -168,12 +170,14 @@ async fn tenant_routes_round_trip() {
         json!([[1_776_502_800i64, 1_776_504_600i64]])
     );
 
-    // Bad input: shares that don't sum to 100% → 400, exact text.
+    // Bad input: rows that don't sum to 100% → 400, exact text.
     let resp = router(state.clone())
         .oneshot(
             Request::post(format!("/blocks/{block_id}/customer-shares"))
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"shares":{"Acme":0.5}}"#))
+                .body(Body::from(
+                    r#"{"rows":[{"customer":"Acme","deild":null,"fraction":0.5}]}"#,
+                ))
                 .unwrap(),
         )
         .await
@@ -346,4 +350,224 @@ async fn fallback_slice_uses_ticket_summary_like_billing() {
         slices[0]["customer"], "Sjúkra",
         "route must resolve the same customer billing::rows_for_day would: {v:#?}"
     );
+}
+
+async fn upsert_customer(state: &Shared, name: &str) {
+    let conn = state.conn.lock().await;
+    crate::billing_registry::upsert_customer(
+        &conn,
+        &Customer {
+            id: None,
+            name: name.into(),
+            aliases: Vec::new(),
+        },
+    )
+    .unwrap();
+}
+
+/// B4: a three-row split naming one customer twice (different deildir)
+/// round-trips through the v2 routes exactly.
+#[tokio::test(flavor = "current_thread")]
+async fn split_rows_round_trip_names_one_customer_twice() {
+    let (state, block_id) = seed();
+    upsert_customer(&state, "Sjúkra").await;
+    upsert_customer(&state, "APRÓ").await;
+
+    let resp = router(state.clone())
+        .oneshot(
+            Request::post(format!("/blocks/{block_id}/customer-shares"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"rows":[
+                        {"customer":"Sjúkra","deild":"Rekstur","fraction":0.33},
+                        {"customer":"Sjúkra","deild":"Áskrift","fraction":0.33},
+                        {"customer":"APRÓ","deild":"AI hraðall","fraction":0.34}
+                    ]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = router(state)
+        .oneshot(
+            Request::get(format!("/blocks/{block_id}/customer-slices"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = read_json(resp).await;
+    let slices = v.as_array().unwrap();
+    assert_eq!(slices.len(), 3, "{v:#?}");
+    let pairs: Vec<(String, String)> = slices
+        .iter()
+        .map(|s| {
+            (
+                s["customer"].as_str().unwrap().to_string(),
+                s["deild"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert!(
+        pairs.contains(&("Sjúkra".to_string(), "Rekstur".to_string())),
+        "{pairs:?}"
+    );
+    assert!(
+        pairs.contains(&("Sjúkra".to_string(), "Áskrift".to_string())),
+        "{pairs:?}"
+    );
+    assert!(
+        pairs.contains(&("APRÓ".to_string(), "AI hraðall".to_string())),
+        "{pairs:?}"
+    );
+    assert!(slices.iter().all(|s| s["origin"] == "manual"));
+}
+
+/// B5: rows that total 90% are refused, and the block keeps whatever it
+/// had before — nothing is written.
+#[tokio::test(flavor = "current_thread")]
+async fn split_rows_rejects_total_below_100_and_writes_nothing() {
+    let (state, block_id) = seed();
+    upsert_customer(&state, "Sjúkra").await;
+
+    let resp = router(state.clone())
+        .oneshot(
+            Request::post(format!("/blocks/{block_id}/customer-shares"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"rows":[{"customer":"Sjúkra","deild":null,"fraction":0.9}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(read_json(resp).await["error"], "Shares must add up to 100%");
+
+    let conn = state.conn.lock().await;
+    let rows: Option<String> = conn
+        .query_row(
+            "SELECT rows_json FROM block_customer_shares WHERE day = '2026-04-18'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap();
+    assert!(
+        rows.is_none(),
+        "a rejected split must write nothing: {rows:?}"
+    );
+}
+
+/// B5: a row naming an unknown or blank customer is refused.
+#[tokio::test(flavor = "current_thread")]
+async fn split_rows_rejects_unknown_or_empty_customer() {
+    let (state, block_id) = seed();
+
+    let resp = router(state.clone())
+        .oneshot(
+            Request::post(format!("/blocks/{block_id}/customer-shares"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"rows":[{"customer":"Ghost","deild":null,"fraction":1.0}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(read_json(resp).await["error"], "Customer no longer exists");
+
+    let resp = router(state)
+        .oneshot(
+            Request::post(format!("/blocks/{block_id}/customer-shares"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"rows":[{"customer":"","deild":null,"fraction":1.0}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(read_json(resp).await["error"], "Customer no longer exists");
+}
+
+/// A blank-string deild is no deild — the route normalises it to `null`
+/// before it ever reaches storage.
+#[tokio::test(flavor = "current_thread")]
+async fn save_customer_shares_normalises_blank_deild_to_null() {
+    let (state, block_id) = seed();
+
+    let resp = router(state.clone())
+        .oneshot(
+            Request::post(format!("/blocks/{block_id}/customer-shares"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"rows":[{"customer":"Acme","deild":"","fraction":1.0}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = router(state)
+        .oneshot(
+            Request::get(format!("/blocks/{block_id}/customer-slices"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let v = read_json(resp).await;
+    let slices = v.as_array().unwrap();
+    assert_eq!(slices.len(), 1);
+    assert!(
+        slices[0]["deild"].is_null(),
+        "a blank deild must be stored as null, not \"\": {v:#?}"
+    );
+}
+
+/// Personal blocks never reach the split routes — both GET and POST
+/// refuse them with the same 400.
+#[tokio::test(flavor = "current_thread")]
+async fn split_routes_reject_personal_blocks() {
+    let conn = open_memory().unwrap();
+    conn.execute(
+        "INSERT INTO blocks (day, started_at, ended_at, duration_seconds, is_personal)
+         VALUES ('2026-04-18', '2026-04-18T09:00:00+00:00', '2026-04-18T09:30:00+00:00', 1800, 1)",
+        [],
+    )
+    .unwrap();
+    let block_id = conn.last_insert_rowid();
+    let state = state_from_conn(conn);
+
+    let resp = router(state.clone())
+        .oneshot(
+            Request::get(format!("/blocks/{block_id}/customer-slices"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(read_json(resp).await["error"], "Block is personal");
+
+    let resp = router(state)
+        .oneshot(
+            Request::post(format!("/blocks/{block_id}/customer-shares"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"rows":[{"customer":"Acme","deild":null,"fraction":1.0}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(read_json(resp).await["error"], "Block is personal");
 }
