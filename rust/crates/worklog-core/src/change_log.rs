@@ -1,9 +1,7 @@
 //! The change log — detects and records automatic changes to a block's
 //! customer, deild, split or description by diffing against the block's
 //! last-seen `deild_contract::ResolutionSnapshot`, and serves the live
-//! pop-up + catch-up feed (spec 006). Types live in `deild_contract`; see
-//! `deild_contract::BlockChange`. Populated by T010: `new_batch`,
-//! `refresh_day`, `feed`, `unseen`, `mark_seen`, `purge_old`.
+//! pop-up + catch-up feed (spec 006). Types live in `deild_contract`.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -277,9 +275,14 @@ fn format_parts(parts: &[ShareRow]) -> String {
     parts
         .iter()
         .map(|p| {
+            let customer = if p.customer.is_empty() {
+                "Unresolved"
+            } else {
+                &p.customer
+            };
             let label = match &p.deild {
-                Some(d) if !d.trim().is_empty() => format!("{}·{}", p.customer, d),
-                _ => p.customer.clone(),
+                Some(d) if !d.trim().is_empty() => format!("{customer}·{d}"),
+                _ => customer.to_string(),
             };
             format!("{label} {}%", (p.fraction * 100.0).round() as i64)
         })

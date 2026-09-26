@@ -138,6 +138,21 @@ fn customer_change_is_logged() {
 }
 
 #[test]
+fn a_block_with_no_customer_reads_unresolved() {
+    let conn = open_memory().unwrap();
+    let b = seed_block(&conn, "2026-09-24T09:00:00Z", 3600, Some("desc"));
+    seed_event(&conn, b, "e1", "/tmp/acme");
+    refresh_day(&conn, DAY, ChangeSource::Rebuild, "b1").unwrap();
+
+    pin(&conn, "acme", Some("Sjúkra"), None);
+    refresh_day(&conn, DAY, ChangeSource::Keyword, "b2").unwrap();
+
+    let changes = feed(&conn, 0).unwrap().changes;
+    assert_eq!(changes[0].old.as_deref(), Some("Unresolved 100%"));
+    assert_eq!(changes[0].new.as_deref(), Some("Sjúkra 100%"));
+}
+
+#[test]
 fn deild_change_is_logged() {
     let conn = open_memory().unwrap();
     pin(&conn, "acme", Some("Sjúkra"), Some("Rekstur"));
