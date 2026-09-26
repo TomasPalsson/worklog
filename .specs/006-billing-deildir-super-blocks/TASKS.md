@@ -51,6 +51,6 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core ch
 - [x] CHK001 human-verify on 2026-09-25 real data — files: . — verify: human: add deildir to Sjúkra and APRÓ; the Billing view shows one line per (customer, deild); split one vitinn-infra block Sjúkra·Rekstur 50 / APRÓ·AI hraðall 50 and both lines update; re-run estimate → one batched pop-up naming Claude, hand-set split unchanged — after: T013, T014 — done: 6ee3e4b by user
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `flow check --fix`
-- [ ] G002 branch review clean — files: . — verify: `flow pass`
-- [ ] G003 verification evidence exists — files: . — verify: `test -s verify/`
+- [x] G001 project gates clean — files: . — verify: `flow check --fix` — done: 67b3a1d
+- [x] G002 branch review clean — files: . — verify: `flow pass` — done: 67b3a1d
+- [x] G003 verification evidence exists — files: . — verify: `test -s verify/` — done: 67b3a1d
