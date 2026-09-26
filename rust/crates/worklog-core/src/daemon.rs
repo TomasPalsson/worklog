@@ -100,6 +100,9 @@ mod daemon_tenants;
 #[path = "daemon_deildir.rs"]
 mod daemon_deildir;
 
+#[path = "daemon_changes.rs"]
+mod daemon_changes;
+
 pub struct AppState {
     /// Single shared connection — SQLite + rusqlite is !Send, so we keep
     /// exactly one and serialise access. Cheap compared to the code path
@@ -155,6 +158,9 @@ pub fn router(state: Shared) -> Router {
             "/billing/deildir/:id/delete",
             post(daemon_deildir::delete_deild),
         )
+        .route("/changes", get(daemon_changes::feed))
+        .route("/changes/unseen", get(daemon_changes::unseen))
+        .route("/changes/seen", post(daemon_changes::mark_seen))
         .route("/billing/tenants", get(daemon_tenants::list_tenants))
         .route("/billing/tenants/link", post(daemon_tenants::link_tenant))
         .route(
@@ -2514,6 +2520,10 @@ mod tests {
 
     mod deild {
         include!("daemon_deildir_test.rs");
+    }
+
+    mod changes {
+        include!("daemon_changes_test.rs");
     }
 
     fn state_with_block() -> Shared {
