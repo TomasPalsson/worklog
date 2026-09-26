@@ -76,7 +76,9 @@ use crate::billing;
 use crate::billing_deildir;
 use crate::billing_registry;
 use crate::browser_ingest;
+use crate::change_log;
 use crate::collectors::{jira, tempo};
+use crate::deild_contract;
 use crate::git::{self, CommitEntry};
 use crate::personal;
 use crate::routing;
@@ -2432,7 +2434,12 @@ async fn billing_customer_upsert(
     Json(body): Json<billing_registry::Customer>,
 ) -> Result<Json<Value>, ApiError> {
     let name = body.name.clone();
-    let id = with_conn(state, move |c| billing_registry::upsert_customer(c, &body)).await?;
+    let id = with_conn(state, move |c| {
+        let id = billing_registry::upsert_customer(c, &body)?;
+        refresh_recent_days(c, deild_contract::ChangeSource::Keyword);
+        Ok(id)
+    })
+    .await?;
     info!(customer = %name, id, "upserted billing customer");
     Ok(Json(json!({ "id": id })))
 }
@@ -2441,7 +2448,12 @@ async fn billing_customer_delete(
     State(state): State<Shared>,
     AxumPath(id): AxumPath<i64>,
 ) -> Result<Json<Value>, ApiError> {
-    let removed = with_conn(state, move |c| billing_registry::delete_customer(c, id)).await?;
+    let removed = with_conn(state, move |c| {
+        let removed = billing_registry::delete_customer(c, id)?;
+        refresh_recent_days(c, deild_contract::ChangeSource::Keyword);
+        Ok(removed)
+    })
+    .await?;
     info!(id, removed, "deleted billing customer");
     Ok(Json(json!({ "removed": removed })))
 }
@@ -2451,7 +2463,12 @@ async fn billing_folder_upsert(
     Json(body): Json<billing_registry::FolderMap>,
 ) -> Result<Json<Value>, ApiError> {
     let folder = body.folder.clone();
-    let id = with_conn(state, move |c| billing_registry::upsert_folder(c, &body)).await?;
+    let id = with_conn(state, move |c| {
+        let id = billing_registry::upsert_folder(c, &body)?;
+        refresh_recent_days(c, deild_contract::ChangeSource::Keyword);
+        Ok(id)
+    })
+    .await?;
     info!(folder = %folder, id, "upserted billing folder mapping");
     Ok(Json(json!({ "id": id })))
 }
@@ -2460,9 +2477,28 @@ async fn billing_folder_delete(
     State(state): State<Shared>,
     AxumPath(id): AxumPath<i64>,
 ) -> Result<Json<Value>, ApiError> {
-    let removed = with_conn(state, move |c| billing_registry::delete_folder(c, id)).await?;
+    let removed = with_conn(state, move |c| {
+        let removed = billing_registry::delete_folder(c, id)?;
+        refresh_recent_days(c, deild_contract::ChangeSource::Keyword);
+        Ok(removed)
+    })
+    .await?;
     info!(id, removed, "deleted billing folder mapping");
     Ok(Json(json!({ "removed": removed })))
+}
+
+/// A4: registry edits (customers, folders, deildir) re-resolve blocks —
+/// refreshed for today and yesterday under one batch, source Keyword. A
+/// refresh failure must not fail the write — it already committed.
+pub(crate) fn refresh_recent_days(conn: &Connection, source: deild_contract::ChangeSource) {
+    let today = crate::tz::local_date(Utc::now());
+    let batch = change_log::new_batch(source);
+    for day in [today, today - chrono::Duration::days(1)] {
+        let day_iso = day.to_string();
+        if let Err(e) = change_log::refresh_day(conn, &day_iso, source, &batch) {
+            warn!(error = %e, day = %day_iso, "change log refresh failed");
+        }
+    }
 }
 
 #[cfg(test)]

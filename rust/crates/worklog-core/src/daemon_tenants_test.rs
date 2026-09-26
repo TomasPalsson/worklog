@@ -7,6 +7,7 @@ use tower::ServiceExt; // for `.oneshot`
 use crate::billing_registry::{Customer, FolderMap};
 use crate::daemon::{router, state_from_conn};
 use crate::db::open_memory;
+use crate::deild_contract::ChangeField;
 use crate::models::Event;
 use crate::repo;
 
@@ -736,4 +737,35 @@ async fn split_routes_reject_personal_blocks() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     assert_eq!(read_json(resp).await["error"], "Block is personal");
+}
+
+/// B9/B15: a saved split that only re-shuffles fractions between the same
+/// customers is logged as a Split change with source User.
+#[tokio::test(flavor = "current_thread")]
+async fn save_customer_shares_logs_a_user_split_change() {
+    let (state, block_id) = seed();
+    upsert_customer(&state, "Beta").await;
+
+    let save = |first: f64, second: f64| {
+        Request::post(format!("/blocks/{block_id}/customer-shares"))
+            .header("content-type", "application/json")
+            .body(Body::from(format!(
+                r#"{{"rows":[{{"customer":"Acme","deild":null,"fraction":{first}}},{{"customer":"Beta","deild":null,"fraction":{second}}}]}}"#,
+            )))
+            .unwrap()
+    };
+
+    let resp = router(state.clone()).oneshot(save(0.6, 0.4)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = router(state.clone()).oneshot(save(0.5, 0.5)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let conn = state.conn.lock().await;
+    let changes = change_log::feed(&conn, 0).unwrap().changes;
+    let split_change = changes
+        .iter()
+        .find(|c| c.field == ChangeField::Split)
+        .expect("the second save must log a Split change");
+    assert_eq!(split_change.source, ChangeSource::User);
 }

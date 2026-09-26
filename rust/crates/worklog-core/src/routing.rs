@@ -13,6 +13,8 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::billing_registry::Registry;
+use crate::change_log;
+use crate::deild_contract::ChangeSource;
 use crate::routing_contract::{
     Classifier, Guess, LabelOrigin, LabelRequest, RouteRule, RoutedEvent, Rule, RuleKind,
     IGNORE_FOLDER, SOURCE_FIREFOX, SOURCE_SLACK,
@@ -234,7 +236,14 @@ pub fn route_day(
 ) -> Result<RouteStats> {
     let (rule_hits, pending) = load_pending(conn, day)?;
     let guesses = decide(&pending, classifier, rule);
-    commit_labels(conn, &rule_hits, &guesses)
+    let stats = commit_labels(conn, &rule_hits, &guesses)?;
+    // One batch per run (D-07); a refresh failure must not fail the route.
+    let day_iso = day.to_string();
+    let batch = change_log::new_batch(ChangeSource::Verdict);
+    if let Err(e) = change_log::refresh_day(conn, &day_iso, ChangeSource::Verdict, &batch) {
+        tracing::warn!(error = %e, day = %day_iso, "change log refresh failed");
+    }
+    Ok(stats)
 }
 
 /// What a hard rule of `kind` keys on, read off `row`. `kind` must match `row.source` (Domain⇔firefox,

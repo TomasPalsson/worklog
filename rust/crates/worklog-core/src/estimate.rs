@@ -20,6 +20,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::{debug, warn};
 
+use crate::change_log;
+use crate::deild_contract::ChangeSource;
+
 pub const DEFAULT_MODEL: &str = "claude-haiku-4-5";
 const ROUND_MINUTES: i64 = 15;
 const SUBPROCESS_TIMEOUT_SECS: u64 = 60;
@@ -535,6 +538,7 @@ pub fn estimate_day_with<I: ModelInvoker>(
 ) -> Result<EstimateStats> {
     let mut stats = EstimateStats::default();
     let day_iso = day.to_string();
+    let batch = change_log::new_batch(ChangeSource::Claude);
 
     let open_tickets = load_open_tickets(conn)?;
     let blocks = load_blocks_for_estimator(conn, &day_iso)?;
@@ -633,6 +637,12 @@ pub fn estimate_day_with<I: ModelInvoker>(
     let merged = merge_same_ticket_adjacent(conn, &day_iso)?;
     if merged > 0 {
         debug!(merged, "merged same-ticket adjacent blocks");
+    }
+
+    // One batch for the whole run (D-07); a refresh failure must not fail
+    // the estimate — the writes above already committed.
+    if let Err(e) = change_log::refresh_day(conn, &day_iso, ChangeSource::Claude, &batch) {
+        warn!(error = %e, day = %day_iso, "change log refresh failed after estimate");
     }
 
     Ok(stats)
@@ -735,17 +745,18 @@ pub fn prepare_block_estimate(
     // front so we can refuse personal before paying for an LLM round trip.
     let block: BlockRow = conn
         .query_row(
-            "SELECT id, started_at, ended_at, jira_issue, estimated_by, is_personal
+            "SELECT id, day, started_at, ended_at, jira_issue, estimated_by, is_personal
                FROM blocks WHERE id = ?1",
             params![block_id],
             |r| {
                 Ok(BlockRow {
                     id: r.get(0)?,
-                    started_at: r.get(1)?,
-                    ended_at: r.get(2)?,
-                    jira_issue: r.get(3)?,
-                    estimated_by: r.get(4)?,
-                    is_personal: r.get::<_, i64>(5)? != 0,
+                    day: r.get(1)?,
+                    started_at: r.get(2)?,
+                    ended_at: r.get(3)?,
+                    jira_issue: r.get(4)?,
+                    estimated_by: r.get(5)?,
+                    is_personal: r.get::<_, i64>(6)? != 0,
                 })
             },
         )
@@ -894,6 +905,13 @@ pub fn commit_block_estimate(
         );
     }
 
+    // One batch for this single-block run (D-07); a refresh failure must
+    // not fail the estimate — the write above already committed.
+    let batch = change_log::new_batch(ChangeSource::Claude);
+    if let Err(e) = change_log::refresh_day(conn, &block.day, ChangeSource::Claude, &batch) {
+        warn!(error = %e, block_id, "change log refresh failed after estimate");
+    }
+
     Ok(EstimatedBlock {
         block_id: block.id,
         description,
@@ -1008,6 +1026,7 @@ struct Candidate {
 #[derive(Debug, Clone)]
 struct BlockRow {
     id: i64,
+    day: String,
     started_at: String,
     ended_at: String,
     jira_issue: Option<String>,
@@ -1056,6 +1075,7 @@ fn load_blocks_for_estimator(conn: &Connection, day_iso: &str) -> Result<Vec<Blo
         .query_map(params![day_iso], |r| {
             Ok(BlockRow {
                 id: r.get(0)?,
+                day: day_iso.to_string(),
                 started_at: r.get(1)?,
                 ended_at: r.get(2)?,
                 jira_issue: r.get(3)?,
@@ -1377,9 +1397,12 @@ pub fn parse_response(raw: &str) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::billing_registry::{upsert_customer, Customer, Registry};
     use crate::db::open_memory;
+    use crate::deild_contract::{BlockShares, ChangeField, ShareRow};
     use crate::models::{Event, JiraTicket};
     use crate::repo;
+    use crate::tenant_shares;
 
     fn insert_block(conn: &Connection) -> i64 {
         conn.execute(
@@ -1596,6 +1619,7 @@ mod tests {
         // blow up the token bill.
         let block = BlockRow {
             id: 1,
+            day: "2026-04-18".into(),
             started_at: "2026-04-18T09:00:00+00:00".into(),
             ended_at: "2026-04-18T09:30:00+00:00".into(),
             jira_issue: None,
@@ -2508,6 +2532,7 @@ mod tests {
     fn build_user_message_includes_commits_field() {
         let block = BlockRow {
             id: 1,
+            day: "2026-04-18".into(),
             started_at: "2026-04-18T09:00:00+00:00".into(),
             ended_at: "2026-04-18T09:30:00+00:00".into(),
             jira_issue: Some("PROJ-1".into()),
@@ -2535,6 +2560,7 @@ mod tests {
     fn build_user_message_emits_empty_commits_when_none() {
         let block = BlockRow {
             id: 1,
+            day: "2026-04-18".into(),
             started_at: "2026-04-18T09:00:00+00:00".into(),
             ended_at: "2026-04-18T09:30:00+00:00".into(),
             jira_issue: None,
@@ -2759,5 +2785,106 @@ mod tests {
                 || err.to_string().to_lowercase().contains("not found"),
             "error must identify the missing block: {err}"
         );
+    }
+
+    /// B8/FR-08: a hand-set split survives `estimate_day_with` rewriting
+    /// the description — splits live in `block_customer_shares`, a table
+    /// the estimator's UPDATE never touches. Only the description change
+    /// is logged, under source `Claude`; the split is untouched.
+    #[test]
+    fn estimate_leaves_manual_split() {
+        let conn = open_memory().unwrap();
+        upsert_customer(
+            &conn,
+            &Customer {
+                id: None,
+                name: "Sjúkra".into(),
+                aliases: Vec::new(),
+            },
+        )
+        .unwrap();
+        let bid = insert_block(&conn);
+        let day = "2026-04-18";
+        let started_at = "2026-04-18T09:00:00+00:00";
+        let registry = Registry::load(&conn).unwrap();
+        let shares = BlockShares {
+            day: day.into(),
+            started_at: started_at.into(),
+            rows: vec![ShareRow {
+                customer: "Sjúkra".into(),
+                deild: None,
+                fraction: 1.0,
+            }],
+        };
+        tenant_shares::save_rows(&conn, &shares, &registry).unwrap();
+        // Seed a snapshot so the estimate's own refresh has something to
+        // diff against — a day's first refresh only stores, never logs.
+        change_log::refresh_day(&conn, day, ChangeSource::Rebuild, "seed").unwrap();
+        let before = tenant_shares::load_rows(&conn, day, started_at).unwrap();
+
+        let invoker = FixedInvoker(json!({
+            "jira_issue": null,
+            "minutes": 30,
+            "description": "Implement auth refresh"
+        }));
+        let stats = estimate_day_with(
+            &conn,
+            NaiveDate::from_ymd_opt(2026, 4, 18).unwrap(),
+            "test-model",
+            &invoker,
+        )
+        .unwrap();
+        assert_eq!(stats.estimated, 1);
+
+        let after = tenant_shares::load_rows(&conn, day, started_at).unwrap();
+        assert_eq!(before, after, "estimate must not touch a manual split");
+
+        let changes = change_log::feed(&conn, 0).unwrap().changes;
+        assert_eq!(changes.len(), 1, "only the description change is logged");
+        assert_eq!(changes[0].field, ChangeField::Description);
+        assert_eq!(changes[0].source, ChangeSource::Claude);
+        let _ = bid;
+    }
+
+    /// B9: one `estimate_day_with` run over many blocks logs every
+    /// resulting change under the SAME batch — the pop-up unit is the run,
+    /// not the block.
+    #[test]
+    fn estimate_logs_all_changes_under_one_batch() {
+        let conn = open_memory().unwrap();
+        let day = "2026-04-18";
+        for i in 0..20 {
+            insert_block_with(
+                &conn,
+                day,
+                &format!("2026-04-18T{i:02}:00:00+00:00"),
+                &format!("2026-04-18T{i:02}:30:00+00:00"),
+                1800,
+                None,
+                None,
+                None,
+            );
+        }
+        change_log::refresh_day(&conn, day, ChangeSource::Rebuild, "seed").unwrap();
+
+        let invoker = FixedInvoker(json!({
+            "jira_issue": null,
+            "minutes": 30,
+            "description": "same description for every block"
+        }));
+        let stats = estimate_day_with(
+            &conn,
+            NaiveDate::from_ymd_opt(2026, 4, 18).unwrap(),
+            "test-model",
+            &invoker,
+        )
+        .unwrap();
+        assert_eq!(stats.estimated, 20);
+
+        let feed = change_log::feed(&conn, 0).unwrap();
+        assert_eq!(feed.changes.len(), 20);
+        assert_eq!(feed.batches.len(), 1, "one run, one batch");
+        assert_eq!(feed.batches[0].source, ChangeSource::Claude);
+        assert_eq!(feed.batches[0].count, 20);
     }
 }

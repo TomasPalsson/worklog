@@ -7,12 +7,13 @@ use axum::extract::{Path as AxumPath, State};
 use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::billing;
 use crate::billing_deildir;
 use crate::billing_registry::Registry;
-use crate::deild_contract::{BillingSlice, BlockShares, ShareRow};
+use crate::change_log;
+use crate::deild_contract::{BillingSlice, BlockShares, ChangeSource, ShareRow};
 use crate::tenant_contract::{Tenant, TenantLink};
 use crate::tenant_shares;
 use crate::tenants;
@@ -112,7 +113,13 @@ pub async fn save_customer_shares(
             started_at: block.started_at,
             rows,
         };
-        tenant_shares::save_rows(c, &shares, &registry)
+        tenant_shares::save_rows(c, &shares, &registry)?;
+        // One batch per save (D-07); a refresh failure must not fail it.
+        let batch = change_log::new_batch(ChangeSource::User);
+        if let Err(e) = change_log::refresh_day(c, &shares.day, ChangeSource::User, &batch) {
+            warn!(error = %e, block_id = id, "change log refresh failed");
+        }
+        Ok(())
     })
     .await
     .map_err(tenant_bad_request)?;
@@ -193,6 +200,12 @@ pub async fn move_line_deild(
             };
             tenant_shares::save_rows(c, &shares, &registry)?;
         }
+        // One batch for the whole move (D-07); a refresh failure must not
+        // fail the write — the rows above already committed.
+        let batch = change_log::new_batch(ChangeSource::User);
+        if let Err(e) = change_log::refresh_day(c, &body.day, ChangeSource::User, &batch) {
+            warn!(error = %e, day = %body.day, "change log refresh failed");
+        }
         Ok(())
     })
     .await
@@ -214,7 +227,13 @@ pub async fn clear_customer_shares(
     with_conn(state, move |c| {
         let block = crate::repo::get_block(c, id)?
             .ok_or_else(|| anyhow::anyhow!("block {id} not found"))?;
-        tenant_shares::clear_shares(c, &block.day, &block.started_at)
+        tenant_shares::clear_shares(c, &block.day, &block.started_at)?;
+        // One batch per edit (D-07); a refresh failure must not fail it.
+        let batch = change_log::new_batch(ChangeSource::User);
+        if let Err(e) = change_log::refresh_day(c, &block.day, ChangeSource::User, &batch) {
+            warn!(error = %e, block_id = id, "change log refresh failed");
+        }
+        Ok(())
     })
     .await?;
     info!(block_id = id, "cleared customer shares");

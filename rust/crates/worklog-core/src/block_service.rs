@@ -8,7 +8,10 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{params, Connection};
+use tracing::warn;
 
+use crate::change_log;
+use crate::deild_contract::ChangeSource;
 use crate::models::Block;
 use crate::repo;
 
@@ -105,7 +108,14 @@ pub fn set_description(conn: &Connection, block_id: i64, description: &str) -> R
         params![description, block_id],
     )
     .context("set_description")?;
-    repo::get_block(conn, block_id)?.ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))
+    let block = repo::get_block(conn, block_id)?
+        .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
+    // One batch per edit (D-07); a refresh failure must not fail the edit.
+    let batch = change_log::new_batch(ChangeSource::User);
+    if let Err(e) = change_log::refresh_day(conn, &block.day, ChangeSource::User, &batch) {
+        warn!(error = %e, block_id, "change log refresh failed");
+    }
+    Ok(block)
 }
 
 /// Manually set a block's work/personal classification.
@@ -122,7 +132,14 @@ pub fn set_personal(conn: &Connection, block_id: i64, is_personal: bool) -> Resu
         params![is_personal as i64, block_id],
     )
     .context("set_personal")?;
-    repo::get_block(conn, block_id)?.ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))
+    let block = repo::get_block(conn, block_id)?
+        .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
+    // One batch per edit (D-07); a refresh failure must not fail the edit.
+    let batch = change_log::new_batch(ChangeSource::User);
+    if let Err(e) = change_log::refresh_day(conn, &block.day, ChangeSource::User, &batch) {
+        warn!(error = %e, block_id, "change log refresh failed");
+    }
+    Ok(block)
 }
 
 /// Mark every one of `day`'s blocks as exported for billing — the
@@ -375,6 +392,7 @@ pub fn split_block(conn: &Connection, block_id: i64, first_minutes: u32) -> Resu
 mod tests {
     use super::*;
     use crate::db::open_memory;
+    use crate::deild_contract::ChangeField;
 
     fn seed(conn: &Connection) -> i64 {
         conn.execute(
@@ -488,6 +506,21 @@ mod tests {
         let got = set_description(&conn, id, "hello").unwrap();
         assert_eq!(got.description.as_deref(), Some("hello"));
         assert_eq!(got.estimated_by.as_deref(), Some("manual"));
+    }
+
+    /// B15: the Owner's own description edit is logged with source User.
+    #[test]
+    fn set_description_logs_a_user_change() {
+        let conn = open_memory().unwrap();
+        let id = seed(&conn);
+        change_log::refresh_day(&conn, "2026-04-18", ChangeSource::Rebuild, "seed").unwrap();
+
+        set_description(&conn, id, "hello").unwrap();
+
+        let changes = change_log::feed(&conn, 0).unwrap().changes;
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].field, ChangeField::Description);
+        assert_eq!(changes[0].source, ChangeSource::User);
     }
 
     #[test]
