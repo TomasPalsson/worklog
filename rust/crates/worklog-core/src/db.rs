@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 
 /// Embedded schema — compiled into the binary.
 pub const SCHEMA_SQL: &str = include_str!("../sql/schema.sql");
@@ -15,7 +15,7 @@ pub const SCHEMA_SQL: &str = include_str!("../sql/schema.sql");
 /// Monotonic integer version of the schema, bumped by future migrations.
 /// Stored in `PRAGMA user_version` so we can detect stale dbs without adding
 /// a dedicated table.
-pub const SCHEMA_VERSION: i32 = 13;
+pub const SCHEMA_VERSION: i32 = 14;
 
 /// Open a connection at `path`, enable WAL + FK, and run migrations.
 pub fn open(path: &Path) -> Result<Connection> {
@@ -80,6 +80,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     ensure_events_routing_columns(conn).context("ensuring events routing columns")?;
     ensure_billing_folder_map_multi_tenant(conn)
         .context("ensuring billing_folder_map.multi_tenant")?;
+    ensure_block_customer_shares_rows_json(conn)
+        .context("ensuring block_customer_shares.rows_json")?;
+    seed_deildir_from_folder_pins(conn).context("seeding billing_deildir from folder pins")?;
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)
         .context("stamping user_version")?;
     Ok(())
@@ -197,6 +200,47 @@ fn ensure_billing_folder_map_multi_tenant(conn: &Connection) -> Result<()> {
             [],
         )
         .context("ALTER TABLE billing_folder_map ADD multi_tenant")?;
+    }
+    Ok(())
+}
+
+fn ensure_block_customer_shares_rows_json(conn: &Connection) -> Result<()> {
+    let has: bool = conn
+        .prepare("PRAGMA table_info(block_customer_shares)")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter()
+        .any(|c| c == "rows_json");
+    if !has {
+        conn.execute(
+            "ALTER TABLE block_customer_shares ADD COLUMN rows_json TEXT",
+            [],
+        )
+        .context("ALTER TABLE block_customer_shares ADD rows_json")?;
+    }
+    Ok(())
+}
+
+/// FR-14: a folder already pinned to a customer and a Verkefni becomes
+/// that customer's deild on upgrade, so the Owner starts with something
+/// instead of an empty list. Guarded per-pin by `billing_deildir`'s
+/// `UNIQUE(customer, name)` — never overwrites a deild the Owner renamed
+/// or removed.
+fn seed_deildir_from_folder_pins(conn: &Connection) -> Result<()> {
+    let pins: Vec<(String, String)> = conn
+        .prepare(
+            "SELECT customer, verkefni FROM billing_folder_map
+             WHERE customer IS NOT NULL AND verkefni IS NOT NULL",
+        )?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for (customer, verkefni) in pins {
+        conn.execute(
+            "INSERT INTO billing_deildir (customer, name) VALUES (?1, ?2)
+             ON CONFLICT(customer, name) DO NOTHING",
+            params![customer, verkefni],
+        )
+        .context("seed billing_deildir from folder pin")?;
     }
     Ok(())
 }
@@ -594,7 +638,162 @@ mod tests {
                 "missing {expected} table; got {tables:?}"
             );
         }
-        assert_eq!(current_version(&conn).unwrap(), 13);
+        // `>=` floor, not `==`: spec 006's deildir + change-log tables took
+        // it to v14 — see the `deildir_and_change_log_tables_exist...` test
+        // below.
+        assert!(current_version(&conn).unwrap() >= 13);
+    }
+
+    #[test]
+    fn deildir_and_change_log_tables_exist_and_schema_version_is_14() {
+        // Spec 006 T001: a per-customer deildir list, the resolution
+        // snapshot used to detect automatic changes, and the change log
+        // itself. Takes the schema to v14.
+        let conn = open_memory().unwrap();
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for expected in [
+            "billing_deildir",
+            "block_resolution_snapshots",
+            "block_changes",
+        ] {
+            assert!(
+                tables.contains(&expected.to_string()),
+                "missing {expected} table; got {tables:?}"
+            );
+        }
+        assert_eq!(current_version(&conn).unwrap(), 14);
+    }
+
+    #[test]
+    fn fresh_db_block_customer_shares_has_rows_json_column() {
+        // Spec 006 T001.
+        let conn = open_memory().unwrap();
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(block_customer_shares)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            cols.contains(&"rows_json".to_string()),
+            "fresh db must have block_customer_shares.rows_json; got {cols:?}"
+        );
+    }
+
+    #[test]
+    fn migrate_adds_rows_json_to_legacy_block_customer_shares_table_and_backfills_null() {
+        // Spec 006 T001. Simulate a pre-v14 block_customer_shares: no
+        // rows_json column, insert a v1 row, then run migrate() and assert
+        // the column appears with NULL for the pre-existing row.
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE block_customer_shares (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                day TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                shares TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                UNIQUE(day, started_at)
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO block_customer_shares (day, started_at, shares)
+             VALUES ('2026-04-18', '2026-04-18T09:00:00+00:00', '{\"Sjúkra\":1.0}')",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 13).unwrap();
+
+        migrate(&conn).unwrap();
+
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(block_customer_shares)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            cols.contains(&"rows_json".to_string()),
+            "rows_json missing after migrate; got {cols:?}"
+        );
+
+        let rows_json: Option<String> = conn
+            .query_row(
+                "SELECT rows_json FROM block_customer_shares LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            rows_json.is_none(),
+            "pre-existing rows must backfill to NULL"
+        );
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn v14_seeds_deildir_from_pins() {
+        // FR-14 (B14): a folder pinned to a customer and a Verkefni
+        // becomes that customer's deild on upgrade. Simulate a pre-v14 db
+        // with a billing_folder_map pin and no billing_deildir table yet.
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE billing_folder_map (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                folder TEXT NOT NULL UNIQUE,
+                customer TEXT,
+                verkefni TEXT,
+                billable INTEGER NOT NULL DEFAULT 1,
+                multi_tenant INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO billing_folder_map (folder, customer, verkefni)
+             VALUES ('sjukra', 'Sjúkra', 'Rekstur')",
+            [],
+        )
+        .unwrap();
+        // A shared folder (no verkefni) must not seed a blank-named deild.
+        conn.execute(
+            "INSERT INTO billing_folder_map (folder, customer, verkefni)
+             VALUES ('genai-infra', NULL, NULL)",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 13).unwrap();
+
+        migrate(&conn).unwrap();
+
+        let deildir: Vec<(String, String)> = conn
+            .prepare("SELECT customer, name FROM billing_deildir ORDER BY customer, name")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(deildir, vec![("Sjúkra".to_string(), "Rekstur".to_string())]);
+
+        // Idempotent: running migrate again must not duplicate the seed
+        // or error on the UNIQUE(customer, name) constraint.
+        migrate(&conn).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM billing_deildir", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
     }
 
     #[test]

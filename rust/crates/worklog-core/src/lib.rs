@@ -5,14 +5,17 @@
 #![forbid(unsafe_code)]
 
 pub mod billing;
+pub mod billing_deildir;
 pub mod billing_registry;
 pub mod block_service;
 pub mod browser;
 pub mod browser_ingest;
+pub mod change_log;
 pub mod collectors;
 pub mod daemon;
 pub mod daemon_service;
 pub mod db;
+pub mod deild_contract;
 pub mod envfile;
 pub mod estimate;
 pub mod git;

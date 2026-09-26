@@ -221,11 +221,58 @@ CREATE TABLE IF NOT EXISTS billing_tenant_links (
 -- The owner's hand-set customer split for one block (tenant_contract::
 -- CustomerShares), keyed by day + started_at so it survives re-infer
 -- rebuilding block ids. `shares` is a JSON object {customer: fraction}.
+-- `rows_json` (spec 006) is the v2 (customer, deild, %) split
+-- (deild_contract::BlockShares); NULL until the block is re-saved. Read
+-- in preference to `shares`, which stays for v1 rows (deild_contract::
+-- ShareRow with `deild: None`) — see tenant_shares::parse_rows.
 CREATE TABLE IF NOT EXISTS block_customer_shares (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     day TEXT NOT NULL,
     started_at TEXT NOT NULL,
     shares TEXT NOT NULL,
+    rows_json TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE(day, started_at)
+);
+
+-- ───────────────────────── deildir + super blocks (spec 006) ─────────────────────────
+-- A deildir list per customer (deild_contract::Deild) — the accounting
+-- keys (Verkefni) the Owner bills that customer under. `keywords` are
+-- matched like billing_customers.aliases (billing_registry::alias_matches).
+CREATE TABLE IF NOT EXISTS billing_deildir (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer TEXT NOT NULL,
+    name TEXT NOT NULL,
+    keywords TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(customer, name)
+);
+
+-- A block's last-seen resolved (customer, deild, description)
+-- (deild_contract::ResolutionSnapshot), keyed like block_customer_shares
+-- so it survives rebuilds. change_log::refresh_day diffs against this
+-- after every write to catch changes an automatic writer makes
+-- indirectly (spec A3). `parts_json` is the resolved ShareRow list.
+CREATE TABLE IF NOT EXISTS block_resolution_snapshots (
+    day TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    description TEXT,
+    parts_json TEXT NOT NULL,
+    PRIMARY KEY(day, started_at)
+);
+
+-- One logged change to a block's customer, deild, split or description
+-- (deild_contract::BlockChange). `seen_at NULL` means unseen (FR-11);
+-- `batch` groups one writer's run into one pop-up (FR-10, D-07).
+CREATE TABLE IF NOT EXISTS block_changes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    day TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    field TEXT NOT NULL,
+    old_value TEXT,
+    new_value TEXT,
+    source TEXT NOT NULL,
+    batch TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    seen_at TEXT
 );
