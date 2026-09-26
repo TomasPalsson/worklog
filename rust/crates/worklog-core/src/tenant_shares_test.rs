@@ -1,6 +1,7 @@
 use super::*;
 use crate::billing_registry::{upsert_customer, upsert_folder, Customer, FolderMap};
 use crate::db::open_memory;
+use crate::deild_contract::{BlockShares, DeildOrigin, ShareRow};
 use crate::models::Event;
 use crate::repo;
 
@@ -241,6 +242,173 @@ fn shares_survive_reinfer() {
         );
     }
     assert_eq!(slices[0].customer, Some("Acme".to_string()));
+}
+
+// ───────── v2: rows (customer, deild, fraction) — B4, B5 ─────────
+
+fn rows(pairs: &[(&str, Option<&str>, f64)]) -> Vec<ShareRow> {
+    pairs
+        .iter()
+        .map(|(customer, deild, fraction)| ShareRow {
+            customer: (*customer).to_string(),
+            deild: deild.map(|d| d.to_string()),
+            fraction: *fraction,
+        })
+        .collect()
+}
+
+#[test]
+fn rows_round_trip() {
+    let conn = open_memory().unwrap();
+    let reg = registry(&["Sjúkra", "APRÓ"]);
+    let s = BlockShares {
+        day: "2026-09-23".into(),
+        started_at: "2026-09-23T10:00:00Z".into(),
+        rows: rows(&[
+            ("Sjúkra", Some("Rekstur"), 0.33),
+            ("Sjúkra", Some("Áskrift"), 0.33),
+            ("APRÓ", None, 0.34),
+        ]),
+    };
+    save_rows(&conn, &s, &reg).unwrap();
+
+    let loaded = load_rows(&conn, "2026-09-23", "2026-09-23T10:00:00Z")
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.rows, s.rows);
+
+    // v1 `shares` column stays an empty object, per the contract.
+    let raw: String = conn
+        .query_row(
+            "SELECT shares FROM block_customer_shares WHERE day = ?1 AND started_at = ?2",
+            params!["2026-09-23", "2026-09-23T10:00:00Z"],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(raw, "{}");
+}
+
+#[test]
+fn load_rows_missing_row_is_none() {
+    let conn = open_memory().unwrap();
+    assert!(load_rows(&conn, "2026-09-23", "2026-09-23T10:00:00Z")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn validate_rows_rejects_total_not_100() {
+    let reg = registry(&["Sjúkra", "APRÓ"]);
+    let r = rows(&[("Sjúkra", None, 0.5), ("APRÓ", None, 0.4)]);
+    let err = validate_rows(&r, &reg).unwrap_err();
+    assert_eq!(err.to_string(), "Shares must add up to 100%");
+}
+
+#[test]
+fn validate_rows_rejects_unknown_customer() {
+    let reg = registry(&["APRÓ"]);
+    let r = rows(&[("Ghost", None, 1.0)]);
+    let err = validate_rows(&r, &reg).unwrap_err();
+    assert_eq!(err.to_string(), "Customer no longer exists");
+}
+
+#[test]
+fn validate_rows_rejects_a_share_at_or_below_zero() {
+    let reg = registry(&["Sjúkra", "APRÓ"]);
+    let r = rows(&[("Sjúkra", None, 1.0), ("APRÓ", None, 0.0)]);
+    let err = validate_rows(&r, &reg).unwrap_err();
+    assert_eq!(err.to_string(), "Share must be above 0");
+}
+
+#[test]
+fn save_rows_rejects_invalid_rows_without_writing() {
+    let conn = open_memory().unwrap();
+    let reg = registry(&["Sjúkra"]);
+    let s = BlockShares {
+        day: "2026-09-23".into(),
+        started_at: "2026-09-23T10:00:00Z".into(),
+        rows: rows(&[("Sjúkra", None, 0.5)]),
+    };
+    assert!(save_rows(&conn, &s, &reg).is_err());
+    assert!(load_rows(&conn, "2026-09-23", "2026-09-23T10:00:00Z")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn parse_rows_prefers_rows_json_when_present() {
+    let r = rows(&[("APRÓ", Some("Rekstur"), 1.0)]);
+    let rows_json = serde_json::to_string(&r).unwrap();
+    let parsed = parse_rows(Some(&rows_json), "{\"Sjúkra\":1.0}");
+    assert_eq!(parsed, r);
+}
+
+#[test]
+fn parse_rows_converts_v1_shares_map_with_no_deild() {
+    let parsed = parse_rows(None, "{\"APRÓ\":0.4,\"Sjúkra\":0.6}");
+    assert_eq!(
+        parsed,
+        vec![
+            ShareRow {
+                customer: "APRÓ".into(),
+                deild: None,
+                fraction: 0.4,
+            },
+            ShareRow {
+                customer: "Sjúkra".into(),
+                deild: None,
+                fraction: 0.6,
+            },
+        ]
+    );
+}
+
+#[test]
+fn parse_rows_malformed_rows_json_is_ignored_not_fatal() {
+    let parsed = parse_rows(Some("not json"), "{}");
+    assert_eq!(parsed, Vec::new());
+}
+
+#[test]
+fn slices_from_rows_are_ordered_by_customer_then_deild() {
+    let r = rows(&[
+        ("Sjúkra", Some("Áskrift"), 0.3),
+        ("APRÓ", None, 0.4),
+        ("Sjúkra", Some("Rekstur"), 0.3),
+    ]);
+    let slices = slices_from_rows(1000, 1100, &r);
+    assert_eq!(slices.len(), 3);
+
+    assert_eq!(slices[0].customer, Some("APRÓ".to_string()));
+    assert_eq!(slices[0].deild, None);
+    assert_eq!(slices[0].intervals, vec![(1000, 1040)]);
+    assert_eq!(slices[0].origin, SplitOrigin::Manual);
+    assert_eq!(slices[0].deild_origin, DeildOrigin::Manual);
+
+    assert_eq!(slices[1].customer, Some("Sjúkra".to_string()));
+    assert_eq!(slices[1].deild, Some("Rekstur".to_string()));
+    assert_eq!(slices[1].intervals, vec![(1040, 1070)]);
+
+    assert_eq!(slices[2].customer, Some("Sjúkra".to_string()));
+    assert_eq!(slices[2].deild, Some("Áskrift".to_string()));
+    assert_eq!(slices[2].intervals, vec![(1070, 1100)]);
+}
+
+#[test]
+fn slices_from_rows_last_slice_absorbs_the_rounding_remainder() {
+    let r = rows(&[
+        ("A", None, 1.0 / 3.0),
+        ("B", None, 1.0 / 3.0),
+        ("C", None, 1.0 / 3.0),
+    ]);
+    let slices = slices_from_rows(0, 10, &r);
+    assert_eq!(slices.len(), 3);
+    let total: i64 = slices
+        .iter()
+        .map(|sl| sl.intervals[0].1 - sl.intervals[0].0)
+        .sum();
+    assert_eq!(total, 10);
+    assert_eq!(slices.last().unwrap().intervals[0].1, 10);
 }
 
 #[test]
