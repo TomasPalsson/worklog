@@ -49,6 +49,14 @@ pub struct InferEvent {
     /// Drives the project-aware split inside `build_blocks` so two
     /// concurrent projects don't get fused into a single worklog entry.
     pub project_path: Option<String>,
+    /// Claude session this event belongs to (NULL for non-Claude sources).
+    /// Drives `infer_evidence::drop_isolated_claude_work` (R3): a
+    /// background `claude_work` heartbeat is judged against its own
+    /// session's prompts and siblings, never another session's.
+    pub session_id: Option<String>,
+    /// Raw event title. Drives `infer_evidence::dedupe_shell_events` (a
+    /// flaky collector logging the exact same `shell` command twice).
+    pub title: Option<String>,
 }
 
 impl InferEvent {
@@ -437,7 +445,8 @@ pub fn load_day_events(conn: &Connection, day: NaiveDate) -> Result<Vec<InferEve
     // subagent activity in another project can never open an overlap
     // window or show up as that project's activity either.
     let mut stmt = conn.prepare(
-        "SELECT id, source, started_at, duration_seconds, jira_issue, project_path
+        "SELECT id, source, started_at, duration_seconds, jira_issue, project_path,
+                session_id, title
            FROM events
           WHERE started_at >= ?1 AND started_at < ?2
             AND NOT (source IN (?3, ?4) AND (label_origin IS NULL OR label_origin IN (?5, ?6)))
@@ -462,22 +471,28 @@ pub fn load_day_events(conn: &Connection, day: NaiveDate) -> Result<Vec<InferEve
             crate::clues_contract::SOURCE_CLAUDE_MESSAGE,
             crate::clues_contract::SOURCE_CLAUDE_TOOL,
         ],
-        |r| {
-            let iso: String = r.get(2)?;
-            let ts = chrono::DateTime::parse_from_rfc3339(&iso)
-                .map(|t| t.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
-            Ok(InferEvent {
-                event_id: Some(r.get(0)?),
-                source: r.get(1)?,
-                ts,
-                duration_seconds: r.get(3)?,
-                jira_issue: r.get(4)?,
-                project_path: r.get(5)?,
-            })
-        },
+        infer_event_row,
     )?;
     iter.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Row mapper shared by `load_day_events`'s query — split out to keep the
+/// query function itself under the line-count cap.
+fn infer_event_row(r: &rusqlite::Row) -> rusqlite::Result<InferEvent> {
+    let iso: String = r.get(2)?;
+    let ts = chrono::DateTime::parse_from_rfc3339(&iso)
+        .map(|t| t.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now());
+    Ok(InferEvent {
+        event_id: Some(r.get(0)?),
+        source: r.get(1)?,
+        ts,
+        duration_seconds: r.get(3)?,
+        jira_issue: r.get(4)?,
+        project_path: r.get(5)?,
+        session_id: r.get(6)?,
+        title: r.get(7)?,
+    })
 }
 
 /// Use the same string form Python emits (`datetime.isoformat()` without
@@ -773,6 +788,8 @@ mod tests {
             jira_issue: None,
             event_id: None,
             project_path: None,
+            session_id: None,
+            title: None,
         }
     }
 
@@ -784,6 +801,8 @@ mod tests {
             jira_issue: None,
             event_id: None,
             project_path: Some(project.into()),
+            session_id: None,
+            title: None,
         }
     }
 
@@ -795,6 +814,8 @@ mod tests {
             jira_issue: None,
             event_id: None,
             project_path: None,
+            session_id: None,
+            title: None,
         }
     }
 
@@ -1008,6 +1029,8 @@ mod tests {
                 jira_issue: None,
                 event_id: None,
                 project_path: None,
+                session_id: None,
+                title: None,
             },
             InferEvent {
                 ts: end - Duration::minutes(1),
@@ -1016,6 +1039,8 @@ mod tests {
                 jira_issue: None,
                 event_id: None,
                 project_path: None,
+                session_id: None,
+                title: None,
             },
         ];
         // Gap is > TIMEOUT, so these become two separate blocks.
@@ -1030,6 +1055,8 @@ mod tests {
                 jira_issue: None,
                 event_id: None,
                 project_path: None,
+                session_id: None,
+                title: None,
             });
             t += Duration::minutes(10);
         }
@@ -1292,6 +1319,8 @@ mod tests {
             duration_seconds: Some(600),
             jira_issue: None,
             project_path: None,
+            session_id: None,
+            title: None,
         };
         let block = new_block(&event);
         assert_eq!(
@@ -1391,6 +1420,11 @@ mod tests {
 
     #[test]
     fn reflog_checkout_switches_project() {
+        // R2: git_reflog is background evidence now, not the owner acting —
+        // it no longer grabs focus the instant it fires. The handover to
+        // repo-b waits for repo-b's own first `shell` command (10:16)
+        // instead of the reflog event itself (10:14); repo-a's focus window
+        // (R1: 5 min for non-prompt human sources) still covers 10:10-10:15.
         let repo_a = "/Users/dev/Desktop/Work/repo-a";
         // Both client repos: a switch between work repos must split. (A switch
         // from work to a personal ~/Desktop/Projects repo deliberately does
@@ -1420,8 +1454,8 @@ mod tests {
             "reflog checkout into a different repo must split the block"
         );
         assert!(
-            blocks[0].ended_at <= at(10, 15),
-            "repo A's block should end by 10:15, ended at {:?}",
+            blocks[0].ended_at <= at(10, 16),
+            "repo A's block should end by 10:16, ended at {:?}",
             blocks[0].ended_at
         );
         assert_eq!(blocks[0].dominant_project_path().as_deref(), Some(repo_a));

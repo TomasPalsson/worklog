@@ -6,9 +6,10 @@
 //! double-counted the same hour for two customers. Instead every minute is
 //! owned by exactly ONE project: the one with the most activity within
 //! ±`WINDOW_MINUTES`. Short silent stretches between the same owner are
-//! bridged, and a run under `MIN_RUN_MINUTES` joins its neighbour. Each
-//! run becomes one block spanning exactly the minutes it owns, so every
-//! owned minute is counted once and blocks never overlap.
+//! bridged, and a run judged too weak on its own evidence
+//! (`infer_evidence::merge_by_evidence`) joins its neighbour or is
+//! dropped. Each run becomes one block spanning exactly the minutes it
+//! owns, so every owned minute is counted once and blocks never overlap.
 
 use chrono::{DateTime, Duration, Utc};
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,30 +20,53 @@ use crate::infer::{InferBlock, InferEvent};
 /// Background activity within this many minutes of a minute counts toward its owner.
 /// Also the max gap `overlaps::project_intervals` bridges inside one
 /// project's activity — the two "5 minutes of quiet is still the same
-/// stretch of work" rules should agree.
+/// stretch of work" rules should agree. Also how long a non-prompt human
+/// action (a shell command, a browser tab, Slack, the owner's own git
+/// commits/PRs) holds a lane's focus (R1) — a quick touch, not sustained
+/// attention.
 pub(crate) const WINDOW_MINUTES: i64 = 5;
-/// The owner's own actions reach further: attention stays on a project for a
-/// while after typing into it.
+/// Only an owner PROMPT (`claude_turn`) reflects sustained attention on a
+/// project; its focus reaches this much further (R1).
 const HUMAN_WINDOW_MINUTES: i64 = 15;
-/// A run shorter than this (a quick hop to another project) joins its
-/// neighbour instead of becoming a sliver block that gets dropped.
-const MIN_RUN_MINUTES: i64 = 5;
 
 /// Sources that are the owner acting, not a tool working on their behalf.
 /// Exposed to `overlaps` so its per-project human/background event split
 /// uses the exact same rule this module owns and elsewhere every minute
 /// belongs to one project.
+///
+/// `git_reflog` is deliberately excluded (R2): agents make the vast
+/// majority of reflog events (checkouts/commits fired by an autonomous
+/// tool run), and the owner's own git commands already arrive as `shell`
+/// — so reflog is background evidence, never a focus-holding action.
 pub(crate) fn is_human(source: &str) -> bool {
     matches!(
         source,
-        "claude_turn"
-            | "shell"
-            | "git_reflog"
-            | "github_commit"
-            | "github_pr"
-            | "slack"
-            | "firefox"
+        "claude_turn" | "shell" | "github_commit" | "github_pr" | "slack" | "firefox"
     )
+}
+
+/// How long a human action holds a lane's focus once it happens (R1).
+/// Only called for sources `is_human` already accepted.
+fn focus_window_minutes(source: &str) -> i64 {
+    if source == "claude_turn" {
+        HUMAN_WINDOW_MINUTES
+    } else {
+        WINDOW_MINUTES
+    }
+}
+
+/// Claude hook lifecycle events (source `claude`) are titled after the
+/// hook event name (`hook_run::title_for`) — SessionStart/Stop/SessionEnd
+/// are the session's own bookkeeping, not the owner acting or the tool
+/// working (R3): they never vote on a lane's owner and never hold a
+/// minute open. Ordinary hook heartbeats on the same source
+/// (UserPromptSubmit, PreToolUse/PostToolUse) are real activity signal
+/// and keep voting exactly as before.
+fn is_lifecycle(e: &InferEvent) -> bool {
+    e.source == "claude"
+        && e.title.as_deref().is_some_and(|t| {
+            t.starts_with("SessionStart") || t.starts_with("Stop") || t.starts_with("SessionEnd")
+        })
 }
 /// Silent runs shorter than this between the same owner are bridged.
 const BRIDGE_MINUTES: i64 = 10;
@@ -65,13 +89,19 @@ pub(crate) fn lane_key(e: &InferEvent) -> Option<String> {
 
 const PERSONAL_MARK: &str = "personal:";
 
-/// (minute, lane key, is the owner acting).
-type Keyed = (i64, String, bool);
+/// (minute, lane key, is the owner acting, minutes that action holds focus).
+pub(crate) type Keyed = (i64, String, bool, i64);
 
 pub(crate) fn build_blocks_by_project(
     mut events: Vec<InferEvent>,
     build: fn(Vec<InferEvent>) -> Vec<InferBlock>,
 ) -> Vec<InferBlock> {
+    // Background noise (R3) never creates time: an isolated `claude_work`
+    // heartbeat, and duplicate `shell` rows a flaky collector logged twice,
+    // are dropped/collapsed before anything else sees the day's events.
+    events = crate::infer_evidence::drop_isolated_claude_work(events);
+    events = crate::infer_evidence::dedupe_shell_events(events);
+
     // Helper/session-message activity (D-05, FR-16, FR-17) is the owner's
     // tool working on its own behalf, not the owner acting — it must never
     // vote on a lane's owner and must add no time to any block, so it is
@@ -101,9 +131,12 @@ pub(crate) fn build_blocks_by_project(
     // project event already established. Pull every one out before any
     // clustering pass can see it, and place it afterward without moving
     // anything.
+    // A lifecycle event (R3) rides like a folderless one — pulled out here
+    // so it never votes and never holds a run's bounds open, but still
+    // links into whatever block ends up covering its timestamp.
     let (folderless, events): (Vec<InferEvent>, Vec<InferEvent>) = events
         .into_iter()
-        .partition(|e| !e.is_calendar() && lane_key(e).is_none());
+        .partition(|e| !e.is_calendar() && (lane_key(e).is_none() || is_lifecycle(e)));
 
     place_folderless(build_project_blocks(events, build), folderless)
 }
@@ -115,18 +148,28 @@ fn build_project_blocks(
     let keyed: Vec<Keyed> = events
         .iter()
         .filter(|e| !e.is_calendar())
-        .filter_map(|e| lane_key(e).map(|k| (minute(e.ts), k, is_human(&e.source))))
+        .filter_map(|e| {
+            lane_key(e).map(|k| {
+                let human = is_human(&e.source);
+                let window = if human {
+                    focus_window_minutes(&e.source)
+                } else {
+                    0
+                };
+                (minute(e.ts), k, human, window)
+            })
+        })
         .collect();
     if keyed
         .iter()
-        .map(|(_, k, _)| k)
+        .map(|(_, k, _, _)| k)
         .collect::<BTreeSet<_>>()
         .len()
         < 2
     {
         return build(events);
     }
-    let runs = fold_short_runs(owner_runs(&keyed));
+    let runs = crate::infer_evidence::merge_by_evidence(owner_runs(&keyed), &keyed);
     let by_key = crate::infer_allocations::events_by_key(&events);
 
     // Every event lands in at most one bucket: calendar alone, a run whose
@@ -155,11 +198,16 @@ fn build_project_blocks(
     }
     // One block per run, spanning the minutes it owns; a run holding none
     // of its owner's events links the nearest one so it reads as theirs.
+    // A run whose own project shows up in fewer than 2 distinct minutes
+    // has no real evidence behind it (R5) and is dropped instead.
     let mut blocks: Vec<InferBlock> = runs
         .iter()
         .enumerate()
         .filter_map(|(i, (owner, s, e))| {
             let evs = buckets.remove(&i).unwrap_or_default();
+            if !crate::infer_evidence::has_evidence_floor(&evs) {
+                return None;
+            }
             let own = by_key.get(owner).map(Vec::as_slice).unwrap_or(&[]);
             let at = |m: i64| DateTime::from_timestamp(m * 60, 0);
             crate::infer_allocations::span_block(evs, at(*s)?, at(*e + 1)?, own)
@@ -200,8 +248,8 @@ pub(crate) fn minute(ts: DateTime<Utc>) -> i64 {
 
 /// Contiguous (owner, first minute, last minute) runs over the day.
 fn owner_runs(keyed: &[Keyed]) -> Vec<(String, i64, i64)> {
-    let first = keyed.iter().map(|(m, _, _)| *m).min().unwrap_or(0);
-    let last = keyed.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
+    let first = keyed.iter().map(|(m, _, _, _)| *m).min().unwrap_or(0);
+    let last = keyed.iter().map(|(m, _, _, _)| *m).max().unwrap_or(0);
     let mut owners: Vec<Option<String>> = Vec::new();
     let mut prev: Option<String> = None;
     for m in first..=last {
@@ -214,7 +262,7 @@ fn owner_runs(keyed: &[Keyed]) -> Vec<(String, i64, i64)> {
             continue;
         }
         let mut counts: BTreeMap<&String, usize> = BTreeMap::new();
-        for (t, k, _) in keyed {
+        for (t, k, _, _) in keyed {
             if (t - m).abs() <= WINDOW_MINUTES {
                 *counts.entry(k).or_default() += 1;
             }
@@ -256,44 +304,20 @@ fn owner_runs(keyed: &[Keyed]) -> Vec<(String, i64, i64)> {
     runs
 }
 
-/// Project of the owner's most recent action in (m − HUMAN_WINDOW, m],
-/// preferring work: the latest work action wins; a personal action only
-/// when no work action is in the window.
+/// Project of the owner's most recent action in (m − window, m], preferring
+/// work: the latest work action wins; a personal action only when no work
+/// action is in the window. Each action's own window is per-source (R1).
 fn latest_human(keyed: &[Keyed], m: i64) -> Option<String> {
     let recent = |work: bool| {
         keyed
             .iter()
-            .filter(|(t, k, human)| {
-                *human && *t <= m && m - t <= HUMAN_WINDOW_MINUTES && is_work(k) == work
+            .filter(|(t, k, human, window)| {
+                *human && *t <= m && m - t <= *window && is_work(k) == work
             })
-            .max_by_key(|(t, _, _)| *t)
-            .map(|(_, k, _)| k.clone())
+            .max_by_key(|(t, _, _, _)| *t)
+            .map(|(_, k, _, _)| k.clone())
     };
     recent(true).or_else(|| recent(false))
-}
-
-/// Fill silent stretches shorter than BRIDGE_MINUTES between the same owner.
-/// Fold runs under `MIN_RUN_MINUTES` into a touching neighbour of the same
-/// kind (work into work, personal into personal — never across), then
-/// merge touching runs that now share an owner.
-fn fold_short_runs(runs: Vec<(String, i64, i64)>) -> Vec<(String, i64, i64)> {
-    let short = |r: &(String, i64, i64)| r.2 - r.1 + 1 < MIN_RUN_MINUTES;
-    let joins = |a: &(String, i64, i64), b: &(String, i64, i64)| {
-        a.2 + 1 == b.1 && is_work(&a.0) == is_work(&b.0)
-    };
-    let mut out: Vec<(String, i64, i64)> = Vec::new();
-    for r in runs {
-        match out.last_mut() {
-            Some(prev) if joins(prev, &r) && (short(&r) || prev.0 == r.0) => prev.2 = r.2,
-            // A short run with nothing before it hands its minutes forward.
-            Some(prev) if joins(prev, &r) && short(prev) => {
-                prev.0 = r.0.clone();
-                prev.2 = r.2;
-            }
-            _ => out.push(r),
-        }
-    }
-    out
 }
 
 fn bridge(owners: &mut [Option<String>]) {

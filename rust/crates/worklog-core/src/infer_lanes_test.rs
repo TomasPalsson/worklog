@@ -12,6 +12,8 @@ fn ev(h: u32, m: u32, source: &str, project: Option<&str>) -> InferEvent {
         jira_issue: None,
         event_id: None,
         project_path: project.map(str::to_string),
+        session_id: None,
+        title: None,
     }
 }
 
@@ -144,11 +146,15 @@ fn a_single_project_day_is_unchanged() {
     assert_eq!(build_blocks(events).len(), 1);
 }
 
-/// What the owner saw on 2026-09-23: they act in A, then Claude works in
-/// the background in C for ten minutes. A owns those minutes (focus), so
-/// they must count as A's — not vanish because A had few events of its own.
+/// R4 (was: "owned minutes count even when the owner has few events
+/// there"). What the owner saw on 2026-09-23: they act in A for 2
+/// minutes, then Claude works in the background in C for ten minutes. A's
+/// run only holds 2 owner events — below R4's "stays on its own" floor of
+/// 3 — so it folds into its only touching neighbour (C) instead of
+/// surviving as a separately-owned sliver; the minutes are still counted
+/// (nobody's time vanishes), just attributed to the neighbour project.
 #[test]
-fn owned_minutes_count_even_when_the_owner_has_few_events_there() {
+fn weak_focus_run_folds_into_its_only_neighbour_instead_of_owning_the_span() {
     let mut events = vec![
         ev(9, 0, "shell", Some(A_WORK)),
         ev(9, 2, "shell", Some(A_WORK)),
@@ -163,7 +169,7 @@ fn owned_minutes_count_even_when_the_owner_has_few_events_there() {
     );
     assert!(blocks
         .iter()
-        .all(|b| b.dominant_project_path().as_deref() == Some(A_WORK)));
+        .all(|b| b.dominant_project_path().as_deref() == Some(C_WORK)));
 }
 
 /// A 3-minute hop to another project joins its neighbour instead of

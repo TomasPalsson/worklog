@@ -22,6 +22,8 @@ fn ev(h: u32, m: u32, source: &str, project: &str) -> InferEvent {
         jira_issue: None,
         event_id: None,
         project_path: Some(project.into()),
+        session_id: None,
+        title: None,
     }
 }
 

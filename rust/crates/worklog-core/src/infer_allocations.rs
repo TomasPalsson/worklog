@@ -241,6 +241,8 @@ mod tests {
             jira_issue: None,
             event_id: None,
             project_path: Some(path.into()),
+            session_id: None,
+            title: None,
         }
     }
 
