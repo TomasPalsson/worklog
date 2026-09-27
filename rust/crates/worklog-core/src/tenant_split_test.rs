@@ -361,3 +361,57 @@ fn conflicting_pins_do_not_emit_pinned_slice() {
         .unwrap();
     assert!(slices.iter().all(|s| s.origin != SplitOrigin::Pinned));
 }
+
+// FR-07 / billing.rs's "nothing that lands on an invoice is invented": a
+// pin's from_at must cover EVERY session event in the block, not just some
+// of them — an event before the pin took effect must not be swept into the
+// pinned customer's slice.
+#[test]
+fn partially_pinned_block_is_not_pinned() {
+    let conn = open_memory().unwrap();
+    let reg = registry(&["Sjúkra"], &[multi_tenant_folder("vitinn-infra")]);
+
+    session_pins::pin(
+        &conn,
+        &reg,
+        "sess-1",
+        Path::new(&work("vitinn-infra")),
+        "Sjúkra",
+        at(2026, 1, 1, 9, 30, 0),
+        None,
+    )
+    .unwrap();
+
+    let start = at(2026, 1, 1, 9, 0, 0);
+    let end = at(2026, 1, 1, 10, 0, 0);
+    let block_id = seed_block(&conn, &start.to_rfc3339(), &end.to_rfc3339(), 3600);
+    seed_event(&conn, block_id, "e1", "sess-1", &start.to_rfc3339());
+    seed_event(
+        &conn,
+        block_id,
+        "e2",
+        "sess-1",
+        &at(2026, 1, 1, 9, 45, 0).to_rfc3339(),
+    );
+
+    let block = Block {
+        id: block_id,
+        day: "2026-01-01".to_string(),
+        jira_issue: None,
+        started_at: start.to_rfc3339(),
+        ended_at: end.to_rfc3339(),
+        duration_seconds: 3600,
+        description: None,
+        estimated_by: None,
+        flagged: false,
+        tempo_worklog_id: None,
+        is_personal: false,
+        dirty: false,
+        exported_at: None,
+    };
+
+    let slices = tenant_slices_for_block(&conn, &block, "vitinn-infra", &reg)
+        .unwrap()
+        .unwrap();
+    assert!(slices.iter().all(|s| s.origin != SplitOrigin::Pinned));
+}

@@ -107,9 +107,13 @@ fn block_interval(block: &Block) -> (i64, i64) {
 
 /// The single customer named by `block`'s events whose session carries a
 /// pin covering their timestamp (latest `from_at` ≤ event time, mirroring
-/// `session_customers::tag_sessions`) — `None` when no covered event exists,
-/// or when covered events name more than one customer (FR-07, contract THE
-/// FIVE #2).
+/// `session_customers::tag_sessions`) — `None` unless EVERY event that
+/// carries a session_id is covered by a pin and all of them agree on one
+/// customer. An event before its session's earliest pin is "uncovered" and
+/// makes the whole block bail out to `None`, else a minute logged before
+/// the pin took effect would be invented onto the pinned customer's
+/// invoice line (FR-07, contract THE FIVE #2). Events with no session_id
+/// carry no pin and are ignored either way.
 fn pinned_customer_for_block(conn: &Connection, block: &Block) -> Result<Option<String>> {
     let events = repo::list_events_for_block(conn, block.id)?;
     let mut session_ids: Vec<String> = events.iter().filter_map(|e| e.session_id.clone()).collect();
@@ -129,12 +133,15 @@ fn pinned_customer_for_block(conn: &Connection, block: &Block) -> Result<Option<
             continue;
         };
         let at = at.with_timezone(&chrono::Utc);
-        if let Some(pin) = pins
+        let covering = pins
             .iter()
             .filter(|p| &p.session_id == session_id && p.from_at <= at)
-            .max_by_key(|p| p.from_at)
-        {
-            customers.insert(pin.customer.clone());
+            .max_by_key(|p| p.from_at);
+        match covering {
+            Some(pin) => {
+                customers.insert(pin.customer.clone());
+            }
+            None => return Ok(None),
         }
     }
 
