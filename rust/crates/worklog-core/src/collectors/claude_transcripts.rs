@@ -9,12 +9,13 @@
 //! defect: the `claude` hook only records session start/end, so a long
 //! autonomous session with hundreds of turns could show as two events.
 //!
-//! PRIVACY: only the fact that a prompt happened is recorded — the prompt
-//! text (`message.content`) is never read into an `Event` field. `title`
-//! is always the literal `"prompt"`; `details` is always `None`. A
-//! "claude working" minute stores only names and paths in `details`: the
-//! git branch, the tool names used and the files it edited — never a
-//! command, a reply or any other text.
+//! PRIVACY: prompt text, tool inputs and tool outputs (capped to 2 KB) are
+//! now stored locally in `raw_json`, secret-scrubbed via `scrub::
+//! scrub_secrets`/`scrub::scrub_json` before they ever reach the row
+//! (D-03/D-04). `title` is always the literal `"prompt"`; `details` is
+//! always `None`. A "claude working" minute still stores only names and
+//! paths in `details`: the git branch, the tool names used and the files
+//! it edited — never a command, a reply or any other text.
 
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
@@ -22,9 +23,12 @@ use rusqlite::Connection;
 use serde_json::Value;
 use std::path::Path;
 
+use crate::clues_contract::RawRecord;
+use crate::collectors::claude_tools;
 use crate::collectors::fish::repo_root_for;
 use crate::models::Event;
 use crate::repo;
+use crate::scrub;
 
 use super::CollectReport;
 
@@ -115,6 +119,9 @@ fn collect_file(
     let Ok(content) = std::fs::read_to_string(path) else {
         return Ok(());
     };
+    // tool_use -> its tool_result's output text, paired across the whole
+    // file (a resumed session's tool_result can be many lines later).
+    let tool_outputs = claude_tools::collect_tool_outputs(&content);
     // One marker per session-minute, summarising every line in it.
     let mut working: std::collections::BTreeMap<(String, i64), WorkMinute> = Default::default();
 
@@ -171,9 +178,23 @@ fn collect_file(
                 .entry((session_id.to_string(), epoch / 60))
                 .or_insert_with(|| WorkMinute::new(ts_utc, project_path.clone()))
                 .add(&value);
+            for tool_event in claude_tools::build_tool_events(
+                &value,
+                session_id,
+                ts_utc,
+                project_path.clone(),
+                &tool_outputs,
+            ) {
+                repo::upsert_event(conn, &tool_event)?;
+                report.events_written += 1;
+            }
             continue;
         }
 
+        let raw = RawRecord::ClaudePrompt {
+            session_id: session_id.to_string(),
+            text: scrub::scrub_secrets(&prompt_text(value.get("message").unwrap_or(&Value::Null))),
+        };
         let ev = Event {
             id: None,
             source: "claude_turn".into(),
@@ -188,7 +209,7 @@ fn collect_file(
             jira_issue: None,
             session_id: Some(session_id.to_string()),
             tempo_worklog_id: None,
-            raw_json: None,
+            raw_json: serde_json::to_string(&raw).ok(),
         };
         repo::upsert_event(conn, &ev)?;
         report.events_written += 1;
@@ -323,6 +344,21 @@ fn is_real_prompt(message: &Value) -> bool {
                     .all(|item| item.get("type").and_then(Value::as_str) == Some("tool_result"))
         }
         _ => false,
+    }
+}
+
+/// The owner's prompt text: the plain string content, or the text items of
+/// a content array joined with `\n`.
+fn prompt_text(message: &Value) -> String {
+    match message.get("content") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter(|item| item.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|item| item.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
     }
 }
 

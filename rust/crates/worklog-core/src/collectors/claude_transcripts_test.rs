@@ -1,4 +1,5 @@
 use super::*;
+use crate::clues_contract::{RawRecord, SECRET_PLACEHOLDER};
 use crate::db::open_memory;
 
 fn write_transcript(dir: &Path, project: &str, session: &str, lines: &str) {
@@ -90,7 +91,6 @@ fn counts_a_real_string_prompt() {
     assert_eq!(events[0].source_id, "s1:u1");
     assert_eq!(events[0].session_id.as_deref(), Some("s1"));
     assert_eq!(events[0].project_path.as_deref(), Some(cwd.as_str()));
-    assert_eq!(events[0].raw_json, None);
     assert_eq!(events[0].repo, None);
     assert_eq!(events[0].jira_issue, None);
     assert_eq!(events[0].tempo_worklog_id, None);
@@ -266,7 +266,6 @@ fn never_stores_prompt_text() {
     let ev = &events[0];
     assert_eq!(ev.title, "prompt");
     assert_eq!(ev.details, None);
-    assert_eq!(ev.raw_json, None);
     let haystack = format!(
         "{}{}{}{}",
         ev.title,
@@ -362,4 +361,286 @@ fn a_session_copied_into_a_second_file_counts_once() {
         )
         .unwrap();
     assert_eq!(n, 1);
+}
+
+#[test]
+fn claude_prompt_raw_json_stores_scrubbed_text() {
+    // FR-14/D-04: prompt text is now stored, secret-scrubbed, in raw_json.
+    let tmp = tempfile::tempdir().unwrap();
+    let token = format!("ghp_{}", "a".repeat(36));
+    let line = user_line(
+        "2026-04-18T09:00:00Z",
+        "s1",
+        "u1",
+        "/home/x/Desktop/Work/widget",
+        &format!("\"fix the bug using {token}\""),
+    );
+    write_transcript(tmp.path(), "proj", "s1", &format!("{line}\n"));
+
+    let conn = open_memory().unwrap();
+    let since = NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
+    let until = NaiveDate::from_ymd_opt(2100, 1, 1).unwrap();
+    collect_from_dir(&conn, tmp.path(), since, until).unwrap();
+    let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+    let raw = events[0]
+        .raw_json
+        .as_deref()
+        .expect("prompt raw_json stored");
+    let record: RawRecord = serde_json::from_str(raw).unwrap();
+    match record {
+        RawRecord::ClaudePrompt { session_id, text } => {
+            assert_eq!(session_id, "s1");
+            assert_eq!(text, format!("fix the bug using {SECRET_PLACEHOLDER}"));
+            assert!(!text.contains(&token));
+        }
+        other => panic!("expected ClaudePrompt, got {other:?}"),
+    }
+    assert_eq!(events[0].title, "prompt");
+    assert_eq!(events[0].details, None);
+}
+
+#[test]
+fn claude_tool_use_and_its_result_store_one_claude_tool_row() {
+    // FR-14/FR-15: one NEW row per tool_use, input + paired output stored.
+    let tmp = tempfile::tempdir().unwrap();
+    let home = dirs::home_dir().unwrap().to_string_lossy().into_owned();
+    let cwd = format!("{home}/Desktop/Work/widget");
+    let file_path = format!("{cwd}/src/main.rs");
+    let tool_use = serde_json::json!({
+        "type": "assistant",
+        "timestamp": "2026-04-18T09:00:05Z",
+        "sessionId": "s1",
+        "uuid": "a1",
+        "cwd": cwd,
+        "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {"file_path": file_path}}
+        ]}
+    })
+    .to_string();
+    let tool_result = serde_json::json!({
+        "type": "user",
+        "timestamp": "2026-04-18T09:00:06Z",
+        "sessionId": "s1",
+        "uuid": "r1",
+        "cwd": cwd,
+        "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_1", "content": "file contents here"}
+        ]}
+    })
+    .to_string();
+    write_transcript(
+        tmp.path(),
+        "proj",
+        "s1",
+        &format!("{tool_use}\n{tool_result}\n"),
+    );
+
+    let conn = open_memory().unwrap();
+    let since = NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
+    let until = NaiveDate::from_ymd_opt(2100, 1, 1).unwrap();
+    collect_from_dir(&conn, tmp.path(), since, until).unwrap();
+    let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+    let tool_rows: Vec<_> = events
+        .iter()
+        .filter(|e| e.source == "claude_tool")
+        .collect();
+    assert_eq!(
+        tool_rows.len(),
+        1,
+        "one row per tool_use, not per tool_result"
+    );
+    let ev = tool_rows[0];
+    assert_eq!(ev.source_id, "s1:toolu_1");
+    assert_eq!(ev.title, "Read");
+    assert_eq!(ev.details, None);
+    assert_eq!(ev.session_id.as_deref(), Some("s1"));
+    assert_eq!(ev.project_path.as_deref(), Some(cwd.as_str()));
+    let record: RawRecord = serde_json::from_str(ev.raw_json.as_deref().unwrap()).unwrap();
+    match record {
+        RawRecord::ClaudeTool {
+            session_id,
+            tool,
+            input,
+            output,
+            output_cut_bytes,
+            files,
+        } => {
+            assert_eq!(session_id, "s1");
+            assert_eq!(tool, "Read");
+            assert_eq!(input, serde_json::json!({"file_path": file_path}));
+            assert_eq!(output.as_deref(), Some("file contents here"));
+            assert_eq!(output_cut_bytes, 0);
+            assert_eq!(files, vec![file_path.clone()]);
+        }
+        other => panic!("expected ClaudeTool, got {other:?}"),
+    }
+}
+
+#[test]
+fn claude_tool_output_over_cap_keeps_first_2kb_bytes() {
+    // FR-15/D-04: a 40 KB output is capped to the first 2 KB, byte-exact.
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = "/home/x/Desktop/Work/widget";
+    let big = "x".repeat(40 * 1024);
+    let tool_use = serde_json::json!({
+        "type": "assistant",
+        "timestamp": "2026-04-18T09:00:05Z",
+        "sessionId": "s1",
+        "uuid": "a1",
+        "cwd": cwd,
+        "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "cat big.log"}}
+        ]}
+    })
+    .to_string();
+    let tool_result = serde_json::json!({
+        "type": "user",
+        "timestamp": "2026-04-18T09:00:06Z",
+        "sessionId": "s1",
+        "uuid": "r1",
+        "cwd": cwd,
+        "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_1", "content": big}
+        ]}
+    })
+    .to_string();
+    write_transcript(
+        tmp.path(),
+        "proj",
+        "s1",
+        &format!("{tool_use}\n{tool_result}\n"),
+    );
+
+    let conn = open_memory().unwrap();
+    let since = NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
+    let until = NaiveDate::from_ymd_opt(2100, 1, 1).unwrap();
+    collect_from_dir(&conn, tmp.path(), since, until).unwrap();
+    let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+    let ev = events.iter().find(|e| e.source == "claude_tool").unwrap();
+    let record: RawRecord = serde_json::from_str(ev.raw_json.as_deref().unwrap()).unwrap();
+    match record {
+        RawRecord::ClaudeTool {
+            output,
+            output_cut_bytes,
+            ..
+        } => {
+            let out = output.expect("output kept");
+            assert_eq!(out.len(), 2048);
+            assert_eq!(out, "x".repeat(2048));
+            assert_eq!(output_cut_bytes, 40 * 1024 - 2048);
+        }
+        other => panic!("expected ClaudeTool, got {other:?}"),
+    }
+}
+
+#[test]
+fn claude_tool_input_secret_is_scrubbed_to_placeholder() {
+    // D-03: a secret in a tool's input never reaches worklog.db.
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = "/home/x/Desktop/Work/widget";
+    let token = format!("ghp_{}", "a".repeat(36));
+    let tool_use = serde_json::json!({
+        "type": "assistant",
+        "timestamp": "2026-04-18T09:00:05Z",
+        "sessionId": "s1",
+        "uuid": "a1",
+        "cwd": cwd,
+        "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": token}}
+        ]}
+    })
+    .to_string();
+    write_transcript(tmp.path(), "proj", "s1", &format!("{tool_use}\n"));
+
+    let conn = open_memory().unwrap();
+    let since = NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
+    let until = NaiveDate::from_ymd_opt(2100, 1, 1).unwrap();
+    collect_from_dir(&conn, tmp.path(), since, until).unwrap();
+    let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+    let ev = events.iter().find(|e| e.source == "claude_tool").unwrap();
+    let record: RawRecord = serde_json::from_str(ev.raw_json.as_deref().unwrap()).unwrap();
+    match record {
+        RawRecord::ClaudeTool { input, .. } => {
+            assert_eq!(
+                input.get("command").and_then(|v| v.as_str()),
+                Some(SECRET_PLACEHOLDER)
+            );
+        }
+        other => panic!("expected ClaudeTool, got {other:?}"),
+    }
+}
+
+#[test]
+fn claude_work_rows_unchanged_by_claude_tool_capture() {
+    // The per-minute "claude working" summary must not change shape just
+    // because tool_use items now also produce their own claude_tool rows.
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = "/home/x/Desktop/Work/widget";
+    let a = serde_json::json!({
+        "type": "assistant", "timestamp": "2026-04-18T09:00:05Z", "sessionId": "s1", "uuid": "a1",
+        "cwd": cwd, "gitBranch": "fix-login",
+        "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "SECRET=hunter2 make deploy"}}
+        ]}
+    }).to_string();
+    let b = serde_json::json!({
+        "type": "assistant", "timestamp": "2026-04-18T09:00:40Z", "sessionId": "s1", "uuid": "a2",
+        "cwd": cwd, "gitBranch": "fix-login",
+        "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t2", "name": "Edit", "input": {"file_path": format!("{cwd}/src/login.rs"), "old_string": "x", "new_string": "y"}},
+            {"type": "tool_use", "id": "t3", "name": "Bash", "input": {"command": "cargo test"}}
+        ]}
+    }).to_string();
+    write_transcript(tmp.path(), "proj", "s1", &format!("{a}\n{b}\n"));
+
+    let conn = open_memory().unwrap();
+    let since = NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
+    let until = NaiveDate::from_ymd_opt(2100, 1, 1).unwrap();
+    collect_from_dir(&conn, tmp.path(), since, until).unwrap();
+    let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+
+    let work_rows: Vec<_> = events
+        .iter()
+        .filter(|e| e.source == "claude_work")
+        .collect();
+    assert_eq!(work_rows.len(), 1, "still one working minute");
+    assert_eq!(work_rows[0].title, "claude working");
+    let d = work_rows[0].details.clone().expect("summary present");
+    assert!(d.contains("fix-login"), "{d}");
+    assert!(d.contains("Bash ×2"), "{d}");
+    assert!(d.contains("Edit"), "{d}");
+    assert!(d.contains("src/login.rs"), "{d}");
+
+    let tool_rows: Vec<_> = events
+        .iter()
+        .filter(|e| e.source == "claude_tool")
+        .collect();
+    assert_eq!(tool_rows.len(), 3, "one claude_tool row per tool_use id");
+}
+
+#[test]
+fn claude_tool_sidechain_tool_calls_produce_no_row() {
+    // D-05/FR-17: sidechain (helper) activity is out of scope here (T011)
+    // and must never surface as a claude_tool row from this collector.
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = "/home/x/Desktop/Work/widget";
+    let line = serde_json::json!({
+        "type": "assistant", "timestamp": "2026-04-18T09:00:05Z", "sessionId": "s1", "uuid": "a1",
+        "cwd": cwd, "isSidechain": true,
+        "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "echo hi"}}
+        ]}
+    })
+    .to_string();
+    write_transcript(tmp.path(), "proj", "s1", &format!("{line}\n"));
+
+    let conn = open_memory().unwrap();
+    let since = NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
+    let until = NaiveDate::from_ymd_opt(2100, 1, 1).unwrap();
+    collect_from_dir(&conn, tmp.path(), since, until).unwrap();
+    let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+    assert_eq!(
+        events.iter().filter(|e| e.source == "claude_tool").count(),
+        0
+    );
 }
