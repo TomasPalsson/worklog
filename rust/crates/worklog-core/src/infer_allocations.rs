@@ -32,9 +32,14 @@ pub fn build_day_blocks(
     day: chrono::NaiveDate,
 ) -> anyhow::Result<Vec<InferBlock>> {
     let mut events = crate::infer::load_day_events(conn, day)?;
+    let mut session_ids: Vec<String> = events.iter().filter_map(|e| e.session_id.clone()).collect();
+    session_ids.sort();
+    session_ids.dedup();
+    let pins = crate::session_pins::pins_for_sessions(conn, &session_ids)?;
     crate::session_customers::tag_sessions(
         &mut events,
         &crate::billing_registry::Registry::load(conn)?,
+        &pins,
     );
     let windows: Vec<AllocationWindow> = crate::overlaps::load_allocations(conn, day)?
         .into_iter()

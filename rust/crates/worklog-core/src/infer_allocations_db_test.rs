@@ -303,6 +303,84 @@ fn prompt_text_names_the_session_customer() {
     }
 }
 
+/// A pin must beat the text guess: two sessions whose prompts both name
+/// the same customer would normally stay a single unsplit lane (see
+/// `two_sessions_same_customer_matches_no_customer_registry` below), but
+/// pinning one of them to a different customer must split the lane
+/// anyway — the pin, not the shared text, decides.
+#[test]
+fn pin_beats_text_guess() {
+    use crate::billing_registry::{upsert_customer, Customer, Registry};
+    let conn = crate::db::open_memory().unwrap();
+    let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
+    upsert_customer(
+        &conn,
+        &Customer {
+            id: None,
+            name: "Sjúkra".into(),
+            aliases: vec![],
+        },
+    )
+    .unwrap();
+    upsert_customer(
+        &conn,
+        &Customer {
+            id: None,
+            name: "APRÓ".into(),
+            aliases: vec![],
+        },
+    )
+    .unwrap();
+    seed_two_session_stretches(&conn, "Sjúkra onboarding call", "Sjúkra followup");
+
+    let registry = Registry::load(&conn).unwrap();
+    crate::session_pins::pin(
+        &conn,
+        &registry,
+        "sessA",
+        std::path::Path::new(SHARED),
+        "APRÓ",
+        at(0, 0),
+        None,
+    )
+    .unwrap();
+
+    let blocks = build_day_blocks(&conn, day).unwrap();
+    let non_calendar: Vec<&InferBlock> = blocks.iter().filter(|b| !b.is_calendar).collect();
+    for b in &non_calendar {
+        let sessions: BTreeMap<&str, ()> = b
+            .events
+            .iter()
+            .filter_map(|e| e.session_id.as_deref())
+            .map(|s| (s, ()))
+            .collect();
+        assert!(
+            sessions.len() <= 1,
+            "a pin splitting the lane must not mix both sessions in one block, got {sessions:?}"
+        );
+    }
+    let session_a_blocks = non_calendar
+        .iter()
+        .filter(|b| {
+            b.events
+                .iter()
+                .any(|e| e.session_id.as_deref() == Some("sessA"))
+        })
+        .count();
+    let session_b_blocks = non_calendar
+        .iter()
+        .filter(|b| {
+            b.events
+                .iter()
+                .any(|e| e.session_id.as_deref() == Some("sessB"))
+        })
+        .count();
+    assert!(
+        session_a_blocks > 0 && session_b_blocks > 0,
+        "the pin must split sessA (APRÓ) from sessB (Sjúkra) despite matching text, got sessA={session_a_blocks} sessB={session_b_blocks}"
+    );
+}
+
 /// Both sessions naming the same customer must not split the lane —
 /// the registry then behaves exactly as if it held no customers (FR-04).
 #[test]
