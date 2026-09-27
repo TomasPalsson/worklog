@@ -153,3 +153,41 @@ fn prepare_window_drops_rows_from_a_different_window() {
         "a row from a stale window must not survive into the new one"
     );
 }
+
+#[test]
+fn run_in_transaction_commits_what_succeeded_before_propagating_an_error() {
+    // A mid-run failure must keep every row written before it, just like
+    // today's one-autocommit-per-write collect loop already does — a plain
+    // transaction wrap that rolls back on error (Transaction::drop's
+    // default) would instead lose the earlier write.
+    let conn = open_memory().unwrap();
+    let result = run_in_transaction(&conn, |tx| {
+        store(tx, "/f", 0, 100, 10, 1, &["u1".to_string()], 1, "")?;
+        anyhow::bail!("boom")
+    });
+
+    assert!(result.is_err());
+    assert!(
+        lookup(&conn, "/f", 0, 100, 10, 1, "").is_some(),
+        "the write before the error must be committed, not rolled back"
+    );
+}
+
+#[test]
+fn keep_first_error_prefers_the_body_error_over_a_commit_error() {
+    // A commit that fails after the body already failed must not hide the
+    // body's own (more useful) error behind a confusing commit error.
+    let result = keep_first_error(
+        Err(anyhow::anyhow!("boom")),
+        Err(rusqlite::Error::SqliteSingleThreadedMode),
+    );
+    assert_eq!(result.unwrap_err().to_string(), "boom");
+}
+
+#[test]
+fn keep_first_error_still_reports_a_lone_commit_error() {
+    // No body error to protect: a commit failure on an otherwise-successful
+    // body is still surfaced, exactly like before.
+    let result = keep_first_error(Ok(()), Err(rusqlite::Error::SqliteSingleThreadedMode));
+    assert!(result.is_err());
+}

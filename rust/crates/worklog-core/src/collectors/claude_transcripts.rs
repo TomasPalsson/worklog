@@ -132,70 +132,71 @@ pub fn collect_from_dirs(
         home: home.as_deref(),
     };
     claude_transcript_cache::prepare_window(conn, win.since_ts, win.until_ts)?;
-
-    let Ok(project_dirs) = std::fs::read_dir(dir) else {
-        return Ok(report);
-    };
-    for project_entry in project_dirs.flatten() {
-        let project_dir = project_entry.path();
-        if !project_dir.is_dir() {
-            continue;
-        }
-        let Ok(files) = std::fs::read_dir(&project_dir) else {
-            continue;
-        };
-        for file_entry in files.flatten() {
-            let path = file_entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+    if let Ok(project_dirs) = std::fs::read_dir(dir) {
+        for project_entry in project_dirs.flatten() {
+            let project_dir = project_entry.path();
+            if !project_dir.is_dir() {
                 continue;
             }
-            let Ok(meta) = file_entry.metadata() else {
+            let Ok(files) = std::fs::read_dir(&project_dir) else {
                 continue;
             };
-            let Ok(modified) = meta.modified() else {
-                continue;
-            };
-            let mtime_ns = modified
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos() as i64)
-                .unwrap_or(0);
-            let modified_ts = mtime_ns / 1_000_000_000;
-            // Only files untouched since before the window can be skipped: a
-            // session still writing after `until` holds lines from inside it.
-            if modified_ts < win.since_ts {
-                continue;
-            }
-            let path_str = path.to_string_lossy().into_owned();
-            // Byte-identical to what an earlier tick already fully read over
-            // this exact window: skip the read and reseed cross-file dedupe
-            // + the printed event count from the cached contribution.
-            claude_transcript_cache::skip_or_read(
-                conn,
-                &path_str,
-                win.since_ts,
-                win.until_ts,
-                meta.len(),
-                mtime_ns,
-                &job_sessions_fp,
-                &mut seen,
-                &mut report,
-                |seen, claimed, report| {
-                    collect_file(conn, &path, &win, seen, claimed, &job_sessions, report)
-                },
-            )?;
-            // A session's subagent/workflow-task transcripts live in a
-            // sibling directory named after its own id (spec 006, FR-16).
-            if let Some(session_id) = path.file_stem().and_then(|s| s.to_str()) {
-                let helper_dir = project_dir.join(session_id).join("subagents");
-                if helper_dir.is_dir() {
-                    claude_helpers::collect_helpers_for_session(
+            for file_entry in files.flatten() {
+                let path = file_entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                    continue;
+                }
+                let Ok(meta) = file_entry.metadata() else {
+                    continue;
+                };
+                let Ok(modified) = meta.modified() else {
+                    continue;
+                };
+                let mtime_ns = modified
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos() as i64)
+                    .unwrap_or(0);
+                let modified_ts = mtime_ns / 1_000_000_000;
+                // Only files untouched since before the window can be skipped: a
+                // session still writing after `until` holds lines from inside it.
+                if modified_ts < win.since_ts {
+                    continue;
+                }
+                let path_str = path.to_string_lossy().into_owned();
+                claude_transcript_cache::run_in_transaction(conn, |conn| {
+                    // Byte-identical to an earlier read over this window: skip + reseed.
+                    claude_transcript_cache::skip_or_read(
                         conn,
-                        &helper_dir,
-                        &win,
+                        &path_str,
+                        win.since_ts,
+                        win.until_ts,
+                        meta.len(),
+                        mtime_ns,
+                        &job_sessions_fp,
                         &mut seen,
                         &mut report,
+                        |seen, claimed, report| {
+                            collect_file(conn, &path, &win, seen, claimed, &job_sessions, report)
+                        },
                     )?;
-                }
+                    // A session's subagent/workflow-task transcripts live in a
+                    // sibling directory named after its own id (spec 006, FR-16).
+                    if let Some(session_id) = path.file_stem().and_then(|s| s.to_str()) {
+                        let helper_dir = project_dir.join(session_id).join("subagents");
+                        if helper_dir.is_dir() {
+                            claude_helpers::collect_helpers_for_session(
+                                conn,
+                                &helper_dir,
+                                &win,
+                                &mut seen,
+                                &mut report,
+                            )?;
+                        }
+                    }
+                    Ok(())
+                })?;
+                // One transaction per file, committed before the next file's read starts.
+                claude_transcript_cache::after_file_commit_for_test();
             }
         }
     }
@@ -214,20 +215,19 @@ fn collect_file(
     let Ok(content) = std::fs::read_to_string(path) else {
         return Ok(());
     };
+    // Parse every line once; the tool-output pairing pass and the main pass
+    // below both derive from this instead of each re-parsing the file.
+    let lines: Vec<Value> = content
+        .lines()
+        .filter_map(|l| serde_json::from_str(l.trim()).ok())
+        .collect();
     // tool_use -> its tool_result's output text, paired across the whole
     // file (a resumed session's tool_result can be many lines later).
-    let tool_outputs = claude_tools::collect_tool_outputs(&content);
+    let tool_outputs = claude_tools::collect_tool_outputs(&lines);
     // One marker per session-minute, summarising every line in it.
     let mut working: std::collections::BTreeMap<(String, i64), WorkMinute> = Default::default();
 
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
+    for value in &lines {
         // Claude working in the owner's interactive session is time on that
         // project too; one marker per minute, never the reply text.
         let is_work = value.get("type").and_then(Value::as_str) == Some("assistant")
@@ -235,7 +235,7 @@ fn collect_file(
             && value.get("isSidechain").and_then(Value::as_bool) != Some(true);
         // An inter-session message (FR-18) is never a prompt, whatever type
         // its line carries.
-        let msg = claude_helpers::session_message(&value);
+        let msg = claude_helpers::session_message(value);
         if !is_work && msg.is_none() {
             if value.get("type").and_then(Value::as_str) != Some("user") {
                 continue;
@@ -243,11 +243,11 @@ fn collect_file(
             let Some(message) = value.get("message") else {
                 continue;
             };
-            if !is_owner_typed(&value) || !is_real_prompt(message) {
+            if !is_owner_typed(value) || !is_real_prompt(message) {
                 continue;
             }
         }
-        let Some(key) = line_key(&value, win.since_ts, win.until_ts) else {
+        let Some(key) = line_key(value, win.since_ts, win.until_ts) else {
             continue;
         };
         if !claude_transcript_cache::claim(seen, claimed, key.uuid) {
@@ -274,9 +274,9 @@ fn collect_file(
             working
                 .entry((key.session_id.to_string(), key.ts_utc.timestamp() / 60))
                 .or_insert_with(|| WorkMinute::new(key.ts_utc, project_path.clone()))
-                .add(&value);
+                .add(value);
             for tool_event in claude_tools::build_tool_events(
-                &value,
+                value,
                 key.session_id,
                 key.ts_utc,
                 project_path.clone(),

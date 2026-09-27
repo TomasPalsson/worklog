@@ -13,17 +13,11 @@ use crate::models::Event;
 use crate::scrub;
 
 /// `tool_use` id -> its `tool_result`'s raw (unscrubbed) output text,
-/// scanned from every "user" line in one transcript file.
-pub fn collect_tool_outputs(content: &str) -> HashMap<String, String> {
+/// scanned from every already-parsed "user" line in one transcript file
+/// (the caller parses each line once and shares it with the main pass).
+pub fn collect_tool_outputs(lines: &[Value]) -> HashMap<String, String> {
     let mut outputs = HashMap::new();
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
+    for value in lines {
         if value.get("type").and_then(Value::as_str) != Some("user") {
             continue;
         }

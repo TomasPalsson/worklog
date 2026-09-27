@@ -23,6 +23,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::Path;
+use tracing::warn;
 
 /// What a file contributed to a run over one window, last time it was
 /// fully read (see the module doc for why both fields matter to a skip).
@@ -183,6 +184,65 @@ pub(super) fn store(
     )
     .context("upserting transcript_file_cache")?;
     Ok(())
+}
+
+/// Runs `body` inside one transaction instead of the caller's usual
+/// autocommit-per-write, then commits whatever it wrote — including when
+/// `body` returns an error, so a mid-run failure still keeps every row
+/// written before it, exactly like today's one-autocommit-per-write loop.
+/// The error itself is still returned to the caller after that commit.
+pub(super) fn run_in_transaction(
+    conn: &Connection,
+    body: impl FnOnce(&Connection) -> Result<()>,
+) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    let result = body(&tx);
+    let commit = tx.commit();
+    keep_first_error(result, commit)
+}
+
+/// `body`'s error already explains the failure; a commit error on top of it
+/// (the transaction was already in trouble) would only replace a meaningful
+/// message with a confusing one, so it's logged and dropped instead of
+/// returned. A commit error with no body error is still reported as before.
+fn keep_first_error(body: Result<()>, commit: rusqlite::Result<()>) -> Result<()> {
+    match (body, commit) {
+        (Err(body_err), Err(commit_err)) => {
+            warn!(
+                error = %commit_err,
+                "claude transcript collect: commit failed after a body error; keeping the original error"
+            );
+            Err(body_err)
+        }
+        (body, commit) => {
+            commit.context("committing claude transcript collect run")?;
+            body
+        }
+    }
+}
+
+thread_local! {
+    /// Test-only: set by [`for_test_set_after_file_commit`], run by
+    /// [`after_file_commit_for_test`]. `None` in production, so the call
+    /// site in `claude_transcripts.rs` is a no-op check-and-branch there.
+    static AFTER_FILE_COMMIT: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Called by `collect_from_dirs` right after each file's transaction
+/// commits, so a test can observe that exact boundary (e.g. via a second
+/// connection to the same on-disk db) instead of only the final result.
+pub(super) fn after_file_commit_for_test() {
+    AFTER_FILE_COMMIT.with(|h| {
+        if let Some(f) = h.borrow_mut().as_mut() {
+            f();
+        }
+    });
+}
+
+#[cfg(test)]
+pub(super) fn for_test_set_after_file_commit(f: impl FnMut() + 'static) {
+    AFTER_FILE_COMMIT.with(|h| *h.borrow_mut() = Some(Box::new(f)));
 }
 
 /// Any code path that deletes rows from `events` must call this in the same
