@@ -1,3 +1,5 @@
+Approved: 2026-09-27 by user
+Base: 7ef08c1
 # Tasks — Session customer pins
 Spec: spec.md · Design: design.md · Base: 83ceaff · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml`
 
