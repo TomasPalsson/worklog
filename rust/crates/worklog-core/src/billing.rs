@@ -238,17 +238,26 @@ pub(crate) fn work_prefix() -> Option<&'static str> {
 /// neither — e.g. a pure calendar or Jira block.
 pub fn work_folder_for_block(conn: &Connection, block_id: i64) -> Result<Option<String>> {
     let mut stmt = conn.prepare(
-        "SELECT e.project_path, e.repo
+        "SELECT e.project_path, e.repo, e.source, e.title
            FROM events e
            JOIN block_events be ON be.event_id = e.id
           WHERE be.block_id = ?1",
     )?;
-    let rows: Vec<(Option<String>, Option<String>)> = stmt
-        .query_map([block_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+    let rows: Vec<(Option<String>, Option<String>, String, String)> = stmt
+        .query_map([block_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
         .collect::<std::result::Result<_, _>>()?;
 
     let mut counts: HashMap<String, u32> = HashMap::new();
-    for (project_path, repo_name) in rows {
+    for (project_path, repo_name, source, title) in rows {
+        // A lifecycle rider (R3) never voted on which lane owns a minute;
+        // it must never vote on which folder a block bills under either,
+        // or a handful of unrelated SessionStart/SessionEnd pings from
+        // other sessions can outnumber the block's real events.
+        if crate::infer_lanes::is_lifecycle_row(&source, Some(title.as_str())) {
+            continue;
+        }
         let key = project_path
             .as_deref()
             .and_then(work_folder_for_path)
@@ -2216,3 +2225,7 @@ mod tests {
 #[cfg(test)]
 #[path = "billing_tenant_test.rs"]
 mod billing_tenant_tests;
+
+#[cfg(test)]
+#[path = "billing_lifecycle_test.rs"]
+mod billing_lifecycle_tests;

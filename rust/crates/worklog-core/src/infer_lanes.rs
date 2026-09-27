@@ -76,8 +76,16 @@ fn focus_window_minutes(source: &str) -> i64 {
 /// either (otherwise a handful of unrelated SessionStart/SessionEnd
 /// pings can outnumber the block's real events and flip its class).
 pub(crate) fn is_lifecycle(e: &InferEvent) -> bool {
-    e.source == "claude"
-        && e.title.as_deref().is_some_and(|t| {
+    is_lifecycle_row(&e.source, e.title.as_deref())
+}
+
+/// Row-level primitive behind [`is_lifecycle`], usable where only a raw
+/// `(source, title)` pair is on hand (a SQL row, not a full `InferEvent`) —
+/// `billing::work_folder_for_block` skips the same lifecycle riders from
+/// its folder vote via this.
+pub(crate) fn is_lifecycle_row(source: &str, title: Option<&str>) -> bool {
+    source == "claude"
+        && title.is_some_and(|t| {
             t.starts_with("SessionStart") || t.starts_with("Stop") || t.starts_with("SessionEnd")
         })
 }
