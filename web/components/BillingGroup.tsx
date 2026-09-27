@@ -12,7 +12,7 @@ import { toast } from "@/lib/toast";
 import type { BillingCustomer, BillingFolderMap, BillingRow } from "@/lib/types";
 import { CustomerPin, DeildMover, VerkefniPin } from "./BillingPins";
 import { ClaudeMark } from "./SourceIcon";
-import { Check, CircleAlert, Pencil, RefreshCw } from "lucide-react";
+import { Check, CircleAlert, Pencil, RefreshCw, Sparkles } from "lucide-react";
 
 interface Props {
   row: BillingRow;
@@ -103,18 +103,21 @@ export function BillingGroup({
     });
   }
 
+  // No stored text yet → the action is a first "Generate", not a redo.
+  const verb = row.text_origin ? "regenerate" : "generate";
+
   function regenerate() {
     start(async () => {
       const r = await regenerateLineText(lineKey);
       if (!r.ok) {
-        toast.error(`Couldn't regenerate — ${r.error}`);
+        toast.error(`Couldn't ${verb} — ${r.error}`);
         return;
       }
       if (!r.data.generated) {
-        toast.error(`Not regenerated — ${r.data.reason ?? "unknown reason"}`);
+        toast.error(`Not ${verb}d — ${r.data.reason ?? "unknown reason"}`);
         return;
       }
-      toast.ok("Regenerated");
+      toast.ok(verb === "generate" ? "Generated" : "Regenerated");
       router.refresh();
     });
   }
@@ -193,13 +196,17 @@ export function BillingGroup({
                   Edit
                 </button>
                 <button type="button" onClick={regenerate} disabled={pending}>
-                  <RefreshCw
-                    width={12}
-                    height={12}
-                    aria-hidden="true"
-                    className={pending ? "billing-spin" : undefined}
-                  />
-                  Regenerate
+                  {verb === "generate" && !pending ? (
+                    <Sparkles width={12} height={12} aria-hidden="true" />
+                  ) : (
+                    <RefreshCw
+                      width={12}
+                      height={12}
+                      aria-hidden="true"
+                      className={pending ? "billing-spin" : undefined}
+                    />
+                  )}
+                  {verb === "generate" ? "Generate" : "Regenerate"}
                 </button>
               </span>
             </>

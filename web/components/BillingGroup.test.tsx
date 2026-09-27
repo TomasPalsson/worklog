@@ -255,6 +255,17 @@ describe("BillingGroup line text (FR-26/FR-31/FR-33/FR-35)", () => {
     expect(screen.getByText("not generated")).toBeTruthy();
   });
 
+  it("offers Generate, not Regenerate, when nothing was generated yet", () => {
+    renderGroup({ text_origin: null });
+    expect(screen.getByRole("button", { name: "Generate" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Regenerate" })).toBeNull();
+  });
+
+  it("offers Regenerate once a text exists", () => {
+    renderGroup({ text_origin: "generated" });
+    expect(screen.getByRole("button", { name: "Regenerate" })).toBeTruthy();
+  });
+
   it("Edit → Save calls saveLineText with {day, folder, customer, text}", async () => {
     renderGroup({ invoice_text: "Old text" });
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
@@ -291,7 +302,7 @@ describe("BillingGroup line text (FR-26/FR-31/FR-33/FR-35)", () => {
       <>
         <ToastHost />
         <BillingGroup
-          row={row({})}
+          row={row({ text_origin: "manual" })}
           folderPin={pin}
           customers={customers}
           knownVerkefni={[]}
