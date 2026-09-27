@@ -6,9 +6,13 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { subscribe, type ToastMsg } from "@/lib/toast";
 import type { Block, JiraTicket } from "@/lib/types";
 
+const setDescription = mock(async (_id: number, _text: string, _day: string) => ({
+  ok: true as const,
+  data: undefined,
+}));
 mock.module("@/app/actions", () => ({
   setDuration: mock(async () => ({ ok: true as const, data: undefined })),
-  setDescription: mock(async () => ({ ok: true as const, data: undefined })),
+  setDescription,
   setPersonal: mock(async () => ({ ok: true as const, data: undefined })),
   deleteBlock: mock(async () => ({ ok: true as const, data: undefined })),
   describeBlock: mock(async () => ({
@@ -94,6 +98,37 @@ describe("BlockCard description + clue line", () => {
       />,
     );
     expect(screen.getByText("Describing…")).toBeTruthy();
+  });
+
+  it("never saves the placeholder as a description when the empty title is clicked and left", () => {
+    setDescription.mockClear();
+    render(
+      <BlockCard
+        block={makeBlock({ description: null, estimated_by: null })}
+        tickets={[]}
+        day="2026-07-25"
+        hideTicketing
+      />,
+    );
+    const box = screen.getByRole("textbox", { name: /Block description/ });
+    fireEvent.focus(box);
+    fireEvent.blur(box);
+    expect(setDescription).not.toHaveBeenCalled();
+    expect(screen.getByText("Describing…")).toBeTruthy();
+  });
+
+  it("clears the placeholder on focus so typing starts from an empty title", () => {
+    render(
+      <BlockCard
+        block={makeBlock({ description: null, estimated_by: "gap" })}
+        tickets={[]}
+        day="2026-07-25"
+        hideTicketing
+      />,
+    );
+    const box = screen.getByRole("textbox", { name: /Block description/ });
+    fireEvent.focus(box);
+    expect(box.innerText ?? box.textContent).toBe("");
   });
 
   it("shows the existing placeholder when there is no description but the block was estimated", () => {
