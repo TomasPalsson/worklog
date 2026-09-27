@@ -105,7 +105,9 @@ impl ModelInvoker for RollingWindowInvoker {
 
 #[test]
 fn bounded_concurrent_invoke_rolls_past_a_slow_call_in_order_and_bounded() {
-    let sleeps_ms = vec![400, 50, 50, 50, 50, 50, 50, 50];
+    // Chunks of 4 would take 800 + 800 + 100 = ~1700 ms; a rolling window
+    // keeps three workers busy with the short calls: ~900 ms.
+    let sleeps_ms = vec![800, 100, 100, 100, 800, 100, 100, 100, 100, 100, 100, 100];
     let users: Vec<String> = (0..sleeps_ms.len()).map(|i| i.to_string()).collect();
     let invoker = RollingWindowInvoker {
         sleeps_ms,
@@ -125,9 +127,9 @@ fn bounded_concurrent_invoke_rolls_past_a_slow_call_in_order_and_bounded() {
         );
     }
     assert!(
-        elapsed < std::time::Duration::from_millis(440),
-        "rolling window took {elapsed:?}, expected ~400ms (bounded by the one slow \
-         call), well under chunked's ~450ms (a slow call's chunk stalls the next chunk)"
+        elapsed < std::time::Duration::from_millis(1300),
+        "rolling window took {elapsed:?}, expected ~900ms, well under chunked's \
+         ~1700ms (a slow call's chunk stalls the next chunk)"
     );
     assert!(
         invoker.max_in_flight.load(Ordering::SeqCst) <= 4,
