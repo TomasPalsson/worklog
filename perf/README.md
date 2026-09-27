@@ -62,6 +62,31 @@ runs, 2026-09-27. CLI runs start on a fresh clone, so the DB file is cold in the
 | S1 db-week | 31.9 MB (raw_json 15.8 MB) | ~~≤ 8 MB~~ closed by owner at "no visible change": ≈ 20 MB/week now (fresh 4-day ingest 12.91 → 8.65 MB); 16–17 MB judged not worth more code | 1.5× |
 | S3 footprint | model dir 1.2 GB; ~600 MB old DB backups | ≤ 0.6 GB model (owner decision) | 2× |
 
+## Final scoreboard (2026-09-27, quiet machine)
+
+`worklog-mainbase` (built from main `d2587fe`) vs `worklog-final` (`perf/evals`), medians.
+Daemon scenarios: PERF_DIR=perf, 20 runs; CLI/tick: perf2, 5 runs. Every scenario PASS or
+PASS* (only declared lines: the new index + cache table in SCHEMA, purge's "bytes freed",
+trimmed claude_tool raw_json).
+
+| id | main | final | speedup | goal | met? |
+|----|------|-------|---------|------|------|
+| T2b steady 15-min tick | 879.6 ms | 33.3 ms | 26.4× | ≤ 30 ms | ~ |
+| T2 tick (first of a window) | 1000.6 ms | 906.6 ms | 1.10× | — | |
+| T3 fresh-DB tick | 902.9 ms | 810.8 ms | 1.11× | ≤ 300 ms | no |
+| T4 day page | 15.3 ms | 5.9 ms | 2.6× | ≤ 3 ms | no |
+| T5 week page | 20.8 ms | 12.6 ms | 1.65× | ≤ 5 ms | no |
+| T6 / T6b / T7 | 0.3 / 7.8 / 0.5 ms | same | 1.0× | don't regress | yes |
+| T8 CLI summary/week/list/infer | 29.6/41.1/29.3/56.6 ms | same | 1.0× | ≤ 5–10 ms | no |
+| T9 purge | 626.6 ms | 625.2 ms | 1.0× | ≤ 100 ms | no (two whole-DB copies are a safety feature) |
+| T1 hook | Claude waited ~20 ms | Claude doesn't wait (detached, flow repo) | ∞ | 0 ms perceived | yes |
+| T10 decide, repeat tick | 45.6 s | 0.024 s | ~1900× | ≤ 50 ms | yes |
+| T10 decide, new events | 42.1 s | 24.7 s | 1.7× | ≤ 4 s | no (model compute-bound; int8 and concurrency measured slower) |
+| T11 describe, 8 real blocks | 246.4 s | 51.5 s | 4.8× | ≤ 1 min/day | 8 blocks yes; 22-block day ~2.5 min |
+| S1 DB, same 9,636 events | 12.49 MB | 8.65 MB | −31% | owner: no visible change | closed |
+| Writes per steady tick (WAL) | 78.2 MB | 0.25 MB | ~300× | — | |
+| S3 footprint | 590 MB old backups | deleted | | | yes |
+
 ## Findings (probes, 2026-09-27)
 
 - T11, same 8 captured prompts (`perf/describe.ts`): **base** 20.4 s/block, $0.044;
