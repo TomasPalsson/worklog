@@ -45,7 +45,7 @@ Independent test: `cd web && bun test lib/detailRows.test.ts components/BlockDet
 - [x] T015 Block details query + `GET /blocks/:id/details` (FR-20) — files: rust/crates/worklog-core/src/block_details.rs, rust/crates/worklog-core/src/daemon.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core block_details` — after: T014 — done: 315c3e4
 - [x] T016 Detail rows: fold sessions prompt → tools → files, nest helpers, source filter (FR-21, FR-22, FR-23) — files: web/lib/detailRows.ts, web/lib/detailRows.test.ts, web/lib/daemon.ts — verify: `cd web && bun test lib/detailRows.test.ts` — after: T015 — done: 198fd60
 - [x] T017 Details page + "Details" control on the block card; inline list untouched (FR-19, FR-24, FR-25, FR-34) — files: web/app/[day]/block/[id]/page.tsx, web/components/BlockDetails.tsx, web/components/BlockDetails.test.tsx, web/components/BlockCard.tsx, web/app/globals.css — verify: `cd web && bun test components/BlockDetails.test.tsx components/BlockCard.test.tsx && bun run typecheck` — after: T016 — done: 4a3acb9
-- [ ] CHK002 Owner reviews the Details view on 2026-09-25 — files: web/components/BlockDetails.tsx — verify: human: owner opens the vitinn-infra block's Details and confirms every prompt, tool call and shell command in its span is there and readable — after: T017
+- [x] CHK002 Owner reviews the Details view on 2026-09-25 — files: web/components/BlockDetails.tsx — verify: human: owner opens the vitinn-infra block's Details and confirms every prompt, tool call and shell command in its span is there and readable — after: T017 — done: 55e17fd by user
 
 ## Phase 4 — Billing-line texts (phase D)
 Goal: each billing line carries 2–3 Icelandic sentences a boss understands, built only from the D-02 send-list.
