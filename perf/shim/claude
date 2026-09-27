@@ -1,0 +1,26 @@
+#!/bin/bash
+# Fake `claude` for T11: records the exact args + stdin worklog sends to `claude -p`,
+# answers with a canned structured_output so the caller proceeds. No network, no cost.
+#   CLAUDE_SHIM_DIR  where captures go (required)
+set -euo pipefail
+n=$(ls "$CLAUDE_SHIM_DIR" 2>/dev/null | grep -c '\.stdin$' || true)
+f="$CLAUDE_SHIM_DIR/$(printf '%04d' "$n")"
+cat > "$f.stdin"
+/usr/bin/python3 -c 'import json,sys; json.dump(sys.argv[2:], open(sys.argv[1], "w"))' "$f.args.json" "$@"
+# Build a minimal instance of the requested --json-schema (strings "x", numbers 1, arrays []).
+schema=""
+while [ $# -gt 0 ]; do [ "$1" = --json-schema ] && schema=$2; shift; done
+/usr/bin/python3 - "$schema" "$f.json" <<'EOF'
+import json, sys
+def fake(s):
+    t = s.get("type")
+    if t == "object":
+        return {k: fake(v) for k, v in s.get("properties", {}).items() if k in s.get("required", s.get("properties", {}))}
+    if t == "array": return []
+    if t in ("number", "integer"): return 1
+    if t == "boolean": return False
+    if "enum" in s: return s["enum"][0]
+    return "x"
+out = {"type": "result", "is_error": False, "result": "", "structured_output": fake(json.loads(sys.argv[1] or "{}"))}
+json.dump(out, open(sys.argv[2], "w")); print(json.dumps(out))
+EOF
