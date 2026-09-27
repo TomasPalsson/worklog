@@ -186,6 +186,18 @@ fn clues_send_block_input_never_leaks_forbidden_fields() {
         },
     );
 
+    // A group DM shares the channel "G" prefix but is named after people.
+    seed_event(
+        &conn,
+        bid,
+        Event::minimal(
+            SOURCE_SLACK,
+            "G0789:1727.3",
+            "2026-05-01T09:06:30+00:00",
+            "mpdm-anna--bjorn--tomas-1",
+        ),
+    );
+
     // A GitHub commit: only the stripped title may leak, never the repo
     // or the commit body.
     seed_event(
@@ -241,6 +253,7 @@ fn clues_send_block_input_never_leaks_forbidden_fields() {
         "SLACK-MESSAGE-TEXT",
         "DM-TEXT",
         "Jón Jónsson",
+        "mpdm-",
         "COMMIT-BODY-TEXT",
         "aproorg/secret-repo",
         "/Users/",

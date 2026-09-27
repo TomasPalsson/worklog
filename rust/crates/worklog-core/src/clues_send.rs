@@ -207,7 +207,7 @@ impl Collected {
     }
 
     fn absorb_slack(&mut self, conn: &Connection, row: &DetailRow) {
-        if slack_channel_id(conn, row.id) {
+        if slack_channel_id(conn, row.id) && !row.title.starts_with("mpdm-") {
             self.slack_channels
                 .push(row.title.trim_start_matches('#').to_string());
         }
@@ -281,7 +281,7 @@ fn basename(path: &str) -> String {
 }
 
 /// `true` for a channel/group event (`source_id` `"C…:ts"`/`"G…:ts"`);
-/// `false` for a DM (`"D…:ts"`) or anything else — never its counterpart.
+/// `false` for a DM (`"D…:ts"`) or else. `G` group DMs (`mpdm-…`) name people.
 fn slack_channel_id(conn: &Connection, event_id: i64) -> bool {
     let sql = "SELECT source_id FROM events WHERE id = ?1";
     let id: String = conn
