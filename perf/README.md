@@ -117,6 +117,15 @@ file_path/notebook_path/path/command/pattern/description/prompt/url/query verbat
 default-case tools cap each string at 200 chars); raw_json compression (plain zstd 1.9×;
 a dictionary must not be committed — trained on private data); one PR to main.
 
+Idea sweep 2 (fresh generators + critics), queued for round 3 after round 2 merges:
+T3 cold tick — parse each transcript line once (claude_tools::collect_tool_outputs re-parses
+every line), one transaction per collect run, `RETURNING id` (fallback SELECT when the
+no-op-guarded upsert returns nothing); T4/T5 — fold stitch_day_summary's 3 enrichment
+queries into one fetch + prepare_cached. Owner decision: tool output cap 2048 → 512 B
+(~3 MB/week; Details shows less). Killed: day-summary cache (key must also cover TZ/non-DB
+inputs), raw_json side table (missed readers), schema-hash open (<5% after the hook change),
+page size 16 KB (4× WAL bytes per small commit), dropping jira/tempo indexes (used).
+
 Owner decisions: backups deleted (~590 MB, 006 ones after #54 merged); hook made
 non-blocking in the flow repo (`plugins/flow/hooks/worklog-hook.sh`: detached `worklog
 hook-run`, 99/99 hook tests, not committed there — owner's repo); tool-input trim approved.
