@@ -183,6 +183,57 @@ fn day_overlaps_attaches_the_saved_allocation() {
 }
 
 #[test]
+fn day_overlaps_from_events_matches_day_overlaps_on_a_preloaded_slice() {
+    // `daemon::stitch_day_summary` now loads a day's events once and feeds
+    // the same slice to `day_overlaps_from_events` and `compute_activity`
+    // instead of letting `day_overlaps`/`day_activity` each call
+    // `load_day_events` themselves. This must produce byte-identical
+    // overlaps (allocation included) to the old load-per-call path, or the
+    // day page would silently start showing wrong overlap/allocation data.
+    let conn = open_memory().unwrap();
+    let day = NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
+    for e in (0..20).map(|i| ev(10, i * 3, "claude_turn", A)) {
+        let mut ev_row = crate::models::Event::minimal(
+            &e.source,
+            format!("a{}", e.ts),
+            e.ts.to_rfc3339(),
+            "work",
+        );
+        ev_row.project_path = Some(A.to_string());
+        crate::repo::upsert_event(&conn, &ev_row).unwrap();
+    }
+    for e in (0..20).map(|i| ev(10, i * 3, "claude_work", B)) {
+        let mut ev_row = crate::models::Event::minimal(
+            &e.source,
+            format!("b{}", e.ts),
+            e.ts.to_rfc3339(),
+            "work",
+        );
+        ev_row.project_path = Some(B.to_string());
+        crate::repo::upsert_event(&conn, &ev_row).unwrap();
+    }
+
+    let expected = day_overlaps(&conn, day).unwrap();
+    assert_eq!(expected.len(), 1);
+    let mut shares = BTreeMap::new();
+    shares.insert(A_KEY.to_string(), 0.6);
+    shares.insert(B_KEY.to_string(), 0.4);
+    save_allocation(
+        &conn,
+        day,
+        expected[0].started_at,
+        expected[0].ended_at,
+        &shares,
+    )
+    .unwrap();
+    let expected = day_overlaps(&conn, day).unwrap();
+
+    let events = load_day_events(&conn, day).unwrap();
+    let got = day_overlaps_from_events(&conn, day, &events).unwrap();
+    assert_eq!(got, expected);
+}
+
+#[test]
 fn helper_tool_and_message_rows_never_create_an_overlap_or_activity() {
     // FR-17/D-05: subagent/tool/message rows are the owner's tool acting
     // on its own behalf, not the owner working two projects at once — a

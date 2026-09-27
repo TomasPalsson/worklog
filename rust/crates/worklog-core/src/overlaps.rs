@@ -65,7 +65,11 @@ pub fn day_activity(conn: &Connection, day: NaiveDate) -> Result<Vec<ProjectActi
     Ok(compute_activity(&events))
 }
 
-fn compute_activity(events: &[InferEvent]) -> Vec<ProjectActivity> {
+/// `pub(crate)` (rather than private) so a caller that already loaded the
+/// day's events — `daemon::stitch_day_summary`, which also needs them for
+/// `day_overlaps_from_events` — can reuse them instead of hitting
+/// `load_day_events` a second time.
+pub(crate) fn compute_activity(events: &[InferEvent]) -> Vec<ProjectActivity> {
     let mut by_project: BTreeMap<String, Vec<ActivitySpan>> = BTreeMap::new();
     for iv in project_intervals(events) {
         by_project
@@ -86,7 +90,18 @@ fn compute_activity(events: &[InferEvent]) -> Vec<ProjectActivity> {
 /// activity, with the day's saved allocation (if any) attached.
 pub fn day_overlaps(conn: &Connection, day: NaiveDate) -> Result<Vec<Overlap>> {
     let events = load_day_events(conn, day)?;
-    let mut overlaps = compute_overlaps(&events);
+    day_overlaps_from_events(conn, day, &events)
+}
+
+/// Same as [`day_overlaps`], but for a caller that already loaded the
+/// day's events — `daemon::stitch_day_summary`, which also needs them for
+/// `compute_activity` and would otherwise call `load_day_events` twice.
+pub(crate) fn day_overlaps_from_events(
+    conn: &Connection,
+    day: NaiveDate,
+    events: &[InferEvent],
+) -> Result<Vec<Overlap>> {
+    let mut overlaps = compute_overlaps(events);
     let allocations = load_allocations(conn, day)?;
     for overlap in &mut overlaps {
         if let Some((_, _, shares)) = allocations
