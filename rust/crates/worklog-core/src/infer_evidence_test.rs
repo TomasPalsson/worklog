@@ -17,6 +17,7 @@ fn ev(h: u32, m: u32, source: &str, session: Option<&str>) -> InferEvent {
         project_path: None,
         session_id: session.map(str::to_string),
         title: None,
+        lane_tag: None,
     }
 }
 

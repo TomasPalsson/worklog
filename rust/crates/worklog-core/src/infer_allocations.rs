@@ -45,13 +45,15 @@ pub fn build_day_blocks(
     ))
 }
 
-/// Every event of the day per lane key, so a re-cut piece can link real
+/// Every event of the day per lane folder, so a re-cut piece can link real
 /// events of the project it was given (a block's project is read from its
-/// linked events everywhere — billing, estimates, the day page).
+/// linked events everywhere — billing, estimates, the day page). Allocation
+/// windows are a folder-level concept, so this is folder-keyed, not
+/// tagged-lane-keyed.
 pub(crate) fn events_by_key(events: &[InferEvent]) -> BTreeMap<String, Vec<InferEvent>> {
     let mut by_key: BTreeMap<String, Vec<InferEvent>> = BTreeMap::new();
     for e in events {
-        if let Some(k) = crate::infer_lanes::lane_key(e) {
+        if let Some(k) = crate::infer_lanes::lane_folder(e) {
             by_key.entry(k).or_default().push(e.clone());
         }
     }

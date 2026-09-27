@@ -57,6 +57,8 @@ pub struct InferEvent {
     /// Raw event title. Drives `infer_evidence::dedupe_shell_events` (a
     /// flaky collector logging the exact same `shell` command twice).
     pub title: Option<String>,
+    /// The Claude session's resolved customer, when its repo folder splits into separate lanes per customer (`infer_lanes::lane_key`); `None` otherwise.
+    pub lane_tag: Option<String>,
 }
 
 impl InferEvent {
@@ -511,6 +513,7 @@ fn infer_event_row(r: &rusqlite::Row) -> rusqlite::Result<InferEvent> {
         project_path: r.get(5)?,
         session_id: r.get(6)?,
         title: r.get(7)?,
+        lane_tag: None,
     })
 }
 
@@ -844,6 +847,7 @@ mod tests {
             project_path: None,
             session_id: None,
             title: None,
+            lane_tag: None,
         }
     }
 
@@ -857,6 +861,7 @@ mod tests {
             project_path: Some(project.into()),
             session_id: None,
             title: None,
+            lane_tag: None,
         }
     }
 
@@ -870,6 +875,7 @@ mod tests {
             project_path: None,
             session_id: None,
             title: None,
+            lane_tag: None,
         }
     }
 
@@ -1117,6 +1123,7 @@ mod tests {
                 project_path: None,
                 session_id: None,
                 title: None,
+                lane_tag: None,
             },
             InferEvent {
                 ts: end - Duration::minutes(1),
@@ -1127,6 +1134,7 @@ mod tests {
                 project_path: None,
                 session_id: None,
                 title: None,
+                lane_tag: None,
             },
         ];
         // Gap is > TIMEOUT, so these become two separate blocks.
@@ -1143,6 +1151,7 @@ mod tests {
                 project_path: None,
                 session_id: None,
                 title: None,
+                lane_tag: None,
             });
             t += Duration::minutes(10);
         }
@@ -1485,6 +1494,7 @@ mod tests {
             project_path: None,
             session_id: None,
             title: None,
+            lane_tag: None,
         };
         let block = new_block(&event);
         assert_eq!(

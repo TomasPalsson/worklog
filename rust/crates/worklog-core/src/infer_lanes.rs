@@ -1,15 +1,13 @@
 //! Parallel projects share the day minute by minute.
 //!
 //! The owner often has two sessions going at once (vitinn-infra in one
-//! terminal, a background job building worklog in another). One interleaved
-//! timeline fused both into a single block; separate per-project lanes
-//! double-counted the same hour for two customers. Instead every minute is
+//! terminal, a background job building worklog in another). Every minute is
 //! owned by exactly ONE project: the one with the most activity within
 //! ±`WINDOW_MINUTES`. Short silent stretches between the same owner are
 //! bridged, and a run judged too weak on its own evidence
-//! (`infer_evidence::merge_by_evidence`) joins its neighbour or is
-//! dropped. Each run becomes one block spanning exactly the minutes it
-//! owns, so every owned minute is counted once and blocks never overlap.
+//! (`infer_evidence::merge_by_evidence`) joins its neighbour or is dropped.
+//! Each run becomes one block spanning exactly the minutes it owns, so every
+//! owned minute is counted once and blocks never overlap.
 
 use chrono::{DateTime, Duration, Utc};
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,13 +15,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::billing::work_folder_for_path;
 use crate::infer::{InferBlock, InferEvent};
 
-/// Background activity within this many minutes of a minute counts toward its owner.
-/// Also the max gap `overlaps::project_intervals` bridges inside one
-/// project's activity — the two "5 minutes of quiet is still the same
-/// stretch of work" rules should agree. Also how long a non-prompt human
-/// action (a shell command, a browser tab, Slack, the owner's own git
-/// commits/PRs) holds a lane's focus (R1) — a quick touch, not sustained
-/// attention.
+/// Background activity within this many minutes of a minute counts toward
+/// its owner — also the max gap `overlaps::project_intervals` bridges, and
+/// how long a non-prompt human action (shell, browser, Slack, the owner's
+/// own git commits/PRs) holds a lane's focus (R1), a quick touch, not
+/// sustained attention.
 pub(crate) const WINDOW_MINUTES: i64 = 5;
 /// Only an owner PROMPT (`claude_turn`) reflects sustained attention on a
 /// project; its focus reaches this much further (R1).
@@ -36,14 +32,11 @@ const HUMAN_WINDOW_MINUTES: i64 = 15;
 const MIN_RUN_MINUTES: i64 = 5;
 
 /// Sources that are the owner acting, not a tool working on their behalf.
-/// Exposed to `overlaps` so its per-project human/background event split
-/// uses the exact same rule this module owns and elsewhere every minute
-/// belongs to one project.
+/// Exposed to `overlaps` for the same human/background event split.
 ///
-/// `git_reflog` is deliberately excluded (R2): agents make the vast
-/// majority of reflog events (checkouts/commits fired by an autonomous
-/// tool run), and the owner's own git commands already arrive as `shell`
-/// — so reflog is background evidence, never a focus-holding action.
+/// `git_reflog` is deliberately excluded (R2): agents make most reflog
+/// events (autonomous checkouts/commits), and the owner's own git commands
+/// already arrive as `shell` — reflog is background evidence only.
 pub(crate) fn is_human(source: &str) -> bool {
     matches!(
         source,
@@ -61,20 +54,16 @@ fn focus_window_minutes(source: &str) -> i64 {
     }
 }
 
-/// Claude hook lifecycle events (source `claude`) are titled after the
-/// hook event name (`hook_run::title_for`) — SessionStart/Stop/SessionEnd
-/// are the session's own bookkeeping, not the owner acting or the tool
-/// working (R3): they never vote on a lane's owner and never hold a
-/// minute open. Ordinary hook heartbeats on the same source
-/// (UserPromptSubmit, PreToolUse/PostToolUse) are real activity signal
-/// and keep voting exactly as before.
+/// Claude hook lifecycle events (source `claude`) titled SessionStart/
+/// Stop/SessionEnd (`hook_run::title_for`) are session bookkeeping, not
+/// the owner acting or the tool working (R3): they never vote on a lane's
+/// owner and never hold a minute open. Ordinary hook heartbeats
+/// (UserPromptSubmit, PreToolUse/PostToolUse) keep voting as before.
 ///
 /// `pub(crate)` so `InferBlock::dominant_project_path` and
-/// `infer_evidence::single_project` can exclude the same events from a
-/// block's project-identity vote — a rider that never voted on which
-/// lane owns a minute must never vote on which project a block IS,
-/// either (otherwise a handful of unrelated SessionStart/SessionEnd
-/// pings can outnumber the block's real events and flip its class).
+/// `infer_evidence::single_project` exclude the same events from a
+/// block's project-identity vote (a lane-ownership non-voter must never
+/// vote on a block's project either).
 pub(crate) fn is_lifecycle(e: &InferEvent) -> bool {
     is_lifecycle_row(&e.source, e.title.as_deref())
 }
@@ -92,12 +81,12 @@ pub(crate) fn is_lifecycle_row(source: &str, title: Option<&str>) -> bool {
 /// Silent runs shorter than this between the same owner are bridged.
 const BRIDGE_MINUTES: i64 = 12;
 
-/// Lane key for an event: its repo folder, `None` for folderless events.
+/// Lane folder for an event: its repo folder, `None` for folderless events.
 /// Personal (non-`~/Desktop/Work`) keys carry a marker so they can never
-/// be mistaken for client work — `work_folder_for_path` basenames them too.
-/// `pub(crate)` so `overlaps` folds project keys identically instead of
-/// duplicating this logic.
-pub(crate) fn lane_key(e: &InferEvent) -> Option<String> {
+/// be mistaken for client work. `pub(crate)` so `infer_allocations` and
+/// `overlaps` fold project keys identically — both are folder-level
+/// concepts, never split by which customer's session touched it.
+pub(crate) fn lane_folder(e: &InferEvent) -> Option<String> {
     e.project_path.as_deref().map(|p| {
         let folder = work_folder_for_path(p).unwrap_or_else(|| p.to_string());
         if p.contains("/Desktop/Work/") {
@@ -105,6 +94,16 @@ pub(crate) fn lane_key(e: &InferEvent) -> Option<String> {
         } else {
             format!("{PERSONAL_MARK}{folder}")
         }
+    })
+}
+
+/// Lane key: the lane folder plus `#<lane_tag>` when the session was
+/// tagged to a customer — what actually owns a minute, so one folder can
+/// split into separate lanes per customer.
+pub(crate) fn lane_key(e: &InferEvent) -> Option<String> {
+    lane_folder(e).map(|folder| match &e.lane_tag {
+        Some(tag) => format!("{folder}#{tag}"),
+        None => folder,
     })
 }
 
@@ -147,14 +146,11 @@ pub(crate) fn build_blocks_by_project(
         return build(events);
     }
 
-    // A folderless event (D-08, FR-07, FR-08, FR-09) never decides a
-    // block's project or bounds — it can only ride inside a span a
-    // project event already established. Pull every one out before any
-    // clustering pass can see it, and place it afterward without moving
-    // anything.
-    // A lifecycle event (R3) rides like a folderless one — pulled out here
-    // so it never votes and never holds a run's bounds open, but still
-    // links into whatever block ends up covering its timestamp.
+    // A folderless event (D-08, FR-07/08/09) never decides a block's
+    // project or bounds — pulled out before clustering, placed after
+    // without moving anything. A lifecycle event (R3) rides the same way:
+    // it never votes or holds a run's bounds open, but still links into
+    // whatever block covers its timestamp.
     let (folderless, events): (Vec<InferEvent>, Vec<InferEvent>) = events
         .into_iter()
         .partition(|e| !e.is_calendar() && (lane_key(e).is_none() || is_lifecycle(e)));
@@ -194,11 +190,16 @@ fn build_project_blocks(
     }
     let runs =
         crate::infer_evidence::merge_by_evidence(fold_short_runs(owner_runs(&keyed)), &keyed);
-    let by_key = crate::infer_allocations::events_by_key(&events);
+    // By lane KEY, not folder: a tagged run's owner is `folder#Cust`.
+    let mut by_key: BTreeMap<String, Vec<InferEvent>> = BTreeMap::new();
+    for e in &events {
+        if let Some(k) = lane_key(e) {
+            by_key.entry(k).or_default().push(e.clone());
+        }
+    }
 
-    // Every event lands in at most one bucket: calendar alone, a run whose
-    // window contains it (project events only into their own project's run),
-    // or leftovers (minutes nobody owns) built on their own.
+    // Every event lands in at most one bucket: calendar alone, a run
+    // whose window contains it, or leftovers (nobody owns) on their own.
     let mut buckets: BTreeMap<usize, Vec<InferEvent>> = BTreeMap::new();
     let mut calendar = Vec::new();
     let mut leftovers = Vec::new();
@@ -221,9 +222,8 @@ fn build_project_blocks(
         }
     }
     // One block per run, spanning the minutes it owns; a run holding none
-    // of its owner's events links the nearest one so it reads as theirs.
-    // A run whose own project shows up in fewer than 2 distinct minutes
-    // has no real evidence behind it (R5) and is dropped instead.
+    // of its own events links the nearest one. A run whose own project
+    // shows in fewer than 2 distinct minutes (R5) is dropped instead.
     let mut blocks: Vec<InferBlock> = runs
         .iter()
         .enumerate()
