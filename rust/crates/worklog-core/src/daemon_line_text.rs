@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::clues_contract::BillingLineKey;
-use crate::{estimate, line_text};
+use crate::line_text;
 
 use super::{with_conn, ApiError, Shared};
 
@@ -75,7 +75,7 @@ pub async fn regenerate(
         Ok(line_text::generate_line_with_default_provider(
             c,
             &key,
-            estimate::DEFAULT_MODEL,
+            line_text::LINE_TEXT_MODEL,
         ))
     })
     .await?;

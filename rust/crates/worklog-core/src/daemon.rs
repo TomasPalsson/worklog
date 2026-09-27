@@ -1699,11 +1699,12 @@ async fn run_estimate(
         let stats = estimate::estimate_day(c, day, &model)?;
         // A line-text failure never fails the estimate call — the
         // estimate itself already succeeded (FR-26).
-        let line_texts = line_text::generate_with_default_provider(c, &day_str, &model)
-            .unwrap_or_else(|_| line_text::LineTextReport {
-                generated: Vec::new(),
-                not_generated: Vec::new(),
-            });
+        let line_texts =
+            line_text::generate_with_default_provider(c, &day_str, line_text::LINE_TEXT_MODEL)
+                .unwrap_or_else(|_| line_text::LineTextReport {
+                    generated: Vec::new(),
+                    not_generated: Vec::new(),
+                });
         Ok((stats, line_texts))
     })
     .await?;

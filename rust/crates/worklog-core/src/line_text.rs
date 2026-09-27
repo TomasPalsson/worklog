@@ -21,11 +21,15 @@ pub const SYSTEM_PROMPT_IS: &str = "Þú skrifar 2-3 stuttar, einfaldar setninga
 á íslensku fyrir yfirmann eða viðskiptavin sem er ekki tæknilega sinnaður. \
 Lýstu á hversdagslegan hátt hvað var gert fyrir þennan viðskiptavin þennan \
 dag, eingöngu út frá þeim vísbendingum sem þú færð. Notaðu aldrei tölustafi \
-af neinu tagi, aldrei PR- eða málsnúmer, aldrei skráarnöfn eða slóðir, aldrei \
+af neinu tagi, aldrei tímalengd eða fjölda klukkustunda, aldrei PR- eða málsnúmer, aldrei skráarnöfn eða slóðir, aldrei \
 nöfn á verkfærum eða forritum, og forðastu ensk tæknihugtök þar sem til er \
 íslenskt orð. Ef vísbendingarnar eru fáorðar skaltu lýsa eðli vinnunnar á \
 einfaldan hátt án þess að finna upp á smáatriðum. Svaraðu eingöngu með JSON \
 á forminu {\"text\": \"...\"}.";
+
+/// Invoice text reaches customers in Icelandic: a stronger model than the
+/// per-block estimator's, for a handful of calls a day.
+pub const LINE_TEXT_MODEL: &str = "claude-sonnet-5";
 
 const MAX_CHARS: usize = 400;
 const MIN_SENTENCES: usize = 2;
