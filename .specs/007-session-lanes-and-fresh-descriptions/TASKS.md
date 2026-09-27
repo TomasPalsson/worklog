@@ -38,8 +38,8 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core de
 ## Phase 3 — Review fixes
 Goal: a split folder keeps every minute and every event link it had, and a description written for a short block is refreshed once the block grows past the thresholds, however gradually.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core` — green, and `bash scripts/verify-inference.sh` exits 0.
-- [ ] T009 split folders keep their evidence and event links (B10) — files: rust/crates/worklog-core/src/infer_lanes.rs, rust/crates/worklog-core/src/infer_lane_tags.rs, rust/crates/worklog-core/src/infer_lane_tags_test.rs, rust/crates/worklog-core/src/infer_evidence.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core infer_lane_tags` — after: CHK001
-- [ ] T010 descriptions remember the length they were written for (B11) — files: rust/crates/worklog-core/sql/schema.sql, rust/crates/worklog-core/src/db.rs, rust/crates/worklog-core/src/infer.rs, rust/crates/worklog-core/src/infer_carry.rs, rust/crates/worklog-core/src/estimate.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core described` — after: T009
+- [x] T009 split folders keep their evidence and event links (B10) — files: rust/crates/worklog-core/src/infer_lanes.rs, rust/crates/worklog-core/src/infer_lane_tags.rs, rust/crates/worklog-core/src/infer_lane_tags_test.rs, rust/crates/worklog-core/src/infer_evidence.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core infer_lane_tags` — after: CHK001 — done: d6bfb67
+- [x] T010 descriptions remember the length they were written for (B11) — files: rust/crates/worklog-core/sql/schema.sql, rust/crates/worklog-core/src/db.rs, rust/crates/worklog-core/src/infer.rs, rust/crates/worklog-core/src/infer_carry.rs, rust/crates/worklog-core/src/estimate.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core described` — after: T009 — done: 50c7b30
 
 ## Gates
 - [ ] G001 project gates clean — files: . — verify: `flow check --fix`

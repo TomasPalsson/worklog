@@ -13,7 +13,7 @@
 2026-09-24 blocks=16 <10m= 0 work= 9.98h personal=1.07h
 2026-09-25 blocks=18 <10m= 2 work= 8.47h personal=0.47h  Sjukra=2.15h APRO=6.30h
 2026-09-26 blocks=10 <10m= 1 work= 3.57h personal=3.08h
-2026-09-27 blocks= 2 <10m= 0 work= 0.00h personal=14.33h
+2026-09-27 blocks= 2 <10m= 0 work= 0.00h personal=15.43h
 
 2026-09-25 vitinn-infra blocks by session customer:
   2026-09-25T08:34:00+00:00-2026-09-25T08:40:00+00:00 customers=['unknown']
