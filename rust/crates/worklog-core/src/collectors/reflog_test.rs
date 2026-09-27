@@ -1,4 +1,5 @@
 use super::*;
+use crate::clues_contract;
 use crate::db::open_memory;
 
 fn write_reflog(repo_dir: &Path, lines: &str) {
@@ -159,6 +160,86 @@ fn submodule_reflog_is_collected_and_attributed_to_the_main_repo() {
     assert!(ids
         .iter()
         .any(|id| id.contains(":sm-tools/code-interpreter:")));
+}
+
+#[test]
+fn reflog_raw_json_stores_full_message() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("Work");
+    std::fs::create_dir_all(&root).unwrap();
+    let repo_dir = root.join("repo-a");
+    std::fs::create_dir_all(&repo_dir).unwrap();
+    write_reflog(
+        &repo_dir,
+        "0000000000000000000000000000000000000000 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Tomas Palsson <t@example.com> 1700000000 +0000\tcommit: fix the thing that broke prod\n",
+    );
+
+    let conn = open_memory().unwrap();
+    let since = NaiveDate::from_ymd_opt(2023, 1, 1).unwrap();
+    let until = NaiveDate::from_ymd_opt(2023, 12, 1).unwrap();
+    collect_from_roots(&conn, &[root], since, until).unwrap();
+    let events = repo::load_day_events(&conn, "2023-11-14").unwrap();
+    let raw: clues_contract::RawRecord =
+        serde_json::from_str(events[0].raw_json.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        raw,
+        clues_contract::RawRecord::Reflog {
+            message: "commit: fix the thing that broke prod".to_string(),
+        }
+    );
+}
+
+#[test]
+fn reflog_raw_json_scrubs_secret_tokens() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("Work");
+    std::fs::create_dir_all(&root).unwrap();
+    let repo_dir = root.join("repo-a");
+    std::fs::create_dir_all(&repo_dir).unwrap();
+    let token = format!("ghp_{}", "a".repeat(36));
+    write_reflog(
+        &repo_dir,
+        &format!(
+            "0000000000000000000000000000000000000000 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Tomas Palsson <t@example.com> 1700000000 +0000\tcommit: leaked {token}\n"
+        ),
+    );
+
+    let conn = open_memory().unwrap();
+    let since = NaiveDate::from_ymd_opt(2023, 1, 1).unwrap();
+    let until = NaiveDate::from_ymd_opt(2023, 12, 1).unwrap();
+    collect_from_roots(&conn, &[root], since, until).unwrap();
+    let events = repo::load_day_events(&conn, "2023-11-14").unwrap();
+    let raw: clues_contract::RawRecord =
+        serde_json::from_str(events[0].raw_json.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        raw,
+        clues_contract::RawRecord::Reflog {
+            message: "commit: leaked [secret]".to_string(),
+        }
+    );
+}
+
+#[test]
+fn reflog_title_unchanged_when_message_has_a_secret() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("Work");
+    std::fs::create_dir_all(&root).unwrap();
+    let repo_dir = root.join("repo-a");
+    std::fs::create_dir_all(&repo_dir).unwrap();
+    let token = format!("ghp_{}", "a".repeat(36));
+    write_reflog(
+        &repo_dir,
+        &format!(
+            "0000000000000000000000000000000000000000 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Tomas Palsson <t@example.com> 1700000000 +0000\tcommit: leaked {token}\n"
+        ),
+    );
+
+    let conn = open_memory().unwrap();
+    let since = NaiveDate::from_ymd_opt(2023, 1, 1).unwrap();
+    let until = NaiveDate::from_ymd_opt(2023, 12, 1).unwrap();
+    collect_from_roots(&conn, &[root], since, until).unwrap();
+    let events = repo::load_day_events(&conn, "2023-11-14").unwrap();
+    assert_eq!(events[0].title, "commit");
 }
 
 #[test]

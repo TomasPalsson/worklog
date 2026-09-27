@@ -6,18 +6,21 @@
 //! submodule's `.git/modules/<path>/logs/HEAD` (recursively, for nested
 //! submodules) — all attributed to the main repo's root, since a
 //! worktree/submodule checkout is still the same project for billing
-//! purposes. Never invokes the `git` CLI. PRIVACY: only the reflog action
-//! and its target ref are kept (e.g. `checkout <branch>`, `commit`, `merge
-//! <branch>`) — the rest of the reflog message (which can embed a commit
-//! subject line) is discarded.
+//! purposes. Never invokes the `git` CLI. PRIVACY: the `title` keeps only
+//! the reflog action and its target ref (e.g. `checkout <branch>`,
+//! `commit`, `merge <branch>`); the full message (which can embed a
+//! commit subject line) is stored locally in `raw_json`, secret-scrubbed
+//! (`scrub::scrub_secrets`), and never sent off-machine on its own.
 
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, NaiveTime};
 use rusqlite::Connection;
 use std::path::Path;
 
+use crate::clues_contract::RawRecord;
 use crate::models::Event;
 use crate::repo;
+use crate::scrub;
 
 use super::CollectReport;
 
@@ -213,7 +216,10 @@ fn collect_log_file(
             jira_issue: None,
             session_id: None,
             tempo_worklog_id: None,
-            raw_json: None,
+            raw_json: serde_json::to_string(&RawRecord::Reflog {
+                message: scrub::scrub_secrets(message),
+            })
+            .ok(),
         };
         repo::upsert_event(conn, &ev)?;
         report.events_written += 1;
