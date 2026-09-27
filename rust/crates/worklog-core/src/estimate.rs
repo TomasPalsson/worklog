@@ -615,11 +615,9 @@ pub fn estimate_day_with<I: ModelInvoker>(
             }
         };
 
-        let minutes = parsed.minutes.unwrap_or_else(|| {
-            // Fall back to block's own wall-clock duration.
-            fallback_block_minutes(&block)
-        });
-        let minutes = round_up_minutes(minutes);
+        let span_minutes = fallback_block_minutes(&block);
+        let minutes = parsed.minutes.unwrap_or(span_minutes);
+        let minutes = round_minutes(minutes, span_minutes);
 
         let ticket_claim = parsed.jira_issue;
         let mut ticket = validate_ticket(ticket_claim.as_deref(), &open_tickets, &literals);
@@ -806,13 +804,10 @@ pub fn invoke_block_estimate<I: ModelInvoker>(
     // to >= 1), but `as u32` would silently wrap on a future regression
     // there, so go through try_into and fall back to the wall-clock
     // duration if anything is off.
-    let raw_minutes = round_up_minutes(
-        parsed
-            .minutes
-            .unwrap_or_else(|| fallback_block_minutes(block)),
-    );
-    let minutes: u32 = u32::try_from(raw_minutes)
-        .unwrap_or_else(|_| u32::try_from(fallback_block_minutes(block)).unwrap_or(0));
+    let span_minutes = fallback_block_minutes(block);
+    let raw_minutes = round_minutes(parsed.minutes.unwrap_or(span_minutes), span_minutes);
+    let minutes: u32 =
+        u32::try_from(raw_minutes).unwrap_or_else(|_| u32::try_from(span_minutes).unwrap_or(0));
 
     // Ticket validation mirrors `estimate_day_with`: prefer Claude's
     // pick; if it's null, fall back to the block's inferred ticket only
@@ -1218,9 +1213,15 @@ fn fallback_block_minutes(block: &BlockRow) -> i64 {
     ((ended - started).num_seconds() / 60).max(1)
 }
 
-fn round_up_minutes(m: i64) -> i64 {
+/// R8: round to the NEAREST `ROUND_MINUTES` (not up), floored at one round
+/// unit so a tiny claimed estimate doesn't round down to nothing, then
+/// capped at the block's own wall-clock span — an estimate can round up
+/// past what actually happened, but it can never bill more than the block
+/// spans.
+fn round_minutes(m: i64, span_minutes: i64) -> i64 {
     let m = m.max(1);
-    ROUND_MINUTES * ((m + ROUND_MINUTES - 1) / ROUND_MINUTES)
+    let nearest = ROUND_MINUTES * ((m + ROUND_MINUTES / 2) / ROUND_MINUTES);
+    nearest.max(ROUND_MINUTES).min(span_minutes.max(1))
 }
 
 /// The project prefix of a Jira key — `GOJ-1310` → `GOJ`. `None` when
@@ -1717,13 +1718,29 @@ mod tests {
         assert_eq!(v["jira_issue"], "P-1");
     }
 
+    /// R8: round to NEAREST 15, not up — was `round_up_minutes_rounds_to_nearest_15`,
+    /// which asserted the old ceiling behaviour (16 -> 30, 31 -> 45).
     #[test]
-    fn round_up_minutes_rounds_to_nearest_15() {
-        assert_eq!(round_up_minutes(1), 15);
-        assert_eq!(round_up_minutes(15), 15);
-        assert_eq!(round_up_minutes(16), 30);
-        assert_eq!(round_up_minutes(30), 30);
-        assert_eq!(round_up_minutes(31), 45);
+    fn round_minutes_rounds_to_nearest_15() {
+        assert_eq!(round_minutes(1, 120), 15, "floored at one round unit");
+        assert_eq!(round_minutes(15, 120), 15);
+        assert_eq!(round_minutes(16, 120), 15, "16 is nearer 15 than 30");
+        assert_eq!(round_minutes(22, 120), 15, "22 is nearer 15 than 30");
+        assert_eq!(round_minutes(23, 120), 30, "23 is nearer 30 than 15");
+        assert_eq!(round_minutes(30, 120), 30);
+        assert_eq!(round_minutes(31, 120), 30, "31 is nearer 30 than 45");
+    }
+
+    /// R8: a block's minutes must never exceed its own wall-clock span,
+    /// even when rounding would otherwise push it past that.
+    #[test]
+    fn round_minutes_never_exceeds_the_block_span() {
+        assert_eq!(
+            round_minutes(12, 10),
+            10,
+            "capped at the block's 10-minute span"
+        );
+        assert_eq!(round_minutes(1, 5), 5, "capped even at the floor minimum");
     }
 
     #[test]
@@ -2141,7 +2158,7 @@ mod tests {
     /// B4: a well-formed proxy reply → the invoker returns the parsed
     /// worklog JSON as a `Value`. The schema the caller sends is embedded
     /// in the system prompt so downstream validation (validate_ticket,
-    /// round_up_minutes) keeps working identically to the subprocess path.
+    /// round_minutes) keeps working identically to the subprocess path.
     #[test]
     fn litellm_invoker_returns_parsed_reply_on_200() {
         use httpmock::prelude::*;
@@ -2551,6 +2568,8 @@ mod tests {
         ).unwrap();
         let bid = conn.last_insert_rowid();
 
+        // R8: the block's own span is 30 min (10:00-10:30) — a 45-minute
+        // claim is capped at that span, not trusted outright.
         let invoker = FixedInvoker(json!({
             "jira_issue": null,
             "minutes": 45,
@@ -2565,7 +2584,7 @@ mod tests {
             Some("AI-rewritten description")
         );
         assert_eq!(block.estimated_by.as_deref(), Some("claude_p"));
-        assert_eq!(block.duration_seconds, 45 * 60);
+        assert_eq!(block.duration_seconds, 30 * 60);
     }
 
     /// B4: personal blocks are refused — the daemon will surface a 400.
