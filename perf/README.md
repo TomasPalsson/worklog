@@ -82,6 +82,9 @@ runs, 2026-09-27. CLI runs start on a fresh clone, so the DB file is cold in the
   inline) slow every events scan — candidate: move raw_json to a side table.
 - T10 threads, quiet machine: 4 threads 41.8 s, 5 threads 42.4 s (10 threads 84 s, busy
   machine). 4 is the sweet spot; inference is compute-bound (~400 ms/event).
+- T10 int8 (onnxruntime quantize_dynamic, probe only): model.onnx 578 → 145 MB; 105/105 same
+  choices, |Δprob| < 5e-5 — but 50.3 s vs 41.8 s (slower on this CPU), and rlcd still loads
+  model.safetensors (600 MB). Not worth it.
 - T10 concurrency probe (3 engines + ThreadingHTTPServer + 3 concurrent clients): 36.4 s vs
   24.7 s single-engine cached — **worse** (cores contend; efficiency cores drag). Rejected.
 - Idea sweep (`perf-ideas` workflow: 4 independent generators + adversarial critics).
