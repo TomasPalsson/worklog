@@ -20,6 +20,8 @@ const C: &str = "/Users/dev/Desktop/Work/lyfjastofnun";
 /// used to rebuild without it and undo the owner's choice.
 #[test]
 fn day_rebuild_reads_the_saved_split() {
+    let _g = crate::tz::test_env_lock();
+    std::env::remove_var("WORKLOG_TZ");
     use crate::models::Event;
     let conn = crate::db::open_memory().unwrap();
     let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
@@ -71,6 +73,8 @@ fn day_rebuild_reads_the_saved_split() {
 /// owner put on blocks in that range.
 #[test]
 fn tickets_survive_a_split_and_its_reset() {
+    let _g = crate::tz::test_env_lock();
+    std::env::remove_var("WORKLOG_TZ");
     use crate::models::Event;
     let conn = crate::db::open_memory().unwrap();
     let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
@@ -158,6 +162,8 @@ fn seed_two_session_stretches(conn: &rusqlite::Connection, title_a: &str, title_
 /// per customer, not one lane that mixes both (session lanes, FR-05).
 #[test]
 fn two_customer_sessions_split_into_separate_blocks() {
+    let _g = crate::tz::test_env_lock();
+    std::env::remove_var("WORKLOG_TZ");
     use crate::billing_registry::{upsert_customer, Customer};
     let conn = crate::db::open_memory().unwrap();
     let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
@@ -231,6 +237,8 @@ fn two_customer_sessions_split_into_separate_blocks() {
 /// resolve the customer from there, not from the (uniform) DB title.
 #[test]
 fn prompt_text_names_the_session_customer() {
+    let _g = crate::tz::test_env_lock();
+    std::env::remove_var("WORKLOG_TZ");
     use crate::billing_registry::{upsert_customer, Customer};
     use crate::clues_contract::RawRecord;
     use crate::models::Event;
@@ -310,6 +318,8 @@ fn prompt_text_names_the_session_customer() {
 /// anyway — the pin, not the shared text, decides.
 #[test]
 fn pin_beats_text_guess() {
+    let _g = crate::tz::test_env_lock();
+    std::env::remove_var("WORKLOG_TZ");
     use crate::billing_registry::{upsert_customer, Customer, Registry};
     let conn = crate::db::open_memory().unwrap();
     let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
@@ -385,6 +395,8 @@ fn pin_beats_text_guess() {
 /// the registry then behaves exactly as if it held no customers (FR-04).
 #[test]
 fn two_sessions_same_customer_matches_no_customer_registry() {
+    let _g = crate::tz::test_env_lock();
+    std::env::remove_var("WORKLOG_TZ");
     use crate::billing_registry::{upsert_customer, Customer};
     let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
 
