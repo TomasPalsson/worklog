@@ -342,6 +342,17 @@ fn hook_run_exits_zero_on_malformed_stdin() {
 }
 
 #[test]
+fn session_hint_exits_zero_and_prints_nothing_on_garbage_stdin() {
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .arg("session-hint")
+        .write_stdin("not json at all")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+#[test]
 fn secret_rm_reports_absent_cleanly() {
     let home = TempDir::new().unwrap();
     cmd(&home)
