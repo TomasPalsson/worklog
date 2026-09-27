@@ -219,55 +219,38 @@ mod tests {
         }
     }
 
+    fn run(base: String) -> (CollectReport, Vec<Event>) {
+        let conn = open_memory().unwrap();
+        let since = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let until = NaiveDate::from_ymd_opt(2026, 4, 19).unwrap();
+        let report =
+            collect_with(&conn, &auth(base), since, until, &http::client().unwrap()).unwrap();
+        let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+        (report, events)
+    }
+
     #[test]
     fn collect_writes_commits_and_prs_with_jira_keys() {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET).path("/search/commits");
-            then.status(200).json_body(json!({
-                "items": [
-                    {
-                        "sha": "abc123",
-                        "repository": { "full_name": "org/repo" },
-                        "commit": {
-                            "author": { "date": "2026-04-18T09:00:00Z" },
-                            "message": "PROJ-42 fix login bug\n\nlonger description"
-                        }
-                    }
-                ]
-            }));
+            then.status(200).json_body(json!({"items": [
+                {"sha": "abc123", "repository": {"full_name": "org/repo"},
+                 "commit": {"author": {"date": "2026-04-18T09:00:00Z"},
+                            "message": "PROJ-42 fix login bug\n\nlonger description"}}
+            ]}));
         });
         server.mock(|when, then| {
             when.method(GET).path("/search/issues");
-            then.status(200).json_body(json!({
-                "items": [
-                    {
-                        "id": 1001,
-                        "number": 12,
-                        "title": "Add dashboard for PROJ-100",
-                        "body": null,
-                        "created_at": "2026-04-18T10:00:00Z",
-                        "closed_at": null,
-                        "repository_url": "https://api.github.com/repos/org/repo"
-                    }
-                ]
-            }));
+            then.status(200).json_body(json!({"items": [
+                {"id": 1001, "number": 12, "title": "Add dashboard for PROJ-100", "body": null,
+                 "created_at": "2026-04-18T10:00:00Z", "closed_at": null,
+                 "repository_url": "https://api.github.com/repos/org/repo"}
+            ]}));
         });
 
-        let conn = open_memory().unwrap();
-        let since = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
-        let until = NaiveDate::from_ymd_opt(2026, 4, 19).unwrap();
-        let report = collect_with(
-            &conn,
-            &auth(server.base_url()),
-            since,
-            until,
-            &http::client().unwrap(),
-        )
-        .unwrap();
-
+        let (report, events) = run(server.base_url());
         assert_eq!(report.events_written, 2);
-        let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
         assert_eq!(events.len(), 2);
 
         let commit = events.iter().find(|e| e.source == "github_commit").unwrap();
@@ -287,16 +270,10 @@ mod tests {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET).path("/search/commits");
-            then.status(200).json_body(json!({
-                "items": [{
-                    "sha": "deadbeef",
-                    "repository": {"full_name":"o/r"},
-                    "commit": {
-                        "author": {"date": "2026-04-18T09:00:00Z"},
-                        "message": "hello"
-                    }
-                }]
-            }));
+            then.status(200).json_body(json!({"items": [
+                {"sha": "deadbeef", "repository": {"full_name": "o/r"},
+                 "commit": {"author": {"date": "2026-04-18T09:00:00Z"}, "message": "hello"}}
+            ]}));
         });
         server.mock(|when, then| {
             when.method(GET).path("/search/issues");
@@ -306,28 +283,52 @@ mod tests {
         let conn = open_memory().unwrap();
         let since = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
         let until = NaiveDate::from_ymd_opt(2026, 4, 19).unwrap();
-        collect_with(
-            &conn,
-            &auth(server.base_url()),
-            since,
-            until,
-            &http::client().unwrap(),
-        )
-        .unwrap();
-        collect_with(
-            &conn,
-            &auth(server.base_url()),
-            since,
-            until,
-            &http::client().unwrap(),
-        )
-        .unwrap();
+        for _ in 0..2 {
+            collect_with(&conn, &auth(server.base_url()), since, until, &http::client().unwrap())
+                .unwrap();
+        }
         let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
         assert_eq!(
             events.len(),
             1,
             "dedupe on (source, source_id) must prevent duplicates"
         );
+    }
+
+    #[test]
+    fn personal_owner_is_skipped() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/search/commits");
+            then.status(200).json_body(json!({"items": [
+                {"sha": "personal1", "repository": {"full_name": "TomasPalsson/worklog"},
+                 "commit": {"author": {"date": "2026-04-18T09:00:00Z"}, "message": "personal repo commit"}},
+                {"sha": "org1", "repository": {"full_name": "aproorg/vitinn-infra"},
+                 "commit": {"author": {"date": "2026-04-18T09:05:00Z"}, "message": "org repo commit"}}
+            ]}));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/search/issues");
+            then.status(200).json_body(json!({"items": [
+                {"id": 1, "number": 1, "title": "personal PR", "body": null,
+                 "created_at": "2026-04-18T10:00:00Z", "closed_at": null,
+                 "repository_url": "https://api.github.com/repos/TomasPalsson/worklog"},
+                {"id": 2, "number": 2, "title": "org PR", "body": null,
+                 "created_at": "2026-04-18T10:05:00Z", "closed_at": null,
+                 "repository_url": "https://api.github.com/repos/aproorg/vitinn-infra"}
+            ]}));
+        });
+
+        let (report, events) = run(server.base_url());
+        assert_eq!(
+            report.events_written, 2,
+            "only the two org-owned events should be written"
+        );
+        assert!(
+            events.iter().all(|e| e.repo.as_deref() != Some("TomasPalsson/worklog")),
+            "personal-owner repo events must not be stored"
+        );
+        assert_eq!(events.len(), 2);
     }
 
     #[test]
