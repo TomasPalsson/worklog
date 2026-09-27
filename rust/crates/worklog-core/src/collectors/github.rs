@@ -79,6 +79,9 @@ pub fn collect_with(
         .context("github commit search")?;
     debug!(total = commits.items.len(), "github commits");
     for c in commits.items {
+        if is_personal_owner(&c.repository.full_name, &auth.user) {
+            continue;
+        }
         let ts = c.commit.author.date;
         let title = c
             .commit
@@ -133,6 +136,9 @@ pub fn collect_with(
             .rev()
             .collect::<Vec<_>>()
             .join("/");
+        if is_personal_owner(&repo_name, &auth.user) {
+            continue;
+        }
         let combined = format!("{} {}", p.title, p.body.as_deref().unwrap_or(""));
         let jira_issue = jira_re.find(&combined).map(|m| m.as_str().to_owned());
         let ev = Event {
@@ -156,6 +162,14 @@ pub fn collect_with(
     }
 
     Ok(report)
+}
+
+/// D-06: repos owned by the configured personal GitHub account are never tracked.
+fn is_personal_owner(repo_full_name: &str, user: &str) -> bool {
+    repo_full_name
+        .split('/')
+        .next()
+        .is_some_and(|owner| owner.eq_ignore_ascii_case(user))
 }
 
 // ───────────────────────── JSON shapes ─────────────────────────
