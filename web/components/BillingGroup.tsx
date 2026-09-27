@@ -147,7 +147,7 @@ export function BillingGroup({
 
         {/* Clicks here must not toggle the <details> — see PalettePicker's
          * root, which stops propagation for the same reason. */}
-        <span className="billing-text" onClick={(e) => e.stopPropagation()}>
+        <span className="billing-text-wrap" onClick={(e) => e.stopPropagation()}>
           {editing ? (
             <span className="billing-text-edit">
               <textarea
@@ -167,18 +167,20 @@ export function BillingGroup({
             </span>
           ) : (
             <>
-              {row.invoice_text}
-              <span
-                className={`billing-text-origin billing-text-origin-${row.text_origin ?? "none"}`}
-              >
-                {originLabel(row.text_origin ?? null)}
+              <span className="billing-text">{row.invoice_text}</span>
+              <span className="billing-text-controls">
+                <span
+                  className={`billing-chip billing-text-origin billing-text-origin-${row.text_origin ?? "none"}`}
+                >
+                  {originLabel(row.text_origin ?? null)}
+                </span>
+                <button type="button" onClick={beginEdit} disabled={pending}>
+                  Edit
+                </button>
+                <button type="button" onClick={regenerate} disabled={pending}>
+                  Regenerate
+                </button>
               </span>
-              <button type="button" onClick={beginEdit} disabled={pending}>
-                Edit
-              </button>
-              <button type="button" onClick={regenerate} disabled={pending}>
-                Regenerate
-              </button>
             </>
           )}
         </span>

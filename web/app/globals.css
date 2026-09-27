@@ -3726,15 +3726,63 @@ button {
   border-color: var(--amber);
 }
 
-/* ── invoice text: prose, clamped to two lines ── */
+/* ── invoice text: prose, clamped to three lines (a generated line text is
+   ≤400 chars, so it always fits whole) ── */
 .billing-text {
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
   font-size: 12.5px;
   line-height: 1.5;
   color: var(--fg-muted);
+}
+.billing-text-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.billing-text-controls,
+.billing-text-edit-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.billing-text-controls button,
+.billing-text-edit-actions button {
+  font-size: 11px;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.billing-text-controls button:hover,
+.billing-text-edit-actions button:hover {
+  color: var(--fg);
+  border-color: var(--fg-subtle);
+}
+.billing-text-origin-none {
+  color: var(--amber-ink);
+  background: var(--amber-bg);
+  border-color: var(--amber);
+}
+.billing-text-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.billing-text-edit textarea {
+  width: 100%;
+  min-height: 5em;
+  font: inherit;
+  font-size: 12.5px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunk);
+  color: var(--fg);
 }
 
 .billing-body {
