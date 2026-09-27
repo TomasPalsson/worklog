@@ -195,16 +195,18 @@ pub fn generate_line(
     generate_one(conn, key, invoker, model)
 }
 
-/// [`generate_for_day`], resolving the model invoker the same way
-/// [`crate::estimate::estimate_day`] does (env/secrets via
-/// [`crate::estimate::build_invoker`]) — so a caller that just wants
-/// "today's configured provider" doesn't have to construct one itself.
+/// Thinking budget for line-text generation's `claude -p` invoker — a
+/// stronger, slower pass than the per-block estimator's.
+pub const LINE_TEXT_THINKING_TOKENS: u32 = 8000;
+
+/// [`generate_for_day`] with a thinking budget for a `claude -p`
+/// invoker (LiteLLM path unchanged) — "today's configured provider".
 pub fn generate_with_default_provider(
     conn: &Connection,
     day: &str,
     model: &str,
 ) -> Result<LineTextReport> {
-    match crate::estimate::build_invoker() {
+    match crate::estimate::build_thinking_invoker(LINE_TEXT_THINKING_TOKENS) {
         Ok(invoker) => generate_for_day(conn, day, invoker.as_ref(), model),
         // FR-35: a misconfigured provider must surface as a report naming
         // every line the day would have touched, not an Err the caller
@@ -239,7 +241,8 @@ pub fn generate_line_with_default_provider(
     key: &BillingLineKey,
     model: &str,
 ) -> std::result::Result<(), String> {
-    let invoker = crate::estimate::build_invoker().map_err(|e| e.to_string())?;
+    let invoker = crate::estimate::build_thinking_invoker(LINE_TEXT_THINKING_TOKENS)
+        .map_err(|e| e.to_string())?;
     generate_line(conn, key, invoker.as_ref(), model)
 }
 

@@ -1448,7 +1448,7 @@ async fn estimate_block(
         let reply = match estimate::resolve_provider()? {
             estimate::ProviderChoice::ClaudeSubprocess => estimate::invoke_block_estimate(
                 &prep,
-                &estimate::ClaudeSubprocess,
+                &estimate::ClaudeSubprocess::default(),
                 estimate::DEFAULT_MODEL,
             ),
             estimate::ProviderChoice::LiteLLM(inv) => {
@@ -1764,7 +1764,7 @@ async fn run_sync(
                 day,
                 dry_run,
                 &http_client,
-                Some(&estimate::ClaudeSubprocess),
+                Some(&estimate::ClaudeSubprocess::default()),
                 estimate::DEFAULT_MODEL,
             ),
             Some(estimate::ProviderChoice::LiteLLM(inv)) => tempo::sync_day_with_invoker(
