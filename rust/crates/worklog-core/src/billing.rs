@@ -279,7 +279,7 @@ pub fn work_folder_for_block(conn: &Connection, block_id: i64) -> Result<Option<
 /// Scanned once per process — the repo fallback runs on every billing
 /// group, and re-reading every work folder's `.gitmodules` on each call
 /// would turn that into a lot of avoidable disk I/O.
-fn submodule_repo_map() -> &'static HashMap<String, String> {
+pub(crate) fn submodule_repo_map() -> &'static HashMap<String, String> {
     static MAP: std::sync::OnceLock<HashMap<String, String>> = std::sync::OnceLock::new();
     MAP.get_or_init(|| match work_prefix() {
         Some(prefix) => submodule_repo_map_under(std::path::Path::new(prefix)),
@@ -290,7 +290,7 @@ fn submodule_repo_map() -> &'static HashMap<String, String> {
 /// Test-injectable, uncached variant of [`submodule_repo_map`]: scans
 /// `<root>/*/.gitmodules` for `url = ...` lines and maps each submodule's
 /// url basename (`.git` stripped) to the work folder that declares it.
-fn submodule_repo_map_under(root: &std::path::Path) -> HashMap<String, String> {
+pub(crate) fn submodule_repo_map_under(root: &std::path::Path) -> HashMap<String, String> {
     let mut map = HashMap::new();
     let Ok(entries) = std::fs::read_dir(root) else {
         return map;
