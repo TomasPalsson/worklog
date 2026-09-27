@@ -158,15 +158,12 @@ pub(crate) fn build_blocks_by_project(
     place_folderless(build_project_blocks(events, build), folderless)
 }
 
-fn build_project_blocks(
-    events: Vec<InferEvent>,
-    build: fn(Vec<InferEvent>) -> Vec<InferBlock>,
-) -> Vec<InferBlock> {
-    let keyed: Vec<Keyed> = events
-        .iter()
+/// Keyed rows under `lane_key` or `lane_folder`, shared with `infer_lane_tags`.
+pub(crate) fn keyed_by(evs: &[InferEvent], key: fn(&InferEvent) -> Option<String>) -> Vec<Keyed> {
+    evs.iter()
         .filter(|e| !e.is_calendar())
         .filter_map(|e| {
-            lane_key(e).map(|k| {
+            key(e).map(|k| {
                 let human = is_human(&e.source);
                 let window = if human {
                     focus_window_minutes(&e.source)
@@ -178,7 +175,14 @@ fn build_project_blocks(
                 (minute(e.ts), k, human, window)
             })
         })
-        .collect();
+        .collect()
+}
+
+fn build_project_blocks(
+    events: Vec<InferEvent>,
+    build: fn(Vec<InferEvent>) -> Vec<InferBlock>,
+) -> Vec<InferBlock> {
+    let keyed = keyed_by(&events, lane_key);
     if keyed
         .iter()
         .map(|(_, k, _, _)| k)
@@ -188,8 +192,10 @@ fn build_project_blocks(
     {
         return build(events);
     }
-    let runs =
-        crate::infer_evidence::merge_by_evidence(fold_short_runs(owner_runs(&keyed)), &keyed);
+    let keyed_folder = keyed_by(&events, lane_folder);
+    let folded = fold_short_runs(owner_runs(&keyed_folder));
+    let runs = crate::infer_evidence::merge_by_evidence(folded, &keyed_folder);
+    let runs = crate::infer_lane_tags::split_runs_by_tag(runs, &events);
     // By lane KEY, not folder: a tagged run's owner is `folder#Cust`.
     let mut by_key: BTreeMap<String, Vec<InferEvent>> = BTreeMap::new();
     for e in &events {
@@ -198,8 +204,7 @@ fn build_project_blocks(
         }
     }
 
-    // Every event lands in at most one bucket: calendar alone, a run
-    // whose window contains it, or leftovers (nobody owns) on their own.
+    // Every event lands in one bucket: calendar, an owning run, or leftovers.
     let mut buckets: BTreeMap<usize, Vec<InferEvent>> = BTreeMap::new();
     let mut calendar = Vec::new();
     let mut leftovers = Vec::new();
@@ -215,15 +220,12 @@ fn build_project_blocks(
         });
         match hit {
             Some(i) => buckets.entry(i).or_default().push(e),
-            // Another project owns this minute: its time is already counted
-            // there, so this event builds nothing (no double billing).
+            // Another project already owns this minute: no double billing.
             None if runs.iter().any(|(_, s, end)| m >= *s && m <= *end) => {}
             None => leftovers.push(e),
         }
     }
-    // One block per run, spanning the minutes it owns; a run holding none
-    // of its own events links the nearest one. A run whose own project
-    // shows in fewer than 2 distinct minutes (R5) is dropped instead.
+    // One block per run, spanning the minutes it owns (dropped under R5).
     let mut blocks: Vec<InferBlock> = runs
         .iter()
         .enumerate()
@@ -271,7 +273,7 @@ pub(crate) fn minute(ts: DateTime<Utc>) -> i64 {
 }
 
 /// Contiguous (owner, first minute, last minute) runs over the day.
-fn owner_runs(keyed: &[Keyed]) -> Vec<(String, i64, i64)> {
+pub(crate) fn owner_runs(keyed: &[Keyed]) -> Vec<(String, i64, i64)> {
     let first = keyed.iter().map(|(m, _, _, _)| *m).min().unwrap_or(0);
     let last = keyed.iter().map(|(m, _, _, _)| *m).max().unwrap_or(0);
     let mut owners: Vec<Option<String>> = Vec::new();
@@ -349,14 +351,10 @@ fn latest_human(keyed: &[Keyed], m: i64, current: Option<&String>) -> Option<Str
     recent(true).or_else(|| recent(false))
 }
 
-/// Fold runs under `MIN_RUN_MINUTES` into a touching neighbour of the same
-/// kind (work into work, personal into personal — never across) purely by
-/// length, before `infer_evidence::merge_by_evidence`'s 15-min
-/// evidence-based pass runs on the result. A tiny multi-minute cluster of
-/// alternating short runs (a genai-infra blip inside a LibreChat session,
-/// say) collapses into one run here first, so the evidence pass judges it
-/// as a whole instead of as several sub-5-minute fragments.
-fn fold_short_runs(runs: Vec<(String, i64, i64)>) -> Vec<(String, i64, i64)> {
+/// Folds runs under `MIN_RUN_MINUTES` into a touching same-kind neighbour
+/// (work/personal, never across) by length alone, before
+/// `infer_evidence::merge_by_evidence`'s evidence pass judges the result.
+pub(crate) fn fold_short_runs(runs: Vec<(String, i64, i64)>) -> Vec<(String, i64, i64)> {
     let short = |r: &(String, i64, i64)| r.2 - r.1 + 1 < MIN_RUN_MINUTES;
     let joins = |a: &(String, i64, i64), b: &(String, i64, i64)| {
         a.2 + 1 == b.1 && is_work(&a.0) == is_work(&b.0)

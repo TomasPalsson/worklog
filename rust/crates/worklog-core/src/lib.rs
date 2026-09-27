@@ -35,6 +35,7 @@ pub mod infer_allocations;
 mod infer_carry;
 mod infer_carry_shares;
 mod infer_evidence;
+mod infer_lane_tags;
 pub mod infer_lanes;
 pub mod line_text;
 mod line_text_jobs;
