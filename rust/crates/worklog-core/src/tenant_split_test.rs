@@ -1,10 +1,14 @@
+use std::path::Path;
+
 use chrono::{DateTime, TimeZone, Utc};
 use rand::Rng;
+use rusqlite::params;
 
 use super::*;
 use crate::billing_registry::{Customer, FolderMap};
 use crate::db::open_memory;
-use crate::models::Block;
+use crate::models::{Block, Event};
+use crate::session_pins;
 use crate::tenant_contract::ClueStrength;
 
 fn registry(customer_names: &[&str], folders: &[FolderMap]) -> Registry {
@@ -42,6 +46,40 @@ fn clue(when: DateTime<Utc>, customer: &str, strength: ClueStrength) -> Clue {
         customer: customer.to_string(),
         strength,
     }
+}
+
+fn work(sub: &str) -> String {
+    format!(
+        "{}/Desktop/Work/{sub}",
+        dirs::home_dir().unwrap().to_string_lossy()
+    )
+}
+
+fn seed_block(conn: &Connection, started_at: &str, ended_at: &str, duration_seconds: i64) -> i64 {
+    conn.execute(
+        "INSERT INTO blocks (day, jira_issue, started_at, ended_at, duration_seconds, description, is_personal)
+         VALUES ('2026-01-01', NULL, ?1, ?2, ?3, NULL, 0)",
+        params![started_at, ended_at, duration_seconds],
+    )
+    .unwrap();
+    conn.last_insert_rowid()
+}
+
+fn seed_event(
+    conn: &Connection,
+    block_id: i64,
+    source_id: &str,
+    session_id: &str,
+    started_at: &str,
+) {
+    let mut ev = Event::minimal("claude", source_id, started_at, "work");
+    ev.session_id = Some(session_id.to_string());
+    let event_id = crate::repo::upsert_event(conn, &ev).unwrap();
+    conn.execute(
+        "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+        params![block_id, event_id],
+    )
+    .unwrap();
 }
 
 // B5 / FR-06: "Block with clues Sjúkra@13:40, MMS@15:30 splits at the
@@ -213,4 +251,113 @@ fn slices_sum_exactly_property() {
             "slices must sum exactly to the block's duration"
         );
     }
+}
+
+// FR-07: a block whose only session is pinned to Sjúkra from before the
+// block starts gets a single Pinned slice for the whole block, ahead of
+// clue splitting.
+#[test]
+fn pinned_session_gives_pinned_slice() {
+    let conn = open_memory().unwrap();
+    let reg = registry(&["Sjúkra"], &[multi_tenant_folder("vitinn-infra")]);
+
+    session_pins::pin(
+        &conn,
+        &reg,
+        "sess-1",
+        Path::new(&work("vitinn-infra")),
+        "Sjúkra",
+        at(2026, 1, 1, 8, 0, 0),
+        None,
+    )
+    .unwrap();
+
+    let start = at(2026, 1, 1, 9, 0, 0);
+    let end = at(2026, 1, 1, 10, 0, 0);
+    let block_id = seed_block(&conn, &start.to_rfc3339(), &end.to_rfc3339(), 3600);
+    seed_event(&conn, block_id, "e1", "sess-1", &start.to_rfc3339());
+
+    let block = Block {
+        id: block_id,
+        day: "2026-01-01".to_string(),
+        jira_issue: None,
+        started_at: start.to_rfc3339(),
+        ended_at: end.to_rfc3339(),
+        duration_seconds: 3600,
+        description: None,
+        estimated_by: None,
+        flagged: false,
+        tempo_worklog_id: None,
+        is_personal: false,
+        dirty: false,
+        exported_at: None,
+    };
+
+    let slices = tenant_slices_for_block(&conn, &block, "vitinn-infra", &reg)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        slices,
+        vec![CustomerSlice {
+            customer: Some("Sjúkra".to_string()),
+            intervals: vec![(start.timestamp(), end.timestamp())],
+            origin: SplitOrigin::Pinned,
+        }]
+    );
+}
+
+// Contract THE FIVE #2: a block whose sessions' pins name two different
+// customers emits no Pinned slice — it falls through to the fallback rules.
+#[test]
+fn conflicting_pins_do_not_emit_pinned_slice() {
+    let conn = open_memory().unwrap();
+    let reg = registry(&["Sjúkra", "MMS"], &[multi_tenant_folder("vitinn-infra")]);
+
+    session_pins::pin(
+        &conn,
+        &reg,
+        "sess-1",
+        Path::new(&work("vitinn-infra")),
+        "Sjúkra",
+        at(2026, 1, 1, 8, 0, 0),
+        None,
+    )
+    .unwrap();
+    session_pins::pin(
+        &conn,
+        &reg,
+        "sess-2",
+        Path::new(&work("vitinn-infra")),
+        "MMS",
+        at(2026, 1, 1, 8, 0, 0),
+        None,
+    )
+    .unwrap();
+
+    let start = at(2026, 1, 1, 9, 0, 0);
+    let end = at(2026, 1, 1, 10, 0, 0);
+    let block_id = seed_block(&conn, &start.to_rfc3339(), &end.to_rfc3339(), 3600);
+    seed_event(&conn, block_id, "e1", "sess-1", &start.to_rfc3339());
+    seed_event(&conn, block_id, "e2", "sess-2", &start.to_rfc3339());
+
+    let block = Block {
+        id: block_id,
+        day: "2026-01-01".to_string(),
+        jira_issue: None,
+        started_at: start.to_rfc3339(),
+        ended_at: end.to_rfc3339(),
+        duration_seconds: 3600,
+        description: None,
+        estimated_by: None,
+        flagged: false,
+        tempo_worklog_id: None,
+        is_personal: false,
+        dirty: false,
+        exported_at: None,
+    };
+
+    let slices = tenant_slices_for_block(&conn, &block, "vitinn-infra", &reg)
+        .unwrap()
+        .unwrap();
+    assert!(slices.iter().all(|s| s.origin != SplitOrigin::Pinned));
 }

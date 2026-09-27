@@ -1,12 +1,14 @@
 //! The per-block customer split rules for multi-tenant infra folders (spec 005).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::Result;
 use rusqlite::Connection;
 
 use crate::billing_registry::Registry;
 use crate::models::Block;
+use crate::repo;
+use crate::session_pins::pins_for_sessions;
 use crate::tenant_clues::clues_for_block;
 use crate::tenant_contract::{Clue, CustomerSlice, SplitOrigin, HOUSE_CUSTOMER};
 use crate::tenant_shares::{load_shares, slices_from_shares};
@@ -103,6 +105,42 @@ fn block_interval(block: &Block) -> (i64, i64) {
     (start, start + block.duration_seconds.max(0))
 }
 
+/// The single customer named by `block`'s events whose session carries a
+/// pin covering their timestamp (latest `from_at` ≤ event time, mirroring
+/// `session_customers::tag_sessions`) — `None` when no covered event exists,
+/// or when covered events name more than one customer (FR-07, contract THE
+/// FIVE #2).
+fn pinned_customer_for_block(conn: &Connection, block: &Block) -> Result<Option<String>> {
+    let events = repo::list_events_for_block(conn, block.id)?;
+    let mut session_ids: Vec<String> = events.iter().filter_map(|e| e.session_id.clone()).collect();
+    session_ids.sort();
+    session_ids.dedup();
+    if session_ids.is_empty() {
+        return Ok(None);
+    }
+
+    let pins = pins_for_sessions(conn, &session_ids)?;
+    let mut customers: BTreeSet<String> = BTreeSet::new();
+    for event in &events {
+        let Some(session_id) = &event.session_id else {
+            continue;
+        };
+        let Ok(at) = chrono::DateTime::parse_from_rfc3339(&event.started_at) else {
+            continue;
+        };
+        let at = at.with_timezone(&chrono::Utc);
+        if let Some(pin) = pins
+            .iter()
+            .filter(|p| &p.session_id == session_id && p.from_at <= at)
+            .max_by_key(|p| p.from_at)
+        {
+            customers.insert(pin.customer.clone());
+        }
+    }
+
+    Ok((customers.len() == 1).then(|| customers.into_iter().next().unwrap()))
+}
+
 /// A non-House customer named in `text` — the summary clue of FR-09, where a
 /// customer named alongside `APRÓ` beats it. `None` when nothing non-House
 /// is unambiguously named; the caller then falls back to the folder's
@@ -120,11 +158,12 @@ fn summary_customer(text: &str, registry: &Registry) -> Option<String> {
     without_house.customer_in_text(text)
 }
 
-/// `block`'s customer slices: the owner's hand-set shares first, else the
-/// clue split, else (no timestamped clue) a single `Fallback` slice —
-/// `customer` from the block's own summary when it unambiguously names one,
-/// else `None` for the folder's normal resolution to fill in. `None`
-/// overall when `folder` isn't multi-tenant.
+/// `block`'s customer slices: the owner's hand-set shares first, else a
+/// single `Pinned` slice when the block's pinned sessions name exactly one
+/// customer, else the clue split, else (no timestamped clue) a single
+/// `Fallback` slice — `customer` from the block's own summary when it
+/// unambiguously names one, else `None` for the folder's normal resolution
+/// to fill in. `None` overall when `folder` isn't multi-tenant.
 pub fn tenant_slices_for_block(
     conn: &Connection,
     block: &Block,
@@ -143,6 +182,14 @@ pub fn tenant_slices_for_block(
 
     if let Some(shares) = load_shares(conn, &block.day, &block.started_at)? {
         return Ok(Some(slices_from_shares(start, end, &shares)));
+    }
+
+    if let Some(customer) = pinned_customer_for_block(conn, block)? {
+        return Ok(Some(vec![CustomerSlice {
+            customer: Some(customer),
+            intervals: vec![(start, end)],
+            origin: SplitOrigin::Pinned,
+        }]));
     }
 
     let tenants = tenant_customer_map(conn)?;
