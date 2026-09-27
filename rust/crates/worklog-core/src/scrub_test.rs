@@ -388,10 +388,7 @@ fn scrub_mysql_dash_p_attached() {
 fn scrub_mysqldump_dash_p_spaced() {
     let value = "s".repeat(12);
     let input = format!("mysqldump -u root -p {value} mydb");
-    assert_eq!(
-        scrub_secrets(&input),
-        "mysqldump -u root -p [secret] mydb"
-    );
+    assert_eq!(scrub_secrets(&input), "mysqldump -u root -p [secret] mydb");
 }
 
 #[test]
@@ -443,7 +440,8 @@ fn scrub_slack_token_e_variant() {
 
 #[test]
 fn scrub_unterminated_pem_block_to_end_of_string() {
-    let input = "before\n-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAK...\nmore lines with no end marker";
+    let input =
+        "before\n-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAK...\nmore lines with no end marker";
     assert_eq!(scrub_secrets(input), "before\n[secret]");
 }
 

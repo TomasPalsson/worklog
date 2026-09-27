@@ -15,8 +15,7 @@ use crate::clues_contract::SECRET_PLACEHOLDER;
 /// a `_key`/`-key` SUFFIX (`OPENAI_KEY`, `SECRET_KEY`) — never on an
 /// arbitrary word that merely contains "key" (`monkey`, `keyboard`),
 /// since neither has a literal `_`/`-` immediately before "key".
-const NAME_FRAGMENT: &str =
-    r"[\w.-]*(?:token|secret|password|passwd|pwd|api[_-]?key|private_key|credential)[\w.-]*|[\w.-]*(?:_key|-key)";
+const NAME_FRAGMENT: &str = r"[\w.-]*(?:token|secret|password|passwd|pwd|api[_-]?key|private_key|credential)[\w.-]*|[\w.-]*(?:_key|-key)";
 
 /// Whole-match patterns: the entire match becomes the placeholder. `(?s)`
 /// only affects the PEM alternative — every other alternative's `.` is
@@ -94,9 +93,7 @@ fn quoted_value_re() -> &'static Regex {
 /// placeholder.
 fn assignment_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(&format!(r"(?i)(--)?\b({NAME_FRAGMENT})(\s*[:=]\s*)\S+")).unwrap()
-    })
+    RE.get_or_init(|| Regex::new(&format!(r"(?i)(--)?\b({NAME_FRAGMENT})(\s*[:=]\s*)\S+")).unwrap())
 }
 
 /// `--password value` — a CLI flag and its value separated by whitespace
@@ -104,9 +101,7 @@ fn assignment_re() -> &'static Regex {
 /// token refresh") never matches.
 fn flag_assignment_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(&format!(r"(?i)(--(?:{NAME_FRAGMENT}))(\s+)\S+")).unwrap()
-    })
+    RE.get_or_init(|| Regex::new(&format!(r"(?i)(--(?:{NAME_FRAGMENT}))(\s+)\S+")).unwrap())
 }
 
 /// `curl -u user:pass` / `curl --user user:pass` → `-u [secret]` —

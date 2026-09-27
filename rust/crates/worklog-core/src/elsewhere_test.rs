@@ -33,12 +33,7 @@ fn seed_block(conn: &Connection, start: &str, end: &str) -> i64 {
     conn.last_insert_rowid()
 }
 
-fn link_event_with_project(
-    conn: &Connection,
-    block_id: i64,
-    source_id: &str,
-    project_path: &str,
-) {
+fn link_event_with_project(conn: &Connection, block_id: i64, source_id: &str, project_path: &str) {
     let id = repo::upsert_event(
         conn,
         &Event::minimal("claude", source_id, "2026-04-18T09:05:00+00:00", "x"),
@@ -154,7 +149,10 @@ fn move_into_block_sets_dominant_project_clears_elsewhere_and_links() {
         Some("/Users/tomas/Desktop/Work/code-interpreter"),
         "must key to the block's dominant project"
     );
-    assert_eq!(elsewhere, 2, "must be owner-moved, out of the elsewhere list");
+    assert_eq!(
+        elsewhere, 2,
+        "must be owner-moved, out of the elsewhere list"
+    );
 
     let linked: i64 = conn
         .query_row(
@@ -184,8 +182,7 @@ fn move_into_block_errors_on_unknown_event() {
 #[test]
 fn move_into_block_errors_on_unknown_block() {
     let conn = db::open_memory().unwrap();
-    let event_id =
-        seed_elsewhere_event(&conn, "far-sha", "2026-04-18T10:00:00+00:00", "aproorg/x");
+    let event_id = seed_elsewhere_event(&conn, "far-sha", "2026-04-18T10:00:00+00:00", "aproorg/x");
     let err = move_into_block(&conn, event_id, 999_999).unwrap_err();
     assert!(
         err.to_string().contains("999999"),

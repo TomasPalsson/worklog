@@ -325,7 +325,6 @@ pub fn set_ticket_issue_id(conn: &Connection, key: &str, issue_id: &str) -> Resu
     Ok(())
 }
 
-
 // Tests live in repo_test.rs (same module, split file for line budget).
 #[cfg(test)]
 #[path = "repo_test.rs"]

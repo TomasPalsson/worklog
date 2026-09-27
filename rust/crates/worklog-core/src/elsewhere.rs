@@ -140,12 +140,16 @@ pub(crate) fn relink_moved_events(conn: &Connection, day: NaiveDate) -> Result<(
         let dominant = personal::dominant_project_path_for_block(conn, *id)?;
         folders.insert(
             *id,
-            dominant.as_deref().and_then(crate::billing::work_folder_for_path),
+            dominant
+                .as_deref()
+                .and_then(crate::billing::work_folder_for_path),
         );
     }
 
     for (event_id, started_at, project_path) in moved {
-        let event_folder = project_path.as_deref().and_then(crate::billing::work_folder_for_path);
+        let event_folder = project_path
+            .as_deref()
+            .and_then(crate::billing::work_folder_for_path);
         let event_ts = parse_ts(&started_at);
         let target = event_folder
             .as_ref()

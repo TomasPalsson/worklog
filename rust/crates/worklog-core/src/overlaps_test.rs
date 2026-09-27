@@ -201,8 +201,12 @@ fn helper_tool_and_message_rows_never_create_an_overlap_or_activity() {
     ] {
         for i in 0..20 {
             let ts = at(10, i * 3);
-            let mut e =
-                crate::models::Event::minimal(source, format!("{source}{ts}"), ts.to_rfc3339(), "x");
+            let mut e = crate::models::Event::minimal(
+                source,
+                format!("{source}{ts}"),
+                ts.to_rfc3339(),
+                "x",
+            );
             e.project_path = Some(B.to_string());
             crate::repo::upsert_event(&conn, &e).unwrap();
         }
