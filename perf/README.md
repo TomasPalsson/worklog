@@ -80,7 +80,20 @@ runs, 2026-09-27. CLI runs start on a fresh clone, so the DB file is cold in the
   30 days of fat `events` rows for `project_path`; a covering index (started_at,
   project_path) measured 17 → 3 ms warm, 213 → 5 ms cold (+1.6 MB). Fat rows (raw_json
   inline) slow every events scan — candidate: move raw_json to a side table.
-- T10: 10 ORT threads measured 84 s vs 42 s at 4 — but the machine was busy; re-measure quiet.
+- T10 threads, quiet machine: 4 threads 41.8 s, 5 threads 42.4 s (10 threads 84 s, busy
+  machine). 4 is the sweet spot; inference is compute-bound (~400 ms/event).
+- T10 concurrency probe (3 engines + ThreadingHTTPServer + 3 concurrent clients): 36.4 s vs
+  24.7 s single-engine cached — **worse** (cores contend; efficiency cores drag). Rejected.
+- Idea sweep (`perf-ideas` workflow: 4 independent generators + adversarial critics).
+  Survived: share `load_day_events` across day_activity/day_overlaps; bound Details SQL to
+  the block span; cache day summaries until the DB changes; purge datetime() fix;
+  parallel `claude -p`; concurrent `/classify` (then refuted by the probe above); batched
+  forward pass (unproven). Killed: WAL read pool (breaks snapshot consistency), hook via
+  daemon, tick inside daemon, version-gated migrate (breaks the re-apply convention),
+  owner_runs two-pointer (changes latest_human semantics), billing haystack de-dup
+  (negligible), raw_json dictionary compression (reader audit incomplete), prompt-cache
+  warm-up and one long `claude` session (negligible / cross-block contamination), skipping
+  the PyTorch fallback load (needs re-implementing rlcd calibration).
 - T1: hook runs only on SessionStart/SessionEnd, in parallel with slower hooks → low impact.
   `schema.sql` re-apply costs ~2 ms per CLI start; the repo convention relies on it running
   every open (tables are added without a version bump), so a skip must key on a schema hash.
