@@ -42,6 +42,6 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core` �
 - [x] T010 descriptions remember the length they were written for (B11) — files: rust/crates/worklog-core/sql/schema.sql, rust/crates/worklog-core/src/db.rs, rust/crates/worklog-core/src/infer.rs, rust/crates/worklog-core/src/infer_carry.rs, rust/crates/worklog-core/src/estimate.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core described` — after: T009 — done: 50c7b30
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `flow check --fix`
-- [ ] G002 branch review clean — files: . — verify: `flow pass`
-- [ ] G003 verification evidence exists — files: . — verify: `test -s .specs/007-session-lanes-and-fresh-descriptions/verify/`
+- [x] G001 project gates clean — files: . — verify: `flow check --fix` — done: 8fbb8cd
+- [x] G002 branch review clean — files: . — verify: `flow pass` — done: 8fbb8cd
+- [x] G003 verification evidence exists — files: . — verify: `test -s .specs/007-session-lanes-and-fresh-descriptions/verify/` — done: 8fbb8cd
