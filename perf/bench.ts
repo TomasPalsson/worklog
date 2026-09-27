@@ -13,6 +13,7 @@ import {
   readonlyDb, dumpDb, maskText, printDiff, daemonFetch, waitHealthy, spawnDaemon, stopDaemon,
   reportScenario, printTable, jsonRows,
 } from "./lib";
+import { computeT6bBlockId, buildT6bScenario } from "./details";
 
 const DAY = "2026-09-22";
 const WEEK_START = 21; // Mon 2026-09-21 .. 2026-09-27
@@ -174,6 +175,7 @@ function buildDaemonScenarios(blockId: number): Record<string, DaemonScenario> {
         return { [`GET /blocks/${blockId}/details`]: details, [`GET /blocks/${blockId}/events`]: events };
       },
     },
+    T6b: buildT6bScenario(computeT6bBlockId()),
     T7: {
       id: "T7", kind: "daemon", defaultRuns: 30,
       run: async (port) => ({ [`GET /export/${DAY}`]: await daemonFetch(port, `/export/${DAY}`) }),
@@ -352,8 +354,8 @@ function parseArgs(argv: string[]): Args {
 }
 
 const ALL_CLI_IDS = ["T1", "T2", "T3", "T8a", "T8b", "T8c", "T8d", "T9"];
-const ALL_DAEMON_IDS = ["T4", "T5", "T6", "T7"];
-const ALL_IDS = ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8a", "T8b", "T8c", "T8d", "T9"];
+const ALL_DAEMON_IDS = ["T4", "T5", "T6", "T6b", "T7"];
+const ALL_IDS = ["T1", "T2", "T3", "T4", "T5", "T6", "T6b", "T7", "T8a", "T8b", "T8c", "T8d", "T9"];
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
