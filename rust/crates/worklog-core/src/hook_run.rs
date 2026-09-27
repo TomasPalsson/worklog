@@ -90,6 +90,23 @@ fn project_root(cwd: Option<&str>) -> Option<String> {
     cwd.and_then(|c| crate::collectors::fish::repo_root_for(c, home.as_deref()))
 }
 
+/// Prefer the user prompt so the estimator has real substance to
+/// summarise from — but run it through `redact_code` FIRST so source
+/// code (pasted snippets, `<task-notification>` `<result>` blocks) never
+/// lands in the DB at all, then cap what remains. `None` when there's no
+/// prompt: the transcript path that used to be stored here is just a
+/// pointer to the full session and carries no work-intent signal worth
+/// keeping.
+fn details_for(prompt: Option<&str>) -> Option<String> {
+    match prompt {
+        Some(p) if !p.is_empty() => {
+            let clean = crate::estimate::redact_code(p);
+            (!clean.is_empty()).then(|| cap_prompt(&clean, PROMPT_CAP_CHARS))
+        }
+        _ => None,
+    }
+}
+
 /// Process a single hook payload against an already-open connection. Errors
 /// are logged to stderr by the caller; this function bails on a hard db
 /// failure only so the CLI entrypoint can still return exit 0 (we never
@@ -111,24 +128,13 @@ pub fn handle(conn: &Connection, payload: &Value, now: DateTime<Utc>) -> Result<
         .and_then(Value::as_str)
         .or_else(|| payload.get("project_path").and_then(Value::as_str))
         .map(str::to_owned);
-    let prompt = prompt_of(payload).map(str::to_owned);
+    // Scrubbed BEFORE title_for's 80-char cut and redact_code so a live
+    // token can never be sliced into a partial prefix the whole-token
+    // regexes miss (FR-11, D-03).
+    let prompt = prompt_of(payload).map(crate::scrub::scrub_secrets);
 
     let jira_issue = first_jira_key(&[prompt.as_deref(), cwd.as_deref()]);
-
-    // Prefer the user prompt so the estimator has real substance to
-    // summarise from — but run it through `redact_code` FIRST so source
-    // code (pasted snippets, `<task-notification>` `<result>` blocks)
-    // never lands in the DB at all, then cap what remains. Fall back to
-    // nothing when there's no prompt: the transcript path that used to
-    // be stored here is just a pointer to the full session and carries
-    // no work-intent signal worth keeping.
-    let details = match prompt.as_deref() {
-        Some(p) if !p.is_empty() => {
-            let clean = crate::estimate::redact_code(p);
-            (!clean.is_empty()).then(|| cap_prompt(&clean, PROMPT_CAP_CHARS))
-        }
-        _ => None,
-    };
+    let details = details_for(prompt.as_deref());
 
     let ev = Event {
         id: None,

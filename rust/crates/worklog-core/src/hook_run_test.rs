@@ -277,3 +277,59 @@ fn cap_prompt_is_char_safe_for_multi_byte_unicode() {
         "the first 4096 chars should all be the original char"
     );
 }
+
+#[test]
+fn prompt_secret_never_reaches_title_details_or_raw_json() {
+    // FR-11/D-03: every stored value is scrubbed, and the prompt is
+    // scrubbed BEFORE the 80-char title cut so the cut can never split a
+    // token into a shape the scrubber misses.
+    let conn = open_memory().unwrap();
+    let token = format!("ghp_{}", "a".repeat(36));
+    let prompt = format!("deploy with {token} please");
+    let payload = json!({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "s5",
+        "user_prompt": prompt,
+    });
+    handle(&conn, &payload, now()).unwrap();
+    let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+    let ev = &events[0];
+    assert!(!ev.title.contains(&token), "title leaked: {}", ev.title);
+    assert!(
+        !ev.details.as_deref().unwrap_or("").contains(&token),
+        "details leaked: {:?}",
+        ev.details
+    );
+    assert!(
+        !ev.raw_json.as_deref().unwrap_or("").contains(&token),
+        "raw_json leaked: {:?}",
+        ev.raw_json
+    );
+}
+
+#[test]
+fn prompt_scrubbed_before_title_cut_never_leaks_a_partial_token() {
+    // The 80-char title cut must never slice a live token in half —
+    // scrubbing has to run on the whole prompt BEFORE `title_for` takes
+    // its snippet, or a partial prefix (not a full-token regex match)
+    // slips through untouched.
+    let conn = open_memory().unwrap();
+    let token = format!("ghp_{}", "a".repeat(36));
+    // A space (not a word char) separates the padding from the token so
+    // the whole-token regex's `\b` boundary still matches it — only the
+    // 80-char cut point sits inside the token.
+    let padding = format!("{} ", "x".repeat(74));
+    let prompt = format!("{padding}{token} please");
+    let payload = json!({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "s6",
+        "user_prompt": prompt,
+    });
+    handle(&conn, &payload, now()).unwrap();
+    let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+    let title = &events[0].title;
+    assert!(
+        !title.contains("ghp_"),
+        "even a partial token prefix must never leak into the title: {title}"
+    );
+}

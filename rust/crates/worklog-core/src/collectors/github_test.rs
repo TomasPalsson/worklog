@@ -293,6 +293,34 @@ fn github_raw_commit_body_stored_and_scrubbed() {
 }
 
 #[test]
+fn github_commit_details_are_scrubbed_too() {
+    // FR-11/D-03: details isn't just raw_json — the full commit message
+    // stored in events.details must never carry a live token either.
+    let server = MockServer::start();
+    let token = format!("ghp_{}", "a".repeat(36));
+    server.mock(|when, then| {
+        when.method(GET).path("/search/commits");
+        then.status(200).json_body(json!({"items": [
+            {"sha": "abc456", "repository": {"full_name": "org/repo"},
+             "commit": {"author": {"date": "2026-04-18T09:00:00Z"},
+                        "message": format!("PROJ-42 fix login bug\n\nuses token {token} to auth")}}
+        ]}));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/search/issues");
+        then.status(200).json_body(json!({"items": []}));
+    });
+
+    let (_conn, _report, events) = run(server.base_url());
+    let commit = events.iter().find(|e| e.source == "github_commit").unwrap();
+    let details = commit.details.as_deref().expect("details set");
+    assert!(
+        !details.contains(&token),
+        "details must not contain the raw token: {details}"
+    );
+}
+
+#[test]
 fn github_raw_pr_body_stored_with_empty_sha() {
     let server = MockServer::start();
     server.mock(|when, then| {
