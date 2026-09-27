@@ -298,8 +298,14 @@ mod tests {
         let since = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
         let until = NaiveDate::from_ymd_opt(2026, 4, 19).unwrap();
         for _ in 0..2 {
-            collect_with(&conn, &auth(server.base_url()), since, until, &http::client().unwrap())
-                .unwrap();
+            collect_with(
+                &conn,
+                &auth(server.base_url()),
+                since,
+                until,
+                &http::client().unwrap(),
+            )
+            .unwrap();
         }
         let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
         assert_eq!(
@@ -339,7 +345,9 @@ mod tests {
             "only the two org-owned events should be written"
         );
         assert!(
-            events.iter().all(|e| e.repo.as_deref() != Some("TomasPalsson/worklog")),
+            events
+                .iter()
+                .all(|e| e.repo.as_deref() != Some("TomasPalsson/worklog")),
             "personal-owner repo events must not be stored"
         );
         assert_eq!(events.len(), 2);
