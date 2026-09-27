@@ -63,6 +63,13 @@ persona text (e.g. "Mr Claude").
   work, e.g. "pharmacy review flow"). **fast rejected** (fails quality); **lean not
   adopted** (trend worse, n=8 too small). Quality-neutral levers instead: run blocks
   concurrently (same prompt + flags) and skip blocks whose prompt is unchanged.
+- T2 profile (fresh clones, D=2026-09-25): whole tick 1.4–1.8 s, of which `collect
+  transcripts` 1.4–1.9 s; shell 37 ms, reflog 18 ms, infer 51 ms. The transcript collector
+  re-reads + re-parses every file touched since midnight on every tick.
+- T4: `/billing/registry` costs ~16 ms warm / ~160 ms cold because `unmapped_folders` reads
+  30 days of fat `events` rows for `project_path`; a covering index (started_at,
+  project_path) measured 17 → 3 ms warm, 213 → 5 ms cold (+1.6 MB). Fat rows (raw_json
+  inline) slow every events scan — candidate: move raw_json to a side table.
 - T10: 10 ORT threads measured 84 s vs 42 s at 4 — but the machine was busy; re-measure quiet.
 - T1: hook runs only on SessionStart/SessionEnd, in parallel with slower hooks → low impact.
   `schema.sql` re-apply costs ~2 ms per CLI start; the repo convention relies on it running
@@ -83,3 +90,24 @@ as small separate commits, and are announced to that session first. Never deploy
 | # | change | scenario | before → after | behaviour eval |
 |---|--------|----------|----------------|----------------|
 | 1 | verdict server: `lru_cache` on the model call (deterministic model) | T10 | cold 42.1 s → 24.7 s (1.7×); repeat tick 45.6 s → 0.024 s (~1900×) | 105/105 answers byte-identical to recorded golden; `cargo test verdict` 6/6; `--self-test` OK |
+
+## How to run
+
+```bash
+# build the fixture once (real data, never committed)
+PERF_DIR=/path/to/perf-fixture bash perf/fixture.sh
+
+# prove the oracle has teeth before trusting any numbers
+PERF_DIR=/path/to/perf-fixture bun perf/bench.ts --selftest --base /path/to/worklog-base
+
+# candidate vs baseline, all scenarios
+PERF_DIR=/path/to/perf-fixture bun perf/bench.ts --bin /path/to/worklog-candidate \
+  --base /path/to/worklog-base --json perf-results.json
+
+# a subset, with an explicit run count
+PERF_DIR=/path/to/perf-fixture bun perf/bench.ts --bin /path/to/worklog \
+  --only T1,T4 --runs 10
+```
+
+No `--base` → prints each scenario's masked-oracle sha256 instead of a PASS/FAIL.
+On a FAIL, full oracles are saved to `$PERF_DIR/runs/oracle-<id>-{base,cand}.txt`.
