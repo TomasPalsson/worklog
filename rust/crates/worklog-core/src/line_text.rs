@@ -5,7 +5,6 @@
 
 use crate::billing;
 use crate::clues_contract::{BillingLineKey, LineTextOrigin};
-use crate::clues_send;
 use crate::estimate::ModelInvoker;
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -178,21 +177,31 @@ pub fn generate_for_day(
     Ok(report)
 }
 
+#[path = "line_text_phases.rs"]
+mod phases;
+/// Prepare/invoke/commit split of [`generate_line`] — the daemon uses
+/// these directly so the sqlite connection lock is never held across
+/// the `claude -p` round trip (see `phases`' own doc comment).
+pub use phases::{
+    commit as commit_line, invoke as invoke_line, prepare as prepare_line, Prep as LineTextPrep,
+};
+
 /// One line's worth of [`generate_for_day`]'s body, split out so the
 /// daemon's single-line "Regenerate" route can reuse it directly. A
 /// hand-edited line (FR-31) is left untouched and reported as
 /// `Err("hand-edited")`; any other failure also leaves the stored text
-/// untouched (FR-35).
+/// untouched (FR-35). Runs all three [`phases`] back-to-back on one
+/// connection — a caller that wants to drop the lock between phases
+/// (the daemon) uses `prepare_line`/`invoke_line`/`commit_line` instead.
 pub fn generate_line(
     conn: &Connection,
     key: &BillingLineKey,
     invoker: &dyn ModelInvoker,
     model: &str,
 ) -> std::result::Result<(), String> {
-    if stored_origin(conn, key).map_err(|e| e.to_string())? == Some(LineTextOrigin::Manual) {
-        return Err("hand-edited".to_string());
-    }
-    generate_one(conn, key, invoker, model)
+    let prep = phases::prepare(conn, key)?;
+    let reply = phases::invoke(&prep, invoker, model);
+    phases::commit(conn, &prep, reply)
 }
 
 /// Thinking budget for line-text generation's `claude -p` invoker — a
@@ -246,7 +255,11 @@ pub fn generate_line_with_default_provider(
     generate_line(conn, key, invoker.as_ref(), model)
 }
 
-fn distinct_keys(conn: &Connection, day: &str) -> Result<Vec<BillingLineKey>> {
+/// Crate-visible for the daemon's day-level line-text pass
+/// (`daemon_line_text::generate_day`), which enumerates a day's lines
+/// itself so it can run prepare/invoke/commit per key without ever
+/// holding the connection across a `claude -p` call.
+pub(crate) fn distinct_keys(conn: &Connection, day: &str) -> Result<Vec<BillingLineKey>> {
     let rows = billing::rows_for_day(conn, day)?;
     let mut seen = HashSet::new();
     let mut keys = Vec::new();
@@ -279,25 +292,6 @@ fn stored_origin(conn: &Connection, key: &BillingLineKey) -> Result<Option<LineT
             LineTextOrigin::Generated
         }
     }))
-}
-
-fn generate_one(
-    conn: &Connection,
-    key: &BillingLineKey,
-    invoker: &dyn ModelInvoker,
-    model: &str,
-) -> std::result::Result<(), String> {
-    let input = clues_send::build_line_input(conn, key).map_err(|e| e.to_string())?;
-    let user = serde_json::to_string(&input).map_err(|e| e.to_string())?;
-    let reply = invoker
-        .invoke(SYSTEM_PROMPT_IS, &user, &line_text_schema(), model)
-        .map_err(|e| e.to_string())?;
-    let text = reply
-        .get("text")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "reply missing `text` field".to_string())?;
-    let validated = validate(&unwrap_nested_text(text))?;
-    upsert_generated(conn, key, &validated).map_err(|e| e.to_string())
 }
 
 /// `claude -p` sometimes puts the whole `{"text": "..."}` reply inside the

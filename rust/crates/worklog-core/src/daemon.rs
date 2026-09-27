@@ -93,7 +93,7 @@ use crate::routing_dismiss;
 use crate::secrets;
 use crate::verdict::VerdictClassifier;
 use crate::{
-    block_service, db, estimate, infer, infer_allocations, line_text,
+    block_service, db, estimate, infer, infer_allocations,
     models::{Block, Event},
     overlaps, repo,
 };
@@ -1695,19 +1695,16 @@ async fn run_estimate(
         .model
         .unwrap_or_else(|| estimate::DEFAULT_MODEL.to_string());
     let day_str = body.day.clone();
-    let (stats, line_texts) = with_conn(state, move |c| {
-        let stats = estimate::estimate_day(c, day, &model)?;
-        // A line-text failure never fails the estimate call — the
-        // estimate itself already succeeded (FR-26).
-        let line_texts =
-            line_text::generate_with_default_provider(c, &day_str, line_text::LINE_TEXT_MODEL)
-                .unwrap_or_else(|_| line_text::LineTextReport {
-                    generated: Vec::new(),
-                    not_generated: Vec::new(),
-                });
-        Ok((stats, line_texts))
+    let stats = with_conn(state.clone(), move |c| {
+        estimate::estimate_day(c, day, &model)
     })
     .await?;
+    // Line texts run as their own prepare/invoke/commit pass per line
+    // (`daemon_line_text::generate_day`) so the sqlite mutex is never
+    // held across any of those `claude -p` round trips. A line-text
+    // failure never fails the estimate call — the estimate itself
+    // already succeeded (FR-26).
+    let line_texts = daemon_line_text::generate_day(state, day_str).await;
     Ok(Json(json!({
         "day":       body.day,
         "estimated": stats.estimated,
@@ -2613,6 +2610,7 @@ pub(crate) fn refresh_recent_days(conn: &Connection, source: deild_contract::Cha
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::line_text;
     use axum::body::{self, Body};
     use axum::http::{Request, StatusCode};
     use rusqlite::params;
