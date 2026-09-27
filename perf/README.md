@@ -131,6 +131,8 @@ as small separate commits, and are announced to that session first. Never deploy
 | # | change | scenario | before → after | behaviour eval |
 |---|--------|----------|----------------|----------------|
 | 1 | verdict server: `lru_cache` on the model call (deterministic model) | T10 | cold 42.1 s → 24.7 s (1.7×); repeat tick 45.6 s → 0.024 s (~1900×) | 105/105 answers byte-identical to recorded golden; `cargo test verdict` 6/6; `--self-test` OK |
+| 2 | index `events(project_path, started_at)` for `unmapped_folders` | T4 | 23.0 → 12.2 ms (1.9×); query 17 → 1.2 ms warm; +1.7 MB/week | all 12 scenarios PASS / PASS* (only the new SCHEMA line and purge's "bytes freed"); other plans unchanged |
+| 3 | upsert `DO UPDATE … WHERE` a value changes | T2 writes | WAL per steady tick 78.2 → 12.9 MB (6×); time unchanged (parsing-bound) | T1/T2/T3/T8d/T9 PASS; new failing-first unit test; 983 tests pass |
 
 ## How to run
 
