@@ -633,8 +633,29 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
             claimed.insert(c.started_at.clone());
         }
         let tempo_id = carry.and_then(|c| c.tempo_worklog_id.clone());
-        let description = carry.and_then(|c| c.description.clone());
-        let estimated_by = carry.and_then(|c| c.estimated_by.clone());
+        // A block whose length changed a lot on rebuild no longer matches
+        // its stale description — drop it so the block is described again.
+        let keeps_description = carry.is_none_or(|c| {
+            let Some((cs, ce)) = parse_pair(&c.started_at, &c.ended_at) else {
+                return true;
+            };
+            let prior_minutes = (cs.timestamp().div_euclid(60), ce.timestamp().div_euclid(60));
+            let new_minutes = (
+                b.started_at.timestamp().div_euclid(60),
+                b.ended_at.timestamp().div_euclid(60),
+            );
+            crate::infer_carry::keeps_description(
+                prior_minutes,
+                new_minutes,
+                c.estimated_by.as_deref(),
+            )
+        });
+        let description = carry
+            .filter(|_| keeps_description)
+            .and_then(|c| c.description.clone());
+        let estimated_by = carry
+            .filter(|_| keeps_description)
+            .and_then(|c| c.estimated_by.clone());
         let exported_at = carry.and_then(|c| c.exported_at.clone());
         // Preserve manual ticket override if present; otherwise trust inference.
         let jira_issue = carry
@@ -1265,6 +1286,63 @@ mod tests {
         assert_eq!(stored[0].description.as_deref(), Some("custom"));
         assert_eq!(stored[0].jira_issue.as_deref(), Some("PROJ-7"));
         assert_eq!(stored[0].estimated_by.as_deref(), Some("manual"));
+    }
+
+    #[test]
+    fn grown_block_is_described_again() {
+        let conn = open_memory().unwrap();
+        repo::upsert_event(
+            &conn,
+            &Event::minimal("github_commit", "y1", "2026-04-18T10:00:00+00:00", "first"),
+        )
+        .unwrap();
+        repo::upsert_event(
+            &conn,
+            &Event::minimal("github_commit", "y2", "2026-04-18T10:28:00+00:00", "second"),
+        )
+        .unwrap();
+
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let events = load_day_events(&conn, day).unwrap();
+        let blocks = build_blocks(events);
+        persist_blocks(&conn, day, &blocks).unwrap();
+        assert_eq!(blocks[0].duration_seconds, 30 * 60);
+
+        conn.execute(
+            "UPDATE blocks SET description = 'old', estimated_by = 'claude_p', \
+             tempo_worklog_id = '555' WHERE day = ?1",
+            params!["2026-04-18"],
+        )
+        .unwrap();
+
+        // Grow the same block from 30 minutes to 3h02m — every added event
+        // stays within the 30-minute clustering timeout so it's one block,
+        // not a new one.
+        for (id, hm) in [
+            ("y3", "10:50"),
+            ("y4", "11:12"),
+            ("y5", "11:34"),
+            ("y6", "11:56"),
+            ("y7", "12:18"),
+            ("y8", "12:40"),
+            ("y9", "13:00"),
+        ] {
+            repo::upsert_event(
+                &conn,
+                &Event::minimal("github_commit", id, format!("2026-04-18T{hm}:00+00:00"), id),
+            )
+            .unwrap();
+        }
+        let events = load_day_events(&conn, day).unwrap();
+        let blocks = build_blocks(events);
+        persist_blocks(&conn, day, &blocks).unwrap();
+
+        let stored = repo::list_blocks_for_day(&conn, "2026-04-18").unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].duration_seconds, 182 * 60);
+        assert_eq!(stored[0].description, None);
+        assert_eq!(stored[0].estimated_by, None);
+        assert_eq!(stored[0].tempo_worklog_id.as_deref(), Some("555"));
     }
 
     /// R7: a spec ID that merely looks like a Jira key (`FR-09`) must not

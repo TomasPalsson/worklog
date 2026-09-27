@@ -60,6 +60,28 @@ pub(crate) fn cut_at_ticket_edges(blocks: &[InferBlock], ticketed: &[Ticketed]) 
     out
 }
 
+/// A block's stale description is dropped when the block's length changed a
+/// lot on rebuild — a 5-minute note doesn't describe a 3-hour block. `prior`
+/// and `new` are each `(started_at, ended_at)` in minutes since epoch.
+/// A `manual` description is never dropped.
+pub(crate) fn keeps_description(
+    prior: (i64, i64),
+    new: (i64, i64),
+    estimated_by: Option<&str>,
+) -> bool {
+    if estimated_by == Some("manual") {
+        return true;
+    }
+    let prior_len = prior.1 - prior.0;
+    let new_len = new.1 - new.0;
+    if (new_len - prior_len).abs() >= 30 {
+        return false;
+    }
+    let max_len = prior_len.max(new_len);
+    let min_len = prior_len.min(new_len);
+    max_len * 2 <= min_len * 3
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::TimeZone;
@@ -119,5 +141,40 @@ mod tests {
         }
         rebuild();
         assert_eq!(tickets(), ["T-1", "T-2"], "neither ticket may be lost");
+    }
+
+    #[test]
+    fn grown_block_drops_description() {
+        assert!(!super::keeps_description((0, 30), (0, 182), None));
+    }
+
+    #[test]
+    fn manual_description_always_kept() {
+        assert!(super::keeps_description((0, 30), (0, 182), Some("manual")));
+    }
+
+    #[test]
+    fn grow_by_exactly_30_drops_description() {
+        assert!(!super::keeps_description((0, 60), (0, 90), None));
+    }
+
+    #[test]
+    fn grow_past_1_5x_under_30_drops_description() {
+        assert!(!super::keeps_description((0, 10), (0, 16), None));
+    }
+
+    #[test]
+    fn shrink_past_1_5x_drops_description() {
+        assert!(!super::keeps_description((0, 60), (0, 25), None));
+    }
+
+    #[test]
+    fn just_under_thresholds_keeps_description() {
+        assert!(super::keeps_description((0, 60), (0, 89), None));
+    }
+
+    #[test]
+    fn unchanged_length_keeps_description() {
+        assert!(super::keeps_description((0, 60), (0, 60), None));
     }
 }
