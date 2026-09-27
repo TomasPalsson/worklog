@@ -15,6 +15,8 @@ Spec: spec.md · Design: design.md · Base: 88d1d77 · Route: dispatch · Test: 
 | B7 (P1) | Given a ≥90-min block, when estimated, then the model is asked for up to 3 tasks | T005 | estimate::tests::long_block_asks_for_tasks |
 | B8 (P0) | Given prompts stored as `claude_turn` rows titled "prompt" with the text in `raw_json`, when the day is rebuilt, then the prompt text resolves the session's customer | T007 | infer_allocations_db_test::prompt_text_names_the_session_customer |
 | B9 (P0) | Given a folder split into customer lanes competing with another folder, when blocks are built, then each folder owns exactly the minutes it owned untagged, and only that folder's minutes are divided between its lanes | T008 | infer_lane_tags::tests::split_keeps_folder_minutes |
+| B10 (P0) | Given a folder split by customer, when blocks are built, then every folder event that linked into a block untagged still links into one (untagged events into whichever sub-run covers them), and a folder run that passed the evidence floor untagged is never dropped | T009 | infer_lane_tags::tests::untagged_folder_events_stay_linked, infer_lane_tags::tests::sparse_split_keeps_its_block |
+| B11 (P0) | Given a non-manual description written for a 30-min block, when the block grows in 15-min rebuild steps, then the description is dropped once the block differs from the length it was described at by ≥30 min or >1.5× | T010 | infer::tests::gradual_growth_is_described_again |
 
 ## Phase 1 — Session lanes
 Goal: one repo serving two customers yields separate blocks per customer session.
@@ -32,6 +34,12 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core de
 - [x] T005 [P] long blocks described as tasks (B7) — files: rust/crates/worklog-core/src/estimate.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core long_block_asks_for_tasks` — done: 095120c
 - [x] T006 Friday real-data check covers splits and block count — files: scripts/verify_inference_report.py — verify: `bash scripts/verify-inference.sh` — after: T004, T005, T007, T008 — done: 31104c0
 - [x] CHK001 human-verify live Friday 2026-09-25 after deploy — files: scripts/verify_inference_report.py — verify: human: Owner sees vitinn-infra Sjúkra and APRÓ work in separate blocks, the 15:09 block(s) carry a fresh multi-task description, and the day still totals about 8.5 h — after: T006 — done: 31104c0 by user
+
+## Phase 3 — Review fixes
+Goal: a split folder keeps every minute and every event link it had, and a description written for a short block is refreshed once the block grows past the thresholds, however gradually.
+Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core` — green, and `bash scripts/verify-inference.sh` exits 0.
+- [ ] T009 split folders keep their evidence and event links (B10) — files: rust/crates/worklog-core/src/infer_lanes.rs, rust/crates/worklog-core/src/infer_lane_tags.rs, rust/crates/worklog-core/src/infer_lane_tags_test.rs, rust/crates/worklog-core/src/infer_evidence.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core infer_lane_tags` — after: CHK001
+- [ ] T010 descriptions remember the length they were written for (B11) — files: rust/crates/worklog-core/sql/schema.sql, rust/crates/worklog-core/src/db.rs, rust/crates/worklog-core/src/infer.rs, rust/crates/worklog-core/src/infer_carry.rs, rust/crates/worklog-core/src/estimate.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core described` — after: T009
 
 ## Gates
 - [ ] G001 project gates clean — files: . — verify: `flow check --fix`
