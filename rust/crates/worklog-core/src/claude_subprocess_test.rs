@@ -14,6 +14,36 @@ fn default_has_no_thinking_env() {
         .any(|(k, v)| k == crate::hook_run::SUPPRESS_ENV && v == "1"));
 }
 
+fn has_pair(args: &[String], flag: &str, value: &str) -> bool {
+    args.windows(2).any(|w| w[0] == flag && w[1] == value)
+}
+
+#[test]
+fn every_call_runs_without_tools_plugins_or_user_settings() {
+    // Without these a text call loads every user hook/plugin/MCP server and
+    // may wander off using tools — minutes instead of seconds.
+    for thinking in [None, Some(8000)] {
+        let (args, _) = command_spec("sys", "{}", "model-x", thinking);
+        assert!(has_pair(&args, "--tools", ""), "{args:?}");
+        assert!(args.contains(&"--strict-mcp-config".to_string()));
+        assert!(has_pair(&args, "--setting-sources", "project"));
+    }
+}
+
+#[test]
+fn thinking_call_turns_thinking_on_explicitly() {
+    // User settings are skipped, so thinking must be requested here.
+    let (args, _) = command_spec("sys", "{}", "model-x", Some(8000));
+    assert!(has_pair(
+        &args,
+        "--settings",
+        r#"{"alwaysThinkingEnabled":true}"#
+    ));
+    assert!(has_pair(&args, "--effort", "high"));
+    let (plain, _) = command_spec("sys", "{}", "model-x", None);
+    assert!(!plain.contains(&"--effort".to_string()));
+}
+
 #[test]
 fn with_thinking_sets_max_thinking_tokens() {
     let (_, envs) = command_spec("sys", "{}", "model-x", Some(8000));

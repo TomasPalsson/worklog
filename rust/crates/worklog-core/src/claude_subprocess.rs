@@ -51,17 +51,42 @@ pub fn command_spec(
     model: &str,
     thinking_tokens: Option<u32>,
 ) -> (Vec<String>, Vec<(String, String)>) {
-    let args = vec![
-        "-p".to_string(),
-        "--model".to_string(),
-        model.to_string(),
-        "--output-format".to_string(),
-        "json".to_string(),
-        "--json-schema".to_string(),
-        schema_str.to_string(),
-        "--system-prompt".to_string(),
-        system.to_string(),
-    ];
+    let mut args: Vec<String> = [
+        "-p",
+        "--model",
+        model,
+        "--output-format",
+        "json",
+        "--json-schema",
+        schema_str,
+        "--system-prompt",
+        system,
+        // A pure text call: no tools, no MCP servers, none of the user's
+        // hooks/plugins/settings. Without this every call loads the whole
+        // user setup (~40k tokens) and may wander off using tools — the
+        // line-text job took minutes instead of seconds.
+        "--tools",
+        "",
+        "--strict-mcp-config",
+        "--setting-sources",
+        "project",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    if thinking_tokens.is_some() {
+        // User settings are skipped above, so thinking is requested here.
+        args.extend(
+            [
+                "--settings",
+                r#"{"alwaysThinkingEnabled":true}"#,
+                "--effort",
+                "high",
+            ]
+            .iter()
+            .map(|s| s.to_string()),
+        );
+    }
     // The spawned `claude -p` inherits this process's Claude Code hook
     // config, so it would re-fire worklog's own hook and log this
     // estimation prompt back into `events` as fake activity — which
