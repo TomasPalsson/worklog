@@ -91,6 +91,21 @@ pub fn default_command() -> String {
     "worklog hook-run".to_owned()
 }
 
+/// Derive the `session-hint` invocation from the recorder's `hook-run`
+/// command, keeping the same binary/back-compat alias.
+// ponytail: falls back to appending " session-hint" when neither suffix
+// matches (the bare legacy `worklog-hook` binary); upgrade if that binary
+// ever needs to run session-hint too.
+fn session_hint_command(command: &str) -> String {
+    if let Some(prefix) = command.strip_suffix("hook-run") {
+        return format!("{prefix}session-hint");
+    }
+    if let Some(prefix) = command.strip_suffix("hook run") {
+        return format!("{prefix}session-hint");
+    }
+    format!("{command} session-hint")
+}
+
 pub fn install(command: &str) -> Result<HookStatus> {
     let path = settings_path()?;
     let mut root = read_settings(&path)?;
@@ -129,6 +144,13 @@ pub fn install(command: &str) -> Result<HookStatus> {
                 { "type": "command", "command": command }
             ]
         }));
+        if *ev == "SessionStart" {
+            arr.push(json!({
+                "hooks": [
+                    { "type": "command", "command": session_hint_command(command) }
+                ]
+            }));
+        }
     }
 
     write_settings(&path, &Value::Object(root))?;
@@ -323,9 +345,52 @@ mod tests {
         let hooks = root.get("hooks").unwrap().as_object().unwrap();
         for ev in EVENTS {
             let arr = hooks.get(*ev).unwrap().as_array().unwrap();
-            assert_eq!(arr.len(), 1, "event {ev} must have 1 handler, got {arr:?}");
+            let expected = if *ev == "SessionStart" { 2 } else { 1 };
+            assert_eq!(
+                arr.len(),
+                expected,
+                "event {ev} must have {expected} handler(s), got {arr:?}"
+            );
             let handler = arr[0].get("hooks").unwrap().as_array().unwrap();
             assert_eq!(handler[0]["command"].as_str().unwrap(), cmd);
+        }
+    }
+
+    #[test]
+    fn install_keeps_recorder_and_start_hint() {
+        let (_g, _t) = enter(tempdir().unwrap());
+        let cmd = "/usr/bin/worklog hook-run";
+        install(cmd).unwrap();
+        install(cmd).unwrap(); // idempotent: re-running must not duplicate
+
+        let raw = std::fs::read_to_string(settings_path().unwrap()).unwrap();
+        let root: Value = serde_json::from_str(&raw).unwrap();
+        let hooks = root.get("hooks").unwrap().as_object().unwrap();
+
+        // SessionStart carries both the recorder and the start-hint command.
+        let start = hooks.get("SessionStart").unwrap().as_array().unwrap();
+        assert_eq!(
+            start.len(),
+            2,
+            "SessionStart must have exactly 2 handlers, got {start:?}"
+        );
+        let commands: Vec<&str> = start
+            .iter()
+            .map(|h| h["hooks"][0]["command"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            commands,
+            vec!["/usr/bin/worklog hook-run", "/usr/bin/worklog session-hint"]
+        );
+
+        // Every other event keeps only the recorder.
+        for ev in EVENTS {
+            if *ev == "SessionStart" {
+                continue;
+            }
+            let arr = hooks.get(*ev).unwrap().as_array().unwrap();
+            assert_eq!(arr.len(), 1, "event {ev} must have 1 handler, got {arr:?}");
+            assert_eq!(arr[0]["hooks"][0]["command"].as_str().unwrap(), cmd);
         }
     }
 
@@ -343,7 +408,8 @@ mod tests {
         let root: Value = serde_json::from_str(&raw).unwrap();
         let hooks = root.get("hooks").unwrap().as_object().unwrap();
         for ev in EVENTS {
-            assert_eq!(hooks.get(*ev).unwrap().as_array().unwrap().len(), 1);
+            let expected = if *ev == "SessionStart" { 2 } else { 1 };
+            assert_eq!(hooks.get(*ev).unwrap().as_array().unwrap().len(), expected);
         }
     }
 
@@ -393,7 +459,8 @@ mod tests {
         assert!(!is_worklog_handler(&pre[0]));
         // …and the intended events are still installed.
         for ev in EVENTS {
-            assert_eq!(hooks.get(*ev).unwrap().as_array().unwrap().len(), 1);
+            let expected = if *ev == "SessionStart" { 2 } else { 1 };
+            assert_eq!(hooks.get(*ev).unwrap().as_array().unwrap().len(), expected);
         }
     }
 
