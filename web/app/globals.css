@@ -4266,7 +4266,8 @@ button {
   background: var(--bg-sunk);
   font-family: var(--font-mono);
   font-size: 11px;
-  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .block-details-session {
