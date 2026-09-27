@@ -132,4 +132,40 @@ mod tests {
         })
         .unwrap();
     }
+
+    #[test]
+    fn load_day_events_reads_a_compressed_prompt() {
+        // infer::load_day_events takes a claude_turn's title from its
+        // raw_json; a prompt long enough to be stored deflated must still load.
+        // load_day_events reads WORKLOG_TZ for the day window; hold the env
+        // lock so a parallel test changing it can't move the event off the day.
+        let _g = crate::tz::test_env_lock();
+        let conn = crate::db::open_memory().unwrap();
+        let prompt = "please fix the billing export rounding ".repeat(20);
+        let mut e = crate::models::Event::minimal(
+            "claude_turn",
+            "p-long",
+            "2026-04-18T09:00:00+00:00",
+            "db title",
+        );
+        e.raw_json = Some(
+            serde_json::to_string(&crate::clues_contract::RawRecord::ClaudePrompt {
+                session_id: "s1".into(),
+                text: prompt.clone(),
+            })
+            .unwrap(),
+        );
+        crate::repo::upsert_event(&conn, &e).unwrap();
+        let stored: String = conn
+            .query_row("SELECT typeof(raw_json) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            stored, "blob",
+            "the fixture must exercise the compressed path"
+        );
+
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let events = crate::infer::load_day_events(&conn, day).unwrap();
+        assert_eq!(events[0].title.as_deref(), Some(prompt.as_str()));
+    }
 }
