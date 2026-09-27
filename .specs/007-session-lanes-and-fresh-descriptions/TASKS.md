@@ -14,6 +14,7 @@ Spec: spec.md · Design: design.md · Base: 88d1d77 · Route: dispatch · Test: 
 | B6 (P0) | Given a manual description, when the block grows, then it is kept | T004 | infer_carry::tests::manual_description_always_kept |
 | B7 (P1) | Given a ≥90-min block, when estimated, then the model is asked for up to 3 tasks | T005 | estimate::tests::long_block_asks_for_tasks |
 | B8 (P0) | Given prompts stored as `claude_turn` rows titled "prompt" with the text in `raw_json`, when the day is rebuilt, then the prompt text resolves the session's customer | T007 | infer_allocations_db_test::prompt_text_names_the_session_customer |
+| B9 (P0) | Given a folder split into customer lanes competing with another folder, when blocks are built, then each folder owns exactly the minutes it owned untagged, and only that folder's minutes are divided between its lanes | T008 | infer_lane_tags::tests::split_keeps_folder_minutes |
 
 ## Phase 1 — Session lanes
 Goal: one repo serving two customers yields separate blocks per customer session.
@@ -21,14 +22,15 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core se
 - [x] T001 lane_tag field and tagged lane key (B1) — files: rust/crates/worklog-core/src/infer.rs, rust/crates/worklog-core/src/infer_lanes.rs, rust/crates/worklog-core/src/infer_lanes_test.rs, rust/crates/worklog-core/src/infer_evidence_test.rs, rust/crates/worklog-core/src/infer_allocations.rs, rust/crates/worklog-core/src/infer_allocations_test.rs, rust/crates/worklog-core/src/overlaps.rs, rust/crates/worklog-core/src/overlaps_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core infer` — done: cd54c05
 - [x] T002 session customer tagging (B2, B3) — files: rust/crates/worklog-core/src/session_customers.rs, rust/crates/worklog-core/src/session_customers_test.rs, rust/crates/worklog-core/src/lib.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core session_customers` — after: T001 — done: 791b666
 - [x] T003 wire tagging into the day rebuild (B4) — files: rust/crates/worklog-core/src/infer_allocations.rs, rust/crates/worklog-core/src/infer_allocations_db_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core two_customer_sessions_split` — after: T002 — done: 1b91eef
-- [ ] T007 session text includes the owner's prompt text (B8) — files: rust/crates/worklog-core/src/infer.rs, rust/crates/worklog-core/src/infer_allocations_db_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core prompt_text_names_the_session_customer` — after: T003
+- [x] T007 session text includes the owner's prompt text (B8) — files: rust/crates/worklog-core/src/infer.rs, rust/crates/worklog-core/src/infer_allocations_db_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core prompt_text_names_the_session_customer` — after: T003 — done: 94865e4
+- [ ] T008 customer lanes split only the minutes their folder already owns (B9) — files: rust/crates/worklog-core/src/infer_lanes.rs, rust/crates/worklog-core/src/infer_lane_tags.rs, rust/crates/worklog-core/src/infer_lane_tags_test.rs, rust/crates/worklog-core/src/lib.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core infer_lane_tags` — after: T007
 
 ## Phase 2 — Fresh descriptions
 Goal: a block that changed a lot is described again, and long blocks read as their tasks.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core description` — green, `reinference_preserves_tempo_id_and_description` still green.
 - [ ] T004 drop stale descriptions on big change (B5, B6) — files: rust/crates/worklog-core/src/infer_carry.rs, rust/crates/worklog-core/src/infer.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core infer_carry` — after: T003
 - [x] T005 [P] long blocks described as tasks (B7) — files: rust/crates/worklog-core/src/estimate.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core long_block_asks_for_tasks` — done: 095120c
-- [ ] T006 Friday real-data check covers splits and block count — files: scripts/verify_inference_report.py — verify: `bash scripts/verify-inference.sh` — after: T004, T005, T007
+- [ ] T006 Friday real-data check covers splits and block count — files: scripts/verify_inference_report.py — verify: `bash scripts/verify-inference.sh` — after: T004, T005, T007, T008
 - [ ] CHK001 human-verify live Friday 2026-09-25 after deploy — files: scripts/verify_inference_report.py — verify: human: Owner sees vitinn-infra Sjúkra and APRÓ work in separate blocks, the 15:09 block(s) carry a fresh multi-task description, and the day still totals about 8.5 h — after: T006
 
 ## Gates
