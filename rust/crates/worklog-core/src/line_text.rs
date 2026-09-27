@@ -55,8 +55,8 @@ pub fn validate(text: &str) -> std::result::Result<String, String> {
         // also catches every such token — no separate key regex needed.
         return Err("contains a number".to_string());
     }
-    if trimmed.contains('#') {
-        return Err("contains '#'".to_string());
+    if trimmed.contains(['#', '{', '}']) {
+        return Err("contains '#' or JSON braces".to_string());
     }
     if has_path_like_token(trimmed) {
         return Err("contains a path or file name".to_string());
@@ -270,8 +270,17 @@ fn generate_one(
         .get("text")
         .and_then(Value::as_str)
         .ok_or_else(|| "reply missing `text` field".to_string())?;
-    let validated = validate(text)?;
+    let validated = validate(&unwrap_nested_text(text))?;
     upsert_generated(conn, key, &validated).map_err(|e| e.to_string())
+}
+
+/// `claude -p` sometimes puts the whole `{"text": "..."}` reply inside the
+/// schema's `text` field again; take the inner text when it does.
+fn unwrap_nested_text(text: &str) -> String {
+    serde_json::from_str::<Value>(text.trim())
+        .ok()
+        .and_then(|v| v.get("text").and_then(Value::as_str).map(str::to_owned))
+        .unwrap_or_else(|| text.to_owned())
 }
 
 fn line_text_schema() -> Value {

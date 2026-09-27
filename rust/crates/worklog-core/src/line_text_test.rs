@@ -139,6 +139,35 @@ fn line_text_validate_rejects_english_only() {
 }
 
 #[test]
+fn line_text_validate_rejects_json_wrapper() {
+    let wrapped = format!("{{\"text\": \"{GOOD_TEXT}\"}}");
+    assert!(validate(&wrapped).is_err());
+}
+
+#[test]
+fn line_text_unwraps_text_nested_as_json_inside_text() {
+    // Seen from real `claude -p`: the schema's `text` held the whole
+    // `{"text": "..."}` object again as a string.
+    let conn = db::open_memory().unwrap();
+    let day = "2026-06-01";
+    pin_folder(&conn, "line-text-folder-a", "Acme Corp");
+    seed_block(
+        &conn,
+        day,
+        "2026-06-01T09:00:00+00:00",
+        "2026-06-01T09:30:00+00:00",
+        1800,
+        "line-text-folder-a",
+        "l1",
+    );
+    let nested = json!({ "text": GOOD_TEXT }).to_string();
+    let invoker = FixedInvoker(json!({ "text": nested }));
+    let report = generate_for_day(&conn, day, &invoker, "model").unwrap();
+    let (text, _) = text_for(&conn, &report.generated[0]).unwrap().unwrap();
+    assert_eq!(text, GOOD_TEXT);
+}
+
+#[test]
 fn line_text_generate_for_day_stores_one_row_per_line_key() {
     let conn = db::open_memory().unwrap();
     let day = "2026-06-01";
