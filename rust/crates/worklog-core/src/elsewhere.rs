@@ -1,9 +1,17 @@
 //! Per-day "done elsewhere" list — org commits/PRs whose sha is absent
 //! from every local clone (`events.elsewhere = 1`, D-07) — and moving one
 //! into a chosen block by hand (FR-05, FR-06). Populated by T006.
+//!
+//! `events.elsewhere` meaning (schema.sql documents the same):
+//!   0 = normal event, eligible for inference.
+//!   1 = org commit/PR whose sha is in no local clone; listed here,
+//!       excluded from every block.
+//!   2 = owner-moved into a block by hand (`move_into_block`). Never
+//!       votes, extends or lists (FR-06) — a collector re-run or the
+//!       upgrade_006 re-resolve must never touch it back to 0/1.
 
 use anyhow::{bail, Result};
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 
@@ -25,9 +33,7 @@ pub fn list_for_day(conn: &Connection, day: NaiveDate) -> Result<Vec<ElsewhereIt
     // started_at is a fixed-width ISO-8601 string; lexicographic comparison
     // works once the `+00:00` suffix is trimmed the same way on both sides
     // (see infer::load_day_events's `iso_prefix`).
-    let (start_utc, end_utc) = crate::tz::utc_window_for_local_day(day);
-    let start = start_utc.to_rfc3339().trim_end_matches("+00:00").to_owned();
-    let end = end_utc.to_rfc3339().trim_end_matches("+00:00").to_owned();
+    let (start, end) = day_window(day);
     let mut stmt = conn.prepare(
         "SELECT id, source, started_at, title, repo
            FROM events
@@ -47,9 +53,18 @@ pub fn list_for_day(conn: &Connection, day: NaiveDate) -> Result<Vec<ElsewhereIt
         .map_err(Into::into)
 }
 
+fn day_window(day: NaiveDate) -> (String, String) {
+    let (start_utc, end_utc) = crate::tz::utc_window_for_local_day(day);
+    (
+        start_utc.to_rfc3339().trim_end_matches("+00:00").to_owned(),
+        end_utc.to_rfc3339().trim_end_matches("+00:00").to_owned(),
+    )
+}
+
 /// Move an elsewhere-flagged event into a chosen block by hand (FR-06):
-/// keys it to the block's dominant project so a re-infer keeps it put
-/// instead of sending it back to "done elsewhere".
+/// keys it to the block's dominant project and flags it owner-moved
+/// (`elsewhere = 2`) so neither a collector re-run nor a re-infer ever
+/// sends it back to "done elsewhere" or lets it vote/extend a block.
 pub fn move_into_block(conn: &Connection, event_id: i64, block_id: i64) -> Result<()> {
     let elsewhere: Option<i64> = conn
         .query_row(
@@ -75,7 +90,7 @@ pub fn move_into_block(conn: &Connection, event_id: i64, block_id: i64) -> Resul
 
     let dominant = personal::dominant_project_path_for_block(conn, block_id)?;
     conn.execute(
-        "UPDATE events SET project_path = ?1, elsewhere = 0 WHERE id = ?2",
+        "UPDATE events SET project_path = ?1, elsewhere = 2 WHERE id = ?2",
         params![dominant, event_id],
     )?;
     conn.execute(
@@ -85,226 +100,91 @@ pub fn move_into_block(conn: &Connection, event_id: i64, block_id: i64) -> Resul
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::db;
-    use crate::models::Event;
-    use crate::repo;
-    use rusqlite::params;
-
-    fn seed_elsewhere_event(
-        conn: &Connection,
-        source_id: &str,
-        started_at: &str,
-        repo_name: &str,
-    ) -> i64 {
-        let id = repo::upsert_event(
-            conn,
-            &Event::minimal("github_commit", source_id, started_at, "fix oauth"),
-        )
-        .unwrap();
-        conn.execute(
-            "UPDATE events SET elsewhere = 1, repo = ?1 WHERE id = ?2",
-            params![repo_name, id],
-        )
-        .unwrap();
-        id
+/// FR-06: after `infer::persist_blocks` rebuilds `day`'s blocks, re-link
+/// every owner-moved event (`elsewhere = 2`) on that day into one of them
+/// — the one whose linked events' dominant folder matches the moved
+/// event's, nearest in time; falling back to the nearest non-personal
+/// block; left unlinked if the day has no blocks at all. Called once,
+/// inside `persist_blocks`'s own transaction, after its inserts.
+pub(crate) fn relink_moved_events(conn: &Connection, day: NaiveDate) -> Result<()> {
+    let (start, end) = day_window(day);
+    let mut stmt = conn.prepare(
+        "SELECT id, started_at, project_path FROM events
+          WHERE elsewhere = 2 AND started_at >= ?1 AND started_at < ?2",
+    )?;
+    let moved: Vec<(i64, String, Option<String>)> = stmt
+        .query_map(params![start, end], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?
+        .collect::<std::result::Result<_, _>>()?;
+    drop(stmt);
+    if moved.is_empty() {
+        return Ok(());
     }
 
-    fn seed_block(conn: &Connection, start: &str, end: &str) -> i64 {
-        conn.execute(
-            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
-             VALUES ('2026-04-18', ?1, ?2, 1800)",
-            params![start, end],
-        )
-        .unwrap();
-        conn.last_insert_rowid()
+    let day_iso = day.to_string();
+    let mut block_stmt =
+        conn.prepare("SELECT id, started_at, is_personal FROM blocks WHERE day = ?1")?;
+    let blocks: Vec<(i64, String, bool)> = block_stmt
+        .query_map(params![day_iso], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0))
+        })?
+        .collect::<std::result::Result<_, _>>()?;
+    drop(block_stmt);
+    if blocks.is_empty() {
+        return Ok(());
     }
 
-    fn link_event_with_project(
-        conn: &Connection,
-        block_id: i64,
-        source_id: &str,
-        project_path: &str,
-    ) {
-        let id = repo::upsert_event(
-            conn,
-            &Event::minimal("claude", source_id, "2026-04-18T09:05:00+00:00", "x"),
-        )
-        .unwrap();
-        conn.execute(
-            "UPDATE events SET project_path = ?1 WHERE id = ?2",
-            params![project_path, id],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
-            params![block_id, id],
-        )
-        .unwrap();
+    let mut folders = std::collections::HashMap::new();
+    for (id, _, _) in &blocks {
+        let dominant = personal::dominant_project_path_for_block(conn, *id)?;
+        folders.insert(
+            *id,
+            dominant.as_deref().and_then(crate::billing::work_folder_for_path),
+        );
     }
 
-    #[test]
-    fn list_for_day_excludes_non_elsewhere_and_other_days() {
-        let conn = db::open_memory().unwrap();
-        seed_elsewhere_event(
-            &conn,
-            "far-sha",
-            "2026-04-18T10:00:00+00:00",
-            "aproorg/code-interpreter",
-        );
-        // Not elsewhere — must be excluded.
-        repo::upsert_event(
-            &conn,
-            &Event::minimal(
-                "github_commit",
-                "local-sha",
-                "2026-04-18T09:00:00+00:00",
-                "x",
-            ),
-        )
-        .unwrap();
-        // Elsewhere, but a different day — must be excluded.
-        seed_elsewhere_event(
-            &conn,
-            "other-day-sha",
-            "2026-04-19T10:00:00+00:00",
-            "aproorg/code-interpreter",
-        );
-
-        let items = list_for_day(&conn, NaiveDate::from_ymd_opt(2026, 4, 18).unwrap()).unwrap();
-        assert_eq!(
-            items.len(),
-            1,
-            "expected exactly the one elsewhere event on 2026-04-18"
-        );
-        assert_eq!(items[0].source, "github_commit");
-        assert_eq!(items[0].repo.as_deref(), Some("aproorg/code-interpreter"));
-        assert_eq!(items[0].title, "fix oauth");
-    }
-
-    #[test]
-    fn list_for_day_is_time_ordered() {
-        let conn = db::open_memory().unwrap();
-        seed_elsewhere_event(&conn, "later-sha", "2026-04-18T14:00:00+00:00", "aproorg/x");
-        seed_elsewhere_event(
-            &conn,
-            "earlier-sha",
-            "2026-04-18T08:00:00+00:00",
-            "aproorg/x",
-        );
-
-        let items = list_for_day(&conn, NaiveDate::from_ymd_opt(2026, 4, 18).unwrap()).unwrap();
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0].started_at, "2026-04-18T08:00:00+00:00");
-        assert_eq!(items[1].started_at, "2026-04-18T14:00:00+00:00");
-    }
-
-    #[test]
-    fn move_into_block_sets_dominant_project_clears_elsewhere_and_links() {
-        let conn = db::open_memory().unwrap();
-        let block_id = seed_block(
-            &conn,
-            "2026-04-18T09:00:00+00:00",
-            "2026-04-18T09:30:00+00:00",
-        );
-        link_event_with_project(
-            &conn,
-            block_id,
-            "a",
-            "/Users/tomas/Desktop/Work/code-interpreter",
-        );
-        link_event_with_project(
-            &conn,
-            block_id,
-            "b",
-            "/Users/tomas/Desktop/Work/code-interpreter",
-        );
-        link_event_with_project(&conn, block_id, "c", "/Users/tomas/Desktop/Work/other");
-        let event_id = seed_elsewhere_event(
-            &conn,
-            "far-sha",
-            "2026-04-18T10:00:00+00:00",
-            "aproorg/code-interpreter",
-        );
-
-        move_into_block(&conn, event_id, block_id).unwrap();
-
-        let (project_path, elsewhere): (Option<String>, i64) = conn
-            .query_row(
-                "SELECT project_path, elsewhere FROM events WHERE id = ?1",
-                params![event_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(
-            project_path.as_deref(),
-            Some("/Users/tomas/Desktop/Work/code-interpreter"),
-            "must key to the block's dominant project"
-        );
-        assert_eq!(elsewhere, 0, "must leave the elsewhere list");
-
-        let linked: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM block_events WHERE block_id = ?1 AND event_id = ?2",
+    for (event_id, started_at, project_path) in moved {
+        let event_folder = project_path.as_deref().and_then(crate::billing::work_folder_for_path);
+        let event_ts = parse_ts(&started_at);
+        let target = event_folder
+            .as_ref()
+            .and_then(|f| {
+                blocks
+                    .iter()
+                    .filter(|(id, _, _)| folders.get(id).and_then(|x| x.as_ref()) == Some(f))
+                    .min_by_key(|(_, started, _)| time_distance(started, event_ts))
+            })
+            .or_else(|| {
+                blocks
+                    .iter()
+                    .filter(|(_, _, is_personal)| !is_personal)
+                    .min_by_key(|(_, started, _)| time_distance(started, event_ts))
+            });
+        if let Some((block_id, _, _)) = target {
+            conn.execute(
+                "INSERT OR IGNORE INTO block_events (block_id, event_id) VALUES (?1, ?2)",
                 params![block_id, event_id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(linked, 1, "must be linked into the block");
+            )?;
+        }
     }
+    Ok(())
+}
 
-    #[test]
-    fn move_into_block_errors_on_unknown_event() {
-        let conn = db::open_memory().unwrap();
-        let block_id = seed_block(
-            &conn,
-            "2026-04-18T09:00:00+00:00",
-            "2026-04-18T09:30:00+00:00",
-        );
-        let err = move_into_block(&conn, 999_999, block_id).unwrap_err();
-        assert!(
-            err.to_string().contains("999999"),
-            "error should name the missing event: {err}"
-        );
-    }
+fn parse_ts(s: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.with_timezone(&Utc))
+}
 
-    #[test]
-    fn move_into_block_errors_on_unknown_block() {
-        let conn = db::open_memory().unwrap();
-        let event_id =
-            seed_elsewhere_event(&conn, "far-sha", "2026-04-18T10:00:00+00:00", "aproorg/x");
-        let err = move_into_block(&conn, event_id, 999_999).unwrap_err();
-        assert!(
-            err.to_string().contains("999999"),
-            "error should name the missing block: {err}"
-        );
-    }
-
-    #[test]
-    fn move_into_block_errors_when_event_is_not_elsewhere() {
-        let conn = db::open_memory().unwrap();
-        let block_id = seed_block(
-            &conn,
-            "2026-04-18T09:00:00+00:00",
-            "2026-04-18T09:30:00+00:00",
-        );
-        let event_id = repo::upsert_event(
-            &conn,
-            &Event::minimal(
-                "github_commit",
-                "local-sha",
-                "2026-04-18T09:00:00+00:00",
-                "x",
-            ),
-        )
-        .unwrap();
-
-        let err = move_into_block(&conn, event_id, block_id).unwrap_err();
-        assert!(
-            err.to_string().to_lowercase().contains("elsewhere"),
-            "error should say the event isn't elsewhere: {err}"
-        );
+fn time_distance(block_started: &str, event_ts: Option<DateTime<Utc>>) -> i64 {
+    match (parse_ts(block_started), event_ts) {
+        (Some(b), Some(e)) => (b - e).num_seconds().abs(),
+        _ => i64::MAX,
     }
 }
+
+// Tests live in elsewhere_test.rs (same module, split file for line budget).
+#[cfg(test)]
+#[path = "elsewhere_test.rs"]
+mod tests;

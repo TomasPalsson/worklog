@@ -602,6 +602,9 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
             .context("inserting block_events row")?;
         }
     }
+    // FR-06: re-link every owner-moved event of this day into a fresh
+    // block now that the deletes+inserts above rebuilt the day's blocks.
+    crate::elsewhere::relink_moved_events(&tx, day)?;
     tx.commit().context("committing block persistence")?;
 
     // One batch for this rebuild (D-07); a refresh failure must not fail

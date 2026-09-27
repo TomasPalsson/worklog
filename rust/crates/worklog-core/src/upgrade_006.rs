@@ -72,9 +72,11 @@ fn reresolve_github_events(
     folder_for_repo: &impl Fn(&str) -> Option<String>,
     sha_is_local: &impl Fn(&str, &str) -> bool,
 ) -> Result<()> {
+    // FR-06: an owner-moved row (`elsewhere = 2`) is never re-resolved —
+    // it must keep its manual placement across this upgrade too.
     let mut stmt = conn.prepare(
         "SELECT id, source, source_id, repo FROM events
-          WHERE source IN ('github_commit', 'github_pr')",
+          WHERE source IN ('github_commit', 'github_pr') AND elsewhere != 2",
     )?;
     let rows: Vec<(i64, String, String, Option<String>)> = stmt
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?

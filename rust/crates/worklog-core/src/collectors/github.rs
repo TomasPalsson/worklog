@@ -205,9 +205,12 @@ pub(crate) fn is_personal_owner(repo_full_name: &str, user: &str) -> bool {
 }
 
 /// FR-04: a re-collect that later finds the sha locally must clear this.
+/// FR-06: an owner-moved row (`elsewhere = 2`) is never touched — it must
+/// never flip back to "done elsewhere" or lose its manual placement.
 fn mark_elsewhere(conn: &Connection, source: &str, source_id: &str, elsewhere: bool) -> Result<()> {
     conn.execute(
-        "UPDATE events SET elsewhere = ?1 WHERE source = ?2 AND source_id = ?3",
+        "UPDATE events SET elsewhere = ?1
+          WHERE source = ?2 AND source_id = ?3 AND elsewhere != 2",
         params![elsewhere as i64, source, source_id],
     )?;
     Ok(())

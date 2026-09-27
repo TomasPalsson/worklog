@@ -168,6 +168,70 @@ fn unresolvable_org_commit_is_marked_elsewhere() {
 }
 
 #[test]
+fn move_into_block_then_recollect_keeps_elsewhere_moved() {
+    // FR-06: an owner-moved event (`elsewhere = 2`) must never be flipped
+    // back by a later collect, even when the commit is still unresolvable
+    // locally.
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/search/commits");
+        then.status(200).json_body(json!({"items": [
+            {"sha": "movedsha", "repository": {"full_name": "org/definitely-not-cloned-xyz"},
+             "commit": {"author": {"date": "2026-04-18T09:00:00Z"}, "message": "moved commit"}}
+        ]}));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/search/issues");
+        then.status(200).json_body(json!({"items": []}));
+    });
+
+    let conn = open_memory().unwrap();
+    let since = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+    let until = NaiveDate::from_ymd_opt(2026, 4, 19).unwrap();
+    let client = http::client().unwrap();
+    collect_with(&conn, &auth(server.base_url()), since, until, &client).unwrap();
+
+    conn.execute(
+        "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+         VALUES ('2026-04-18', '2026-04-18T09:00:00+00:00', '2026-04-18T09:30:00+00:00', 1800)",
+        [],
+    )
+    .unwrap();
+    let block_id = conn.last_insert_rowid();
+    let event_id: i64 = conn
+        .query_row(
+            "SELECT id FROM events WHERE source_id = 'movedsha'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    crate::elsewhere::move_into_block(&conn, event_id, block_id).unwrap();
+
+    // Re-collect: the same commit is seen again, still unresolvable.
+    collect_with(&conn, &auth(server.base_url()), since, until, &client).unwrap();
+
+    let elsewhere: i64 = conn
+        .query_row(
+            "SELECT elsewhere FROM events WHERE source_id = 'movedsha'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        elsewhere, 2,
+        "a re-collect must never flip an owner-moved event back"
+    );
+
+    let listed =
+        crate::elsewhere::list_for_day(&conn, NaiveDate::from_ymd_opt(2026, 4, 18).unwrap())
+            .unwrap();
+    assert!(
+        listed.is_empty(),
+        "an owner-moved event must not appear in the elsewhere list"
+    );
+}
+
+#[test]
 fn collect_surfaces_http_errors() {
     let server = MockServer::start();
     server.mock(|when, then| {

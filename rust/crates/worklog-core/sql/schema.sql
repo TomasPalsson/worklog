@@ -42,9 +42,13 @@ CREATE TABLE IF NOT EXISTS events (
     label_origin TEXT,
     -- Model confidence when label_origin = 'guess'. NULL otherwise.
     label_confidence REAL,
+    -- 0 = normal event, eligible for inference.
     -- 1 = an org commit/PR whose sha is in no local clone (spec 006,
     -- D-07): kept out of every block, listed in the day's "done
     -- elsewhere" list instead. See elsewhere.rs.
+    -- 2 = owner-moved into a block by hand (FR-06, elsewhere::move_into_block):
+    -- never votes, extends or lists again; a collector re-run or the
+    -- upgrade_006 re-resolve must never touch this row back to 0/1.
     elsewhere INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE(source, source_id)
