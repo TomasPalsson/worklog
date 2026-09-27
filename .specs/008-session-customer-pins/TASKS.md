@@ -22,7 +22,7 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core se
 - [x] T001 [P] pin store and customer lookup (B1, B2) — files: rust/crates/worklog-core/sql/schema.sql, rust/crates/worklog-core/src/session_pins.rs, rust/crates/worklog-core/src/session_pins_test.rs, rust/crates/worklog-core/src/lib.rs, rust/crates/worklog-core/src/billing_registry.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core session_pins` — done: 47cb872
 - [x] T002 [P] current branch reader (B3) — files: rust/crates/worklog-core/src/git.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core current_branch` — done: 55ec9f0
 - [x] T003 pin command (B4) — files: rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-cli/tests/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-cli pin` — after: T001, T002 — done: 4942182
-- [ ] T004 start instruction and inheritance (B5) — files: rust/crates/worklog-core/src/session_pins.rs, rust/crates/worklog-core/src/session_pins_test.rs, rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-cli/tests/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core start_text` — after: T003
+- [x] T004 start instruction and inheritance (B5) — files: rust/crates/worklog-core/src/session_pins.rs, rust/crates/worklog-core/src/session_pins_test.rs, rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-cli/tests/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core start_text` — after: T003 — done: f9f8e7b
 - [ ] T005 installer keeps both hooks (B6) — files: rust/crates/worklog-core/src/hook.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core hook::tests` — after: T004
 
 ## Phase 2 — Pins drive blocks
@@ -34,7 +34,7 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core` �
 ## Phase 3 — You can see it
 Goal: the Owner sees "pinned" in the day view and the block detail view and can still change it.
 Independent test: `cd web && bun test && bun run typecheck` — green.
-- [ ] T008 show pinned in day and detail views (B9) — files: web/lib/tenants.ts, web/components/BlockCustomerSplit.tsx, web/components/BlockCustomerSplit.test.tsx, web/app/[day]/block/[id]/page.tsx — verify: `cd web && bun test components/BlockCustomerSplit.test.tsx` — after: T007
+- [x] T008 show pinned in day and detail views (B9) — files: web/lib/tenants.ts, web/components/BlockCustomerSplit.tsx, web/components/BlockCustomerSplit.test.tsx, web/app/[day]/block/[id]/page.tsx — verify: `cd web && bun test components/BlockCustomerSplit.test.tsx` — after: T007 — done: 7edb869
 - [ ] CHK001 human-verify the pin flow live — files: .specs/008-session-customer-pins/verify/CHK001.md — verify: human: in vitinn-infra on a feature branch, a new session told "work on the Sjúkra config", then /clear + /flow:next on the same branch; after the day rebuild both sessions' blocks show "Sjúkra (pinned)" in the day view and Claude never asked — after: T005, T006, T008
 
 ## Gates

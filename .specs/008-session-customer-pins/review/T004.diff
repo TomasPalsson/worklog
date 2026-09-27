@@ -1,0 +1,496 @@
+f9bc3ba feat(worklog-cli): add session-hint command for the session-start pin instruction
+e2d8a9d test(worklog-cli): add failing test for session-hint on garbage stdin [RED]
+4cb4511 feat(worklog-core): print the session-start pin instruction and inherit branch pins
+ad656a0 test(worklog-core): add failing tests for the session-start pin instruction [RED]
+
+ rust/crates/worklog-cli/src/cli.rs                |  45 ++++++++
+ rust/crates/worklog-cli/tests/cli.rs              |  11 ++
+ rust/crates/worklog-core/src/session_pins.rs      |  84 +++++++++++++-
+ rust/crates/worklog-core/src/session_pins_test.rs | 132 +++++++++++++++++++++-
+ 4 files changed, 266 insertions(+), 6 deletions(-)
+
+diff --git a/rust/crates/worklog-cli/src/cli.rs b/rust/crates/worklog-cli/src/cli.rs
+index bb2606e..ea51b8f 100644
+--- a/rust/crates/worklog-cli/src/cli.rs
++++ b/rust/crates/worklog-cli/src/cli.rs
+@@ -294,20 +294,26 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
+         session: String,
+         /// RFC-3339 timestamp the pin takes effect from. Default: now.
+         #[arg(long)]
+         at: Option<String>,
+     },
+ 
+     /// Claude Code hook — reads a JSON event from stdin and records it.
+     #[command(name = "hook-run", hide = true)]
+     HookRun,
+ 
++    /// Claude Code session-start hook — reads SessionStart JSON from
++    /// stdin and prints the pin instruction for a shared /Work repo, if
++    /// any (spec 008). Never fails: any error prints nothing and exits 0.
++    #[command(name = "session-hint", hide = true)]
++    SessionHint,
++
+     /// Start the axum unix-socket IPC server (foreground) OR manage the
+     /// background service unit that supervises it. Bare `worklog daemon`
+     /// keeps running in the foreground like before; the install / status
+     /// / uninstall subcommands write a launchd plist / systemd user unit.
+     Daemon {
+         #[command(subcommand)]
+         sub: Option<DaemonCmd>,
+         /// Override the socket path (default: <data>/api.sock).
+         #[arg(long)]
+         socket: Option<std::path::PathBuf>,
+@@ -845,20 +851,21 @@ pub fn run_with<W: Write>(
+             TagCmd::Personal { glob } => cmd_tag_personal(glob, out, cli.json),
+             TagCmd::Work { glob } => cmd_tag_work(glob, out, cli.json),
+             TagCmd::Reclassify { day } => cmd_tag_reclassify(day, out, cli.json),
+         },
+         Cmd::Pin {
+             customer,
+             session,
+             at,
+         } => cmd_pin(&customer, &session, at, out),
+         Cmd::HookRun => cmd_hook_run(),
++        Cmd::SessionHint => cmd_session_hint(out),
+         Cmd::Daemon { sub, socket, tcp } => match sub {
+             None => cmd_daemon(socket, tcp),
+             Some(DaemonCmd::Install { command }) => cmd_daemon_install(command, out, cli.json),
+             Some(DaemonCmd::Uninstall) => cmd_daemon_uninstall(out, cli.json),
+             Some(DaemonCmd::Status) => cmd_daemon_status(out, cli.json),
+         },
+         Cmd::Verdict { sub } => match sub {
+             VerdictCmd::Serve => cmd_verdict_serve(),
+             VerdictCmd::Status => cmd_verdict_status(out, cli.json),
+         },
+@@ -3482,20 +3489,58 @@ impl StepOutcome {
+         }
+     }
+ }
+ 
+ fn cmd_hook_run() -> Result<()> {
+     // All output goes to stderr (handled inside hook_run::run_from_stdin) so
+     // Claude Code never sees bytes on stdout.
+     hook_run::run_from_stdin()
+ }
+ 
++/// `worklog session-hint`. Every failure is swallowed and prints nothing —
++/// a broken payload, a missing db, or an unreadable registry must never
++/// block or fail a Claude Code session start (design.md §2, contract T004).
++fn cmd_session_hint<W: Write>(out: &mut W) -> Result<()> {
++    let mut buf = String::new();
++    if io::stdin().read_to_string(&mut buf).is_err() {
++        return Ok(());
++    }
++    let Ok(payload) = serde_json::from_str::<serde_json::Value>(&buf) else {
++        return Ok(());
++    };
++    let Some(session_id) = payload.get("session_id").and_then(|v| v.as_str()) else {
++        return Ok(());
++    };
++    let Some(cwd) = payload.get("cwd").and_then(|v| v.as_str()) else {
++        return Ok(());
++    };
++    let Ok(paths) = Paths::resolve() else {
++        return Ok(());
++    };
++    let Ok(conn) = db::open(&paths.db) else {
++        return Ok(());
++    };
++    let Ok(registry) = billing_registry::Registry::load(&conn) else {
++        return Ok(());
++    };
++    if let Ok(Some(text)) = session_pins::start_text(
++        &conn,
++        &registry,
++        session_id,
++        std::path::Path::new(cwd),
++        chrono::Utc::now(),
++    ) {
++        let _ = writeln!(out, "{text}");
++    }
++    Ok(())
++}
++
+ fn cmd_daemon_install<W: Write>(command: Option<String>, out: &mut W, json: bool) -> Result<()> {
+     let cmd = command.unwrap_or_else(worklog_core::daemon_service::default_command);
+     let status = worklog_core::daemon_service::install(&cmd)?;
+     if json {
+         writeln!(out, "{}", serde_json::to_string_pretty(&status)?)?;
+         return Ok(());
+     }
+     style::ok(
+         out,
+         &format!(
+diff --git a/rust/crates/worklog-cli/tests/cli.rs b/rust/crates/worklog-cli/tests/cli.rs
+index 3b3ee09..65e8e60 100644
+--- a/rust/crates/worklog-cli/tests/cli.rs
++++ b/rust/crates/worklog-cli/tests/cli.rs
+@@ -334,20 +334,31 @@ fn hook_run_writes_claude_event_from_stdin() {
+ fn hook_run_exits_zero_on_malformed_stdin() {
+     let home = TempDir::new().unwrap();
+     cmd(&home).args(["db", "migrate"]).assert().success();
+     cmd(&home)
+         .arg("hook-run")
+         .write_stdin("not json at all")
+         .assert()
+         .success(); // Never blocks Claude.
+ }
+ 
++#[test]
++fn session_hint_exits_zero_and_prints_nothing_on_garbage_stdin() {
++    let home = TempDir::new().unwrap();
++    cmd(&home)
++        .arg("session-hint")
++        .write_stdin("not json at all")
++        .assert()
++        .success()
++        .stdout(predicate::str::is_empty());
++}
++
+ #[test]
+ fn secret_rm_reports_absent_cleanly() {
+     let home = TempDir::new().unwrap();
+     cmd(&home)
+         .args(["secret", "rm", "nonexistent_key"])
+         .assert()
+         .success();
+ }
+ 
+ // ─────────────────────────── `worklog day` ───────────────────────────
+diff --git a/rust/crates/worklog-core/src/session_pins.rs b/rust/crates/worklog-core/src/session_pins.rs
+index 7a83adc..b1b02fc 100644
+--- a/rust/crates/worklog-core/src/session_pins.rs
++++ b/rust/crates/worklog-core/src/session_pins.rs
+@@ -5,20 +5,21 @@
+ 
+ use std::path::Path;
+ 
+ use anyhow::{Context, Result};
+ use chrono::DateTime;
+ use chrono::Utc;
+ use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
+ 
+ use crate::billing;
+ use crate::billing_registry::Registry;
++use crate::git;
+ 
+ /// One pin row.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub struct SessionPin {
+     pub session_id: String,
+     pub customer: String,
+     pub from_at: DateTime<Utc>,
+     pub folder: String,
+     pub branch: Option<String>,
+     pub source: String,
+@@ -39,20 +40,79 @@ impl From<anyhow::Error> for PinError {
+     fn from(e: anyhow::Error) -> Self {
+         Self::Other(e)
+     }
+ }
+ 
+ /// `true` for the branches a pin never applies to (§1, `is_default_branch`).
+ pub fn is_default_branch(branch: &str) -> bool {
+     matches!(branch, "main" | "master")
+ }
+ 
++/// The `worklog session-hint` start-of-session text (design.md §4,
++/// contract T004), or `None` when nothing should be printed.
++///
++/// Gated on the session's folder being registered multi-tenant in the
++/// billing registry — every folder there came from the /Work discovery
++/// flow, so this doubles as the "under `~/Desktop/Work`" check without
++/// re-deriving `billing::work_prefix` here.
++pub fn start_text(
++    conn: &Connection,
++    registry: &Registry,
++    session_id: &str,
++    cwd: &Path,
++    now: DateTime<Utc>,
++) -> Result<Option<String>> {
++    let Some(folder) = billing::work_folder_for_path(&cwd.to_string_lossy()) else {
++        return Ok(None);
++    };
++    let multi_tenant = registry
++        .folders
++        .iter()
++        .any(|f| f.folder == folder && f.multi_tenant);
++    if !multi_tenant {
++        return Ok(None);
++    }
++
++    if let Some(branch) = git::current_branch(cwd) {
++        if let Some(branch_pin) = pin_for_branch(conn, &folder, &branch)? {
++            let inherited = store_pin(
++                conn,
++                session_id,
++                &branch_pin.customer,
++                now,
++                &folder,
++                Some(&branch),
++                "inherited",
++            )?;
++            return Ok(Some(format!(
++                "This session is for {} (pinned from branch {branch}). If you switch \
++                 customer, run: worklog pin <name> --session {session_id}",
++                inherited.customer
++            )));
++        }
++    }
++
++    let customers = registry
++        .customers
++        .iter()
++        .map(|c| c.name.as_str())
++        .collect::<Vec<_>>()
++        .join(", ");
++    Ok(Some(format!(
++        "Shared repo — work out this session's customer from the repo, the prompt, and \
++         the files you touch. When it's clear, pin it without asking: worklog pin <name> \
++         --session {session_id}. When it's unclear and the Owner is present, ask once. \
++         When nobody is present (a background or unattended run), pin nothing. Known \
++         customers: {customers}."
++    )))
++}
++
+ /// Pin `session_id` to `name` from `at` on.
+ ///
+ /// `name` must resolve to a known customer name or alias
+ /// (case-insensitively) via [`Registry::customer_named`] — anything else
+ /// is refused and nothing is stored. Re-pinning the same session at the
+ /// same `at` overwrites that row; a different `at` adds a new one, so a
+ /// session can carry several pins across time.
+ pub fn pin(
+     conn: &Connection,
+     registry: &Registry,
+@@ -63,23 +123,37 @@ pub fn pin(
+     branch: Option<&str>,
+ ) -> Result<SessionPin, PinError> {
+     let customer = registry
+         .customer_named(name)
+         .ok_or_else(|| PinError::UnknownCustomer {
+             known: registry.customers.iter().map(|c| c.name.clone()).collect(),
+         })?;
+     let folder = billing::work_folder_for_path(&cwd.to_string_lossy()).ok_or_else(|| {
+         anyhow::anyhow!("cwd {} is not under a usable work folder", cwd.display())
+     })?;
+-    let branch = branch.map(str::to_owned);
+-    let source = "claude";
+ 
++    Ok(store_pin(
++        conn, session_id, &customer, at, &folder, branch, "claude",
++    )?)
++}
++
++/// Shared INSERT behind [`pin`] (`source = "claude"`) and the branch
++/// inheritance in [`start_text`] (`source = "inherited"`).
++fn store_pin(
++    conn: &Connection,
++    session_id: &str,
++    customer: &str,
++    at: DateTime<Utc>,
++    folder: &str,
++    branch: Option<&str>,
++    source: &str,
++) -> Result<SessionPin> {
+     conn.execute(
+         "INSERT INTO session_pins (session_id, customer, from_at, folder, branch, source)
+          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+          ON CONFLICT(session_id, from_at) DO UPDATE SET
+              customer = excluded.customer,
+              folder = excluded.folder,
+              branch = excluded.branch,
+              source = excluded.source",
+         params![
+             session_id,
+@@ -87,24 +161,24 @@ pub fn pin(
+             at.to_rfc3339(),
+             folder,
+             branch,
+             source
+         ],
+     )
+     .context("inserting session pin")?;
+ 
+     Ok(SessionPin {
+         session_id: session_id.to_owned(),
+-        customer,
++        customer: customer.to_owned(),
+         from_at: at,
+-        folder,
+-        branch,
++        folder: folder.to_owned(),
++        branch: branch.map(str::to_owned),
+         source: source.to_owned(),
+     })
+ }
+ 
+ /// The latest pin for `branch` in `folder`, or `None` on a default
+ /// branch (a pin is never inherited there) or when nothing is pinned.
+ pub fn pin_for_branch(conn: &Connection, folder: &str, branch: &str) -> Result<Option<SessionPin>> {
+     if is_default_branch(branch) {
+         return Ok(None);
+     }
+diff --git a/rust/crates/worklog-core/src/session_pins_test.rs b/rust/crates/worklog-core/src/session_pins_test.rs
+index 7452629..a0be686 100644
+--- a/rust/crates/worklog-core/src/session_pins_test.rs
++++ b/rust/crates/worklog-core/src/session_pins_test.rs
+@@ -1,16 +1,17 @@
+ use std::path::Path;
++use std::process::Command;
+ 
+ use chrono::{TimeZone, Utc};
+ 
+ use super::*;
+-use crate::billing_registry::Customer;
++use crate::billing_registry::{Customer, FolderMap};
+ use crate::db;
+ 
+ fn home() -> String {
+     dirs::home_dir().unwrap().to_string_lossy().into_owned()
+ }
+ 
+ fn work(sub: &str) -> String {
+     format!("{}/Desktop/Work/{sub}", home())
+ }
+ 
+@@ -312,10 +313,139 @@ fn pins_for_sessions_returns_empty_for_no_ids() {
+     assert_eq!(pins_for_sessions(&conn, &[]).unwrap(), Vec::new());
+ }
+ 
+ #[test]
+ fn is_default_branch_matches_main_and_master_only() {
+     assert!(is_default_branch("main"));
+     assert!(is_default_branch("master"));
+     assert!(!is_default_branch("feat/x"));
+     assert!(!is_default_branch("Main"));
+ }
++
++fn multi_tenant_folder(folder: &str) -> FolderMap {
++    FolderMap {
++        id: None,
++        folder: folder.into(),
++        customer: None,
++        verkefni: None,
++        billable: true,
++        multi_tenant: true,
++    }
++}
++
++fn init_git_repo(path: &Path, branch: &str) {
++    let out = Command::new("git")
++        .arg("-C")
++        .arg(path)
++        .args(["init", "-q", "-b", branch])
++        .output()
++        .unwrap();
++    assert!(
++        out.status.success(),
++        "git init failed: {}",
++        String::from_utf8_lossy(&out.stderr)
++    );
++}
++
++#[test]
++fn start_text_inherits_branch_pin() {
++    let conn = db::open_memory().unwrap();
++    let mut reg = registry();
++    reg.folders.push(multi_tenant_folder("vitinn-infra"));
++
++    let tmp = tempfile::tempdir().unwrap();
++    let repo_dir = tmp.path().join("vitinn-infra");
++    std::fs::create_dir_all(&repo_dir).unwrap();
++    init_git_repo(&repo_dir, "feat/x");
++
++    pin(
++        &conn,
++        &reg,
++        "sess-1",
++        &repo_dir,
++        "Sjúkra",
++        at(9, 0),
++        Some("feat/x"),
++    )
++    .unwrap();
++
++    let text = start_text(&conn, &reg, "sess-2", &repo_dir, at(10, 0))
++        .unwrap()
++        .expect("a branch pin must produce inherited start text");
++
++    assert_eq!(
++        text,
++        "This session is for Sjúkra (pinned from branch feat/x). If you switch customer, run: worklog pin <name> --session sess-2"
++    );
++
++    let rows = pins_for_sessions(&conn, &["sess-2".to_string()]).unwrap();
++    assert_eq!(rows.len(), 1, "inheritance must store one pin row");
++    assert_eq!(rows[0].customer, "Sjúkra");
++    assert_eq!(rows[0].source, "inherited");
++    assert_eq!(rows[0].branch.as_deref(), Some("feat/x"));
++    assert_eq!(rows[0].from_at, at(10, 0));
++}
++
++#[test]
++fn start_text_prints_the_pin_instruction_in_a_multi_tenant_folder() {
++    let conn = db::open_memory().unwrap();
++    let mut reg = registry();
++    reg.folders.push(multi_tenant_folder("vitinn-infra"));
++
++    // Non-existent path: `git::current_branch` returns `None` for it, so
++    // this exercises the "no branch pin" leg of `start_text`, not the
++    // inheritance leg covered by `start_text_inherits_branch_pin`.
++    let cwd = work("vitinn-infra");
++
++    let text = start_text(&conn, &reg, "sess-9", Path::new(&cwd), at(9, 0))
++        .unwrap()
++        .expect("a multi-tenant folder must print the pin instruction");
++
++    assert!(
++        text.contains("worklog pin <name> --session sess-9"),
++        "instruction must carry the exact pin command: {text}"
++    );
++    assert!(text.contains("Sjúkra"), "must list known customers: {text}");
++    assert!(text.contains("APRÓ"), "must list known customers: {text}");
++    assert!(
++        text.chars().count() <= 600,
++        "start text must be at most 600 chars, was {}",
++        text.chars().count()
++    );
++
++    // No branch pin existed, so nothing gets stored for this session.
++    assert!(pins_for_sessions(&conn, &["sess-9".to_string()])
++        .unwrap()
++        .is_empty());
++}
++
++#[test]
++fn start_text_is_none_when_the_folder_is_not_multi_tenant() {
++    let conn = db::open_memory().unwrap();
++    let mut reg = registry();
++    reg.folders.push(FolderMap {
++        id: None,
++        folder: "apro-skills".into(),
++        customer: Some("APRÓ".into()),
++        verkefni: None,
++        billable: true,
++        multi_tenant: false,
++    });
++    let cwd = work("apro-skills");
++
++    assert_eq!(
++        start_text(&conn, &reg, "sess-1", Path::new(&cwd), at(9, 0)).unwrap(),
++        None
++    );
++}
++
++#[test]
++fn start_text_is_none_outside_a_registered_work_folder() {
++    let conn = db::open_memory().unwrap();
++    let reg = registry();
++    let cwd = Path::new("/tmp/does-not-exist/personal-blog");
++
++    assert_eq!(
++        start_text(&conn, &reg, "sess-1", cwd, at(9, 0)).unwrap(),
++        None
++    );
++}
