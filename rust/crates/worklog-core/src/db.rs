@@ -318,6 +318,17 @@ fn ensure_events_elsewhere(conn: &Connection) -> Result<()> {
         [],
     )
     .context("CREATE INDEX idx_events_elsewhere")?;
+    // Covers infer::load_day_events (day page, week page, infer, every tick) so
+    // it never reads the wide rows. `id` second keeps equal started_at in rowid
+    // order, as idx_events_started returned them; `elsewhere = 0` is the only
+    // query term that lets SQLite pick this partial index.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_events_day_cover ON events(started_at, id, source,
+            label_origin, duration_seconds, jira_issue, project_path, session_id, title)
+         WHERE elsewhere = 0",
+        [],
+    )
+    .context("CREATE INDEX idx_events_day_cover")?;
     Ok(())
 }
 
