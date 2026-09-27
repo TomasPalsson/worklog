@@ -68,7 +68,14 @@ fn focus_window_minutes(source: &str) -> i64 {
 /// minute open. Ordinary hook heartbeats on the same source
 /// (UserPromptSubmit, PreToolUse/PostToolUse) are real activity signal
 /// and keep voting exactly as before.
-fn is_lifecycle(e: &InferEvent) -> bool {
+///
+/// `pub(crate)` so `InferBlock::dominant_project_path` and
+/// `infer_evidence::single_project` can exclude the same events from a
+/// block's project-identity vote — a rider that never voted on which
+/// lane owns a minute must never vote on which project a block IS,
+/// either (otherwise a handful of unrelated SessionStart/SessionEnd
+/// pings can outnumber the block's real events and flip its class).
+pub(crate) fn is_lifecycle(e: &InferEvent) -> bool {
     e.source == "claude"
         && e.title.as_deref().is_some_and(|t| {
             t.starts_with("SessionStart") || t.starts_with("Stop") || t.starts_with("SessionEnd")
@@ -217,7 +224,7 @@ fn build_project_blocks(
             }
             let own = by_key.get(owner).map(Vec::as_slice).unwrap_or(&[]);
             let at = |m: i64| DateTime::from_timestamp(m * 60, 0);
-            crate::infer_allocations::span_block(evs, at(*s)?, at(*e + 1)?, own)
+            crate::infer_allocations::span_block(evs, at(*s)?, at(*e + 1)?, own, false)
         })
         .collect();
     blocks.extend(build(calendar));

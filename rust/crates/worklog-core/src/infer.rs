@@ -103,6 +103,13 @@ impl InferBlock {
     pub fn dominant_project_path(&self) -> Option<String> {
         let mut counts: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
         for e in &self.events {
+            // A lifecycle rider (R3) never voted on which lane owns a
+            // minute; it must never vote on which project the block IS
+            // either, or a handful of unrelated SessionStart/SessionEnd
+            // pings can outnumber the block's real events.
+            if crate::infer_lanes::is_lifecycle(e) {
+                continue;
+            }
             if let Some(p) = &e.project_path {
                 *counts.entry(p.as_str()).or_insert(0) += 1;
             }
@@ -170,9 +177,21 @@ fn unique_jira_issue(events: &[InferEvent]) -> Option<String> {
     }
 }
 
-pub(crate) fn finalize(mut block: InferBlock) -> Option<InferBlock> {
+pub(crate) fn finalize(block: InferBlock) -> Option<InferBlock> {
+    finalize_ext(block, true)
+}
+
+/// `enforce_min=false` skips the `MIN_BLOCK_MINUTES` drop — for a piece
+/// re-cut from an already-approved block (an allocation window's
+/// before/after remainder, a ticket-edge cut) whose minutes must never
+/// vanish just for being a short remainder (see `span_block`'s doc).
+/// Still refuses a zero/negative span (a malformed cut, never real time).
+pub(crate) fn finalize_ext(mut block: InferBlock, enforce_min: bool) -> Option<InferBlock> {
     let duration = block.ended_at - block.started_at;
-    if duration < Duration::minutes(MIN_BLOCK_MINUTES) {
+    if duration <= Duration::zero() {
+        return None;
+    }
+    if enforce_min && duration < Duration::minutes(MIN_BLOCK_MINUTES) {
         return None;
     }
     if duration > Duration::minutes(MAX_BLOCK_MINUTES) {
@@ -1019,6 +1038,38 @@ mod tests {
         assert_eq!(
             block.dominant_project_path().as_deref(),
             Some("/work/sjukra")
+        );
+    }
+
+    /// R3 regression (found via the 2026-09-25 real-data check): a run
+    /// legitimately owned by apro-skills can have MORE SessionStart/
+    /// SessionEnd lifecycle riders from unrelated concurrent sessions
+    /// (a different project's `claude` hook pings, riding in like
+    /// folderless events per R3) than real apro-skills events. Those
+    /// riders must never outvote the block's real project and flip its
+    /// `is_personal` classification.
+    #[test]
+    fn dominant_project_path_ignores_lifecycle_riders() {
+        let mut a = ev_project(10, 36, "claude_work", "/Users/dev/Desktop/Work/apro-skills");
+        a.event_id = Some(1);
+        let mut block = new_block(&a);
+        let mut b = ev_project(10, 37, "claude_turn", "/Users/dev/Desktop/Work/apro-skills");
+        b.event_id = Some(2);
+        extend_block(&mut block, &b);
+
+        // Five lifecycle riders from an unrelated personal project — more
+        // than the two real apro-skills events above.
+        for i in 0..5 {
+            let mut rider = ev_project(10, 40 + i, "claude", "/Users/dev/Desktop/Projects/worklog");
+            rider.title = Some("SessionStart".into());
+            rider.event_id = Some(10 + i64::from(i));
+            attach_riding_event(&mut block, rider);
+        }
+
+        assert_eq!(
+            block.dominant_project_path().as_deref(),
+            Some("/Users/dev/Desktop/Work/apro-skills"),
+            "lifecycle riders must never outvote the block's real project"
         );
     }
 

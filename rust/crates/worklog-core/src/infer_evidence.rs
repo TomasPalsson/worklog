@@ -278,6 +278,14 @@ pub(crate) fn merge_touching_same_project(mut blocks: Vec<InferBlock>) -> Vec<In
 fn single_project(b: &InferBlock) -> Option<Option<String>> {
     let mut key: Option<String> = None;
     for e in &b.events {
+        // A lifecycle rider (R3) never voted on which lane owns a
+        // minute — it must never count as a second project either, or
+        // an unrelated SessionStart/SessionEnd ping makes a genuinely
+        // single-project piece look "mixed" and block a merge it should
+        // otherwise be eligible for.
+        if crate::infer_lanes::is_lifecycle(e) {
+            continue;
+        }
         let Some(k) = crate::infer_lanes::lane_key(e) else {
             continue;
         };

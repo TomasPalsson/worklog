@@ -42,8 +42,11 @@ pub(crate) fn cut_at_ticket_edges(blocks: &[InferBlock], ticketed: &[Ticketed]) 
                 .filter(|x| x.ts >= w[0] && x.ts < w[1])
                 .cloned()
                 .collect();
+            // keep_thin=true: a ticket-edge cut re-slices an
+            // already-approved block — a short remainder must never
+            // vanish just for being small (matches apply_split's rule).
             out.extend(crate::infer_allocations::span_block(
-                evs, w[0], w[1], &b.events,
+                evs, w[0], w[1], &b.events, true,
             ));
         }
         // Deliberately NOT re-merged (R6 applies to `apply_split` only,
