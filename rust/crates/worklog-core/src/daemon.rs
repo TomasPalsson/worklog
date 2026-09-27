@@ -38,6 +38,8 @@
 //! * `POST /sync`                        — { "day": "YYYY-MM-DD", "dry_run": true }
 //! * `GET  /export/:day`                 — billing rows + rendered text/csv/json for a day
 //! * `POST /export/:day/mark`            — mark a day's blocks as billed (idempotent)
+//! * `POST /billing/lines/text`          — { day, folder, customer, text } hand-edit a line's invoice text
+//! * `POST /billing/lines/regenerate`    — { day, folder, customer } re-run text generation for one line
 //! * `POST /browser/heartbeat`           — { Heartbeat } from the add-on, requires moz-extension:// Origin
 //! * `GET  /days/:day/routed?include_hidden=` — browser/Slack events for a day (default excludes dismissed/noise)
 //! * `POST /events/:id/label`            — { LabelRequest } manual label, optionally creating a rule
@@ -91,13 +93,16 @@ use crate::routing_dismiss;
 use crate::secrets;
 use crate::verdict::VerdictClassifier;
 use crate::{
-    block_service, db, estimate, infer, infer_allocations,
+    block_service, db, estimate, infer, infer_allocations, line_text,
     models::{Block, Event},
     overlaps, repo,
 };
 
 #[path = "daemon_tenants.rs"]
 mod daemon_tenants;
+
+#[path = "daemon_line_text.rs"]
+mod daemon_line_text;
 
 #[path = "daemon_deildir.rs"]
 mod daemon_deildir;
@@ -164,6 +169,11 @@ pub fn router(state: Shared) -> Router {
         .route("/changes", get(daemon_changes::feed))
         .route("/changes/unseen", get(daemon_changes::unseen))
         .route("/changes/seen", post(daemon_changes::mark_seen))
+        .route("/billing/lines/text", post(daemon_line_text::set_text))
+        .route(
+            "/billing/lines/regenerate",
+            post(daemon_line_text::regenerate),
+        )
         .route("/billing/tenants", get(daemon_tenants::list_tenants))
         .route("/billing/tenants/link", post(daemon_tenants::link_tenant))
         .route(
@@ -1684,12 +1694,32 @@ async fn run_estimate(
     let model = body
         .model
         .unwrap_or_else(|| estimate::DEFAULT_MODEL.to_string());
-    let stats = with_conn(state, move |c| estimate::estimate_day(c, day, &model)).await?;
+    let day_str = body.day.clone();
+    let (stats, line_texts) = with_conn(state, move |c| {
+        let stats = estimate::estimate_day(c, day, &model)?;
+        // A line-text failure never fails the estimate call — the
+        // estimate itself already succeeded (FR-26).
+        let line_texts = line_text::generate_with_default_provider(c, &day_str, &model)
+            .unwrap_or_else(|_| line_text::LineTextReport {
+                generated: Vec::new(),
+                not_generated: Vec::new(),
+            });
+        Ok((stats, line_texts))
+    })
+    .await?;
     Ok(Json(json!({
         "day":       body.day,
         "estimated": stats.estimated,
         "skipped":   stats.skipped,
         "failed":    stats.failed,
+        "line_texts": {
+            "generated": line_texts.generated.len(),
+            "not_generated": line_texts.not_generated.iter().map(|(key, reason)| json!({
+                "folder":   key.folder,
+                "customer": key.customer,
+                "reason":   reason,
+            })).collect::<Vec<_>>(),
+        },
     })))
 }
 
@@ -4244,6 +4274,118 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ───────────── billing line text (spec 006, FR-26/FR-31/FR-33) ─────────────
+    // No invoker-injection seam exists for `/estimate`/`/billing/lines/regenerate`
+    // in these HTTP-level tests (the only existing `/estimate` test asserts its
+    // 400 path, never a real run), so only the manual-line short-circuit —
+    // which never reaches the model invoker — is exercised here. The
+    // success/failure generation paths are covered at the `line_text` unit
+    // level instead (`line_text_test.rs`).
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn line_text_route_stores_manual_text() {
+        let app = router(state_with_block());
+        let body = Body::from(
+            serde_json::to_vec(&json!({
+                "day": "2026-04-18",
+                "folder": "acme-project",
+                "customer": "Acme Corp",
+                "text": "Handskrifaður texti sem eigandinn skrifaði sjálfur.",
+            }))
+            .unwrap(),
+        );
+        let resp = app
+            .oneshot(
+                Request::post("/billing/lines/text")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["ok"], true);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn line_text_route_empty_text_resets() {
+        let state = state_with_block();
+        let key = crate::clues_contract::BillingLineKey {
+            day: "2026-04-18".to_string(),
+            folder: "acme-project".to_string(),
+            customer: "Acme Corp".to_string(),
+        };
+        {
+            let conn = state.conn.lock().await;
+            line_text::set_manual(&conn, &key, "Eitthvað sem eigandinn skrifaði áður.").unwrap();
+            assert!(line_text::text_for(&conn, &key).unwrap().is_some());
+        }
+        let app = router(state.clone());
+        let body = Body::from(
+            serde_json::to_vec(&json!({
+                "day": "2026-04-18",
+                "folder": "acme-project",
+                "customer": "Acme Corp",
+                "text": "   ",
+            }))
+            .unwrap(),
+        );
+        let resp = app
+            .oneshot(
+                Request::post("/billing/lines/text")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let conn = state.conn.lock().await;
+        assert!(line_text::text_for(&conn, &key).unwrap().is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn line_text_regenerate_on_manual_line_returns_reason_and_leaves_text() {
+        let state = state_with_block();
+        let key = crate::clues_contract::BillingLineKey {
+            day: "2026-04-18".to_string(),
+            folder: "acme-project".to_string(),
+            customer: "Acme Corp".to_string(),
+        };
+        let manual_text = "Handskrifaður texti sem eigandinn skrifaði sjálfur.";
+        {
+            let conn = state.conn.lock().await;
+            line_text::set_manual(&conn, &key, manual_text).unwrap();
+        }
+        let app = router(state.clone());
+        let body = Body::from(
+            serde_json::to_vec(&json!({
+                "day": "2026-04-18",
+                "folder": "acme-project",
+                "customer": "Acme Corp",
+            }))
+            .unwrap(),
+        );
+        let resp = app
+            .oneshot(
+                Request::post("/billing/lines/regenerate")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["generated"], false);
+        assert_eq!(v["reason"], "hand-edited");
+        let conn = state.conn.lock().await;
+        let (text, origin) = line_text::text_for(&conn, &key).unwrap().unwrap();
+        assert_eq!(text, manual_text);
+        assert_eq!(origin, crate::clues_contract::LineTextOrigin::Manual);
     }
 
     #[tokio::test(flavor = "current_thread")]
