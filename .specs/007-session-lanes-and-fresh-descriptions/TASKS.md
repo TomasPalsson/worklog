@@ -17,7 +17,7 @@ Spec: spec.md · Design: design.md · Base: 88d1d77 · Route: dispatch · Test: 
 ## Phase 1 — Session lanes
 Goal: one repo serving two customers yields separate blocks per customer session.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core session` — green, and all existing infer tests still green.
-- [ ] T001 lane_tag field and tagged lane key (B1) — files: rust/crates/worklog-core/src/infer.rs, rust/crates/worklog-core/src/infer_lanes.rs, rust/crates/worklog-core/src/infer_lanes_test.rs, rust/crates/worklog-core/src/infer_evidence_test.rs, rust/crates/worklog-core/src/infer_allocations.rs, rust/crates/worklog-core/src/infer_allocations_test.rs, rust/crates/worklog-core/src/overlaps.rs, rust/crates/worklog-core/src/overlaps_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core infer`
+- [x] T001 lane_tag field and tagged lane key (B1) — files: rust/crates/worklog-core/src/infer.rs, rust/crates/worklog-core/src/infer_lanes.rs, rust/crates/worklog-core/src/infer_lanes_test.rs, rust/crates/worklog-core/src/infer_evidence_test.rs, rust/crates/worklog-core/src/infer_allocations.rs, rust/crates/worklog-core/src/infer_allocations_test.rs, rust/crates/worklog-core/src/overlaps.rs, rust/crates/worklog-core/src/overlaps_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core infer` — done: cd54c05
 - [ ] T002 session customer tagging (B2, B3) — files: rust/crates/worklog-core/src/session_customers.rs, rust/crates/worklog-core/src/session_customers_test.rs, rust/crates/worklog-core/src/lib.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core session_customers` — after: T001
 - [ ] T003 wire tagging into the day rebuild (B4) — files: rust/crates/worklog-core/src/infer_allocations.rs, rust/crates/worklog-core/src/infer_allocations_db_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core two_customer_sessions_split` — after: T002
 
@@ -25,7 +25,7 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core se
 Goal: a block that changed a lot is described again, and long blocks read as their tasks.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core description` — green, `reinference_preserves_tempo_id_and_description` still green.
 - [ ] T004 drop stale descriptions on big change (B5, B6) — files: rust/crates/worklog-core/src/infer_carry.rs, rust/crates/worklog-core/src/infer.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core infer_carry` — after: T003
-- [ ] T005 [P] long blocks described as tasks (B7) — files: rust/crates/worklog-core/src/estimate.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core long_block_asks_for_tasks`
+- [x] T005 [P] long blocks described as tasks (B7) — files: rust/crates/worklog-core/src/estimate.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core long_block_asks_for_tasks` — done: 095120c
 - [ ] T006 Friday real-data check covers splits and block count — files: scripts/verify_inference_report.py — verify: `bash scripts/verify-inference.sh` — after: T004, T005
 - [ ] CHK001 human-verify live Friday 2026-09-25 after deploy — files: scripts/verify_inference_report.py — verify: human: Owner sees vitinn-infra Sjúkra and APRÓ work in separate blocks, the 15:09 block(s) carry a fresh multi-task description, and the day still totals about 8.5 h — after: T006
 
