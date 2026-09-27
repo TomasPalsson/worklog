@@ -2,20 +2,23 @@
 //! secrets with `clues_contract::SECRET_PLACEHOLDER` before a value is
 //! stored or sent off-machine (spec 006, D-03). Populated by T007:
 //! `scrub_secrets`.
+//!
+//! Precision matters as much as recall here: `scrub_secrets` now runs on
+//! every stored title/details (repo::upsert_event), so over-scrubbing
+//! permanently destroys ordinary commit/PR prose. Every pattern below
+//! that could plausibly collide with prose, a file path, or a numeric
+//! setting is gated — either by requiring a credential-shaped value (a
+//! digit, a base64/token symbol, or mixed case not at the very start),
+//! by rejecting a purely-numeric value, or by requiring the surrounding
+//! command context (mysql/curl/wget/...). The `NAME=value`-shaped family
+//! (bare/flagged/quoted/JSON) lives in `scrub_assignment.rs`.
 
 use std::sync::OnceLock;
 
-use regex::Regex;
+use regex::{Captures, Regex};
 
 use crate::clues_contract::SECRET_PLACEHOLDER;
-
-/// Shared "does this name look like a secret" fragment, reused by
-/// `assignment_re`, `flag_assignment_re` and `quoted_value_re` so the
-/// keyword list lives in one place. The second alternative only fires on
-/// a `_key`/`-key` SUFFIX (`OPENAI_KEY`, `SECRET_KEY`) — never on an
-/// arbitrary word that merely contains "key" (`monkey`, `keyboard`),
-/// since neither has a literal `_`/`-` immediately before "key".
-const NAME_FRAGMENT: &str = r"[\w.-]*(?:token|secret|password|passwd|pwd|api[_-]?key|private_key|credential)[\w.-]*|[\w.-]*(?:_key|-key)";
+use crate::scrub_assignment;
 
 /// Whole-match patterns: the entire match becomes the placeholder. `(?s)`
 /// only affects the PEM alternative — every other alternative's `.` is
@@ -51,64 +54,127 @@ fn unterminated_pem_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*\z").unwrap())
 }
 
-/// `Authorization: Bearer <token>` / bare `Bearer <token>`, case
-/// insensitive (`bearer`, `BEARER`) — the matched word is kept verbatim,
-/// only the token is scrubbed.
-fn bearer_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)\b(bearer\s+)[A-Za-z0-9\-._~+/=]+").unwrap())
+// ───────────────────────── shared value-shape guards ─────────────────────────
+// (used by both this file's Bearer/Basic checks and scrub_assignment.rs)
+
+/// True when `v` looks like a real credential rather than an ordinary
+/// English word of the same length: contains a digit, one of the
+/// URL-safe base64/token symbols, or an uppercase letter NOT at the very
+/// start (real base64/tokens mix case mid-word; English prose is either
+/// all-lowercase or Titlecase, never `dXNl`-style).
+pub(crate) fn looks_credential_shaped(v: &str) -> bool {
+    v.chars().any(|c| c.is_ascii_digit())
+        || v.chars().any(|c| "+/=._~-".contains(c))
+        || v.chars().skip(1).any(|c| c.is_ascii_uppercase())
 }
 
-/// `Authorization: Basic <base64>`, case insensitive.
-fn basic_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)\b(basic\s+)[A-Za-z0-9+/=]+").unwrap())
+pub(crate) fn is_pure_numeric(v: &str) -> bool {
+    !v.is_empty() && v.chars().all(|c| c.is_ascii_digit())
 }
+
+/// True when the text immediately before `match_start` is an
+/// `Authorization:` header label (with optional trailing whitespace) —
+/// a bare `Bearer <opaque token>` with no other credential-shaped
+/// signal is still a secret when it's genuinely a header value.
+fn preceded_by_authorization_header(s: &str, match_start: usize) -> bool {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)authorization\s*:\s*$").unwrap())
+        .is_match(&s[..match_start])
+}
+
+// ───────────────────────── Authorization headers ─────────────────────────
+
+/// `Authorization: Bearer <token>` / bare `Bearer <token>`, case
+/// insensitive. Requires the token look credential-shaped (a digit or a
+/// token/base64 symbol) — a bare `Bearer token refresh` in prose never
+/// matches at all (candidate length floor); a real header value with no
+/// such signal (`Bearer zzzzzzzz...`) still scrubs when genuinely
+/// preceded by `Authorization:`.
+fn bearer_candidate_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)\b(bearer\s+)([A-Za-z0-9\-._~+/=]{16,})").unwrap())
+}
+
+fn scrub_bearer(s: &str) -> String {
+    bearer_candidate_re()
+        .replace_all(s, |caps: &Captures| {
+            let m = caps.get(0).unwrap();
+            let word = &caps[1];
+            let token = &caps[2];
+            if looks_credential_shaped(token) || preceded_by_authorization_header(s, m.start()) {
+                format!("{word}{SECRET_PLACEHOLDER}")
+            } else {
+                m.as_str().to_string()
+            }
+        })
+        .into_owned()
+}
+
+/// `Authorization: Basic <base64>`, case insensitive. Requires a
+/// base64-shaped run of >=12 chars — `basic validation`/`basic auth
+/// support` (ordinary words) never even reach the length floor, and a
+/// genuine word-shaped run needs a digit/symbol/mixed-case signal too.
+fn basic_candidate_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)\b(basic\s+)([A-Za-z0-9+/]{12,}=*)").unwrap())
+}
+
+fn scrub_basic(s: &str) -> String {
+    basic_candidate_re()
+        .replace_all(s, |caps: &Captures| {
+            let m = caps.get(0).unwrap();
+            let word = &caps[1];
+            let token = &caps[2];
+            if looks_credential_shaped(token) || preceded_by_authorization_header(s, m.start()) {
+                format!("{word}{SECRET_PLACEHOLDER}")
+            } else {
+                m.as_str().to_string()
+            }
+        })
+        .into_owned()
+}
+
+// ───────────────────────── URL credentials ─────────────────────────
 
 /// `scheme://user:pass@host` → `scheme://[secret]@host`, for any URI
 /// scheme (`postgres`, `mongodb+srv`, `redis`, ...) and an optionally
-/// empty user (`redis://:pass@host`).
+/// empty user (`redis://:pass@host`). The password half excludes `/` so
+/// a bare port number before the first path segment
+/// (`https://host:8080/users/foo@bar.com`) can never be mistaken for
+/// userinfo — real userinfo always ends at the first `/`.
 fn url_creds_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"([A-Za-z][A-Za-z0-9+.-]*://)[^\s:/@]*:[^\s@]+@").unwrap())
+    RE.get_or_init(|| Regex::new(r"([A-Za-z][A-Za-z0-9+.-]*://)[^\s:/@]*:[^\s@/]+@").unwrap())
 }
 
-/// `NAME="a whole quoted value"` / `'...'` — the entire quoted value
-/// becomes the placeholder (no quotes), so a multi-word secret can't
-/// leave a dangling fragment behind for `assignment_re`'s `\S+` to
-/// half-scrub. Must run before `assignment_re`.
-fn quoted_value_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(&format!(
-            r#"(?i)({NAME_FRAGMENT})([:=]\s*)("[^"]*"|'[^']*')"#
-        ))
-        .unwrap()
-    })
-}
+// ───────────────────────── shell credential flags ─────────────────────────
 
-/// `NAME=value` / `NAME: value` (also matches after `export ` or `--`,
-/// since neither is part of the match) where NAME contains one of the
-/// secret-ish keywords. The name is kept, the value becomes the
-/// placeholder.
-fn assignment_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(&format!(r"(?i)(--)?\b({NAME_FRAGMENT})(\s*[:=]\s*)\S+")).unwrap())
-}
-
-/// `--password value` — a CLI flag and its value separated by whitespace
-/// instead of `=`. Requires the leading `--` so ordinary prose ("fix
-/// token refresh") never matches.
-fn flag_assignment_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(&format!(r"(?i)(--(?:{NAME_FRAGMENT}))(\s+)\S+")).unwrap())
-}
-
-/// `curl -u user:pass` / `curl --user user:pass` → `-u [secret]` —
-/// normalizes both flag spellings and scrubs the whole `user:pass` pair.
+/// `curl -u user:pass` / `curl --user user:pass` → `-u [secret]` — only
+/// within a curl/wget/http(ie) command (`docker run -u 1000:1000` is a
+/// UID:GID pair, not credentials), and never when both sides are plain
+/// digits either.
 fn curl_user_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?:-u|--user)\s+\S+:\S+").unwrap())
+    RE.get_or_init(|| Regex::new(r"(?:-u|--user)\s+(\S+):(\S+)").unwrap())
+}
+
+fn scrub_curl_user(s: &str) -> String {
+    static PROG: OnceLock<Regex> = OnceLock::new();
+    let prog = PROG.get_or_init(|| Regex::new(r"\b(?:curl|wget|https?|httpie)\b").unwrap());
+    if !prog.is_match(s) {
+        return s.to_string();
+    }
+    curl_user_re()
+        .replace_all(s, |caps: &Captures| {
+            let user = &caps[1];
+            let pass = &caps[2];
+            if is_pure_numeric(user) && is_pure_numeric(pass) {
+                caps.get(0).unwrap().as_str().to_string()
+            } else {
+                format!("-u {SECRET_PLACEHOLDER}")
+            }
+        })
+        .into_owned()
 }
 
 /// `sshpass -p X` (attached or spaced) — `sshpass` IS the password
@@ -116,6 +182,45 @@ fn curl_user_re() -> &'static Regex {
 fn sshpass_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"(sshpass\s+-p)(\s*)\S+").unwrap())
+}
+
+/// mysql/mysqldump/mariadb's `-p` password flag, spaced or attached —
+/// gated on one of those program names appearing in the SAME command
+/// segment (split on `;`, `&&`, `||`, `|`, newline) as the `-p`, since
+/// `-p` alone is far too generic to redact unconditionally (`mkdir -p`)
+/// and a later unrelated command in the same line must stay untouched
+/// (`mysql migration; mkdir -p build` keeps "build").
+fn command_separator_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r";|&&|\|\||\||\n").unwrap())
+}
+
+fn scrub_mysql_password(s: &str) -> String {
+    let sep = command_separator_re();
+    let mut out = String::with_capacity(s.len());
+    let mut last = 0;
+    for m in sep.find_iter(s) {
+        out.push_str(&scrub_mysql_segment(&s[last..m.start()]));
+        out.push_str(m.as_str());
+        last = m.end();
+    }
+    out.push_str(&scrub_mysql_segment(&s[last..]));
+    out
+}
+
+fn scrub_mysql_segment(seg: &str) -> String {
+    static PROG: OnceLock<Regex> = OnceLock::new();
+    let prog = PROG.get_or_init(|| Regex::new(r"\b(?:mysql|mysqldump|mariadb)\b").unwrap());
+    if !prog.is_match(seg) {
+        return seg.to_string();
+    }
+    static FLAG: OnceLock<Regex> = OnceLock::new();
+    let flag = FLAG.get_or_init(|| Regex::new(r"(^|\s)(-p)(\s*)(\S+)").unwrap());
+    flag.replace_all(
+        seg,
+        format!("${{1}}${{2}}${{3}}{SECRET_PLACEHOLDER}").as_str(),
+    )
+    .into_owned()
 }
 
 /// Redact tokens, keys, passwords and private keys only. Emails and IPs
@@ -127,52 +232,20 @@ pub fn scrub_secrets(s: &str) -> String {
     let s = unterminated_pem_re()
         .replace_all(&s, SECRET_PLACEHOLDER)
         .into_owned();
-    let s = bearer_re()
-        .replace_all(&s, format!("${{1}}{SECRET_PLACEHOLDER}").as_str())
-        .into_owned();
-    let s = basic_re()
-        .replace_all(&s, format!("${{1}}{SECRET_PLACEHOLDER}").as_str())
-        .into_owned();
+    let s = scrub_bearer(&s);
+    let s = scrub_basic(&s);
     let s = url_creds_re()
         .replace_all(&s, format!("${{1}}{SECRET_PLACEHOLDER}@").as_str())
         .into_owned();
-    let s = quoted_value_re()
-        .replace_all(&s, format!("${{1}}${{2}}{SECRET_PLACEHOLDER}").as_str())
-        .into_owned();
-    let s = assignment_re()
-        .replace_all(
-            &s,
-            format!("${{1}}${{2}}${{3}}{SECRET_PLACEHOLDER}").as_str(),
-        )
-        .into_owned();
-    let s = flag_assignment_re()
-        .replace_all(&s, format!("${{1}}${{2}}{SECRET_PLACEHOLDER}").as_str())
-        .into_owned();
-    let s = curl_user_re()
-        .replace_all(&s, format!("-u {SECRET_PLACEHOLDER}").as_str())
-        .into_owned();
+    let s = scrub_assignment::scrub_json_kv(&s);
+    let s = scrub_assignment::scrub_quoted(&s);
+    let s = scrub_assignment::scrub_bare(&s);
+    let s = scrub_assignment::scrub_flagged(&s);
+    let s = scrub_curl_user(&s);
     let s = sshpass_re()
         .replace_all(&s, format!("${{1}}${{2}}{SECRET_PLACEHOLDER}").as_str())
         .into_owned();
     scrub_mysql_password(&s)
-}
-
-/// mysql/mysqldump/mariadb's `-p` password flag, spaced or attached —
-/// gated on one of those program names appearing anywhere in `s`, since
-/// `-p` alone is far too generic to redact unconditionally (`mkdir -p`).
-fn scrub_mysql_password(s: &str) -> String {
-    static PROG: OnceLock<Regex> = OnceLock::new();
-    let prog = PROG.get_or_init(|| Regex::new(r"\b(?:mysql|mysqldump|mariadb)\b").unwrap());
-    if !prog.is_match(s) {
-        return s.to_string();
-    }
-    static FLAG: OnceLock<Regex> = OnceLock::new();
-    let flag = FLAG.get_or_init(|| Regex::new(r"(^|\s)(-p)(\s*)(\S+)").unwrap());
-    flag.replace_all(
-        s,
-        format!("${{1}}${{2}}${{3}}{SECRET_PLACEHOLDER}").as_str(),
-    )
-    .into_owned()
 }
 
 fn email_re() -> &'static Regex {

@@ -475,3 +475,113 @@ fn scrub_new_families_are_idempotent() {
     let twice = scrub_secrets(&once);
     assert_eq!(once, twice);
 }
+
+// ───────────────────── NF-2: Basic/Bearer require credential shape ─────────────────────
+
+#[test]
+fn scrub_basic_prose_add_basic_validation_stays() {
+    let input = "Add basic validation for invoices";
+    assert_eq!(scrub_secrets(input), input);
+}
+
+#[test]
+fn scrub_basic_prose_feat_basic_auth_support_stays() {
+    let input = "feat: basic auth support";
+    assert_eq!(scrub_secrets(input), input);
+}
+
+#[test]
+fn scrub_basic_prose_long_english_word_stays() {
+    // A long lowercase English word alone (no digit/symbol/mixed-case)
+    // must not be mistaken for base64 just by clearing the length floor.
+    let input = "Add basic authentication support";
+    assert_eq!(scrub_secrets(input), input);
+}
+
+#[test]
+fn scrub_bearer_prose_token_refresh_stays() {
+    let input = "Bearer token refresh";
+    assert_eq!(scrub_secrets(input), input);
+}
+
+// ───────────────────── NF-3: numeric values, path-like names, newline-safe separators ─────────────────────
+
+#[test]
+fn scrub_max_tokens_numeric_value_stays() {
+    let input = "max_tokens=4096";
+    assert_eq!(scrub_secrets(input), input);
+}
+
+#[test]
+fn scrub_timeout_secret_numeric_value_stays() {
+    let input = "timeout_secret=30";
+    assert_eq!(scrub_secrets(input), input);
+}
+
+#[test]
+fn scrub_path_with_line_number_stays() {
+    let input = "src/token.rs:42";
+    assert_eq!(scrub_secrets(input), input);
+}
+
+#[test]
+fn scrub_path_like_name_with_space_after_colon_stays() {
+    // Same path-embedded-name concern as `src/token.rs:42`, but engineered
+    // so the colon+space rule alone wouldn't already exclude it — proves
+    // the "not preceded by / or ." guard is load-bearing on its own.
+    let input = "in config/secret: rotate keys regularly";
+    assert_eq!(scrub_secrets(input), input);
+}
+
+#[test]
+fn scrub_partition_key_short_value_stays() {
+    let input = "partition_key: userId";
+    assert_eq!(scrub_secrets(input), input);
+}
+
+#[test]
+fn scrub_docker_run_uid_gid_stays() {
+    let input = "docker run -u 1000:1000 myimage";
+    assert_eq!(scrub_secrets(input), input);
+}
+
+#[test]
+fn scrub_curl_dash_u_both_digits_stays() {
+    let input = "curl -u 1000:1000 https://api.example.com";
+    assert_eq!(scrub_secrets(input), input);
+}
+
+#[test]
+fn scrub_url_creds_boundary_stays_before_first_slash() {
+    let input = "https://host:8080/users/foo@bar.com";
+    assert_eq!(scrub_secrets(input), input);
+}
+
+#[test]
+fn scrub_mysql_dash_p_scoped_to_its_own_command_segment() {
+    let input = "mysql migration; mkdir -p build";
+    assert_eq!(scrub_secrets(input), input);
+}
+
+#[test]
+fn scrub_assignment_separator_does_not_cross_newline() {
+    let input = "The token:\nrotate every hour";
+    assert_eq!(scrub_secrets(input), input);
+}
+
+// ───────────────────── NF-1: JSON pasted into free text ─────────────────────
+
+#[test]
+fn scrub_json_fragment_pasted_into_prose() {
+    let input = r#"config: {"password": "hunter2", "api_key": "abc123"}"#;
+    assert_eq!(
+        scrub_secrets(input),
+        r#"config: {"password": "[secret]", "api_key": "[secret]"}"#
+    );
+}
+
+#[test]
+fn scrub_json_fragment_leaves_non_secret_keys_alone() {
+    let input = r#"{"count": 3, "name": "x"}"#;
+    assert_eq!(scrub_secrets(input), input);
+}

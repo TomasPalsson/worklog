@@ -47,6 +47,7 @@ pub mod routing_contract;
 pub mod routing_dismiss;
 pub mod schedule;
 pub mod scrub;
+mod scrub_assignment;
 pub mod secrets;
 pub mod sessions;
 pub mod skill;
