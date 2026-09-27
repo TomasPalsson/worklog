@@ -1137,6 +1137,7 @@ fn clues_for_block(conn: &Connection, block: &BlockRow) -> DescriptionInput {
         web_domains: Vec::new(),
         slack_channels: Vec::new(),
         block_descriptions: Vec::new(),
+        work_items: Vec::new(),
     })
 }
 
@@ -1647,6 +1648,7 @@ mod tests {
             web_domains: Vec::new(),
             slack_channels: Vec::new(),
             block_descriptions: Vec::new(),
+            work_items: Vec::new(),
         };
 
         let msg = build_user_message(&block, &clues, &[], &[]);

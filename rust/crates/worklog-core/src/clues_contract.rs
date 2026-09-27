@@ -97,6 +97,32 @@ pub struct DescriptionInput {
     pub slack_channels: Vec<String>,
     /// Existing per-block descriptions feeding a billing-line text (D-12).
     pub block_descriptions: Vec<String>,
+    /// A billing line's blocks grouped BY TASK rather than flattened, so
+    /// the line-text model can tell which clue belongs to which piece of
+    /// work. Empty for a single-block `DescriptionInput` (the per-block
+    /// estimator never sets this). Only present in the wire payload when
+    /// non-empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub work_items: Vec<WorkItem>,
+}
+
+/// One task's worth of grouped clues within a billing line — built only
+/// by `clues_work_items::group` inside `clues_send::build_line_input`.
+/// Only D-02-allowed fields; every string arrives already
+/// scrubbed/deduped/capped exactly like `DescriptionInput`'s flat lists.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkItem {
+    /// Short identifying label for the task — the ticket key, else the
+    /// first branch, change title, file basename or description in that
+    /// order. Always built from already-scrubbed fields, never a raw
+    /// string of its own.
+    pub title: String,
+    pub minutes: i64,
+    pub ticket: Option<String>,
+    pub branches: Vec<String>,
+    pub change_titles: Vec<String>,
+    pub file_basenames: Vec<String>,
+    pub description: Option<String>,
 }
 
 /// Primary key of one billing line — one invoice-form submission.

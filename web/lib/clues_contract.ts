@@ -80,6 +80,22 @@ export interface DescriptionInput {
   slack_channels: string[];
   /** Existing per-block descriptions feeding a billing-line text (D-12). */
   block_descriptions: string[];
+  /** A billing line's blocks grouped BY TASK rather than flattened (only
+   * present, and non-empty, on a billing line's input — a per-block
+   * input never sets it). */
+  work_items?: WorkItem[];
+}
+
+/** Mirrors `clues_contract::WorkItem` — one task's worth of grouped
+ * clues within a billing line. Only D-02-allowed fields. */
+export interface WorkItem {
+  title: string;
+  minutes: number;
+  ticket: string | null;
+  branches: string[];
+  change_titles: string[];
+  file_basenames: string[];
+  description: string | null;
 }
 
 /** Mirrors `clues_contract::BillingLineKey` — primary key of one billing

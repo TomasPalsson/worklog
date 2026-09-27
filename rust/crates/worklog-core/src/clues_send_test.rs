@@ -4,9 +4,10 @@
 
 use super::*;
 use crate::billing_registry::{upsert_folder, FolderMap};
-use crate::clues_contract::{BillingLineKey, HelperKind, RawRecord};
+use crate::clues_contract::{BillingLineKey, HelperKind, RawRecord, SOURCE_CLAUDE_HELPER};
 use crate::db;
 use crate::models::Event;
+use crate::routing_contract::{SOURCE_FIREFOX, SOURCE_SLACK};
 use rusqlite::params;
 
 fn home_work(sub: &str) -> String {
@@ -252,6 +253,15 @@ fn clues_send_block_input_never_leaks_forbidden_fields() {
     let input = build_block_input(&conn, bid).unwrap();
     let json = serde_json::to_string(&input).unwrap();
 
+    // A per-block input never groups into work items — the field must
+    // not even appear on the wire (`skip_serializing_if`), not just be
+    // an empty array.
+    assert!(input.work_items.is_empty());
+    assert!(
+        !json.contains("work_items"),
+        "empty work_items must be omitted: {json}"
+    );
+
     for forbidden in [
         "SECRET-PROMPT-TEXT",
         "SECRET-TOOL-INPUT",
@@ -407,6 +417,153 @@ fn clues_send_line_input_merges_two_blocks() {
     assert_eq!(
         input.block_descriptions,
         vec!["Did feature A".to_string(), "Did feature B".to_string()]
+    );
+}
+
+/// Two blocks sharing a branch (at 09:00 and 15:00 — grouping is BY TASK,
+/// never by time) plus one other-branch block: 2 work items, the
+/// branch-sharing pair folded into one with both blocks' minutes summed.
+#[test]
+fn clues_send_line_input_groups_work_items_by_branch_not_time() {
+    let conn = db::open_memory().unwrap();
+    let folder = "clues-work-items-folder";
+    pin_folder(&conn, folder, "Acme Corp");
+
+    let b1 = seed_block(
+        &conn,
+        "2026-05-05",
+        "2026-05-05T09:00:00+00:00",
+        "2026-05-05T09:30:00+00:00",
+        1800,
+        None,
+        None,
+        false,
+    );
+    seed_event(
+        &conn,
+        b1,
+        Event {
+            project_path: Some(home_work(folder)),
+            raw_json: Some(
+                serde_json::to_string(&RawRecord::Helper {
+                    parent_session_id: "s1".into(),
+                    helper_kind: HelperKind::Subagent,
+                    summary: "branch shared-branch · Edit · edited a.rs".into(),
+                })
+                .unwrap(),
+            ),
+            ..Event::minimal(
+                SOURCE_CLAUDE_HELPER,
+                "wi1",
+                "2026-05-05T09:05:00+00:00",
+                "subagent",
+            )
+        },
+    );
+    // A raw secret co-located on the same block — proves grouping never
+    // resurrects it through `title` or any `WorkItem` field.
+    seed_event(
+        &conn,
+        b1,
+        Event {
+            raw_json: Some(
+                serde_json::to_string(&RawRecord::Shell {
+                    command: "curl https://internal.example.com/WORK-ITEM-SECRET".into(),
+                    cwd: None,
+                })
+                .unwrap(),
+            ),
+            ..Event::minimal("shell", "wi1-shell", "2026-05-05T09:06:00+00:00", "curl")
+        },
+    );
+
+    let b2 = seed_block(
+        &conn,
+        "2026-05-05",
+        "2026-05-05T15:00:00+00:00",
+        "2026-05-05T15:30:00+00:00",
+        1800,
+        None,
+        None,
+        false,
+    );
+    seed_event(
+        &conn,
+        b2,
+        Event {
+            project_path: Some(home_work(folder)),
+            raw_json: Some(
+                serde_json::to_string(&RawRecord::Helper {
+                    parent_session_id: "s2".into(),
+                    helper_kind: HelperKind::Subagent,
+                    summary: "branch shared-branch · Edit · edited b.rs".into(),
+                })
+                .unwrap(),
+            ),
+            ..Event::minimal(
+                SOURCE_CLAUDE_HELPER,
+                "wi2",
+                "2026-05-05T15:05:00+00:00",
+                "subagent",
+            )
+        },
+    );
+
+    let b3 = seed_block(
+        &conn,
+        "2026-05-05",
+        "2026-05-05T11:00:00+00:00",
+        "2026-05-05T11:45:00+00:00",
+        2700,
+        None,
+        None,
+        false,
+    );
+    seed_event(
+        &conn,
+        b3,
+        Event {
+            project_path: Some(home_work(folder)),
+            raw_json: Some(
+                serde_json::to_string(&RawRecord::Helper {
+                    parent_session_id: "s3".into(),
+                    helper_kind: HelperKind::Subagent,
+                    summary: "branch other-branch · Edit · edited c.rs".into(),
+                })
+                .unwrap(),
+            ),
+            ..Event::minimal(
+                SOURCE_CLAUDE_HELPER,
+                "wi3",
+                "2026-05-05T11:05:00+00:00",
+                "subagent",
+            )
+        },
+    );
+
+    let key = BillingLineKey {
+        day: "2026-05-05".to_string(),
+        folder: folder.to_string(),
+        customer: "Acme Corp".to_string(),
+    };
+    let input = build_line_input(&conn, &key).unwrap();
+
+    assert_eq!(input.work_items.len(), 2, "{:?}", input.work_items);
+    assert_eq!(input.work_items[0].minutes, 60);
+    assert_eq!(
+        input.work_items[0].branches,
+        vec!["shared-branch".to_string()]
+    );
+    assert_eq!(input.work_items[1].minutes, 45);
+    assert_eq!(
+        input.work_items[1].branches,
+        vec!["other-branch".to_string()]
+    );
+
+    let json = serde_json::to_string(&input).unwrap();
+    assert!(
+        !json.contains("WORK-ITEM-SECRET") && !json.contains("internal.example.com"),
+        "leaked forbidden field through work_items: {json}"
     );
 }
 
