@@ -3,16 +3,120 @@
 //! stored or sent off-machine (spec 006, D-03). Populated by T007:
 //! `scrub_secrets`.
 
+use std::sync::OnceLock;
+
+use regex::Regex;
+
+use crate::clues_contract::SECRET_PLACEHOLDER;
+
+/// Whole-match patterns: the entire match becomes the placeholder. `(?s)`
+/// only affects the PEM alternative — every other alternative's `.` is
+/// escaped (`\.`), so it stays a literal dot regardless of the flag.
+fn whole_match_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(concat!(
+            r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+            r"|\bgh[oprsu]_[A-Za-z0-9]{36}\b",
+            r"|\bgithub_pat_[A-Za-z0-9_]{20,}\b",
+            r"|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b",
+            r"|\bxox[abprs]-[A-Za-z0-9-]{8,}\b",
+            r"|\bsk-[A-Za-z0-9_-]{20,}\b",
+            r"|\b(?:sk|rk)_live_[A-Za-z0-9]{10,}\b",
+            r"|\bAIza[A-Za-z0-9_-]{35}\b",
+            r"|\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b",
+        ))
+        .unwrap()
+    })
+}
+
+/// `Authorization: Bearer <token>` / bare `Bearer <token>` — the word
+/// `Bearer` is kept, only the token is scrubbed.
+fn bearer_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\b(Bearer\s+)[A-Za-z0-9\-._~+/=]+").unwrap())
+}
+
+/// `https://user:pass@host` → `https://[secret]@host`.
+fn url_creds_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(https?://)[^\s:/@]+:[^\s@]+@").unwrap())
+}
+
+/// `NAME=value` / `NAME: value` (also matches after `export ` or `--`,
+/// since neither is part of the match) where NAME contains one of the
+/// secret-ish keywords. The name is kept, the value becomes the
+/// placeholder.
+fn assignment_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)(--)?\b([\w.-]*(?:token|secret|password|passwd|api_key|private_key)[\w.-]*)(\s*[:=]\s*)\S+",
+        )
+        .unwrap()
+    })
+}
+
+/// `--password value` — a CLI flag and its value separated by whitespace
+/// instead of `=`. Requires the leading `--` so ordinary prose ("fix
+/// token refresh") never matches.
+fn flag_assignment_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)(--[\w.-]*(?:token|secret|password|passwd|api_key|private_key)[\w.-]*)(\s+)\S+",
+        )
+        .unwrap()
+    })
+}
+
 /// Redact tokens, keys, passwords and private keys only. Emails and IPs
 /// stay raw — this is the storage-time scrub (D-03).
-pub fn scrub_secrets(_s: &str) -> String {
-    unimplemented!("T007")
+pub fn scrub_secrets(s: &str) -> String {
+    let s = whole_match_re().replace_all(s, SECRET_PLACEHOLDER).into_owned();
+    let s = bearer_re()
+        .replace_all(&s, format!("${{1}}{SECRET_PLACEHOLDER}").as_str())
+        .into_owned();
+    let s = url_creds_re()
+        .replace_all(&s, format!("${{1}}{SECRET_PLACEHOLDER}@").as_str())
+        .into_owned();
+    let s = assignment_re()
+        .replace_all(&s, format!("${{1}}${{2}}${{3}}{SECRET_PLACEHOLDER}").as_str())
+        .into_owned();
+    flag_assignment_re()
+        .replace_all(&s, format!("${{1}}${{2}}{SECRET_PLACEHOLDER}").as_str())
+        .into_owned()
+}
+
+fn email_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b").unwrap())
+}
+
+fn ipv4_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b",
+        )
+        .unwrap()
+    })
+}
+
+fn account_id_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\b\d{12}\b").unwrap())
 }
 
 /// `scrub_secrets` plus emails, IPv4 addresses and 12-digit AWS account
 /// ids. Used for anything leaving the machine (D-02).
-pub fn scrub_identifiers(_s: &str) -> String {
-    unimplemented!("T007")
+pub fn scrub_identifiers(s: &str) -> String {
+    let s = scrub_secrets(s);
+    let s = email_re().replace_all(&s, SECRET_PLACEHOLDER).into_owned();
+    let s = ipv4_re().replace_all(&s, SECRET_PLACEHOLDER).into_owned();
+    account_id_re()
+        .replace_all(&s, SECRET_PLACEHOLDER)
+        .into_owned()
 }
 
 #[cfg(test)]
