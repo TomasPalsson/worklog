@@ -181,11 +181,36 @@ function ActionButton(props: {
   );
 }
 
-function summarise(r: unknown): string {
+/** One `not_generated` entry from `runEstimate`'s `line_texts` field. */
+interface NotGeneratedLine {
+  folder: string;
+  customer: string;
+  reason: string;
+}
+
+/** Max lines named before the rest collapse into a trailing "…" (FR-35). */
+const MAX_NAMED_LINE_TEXTS = 3;
+
+function lineTextsSuffix(lineTexts: unknown): string {
+  if (!lineTexts || typeof lineTexts !== "object") return "";
+  const notGenerated = (lineTexts as { not_generated?: NotGeneratedLine[] }).not_generated ?? [];
+  if (notGenerated.length === 0) return "";
+  const names = notGenerated
+    .slice(0, MAX_NAMED_LINE_TEXTS)
+    .map((n) => `${n.folder} (${n.reason})`)
+    .join(", ");
+  const more = notGenerated.length > MAX_NAMED_LINE_TEXTS ? "…" : "";
+  return ` · ${notGenerated.length} line texts not regenerated: ${names}${more}`;
+}
+
+export function summarise(r: unknown): string {
   if (r && typeof r === "object") {
     const o = r as Record<string, unknown>;
     if ("estimated" in o)
-      return `${o.estimated} estimated · ${o.skipped ?? 0} skipped · ${o.failed ?? 0} failed`;
+      return (
+        `${o.estimated} estimated · ${o.skipped ?? 0} skipped · ${o.failed ?? 0} failed` +
+        lineTextsSuffix(o.line_texts)
+      );
     if ("synced" in o) {
       const synced = Number(o.synced) || 0;
       const skipped = Number(o.skipped ?? 0);
