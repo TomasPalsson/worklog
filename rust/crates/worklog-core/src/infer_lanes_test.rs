@@ -410,3 +410,34 @@ fn short_runs_fold_by_length_before_the_evidence_pass_judges_them_as_one() {
         "both consolidated runs are >= 15 min and must survive: {merged:?}"
     );
 }
+
+#[test]
+fn agent_reflog_keeps_an_owned_work_run_against_personal_typing() {
+    // Owner prompts work A, then an agent keeps committing in A while the
+    // owner types into personal B: A's run continues (R2 softened) instead
+    // of B cutting a personal sliver into the middle of it.
+    let mut events: Vec<InferEvent> = [0, 2, 4]
+        .iter()
+        .map(|&m| ev(9, m, "claude_turn", Some(A)))
+        .collect();
+    events.extend(
+        [17, 29, 41]
+            .iter()
+            .map(|&m| ev(9, m, "git_reflog", Some(A))),
+    );
+    events.extend(
+        [20, 23, 26]
+            .iter()
+            .map(|&m| ev(9, m, "claude_turn", Some(B))),
+    );
+    let blocks = build_blocks(events);
+    assert_no_overlap(&blocks);
+    let cutoff = Utc.with_ymd_and_hms(2026, 9, 23, 9, 40, 0).unwrap();
+    let personal_inside = blocks
+        .iter()
+        .any(|b| b.dominant_project_path().as_deref() == Some(B) && b.started_at < cutoff);
+    assert!(
+        !personal_inside,
+        "no personal sliver inside the agent-extended A run"
+    );
+}

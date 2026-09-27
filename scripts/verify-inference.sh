@@ -9,7 +9,7 @@
 # Never touches the live database.
 #
 # Asserts:
-#   * 2026-09-25 work hours in [7.75, 8.25]
+#   * 2026-09-25 work hours in [8.35, 8.65] (owner: ~8.5 h)
 #   * 2026-09-25 vitinn-infra hours in [1.9, 2.2]
 #   * at most 2 blocks < 10 min on 2026-09-25
 #   * no block overlaps 2026-09-23 03:00-04:30

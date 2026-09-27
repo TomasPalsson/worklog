@@ -90,7 +90,7 @@ pub(crate) fn is_lifecycle_row(source: &str, title: Option<&str>) -> bool {
         })
 }
 /// Silent runs shorter than this between the same owner are bridged.
-const BRIDGE_MINUTES: i64 = 10;
+const BRIDGE_MINUTES: i64 = 12;
 
 /// Lane key for an event: its repo folder, `None` for folderless events.
 /// Personal (non-`~/Desktop/Work`) keys carry a marker so they can never
@@ -174,6 +174,8 @@ fn build_project_blocks(
                 let human = is_human(&e.source);
                 let window = if human {
                     focus_window_minutes(&e.source)
+                } else if e.source == "git_reflog" {
+                    HUMAN_WINDOW_MINUTES // only extends an owned run: see latest_human
                 } else {
                     0
                 };
@@ -278,7 +280,7 @@ fn owner_runs(keyed: &[Keyed]) -> Vec<(String, i64, i64)> {
         // Focus follows the owner's latest action: the project of the most
         // recent human event at or before this minute (within the human
         // window) owns it outright — work before personal.
-        if let Some(focus) = latest_human(keyed, m) {
+        if let Some(focus) = latest_human(keyed, m, prev.as_ref()) {
             prev = Some(focus.clone());
             owners.push(Some(focus));
             continue;
@@ -329,12 +331,17 @@ fn owner_runs(keyed: &[Keyed]) -> Vec<(String, i64, i64)> {
 /// Project of the owner's most recent action in (m − window, m], preferring
 /// work: the latest work action wins; a personal action only when no work
 /// action is in the window. Each action's own window is per-source (R1).
-fn latest_human(keyed: &[Keyed], m: i64) -> Option<String> {
+/// A non-human event with a window (agent git work) only counts for the
+/// project that already owns the run (`current`) — it extends, never starts.
+fn latest_human(keyed: &[Keyed], m: i64, current: Option<&String>) -> Option<String> {
     let recent = |work: bool| {
         keyed
             .iter()
             .filter(|(t, k, human, window)| {
-                *human && *t <= m && m - t <= *window && is_work(k) == work
+                (*human || (*window > 0 && current == Some(k)))
+                    && *t <= m
+                    && m - t <= *window
+                    && is_work(k) == work
             })
             .max_by_key(|(t, _, _, _)| *t)
             .map(|(_, k, _, _)| k.clone())

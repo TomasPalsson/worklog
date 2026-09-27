@@ -125,8 +125,8 @@ def run_assertions(conn, day25_work_h, day25_vitinn_h, day25_under10):
 
     print("\nAssertions:")
     check(
-        f"2026-09-25 work hours in [7.75, 8.25] (got {day25_work_h:.2f})",
-        7.75 <= day25_work_h <= 8.25,
+        f"2026-09-25 work hours in [8.35, 8.65] (owner: ~8.5 h) (got {day25_work_h:.2f})",
+        8.35 <= day25_work_h <= 8.65,
     )
     check(
         f"2026-09-25 vitinn-infra hours in [1.9, 2.2] (got {day25_vitinn_h:.2f})",
