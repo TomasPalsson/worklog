@@ -126,6 +126,30 @@ fn run_git_log(cwd: &Path, since: &str, until: &str) -> Result<Vec<CommitEntry>>
     Ok(entries)
 }
 
+/// The branch checked out at `dir`, or `None` on detached HEAD, a
+/// non-repo, or any git error.
+pub fn current_branch(dir: &Path) -> Option<String> {
+    if !dir.is_dir() {
+        return None;
+    }
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .arg("branch")
+        .arg("--show-current")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+    if branch.is_empty() {
+        None
+    } else {
+        Some(branch)
+    }
+}
+
 fn git_remote_origin(cwd: &Path) -> Option<String> {
     let output = Command::new("git")
         .arg("-C")
@@ -236,6 +260,28 @@ pub(crate) fn derive_github_url(remote_url: &str, sha: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_branch_returns_checked_out_branch_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed_repo(tmp.path());
+        run(tmp.path(), &["checkout", "-q", "-b", "feat/x"]);
+        assert_eq!(current_branch(tmp.path()), Some("feat/x".to_owned()));
+    }
+
+    #[test]
+    fn current_branch_returns_none_for_detached_head() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed_repo(tmp.path());
+        run(tmp.path(), &["checkout", "-q", "--detach", "HEAD"]);
+        assert_eq!(current_branch(tmp.path()), None);
+    }
+
+    #[test]
+    fn current_branch_returns_none_for_non_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(current_branch(tmp.path()), None);
+    }
 
     #[test]
     fn derive_github_url_handles_ssh_form() {
