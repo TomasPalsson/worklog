@@ -31,7 +31,11 @@ pub fn build_day_blocks(
     conn: &rusqlite::Connection,
     day: chrono::NaiveDate,
 ) -> anyhow::Result<Vec<InferBlock>> {
-    let events = crate::infer::load_day_events(conn, day)?;
+    let mut events = crate::infer::load_day_events(conn, day)?;
+    crate::session_customers::tag_sessions(
+        &mut events,
+        &crate::billing_registry::Registry::load(conn)?,
+    );
     let windows: Vec<AllocationWindow> = crate::overlaps::load_allocations(conn, day)?
         .into_iter()
         .map(|(started_at, ended_at, shares)| AllocationWindow {

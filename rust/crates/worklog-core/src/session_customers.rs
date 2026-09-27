@@ -12,7 +12,6 @@ use crate::billing_registry::Registry;
 use crate::infer::InferEvent;
 use crate::infer_lanes::lane_folder;
 
-#[allow(dead_code)] // unused until the block-building pipeline calls it
 pub(crate) fn tag_sessions(events: &mut [InferEvent], registry: &Registry) {
     let mut sessions: BTreeMap<(Option<String>, String), Vec<usize>> = BTreeMap::new();
     for (i, e) in events.iter().enumerate() {

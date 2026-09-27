@@ -126,3 +126,143 @@ fn tickets_survive_a_split_and_its_reset() {
     rebuild();
     assert_eq!(tickets(), ["T-A", "T-C"], "a reset keeps them too");
 }
+
+const SHARED: &str = "/Users/dev/Desktop/Work/vitinn-infra";
+
+/// Six alternating ~20-min stretches over two hours: session A owns the
+/// even stretches, session B the odd ones, both in the same shared folder.
+fn seed_two_session_stretches(conn: &rusqlite::Connection, title_a: &str, title_b: &str) {
+    use crate::models::Event;
+    for stretch in 0..6u32 {
+        let (session, title) = if stretch % 2 == 0 {
+            ("sessA", title_a)
+        } else {
+            ("sessB", title_b)
+        };
+        for step in 0..10u32 {
+            let minute = stretch * 20 + step * 2;
+            let mut e = Event::minimal(
+                "claude_turn",
+                format!("t{stretch}-{step}"),
+                at(9 + minute / 60, minute % 60).to_rfc3339(),
+                title,
+            );
+            e.project_path = Some(SHARED.into());
+            e.session_id = Some(session.into());
+            crate::repo::upsert_event(conn, &e).unwrap();
+        }
+    }
+}
+
+/// A folder shared by two customers' sessions must yield separate blocks
+/// per customer, not one lane that mixes both (session lanes, FR-05).
+#[test]
+fn two_customer_sessions_split_into_separate_blocks() {
+    use crate::billing_registry::{upsert_customer, Customer};
+    let conn = crate::db::open_memory().unwrap();
+    let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
+    upsert_customer(
+        &conn,
+        &Customer {
+            id: None,
+            name: "Sjúkra".into(),
+            aliases: vec![],
+        },
+    )
+    .unwrap();
+    upsert_customer(
+        &conn,
+        &Customer {
+            id: None,
+            name: "APRÓ".into(),
+            aliases: vec![],
+        },
+    )
+    .unwrap();
+    seed_two_session_stretches(&conn, "Sjúkra onboarding call", "APRÓ migration work");
+
+    let blocks = build_day_blocks(&conn, day).unwrap();
+    let non_calendar: Vec<&InferBlock> = blocks.iter().filter(|b| !b.is_calendar).collect();
+    assert!(
+        non_calendar.len() >= 2,
+        "expected at least 2 blocks, got {}",
+        non_calendar.len()
+    );
+    for b in &non_calendar {
+        let sessions: BTreeMap<&str, ()> = b
+            .events
+            .iter()
+            .filter_map(|e| e.session_id.as_deref())
+            .map(|s| (s, ()))
+            .collect();
+        assert!(
+            sessions.len() <= 1,
+            "block must not mix both sessions, got {sessions:?}"
+        );
+        assert!(
+            b.events
+                .iter()
+                .all(|e| e.project_path.as_deref() == Some(SHARED)),
+            "every event must stay under vitinn-infra"
+        );
+    }
+
+    crate::infer::persist_blocks(&conn, day, &blocks).unwrap();
+    let ids: Vec<i64> = conn
+        .prepare("SELECT id FROM blocks WHERE day = ?1")
+        .unwrap()
+        .query_map([day.to_string()], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(!ids.is_empty());
+    for id in ids {
+        let p = crate::personal::dominant_project_path_for_block(&conn, id).unwrap();
+        assert_eq!(
+            p.as_deref(),
+            Some(SHARED),
+            "saved block {id} must read as vitinn-infra"
+        );
+    }
+}
+
+/// Both sessions naming the same customer must not split the lane —
+/// the registry then behaves exactly as if it held no customers (FR-04).
+#[test]
+fn two_sessions_same_customer_matches_no_customer_registry() {
+    use crate::billing_registry::{upsert_customer, Customer};
+    let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
+
+    let with_customer = crate::db::open_memory().unwrap();
+    upsert_customer(
+        &with_customer,
+        &Customer {
+            id: None,
+            name: "Sjúkra".into(),
+            aliases: vec![],
+        },
+    )
+    .unwrap();
+    seed_two_session_stretches(&with_customer, "Sjúkra onboarding call", "Sjúkra followup");
+    let tagged_blocks = build_day_blocks(&with_customer, day).unwrap();
+
+    let without_customer = crate::db::open_memory().unwrap();
+    seed_two_session_stretches(
+        &without_customer,
+        "Sjúkra onboarding call",
+        "Sjúkra followup",
+    );
+    let plain_blocks = build_day_blocks(&without_customer, day).unwrap();
+
+    let shape = |blocks: &[InferBlock]| -> Vec<(DateTime<Utc>, DateTime<Utc>, u32)> {
+        blocks
+            .iter()
+            .map(|b| (b.started_at, b.ended_at, b.event_count))
+            .collect()
+    };
+    assert_eq!(
+        shape(&tagged_blocks),
+        shape(&plain_blocks),
+        "one resolved customer must not split the folder's lane"
+    );
+}
