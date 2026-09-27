@@ -154,18 +154,24 @@ fn clues_send_block_input_never_leaks_forbidden_fields() {
         },
     );
 
-    // A Slack channel message: only the channel name may leak.
+    // A Slack channel message (source_id "C…": a real channel/group id per
+    // collectors::slack): only the channel name may leak.
     seed_event(
         &conn,
         bid,
         Event {
             details: Some("SLACK-MESSAGE-TEXT".into()),
-            ..Event::minimal(SOURCE_SLACK, "e5", "2026-05-01T09:05:00+00:00", "#team-dev")
+            ..Event::minimal(
+                SOURCE_SLACK,
+                "C0123:1727.1",
+                "2026-05-01T09:05:00+00:00",
+                "team-dev",
+            )
         },
     );
 
-    // A Slack DM: nothing about it may leak — not the counterpart's name,
-    // not the message.
+    // A Slack DM (source_id "D…"): nothing about it may leak — not the
+    // counterpart's name, not the message.
     seed_event(
         &conn,
         bid,
@@ -173,7 +179,7 @@ fn clues_send_block_input_never_leaks_forbidden_fields() {
             details: Some("DM-TEXT".into()),
             ..Event::minimal(
                 SOURCE_SLACK,
-                "e6",
+                "D0456:1727.2",
                 "2026-05-01T09:06:00+00:00",
                 "Jón Jónsson",
             )

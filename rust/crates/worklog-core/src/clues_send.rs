@@ -1,9 +1,4 @@
-//! The only producer of anything sent off-machine (spec 006, D-02): builds
-//! a `clues_contract::DescriptionInput` from a block or a billing line.
-//! Every string reaching it passes `scrub::scrub_identifiers`.
-
-use std::collections::HashSet;
-use std::sync::OnceLock;
+//! The only producer of anything sent off-machine (spec 006, D-02).
 
 use crate::billing;
 use crate::block_details::{self, DetailRow};
@@ -16,16 +11,15 @@ use crate::scrub;
 use anyhow::{anyhow, Result};
 use regex::Regex;
 use rusqlite::Connection;
-
+use std::collections::HashSet;
+use std::sync::OnceLock;
 const SOURCE_CLAUDE_WORK: &str = "claude_work";
 const SOURCE_GIT_REFLOG: &str = "git_reflog";
 const SOURCE_SHELL: &str = "shell";
 const SOURCE_GITHUB_COMMIT: &str = "github_commit";
 const SOURCE_GITHUB_PR: &str = "github_pr";
-
-/// Longest single string / list in a `DescriptionInput` (D-02).
-const MAX_STRING_CHARS: usize = 200;
-const MAX_LIST_ENTRIES: usize = 30;
+const MAX_STRING_CHARS: usize = 200; // longest string in a DescriptionInput
+const MAX_LIST_ENTRIES: usize = 30; // longest list in a DescriptionInput
 
 /// A block's `DescriptionInput`. `Err` for a personal block.
 pub fn build_block_input(conn: &Connection, block_id: i64) -> Result<DescriptionInput> {
@@ -38,7 +32,7 @@ pub fn build_block_input(conn: &Connection, block_id: i64) -> Result<Description
     let rows = block_details::details_for_block(conn, block_id)?;
     let mut collected = Collected::default();
     for row in &rows {
-        collected.absorb(row);
+        collected.absorb(conn, row);
     }
 
     let own_key = block.jira_issue.as_deref().filter(|s| !s.is_empty());
@@ -61,8 +55,7 @@ pub fn build_block_input(conn: &Connection, block_id: i64) -> Result<Description
     })
 }
 
-/// A billing line's `DescriptionInput`: merges every block folded into
-/// `billing::rows_for_day`'s rows for `key`. `Err` when no row matches.
+/// A billing line's `DescriptionInput`: merges every folded-in block.
 pub fn build_line_input(conn: &Connection, key: &BillingLineKey) -> Result<DescriptionInput> {
     let rows = billing::rows_for_day(conn, &key.day)?;
     let matching: Vec<&billing::BillingRow> =
@@ -113,8 +106,7 @@ fn row_matches_key(row: &billing::BillingRow, key: &BillingLineKey) -> bool {
     row.folder == key.folder && row.customer.as_deref().unwrap_or("") == key.customer
 }
 
-/// Distinct block ids (first-seen) plus their `seconds` total (already
-/// the overlap-safe union, never a naive per-block sum).
+/// Distinct block ids (first-seen) plus their overlap-safe `seconds` total.
 fn union_block_ids(rows: &[&billing::BillingRow]) -> (Vec<i64>, i64) {
     let mut ids = Vec::new();
     let mut seen = HashSet::new();
@@ -148,7 +140,7 @@ struct Collected {
 }
 
 impl Collected {
-    fn absorb(&mut self, row: &DetailRow) {
+    fn absorb(&mut self, conn: &Connection, row: &DetailRow) {
         match row.source.as_str() {
             SOURCE_CLAUDE_TOOL => self.absorb_claude_tool(row),
             SOURCE_CLAUDE_WORK => self.absorb_claude_work(row),
@@ -156,7 +148,7 @@ impl Collected {
             SOURCE_GIT_REFLOG => self.absorb_reflog(row),
             SOURCE_SHELL => self.absorb_shell(row),
             SOURCE_FIREFOX => self.absorb_firefox(row),
-            SOURCE_SLACK => self.absorb_slack(row),
+            SOURCE_SLACK => self.absorb_slack(conn, row),
             SOURCE_GITHUB_COMMIT | SOURCE_GITHUB_PR => self.absorb_change_title(row),
             _ => {}
         }
@@ -214,10 +206,10 @@ impl Collected {
         }
     }
 
-    fn absorb_slack(&mut self, row: &DetailRow) {
-        // DMs (anything not starting with '#') are never included.
-        if let Some(name) = row.title.strip_prefix('#') {
-            self.slack_channels.push(name.to_string());
+    fn absorb_slack(&mut self, conn: &Connection, row: &DetailRow) {
+        if slack_channel_id(conn, row.id) {
+            self.slack_channels
+                .push(row.title.trim_start_matches('#').to_string());
         }
     }
 
@@ -288,8 +280,17 @@ fn basename(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_string()
 }
 
-/// The value right after `"branch "` in a `WorkMinute::summary` string,
-/// up to the next " · " separator.
+/// `true` for a channel/group event (`source_id` `"C…:ts"`/`"G…:ts"`);
+/// `false` for a DM (`"D…:ts"`) or anything else — never its counterpart.
+fn slack_channel_id(conn: &Connection, event_id: i64) -> bool {
+    let sql = "SELECT source_id FROM events WHERE id = ?1";
+    let id: String = conn
+        .query_row(sql, [event_id], |r| r.get(0))
+        .unwrap_or_default();
+    matches!(id.chars().next(), Some('C') | Some('G'))
+}
+
+/// The value right after `"branch "` in a `WorkMinute::summary` string.
 fn branch_from_summary(summary: &str) -> Option<String> {
     summary
         .split(" · ")
@@ -385,8 +386,7 @@ fn ticket_number_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"#\d+|\b[A-Z][A-Z0-9]{1,9}-\d+\b").unwrap())
 }
 
-/// A title with the leading `"PR #123: "`, every `"#123"` and every Jira
-/// key removed (D-13), whitespace collapsed; `None` once that's empty.
+/// Title with `"PR #123: "`, `"#123"` and every Jira key stripped (D-13).
 fn strip_pr_ticket(title: &str) -> Option<String> {
     let s = pr_prefix_re().replace(title, "");
     let s = ticket_number_re().replace_all(&s, "");
