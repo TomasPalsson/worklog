@@ -23,6 +23,9 @@ mock.module("@/app/actions", () => ({
   createTicket: mock(async () => ({ ok: true as const, data: undefined })),
   fetchAccounts: mock(async () => ({ ok: true as const, data: [] })),
   fetchProjects: mock(async () => ({ ok: true as const, data: [] })),
+  // Bun's mock.module is process-wide: BillingGroup.test mocks this same
+  // specifier, so both must export every name either file's tree imports.
+  saveBillingFolder: mock(async () => ({ ok: true as const, data: undefined })),
 }));
 
 let BlockCard: (props: {

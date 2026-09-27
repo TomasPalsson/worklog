@@ -34,7 +34,26 @@ const regenerateLineText = mock(async (_i: LineTextKey) => ({
 mock.module("next/navigation", () => ({
   useRouter: () => ({ refresh: mock(() => {}) }),
 }));
-mock.module("@/app/actions", () => ({ saveBillingFolder }));
+// Process-wide like every mock.module: BlockCard.test mocks this specifier
+// too, so export the names its tree imports as well (order must not matter).
+const okVoid = () => mock(async () => ({ ok: true as const, data: undefined }));
+const okList = () => mock(async () => ({ ok: true as const, data: [] }));
+mock.module("@/app/actions", () => ({
+  saveBillingFolder,
+  setDuration: okVoid(),
+  setDescription: okVoid(),
+  setPersonal: okVoid(),
+  deleteBlock: okVoid(),
+  describeBlock: mock(async () => ({ ok: true as const, data: { minutes: 0, jira_issue: null } })),
+  fetchBlockEvents: okList(),
+  fetchBlockCommits: okList(),
+  assignTicket: okVoid(),
+  assignExternalTicket: okVoid(),
+  searchJiraTickets: okList(),
+  createTicket: okVoid(),
+  fetchAccounts: okList(),
+  fetchProjects: okList(),
+}));
 
 let BillingGroup: typeof import("./BillingGroup").BillingGroup;
 
