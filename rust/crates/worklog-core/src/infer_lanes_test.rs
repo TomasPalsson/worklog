@@ -378,3 +378,35 @@ fn helper_adds_no_time() {
         "helper/message activity must add no time to any block"
     );
 }
+
+/// R4 regression: real 2026-09-25 data had project B (LibreChat) hop with
+/// project C, back to B, then D — each hop under 5 min — sandwiched
+/// between two long anchors. `fold_short_runs` (length-only, MIN_RUN=5)
+/// must consolidate the whole alternating cluster into ONE run first;
+/// only then does `merge_by_evidence`'s 15-min pass judge it as a whole
+/// instead of dropping/folding each sub-5-min fragment on its own.
+#[test]
+fn short_runs_fold_by_length_before_the_evidence_pass_judges_them_as_one() {
+    let raw: Vec<(String, i64, i64)> = vec![
+        ("B".into(), 0, 5),   // 6 min — not itself short
+        ("C".into(), 6, 8),   // 3 min
+        ("B".into(), 9, 11),  // 3 min
+        ("D".into(), 12, 15), // 4 min
+        ("A".into(), 16, 30), // 15 min anchor, a different project
+    ];
+    let folded = fold_short_runs(raw);
+    assert_eq!(
+        folded,
+        vec![("B".to_string(), 0, 15), ("A".to_string(), 16, 30)],
+        "the alternating short hops must consolidate under the first run's identity: {folded:?}"
+    );
+    // With no per-project evidence at all (empty keyed), a run at or
+    // above the 15-min sliver threshold is judged strong enough on length
+    // alone and must survive untouched.
+    let merged = crate::infer_evidence::merge_by_evidence(folded, &[]);
+    assert_eq!(
+        merged.len(),
+        2,
+        "both consolidated runs are >= 15 min and must survive: {merged:?}"
+    );
+}

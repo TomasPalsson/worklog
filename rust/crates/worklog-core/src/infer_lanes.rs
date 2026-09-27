@@ -28,6 +28,12 @@ pub(crate) const WINDOW_MINUTES: i64 = 5;
 /// Only an owner PROMPT (`claude_turn`) reflects sustained attention on a
 /// project; its focus reaches this much further (R1).
 const HUMAN_WINDOW_MINUTES: i64 = 15;
+/// A run shorter than this (a quick hop to another project) joins its
+/// neighbour before the evidence-based pass (R4) even runs — a plain
+/// length check for the truly tiny runs, same threshold `overlaps`
+/// bridges on, so "5 minutes of quiet is still the same stretch" agrees
+/// everywhere.
+const MIN_RUN_MINUTES: i64 = 5;
 
 /// Sources that are the owner acting, not a tool working on their behalf.
 /// Exposed to `overlaps` so its per-project human/background event split
@@ -169,7 +175,8 @@ fn build_project_blocks(
     {
         return build(events);
     }
-    let runs = crate::infer_evidence::merge_by_evidence(owner_runs(&keyed), &keyed);
+    let runs =
+        crate::infer_evidence::merge_by_evidence(fold_short_runs(owner_runs(&keyed)), &keyed);
     let by_key = crate::infer_allocations::events_by_key(&events);
 
     // Every event lands in at most one bucket: calendar alone, a run whose
@@ -318,6 +325,33 @@ fn latest_human(keyed: &[Keyed], m: i64) -> Option<String> {
             .map(|(_, k, _, _)| k.clone())
     };
     recent(true).or_else(|| recent(false))
+}
+
+/// Fold runs under `MIN_RUN_MINUTES` into a touching neighbour of the same
+/// kind (work into work, personal into personal — never across) purely by
+/// length, before `infer_evidence::merge_by_evidence`'s 15-min
+/// evidence-based pass runs on the result. A tiny multi-minute cluster of
+/// alternating short runs (a genai-infra blip inside a LibreChat session,
+/// say) collapses into one run here first, so the evidence pass judges it
+/// as a whole instead of as several sub-5-minute fragments.
+fn fold_short_runs(runs: Vec<(String, i64, i64)>) -> Vec<(String, i64, i64)> {
+    let short = |r: &(String, i64, i64)| r.2 - r.1 + 1 < MIN_RUN_MINUTES;
+    let joins = |a: &(String, i64, i64), b: &(String, i64, i64)| {
+        a.2 + 1 == b.1 && is_work(&a.0) == is_work(&b.0)
+    };
+    let mut out: Vec<(String, i64, i64)> = Vec::new();
+    for r in runs {
+        match out.last_mut() {
+            Some(prev) if joins(prev, &r) && (short(&r) || prev.0 == r.0) => prev.2 = r.2,
+            // A short run with nothing before it hands its minutes forward.
+            Some(prev) if joins(prev, &r) && short(prev) => {
+                prev.0 = r.0.clone();
+                prev.2 = r.2;
+            }
+            _ => out.push(r),
+        }
+    }
+    out
 }
 
 fn bridge(owners: &mut [Option<String>]) {
