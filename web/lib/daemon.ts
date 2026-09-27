@@ -153,6 +153,10 @@ export async function runEstimate(day: string, model?: string) {
     estimated: number;
     skipped: number;
     failed: number;
+    line_texts: {
+      generated: number;
+      not_generated: { folder: string; customer: string; reason: string }[];
+    };
   }>("POST", "/estimate", model ? { day, model } : { day });
 }
 

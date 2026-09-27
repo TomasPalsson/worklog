@@ -6,17 +6,22 @@
 //! attached as `jira_issue` on the event so the estimator has a strong
 //! signal to start from.
 
+use std::path::Path;
+
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use regex::Regex;
 use reqwest::blocking::Client;
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use serde::Deserialize;
 use tracing::debug;
 
+use crate::clues_contract::RawRecord;
 use crate::http::{self, RequestBuilderExt};
+use crate::local_clone;
 use crate::models::Event;
 use crate::repo;
+use crate::scrub;
 
 use super::CollectReport;
 
@@ -79,6 +84,9 @@ pub fn collect_with(
         .context("github commit search")?;
     debug!(total = commits.items.len(), "github commits");
     for c in commits.items {
+        if is_personal_owner(&c.repository.full_name, &auth.user) {
+            continue;
+        }
         let ts = c.commit.author.date;
         let title = c
             .commit
@@ -92,23 +100,34 @@ pub fn collect_with(
         let jira_issue = jira_re
             .find(&c.commit.message)
             .map(|m| m.as_str().to_owned());
+        let folder = local_clone::folder_for_repo(&c.repository.full_name);
+        let is_local = folder
+            .as_deref()
+            .is_some_and(|f| local_clone::sha_is_local(Path::new(f), &c.sha));
+        let raw_json = serde_json::to_string(&RawRecord::Commit {
+            sha: c.sha.clone(),
+            body: scrub::scrub_secrets(commit_body(&c.commit.message)),
+            local_folder: if is_local { folder.clone() } else { None },
+        })
+        .ok();
         let ev = Event {
             id: None,
             source: "github_commit".into(),
-            source_id: c.sha,
+            source_id: c.sha.clone(),
             started_at: ts,
             ended_at: None,
             duration_seconds: None,
             title,
             details: Some(c.commit.message),
             repo: Some(c.repository.full_name),
-            project_path: None,
+            project_path: if is_local { folder } else { None },
             jira_issue,
             session_id: None,
             tempo_worklog_id: None,
-            raw_json: None,
+            raw_json,
         };
         repo::upsert_event(conn, &ev)?;
+        mark_elsewhere(conn, &ev.source, &ev.source_id, !is_local)?;
         report.events_written += 1;
     }
 
@@ -133,8 +152,20 @@ pub fn collect_with(
             .rev()
             .collect::<Vec<_>>()
             .join("/");
+        if is_personal_owner(&repo_name, &auth.user) {
+            continue;
+        }
         let combined = format!("{} {}", p.title, p.body.as_deref().unwrap_or(""));
         let jira_issue = jira_re.find(&combined).map(|m| m.as_str().to_owned());
+        // Search API PRs carry no sha: a clone existing is enough to call it local.
+        let folder = local_clone::folder_for_repo(&repo_name);
+        let is_local = folder.is_some();
+        let raw_json = serde_json::to_string(&RawRecord::Commit {
+            sha: String::new(),
+            body: scrub::scrub_secrets(p.body.as_deref().unwrap_or("")),
+            local_folder: if is_local { folder.clone() } else { None },
+        })
+        .ok();
         let ev = Event {
             id: None,
             source: "github_pr".into(),
@@ -145,17 +176,50 @@ pub fn collect_with(
             title: format!("PR #{}: {}", p.number, p.title),
             details: p.body.clone(),
             repo: Some(repo_name),
-            project_path: None,
+            project_path: folder,
             jira_issue,
             session_id: None,
             tempo_worklog_id: None,
-            raw_json: None,
+            raw_json,
         };
         repo::upsert_event(conn, &ev)?;
+        mark_elsewhere(conn, &ev.source, &ev.source_id, !is_local)?;
         report.events_written += 1;
     }
 
+    // FR-02/D-06: keep the personal-row deletion re-runnable. If
+    // `run_upgrade_006` ran before `github_user` was configured, a
+    // personal-owner row could otherwise survive forever — every
+    // collect has auth.user in hand, so re-run it here too.
+    crate::upgrade_006::delete_personal_rows(conn, Some(&auth.user))?;
+
     Ok(report)
+}
+
+/// The commit message with its title line (and the blank line after it)
+/// removed, trimmed - the body stored in `RawRecord::Commit` (D-03).
+fn commit_body(message: &str) -> &str {
+    message.split_once('\n').map_or("", |(_, rest)| rest).trim()
+}
+
+/// D-06: repos owned by the configured personal GitHub account are never tracked.
+pub(crate) fn is_personal_owner(repo_full_name: &str, user: &str) -> bool {
+    repo_full_name
+        .split('/')
+        .next()
+        .is_some_and(|owner| owner.eq_ignore_ascii_case(user))
+}
+
+/// FR-04: a re-collect that later finds the sha locally must clear this.
+/// FR-06: an owner-moved row (`elsewhere = 2`) is never touched — it must
+/// never flip back to "done elsewhere" or lose its manual placement.
+fn mark_elsewhere(conn: &Connection, source: &str, source_id: &str, elsewhere: bool) -> Result<()> {
+    conn.execute(
+        "UPDATE events SET elsewhere = ?1
+          WHERE source = ?2 AND source_id = ?3 AND elsewhere != 2",
+        params![elsewhere as i64, source, source_id],
+    )?;
+    Ok(())
 }
 
 // ───────────────────────── JSON shapes ─────────────────────────
@@ -204,151 +268,7 @@ struct IssueItem {
     repository_url: String,
 }
 
+// Tests live in github_test.rs (same module, split file for line budget).
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::db::open_memory;
-    use httpmock::prelude::*;
-    use serde_json::json;
-
-    fn auth(base: String) -> GitHubAuth {
-        GitHubAuth {
-            token: "ghp_test".into(),
-            user: "TomasPalsson".into(),
-            base,
-        }
-    }
-
-    #[test]
-    fn collect_writes_commits_and_prs_with_jira_keys() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET).path("/search/commits");
-            then.status(200).json_body(json!({
-                "items": [
-                    {
-                        "sha": "abc123",
-                        "repository": { "full_name": "org/repo" },
-                        "commit": {
-                            "author": { "date": "2026-04-18T09:00:00Z" },
-                            "message": "PROJ-42 fix login bug\n\nlonger description"
-                        }
-                    }
-                ]
-            }));
-        });
-        server.mock(|when, then| {
-            when.method(GET).path("/search/issues");
-            then.status(200).json_body(json!({
-                "items": [
-                    {
-                        "id": 1001,
-                        "number": 12,
-                        "title": "Add dashboard for PROJ-100",
-                        "body": null,
-                        "created_at": "2026-04-18T10:00:00Z",
-                        "closed_at": null,
-                        "repository_url": "https://api.github.com/repos/org/repo"
-                    }
-                ]
-            }));
-        });
-
-        let conn = open_memory().unwrap();
-        let since = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
-        let until = NaiveDate::from_ymd_opt(2026, 4, 19).unwrap();
-        let report = collect_with(
-            &conn,
-            &auth(server.base_url()),
-            since,
-            until,
-            &http::client().unwrap(),
-        )
-        .unwrap();
-
-        assert_eq!(report.events_written, 2);
-        let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
-        assert_eq!(events.len(), 2);
-
-        let commit = events.iter().find(|e| e.source == "github_commit").unwrap();
-        assert_eq!(commit.source_id, "abc123");
-        assert_eq!(commit.jira_issue.as_deref(), Some("PROJ-42"));
-        assert_eq!(commit.repo.as_deref(), Some("org/repo"));
-
-        let pr = events.iter().find(|e| e.source == "github_pr").unwrap();
-        assert_eq!(pr.source_id, "1001");
-        assert_eq!(pr.jira_issue.as_deref(), Some("PROJ-100"));
-        assert_eq!(pr.repo.as_deref(), Some("org/repo"));
-        assert!(pr.title.starts_with("PR #12:"));
-    }
-
-    #[test]
-    fn collect_is_idempotent_by_source_id() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET).path("/search/commits");
-            then.status(200).json_body(json!({
-                "items": [{
-                    "sha": "deadbeef",
-                    "repository": {"full_name":"o/r"},
-                    "commit": {
-                        "author": {"date": "2026-04-18T09:00:00Z"},
-                        "message": "hello"
-                    }
-                }]
-            }));
-        });
-        server.mock(|when, then| {
-            when.method(GET).path("/search/issues");
-            then.status(200).json_body(json!({"items": []}));
-        });
-
-        let conn = open_memory().unwrap();
-        let since = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
-        let until = NaiveDate::from_ymd_opt(2026, 4, 19).unwrap();
-        collect_with(
-            &conn,
-            &auth(server.base_url()),
-            since,
-            until,
-            &http::client().unwrap(),
-        )
-        .unwrap();
-        collect_with(
-            &conn,
-            &auth(server.base_url()),
-            since,
-            until,
-            &http::client().unwrap(),
-        )
-        .unwrap();
-        let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
-        assert_eq!(
-            events.len(),
-            1,
-            "dedupe on (source, source_id) must prevent duplicates"
-        );
-    }
-
-    #[test]
-    fn collect_surfaces_http_errors() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET).path("/search/commits");
-            then.status(403).body("rate limited");
-        });
-        let conn = open_memory().unwrap();
-        let err = format!(
-            "{:#}",
-            collect_with(
-                &conn,
-                &auth(server.base_url()),
-                NaiveDate::from_ymd_opt(2026, 4, 18).unwrap(),
-                NaiveDate::from_ymd_opt(2026, 4, 19).unwrap(),
-                &http::client().unwrap(),
-            )
-            .unwrap_err()
-        );
-        assert!(err.contains("HTTP 403"), "err = {err}");
-    }
-}
+#[path = "github_test.rs"]
+mod tests;

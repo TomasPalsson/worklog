@@ -6,9 +6,13 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { subscribe, type ToastMsg } from "@/lib/toast";
 import type { Block, JiraTicket } from "@/lib/types";
 
+const setDescription = mock(async (_id: number, _text: string, _day: string) => ({
+  ok: true as const,
+  data: undefined,
+}));
 mock.module("@/app/actions", () => ({
   setDuration: mock(async () => ({ ok: true as const, data: undefined })),
-  setDescription: mock(async () => ({ ok: true as const, data: undefined })),
+  setDescription,
   setPersonal: mock(async () => ({ ok: true as const, data: undefined })),
   deleteBlock: mock(async () => ({ ok: true as const, data: undefined })),
   describeBlock: mock(async () => ({
@@ -23,6 +27,9 @@ mock.module("@/app/actions", () => ({
   createTicket: mock(async () => ({ ok: true as const, data: undefined })),
   fetchAccounts: mock(async () => ({ ok: true as const, data: [] })),
   fetchProjects: mock(async () => ({ ok: true as const, data: [] })),
+  // Bun's mock.module is process-wide: BillingGroup.test mocks this same
+  // specifier, so both must export every name either file's tree imports.
+  saveBillingFolder: mock(async () => ({ ok: true as const, data: undefined })),
 }));
 
 let BlockCard: (props: {
@@ -91,6 +98,37 @@ describe("BlockCard description + clue line", () => {
       />,
     );
     expect(screen.getByText("Describing…")).toBeTruthy();
+  });
+
+  it("never saves the placeholder as a description when the empty title is clicked and left", () => {
+    setDescription.mockClear();
+    render(
+      <BlockCard
+        block={makeBlock({ description: null, estimated_by: null })}
+        tickets={[]}
+        day="2026-07-25"
+        hideTicketing
+      />,
+    );
+    const box = screen.getByRole("textbox", { name: /Block description/ });
+    fireEvent.focus(box);
+    fireEvent.blur(box);
+    expect(setDescription).not.toHaveBeenCalled();
+    expect(screen.getByText("Describing…")).toBeTruthy();
+  });
+
+  it("clears the placeholder on focus so typing starts from an empty title", () => {
+    render(
+      <BlockCard
+        block={makeBlock({ description: null, estimated_by: "gap" })}
+        tickets={[]}
+        day="2026-07-25"
+        hideTicketing
+      />,
+    );
+    const box = screen.getByRole("textbox", { name: /Block description/ });
+    fireEvent.focus(box);
+    expect(box.innerText ?? box.textContent).toBe("");
   });
 
   it("shows the existing placeholder when there is no description but the block was estimated", () => {
@@ -165,6 +203,21 @@ describe("BlockCard confidence badge", () => {
       expect(badge.textContent).toBe(`${level} confidence`);
     },
   );
+});
+
+describe("BlockCard details link", () => {
+  it("links to the block's Details page", () => {
+    render(
+      <BlockCard
+        block={makeBlock({ id: 42, day: "2026-07-25" })}
+        tickets={[]}
+        day="2026-07-25"
+        hideTicketing
+      />,
+    );
+    const link = screen.getByRole("link", { name: "Details" });
+    expect(link.getAttribute("href")).toBe("/2026-07-25/block/42");
+  });
 });
 
 describe("BlockCard billing move alert", () => {

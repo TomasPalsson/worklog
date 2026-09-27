@@ -375,7 +375,10 @@ fn deildir_and_change_log_tables_exist_and_schema_version_is_14() {
             "missing {expected} table; got {tables:?}"
         );
     }
-    assert_eq!(current_version(&conn).unwrap(), 14);
+    // `>=` floor, not `==`: spec 006's events.elsewhere and
+    // billing_line_texts (T001) took it to v15 — see the
+    // `billing_line_texts_table_exists...` test above.
+    assert!(current_version(&conn).unwrap() >= 14);
 }
 
 #[test]
@@ -577,6 +580,136 @@ fn migrate_adds_multi_tenant_to_legacy_billing_folder_map_table_and_backfills_ze
         .unwrap();
     assert_eq!(multi_tenant, 0, "pre-existing rows must backfill to 0");
     assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+}
+
+#[test]
+fn fresh_db_events_table_has_elsewhere_column() {
+    // Spec 006 T001 (D-07): "done elsewhere" flag on events.
+    let conn = open_memory().unwrap();
+    let cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(events)")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(
+        cols.contains(&"elsewhere".to_string()),
+        "fresh db must have events.elsewhere; got {cols:?}"
+    );
+}
+
+#[test]
+fn migrate_adds_elsewhere_to_legacy_events_table_and_backfills_zero() {
+    // Spec 006 T001. Simulate a pre-v15 events table without `elsewhere`,
+    // insert a row, then run migrate() and assert the column appears
+    // defaulting to 0 for the pre-existing row.
+    let conn = Connection::open_in_memory().unwrap();
+    configure(&conn).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            ended_at TEXT,
+            duration_seconds INTEGER,
+            title TEXT NOT NULL,
+            details TEXT,
+            repo TEXT,
+            project_path TEXT,
+            jira_issue TEXT,
+            session_id TEXT,
+            tempo_worklog_id TEXT,
+            raw_json TEXT,
+            container TEXT,
+            label_origin TEXT,
+            label_confidence REAL,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            UNIQUE(source, source_id)
+        );",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO events (source, source_id, started_at, title)
+         VALUES ('github', 'abc', '2026-04-18T09:00:00+00:00', 'a commit')",
+        [],
+    )
+    .unwrap();
+    conn.pragma_update(None, "user_version", 14).unwrap();
+
+    migrate(&conn).unwrap();
+
+    let cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(events)")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(
+        cols.contains(&"elsewhere".to_string()),
+        "events.elsewhere missing after migrate; got {cols:?}"
+    );
+
+    let elsewhere: i64 = conn
+        .query_row("SELECT elsewhere FROM events LIMIT 1", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(elsewhere, 0, "pre-existing rows must backfill to 0");
+    assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+}
+
+#[test]
+fn billing_line_texts_table_exists_and_schema_version_is_15() {
+    // Spec 006 T001: one generated/manual text per billing line
+    // (day, folder, customer). Takes the schema to v15.
+    let conn = open_memory().unwrap();
+    let tables: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(
+        tables.contains(&"billing_line_texts".to_string()),
+        "missing billing_line_texts table; got {tables:?}"
+    );
+    assert_eq!(current_version(&conn).unwrap(), 15);
+}
+
+#[test]
+fn billing_line_texts_rejects_an_origin_outside_the_check_constraint() {
+    // Spec 006 T001: origin is CHECK(origin IN ('generated','manual')).
+    let conn = open_memory().unwrap();
+    conn.execute(
+        "INSERT INTO billing_line_texts (day, folder, customer, text, origin, updated_at)
+         VALUES ('2026-09-25', 'vitinn-infra', 'Sjúkra', 'text', 'guessed', '2026-09-25T09:00:00Z')",
+        [],
+    )
+    .expect_err("an origin outside ('generated','manual') must be rejected");
+}
+
+#[test]
+fn billing_line_texts_accepts_generated_and_manual_rows_keyed_by_day_folder_customer() {
+    // Spec 006 T001.
+    let conn = open_memory().unwrap();
+    conn.execute(
+        "INSERT INTO billing_line_texts (day, folder, customer, text, origin, updated_at)
+         VALUES ('2026-09-25', 'vitinn-infra', 'Sjúkra', 'Unnið að innviðum.', 'generated', '2026-09-25T09:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO billing_line_texts (day, folder, customer, text, origin, updated_at)
+         VALUES ('2026-09-25', 'genai-infra', '', 'Skoðaði stillingar.', 'manual', '2026-09-25T09:05:00Z')",
+        [],
+    )
+    .unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM billing_line_texts", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 2);
 }
 
 #[test]

@@ -1710,7 +1710,7 @@ fn cmd_sync<W: Write>(day: Option<String>, dry_run: bool, out: &mut W, json: boo
             day,
             dry_run,
             &client,
-            Some(&estimate::ClaudeSubprocess),
+            Some(&estimate::ClaudeSubprocess::default()),
             estimate::DEFAULT_MODEL,
         )?,
         Some(estimate::ProviderChoice::LiteLLM(inv)) => tempo_col::sync_day_with_invoker(

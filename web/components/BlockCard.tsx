@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useTransition } from "react";
 import { Check, Coffee, FolderGit2, Sparkles, Trash2 } from "lucide-react";
+import { BlockDetailsLink } from "./BlockDetailsLink";
 import type { Block, JiraTicket, SourceCount } from "@/lib/types";
 import { formatDuration, formatProjectPath, formatRange } from "@/lib/format";
 import {
@@ -98,9 +99,20 @@ export function BlockCard({
     scrollToBlock(block.id);
   }, [block.id, block.description, billingCustomer]);
 
+  // Never save this as a description: it would mark the block manual and the estimator would skip it forever.
+  const placeholder = block.estimated_by ? "Click to add a description…" : "Describing…";
+  const clearPlaceholder = () => {
+    if (!block.description && descRef.current) descRef.current.textContent = "";
+  };
+
   const commitDescription = () => {
     const previous = block.description ?? "";
-    const next = (descRef.current?.innerText ?? "").trim();
+    const box = descRef.current;
+    const next = (box?.innerText ?? box?.textContent ?? "").trim();
+    if (!block.description && (next === "" || next === placeholder)) {
+      if (box) box.textContent = placeholder;
+      return;
+    }
     if (next === previous) return;
     // Recorded before the save: the revalidated render can land before
     // the action's promise resolves.
@@ -236,6 +248,7 @@ export function BlockCard({
           aria-multiline="true"
           aria-label="Block description — click to edit"
           aria-busy={isPending || undefined}
+          onFocus={clearPlaceholder}
           onBlur={commitDescription}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -244,7 +257,7 @@ export function BlockCard({
             }
           }}
         >
-          {block.description ?? (block.estimated_by ? "Click to add a description…" : "Describing…")}
+          {block.description ?? placeholder}
         </div>
 
         {block.sources.length > 0 && <p className="block-clue-line">{clueLine(block.sources)}</p>}
@@ -305,6 +318,7 @@ export function BlockCard({
           )}
           <EventList blockId={block.id} eventCount={block.event_count} />
           <CommitList blockId={block.id} isPersonal={block.is_personal} />
+          <BlockDetailsLink day={block.day} blockId={block.id} />
         </div>
       </div>
 

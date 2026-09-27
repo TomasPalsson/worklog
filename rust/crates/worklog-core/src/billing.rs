@@ -29,6 +29,7 @@ use rusqlite::{params_from_iter, Connection};
 
 use crate::billing_deildir;
 use crate::billing_registry::Registry;
+use crate::clues_contract::{BillingLineKey, LineTextOrigin};
 use crate::collectors::tempo::{round_to_half_hour, HALF_HOUR_SECONDS};
 use crate::models::Block;
 use crate::repo;
@@ -106,6 +107,12 @@ pub struct BillingRow {
     /// Ids of the blocks folded into this line, so the review UI can group
     /// a day exactly the way the export bills it instead of by Jira ticket.
     pub block_ids: Vec<i64>,
+    /// Origin of a stored `billing_line_texts` row that replaced
+    /// `invoice_text`, when one exists (FR-32). `None` when no text has
+    /// been generated or hand-written for this line yet — the UI shows
+    /// that as "not generated" rather than implying `invoice_text` came
+    /// from `line_text` (FR-35).
+    pub text_origin: Option<LineTextOrigin>,
 }
 
 impl BillingRow {
@@ -231,17 +238,26 @@ pub(crate) fn work_prefix() -> Option<&'static str> {
 /// neither — e.g. a pure calendar or Jira block.
 pub fn work_folder_for_block(conn: &Connection, block_id: i64) -> Result<Option<String>> {
     let mut stmt = conn.prepare(
-        "SELECT e.project_path, e.repo
+        "SELECT e.project_path, e.repo, e.source, e.title
            FROM events e
            JOIN block_events be ON be.event_id = e.id
           WHERE be.block_id = ?1",
     )?;
-    let rows: Vec<(Option<String>, Option<String>)> = stmt
-        .query_map([block_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+    let rows: Vec<(Option<String>, Option<String>, String, String)> = stmt
+        .query_map([block_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
         .collect::<std::result::Result<_, _>>()?;
 
     let mut counts: HashMap<String, u32> = HashMap::new();
-    for (project_path, repo_name) in rows {
+    for (project_path, repo_name, source, title) in rows {
+        // A lifecycle rider (R3) never voted on which lane owns a minute;
+        // it must never vote on which folder a block bills under either,
+        // or a handful of unrelated SessionStart/SessionEnd pings from
+        // other sessions can outnumber the block's real events.
+        if crate::infer_lanes::is_lifecycle_row(&source, Some(title.as_str())) {
+            continue;
+        }
         let key = project_path
             .as_deref()
             .and_then(work_folder_for_path)
@@ -279,7 +295,7 @@ pub fn work_folder_for_block(conn: &Connection, block_id: i64) -> Result<Option<
 /// Scanned once per process — the repo fallback runs on every billing
 /// group, and re-reading every work folder's `.gitmodules` on each call
 /// would turn that into a lot of avoidable disk I/O.
-fn submodule_repo_map() -> &'static HashMap<String, String> {
+pub(crate) fn submodule_repo_map() -> &'static HashMap<String, String> {
     static MAP: std::sync::OnceLock<HashMap<String, String>> = std::sync::OnceLock::new();
     MAP.get_or_init(|| match work_prefix() {
         Some(prefix) => submodule_repo_map_under(std::path::Path::new(prefix)),
@@ -290,7 +306,7 @@ fn submodule_repo_map() -> &'static HashMap<String, String> {
 /// Test-injectable, uncached variant of [`submodule_repo_map`]: scans
 /// `<root>/*/.gitmodules` for `url = ...` lines and maps each submodule's
 /// url basename (`.git` stripped) to the work folder that declares it.
-fn submodule_repo_map_under(root: &std::path::Path) -> HashMap<String, String> {
+pub(crate) fn submodule_repo_map_under(root: &std::path::Path) -> HashMap<String, String> {
     let mut map = HashMap::new();
     let Ok(entries) = std::fs::read_dir(root) else {
         return map;
@@ -540,6 +556,22 @@ fn join_descriptions(descriptions: &[String]) -> String {
     out
 }
 
+/// A group's stored `billing_line_texts` row, when one exists — the same
+/// `(day, folder, customer)` key `line_text::text_for` and `clues_send`
+/// resolve a billing line by.
+fn stored_line_text(
+    conn: &Connection,
+    day: &str,
+    acc: &GroupAcc,
+) -> Result<Option<(String, LineTextOrigin)>> {
+    let key = BillingLineKey {
+        day: day.to_owned(),
+        folder: acc.folder.clone(),
+        customer: acc.customer.clone().unwrap_or_default(),
+    };
+    crate::line_text::text_for(conn, &key)
+}
+
 /// Deterministic, never-empty invoice text for a group whose blocks all
 /// lack a description: the group's most-frequent event title, else the
 /// folder name, else a neutral placeholder.
@@ -658,6 +690,11 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
             } else {
                 join_descriptions(&acc.descriptions)
             };
+            let (invoice_text, needs_description, text_origin) =
+                match stored_line_text(conn, day, &acc)? {
+                    Some((text, origin)) => (text, false, Some(origin)),
+                    None => (invoice_text, needs_description, None),
+                };
             let block_count = acc.block_ids.len() as i64;
             let started_at = acc.starts.iter().min().cloned().unwrap_or_default();
             let ended_at = acc.ends.iter().max().cloned().unwrap_or_default();
@@ -679,6 +716,7 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
                 ended_at,
                 paths,
                 block_ids: acc.block_ids,
+                text_origin,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -1441,6 +1479,121 @@ mod tests {
         assert!(!rows2[0].needs_description);
     }
 
+    // ───────────── stored line text overrides invoice_text (FR-32) ─────────────
+
+    #[test]
+    fn billing_row_uses_a_stored_generated_line_text() {
+        let c = open_memory().unwrap();
+        let b = seed_block(
+            &c,
+            "2026-07-23T09:00:00+00:00",
+            3600,
+            None,
+            Some("Raw block description"),
+            false,
+        );
+        seed_event(&c, b, "e1", Some(&work("sjukra")), "PreToolUse");
+        c.execute(
+            "INSERT INTO billing_line_texts (day, folder, customer, text, origin, updated_at)
+             VALUES ('2026-07-23', 'sjukra', '', 'Sinnti verkefnum fyrir viðskiptavin.', 'generated', '2026-07-23T10:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        let rows = rows_for_day(&c, "2026-07-23").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].invoice_text, "Sinnti verkefnum fyrir viðskiptavin.");
+        assert!(!rows[0].needs_description);
+        assert_eq!(rows[0].text_origin, Some(LineTextOrigin::Generated));
+    }
+
+    #[test]
+    fn billing_row_uses_a_stored_manual_line_text() {
+        let c = open_memory().unwrap();
+        let b = seed_block(
+            &c,
+            "2026-07-23T09:00:00+00:00",
+            3600,
+            None,
+            Some("Raw block description"),
+            false,
+        );
+        seed_event(&c, b, "e1", Some(&work("sjukra")), "PreToolUse");
+        crate::line_text::set_manual(
+            &c,
+            &BillingLineKey {
+                day: "2026-07-23".into(),
+                folder: "sjukra".into(),
+                customer: "".into(),
+            },
+            "Handskrifaður texti fyrir þennan dag.",
+        )
+        .unwrap();
+
+        let rows = rows_for_day(&c, "2026-07-23").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].invoice_text,
+            "Handskrifaður texti fyrir þennan dag."
+        );
+        assert!(!rows[0].needs_description);
+        assert_eq!(rows[0].text_origin, Some(LineTextOrigin::Manual));
+    }
+
+    #[test]
+    fn billing_row_without_a_stored_line_text_keeps_todays_text() {
+        let c = open_memory().unwrap();
+        let b = seed_block(
+            &c,
+            "2026-07-23T09:00:00+00:00",
+            3600,
+            None,
+            Some("Fix the poller sentinel orphan"),
+            false,
+        );
+        seed_event(&c, b, "e1", Some(&work("sjukra")), "PreToolUse");
+
+        let rows = rows_for_day(&c, "2026-07-23").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].invoice_text, "Fix the poller sentinel orphan");
+        assert_eq!(rows[0].text_origin, None);
+
+        // The fallback-text case must also leave `text_origin` blank.
+        let c2 = open_memory().unwrap();
+        let b2 = seed_block(&c2, "2026-07-23T09:00:00+00:00", 3600, None, None, false);
+        seed_event(&c2, b2, "e1", Some(&work("sjukra")), "PreToolUse");
+        let rows2 = rows_for_day(&c2, "2026-07-23").unwrap();
+        assert_eq!(rows2[0].invoice_text, "Work in sjukra");
+        assert_eq!(rows2[0].text_origin, None);
+    }
+
+    #[test]
+    fn csv_and_text_render_use_the_stored_line_text() {
+        let c = open_memory().unwrap();
+        let b = seed_block(
+            &c,
+            "2026-07-23T09:00:00+00:00",
+            3600,
+            None,
+            Some("Raw block description"),
+            false,
+        );
+        seed_event(&c, b, "e1", Some(&work("sjukra")), "PreToolUse");
+        c.execute(
+            "INSERT INTO billing_line_texts (day, folder, customer, text, origin, updated_at)
+             VALUES ('2026-07-23', 'sjukra', '', 'Sinnti verkefnum fyrir viðskiptavin.', 'generated', '2026-07-23T10:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        let rows = rows_for_day(&c, "2026-07-23").unwrap();
+        let csv = render(&rows, Format::Csv);
+        assert!(csv.contains("Sinnti verkefnum fyrir viðskiptavin."));
+        assert!(!csv.contains("Raw block description"));
+        let text = render(&rows, Format::Text);
+        assert!(text.contains("Sinnti verkefnum fyrir viðskiptavin."));
+    }
+
     #[test]
     fn discovery_only_offers_folders_under_the_work_prefix() {
         // Personal paths must not appear as candidate billing folders —
@@ -1580,6 +1733,7 @@ mod tests {
                 ended_at: "2026-07-23T14:30:00Z".into(),
                 paths: vec!["/Users/x/Desktop/Work/sjukra".into()],
                 block_ids: vec![1, 2, 3],
+                text_origin: None,
             },
             BillingRow {
                 day: "2026-07-23".into(),
@@ -1597,6 +1751,7 @@ mod tests {
                 ended_at: "2026-07-23T19:00:00Z".into(),
                 paths: vec!["/Users/x/Desktop/Work/genai-infra".into()],
                 block_ids: vec![4],
+                text_origin: None,
             },
         ]
     }
@@ -2070,3 +2225,7 @@ mod tests {
 #[cfg(test)]
 #[path = "billing_tenant_test.rs"]
 mod billing_tenant_tests;
+
+#[cfg(test)]
+#[path = "billing_lifecycle_test.rs"]
+mod billing_lifecycle_tests;

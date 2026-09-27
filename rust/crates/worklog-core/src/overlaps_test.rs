@@ -22,6 +22,8 @@ fn ev(h: u32, m: u32, source: &str, project: &str) -> InferEvent {
         jira_issue: None,
         event_id: None,
         project_path: Some(project.into()),
+        session_id: None,
+        title: None,
     }
 }
 
@@ -177,4 +179,49 @@ fn day_overlaps_attaches_the_saved_allocation() {
     let overlaps = day_overlaps(&conn, day).unwrap();
     assert_eq!(overlaps.len(), 1);
     assert_eq!(overlaps[0].allocation.as_ref().unwrap().shares, shares);
+}
+
+#[test]
+fn helper_tool_and_message_rows_never_create_an_overlap_or_activity() {
+    // FR-17/D-05: subagent/tool/message rows are the owner's tool acting
+    // on its own behalf, not the owner working two projects at once — a
+    // dense run of them tagged to another project must never open an
+    // overlap window nor show up as that project's activity.
+    let conn = open_memory().unwrap();
+    let day = NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
+    for i in 0..20 {
+        let ts = at(10, i * 3);
+        let mut e =
+            crate::models::Event::minimal("claude_turn", format!("a{ts}"), ts.to_rfc3339(), "work");
+        e.project_path = Some(A.to_string());
+        crate::repo::upsert_event(&conn, &e).unwrap();
+    }
+    for source in [
+        crate::clues_contract::SOURCE_CLAUDE_HELPER,
+        crate::clues_contract::SOURCE_CLAUDE_MESSAGE,
+        crate::clues_contract::SOURCE_CLAUDE_TOOL,
+    ] {
+        for i in 0..20 {
+            let ts = at(10, i * 3);
+            let mut e = crate::models::Event::minimal(
+                source,
+                format!("{source}{ts}"),
+                ts.to_rfc3339(),
+                "x",
+            );
+            e.project_path = Some(B.to_string());
+            crate::repo::upsert_event(&conn, &e).unwrap();
+        }
+    }
+
+    assert!(
+        day_overlaps(&conn, day).unwrap().is_empty(),
+        "{:?}",
+        day_overlaps(&conn, day).unwrap()
+    );
+    let activity = day_activity(&conn, day).unwrap();
+    assert!(
+        activity.iter().all(|a| a.project != B_KEY),
+        "helper/tool/message activity leaked into day_activity: {activity:?}"
+    );
 }

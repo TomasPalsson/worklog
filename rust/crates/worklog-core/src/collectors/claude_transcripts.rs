@@ -9,27 +9,88 @@
 //! defect: the `claude` hook only records session start/end, so a long
 //! autonomous session with hundreds of turns could show as two events.
 //!
-//! PRIVACY: only the fact that a prompt happened is recorded — the prompt
-//! text (`message.content`) is never read into an `Event` field. `title`
-//! is always the literal `"prompt"`; `details` is always `None`. A
-//! "claude working" minute stores only names and paths in `details`: the
-//! git branch, the tool names used and the files it edited — never a
-//! command, a reply or any other text.
+//! PRIVACY: prompt text, tool inputs and tool outputs (capped to 2 KB) are
+//! now stored locally in `raw_json`, secret-scrubbed via `scrub::
+//! scrub_secrets`/`scrub::scrub_json` before they ever reach the row
+//! (D-03/D-04). `title` is always the literal `"prompt"`; `details` is
+//! always `None`. A "claude working" minute still stores only names and
+//! paths in `details`: the git branch, the tool names used and the files
+//! it edited — never a command, a reply or any other text.
 
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use rusqlite::Connection;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::path::Path;
 
+use crate::clues_contract::{HelperKind, RawRecord};
+use crate::collectors::claude_helpers::{self, WorkMinute};
+use crate::collectors::claude_tools;
 use crate::collectors::fish::repo_root_for;
 use crate::models::Event;
 use crate::repo;
+use crate::scrub;
 
 use super::CollectReport;
 
-/// Collect from the default transcripts root (`~/.claude/projects`).
-/// Missing directory is not an error.
+/// One transcript line's identity: when it happened and which session/turn
+/// it belongs to. `None` when the line is outside `[since_ts, until_ts)` or
+/// missing a timestamp, session id or uuid.
+pub(super) struct LineKey<'a> {
+    pub(super) ts_utc: DateTime<Utc>,
+    pub(super) session_id: &'a str,
+    pub(super) uuid: &'a str,
+}
+
+pub(super) fn line_key<'a>(value: &'a Value, since_ts: i64, until_ts: i64) -> Option<LineKey<'a>> {
+    let timestamp = value.get("timestamp").and_then(Value::as_str)?;
+    let parsed = DateTime::parse_from_rfc3339(timestamp).ok()?;
+    let ts_utc: DateTime<Utc> = parsed.with_timezone(&Utc);
+    let epoch = ts_utc.timestamp();
+    if epoch < since_ts || epoch >= until_ts {
+        return None;
+    }
+    Some(LineKey {
+        ts_utc,
+        session_id: value.get("sessionId").and_then(Value::as_str)?,
+        uuid: value.get("uuid").and_then(Value::as_str)?,
+    })
+}
+
+/// The collection window and the owner's home dir, threaded through every
+/// file/line a collector run touches (keeps their signatures under
+/// clippy's `too_many_arguments`).
+pub(super) struct Window<'a> {
+    pub(super) since_ts: i64,
+    pub(super) until_ts: i64,
+    pub(super) home: Option<&'a str>,
+}
+
+/// Session ids belonging to a background job (`<jobs_dir>/<id>/state.json`
+/// -> `sessionId`): their Claude-busy minutes add no time (D-05).
+fn background_job_sessions(jobs_dir: &Path) -> HashSet<String> {
+    let mut sessions = HashSet::new();
+    let Ok(entries) = std::fs::read_dir(jobs_dir) else {
+        return sessions;
+    };
+    for entry in entries.flatten() {
+        let Ok(content) = std::fs::read_to_string(entry.path().join("state.json")) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&content) else {
+            continue;
+        };
+        if let Some(id) = value.get("sessionId").and_then(Value::as_str) {
+            sessions.insert(id.to_string());
+        }
+    }
+    sessions
+}
+
+/// Collect from the default transcripts root (`~/.claude/projects`) and the
+/// default background-job store (`~/.claude/jobs`). Missing directories are
+/// not an error.
 pub fn collect(conn: &Connection, since: NaiveDate, until: NaiveDate) -> Result<CollectReport> {
     let Some(home) = dirs::home_dir() else {
         return Ok(CollectReport {
@@ -37,12 +98,33 @@ pub fn collect(conn: &Connection, since: NaiveDate, until: NaiveDate) -> Result<
             ..Default::default()
         });
     };
-    collect_from_dir(conn, &home.join(".claude/projects"), since, until)
+    collect_from_dirs(
+        conn,
+        &home.join(".claude/projects"),
+        &home.join(".claude/jobs"),
+        since,
+        until,
+    )
 }
 
+/// Collect from a transcripts root, using the default background-job store.
 pub fn collect_from_dir(
     conn: &Connection,
     dir: &Path,
+    since: NaiveDate,
+    until: NaiveDate,
+) -> Result<CollectReport> {
+    let jobs_dir = dirs::home_dir().unwrap_or_default().join(".claude/jobs");
+    collect_from_dirs(conn, dir, &jobs_dir, since, until)
+}
+
+/// Collect from a transcripts root and a background-job store (spec 006,
+/// D-05): a job's own session gets its Claude-busy minutes recorded as
+/// helper activity, never `claude_work`.
+pub fn collect_from_dirs(
+    conn: &Connection,
+    dir: &Path,
+    jobs_dir: &Path,
     since: NaiveDate,
     until: NaiveDate,
 ) -> Result<CollectReport> {
@@ -51,12 +133,16 @@ pub fn collect_from_dir(
         ..Default::default()
     };
     let home = dirs::home_dir().map(|p| p.to_string_lossy().into_owned());
+    let job_sessions = background_job_sessions(jobs_dir);
 
     // A resumed session copies its history into a new file with the same
     // line uuids: count each line once across every file.
     let mut seen = std::collections::HashSet::new();
-    let since_ts = since.and_time(NaiveTime::MIN).and_utc().timestamp();
-    let until_ts = until.and_time(NaiveTime::MIN).and_utc().timestamp();
+    let win = Window {
+        since_ts: since.and_time(NaiveTime::MIN).and_utc().timestamp(),
+        until_ts: until.and_time(NaiveTime::MIN).and_utc().timestamp(),
+        home: home.as_deref(),
+    };
 
     let Ok(project_dirs) = std::fs::read_dir(dir) else {
         return Ok(report);
@@ -86,18 +172,24 @@ pub fn collect_from_dir(
                 .unwrap_or(0);
             // Only files untouched since before the window can be skipped: a
             // session still writing after `until` holds lines from inside it.
-            if modified_ts < since_ts {
+            if modified_ts < win.since_ts {
                 continue;
             }
-            collect_file(
-                conn,
-                &path,
-                since_ts,
-                until_ts,
-                home.as_deref(),
-                &mut seen,
-                &mut report,
-            )?;
+            collect_file(conn, &path, &win, &mut seen, &job_sessions, &mut report)?;
+            // A session's subagent/workflow-task transcripts live in a
+            // sibling directory named after its own id (spec 006, FR-16).
+            if let Some(session_id) = path.file_stem().and_then(|s| s.to_str()) {
+                let helper_dir = project_dir.join(session_id).join("subagents");
+                if helper_dir.is_dir() {
+                    claude_helpers::collect_helpers_for_session(
+                        conn,
+                        &helper_dir,
+                        &win,
+                        &mut seen,
+                        &mut report,
+                    )?;
+                }
+            }
         }
     }
     Ok(report)
@@ -106,15 +198,17 @@ pub fn collect_from_dir(
 fn collect_file(
     conn: &Connection,
     path: &Path,
-    since_ts: i64,
-    until_ts: i64,
-    home: Option<&str>,
-    seen: &mut std::collections::HashSet<String>,
+    win: &Window,
+    seen: &mut HashSet<String>,
+    job_sessions: &HashSet<String>,
     report: &mut CollectReport,
 ) -> Result<()> {
     let Ok(content) = std::fs::read_to_string(path) else {
         return Ok(());
     };
+    // tool_use -> its tool_result's output text, paired across the whole
+    // file (a resumed session's tool_result can be many lines later).
+    let tool_outputs = claude_tools::collect_tool_outputs(&content);
     // One marker per session-minute, summarising every line in it.
     let mut working: std::collections::BTreeMap<(String, i64), WorkMinute> = Default::default();
 
@@ -131,7 +225,10 @@ fn collect_file(
         let is_work = value.get("type").and_then(Value::as_str) == Some("assistant")
             && value.get("entrypoint").and_then(Value::as_str) != Some("sdk-cli")
             && value.get("isSidechain").and_then(Value::as_bool) != Some(true);
-        if !is_work {
+        // An inter-session message (FR-18) is never a prompt, whatever type
+        // its line carries.
+        let msg = claude_helpers::session_message(&value);
+        if !is_work && msg.is_none() {
             if value.get("type").and_then(Value::as_str) != Some("user") {
                 continue;
             }
@@ -142,53 +239,61 @@ fn collect_file(
                 continue;
             }
         }
-        let Some(timestamp) = value.get("timestamp").and_then(Value::as_str) else {
+        let Some(key) = line_key(&value, win.since_ts, win.until_ts) else {
             continue;
         };
-        let Ok(parsed) = DateTime::parse_from_rfc3339(timestamp) else {
-            continue;
-        };
-        let ts_utc: DateTime<Utc> = parsed.with_timezone(&Utc);
-        let epoch = ts_utc.timestamp();
-        if epoch < since_ts || epoch >= until_ts {
-            continue;
-        }
-        let Some(session_id) = value.get("sessionId").and_then(Value::as_str) else {
-            continue;
-        };
-        let Some(uuid) = value.get("uuid").and_then(Value::as_str) else {
-            continue;
-        };
-        if !seen.insert(uuid.to_string()) {
+        if !seen.insert(key.uuid.to_string()) {
             continue;
         }
         let project_path = value
             .get("cwd")
             .and_then(Value::as_str)
-            .and_then(|cwd| repo_root_for(cwd, home));
+            .and_then(|cwd| repo_root_for(cwd, win.home));
+
+        if let Some(msg) = msg {
+            claude_helpers::emit_message_event(
+                conn,
+                key.session_id,
+                key.uuid,
+                key.ts_utc,
+                project_path,
+                msg,
+                report,
+            )?;
+            continue;
+        }
         if is_work {
             working
-                .entry((session_id.to_string(), epoch / 60))
-                .or_insert_with(|| WorkMinute::new(ts_utc, project_path.clone()))
+                .entry((key.session_id.to_string(), key.ts_utc.timestamp() / 60))
+                .or_insert_with(|| WorkMinute::new(key.ts_utc, project_path.clone()))
                 .add(&value);
+            for tool_event in claude_tools::build_tool_events(
+                &value,
+                key.session_id,
+                key.ts_utc,
+                project_path.clone(),
+                &tool_outputs,
+            ) {
+                repo::upsert_event(conn, &tool_event)?;
+                report.events_written += 1;
+            }
             continue;
         }
 
+        let raw = RawRecord::ClaudePrompt {
+            session_id: key.session_id.to_string(),
+            text: scrub::scrub_secrets(&prompt_text(value.get("message").unwrap_or(&Value::Null))),
+        };
         let ev = Event {
-            id: None,
-            source: "claude_turn".into(),
-            source_id: format!("{session_id}:{uuid}"),
-            started_at: ts_utc.to_rfc3339(),
-            ended_at: None,
-            duration_seconds: None,
-            title: "prompt".into(),
-            details: None,
-            repo: None,
             project_path,
-            jira_issue: None,
-            session_id: Some(session_id.to_string()),
-            tempo_worklog_id: None,
-            raw_json: None,
+            session_id: Some(key.session_id.to_string()),
+            raw_json: serde_json::to_string(&raw).ok(),
+            ..Event::minimal(
+                "claude_turn",
+                format!("{}:{}", key.session_id, key.uuid),
+                key.ts_utc.to_rfc3339(),
+                "prompt",
+            )
         };
         repo::upsert_event(conn, &ev)?;
         report.events_written += 1;
@@ -197,116 +302,33 @@ fn collect_file(
     // "claude_work" (Claude busy) is kept apart from "claude_turn" (the owner
     // typed) so attention can outweigh background activity.
     for ((session_id, minute), w) in working {
+        if job_sessions.contains(&session_id) {
+            claude_helpers::emit_helper_minute(
+                conn,
+                format!("{session_id}:m{minute}"),
+                session_id,
+                HelperKind::BackgroundJob,
+                "claude working".to_string(),
+                &w,
+                report,
+            )?;
+            continue;
+        }
         let ev = Event {
-            id: None,
-            source: "claude_work".into(),
-            source_id: format!("{session_id}:m{minute}"),
-            started_at: w.first.to_rfc3339(),
-            ended_at: None,
-            duration_seconds: None,
-            title: "claude working".into(),
             details: w.summary(),
-            repo: None,
             project_path: w.project_path.clone(),
-            jira_issue: None,
-            session_id: Some(session_id),
-            tempo_worklog_id: None,
-            raw_json: None,
+            session_id: Some(session_id.clone()),
+            ..Event::minimal(
+                "claude_work",
+                format!("{session_id}:m{minute}"),
+                w.first.to_rfc3339(),
+                "claude working",
+            )
         };
         repo::upsert_event(conn, &ev)?;
         report.events_written += 1;
     }
     Ok(())
-}
-
-/// What Claude did in one minute, as names and paths only.
-struct WorkMinute {
-    first: DateTime<Utc>,
-    project_path: Option<String>,
-    branch: Option<String>,
-    tools: std::collections::BTreeMap<String, u32>,
-    edited: std::collections::BTreeSet<String>,
-}
-
-/// Tools whose `file_path` is a file Claude changed.
-const EDIT_TOOLS: [&str; 4] = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
-
-impl WorkMinute {
-    fn new(first: DateTime<Utc>, project_path: Option<String>) -> Self {
-        Self {
-            first,
-            project_path,
-            branch: None,
-            tools: Default::default(),
-            edited: Default::default(),
-        }
-    }
-
-    fn add(&mut self, line: &Value) {
-        if let Some(b) = line.get("gitBranch").and_then(Value::as_str) {
-            if !b.is_empty() && b != "HEAD" {
-                self.branch = Some(b.to_string());
-            }
-        }
-        let content = line.pointer("/message/content").and_then(Value::as_array);
-        for item in content.into_iter().flatten() {
-            if item.get("type").and_then(Value::as_str) != Some("tool_use") {
-                continue;
-            }
-            let Some(name) = item.get("name").and_then(Value::as_str) else {
-                continue;
-            };
-            *self.tools.entry(name.to_string()).or_default() += 1;
-            if EDIT_TOOLS.contains(&name) {
-                if let Some(p) = item.pointer("/input/file_path").and_then(Value::as_str) {
-                    // Relative to the repo root, else to the session's folder.
-                    let cwd = line.get("cwd").and_then(Value::as_str);
-                    let rel = [self.project_path.as_deref(), cwd]
-                        .into_iter()
-                        .flatten()
-                        .find_map(|r| p.strip_prefix(&format!("{r}/")).map(str::to_string));
-                    self.edited.insert(
-                        rel.unwrap_or_else(|| p.rsplit('/').next().unwrap_or(p).to_string()),
-                    );
-                }
-            }
-        }
-    }
-
-    /// "branch fix-login · Bash ×2, Edit · edited src/login.rs", or `None`
-    /// when there is nothing but text (no branch, no tools).
-    fn summary(&self) -> Option<String> {
-        let mut parts = Vec::new();
-        if let Some(b) = &self.branch {
-            parts.push(format!("branch {b}"));
-        }
-        if !self.tools.is_empty() {
-            let mut tools: Vec<(&String, &u32)> = self.tools.iter().collect();
-            tools.sort_by(|a, b| b.1.cmp(a.1));
-            let names: Vec<String> = tools
-                .iter()
-                .map(|(n, c)| {
-                    if **c > 1 {
-                        format!("{n} ×{c}")
-                    } else {
-                        n.to_string()
-                    }
-                })
-                .collect();
-            parts.push(names.join(", "));
-        }
-        if !self.edited.is_empty() {
-            let files: Vec<&str> = self.edited.iter().map(String::as_str).collect();
-            let shown = files.iter().take(3).copied().collect::<Vec<_>>().join(", ");
-            let more = files.len().saturating_sub(3);
-            parts.push(if more > 0 {
-                format!("edited {shown} +{more}")
-            } else {
-                format!("edited {shown}")
-            });
-        }
-        (!parts.is_empty()).then(|| parts.join(" · "))
-    }
 }
 
 /// A "real" user prompt: plain string content, or a content array that
@@ -326,11 +348,26 @@ fn is_real_prompt(message: &Value) -> bool {
     }
 }
 
+/// The owner's prompt text: the plain string content, or the text items of
+/// a content array joined with `\n`.
+fn prompt_text(message: &Value) -> String {
+    match message.get("content") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter(|item| item.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|item| item.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
 /// Only lines the owner typed: never headless `claude -p` runs (the
 /// estimator, loop children), meta lines, or queued system notifications.
 /// Newer transcripts say so in `origin.kind`; older ones have no origin, so
 /// fall back to "not a `<tag>` line".
-fn is_owner_typed(line: &Value) -> bool {
+pub(super) fn is_owner_typed(line: &Value) -> bool {
     if line.get("entrypoint").and_then(Value::as_str) == Some("sdk-cli")
         || line.get("isMeta").and_then(Value::as_bool) == Some(true)
     {

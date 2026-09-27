@@ -12,6 +12,8 @@ fn ev(h: u32, m: u32, source: &str, project: Option<&str>) -> InferEvent {
         jira_issue: None,
         event_id: None,
         project_path: project.map(str::to_string),
+        session_id: None,
+        title: None,
     }
 }
 
@@ -144,11 +146,15 @@ fn a_single_project_day_is_unchanged() {
     assert_eq!(build_blocks(events).len(), 1);
 }
 
-/// What the owner saw on 2026-09-23: they act in A, then Claude works in
-/// the background in C for ten minutes. A owns those minutes (focus), so
-/// they must count as A's — not vanish because A had few events of its own.
+/// R4 (was: "owned minutes count even when the owner has few events
+/// there"). What the owner saw on 2026-09-23: they act in A for 2
+/// minutes, then Claude works in the background in C for ten minutes. A's
+/// run only holds 2 owner events — below R4's "stays on its own" floor of
+/// 3 — so it folds into its only touching neighbour (C) instead of
+/// surviving as a separately-owned sliver; the minutes are still counted
+/// (nobody's time vanishes), just attributed to the neighbour project.
 #[test]
-fn owned_minutes_count_even_when_the_owner_has_few_events_there() {
+fn weak_focus_run_folds_into_its_only_neighbour_instead_of_owning_the_span() {
     let mut events = vec![
         ev(9, 0, "shell", Some(A_WORK)),
         ev(9, 2, "shell", Some(A_WORK)),
@@ -163,7 +169,7 @@ fn owned_minutes_count_even_when_the_owner_has_few_events_there() {
     );
     assert!(blocks
         .iter()
-        .all(|b| b.dominant_project_path().as_deref() == Some(A_WORK)));
+        .all(|b| b.dominant_project_path().as_deref() == Some(C_WORK)));
 }
 
 /// A 3-minute hop to another project joins its neighbour instead of
@@ -186,3 +192,252 @@ fn a_quick_hop_joins_its_neighbour_instead_of_vanishing() {
 
 const A_WORK: &str = "/Users/dev/Desktop/Work/vitinn-infra";
 const C_WORK: &str = "/Users/dev/Desktop/Work/lyfjastofnun";
+const D_WORK: &str = "/Users/dev/Desktop/Work/otherproj";
+
+/// A folderless event landing inside an established block's span rides
+/// along with it, but must never move that block's project or bounds
+/// (D-08, FR-07, FR-08, B4).
+#[test]
+fn folderless_never_votes_or_extends() {
+    let mut events: Vec<InferEvent> = (0..10)
+        .map(|i| ev(9, i * 3, "claude_turn", Some(A)))
+        .collect();
+    events.extend((0..10).map(|i| ev(14, i * 3, "claude_turn", Some(B))));
+    let baseline = build_blocks(events.clone());
+
+    // Squarely inside A's morning span.
+    events.push(ev(9, 15, "github_pr", None));
+    let blocks = build_blocks(events);
+
+    assert_eq!(blocks.len(), baseline.len());
+    let morning = |bs: &[InferBlock]| {
+        bs.iter()
+            .find(|b| b.started_at.format("%H").to_string() == "09")
+            .unwrap()
+            .clone()
+    };
+    let (m, base_m) = (morning(&blocks), morning(&baseline));
+    assert_eq!(m.dominant_project_path().as_deref(), Some(A));
+    assert_eq!(
+        m.started_at, base_m.started_at,
+        "folderless event must not move the start"
+    );
+    assert_eq!(
+        m.ended_at, base_m.ended_at,
+        "folderless event must not extend the end"
+    );
+}
+
+/// A folderless event nowhere near any established span joins no block
+/// and creates none of its own (FR-09).
+#[test]
+fn folderless_event_outside_every_span_joins_no_block() {
+    let mut events: Vec<InferEvent> = (0..10)
+        .map(|i| ev(9, i * 3, "claude_turn", Some(A)))
+        .collect();
+    events.extend((0..10).map(|i| ev(14, i * 3, "claude_turn", Some(B))));
+    let baseline = build_blocks(events.clone());
+
+    // Nowhere near either span, and no project of its own.
+    events.push(ev(20, 0, "github_pr", None));
+    let blocks = build_blocks(events);
+
+    assert_eq!(
+        blocks.len(),
+        baseline.len(),
+        "a folderless event outside every span must create no block"
+    );
+    assert_eq!(total_minutes(&blocks), total_minutes(&baseline));
+}
+
+/// On a single-project day (one lane, the `< 2` bypass), a folderless
+/// event just before the project's span used to merge straight in via
+/// plain gap-clustering and drag the block's start back with it. It must
+/// join no block instead (D-08, FR-08, FR-09).
+#[test]
+fn folderless_event_before_span_does_not_extend_start() {
+    // A single real project running 10:08-10:36 - the day's only lane.
+    let project_events: Vec<InferEvent> = (0..8)
+        .map(|i| ev(10, 8 + i * 4, "claude_turn", Some(A)))
+        .collect();
+    let baseline = build_blocks(project_events.clone());
+    assert_eq!(baseline.len(), 1);
+
+    // A folderless shell `cd` from ~ eight minutes earlier - inside the
+    // gap-timeout window, so naive gap-clustering merges it straight in
+    // and moves the start back to 10:00.
+    let mut events = project_events;
+    events.push(ev(10, 0, "shell", None));
+    let blocks = build_blocks(events);
+
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(
+        blocks[0].started_at, baseline[0].started_at,
+        "a folderless event before the span must not move its start"
+    );
+    assert_eq!(
+        blocks[0].event_count, baseline[0].event_count,
+        "a folderless event outside every span must join no block"
+    );
+}
+
+/// Same single-project day, but the folderless event lands inside the
+/// span rather than before it: it rides along (linked into the block)
+/// without moving either bound (D-08, FR-07, FR-08).
+#[test]
+fn folderless_event_inside_span_links_without_moving_bounds() {
+    let project_events: Vec<InferEvent> = (0..8)
+        .map(|i| ev(10, 8 + i * 4, "claude_turn", Some(A)))
+        .collect();
+    let baseline = build_blocks(project_events.clone());
+    assert_eq!(baseline.len(), 1);
+
+    let mut events = project_events;
+    events.push(ev(10, 20, "shell", None)); // squarely inside 10:08-10:36
+    let blocks = build_blocks(events);
+
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].started_at, baseline[0].started_at);
+    assert_eq!(blocks[0].ended_at, baseline[0].ended_at);
+    assert_eq!(
+        blocks[0].event_count,
+        baseline[0].event_count + 1,
+        "a folderless event inside the span must be linked into the block"
+    );
+}
+
+/// A run of folderless-only events far from every established span used
+/// to cluster into its own leftover block. It must create no block of
+/// its own (FR-09).
+#[test]
+fn folderless_only_stretch_outside_every_span_creates_no_block() {
+    let mut events: Vec<InferEvent> = (0..10)
+        .map(|i| ev(9, i * 3, "claude_turn", Some(A)))
+        .collect();
+    events.extend((0..10).map(|i| ev(14, i * 3, "claude_turn", Some(B))));
+    let baseline = build_blocks(events.clone());
+    assert_eq!(baseline.len(), 2);
+
+    // 20 minutes of folderless shell activity - a `cd` session from ~ -
+    // nowhere near either span.
+    events.extend((0..=10).map(|i| ev(20, i * 2, "shell", None)));
+    let blocks = build_blocks(events);
+
+    assert_eq!(
+        blocks.len(),
+        baseline.len(),
+        "a folderless-only stretch outside every span must create no block of its own"
+    );
+    assert_eq!(total_minutes(&blocks), total_minutes(&baseline));
+}
+
+/// Helper activity (claude_helper) and session messages (claude_message)
+/// must never vote on a lane's owner and must add no time to any block
+/// (D-05, FR-16, FR-17, B7) — dense helper/message rows tagged to a
+/// project the owner never touched must leave the day identical to the
+/// same day without them.
+#[test]
+fn helper_adds_no_time() {
+    let base_events = || {
+        vec![
+            ev(9, 0, "claude_turn", Some(A)),
+            ev(9, 30, "claude_turn", Some(A)),
+        ]
+    };
+    let baseline = build_blocks(base_events());
+
+    let mut events = base_events();
+    events.extend((5..20).map(|m| {
+        ev(
+            9,
+            m,
+            crate::clues_contract::SOURCE_CLAUDE_HELPER,
+            Some(D_WORK),
+        )
+    }));
+    events.extend((20..26).map(|m| {
+        ev(
+            9,
+            m,
+            crate::clues_contract::SOURCE_CLAUDE_MESSAGE,
+            Some(D_WORK),
+        )
+    }));
+    let blocks = build_blocks(events);
+
+    assert!(
+        blocks
+            .iter()
+            .all(|b| b.dominant_project_path().as_deref() != Some(D_WORK)),
+        "helper/message activity must never decide a block's project"
+    );
+    assert_eq!(blocks.len(), baseline.len());
+    assert_eq!(
+        total_minutes(&blocks),
+        total_minutes(&baseline),
+        "helper/message activity must add no time to any block"
+    );
+}
+
+/// R4 regression: real 2026-09-25 data had project B (LibreChat) hop with
+/// project C, back to B, then D — each hop under 5 min — sandwiched
+/// between two long anchors. `fold_short_runs` (length-only, MIN_RUN=5)
+/// must consolidate the whole alternating cluster into ONE run first;
+/// only then does `merge_by_evidence`'s 15-min pass judge it as a whole
+/// instead of dropping/folding each sub-5-min fragment on its own.
+#[test]
+fn short_runs_fold_by_length_before_the_evidence_pass_judges_them_as_one() {
+    let raw: Vec<(String, i64, i64)> = vec![
+        ("B".into(), 0, 5),   // 6 min — not itself short
+        ("C".into(), 6, 8),   // 3 min
+        ("B".into(), 9, 11),  // 3 min
+        ("D".into(), 12, 15), // 4 min
+        ("A".into(), 16, 30), // 15 min anchor, a different project
+    ];
+    let folded = fold_short_runs(raw);
+    assert_eq!(
+        folded,
+        vec![("B".to_string(), 0, 15), ("A".to_string(), 16, 30)],
+        "the alternating short hops must consolidate under the first run's identity: {folded:?}"
+    );
+    // With no per-project evidence at all (empty keyed), a run at or
+    // above the 15-min sliver threshold is judged strong enough on length
+    // alone and must survive untouched.
+    let merged = crate::infer_evidence::merge_by_evidence(folded, &[]);
+    assert_eq!(
+        merged.len(),
+        2,
+        "both consolidated runs are >= 15 min and must survive: {merged:?}"
+    );
+}
+
+#[test]
+fn agent_reflog_keeps_an_owned_work_run_against_personal_typing() {
+    // Owner prompts work A, then an agent keeps committing in A while the
+    // owner types into personal B: A's run continues (R2 softened) instead
+    // of B cutting a personal sliver into the middle of it.
+    let mut events: Vec<InferEvent> = [0, 2, 4]
+        .iter()
+        .map(|&m| ev(9, m, "claude_turn", Some(A)))
+        .collect();
+    events.extend(
+        [17, 29, 41]
+            .iter()
+            .map(|&m| ev(9, m, "git_reflog", Some(A))),
+    );
+    events.extend(
+        [20, 23, 26]
+            .iter()
+            .map(|&m| ev(9, m, "claude_turn", Some(B))),
+    );
+    let blocks = build_blocks(events);
+    assert_no_overlap(&blocks);
+    let cutoff = Utc.with_ymd_and_hms(2026, 9, 23, 9, 40, 0).unwrap();
+    let personal_inside = blocks
+        .iter()
+        .any(|b| b.dominant_project_path().as_deref() == Some(B) && b.started_at < cutoff);
+    assert!(
+        !personal_inside,
+        "no personal sliver inside the agent-extended A run"
+    );
+}

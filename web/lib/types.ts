@@ -2,6 +2,7 @@
 // purpose — we only list the columns the UI actually reads.
 
 import type { Deild } from "./deildir";
+import type { LineTextOrigin } from "./clues_contract";
 
 /** A row from the `events` table as the daemon returns it. */
 export interface Event {
@@ -291,6 +292,11 @@ export interface BillingRow {
   /** Ids of the blocks folded into this line — lets the day view group
    * blocks the way the export bills them rather than by Jira ticket. */
   block_ids: number[];
+  /** Origin of a stored billing-line text that replaced `invoice_text`,
+   * when one exists (FR-32/FR-35). `null`/absent = nothing generated or
+   * hand-written yet — optional so existing `BillingRow` literals built
+   * before this field existed stay assignable. */
+  text_origin?: LineTextOrigin | null;
 }
 
 /** A customer time can be billed to. */

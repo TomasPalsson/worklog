@@ -8,12 +8,14 @@ import {
   loadDaySummary,
   routedForDay,
 } from "@/lib/daemon";
+import { elsewhereForDay, type ElsewhereItem } from "@/lib/daemonElsewhere";
 import { formatDayHeading, formatTotalHours } from "@/lib/format";
 import { DayHeader } from "@/components/DayHeader";
 import { ActionBar } from "@/components/ActionBar";
 import { BillingGroup } from "@/components/BillingGroup";
 import { BlockCard } from "@/components/BlockCard";
 import { DayStrip } from "@/components/DayStrip";
+import { ElsewhereList } from "@/components/ElsewhereList";
 import { EmptyState } from "@/components/EmptyState";
 import { TicketGroup } from "@/components/TicketGroup";
 import { UnsortedList } from "@/components/UnsortedList";
@@ -70,14 +72,17 @@ export default async function DayPage({
   // can report a hidden count without a second round trip when Review opens.
   let routedEvents: RoutedEvent[] = [];
   let registry: BillingRegistry | null = null;
+  let elsewhereItems: ElsewhereItem[] = [];
   try {
-    [routedEvents, registry] = await Promise.all([
+    [routedEvents, registry, elsewhereItems] = await Promise.all([
       routedForDay(day, true),
       loadBillingRegistry(),
+      elsewhereForDay(day),
     ]);
   } catch {
     routedEvents = [];
     registry = null;
+    elsewhereItems = [];
   }
   const folderOptions = registry
     ? Array.from(
@@ -167,6 +172,7 @@ export default async function DayPage({
         allocations={allocations}
       />
       <UnsortedList key={day} day={day} events={routedEvents} folderOptions={folderOptions} />
+      <ElsewhereList key={day} day={day} items={elsewhereItems} blocks={blocks} />
       {blocks.length === 0 ? (
         <EmptyState day={day} />
       ) : (

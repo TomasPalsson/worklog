@@ -49,6 +49,14 @@ pub struct InferEvent {
     /// Drives the project-aware split inside `build_blocks` so two
     /// concurrent projects don't get fused into a single worklog entry.
     pub project_path: Option<String>,
+    /// Claude session this event belongs to (NULL for non-Claude sources).
+    /// Drives `infer_evidence::drop_isolated_claude_work` (R3): a
+    /// background `claude_work` heartbeat is judged against its own
+    /// session's prompts and siblings, never another session's.
+    pub session_id: Option<String>,
+    /// Raw event title. Drives `infer_evidence::dedupe_shell_events` (a
+    /// flaky collector logging the exact same `shell` command twice).
+    pub title: Option<String>,
 }
 
 impl InferEvent {
@@ -79,8 +87,10 @@ pub struct InferBlock {
     pub flagged: bool,
     /// Track the source kind so the clustering pass can refuse to extend
     /// a calendar block. Skipped in serialization; not needed on disk.
+    /// `pub(crate)` so `infer_lanes` can refuse to place a folderless
+    /// event into a calendar block.
     #[serde(skip)]
-    is_calendar: bool,
+    pub(crate) is_calendar: bool,
     #[serde(skip)]
     pub(crate) events: Vec<InferEvent>,
 }
@@ -93,6 +103,13 @@ impl InferBlock {
     pub fn dominant_project_path(&self) -> Option<String> {
         let mut counts: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
         for e in &self.events {
+            // A lifecycle rider (R3) never voted on which lane owns a
+            // minute; it must never vote on which project the block IS
+            // either, or a handful of unrelated SessionStart/SessionEnd
+            // pings can outnumber the block's real events.
+            if crate::infer_lanes::is_lifecycle(e) {
+                continue;
+            }
             if let Some(p) = &e.project_path {
                 *counts.entry(p.as_str()).or_insert(0) += 1;
             }
@@ -134,24 +151,53 @@ pub(crate) fn extend_block(block: &mut InferBlock, e: &InferEvent) {
     block.events.push(e.clone());
 }
 
-pub(crate) fn finalize(mut block: InferBlock) -> Option<InferBlock> {
+/// Link `e` into `block` without moving `started_at`/`ended_at`/
+/// `duration_seconds` — for an event that must ride along inside a span
+/// it never gets to decide (a folderless event placed by `infer_lanes`,
+/// D-08, FR-07, FR-08, FR-09).
+pub(crate) fn attach_riding_event(block: &mut InferBlock, e: InferEvent) {
+    block.event_count += 1;
+    if let Some(id) = e.event_id {
+        block.event_ids.push(id);
+    }
+    block.events.push(e);
+    block.jira_issue = unique_jira_issue(&block.events);
+}
+
+/// The one `jira_issue` shared by every event that carries one; `None`
+/// if there isn't exactly one. Shared by `finalize`, `build_sub_block`
+/// and `attach_riding_event` so a block's ticket is always computed the
+/// same way regardless of which pass last touched its events.
+fn unique_jira_issue(events: &[InferEvent]) -> Option<String> {
+    let issues: HashSet<String> = events.iter().filter_map(|e| e.jira_issue.clone()).collect();
+    if issues.len() == 1 {
+        issues.into_iter().next()
+    } else {
+        None
+    }
+}
+
+pub(crate) fn finalize(block: InferBlock) -> Option<InferBlock> {
+    finalize_ext(block, true)
+}
+
+/// `enforce_min=false` skips the `MIN_BLOCK_MINUTES` drop — for a piece
+/// re-cut from an already-approved block (an allocation window's
+/// before/after remainder, a ticket-edge cut) whose minutes must never
+/// vanish just for being a short remainder (see `span_block`'s doc).
+/// Still refuses a zero/negative span (a malformed cut, never real time).
+pub(crate) fn finalize_ext(mut block: InferBlock, enforce_min: bool) -> Option<InferBlock> {
     let duration = block.ended_at - block.started_at;
-    if duration < Duration::minutes(MIN_BLOCK_MINUTES) {
+    if duration <= Duration::zero() {
+        return None;
+    }
+    if enforce_min && duration < Duration::minutes(MIN_BLOCK_MINUTES) {
         return None;
     }
     if duration > Duration::minutes(MAX_BLOCK_MINUTES) {
         block.flagged = true;
     }
-    let issues: HashSet<String> = block
-        .events
-        .iter()
-        .filter_map(|e| e.jira_issue.clone())
-        .collect();
-    block.jira_issue = if issues.len() == 1 {
-        issues.into_iter().next()
-    } else {
-        None
-    };
+    block.jira_issue = unique_jira_issue(&block.events);
     Some(block)
 }
 
@@ -376,12 +422,7 @@ fn build_sub_block(parent: &InferBlock, first: usize, last: usize) -> Option<Inf
         .max()
         .unwrap_or(started)
         .max(started);
-    let issues: HashSet<String> = slice.iter().filter_map(|e| e.jira_issue.clone()).collect();
-    let jira_issue = if issues.len() == 1 {
-        issues.into_iter().next()
-    } else {
-        None
-    };
+    let jira_issue = unique_jira_issue(&slice);
     let duration = ended - started;
     if duration < Duration::minutes(MIN_BLOCK_MINUTES) {
         return None;
@@ -414,12 +455,22 @@ pub fn load_day_events(conn: &Connection, day: NaiveDate) -> Result<Vec<InferEve
     // decision 3): they must never inherit a neighbour's project_path, so
     // they're excluded here rather than let through with project_path NULL.
     // Dismissed and noise events (thrown away by the owner or by the
-    // end-of-day absorb step) are excluded the same way.
+    // end-of-day absorb step) are excluded the same way. An org commit/PR
+    // whose sha is in no local clone is flagged `elsewhere` (FR-04) and
+    // must never reach inference (FR-09, D-08, B3). Helper/tool/message
+    // rows (D-05, FR-17) are the owner's tool working on its own behalf,
+    // never the owner acting — excluded here, at the one loader every
+    // caller (block-building AND overlaps/activity) shares, so a run of
+    // subagent activity in another project can never open an overlap
+    // window or show up as that project's activity either.
     let mut stmt = conn.prepare(
-        "SELECT id, source, started_at, duration_seconds, jira_issue, project_path
+        "SELECT id, source, started_at, duration_seconds, jira_issue, project_path,
+                session_id, title
            FROM events
           WHERE started_at >= ?1 AND started_at < ?2
             AND NOT (source IN (?3, ?4) AND (label_origin IS NULL OR label_origin IN (?5, ?6)))
+            AND elsewhere = 0
+            AND source NOT IN (?7, ?8, ?9)
           ORDER BY started_at",
     )?;
     // started_at is ISO-8601 string; we compare lexicographically which works
@@ -434,24 +485,33 @@ pub fn load_day_events(conn: &Connection, day: NaiveDate) -> Result<Vec<InferEve
             crate::routing_contract::SOURCE_FIREFOX,
             crate::routing_contract::SOURCE_SLACK,
             crate::routing_contract::LabelOrigin::Dismissed.as_str(),
-            crate::routing_contract::LabelOrigin::Noise.as_str()
+            crate::routing_contract::LabelOrigin::Noise.as_str(),
+            crate::clues_contract::SOURCE_CLAUDE_HELPER,
+            crate::clues_contract::SOURCE_CLAUDE_MESSAGE,
+            crate::clues_contract::SOURCE_CLAUDE_TOOL,
         ],
-        |r| {
-            let iso: String = r.get(2)?;
-            let ts = chrono::DateTime::parse_from_rfc3339(&iso)
-                .map(|t| t.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
-            Ok(InferEvent {
-                event_id: Some(r.get(0)?),
-                source: r.get(1)?,
-                ts,
-                duration_seconds: r.get(3)?,
-                jira_issue: r.get(4)?,
-                project_path: r.get(5)?,
-            })
-        },
+        infer_event_row,
     )?;
     iter.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Row mapper shared by `load_day_events`'s query — split out to keep the
+/// query function itself under the line-count cap.
+fn infer_event_row(r: &rusqlite::Row) -> rusqlite::Result<InferEvent> {
+    let iso: String = r.get(2)?;
+    let ts = chrono::DateTime::parse_from_rfc3339(&iso)
+        .map(|t| t.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now());
+    Ok(InferEvent {
+        event_id: Some(r.get(0)?),
+        source: r.get(1)?,
+        ts,
+        duration_seconds: r.get(3)?,
+        jira_issue: r.get(4)?,
+        project_path: r.get(5)?,
+        session_id: r.get(6)?,
+        title: r.get(7)?,
+    })
 }
 
 /// Use the same string form Python emits (`datetime.isoformat()` without
@@ -483,7 +543,7 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
         // ensures the earliest-starting new block claims the earliest
         // prior.
         let mut stmt = conn.prepare(
-            "SELECT started_at, ended_at, jira_issue, description, estimated_by, tempo_worklog_id
+            "SELECT started_at, ended_at, jira_issue, description, estimated_by, tempo_worklog_id, exported_at
                FROM blocks WHERE day = ?1 ORDER BY started_at",
         )?;
         let iter = stmt.query_map(params![day_iso], |r| {
@@ -494,6 +554,7 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
                 description: r.get(3)?,
                 estimated_by: r.get(4)?,
                 tempo_worklog_id: r.get(5)?,
+                exported_at: r.get(6)?,
             })
         })?;
         for row in iter {
@@ -502,6 +563,14 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
             prior_list.push(row);
         }
     }
+    // Old blocks' spans, captured before the delete below, so hand-set
+    // owner rows (block_customer_shares, block_resolution_snapshots) can
+    // be carried onto whichever new block covers them most (see
+    // infer_carry_shares).
+    let old_spans: Vec<(String, String)> = prior_list
+        .iter()
+        .map(|c| (c.started_at.clone(), c.ended_at.clone()))
+        .collect();
     // Two ticketed blocks fused into one would keep only one ticket: cut
     // such a block where each later ticketed block began (see infer_carry).
     let ticketed: Vec<crate::infer_carry::Ticketed> = prior_list
@@ -520,9 +589,11 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
     tx.execute("DELETE FROM blocks WHERE day = ?1", params![day_iso])
         .context("clearing stale blocks")?;
 
+    let mut new_spans: Vec<(String, String)> = Vec::new();
     for b in &blocks {
         let started_key = block_iso(b.started_at);
         let ended_key = block_iso(b.ended_at);
+        new_spans.push((started_key.clone(), ended_key.clone()));
         let carry: Option<&CarryRow> = prior.get(&started_key).or_else(|| {
             // Overlap fallback: if no exact-start match, find one prior
             // block whose time range overlaps the new block's — a ticketed
@@ -543,22 +614,27 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
         let tempo_id = carry.and_then(|c| c.tempo_worklog_id.clone());
         let description = carry.and_then(|c| c.description.clone());
         let estimated_by = carry.and_then(|c| c.estimated_by.clone());
+        let exported_at = carry.and_then(|c| c.exported_at.clone());
         // Preserve manual ticket override if present; otherwise trust inference.
         let jira_issue = carry
             .and_then(|c| c.jira_issue.clone())
             .or_else(|| b.jira_issue.clone());
 
-        // path-based classifier gives the first signal, but a non-null
-        // jira_issue (manual or inferred) is a stronger one — if the user
-        // (or estimator) bothered to attach a ticket, the block is work.
+        // path-based classifier gives the first signal, but a jira_issue
+        // that's actually a cached ticket (R7) is a stronger one — a spec
+        // ID that merely looks like a Jira key (`FR-09`) must not flip a
+        // personal path to work.
         let path_personal = personal_cfg.classify(b.dominant_project_path().as_deref());
-        let is_personal = path_personal && jira_issue.is_none();
+        let has_real_ticket = jira_issue
+            .as_deref()
+            .is_some_and(|k| jira_ticket_known(&tx, k));
+        let is_personal = path_personal && !has_real_ticket;
         tx.execute(
             "INSERT INTO blocks (
                 day, jira_issue, started_at, ended_at,
                 duration_seconds, description, estimated_by, flagged,
-                tempo_worklog_id, is_personal
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                tempo_worklog_id, is_personal, exported_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 b.day,
                 jira_issue,
@@ -570,6 +646,7 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
                 if b.flagged { 1 } else { 0 },
                 tempo_id,
                 if is_personal { 1 } else { 0 },
+                exported_at,
             ],
         )
         .context("inserting block")?;
@@ -582,6 +659,12 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
             .context("inserting block_events row")?;
         }
     }
+    // Re-key hand-set owner rows onto whichever new block covers them
+    // most, before an unmatched old started_at is lost for good.
+    crate::infer_carry_shares::carry_owner_tables(&tx, &day_iso, &old_spans, &new_spans)?;
+    // FR-06: re-link every owner-moved event of this day into a fresh
+    // block now that the deletes+inserts above rebuilt the day's blocks.
+    crate::elsewhere::relink_moved_events(&tx, day)?;
     tx.commit().context("committing block persistence")?;
 
     // One batch for this rebuild (D-07); a refresh failure must not fail
@@ -606,6 +689,18 @@ fn block_iso(dt: DateTime<Utc>) -> String {
     dt.to_rfc3339_opts(SecondsFormat::AutoSi, false)
 }
 
+/// R7: does `key` exist in `jira_tickets`? A spec ID that merely looks
+/// like a Jira key (`FR-09`) has no row here — only a real cached ticket
+/// flips a personal-path block to work.
+fn jira_ticket_known(conn: &Connection, key: &str) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM jira_tickets WHERE key = ?1",
+        params![key],
+        |_| Ok(()),
+    )
+    .is_ok()
+}
+
 #[derive(Debug, Clone)]
 struct CarryRow {
     started_at: String,
@@ -614,6 +709,7 @@ struct CarryRow {
     description: Option<String>,
     estimated_by: Option<String>,
     tempo_worklog_id: Option<String>,
+    exported_at: Option<String>,
 }
 
 /// Overlap check on ISO-8601 timestamps. Parses each string to a
@@ -634,7 +730,13 @@ fn ranges_overlap(a_start: &str, a_end: &str, b_start: &str, b_end: &str) -> boo
     a_s < b_e && b_s < a_e
 }
 
-fn parse_pair(start: &str, end: &str) -> Option<(chrono::DateTime<Utc>, chrono::DateTime<Utc>)> {
+/// `pub(crate)` so `infer_carry_shares` can measure overlap between an old
+/// and a new block span without re-implementing the same cross-format
+/// timestamp parsing.
+pub(crate) fn parse_pair(
+    start: &str,
+    end: &str,
+) -> Option<(chrono::DateTime<Utc>, chrono::DateTime<Utc>)> {
     // Accept the common variants our codebase writes:
     //   * `+00:00` offset (what block_iso emits)
     //   * `Z` (chrono's default to_rfc3339 on some builds)
@@ -740,6 +842,8 @@ mod tests {
             jira_issue: None,
             event_id: None,
             project_path: None,
+            session_id: None,
+            title: None,
         }
     }
 
@@ -751,6 +855,8 @@ mod tests {
             jira_issue: None,
             event_id: None,
             project_path: Some(project.into()),
+            session_id: None,
+            title: None,
         }
     }
 
@@ -762,6 +868,8 @@ mod tests {
             jira_issue: None,
             event_id: None,
             project_path: None,
+            session_id: None,
+            title: None,
         }
     }
 
@@ -952,6 +1060,38 @@ mod tests {
         );
     }
 
+    /// R3 regression (found via the 2026-09-25 real-data check): a run
+    /// legitimately owned by apro-skills can have MORE SessionStart/
+    /// SessionEnd lifecycle riders from unrelated concurrent sessions
+    /// (a different project's `claude` hook pings, riding in like
+    /// folderless events per R3) than real apro-skills events. Those
+    /// riders must never outvote the block's real project and flip its
+    /// `is_personal` classification.
+    #[test]
+    fn dominant_project_path_ignores_lifecycle_riders() {
+        let mut a = ev_project(10, 36, "claude_work", "/Users/dev/Desktop/Work/apro-skills");
+        a.event_id = Some(1);
+        let mut block = new_block(&a);
+        let mut b = ev_project(10, 37, "claude_turn", "/Users/dev/Desktop/Work/apro-skills");
+        b.event_id = Some(2);
+        extend_block(&mut block, &b);
+
+        // Five lifecycle riders from an unrelated personal project — more
+        // than the two real apro-skills events above.
+        for i in 0..5 {
+            let mut rider = ev_project(10, 40 + i, "claude", "/Users/dev/Desktop/Projects/worklog");
+            rider.title = Some("SessionStart".into());
+            rider.event_id = Some(10 + i64::from(i));
+            attach_riding_event(&mut block, rider);
+        }
+
+        assert_eq!(
+            block.dominant_project_path().as_deref(),
+            Some("/Users/dev/Desktop/Work/apro-skills"),
+            "lifecycle riders must never outvote the block's real project"
+        );
+    }
+
     #[test]
     fn jira_issue_cleared_when_events_disagree() {
         let mut a = ev(10, 0, "github_commit");
@@ -975,6 +1115,8 @@ mod tests {
                 jira_issue: None,
                 event_id: None,
                 project_path: None,
+                session_id: None,
+                title: None,
             },
             InferEvent {
                 ts: end - Duration::minutes(1),
@@ -983,6 +1125,8 @@ mod tests {
                 jira_issue: None,
                 event_id: None,
                 project_path: None,
+                session_id: None,
+                title: None,
             },
         ];
         // Gap is > TIMEOUT, so these become two separate blocks.
@@ -997,6 +1141,8 @@ mod tests {
                 jira_issue: None,
                 event_id: None,
                 project_path: None,
+                session_id: None,
+                title: None,
             });
             t += Duration::minutes(10);
         }
@@ -1092,6 +1238,84 @@ mod tests {
         assert_eq!(stored[0].description.as_deref(), Some("custom"));
         assert_eq!(stored[0].jira_issue.as_deref(), Some("PROJ-7"));
         assert_eq!(stored[0].estimated_by.as_deref(), Some("manual"));
+    }
+
+    /// R7: a spec ID that merely looks like a Jira key (`FR-09`) must not
+    /// flip a personal-path block to work — only a key that actually
+    /// exists in `jira_tickets` does.
+    #[test]
+    fn spec_id_on_personal_path_does_not_flip_to_work() {
+        let conn = open_memory().unwrap();
+        let mut a = Event::minimal(
+            "claude_turn",
+            "e1",
+            "2026-04-18T10:00:00+00:00",
+            "spec work",
+        );
+        a.project_path = Some("/Users/dev/Desktop/Projects/worklog".into());
+        a.jira_issue = Some("FR-09".into());
+        repo::upsert_event(&conn, &a).unwrap();
+        let mut b = Event::minimal(
+            "claude_turn",
+            "e2",
+            "2026-04-18T10:05:00+00:00",
+            "spec work",
+        );
+        b.project_path = Some("/Users/dev/Desktop/Projects/worklog".into());
+        b.jira_issue = Some("FR-09".into());
+        repo::upsert_event(&conn, &b).unwrap();
+
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let blocks = build_blocks(load_day_events(&conn, day).unwrap());
+        persist_blocks(&conn, day, &blocks).unwrap();
+
+        let stored = repo::list_blocks_for_day(&conn, "2026-04-18").unwrap();
+        assert_eq!(stored.len(), 1);
+        assert!(
+            stored[0].is_personal,
+            "FR-09 is not a real cached Jira ticket — the personal path must stick"
+        );
+    }
+
+    /// R7 inverse: a jira_issue that DOES exist in `jira_tickets` flips a
+    /// personal-path block to work, same as before.
+    #[test]
+    fn cached_jira_ticket_on_personal_path_flips_to_work() {
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO jira_tickets (key, summary) VALUES ('PROJ-1', 'x')",
+            [],
+        )
+        .unwrap();
+        let mut a = Event::minimal(
+            "claude_turn",
+            "e1",
+            "2026-04-18T10:00:00+00:00",
+            "real work",
+        );
+        a.project_path = Some("/Users/dev/Desktop/Projects/worklog".into());
+        a.jira_issue = Some("PROJ-1".into());
+        repo::upsert_event(&conn, &a).unwrap();
+        let mut b = Event::minimal(
+            "claude_turn",
+            "e2",
+            "2026-04-18T10:05:00+00:00",
+            "real work",
+        );
+        b.project_path = Some("/Users/dev/Desktop/Projects/worklog".into());
+        b.jira_issue = Some("PROJ-1".into());
+        repo::upsert_event(&conn, &b).unwrap();
+
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let blocks = build_blocks(load_day_events(&conn, day).unwrap());
+        persist_blocks(&conn, day, &blocks).unwrap();
+
+        let stored = repo::list_blocks_for_day(&conn, "2026-04-18").unwrap();
+        assert_eq!(stored.len(), 1);
+        assert!(
+            !stored[0].is_personal,
+            "a real cached ticket must flip a personal-path block to work"
+        );
     }
 
     #[test]
@@ -1213,6 +1437,38 @@ mod tests {
     }
 
     #[test]
+    fn elsewhere_event_joins_no_block() {
+        // events.elsewhere = 1 marks an org commit whose sha is in no
+        // local clone (FR-04) — it must never reach inference and must
+        // never join a block (D-08, FR-09, B3).
+        let conn = open_memory().unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                "github_commit",
+                "elsewhere1",
+                "2026-04-18T09:00:00+00:00",
+                "org commit, no local clone",
+            ),
+        )
+        .unwrap();
+        conn.execute("UPDATE events SET elsewhere = 1 WHERE id = ?1", [id])
+            .unwrap();
+
+        let events = load_day_events(&conn, day).unwrap();
+        assert!(
+            events.is_empty(),
+            "an elsewhere-flagged event must never reach inference"
+        );
+
+        let blocks = build_blocks(events);
+        persist_blocks(&conn, day, &blocks).unwrap();
+        let stored = repo::list_blocks_for_day(&conn, "2026-04-18").unwrap();
+        assert!(stored.is_empty(), "elsewhere event must join no block");
+    }
+
+    #[test]
     fn block_day_respects_worklog_tz() {
         // Regression for H4: without WORKLOG_TZ, a 23:30 local event in
         // UTC-5 (=04:30Z the next day) would land on the WRONG day's
@@ -1227,6 +1483,8 @@ mod tests {
             duration_seconds: Some(600),
             jira_issue: None,
             project_path: None,
+            session_id: None,
+            title: None,
         };
         let block = new_block(&event);
         assert_eq!(
@@ -1326,6 +1584,11 @@ mod tests {
 
     #[test]
     fn reflog_checkout_switches_project() {
+        // R2: git_reflog is background evidence now, not the owner acting —
+        // it no longer grabs focus the instant it fires. The handover to
+        // repo-b waits for repo-b's own first `shell` command (10:16)
+        // instead of the reflog event itself (10:14); repo-a's focus window
+        // (R1: 5 min for non-prompt human sources) still covers 10:10-10:15.
         let repo_a = "/Users/dev/Desktop/Work/repo-a";
         // Both client repos: a switch between work repos must split. (A switch
         // from work to a personal ~/Desktop/Projects repo deliberately does
@@ -1355,8 +1618,8 @@ mod tests {
             "reflog checkout into a different repo must split the block"
         );
         assert!(
-            blocks[0].ended_at <= at(10, 15),
-            "repo A's block should end by 10:15, ended at {:?}",
+            blocks[0].ended_at <= at(10, 16),
+            "repo A's block should end by 10:16, ended at {:?}",
             blocks[0].ended_at
         );
         assert_eq!(blocks[0].dominant_project_path().as_deref(), Some(repo_a));

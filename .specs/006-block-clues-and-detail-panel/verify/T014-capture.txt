@@ -1,0 +1,12 @@
+$ bash scripts/verify-006-capture.sh   (2026-09-27, backup copy of the live DB)
+day: 2026-09-25
+rows with raw_json on 2026-09-25:
+  claude_helper 1557
+  claude_message 6
+  claude_tool 1119
+  claude_turn 116
+  git_reflog 81
+  shell 40
+stored bytes for 2026-09-25: before=153835 after=2842927 growth=2689092 (limit 5242880)
+scrubber-pattern hits in stored events: 0
+PASS

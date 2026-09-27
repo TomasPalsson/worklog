@@ -42,10 +42,20 @@ pub(crate) fn cut_at_ticket_edges(blocks: &[InferBlock], ticketed: &[Ticketed]) 
                 .filter(|x| x.ts >= w[0] && x.ts < w[1])
                 .cloned()
                 .collect();
+            // keep_thin=true: a ticket-edge cut re-slices an
+            // already-approved block — a short remainder must never
+            // vanish just for being small (matches apply_split's rule).
             out.extend(crate::infer_allocations::span_block(
-                evs, w[0], w[1], &b.events,
+                evs, w[0], w[1], &b.events, true,
             ));
         }
+        // Deliberately NOT re-merged (R6 applies to `apply_split` only,
+        // see infer_evidence::merge_touching_same_project's doc comment):
+        // these pieces exist specifically to keep two different prior
+        // tickets apart, and each piece's own `jira_issue` is still None
+        // here — the real ticket is reattached later by persist_blocks'
+        // carry matching, so a same-project/same-(absent)-ticket check at
+        // this point can't tell a real split from a preserved one.
     }
     out
 }

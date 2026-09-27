@@ -38,6 +38,9 @@
 //! * `POST /sync`                        — { "day": "YYYY-MM-DD", "dry_run": true }
 //! * `GET  /export/:day`                 — billing rows + rendered text/csv/json for a day
 //! * `POST /export/:day/mark`            — mark a day's blocks as billed (idempotent)
+//! * `POST /billing/lines/text`          — { day, folder, customer, text } hand-edit a line's invoice text
+//! * `POST /billing/lines/regenerate`    — { day, folder, customer } starts text generation for one line in the background, returns { started }
+//! * `GET  /billing/lines/status`         — ?day=&folder=&customer= poll the in-flight regenerate job's state
 //! * `POST /browser/heartbeat`           — { Heartbeat } from the add-on, requires moz-extension:// Origin
 //! * `GET  /days/:day/routed?include_hidden=` — browser/Slack events for a day (default excludes dismissed/noise)
 //! * `POST /events/:id/label`            — { LabelRequest } manual label, optionally creating a rule
@@ -75,11 +78,14 @@ use tracing::{error, info, warn};
 use crate::billing;
 use crate::billing_deildir;
 use crate::billing_registry;
+use crate::block_details;
 use crate::browser_ingest;
 use crate::change_log;
 use crate::collectors::{jira, tempo};
 use crate::deild_contract;
+use crate::elsewhere;
 use crate::git::{self, CommitEntry};
+use crate::line_text_jobs;
 use crate::personal;
 use crate::routing;
 use crate::routing_absorb;
@@ -97,6 +103,9 @@ use crate::{
 #[path = "daemon_tenants.rs"]
 mod daemon_tenants;
 
+#[path = "daemon_line_text.rs"]
+mod daemon_line_text;
+
 #[path = "daemon_deildir.rs"]
 mod daemon_deildir;
 
@@ -108,6 +117,9 @@ pub struct AppState {
     /// exactly one and serialise access. Cheap compared to the code path
     /// we are serving (a single keystroke or click).
     pub conn: Mutex<Connection>,
+    /// In-flight billing-line regenerate jobs (spec change set:
+    /// background regenerate) — never touches sqlite itself.
+    pub line_text_jobs: line_text_jobs::JobTracker,
 }
 
 pub type Shared = Arc<AppState>;
@@ -124,6 +136,7 @@ pub fn router(state: Shared) -> Router {
         .route("/projects", get(list_projects))
         .route("/accounts", get(list_accounts))
         .route("/blocks/:id/events", get(block_events))
+        .route("/blocks/:id/details", get(block_details_route))
         .route("/blocks/:id/commits", get(block_commits))
         .route("/blocks/:id/ticket", post(assign_ticket))
         .route("/blocks/:id/duration", post(set_duration))
@@ -161,6 +174,12 @@ pub fn router(state: Shared) -> Router {
         .route("/changes", get(daemon_changes::feed))
         .route("/changes/unseen", get(daemon_changes::unseen))
         .route("/changes/seen", post(daemon_changes::mark_seen))
+        .route("/billing/lines/text", post(daemon_line_text::set_text))
+        .route(
+            "/billing/lines/regenerate",
+            post(daemon_line_text::regenerate),
+        )
+        .route("/billing/lines/status", get(daemon_line_text::status))
         .route("/billing/tenants", get(daemon_tenants::list_tenants))
         .route("/billing/tenants/link", post(daemon_tenants::link_tenant))
         .route(
@@ -190,6 +209,8 @@ pub fn router(state: Shared) -> Router {
         .route("/routing/rules", get(routing_rules_list))
         .route("/routing/rules/:id/delete", post(routing_rule_delete))
         .route("/routing/status", get(routing_status))
+        .route("/days/:day/elsewhere", get(list_elsewhere))
+        .route("/events/:id/move", post(move_event_handler))
         .with_state(state)
 }
 
@@ -308,6 +329,7 @@ pub fn new_state() -> Result<Shared> {
     let conn = db::open(&paths.db)?;
     Ok(Arc::new(AppState {
         conn: Mutex::new(conn),
+        line_text_jobs: Default::default(),
     }))
 }
 
@@ -359,6 +381,7 @@ pub fn spawn_prune_loop(
 pub fn state_from_conn(conn: Connection) -> Shared {
     Arc::new(AppState {
         conn: Mutex::new(conn),
+        line_text_jobs: Default::default(),
     })
 }
 
@@ -1086,6 +1109,19 @@ async fn block_events(
     Ok(Json(views))
 }
 
+/// `GET /blocks/:id/details` (FR-20): every event of the block, including
+/// helper/message activity in its span, in time order. Unknown block →
+/// 404, mirroring `block_commits`'s not-found pattern.
+async fn block_details_route(
+    State(state): State<Shared>,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<Json<Vec<block_details::DetailRow>>, ApiError> {
+    let rows = with_conn(state, move |c| block_details::details_for_block(c, id))
+        .await
+        .map_err(ApiError::NotFound)?;
+    Ok(Json(rows))
+}
+
 /// Per-block commit sidecar — returns the commits that landed inside
 /// the block's `[started_at, ended_at]` window under the block's
 /// dominant `project_path`.
@@ -1420,7 +1456,7 @@ async fn estimate_block(
         let reply = match estimate::resolve_provider()? {
             estimate::ProviderChoice::ClaudeSubprocess => estimate::invoke_block_estimate(
                 &prep,
-                &estimate::ClaudeSubprocess,
+                &estimate::ClaudeSubprocess::default(),
                 estimate::DEFAULT_MODEL,
             ),
             estimate::ProviderChoice::LiteLLM(inv) => {
@@ -1666,12 +1702,30 @@ async fn run_estimate(
     let model = body
         .model
         .unwrap_or_else(|| estimate::DEFAULT_MODEL.to_string());
-    let stats = with_conn(state, move |c| estimate::estimate_day(c, day, &model)).await?;
+    let day_str = body.day.clone();
+    let stats = with_conn(state.clone(), move |c| {
+        estimate::estimate_day(c, day, &model)
+    })
+    .await?;
+    // Line texts run as their own prepare/invoke/commit pass per line
+    // (`daemon_line_text::generate_day`) so the sqlite mutex is never
+    // held across any of those `claude -p` round trips. A line-text
+    // failure never fails the estimate call — the estimate itself
+    // already succeeded (FR-26).
+    let line_texts = daemon_line_text::generate_day(state, day_str).await;
     Ok(Json(json!({
         "day":       body.day,
         "estimated": stats.estimated,
         "skipped":   stats.skipped,
         "failed":    stats.failed,
+        "line_texts": {
+            "generated": line_texts.generated.len(),
+            "not_generated": line_texts.not_generated.iter().map(|(key, reason)| json!({
+                "folder":   key.folder,
+                "customer": key.customer,
+                "reason":   reason,
+            })).collect::<Vec<_>>(),
+        },
     })))
 }
 
@@ -1715,7 +1769,7 @@ async fn run_sync(
                 day,
                 dry_run,
                 &http_client,
-                Some(&estimate::ClaudeSubprocess),
+                Some(&estimate::ClaudeSubprocess::default()),
                 estimate::DEFAULT_MODEL,
             ),
             Some(estimate::ProviderChoice::LiteLLM(inv)) => tempo::sync_day_with_invoker(
@@ -2371,6 +2425,34 @@ async fn dismiss_event_handler(
     Ok(Json(routed))
 }
 
+async fn list_elsewhere(
+    State(state): State<Shared>,
+    AxumPath(day): AxumPath<String>,
+) -> Result<Json<Vec<elsewhere::ElsewhereItem>>, ApiError> {
+    let parsed = NaiveDate::parse_from_str(&day, "%Y-%m-%d")
+        .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{}`: {e}", day)))?;
+    let items = with_conn(state, move |c| elsewhere::list_for_day(c, parsed)).await?;
+    Ok(Json(items))
+}
+
+#[derive(Deserialize)]
+struct MoveEventRequest {
+    block_id: i64,
+}
+
+async fn move_event_handler(
+    State(state): State<Shared>,
+    AxumPath(id): AxumPath<i64>,
+    Json(body): Json<MoveEventRequest>,
+) -> Result<Json<Value>, ApiError> {
+    with_conn(state, move |c| {
+        elsewhere::move_into_block(c, id, body.block_id)
+    })
+    .await
+    .map_err(ApiError::NotFound)?;
+    Ok(Json(json!({ "moved": true })))
+}
+
 async fn routing_rules_list(
     State(state): State<Shared>,
 ) -> Result<Json<Vec<routing_contract::Rule>>, ApiError> {
@@ -2536,6 +2618,7 @@ pub(crate) fn refresh_recent_days(conn: &Connection, source: deild_contract::Cha
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::line_text;
     use axum::body::{self, Body};
     use axum::http::{Request, StatusCode};
     use rusqlite::params;
@@ -2591,6 +2674,7 @@ mod tests {
         .unwrap();
         Arc::new(AppState {
             conn: Mutex::new(conn),
+            line_text_jobs: Default::default(),
         })
     }
 
@@ -2734,6 +2818,7 @@ mod tests {
 
         let app = router(Arc::new(AppState {
             conn: Mutex::new(conn),
+            line_text_jobs: Default::default(),
         }));
         let resp = app
             .oneshot(
@@ -3389,6 +3474,39 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn block_details_route_returns_linked_events_in_time_order() {
+        let app = router(state_with_block());
+        let resp = app
+            .oneshot(
+                Request::get("/blocks/1/details")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["source"], "github_commit");
+        assert_eq!(arr[1]["source"], "claude");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn block_details_route_returns_not_found_for_unknown_block() {
+        let app = router(state_with_block());
+        let resp = app
+            .oneshot(
+                Request::get("/blocks/999/details")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn list_tickets_returns_cached_tickets_with_meta() {
         // B3: /tickets returns the cached Jira tickets + cache meta in
         // one response so the web combobox can render the empty state
@@ -3613,6 +3731,7 @@ mod tests {
         }
         Arc::new(AppState {
             conn: Mutex::new(conn),
+            line_text_jobs: Default::default(),
         })
     }
 
@@ -3972,6 +4091,7 @@ mod tests {
         }
         Arc::new(AppState {
             conn: Mutex::new(conn),
+            line_text_jobs: Default::default(),
         })
     }
 
@@ -4165,6 +4285,268 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ───────────── billing line text (spec 006, FR-26/FR-31/FR-33) ─────────────
+    // No invoker-injection seam exists for `/estimate`/`/billing/lines/regenerate`
+    // in these HTTP-level tests (the only existing `/estimate` test asserts its
+    // 400 path, never a real run), so only the manual-line short-circuit —
+    // which never reaches the model invoker — is exercised here. The
+    // success/failure generation paths are covered at the `line_text` unit
+    // level instead (`line_text_test.rs`).
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn line_text_route_stores_manual_text() {
+        let app = router(state_with_block());
+        let body = Body::from(
+            serde_json::to_vec(&json!({
+                "day": "2026-04-18",
+                "folder": "acme-project",
+                "customer": "Acme Corp",
+                "text": "Handskrifaður texti sem eigandinn skrifaði sjálfur.",
+            }))
+            .unwrap(),
+        );
+        let resp = app
+            .oneshot(
+                Request::post("/billing/lines/text")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["ok"], true);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn line_text_route_empty_text_resets() {
+        let state = state_with_block();
+        let key = crate::clues_contract::BillingLineKey {
+            day: "2026-04-18".to_string(),
+            folder: "acme-project".to_string(),
+            customer: "Acme Corp".to_string(),
+        };
+        {
+            let conn = state.conn.lock().await;
+            line_text::set_manual(&conn, &key, "Eitthvað sem eigandinn skrifaði áður.").unwrap();
+            assert!(line_text::text_for(&conn, &key).unwrap().is_some());
+        }
+        let app = router(state.clone());
+        let body = Body::from(
+            serde_json::to_vec(&json!({
+                "day": "2026-04-18",
+                "folder": "acme-project",
+                "customer": "Acme Corp",
+                "text": "   ",
+            }))
+            .unwrap(),
+        );
+        let resp = app
+            .oneshot(
+                Request::post("/billing/lines/text")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let conn = state.conn.lock().await;
+        assert!(line_text::text_for(&conn, &key).unwrap().is_none());
+    }
+
+    fn line_text_status_query(key: &crate::clues_contract::BillingLineKey) -> String {
+        // Test-only: these fixtures never contain other URL-unsafe
+        // characters, so a bare space replacement is enough.
+        format!(
+            "/billing/lines/status?day={}&folder={}&customer={}",
+            key.day,
+            key.folder,
+            key.customer.replace(' ', "%20")
+        )
+    }
+
+    /// Polls `GET /billing/lines/status` until it stops reporting
+    /// `"running"` or `budget` elapses, returning the last-seen body.
+    async fn poll_line_text_status(
+        app: Router,
+        key: &crate::clues_contract::BillingLineKey,
+    ) -> Value {
+        let step = std::time::Duration::from_millis(5);
+        let budget = std::time::Duration::from_millis(2000);
+        let mut waited = std::time::Duration::ZERO;
+        loop {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::get(line_text_status_query(key))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let v = read_json(resp).await;
+            if v["state"] != "running" || waited >= budget {
+                return v;
+            }
+            tokio::time::sleep(step).await;
+            waited += step;
+        }
+    }
+
+    /// FR-33/FR-31/FR-35, background contract (spec change set:
+    /// background regenerate): the route returns `started: true`
+    /// immediately — no model call on the request path, proven here
+    /// because a hand-edited line's job settles to `"failed"` /
+    /// `"hand-edited"` without ever reaching a model invoker — and the
+    /// stored text is left untouched.
+    #[tokio::test(flavor = "current_thread")]
+    async fn line_text_regenerate_on_manual_line_starts_then_settles_failed() {
+        let state = state_with_block();
+        let key = crate::clues_contract::BillingLineKey {
+            day: "2026-04-18".to_string(),
+            folder: "acme-project".to_string(),
+            customer: "Acme Corp".to_string(),
+        };
+        let manual_text = "Handskrifaður texti sem eigandinn skrifaði sjálfur.";
+        {
+            let conn = state.conn.lock().await;
+            line_text::set_manual(&conn, &key, manual_text).unwrap();
+        }
+        let app = router(state.clone());
+        let body = Body::from(
+            serde_json::to_vec(&json!({
+                "day": "2026-04-18",
+                "folder": "acme-project",
+                "customer": "Acme Corp",
+            }))
+            .unwrap(),
+        );
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/billing/lines/regenerate")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["started"], true);
+
+        let status = poll_line_text_status(app, &key).await;
+        assert_eq!(status["state"], "failed");
+        assert_eq!(status["reason"], "hand-edited");
+
+        let conn = state.conn.lock().await;
+        let (text, origin) = line_text::text_for(&conn, &key).unwrap().unwrap();
+        assert_eq!(text, manual_text);
+        assert_eq!(origin, crate::clues_contract::LineTextOrigin::Manual);
+    }
+
+    /// A second regenerate for a key already running is rejected rather
+    /// than racing the first.
+    #[tokio::test(flavor = "current_thread")]
+    async fn line_text_regenerate_rejects_a_second_call_while_running() {
+        let state = state_with_block();
+        let key = crate::clues_contract::BillingLineKey {
+            day: "2026-04-18".to_string(),
+            folder: "acme-project".to_string(),
+            customer: "Acme Corp".to_string(),
+        };
+        // Simulate a job already in flight without spawning a real one.
+        assert!(state.line_text_jobs.try_start(key.clone()));
+
+        let app = router(state.clone());
+        let body = Body::from(
+            serde_json::to_vec(&json!({
+                "day": key.day,
+                "folder": key.folder,
+                "customer": key.customer,
+            }))
+            .unwrap(),
+        );
+        let resp = app
+            .oneshot(
+                Request::post("/billing/lines/regenerate")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["started"], false);
+        assert_eq!(v["reason"], "already running");
+    }
+
+    /// `GET /billing/lines/status` maps every `JobState` to its wire
+    /// shape, including `"idle"` for a key nothing has ever tracked.
+    #[tokio::test(flavor = "current_thread")]
+    async fn line_text_status_maps_every_job_state() {
+        let state = state_with_block();
+        let key = crate::clues_contract::BillingLineKey {
+            day: "2026-04-18".to_string(),
+            folder: "acme-project".to_string(),
+            customer: "Acme Corp".to_string(),
+        };
+        let app = router(state.clone());
+
+        let idle = app
+            .clone()
+            .oneshot(
+                Request::get(line_text_status_query(&key))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read_json(idle).await["state"], "idle");
+
+        state.line_text_jobs.try_start(key.clone());
+        let running = app
+            .clone()
+            .oneshot(
+                Request::get(line_text_status_query(&key))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read_json(running).await["state"], "running");
+
+        state.line_text_jobs.finish(key.clone(), Ok(()));
+        let done = app
+            .clone()
+            .oneshot(
+                Request::get(line_text_status_query(&key))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read_json(done).await["state"], "done");
+
+        state
+            .line_text_jobs
+            .finish(key.clone(), Err("boom".to_string()));
+        let failed = app
+            .oneshot(
+                Request::get(line_text_status_query(&key))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(failed).await;
+        assert_eq!(v["state"], "failed");
+        assert_eq!(v["reason"], "boom");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -4511,6 +4893,7 @@ mod tests {
         (
             Arc::new(AppState {
                 conn: Mutex::new(conn),
+                line_text_jobs: Default::default(),
             }),
             a,
             b,
@@ -4627,6 +5010,7 @@ mod tests {
         }
         let state = Arc::new(AppState {
             conn: Mutex::new(conn),
+            line_text_jobs: Default::default(),
         });
         let resp = router(state)
             .oneshot(
@@ -4726,6 +5110,7 @@ mod tests {
         let bid = conn.last_insert_rowid();
         let state = Arc::new(AppState {
             conn: Mutex::new(conn),
+            line_text_jobs: Default::default(),
         });
         let resp = router(state)
             .oneshot(
@@ -5227,6 +5612,161 @@ mod tests {
                 Request::post("/events/999999/dismiss")
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{"rule_kind":null}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_elsewhere_returns_the_days_flagged_events() {
+        let conn = open_memory().unwrap();
+        let id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                "github_commit",
+                "far-sha",
+                "2026-04-18T10:00:00+00:00",
+                "fix oauth",
+            ),
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE events SET elsewhere = 1, repo = 'aproorg/code-interpreter' WHERE id = ?1",
+            params![id],
+        )
+        .unwrap();
+
+        let app = router(state_from_conn(conn));
+        let resp = app
+            .oneshot(
+                Request::get("/days/2026-04-18/elsewhere")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["id"], id);
+        assert_eq!(arr[0]["repo"], "aproorg/code-interpreter");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_elsewhere_rejects_bad_day() {
+        let app = router(state_from_conn(open_memory().unwrap()));
+        let resp = app
+            .oneshot(
+                Request::get("/days/not-a-day/elsewhere")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn move_event_moves_it_off_the_elsewhere_list() {
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-18', '2026-04-18T09:00:00+00:00', '2026-04-18T09:30:00+00:00', 1800)",
+            [],
+        )
+        .unwrap();
+        let block_id = conn.last_insert_rowid();
+        let id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                "github_commit",
+                "far-sha",
+                "2026-04-18T10:00:00+00:00",
+                "fix oauth",
+            ),
+        )
+        .unwrap();
+        conn.execute("UPDATE events SET elsewhere = 1 WHERE id = ?1", params![id])
+            .unwrap();
+
+        let app = router(state_from_conn(conn));
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/events/{id}/move"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(r#"{{"block_id":{block_id}}}"#)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let resp = app
+            .oneshot(
+                Request::get("/days/2026-04-18/elsewhere")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        assert_eq!(
+            v.as_array().unwrap().len(),
+            0,
+            "moved event must leave the list"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn move_event_elsewhere_404s_an_unknown_event() {
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-18', '2026-04-18T09:00:00+00:00', '2026-04-18T09:30:00+00:00', 1800)",
+            [],
+        )
+        .unwrap();
+        let block_id = conn.last_insert_rowid();
+
+        let app = router(state_from_conn(conn));
+        let resp = app
+            .oneshot(
+                Request::post("/events/999999/move")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(r#"{{"block_id":{block_id}}}"#)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn move_event_elsewhere_404s_an_unknown_block() {
+        let conn = open_memory().unwrap();
+        let id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                "github_commit",
+                "far-sha",
+                "2026-04-18T10:00:00+00:00",
+                "fix oauth",
+            ),
+        )
+        .unwrap();
+        conn.execute("UPDATE events SET elsewhere = 1 WHERE id = ?1", params![id])
+            .unwrap();
+
+        let app = router(state_from_conn(conn));
+        let resp = app
+            .oneshot(
+                Request::post(format!("/events/{id}/move"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"block_id":999999}"#))
                     .unwrap(),
             )
             .await

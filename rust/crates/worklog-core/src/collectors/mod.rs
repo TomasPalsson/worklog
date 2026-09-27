@@ -6,6 +6,8 @@
 //! invocations, not long-running services. Stage 3's axum IPC server will
 //! invoke them from async code via `tokio::task::spawn_blocking`.
 
+pub mod claude_helpers;
+pub mod claude_tools;
 pub mod claude_transcripts;
 pub mod fish;
 pub mod gcal;

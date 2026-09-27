@@ -1,8 +1,30 @@
-import { ComponentProps, ReactNode } from "react";
+"use client";
 
+import { ComponentProps, ReactNode, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
+
+import {
+  lineTextStatusAction,
+  regenerateLineText as regenerateLineTextAction,
+  saveLineText as saveLineTextAction,
+} from "@/app/actions-line-text";
 import { formatExportHours, reikningshaefi } from "@/lib/export";
+import { toast } from "@/lib/toast";
 import type { BillingCustomer, BillingFolderMap, BillingRow } from "@/lib/types";
 import { CustomerPin, DeildMover, VerkefniPin } from "./BillingPins";
+import { ClaudeMark } from "./SourceIcon";
+import { Check, CircleAlert, Pencil, RefreshCw, Sparkles } from "lucide-react";
+
+/** Poll cadence for an in-flight regenerate job (spec change set:
+ * background regenerate). */
+const POLL_INTERVAL_MS = 2000;
+/** Give up waiting after this long — the job itself keeps running on
+ * the daemon; the UI just stops polling and lets the user try again. */
+const POLL_MAX_MS = 4 * 60 * 1000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 interface Props {
   row: BillingRow;
@@ -20,7 +42,29 @@ interface Props {
   /** Test-only override for `DeildMover`'s server action call — see its
    * own doc comment. */
   moveLineDeild?: ComponentProps<typeof DeildMover>["moveLineDeild"];
+  /** Test-only overrides for the line-text server actions — same reason
+   * as `moveLineDeild`. */
+  saveLineText?: typeof saveLineTextAction;
+  regenerateLineText?: typeof regenerateLineTextAction;
+  lineTextStatus?: typeof lineTextStatusAction;
+  /** Test-only override of the poll cadence — a real 2s cadence would
+   * make the polling flow's own test agonisingly slow. */
+  pollIntervalMs?: number;
   children: ReactNode;
+}
+
+/** FR-35: a line with no stored text ever reads as "not generated" —
+ * never implied to be the writer's output. */
+function OriginIcon({ origin }: { origin: BillingRow["text_origin"] }) {
+  if (origin === "generated") return <ClaudeMark size={11} />;
+  if (origin === "manual") return <Pencil width={11} height={11} aria-hidden="true" />;
+  return <CircleAlert width={11} height={11} aria-hidden="true" />;
+}
+
+function originLabel(origin: BillingRow["text_origin"]): string {
+  if (origin === "manual") return "edited by you";
+  if (origin === "generated") return "generated";
+  return "not generated";
 }
 
 /**
@@ -41,12 +85,87 @@ export function BillingGroup({
   knownVerkefni,
   deildirByCustomer = {},
   moveLineDeild,
+  saveLineText = saveLineTextAction,
+  regenerateLineText = regenerateLineTextAction,
+  lineTextStatus = lineTextStatusAction,
+  pollIntervalMs = POLL_INTERVAL_MS,
   children,
 }: Props) {
+  const router = useRouter();
+  const [pending, start] = useTransition();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(row.invoice_text);
+
   const needsCustomer = row.customer === null;
   const needsVerkefni = row.verkefni === null;
   const needsInput = needsCustomer || needsVerkefni;
   const blockNoun = row.block_count === 1 ? "block" : "blocks";
+  const lineKey = { day: row.day, folder: row.folder, customer: row.customer ?? "" };
+
+  function beginEdit() {
+    setDraft(row.invoice_text);
+    setEditing(true);
+  }
+
+  function save() {
+    const text = draft;
+    start(async () => {
+      const r = await saveLineText({ ...lineKey, text });
+      if (!r.ok) {
+        toast.error(`Couldn't save — ${r.error}`);
+        return;
+      }
+      setEditing(false);
+      toast.ok(text.trim() === "" ? "Reset to generated text" : "Saved");
+      router.refresh();
+    });
+  }
+
+  // No stored text yet → the action is a first "Generate", not a redo.
+  const verb = row.text_origin ? "regenerate" : "generate";
+
+  function regenerate() {
+    start(async () => {
+      const r = await regenerateLineText(lineKey);
+      if (!r.ok) {
+        toast.error(`Couldn't ${verb} — ${r.error}`);
+        return;
+      }
+      if (!r.data.started) {
+        toast.error(`Not ${verb}d — ${r.data.reason ?? "unknown reason"}`);
+        return;
+      }
+      await pollUntilSettled();
+    });
+  }
+
+  /** Polls `GET /billing/lines/status` every `pollIntervalMs` until the
+   * background job is `"done"`/`"failed"`, or `POLL_MAX_MS` elapses —
+   * the job itself keeps running on the daemon either way. */
+  async function pollUntilSettled() {
+    const deadline = Date.now() + POLL_MAX_MS;
+    for (;;) {
+      const s = await lineTextStatus(lineKey);
+      if (!s.ok) {
+        toast.error(`Couldn't check ${verb} status — ${s.error}`);
+        return;
+      }
+      if (s.data.state === "done") {
+        toast.ok(verb === "generate" ? "Generated" : "Regenerated");
+        router.refresh();
+        return;
+      }
+      if (s.data.state === "failed") {
+        toast.error(`Not ${verb}d — ${s.data.reason ?? "unknown reason"}`);
+        return;
+      }
+      if (Date.now() >= deadline) {
+        toast.error(`Still ${verb === "generate" ? "generating" : "regenerating"} — check back later`);
+        return;
+      }
+      await sleep(pollIntervalMs);
+    }
+  }
 
   return (
     <details className={`billing-group ${needsInput ? "needs-input" : "complete"}`}>
@@ -82,7 +201,62 @@ export function BillingGroup({
           )}
         </span>
 
-        <span className="billing-text">{row.invoice_text}</span>
+        {/* Clicks here must not toggle the <details> — see PalettePicker's
+         * root, which stops propagation for the same reason. */}
+        <span className="billing-text-wrap" onClick={(e) => e.stopPropagation()}>
+          {editing ? (
+            <span className="billing-text-edit">
+              <textarea
+                aria-label={`Edit invoice text for ${row.folder}`}
+                value={draft}
+                disabled={pending}
+                autoFocus
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") setEditing(false);
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) save();
+                }}
+              />
+              <span className="billing-text-edit-actions">
+                <button type="button" className="billing-text-primary" onClick={save} disabled={pending}>
+                  <Check width={12} height={12} aria-hidden="true" />
+                  Save
+                </button>
+                <button type="button" onClick={() => setEditing(false)} disabled={pending}>
+                  Cancel
+                </button>
+                <span className="billing-text-hint">⌘↵ to save · Esc to cancel · empty resets to generated</span>
+              </span>
+            </span>
+          ) : (
+            <>
+              <span className="billing-text">{row.invoice_text}</span>
+              <span className="billing-text-controls">
+                <span className={`billing-text-origin billing-text-origin-${row.text_origin ?? "none"}`}>
+                  <OriginIcon origin={row.text_origin ?? null} />
+                  {originLabel(row.text_origin ?? null)}
+                </span>
+                <button type="button" onClick={beginEdit} disabled={pending}>
+                  <Pencil width={12} height={12} aria-hidden="true" />
+                  Edit
+                </button>
+                <button type="button" onClick={regenerate} disabled={pending}>
+                  {verb === "generate" && !pending ? (
+                    <Sparkles width={12} height={12} aria-hidden="true" />
+                  ) : (
+                    <RefreshCw
+                      width={12}
+                      height={12}
+                      aria-hidden="true"
+                      className={pending ? "billing-spin" : undefined}
+                    />
+                  )}
+                  {pending ? "Writing…" : verb === "generate" ? "Generate" : "Regenerate"}
+                </button>
+              </span>
+            </>
+          )}
+        </span>
       </summary>
 
       <div className="billing-body">{children}</div>
@@ -100,7 +274,7 @@ function PinCells({
   knownVerkefni,
   deildirByCustomer = {},
   moveLineDeild,
-}: Omit<Props, "children">) {
+}: Omit<Props, "children" | "saveLineText" | "regenerateLineText">) {
   const pin = {
     folder: row.folder,
     customer: folderPin?.customer ?? null,
