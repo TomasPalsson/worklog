@@ -1213,6 +1213,38 @@ mod tests {
     }
 
     #[test]
+    fn elsewhere_event_joins_no_block() {
+        // events.elsewhere = 1 marks an org commit whose sha is in no
+        // local clone (FR-04) — it must never reach inference and must
+        // never join a block (D-08, FR-09, B3).
+        let conn = open_memory().unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                "github_commit",
+                "elsewhere1",
+                "2026-04-18T09:00:00+00:00",
+                "org commit, no local clone",
+            ),
+        )
+        .unwrap();
+        conn.execute("UPDATE events SET elsewhere = 1 WHERE id = ?1", [id])
+            .unwrap();
+
+        let events = load_day_events(&conn, day).unwrap();
+        assert!(
+            events.is_empty(),
+            "an elsewhere-flagged event must never reach inference"
+        );
+
+        let blocks = build_blocks(events);
+        persist_blocks(&conn, day, &blocks).unwrap();
+        let stored = repo::list_blocks_for_day(&conn, "2026-04-18").unwrap();
+        assert!(stored.is_empty(), "elsewhere event must join no block");
+    }
+
+    #[test]
     fn block_day_respects_worklog_tz() {
         // Regression for H4: without WORKLOG_TZ, a 23:30 local event in
         // UTC-5 (=04:30Z the next day) would land on the WRONG day's

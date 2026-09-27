@@ -186,3 +186,87 @@ fn a_quick_hop_joins_its_neighbour_instead_of_vanishing() {
 
 const A_WORK: &str = "/Users/dev/Desktop/Work/vitinn-infra";
 const C_WORK: &str = "/Users/dev/Desktop/Work/lyfjastofnun";
+const D_WORK: &str = "/Users/dev/Desktop/Work/otherproj";
+
+/// A folderless event landing inside an established block's span rides
+/// along with it, but must never move that block's project or bounds
+/// (D-08, FR-07, FR-08, B4).
+#[test]
+fn folderless_never_votes_or_extends() {
+    let mut events: Vec<InferEvent> = (0..10)
+        .map(|i| ev(9, i * 3, "claude_turn", Some(A)))
+        .collect();
+    events.extend((0..10).map(|i| ev(14, i * 3, "claude_turn", Some(B))));
+    let baseline = build_blocks(events.clone());
+
+    // Squarely inside A's morning span.
+    events.push(ev(9, 15, "github_pr", None));
+    let blocks = build_blocks(events);
+
+    assert_eq!(blocks.len(), baseline.len());
+    let morning = |bs: &[InferBlock]| {
+        bs.iter()
+            .find(|b| b.started_at.format("%H").to_string() == "09")
+            .unwrap()
+            .clone()
+    };
+    let (m, base_m) = (morning(&blocks), morning(&baseline));
+    assert_eq!(m.dominant_project_path().as_deref(), Some(A));
+    assert_eq!(m.started_at, base_m.started_at, "folderless event must not move the start");
+    assert_eq!(m.ended_at, base_m.ended_at, "folderless event must not extend the end");
+}
+
+/// A folderless event nowhere near any established span joins no block
+/// and creates none of its own (FR-09).
+#[test]
+fn folderless_event_outside_every_span_joins_no_block() {
+    let mut events: Vec<InferEvent> = (0..10)
+        .map(|i| ev(9, i * 3, "claude_turn", Some(A)))
+        .collect();
+    events.extend((0..10).map(|i| ev(14, i * 3, "claude_turn", Some(B))));
+    let baseline = build_blocks(events.clone());
+
+    // Nowhere near either span, and no project of its own.
+    events.push(ev(20, 0, "github_pr", None));
+    let blocks = build_blocks(events);
+
+    assert_eq!(
+        blocks.len(),
+        baseline.len(),
+        "a folderless event outside every span must create no block"
+    );
+    assert_eq!(total_minutes(&blocks), total_minutes(&baseline));
+}
+
+/// Helper activity (claude_helper) and session messages (claude_message)
+/// must never vote on a lane's owner and must add no time to any block
+/// (D-05, FR-16, FR-17, B7) — dense helper/message rows tagged to a
+/// project the owner never touched must leave the day identical to the
+/// same day without them.
+#[test]
+fn helper_adds_no_time() {
+    let base_events = || vec![ev(9, 0, "claude_turn", Some(A)), ev(9, 30, "claude_turn", Some(A))];
+    let baseline = build_blocks(base_events());
+
+    let mut events = base_events();
+    events.extend(
+        (5..20).map(|m| ev(9, m, crate::clues_contract::SOURCE_CLAUDE_HELPER, Some(D_WORK))),
+    );
+    events.extend(
+        (20..26).map(|m| ev(9, m, crate::clues_contract::SOURCE_CLAUDE_MESSAGE, Some(D_WORK))),
+    );
+    let blocks = build_blocks(events);
+
+    assert!(
+        blocks
+            .iter()
+            .all(|b| b.dominant_project_path().as_deref() != Some(D_WORK)),
+        "helper/message activity must never decide a block's project"
+    );
+    assert_eq!(blocks.len(), baseline.len());
+    assert_eq!(
+        total_minutes(&blocks),
+        total_minutes(&baseline),
+        "helper/message activity must add no time to any block"
+    );
+}
