@@ -244,6 +244,87 @@ fn folderless_event_outside_every_span_joins_no_block() {
     assert_eq!(total_minutes(&blocks), total_minutes(&baseline));
 }
 
+/// On a single-project day (one lane, the `< 2` bypass), a folderless
+/// event just before the project's span used to merge straight in via
+/// plain gap-clustering and drag the block's start back with it. It must
+/// join no block instead (D-08, FR-08, FR-09).
+#[test]
+fn folderless_event_before_span_does_not_extend_start() {
+    // A single real project running 10:08-10:36 - the day's only lane.
+    let project_events: Vec<InferEvent> = (0..8)
+        .map(|i| ev(10, 8 + i * 4, "claude_turn", Some(A)))
+        .collect();
+    let baseline = build_blocks(project_events.clone());
+    assert_eq!(baseline.len(), 1);
+
+    // A folderless shell `cd` from ~ eight minutes earlier - inside the
+    // gap-timeout window, so naive gap-clustering merges it straight in
+    // and moves the start back to 10:00.
+    let mut events = project_events;
+    events.push(ev(10, 0, "shell", None));
+    let blocks = build_blocks(events);
+
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(
+        blocks[0].started_at, baseline[0].started_at,
+        "a folderless event before the span must not move its start"
+    );
+    assert_eq!(
+        blocks[0].event_count, baseline[0].event_count,
+        "a folderless event outside every span must join no block"
+    );
+}
+
+/// Same single-project day, but the folderless event lands inside the
+/// span rather than before it: it rides along (linked into the block)
+/// without moving either bound (D-08, FR-07, FR-08).
+#[test]
+fn folderless_event_inside_span_links_without_moving_bounds() {
+    let project_events: Vec<InferEvent> = (0..8)
+        .map(|i| ev(10, 8 + i * 4, "claude_turn", Some(A)))
+        .collect();
+    let baseline = build_blocks(project_events.clone());
+    assert_eq!(baseline.len(), 1);
+
+    let mut events = project_events;
+    events.push(ev(10, 20, "shell", None)); // squarely inside 10:08-10:36
+    let blocks = build_blocks(events);
+
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].started_at, baseline[0].started_at);
+    assert_eq!(blocks[0].ended_at, baseline[0].ended_at);
+    assert_eq!(
+        blocks[0].event_count,
+        baseline[0].event_count + 1,
+        "a folderless event inside the span must be linked into the block"
+    );
+}
+
+/// A run of folderless-only events far from every established span used
+/// to cluster into its own leftover block. It must create no block of
+/// its own (FR-09).
+#[test]
+fn folderless_only_stretch_outside_every_span_creates_no_block() {
+    let mut events: Vec<InferEvent> = (0..10)
+        .map(|i| ev(9, i * 3, "claude_turn", Some(A)))
+        .collect();
+    events.extend((0..10).map(|i| ev(14, i * 3, "claude_turn", Some(B))));
+    let baseline = build_blocks(events.clone());
+    assert_eq!(baseline.len(), 2);
+
+    // 20 minutes of folderless shell activity - a `cd` session from ~ -
+    // nowhere near either span.
+    events.extend((0..=10).map(|i| ev(20, i * 2, "shell", None)));
+    let blocks = build_blocks(events);
+
+    assert_eq!(
+        blocks.len(),
+        baseline.len(),
+        "a folderless-only stretch outside every span must create no block of its own"
+    );
+    assert_eq!(total_minutes(&blocks), total_minutes(&baseline));
+}
+
 /// Helper activity (claude_helper) and session messages (claude_message)
 /// must never vote on a lane's owner and must add no time to any block
 /// (D-05, FR-16, FR-17, B7) — dense helper/message rows tagged to a
