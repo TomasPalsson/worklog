@@ -24,6 +24,7 @@ fn ev(h: u32, m: u32, source: &str, project: &str) -> InferEvent {
         project_path: Some(project.into()),
         session_id: None,
         title: None,
+        lane_tag: None,
     }
 }
 

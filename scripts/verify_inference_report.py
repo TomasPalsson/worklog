@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """Print per-day block/hour stats from a rebuilt worklog.db COPY and assert
-the block-clues-and-detail-panel spec's real-data expectations. Invoked by
-scripts/verify-inference.sh — never opens the live database itself.
+the block-clues-and-detail-panel spec's real-data expectations, plus the
+session-lanes-and-fresh-descriptions spec's customer-split expectations
+for 2026-09-25 (block count, no mixed-customer block, the vitinn-infra
+Sjúkra/APRÓ split firing). Invoked by scripts/verify-inference.sh — never
+opens the live database itself.
 """
 import datetime as dt
+import json
+import re
 import sqlite3
 import sys
 
@@ -86,6 +91,147 @@ def overlap_minutes(conn, day, start_hm, end_hm):
     return total
 
 
+_ALIAS_SPLIT_RE = re.compile(r"[\n,]")
+
+
+def parse_customer_aliases(raw):
+    """Mirror billing_registry::parse_aliases: split on newline or comma."""
+    return [a.strip() for a in _ALIAS_SPLIT_RE.split(raw or "") if a.strip()]
+
+
+def alias_matches(haystack, alias):
+    """Mirror billing_registry::alias_matches: case-insensitive, whole-word
+    substring match — a boundary is the string's edge or a non-alnum char."""
+    alias = alias.strip()
+    if not alias:
+        return False
+    hay = haystack.lower()
+    needle = alias.lower()
+    if len(needle) > len(hay):
+        return False
+    start = 0
+    while True:
+        idx = hay.find(needle, start)
+        if idx == -1:
+            return False
+        before_ok = idx == 0 or not hay[idx - 1].isalnum()
+        after = idx + len(needle)
+        after_ok = after == len(hay) or not hay[after].isalnum()
+        if before_ok and after_ok:
+            return True
+        start = idx + 1
+
+
+def load_customers(conn):
+    return [
+        (name, parse_customer_aliases(aliases))
+        for name, aliases in conn.execute("SELECT name, aliases FROM billing_customers")
+    ]
+
+
+def customer_in_text(text, customers):
+    """Mirror billing_registry::Registry::customer_in_text: exactly one
+    customer's name/alias hits `text`; 0 or 2+ hits resolve to unknown."""
+    hits = []
+    for name, aliases in customers:
+        if alias_matches(text, name) or any(alias_matches(text, a) for a in aliases):
+            if name not in hits:
+                hits.append(name)
+    return hits[0] if len(hits) == 1 else None
+
+
+def repo_folder(project_path):
+    """Mirror infer_lanes::lane_folder / billing::work_folder_for_path: the
+    path segment right after .../Desktop/Work/ — a worktree collapses to it."""
+    if not project_path:
+        return None
+    base = project_path.split("/.claude/")[0].rstrip("/")
+    if not base:
+        return None
+    marker = "/Desktop/Work/"
+    idx = base.find(marker)
+    if idx == -1:
+        return base.rsplit("/", 1)[-1] or None
+    rest = base[idx + len(marker):].lstrip("/")
+    if not rest:
+        return None
+    return rest.split("/")[0]
+
+
+def resolve_session_customers(conn, day):
+    """Mirror session_customers::tag_sessions' resolution step: per (repo
+    folder, session_id), join that day's claude_turn prompt texts (the
+    `{"kind":"claude_prompt","text":…}` raw_json) and match the result
+    against billing_customers. Returns {(folder, session_id): customer}
+    for every session with exactly one customer hit."""
+    customers = load_customers(conn)
+    texts = {}
+    rows = conn.execute(
+        "SELECT project_path, session_id, raw_json FROM events "
+        "WHERE source = 'claude_turn' AND session_id IS NOT NULL AND started_at LIKE ?",
+        (day + "%",),
+    ).fetchall()
+    for project_path, session_id, raw_json in rows:
+        folder = repo_folder(project_path)
+        if folder is None or not raw_json:
+            continue
+        try:
+            rec = json.loads(raw_json)
+        except ValueError:
+            continue
+        if rec.get("kind") != "claude_prompt":
+            continue
+        text = rec.get("text")
+        if text is None:
+            continue
+        texts.setdefault((folder, session_id), []).append(text)
+
+    resolved = {}
+    for key, parts in texts.items():
+        customer = customer_in_text("\n".join(parts), customers)
+        if customer:
+            resolved[key] = customer
+    return resolved
+
+
+def block_customers(conn, block_id, resolved):
+    """The distinct customers resolved for the claude_turn sessions linked
+    to `block_id` via block_events → events.session_id."""
+    rows = conn.execute(
+        "SELECT DISTINCT e.project_path, e.session_id FROM block_events be "
+        "JOIN events e ON e.id = be.event_id "
+        "WHERE be.block_id = ? AND e.source = 'claude_turn' AND e.session_id IS NOT NULL",
+        (block_id,),
+    ).fetchall()
+    customers = set()
+    for project_path, session_id in rows:
+        customer = resolved.get((repo_folder(project_path), session_id))
+        if customer:
+            customers.add(customer)
+    return customers
+
+
+def print_day25_customer_split(conn):
+    """Print every 2026-09-25 vitinn-infra block's span and resolved
+    session customers; return (mixed_blocks, vitinn_customer_sets) for
+    the mixed-customer and split-fired assertions."""
+    resolved = resolve_session_customers(conn, "2026-09-25")
+    blocks = blocks_for_day(conn, "2026-09-25")
+
+    print("\n2026-09-25 vitinn-infra blocks by session customer:")
+    mixed_blocks = []
+    vitinn_sets = []
+    for b in blocks:
+        customers = block_customers(conn, b["id"], resolved)
+        if len(customers) >= 2:
+            mixed_blocks.append((b["started_at"], b["ended_at"], sorted(customers)))
+        if "vitinn-infra" in (dominant_project(conn, b["id"]) or ""):
+            vitinn_sets.append(customers)
+            print(f"  {b['started_at']}-{b['ended_at']} customers={sorted(customers) or ['unknown']}")
+
+    return mixed_blocks, vitinn_sets
+
+
 def print_day(conn, day):
     """Print one day's line; returns (work_hours, vitinn_hours_or_None,
     under10_count) so the 2026-09-25 figures can feed the assertions."""
@@ -115,7 +261,7 @@ def print_day(conn, day):
     return work_h, vitinn_h, under10
 
 
-def run_assertions(conn, day25_work_h, day25_vitinn_h, day25_under10):
+def run_assertions(conn, day25_work_h, day25_vitinn_h, day25_under10, day25_n_blocks, day25_mixed, day25_vitinn_sets):
     failures = []
 
     def check(label, condition):
@@ -133,6 +279,14 @@ def run_assertions(conn, day25_work_h, day25_vitinn_h, day25_under10):
         1.9 <= day25_vitinn_h <= 2.2,
     )
     check(f"2026-09-25 at most 2 blocks < 10 min (got {day25_under10})", day25_under10 <= 2)
+    check(f"2026-09-25 at most 18 blocks (got {day25_n_blocks})", day25_n_blocks <= 18)
+    check(f"2026-09-25 no mixed-customer block (found {day25_mixed})", not day25_mixed)
+    sjukra_idx = [i for i, cs in enumerate(day25_vitinn_sets) if "Sjúkra" in cs]
+    apro_idx = [i for i, cs in enumerate(day25_vitinn_sets) if "APRÓ" in cs]
+    check(
+        f"2026-09-25 vitinn-infra split fired (Sjúkra blocks={len(sjukra_idx)}, APRÓ blocks={len(apro_idx)})",
+        any(i != j for i in sjukra_idx for j in apro_idx),
+    )
 
     gap_23 = overlaps(conn, "2026-09-23", "03:00", "04:30")
     check(f"no block on 2026-09-23 03:00-04:30 (found {gap_23})", not gap_23)
@@ -173,7 +327,9 @@ def main():
         result = print_day(conn, day)
         if day == "2026-09-25":
             day25 = result
-    run_assertions(conn, day25[0], day25[1], day25[2])
+    day25_mixed, day25_vitinn_sets = print_day25_customer_split(conn)
+    day25_n_blocks = len(blocks_for_day(conn, "2026-09-25"))
+    run_assertions(conn, day25[0], day25[1], day25[2], day25_n_blocks, day25_mixed, day25_vitinn_sets)
 
 
 if __name__ == "__main__":

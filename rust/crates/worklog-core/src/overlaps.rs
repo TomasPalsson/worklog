@@ -15,7 +15,7 @@ use rusqlite::Connection;
 use serde::Serialize;
 
 use crate::infer::{load_day_events, InferEvent};
-use crate::infer_lanes::{is_human, is_work, lane_key, WINDOW_MINUTES};
+use crate::infer_lanes::{is_human, is_work, lane_folder, WINDOW_MINUTES};
 
 // Re-exported so daemon.rs (the only other caller) needs just `overlaps::*`
 // for detecting overlaps, persisting the owner's chosen split, and feeding
@@ -148,7 +148,7 @@ fn project_activity(
         .iter()
         .filter(|e| !e.is_calendar())
         .filter(|e| e.ts >= start && e.ts < end)
-        .filter(|e| lane_key(e).as_deref() == Some(project))
+        .filter(|e| lane_folder(e).as_deref() == Some(project))
         .fold((0usize, 0usize), |(h, b), e| {
             if is_human(&e.source) {
                 (h + 1, b)
@@ -167,13 +167,13 @@ fn project_activity(
 fn project_intervals(events: &[InferEvent]) -> Vec<Interval> {
     let mut by_project: BTreeMap<&str, Vec<&InferEvent>> = BTreeMap::new();
     let mut keys: BTreeMap<usize, String> = BTreeMap::new();
-    // lane_key returns an owned String; keep them alive alongside the
+    // lane_folder returns an owned String; keep them alive alongside the
     // borrow-by-index into `events` so `by_project` can key on `&str`.
     for (i, e) in events.iter().enumerate() {
         if e.is_calendar() {
             continue;
         }
-        let Some(key) = lane_key(e) else { continue };
+        let Some(key) = lane_folder(e) else { continue };
         if !is_work(&key) {
             continue;
         }

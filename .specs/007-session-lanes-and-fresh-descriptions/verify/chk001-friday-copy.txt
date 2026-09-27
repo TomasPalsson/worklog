@@ -1,0 +1,67 @@
+=== BEFORE (live blocks as stored today, old binary) ===
+span         min  p  by        jira        description                                                                          
+-----------  ---  -  --------  ----------  -------------------------------------------------------------------------------------
+08:34-09:52  78   0  claude_p  -           Prepare Sjúkra 3P color fix for code review                                          
+09:52-10:08  16   0  claude_p  -           Review pull requests for LibreChat                                                   
+10:08-10:36  28   0  manual    GENAI-1754  Code executor updates                                                                
+10:36-10:52  16   0  claude_p  -           Set up Apró skills framework and infrastructure                                      
+10:52-11:12  20   1  -         -           (none)                                                                               
+11:12-11:33  21   0  claude_p  -           Update apro skill documentation and references                                       
+11:33-11:41  8    1  -         -           (none)                                                                               
+11:41-12:18  37   0  claude_p  -           Implement APRÓ brand design system with multi-format support                         
+12:18-12:34  15   0  claude_p  FR-06       Implement Apró brand design system                                                   
+12:34-12:47  12   0  claude_p  -           Work on Apró brand design system                                                     
+12:47-13:14  27   0  claude_p  -           Harden microVM egress security groups for code interpreter                           
+13:14-13:44  30   0  claude_p  FR-14       Add design system and document output formats (decks, PDFs, Word, HTML) to apro skill
+13:44-14:28  44   0  manual    FR-11       Sjúkra 3P configuration debug                                                        
+15:09-18:11  182  0  claude_p  -           Investigate CI pipeline issues via Datadog logs                                      
+
+=== AFTER REBUILD (new binary; stale descriptions dropped) ===
+span         min  p  by        jira        description                                                                          
+-----------  ---  -  --------  ----------  -------------------------------------------------------------------------------------
+08:34-08:40  6    0  -         -           (none)                                                                               
+08:40-09:31  51   0  -         -           (none)                                                                               
+09:31-09:52  21   0  -         -           (none)                                                                               
+09:52-10:08  16   0  claude_p  -           Review pull requests for LibreChat                                                   
+10:08-10:36  28   0  manual    GENAI-1754  Code executor updates                                                                
+10:36-10:52  16   0  claude_p  -           Set up Apró skills framework and infrastructure                                      
+10:52-11:12  20   1  -         -           (none)                                                                               
+11:12-11:33  21   0  claude_p  -           Update apro skill documentation and references                                       
+11:33-11:41  8    1  -         -           (none)                                                                               
+11:41-12:18  37   0  claude_p  -           Implement APRÓ brand design system with multi-format support                         
+12:18-12:34  15   0  claude_p  FR-06       Implement Apró brand design system                                                   
+12:34-12:47  12   0  claude_p  -           Work on Apró brand design system                                                     
+12:47-13:14  27   0  claude_p  -           Harden microVM egress security groups for code interpreter                           
+13:14-13:44  30   0  claude_p  FR-14       Add design system and document output formats (decks, PDFs, Word, HTML) to apro skill
+13:44-13:55  11   0  manual    FR-11       Sjúkra 3P configuration debug                                                        
+13:55-14:28  33   0  -         -           (none)                                                                               
+15:09-17:26  137  0  -         -           (none)                                                                               
+17:26-18:11  45   0  -         -           (none)                                                                               
+
+=== ESTIMATE ===
+[2m2026-09-27T17:35:50.132289Z[0m [33m WARN[0m [2mworklog_core::estimate[0m[2m:[0m claude invocation failed [3mblock_id[0m[2m=[0m5471 [3merror[0m[2m=[0mclaude -p timed out after 60s
+✓ 2026-09-25: estimated=5 skipped=12 failed=1
+
+=== AFTER RE-ESTIMATE ===
+span         min  p  by        jira        description                                                                                    
+-----------  ---  -  --------  ----------  -----------------------------------------------------------------------------------------------
+08:34-08:40  6    0  gap       -           (none)                                                                                         
+08:40-09:31  45   0  claude_p  -           Configure tenant-owned Claude 3p integration; fix sjúkra UI color                              
+09:31-09:52  15   0  claude_p  -           Remove non-Anthropic GPT models from claude-3p profile                                         
+09:52-10:08  16   0  claude_p  -           Review pull requests for LibreChat                                                             
+10:08-10:36  28   0  manual    GENAI-1754  Code executor updates                                                                          
+10:36-10:52  16   0  claude_p  -           Set up Apró skills framework and infrastructure                                                
+10:52-11:12  20   1  -         -           (none)                                                                                         
+11:12-11:33  21   0  claude_p  -           Update apro skill documentation and references                                                 
+11:33-11:41  8    1  -         -           (none)                                                                                         
+11:41-12:18  37   0  claude_p  -           Implement APRÓ brand design system with multi-format support                                   
+12:18-12:34  15   0  claude_p  FR-06       Implement Apró brand design system                                                             
+12:34-12:47  12   0  claude_p  -           Work on Apró brand design system                                                               
+12:47-13:14  27   0  claude_p  -           Harden microVM egress security groups for code interpreter                                     
+13:14-13:44  30   0  claude_p  FR-14       Add design system and document output formats (decks, PDFs, Word, HTML) to apro skill          
+13:44-13:55  11   0  manual    FR-11       Sjúkra 3P configuration debug                                                                  
+13:55-14:28  30   0  claude_p  GENAI-1366  Deploy Jira MCP to Vitinn environment                                                          
+15:09-17:26  135  0  claude_p  -           Enable code interpreter in one-PR workflow; Configure deployment infrastructure; Review PR body
+17:26-18:11  45   0  claude_p  -           Add runner resolver for tenant ECR image import                                                
+
+work hours = 8.18

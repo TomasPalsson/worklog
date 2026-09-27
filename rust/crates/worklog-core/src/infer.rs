@@ -54,9 +54,14 @@ pub struct InferEvent {
     /// background `claude_work` heartbeat is judged against its own
     /// session's prompts and siblings, never another session's.
     pub session_id: Option<String>,
-    /// Raw event title. Drives `infer_evidence::dedupe_shell_events` (a
-    /// flaky collector logging the exact same `shell` command twice).
+    /// Event title. For `claude_turn`, this is the owner's prompt text
+    /// read from `raw_json` when it deserialises, else the DB title —
+    /// every `claude_turn` row is titled "prompt" in the DB. Drives
+    /// `infer_evidence::dedupe_shell_events` (a flaky collector logging
+    /// the exact same `shell` command twice).
     pub title: Option<String>,
+    /// The Claude session's resolved customer, when its repo folder splits into separate lanes per customer (`infer_lanes::lane_key`); `None` otherwise.
+    pub lane_tag: Option<String>,
 }
 
 impl InferEvent {
@@ -465,7 +470,7 @@ pub fn load_day_events(conn: &Connection, day: NaiveDate) -> Result<Vec<InferEve
     // window or show up as that project's activity either.
     let mut stmt = conn.prepare(
         "SELECT id, source, started_at, duration_seconds, jira_issue, project_path,
-                session_id, title
+                session_id, title, raw_json
            FROM events
           WHERE started_at >= ?1 AND started_at < ?2
             AND NOT (source IN (?3, ?4) AND (label_origin IS NULL OR label_origin IN (?5, ?6)))
@@ -502,15 +507,31 @@ fn infer_event_row(r: &rusqlite::Row) -> rusqlite::Result<InferEvent> {
     let ts = chrono::DateTime::parse_from_rfc3339(&iso)
         .map(|t| t.with_timezone(&Utc))
         .unwrap_or_else(|_| Utc::now());
+    let source: String = r.get(1)?;
+    let db_title: Option<String> = r.get(7)?;
+    let raw_json: Option<String> = r.get(8)?;
+    let title = if source == "claude_turn" {
+        raw_json
+            .as_deref()
+            .and_then(|j| serde_json::from_str::<crate::clues_contract::RawRecord>(j).ok())
+            .and_then(|rec| match rec {
+                crate::clues_contract::RawRecord::ClaudePrompt { text, .. } => Some(text),
+                _ => None,
+            })
+            .or(db_title)
+    } else {
+        db_title
+    };
     Ok(InferEvent {
         event_id: Some(r.get(0)?),
-        source: r.get(1)?,
+        source,
         ts,
         duration_seconds: r.get(3)?,
         jira_issue: r.get(4)?,
         project_path: r.get(5)?,
         session_id: r.get(6)?,
-        title: r.get(7)?,
+        title,
+        lane_tag: None,
     })
 }
 
@@ -543,7 +564,7 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
         // ensures the earliest-starting new block claims the earliest
         // prior.
         let mut stmt = conn.prepare(
-            "SELECT started_at, ended_at, jira_issue, description, estimated_by, tempo_worklog_id, exported_at
+            "SELECT started_at, ended_at, jira_issue, description, estimated_by, tempo_worklog_id, exported_at, described_seconds
                FROM blocks WHERE day = ?1 ORDER BY started_at",
         )?;
         let iter = stmt.query_map(params![day_iso], |r| {
@@ -555,6 +576,7 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
                 estimated_by: r.get(4)?,
                 tempo_worklog_id: r.get(5)?,
                 exported_at: r.get(6)?,
+                described_seconds: r.get(7)?,
             })
         })?;
         for row in iter {
@@ -612,8 +634,43 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
             claimed.insert(c.started_at.clone());
         }
         let tempo_id = carry.and_then(|c| c.tempo_worklog_id.clone());
-        let description = carry.and_then(|c| c.description.clone());
-        let estimated_by = carry.and_then(|c| c.estimated_by.clone());
+        // A block whose length changed a lot on rebuild no longer matches
+        // its stale description — drop it so the block is described again.
+        let keeps_description = carry.is_none_or(|c| {
+            // A description remembers the length it was written for
+            // (`described_seconds`) — comparing against that survives a
+            // block that grows in small steps every rebuild, and a same-
+            // ticket merge that widens the claimed prior row. A NULL
+            // (old rows, manual text) falls back to the prior row's own
+            // span, as before.
+            let prior_minutes = match c.described_seconds {
+                Some(secs) => (0, secs.div_euclid(60)),
+                None => {
+                    let Some((cs, ce)) = parse_pair(&c.started_at, &c.ended_at) else {
+                        return true;
+                    };
+                    (cs.timestamp().div_euclid(60), ce.timestamp().div_euclid(60))
+                }
+            };
+            let new_minutes = (
+                b.started_at.timestamp().div_euclid(60),
+                b.ended_at.timestamp().div_euclid(60),
+            );
+            crate::infer_carry::keeps_description(
+                prior_minutes,
+                new_minutes,
+                c.estimated_by.as_deref(),
+            )
+        });
+        let description = carry
+            .filter(|_| keeps_description)
+            .and_then(|c| c.description.clone());
+        let estimated_by = carry
+            .filter(|_| keeps_description)
+            .and_then(|c| c.estimated_by.clone());
+        let described_seconds = carry
+            .filter(|_| keeps_description)
+            .and_then(|c| c.described_seconds);
         let exported_at = carry.and_then(|c| c.exported_at.clone());
         // Preserve manual ticket override if present; otherwise trust inference.
         let jira_issue = carry
@@ -633,8 +690,8 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
             "INSERT INTO blocks (
                 day, jira_issue, started_at, ended_at,
                 duration_seconds, description, estimated_by, flagged,
-                tempo_worklog_id, is_personal, exported_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                tempo_worklog_id, is_personal, exported_at, described_seconds
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 b.day,
                 jira_issue,
@@ -647,6 +704,7 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
                 tempo_id,
                 if is_personal { 1 } else { 0 },
                 exported_at,
+                described_seconds,
             ],
         )
         .context("inserting block")?;
@@ -710,6 +768,7 @@ struct CarryRow {
     estimated_by: Option<String>,
     tempo_worklog_id: Option<String>,
     exported_at: Option<String>,
+    described_seconds: Option<i64>,
 }
 
 /// Overlap check on ISO-8601 timestamps. Parses each string to a
@@ -844,6 +903,7 @@ mod tests {
             project_path: None,
             session_id: None,
             title: None,
+            lane_tag: None,
         }
     }
 
@@ -857,6 +917,7 @@ mod tests {
             project_path: Some(project.into()),
             session_id: None,
             title: None,
+            lane_tag: None,
         }
     }
 
@@ -870,6 +931,7 @@ mod tests {
             project_path: None,
             session_id: None,
             title: None,
+            lane_tag: None,
         }
     }
 
@@ -1117,6 +1179,7 @@ mod tests {
                 project_path: None,
                 session_id: None,
                 title: None,
+                lane_tag: None,
             },
             InferEvent {
                 ts: end - Duration::minutes(1),
@@ -1127,6 +1190,7 @@ mod tests {
                 project_path: None,
                 session_id: None,
                 title: None,
+                lane_tag: None,
             },
         ];
         // Gap is > TIMEOUT, so these become two separate blocks.
@@ -1143,6 +1207,7 @@ mod tests {
                 project_path: None,
                 session_id: None,
                 title: None,
+                lane_tag: None,
             });
             t += Duration::minutes(10);
         }
@@ -1238,6 +1303,228 @@ mod tests {
         assert_eq!(stored[0].description.as_deref(), Some("custom"));
         assert_eq!(stored[0].jira_issue.as_deref(), Some("PROJ-7"));
         assert_eq!(stored[0].estimated_by.as_deref(), Some("manual"));
+    }
+
+    #[test]
+    fn grown_block_is_described_again() {
+        let conn = open_memory().unwrap();
+        repo::upsert_event(
+            &conn,
+            &Event::minimal("github_commit", "y1", "2026-04-18T10:00:00+00:00", "first"),
+        )
+        .unwrap();
+        repo::upsert_event(
+            &conn,
+            &Event::minimal("github_commit", "y2", "2026-04-18T10:28:00+00:00", "second"),
+        )
+        .unwrap();
+
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let events = load_day_events(&conn, day).unwrap();
+        let blocks = build_blocks(events);
+        persist_blocks(&conn, day, &blocks).unwrap();
+        assert_eq!(blocks[0].duration_seconds, 30 * 60);
+
+        conn.execute(
+            "UPDATE blocks SET description = 'old', estimated_by = 'claude_p', \
+             tempo_worklog_id = '555' WHERE day = ?1",
+            params!["2026-04-18"],
+        )
+        .unwrap();
+
+        // Grow the same block from 30 minutes to 3h02m — every added event
+        // stays within the 30-minute clustering timeout so it's one block,
+        // not a new one.
+        for (id, hm) in [
+            ("y3", "10:50"),
+            ("y4", "11:12"),
+            ("y5", "11:34"),
+            ("y6", "11:56"),
+            ("y7", "12:18"),
+            ("y8", "12:40"),
+            ("y9", "13:00"),
+        ] {
+            repo::upsert_event(
+                &conn,
+                &Event::minimal("github_commit", id, format!("2026-04-18T{hm}:00+00:00"), id),
+            )
+            .unwrap();
+        }
+        let events = load_day_events(&conn, day).unwrap();
+        let blocks = build_blocks(events);
+        persist_blocks(&conn, day, &blocks).unwrap();
+
+        let stored = repo::list_blocks_for_day(&conn, "2026-04-18").unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].duration_seconds, 182 * 60);
+        assert_eq!(stored[0].description, None);
+        assert_eq!(stored[0].estimated_by, None);
+        assert_eq!(stored[0].tempo_worklog_id.as_deref(), Some("555"));
+    }
+
+    /// B11: a description remembers the length it was written for
+    /// (`described_seconds`), not the prior row's current span — so it
+    /// survives a block that grows in small steps every 15-minute
+    /// rebuild, one step below both thresholds at a time.
+    #[test]
+    fn gradual_growth_is_described_again() {
+        let conn = open_memory().unwrap();
+        repo::upsert_event(
+            &conn,
+            &Event::minimal("github_commit", "z1", "2026-04-18T10:00:00+00:00", "first"),
+        )
+        .unwrap();
+        repo::upsert_event(
+            &conn,
+            &Event::minimal("github_commit", "z2", "2026-04-18T10:28:00+00:00", "second"),
+        )
+        .unwrap();
+
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let events = load_day_events(&conn, day).unwrap();
+        let blocks = build_blocks(events);
+        persist_blocks(&conn, day, &blocks).unwrap();
+        assert_eq!(blocks[0].duration_seconds, 30 * 60);
+
+        conn.execute(
+            "UPDATE blocks SET description = 'short', estimated_by = 'claude_p', \
+             described_seconds = 1800 WHERE day = ?1",
+            params!["2026-04-18"],
+        )
+        .unwrap();
+
+        // Grow to 45 minutes (10:00-10:45): diff from the described 30
+        // min is 15 (< 30) and 45*2 <= 30*3 — kept.
+        repo::upsert_event(
+            &conn,
+            &Event::minimal("github_commit", "z3", "2026-04-18T10:43:00+00:00", "third"),
+        )
+        .unwrap();
+        let events = load_day_events(&conn, day).unwrap();
+        let blocks = build_blocks(events);
+        persist_blocks(&conn, day, &blocks).unwrap();
+
+        let stored = repo::list_blocks_for_day(&conn, "2026-04-18").unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].duration_seconds, 45 * 60);
+        assert_eq!(
+            stored[0].description.as_deref(),
+            Some("short"),
+            "45 min is within the described-30 thresholds"
+        );
+        let described_seconds: Option<i64> = conn
+            .query_row(
+                "SELECT described_seconds FROM blocks WHERE day = ?1",
+                params!["2026-04-18"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            described_seconds,
+            Some(1800),
+            "a kept description carries its described length unchanged"
+        );
+
+        // Grow to 60 minutes (10:00-11:00): diff from the described 30
+        // min is now exactly 30 — dropped.
+        repo::upsert_event(
+            &conn,
+            &Event::minimal("github_commit", "z4", "2026-04-18T10:58:00+00:00", "fourth"),
+        )
+        .unwrap();
+        let events = load_day_events(&conn, day).unwrap();
+        let blocks = build_blocks(events);
+        persist_blocks(&conn, day, &blocks).unwrap();
+
+        let stored = repo::list_blocks_for_day(&conn, "2026-04-18").unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].duration_seconds, 60 * 60);
+        assert_eq!(stored[0].description, None);
+        let described_seconds: Option<i64> = conn
+            .query_row(
+                "SELECT described_seconds FROM blocks WHERE day = ?1",
+                params!["2026-04-18"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(described_seconds, None);
+    }
+
+    /// B11: the estimator merges adjacent same-ticket blocks into one wide
+    /// row (`estimate::merge_block_into`), widening only the destination
+    /// row's span — its `described_seconds` stays whatever it was written
+    /// for. On the next rebuild the first piece splits back out at its
+    /// original span and must keep its description.
+    #[test]
+    fn merged_piece_keeps_described_text() {
+        let conn = open_memory().unwrap();
+        repo::upsert_event(
+            &conn,
+            &Event::minimal("github_commit", "m1", "2026-04-18T10:00:00+00:00", "first"),
+        )
+        .unwrap();
+        repo::upsert_event(
+            &conn,
+            &Event::minimal("github_commit", "m2", "2026-04-18T10:28:00+00:00", "second"),
+        )
+        .unwrap();
+        repo::upsert_event(
+            &conn,
+            &Event::minimal("github_commit", "m3", "2026-04-18T11:30:00+00:00", "third"),
+        )
+        .unwrap();
+        repo::upsert_event(
+            &conn,
+            &Event::minimal("github_commit", "m4", "2026-04-18T11:58:00+00:00", "fourth"),
+        )
+        .unwrap();
+
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let events = load_day_events(&conn, day).unwrap();
+        let blocks = build_blocks(events);
+        persist_blocks(&conn, day, &blocks).unwrap();
+        let stored = repo::list_blocks_for_day(&conn, "2026-04-18").unwrap();
+        assert_eq!(stored.len(), 2, "60-minute gap keeps the two pieces apart");
+
+        let first_id = stored[0].id;
+        let second_id = stored[1].id;
+
+        // The first piece got a description written for its own 30-minute
+        // span, then estimate::merge_block_into widened it to cover both
+        // pieces (dst keeps its own started_at; ended_at/duration_seconds
+        // become the wider span) and dropped the second row.
+        conn.execute(
+            "UPDATE blocks SET description = 'desc', estimated_by = 'claude_p', \
+             jira_issue = 'TICK-1', described_seconds = 1800 WHERE id = ?1",
+            params![first_id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE blocks SET ended_at = '2026-04-18T12:00:00+00:00', \
+             duration_seconds = ?1 WHERE id = ?2",
+            params![120 * 60, first_id],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM blocks WHERE id = ?1", params![second_id])
+            .unwrap();
+
+        // Rebuild: the underlying events split back into the same two
+        // pieces they always were.
+        let events = load_day_events(&conn, day).unwrap();
+        let blocks = build_blocks(events);
+        persist_blocks(&conn, day, &blocks).unwrap();
+
+        let stored = repo::list_blocks_for_day(&conn, "2026-04-18").unwrap();
+        assert_eq!(stored.len(), 2);
+        let first_piece = stored
+            .iter()
+            .find(|b| b.duration_seconds == 30 * 60 && b.started_at.starts_with("2026-04-18T10"))
+            .expect("first piece present");
+        assert_eq!(
+            first_piece.description.as_deref(),
+            Some("desc"),
+            "the 10:00-10:30 piece keeps its description"
+        );
     }
 
     /// R7: a spec ID that merely looks like a Jira key (`FR-09`) must not
@@ -1437,6 +1724,36 @@ mod tests {
     }
 
     #[test]
+    fn load_day_events_falls_back_to_db_title_on_malformed_raw_json() {
+        let conn = open_memory().unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let mut e = Event::minimal("claude_turn", "p1", "2026-04-18T09:00:00+00:00", "prompt");
+        e.raw_json = Some("not json".into());
+        repo::upsert_event(&conn, &e).unwrap();
+
+        let events = load_day_events(&conn, day).unwrap();
+        assert_eq!(events[0].title.as_deref(), Some("prompt"));
+    }
+
+    #[test]
+    fn load_day_events_keeps_shell_title_even_with_raw_json() {
+        let conn = open_memory().unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let mut e = Event::minimal("shell", "s1", "2026-04-18T09:00:00+00:00", "git status");
+        e.raw_json = Some(
+            serde_json::to_string(&crate::clues_contract::RawRecord::Shell {
+                command: "git status".into(),
+                cwd: None,
+            })
+            .unwrap(),
+        );
+        repo::upsert_event(&conn, &e).unwrap();
+
+        let events = load_day_events(&conn, day).unwrap();
+        assert_eq!(events[0].title.as_deref(), Some("git status"));
+    }
+
+    #[test]
     fn elsewhere_event_joins_no_block() {
         // events.elsewhere = 1 marks an org commit whose sha is in no
         // local clone (FR-04) — it must never reach inference and must
@@ -1485,6 +1802,7 @@ mod tests {
             project_path: None,
             session_id: None,
             title: None,
+            lane_tag: None,
         };
         let block = new_block(&event);
         assert_eq!(

@@ -25,8 +25,10 @@ const SLIVER_MINUTES: i64 = 15;
 /// (`is_human`) events is still weak enough to fold into a neighbour.
 const MAX_OWN_HUMAN_EVENTS: usize = 2;
 /// A finished block needs its own project's events in at least this many
-/// distinct minutes to be billed at all (R5).
-const MIN_EVIDENCE_MINUTES: usize = 2;
+/// distinct minutes to be billed at all (R5). `pub(crate)` so
+/// `infer_lane_tags` can fold a sub-run that would fail this same floor
+/// into a neighbour instead of losing its minutes outright.
+pub(crate) const MIN_EVIDENCE_MINUTES: usize = 2;
 
 /// R3: a `claude_work` heartbeat with no sibling marker of its own session
 /// within ±3 min AND more than 60 min after that session's last prompt (or
@@ -113,7 +115,7 @@ pub(crate) fn has_evidence_floor(evs: &[InferEvent]) -> bool {
         >= MIN_EVIDENCE_MINUTES
 }
 
-type Run = (String, i64, i64);
+pub(crate) type Run = (String, i64, i64);
 
 /// Count of a run's own-project events (`n`) and how many of those are the
 /// owner acting (`h`, `is_human`), restricted to the run's own bounds.
@@ -219,7 +221,7 @@ fn longer_same_class_neighbour(
 
 /// Two touching runs (end + 1 == start) that ended up with the same owner
 /// after evidence folding are one run, not two.
-fn merge_touching_same_owner(runs: Vec<Run>) -> Vec<Run> {
+pub(crate) fn merge_touching_same_owner(runs: Vec<Run>) -> Vec<Run> {
     let mut out: Vec<Run> = Vec::new();
     for r in runs {
         match out.last_mut() {

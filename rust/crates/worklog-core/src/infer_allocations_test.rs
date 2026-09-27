@@ -50,6 +50,7 @@ fn ev(m: u32, path: &str) -> InferEvent {
         project_path: Some(path.into()),
         session_id: None,
         title: None,
+        lane_tag: None,
     }
 }
 

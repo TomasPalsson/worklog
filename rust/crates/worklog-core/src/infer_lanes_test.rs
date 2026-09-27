@@ -14,6 +14,7 @@ fn ev(h: u32, m: u32, source: &str, project: Option<&str>) -> InferEvent {
         project_path: project.map(str::to_string),
         session_id: None,
         title: None,
+        lane_tag: None,
     }
 }
 
@@ -440,4 +441,53 @@ fn agent_reflog_keeps_an_owned_work_run_against_personal_typing() {
         !personal_inside,
         "no personal sliver inside the agent-extended A run"
     );
+}
+
+const FOO: &str = "/Users/dev/Desktop/Work/foo";
+
+fn tagged(mut e: InferEvent, tag: &str) -> InferEvent {
+    e.lane_tag = Some(tag.to_string());
+    e
+}
+
+/// B1: a session tagged to a customer gets a lane key distinct from its
+/// folder's plain lane key, but its lane folder is unaffected; an
+/// untagged event's key and folder are identical.
+#[test]
+fn tagged_event_gets_its_own_lane_key() {
+    let mut e = ev(9, 0, "claude_turn", Some(FOO));
+    e.lane_tag = Some("Acme".to_string());
+    assert_eq!(lane_key(&e), Some("foo#Acme".to_string()));
+    assert_eq!(lane_folder(&e), Some("foo".to_string()));
+
+    e.lane_tag = None;
+    assert_eq!(lane_key(&e), Some("foo".to_string()));
+    assert_eq!(lane_folder(&e), Some("foo".to_string()));
+}
+
+/// Two customer sessions sharing one repo folder really compete for
+/// minutes via `build_blocks_by_project`, splitting into separate blocks
+/// exactly like two different folders would — and the split never
+/// touches the events' own `project_path`.
+#[test]
+fn tagged_lanes_in_one_folder_compete_and_split_into_separate_blocks() {
+    let mut events: Vec<InferEvent> = (0..15)
+        .map(|i| tagged(ev(9, i * 2, "claude_turn", Some(FOO)), "Acme"))
+        .collect();
+    events.extend((0..15).map(|i| tagged(ev(9, 30 + i * 2, "claude_turn", Some(FOO)), "Globex")));
+    let blocks = build_blocks_by_project(events, build_blocks);
+    assert_no_overlap(&blocks);
+    assert_eq!(
+        blocks.len(),
+        2,
+        "two customer tags sharing one folder must split into separate blocks: {blocks:?}"
+    );
+    for b in &blocks {
+        assert!(
+            b.events
+                .iter()
+                .all(|e| e.project_path.as_deref() == Some(FOO)),
+            "a split block's events must keep the untouched project_path"
+        );
+    }
 }

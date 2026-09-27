@@ -2,6 +2,8 @@
 -- All CREATE statements are idempotent (IF NOT EXISTS) so the Rust hook can
 -- run this on every invocation with negligible cost.
 --
+-- v16 adds blocks.described_seconds — the block's wall-clock span when its
+-- description was last written; see db.rs / infer_carry.rs.
 -- v15 adds events.elsewhere and billing_line_texts — attribution and
 -- billing-line texts (spec 006); see db.rs / clues_contract.rs.
 -- v11 adds events.container/label_origin/label_confidence and the
@@ -93,6 +95,12 @@ CREATE TABLE IF NOT EXISTS blocks (
     -- Tempo-independent; purge.rs treats this the same as a synced
     -- tempo_worklog_id.
     exported_at TEXT,
+    -- Wall-clock span (ended_at - started_at, seconds) of the block at the
+    -- moment its description was last written by the estimator. Compared
+    -- against, not the current duration_seconds, so a description survives
+    -- gradual growth but is dropped once the block outgrows the length it
+    -- was actually written for. NULL for manual text and pre-migration rows.
+    described_seconds INTEGER,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
