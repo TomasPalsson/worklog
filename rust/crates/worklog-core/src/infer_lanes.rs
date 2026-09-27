@@ -182,7 +182,11 @@ fn build_project_blocks(
     events: Vec<InferEvent>,
     build: fn(Vec<InferEvent>) -> Vec<InferBlock>,
 ) -> Vec<InferBlock> {
-    let keyed = keyed_by(&events, lane_key);
+    // Minutes are owned, bucketed and judged by FOLDER exactly as on an
+    // untagged day; customer tags only divide the finished folder blocks.
+    use crate::infer_lane_tags::divide_blocks;
+    let day = events.clone();
+    let keyed = keyed_by(&events, lane_folder);
     if keyed
         .iter()
         .map(|(_, k, _, _)| k)
@@ -190,17 +194,14 @@ fn build_project_blocks(
         .len()
         < 2
     {
-        return build(events);
+        return divide_blocks(build(events), &day);
     }
-    let keyed_folder = keyed_by(&events, lane_folder);
-    let folded = fold_short_runs(owner_runs(&keyed_folder));
-    let runs = crate::infer_evidence::merge_by_evidence(folded, &keyed_folder);
-    let runs = crate::infer_lane_tags::split_runs_by_tag(runs, &events);
-    // By lane KEY, not folder: a tagged run's owner is `folder#Cust`.
-    let mut by_key: BTreeMap<String, Vec<InferEvent>> = BTreeMap::new();
+    let folded = fold_short_runs(owner_runs(&keyed));
+    let runs = crate::infer_evidence::merge_by_evidence(folded, &keyed);
+    let mut by_folder: BTreeMap<String, Vec<InferEvent>> = BTreeMap::new();
     for e in &events {
-        if let Some(k) = lane_key(e) {
-            by_key.entry(k).or_default().push(e.clone());
+        if let Some(k) = lane_folder(e) {
+            by_folder.entry(k).or_default().push(e.clone());
         }
     }
 
@@ -214,7 +215,7 @@ fn build_project_blocks(
             continue;
         }
         let m = minute(e.ts);
-        let key = lane_key(&e);
+        let key = lane_folder(&e);
         let hit = runs.iter().position(|(owner, start, end)| {
             m >= *start && m <= *end && key.as_ref().is_none_or(|k| k == owner)
         });
@@ -226,7 +227,7 @@ fn build_project_blocks(
         }
     }
     // One block per run, spanning the minutes it owns (dropped under R5).
-    let mut blocks: Vec<InferBlock> = runs
+    let owned: Vec<InferBlock> = runs
         .iter()
         .enumerate()
         .filter_map(|(i, (owner, s, e))| {
@@ -234,11 +235,12 @@ fn build_project_blocks(
             if !crate::infer_evidence::has_evidence_floor(&evs) {
                 return None;
             }
-            let own = by_key.get(owner).map(Vec::as_slice).unwrap_or(&[]);
+            let own = by_folder.get(owner).map(Vec::as_slice).unwrap_or(&[]);
             let at = |m: i64| DateTime::from_timestamp(m * 60, 0);
             crate::infer_allocations::span_block(evs, at(*s)?, at(*e + 1)?, own, false)
         })
         .collect();
+    let mut blocks = divide_blocks(owned, &day);
     blocks.extend(build(calendar));
     blocks.extend(build(leftovers));
     blocks.sort_by_key(|b| b.started_at);

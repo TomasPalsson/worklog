@@ -115,7 +115,7 @@ pub(crate) fn has_evidence_floor(evs: &[InferEvent]) -> bool {
         >= MIN_EVIDENCE_MINUTES
 }
 
-type Run = (String, i64, i64);
+pub(crate) type Run = (String, i64, i64);
 
 /// Count of a run's own-project events (`n`) and how many of those are the
 /// owner acting (`h`, `is_human`), restricted to the run's own bounds.
@@ -221,7 +221,7 @@ fn longer_same_class_neighbour(
 
 /// Two touching runs (end + 1 == start) that ended up with the same owner
 /// after evidence folding are one run, not two.
-fn merge_touching_same_owner(runs: Vec<Run>) -> Vec<Run> {
+pub(crate) fn merge_touching_same_owner(runs: Vec<Run>) -> Vec<Run> {
     let mut out: Vec<Run> = Vec::new();
     for r in runs {
         match out.last_mut() {

@@ -1,19 +1,90 @@
 //! Splits a folder-level run into per-customer sub-runs (B9): a customer
 //! tag may only divide a folder's own minutes, never take a minute away
-//! from — or hand one to — a competing folder.
+//! from — or hand one to — a competing folder. The folder-level block is
+//! built and judged exactly as on an untagged day first; only then is it
+//! divided.
 
+use chrono::DateTime;
 use std::collections::BTreeSet;
 
-use crate::infer::InferEvent;
-use crate::infer_evidence::MIN_EVIDENCE_MINUTES;
-use crate::infer_lanes::{fold_short_runs, keyed_by, lane_folder, lane_key, owner_runs, Keyed};
+use crate::infer::{InferBlock, InferEvent};
+use crate::infer_evidence::{merge_touching_same_owner, Run, MIN_EVIDENCE_MINUTES};
+use crate::infer_lanes::{
+    fold_short_runs, keyed_by, lane_folder, lane_key, minute, owner_runs, Keyed,
+};
 
-type Run = (String, i64, i64);
-
-pub(crate) fn split_runs_by_tag(runs: Vec<Run>, events: &[InferEvent]) -> Vec<Run> {
-    runs.into_iter()
-        .flat_map(|(folder, s, e)| split_one(&folder, s, e, events))
+pub(crate) fn divide_blocks(blocks: Vec<InferBlock>, day: &[InferEvent]) -> Vec<InferBlock> {
+    blocks
+        .into_iter()
+        .flat_map(|b| divide_block(b, day))
         .collect()
+}
+
+/// Divides a folder-level block into one block per customer sub-run. An
+/// untagged event joins the sub-run covering its minute; a tagged one joins
+/// the nearest sub-run of its own customer, or no block at all — so no block
+/// ever holds two customers' tagged events. A block with no tagged event is
+/// returned as-is.
+fn divide_block(block: InferBlock, day: &[InferEvent]) -> Vec<InferBlock> {
+    if block.events.iter().all(|e| e.lane_tag.is_none()) {
+        return vec![block];
+    }
+    let Some(folder) = block.events.iter().find_map(lane_folder) else {
+        return vec![block];
+    };
+    let last_minute = (block.ended_at.timestamp() - 1).div_euclid(60);
+    let subs = split_one(&folder, minute(block.started_at), last_minute, day);
+    let mut shares: Vec<Vec<InferEvent>> = vec![Vec::new(); subs.len()];
+    for e in &block.events {
+        if let Some(i) = sub_run_for(&subs, e) {
+            shares[i].push(e.clone());
+        }
+    }
+    if subs.len() == 1 && shares[0].len() == block.events.len() {
+        return vec![block];
+    }
+    let folder_events: Vec<InferEvent> = day
+        .iter()
+        .filter(|e| lane_folder(e).as_deref() == Some(folder.as_str()))
+        .cloned()
+        .collect();
+    let at = |m: i64| DateTime::from_timestamp(m * 60, 0);
+    let last = subs.len() - 1;
+    subs.iter()
+        .zip(shares)
+        .enumerate()
+        .filter_map(|(i, ((owner, s, e), evs))| {
+            let lo = if i == 0 { block.started_at } else { at(*s)? };
+            let hi = if i == last {
+                block.ended_at
+            } else {
+                at(*e + 1)?
+            };
+            let own: Vec<InferEvent> = folder_events
+                .iter()
+                .filter(|x| lane_key(x).as_ref() == Some(owner))
+                .cloned()
+                .collect();
+            let own = if own.is_empty() { &folder_events } else { &own };
+            crate::infer_allocations::span_block(evs, lo, hi, own, true)
+        })
+        .collect()
+}
+
+fn sub_run_for(subs: &[Run], e: &InferEvent) -> Option<usize> {
+    let m = minute(e.ts);
+    let dist = |r: &Run| (r.1 - m).max(m - r.2).max(0);
+    let nearest = |pick: &dyn Fn(&Run) -> bool| {
+        (0..subs.len())
+            .filter(|&i| pick(&subs[i]))
+            .min_by_key(|&i| dist(&subs[i]))
+    };
+    let covering = nearest(&|_| true)?;
+    let key = lane_key(e);
+    if e.lane_tag.is_none() || key.as_ref() == Some(&subs[covering].0) {
+        return Some(covering);
+    }
+    nearest(&|r| key.as_ref() == Some(&r.0))
 }
 
 fn split_one(folder: &str, s: i64, e: i64, events: &[InferEvent]) -> Vec<Run> {
@@ -67,7 +138,7 @@ fn tile(mut runs: Vec<Run>, s: i64, e: i64) -> Vec<Run> {
             runs[i - 1].2 = runs[i].1 - 1;
         }
     }
-    merge_touching(runs)
+    merge_touching_same_owner(runs)
 }
 
 /// Distinct minutes `subset` has under `r`'s own key, inside `r`'s own
@@ -100,18 +171,7 @@ fn fold_weak_sub_runs(mut runs: Vec<Run>, subset: &[Keyed]) -> Vec<Run> {
             runs[i - 1].2 = r.2;
         }
     }
-    merge_touching(runs)
-}
-
-fn merge_touching(runs: Vec<Run>) -> Vec<Run> {
-    let mut merged: Vec<Run> = Vec::new();
-    for r in runs {
-        match merged.last_mut() {
-            Some(prev) if prev.0 == r.0 && r.1 - prev.2 <= 1 => prev.2 = r.2,
-            _ => merged.push(r),
-        }
-    }
-    merged
+    merge_touching_same_owner(runs)
 }
 
 #[cfg(test)]

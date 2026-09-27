@@ -286,3 +286,113 @@ fn weak_sub_run_joins_its_neighbour() {
         "a weak untagged blip must not drop any of the folder's minutes: {tagged_blocks:?}"
     );
 }
+
+fn with_id(mut e: InferEvent, id: i64) -> InferEvent {
+    e.event_id = Some(id);
+    e
+}
+
+fn untag(events: &[InferEvent]) -> Vec<InferEvent> {
+    events
+        .iter()
+        .cloned()
+        .map(|mut e| {
+            e.lane_tag = None;
+            e
+        })
+        .collect()
+}
+
+fn linked_ids(blocks: &[crate::infer::InferBlock]) -> BTreeSet<i64> {
+    blocks
+        .iter()
+        .flat_map(|b| b.events.iter().filter_map(|e| e.event_id))
+        .collect()
+}
+
+/// An untagged event of a split folder (a session-less shell command, a
+/// commit, a prompt from a session no customer was resolved for) is linked
+/// into a block exactly as it is on an untagged day.
+#[test]
+fn untagged_folder_events_stay_linked() {
+    let mut a_events: Vec<InferEvent> = Vec::new();
+    for i in 0..20 {
+        a_events.push(with_id(
+            tagged(ev(i * 2, "claude_turn", Some(A)), "Cust1"),
+            i as i64 + 1,
+        ));
+        a_events.push(with_id(
+            tagged(ev(40 + i * 2, "claude_turn", Some(A)), "Cust2"),
+            i as i64 + 101,
+        ));
+    }
+    let shell = InferEvent {
+        title: Some("make test".into()),
+        ..with_id(ev(21, "shell", Some(A)), 1001)
+    };
+    let commit = with_id(ev(61, "github_commit", Some(A)), 1002);
+    let unresolved = InferEvent {
+        session_id: Some("unresolved".into()),
+        ..with_id(ev(30, "claude_turn", Some(A)), 1003)
+    };
+    a_events.extend([shell, commit, unresolved]);
+    let b_events: Vec<InferEvent> = (0..10)
+        .map(|i| with_id(ev(120 + i * 2, "claude_turn", Some(B)), i as i64 + 2001))
+        .collect();
+
+    let mut tagged_events = a_events.clone();
+    tagged_events.extend(b_events.clone());
+    let tagged_linked = linked_ids(&build_blocks_by_project(tagged_events, build_blocks));
+
+    let mut untagged_events = untag(&a_events);
+    untagged_events.extend(b_events);
+    let untagged_linked = linked_ids(&build_blocks_by_project(untagged_events, build_blocks));
+
+    for id in [1001, 1002, 1003] {
+        assert!(
+            tagged_linked.contains(&id),
+            "event {id} must be linked: {tagged_linked:?}"
+        );
+    }
+    let a_ids: BTreeSet<i64> = a_events.iter().filter_map(|e| e.event_id).collect();
+    let missing: Vec<&i64> = untagged_linked
+        .intersection(&a_ids)
+        .filter(|id| !tagged_linked.contains(id))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "linked untagged but not tagged: {missing:?}"
+    );
+}
+
+/// A split folder whose customers each have a single prompt keeps the
+/// block its folder earns untagged: evidence is judged on the folder run.
+#[test]
+fn sparse_split_keeps_its_block() {
+    let a_events = vec![
+        tagged(ev(0, "claude_turn", Some(A)), "Cust1"),
+        tagged(ev(3, "claude_turn", Some(A)), "Cust2"),
+    ];
+    let b_events: Vec<InferEvent> = (0..10)
+        .map(|i| ev(120 + i * 2, "claude_turn", Some(B)))
+        .collect();
+    for extra in [Vec::new(), b_events] {
+        let mut tagged_events = a_events.clone();
+        tagged_events.extend(extra.clone());
+        let tagged_blocks = build_blocks_by_project(tagged_events, build_blocks);
+        let mut untagged_events = untag(&a_events);
+        untagged_events.extend(extra);
+        let untagged_blocks = build_blocks_by_project(untagged_events, build_blocks);
+
+        let untagged_minutes = minutes_for_folder(&untagged_blocks, A);
+        assert!(
+            untagged_minutes > 0,
+            "untagged build has a block: {untagged_blocks:?}"
+        );
+        assert_eq!(
+            minutes_for_folder(&tagged_blocks, A),
+            untagged_minutes,
+            "tagged: {tagged_blocks:?}\nuntagged: {untagged_blocks:?}"
+        );
+    }
+}
