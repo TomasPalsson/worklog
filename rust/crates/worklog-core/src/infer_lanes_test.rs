@@ -212,8 +212,14 @@ fn folderless_never_votes_or_extends() {
     };
     let (m, base_m) = (morning(&blocks), morning(&baseline));
     assert_eq!(m.dominant_project_path().as_deref(), Some(A));
-    assert_eq!(m.started_at, base_m.started_at, "folderless event must not move the start");
-    assert_eq!(m.ended_at, base_m.ended_at, "folderless event must not extend the end");
+    assert_eq!(
+        m.started_at, base_m.started_at,
+        "folderless event must not move the start"
+    );
+    assert_eq!(
+        m.ended_at, base_m.ended_at,
+        "folderless event must not extend the end"
+    );
 }
 
 /// A folderless event nowhere near any established span joins no block
@@ -245,16 +251,31 @@ fn folderless_event_outside_every_span_joins_no_block() {
 /// same day without them.
 #[test]
 fn helper_adds_no_time() {
-    let base_events = || vec![ev(9, 0, "claude_turn", Some(A)), ev(9, 30, "claude_turn", Some(A))];
+    let base_events = || {
+        vec![
+            ev(9, 0, "claude_turn", Some(A)),
+            ev(9, 30, "claude_turn", Some(A)),
+        ]
+    };
     let baseline = build_blocks(base_events());
 
     let mut events = base_events();
-    events.extend(
-        (5..20).map(|m| ev(9, m, crate::clues_contract::SOURCE_CLAUDE_HELPER, Some(D_WORK))),
-    );
-    events.extend(
-        (20..26).map(|m| ev(9, m, crate::clues_contract::SOURCE_CLAUDE_MESSAGE, Some(D_WORK))),
-    );
+    events.extend((5..20).map(|m| {
+        ev(
+            9,
+            m,
+            crate::clues_contract::SOURCE_CLAUDE_HELPER,
+            Some(D_WORK),
+        )
+    }));
+    events.extend((20..26).map(|m| {
+        ev(
+            9,
+            m,
+            crate::clues_contract::SOURCE_CLAUDE_MESSAGE,
+            Some(D_WORK),
+        )
+    }));
     let blocks = build_blocks(events);
 
     assert!(

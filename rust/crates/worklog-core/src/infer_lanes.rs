@@ -79,7 +79,8 @@ pub(crate) fn build_blocks_by_project(
     events.retain(|e| {
         !matches!(
             e.source.as_str(),
-            crate::clues_contract::SOURCE_CLAUDE_HELPER | crate::clues_contract::SOURCE_CLAUDE_MESSAGE
+            crate::clues_contract::SOURCE_CLAUDE_HELPER
+                | crate::clues_contract::SOURCE_CLAUDE_MESSAGE
         )
     });
     let keyed: Vec<Keyed> = events
