@@ -191,6 +191,10 @@ pub(super) fn store(
 /// `body` returns an error, so a mid-run failure still keeps every row
 /// written before it, exactly like today's one-autocommit-per-write loop.
 /// The error itself is still returned to the caller after that commit.
+/// Caveat: if the COMMIT itself fails (disk full, I/O error) the whole
+/// file's rows roll back, where per-row autocommit kept the earlier ones;
+/// its cache row rolls back too, so the next tick re-reads the file and
+/// the idempotent upsert restores them.
 pub(super) fn run_in_transaction(
     conn: &Connection,
     body: impl FnOnce(&Connection) -> Result<()>,
