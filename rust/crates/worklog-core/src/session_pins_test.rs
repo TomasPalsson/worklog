@@ -1,9 +1,10 @@
 use std::path::Path;
+use std::process::Command;
 
 use chrono::{TimeZone, Utc};
 
 use super::*;
-use crate::billing_registry::Customer;
+use crate::billing_registry::{Customer, FolderMap};
 use crate::db;
 
 fn home() -> String {
@@ -318,4 +319,133 @@ fn is_default_branch_matches_main_and_master_only() {
     assert!(is_default_branch("master"));
     assert!(!is_default_branch("feat/x"));
     assert!(!is_default_branch("Main"));
+}
+
+fn multi_tenant_folder(folder: &str) -> FolderMap {
+    FolderMap {
+        id: None,
+        folder: folder.into(),
+        customer: None,
+        verkefni: None,
+        billable: true,
+        multi_tenant: true,
+    }
+}
+
+fn init_git_repo(path: &Path, branch: &str) {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["init", "-q", "-b", branch])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git init failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn start_text_inherits_branch_pin() {
+    let conn = db::open_memory().unwrap();
+    let mut reg = registry();
+    reg.folders.push(multi_tenant_folder("vitinn-infra"));
+
+    let tmp = tempfile::tempdir().unwrap();
+    let repo_dir = tmp.path().join("vitinn-infra");
+    std::fs::create_dir_all(&repo_dir).unwrap();
+    init_git_repo(&repo_dir, "feat/x");
+
+    pin(
+        &conn,
+        &reg,
+        "sess-1",
+        &repo_dir,
+        "Sjúkra",
+        at(9, 0),
+        Some("feat/x"),
+    )
+    .unwrap();
+
+    let text = start_text(&conn, &reg, "sess-2", &repo_dir, at(10, 0))
+        .unwrap()
+        .expect("a branch pin must produce inherited start text");
+
+    assert_eq!(
+        text,
+        "This session is for Sjúkra (pinned from branch feat/x). If you switch customer, run: worklog pin <name> --session sess-2"
+    );
+
+    let rows = pins_for_sessions(&conn, &["sess-2".to_string()]).unwrap();
+    assert_eq!(rows.len(), 1, "inheritance must store one pin row");
+    assert_eq!(rows[0].customer, "Sjúkra");
+    assert_eq!(rows[0].source, "inherited");
+    assert_eq!(rows[0].branch.as_deref(), Some("feat/x"));
+    assert_eq!(rows[0].from_at, at(10, 0));
+}
+
+#[test]
+fn start_text_prints_the_pin_instruction_in_a_multi_tenant_folder() {
+    let conn = db::open_memory().unwrap();
+    let mut reg = registry();
+    reg.folders.push(multi_tenant_folder("vitinn-infra"));
+
+    // Non-existent path: `git::current_branch` returns `None` for it, so
+    // this exercises the "no branch pin" leg of `start_text`, not the
+    // inheritance leg covered by `start_text_inherits_branch_pin`.
+    let cwd = work("vitinn-infra");
+
+    let text = start_text(&conn, &reg, "sess-9", Path::new(&cwd), at(9, 0))
+        .unwrap()
+        .expect("a multi-tenant folder must print the pin instruction");
+
+    assert!(
+        text.contains("worklog pin <name> --session sess-9"),
+        "instruction must carry the exact pin command: {text}"
+    );
+    assert!(text.contains("Sjúkra"), "must list known customers: {text}");
+    assert!(text.contains("APRÓ"), "must list known customers: {text}");
+    assert!(
+        text.chars().count() <= 600,
+        "start text must be at most 600 chars, was {}",
+        text.chars().count()
+    );
+
+    // No branch pin existed, so nothing gets stored for this session.
+    assert!(pins_for_sessions(&conn, &["sess-9".to_string()])
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn start_text_is_none_when_the_folder_is_not_multi_tenant() {
+    let conn = db::open_memory().unwrap();
+    let mut reg = registry();
+    reg.folders.push(FolderMap {
+        id: None,
+        folder: "apro-skills".into(),
+        customer: Some("APRÓ".into()),
+        verkefni: None,
+        billable: true,
+        multi_tenant: false,
+    });
+    let cwd = work("apro-skills");
+
+    assert_eq!(
+        start_text(&conn, &reg, "sess-1", Path::new(&cwd), at(9, 0)).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn start_text_is_none_outside_a_registered_work_folder() {
+    let conn = db::open_memory().unwrap();
+    let reg = registry();
+    let cwd = Path::new("/tmp/does-not-exist/personal-blog");
+
+    assert_eq!(
+        start_text(&conn, &reg, "sess-1", cwd, at(9, 0)).unwrap(),
+        None
+    );
 }

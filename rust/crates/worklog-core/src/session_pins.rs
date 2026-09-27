@@ -46,6 +46,18 @@ pub fn is_default_branch(branch: &str) -> bool {
     matches!(branch, "main" | "master")
 }
 
+/// The `worklog session-hint` start-of-session text (design.md §4,
+/// contract T004), or `None` when nothing should be printed.
+pub fn start_text(
+    _conn: &Connection,
+    _registry: &Registry,
+    _session_id: &str,
+    _cwd: &Path,
+    _now: DateTime<Utc>,
+) -> Result<Option<String>> {
+    unimplemented!("T004")
+}
+
 /// Pin `session_id` to `name` from `at` on.
 ///
 /// `name` must resolve to a known customer name or alias
