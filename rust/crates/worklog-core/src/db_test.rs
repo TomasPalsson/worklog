@@ -375,7 +375,10 @@ fn deildir_and_change_log_tables_exist_and_schema_version_is_14() {
             "missing {expected} table; got {tables:?}"
         );
     }
-    assert_eq!(current_version(&conn).unwrap(), 14);
+    // `>=` floor, not `==`: spec 006's events.elsewhere and
+    // billing_line_texts (T001) took it to v15 — see the
+    // `billing_line_texts_table_exists...` test above.
+    assert!(current_version(&conn).unwrap() >= 14);
 }
 
 #[test]

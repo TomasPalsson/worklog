@@ -15,7 +15,7 @@ pub const SCHEMA_SQL: &str = include_str!("../sql/schema.sql");
 /// Monotonic integer version of the schema, bumped by future migrations.
 /// Stored in `PRAGMA user_version` so we can detect stale dbs without adding
 /// a dedicated table.
-pub const SCHEMA_VERSION: i32 = 14;
+pub const SCHEMA_VERSION: i32 = 15;
 
 /// Open a connection at `path`, enable WAL + FK, and run migrations.
 pub fn open(path: &Path) -> Result<Connection> {
@@ -83,6 +83,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         .context("ensuring billing_folder_map.multi_tenant")?;
     ensure_block_customer_shares_rows_json(conn)
         .context("ensuring block_customer_shares.rows_json")?;
+    ensure_events_elsewhere(conn).context("ensuring events.elsewhere")?;
     if from_version < 14 {
         seed_deildir_from_folder_pins(conn).context("seeding billing_deildir from folder pins")?;
     }
@@ -243,6 +244,23 @@ fn seed_deildir_from_folder_pins(conn: &Connection) -> Result<()> {
             params![customer, verkefni],
         )
         .context("seed billing_deildir from folder pin")?;
+    }
+    Ok(())
+}
+
+fn ensure_events_elsewhere(conn: &Connection) -> Result<()> {
+    let has: bool = conn
+        .prepare("PRAGMA table_info(events)")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter()
+        .any(|c| c == "elsewhere");
+    if !has {
+        conn.execute(
+            "ALTER TABLE events ADD COLUMN elsewhere INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .context("ALTER TABLE events ADD elsewhere")?;
     }
     Ok(())
 }

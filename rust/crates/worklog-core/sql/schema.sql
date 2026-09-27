@@ -2,6 +2,8 @@
 -- All CREATE statements are idempotent (IF NOT EXISTS) so the Rust hook can
 -- run this on every invocation with negligible cost.
 --
+-- v15 adds events.elsewhere and billing_line_texts — attribution and
+-- billing-line texts (spec 006); see db.rs / clues_contract.rs.
 -- v11 adds events.container/label_origin/label_confidence and the
 -- routing_rules table — browser/Slack event routing; see db.rs / routing.rs
 -- / routing_contract.rs.
@@ -40,6 +42,10 @@ CREATE TABLE IF NOT EXISTS events (
     label_origin TEXT,
     -- Model confidence when label_origin = 'guess'. NULL otherwise.
     label_confidence REAL,
+    -- 1 = an org commit/PR whose sha is in no local clone (spec 006,
+    -- D-07): kept out of every block, listed in the day's "done
+    -- elsewhere" list instead. See elsewhere.rs.
+    elsewhere INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE(source, source_id)
 );
@@ -275,4 +281,20 @@ CREATE TABLE IF NOT EXISTS block_changes (
     batch TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     seen_at TEXT
+);
+
+-- ───────────────────────── billing-line texts (spec 006) ─────────────────────────
+-- One generated or hand-edited Icelandic text per billing line
+-- (clues_contract::BillingLineKey), the "Texti á reikning" a boss or
+-- customer reads. `customer = ''` when the line's customer is
+-- unresolved. `origin = 'manual'` rows are never overwritten by
+-- generation (FR-31); see line_text.rs.
+CREATE TABLE IF NOT EXISTS billing_line_texts (
+    day TEXT NOT NULL,
+    folder TEXT NOT NULL,
+    customer TEXT NOT NULL DEFAULT '',
+    text TEXT NOT NULL,
+    origin TEXT NOT NULL CHECK(origin IN ('generated', 'manual')),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(day, folder, customer)
 );
