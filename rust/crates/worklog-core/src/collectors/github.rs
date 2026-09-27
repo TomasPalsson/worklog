@@ -354,6 +354,50 @@ mod tests {
     }
 
     #[test]
+    fn unresolvable_org_commit_is_marked_elsewhere() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/search/commits");
+            then.status(200).json_body(json!({"items": [
+                {"sha": "nowhere1", "repository": {"full_name": "org/definitely-not-cloned-xyz"},
+                 "commit": {"author": {"date": "2026-04-18T09:00:00Z"}, "message": "no local clone"}}
+            ]}));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/search/issues");
+            then.status(200).json_body(json!({"items": []}));
+        });
+
+        let conn = open_memory().unwrap();
+        let since = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let until = NaiveDate::from_ymd_opt(2026, 4, 19).unwrap();
+        collect_with(
+            &conn,
+            &auth(server.base_url()),
+            since,
+            until,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+
+        let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+        let commit = events
+            .iter()
+            .find(|e| e.source_id == "nowhere1")
+            .expect("commit event stored");
+        assert_eq!(commit.project_path, None);
+
+        let elsewhere: i64 = conn
+            .query_row(
+                "SELECT elsewhere FROM events WHERE source_id = ?1",
+                ["nowhere1"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(elsewhere, 1, "commit with no local clone must be flagged elsewhere");
+    }
+
+    #[test]
     fn collect_surfaces_http_errors() {
         let server = MockServer::start();
         server.mock(|when, then| {
