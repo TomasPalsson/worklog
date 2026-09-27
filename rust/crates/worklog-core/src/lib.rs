@@ -55,6 +55,7 @@ pub mod schedule;
 pub mod scrub;
 mod scrub_assignment;
 pub mod secrets;
+mod session_customers;
 pub mod sessions;
 pub mod skill;
 pub mod tenant_clues;
