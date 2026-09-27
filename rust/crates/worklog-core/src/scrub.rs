@@ -124,9 +124,64 @@ pub fn scrub_identifiers(s: &str) -> String {
         .into_owned()
 }
 
+/// `scrub_secrets` over every string in a JSON value. A string value whose
+/// object key names a secret (`"token": "…"`) is replaced whole, since the
+/// key never reaches the text-level assignment pattern.
+pub fn scrub_json(value: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::String(s) => Value::String(scrub_secrets(s)),
+        Value::Array(items) => Value::Array(items.iter().map(scrub_json).collect()),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| {
+                    let v = match v {
+                        Value::String(_) if names_a_secret(k) => {
+                            Value::String(SECRET_PLACEHOLDER.to_string())
+                        }
+                        _ => scrub_json(v),
+                    };
+                    (k.clone(), v)
+                })
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn names_a_secret(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    [
+        "token",
+        "secret",
+        "password",
+        "passwd",
+        "api_key",
+        "private_key",
+    ]
+    .iter()
+    .any(|word| key.contains(word))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scrub_json_scrubs_nested_strings_and_secret_keys() {
+        let token = fake_ghp();
+        let input = serde_json::json!({
+            "command": format!("curl -H 'Authorization: Bearer {token}' x"),
+            "nested": [{"api_token": "plain-looking-value"}],
+            "count": 3,
+            "path": "/Users/me/src/main.rs"
+        });
+        let out = scrub_json(&input);
+        assert!(!out.to_string().contains(&token));
+        assert_eq!(out["nested"][0]["api_token"], "[secret]");
+        assert_eq!(out["count"], 3);
+        assert_eq!(out["path"], "/Users/me/src/main.rs");
+    }
 
     fn fake_ghp() -> String {
         format!("ghp_{}", "a".repeat(36))
