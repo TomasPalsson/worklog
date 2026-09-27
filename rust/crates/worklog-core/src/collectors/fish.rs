@@ -2,17 +2,19 @@
 //!
 //! Reads `~/.local/share/fish/fish_history` (format: repeating blocks of
 //! `- cmd: <text>`, `  when: <epoch>`, optional `  paths:` + indented
-//! path lines). PRIVACY: the command text is only used in-process to
-//! track `cd` and pick a program name — it is never written to the DB.
-//! `title` is the first whitespace token of the command; `details` is
-//! always `None`.
+//! path lines). PRIVACY: the full command and its cwd are now stored
+//! locally in `events.raw_json` as `RawRecord::Shell`, secret-scrubbed
+//! via `scrub::scrub_secrets` (D-03). `title` is the first whitespace
+//! token of the command; `details` is always `None`.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate, NaiveTime};
 use rusqlite::Connection;
 
+use crate::clues_contract::RawRecord;
 use crate::models::Event;
 use crate::repo;
+use crate::scrub;
 
 use super::CollectReport;
 
@@ -100,6 +102,11 @@ pub fn collect_from_path(
         let project_path = cwd
             .as_deref()
             .and_then(|c| repo_root_for(c, home.as_deref()));
+        let raw_json = serde_json::to_string(&RawRecord::Shell {
+            command: scrub::scrub_secrets(&cmd),
+            cwd: cwd.clone(),
+        })
+        .context("serialising shell raw_json")?;
 
         let ev = Event {
             id: None,
@@ -115,7 +122,7 @@ pub fn collect_from_path(
             jira_issue: None,
             session_id: None,
             tempo_worklog_id: None,
-            raw_json: None,
+            raw_json: Some(raw_json),
         };
         repo::upsert_event(conn, &ev)?;
         report.events_written += 1;

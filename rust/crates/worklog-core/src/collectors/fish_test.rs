@@ -198,6 +198,60 @@ fn cd_into_nested_subdirectory_collapses_to_repo_root() {
 }
 
 #[test]
+fn shell_full_command_and_cwd_stored() {
+    let repo_dir = format!("{}/Desktop/Work/widget", home());
+    let fixture = write_fixture(&format!(
+        "- cmd: cd {repo_dir}\n  when: 1700000000\n- cmd: cargo test --release\n  when: 1700000100\n",
+    ));
+    let conn = open_memory().unwrap();
+    let since = NaiveDate::from_ymd_opt(2023, 1, 1).unwrap();
+    let until = NaiveDate::from_ymd_opt(2023, 12, 1).unwrap();
+    collect_from_path(&conn, fixture.path(), since, until).unwrap();
+    let events = repo::load_day_events(&conn, "2023-11-14").unwrap();
+    let cargo_ev = events.iter().find(|e| e.title == "cargo").unwrap();
+    let raw: crate::clues_contract::RawRecord =
+        serde_json::from_str(cargo_ev.raw_json.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        raw,
+        crate::clues_contract::RawRecord::Shell {
+            command: "cargo test --release".to_string(),
+            cwd: Some(repo_dir),
+        }
+    );
+}
+
+#[test]
+fn shell_secret_token_scrubbed_and_title_unchanged() {
+    let token = format!("ghp_{}", "a".repeat(36));
+    let fixture = write_fixture(&format!(
+        "- cmd: curl -H 'Authorization: token {token}' https://api.example.com\n  when: 1700000000\n"
+    ));
+    let conn = open_memory().unwrap();
+    let since = NaiveDate::from_ymd_opt(2023, 1, 1).unwrap();
+    let until = NaiveDate::from_ymd_opt(2023, 12, 1).unwrap();
+    collect_from_path(&conn, fixture.path(), since, until).unwrap();
+    let events = repo::load_day_events(&conn, "2023-11-14").unwrap();
+    assert_eq!(events.len(), 1);
+    let ev = &events[0];
+    assert_eq!(ev.title, "curl");
+    let raw_json = ev.raw_json.clone().unwrap();
+    assert!(!raw_json.contains(&token));
+    let raw: crate::clues_contract::RawRecord = serde_json::from_str(&raw_json).unwrap();
+    let crate::clues_contract::RawRecord::Shell { command, .. } = raw else {
+        panic!("expected Shell variant")
+    };
+    assert!(command.contains("[secret]"));
+    let haystack = format!(
+        "{}{}{}{}",
+        ev.title,
+        ev.details.clone().unwrap_or_default(),
+        ev.project_path.clone().unwrap_or_default(),
+        raw_json,
+    );
+    assert!(!haystack.contains(&token));
+}
+
+#[test]
 fn re_run_inserts_no_new_rows() {
     let fixture = write_fixture("- cmd: ls\n  when: 1700000000\n");
     let conn = open_memory().unwrap();
