@@ -79,8 +79,10 @@ pub struct InferBlock {
     pub flagged: bool,
     /// Track the source kind so the clustering pass can refuse to extend
     /// a calendar block. Skipped in serialization; not needed on disk.
+    /// `pub(crate)` so `infer_lanes` can refuse to place a folderless
+    /// event into a calendar block.
     #[serde(skip)]
-    is_calendar: bool,
+    pub(crate) is_calendar: bool,
     #[serde(skip)]
     pub(crate) events: Vec<InferEvent>,
 }
@@ -134,6 +136,32 @@ pub(crate) fn extend_block(block: &mut InferBlock, e: &InferEvent) {
     block.events.push(e.clone());
 }
 
+/// Link `e` into `block` without moving `started_at`/`ended_at`/
+/// `duration_seconds` — for an event that must ride along inside a span
+/// it never gets to decide (a folderless event placed by `infer_lanes`,
+/// D-08, FR-07, FR-08, FR-09).
+pub(crate) fn attach_riding_event(block: &mut InferBlock, e: InferEvent) {
+    block.event_count += 1;
+    if let Some(id) = e.event_id {
+        block.event_ids.push(id);
+    }
+    block.events.push(e);
+    block.jira_issue = unique_jira_issue(&block.events);
+}
+
+/// The one `jira_issue` shared by every event that carries one; `None`
+/// if there isn't exactly one. Shared by `finalize`, `build_sub_block`
+/// and `attach_riding_event` so a block's ticket is always computed the
+/// same way regardless of which pass last touched its events.
+fn unique_jira_issue(events: &[InferEvent]) -> Option<String> {
+    let issues: HashSet<String> = events.iter().filter_map(|e| e.jira_issue.clone()).collect();
+    if issues.len() == 1 {
+        issues.into_iter().next()
+    } else {
+        None
+    }
+}
+
 pub(crate) fn finalize(mut block: InferBlock) -> Option<InferBlock> {
     let duration = block.ended_at - block.started_at;
     if duration < Duration::minutes(MIN_BLOCK_MINUTES) {
@@ -142,16 +170,7 @@ pub(crate) fn finalize(mut block: InferBlock) -> Option<InferBlock> {
     if duration > Duration::minutes(MAX_BLOCK_MINUTES) {
         block.flagged = true;
     }
-    let issues: HashSet<String> = block
-        .events
-        .iter()
-        .filter_map(|e| e.jira_issue.clone())
-        .collect();
-    block.jira_issue = if issues.len() == 1 {
-        issues.into_iter().next()
-    } else {
-        None
-    };
+    block.jira_issue = unique_jira_issue(&block.events);
     Some(block)
 }
 
@@ -376,12 +395,7 @@ fn build_sub_block(parent: &InferBlock, first: usize, last: usize) -> Option<Inf
         .max()
         .unwrap_or(started)
         .max(started);
-    let issues: HashSet<String> = slice.iter().filter_map(|e| e.jira_issue.clone()).collect();
-    let jira_issue = if issues.len() == 1 {
-        issues.into_iter().next()
-    } else {
-        None
-    };
+    let jira_issue = unique_jira_issue(&slice);
     let duration = ended - started;
     if duration < Duration::minutes(MIN_BLOCK_MINUTES) {
         return None;

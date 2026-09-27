@@ -83,6 +83,34 @@ pub(crate) fn build_blocks_by_project(
                 | crate::clues_contract::SOURCE_CLAUDE_MESSAGE
         )
     });
+
+    // With no project-tagged event anywhere in the day there is no lane
+    // to speak of — every event is folderless, and D-08's "ride inside an
+    // existing span" has no span to ride inside. Cluster them all the
+    // ordinary way, exactly as before spec 006.
+    if !events
+        .iter()
+        .any(|e| !e.is_calendar() && lane_key(e).is_some())
+    {
+        return build(events);
+    }
+
+    // A folderless event (D-08, FR-07, FR-08, FR-09) never decides a
+    // block's project or bounds — it can only ride inside a span a
+    // project event already established. Pull every one out before any
+    // clustering pass can see it, and place it afterward without moving
+    // anything.
+    let (folderless, events): (Vec<InferEvent>, Vec<InferEvent>) = events
+        .into_iter()
+        .partition(|e| !e.is_calendar() && lane_key(e).is_none());
+
+    place_folderless(build_project_blocks(events, build), folderless)
+}
+
+fn build_project_blocks(
+    events: Vec<InferEvent>,
+    build: fn(Vec<InferEvent>) -> Vec<InferBlock>,
+) -> Vec<InferBlock> {
     let keyed: Vec<Keyed> = events
         .iter()
         .filter(|e| !e.is_calendar())
@@ -139,6 +167,22 @@ pub(crate) fn build_blocks_by_project(
     blocks.extend(build(calendar));
     blocks.extend(build(leftovers));
     blocks.sort_by_key(|b| b.started_at);
+    blocks
+}
+
+/// Link each folderless event into the non-calendar block whose span
+/// already contains its timestamp, never moving that block's start, end
+/// or duration (D-08, FR-07, FR-08). One outside every span joins no
+/// block and creates none of its own (FR-09).
+fn place_folderless(mut blocks: Vec<InferBlock>, folderless: Vec<InferEvent>) -> Vec<InferBlock> {
+    for e in folderless {
+        if let Some(b) = blocks
+            .iter_mut()
+            .find(|b| !b.is_calendar && e.ts >= b.started_at && e.ts < b.ended_at)
+        {
+            crate::infer::attach_riding_event(b, e);
+        }
+    }
     blocks
 }
 
