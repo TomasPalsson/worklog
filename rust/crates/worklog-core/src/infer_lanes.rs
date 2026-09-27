@@ -81,6 +81,7 @@ pub(crate) fn build_blocks_by_project(
             e.source.as_str(),
             crate::clues_contract::SOURCE_CLAUDE_HELPER
                 | crate::clues_contract::SOURCE_CLAUDE_MESSAGE
+                | crate::clues_contract::SOURCE_CLAUDE_TOOL
         )
     });
 

@@ -19,6 +19,10 @@ pub const SOURCE_CLAUDE_HELPER: &str = "claude_helper";
 /// `events.source` for a message one Claude session sent another (FR-18).
 /// Never counted as block time.
 pub const SOURCE_CLAUDE_MESSAGE: &str = "claude_message";
+/// `events.source` for one Claude tool call (`RawRecord::ClaudeTool`), one
+/// row per `tool_use` id. Detail only: the per-minute `claude_work` row
+/// already carries the time, so this is never counted as block time.
+pub const SOURCE_CLAUDE_TOOL: &str = "claude_tool";
 
 /// The one JSON shape stored in `events.raw_json` from spec 006 on.
 /// Every string field has already passed `scrub::scrub_secrets`.

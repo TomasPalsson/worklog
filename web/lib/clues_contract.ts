@@ -10,6 +10,8 @@ export const TOOL_OUTPUT_CAP_BYTES = 2048;
 export const SOURCE_CLAUDE_HELPER = "claude_helper";
 /** Mirrors `clues_contract::SOURCE_CLAUDE_MESSAGE`. */
 export const SOURCE_CLAUDE_MESSAGE = "claude_message";
+/** Mirrors `clues_contract::SOURCE_CLAUDE_TOOL`. */
+export const SOURCE_CLAUDE_TOOL = "claude_tool";
 
 /** Mirrors `clues_contract::HelperKind`. */
 export type HelperKind = "subagent" | "sidechain" | "background_job" | "teammate";
