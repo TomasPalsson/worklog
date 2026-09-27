@@ -54,8 +54,11 @@ pub struct InferEvent {
     /// background `claude_work` heartbeat is judged against its own
     /// session's prompts and siblings, never another session's.
     pub session_id: Option<String>,
-    /// Raw event title. Drives `infer_evidence::dedupe_shell_events` (a
-    /// flaky collector logging the exact same `shell` command twice).
+    /// Event title. For `claude_turn`, this is the owner's prompt text
+    /// read from `raw_json` when it deserialises, else the DB title —
+    /// every `claude_turn` row is titled "prompt" in the DB. Drives
+    /// `infer_evidence::dedupe_shell_events` (a flaky collector logging
+    /// the exact same `shell` command twice).
     pub title: Option<String>,
     /// The Claude session's resolved customer, when its repo folder splits into separate lanes per customer (`infer_lanes::lane_key`); `None` otherwise.
     pub lane_tag: Option<String>,
@@ -467,7 +470,7 @@ pub fn load_day_events(conn: &Connection, day: NaiveDate) -> Result<Vec<InferEve
     // window or show up as that project's activity either.
     let mut stmt = conn.prepare(
         "SELECT id, source, started_at, duration_seconds, jira_issue, project_path,
-                session_id, title
+                session_id, title, raw_json
            FROM events
           WHERE started_at >= ?1 AND started_at < ?2
             AND NOT (source IN (?3, ?4) AND (label_origin IS NULL OR label_origin IN (?5, ?6)))
@@ -504,15 +507,30 @@ fn infer_event_row(r: &rusqlite::Row) -> rusqlite::Result<InferEvent> {
     let ts = chrono::DateTime::parse_from_rfc3339(&iso)
         .map(|t| t.with_timezone(&Utc))
         .unwrap_or_else(|_| Utc::now());
+    let source: String = r.get(1)?;
+    let db_title: Option<String> = r.get(7)?;
+    let raw_json: Option<String> = r.get(8)?;
+    let title = if source == "claude_turn" {
+        raw_json
+            .as_deref()
+            .and_then(|j| serde_json::from_str::<crate::clues_contract::RawRecord>(j).ok())
+            .and_then(|rec| match rec {
+                crate::clues_contract::RawRecord::ClaudePrompt { text, .. } => Some(text),
+                _ => None,
+            })
+            .or(db_title)
+    } else {
+        db_title
+    };
     Ok(InferEvent {
         event_id: Some(r.get(0)?),
-        source: r.get(1)?,
+        source,
         ts,
         duration_seconds: r.get(3)?,
         jira_issue: r.get(4)?,
         project_path: r.get(5)?,
         session_id: r.get(6)?,
-        title: r.get(7)?,
+        title,
         lane_tag: None,
     })
 }
@@ -1443,6 +1461,36 @@ mod tests {
             events.is_empty(),
             "noise firefox/slack events must never reach inference"
         );
+    }
+
+    #[test]
+    fn load_day_events_falls_back_to_db_title_on_malformed_raw_json() {
+        let conn = open_memory().unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let mut e = Event::minimal("claude_turn", "p1", "2026-04-18T09:00:00+00:00", "prompt");
+        e.raw_json = Some("not json".into());
+        repo::upsert_event(&conn, &e).unwrap();
+
+        let events = load_day_events(&conn, day).unwrap();
+        assert_eq!(events[0].title.as_deref(), Some("prompt"));
+    }
+
+    #[test]
+    fn load_day_events_keeps_shell_title_even_with_raw_json() {
+        let conn = open_memory().unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let mut e = Event::minimal("shell", "s1", "2026-04-18T09:00:00+00:00", "git status");
+        e.raw_json = Some(
+            serde_json::to_string(&crate::clues_contract::RawRecord::Shell {
+                command: "git status".into(),
+                cwd: None,
+            })
+            .unwrap(),
+        );
+        repo::upsert_event(&conn, &e).unwrap();
+
+        let events = load_day_events(&conn, day).unwrap();
+        assert_eq!(events[0].title.as_deref(), Some("git status"));
     }
 
     #[test]

@@ -226,6 +226,83 @@ fn two_customer_sessions_split_into_separate_blocks() {
     }
 }
 
+/// On real data every `claude_turn` is titled "prompt"; the owner's message
+/// lives in `raw_json` (`RawRecord::ClaudePrompt`). Session lanes must
+/// resolve the customer from there, not from the (uniform) DB title.
+#[test]
+fn prompt_text_names_the_session_customer() {
+    use crate::billing_registry::{upsert_customer, Customer};
+    use crate::clues_contract::RawRecord;
+    use crate::models::Event;
+    let conn = crate::db::open_memory().unwrap();
+    let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
+    upsert_customer(
+        &conn,
+        &Customer {
+            id: None,
+            name: "Sjúkra".into(),
+            aliases: vec![],
+        },
+    )
+    .unwrap();
+    upsert_customer(
+        &conn,
+        &Customer {
+            id: None,
+            name: "APRÓ".into(),
+            aliases: vec![],
+        },
+    )
+    .unwrap();
+
+    for stretch in 0..6u32 {
+        let (session, text) = if stretch % 2 == 0 {
+            ("sessA", "Sjúkra onboarding call")
+        } else {
+            ("sessB", "APRÓ migration work")
+        };
+        for step in 0..10u32 {
+            let minute = stretch * 20 + step * 2;
+            let mut e = Event::minimal(
+                "claude_turn",
+                format!("t{stretch}-{step}"),
+                at(9 + minute / 60, minute % 60).to_rfc3339(),
+                "prompt",
+            );
+            e.project_path = Some(SHARED.into());
+            e.session_id = Some(session.into());
+            e.raw_json = Some(
+                serde_json::to_string(&RawRecord::ClaudePrompt {
+                    session_id: session.into(),
+                    text: text.into(),
+                })
+                .unwrap(),
+            );
+            crate::repo::upsert_event(&conn, &e).unwrap();
+        }
+    }
+
+    let blocks = build_day_blocks(&conn, day).unwrap();
+    let non_calendar: Vec<&InferBlock> = blocks.iter().filter(|b| !b.is_calendar).collect();
+    assert!(
+        non_calendar.len() >= 2,
+        "expected at least 2 blocks, got {}",
+        non_calendar.len()
+    );
+    for b in &non_calendar {
+        let sessions: BTreeMap<&str, ()> = b
+            .events
+            .iter()
+            .filter_map(|e| e.session_id.as_deref())
+            .map(|s| (s, ()))
+            .collect();
+        assert!(
+            sessions.len() <= 1,
+            "block must not mix both sessions, got {sessions:?}"
+        );
+    }
+}
+
 /// Both sessions naming the same customer must not split the lane —
 /// the registry then behaves exactly as if it held no customers (FR-04).
 #[test]
