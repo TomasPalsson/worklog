@@ -190,6 +190,9 @@ fn day_overlaps_from_events_matches_day_overlaps_on_a_preloaded_slice() {
     // `load_day_events` themselves. This must produce byte-identical
     // overlaps (allocation included) to the old load-per-call path, or the
     // day page would silently start showing wrong overlap/allocation data.
+    // Both loads read WORKLOG_TZ for the day window; hold the env lock so a
+    // parallel test changing it can't split them across two windows.
+    let _g = crate::tz::test_env_lock();
     let conn = open_memory().unwrap();
     let day = NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
     for e in (0..20).map(|i| ev(10, i * 3, "claude_turn", A)) {
