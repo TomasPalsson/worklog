@@ -310,6 +310,25 @@ fn ensure_events_elsewhere(conn: &Connection) -> Result<()> {
         )
         .context("ALTER TABLE events ADD elsewhere")?;
     }
+    // elsewhere::list_for_day (every day page) wants the few elsewhere=1 rows of
+    // a day; without this it reads every event of the day to find them. Lives
+    // here, not in schema.sql, because older DBs only gain the column above.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_events_elsewhere ON events(started_at) WHERE elsewhere = 1",
+        [],
+    )
+    .context("CREATE INDEX idx_events_elsewhere")?;
+    // Covers infer::load_day_events (day page, week page, infer, every tick) so
+    // it never reads the wide rows. `id` second keeps equal started_at in rowid
+    // order, as idx_events_started returned them; `elsewhere = 0` is the only
+    // query term that lets SQLite pick this partial index.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_events_day_cover ON events(started_at, id, source,
+            label_origin, duration_seconds, jira_issue, project_path, session_id, title)
+         WHERE elsewhere = 0",
+        [],
+    )
+    .context("CREATE INDEX idx_events_day_cover")?;
     Ok(())
 }
 

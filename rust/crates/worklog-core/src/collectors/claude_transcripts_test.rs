@@ -644,3 +644,54 @@ fn claude_tool_sidechain_tool_calls_produce_no_row() {
         0
     );
 }
+
+#[test]
+fn each_files_commit_lands_before_the_next_files_read_starts() {
+    // A transaction spanning the whole multi-file scan holds SQLite's write
+    // lock for as long as the scan takes; each file must instead commit
+    // (and become visible to a second connection) before the next file's
+    // turn — proven here by a hook fired right after each per-file commit.
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = "/home/x/Desktop/Work/widget";
+    write_transcript(
+        tmp.path(),
+        "proj",
+        "s1",
+        &format!(
+            "{}\n",
+            user_line("2026-04-18T09:00:00Z", "s1", "u1", cwd, "\"one\"")
+        ),
+    );
+    write_transcript(
+        tmp.path(),
+        "proj",
+        "s2",
+        &format!(
+            "{}\n",
+            user_line("2026-04-18T09:05:00Z", "s2", "u2", cwd, "\"two\"")
+        ),
+    );
+
+    let db_path = tmp.path().join("worklog.db");
+    let conn = crate::db::open(&db_path).unwrap();
+    let second = rusqlite::Connection::open(&db_path).unwrap();
+    let seen_counts = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let recorder = seen_counts.clone();
+    claude_transcript_cache::for_test_set_after_file_commit(move || {
+        let n: i64 = second
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE source = 'claude_turn'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        recorder.borrow_mut().push(n);
+    });
+
+    let since = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+    let until = NaiveDate::from_ymd_opt(2026, 4, 19).unwrap();
+    collect_from_dir(&conn, tmp.path(), since, until).unwrap();
+
+    let counts = seen_counts.borrow();
+    assert_eq!(*counts, vec![1, 2], "each file's commit must land, and be visible to another connection, before the next file's commit — not only once the whole scan finishes");
+}

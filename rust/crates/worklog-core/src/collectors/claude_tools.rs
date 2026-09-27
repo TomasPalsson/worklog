@@ -13,17 +13,11 @@ use crate::models::Event;
 use crate::scrub;
 
 /// `tool_use` id -> its `tool_result`'s raw (unscrubbed) output text,
-/// scanned from every "user" line in one transcript file.
-pub fn collect_tool_outputs(content: &str) -> HashMap<String, String> {
+/// scanned from every already-parsed "user" line in one transcript file
+/// (the caller parses each line once and shares it with the main pass).
+pub fn collect_tool_outputs(lines: &[Value]) -> HashMap<String, String> {
     let mut outputs = HashMap::new();
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
+    for value in lines {
         if value.get("type").and_then(Value::as_str) != Some("user") {
             continue;
         }
@@ -95,6 +89,7 @@ fn build_tool_event(
     let tool = item.get("name").and_then(Value::as_str)?.to_string();
     let input = scrub::scrub_json(item.get("input").unwrap_or(&Value::Null));
     let files = files_named_in(&input);
+    let stored_input = trim_input_for_storage(&tool, &input);
 
     let (output, output_cut_bytes) = match outputs.get(id) {
         Some(raw) => {
@@ -108,7 +103,7 @@ fn build_tool_event(
     let raw = RawRecord::ClaudeTool {
         session_id: session_id.to_string(),
         tool: tool.clone(),
-        input,
+        input: stored_input,
         output,
         output_cut_bytes,
         files,
@@ -156,4 +151,92 @@ fn cap_bytes(s: &str, max_bytes: usize) -> (String, usize) {
         cut -= 1;
     }
     (s[..cut].to_string(), s.len() - cut)
+}
+
+/// The keys `toolPreview` (web/lib/detailText.ts) reads for `tool` in an
+/// explicit branch; `None` means the default branch (`JSON.stringify(input)`
+/// cut at 140 chars).
+fn preview_keys(tool: &str) -> Option<&'static [&'static str]> {
+    match tool {
+        "Bash" => Some(&["command"]),
+        "Read" | "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => {
+            Some(&["file_path", "notebook_path", "path"])
+        }
+        "Grep" | "Glob" => Some(&["pattern", "file_path", "notebook_path", "path"]),
+        "Agent" | "Task" => Some(&["description", "prompt"]),
+        "WebFetch" => Some(&["url"]),
+        "WebSearch" => Some(&["query"]),
+        _ => None,
+    }
+}
+
+/// Trim a tool's (already-scrubbed) input to exactly what `toolPreview` can
+/// ever display for `tool`, so `events.raw_json` doesn't carry the rest of
+/// an Edit/MultiEdit/Write body nobody sees. `files` and anything else must
+/// still be computed from the untrimmed input, before this runs.
+fn trim_input_for_storage(tool: &str, input: &Value) -> Value {
+    match preview_keys(tool) {
+        Some(keys) => keep_keys(input, keys),
+        None => cap_strings(input, 200),
+    }
+}
+
+/// Keep only `keys` present on a JSON object, values verbatim.
+fn keep_keys(input: &Value, keys: &[&str]) -> Value {
+    let mut kept = serde_json::Map::new();
+    if let Value::Object(map) = input {
+        for &key in keys {
+            if let Some(value) = map.get(key) {
+                kept.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+    Value::Object(kept)
+}
+
+/// Cap every string value at `max_chars`, recursively through arrays and
+/// objects; a string cut at >= 200 chars can't change `JSON.stringify(...)`
+/// in its first 140 chars, nor whether it exceeds 140 (see toolPreview's
+/// default branch). Keys and non-string values are untouched.
+fn cap_strings(input: &Value, max_chars: usize) -> Value {
+    match input {
+        Value::String(s) if s.chars().count() > max_chars => {
+            Value::String(s.chars().take(max_chars).collect())
+        }
+        Value::Array(items) => {
+            Value::Array(items.iter().map(|v| cap_strings(v, max_chars)).collect())
+        }
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), cap_strings(v, max_chars)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trim_input_for_storage_keeps_only_preview_keys() {
+        // Write: toolPreview only ever reads file_path — the file body must
+        // not survive into raw_json.
+        let write_input = serde_json::json!({
+            "file_path": "/a/b.rs",
+            "content": "x".repeat(10_000),
+        });
+        assert_eq!(
+            trim_input_for_storage("Write", &write_input),
+            serde_json::json!({"file_path": "/a/b.rs"})
+        );
+
+        // A tool with no explicit toolPreview branch (default:
+        // JSON.stringify cut at 140 chars) keeps every key but caps each
+        // string at 200 chars.
+        let other_input = serde_json::json!({"note": "y".repeat(500)});
+        let trimmed = trim_input_for_storage("TodoWrite", &other_input);
+        assert_eq!(trimmed["note"].as_str().unwrap().len(), 200);
+    }
 }

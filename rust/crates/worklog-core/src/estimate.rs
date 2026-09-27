@@ -217,6 +217,27 @@ pub fn build_thinking_invoker(thinking_tokens: u32) -> Result<Box<dyn ModelInvok
 /// Test seam — tests pass a fake invoker so we don't shell out to `claude`.
 pub trait ModelInvoker {
     fn invoke(&self, system: &str, user: &str, schema: &Value, model: &str) -> Result<Value>;
+
+    /// Runs `invoke` once per entry of `users`, in the same order, against
+    /// the same `system`/`schema`/`model` — the shape both
+    /// `estimate_day_with` and `line_text::generate_for_day` call it with
+    /// (only the per-block/per-line user prompt differs). The default
+    /// runs them sequentially, so test fakes (not necessarily `Sync`) get
+    /// correct behaviour for free. `ClaudeSubprocess` and `LiteLLMInvoker`
+    /// override this to run several calls concurrently (SLICE T11 —
+    /// `invoke` is a ~20s-per-call bottleneck when it shells out).
+    fn invoke_many(
+        &self,
+        system: &str,
+        users: &[String],
+        schema: &Value,
+        model: &str,
+    ) -> Vec<Result<Value>> {
+        users
+            .iter()
+            .map(|u| self.invoke(system, u, schema, model))
+            .collect()
+    }
 }
 
 /// `claude -p` subprocess invoker. Moved to its own module (only a
@@ -403,6 +424,16 @@ impl ModelInvoker for LiteLLMInvoker {
         let content = extract_message_content(&envelope)?;
         parse_response(content)
     }
+
+    fn invoke_many(
+        &self,
+        system: &str,
+        users: &[String],
+        schema: &Value,
+        model: &str,
+    ) -> Vec<Result<Value>> {
+        crate::claude_subprocess::bounded_concurrent_invoke(self, system, users, schema, model)
+    }
 }
 
 impl LiteLLMInvoker {
@@ -474,6 +505,10 @@ pub fn estimate_day_with<I: ModelInvoker>(
     let open_tickets = load_open_tickets(conn)?;
     let blocks = load_blocks_for_estimator(conn, &day_iso)?;
 
+    // Phase 1: build every block's prompt up front, in the same DB-read
+    // order as before — nothing here talks to the model yet, so it stays
+    // fully sequential (SLICE T11).
+    let mut pending: Vec<PendingEstimate> = Vec::new();
     for block in blocks {
         // Personal blocks don't get an estimate — they're never going to
         // Tempo, and burning a `claude -p` call to write a Jira-style
@@ -500,8 +535,30 @@ pub fn estimate_day_with<I: ModelInvoker>(
         let literals = collect_literal_matches(&events);
         let clues = clues_for_block(conn, &block);
         let user_msg = build_user_message(&block, &clues, &open_tickets, &literals);
+        pending.push(PendingEstimate {
+            block,
+            literals,
+            user_msg,
+        });
+    }
 
-        let reply = match invoker.invoke(SYSTEM_PROMPT, &user_msg, &response_schema(), model) {
+    // Phase 2: the slow part — up to a few `invoke` calls in flight at
+    // once. `pending`'s order is preserved in `replies` regardless of
+    // which call returns first (see `ModelInvoker::invoke_many`).
+    let users: Vec<String> = pending.iter().map(|p| p.user_msg.clone()).collect();
+    let replies = invoker.invoke_many(SYSTEM_PROMPT, &users, &response_schema(), model);
+
+    // Phase 3: apply every result sequentially, in the ORIGINAL block
+    // order — identical DB writes / mark_gap / stats bookkeeping to
+    // before phase 1/2 were split out.
+    for (prepped, reply) in pending.into_iter().zip(replies) {
+        let PendingEstimate {
+            block,
+            literals,
+            user_msg: _,
+        } = prepped;
+
+        let reply = match reply {
             Ok(v) => v,
             Err(e) => {
                 warn!(block_id = block.id, error = %e, "claude invocation failed");
@@ -546,25 +603,40 @@ pub fn estimate_day_with<I: ModelInvoker>(
         }
 
         let described_seconds = block_span_seconds(&block);
-        conn.execute(
-            "UPDATE blocks
+        // Phase 1 read `estimated_by` before the batch's `invoke_many` call,
+        // which can take minutes — if the owner hand-edits this block (or
+        // another `estimate` run beats us to it) in that window, this WHERE
+        // makes the write a no-op instead of clobbering it. CLAUDE.md:
+        // manual blocks MUST NOT be overwritten by re-estimation.
+        let rows_updated = conn
+            .execute(
+                "UPDATE blocks
                 SET description        = ?1,
                     duration_seconds   = ?2,
                     jira_issue         = ?3,
                     estimated_by       = 'claude_p',
                     described_seconds  = ?5
-              WHERE id = ?4",
-            params![
-                description,
-                minutes * 60,
-                ticket,
-                block.id,
-                described_seconds
-            ],
-        )
-        .context("updating block with estimate")?;
-        stats.estimated += 1;
-        debug!(block_id = block.id, "estimated by claude_p");
+              WHERE id = ?4
+                AND (estimated_by IS NULL OR estimated_by NOT IN ('manual', 'claude_p'))",
+                params![
+                    description,
+                    minutes * 60,
+                    ticket,
+                    block.id,
+                    described_seconds
+                ],
+            )
+            .context("updating block with estimate")?;
+        if rows_updated == 0 {
+            debug!(
+                block_id = block.id,
+                "estimated_by became manual/claude_p mid-batch; skipping write"
+            );
+            stats.skipped += 1;
+        } else {
+            stats.estimated += 1;
+            debug!(block_id = block.id, "estimated by claude_p");
+        }
     }
 
     // After estimation, fold neighbouring blocks that landed on the same
@@ -942,6 +1014,16 @@ struct BlockRow {
 struct EventRow {
     title: Option<String>,
     details: Option<String>,
+}
+
+/// One block's built prompt, carried from [`estimate_day_with`]'s phase 1
+/// (DB reads + prompt-building) to its phase 3 (apply results) across the
+/// phase 2 concurrent `invoke_many` call — `literals` is needed again at
+/// apply time for ticket validation.
+struct PendingEstimate {
+    block: BlockRow,
+    literals: Vec<String>,
+    user_msg: String,
 }
 
 fn load_open_tickets(conn: &Connection) -> Result<Vec<Candidate>> {
@@ -2762,6 +2844,232 @@ mod tests {
         assert_eq!(feed.batches.len(), 1, "one run, one batch");
         assert_eq!(feed.batches[0].source, ChangeSource::Claude);
         assert_eq!(feed.batches[0].count, 20);
+    }
+
+    /// SLICE T11: `invoke_many`'s real threads finish out of order (this
+    /// fake sleeps LONGER for an earlier block, so completion order is the
+    /// reverse of `users`' order) — `estimate_day_with` must still apply
+    /// each reply to its OWN block, not whichever block's prompt happened
+    /// to be built first.
+    struct OutOfOrderInvoker;
+
+    impl ModelInvoker for OutOfOrderInvoker {
+        fn invoke(
+            &self,
+            _system: &str,
+            user: &str,
+            _schema: &Value,
+            _model: &str,
+        ) -> Result<Value> {
+            // The prompt embeds the block's own duration; echo it back so
+            // the test can tell which block a reply was meant for.
+            let v: Value = serde_json::from_str(user)?;
+            let minutes = v["block_duration_minutes"].as_i64().unwrap_or(0);
+            Ok(json!({
+                "jira_issue": null,
+                "minutes": minutes,
+                "description": format!("desc-for-{minutes}"),
+            }))
+        }
+
+        fn invoke_many(
+            &self,
+            system: &str,
+            users: &[String],
+            schema: &Value,
+            model: &str,
+        ) -> Vec<Result<Value>> {
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = users
+                    .iter()
+                    .enumerate()
+                    .map(|(i, u)| {
+                        scope.spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_millis(
+                                (users.len() - i) as u64 * 20,
+                            ));
+                            self.invoke(system, u, schema, model)
+                        })
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            })
+        }
+    }
+
+    #[test]
+    fn estimate_day_with_matches_out_of_order_replies_to_the_right_block() {
+        let conn = open_memory().unwrap();
+        let day = "2026-08-01";
+        let block_30 = insert_block_with(
+            &conn,
+            day,
+            "2026-08-01T09:00:00+00:00",
+            "2026-08-01T09:30:00+00:00",
+            1800,
+            None,
+            None,
+            None,
+        );
+        let block_45 = insert_block_with(
+            &conn,
+            day,
+            "2026-08-01T10:00:00+00:00",
+            "2026-08-01T10:45:00+00:00",
+            2700,
+            None,
+            None,
+            None,
+        );
+        let block_60 = insert_block_with(
+            &conn,
+            day,
+            "2026-08-01T11:00:00+00:00",
+            "2026-08-01T12:00:00+00:00",
+            3600,
+            None,
+            None,
+            None,
+        );
+
+        let stats = estimate_day_with(
+            &conn,
+            NaiveDate::from_ymd_opt(2026, 8, 1).unwrap(),
+            "test-model",
+            &OutOfOrderInvoker,
+        )
+        .unwrap();
+        assert_eq!(stats.estimated, 3);
+
+        let description = |id: i64| -> String {
+            conn.query_row(
+                "SELECT description FROM blocks WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(description(block_30), "desc-for-30");
+        assert_eq!(description(block_45), "desc-for-45");
+        assert_eq!(description(block_60), "desc-for-60");
+    }
+
+    /// Review finding 1 (SLICE T11 round 2): phase 1 reads every block's
+    /// `estimated_by` before the batch's `invoke_many` call, which can run
+    /// for minutes. This fake simulates the owner hand-editing a block
+    /// (marking it `manual`) THROUGH A SECOND CONNECTION to the same
+    /// file-backed DB while that call is still in flight — the way the
+    /// daemon's own HTTP handler thread would. The phase-3 write must see
+    /// that change and skip the row: CLAUDE.md says manual blocks MUST NOT
+    /// be overwritten by re-estimation.
+    struct MidBatchManualInvoker {
+        db_path: std::path::PathBuf,
+        manual_block_id: i64,
+    }
+
+    impl ModelInvoker for MidBatchManualInvoker {
+        fn invoke(
+            &self,
+            _system: &str,
+            user: &str,
+            _schema: &Value,
+            _model: &str,
+        ) -> Result<Value> {
+            let v: Value = serde_json::from_str(user)?;
+            let minutes = v["block_duration_minutes"].as_i64().unwrap_or(0);
+            Ok(json!({
+                "jira_issue": null,
+                "minutes": minutes,
+                "description": format!("desc-for-{minutes}"),
+            }))
+        }
+
+        fn invoke_many(
+            &self,
+            system: &str,
+            users: &[String],
+            schema: &Value,
+            model: &str,
+        ) -> Vec<Result<Value>> {
+            let other = crate::db::open(&self.db_path).unwrap();
+            other
+                .execute(
+                    "UPDATE blocks SET estimated_by = 'manual' WHERE id = ?1",
+                    params![self.manual_block_id],
+                )
+                .unwrap();
+            users
+                .iter()
+                .map(|u| self.invoke(system, u, schema, model))
+                .collect()
+        }
+    }
+
+    /// Test-only helper for the manual-mid-batch test below — kept outside
+    /// the test function to stay under the function-length guard.
+    fn block_estimated_by_and_description(
+        conn: &Connection,
+        id: i64,
+    ) -> (Option<String>, Option<String>) {
+        conn.query_row(
+            "SELECT estimated_by, description FROM blocks WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn estimate_day_with_does_not_overwrite_a_block_marked_manual_mid_batch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("worklog.sqlite");
+        let conn = crate::db::open(&db_path).unwrap();
+        let day = "2026-08-02";
+        let manual_block = insert_block_with(
+            &conn,
+            day,
+            "2026-08-02T09:00:00+00:00",
+            "2026-08-02T09:30:00+00:00",
+            1800,
+            None,
+            None,
+            None,
+        );
+        let other_block = insert_block_with(
+            &conn,
+            day,
+            "2026-08-02T10:00:00+00:00",
+            "2026-08-02T10:30:00+00:00",
+            1800,
+            None,
+            None,
+            None,
+        );
+
+        let invoker = MidBatchManualInvoker {
+            db_path: db_path.clone(),
+            manual_block_id: manual_block,
+        };
+        let stats = estimate_day_with(
+            &conn,
+            NaiveDate::from_ymd_opt(2026, 8, 2).unwrap(),
+            "test-model",
+            &invoker,
+        )
+        .unwrap();
+
+        assert_eq!(stats.estimated, 1, "only the untouched block gets written");
+        assert_eq!(stats.skipped, 1, "mid-batch manual block counts as skipped");
+
+        let (estimated_by, description) = block_estimated_by_and_description(&conn, manual_block);
+        assert_eq!(estimated_by.as_deref(), Some("manual"));
+        assert!(description.is_none(), "manual row must survive untouched");
+        assert_eq!(
+            block_estimated_by_and_description(&conn, other_block)
+                .0
+                .as_deref(),
+            Some("claude_p")
+        );
     }
 
     /// Records the `user` prompt an [`invoke_block_estimate`] call was

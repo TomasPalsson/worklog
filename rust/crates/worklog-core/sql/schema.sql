@@ -60,6 +60,10 @@ CREATE INDEX IF NOT EXISTS idx_events_started ON events(started_at);
 CREATE INDEX IF NOT EXISTS idx_events_tempo ON events(tempo_worklog_id);
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
 CREATE INDEX IF NOT EXISTS idx_events_jira ON events(jira_issue);
+-- Covers billing_registry::unmapped_folders (the Billing registry, loaded by every day
+-- page) so it never reads the wide event rows. Leading on project_path, not started_at,
+-- so no started_at-ordered query can pick it up and change its tie order.
+CREATE INDEX IF NOT EXISTS idx_events_path_started ON events(project_path, started_at);
 
 CREATE TABLE IF NOT EXISTS sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -309,4 +313,29 @@ CREATE TABLE IF NOT EXISTS billing_line_texts (
     origin TEXT NOT NULL CHECK(origin IN ('generated', 'manual')),
     updated_at TEXT NOT NULL,
     PRIMARY KEY(day, folder, customer)
+);
+
+-- ───────────────────── transcript file cache (perf T2) ─────────────────────
+-- Per-file fingerprint for the Claude transcript collector's tick skip
+-- (collectors/claude_transcripts.rs, claude_helpers.rs): a `.jsonl` whose
+-- size + mtime_ns haven't changed since it was last fully read for this
+-- exact [since_ts, until_ts) window is skipped outright instead of
+-- re-read + re-parsed. `claimed_uuids_json` is the JSON array of line
+-- uuids the file itself won the cross-file dedupe race for last time (a
+-- resumed session can copy an older file's lines, same uuid, into a new
+-- file), so a skip still reseeds the run's `seen` set exactly as a full
+-- read would. `events_written` replays into CollectReport so a skip never
+-- changes `worklog day`'s printed "events=N". `extra_key` is an additional
+-- cache-key component for state a file's own bytes don't capture — the
+-- background-job session set for session files, empty for helper files.
+CREATE TABLE IF NOT EXISTS transcript_file_cache (
+    path TEXT NOT NULL,
+    since_ts INTEGER NOT NULL,
+    until_ts INTEGER NOT NULL,
+    size INTEGER NOT NULL,
+    mtime_ns INTEGER NOT NULL,
+    claimed_uuids_json TEXT NOT NULL,
+    events_written INTEGER NOT NULL DEFAULT 0,
+    extra_key TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(path, since_ts, until_ts)
 );
