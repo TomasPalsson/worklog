@@ -5,6 +5,8 @@
 import { afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { BillingFolderMap, BillingRow } from "@/lib/types";
+import type { LineTextKey, SetLineTextInput } from "@/lib/daemonLineText";
+import { ToastHost } from "./ToastHost";
 
 const saveBillingFolder = mock(async (_f: BillingFolderMap) => ({
   ok: true as const,
@@ -18,6 +20,16 @@ const saveBillingFolder = mock(async (_f: BillingFolderMap) => ({
 const moveLineDeild = mock(async (_args: unknown) => ({
   ok: true as const,
   data: { ok: true as const },
+}));
+// Same reasoning as `moveLineDeild` above — a prop override, not a
+// `mock.module`, for the line-text server actions.
+const saveLineText = mock(async (_i: SetLineTextInput) => ({
+  ok: true as const,
+  data: { ok: true as const },
+}));
+const regenerateLineText = mock(async (_i: LineTextKey) => ({
+  ok: true as const,
+  data: { generated: true },
 }));
 mock.module("next/navigation", () => ({
   useRouter: () => ({ refresh: mock(() => {}) }),
@@ -34,6 +46,8 @@ afterEach(() => {
   cleanup();
   saveBillingFolder.mockClear();
   moveLineDeild.mockClear();
+  saveLineText.mockClear();
+  regenerateLineText.mockClear();
 });
 
 function row(overrides: Partial<BillingRow>): BillingRow {
@@ -188,5 +202,89 @@ describe("BillingGroup deild mover (FR-13)", () => {
     fireEvent.click(screen.getByRole("option", { name: "[O] AI hraðall - rekstur" }));
     await waitFor(() => expect(saveBillingFolder).toHaveBeenCalled());
     expect(moveLineDeild).not.toHaveBeenCalled();
+  });
+});
+
+describe("BillingGroup line text (FR-26/FR-31/FR-33/FR-35)", () => {
+  function renderGroup(overrides: Partial<BillingRow> = {}) {
+    render(
+      <BillingGroup
+        row={row(overrides)}
+        folderPin={pin}
+        customers={customers}
+        knownVerkefni={[]}
+        saveLineText={saveLineText}
+        regenerateLineText={regenerateLineText}
+      >
+        {null}
+      </BillingGroup>,
+    );
+  }
+
+  it("badges a generated line as 'generated'", () => {
+    renderGroup({ text_origin: "generated" });
+    expect(screen.getByText("generated")).toBeTruthy();
+  });
+
+  it("badges a hand-edited line as 'edited by you'", () => {
+    renderGroup({ text_origin: "manual" });
+    expect(screen.getByText("edited by you")).toBeTruthy();
+  });
+
+  it("badges a line with no stored text as 'not generated' (FR-35)", () => {
+    renderGroup({ text_origin: null });
+    expect(screen.getByText("not generated")).toBeTruthy();
+  });
+
+  it("Edit → Save calls saveLineText with {day, folder, customer, text}", async () => {
+    renderGroup({ invoice_text: "Old text" });
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Edit invoice text for vitinn-infra"), {
+      target: { value: "New text" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(saveLineText).toHaveBeenCalled());
+    expect(saveLineText.mock.calls[0][0]).toEqual({
+      day: "2026-09-25",
+      folder: "vitinn-infra",
+      customer: "APRÓ",
+      text: "New text",
+    });
+  });
+
+  it("Cancel discards the edit without saving", () => {
+    renderGroup({ invoice_text: "Old text" });
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Edit invoice text for vitinn-infra"), {
+      target: { value: "Discarded" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(saveLineText).not.toHaveBeenCalled();
+    expect(screen.getByText("Old text")).toBeTruthy();
+  });
+
+  it("shows the reason in a toast when Regenerate doesn't generate", async () => {
+    regenerateLineText.mockImplementationOnce(async () => ({
+      ok: true as const,
+      data: { generated: false, reason: "hand-edited" },
+    }));
+    render(
+      <>
+        <ToastHost />
+        <BillingGroup
+          row={row({})}
+          folderPin={pin}
+          customers={customers}
+          knownVerkefni={[]}
+          saveLineText={saveLineText}
+          regenerateLineText={regenerateLineText}
+        >
+          {null}
+        </BillingGroup>
+      </>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Regenerate" }));
+    await waitFor(() => expect(regenerateLineText).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByText(/hand-edited/)).toBeTruthy());
   });
 });

@@ -1,6 +1,14 @@
-import { ComponentProps, ReactNode } from "react";
+"use client";
 
+import { ComponentProps, ReactNode, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
+
+import {
+  regenerateLineText as regenerateLineTextAction,
+  saveLineText as saveLineTextAction,
+} from "@/app/actions-line-text";
 import { formatExportHours, reikningshaefi } from "@/lib/export";
+import { toast } from "@/lib/toast";
 import type { BillingCustomer, BillingFolderMap, BillingRow } from "@/lib/types";
 import { CustomerPin, DeildMover, VerkefniPin } from "./BillingPins";
 
@@ -20,7 +28,19 @@ interface Props {
   /** Test-only override for `DeildMover`'s server action call — see its
    * own doc comment. */
   moveLineDeild?: ComponentProps<typeof DeildMover>["moveLineDeild"];
+  /** Test-only overrides for the line-text server actions — same reason
+   * as `moveLineDeild`. */
+  saveLineText?: typeof saveLineTextAction;
+  regenerateLineText?: typeof regenerateLineTextAction;
   children: ReactNode;
+}
+
+/** FR-35: a line with no stored text ever reads as "not generated" —
+ * never implied to be the writer's output. */
+function originLabel(origin: BillingRow["text_origin"]): string {
+  if (origin === "manual") return "edited by you";
+  if (origin === "generated") return "generated";
+  return "not generated";
 }
 
 /**
@@ -41,12 +61,55 @@ export function BillingGroup({
   knownVerkefni,
   deildirByCustomer = {},
   moveLineDeild,
+  saveLineText = saveLineTextAction,
+  regenerateLineText = regenerateLineTextAction,
   children,
 }: Props) {
+  const router = useRouter();
+  const [pending, start] = useTransition();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(row.invoice_text);
+
   const needsCustomer = row.customer === null;
   const needsVerkefni = row.verkefni === null;
   const needsInput = needsCustomer || needsVerkefni;
   const blockNoun = row.block_count === 1 ? "block" : "blocks";
+  const lineKey = { day: row.day, folder: row.folder, customer: row.customer ?? "" };
+
+  function beginEdit() {
+    setDraft(row.invoice_text);
+    setEditing(true);
+  }
+
+  function save() {
+    const text = draft;
+    start(async () => {
+      const r = await saveLineText({ ...lineKey, text });
+      if (!r.ok) {
+        toast.error(`Couldn't save — ${r.error}`);
+        return;
+      }
+      setEditing(false);
+      toast.ok(text.trim() === "" ? "Reset to generated text" : "Saved");
+      router.refresh();
+    });
+  }
+
+  function regenerate() {
+    start(async () => {
+      const r = await regenerateLineText(lineKey);
+      if (!r.ok) {
+        toast.error(`Couldn't regenerate — ${r.error}`);
+        return;
+      }
+      if (!r.data.generated) {
+        toast.error(`Not regenerated — ${r.data.reason ?? "unknown reason"}`);
+        return;
+      }
+      toast.ok("Regenerated");
+      router.refresh();
+    });
+  }
 
   return (
     <details className={`billing-group ${needsInput ? "needs-input" : "complete"}`}>
@@ -82,7 +145,43 @@ export function BillingGroup({
           )}
         </span>
 
-        <span className="billing-text">{row.invoice_text}</span>
+        {/* Clicks here must not toggle the <details> — see PalettePicker's
+         * root, which stops propagation for the same reason. */}
+        <span className="billing-text" onClick={(e) => e.stopPropagation()}>
+          {editing ? (
+            <span className="billing-text-edit">
+              <textarea
+                aria-label={`Edit invoice text for ${row.folder}`}
+                value={draft}
+                disabled={pending}
+                onChange={(e) => setDraft(e.target.value)}
+              />
+              <span className="billing-text-edit-actions">
+                <button type="button" onClick={save} disabled={pending}>
+                  Save
+                </button>
+                <button type="button" onClick={() => setEditing(false)} disabled={pending}>
+                  Cancel
+                </button>
+              </span>
+            </span>
+          ) : (
+            <>
+              {row.invoice_text}
+              <span
+                className={`billing-text-origin billing-text-origin-${row.text_origin ?? "none"}`}
+              >
+                {originLabel(row.text_origin ?? null)}
+              </span>
+              <button type="button" onClick={beginEdit} disabled={pending}>
+                Edit
+              </button>
+              <button type="button" onClick={regenerate} disabled={pending}>
+                Regenerate
+              </button>
+            </>
+          )}
+        </span>
       </summary>
 
       <div className="billing-body">{children}</div>
@@ -100,7 +199,7 @@ function PinCells({
   knownVerkefni,
   deildirByCustomer = {},
   moveLineDeild,
-}: Omit<Props, "children">) {
+}: Omit<Props, "children" | "saveLineText" | "regenerateLineText">) {
   const pin = {
     folder: row.folder,
     customer: folderPin?.customer ?? null,
