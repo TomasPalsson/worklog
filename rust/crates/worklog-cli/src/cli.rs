@@ -301,6 +301,12 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
     #[command(name = "hook-run", hide = true)]
     HookRun,
 
+    /// Claude Code session-start hook — reads SessionStart JSON from
+    /// stdin and prints the pin instruction for a shared /Work repo, if
+    /// any (spec 008). Never fails: any error prints nothing and exits 0.
+    #[command(name = "session-hint", hide = true)]
+    SessionHint,
+
     /// Start the axum unix-socket IPC server (foreground) OR manage the
     /// background service unit that supervises it. Bare `worklog daemon`
     /// keeps running in the foreground like before; the install / status
@@ -852,6 +858,7 @@ pub fn run_with<W: Write>(
             at,
         } => cmd_pin(&customer, &session, at, out),
         Cmd::HookRun => cmd_hook_run(),
+        Cmd::SessionHint => cmd_session_hint(out),
         Cmd::Daemon { sub, socket, tcp } => match sub {
             None => cmd_daemon(socket, tcp),
             Some(DaemonCmd::Install { command }) => cmd_daemon_install(command, out, cli.json),
@@ -3487,6 +3494,44 @@ fn cmd_hook_run() -> Result<()> {
     // All output goes to stderr (handled inside hook_run::run_from_stdin) so
     // Claude Code never sees bytes on stdout.
     hook_run::run_from_stdin()
+}
+
+/// `worklog session-hint`. Every failure is swallowed and prints nothing —
+/// a broken payload, a missing db, or an unreadable registry must never
+/// block or fail a Claude Code session start (design.md §2, contract T004).
+fn cmd_session_hint<W: Write>(out: &mut W) -> Result<()> {
+    let mut buf = String::new();
+    if io::stdin().read_to_string(&mut buf).is_err() {
+        return Ok(());
+    }
+    let Ok(payload) = serde_json::from_str::<serde_json::Value>(&buf) else {
+        return Ok(());
+    };
+    let Some(session_id) = payload.get("session_id").and_then(|v| v.as_str()) else {
+        return Ok(());
+    };
+    let Some(cwd) = payload.get("cwd").and_then(|v| v.as_str()) else {
+        return Ok(());
+    };
+    let Ok(paths) = Paths::resolve() else {
+        return Ok(());
+    };
+    let Ok(conn) = db::open(&paths.db) else {
+        return Ok(());
+    };
+    let Ok(registry) = billing_registry::Registry::load(&conn) else {
+        return Ok(());
+    };
+    if let Ok(Some(text)) = session_pins::start_text(
+        &conn,
+        &registry,
+        session_id,
+        std::path::Path::new(cwd),
+        chrono::Utc::now(),
+    ) {
+        let _ = writeln!(out, "{text}");
+    }
+    Ok(())
 }
 
 fn cmd_daemon_install<W: Write>(command: Option<String>, out: &mut W, json: bool) -> Result<()> {

@@ -131,7 +131,9 @@ pub fn pin(
         anyhow::anyhow!("cwd {} is not under a usable work folder", cwd.display())
     })?;
 
-    Ok(store_pin(conn, session_id, &customer, at, &folder, branch, "claude")?)
+    Ok(store_pin(
+        conn, session_id, &customer, at, &folder, branch, "claude",
+    )?)
 }
 
 /// Shared INSERT behind [`pin`] (`source = "claude"`) and the branch
@@ -153,7 +155,14 @@ fn store_pin(
              folder = excluded.folder,
              branch = excluded.branch,
              source = excluded.source",
-        params![session_id, customer, at.to_rfc3339(), folder, branch, source],
+        params![
+            session_id,
+            customer,
+            at.to_rfc3339(),
+            folder,
+            branch,
+            source
+        ],
     )
     .context("inserting session pin")?;
 
