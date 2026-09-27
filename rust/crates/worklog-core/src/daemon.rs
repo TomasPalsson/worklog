@@ -75,6 +75,7 @@ use tracing::{error, info, warn};
 use crate::billing;
 use crate::billing_deildir;
 use crate::billing_registry;
+use crate::block_details;
 use crate::browser_ingest;
 use crate::change_log;
 use crate::collectors::{jira, tempo};
@@ -125,6 +126,7 @@ pub fn router(state: Shared) -> Router {
         .route("/projects", get(list_projects))
         .route("/accounts", get(list_accounts))
         .route("/blocks/:id/events", get(block_events))
+        .route("/blocks/:id/details", get(block_details_route))
         .route("/blocks/:id/commits", get(block_commits))
         .route("/blocks/:id/ticket", post(assign_ticket))
         .route("/blocks/:id/duration", post(set_duration))
@@ -1087,6 +1089,19 @@ async fn block_events(
     .await
     .map_err(anyhow::Error::from)?;
     Ok(Json(views))
+}
+
+/// `GET /blocks/:id/details` (FR-20): every event of the block, including
+/// helper/message activity in its span, in time order. Unknown block →
+/// 404, mirroring `block_commits`'s not-found pattern.
+async fn block_details_route(
+    State(state): State<Shared>,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<Json<Vec<block_details::DetailRow>>, ApiError> {
+    let rows = with_conn(state, move |c| block_details::details_for_block(c, id))
+        .await
+        .map_err(ApiError::NotFound)?;
+    Ok(Json(rows))
 }
 
 /// Per-block commit sidecar — returns the commits that landed inside
@@ -3417,6 +3432,39 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let v = read_json(resp).await;
         assert_eq!(v.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn block_details_route_returns_linked_events_in_time_order() {
+        let app = router(state_with_block());
+        let resp = app
+            .oneshot(
+                Request::get("/blocks/1/details")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["source"], "github_commit");
+        assert_eq!(arr[1]["source"], "claude");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn block_details_route_returns_not_found_for_unknown_block() {
+        let app = router(state_with_block());
+        let resp = app
+            .oneshot(
+                Request::get("/blocks/999/details")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test(flavor = "current_thread")]
