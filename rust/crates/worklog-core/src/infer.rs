@@ -414,12 +414,15 @@ pub fn load_day_events(conn: &Connection, day: NaiveDate) -> Result<Vec<InferEve
     // decision 3): they must never inherit a neighbour's project_path, so
     // they're excluded here rather than let through with project_path NULL.
     // Dismissed and noise events (thrown away by the owner or by the
-    // end-of-day absorb step) are excluded the same way.
+    // end-of-day absorb step) are excluded the same way. An org commit/PR
+    // whose sha is in no local clone is flagged `elsewhere` (FR-04) and
+    // must never reach inference (FR-09, D-08, B3).
     let mut stmt = conn.prepare(
         "SELECT id, source, started_at, duration_seconds, jira_issue, project_path
            FROM events
           WHERE started_at >= ?1 AND started_at < ?2
             AND NOT (source IN (?3, ?4) AND (label_origin IS NULL OR label_origin IN (?5, ?6)))
+            AND elsewhere = 0
           ORDER BY started_at",
     )?;
     // started_at is ISO-8601 string; we compare lexicographically which works

@@ -69,9 +69,19 @@ const PERSONAL_MARK: &str = "personal:";
 type Keyed = (i64, String, bool);
 
 pub(crate) fn build_blocks_by_project(
-    events: Vec<InferEvent>,
+    mut events: Vec<InferEvent>,
     build: fn(Vec<InferEvent>) -> Vec<InferBlock>,
 ) -> Vec<InferBlock> {
+    // Helper/session-message activity (D-05, FR-16, FR-17) is the owner's
+    // tool working on its own behalf, not the owner acting — it must never
+    // vote on a lane's owner and must add no time to any block, so it is
+    // dropped before any clustering pass sees it.
+    events.retain(|e| {
+        !matches!(
+            e.source.as_str(),
+            crate::clues_contract::SOURCE_CLAUDE_HELPER | crate::clues_contract::SOURCE_CLAUDE_MESSAGE
+        )
+    });
     let keyed: Vec<Keyed> = events
         .iter()
         .filter(|e| !e.is_calendar())
