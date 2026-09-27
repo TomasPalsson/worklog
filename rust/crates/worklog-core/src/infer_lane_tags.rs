@@ -5,7 +5,8 @@
 use std::collections::BTreeSet;
 
 use crate::infer::InferEvent;
-use crate::infer_lanes::{fold_short_runs, keyed_by, lane_folder, lane_key, owner_runs};
+use crate::infer_evidence::MIN_EVIDENCE_MINUTES;
+use crate::infer_lanes::{fold_short_runs, keyed_by, lane_folder, lane_key, owner_runs, Keyed};
 
 type Run = (String, i64, i64);
 
@@ -50,7 +51,7 @@ fn split_one(folder: &str, s: i64, e: i64, events: &[InferEvent]) -> Vec<Run> {
     if clamped.is_empty() {
         return single(&subset);
     }
-    tile(clamped, s, e)
+    fold_weak_sub_runs(tile(clamped, s, e), &subset)
 }
 
 /// Clamped sub-runs land inside `[s, e]` but rarely touch its edges or each
@@ -66,6 +67,43 @@ fn tile(mut runs: Vec<Run>, s: i64, e: i64) -> Vec<Run> {
             runs[i - 1].2 = runs[i].1 - 1;
         }
     }
+    merge_touching(runs)
+}
+
+/// Distinct minutes `subset` has under `r`'s own key, inside `r`'s own
+/// bounds — the same floor `infer_evidence::has_evidence_floor` checks.
+fn own_minutes(r: &Run, subset: &[Keyed]) -> usize {
+    subset
+        .iter()
+        .filter(|(t, k, _, _)| k == &r.0 && *t >= r.1 && *t <= r.2)
+        .map(|(t, _, _, _)| *t)
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+/// A sub-run below `MIN_EVIDENCE_MINUTES` would fail R5 on its own once
+/// `build_project_blocks` gets to it — fold it into a neighbour (the one
+/// after it, when it's first) instead of losing its minutes outright.
+fn fold_weak_sub_runs(mut runs: Vec<Run>, subset: &[Keyed]) -> Vec<Run> {
+    while runs.len() > 1 {
+        let weak = runs
+            .iter()
+            .position(|r| own_minutes(r, subset) < MIN_EVIDENCE_MINUTES);
+        let Some(i) = weak else {
+            break;
+        };
+        if i == 0 {
+            let r = runs.remove(0);
+            runs[0].1 = r.1;
+        } else {
+            let r = runs.remove(i);
+            runs[i - 1].2 = r.2;
+        }
+    }
+    merge_touching(runs)
+}
+
+fn merge_touching(runs: Vec<Run>) -> Vec<Run> {
     let mut merged: Vec<Run> = Vec::new();
     for r in runs {
         match merged.last_mut() {

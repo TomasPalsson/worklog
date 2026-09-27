@@ -235,3 +235,54 @@ fn single_customer_run_is_one_block() {
     assert_eq!(t.started_at, u.started_at);
     assert_eq!(t.ended_at, u.ended_at);
 }
+
+/// A weak untagged blip (own evidence: 1 distinct minute, so R5 would drop
+/// it) inside an otherwise customer-split folder must join its neighbouring
+/// sub-run instead of vanishing and taking the folder's minutes with it.
+#[test]
+fn weak_sub_run_joins_its_neighbour() {
+    let mut a_events: Vec<InferEvent> = Vec::new();
+    // A session-less shell burst: three distinct rows in the same minute
+    // (distinct titles so `dedupe_shell_events` keeps all three), so its
+    // event COUNT (h=3) blocks the existing sliver fold in
+    // `merge_by_evidence` (h > MAX_OWN_HUMAN_EVENTS) even though its own
+    // DISTINCT-minute evidence is only 1.
+    for title in ["cmd1", "cmd2", "cmd3"] {
+        a_events.push(InferEvent {
+            title: Some(title.to_string()),
+            ..ev(0, "shell", Some(A))
+        });
+    }
+    for i in 0..10 {
+        a_events.push(tagged(ev(6 + i * 2, "claude_turn", Some(A)), "Cust1"));
+    }
+    for i in 0..10 {
+        a_events.push(tagged(ev(60 + i * 2, "claude_turn", Some(A)), "Cust2"));
+    }
+    // Folder B: a decoy far away in time, only to keep both the tagged and
+    // untagged builds inside the same owner-run machinery for a fair
+    // comparison (a single-key day would otherwise bypass it entirely).
+    let b_events: Vec<InferEvent> = (0..3)
+        .map(|i| ev(200 + i * 2, "claude_turn", Some(B)))
+        .collect();
+
+    let mut tagged_events = a_events.clone();
+    tagged_events.extend(b_events.clone());
+    let tagged_blocks = build_blocks_by_project(tagged_events, build_blocks);
+
+    let mut untagged_events: Vec<InferEvent> = a_events
+        .into_iter()
+        .map(|mut e| {
+            e.lane_tag = None;
+            e
+        })
+        .collect();
+    untagged_events.extend(b_events);
+    let untagged_blocks = build_blocks_by_project(untagged_events, build_blocks);
+
+    assert_eq!(
+        minutes_for_folder(&tagged_blocks, A),
+        minutes_for_folder(&untagged_blocks, A),
+        "a weak untagged blip must not drop any of the folder's minutes: {tagged_blocks:?}"
+    );
+}
