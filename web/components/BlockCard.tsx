@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useTransition } from "react";
+import Link from "next/link";
 import { Check, Coffee, FolderGit2, Sparkles, Trash2 } from "lucide-react";
 import type { Block, JiraTicket, SourceCount } from "@/lib/types";
 import { formatDuration, formatProjectPath, formatRange } from "@/lib/format";
@@ -305,6 +306,9 @@ export function BlockCard({
           )}
           <EventList blockId={block.id} eventCount={block.event_count} />
           <CommitList blockId={block.id} isPersonal={block.is_personal} />
+          <Link href={`/${block.day}/block/${block.id}`} className="events-disclosure">
+            Details
+          </Link>
         </div>
       </div>
 

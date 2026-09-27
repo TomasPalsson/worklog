@@ -167,6 +167,21 @@ describe("BlockCard confidence badge", () => {
   );
 });
 
+describe("BlockCard details link", () => {
+  it("links to the block's Details page", () => {
+    render(
+      <BlockCard
+        block={makeBlock({ id: 42, day: "2026-07-25" })}
+        tickets={[]}
+        day="2026-07-25"
+        hideTicketing
+      />,
+    );
+    const link = screen.getByRole("link", { name: "Details" });
+    expect(link.getAttribute("href")).toBe("/2026-07-25/block/42");
+  });
+});
+
 describe("BlockCard billing move alert", () => {
   it("tells the owner and shows the card when a description edit moves it to another customer", async () => {
     let toasts: ToastMsg[] = [];
