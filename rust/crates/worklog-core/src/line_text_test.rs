@@ -81,6 +81,33 @@ impl crate::estimate::ModelInvoker for ErrInvoker {
     }
 }
 
+/// The prompt must tell the model to describe the day task by task from
+/// `work_items` — at most 3, biggest first, small leftovers folded into
+/// "auk minni verkefna" or dropped — never joining two unrelated tasks
+/// into one sentence, never ordering by time of day, and never
+/// attributing a detail to the wrong task.
+#[test]
+fn line_text_system_prompt_describes_work_items_task_by_task() {
+    assert!(SYSTEM_PROMPT_IS.contains("work_items"));
+    assert!(SYSTEM_PROMPT_IS.contains("auk minni verkefna"));
+    assert!(SYSTEM_PROMPT_IS.contains("þrjú"), "cap at 3 tasks");
+    assert!(
+        SYSTEM_PROMPT_IS.to_lowercase().contains("tímaröð"),
+        "must forbid ordering by time of day"
+    );
+    assert!(
+        SYSTEM_PROMPT_IS.contains("blanda saman") || SYSTEM_PROMPT_IS.contains("ólíkum verkefnum"),
+        "must forbid joining unrelated tasks in one sentence"
+    );
+    // Every pre-existing rule survives the rewrite.
+    assert!(SYSTEM_PROMPT_IS.contains("{\"text\""));
+    assert!(SYSTEM_PROMPT_IS.contains("tölustafi"));
+    assert!(SYSTEM_PROMPT_IS.contains("PR-"));
+    assert!(SYSTEM_PROMPT_IS.contains("skráarnöfn"));
+    assert!(SYSTEM_PROMPT_IS.contains("verkfærum"));
+    assert!(SYSTEM_PROMPT_IS.contains("íslensku"));
+}
+
 #[test]
 fn line_text_validate_accepts_good_icelandic_text() {
     assert_eq!(validate(GOOD_TEXT).unwrap(), GOOD_TEXT);

@@ -15,17 +15,13 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
+#[path = "line_text_prompt.rs"]
+mod prompt;
 /// Icelandic system prompt for [`generate_for_day`]. Kept short, plain,
 /// non-technical: the audience is a boss or customer, not a developer.
-pub const SYSTEM_PROMPT_IS: &str = "Þú skrifar 2-3 stuttar, einfaldar setningar \
-á íslensku fyrir yfirmann eða viðskiptavin sem er ekki tæknilega sinnaður. \
-Lýstu á hversdagslegan hátt hvað var gert fyrir þennan viðskiptavin þennan \
-dag, eingöngu út frá þeim vísbendingum sem þú færð. Notaðu aldrei tölustafi \
-af neinu tagi, aldrei tímalengd eða fjölda klukkustunda, aldrei PR- eða málsnúmer, aldrei skráarnöfn eða slóðir, aldrei \
-nöfn á verkfærum eða forritum, og forðastu ensk tæknihugtök þar sem til er \
-íslenskt orð. Ef vísbendingarnar eru fáorðar skaltu lýsa eðli vinnunnar á \
-einfaldan hátt án þess að finna upp á smáatriðum. Svaraðu eingöngu með JSON \
-á forminu {\"text\": \"...\"}.";
+/// Split into its own module purely to keep this file under the repo's
+/// size guard.
+pub use prompt::SYSTEM_PROMPT_IS;
 
 /// Invoice text reaches customers in Icelandic: a stronger model than the
 /// per-block estimator's, for a handful of calls a day.
