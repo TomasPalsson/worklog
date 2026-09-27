@@ -12,6 +12,7 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 
 use crate::billing;
 use crate::billing_registry::Registry;
+use crate::git;
 
 /// One pin row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,14 +49,61 @@ pub fn is_default_branch(branch: &str) -> bool {
 
 /// The `worklog session-hint` start-of-session text (design.md §4,
 /// contract T004), or `None` when nothing should be printed.
+///
+/// Gated on the session's folder being registered multi-tenant in the
+/// billing registry — every folder there came from the /Work discovery
+/// flow, so this doubles as the "under `~/Desktop/Work`" check without
+/// re-deriving `billing::work_prefix` here.
 pub fn start_text(
-    _conn: &Connection,
-    _registry: &Registry,
-    _session_id: &str,
-    _cwd: &Path,
-    _now: DateTime<Utc>,
+    conn: &Connection,
+    registry: &Registry,
+    session_id: &str,
+    cwd: &Path,
+    now: DateTime<Utc>,
 ) -> Result<Option<String>> {
-    unimplemented!("T004")
+    let Some(folder) = billing::work_folder_for_path(&cwd.to_string_lossy()) else {
+        return Ok(None);
+    };
+    let multi_tenant = registry
+        .folders
+        .iter()
+        .any(|f| f.folder == folder && f.multi_tenant);
+    if !multi_tenant {
+        return Ok(None);
+    }
+
+    if let Some(branch) = git::current_branch(cwd) {
+        if let Some(branch_pin) = pin_for_branch(conn, &folder, &branch)? {
+            let inherited = store_pin(
+                conn,
+                session_id,
+                &branch_pin.customer,
+                now,
+                &folder,
+                Some(&branch),
+                "inherited",
+            )?;
+            return Ok(Some(format!(
+                "This session is for {} (pinned from branch {branch}). If you switch \
+                 customer, run: worklog pin <name> --session {session_id}",
+                inherited.customer
+            )));
+        }
+    }
+
+    let customers = registry
+        .customers
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Ok(Some(format!(
+        "Shared repo — work out this session's customer from the repo, the prompt, and \
+         the files you touch. When it's clear, pin it without asking: worklog pin <name> \
+         --session {session_id}. When it's unclear and the Owner is present, ask once. \
+         When nobody is present (a background or unattended run), pin nothing. Known \
+         customers: {customers}."
+    )))
 }
 
 /// Pin `session_id` to `name` from `at` on.
@@ -82,9 +130,21 @@ pub fn pin(
     let folder = billing::work_folder_for_path(&cwd.to_string_lossy()).ok_or_else(|| {
         anyhow::anyhow!("cwd {} is not under a usable work folder", cwd.display())
     })?;
-    let branch = branch.map(str::to_owned);
-    let source = "claude";
 
+    Ok(store_pin(conn, session_id, &customer, at, &folder, branch, "claude")?)
+}
+
+/// Shared INSERT behind [`pin`] (`source = "claude"`) and the branch
+/// inheritance in [`start_text`] (`source = "inherited"`).
+fn store_pin(
+    conn: &Connection,
+    session_id: &str,
+    customer: &str,
+    at: DateTime<Utc>,
+    folder: &str,
+    branch: Option<&str>,
+    source: &str,
+) -> Result<SessionPin> {
     conn.execute(
         "INSERT INTO session_pins (session_id, customer, from_at, folder, branch, source)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -93,23 +153,16 @@ pub fn pin(
              folder = excluded.folder,
              branch = excluded.branch,
              source = excluded.source",
-        params![
-            session_id,
-            customer,
-            at.to_rfc3339(),
-            folder,
-            branch,
-            source
-        ],
+        params![session_id, customer, at.to_rfc3339(), folder, branch, source],
     )
     .context("inserting session pin")?;
 
     Ok(SessionPin {
         session_id: session_id.to_owned(),
-        customer,
+        customer: customer.to_owned(),
         from_at: at,
-        folder,
-        branch,
+        folder: folder.to_owned(),
+        branch: branch.map(str::to_owned),
         source: source.to_owned(),
     })
 }
