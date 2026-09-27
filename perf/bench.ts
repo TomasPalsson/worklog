@@ -14,6 +14,7 @@ import {
   reportScenario, printTable, jsonRows,
 } from "./lib";
 import { computeT6bBlockId, buildT6bScenario } from "./details";
+import { runT2b, runT2c } from "./ticks";
 
 const DAY = "2026-09-22";
 const WEEK_START = 21; // Mon 2026-09-21 .. 2026-09-27
@@ -355,7 +356,10 @@ function parseArgs(argv: string[]): Args {
 
 const ALL_CLI_IDS = ["T1", "T2", "T3", "T8a", "T8b", "T8c", "T8d", "T9"];
 const ALL_DAEMON_IDS = ["T4", "T5", "T6", "T6b", "T7"];
-const ALL_IDS = ["T1", "T2", "T3", "T4", "T5", "T6", "T6b", "T7", "T8a", "T8b", "T8c", "T8d", "T9"];
+// T2b/T2c (perf/ticks.ts): extra proof for T2, not their own user story —
+// reachable via --only but excluded from the no-flags default sweep.
+const TICK_IDS = ["T2b", "T2c"];
+const ALL_IDS = ["T1", "T2", "T3", "T4", "T5", "T6", "T6b", "T7", "T8a", "T8b", "T8c", "T8d", "T9", ...TICK_IDS];
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
@@ -368,15 +372,19 @@ async function main(): Promise<void> {
     if (!ALL_IDS.includes(id)) { console.error(`unknown scenario id in --only: ${id}`); process.exit(1); }
   }
 
-  const selected = ALL_IDS.filter((id) => (args.only ? args.only.includes(id) : true));
+  const selected = args.only ? ALL_IDS.filter((id) => args.only!.includes(id)) : ALL_IDS.filter((id) => !TICK_IDS.includes(id));
   const cliIds = selected.filter((id) => ALL_CLI_IDS.includes(id));
   const daemonIds = selected.filter((id) => ALL_DAEMON_IDS.includes(id));
+  const tickIds = selected.filter((id) => TICK_IDS.includes(id));
 
   for (const id of cliIds) await runCliFlow(CLI_SCENARIOS[id], args.bin, args.base, args.runs);
 
   if (daemonIds.length > 0) {
     await runDaemonScenarios(daemonIds, args.bin, args.base, args.runs, computeHeaviestBlockId());
   }
+
+  if (tickIds.includes("T2b")) await runT2b(args.bin, args.base, args.runs);
+  if (tickIds.includes("T2c")) await runT2c(args.bin, args.base, args.runs);
 
   printTable();
   if (args.json) {

@@ -105,9 +105,9 @@ runs, 2026-09-27. CLI runs start on a fresh clone, so the DB file is cold in the
 State 2026-09-27 ~16:00: PR #54 merged to main (`d2587fe`); `perf/evals` rebased on it.
 Done on the branch: #1–#6 in the change log. Baselines: `worklog-base3` = #3.
 Slice branches (built in isolated worktrees `.claude/worktrees/wf_a517011d-04f-{1..5}`):
-- `perf/s-ticks` (T2b 848 → 31 ms, 27×; T2c growth oracle PASS*): awaiting review. Needs a
-  follow-up before merge: `transcript_file_cache` keeps one row per file per day forever
-  (5.1 MB after 4 days) → delete rows whose window ended before the current one.
+- `perf/s-ticks`: reviewed BLOCK (cache survived a purge; missing-file uuid-ownership gap;
+  unbounded growth). Re-ported + fixed on `perf/r2-ticks` (#7 in the change log) — ported
+  onto `perf/evals` tip via a 3-way patch, both findings fixed, retention added.
 - `perf/s-describe`: review said FIX — (1) estimate phase-3 UPDATE must skip rows that
   became `manual` meanwhile; (2) its line_text half has no production caller (the daemon
   uses `daemon_line_text::generate_day`) → drop it, parallelise that path instead with
@@ -152,6 +152,7 @@ as small separate commits, and are announced to that session first. Never deploy
 | 4 | purge: `started_at < cutoff+2d` index pre-filter ahead of the unchanged `datetime()` predicate | T9 | 641 → 651 ms (noise: the two whole-DB VACUUMs dominate at 1 week); SCAN → SEARCH for months of data | reviewer SHIP: sabotage-tested, ~3.3k synthetic timestamps 0 divergences |
 | 5 | `stitch_day_summary` loads the day's events once | T4, T5 | T4 8.8 → 6.4 ms; T5 21.8 → 13.7 ms | all 13 scenarios PASS (base = #3, perf2 fixture); reviewer PASS |
 | 6 | Details: SQL day pre-filter (block span ± 1 day) | T6b | 8.6 → 8.6 ms (fixture's heaviest session sits in one day; helps multi-day sessions) | T6/T6b PASS; reviewer PASS |
+| 7 | `transcript_file_cache` (perf/s-ticks R2): skip byte-identical `.jsonl`s on repeat ticks; fixed the BLOCK review found — purge now clears the cache in the same transaction (else a purged row never came back), a missing cached path invalidates its whole window (cross-file uuid ownership), and retention keeps at most one window | T2, T2b | T2b steady tick 1262 → 49 ms (25.5×); cache table ≈1.0 MB after 4 consecutive day ticks (was 5.1 MB unbounded) | T2/T2b/T2c/T9 PASS* (PERF_IGNORE for the new SCHEMA lines + purge's "bytes freed", both explained by the new table); 3 new unit tests incl. a purge→re-collect repro that fails without the fix; 991 tests pass |
 
 ## How to run
 

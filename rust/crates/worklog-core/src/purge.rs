@@ -31,6 +31,8 @@
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
+
+use crate::collectors::claude_transcript_cache;
 use rusqlite::{params, Connection, OptionalExtension};
 
 /// Default retention window for the `--days` CLI override. Unrelated to
@@ -291,6 +293,10 @@ pub fn purge_rows(conn: &Connection, cutoff: NaiveDate, dry_run: bool) -> Result
             [],
         )
         .context("deleting orphaned external jira tickets past cutoff")? as i64;
+    // A cached transcript fingerprint doesn't know the events delete above
+    // just ran — without this, an untouched file stays skipped forever and
+    // its deleted rows never come back on a later tick.
+    claude_transcript_cache::clear_after_events_delete(&tx)?;
     tx.commit()?;
 
     Ok(PurgeReport {

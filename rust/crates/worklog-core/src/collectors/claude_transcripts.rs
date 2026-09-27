@@ -27,6 +27,7 @@ use std::path::Path;
 use crate::clues_contract::{HelperKind, RawRecord};
 use crate::collectors::claude_helpers::{self, WorkMinute};
 use crate::collectors::claude_tools;
+use crate::collectors::claude_transcript_cache;
 use crate::collectors::fish::repo_root_for;
 use crate::models::Event;
 use crate::repo;
@@ -65,27 +66,6 @@ pub(super) struct Window<'a> {
     pub(super) since_ts: i64,
     pub(super) until_ts: i64,
     pub(super) home: Option<&'a str>,
-}
-
-/// Session ids belonging to a background job (`<jobs_dir>/<id>/state.json`
-/// -> `sessionId`): their Claude-busy minutes add no time (D-05).
-fn background_job_sessions(jobs_dir: &Path) -> HashSet<String> {
-    let mut sessions = HashSet::new();
-    let Ok(entries) = std::fs::read_dir(jobs_dir) else {
-        return sessions;
-    };
-    for entry in entries.flatten() {
-        let Ok(content) = std::fs::read_to_string(entry.path().join("state.json")) else {
-            continue;
-        };
-        let Ok(value) = serde_json::from_str::<Value>(&content) else {
-            continue;
-        };
-        if let Some(id) = value.get("sessionId").and_then(Value::as_str) {
-            sessions.insert(id.to_string());
-        }
-    }
-    sessions
 }
 
 /// Collect from the default transcripts root (`~/.claude/projects`) and the
@@ -133,7 +113,15 @@ pub fn collect_from_dirs(
         ..Default::default()
     };
     let home = dirs::home_dir().map(|p| p.to_string_lossy().into_owned());
-    let job_sessions = background_job_sessions(jobs_dir);
+    let job_sessions = claude_transcript_cache::background_job_sessions(jobs_dir);
+    // Extra tick-skip cache key: a session's claude_work minutes route
+    // differently once it's a background job (see `collect_file`), so a
+    // skip must not reuse a fingerprint recorded under a different set.
+    let job_sessions_fp = {
+        let mut ids: Vec<&str> = job_sessions.iter().map(String::as_str).collect();
+        ids.sort_unstable();
+        ids.join(",")
+    };
 
     // A resumed session copies its history into a new file with the same
     // line uuids: count each line once across every file.
@@ -143,6 +131,7 @@ pub fn collect_from_dirs(
         until_ts: until.and_time(NaiveTime::MIN).and_utc().timestamp(),
         home: home.as_deref(),
     };
+    claude_transcript_cache::prepare_window(conn, win.since_ts, win.until_ts)?;
 
     let Ok(project_dirs) = std::fs::read_dir(dir) else {
         return Ok(report);
@@ -166,16 +155,34 @@ pub fn collect_from_dirs(
             let Ok(modified) = meta.modified() else {
                 continue;
             };
-            let modified_ts = modified
+            let mtime_ns = modified
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
+                .map(|d| d.as_nanos() as i64)
                 .unwrap_or(0);
+            let modified_ts = mtime_ns / 1_000_000_000;
             // Only files untouched since before the window can be skipped: a
             // session still writing after `until` holds lines from inside it.
             if modified_ts < win.since_ts {
                 continue;
             }
-            collect_file(conn, &path, &win, &mut seen, &job_sessions, &mut report)?;
+            let path_str = path.to_string_lossy().into_owned();
+            // Byte-identical to what an earlier tick already fully read over
+            // this exact window: skip the read and reseed cross-file dedupe
+            // + the printed event count from the cached contribution.
+            claude_transcript_cache::skip_or_read(
+                conn,
+                &path_str,
+                win.since_ts,
+                win.until_ts,
+                meta.len(),
+                mtime_ns,
+                &job_sessions_fp,
+                &mut seen,
+                &mut report,
+                |seen, claimed, report| {
+                    collect_file(conn, &path, &win, seen, claimed, &job_sessions, report)
+                },
+            )?;
             // A session's subagent/workflow-task transcripts live in a
             // sibling directory named after its own id (spec 006, FR-16).
             if let Some(session_id) = path.file_stem().and_then(|s| s.to_str()) {
@@ -200,6 +207,7 @@ fn collect_file(
     path: &Path,
     win: &Window,
     seen: &mut HashSet<String>,
+    claimed: &mut Vec<String>,
     job_sessions: &HashSet<String>,
     report: &mut CollectReport,
 ) -> Result<()> {
@@ -242,7 +250,7 @@ fn collect_file(
         let Some(key) = line_key(&value, win.since_ts, win.until_ts) else {
             continue;
         };
-        if !seen.insert(key.uuid.to_string()) {
+        if !claude_transcript_cache::claim(seen, claimed, key.uuid) {
             continue;
         }
         let project_path = value
