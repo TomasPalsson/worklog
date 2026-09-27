@@ -25,6 +25,27 @@ fn upsert_event_dedupes_on_source_pair() {
 }
 
 #[test]
+fn upsert_event_skips_the_write_when_nothing_changes() {
+    // The 15-min tick re-collects thousands of unchanged events; rewriting an
+    // identical row still dirties its page and appends a WAL frame.
+    let c = fresh();
+    let mut e = Event::minimal("github_commit", "abc", "2026-04-18T09:00:00Z", "first");
+    e.ended_at = Some("2026-04-18T09:05:00Z".into());
+    upsert_event(&c, &e).unwrap();
+    // A re-collect without ended_at keeps it (COALESCE) — still no change.
+    e.ended_at = None;
+    upsert_event(&c, &e).unwrap();
+    assert_eq!(
+        c.changes(),
+        0,
+        "identical re-collect must not rewrite the row"
+    );
+    e.title = "second".into();
+    upsert_event(&c, &e).unwrap();
+    assert_eq!(c.changes(), 1, "a changed value is still written");
+}
+
+#[test]
 fn upsert_event_preserves_tempo_worklog_id_on_re_collect() {
     // CLAUDE.md canary: tempo_worklog_id MUST NEVER be cleared.
     // A re-collect pass (which passes tempo_worklog_id=None on the

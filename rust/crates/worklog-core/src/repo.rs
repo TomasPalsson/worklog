@@ -11,6 +11,55 @@ use crate::scrub;
 
 // ───────────────────────── events ─────────────────────────
 
+/// `upsert_event`'s statement: dedupe on `(source, source_id)`, update the
+/// mutable columns in place.
+const UPSERT_EVENT_SQL: &str = "INSERT INTO events
+        (source, source_id, started_at, ended_at, duration_seconds,
+         title, details, repo, project_path, jira_issue, session_id,
+         tempo_worklog_id, raw_json)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+     ON CONFLICT(source, source_id) DO UPDATE SET
+        started_at       = excluded.started_at,
+        -- COALESCE: collectors don't populate these on re-collect,
+        -- so a None on the new side must not wipe existing data.
+        ended_at         = COALESCE(excluded.ended_at, events.ended_at),
+        duration_seconds = COALESCE(excluded.duration_seconds, events.duration_seconds),
+        title            = excluded.title,
+        details          = excluded.details,
+        repo             = excluded.repo,
+        -- project_path: routing::set_label writes this via a raw
+        -- UPDATE, never through this function. Collectors always
+        -- pass None here, so unconditional overwrite would wipe a
+        -- routing label on every re-collect of the same event.
+        project_path     = COALESCE(excluded.project_path, events.project_path),
+        jira_issue       = excluded.jira_issue,
+        -- session_id: preserve existing when the new side doesn't
+        -- carry one — matches Python and prevents e.g. a GitHub
+        -- re-collect from wiping the claude session linkage.
+        session_id       = COALESCE(events.session_id, excluded.session_id),
+        -- tempo_worklog_id: the CLAUDE.md canary. Must NEVER be
+        -- cleared. Collectors always pass None here, so unconditional
+        -- overwrite would destroy the double-sync guard on every
+        -- re-collect. COALESCE keeps the existing value.
+        tempo_worklog_id = COALESCE(events.tempo_worklog_id, excluded.tempo_worklog_id),
+        raw_json         = excluded.raw_json
+     -- Skip the write when every SET above would store what is already
+     -- there: the 15-min tick re-collects thousands of unchanged events,
+     -- and an identical rewrite still dirties the page and grows the WAL.
+     WHERE events.started_at IS NOT excluded.started_at
+        OR events.ended_at IS NOT COALESCE(excluded.ended_at, events.ended_at)
+        OR events.duration_seconds
+               IS NOT COALESCE(excluded.duration_seconds, events.duration_seconds)
+        OR events.title IS NOT excluded.title
+        OR events.details IS NOT excluded.details
+        OR events.repo IS NOT excluded.repo
+        OR events.project_path IS NOT COALESCE(excluded.project_path, events.project_path)
+        OR events.jira_issue IS NOT excluded.jira_issue
+        OR events.session_id IS NOT COALESCE(events.session_id, excluded.session_id)
+        OR events.tempo_worklog_id
+               IS NOT COALESCE(events.tempo_worklog_id, excluded.tempo_worklog_id)
+        OR events.raw_json IS NOT excluded.raw_json";
+
 /// Insert or update an event. Returns the event id.
 ///
 /// Dedupe is enforced by the `UNIQUE(source, source_id)` constraint in
@@ -24,36 +73,7 @@ pub fn upsert_event(conn: &Connection, e: &Event) -> Result<i64> {
     let title = scrub::scrub_secrets(&e.title);
     let details = e.details.as_deref().map(scrub::scrub_secrets);
     conn.execute(
-        "INSERT INTO events
-            (source, source_id, started_at, ended_at, duration_seconds,
-             title, details, repo, project_path, jira_issue, session_id,
-             tempo_worklog_id, raw_json)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-         ON CONFLICT(source, source_id) DO UPDATE SET
-            started_at       = excluded.started_at,
-            -- COALESCE: collectors don't populate these on re-collect,
-            -- so a None on the new side must not wipe existing data.
-            ended_at         = COALESCE(excluded.ended_at, events.ended_at),
-            duration_seconds = COALESCE(excluded.duration_seconds, events.duration_seconds),
-            title            = excluded.title,
-            details          = excluded.details,
-            repo             = excluded.repo,
-            -- project_path: routing::set_label writes this via a raw
-            -- UPDATE, never through this function. Collectors always
-            -- pass None here, so unconditional overwrite would wipe a
-            -- routing label on every re-collect of the same event.
-            project_path     = COALESCE(excluded.project_path, events.project_path),
-            jira_issue       = excluded.jira_issue,
-            -- session_id: preserve existing when the new side doesn't
-            -- carry one — matches Python and prevents e.g. a GitHub
-            -- re-collect from wiping the claude session linkage.
-            session_id       = COALESCE(events.session_id, excluded.session_id),
-            -- tempo_worklog_id: the CLAUDE.md canary. Must NEVER be
-            -- cleared. Collectors always pass None here, so unconditional
-            -- overwrite would destroy the double-sync guard on every
-            -- re-collect. COALESCE keeps the existing value.
-            tempo_worklog_id = COALESCE(events.tempo_worklog_id, excluded.tempo_worklog_id),
-            raw_json         = excluded.raw_json",
+        UPSERT_EVENT_SQL,
         params![
             e.source,
             e.source_id,
