@@ -152,6 +152,31 @@ pub fn purge_rows(conn: &Connection, cutoff: NaiveDate, dry_run: bool) -> Result
     // local-date string would skew by the configured offset. `day`, in
     // contrast, is itself a local-date string and compares directly.
     let instant_iso = crate::tz::utc_window_for_local_day(cutoff).0.to_rfc3339();
+    // Index-usable pre-filter for the four `datetime(started_at) <
+    // datetime(?1)` predicates below: that expression can't use
+    // idx_events_started/idx_sessions_started because SQLite must call
+    // datetime() on every row before it can compare. `started_at <
+    // date_bound_iso` is a plain string comparison the index CAN drive,
+    // ANDed in front of the original (unchanged) predicate as a superset
+    // filter — it only has to be provably true for every row the exact
+    // predicate matches, never exact itself.
+    //
+    // Proof: a row matches the exact predicate only if its UTC instant is
+    // < the instant named by `instant_iso`, which is local midnight at
+    // `cutoff` — never later than 23:59:59 UTC on `cutoff`'s own calendar
+    // date (`utc_window_for_local_day` cannot shift local midnight past
+    // the end of `cutoff`'s UTC day). So a matching row's UTC-instant date
+    // is <= `cutoff`. `started_at` strings carry an offset of at most
+    // ±14:00 (well under 24h), so the *literal* calendar date written in
+    // the string can differ from the UTC-instant date by at most one day,
+    // giving a literal date <= `cutoff + 1 day`. `date_bound_iso` below is
+    // `cutoff + 2 days` formatted as a bare `YYYY-MM-DD` (10 chars, no
+    // time part): its date is strictly greater than `cutoff + 1 day`, so
+    // the first 10 characters of any matching row's `started_at` compare
+    // less than it — and once an earlier character differs, whatever
+    // follows (a 'T'/space plus time and offset) can't change the
+    // comparison back.
+    let date_bound_iso = (cutoff + chrono::Duration::days(2)).to_string();
 
     // Never-billed count is taken BEFORE any deletion — the rows (and
     // the markers that would prove they were never billed) are gone
@@ -180,12 +205,13 @@ pub fn purge_rows(conn: &Connection, cutoff: NaiveDate, dry_run: bool) -> Result
         let events_deleted: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM events
-                 WHERE datetime(started_at) < datetime(?1)
+                 WHERE started_at < ?3
+                   AND datetime(started_at) < datetime(?1)
                    AND id NOT IN (
                        SELECT event_id FROM block_events
                         WHERE block_id IN (SELECT id FROM blocks WHERE day >= ?2)
                    )",
-                params![instant_iso, cutoff_iso],
+                params![instant_iso, cutoff_iso, date_bound_iso],
                 |r| r.get(0),
             )
             .context("counting orphan events past cutoff")?;
@@ -193,8 +219,9 @@ pub fn purge_rows(conn: &Connection, cutoff: NaiveDate, dry_run: bool) -> Result
         // same instant, never the local cutoff string.
         let sessions_deleted: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM sessions WHERE datetime(started_at) < datetime(?1)",
-                params![instant_iso],
+                "SELECT COUNT(*) FROM sessions
+                 WHERE started_at < ?2 AND datetime(started_at) < datetime(?1)",
+                params![instant_iso, date_bound_iso],
                 |r| r.get(0),
             )
             .context("counting sessions past cutoff")?;
@@ -237,9 +264,10 @@ pub fn purge_rows(conn: &Connection, cutoff: NaiveDate, dry_run: bool) -> Result
     let events_deleted = tx
         .execute(
             "DELETE FROM events
-             WHERE datetime(started_at) < datetime(?1)
+             WHERE started_at < ?2
+               AND datetime(started_at) < datetime(?1)
                AND id NOT IN (SELECT event_id FROM block_events)",
-            params![instant_iso],
+            params![instant_iso, date_bound_iso],
         )
         .context("deleting orphan events past cutoff")? as i64;
     // sessions.started_at is UTC, like events — compare against the same
@@ -247,8 +275,9 @@ pub fn purge_rows(conn: &Connection, cutoff: NaiveDate, dry_run: bool) -> Result
     // this: `reap_stale` only ever sets `ended_at`.
     let sessions_deleted = tx
         .execute(
-            "DELETE FROM sessions WHERE datetime(started_at) < datetime(?1)",
-            params![instant_iso],
+            "DELETE FROM sessions
+             WHERE started_at < ?2 AND datetime(started_at) < datetime(?1)",
+            params![instant_iso, date_bound_iso],
         )
         .context("deleting sessions past cutoff")? as i64;
     // Runs after the blocks delete, so only surviving blocks remain to
@@ -876,6 +905,39 @@ mod tests {
         let report = purge_rows(&conn, cutoff, false).unwrap();
         assert_eq!(report.tickets_deleted, 0);
         assert_eq!(count(&conn, "jira_tickets"), 1);
+    }
+
+    /// T9: the index-usable `started_at < date_bound_iso` pre-filter must
+    /// never exclude a row the original `datetime(started_at) <
+    /// datetime(?1)` predicate matches. `WORKLOG_TZ=-23:59` pushes local
+    /// midnight to the very end of `cutoff`'s UTC day, and a `+14:00`
+    /// offset on the stored timestamp then pushes its LITERAL calendar
+    /// date to `cutoff + 1 day` — the exact ceiling the safety proof
+    /// relies on — even though its UTC instant (`cutoff` 23:00) is
+    /// genuinely before the cutoff. A `date_bound_iso` one day short of
+    /// what the code computes (`cutoff + 2 days`) would make the
+    /// pre-filter wrongly spare this row, so this test fails if that
+    /// bound regresses.
+    #[test]
+    fn t9_purge_prefilter_deletes_row_at_offset_shifted_literal_date_ceiling() {
+        let _g = crate::tz::test_env_lock();
+        std::env::set_var("WORKLOG_TZ", "-23:59");
+        let conn = open_memory().unwrap();
+        let cutoff = date("2026-06-20");
+        // UTC instant 2026-06-20T23:00:00Z (before the shifted threshold
+        // of 2026-06-20T23:59:00Z) written with a +14:00 offset: literal
+        // date 2026-06-21, i.e. `cutoff + 1 day`.
+        insert_event(&conn, "2026-06-21T13:00:00+14:00", "offset-ceiling-event");
+        insert_session(&conn, "sess-offset-ceiling", "2026-06-21T13:00:00+14:00");
+
+        let report = purge_rows(&conn, cutoff, false);
+        std::env::remove_var("WORKLOG_TZ");
+        let report = report.unwrap();
+
+        assert_eq!(report.events_deleted, 1);
+        assert_eq!(report.sessions_deleted, 1);
+        assert_eq!(count(&conn, "events"), 0);
+        assert_eq!(count(&conn, "sessions"), 0);
     }
 
     /// B16: an `external = 0` cached ticket, ancient and unreferenced, is
