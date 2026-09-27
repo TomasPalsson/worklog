@@ -73,6 +73,23 @@ fn cap_prompt(s: &str, max: usize) -> String {
     format!("{kept}…<truncated {dropped} chars>")
 }
 
+/// The full hook payload, scrubbed, for the Details view (spec 006).
+fn raw_record(event: &str, payload: &Value) -> Option<String> {
+    serde_json::to_string(&crate::clues_contract::RawRecord::Hook {
+        event: event.to_owned(),
+        payload: crate::scrub::scrub_json(payload),
+    })
+    .ok()
+}
+
+/// Collapse `/.claude/worktrees/<name>` to its repo root the same way
+/// `collectors::claude_transcripts` does, or the same repo splits into two
+/// project folders depending on which source saw it (A11/A12).
+fn project_root(cwd: Option<&str>) -> Option<String> {
+    let home = dirs::home_dir().map(|p| p.to_string_lossy().into_owned());
+    cwd.and_then(|c| crate::collectors::fish::repo_root_for(c, home.as_deref()))
+}
+
 /// Process a single hook payload against an already-open connection. Errors
 /// are logged to stderr by the caller; this function bails on a hard db
 /// failure only so the CLI entrypoint can still return exit 0 (we never
@@ -113,12 +130,6 @@ pub fn handle(conn: &Connection, payload: &Value, now: DateTime<Utc>) -> Result<
         _ => None,
     };
 
-    // `raw_json` is deliberately NOT stored. The full Claude Code hook
-    // payload carries tool inputs/outputs (i.e. source code) for
-    // PreToolUse/PostToolUse events; nothing in worklog ever reads the
-    // column, so capturing it was pure code-at-rest with no upside.
-    let raw_json: Option<String> = None;
-
     let ev = Event {
         id: None,
         source: "claude".into(),
@@ -129,11 +140,11 @@ pub fn handle(conn: &Connection, payload: &Value, now: DateTime<Utc>) -> Result<
         title: title_for(&event, prompt.as_deref()),
         details,
         repo: None,
-        project_path: cwd.clone(),
+        project_path: project_root(cwd.as_deref()),
         jira_issue,
         session_id: Some(session_id.clone()),
         tempo_worklog_id: None,
-        raw_json,
+        raw_json: raw_record(&event, payload),
     };
     repo::upsert_event(conn, &ev)?;
 
@@ -205,245 +216,7 @@ pub fn run_from_stdin() -> Result<()> {
     Ok(())
 }
 
+// Tests live in hook_run_test.rs (same module, split file for line budget).
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::db::open_memory;
-    use chrono::TimeZone;
-    use serde_json::json;
-
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 4, 18, 9, 30, 0).unwrap()
-    }
-
-    #[test]
-    fn session_start_inserts_event_and_session_row() {
-        let conn = open_memory().unwrap();
-        let payload = json!({
-            "hook_event_name": "SessionStart",
-            "session_id": "abc-123",
-            "cwd": "/Users/tomas/project",
-            "user_prompt": "look at PROJ-42"
-        });
-        handle(&conn, &payload, now()).unwrap();
-
-        // Event written with source=claude and jira key extracted.
-        let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].source, "claude");
-        assert_eq!(events[0].jira_issue.as_deref(), Some("PROJ-42"));
-        assert_eq!(events[0].session_id.as_deref(), Some("abc-123"));
-        assert!(events[0].title.starts_with("SessionStart —"));
-
-        // Sessions row exists with event_count = 1.
-        let count: i64 = conn
-            .query_row(
-                "SELECT event_count FROM sessions WHERE session_id = ?1",
-                rusqlite::params!["abc-123"],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn stop_event_closes_session() {
-        let conn = open_memory().unwrap();
-        handle(
-            &conn,
-            &json!({
-                "hook_event_name": "SessionStart",
-                "session_id": "x",
-                "cwd": "/p"
-            }),
-            now(),
-        )
-        .unwrap();
-        handle(
-            &conn,
-            &json!({
-                "hook_event_name": "Stop",
-                "session_id": "x"
-            }),
-            now() + chrono::Duration::minutes(15),
-        )
-        .unwrap();
-
-        let (ended_at, end_source): (String, String) = conn
-            .query_row(
-                "SELECT ended_at, end_source FROM sessions WHERE session_id = ?1",
-                rusqlite::params!["x"],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
-        assert!(ended_at.starts_with("2026-04-18T09:45"));
-        assert_eq!(end_source, "stop");
-    }
-
-    #[test]
-    fn dedupe_is_keyed_on_session_event_timestamp() {
-        let conn = open_memory().unwrap();
-        let p = json!({ "hook_event_name": "UserPromptSubmit", "session_id": "s1" });
-        handle(&conn, &p, now()).unwrap();
-        handle(&conn, &p, now()).unwrap(); // same timestamp → same source_id → upsert, not duplicate
-        let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
-        assert_eq!(events.len(), 1);
-    }
-
-    #[test]
-    fn handle_does_not_panic_on_missing_fields() {
-        let conn = open_memory().unwrap();
-        // Only a session id — everything else is missing.
-        let p = json!({ "session_id": "bare" });
-        handle(&conn, &p, now()).unwrap();
-        let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].title, "unknown");
-    }
-
-    // ───────────────────── prompt capture (v0.4) ─────────────────────
-
-    #[test]
-    fn captures_full_prompt_up_to_cap_in_details() {
-        // B1: a 200-char prompt is well below the 4KiB cap → must land
-        // verbatim in event.details. The estimator reads `details`, so
-        // anything the user typed in their Claude prompt is now visible
-        // to the summariser (previously dropped after the 80-char title).
-        let conn = open_memory().unwrap();
-        let prompt = "a".repeat(200);
-        let payload = json!({
-            "hook_event_name": "UserPromptSubmit",
-            "session_id": "s1",
-            "user_prompt": prompt,
-        });
-        handle(&conn, &payload, now()).unwrap();
-        let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(
-            events[0].details.as_deref(),
-            Some("a".repeat(200).as_str()),
-            "full 200-char prompt should round-trip into event.details"
-        );
-    }
-
-    #[test]
-    fn truncates_prompts_over_cap_with_explicit_marker() {
-        // B2: anything over 4096 chars gets sliced to the cap + a
-        // `…<truncated N chars>` suffix so readers (and Claude, when it
-        // re-reads this in the estimator) know the payload was cut.
-        let conn = open_memory().unwrap();
-        let prompt = "x".repeat(10_000);
-        let payload = json!({
-            "hook_event_name": "UserPromptSubmit",
-            "session_id": "s2",
-            "user_prompt": prompt,
-        });
-        handle(&conn, &payload, now()).unwrap();
-        let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
-        let details = events[0]
-            .details
-            .as_deref()
-            .expect("details should be populated from the prompt");
-        assert!(
-            details.starts_with(&"x".repeat(4096)),
-            "first 4096 chars must be preserved verbatim"
-        );
-        assert!(
-            details.contains("truncated"),
-            "truncation marker must be present so downstream readers know"
-        );
-        assert!(
-            details.chars().count() < 10_000,
-            "payload must actually be shorter than the original"
-        );
-    }
-
-    #[test]
-    fn no_prompt_event_stores_no_details() {
-        // A SessionStart/Stop fires without a prompt. We used to store the
-        // transcript path in `details`; that path points at the full
-        // session and is not work-intent signal, so `details` is now left
-        // empty for these events.
-        let conn = open_memory().unwrap();
-        let payload = json!({
-            "hook_event_name": "SessionStart",
-            "session_id": "s3",
-            "transcript_path": "/tmp/transcript-abc.jsonl",
-        });
-        handle(&conn, &payload, now()).unwrap();
-        let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
-        assert_eq!(
-            events[0].details, None,
-            "no prompt → no details (transcript path is not stored)"
-        );
-    }
-
-    #[test]
-    fn raw_json_is_never_stored_for_hook_events() {
-        // The full hook payload carries tool inputs/outputs (source code)
-        // for tool events and must not land in the DB.
-        let conn = open_memory().unwrap();
-        let payload = json!({
-            "hook_event_name": "PostToolUse",
-            "session_id": "s5",
-            "tool_name": "Edit",
-            "tool_input": { "old_string": "let secret = 1;", "new_string": "let secret = 2;" },
-        });
-        handle(&conn, &payload, now()).unwrap();
-        let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
-        assert_eq!(events[0].raw_json, None, "raw_json must never be stored");
-    }
-
-    #[test]
-    fn task_notification_prompt_is_redacted_before_storage() {
-        // Claude Code delivers background-agent completions as a prompt;
-        // the <result> holds code. `redact_code` runs at capture time so
-        // only the one-line summary is ever written to the DB.
-        let conn = open_memory().unwrap();
-        let notif = "<task-notification><summary>Agent review done</summary>\
-             <result>def f(): return SECRET_KEY</result></task-notification>";
-        let payload = json!({
-            "hook_event_name": "UserPromptSubmit",
-            "session_id": "s6",
-            "user_prompt": notif,
-        });
-        handle(&conn, &payload, now()).unwrap();
-        let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
-        let details = events[0].details.as_deref().unwrap_or("");
-        assert!(details.contains("Agent review done"));
-        assert!(
-            !details.contains("SECRET_KEY"),
-            "result code must not be stored"
-        );
-    }
-
-    #[test]
-    fn cap_prompt_is_char_safe_for_multi_byte_unicode() {
-        // If the cap clipped on byte boundaries we'd corrupt emoji /
-        // non-ASCII at the boundary. Feed a payload that crosses the
-        // cap with multi-byte chars and assert the stored string is
-        // still valid UTF-8 and of the expected char length.
-        let conn = open_memory().unwrap();
-        // "日" is 3 bytes, 1 char. 5000 of them > 4096 chars but < 4096
-        // bytes if we were byte-counting (we're not).
-        let prompt = "日".repeat(5000);
-        let payload = json!({
-            "hook_event_name": "UserPromptSubmit",
-            "session_id": "s4",
-            "user_prompt": prompt,
-        });
-        handle(&conn, &payload, now()).unwrap();
-        let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
-        let details = events[0].details.as_deref().unwrap();
-        // First 4096 chars must be "日"*4096. Count chars, not bytes.
-        let prefix_chars = details.chars().take(4096).count();
-        assert_eq!(
-            prefix_chars, 4096,
-            "cap must slice on char boundaries, not byte boundaries"
-        );
-        assert!(
-            details.chars().take(4096).all(|c| c == '日'),
-            "the first 4096 chars should all be the original char"
-        );
-    }
-}
+#[path = "hook_run_test.rs"]
+mod tests;
