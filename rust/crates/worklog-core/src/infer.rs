@@ -563,6 +563,14 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
             prior_list.push(row);
         }
     }
+    // Old blocks' spans, captured before the delete below, so hand-set
+    // owner rows (block_customer_shares, block_resolution_snapshots) can
+    // be carried onto whichever new block covers them most (see
+    // infer_carry_shares).
+    let old_spans: Vec<(String, String)> = prior_list
+        .iter()
+        .map(|c| (c.started_at.clone(), c.ended_at.clone()))
+        .collect();
     // Two ticketed blocks fused into one would keep only one ticket: cut
     // such a block where each later ticketed block began (see infer_carry).
     let ticketed: Vec<crate::infer_carry::Ticketed> = prior_list
@@ -581,9 +589,11 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
     tx.execute("DELETE FROM blocks WHERE day = ?1", params![day_iso])
         .context("clearing stale blocks")?;
 
+    let mut new_spans: Vec<(String, String)> = Vec::new();
     for b in &blocks {
         let started_key = block_iso(b.started_at);
         let ended_key = block_iso(b.ended_at);
+        new_spans.push((started_key.clone(), ended_key.clone()));
         let carry: Option<&CarryRow> = prior.get(&started_key).or_else(|| {
             // Overlap fallback: if no exact-start match, find one prior
             // block whose time range overlaps the new block's — a ticketed
@@ -649,6 +659,9 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
             .context("inserting block_events row")?;
         }
     }
+    // Re-key hand-set owner rows onto whichever new block covers them
+    // most, before an unmatched old started_at is lost for good.
+    crate::infer_carry_shares::carry_owner_tables(&tx, &day_iso, &old_spans, &new_spans)?;
     // FR-06: re-link every owner-moved event of this day into a fresh
     // block now that the deletes+inserts above rebuilt the day's blocks.
     crate::elsewhere::relink_moved_events(&tx, day)?;
@@ -717,7 +730,13 @@ fn ranges_overlap(a_start: &str, a_end: &str, b_start: &str, b_end: &str) -> boo
     a_s < b_e && b_s < a_e
 }
 
-fn parse_pair(start: &str, end: &str) -> Option<(chrono::DateTime<Utc>, chrono::DateTime<Utc>)> {
+/// `pub(crate)` so `infer_carry_shares` can measure overlap between an old
+/// and a new block span without re-implementing the same cross-format
+/// timestamp parsing.
+pub(crate) fn parse_pair(
+    start: &str,
+    end: &str,
+) -> Option<(chrono::DateTime<Utc>, chrono::DateTime<Utc>)> {
     // Accept the common variants our codebase writes:
     //   * `+00:00` offset (what block_iso emits)
     //   * `Z` (chrono's default to_rfc3339 on some builds)

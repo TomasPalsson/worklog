@@ -412,7 +412,12 @@ fn slices_from_rows_last_slice_absorbs_the_rounding_remainder() {
 }
 
 #[test]
-fn shares_dropped_when_block_start_moves() {
+fn shares_survive_when_block_start_moves() {
+    // Regression for the orphaned-owner-row bug: block_customer_shares is
+    // keyed by the block's exact started_at, and persist_blocks deletes +
+    // re-inserts a day's blocks on every re-infer. A rebuilt block whose
+    // start shifted must inherit the old block's row instead of silently
+    // losing the owner's customer split (infer_carry_shares).
     let conn = open_memory().unwrap();
     seed_multi_tenant_folder(&conn);
     seed_claude_event(&conn, "e1", "2026-07-23T09:00:00Z", "vitinn-infra");
@@ -453,7 +458,7 @@ fn shares_dropped_when_block_start_moves() {
         .unwrap()
         .expect("vitinn-infra is multi-tenant");
     assert!(
-        !slices.iter().any(|s| s.origin == SplitOrigin::Manual),
-        "shares keyed to the old start must not apply to the moved block: {slices:#?}"
+        slices.iter().any(|s| s.origin == SplitOrigin::Manual),
+        "shares keyed to the old start must be inherited by the moved block: {slices:#?}"
     );
 }

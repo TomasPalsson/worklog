@@ -30,6 +30,7 @@ pub mod http;
 pub mod infer;
 pub mod infer_allocations;
 mod infer_carry;
+mod infer_carry_shares;
 mod infer_evidence;
 pub mod infer_lanes;
 pub mod line_text;
