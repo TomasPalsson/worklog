@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::models::{Block, Event, JiraTicket};
+use crate::raw_json::{decode_raw_json, encode_raw_json};
 use crate::scrub;
 
 // ───────────────────────── events ─────────────────────────
@@ -87,7 +88,7 @@ pub fn upsert_event(conn: &Connection, e: &Event) -> Result<i64> {
             e.jira_issue,
             e.session_id,
             e.tempo_worklog_id,
-            e.raw_json,
+            encode_raw_json(e.raw_json.as_deref()),
         ],
     )
     .context("upsert event")?;
@@ -132,7 +133,7 @@ pub fn load_day_events(conn: &Connection, day: &str) -> Result<Vec<Event>> {
             jira_issue: r.get(10)?,
             session_id: r.get(11)?,
             tempo_worklog_id: r.get(12)?,
-            raw_json: r.get(13)?,
+            raw_json: decode_raw_json(r, 13)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -198,7 +199,7 @@ pub fn list_events_for_block(conn: &Connection, block_id: i64) -> Result<Vec<Eve
             jira_issue: r.get(10)?,
             session_id: r.get(11)?,
             tempo_worklog_id: r.get(12)?,
-            raw_json: r.get(13)?,
+            raw_json: decode_raw_json(r, 13)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)

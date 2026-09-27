@@ -157,7 +157,7 @@ fn helper_activity_for_sessions(
             jira_issue: r.get(10)?,
             session_id: r.get(11)?,
             tempo_worklog_id: r.get(12)?,
-            raw_json: r.get(13)?,
+            raw_json: crate::raw_json::decode_raw_json(r, 13)?,
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()

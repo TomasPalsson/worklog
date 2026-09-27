@@ -47,6 +47,7 @@ pub mod paths;
 pub mod personal;
 pub mod prompt_snippets;
 pub mod purge;
+pub mod raw_json;
 pub mod repo;
 pub mod routing;
 pub mod routing_absorb;

@@ -46,6 +46,32 @@ fn upsert_event_skips_the_write_when_nothing_changes() {
 }
 
 #[test]
+fn upsert_event_recompresses_raw_json_identically() {
+    // S1: raw_json is deflated to a BLOB when that's smaller. Compression
+    // must be deterministic, or the no-op WHERE clause (`events.raw_json
+    // IS NOT excluded.raw_json`) would see a "changed" BLOB on every
+    // re-collect of the same event and rewrite the row every tick.
+    let c = fresh();
+    let mut e = Event::minimal("github_commit", "abc", "2026-04-18T09:00:00Z", "first");
+    e.raw_json = Some(
+        r#"{"message":"a fairly repetitive commit message commit message commit message"}"#.into(),
+    );
+    upsert_event(&c, &e).unwrap();
+    upsert_event(&c, &e).unwrap();
+    assert_eq!(
+        c.changes(),
+        0,
+        "re-upserting the identical event must not rewrite the row"
+    );
+    let got = load_day_events(&c, "2026-04-18").unwrap();
+    assert_eq!(got.len(), 1);
+    assert_eq!(
+        got[0].raw_json, e.raw_json,
+        "raw_json must decode byte-identical"
+    );
+}
+
+#[test]
 fn upsert_event_preserves_tempo_worklog_id_on_re_collect() {
     // CLAUDE.md canary: tempo_worklog_id MUST NEVER be cleared.
     // A re-collect pass (which passes tempo_worklog_id=None on the

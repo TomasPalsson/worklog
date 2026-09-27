@@ -92,6 +92,19 @@ export function readonlyDb(path: string): Database {
   return new Database(`file:${path}?mode=ro&immutable=1`, { readonly: true });
 }
 
+// S1: repo::upsert_event deflate-compresses events.raw_json into a BLOB
+// when that's smaller than the TEXT it replaces. bun:sqlite hands back a
+// BLOB column as a Uint8Array; inflate it here (raw deflate, matching
+// flate2's DeflateEncoder — no zlib/gzip header) so the oracle compares
+// logical JSON content, never storage representation.
+function inflateRawJsonBlobs(row: Record<string, unknown>): Record<string, unknown> {
+  const v = row.raw_json;
+  if (v instanceof Uint8Array) {
+    return { ...row, raw_json: new TextDecoder().decode(Bun.inflateSync(v)) };
+  }
+  return row;
+}
+
 export function dumpDb(path: string): string {
   const db = readonlyDb(path);
   try {
@@ -106,7 +119,7 @@ export function dumpDb(path: string): string {
       const rows = db.query(
         `SELECT * FROM ${quoteIdent(t.name)} ORDER BY ${cols.map(quoteIdent).join(",")}`,
       ).all();
-      for (const r of rows) lines.push(`${t.name}\t${JSON.stringify(r)}`);
+      for (const r of rows) lines.push(`${t.name}\t${JSON.stringify(inflateRawJsonBlobs(r as Record<string, unknown>))}`);
     }
     return lines.join("\n");
   } finally {
