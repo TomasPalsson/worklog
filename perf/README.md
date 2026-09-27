@@ -40,17 +40,27 @@ performance eval is a blind LLM judge: candidate descriptions must be rated "as 
 better" than baseline on ≥ 95% of blocks, valid against the schema, and never leak
 persona text (e.g. "Mr Claude").
 
-## Baseline (first probes, before the harness; harness numbers replace these)
+## Baseline and goals
 
-| id | today | goal |
-|----|-------|------|
-| T1 hook | 15.3 ms (floor: tiny Rust exec 3.2 ms) | ≤ 2 ms; 0 ms perceived with `async: true` |
-| T8 week | 154 ms | ≤ 10 ms |
-| T8 summary / block list / infer | 12 / 17 / 26 ms | ≤ 3 ms each |
-| T10 decide | 105 events (63 unique), 44 options: 42.1 s cold, 45.6 s repeat tick (~430 ms/event, 4 ORT threads, CPU) | cold ≤ 4 s; repeat tick ≤ 50 ms |
-| T11 describe | real prompts (22 blocks of 2026-09-22, ~4 KB each): 20.4 s and $0.044 per block, sequential → ~7.5 min/day; ~2k hidden thinking tokens for an ~80-char answer | ≤ 2 s/block effective, ≤ $0.003/block, judge parity |
-| S1 db-week | 31.9 MB (raw_json 16.5 MB of it) | ≤ 8 MB |
-| S3 footprint | model dir 1.2 GB (onnx + safetensors both loaded) | measure first |
+Baseline = `bun perf/bench.ts --bin worklog-base` (PR #54 @ `26742ac`), medians, default
+runs, 2026-09-27. CLI runs start on a fresh clone, so the DB file is cold in the page cache
+(same for base and candidate). T10/T11 from `perf/decide.ts` / `perf/describe.ts`.
+
+| id | today | goal | speedup asked |
+|----|-------|------|---------------|
+| T1 hook | 17.2 ms (floor: tiny Rust exec ≈ 3 ms) | ≤ 3 ms; 0 ms perceived via `async: true` | 6× / ∞ |
+| T2 tick-warm | 1418 ms | ≤ 30 ms | 47× |
+| T3 tick-cold | 1359 ms | ≤ 300 ms | 4.5× |
+| T4 day-page | 28.6 ms | ≤ 3 ms | 10× |
+| T5 week-page | 59.1 ms | ≤ 5 ms | 12× |
+| T6 block-details | 0.7 ms | ≤ 0.7 ms (don't regress) | 1× |
+| T7 billing-tab | 1.3 ms | ≤ 1 ms | 1.3× |
+| T8 summary / week / block list / infer | 29.8 / 40.0 / 28.1 / 66.0 ms | ≤ 5 / 6 / 5 / 10 ms | 6× |
+| T9 purge | 896 ms | ≤ 100 ms | 9× |
+| T10 decide | 105 events (63 unique): cold 42.1 s, repeat tick 45.6 s | cold ≤ 4 s; repeat ≤ 50 ms | 10× / 900× |
+| T11 describe | 20.4 s + $0.044 per block, sequential → ~7.5 min for 22 blocks | ≤ 1 min/day at judge parity and same cost | 7.5× |
+| S1 db-week | 31.9 MB (raw_json 15.8 MB) | ≤ 8 MB | 4× |
+| S3 footprint | model dir 1.2 GB; ~600 MB old DB backups | ≤ 0.6 GB model (owner decision) | 2× |
 
 ## Findings (probes, 2026-09-27)
 
