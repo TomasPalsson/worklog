@@ -58,6 +58,6 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core cl
 - [x] CHK003 Owner's PREP Verify on 2026-09-25 — files: . — verify: human: no personal-account commit in any work block; the vitinn-infra Details view shows every prompt, tool call and shell command; its billing line reads as 2–3 Icelandic sentences the owner would send to their boss unedited — after: T022 — done: 79890f0 by user
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `flow check --fix`
-- [ ] G002 branch review clean — files: . — verify: `flow pass`
-- [ ] G003 verification evidence exists — files: . — verify: `test -s verify/`
+- [x] G001 project gates clean — files: . — verify: `flow check --fix` — done: cfb9d39
+- [x] G002 branch review clean — files: . — verify: `flow pass` — done: cfb9d39
+- [x] G003 verification evidence exists — files: . — verify: `test -s verify/` — done: cfb9d39
