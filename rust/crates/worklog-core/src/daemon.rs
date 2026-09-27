@@ -79,6 +79,7 @@ use crate::browser_ingest;
 use crate::change_log;
 use crate::collectors::{jira, tempo};
 use crate::deild_contract;
+use crate::elsewhere;
 use crate::git::{self, CommitEntry};
 use crate::personal;
 use crate::routing;
@@ -190,6 +191,8 @@ pub fn router(state: Shared) -> Router {
         .route("/routing/rules", get(routing_rules_list))
         .route("/routing/rules/:id/delete", post(routing_rule_delete))
         .route("/routing/status", get(routing_status))
+        .route("/days/:day/elsewhere", get(list_elsewhere))
+        .route("/events/:id/move", post(move_event_handler))
         .with_state(state)
 }
 
@@ -2369,6 +2372,28 @@ async fn dismiss_event_handler(
     .await
     .map_err(ApiError::bad_request)?;
     Ok(Json(routed))
+}
+
+async fn list_elsewhere(
+    State(state): State<Shared>,
+    AxumPath(day): AxumPath<String>,
+) -> Result<Json<Vec<elsewhere::ElsewhereItem>>, ApiError> {
+    let _ = (state, day);
+    unimplemented!("T006 GREEN")
+}
+
+#[derive(Deserialize)]
+struct MoveEventRequest {
+    block_id: i64,
+}
+
+async fn move_event_handler(
+    State(state): State<Shared>,
+    AxumPath(id): AxumPath<i64>,
+    Json(body): Json<MoveEventRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let _ = (state, id, body);
+    unimplemented!("T006 GREEN")
 }
 
 async fn routing_rules_list(
@@ -5227,6 +5252,163 @@ mod tests {
                 Request::post("/events/999999/dismiss")
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{"rule_kind":null}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_elsewhere_returns_the_days_flagged_events() {
+        let conn = open_memory().unwrap();
+        let id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                "github_commit",
+                "far-sha",
+                "2026-04-18T10:00:00+00:00",
+                "fix oauth",
+            ),
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE events SET elsewhere = 1, repo = 'aproorg/code-interpreter' WHERE id = ?1",
+            params![id],
+        )
+        .unwrap();
+
+        let app = router(state_from_conn(conn));
+        let resp = app
+            .oneshot(
+                Request::get("/days/2026-04-18/elsewhere")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["id"], id);
+        assert_eq!(arr[0]["repo"], "aproorg/code-interpreter");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_elsewhere_rejects_bad_day() {
+        let app = router(state_from_conn(open_memory().unwrap()));
+        let resp = app
+            .oneshot(
+                Request::get("/days/not-a-day/elsewhere")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn move_event_moves_it_into_the_chosen_block_and_off_the_list() {
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-18', '2026-04-18T09:00:00+00:00', '2026-04-18T09:30:00+00:00', 1800)",
+            [],
+        )
+        .unwrap();
+        let block_id = conn.last_insert_rowid();
+        let id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                "github_commit",
+                "far-sha",
+                "2026-04-18T10:00:00+00:00",
+                "fix oauth",
+            ),
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE events SET elsewhere = 1 WHERE id = ?1",
+            params![id],
+        )
+        .unwrap();
+
+        let app = router(state_from_conn(conn));
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/events/{id}/move"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(r#"{{"block_id":{block_id}}}"#)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let resp = app
+            .oneshot(
+                Request::get("/days/2026-04-18/elsewhere")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        assert_eq!(v.as_array().unwrap().len(), 0, "moved event must leave the list");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn move_event_404s_an_unknown_event() {
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-18', '2026-04-18T09:00:00+00:00', '2026-04-18T09:30:00+00:00', 1800)",
+            [],
+        )
+        .unwrap();
+        let block_id = conn.last_insert_rowid();
+
+        let app = router(state_from_conn(conn));
+        let resp = app
+            .oneshot(
+                Request::post("/events/999999/move")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(r#"{{"block_id":{block_id}}}"#)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn move_event_404s_an_unknown_block() {
+        let conn = open_memory().unwrap();
+        let id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                "github_commit",
+                "far-sha",
+                "2026-04-18T10:00:00+00:00",
+                "fix oauth",
+            ),
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE events SET elsewhere = 1 WHERE id = ?1",
+            params![id],
+        )
+        .unwrap();
+
+        let app = router(state_from_conn(conn));
+        let resp = app
+            .oneshot(
+                Request::post(format!("/events/{id}/move"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"block_id":999999}"#))
                     .unwrap(),
             )
             .await
