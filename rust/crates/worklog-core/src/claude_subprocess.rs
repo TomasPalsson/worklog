@@ -125,8 +125,9 @@ impl ModelInvoker for ClaudeSubprocess {
 /// I/O-bound (waiting on the model, not this machine's CPU), so a handful
 /// of them in flight together shortens the day/line-text passes without
 /// the core contention T10's concurrency probe found for compute-bound
-/// work (see perf/README.md).
-const MAX_CONCURRENT_INVOKES: usize = 4;
+/// work (see perf/README.md). Measured on a real 22-block day with
+/// `claude -p` on haiku: 4 → 160 s, 8 → 78 s, 22/22 replies ok.
+const MAX_CONCURRENT_INVOKES: usize = 8;
 
 /// Shared `invoke_many` fan-out for invokers whose `invoke` is safe to
 /// call from multiple threads at once (`ClaudeSubprocess`'s `claude -p`

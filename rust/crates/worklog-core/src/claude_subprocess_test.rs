@@ -105,9 +105,12 @@ impl ModelInvoker for RollingWindowInvoker {
 
 #[test]
 fn bounded_concurrent_invoke_rolls_past_a_slow_call_in_order_and_bounded() {
-    // Chunks of 4 would take 800 + 800 + 100 = ~1700 ms; a rolling window
-    // keeps three workers busy with the short calls: ~900 ms.
-    let sleeps_ms = vec![800, 100, 100, 100, 800, 100, 100, 100, 100, 100, 100, 100];
+    // Three chunks' worth of calls with a slow one leading each of the first two
+    // chunks: chunked would take 800 + 800 + 100 = ~1700 ms; a rolling window
+    // keeps the other workers busy with the short calls: ~900 ms.
+    let mut sleeps_ms = vec![100; 3 * MAX_CONCURRENT_INVOKES];
+    sleeps_ms[0] = 800;
+    sleeps_ms[MAX_CONCURRENT_INVOKES] = 800;
     let users: Vec<String> = (0..sleeps_ms.len()).map(|i| i.to_string()).collect();
     let invoker = RollingWindowInvoker {
         sleeps_ms,
@@ -132,7 +135,7 @@ fn bounded_concurrent_invoke_rolls_past_a_slow_call_in_order_and_bounded() {
          ~1700ms (a slow call's chunk stalls the next chunk)"
     );
     assert!(
-        invoker.max_in_flight.load(Ordering::SeqCst) <= 4,
+        invoker.max_in_flight.load(Ordering::SeqCst) <= MAX_CONCURRENT_INVOKES,
         "more than MAX_CONCURRENT_INVOKES calls were in flight at once"
     );
 }

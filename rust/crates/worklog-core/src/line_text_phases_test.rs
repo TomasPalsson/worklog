@@ -179,8 +179,8 @@ fn invoke_many_runs_concurrently_and_keeps_reply_order() {
     for (i, reply) in replies.iter().enumerate() {
         assert_eq!(reply, &Ok(format!("{GOOD_TEXT} (prompt-{i})")));
     }
-    // Sequential would be 6 * 200ms = 1200ms; bounded to 4 concurrent
-    // (MAX_CONCURRENT_INVOKES) takes 2 batches, ~400ms. Generous headroom
+    // Sequential would be 6 * 200ms = 1200ms; bounded concurrency
+    // (MAX_CONCURRENT_INVOKES) runs them in parallel, ~200–400ms. Generous headroom
     // for CI/scheduling noise while still proving it's nowhere near
     // sequential.
     assert!(
