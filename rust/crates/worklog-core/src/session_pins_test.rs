@@ -350,25 +350,45 @@ fn init_git_repo(path: &Path, branch: &str) {
 fn start_text_inherits_branch_pin() {
     let conn = db::open_memory().unwrap();
     let mut reg = registry();
-    reg.folders.push(multi_tenant_folder("vitinn-infra"));
 
-    let tmp = tempfile::tempdir().unwrap();
-    let repo_dir = tmp.path().join("vitinn-infra");
-    std::fs::create_dir_all(&repo_dir).unwrap();
-    init_git_repo(&repo_dir, "feat/x");
+    // `billing::billable_work_folder` (the strict /Work gate `start_text`
+    // now uses) and `git::current_branch` both require a *real* directory,
+    // and the folder must genuinely sit under `~/Desktop/Work` for the
+    // gate to pass — a tempdir elsewhere no longer qualifies. A uniquely
+    // named `TempDir` created directly inside the real work root is the
+    // only way to satisfy both without an env-var override (which would
+    // race other tests touching the same process-global `OnceLock` in
+    // `billing::work_prefix`); the random suffix means the registered
+    // folder name can never collide with a real project, and the
+    // directory is removed again when `repo_dir` drops.
+    let work_root = std::path::Path::new(&home()).join("Desktop/Work");
+    std::fs::create_dir_all(&work_root).unwrap();
+    let repo_dir = tempfile::Builder::new()
+        .prefix("session-pins-test-")
+        .tempdir_in(&work_root)
+        .unwrap();
+    let folder_name = repo_dir
+        .path()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    reg.folders.push(multi_tenant_folder(&folder_name));
+    init_git_repo(repo_dir.path(), "feat/x");
 
     pin(
         &conn,
         &reg,
         "sess-1",
-        &repo_dir,
+        repo_dir.path(),
         "Sjúkra",
         at(9, 0),
         Some("feat/x"),
     )
     .unwrap();
 
-    let text = start_text(&conn, &reg, "sess-2", &repo_dir, at(10, 0))
+    let text = start_text(&conn, &reg, "sess-2", repo_dir.path(), at(10, 0))
         .unwrap()
         .expect("a branch pin must produce inherited start text");
 
@@ -447,5 +467,27 @@ fn start_text_is_none_outside_a_registered_work_folder() {
     assert_eq!(
         start_text(&conn, &reg, "sess-1", cwd, at(9, 0)).unwrap(),
         None
+    );
+}
+
+#[test]
+fn start_text_is_none_outside_desktop_work_even_when_basename_matches() {
+    let conn = db::open_memory().unwrap();
+    let mut reg = registry();
+    reg.folders.push(multi_tenant_folder("vitinn-infra"));
+    // Same basename as a registered multi-tenant folder, but reached from
+    // outside `~/Desktop/Work` — `work_folder_for_path`'s lenient fallback
+    // must not be enough to fire the instruction here (FR-01, §2.2).
+    let cwd = Path::new("/tmp/not-work/vitinn-infra");
+
+    assert_eq!(
+        start_text(&conn, &reg, "sess-1", cwd, at(9, 0)).unwrap(),
+        None
+    );
+    assert!(
+        pins_for_sessions(&conn, &["sess-1".to_string()])
+            .unwrap()
+            .is_empty(),
+        "a path outside /Work must never write an inherited pin"
     );
 }

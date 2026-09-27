@@ -50,10 +50,12 @@ pub fn is_default_branch(branch: &str) -> bool {
 /// The `worklog session-hint` start-of-session text (design.md §4,
 /// contract T004), or `None` when nothing should be printed.
 ///
-/// Gated on the session's folder being registered multi-tenant in the
-/// billing registry — every folder there came from the /Work discovery
-/// flow, so this doubles as the "under `~/Desktop/Work`" check without
-/// re-deriving `billing::work_prefix` here.
+/// Gated on `cwd` actually living under `~/Desktop/Work` (FR-01, §2.2) —
+/// `billing::billable_work_folder` is the strict form of the lookup;
+/// unlike `work_folder_for_path` it refuses to fall back to a bare
+/// basename for paths outside the work prefix, so a folder name outside
+/// `~/Desktop/Work` can never coincidentally match a registered
+/// multi-tenant folder — and on top of the multi_tenant check.
 pub fn start_text(
     conn: &Connection,
     registry: &Registry,
@@ -61,7 +63,7 @@ pub fn start_text(
     cwd: &Path,
     now: DateTime<Utc>,
 ) -> Result<Option<String>> {
-    let Some(folder) = billing::work_folder_for_path(&cwd.to_string_lossy()) else {
+    let Some(folder) = billing::billable_work_folder(&cwd.to_string_lossy()) else {
         return Ok(None);
     };
     let multi_tenant = registry
