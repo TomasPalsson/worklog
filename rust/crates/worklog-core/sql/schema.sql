@@ -60,6 +60,10 @@ CREATE INDEX IF NOT EXISTS idx_events_started ON events(started_at);
 CREATE INDEX IF NOT EXISTS idx_events_tempo ON events(tempo_worklog_id);
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
 CREATE INDEX IF NOT EXISTS idx_events_jira ON events(jira_issue);
+-- Covers billing_registry::unmapped_folders (the Billing registry, loaded by every day
+-- page) so it never reads the wide event rows. Leading on project_path, not started_at,
+-- so no started_at-ordered query can pick it up and change its tie order.
+CREATE INDEX IF NOT EXISTS idx_events_path_started ON events(project_path, started_at);
 
 CREATE TABLE IF NOT EXISTS sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

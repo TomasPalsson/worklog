@@ -136,17 +136,27 @@ function sha256(text: string): string {
   return new Bun.CryptoHasher("sha256").update(text).digest("hex");
 }
 
+// Multiset difference: an inserted line (e.g. a new index in SCHEMA) shows as one line,
+// not as every later line shifting.
 export function printDiff(id: string, baseText: string, candText: string): void {
-  const b = baseText.split("\n"), c = candText.split("\n");
-  let shown = 0;
-  console.log(`--- oracle mismatch for ${id} (first 20 differing lines) ---`);
-  for (let i = 0; i < Math.max(b.length, c.length) && shown < 20; i++) {
-    if (b[i] !== c[i]) {
-      console.log(`- ${b[i] ?? "<EOF>"}`);
-      console.log(`+ ${c[i] ?? "<EOF>"}`);
-      shown++;
-    }
+  const count = new Map<string, number>();
+  for (const l of baseText.split("\n")) count.set(l, (count.get(l) ?? 0) + 1);
+  const onlyCand: string[] = [];
+  for (const l of candText.split("\n")) {
+    const n = count.get(l) ?? 0;
+    if (n > 0) count.set(l, n - 1); else onlyCand.push(l);
   }
+  const onlyBase = [...count].flatMap(([l, n]) => Array(n).fill(l) as string[]);
+  console.log(`--- oracle mismatch for ${id}: ${onlyBase.length} line(s) only in base, ${onlyCand.length} only in cand (first 20 each) ---`);
+  for (const l of onlyBase.slice(0, 20)) console.log(`- ${l}`);
+  for (const l of onlyCand.slice(0, 20)) console.log(`+ ${l}`);
+}
+
+// PERF_IGNORE=<regex>: drop intended-difference lines (e.g. a new index) from both oracles
+// before comparing; such a match reports PASS* so it is never silent.
+const IGNORE = process.env.PERF_IGNORE ? new RegExp(process.env.PERF_IGNORE) : undefined;
+function withoutIgnored(text: string): string {
+  return IGNORE ? text.split("\n").filter((l) => !IGNORE.test(l)).join("\n") : text;
 }
 
 // ---- daemon HTTP helpers ----
@@ -202,8 +212,8 @@ export function reportScenario(
   let pass: boolean | undefined;
   let oracleLabel: string;
   if (candOracle !== undefined && baseOracle !== undefined) {
-    pass = candOracle === baseOracle;
-    oracleLabel = pass ? "PASS" : "FAIL";
+    pass = withoutIgnored(candOracle) === withoutIgnored(baseOracle);
+    oracleLabel = !pass ? "FAIL" : candOracle === baseOracle ? "PASS" : "PASS*";
     if (!pass) {
       printDiff(id, baseOracle, candOracle);
       writeFileSync(`${RUNS_ROOT}/oracle-${id}-base.txt`, baseOracle);
