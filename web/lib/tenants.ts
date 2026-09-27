@@ -33,7 +33,7 @@ export async function linkTenant(link: TenantLink): Promise<{ ok: true }> {
 }
 
 /** Where a block's split came from (`tenant_contract::SplitOrigin`). */
-export type SplitOrigin = "clues" | "manual" | "fallback";
+export type SplitOrigin = "clues" | "manual" | "fallback" | "pinned";
 
 /** One customer's part of one block (`GET /blocks/:id/customer-slices`).
  * `intervals` are `[start, end)` epoch seconds inside the block. An empty

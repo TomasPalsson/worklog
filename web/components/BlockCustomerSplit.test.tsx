@@ -200,6 +200,17 @@ describe("BlockCustomerSplit (B17)", () => {
     expect(fetchBillingRegistryImpl).toHaveBeenCalled();
   });
 
+  it("shows a pinned block's customer tagged 'pinned', with Change available (FR-08)", async () => {
+    currentSlices = [
+      { customer: "Sjúkra", deild: null, intervals: [[0, 3600]], origin: "pinned", deild_origin: "blank" },
+    ];
+    render(<BlockCustomerSplit blockId={707} />);
+
+    expect(await screen.findByText("Sjúkra")).not.toBeNull();
+    expect(screen.getByText("pinned")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Change" })).not.toBeNull();
+  });
+
   it("turns a fallback slice with no resolved customer into a required picker and never saves it as Unresolved (FR-05)", async () => {
     currentSlices = [
       { customer: null, deild: null, intervals: [[0, 3600]], origin: "fallback", deild_origin: "blank" },

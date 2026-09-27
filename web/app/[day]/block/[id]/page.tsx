@@ -6,6 +6,7 @@ import { blockDetails } from "@/lib/daemonDetails";
 import { formatDayHeading, formatDuration, formatRange } from "@/lib/format";
 import type { Block } from "@/lib/types";
 import { BlockDetails } from "@/components/BlockDetails";
+import { BlockCustomerSplit } from "@/components/BlockCustomerSplit";
 
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -49,6 +50,7 @@ export default async function BlockDetailPage({ params }: { params: Promise<{ da
     return (
       <div className="bd-page">
         <BlockHeader day={day} block={block} />
+        <BlockCustomerSplit blockId={blockId} />
         <BlockDetails rows={rows} />
       </div>
     );
