@@ -310,6 +310,14 @@ fn ensure_events_elsewhere(conn: &Connection) -> Result<()> {
         )
         .context("ALTER TABLE events ADD elsewhere")?;
     }
+    // elsewhere::list_for_day (every day page) wants the few elsewhere=1 rows of
+    // a day; without this it reads every event of the day to find them. Lives
+    // here, not in schema.sql, because older DBs only gain the column above.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_events_elsewhere ON events(started_at) WHERE elsewhere = 1",
+        [],
+    )
+    .context("CREATE INDEX idx_events_elsewhere")?;
     Ok(())
 }
 
