@@ -430,13 +430,19 @@ pub fn load_day_events(conn: &Connection, day: NaiveDate) -> Result<Vec<InferEve
     // Dismissed and noise events (thrown away by the owner or by the
     // end-of-day absorb step) are excluded the same way. An org commit/PR
     // whose sha is in no local clone is flagged `elsewhere` (FR-04) and
-    // must never reach inference (FR-09, D-08, B3).
+    // must never reach inference (FR-09, D-08, B3). Helper/tool/message
+    // rows (D-05, FR-17) are the owner's tool working on its own behalf,
+    // never the owner acting — excluded here, at the one loader every
+    // caller (block-building AND overlaps/activity) shares, so a run of
+    // subagent activity in another project can never open an overlap
+    // window or show up as that project's activity either.
     let mut stmt = conn.prepare(
         "SELECT id, source, started_at, duration_seconds, jira_issue, project_path
            FROM events
           WHERE started_at >= ?1 AND started_at < ?2
             AND NOT (source IN (?3, ?4) AND (label_origin IS NULL OR label_origin IN (?5, ?6)))
             AND elsewhere = 0
+            AND source NOT IN (?7, ?8, ?9)
           ORDER BY started_at",
     )?;
     // started_at is ISO-8601 string; we compare lexicographically which works
@@ -451,7 +457,10 @@ pub fn load_day_events(conn: &Connection, day: NaiveDate) -> Result<Vec<InferEve
             crate::routing_contract::SOURCE_FIREFOX,
             crate::routing_contract::SOURCE_SLACK,
             crate::routing_contract::LabelOrigin::Dismissed.as_str(),
-            crate::routing_contract::LabelOrigin::Noise.as_str()
+            crate::routing_contract::LabelOrigin::Noise.as_str(),
+            crate::clues_contract::SOURCE_CLAUDE_HELPER,
+            crate::clues_contract::SOURCE_CLAUDE_MESSAGE,
+            crate::clues_contract::SOURCE_CLAUDE_TOOL,
         ],
         |r| {
             let iso: String = r.get(2)?;
