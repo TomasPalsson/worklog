@@ -59,7 +59,7 @@ runs, 2026-09-27. CLI runs start on a fresh clone, so the DB file is cold in the
 | T9 purge | 896 ms | ≤ 100 ms | 9× |
 | T10 decide | 105 events (63 unique): cold 42.1 s, repeat tick 45.6 s | cold ≤ 4 s; repeat ≤ 50 ms | 10× / 900× |
 | T11 describe | 20.4 s + $0.044 per block, sequential → ~7.5 min for 22 blocks | ≤ 1 min/day at judge parity and same cost | 7.5× |
-| S1 db-week | 31.9 MB (raw_json 15.8 MB) | ≤ 8 MB | 4× |
+| S1 db-week | 31.9 MB (raw_json 15.8 MB) | ~~≤ 8 MB~~ closed by owner at "no visible change": ≈ 20 MB/week now (fresh 4-day ingest 12.91 → 8.65 MB); 16–17 MB judged not worth more code | 1.5× |
 | S3 footprint | model dir 1.2 GB; ~600 MB old DB backups | ≤ 0.6 GB model (owner decision) | 2× |
 
 ## Findings (probes, 2026-09-27)
