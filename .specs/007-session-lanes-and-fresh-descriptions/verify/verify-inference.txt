@@ -1,0 +1,42 @@
+→ building release binary
+→ migrating the copy
+→ inferring 2026-09-21
+→ inferring 2026-09-22
+→ inferring 2026-09-23
+→ inferring 2026-09-24
+→ inferring 2026-09-25
+→ inferring 2026-09-26
+→ inferring 2026-09-27
+2026-09-21 blocks=10 <10m= 1 work= 8.95h personal=0.00h
+2026-09-22 blocks=14 <10m= 2 work= 9.97h personal=0.10h
+2026-09-23 blocks=24 <10m= 6 work= 7.60h personal=7.05h
+2026-09-24 blocks=16 <10m= 0 work= 9.98h personal=1.07h
+2026-09-25 blocks=18 <10m= 2 work= 8.47h personal=0.47h  Sjukra=2.15h APRO=6.30h
+2026-09-26 blocks=10 <10m= 1 work= 3.57h personal=3.08h
+2026-09-27 blocks= 2 <10m= 0 work= 0.00h personal=14.33h
+
+2026-09-25 vitinn-infra blocks by session customer:
+  2026-09-25T08:34:00+00:00-2026-09-25T08:40:00+00:00 customers=['unknown']
+  2026-09-25T08:40:00+00:00-2026-09-25T09:31:00+00:00 customers=['Sjúkra']
+  2026-09-25T09:31:00+00:00-2026-09-25T09:52:00+00:00 customers=['unknown']
+  2026-09-25T09:52:00+00:00-2026-09-25T10:08:00+00:00 customers=['unknown']
+  2026-09-25T10:08:00+00:00-2026-09-25T10:36:00+00:00 customers=['unknown']
+  2026-09-25T12:18:56+00:00-2026-09-25T12:34:15+00:00 customers=['unknown']
+  2026-09-25T12:47:00+00:00-2026-09-25T13:14:00+00:00 customers=['APRÓ']
+  2026-09-25T13:44:00+00:00-2026-09-25T13:55:00+00:00 customers=['unknown']
+  2026-09-25T13:55:00+00:00-2026-09-25T14:28:00+00:00 customers=['Sjúkra']
+  2026-09-25T15:09:00+00:00-2026-09-25T17:26:00+00:00 customers=['APRÓ']
+  2026-09-25T17:26:00+00:00-2026-09-25T18:11:00+00:00 customers=['unknown']
+
+Assertions:
+  [OK] 2026-09-25 work hours in [8.35, 8.65] (owner: ~8.5 h) (got 8.47)
+  [OK] 2026-09-25 vitinn-infra hours in [1.9, 2.2] (got 2.15)
+  [OK] 2026-09-25 at most 2 blocks < 10 min (got 2)
+  [OK] 2026-09-25 at most 18 blocks (got 18)
+  [OK] 2026-09-25 no mixed-customer block (found [])
+  [OK] 2026-09-25 vitinn-infra split fired (Sjúkra blocks=2, APRÓ blocks=2)
+  [OK] no block on 2026-09-23 03:00-04:30 (found [])
+  [OK] 2026-09-26 22:00-23:10 is at most 10 min of blocks (got 8m)
+  [OK] 2026-09-27 03:03-08:11 block is personal (found [('2026-09-27T01:18:00+00:00', '2026-09-27T08:11:00+00:00', 1)])
+
+All assertions passed.

@@ -30,8 +30,8 @@ Goal: a block that changed a lot is described again, and long blocks read as the
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core description` — green, `reinference_preserves_tempo_id_and_description` still green.
 - [x] T004 drop stale descriptions on big change (B5, B6) — files: rust/crates/worklog-core/src/infer_carry.rs, rust/crates/worklog-core/src/infer.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core infer_carry` — after: T003 — done: 7d2dba0
 - [x] T005 [P] long blocks described as tasks (B7) — files: rust/crates/worklog-core/src/estimate.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core long_block_asks_for_tasks` — done: 095120c
-- [ ] T006 Friday real-data check covers splits and block count — files: scripts/verify_inference_report.py — verify: `bash scripts/verify-inference.sh` — after: T004, T005, T007, T008
-- [ ] CHK001 human-verify live Friday 2026-09-25 after deploy — files: scripts/verify_inference_report.py — verify: human: Owner sees vitinn-infra Sjúkra and APRÓ work in separate blocks, the 15:09 block(s) carry a fresh multi-task description, and the day still totals about 8.5 h — after: T006
+- [x] T006 Friday real-data check covers splits and block count — files: scripts/verify_inference_report.py — verify: `bash scripts/verify-inference.sh` — after: T004, T005, T007, T008 — done: 31104c0
+- [x] CHK001 human-verify live Friday 2026-09-25 after deploy — files: scripts/verify_inference_report.py — verify: human: Owner sees vitinn-infra Sjúkra and APRÓ work in separate blocks, the 15:09 block(s) carry a fresh multi-task description, and the day still totals about 8.5 h — after: T006 — done: 31104c0 by user
 
 ## Gates
 - [ ] G001 project gates clean — files: . — verify: `flow check --fix`
