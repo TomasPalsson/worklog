@@ -1,0 +1,468 @@
+2378aeb feat(worklog-core): session pins beat the text guess in lanes
+
+ rust/crates/worklog-core/src/infer_allocations.rs  |  5 ++
+ .../worklog-core/src/infer_allocations_db_test.rs  | 78 +++++++++++++++++++
+ rust/crates/worklog-core/src/session_customers.rs  | 83 ++++++++++++++++-----
+ .../worklog-core/src/session_customers_test.rs     | 87 ++++++++++++++++++++--
+ 4 files changed, 228 insertions(+), 25 deletions(-)
+
+diff --git a/rust/crates/worklog-core/src/infer_allocations.rs b/rust/crates/worklog-core/src/infer_allocations.rs
+index 453621b..585f9c4 100644
+--- a/rust/crates/worklog-core/src/infer_allocations.rs
++++ b/rust/crates/worklog-core/src/infer_allocations.rs
+@@ -25,23 +25,28 @@ pub struct AllocationWindow {
+ }
+ 
+ /// A day's blocks with its saved splits applied — the ONE rebuild every
+ /// caller uses (daemon, `worklog infer`, `worklog day`), so no path can
+ /// quietly undo the owner's choice.
+ pub fn build_day_blocks(
+     conn: &rusqlite::Connection,
+     day: chrono::NaiveDate,
+ ) -> anyhow::Result<Vec<InferBlock>> {
+     let mut events = crate::infer::load_day_events(conn, day)?;
++    let mut session_ids: Vec<String> = events.iter().filter_map(|e| e.session_id.clone()).collect();
++    session_ids.sort();
++    session_ids.dedup();
++    let pins = crate::session_pins::pins_for_sessions(conn, &session_ids)?;
+     crate::session_customers::tag_sessions(
+         &mut events,
+         &crate::billing_registry::Registry::load(conn)?,
++        &pins,
+     );
+     let windows: Vec<AllocationWindow> = crate::overlaps::load_allocations(conn, day)?
+         .into_iter()
+         .map(|(started_at, ended_at, shares)| AllocationWindow {
+             started_at,
+             ended_at,
+             shares,
+         })
+         .collect();
+     Ok(crate::infer::build_blocks_with_allocations(
+diff --git a/rust/crates/worklog-core/src/infer_allocations_db_test.rs b/rust/crates/worklog-core/src/infer_allocations_db_test.rs
+index 80bb73d..6c8659c 100644
+--- a/rust/crates/worklog-core/src/infer_allocations_db_test.rs
++++ b/rust/crates/worklog-core/src/infer_allocations_db_test.rs
+@@ -296,20 +296,98 @@ fn prompt_text_names_the_session_customer() {
+             .filter_map(|e| e.session_id.as_deref())
+             .map(|s| (s, ()))
+             .collect();
+         assert!(
+             sessions.len() <= 1,
+             "block must not mix both sessions, got {sessions:?}"
+         );
+     }
+ }
+ 
++/// A pin must beat the text guess: two sessions whose prompts both name
++/// the same customer would normally stay a single unsplit lane (see
++/// `two_sessions_same_customer_matches_no_customer_registry` below), but
++/// pinning one of them to a different customer must split the lane
++/// anyway — the pin, not the shared text, decides.
++#[test]
++fn pin_beats_text_guess() {
++    use crate::billing_registry::{upsert_customer, Customer, Registry};
++    let conn = crate::db::open_memory().unwrap();
++    let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
++    upsert_customer(
++        &conn,
++        &Customer {
++            id: None,
++            name: "Sjúkra".into(),
++            aliases: vec![],
++        },
++    )
++    .unwrap();
++    upsert_customer(
++        &conn,
++        &Customer {
++            id: None,
++            name: "APRÓ".into(),
++            aliases: vec![],
++        },
++    )
++    .unwrap();
++    seed_two_session_stretches(&conn, "Sjúkra onboarding call", "Sjúkra followup");
++
++    let registry = Registry::load(&conn).unwrap();
++    crate::session_pins::pin(
++        &conn,
++        &registry,
++        "sessA",
++        std::path::Path::new(SHARED),
++        "APRÓ",
++        at(0, 0),
++        None,
++    )
++    .unwrap();
++
++    let blocks = build_day_blocks(&conn, day).unwrap();
++    let non_calendar: Vec<&InferBlock> = blocks.iter().filter(|b| !b.is_calendar).collect();
++    for b in &non_calendar {
++        let sessions: BTreeMap<&str, ()> = b
++            .events
++            .iter()
++            .filter_map(|e| e.session_id.as_deref())
++            .map(|s| (s, ()))
++            .collect();
++        assert!(
++            sessions.len() <= 1,
++            "a pin splitting the lane must not mix both sessions in one block, got {sessions:?}"
++        );
++    }
++    let session_a_blocks = non_calendar
++        .iter()
++        .filter(|b| {
++            b.events
++                .iter()
++                .any(|e| e.session_id.as_deref() == Some("sessA"))
++        })
++        .count();
++    let session_b_blocks = non_calendar
++        .iter()
++        .filter(|b| {
++            b.events
++                .iter()
++                .any(|e| e.session_id.as_deref() == Some("sessB"))
++        })
++        .count();
++    assert!(
++        session_a_blocks > 0 && session_b_blocks > 0,
++        "the pin must split sessA (APRÓ) from sessB (Sjúkra) despite matching text, got sessA={session_a_blocks} sessB={session_b_blocks}"
++    );
++}
++
+ /// Both sessions naming the same customer must not split the lane —
+ /// the registry then behaves exactly as if it held no customers (FR-04).
+ #[test]
+ fn two_sessions_same_customer_matches_no_customer_registry() {
+     use crate::billing_registry::{upsert_customer, Customer};
+     let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
+ 
+     let with_customer = crate::db::open_memory().unwrap();
+     upsert_customer(
+         &with_customer,
+diff --git a/rust/crates/worklog-core/src/session_customers.rs b/rust/crates/worklog-core/src/session_customers.rs
+index 4ef6752..11f7920 100644
+--- a/rust/crates/worklog-core/src/session_customers.rs
++++ b/rust/crates/worklog-core/src/session_customers.rs
+@@ -1,57 +1,102 @@
+ //! Splits a shared repo folder's lane by session customer.
+ //!
+ //! A folder like `vitinn-infra` can host two different customers' Claude
+ //! sessions back to back. When a folder's sessions name at least two
+ //! distinct customers, each resolved session's events get `lane_tag` set
+ //! so `infer_lanes::lane_key` gives it its own lane; a folder that never
+ //! shows more than one named customer stays a single lane (R1 unchanged).
++//!
++//! A session pin always wins over the text guess: an event takes the pin
++//! whose `from_at` is the latest one at or before its own timestamp, so a
++//! mid-session pin switch moves only the events from that time on; events
++//! before the earliest applicable pin (or in an unpinned session) fall
++//! back to the session's text guess.
+ 
+ use std::collections::{BTreeMap, BTreeSet};
+ 
+ use crate::billing_registry::Registry;
+ use crate::infer::InferEvent;
+ use crate::infer_lanes::lane_folder;
++use crate::session_pins::SessionPin;
+ 
+-pub(crate) fn tag_sessions(events: &mut [InferEvent], registry: &Registry) {
+-    let mut sessions: BTreeMap<(Option<String>, String), Vec<usize>> = BTreeMap::new();
+-    for (i, e) in events.iter().enumerate() {
+-        if let Some(sid) = e.session_id.clone() {
+-            sessions.entry((lane_folder(e), sid)).or_default().push(i);
+-        }
++/// Per-event resolved customer: the pin covering the event's timestamp, or
++/// the session's text guess when no pin covers it yet.
++fn resolve_events(
++    events: &[InferEvent],
++    registry: &Registry,
++    sessions: &BTreeMap<(Option<String>, String), Vec<usize>>,
++    pins: &[SessionPin],
++) -> BTreeMap<usize, String> {
++    let mut pins_by_session: BTreeMap<&str, Vec<&SessionPin>> = BTreeMap::new();
++    for p in pins {
++        pins_by_session
++            .entry(p.session_id.as_str())
++            .or_default()
++            .push(p);
+     }
+ 
+-    let mut resolved: BTreeMap<(Option<String>, String), String> = BTreeMap::new();
+-    for (key, idxs) in &sessions {
++    let mut resolved: BTreeMap<usize, String> = BTreeMap::new();
++    for (key, idxs) in sessions {
++        let (_, session_id) = key;
+         let text = idxs
+             .iter()
+             .flat_map(|&i| [events[i].title.as_deref(), events[i].jira_issue.as_deref()])
+             .flatten()
+             .collect::<Vec<_>>()
+             .join("\n");
+-        if let Some(customer) = registry.customer_in_text(&text) {
+-            resolved.insert(key.clone(), customer);
++        let text_guess = registry.customer_in_text(&text);
++        let session_pins = pins_by_session.get(session_id.as_str());
++        for &i in idxs {
++            let pinned = session_pins.and_then(|ps| {
++                ps.iter()
++                    .filter(|p| p.from_at <= events[i].ts)
++                    .max_by_key(|p| p.from_at)
++                    .map(|p| p.customer.clone())
++            });
++            if let Some(customer) = pinned.or_else(|| text_guess.clone()) {
++                resolved.insert(i, customer);
++            }
+         }
+     }
++    resolved
++}
+ 
+-    let mut customers_by_folder: BTreeMap<Option<String>, BTreeSet<&str>> = BTreeMap::new();
+-    for ((folder, _), customer) in &resolved {
+-        customers_by_folder
+-            .entry(folder.clone())
+-            .or_default()
+-            .insert(customer.as_str());
++pub(crate) fn tag_sessions(events: &mut [InferEvent], registry: &Registry, pins: &[SessionPin]) {
++    let mut sessions: BTreeMap<(Option<String>, String), Vec<usize>> = BTreeMap::new();
++    for (i, e) in events.iter().enumerate() {
++        if let Some(sid) = e.session_id.clone() {
++            sessions.entry((lane_folder(e), sid)).or_default().push(i);
++        }
+     }
+ 
+-    for (key, customer) in &resolved {
++    let resolved = resolve_events(events, registry, &sessions, pins);
++
++    let mut customers_by_folder: BTreeMap<Option<String>, BTreeSet<String>> = BTreeMap::new();
++    for (key, idxs) in &sessions {
++        let (folder, _) = key;
++        for &i in idxs {
++            if let Some(customer) = resolved.get(&i) {
++                customers_by_folder
++                    .entry(folder.clone())
++                    .or_default()
++                    .insert(customer.clone());
++            }
++        }
++    }
++
++    for (key, idxs) in &sessions {
+         let (folder, _) = key;
+         if customers_by_folder.get(folder).map_or(0, BTreeSet::len) < 2 {
+             continue;
+         }
+-        for &i in &sessions[key] {
+-            events[i].lane_tag = Some(customer.clone());
++        for &i in idxs {
++            if let Some(customer) = resolved.get(&i) {
++                events[i].lane_tag = Some(customer.clone());
++            }
+         }
+     }
+ }
+ 
+ #[cfg(test)]
+ #[path = "session_customers_test.rs"]
+ mod tests;
+diff --git a/rust/crates/worklog-core/src/session_customers_test.rs b/rust/crates/worklog-core/src/session_customers_test.rs
+index 1f93394..308851e 100644
+--- a/rust/crates/worklog-core/src/session_customers_test.rs
++++ b/rust/crates/worklog-core/src/session_customers_test.rs
+@@ -1,14 +1,15 @@
+ //! Tests for session customer tagging (`session_customers`).
+ 
+ use super::*;
+ use crate::billing_registry::Customer;
++use crate::session_pins::SessionPin;
+ use chrono::{TimeZone, Utc};
+ 
+ fn ev(session: &str, project: &str, title: Option<&str>, jira: Option<&str>) -> InferEvent {
+     InferEvent {
+         ts: Utc.with_ymd_and_hms(2026, 9, 23, 9, 0, 0).unwrap(),
+         source: "claude_turn".into(),
+         duration_seconds: None,
+         jira_issue: jira.map(str::to_string),
+         event_id: None,
+         project_path: Some(project.to_string()),
+@@ -36,62 +37,62 @@ const FOLDER: &str = "/Users/dev/Desktop/Work/vitinn-infra";
+ 
+ #[test]
+ fn two_customers_in_one_repo_tag_both() {
+     let reg = registry(&["Acme", "Globex"]);
+     let mut events = vec![
+         ev("A", FOLDER, Some("Acme onboarding"), None),
+         ev("A", FOLDER, Some("more Acme work"), None),
+         ev("B", FOLDER, Some("Globex migration"), None),
+         ev("B", FOLDER, Some("Globex followup"), None),
+     ];
+-    tag_sessions(&mut events, &reg);
++    tag_sessions(&mut events, &reg, &[]);
+     assert!(events[0..2]
+         .iter()
+         .all(|e| e.lane_tag.as_deref() == Some("Acme")));
+     assert!(events[2..4]
+         .iter()
+         .all(|e| e.lane_tag.as_deref() == Some("Globex")));
+     assert!(events
+         .iter()
+         .all(|e| e.project_path.as_deref() == Some(FOLDER)));
+ }
+ 
+ #[test]
+ fn one_customer_tags_nothing() {
+     let reg = registry(&["Acme", "Globex"]);
+ 
+     // Both sessions name the same customer.
+     let mut same = vec![
+         ev("A", FOLDER, Some("Acme onboarding"), None),
+         ev("B", FOLDER, Some("Acme followup"), None),
+     ];
+-    tag_sessions(&mut same, &reg);
++    tag_sessions(&mut same, &reg, &[]);
+     assert!(same.iter().all(|e| e.lane_tag.is_none()));
+ 
+     // One session resolves, the other names nothing.
+     let mut mixed = vec![
+         ev("A", FOLDER, Some("Acme onboarding"), None),
+         ev("B", FOLDER, Some("routine maintenance"), None),
+     ];
+-    tag_sessions(&mut mixed, &reg);
++    tag_sessions(&mut mixed, &reg, &[]);
+     assert!(mixed.iter().all(|e| e.lane_tag.is_none()));
+ }
+ 
+ #[test]
+ fn unresolved_session_stays_untagged() {
+     let reg = registry(&["Acme", "Globex"]);
+     let mut events = vec![
+         ev("A", FOLDER, Some("Acme onboarding"), None),
+         ev("B", FOLDER, Some("Globex migration"), None),
+         ev("C", FOLDER, Some("Acme and Globex sync"), None), // names both -> ambiguous
+     ];
+-    tag_sessions(&mut events, &reg);
++    tag_sessions(&mut events, &reg, &[]);
+     assert_eq!(events[0].lane_tag.as_deref(), Some("Acme"));
+     assert_eq!(events[1].lane_tag.as_deref(), Some("Globex"));
+     assert_eq!(events[2].lane_tag, None);
+ }
+ 
+ #[test]
+ fn session_less_event_stays_untagged() {
+     let reg = registry(&["Acme", "Globex"]);
+     let mut events = vec![
+         ev("A", FOLDER, Some("Acme onboarding"), None),
+@@ -102,34 +103,108 @@ fn session_less_event_stays_untagged() {
+         ts,
+         source: "shell".into(),
+         duration_seconds: None,
+         jira_issue: None,
+         event_id: None,
+         project_path: Some(FOLDER.to_string()),
+         session_id: None,
+         title: None,
+         lane_tag: None,
+     });
+-    tag_sessions(&mut events, &reg);
++    tag_sessions(&mut events, &reg, &[]);
+     assert_eq!(
+         events[2].lane_tag, None,
+         "a session-less event stays untagged"
+     );
+     assert!(
+         events
+             .iter()
+             .all(|e| e.project_path.as_deref() == Some(FOLDER)),
+         "project_path must be untouched by tagging"
+     );
+ }
+ 
++fn pin(session: &str, customer: &str, from_at: chrono::DateTime<Utc>) -> SessionPin {
++    SessionPin {
++        session_id: session.to_string(),
++        customer: customer.to_string(),
++        from_at,
++        folder: FOLDER.to_string(),
++        branch: None,
++        source: "claude".to_string(),
++    }
++}
++
++fn ev_at(session: &str, ts: chrono::DateTime<Utc>) -> InferEvent {
++    InferEvent {
++        ts,
++        source: "claude_turn".into(),
++        duration_seconds: None,
++        jira_issue: None,
++        event_id: None,
++        project_path: Some(FOLDER.to_string()),
++        session_id: Some(session.to_string()),
++        title: Some("routine maintenance".into()),
++        lane_tag: None,
++    }
++}
++
++#[test]
++fn pin_beats_text_guess() {
++    let reg = registry(&["Acme", "Globex"]);
++    let switch_at = Utc.with_ymd_and_hms(2026, 9, 23, 9, 10, 0).unwrap();
++    let mut events = vec![
++        // Session A's own text says Acme, but it is pinned to Globex from
++        // the start — the pin must win.
++        ev("A", FOLDER, Some("Acme onboarding"), None),
++        ev("A", FOLDER, Some("more Acme work"), None),
++        // Session B is never pinned; its text guess (Acme) stands.
++        ev("B", FOLDER, Some("Acme followup"), None),
++        // Session C switches mid-session: before `switch_at` it falls back
++        // to its own text guess (Globex); from `switch_at` on the pin
++        // (Acme) applies.
++        ev_at("C", switch_at - chrono::Duration::minutes(5)),
++        ev_at("C", switch_at),
++        ev_at("C", switch_at + chrono::Duration::minutes(5)),
++    ];
++    events[3].title = Some("Globex prep".into());
++    events[4].title = Some("Globex prep".into());
++    events[5].title = Some("Globex prep".into());
++
++    let pins = vec![
++        pin(
++            "A",
++            "Globex",
++            Utc.with_ymd_and_hms(2026, 9, 23, 0, 0, 0).unwrap(),
++        ),
++        pin("C", "Acme", switch_at),
++    ];
++
++    tag_sessions(&mut events, &reg, &pins);
++
++    assert!(
++        events[0..2]
++            .iter()
++            .all(|e| e.lane_tag.as_deref() == Some("Globex")),
++        "the pin must beat session A's own text guess of Acme"
++    );
++    assert_eq!(events[2].lane_tag.as_deref(), Some("Acme"));
++    assert_eq!(
++        events[3].lane_tag.as_deref(),
++        Some("Globex"),
++        "before the pin's from_at, the text guess fills in"
++    );
++    assert_eq!(events[4].lane_tag.as_deref(), Some("Acme"));
++    assert_eq!(events[5].lane_tag.as_deref(), Some("Acme"));
++}
++
+ #[test]
+ fn two_folders_one_customer_each_tags_nothing() {
+     const FOLDER_B: &str = "/Users/dev/Desktop/Work/otherproj";
+     let reg = registry(&["Acme", "Globex"]);
+     let mut events = vec![
+         ev("A", FOLDER, Some("Acme onboarding"), None),
+         ev("B", FOLDER_B, Some("Globex migration"), None),
+     ];
+-    tag_sessions(&mut events, &reg);
++    tag_sessions(&mut events, &reg, &[]);
+     assert!(events.iter().all(|e| e.lane_tag.is_none()));
+ }

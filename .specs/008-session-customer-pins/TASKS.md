@@ -21,15 +21,15 @@ Goal: Claude can pin a customer to its session from the command line, and a new 
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core session_pins` and `cargo test --manifest-path rust/Cargo.toml -p worklog-cli pin` — green.
 - [x] T001 [P] pin store and customer lookup (B1, B2) — files: rust/crates/worklog-core/sql/schema.sql, rust/crates/worklog-core/src/session_pins.rs, rust/crates/worklog-core/src/session_pins_test.rs, rust/crates/worklog-core/src/lib.rs, rust/crates/worklog-core/src/billing_registry.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core session_pins` — done: 47cb872
 - [x] T002 [P] current branch reader (B3) — files: rust/crates/worklog-core/src/git.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core current_branch` — done: 55ec9f0
-- [ ] T003 pin command (B4) — files: rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-cli/tests/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-cli pin` — after: T001, T002
+- [x] T003 pin command (B4) — files: rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-cli/tests/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-cli pin` — after: T001, T002 — done: 4942182
 - [ ] T004 start instruction and inheritance (B5) — files: rust/crates/worklog-core/src/session_pins.rs, rust/crates/worklog-core/src/session_pins_test.rs, rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-cli/tests/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core start_text` — after: T003
 - [ ] T005 installer keeps both hooks (B6) — files: rust/crates/worklog-core/src/hook.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core hook::tests` — after: T004
 
 ## Phase 2 — Pins drive blocks
 Goal: a pinned session's minutes land in its customer's lane, and the block's customer line says "pinned".
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core` — green, and `bash scripts/verify-inference.sh` exits 0.
-- [ ] T006 [P] pins beat the text guess in lanes (B7) — files: rust/crates/worklog-core/src/session_customers.rs, rust/crates/worklog-core/src/session_customers_test.rs, rust/crates/worklog-core/src/infer_allocations.rs, rust/crates/worklog-core/src/infer_allocations_db_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core pin_beats_text_guess` — after: T001
-- [ ] T007 [P] pinned customer line (B8) — files: rust/crates/worklog-core/src/tenant_contract.rs, rust/crates/worklog-core/src/tenant_split.rs, rust/crates/worklog-core/src/tenant_split_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core pinned_session_gives_pinned_slice` — after: T001
+- [x] T006 [P] pins beat the text guess in lanes (B7) — files: rust/crates/worklog-core/src/session_customers.rs, rust/crates/worklog-core/src/session_customers_test.rs, rust/crates/worklog-core/src/infer_allocations.rs, rust/crates/worklog-core/src/infer_allocations_db_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core pin_beats_text_guess` — after: T001 — done: 0ac1465
+- [x] T007 [P] pinned customer line (B8) — files: rust/crates/worklog-core/src/tenant_contract.rs, rust/crates/worklog-core/src/tenant_split.rs, rust/crates/worklog-core/src/tenant_split_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core pinned_session_gives_pinned_slice` — after: T001 — done: ce7997a
 
 ## Phase 3 — You can see it
 Goal: the Owner sees "pinned" in the day view and the block detail view and can still change it.

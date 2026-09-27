@@ -1,0 +1,221 @@
+4942182 feat(worklog-cli): add pin command for session customer pins
+
+ rust/crates/worklog-cli/src/cli.rs   | 74 ++++++++++++++++++++++++++++++++++--
+ rust/crates/worklog-cli/tests/cli.rs | 32 ++++++++++++++++
+ 2 files changed, 102 insertions(+), 4 deletions(-)
+
+diff --git a/rust/crates/worklog-cli/src/cli.rs b/rust/crates/worklog-cli/src/cli.rs
+index b1c749a..bb2606e 100644
+--- a/rust/crates/worklog-cli/src/cli.rs
++++ b/rust/crates/worklog-cli/src/cli.rs
+@@ -2,30 +2,31 @@
+ //!
+ //! Kept in `lib.rs` so integration tests can invoke `worklog_cli::run_with`
+ //! with explicit argv without spawning a subprocess. `main.rs` simply calls
+ //! `run()` which uses the real `std::env::args`.
+ 
+ use std::io::{self, IsTerminal, Read, Write};
+ 
+ use anyhow::{Context, Result};
+ use clap::{CommandFactory, Parser, Subcommand};
+ use worklog_core::{
+-    billing, block_service,
++    billing, billing_registry, block_service,
+     collectors::{
+         claude_transcripts as claude_transcripts_col, fish as fish_col, gcal as gcal_col,
+         github as gh, jira as jira_col, reflog as reflog_col, slack as slack_col,
+         tempo as tempo_col,
+     },
+-    daemon as daemon_mod, db, estimate, hook, hook_run, http, infer,
++    daemon as daemon_mod, db, estimate, git, hook, hook_run, http, infer,
+     paths::Paths,
+-    personal as personal_mod, routing, routing_absorb, schedule, secrets, skill as skill_mod,
+-    updater as upd,
++    personal as personal_mod, routing, routing_absorb, schedule, secrets,
++    session_pins::{self, PinError},
++    skill as skill_mod, updater as upd,
+     verdict::VerdictClassifier,
+     web as web_mod,
+ };
+ 
+ use crate::style;
+ 
+ /// Clap styles applied to every help surface. Matches the `console`
+ /// colour palette used by `style.rs` so help + status output feel like
+ /// one CLI. `AnsiColor::Cyan` is reused for section headers, and valid
+ /// values get a matching green to keep the palette tight.
+@@ -275,20 +276,34 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
+         sub: BlockCmd,
+     },
+ 
+     /// Personal/work classification — manage the auto-classifier and
+     /// re-evaluate existing blocks against the current ruleset.
+     Tag {
+         #[command(subcommand)]
+         sub: TagCmd,
+     },
+ 
++    /// Pin a customer to a Claude Code session from a given time on
++    /// (spec 008). Refuses names that don't resolve to a known customer
++    /// or alias.
++    Pin {
++        /// Customer name or alias (case-insensitive).
++        customer: String,
++        /// The Claude Code session id.
++        #[arg(long)]
++        session: String,
++        /// RFC-3339 timestamp the pin takes effect from. Default: now.
++        #[arg(long)]
++        at: Option<String>,
++    },
++
+     /// Claude Code hook — reads a JSON event from stdin and records it.
+     #[command(name = "hook-run", hide = true)]
+     HookRun,
+ 
+     /// Start the axum unix-socket IPC server (foreground) OR manage the
+     /// background service unit that supervises it. Bare `worklog daemon`
+     /// keeps running in the foreground like before; the install / status
+     /// / uninstall subcommands write a launchd plist / systemd user unit.
+     Daemon {
+         #[command(subcommand)]
+@@ -824,20 +839,25 @@ pub fn run_with<W: Write>(
+                 cmd_block_split(id, first_minutes, out, cli.json)
+             }
+             BlockCmd::Personal { id, work } => cmd_block_personal(id, work, out, cli.json),
+         },
+         Cmd::Tag { sub } => match sub {
+             TagCmd::List => cmd_tag_list(out, cli.json),
+             TagCmd::Personal { glob } => cmd_tag_personal(glob, out, cli.json),
+             TagCmd::Work { glob } => cmd_tag_work(glob, out, cli.json),
+             TagCmd::Reclassify { day } => cmd_tag_reclassify(day, out, cli.json),
+         },
++        Cmd::Pin {
++            customer,
++            session,
++            at,
++        } => cmd_pin(&customer, &session, at, out),
+         Cmd::HookRun => cmd_hook_run(),
+         Cmd::Daemon { sub, socket, tcp } => match sub {
+             None => cmd_daemon(socket, tcp),
+             Some(DaemonCmd::Install { command }) => cmd_daemon_install(command, out, cli.json),
+             Some(DaemonCmd::Uninstall) => cmd_daemon_uninstall(out, cli.json),
+             Some(DaemonCmd::Status) => cmd_daemon_status(out, cli.json),
+         },
+         Cmd::Verdict { sub } => match sub {
+             VerdictCmd::Serve => cmd_verdict_serve(),
+             VerdictCmd::Status => cmd_verdict_status(out, cli.json),
+@@ -3154,20 +3174,66 @@ fn cmd_tag_reclassify<W: Write>(day: Option<String>, out: &mut W, json: bool) ->
+             stats.total,
+             if stats.total == 1 { "" } else { "s" },
+             stats.changed_to_personal,
+             stats.changed_to_work,
+             stats.unchanged
+         )?;
+     }
+     Ok(())
+ }
+ 
++/// `worklog pin <customer> --session <id> [--at <rfc3339>]` (spec 008,
++/// design.md contract T003). Exit codes: 0 pinned, 2 unknown customer
++/// (known customers listed on stderr, nothing stored), 1 any other error.
++fn cmd_pin<W: Write>(customer: &str, session: &str, at: Option<String>, out: &mut W) -> Result<()> {
++    let paths = Paths::resolve()?;
++    let conn = db::open(&paths.db)?;
++    let registry = billing_registry::Registry::load(&conn)?;
++    let at = match at {
++        Some(s) => chrono::DateTime::parse_from_rfc3339(&s)
++            .with_context(|| format!("invalid --at timestamp {s}"))?
++            .with_timezone(&chrono::Utc),
++        None => chrono::Utc::now(),
++    };
++    let cwd = std::env::current_dir().context("resolving cwd")?;
++    let branch = git::current_branch(&cwd);
++
++    match session_pins::pin(
++        &conn,
++        &registry,
++        session,
++        &cwd,
++        customer,
++        at,
++        branch.as_deref(),
++    ) {
++        Ok(stored) => {
++            let short: String = stored.session_id.chars().take(8).collect();
++            writeln!(
++                out,
++                "Pinned {short} to {} from {}",
++                stored.customer,
++                local_hhmm(&stored.from_at.to_rfc3339())
++            )?;
++            Ok(())
++        }
++        Err(PinError::UnknownCustomer { known }) => {
++            eprintln!(
++                "unknown customer {customer:?} — known customers: {}",
++                known.join(", ")
++            );
++            std::process::exit(2);
++        }
++        Err(PinError::Other(e)) => Err(e),
++    }
++}
++
+ fn cmd_infer<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()> {
+     let paths = Paths::resolve()?;
+     paths.ensure()?;
+     let conn = db::open(&paths.db)?;
+     let day = parse_day(day.as_deref())?;
+     // Saved splits included — a rebuild must never undo the owner's choice.
+     let blocks = worklog_core::infer_allocations::build_day_blocks(&conn, day)?;
+     infer::persist_blocks(&conn, day, &blocks)?;
+ 
+     if json {
+diff --git a/rust/crates/worklog-cli/tests/cli.rs b/rust/crates/worklog-cli/tests/cli.rs
+index 77bc30b..3b3ee09 100644
+--- a/rust/crates/worklog-cli/tests/cli.rs
++++ b/rust/crates/worklog-cli/tests/cli.rs
+@@ -623,10 +623,42 @@ fn export_on_empty_day_prints_no_blocks_notice() {
+ /// rejects it up-front (exit non-zero) before any db/day handling.
+ #[test]
+ fn export_rejects_unknown_format() {
+     let home = TempDir::new().unwrap();
+     cmd(&home)
+         .args(["export", "--day", "2026-07-23", "--format", "bogus"])
+         .assert()
+         .failure()
+         .stderr(predicate::str::contains("--format"));
+ }
++
++// ─────────────────────────── `worklog pin` (B4) ───────────────────────────
++
++/// B4: pinning a name that resolves to no known customer or alias
++/// refuses, exits 2 (design.md §3), lists the known customers on
++/// stderr, and stores nothing.
++#[test]
++fn pin_refuses_unknown_customer() {
++    let home = TempDir::new().unwrap();
++    cmd(&home).args(["db", "migrate"]).assert().success();
++    cmd(&home)
++        .current_dir(home.path())
++        .args(["pin", "Sjukra tryggingar", "--session", "sess-1"])
++        .assert()
++        .code(2)
++        .stderr(predicate::str::contains("APRÓ"));
++}
++
++/// Happy path: a name that resolves to a known customer pins the
++/// session and prints a confirmation naming the session and customer.
++#[test]
++fn pin_stores_a_known_customer() {
++    let home = TempDir::new().unwrap();
++    cmd(&home).args(["db", "migrate"]).assert().success();
++    cmd(&home)
++        .current_dir(home.path())
++        .args(["pin", "APRÓ", "--session", "sess-1"])
++        .assert()
++        .success()
++        .stdout(predicate::str::contains("Pinned"))
++        .stdout(predicate::str::contains("APRÓ"));
++}
