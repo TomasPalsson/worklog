@@ -591,11 +591,15 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
             .and_then(|c| c.jira_issue.clone())
             .or_else(|| b.jira_issue.clone());
 
-        // path-based classifier gives the first signal, but a non-null
-        // jira_issue (manual or inferred) is a stronger one — if the user
-        // (or estimator) bothered to attach a ticket, the block is work.
+        // path-based classifier gives the first signal, but a jira_issue
+        // that's actually a cached ticket (R7) is a stronger one — a spec
+        // ID that merely looks like a Jira key (`FR-09`) must not flip a
+        // personal path to work.
         let path_personal = personal_cfg.classify(b.dominant_project_path().as_deref());
-        let is_personal = path_personal && jira_issue.is_none();
+        let has_real_ticket = jira_issue
+            .as_deref()
+            .is_some_and(|k| jira_ticket_known(&tx, k));
+        let is_personal = path_personal && !has_real_ticket;
         tx.execute(
             "INSERT INTO blocks (
                 day, jira_issue, started_at, ended_at,
@@ -651,6 +655,18 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
 fn block_iso(dt: DateTime<Utc>) -> String {
     use chrono::SecondsFormat;
     dt.to_rfc3339_opts(SecondsFormat::AutoSi, false)
+}
+
+/// R7: does `key` exist in `jira_tickets`? A spec ID that merely looks
+/// like a Jira key (`FR-09`) has no row here — only a real cached ticket
+/// flips a personal-path block to work.
+fn jira_ticket_known(conn: &Connection, key: &str) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM jira_tickets WHERE key = ?1",
+        params![key],
+        |_| Ok(()),
+    )
+    .is_ok()
 }
 
 #[derive(Debug, Clone)]
@@ -1152,6 +1168,84 @@ mod tests {
         assert_eq!(stored[0].description.as_deref(), Some("custom"));
         assert_eq!(stored[0].jira_issue.as_deref(), Some("PROJ-7"));
         assert_eq!(stored[0].estimated_by.as_deref(), Some("manual"));
+    }
+
+    /// R7: a spec ID that merely looks like a Jira key (`FR-09`) must not
+    /// flip a personal-path block to work — only a key that actually
+    /// exists in `jira_tickets` does.
+    #[test]
+    fn spec_id_on_personal_path_does_not_flip_to_work() {
+        let conn = open_memory().unwrap();
+        let mut a = Event::minimal(
+            "claude_turn",
+            "e1",
+            "2026-04-18T10:00:00+00:00",
+            "spec work",
+        );
+        a.project_path = Some("/Users/dev/Desktop/Projects/worklog".into());
+        a.jira_issue = Some("FR-09".into());
+        repo::upsert_event(&conn, &a).unwrap();
+        let mut b = Event::minimal(
+            "claude_turn",
+            "e2",
+            "2026-04-18T10:05:00+00:00",
+            "spec work",
+        );
+        b.project_path = Some("/Users/dev/Desktop/Projects/worklog".into());
+        b.jira_issue = Some("FR-09".into());
+        repo::upsert_event(&conn, &b).unwrap();
+
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let blocks = build_blocks(load_day_events(&conn, day).unwrap());
+        persist_blocks(&conn, day, &blocks).unwrap();
+
+        let stored = repo::list_blocks_for_day(&conn, "2026-04-18").unwrap();
+        assert_eq!(stored.len(), 1);
+        assert!(
+            stored[0].is_personal,
+            "FR-09 is not a real cached Jira ticket — the personal path must stick"
+        );
+    }
+
+    /// R7 inverse: a jira_issue that DOES exist in `jira_tickets` flips a
+    /// personal-path block to work, same as before.
+    #[test]
+    fn cached_jira_ticket_on_personal_path_flips_to_work() {
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO jira_tickets (key, summary) VALUES ('PROJ-1', 'x')",
+            [],
+        )
+        .unwrap();
+        let mut a = Event::minimal(
+            "claude_turn",
+            "e1",
+            "2026-04-18T10:00:00+00:00",
+            "real work",
+        );
+        a.project_path = Some("/Users/dev/Desktop/Projects/worklog".into());
+        a.jira_issue = Some("PROJ-1".into());
+        repo::upsert_event(&conn, &a).unwrap();
+        let mut b = Event::minimal(
+            "claude_turn",
+            "e2",
+            "2026-04-18T10:05:00+00:00",
+            "real work",
+        );
+        b.project_path = Some("/Users/dev/Desktop/Projects/worklog".into());
+        b.jira_issue = Some("PROJ-1".into());
+        repo::upsert_event(&conn, &b).unwrap();
+
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let blocks = build_blocks(load_day_events(&conn, day).unwrap());
+        persist_blocks(&conn, day, &blocks).unwrap();
+
+        let stored = repo::list_blocks_for_day(&conn, "2026-04-18").unwrap();
+        assert_eq!(stored.len(), 1);
+        assert!(
+            !stored[0].is_personal,
+            "a real cached ticket must flip a personal-path block to work"
+        );
     }
 
     #[test]
