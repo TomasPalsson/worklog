@@ -73,7 +73,9 @@ fn flag_assignment_re() -> &'static Regex {
 /// Redact tokens, keys, passwords and private keys only. Emails and IPs
 /// stay raw — this is the storage-time scrub (D-03).
 pub fn scrub_secrets(s: &str) -> String {
-    let s = whole_match_re().replace_all(s, SECRET_PLACEHOLDER).into_owned();
+    let s = whole_match_re()
+        .replace_all(s, SECRET_PLACEHOLDER)
+        .into_owned();
     let s = bearer_re()
         .replace_all(&s, format!("${{1}}{SECRET_PLACEHOLDER}").as_str())
         .into_owned();
@@ -81,7 +83,10 @@ pub fn scrub_secrets(s: &str) -> String {
         .replace_all(&s, format!("${{1}}{SECRET_PLACEHOLDER}@").as_str())
         .into_owned();
     let s = assignment_re()
-        .replace_all(&s, format!("${{1}}${{2}}${{3}}{SECRET_PLACEHOLDER}").as_str())
+        .replace_all(
+            &s,
+            format!("${{1}}${{2}}${{3}}{SECRET_PLACEHOLDER}").as_str(),
+        )
         .into_owned();
     flag_assignment_re()
         .replace_all(&s, format!("${{1}}${{2}}{SECRET_PLACEHOLDER}").as_str())
@@ -160,7 +165,12 @@ mod tests {
 
     #[test]
     fn scrub_slack_token() {
-        let token = format!("xoxb-{}-{}-{}", "1".repeat(11), "2".repeat(12), "c".repeat(24));
+        let token = format!(
+            "xoxb-{}-{}-{}",
+            "1".repeat(11),
+            "2".repeat(12),
+            "c".repeat(24)
+        );
         let input = format!("slack token {token} leaked");
         assert_eq!(scrub_secrets(&input), "slack token [secret] leaked");
     }
@@ -215,7 +225,7 @@ mod tests {
 
     #[test]
     fn scrub_pem_private_key_block() {
-        let body: String = std::iter::repeat("QUJDREVGRw==\n").take(3).collect();
+        let body = "QUJDREVGRw==\n".repeat(3);
         let input = format!(
             "before\n-----BEGIN RSA PRIVATE KEY-----\n{body}-----END RSA PRIVATE KEY-----\nafter"
         );
@@ -250,10 +260,7 @@ mod tests {
     fn scrub_cli_flag_password_space() {
         let value = "s".repeat(16);
         let input = format!("mysql --password {value} -u root");
-        assert_eq!(
-            scrub_secrets(&input),
-            "mysql --password [secret] -u root"
-        );
+        assert_eq!(scrub_secrets(&input), "mysql --password [secret] -u root");
     }
 
     #[test]
@@ -315,10 +322,7 @@ mod tests {
     #[test]
     fn scrub_identifiers_redacts_email() {
         let input = "sent to tomas.ari.palsson@apro.is yesterday";
-        assert_eq!(
-            scrub_identifiers(input),
-            "sent to [secret] yesterday"
-        );
+        assert_eq!(scrub_identifiers(input), "sent to [secret] yesterday");
     }
 
     #[test]
