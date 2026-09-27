@@ -187,6 +187,12 @@ pub fn collect_with(
         report.events_written += 1;
     }
 
+    // FR-02/D-06: keep the personal-row deletion re-runnable. If
+    // `run_upgrade_006` ran before `github_user` was configured, a
+    // personal-owner row could otherwise survive forever — every
+    // collect has auth.user in hand, so re-run it here too.
+    crate::upgrade_006::delete_personal_rows(conn, Some(&auth.user))?;
+
     Ok(report)
 }
 

@@ -232,6 +232,57 @@ fn move_into_block_then_recollect_keeps_elsewhere_moved() {
 }
 
 #[test]
+fn collect_cleans_up_leftover_personal_rows_from_before_github_user_was_set() {
+    // FR-02/D-06: if `run_upgrade_006` ran before `github_user` was
+    // configured (secret lookup failed/None), a personal-owner row could
+    // survive forever. Every later collect_with call has auth.user in
+    // hand, so it's the natural place to keep the deletion re-runnable.
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/search/commits");
+        then.status(200).json_body(json!({"items": []}));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/search/issues");
+        then.status(200).json_body(json!({"items": []}));
+    });
+
+    let conn = open_memory().unwrap();
+    // A leftover personal-owner row, stored before FR-02 could delete it.
+    let leftover = Event {
+        repo: Some("TomasPalsson/dotfiles".into()),
+        ..Event::minimal(
+            "github_commit",
+            "leftover-personal-sha",
+            "2026-04-18T09:00:00+00:00",
+            "personal commit",
+        )
+    };
+    crate::repo::upsert_event(&conn, &leftover).unwrap();
+
+    collect_with(
+        &conn,
+        &auth(server.base_url()),
+        NaiveDate::from_ymd_opt(2026, 4, 18).unwrap(),
+        NaiveDate::from_ymd_opt(2026, 4, 19).unwrap(),
+        &http::client().unwrap(),
+    )
+    .unwrap();
+
+    let remaining: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE source_id = 'leftover-personal-sha'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        remaining, 0,
+        "a leftover personal-owner row must be cleaned up on the next collect"
+    );
+}
+
+#[test]
 fn collect_surfaces_http_errors() {
     let server = MockServer::start();
     server.mock(|when, then| {

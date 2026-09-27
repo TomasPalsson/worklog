@@ -42,7 +42,7 @@ fn run_with(
 /// is the configured personal account, same rule as collection time
 /// (`github::is_personal_owner`). `block_events` rows for the deleted
 /// events cascade via the FK; the blocks and org rows are untouched.
-fn delete_personal_rows(conn: &Connection, personal_user: Option<&str>) -> Result<()> {
+pub(crate) fn delete_personal_rows(conn: &Connection, personal_user: Option<&str>) -> Result<()> {
     let Some(user) = personal_user else {
         return Ok(());
     };
@@ -98,7 +98,12 @@ fn reresolve_github_events(
                 params![folder, id],
             )?;
         } else {
-            conn.execute("UPDATE events SET elsewhere = 1 WHERE id = ?1", params![id])?;
+            // Match collection time (`collectors::github`): a row that's
+            // no longer local carries no project_path either.
+            conn.execute(
+                "UPDATE events SET project_path = NULL, elsewhere = 1 WHERE id = ?1",
+                params![id],
+            )?;
         }
     }
     Ok(())
@@ -304,6 +309,43 @@ mod tests {
         assert_eq!(
             block_events, 0,
             "an elsewhere event must never end up in a block"
+        );
+    }
+
+    #[test]
+    fn reresolve_clears_project_path_when_no_longer_local() {
+        // A row previously resolved local (project_path set by a stale
+        // collection) whose clone/sha is gone by the time the upgrade
+        // re-resolves it must end up exactly as collection time would
+        // leave a never-local row: project_path cleared too, not just
+        // elsewhere flipped.
+        let conn = db::open_memory().unwrap();
+        let event_id = insert_event(
+            &conn,
+            "github_commit",
+            "flip-sha",
+            "aproorg/worklog",
+            "2026-04-18T09:00:00+00:00",
+        );
+        conn.execute(
+            "UPDATE events SET project_path = '/work/worklog' WHERE id = ?1",
+            params![event_id],
+        )
+        .unwrap();
+
+        let (folder_for_repo, sha_is_local) = resolver_never_local();
+        run_with(&conn, None, folder_for_repo, sha_is_local).unwrap();
+
+        let project_path: Option<String> = conn
+            .query_row(
+                "SELECT project_path FROM events WHERE id = ?1",
+                params![event_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            project_path, None,
+            "a row that flips to not-local must have its project_path cleared"
         );
     }
 

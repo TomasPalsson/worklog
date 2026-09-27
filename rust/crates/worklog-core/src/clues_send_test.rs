@@ -135,6 +135,13 @@ fn clues_send_block_input_never_leaks_forbidden_fields() {
         &conn,
         bid,
         Event {
+            raw_json: Some(
+                serde_json::to_string(&RawRecord::Shell {
+                    command: "curl https://internal.example.com/secret?q=1 -H token".into(),
+                    cwd: None,
+                })
+                .unwrap(),
+            ),
             ..Event::minimal("shell", "e3", "2026-05-01T09:03:00+00:00", "curl")
         },
     );
