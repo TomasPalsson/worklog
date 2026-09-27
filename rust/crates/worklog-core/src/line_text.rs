@@ -208,8 +208,23 @@ pub fn generate_with_default_provider(
     day: &str,
     model: &str,
 ) -> Result<LineTextReport> {
-    let invoker = crate::estimate::build_invoker()?;
-    generate_for_day(conn, day, invoker.as_ref(), model)
+    match crate::estimate::build_invoker() {
+        Ok(invoker) => generate_for_day(conn, day, invoker.as_ref(), model),
+        // FR-35: a misconfigured provider must surface as a report naming
+        // every line the day would have touched, not an Err the caller
+        // swallows into an empty (silently-looking-fine) report.
+        Err(e) => report_for_invoker_error(conn, day, &e.to_string()),
+    }
+}
+
+/// Every distinct billing line of `day`, reported as `not_generated` with
+/// `reason` — used when the model invoker itself couldn't be built.
+fn report_for_invoker_error(conn: &Connection, day: &str, reason: &str) -> Result<LineTextReport> {
+    let keys = distinct_keys(conn, day)?;
+    Ok(LineTextReport {
+        generated: Vec::new(),
+        not_generated: keys.into_iter().map(|k| (k, reason.to_string())).collect(),
+    })
 }
 
 /// [`generate_line`]'s sibling, resolving the model invoker the same way

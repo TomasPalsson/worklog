@@ -338,3 +338,42 @@ fn line_text_text_for_round_trips_origin() {
     assert_eq!(text, "Handskrifaður texti með ö og allt sem virkar.");
     assert_eq!(origin, LineTextOrigin::Manual);
 }
+
+#[test]
+fn line_text_invoker_error_reports_every_line_key_not_generated() {
+    // FR-35: when the model invoker itself can't be built (misconfigured
+    // provider), every distinct billing line of the day must surface in
+    // `not_generated` with that reason — not silently vanish into an
+    // empty report (the previous behaviour daemon.rs's `run_estimate`
+    // fell back to on any `Err` from `generate_with_default_provider`).
+    let conn = db::open_memory().unwrap();
+    let day = "2026-06-07";
+    pin_folder(&conn, "line-text-folder-err-a", "Acme Corp");
+    pin_folder(&conn, "line-text-folder-err-b", "Beta ehf");
+    seed_block(
+        &conn,
+        day,
+        "2026-06-07T09:00:00+00:00",
+        "2026-06-07T09:30:00+00:00",
+        1800,
+        "line-text-folder-err-a",
+        "e1",
+    );
+    seed_block(
+        &conn,
+        day,
+        "2026-06-07T10:00:00+00:00",
+        "2026-06-07T10:30:00+00:00",
+        1800,
+        "line-text-folder-err-b",
+        "e2",
+    );
+
+    let report = report_for_invoker_error(&conn, day, "provider not configured").unwrap();
+    assert!(report.generated.is_empty());
+    assert_eq!(report.not_generated.len(), 2);
+    assert!(report
+        .not_generated
+        .iter()
+        .all(|(_, reason)| reason == "provider not configured"));
+}
