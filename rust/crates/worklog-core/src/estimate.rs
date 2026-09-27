@@ -545,14 +545,22 @@ pub fn estimate_day_with<I: ModelInvoker>(
             ticket = validate_ticket(block.jira_issue.as_deref(), &open_tickets, &literals);
         }
 
+        let described_seconds = block_span_seconds(&block);
         conn.execute(
             "UPDATE blocks
-                SET description      = ?1,
-                    duration_seconds = ?2,
-                    jira_issue       = ?3,
-                    estimated_by     = 'claude_p'
+                SET description        = ?1,
+                    duration_seconds   = ?2,
+                    jira_issue         = ?3,
+                    estimated_by       = 'claude_p',
+                    described_seconds  = ?5
               WHERE id = ?4",
-            params![description, minutes * 60, ticket, block.id],
+            params![
+                description,
+                minutes * 60,
+                ticket,
+                block.id,
+                described_seconds
+            ],
         )
         .context("updating block with estimate")?;
         stats.estimated += 1;
@@ -769,15 +777,23 @@ pub fn commit_block_estimate(
     // happily reports OK for a 0-row UPDATE; without this check the
     // daemon would 200 and the UI would toast success while writing
     // nothing.
+    let described_seconds = block_span_seconds(block);
     let updated = conn
         .execute(
             "UPDATE blocks
-                SET description      = ?1,
-                    duration_seconds = ?2,
-                    jira_issue       = ?3,
-                    estimated_by     = 'claude_p'
+                SET description        = ?1,
+                    duration_seconds   = ?2,
+                    jira_issue         = ?3,
+                    estimated_by       = 'claude_p',
+                    described_seconds  = ?5
               WHERE id = ?4",
-            params![description, minutes as i64 * 60, ticket, block.id],
+            params![
+                description,
+                minutes as i64 * 60,
+                ticket,
+                block.id,
+                described_seconds
+            ],
         )
         .context("updating block with per-block estimate")?;
     if updated == 0 {
@@ -1129,6 +1145,17 @@ fn fallback_block_minutes(block: &BlockRow) -> i64 {
     let started: DateTime<Utc> = block.started_at.parse().unwrap_or_else(|_| Utc::now());
     let ended: DateTime<Utc> = block.ended_at.parse().unwrap_or_else(|_| Utc::now());
     ((ended - started).num_seconds() / 60).max(1)
+}
+
+/// The block's exact wall-clock span in seconds, stamped onto
+/// `described_seconds` whenever a description is (re)written — compared
+/// against on the next rebuild instead of the block's current duration, so
+/// a description written for a short block is dropped once the block
+/// outgrows the length it was actually written for.
+fn block_span_seconds(block: &BlockRow) -> i64 {
+    let started: DateTime<Utc> = block.started_at.parse().unwrap_or_else(|_| Utc::now());
+    let ended: DateTime<Utc> = block.ended_at.parse().unwrap_or_else(|_| Utc::now());
+    (ended - started).num_seconds()
 }
 
 /// R8: round to the NEAREST `ROUND_MINUTES` (not up), floored at one round
@@ -2522,6 +2549,41 @@ mod tests {
         assert_eq!(block.jira_issue.as_deref(), Some("PROJ-1"));
         assert_eq!(block.estimated_by.as_deref(), Some("claude_p"));
         assert_eq!(block.duration_seconds, 30 * 60);
+    }
+
+    /// B11: a per-block estimate stamps `described_seconds` with the
+    /// block's own wall-clock span (not the model's claimed minutes), so a
+    /// later rebuild compares the description against the length it was
+    /// actually written for.
+    #[test]
+    fn estimate_block_sets_described_seconds_to_block_span() {
+        let conn = open_memory().unwrap();
+        let bid = insert_block_with(
+            &conn,
+            "2026-04-18",
+            "2026-04-18T10:00:00+00:00",
+            "2026-04-18T10:45:00+00:00",
+            2700,
+            None,
+            None,
+            None,
+        );
+
+        let invoker = FixedInvoker(json!({
+            "jira_issue": null,
+            "minutes": 45,
+            "description": "Implement auth refresh"
+        }));
+        estimate_block_with(&conn, bid, &invoker, "test-model").unwrap();
+
+        let described_seconds: Option<i64> = conn
+            .query_row(
+                "SELECT described_seconds FROM blocks WHERE id = ?1",
+                params![bid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(described_seconds, Some(2700));
     }
 
     /// B3: a `manual` block IS overwritten by per-block estimate. The

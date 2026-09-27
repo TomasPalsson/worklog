@@ -176,6 +176,66 @@ fn migrate_adds_exported_at_to_legacy_blocks_table_and_backfills_null() {
 }
 
 #[test]
+fn migrate_adds_described_seconds_to_legacy_blocks_table() {
+    // Simulate a pre-described_seconds DB: a blocks table with every
+    // column that shipped before this slice, insert a row, then run
+    // migrate() and assert the column appears with NULL for it.
+    let conn = Connection::open_in_memory().unwrap();
+    configure(&conn).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE blocks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            day TEXT NOT NULL,
+            jira_issue TEXT,
+            started_at TEXT NOT NULL,
+            ended_at TEXT NOT NULL,
+            duration_seconds INTEGER NOT NULL,
+            description TEXT,
+            estimated_by TEXT,
+            flagged INTEGER NOT NULL DEFAULT 0,
+            tempo_worklog_id TEXT,
+            is_personal INTEGER NOT NULL DEFAULT 0,
+            dirty INTEGER NOT NULL DEFAULT 0,
+            exported_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+         VALUES ('2026-04-18', '2026-04-18T09:00:00+00:00', '2026-04-18T09:30:00+00:00', 1800)",
+        [],
+    )
+    .unwrap();
+    conn.pragma_update(None, "user_version", 15).unwrap();
+
+    migrate(&conn).unwrap();
+
+    let cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(blocks)")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(
+        cols.contains(&"described_seconds".to_string()),
+        "described_seconds missing after migrate; got {cols:?}"
+    );
+
+    let described_seconds: Option<i64> = conn
+        .query_row("SELECT described_seconds FROM blocks LIMIT 1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert!(
+        described_seconds.is_none(),
+        "pre-existing rows must backfill to NULL"
+    );
+    assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+}
+
+#[test]
 fn meta_table_exists_and_schema_version_is_10() {
     // B22. The pruner's latch lives in a new generic `meta` table
     // (slice 002-billing-cycle-pruner §4), and the billing merge's
@@ -675,7 +735,9 @@ fn billing_line_texts_table_exists_and_schema_version_is_15() {
         tables.contains(&"billing_line_texts".to_string()),
         "missing billing_line_texts table; got {tables:?}"
     );
-    assert_eq!(current_version(&conn).unwrap(), 15);
+    // `>=` floor (like the exported_at test) rather than equality, so this
+    // stays meaningful without an edit on every later migration.
+    assert!(current_version(&conn).unwrap() >= 15);
 }
 
 #[test]

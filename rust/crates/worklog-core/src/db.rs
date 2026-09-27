@@ -15,7 +15,7 @@ pub const SCHEMA_SQL: &str = include_str!("../sql/schema.sql");
 /// Monotonic integer version of the schema, bumped by future migrations.
 /// Stored in `PRAGMA user_version` so we can detect stale dbs without adding
 /// a dedicated table.
-pub const SCHEMA_VERSION: i32 = 15;
+pub const SCHEMA_VERSION: i32 = 16;
 
 /// Open a connection at `path`, enable WAL + FK, and run migrations.
 pub fn open(path: &Path) -> Result<Connection> {
@@ -76,6 +76,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     ensure_blocks_is_personal(conn).context("ensuring blocks.is_personal")?;
     ensure_blocks_dirty(conn).context("ensuring blocks.dirty")?;
     ensure_blocks_exported_at(conn).context("ensuring blocks.exported_at")?;
+    ensure_blocks_described_seconds(conn).context("ensuring blocks.described_seconds")?;
     ensure_jira_tickets_issue_id(conn).context("ensuring jira_tickets.issue_id")?;
     ensure_jira_tickets_external(conn).context("ensuring jira_tickets.external")?;
     ensure_events_routing_columns(conn).context("ensuring events routing columns")?;
@@ -166,6 +167,23 @@ fn ensure_blocks_exported_at(conn: &Connection) -> Result<()> {
     if !has {
         conn.execute("ALTER TABLE blocks ADD COLUMN exported_at TEXT", [])
             .context("ALTER TABLE blocks ADD exported_at")?;
+    }
+    Ok(())
+}
+
+fn ensure_blocks_described_seconds(conn: &Connection) -> Result<()> {
+    let has: bool = conn
+        .prepare("PRAGMA table_info(blocks)")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter()
+        .any(|c| c == "described_seconds");
+    if !has {
+        conn.execute(
+            "ALTER TABLE blocks ADD COLUMN described_seconds INTEGER",
+            [],
+        )
+        .context("ALTER TABLE blocks ADD described_seconds")?;
     }
     Ok(())
 }
