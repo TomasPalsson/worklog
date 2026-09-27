@@ -183,7 +183,8 @@ mod phases;
 /// these directly so the sqlite connection lock is never held across
 /// the `claude -p` round trip (see `phases`' own doc comment).
 pub use phases::{
-    commit as commit_line, invoke as invoke_line, prepare as prepare_line, Prep as LineTextPrep,
+    commit as commit_line, invoke as invoke_line, invoke_many as invoke_line_many,
+    prepare as prepare_line, Prep as LineTextPrep,
 };
 
 /// One line's worth of [`generate_for_day`]'s body, split out so the

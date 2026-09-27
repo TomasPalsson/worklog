@@ -106,6 +106,59 @@ impl ModelInvoker for ClaudeSubprocess {
         let (child, out_handle, err_handle) = spawn_and_feed(&args, &envs, user)?;
         wait_for_reply(child, out_handle, err_handle, self.timeout_secs())
     }
+
+    fn invoke_many(
+        &self,
+        system: &str,
+        users: &[String],
+        schema: &Value,
+        model: &str,
+    ) -> Vec<Result<Value>> {
+        bounded_concurrent_invoke(self, system, users, schema, model)
+    }
+}
+
+/// Upper bound on simultaneous `invoke` calls a single [`bounded_concurrent_invoke`]
+/// batch runs at once — each `claude -p` shell-out / LiteLLM HTTP call is
+/// I/O-bound (waiting on the model, not this machine's CPU), so a handful
+/// of them in flight together shortens the day/line-text passes without
+/// the core contention T10's concurrency probe found for compute-bound
+/// work (see perf/README.md).
+const MAX_CONCURRENT_INVOKES: usize = 4;
+
+/// Shared `invoke_many` fan-out for invokers whose `invoke` is safe to
+/// call from multiple threads at once (`ClaudeSubprocess`'s `claude -p`
+/// shell-out, `LiteLLMInvoker`'s HTTP call). Runs up to
+/// [`MAX_CONCURRENT_INVOKES`] calls concurrently but always returns
+/// results in `users`' order, regardless of which call finishes first,
+/// so a caller can zip them back onto its own per-item state unchanged
+/// (SLICE T11).
+pub(crate) fn bounded_concurrent_invoke<I: ModelInvoker + Sync>(
+    invoker: &I,
+    system: &str,
+    users: &[String],
+    schema: &Value,
+    model: &str,
+) -> Vec<Result<Value>> {
+    let mut results: Vec<Option<Result<Value>>> = (0..users.len()).map(|_| None).collect();
+    for chunk_start in (0..users.len()).step_by(MAX_CONCURRENT_INVOKES) {
+        let chunk_end = (chunk_start + MAX_CONCURRENT_INVOKES).min(users.len());
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (chunk_start..chunk_end)
+                .map(|i| scope.spawn(move || invoker.invoke(system, &users[i], schema, model)))
+                .collect();
+            for (i, handle) in (chunk_start..chunk_end).zip(handles) {
+                let result = handle
+                    .join()
+                    .unwrap_or_else(|_| Err(anyhow::anyhow!("invoke thread panicked")));
+                results[i] = Some(result);
+            }
+        });
+    }
+    results
+        .into_iter()
+        .map(|r| r.unwrap_or_else(|| Err(anyhow::anyhow!("invoke result missing"))))
+        .collect()
 }
 
 /// Spawns `claude`, starts draining its stdout/stderr pipes on their own

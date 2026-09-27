@@ -115,11 +115,24 @@ pub async fn status(State(state): State<Shared>, Query(q): Query<StatusQuery>) -
     })
 }
 
-/// Generates every distinct billing line's text for `day`, one
-/// [`run_line_text_job`] at a time — used by `run_estimate`'s line-texts
-/// pass so the sqlite mutex is never held across any of those calls'
-/// `claude -p` round trips. Mirrors [`line_text::generate_for_day`]'s
-/// skip-hand-edited/report-the-rest shape.
+/// One key's outcome through [`generate_day`]'s phase 1 (prepare), kept in
+/// the day's original key order so phase 3 can rebuild the report exactly
+/// as a fully-sequential run would.
+enum LineOutcome {
+    HandEdited,
+    Failed(String),
+    Ready(line_text::LineTextPrep),
+}
+
+/// Generates every distinct billing line's text for `day` — used by
+/// `run_estimate`'s line-texts pass so the sqlite mutex is never held
+/// across any of those calls' `claude -p` round trips. Mirrors
+/// [`line_text::generate_for_day`]'s skip-hand-edited/report-the-rest
+/// shape. Prepare and commit each run one key at a time, in `day`'s
+/// original key order, under the lock exactly as before; the model calls
+/// between them run up to `MAX_CONCURRENT_INVOKES` at a time, entirely
+/// outside the lock (SLICE T11 round 2) — the report's order and content
+/// are unchanged either way.
 pub(crate) async fn generate_day(state: Shared, day: String) -> line_text::LineTextReport {
     let day_for_keys = day.clone();
     let keys = with_conn(state.clone(), move |c| {
@@ -136,18 +149,110 @@ pub(crate) async fn generate_day(state: Shared, day: String) -> line_text::LineT
         }
     };
 
+    let outcomes = prepare_all_lines(&state, keys).await;
+    let replies = invoke_ready_lines(&outcomes).await;
+
     let mut report = line_text::LineTextReport {
         generated: Vec::new(),
         not_generated: Vec::new(),
     };
+    commit_ready_lines(&state, outcomes, replies, &mut report).await;
+    report
+}
+
+/// Phase 1: prepare every key up front, one at a time under the lock, in
+/// `keys`' original order — identical DB reads to the pre-batch version.
+/// Outcomes are recorded, not yet applied to a report, so phase 3 can
+/// replay them in this same order.
+async fn prepare_all_lines(
+    state: &Shared,
+    keys: Vec<BillingLineKey>,
+) -> Vec<(BillingLineKey, LineOutcome)> {
+    let mut outcomes = Vec::new();
     for key in keys {
-        match run_line_text_job(state.clone(), key.clone()).await {
-            Ok(()) => report.generated.push(key),
-            Err(reason) if reason == "hand-edited" => {}
-            Err(reason) => report.not_generated.push((key, reason)),
+        let prep_key = key.clone();
+        let prep_result = with_conn(state.clone(), move |c| {
+            Ok(line_text::prepare_line(c, &prep_key))
+        })
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r);
+        let outcome = match prep_result {
+            Ok(prep) => LineOutcome::Ready(prep),
+            Err(reason) if reason == "hand-edited" => LineOutcome::HandEdited,
+            Err(reason) => LineOutcome::Failed(reason),
+        };
+        outcomes.push((key, outcome));
+    }
+    outcomes
+}
+
+/// Phase 2: the slow part — up to a few `claude -p` calls in flight at
+/// once, entirely outside the lock. The returned replies line up with the
+/// `Ready` subsequence of `outcomes` regardless of which call returns
+/// first (see `ModelInvoker::invoke_many`).
+async fn invoke_ready_lines(
+    outcomes: &[(BillingLineKey, LineOutcome)],
+) -> std::vec::IntoIter<std::result::Result<String, String>> {
+    let ready_preps: Vec<line_text::LineTextPrep> = outcomes
+        .iter()
+        .filter_map(|(_, o)| match o {
+            LineOutcome::Ready(prep) => Some(prep.clone()),
+            _ => None,
+        })
+        .collect();
+    let ready_count = ready_preps.len();
+    if ready_preps.is_empty() {
+        return Vec::new().into_iter();
+    }
+    tokio::task::spawn_blocking(move || {
+        match estimate::build_thinking_invoker(line_text::LINE_TEXT_THINKING_TOKENS) {
+            Ok(inv) => {
+                line_text::invoke_line_many(&ready_preps, inv.as_ref(), line_text::LINE_TEXT_MODEL)
+            }
+            Err(e) => {
+                let reason = e.to_string();
+                ready_preps.iter().map(|_| Err(reason.clone())).collect()
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|e| {
+        let reason = e.to_string();
+        (0..ready_count).map(|_| Err(reason.clone())).collect()
+    })
+    .into_iter()
+}
+
+/// Phase 3: commits every result sequentially, in `outcomes`' (the
+/// original key) order — identical DB writes to before phase 1/2 were
+/// split out.
+async fn commit_ready_lines(
+    state: &Shared,
+    outcomes: Vec<(BillingLineKey, LineOutcome)>,
+    mut replies: impl Iterator<Item = std::result::Result<String, String>>,
+    report: &mut line_text::LineTextReport,
+) {
+    for (key, outcome) in outcomes {
+        match outcome {
+            LineOutcome::HandEdited => {}
+            LineOutcome::Failed(reason) => report.not_generated.push((key, reason)),
+            LineOutcome::Ready(prep) => {
+                let reply = replies.next().expect("one reply per ready key");
+                let result = with_conn(state.clone(), move |c| {
+                    Ok(line_text::commit_line(c, &prep, reply))
+                })
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r);
+                match result {
+                    Ok(()) => report.generated.push(key),
+                    Err(reason) if reason == "hand-edited" => {}
+                    Err(reason) => report.not_generated.push((key, reason)),
+                }
+            }
         }
     }
-    report
 }
 
 /// Runs [`line_text::prepare_line`] / [`line_text::invoke_line`] /
