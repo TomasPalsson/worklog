@@ -82,7 +82,7 @@ trimmed claude_tool raw_json).
 | T1 hook | Claude waited ~20 ms | Claude doesn't wait (detached, flow repo) | ∞ | 0 ms perceived | yes |
 | T10 decide, repeat tick | 45.6 s | 0.024 s | ~1900× | ≤ 50 ms | yes |
 | T10 decide, new events | 42.1 s | 24.7 s | 1.7× | ≤ 4 s | no (model compute-bound; int8 and concurrency measured slower) |
-| T11 describe, 8 real blocks | 246.4 s | 51.5 s | 4.8× | ≤ 1 min/day | 8 blocks yes; 22-block day ~2.5 min |
+| T11 describe, real 22-block day | ~680 s (sequential; 8 blocks took 246.4 s) | 77.6 s (8 in flight, rolling) | ≈ 8.7× | ≤ 1 min/day | ~ (78 s) |
 | S1 DB, same 9,636 events | 12.49 MB | 8.65 MB (+ ~8% for #13/#14 indexes) | ≈ −25% | owner: no visible change | closed |
 | Writes per steady tick (WAL) | 78.2 MB | 0.25 MB | ~300× | — | |
 | S3 footprint | 590 MB old backups | deleted | | | yes |
@@ -183,6 +183,7 @@ as small separate commits, and are announced to that session first. Never deploy
 | 12 | parse each transcript line once; one transaction per transcript file | T3 | 1602.8 → 1246.5 ms (1.29×); T2c 1.27× | T2/T2b/T2c/T3 PASS; reviewer caveat (failed COMMIT rolls back one file, re-read next tick) documented |
 | 13 | partial index `events(started_at) WHERE elsewhere = 1` (created after the column exists) | T4 | 5.7 → 4.3 ms | T4/T5 PASS; CLI PASS* (index line) |
 | 14 | covering partial index for infer::load_day_events `(started_at, id, …) WHERE elsewhere = 0` | T4, T5 | T4 4.3 → 2.9 ms, T5 12.3 → 7.2 ms; query 2.0 → 0.6 ms; +~3.4 MB/week | all PASS/PASS*; steady-state CLI/tick unchanged |
+| 15 | up to 8 concurrent model calls (was 4) | T11 | real 22-block day 160.4 → 77.6 s, 22/22 ok, same cost | 1006 tests ×2; rolling test derives its schedule from the limit |
 | 7 | `transcript_file_cache` (perf/s-ticks R2): skip byte-identical `.jsonl`s on repeat ticks; fixed the BLOCK review found — purge now clears the cache in the same transaction (else a purged row never came back), a missing cached path invalidates its whole window (cross-file uuid ownership), and retention keeps at most one window | T2, T2b | T2b steady tick 1262 → 49 ms (25.5×); cache table ≈1.0 MB after 4 consecutive day ticks (was 5.1 MB unbounded) | T2/T2b/T2c/T9 PASS* (PERF_IGNORE for the new SCHEMA lines + purge's "bytes freed", both explained by the new table); 3 new unit tests incl. a purge→re-collect repro that fails without the fix; 991 tests pass |
 
 ## How to run
