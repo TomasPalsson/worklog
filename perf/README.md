@@ -102,21 +102,28 @@ runs, 2026-09-27. CLI runs start on a fresh clone, so the DB file is cold in the
 
 ## Next (resume here)
 
-Rebased on PR #54 @ `88d1d77` (it now runs `claude -p` with `--tools "" --strict-mcp-config
---setting-sources project` itself). New baseline binary: `worklog-base2` built from HEAD.
-1. T4/T5: load the day's events once in `stitch_day_summary`; then cache each day summary
-   keyed by `PRAGMA data_version` + `total_changes()` (only DB inputs — audit first).
-2. T4: covering index `events(started_at, project_path)` for `unmapped_folders`.
-3. T2: skip transcript files unchanged since the last tick (keep resumed-session dedupe
-   semantics; oracle = tick on truncated fixture, then on full fixture).
-4. T11: run `claude -p` calls concurrently, commit in original order.
-5. T6: pre-filter Details SQL by the block's calendar day(s).
-6. T9: purge prefilter `started_at < date(cutoff,'+2 days') AND datetime(...) < datetime(...)`.
-7. S1: raw_json compression — plain zstd 1.9×, dictionary 3.1× (dictionary must not be
-   committed: trained on private data → store it in the DB).
+State 2026-09-27 ~16:00: PR #54 merged to main (`d2587fe`); `perf/evals` rebased on it.
+Done on the branch: #1–#6 in the change log. Baselines: `worklog-base3` = #3.
+Slice branches (built in isolated worktrees `.claude/worktrees/wf_a517011d-04f-{1..5}`):
+- `perf/s-ticks` (T2b 848 → 31 ms, 27×; T2c growth oracle PASS*): awaiting review. Needs a
+  follow-up before merge: `transcript_file_cache` keeps one row per file per day forever
+  (5.1 MB after 4 days) → delete rows whose window ended before the current one.
+- `perf/s-describe`: review said FIX — (1) estimate phase-3 UPDATE must skip rows that
+  became `manual` meanwhile; (2) its line_text half has no production caller (the daemon
+  uses `daemon_line_text::generate_day`) → drop it, parallelise that path instead with
+  invoke outside the DB lock.
+Then: tool-input trim in `collectors/claude_tools.rs` (owner OK'd; keep the 9 preview keys
+file_path/notebook_path/path/command/pattern/description/prompt/url/query verbatim; for
+default-case tools cap each string at 200 chars); raw_json compression (plain zstd 1.9×;
+a dictionary must not be committed — trained on private data); one PR to main.
 
-Owner decisions pending: `async: true` on the worklog hook; delete ~600 MB of old DB
-backups; int8/fp16 model (changes numerics); trimming never-displayed tool input.
+Owner decisions: backups deleted (~590 MB, 006 ones after #54 merged); hook made
+non-blocking in the flow repo (`plugins/flow/hooks/worklog-hook.sh`: detached `worklog
+hook-run`, 99/99 hook tests, not committed there — owner's repo); tool-input trim approved.
+Open: int8/fp16 model (changes numerics); stable block IDs when a day's blocks are unchanged
+(would cut the remaining 12.9 MB/tick of writes; changes visible IDs).
+Lesson: workflow agents inherit this worktree's sandbox — builders AND reviewers need
+`isolation: 'worktree'` (a reviewer's checkout detached this branch once).
 
 ## Coordination
 
