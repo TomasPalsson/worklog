@@ -1,5 +1,6 @@
 # Tasks — Block clues, attribution and detail view
 Approved: 2026-09-27 by user
+Verified: 2026-09-27 by user
 Spec: spec.md · Design: design.md · Base: 7952c55 · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && (cd web && bun test)`
 
 ## Behaviors
