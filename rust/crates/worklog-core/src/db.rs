@@ -87,9 +87,39 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     if from_version < 14 {
         seed_deildir_from_folder_pins(conn).context("seeding billing_deildir from folder pins")?;
     }
+    if from_version < 15 {
+        run_upgrade_006(conn).context("running spec 006 upgrade")?;
+    }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)
         .context("stamping user_version")?;
     Ok(())
+}
+
+/// FR-02/FR-10: delete personal-owner github rows and re-infer every
+/// stored day, once per db. Skipped on an empty events table (every
+/// fresh/in-memory test db) so this never costs a git-shell-out per test.
+fn run_upgrade_006(conn: &Connection) -> Result<()> {
+    let events: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?;
+    if events == 0 {
+        return Ok(());
+    }
+    let has_github: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM events WHERE source IN ('github_commit', 'github_pr'))",
+        [],
+        |r| r.get(0),
+    )?;
+    let personal_user = if has_github {
+        match crate::secrets::get("github_user") {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to read github_user secret for upgrade_006");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    crate::upgrade_006::run(conn, personal_user.as_deref())
 }
 
 fn ensure_blocks_is_personal(conn: &Connection) -> Result<()> {

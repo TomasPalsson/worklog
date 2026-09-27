@@ -177,7 +177,7 @@ pub fn collect_with(
 }
 
 /// D-06: repos owned by the configured personal GitHub account are never tracked.
-fn is_personal_owner(repo_full_name: &str, user: &str) -> bool {
+pub(crate) fn is_personal_owner(repo_full_name: &str, user: &str) -> bool {
     repo_full_name
         .split('/')
         .next()

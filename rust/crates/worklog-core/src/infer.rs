@@ -500,7 +500,7 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
         // ensures the earliest-starting new block claims the earliest
         // prior.
         let mut stmt = conn.prepare(
-            "SELECT started_at, ended_at, jira_issue, description, estimated_by, tempo_worklog_id
+            "SELECT started_at, ended_at, jira_issue, description, estimated_by, tempo_worklog_id, exported_at
                FROM blocks WHERE day = ?1 ORDER BY started_at",
         )?;
         let iter = stmt.query_map(params![day_iso], |r| {
@@ -511,6 +511,7 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
                 description: r.get(3)?,
                 estimated_by: r.get(4)?,
                 tempo_worklog_id: r.get(5)?,
+                exported_at: r.get(6)?,
             })
         })?;
         for row in iter {
@@ -560,6 +561,7 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
         let tempo_id = carry.and_then(|c| c.tempo_worklog_id.clone());
         let description = carry.and_then(|c| c.description.clone());
         let estimated_by = carry.and_then(|c| c.estimated_by.clone());
+        let exported_at = carry.and_then(|c| c.exported_at.clone());
         // Preserve manual ticket override if present; otherwise trust inference.
         let jira_issue = carry
             .and_then(|c| c.jira_issue.clone())
@@ -574,8 +576,8 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
             "INSERT INTO blocks (
                 day, jira_issue, started_at, ended_at,
                 duration_seconds, description, estimated_by, flagged,
-                tempo_worklog_id, is_personal
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                tempo_worklog_id, is_personal, exported_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 b.day,
                 jira_issue,
@@ -587,6 +589,7 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
                 if b.flagged { 1 } else { 0 },
                 tempo_id,
                 if is_personal { 1 } else { 0 },
+                exported_at,
             ],
         )
         .context("inserting block")?;
@@ -631,6 +634,7 @@ struct CarryRow {
     description: Option<String>,
     estimated_by: Option<String>,
     tempo_worklog_id: Option<String>,
+    exported_at: Option<String>,
 }
 
 /// Overlap check on ISO-8601 timestamps. Parses each string to a

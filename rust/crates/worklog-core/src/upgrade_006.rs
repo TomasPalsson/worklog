@@ -3,25 +3,130 @@
 //! attribution rules, carrying `exported_at`, Tempo ids, manual
 //! descriptions and tickets (FR-10, D-09).
 
+use std::collections::BTreeSet;
+use std::path::Path;
+
 use anyhow::Result;
-use rusqlite::Connection;
+use chrono::{DateTime, NaiveDate, Utc};
+use rusqlite::{params, Connection};
+
+use crate::{collectors::github, infer, infer_allocations, local_clone};
 
 /// Runs the phase-A upgrade against `conn`. `personal_user` is the
 /// configured GitHub login (`None` when unset), used to delete previously
 /// stored rows from the owner's personal account (D-06).
-pub fn run(_conn: &Connection, _personal_user: Option<&str>) -> Result<()> {
-    unimplemented!("T005 RED: upgrade_006::run")
+pub fn run(conn: &Connection, personal_user: Option<&str>) -> Result<()> {
+    run_with(
+        conn,
+        personal_user,
+        local_clone::folder_for_repo,
+        |folder, sha| local_clone::sha_is_local(Path::new(folder), sha),
+    )
 }
 
 /// Test seam: `folder_for_repo`/`sha_is_local` are injected so tests don't
 /// depend on `~/Desktop/Work`. `run` wires in the real `local_clone` fns.
 fn run_with(
-    _conn: &Connection,
-    _personal_user: Option<&str>,
-    _folder_for_repo: impl Fn(&str) -> Option<String>,
-    _sha_is_local: impl Fn(&str, &str) -> bool,
+    conn: &Connection,
+    personal_user: Option<&str>,
+    folder_for_repo: impl Fn(&str) -> Option<String>,
+    sha_is_local: impl Fn(&str, &str) -> bool,
 ) -> Result<()> {
-    unimplemented!("T005 RED: upgrade_006::run_with")
+    delete_personal_rows(conn, personal_user)?;
+    reresolve_github_events(conn, &folder_for_repo, &sha_is_local)?;
+    reinfer_all_days(conn)?;
+    Ok(())
+}
+
+/// FR-02: delete stored `github_commit`/`github_pr` rows whose repo owner
+/// is the configured personal account, same rule as collection time
+/// (`github::is_personal_owner`). `block_events` rows for the deleted
+/// events cascade via the FK; the blocks and org rows are untouched.
+fn delete_personal_rows(conn: &Connection, personal_user: Option<&str>) -> Result<()> {
+    let Some(user) = personal_user else {
+        return Ok(());
+    };
+    let mut stmt = conn
+        .prepare("SELECT id, repo FROM events WHERE source IN ('github_commit', 'github_pr')")?;
+    let rows: Vec<(i64, Option<String>)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<std::result::Result<_, _>>()?;
+    drop(stmt);
+    for (id, repo) in rows {
+        if repo
+            .as_deref()
+            .is_some_and(|r| github::is_personal_owner(r, user))
+        {
+            conn.execute("DELETE FROM events WHERE id = ?1", params![id])?;
+        }
+    }
+    Ok(())
+}
+
+/// Re-resolve every remaining `github_commit`/`github_pr` row's
+/// `project_path`/`elsewhere`, mirroring what `collectors::github` does
+/// at collection time: a commit is local when its sha is reachable from
+/// the repo's clone; a PR is local when the clone simply exists.
+fn reresolve_github_events(
+    conn: &Connection,
+    folder_for_repo: &impl Fn(&str) -> Option<String>,
+    sha_is_local: &impl Fn(&str, &str) -> bool,
+) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT id, source, source_id, repo FROM events
+          WHERE source IN ('github_commit', 'github_pr')",
+    )?;
+    let rows: Vec<(i64, String, String, Option<String>)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+        .collect::<std::result::Result<_, _>>()?;
+    drop(stmt);
+    for (id, source, source_id, repo) in rows {
+        let Some(repo) = repo else { continue };
+        let folder = folder_for_repo(&repo);
+        let is_local = if source == "github_commit" {
+            folder
+                .as_deref()
+                .is_some_and(|f| sha_is_local(f, &source_id))
+        } else {
+            folder.is_some()
+        };
+        if is_local {
+            conn.execute(
+                "UPDATE events SET project_path = ?1, elsewhere = 0 WHERE id = ?2",
+                params![folder, id],
+            )?;
+        } else {
+            conn.execute("UPDATE events SET elsewhere = 1 WHERE id = ?1", params![id])?;
+        }
+    }
+    Ok(())
+}
+
+/// D-09: rebuild every day that has a stored block or event, so the new
+/// attribution rules and the row deletion above are reflected everywhere.
+fn reinfer_all_days(conn: &Connection) -> Result<()> {
+    let mut days: BTreeSet<NaiveDate> = BTreeSet::new();
+    {
+        let mut stmt = conn.prepare("SELECT DISTINCT day FROM blocks")?;
+        for row in stmt.query_map([], |r| r.get::<_, String>(0))? {
+            if let Ok(d) = NaiveDate::parse_from_str(&row?, "%Y-%m-%d") {
+                days.insert(d);
+            }
+        }
+    }
+    {
+        let mut stmt = conn.prepare("SELECT started_at FROM events")?;
+        for row in stmt.query_map([], |r| r.get::<_, String>(0))? {
+            if let Ok(dt) = DateTime::parse_from_rfc3339(&row?) {
+                days.insert(crate::tz::local_date(dt.with_timezone(&Utc)));
+            }
+        }
+    }
+    for day in days {
+        let blocks = infer_allocations::build_day_blocks(conn, day)?;
+        infer::persist_blocks(conn, day, &blocks)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -35,6 +140,9 @@ mod tests {
     fn insert_event(conn: &Connection, source: &str, source_id: &str, repo: &str, ts: &str) -> i64 {
         let mut ev = Event::minimal(source, source_id, ts, format!("{source} {source_id}"));
         ev.repo = Some(repo.to_owned());
+        // 30 minutes: long enough to clear MIN_BLOCK_MINUTES on its own,
+        // so the day always rebuilds into exactly one block.
+        ev.duration_seconds = Some(1800);
         repo::upsert_event(conn, &ev).unwrap()
     }
 
@@ -51,8 +159,10 @@ mod tests {
     fn carries_all_fields() {
         // Fixture: a block with tempo_worklog_id, exported_at,
         // estimated_by='manual' + description, and a manual jira_issue,
-        // linked to one org commit event. After run(), a rebuilt block
-        // for the same day must still carry all four.
+        // linked to org commit events. After run(), a rebuilt block for
+        // the same day must still carry all four. Two commits ten
+        // minutes apart so the rebuilt span clears MIN_BLOCK_MINUTES —
+        // a lone point event's 2-minute CREDIT would not.
         let conn = db::open_memory().unwrap();
         let event_id = insert_event(
             &conn,
@@ -60,6 +170,13 @@ mod tests {
             "sha1",
             "aproorg/worklog",
             "2026-04-18T09:00:00+00:00",
+        );
+        insert_event(
+            &conn,
+            "github_commit",
+            "sha2",
+            "aproorg/worklog",
+            "2026-04-18T09:10:00+00:00",
         );
         conn.execute(
             "INSERT INTO blocks (
