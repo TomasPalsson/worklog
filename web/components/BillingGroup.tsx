@@ -11,6 +11,8 @@ import { formatExportHours, reikningshaefi } from "@/lib/export";
 import { toast } from "@/lib/toast";
 import type { BillingCustomer, BillingFolderMap, BillingRow } from "@/lib/types";
 import { CustomerPin, DeildMover, VerkefniPin } from "./BillingPins";
+import { ClaudeMark } from "./SourceIcon";
+import { Check, CircleAlert, Pencil, RefreshCw } from "lucide-react";
 
 interface Props {
   row: BillingRow;
@@ -37,6 +39,12 @@ interface Props {
 
 /** FR-35: a line with no stored text ever reads as "not generated" —
  * never implied to be the writer's output. */
+function OriginIcon({ origin }: { origin: BillingRow["text_origin"] }) {
+  if (origin === "generated") return <ClaudeMark size={11} />;
+  if (origin === "manual") return <Pencil width={11} height={11} aria-hidden="true" />;
+  return <CircleAlert width={11} height={11} aria-hidden="true" />;
+}
+
 function originLabel(origin: BillingRow["text_origin"]): string {
   if (origin === "manual") return "edited by you";
   if (origin === "generated") return "generated";
@@ -154,30 +162,43 @@ export function BillingGroup({
                 aria-label={`Edit invoice text for ${row.folder}`}
                 value={draft}
                 disabled={pending}
+                autoFocus
                 onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") setEditing(false);
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) save();
+                }}
               />
               <span className="billing-text-edit-actions">
-                <button type="button" onClick={save} disabled={pending}>
+                <button type="button" className="billing-text-primary" onClick={save} disabled={pending}>
+                  <Check width={12} height={12} aria-hidden="true" />
                   Save
                 </button>
                 <button type="button" onClick={() => setEditing(false)} disabled={pending}>
                   Cancel
                 </button>
+                <span className="billing-text-hint">⌘↵ to save · Esc to cancel · empty resets to generated</span>
               </span>
             </span>
           ) : (
             <>
               <span className="billing-text">{row.invoice_text}</span>
               <span className="billing-text-controls">
-                <span
-                  className={`billing-chip billing-text-origin billing-text-origin-${row.text_origin ?? "none"}`}
-                >
+                <span className={`billing-text-origin billing-text-origin-${row.text_origin ?? "none"}`}>
+                  <OriginIcon origin={row.text_origin ?? null} />
                   {originLabel(row.text_origin ?? null)}
                 </span>
                 <button type="button" onClick={beginEdit} disabled={pending}>
+                  <Pencil width={12} height={12} aria-hidden="true" />
                   Edit
                 </button>
                 <button type="button" onClick={regenerate} disabled={pending}>
+                  <RefreshCw
+                    width={12}
+                    height={12}
+                    aria-hidden="true"
+                    className={pending ? "billing-spin" : undefined}
+                  />
                   Regenerate
                 </button>
               </span>

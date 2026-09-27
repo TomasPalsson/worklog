@@ -89,52 +89,73 @@ describe("BlockDetails timeline", () => {
   it("folds the Claude session into prompt -> tools -> files, with the helper group nested inside", () => {
     render(<BlockDetails rows={fixtureRows()} />);
 
-    const session = screen.getByText(/Claude session/).closest("details") as HTMLDetailsElement;
-    expect(session).toBeTruthy();
+    const head = screen.getByRole("button", { name: /Claude session/ });
+    // Closed, the card already says what happened: counts + the first prompt.
+    expect(head.textContent).toContain("2 prompts · 2 tool calls · 1 file · 1 helper");
+    expect(head.textContent).toContain("fix the bug");
+    fireEvent.click(head);
+
+    const session = head.closest(".bd-session") as HTMLElement;
     expect(within(session).getByText("fix the bug")).toBeTruthy();
     expect(within(session).getByText("now fix the test")).toBeTruthy();
     expect(within(session).getByText("Edit")).toBeTruthy();
     expect(within(session).getByText("Bash")).toBeTruthy();
-    expect(within(session).getByText("Files: a.ts")).toBeTruthy();
+    expect(within(session).getByText("bun test")).toBeTruthy();
+    const files = within(session).getByRole("list", { name: "Files touched" });
+    expect(within(files).getByText("a.ts")).toBeTruthy();
 
-    const helperSummary = within(session).getByText("Subagent: reviewer · 2");
-    const helperGroup = helperSummary.closest("details") as HTMLDetailsElement;
-    expect(helperGroup).toBeTruthy();
-    expect(within(helperGroup).getByText("reviewed the diff")).toBeTruthy();
-    expect(within(helperGroup).getByText("approved")).toBeTruthy();
+    const helpers = within(session).getByRole("region", { name: "Helpers" });
+    const helperLine = within(helpers).getByRole("button", { name: /Subagent: reviewer/ });
+    expect(helperLine.textContent).toContain("2 mins");
+    fireEvent.click(helperLine);
+    expect(within(helpers).getByText("reviewed the diff")).toBeTruthy();
+    expect(within(helpers).getByText("approved")).toBeTruthy();
   });
 
-  it("shows every filter chip pressed by default", () => {
+  it("shows every filter chip pressed by default, with its count", () => {
     render(<BlockDetails rows={fixtureRows()} />);
-    expect(screen.getByRole("button", { name: "shell" }).getAttribute("aria-pressed")).toBe("true");
-    expect(screen.getByRole("button", { name: "GitHub" }).getAttribute("aria-pressed")).toBe("true");
+    const shell = screen.getByRole("button", { name: /^Shell/ });
+    expect(shell.getAttribute("aria-pressed")).toBe("true");
+    expect(shell.textContent).toBe("Shell1");
+    expect(screen.getByRole("button", { name: /^GitHub/ }).getAttribute("aria-pressed")).toBe("true");
   });
 
   it("hides and restores the shell row via its filter chip", () => {
     render(<BlockDetails rows={fixtureRows()} />);
     expect(screen.getByText("ls -la")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "shell" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Shell/ }));
     expect(screen.queryByText("ls -la")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "shell" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Shell/ }));
     expect(screen.getByText("ls -la")).toBeTruthy();
   });
 
-  it("expands a tool row to reveal its stored JSON, including the tool input", () => {
+  it("opens a tool row to reveal its stored record, including the tool input", () => {
     render(<BlockDetails rows={fixtureRows()} />);
+    fireEvent.click(screen.getByRole("button", { name: /Claude session/ }));
     expect(screen.queryByText(/"file_path": "a.ts"/)).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: /show raw record — Edit/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^Edit/ }));
 
     expect(screen.getByText(/"file_path": "a.ts"/)).toBeTruthy();
   });
 
-  it("links a github_commit row's title to GitHub when it has a repo and sha", () => {
+  it("links a github_commit row to GitHub when it has a repo and sha", () => {
     render(<BlockDetails rows={fixtureRows()} />);
-    const link = screen.getByRole("link", { name: "Fix the bug" });
+    expect(screen.getByText("Fix the bug")).toBeTruthy();
+    const link = screen.getByRole("link", { name: /Open on GitHub/ });
     expect(link.getAttribute("href")).toBe("https://github.com/acme/widgets/commit/abc123");
     expect(link.getAttribute("target")).toBe("_blank");
     expect(link.getAttribute("rel")).toBe("noreferrer");
+  });
+
+  it("expand all opens every session, collapse all closes them", () => {
+    render(<BlockDetails rows={fixtureRows()} />);
+    expect(screen.queryByText("now fix the test")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Expand all/ }));
+    expect(screen.getByText("now fix the test")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Collapse all/ }));
+    expect(screen.queryByText("now fix the test")).toBeNull();
   });
 });

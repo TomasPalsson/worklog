@@ -11,11 +11,25 @@ import { formatEventTime } from "@/lib/format-event";
 import { formatRange } from "@/lib/format";
 import type { Block } from "@/lib/types";
 import type { ElsewhereItem } from "@/lib/daemonElsewhere";
+import { ArrowRightToLine } from "lucide-react";
+import { GitHubMark } from "./SourceIcon";
 
 interface Props {
   day: string;
   items: ElsewhereItem[];
   blocks: Block[];
+}
+
+/** The block whose time is closest to the item — the likely home. */
+function nearestBlock(blocks: Block[], at: string): number | "" {
+  const t = Date.parse(at);
+  let best: Block | null = null;
+  let bestGap = Infinity;
+  for (const b of blocks) {
+    const gap = Math.max(0, Date.parse(b.started_at) - t, t - Date.parse(b.ended_at));
+    if (gap < bestGap) [best, bestGap] = [b, gap];
+  }
+  return best?.id ?? "";
 }
 
 function blockLabel(b: Block): string {
@@ -38,6 +52,9 @@ export function ElsewhereList({ day, items, blocks }: Props) {
         <span className="elsewhere-list-count">
           {rows.length} item{rows.length === 1 ? "" : "s"}
         </span>
+        <span className="elsewhere-list-hint">
+          Commits not made on this Mac — not billed unless you move them into a block
+        </span>
       </summary>
       <ul className="elsewhere-list-body" role="list">
         {rows.map((item) => (
@@ -59,7 +76,7 @@ function ElsewhereRow({
   blocks: Block[];
   onMoved: (id: number) => void;
 }) {
-  const [blockId, setBlockId] = useState<number | "">("");
+  const [blockId, setBlockId] = useState<number | "">(() => nearestBlock(blocks, item.started_at));
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
 
@@ -81,8 +98,13 @@ function ElsewhereRow({
   return (
     <li className="elsewhere-row">
       <span className="elsewhere-row-time">{formatEventTime(item.started_at)}</span>
-      {item.repo && <span className="elsewhere-row-repo">{item.repo}</span>}
-      <span className="elsewhere-row-title">{item.title}</span>
+      <span className="elsewhere-row-icon" aria-hidden="true">
+        <GitHubMark size={13} />
+      </span>
+      <span className="elsewhere-row-main">
+        <span className="elsewhere-row-title">{item.title}</span>
+        {item.repo && <span className="elsewhere-row-repo">{item.repo}</span>}
+      </span>
       <select
         aria-label={`Block for ${item.title}`}
         value={blockId}
@@ -102,6 +124,7 @@ function ElsewhereRow({
         aria-busy={pending || undefined}
         onClick={move}
       >
+        <ArrowRightToLine width={12} height={12} aria-hidden="true" />
         Move
       </button>
       {error && (
