@@ -48,6 +48,21 @@ export type RawRecord =
     }
   | { kind: "hook"; event: string; payload: unknown };
 
+/** Mirrors `block_details::DetailRow` — one row of the Details view
+ * timeline (FR-20). */
+export interface DetailRow {
+  id: number;
+  source: string;
+  started_at: string;
+  title: string;
+  details: string | null;
+  repo: string | null;
+  project_path: string | null;
+  session_id: string | null;
+  jira_issue: string | null;
+  raw: RawRecord | null;
+}
+
 /** Mirrors `clues_contract::DescriptionInput` — everything the description
  * writer may see (D-02). */
 export interface DescriptionInput {
