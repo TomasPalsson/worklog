@@ -101,11 +101,15 @@ pub fn move_into_block(conn: &Connection, event_id: i64, block_id: i64) -> Resul
 }
 
 /// FR-06: after `infer::persist_blocks` rebuilds `day`'s blocks, re-link
-/// every owner-moved event (`elsewhere = 2`) on that day into one of them
-/// — the one whose linked events' dominant folder matches the moved
-/// event's, nearest in time; falling back to the nearest non-personal
-/// block; left unlinked if the day has no blocks at all. Called once,
-/// inside `persist_blocks`'s own transaction, after its inserts.
+/// every owner-moved event (`elsewhere = 2`) on that day into the block
+/// whose linked events' dominant folder matches the moved event's,
+/// nearest in time. Never attaches to a block of a DIFFERENT folder —
+/// that could flip that block's dominant folder/customer — so when no
+/// block of the day shares the folder, the event goes back to "done
+/// elsewhere" (`elsewhere = 1`) for the owner to move again; left
+/// unlinked (still `elsewhere = 2`) if the day has no blocks at all.
+/// Called once, inside `persist_blocks`'s own transaction, after its
+/// inserts.
 pub(crate) fn relink_moved_events(conn: &Connection, day: NaiveDate) -> Result<()> {
     let (start, end) = day_window(day);
     let mut stmt = conn.prepare(
@@ -147,28 +151,50 @@ pub(crate) fn relink_moved_events(conn: &Connection, day: NaiveDate) -> Result<(
     }
 
     for (event_id, started_at, project_path) in moved {
-        let event_folder = project_path
-            .as_deref()
-            .and_then(crate::billing::work_folder_for_path);
-        let event_ts = parse_ts(&started_at);
-        let target = event_folder
-            .as_ref()
-            .and_then(|f| {
-                blocks
-                    .iter()
-                    .filter(|(id, _, _)| folders.get(id).and_then(|x| x.as_ref()) == Some(f))
-                    .min_by_key(|(_, started, _)| time_distance(started, event_ts))
-            })
-            .or_else(|| {
-                blocks
-                    .iter()
-                    .filter(|(_, _, is_personal)| !is_personal)
-                    .min_by_key(|(_, started, _)| time_distance(started, event_ts))
-            });
-        if let Some((block_id, _, _)) = target {
+        relink_one(
+            conn,
+            event_id,
+            &started_at,
+            project_path.as_deref(),
+            &blocks,
+            &folders,
+        )?;
+    }
+    Ok(())
+}
+
+/// One moved event's worth of `relink_moved_events`: attach it to the
+/// day's matching-folder block, nearest in time, or send it back to
+/// "done elsewhere" (`elsewhere = 1`) when no block of the day shares
+/// its folder — never onto an unrelated folder's block.
+#[allow(clippy::too_many_arguments)]
+fn relink_one(
+    conn: &Connection,
+    event_id: i64,
+    started_at: &str,
+    project_path: Option<&str>,
+    blocks: &[(i64, String, bool)],
+    folders: &std::collections::HashMap<i64, Option<String>>,
+) -> Result<()> {
+    let event_folder = project_path.and_then(crate::billing::work_folder_for_path);
+    let event_ts = parse_ts(started_at);
+    let target = event_folder.as_ref().and_then(|f| {
+        blocks
+            .iter()
+            .filter(|(id, _, _)| folders.get(id).and_then(|x| x.as_ref()) == Some(f))
+            .min_by_key(|(_, started, _)| time_distance(started, event_ts))
+    });
+    match target {
+        Some((block_id, _, _)) => {
             conn.execute(
                 "INSERT OR IGNORE INTO block_events (block_id, event_id) VALUES (?1, ?2)",
                 params![block_id, event_id],
+            )?;
+        }
+        None => {
+            conn.execute(
+                "UPDATE events SET elsewhere = 1 WHERE id = ?1",
+                params![event_id],
             )?;
         }
     }

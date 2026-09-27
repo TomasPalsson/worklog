@@ -329,3 +329,68 @@ fn move_into_block_survives_rebuild_and_relinks_by_folder() {
         "must stay owner-moved, never flip back to the elsewhere list"
     );
 }
+
+#[test]
+fn relink_moved_events_never_attaches_to_a_mismatched_folder_block() {
+    // NF-4: if no rebuilt block of the day shares the moved event's
+    // folder, never attach it to an unrelated folder's block — that
+    // could flip that block's dominant folder/customer. Send it back
+    // to "done elsewhere" (elsewhere = 1) instead.
+    let conn = db::open_memory().unwrap();
+    let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+    let block_id = seed_block(
+        &conn,
+        "2026-04-18T09:00:00+00:00",
+        "2026-04-18T09:30:00+00:00",
+    );
+    link_event_with_project(
+        &conn,
+        block_id,
+        "a",
+        "/Users/tomas/Desktop/Work/code-interpreter",
+    );
+
+    // An owner-moved event whose folder ("other-project") matches no
+    // block built for this day.
+    let moved_id = repo::upsert_event(
+        &conn,
+        &Event::minimal(
+            "github_commit",
+            "far-sha",
+            "2026-04-18T14:00:00+00:00",
+            "fix oauth",
+        ),
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE events SET elsewhere = 2, project_path = ?1 WHERE id = ?2",
+        params!["/Users/tomas/Desktop/Work/other-project", moved_id],
+    )
+    .unwrap();
+
+    relink_moved_events(&conn, day).unwrap();
+
+    let linked: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM block_events WHERE block_id = ?1 AND event_id = ?2",
+            params![block_id, moved_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        linked, 0,
+        "must never attach to a block of a different folder"
+    );
+
+    let elsewhere: i64 = conn
+        .query_row(
+            "SELECT elsewhere FROM events WHERE id = ?1",
+            [moved_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        elsewhere, 1,
+        "must reappear in the done-elsewhere list for the owner to move again"
+    );
+}
