@@ -165,15 +165,59 @@ pub fn generate_for_day(
         not_generated: Vec::new(),
     };
     for key in distinct_keys(conn, day)? {
-        if stored_origin(conn, &key)? == Some(LineTextOrigin::Manual) {
-            continue;
-        }
-        match generate_one(conn, &key, invoker, model) {
+        match generate_line(conn, &key, invoker, model) {
             Ok(()) => report.generated.push(key),
+            // A hand-edited line is skipped silently here — it's never
+            // overwritten (FR-31), not a failure to report. Only
+            // `generate_line`'s single-line caller (the daemon's
+            // Regenerate route) needs that reason surfaced.
+            Err(reason) if reason == "hand-edited" => {}
             Err(reason) => report.not_generated.push((key, reason)),
         }
     }
     Ok(report)
+}
+
+/// One line's worth of [`generate_for_day`]'s body, split out so the
+/// daemon's single-line "Regenerate" route can reuse it directly. A
+/// hand-edited line (FR-31) is left untouched and reported as
+/// `Err("hand-edited")`; any other failure also leaves the stored text
+/// untouched (FR-35).
+pub fn generate_line(
+    conn: &Connection,
+    key: &BillingLineKey,
+    invoker: &dyn ModelInvoker,
+    model: &str,
+) -> std::result::Result<(), String> {
+    if stored_origin(conn, key).map_err(|e| e.to_string())? == Some(LineTextOrigin::Manual) {
+        return Err("hand-edited".to_string());
+    }
+    generate_one(conn, key, invoker, model)
+}
+
+/// [`generate_for_day`], resolving the model invoker the same way
+/// [`crate::estimate::estimate_day`] does (env/secrets via
+/// [`crate::estimate::build_invoker`]) — so a caller that just wants
+/// "today's configured provider" doesn't have to construct one itself.
+pub fn generate_with_default_provider(
+    conn: &Connection,
+    day: &str,
+    model: &str,
+) -> Result<LineTextReport> {
+    let invoker = crate::estimate::build_invoker()?;
+    generate_for_day(conn, day, invoker.as_ref(), model)
+}
+
+/// [`generate_line`]'s sibling, resolving the model invoker the same way
+/// [`generate_with_default_provider`] does. Used by the daemon's
+/// single-line "Regenerate" route.
+pub fn generate_line_with_default_provider(
+    conn: &Connection,
+    key: &BillingLineKey,
+    model: &str,
+) -> std::result::Result<(), String> {
+    let invoker = crate::estimate::build_invoker().map_err(|e| e.to_string())?;
+    generate_line(conn, key, invoker.as_ref(), model)
 }
 
 fn distinct_keys(conn: &Connection, day: &str) -> Result<Vec<BillingLineKey>> {

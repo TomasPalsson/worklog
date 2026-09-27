@@ -190,6 +190,18 @@ pub fn estimate_day(conn: &Connection, day: NaiveDate, model: &str) -> Result<Es
     }
 }
 
+/// [`resolve_provider`], boxed as a single trait object. Any caller that
+/// just wants "the configured invoker" — rather than matching on
+/// [`ProviderChoice`] itself the way [`estimate_day`] and `worklog sync`
+/// do — should use this instead of re-deriving the provider construction
+/// (used by `line_text`'s day/single-line generation, spec 006 T022).
+pub fn build_invoker() -> Result<Box<dyn ModelInvoker>> {
+    Ok(match resolve_provider()? {
+        ProviderChoice::ClaudeSubprocess => Box::new(ClaudeSubprocess),
+        ProviderChoice::LiteLLM(inv) => Box::new(inv),
+    })
+}
+
 /// Test seam — tests pass a fake invoker so we don't shell out to `claude`.
 pub trait ModelInvoker {
     fn invoke(&self, system: &str, user: &str, schema: &Value, model: &str) -> Result<Value>;
