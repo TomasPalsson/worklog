@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 
-use crate::infer::InferEvent;
+use crate::infer::{InferBlock, InferEvent};
 use crate::infer_lanes::{is_work, minute, Keyed};
 
 /// Minutes after a session's last prompt (`claude_turn`) that a
@@ -228,6 +228,66 @@ fn merge_touching_same_owner(runs: Vec<Run>) -> Vec<Run> {
         }
     }
     out
+}
+
+/// R6: after `apply_split`/`cut_at_ticket_edges` cut a block into touching
+/// pieces, two of them are a spurious artifact of the cut — not a real
+/// multi-project split — when they're both a single real project (or
+/// carry none at all) and agree on that project and on the ticket. Merge
+/// those back into one block so a single-project allocation window, or
+/// two ticket-edge pieces that share the same ticket, don't fragment one
+/// span into two.
+pub(crate) fn merge_touching_same_project(mut blocks: Vec<InferBlock>) -> Vec<InferBlock> {
+    blocks.sort_by_key(|b| b.started_at);
+    let mut out: Vec<InferBlock> = Vec::new();
+    for b in blocks {
+        let mergeable = out.last().is_some_and(|prev: &InferBlock| {
+            !prev.is_calendar
+                && !b.is_calendar
+                && prev.ended_at == b.started_at
+                && prev.jira_issue == b.jira_issue
+                && single_project(prev).is_some_and(|p| Some(p) == single_project(&b))
+        });
+        if mergeable {
+            let prev = out.last_mut().unwrap();
+            prev.ended_at = b.ended_at;
+            prev.duration_seconds = (prev.ended_at - prev.started_at).num_seconds();
+            prev.flagged = prev.flagged || b.flagged;
+            // `span_block`'s "link the nearest event" fallback can have
+            // pulled the same event into both adjacent pieces before the
+            // spurious cut is undone — dedupe by event_id so it doesn't
+            // end up double-linked to the merged block.
+            prev.events.extend(b.events);
+            prev.events.sort_by_key(|e| e.ts);
+            let mut seen = HashSet::new();
+            prev.events
+                .retain(|e| e.event_id.is_none_or(|id| seen.insert(id)));
+            prev.event_ids = prev.events.iter().filter_map(|e| e.event_id).collect();
+            prev.event_count = prev.events.len() as u32;
+        } else {
+            out.push(b);
+        }
+    }
+    out
+}
+
+/// `Some(Some(key))` when every project-tagged event in `b` names the same
+/// lane key, `Some(None)` when it carries no project-tagged event at all
+/// (a plain "no allocation" piece), `None` when it spans more than one —
+/// a real multi-project split, which must never merge away.
+fn single_project(b: &InferBlock) -> Option<Option<String>> {
+    let mut key: Option<String> = None;
+    for e in &b.events {
+        let Some(k) = crate::infer_lanes::lane_key(e) else {
+            continue;
+        };
+        match &key {
+            None => key = Some(k),
+            Some(existing) if *existing == k => {}
+            Some(_) => return None,
+        }
+    }
+    Some(key)
 }
 
 #[cfg(test)]

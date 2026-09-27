@@ -46,6 +46,13 @@ pub(crate) fn cut_at_ticket_edges(blocks: &[InferBlock], ticketed: &[Ticketed]) 
                 evs, w[0], w[1], &b.events,
             ));
         }
+        // Deliberately NOT re-merged (R6 applies to `apply_split` only,
+        // see infer_evidence::merge_touching_same_project's doc comment):
+        // these pieces exist specifically to keep two different prior
+        // tickets apart, and each piece's own `jira_issue` is still None
+        // here — the real ticket is reattached later by persist_blocks'
+        // carry matching, so a same-project/same-(absent)-ticket check at
+        // this point can't tell a real split from a preserved one.
     }
     out
 }

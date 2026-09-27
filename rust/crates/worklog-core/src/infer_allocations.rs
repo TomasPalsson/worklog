@@ -67,6 +67,10 @@ pub(crate) fn apply_split(
     for w in windows {
         blocks = split_window(blocks, w, by_key);
     }
+    // R6: undo a spurious cut a window's own before/inside/after slicing
+    // can leave behind when the window's share is 100% the project that
+    // already owned the time on both sides.
+    blocks = crate::infer_evidence::merge_touching_same_project(blocks);
     blocks.sort_by_key(|b| b.started_at);
     blocks
 }
@@ -274,6 +278,33 @@ mod tests {
             .iter()
             .all(|b| b.dominant_project_path().as_deref() == Some(A)));
         assert_eq!(total, auto_total, "a split moves time, never adds it");
+    }
+
+    /// R6: a single-project allocation window (100% share to the project
+    /// that already dominates before and after it) is a spurious cut, not
+    /// a real split — apply_split must re-merge the resulting touching
+    /// pieces back into one block.
+    #[test]
+    fn single_project_allocation_window_does_not_fragment_the_block() {
+        // 60 min of continuous vitinn-infra activity, no real project
+        // switch anywhere.
+        let events: Vec<InferEvent> = (0..30).map(|i| ev(i * 2, A)).collect();
+        let auto = build_blocks(events.clone());
+        assert_eq!(auto.len(), 1, "one continuous single-project block");
+        // A window over the middle third, entirely re-allocated to the
+        // SAME project — this used to still cut before/inside/after into
+        // three pieces.
+        let window = AllocationWindow {
+            started_at: at(9, 20),
+            ended_at: at(9, 40),
+            shares: shares(&[("vitinn-infra", 1.0)]),
+        };
+        let blocks = apply_split(auto, &[window], &events_by_key(&events));
+        assert_eq!(
+            blocks.len(),
+            1,
+            "a single-project allocation must not fragment the block: {blocks:?}"
+        );
     }
 
     #[test]
