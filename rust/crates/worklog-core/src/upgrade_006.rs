@@ -46,8 +46,8 @@ fn delete_personal_rows(conn: &Connection, personal_user: Option<&str>) -> Resul
     let Some(user) = personal_user else {
         return Ok(());
     };
-    let mut stmt = conn
-        .prepare("SELECT id, repo FROM events WHERE source IN ('github_commit', 'github_pr')")?;
+    let mut stmt =
+        conn.prepare("SELECT id, repo FROM events WHERE source IN ('github_commit', 'github_pr')")?;
     let rows: Vec<(i64, Option<String>)> = stmt
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<std::result::Result<_, _>>()?;
@@ -146,13 +146,25 @@ mod tests {
         repo::upsert_event(conn, &ev).unwrap()
     }
 
-    fn resolver_always_local(folder: &'static str) -> (impl Fn(&str) -> Option<String>, impl Fn(&str, &str) -> bool)
-    {
-        (move |_repo: &str| Some(folder.to_owned()), |_f: &str, _sha: &str| true)
+    fn resolver_always_local(
+        folder: &'static str,
+    ) -> (impl Fn(&str) -> Option<String>, impl Fn(&str, &str) -> bool) {
+        (
+            move |_repo: &str| Some(folder.to_owned()),
+            |_f: &str, _sha: &str| true,
+        )
     }
 
     fn resolver_never_local() -> (impl Fn(&str) -> Option<String>, impl Fn(&str, &str) -> bool) {
         (|_repo: &str| None, |_f: &str, _sha: &str| false)
+    }
+
+    struct CarriedFields {
+        jira_issue: Option<String>,
+        description: Option<String>,
+        estimated_by: Option<String>,
+        tempo_worklog_id: Option<String>,
+        exported_at: Option<String>,
     }
 
     #[test]
@@ -199,26 +211,28 @@ mod tests {
         let (folder_for_repo, sha_is_local) = resolver_always_local("/work/worklog");
         run_with(&conn, None, folder_for_repo, sha_is_local).unwrap();
 
-        let (jira_issue, description, estimated_by, tempo_worklog_id, exported_at): (
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-        ) = conn
+        let carried = conn
             .query_row(
                 "SELECT jira_issue, description, estimated_by, tempo_worklog_id, exported_at
                    FROM blocks WHERE day = '2026-04-18'",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                |r| {
+                    Ok(CarriedFields {
+                        jira_issue: r.get(0)?,
+                        description: r.get(1)?,
+                        estimated_by: r.get(2)?,
+                        tempo_worklog_id: r.get(3)?,
+                        exported_at: r.get(4)?,
+                    })
+                },
             )
             .unwrap();
-        assert_eq!(jira_issue.as_deref(), Some("ABC-1"));
-        assert_eq!(description.as_deref(), Some("manual write-up"));
-        assert_eq!(estimated_by.as_deref(), Some("manual"));
-        assert_eq!(tempo_worklog_id.as_deref(), Some("999"));
+        assert_eq!(carried.jira_issue.as_deref(), Some("ABC-1"));
+        assert_eq!(carried.description.as_deref(), Some("manual write-up"));
+        assert_eq!(carried.estimated_by.as_deref(), Some("manual"));
+        assert_eq!(carried.tempo_worklog_id.as_deref(), Some("999"));
         assert_eq!(
-            exported_at.as_deref(),
+            carried.exported_at.as_deref(),
             Some("2026-04-19T00:00:00+00:00"),
             "A15: exported_at must survive the carry, or a rebuild un-marks billed work"
         );
