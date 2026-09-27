@@ -74,8 +74,8 @@ trimmed claude_tool raw_json).
 | T2b steady 15-min tick | 879.6 ms | 33.3 ms | 26.4× | ≤ 30 ms | ~ |
 | T2 tick (first of a window) | 1000.6 ms | 906.6 ms | 1.10× | — | |
 | T3 fresh-DB tick | 902.9 ms | 810.8 ms | 1.11× | ≤ 300 ms | no |
-| T4 day page | 15.3 ms | 5.9 ms | 2.6× | ≤ 3 ms | no |
-| T5 week page | 20.8 ms | 12.6 ms | 1.65× | ≤ 5 ms | no |
+| T4 day page | 15.3 ms | 2.9 ms | 5.3× | ≤ 3 ms | yes |
+| T5 week page | 20.8 ms | 7.2 ms | 2.9× | ≤ 5 ms | no |
 | T6 / T6b / T7 | 0.3 / 7.8 / 0.5 ms | same | 1.0× | don't regress | yes |
 | T8 CLI summary/week/list/infer | 29.6/41.1/29.3/56.6 ms | same | 1.0× | ≤ 5–10 ms | no |
 | T9 purge | 626.6 ms | 625.2 ms | 1.0× | ≤ 100 ms | no (two whole-DB copies are a safety feature) |
@@ -83,7 +83,7 @@ trimmed claude_tool raw_json).
 | T10 decide, repeat tick | 45.6 s | 0.024 s | ~1900× | ≤ 50 ms | yes |
 | T10 decide, new events | 42.1 s | 24.7 s | 1.7× | ≤ 4 s | no (model compute-bound; int8 and concurrency measured slower) |
 | T11 describe, 8 real blocks | 246.4 s | 51.5 s | 4.8× | ≤ 1 min/day | 8 blocks yes; 22-block day ~2.5 min |
-| S1 DB, same 9,636 events | 12.49 MB | 8.65 MB | −31% | owner: no visible change | closed |
+| S1 DB, same 9,636 events | 12.49 MB | 8.65 MB (+ ~8% for #13/#14 indexes) | ≈ −25% | owner: no visible change | closed |
 | Writes per steady tick (WAL) | 78.2 MB | 0.25 MB | ~300× | — | |
 | S3 footprint | 590 MB old backups | deleted | | | yes |
 
@@ -181,6 +181,8 @@ as small separate commits, and are announced to that session first. Never deploy
 | 10 | raw_json stored as raw-deflate BLOB when smaller; one decoder at the 3 SQL readers (TEXT legacy rows stay readable, corrupt BLOB → None, strict UTF-8); verify-006-capture.sh decodes before grepping for secrets | S1 | fresh 4-day ingest 12.16 → 8.65 MB (after VACUUM 11.88 → 8.38) | all 15 scenarios PASS (dumpDb inflates); planted-secret test; reviewer SHIP |
 | 11 | rolling window (4 workers pull the next call) instead of fixed chunks of 4 | T11 | chunked waits on each chunk's slowest call; unit test 12 calls: ~1700 → ~900 ms | order + ≤ 4 in flight asserted; reviewer: correct, test margin widened |
 | 12 | parse each transcript line once; one transaction per transcript file | T3 | 1602.8 → 1246.5 ms (1.29×); T2c 1.27× | T2/T2b/T2c/T3 PASS; reviewer caveat (failed COMMIT rolls back one file, re-read next tick) documented |
+| 13 | partial index `events(started_at) WHERE elsewhere = 1` (created after the column exists) | T4 | 5.7 → 4.3 ms | T4/T5 PASS; CLI PASS* (index line) |
+| 14 | covering partial index for infer::load_day_events `(started_at, id, …) WHERE elsewhere = 0` | T4, T5 | T4 4.3 → 2.9 ms, T5 12.3 → 7.2 ms; query 2.0 → 0.6 ms; +~3.4 MB/week | all PASS/PASS*; steady-state CLI/tick unchanged |
 | 7 | `transcript_file_cache` (perf/s-ticks R2): skip byte-identical `.jsonl`s on repeat ticks; fixed the BLOCK review found — purge now clears the cache in the same transaction (else a purged row never came back), a missing cached path invalidates its whole window (cross-file uuid ownership), and retention keeps at most one window | T2, T2b | T2b steady tick 1262 → 49 ms (25.5×); cache table ≈1.0 MB after 4 consecutive day ticks (was 5.1 MB unbounded) | T2/T2b/T2c/T9 PASS* (PERF_IGNORE for the new SCHEMA lines + purge's "bytes freed", both explained by the new table); 3 new unit tests incl. a purge→re-collect repro that fails without the fix; 991 tests pass |
 
 ## How to run
