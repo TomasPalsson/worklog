@@ -2378,8 +2378,10 @@ async fn list_elsewhere(
     State(state): State<Shared>,
     AxumPath(day): AxumPath<String>,
 ) -> Result<Json<Vec<elsewhere::ElsewhereItem>>, ApiError> {
-    let _ = (state, day);
-    unimplemented!("T006 GREEN")
+    let parsed = NaiveDate::parse_from_str(&day, "%Y-%m-%d")
+        .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{}`: {e}", day)))?;
+    let items = with_conn(state, move |c| elsewhere::list_for_day(c, parsed)).await?;
+    Ok(Json(items))
 }
 
 #[derive(Deserialize)]
@@ -2392,8 +2394,12 @@ async fn move_event_handler(
     AxumPath(id): AxumPath<i64>,
     Json(body): Json<MoveEventRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let _ = (state, id, body);
-    unimplemented!("T006 GREEN")
+    with_conn(state, move |c| {
+        elsewhere::move_into_block(c, id, body.block_id)
+    })
+    .await
+    .map_err(ApiError::NotFound)?;
+    Ok(Json(json!({ "moved": true })))
 }
 
 async fn routing_rules_list(
@@ -5310,7 +5316,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn move_event_moves_it_into_the_chosen_block_and_off_the_list() {
+    async fn move_event_moves_it_off_the_elsewhere_list() {
         let conn = open_memory().unwrap();
         conn.execute(
             "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
@@ -5329,11 +5335,8 @@ mod tests {
             ),
         )
         .unwrap();
-        conn.execute(
-            "UPDATE events SET elsewhere = 1 WHERE id = ?1",
-            params![id],
-        )
-        .unwrap();
+        conn.execute("UPDATE events SET elsewhere = 1 WHERE id = ?1", params![id])
+            .unwrap();
 
         let app = router(state_from_conn(conn));
         let resp = app
@@ -5357,11 +5360,15 @@ mod tests {
             .await
             .unwrap();
         let v = read_json(resp).await;
-        assert_eq!(v.as_array().unwrap().len(), 0, "moved event must leave the list");
+        assert_eq!(
+            v.as_array().unwrap().len(),
+            0,
+            "moved event must leave the list"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn move_event_404s_an_unknown_event() {
+    async fn move_event_elsewhere_404s_an_unknown_event() {
         let conn = open_memory().unwrap();
         conn.execute(
             "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
@@ -5385,7 +5392,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn move_event_404s_an_unknown_block() {
+    async fn move_event_elsewhere_404s_an_unknown_block() {
         let conn = open_memory().unwrap();
         let id = repo::upsert_event(
             &conn,
@@ -5397,11 +5404,8 @@ mod tests {
             ),
         )
         .unwrap();
-        conn.execute(
-            "UPDATE events SET elsewhere = 1 WHERE id = ?1",
-            params![id],
-        )
-        .unwrap();
+        conn.execute("UPDATE events SET elsewhere = 1 WHERE id = ?1", params![id])
+            .unwrap();
 
         let app = router(state_from_conn(conn));
         let resp = app
