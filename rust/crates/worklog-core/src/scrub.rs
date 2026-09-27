@@ -9,6 +9,15 @@ use regex::Regex;
 
 use crate::clues_contract::SECRET_PLACEHOLDER;
 
+/// Shared "does this name look like a secret" fragment, reused by
+/// `assignment_re`, `flag_assignment_re` and `quoted_value_re` so the
+/// keyword list lives in one place. The second alternative only fires on
+/// a `_key`/`-key` SUFFIX (`OPENAI_KEY`, `SECRET_KEY`) — never on an
+/// arbitrary word that merely contains "key" (`monkey`, `keyboard`),
+/// since neither has a literal `_`/`-` immediately before "key".
+const NAME_FRAGMENT: &str =
+    r"[\w.-]*(?:token|secret|password|passwd|pwd|api[_-]?key|private_key|credential)[\w.-]*|[\w.-]*(?:_key|-key)";
+
 /// Whole-match patterns: the entire match becomes the placeholder. `(?s)`
 /// only affects the PEM alternative — every other alternative's `.` is
 /// escaped (`\.`), so it stays a literal dot regardless of the flag.
@@ -19,8 +28,12 @@ fn whole_match_re() -> &'static Regex {
             r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
             r"|\bgh[oprsu]_[A-Za-z0-9]{36}\b",
             r"|\bgithub_pat_[A-Za-z0-9_]{20,}\b",
+            r"|\bglpat-[A-Za-z0-9_-]{20,}\b",
+            r"|\bnpm_[A-Za-z0-9]{36}\b",
             r"|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b",
-            r"|\bxox[abprs]-[A-Za-z0-9-]{8,}\b",
+            r"|\bxapp-\d+-[A-Za-z0-9-]{8,}\b",
+            r"|\bxoxe\.xoxp-[A-Za-z0-9-]{8,}\b",
+            r"|\bxox[abeprs]-[A-Za-z0-9-]{8,}\b",
             r"|\bsk-[A-Za-z0-9_-]{20,}\b",
             r"|\b(?:sk|rk)_live_[A-Za-z0-9]{10,}\b",
             r"|\bAIza[A-Za-z0-9_-]{35}\b",
@@ -30,17 +43,49 @@ fn whole_match_re() -> &'static Regex {
     })
 }
 
-/// `Authorization: Bearer <token>` / bare `Bearer <token>` — the word
-/// `Bearer` is kept, only the token is scrubbed.
-fn bearer_re() -> &'static Regex {
+/// A PEM block whose `-----BEGIN ... PRIVATE KEY-----` marker is never
+/// followed by a matching END — `whole_match_re` only pairs the two, so
+/// a truncated/streamed key would otherwise leak everything after BEGIN.
+/// Scrubs from the marker to the end of the string.
+fn unterminated_pem_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\b(Bearer\s+)[A-Za-z0-9\-._~+/=]+").unwrap())
+    RE.get_or_init(|| Regex::new(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*\z").unwrap())
 }
 
-/// `https://user:pass@host` → `https://[secret]@host`.
+/// `Authorization: Bearer <token>` / bare `Bearer <token>`, case
+/// insensitive (`bearer`, `BEARER`) — the matched word is kept verbatim,
+/// only the token is scrubbed.
+fn bearer_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)\b(bearer\s+)[A-Za-z0-9\-._~+/=]+").unwrap())
+}
+
+/// `Authorization: Basic <base64>`, case insensitive.
+fn basic_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)\b(basic\s+)[A-Za-z0-9+/=]+").unwrap())
+}
+
+/// `scheme://user:pass@host` → `scheme://[secret]@host`, for any URI
+/// scheme (`postgres`, `mongodb+srv`, `redis`, ...) and an optionally
+/// empty user (`redis://:pass@host`).
 fn url_creds_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(https?://)[^\s:/@]+:[^\s@]+@").unwrap())
+    RE.get_or_init(|| Regex::new(r"([A-Za-z][A-Za-z0-9+.-]*://)[^\s:/@]*:[^\s@]+@").unwrap())
+}
+
+/// `NAME="a whole quoted value"` / `'...'` — the entire quoted value
+/// becomes the placeholder (no quotes), so a multi-word secret can't
+/// leave a dangling fragment behind for `assignment_re`'s `\S+` to
+/// half-scrub. Must run before `assignment_re`.
+fn quoted_value_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(&format!(
+            r#"(?i)({NAME_FRAGMENT})([:=]\s*)("[^"]*"|'[^']*')"#
+        ))
+        .unwrap()
+    })
 }
 
 /// `NAME=value` / `NAME: value` (also matches after `export ` or `--`,
@@ -50,10 +95,7 @@ fn url_creds_re() -> &'static Regex {
 fn assignment_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(
-            r"(?i)(--)?\b([\w.-]*(?:token|secret|password|passwd|api_key|private_key)[\w.-]*)(\s*[:=]\s*)\S+",
-        )
-        .unwrap()
+        Regex::new(&format!(r"(?i)(--)?\b({NAME_FRAGMENT})(\s*[:=]\s*)\S+")).unwrap()
     })
 }
 
@@ -63,11 +105,22 @@ fn assignment_re() -> &'static Regex {
 fn flag_assignment_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(
-            r"(?i)(--[\w.-]*(?:token|secret|password|passwd|api_key|private_key)[\w.-]*)(\s+)\S+",
-        )
-        .unwrap()
+        Regex::new(&format!(r"(?i)(--(?:{NAME_FRAGMENT}))(\s+)\S+")).unwrap()
     })
+}
+
+/// `curl -u user:pass` / `curl --user user:pass` → `-u [secret]` —
+/// normalizes both flag spellings and scrubs the whole `user:pass` pair.
+fn curl_user_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?:-u|--user)\s+\S+:\S+").unwrap())
+}
+
+/// `sshpass -p X` (attached or spaced) — `sshpass` IS the password
+/// prompt bypass, so its `-p` is unconditionally a secret.
+fn sshpass_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(sshpass\s+-p)(\s*)\S+").unwrap())
 }
 
 /// Redact tokens, keys, passwords and private keys only. Emails and IPs
@@ -76,11 +129,20 @@ pub fn scrub_secrets(s: &str) -> String {
     let s = whole_match_re()
         .replace_all(s, SECRET_PLACEHOLDER)
         .into_owned();
+    let s = unterminated_pem_re()
+        .replace_all(&s, SECRET_PLACEHOLDER)
+        .into_owned();
     let s = bearer_re()
+        .replace_all(&s, format!("${{1}}{SECRET_PLACEHOLDER}").as_str())
+        .into_owned();
+    let s = basic_re()
         .replace_all(&s, format!("${{1}}{SECRET_PLACEHOLDER}").as_str())
         .into_owned();
     let s = url_creds_re()
         .replace_all(&s, format!("${{1}}{SECRET_PLACEHOLDER}@").as_str())
+        .into_owned();
+    let s = quoted_value_re()
+        .replace_all(&s, format!("${{1}}${{2}}{SECRET_PLACEHOLDER}").as_str())
         .into_owned();
     let s = assignment_re()
         .replace_all(
@@ -88,9 +150,34 @@ pub fn scrub_secrets(s: &str) -> String {
             format!("${{1}}${{2}}${{3}}{SECRET_PLACEHOLDER}").as_str(),
         )
         .into_owned();
-    flag_assignment_re()
+    let s = flag_assignment_re()
         .replace_all(&s, format!("${{1}}${{2}}{SECRET_PLACEHOLDER}").as_str())
-        .into_owned()
+        .into_owned();
+    let s = curl_user_re()
+        .replace_all(&s, format!("-u {SECRET_PLACEHOLDER}").as_str())
+        .into_owned();
+    let s = sshpass_re()
+        .replace_all(&s, format!("${{1}}${{2}}{SECRET_PLACEHOLDER}").as_str())
+        .into_owned();
+    scrub_mysql_password(&s)
+}
+
+/// mysql/mysqldump/mariadb's `-p` password flag, spaced or attached —
+/// gated on one of those program names appearing anywhere in `s`, since
+/// `-p` alone is far too generic to redact unconditionally (`mkdir -p`).
+fn scrub_mysql_password(s: &str) -> String {
+    static PROG: OnceLock<Regex> = OnceLock::new();
+    let prog = PROG.get_or_init(|| Regex::new(r"\b(?:mysql|mysqldump|mariadb)\b").unwrap());
+    if !prog.is_match(s) {
+        return s.to_string();
+    }
+    static FLAG: OnceLock<Regex> = OnceLock::new();
+    let flag = FLAG.get_or_init(|| Regex::new(r"(^|\s)(-p)(\s*)(\S+)").unwrap());
+    flag.replace_all(
+        s,
+        format!("${{1}}${{2}}${{3}}{SECRET_PLACEHOLDER}").as_str(),
+    )
+    .into_owned()
 }
 
 fn email_re() -> &'static Regex {
@@ -163,239 +250,7 @@ fn names_a_secret(key: &str) -> bool {
     .any(|word| key.contains(word))
 }
 
+// Tests live in scrub_test.rs (same module, split file for line budget).
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn scrub_json_scrubs_nested_strings_and_secret_keys() {
-        let token = fake_ghp();
-        let input = serde_json::json!({
-            "command": format!("curl -H 'Authorization: Bearer {token}' x"),
-            "nested": [{"api_token": "plain-looking-value"}],
-            "count": 3,
-            "path": "/Users/me/src/main.rs"
-        });
-        let out = scrub_json(&input);
-        assert!(!out.to_string().contains(&token));
-        assert_eq!(out["nested"][0]["api_token"], "[secret]");
-        assert_eq!(out["count"], 3);
-        assert_eq!(out["path"], "/Users/me/src/main.rs");
-    }
-
-    fn fake_ghp() -> String {
-        format!("ghp_{}", "a".repeat(36))
-    }
-
-    #[test]
-    fn scrub_github_token() {
-        let token = fake_ghp();
-        let input = format!("auth with {token} please");
-        assert_eq!(
-            scrub_secrets(&input),
-            "auth with [secret] please".to_string()
-        );
-    }
-
-    #[test]
-    fn scrub_github_pat() {
-        let token = format!("github_pat_{}", "b".repeat(30));
-        let input = format!("token: {token}");
-        assert_eq!(scrub_secrets(&input), "token: [secret]");
-    }
-
-    #[test]
-    fn scrub_aws_access_key_id() {
-        let key = format!("AKIA{}", "B".repeat(16));
-        let input = format!("key id is {key} in the config");
-        assert_eq!(scrub_secrets(&input), "key id is [secret] in the config");
-    }
-
-    #[test]
-    fn scrub_aws_secret_access_key_assignment() {
-        let value = "s".repeat(40);
-        let input = format!("aws_secret_access_key = {value}");
-        assert_eq!(scrub_secrets(&input), "aws_secret_access_key = [secret]");
-    }
-
-    #[test]
-    fn scrub_slack_token() {
-        let token = format!(
-            "xoxb-{}-{}-{}",
-            "1".repeat(11),
-            "2".repeat(12),
-            "c".repeat(24)
-        );
-        let input = format!("slack token {token} leaked");
-        assert_eq!(scrub_secrets(&input), "slack token [secret] leaked");
-    }
-
-    #[test]
-    fn scrub_anthropic_style_api_key() {
-        let key = format!("sk-ant-{}", "x".repeat(30));
-        let input = format!("export ANTHROPIC_API_KEY={key}");
-        // ANTHROPIC_API_KEY contains API_KEY -> name kept, value scrubbed.
-        assert_eq!(scrub_secrets(&input), "export ANTHROPIC_API_KEY=[secret]");
-    }
-
-    #[test]
-    fn scrub_bare_sk_api_key() {
-        let key = format!("sk-{}", "y".repeat(30));
-        let input = format!("using key {key} now");
-        assert_eq!(scrub_secrets(&input), "using key [secret] now");
-    }
-
-    #[test]
-    fn scrub_stripe_live_key() {
-        let key = format!("sk_live_{}", "9".repeat(24));
-        let input = format!("stripe key {key}");
-        assert_eq!(scrub_secrets(&input), "stripe key [secret]");
-    }
-
-    #[test]
-    fn scrub_google_api_key() {
-        let key = format!("AIza{}", "Q".repeat(35));
-        let input = format!("maps key {key}");
-        assert_eq!(scrub_secrets(&input), "maps key [secret]");
-    }
-
-    #[test]
-    fn scrub_jwt() {
-        let jwt = format!(
-            "eyJ{}.eyJ{}.{}",
-            "a".repeat(20),
-            "b".repeat(20),
-            "c".repeat(20)
-        );
-        let input = format!("jwt is {jwt} ok");
-        assert_eq!(scrub_secrets(&input), "jwt is [secret] ok");
-    }
-
-    #[test]
-    fn scrub_bearer_header() {
-        let tok = "z".repeat(40);
-        let input = format!("Authorization: Bearer {tok}");
-        assert_eq!(scrub_secrets(&input), "Authorization: Bearer [secret]");
-    }
-
-    #[test]
-    fn scrub_pem_private_key_block() {
-        let body = "QUJDREVGRw==\n".repeat(3);
-        let input = format!(
-            "before\n-----BEGIN RSA PRIVATE KEY-----\n{body}-----END RSA PRIVATE KEY-----\nafter"
-        );
-        assert_eq!(scrub_secrets(&input), "before\n[secret]\nafter");
-    }
-
-    #[test]
-    fn scrub_url_credentials() {
-        let pass = "p".repeat(12);
-        let input = format!("clone https://user:{pass}@host.example.com/repo.git now");
-        assert_eq!(
-            scrub_secrets(&input),
-            "clone https://[secret]@host.example.com/repo.git now"
-        );
-    }
-
-    #[test]
-    fn scrub_name_equals_value_assignment() {
-        let value = "t".repeat(30);
-        let input = format!("GITHUB_TOKEN={value}");
-        assert_eq!(scrub_secrets(&input), "GITHUB_TOKEN=[secret]");
-    }
-
-    #[test]
-    fn scrub_name_colon_value_assignment() {
-        let value = "h".repeat(16);
-        let input = format!("password: {value}");
-        assert_eq!(scrub_secrets(&input), "password: [secret]");
-    }
-
-    #[test]
-    fn scrub_cli_flag_password_space() {
-        let value = "s".repeat(16);
-        let input = format!("mysql --password {value} -u root");
-        assert_eq!(scrub_secrets(&input), "mysql --password [secret] -u root");
-    }
-
-    #[test]
-    fn scrub_cli_flag_password_equals() {
-        let value = "s".repeat(16);
-        let input = format!("mysql --password={value} -u root");
-        assert_eq!(scrub_secrets(&input), "mysql --password=[secret] -u root");
-    }
-
-    #[test]
-    fn scrub_does_not_alter_prose() {
-        let input = "fix token refresh in auth";
-        assert_eq!(scrub_secrets(input), input);
-    }
-
-    #[test]
-    fn scrub_does_not_alter_file_paths() {
-        let input = "see rust/crates/worklog-core/src/scrub.rs for details";
-        assert_eq!(scrub_secrets(input), input);
-    }
-
-    #[test]
-    fn scrub_does_not_alter_git_sha() {
-        let input = "commit 1234567890abcdef1234567890abcdef12345678 fixed it";
-        assert_eq!(scrub_secrets(input), input);
-    }
-
-    #[test]
-    fn scrub_does_not_alter_uuid() {
-        let input = "id 550e8400-e29b-41d4-a716-446655440000 created";
-        assert_eq!(scrub_secrets(input), input);
-    }
-
-    #[test]
-    fn scrub_does_not_alter_bare_password_word() {
-        let input = "please enter your password to continue";
-        assert_eq!(scrub_secrets(input), input);
-    }
-
-    #[test]
-    fn scrub_secrets_leaves_email_intact() {
-        let input = "contact tomas.ari.palsson@apro.is for access";
-        assert_eq!(scrub_secrets(input), input);
-    }
-
-    #[test]
-    fn scrub_secrets_is_idempotent() {
-        let token = fake_ghp();
-        let value = "t".repeat(20);
-        let input = format!(
-            "token {token}, GITHUB_TOKEN={value}, Bearer {value2}",
-            value2 = "q".repeat(30)
-        );
-        let once = scrub_secrets(&input);
-        let twice = scrub_secrets(&once);
-        assert_eq!(once, twice);
-    }
-
-    #[test]
-    fn scrub_identifiers_redacts_email() {
-        let input = "sent to tomas.ari.palsson@apro.is yesterday";
-        assert_eq!(scrub_identifiers(input), "sent to [secret] yesterday");
-    }
-
-    #[test]
-    fn scrub_identifiers_redacts_ipv4() {
-        let input = "connect to 10.20.30.40 over vpn";
-        assert_eq!(scrub_identifiers(input), "connect to [secret] over vpn");
-    }
-
-    #[test]
-    fn scrub_identifiers_redacts_aws_account_id() {
-        let input = format!("account {} is billed", "4".repeat(12));
-        assert_eq!(scrub_identifiers(&input), "account [secret] is billed");
-    }
-
-    #[test]
-    fn scrub_identifiers_also_redacts_secrets() {
-        let token = fake_ghp();
-        let input = format!("token {token} in use");
-        assert_eq!(scrub_identifiers(&input), "token [secret] in use");
-    }
-}
+#[path = "scrub_test.rs"]
+mod tests;
