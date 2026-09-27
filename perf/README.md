@@ -100,6 +100,24 @@ runs, 2026-09-27. CLI runs start on a fresh clone, so the DB file is cold in the
 - Space: `verdict-model/` holds model.onnx (inference) + model.safetensors (rlcd also loads a
   PyTorch copy as fallback) = 1.2 GB; ~600 MB of old DB backups sit in the data dir.
 
+## Next (resume here)
+
+Rebased on PR #54 @ `88d1d77` (it now runs `claude -p` with `--tools "" --strict-mcp-config
+--setting-sources project` itself). New baseline binary: `worklog-base2` built from HEAD.
+1. T4/T5: load the day's events once in `stitch_day_summary`; then cache each day summary
+   keyed by `PRAGMA data_version` + `total_changes()` (only DB inputs — audit first).
+2. T4: covering index `events(started_at, project_path)` for `unmapped_folders`.
+3. T2: skip transcript files unchanged since the last tick (keep resumed-session dedupe
+   semantics; oracle = tick on truncated fixture, then on full fixture).
+4. T11: run `claude -p` calls concurrently, commit in original order.
+5. T6: pre-filter Details SQL by the block's calendar day(s).
+6. T9: purge prefilter `started_at < date(cutoff,'+2 days') AND datetime(...) < datetime(...)`.
+7. S1: raw_json compression — plain zstd 1.9×, dictionary 3.1× (dictionary must not be
+   committed: trained on private data → store it in the DB).
+
+Owner decisions pending: `async: true` on the worklog hook; delete ~600 MB of old DB
+backups; int8/fp16 model (changes numerics); trimming never-displayed tool input.
+
 ## Coordination
 
 PR #54's session (`prep-block-clues` worktree) is live in `infer*`, `estimate.rs`,
