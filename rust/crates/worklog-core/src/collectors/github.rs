@@ -6,15 +6,18 @@
 //! attached as `jira_issue` on the event so the estimator has a strong
 //! signal to start from.
 
+use std::path::Path;
+
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use regex::Regex;
 use reqwest::blocking::Client;
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use serde::Deserialize;
 use tracing::debug;
 
 use crate::http::{self, RequestBuilderExt};
+use crate::local_clone;
 use crate::models::Event;
 use crate::repo;
 
@@ -95,23 +98,28 @@ pub fn collect_with(
         let jira_issue = jira_re
             .find(&c.commit.message)
             .map(|m| m.as_str().to_owned());
+        let folder = local_clone::folder_for_repo(&c.repository.full_name);
+        let is_local = folder
+            .as_deref()
+            .is_some_and(|f| local_clone::sha_is_local(Path::new(f), &c.sha));
         let ev = Event {
             id: None,
             source: "github_commit".into(),
-            source_id: c.sha,
+            source_id: c.sha.clone(),
             started_at: ts,
             ended_at: None,
             duration_seconds: None,
             title,
             details: Some(c.commit.message),
             repo: Some(c.repository.full_name),
-            project_path: None,
+            project_path: if is_local { folder } else { None },
             jira_issue,
             session_id: None,
             tempo_worklog_id: None,
             raw_json: None,
         };
         repo::upsert_event(conn, &ev)?;
+        mark_elsewhere(conn, &ev.source, &ev.source_id, !is_local)?;
         report.events_written += 1;
     }
 
@@ -141,6 +149,9 @@ pub fn collect_with(
         }
         let combined = format!("{} {}", p.title, p.body.as_deref().unwrap_or(""));
         let jira_issue = jira_re.find(&combined).map(|m| m.as_str().to_owned());
+        // Search API PRs carry no sha: a clone existing is enough to call it local.
+        let folder = local_clone::folder_for_repo(&repo_name);
+        let is_local = folder.is_some();
         let ev = Event {
             id: None,
             source: "github_pr".into(),
@@ -151,13 +162,14 @@ pub fn collect_with(
             title: format!("PR #{}: {}", p.number, p.title),
             details: p.body.clone(),
             repo: Some(repo_name),
-            project_path: None,
+            project_path: folder,
             jira_issue,
             session_id: None,
             tempo_worklog_id: None,
             raw_json: None,
         };
         repo::upsert_event(conn, &ev)?;
+        mark_elsewhere(conn, &ev.source, &ev.source_id, !is_local)?;
         report.events_written += 1;
     }
 
@@ -170,6 +182,15 @@ fn is_personal_owner(repo_full_name: &str, user: &str) -> bool {
         .split('/')
         .next()
         .is_some_and(|owner| owner.eq_ignore_ascii_case(user))
+}
+
+/// FR-04: a re-collect that later finds the sha locally must clear this.
+fn mark_elsewhere(conn: &Connection, source: &str, source_id: &str, elsewhere: bool) -> Result<()> {
+    conn.execute(
+        "UPDATE events SET elsewhere = ?1 WHERE source = ?2 AND source_id = ?3",
+        params![elsewhere as i64, source, source_id],
+    )?;
+    Ok(())
 }
 
 // ───────────────────────── JSON shapes ─────────────────────────
@@ -233,14 +254,14 @@ mod tests {
         }
     }
 
-    fn run(base: String) -> (CollectReport, Vec<Event>) {
+    fn run(base: String) -> (Connection, CollectReport, Vec<Event>) {
         let conn = open_memory().unwrap();
         let since = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
         let until = NaiveDate::from_ymd_opt(2026, 4, 19).unwrap();
         let report =
             collect_with(&conn, &auth(base), since, until, &http::client().unwrap()).unwrap();
         let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
-        (report, events)
+        (conn, report, events)
     }
 
     #[test]
@@ -263,7 +284,7 @@ mod tests {
             ]}));
         });
 
-        let (report, events) = run(server.base_url());
+        let (_conn, report, events) = run(server.base_url());
         assert_eq!(report.events_written, 2);
         assert_eq!(events.len(), 2);
 
@@ -339,7 +360,7 @@ mod tests {
             ]}));
         });
 
-        let (report, events) = run(server.base_url());
+        let (_conn, report, events) = run(server.base_url());
         assert_eq!(
             report.events_written, 2,
             "only the two org-owned events should be written"
@@ -368,19 +389,8 @@ mod tests {
             then.status(200).json_body(json!({"items": []}));
         });
 
-        let conn = open_memory().unwrap();
-        let since = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
-        let until = NaiveDate::from_ymd_opt(2026, 4, 19).unwrap();
-        collect_with(
-            &conn,
-            &auth(server.base_url()),
-            since,
-            until,
-            &http::client().unwrap(),
-        )
-        .unwrap();
-
-        let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+        let (conn, report, events) = run(server.base_url());
+        assert_eq!(report.events_written, 1);
         let commit = events
             .iter()
             .find(|e| e.source_id == "nowhere1")
@@ -394,7 +404,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(elsewhere, 1, "commit with no local clone must be flagged elsewhere");
+        assert_eq!(
+            elsewhere, 1,
+            "commit with no local clone must be flagged elsewhere"
+        );
     }
 
     #[test]
