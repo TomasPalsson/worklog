@@ -12,8 +12,13 @@ use crate::billing;
 /// True when `sha` is a commit reachable from `folder`'s own git history,
 /// or from the checkout of any submodule it declares. Any error (not a
 /// repo, git missing, unknown sha) is "not local" — D-07, FR-04.
-pub fn sha_is_local(_folder: &Path, _sha: &str) -> bool {
-    unimplemented!("T003 GREEN")
+pub fn sha_is_local(folder: &Path, sha: &str) -> bool {
+    if cat_file_has_commit(folder, sha) {
+        return true;
+    }
+    submodule_paths(folder)
+        .into_iter()
+        .any(|path| cat_file_has_commit(&folder.join(path), sha))
 }
 
 fn cat_file_has_commit(folder: &Path, sha: &str) -> bool {
@@ -62,8 +67,10 @@ pub fn folder_for_repo(repo: &str) -> Option<String> {
     resolve_folder_for_repo(Path::new(root), repo, billing::submodule_repo_map())
 }
 
-fn folder_for_repo_under(_root: &Path, _repo: &str) -> Option<String> {
-    unimplemented!("T003 GREEN")
+#[cfg(test)]
+fn folder_for_repo_under(root: &Path, repo: &str) -> Option<String> {
+    let map = billing::submodule_repo_map_under(root);
+    resolve_folder_for_repo(root, repo, &map)
 }
 
 fn resolve_folder_for_repo(
