@@ -630,3 +630,35 @@ fn export_rejects_unknown_format() {
         .failure()
         .stderr(predicate::str::contains("--format"));
 }
+
+// ─────────────────────────── `worklog pin` (B4) ───────────────────────────
+
+/// B4: pinning a name that resolves to no known customer or alias
+/// refuses, exits 2 (design.md §3), lists the known customers on
+/// stderr, and stores nothing.
+#[test]
+fn pin_refuses_unknown_customer() {
+    let home = TempDir::new().unwrap();
+    cmd(&home).args(["db", "migrate"]).assert().success();
+    cmd(&home)
+        .current_dir(home.path())
+        .args(["pin", "Sjukra tryggingar", "--session", "sess-1"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("APRÓ"));
+}
+
+/// Happy path: a name that resolves to a known customer pins the
+/// session and prints a confirmation naming the session and customer.
+#[test]
+fn pin_stores_a_known_customer() {
+    let home = TempDir::new().unwrap();
+    cmd(&home).args(["db", "migrate"]).assert().success();
+    cmd(&home)
+        .current_dir(home.path())
+        .args(["pin", "APRÓ", "--session", "sess-1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Pinned"))
+        .stdout(predicate::str::contains("APRÓ"));
+}

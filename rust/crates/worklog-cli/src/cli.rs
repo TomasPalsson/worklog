@@ -9,16 +9,17 @@ use std::io::{self, IsTerminal, Read, Write};
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 use worklog_core::{
-    billing, block_service,
+    billing, billing_registry, block_service,
     collectors::{
         claude_transcripts as claude_transcripts_col, fish as fish_col, gcal as gcal_col,
         github as gh, jira as jira_col, reflog as reflog_col, slack as slack_col,
         tempo as tempo_col,
     },
-    daemon as daemon_mod, db, estimate, hook, hook_run, http, infer,
+    daemon as daemon_mod, db, estimate, git, hook, hook_run, http, infer,
     paths::Paths,
-    personal as personal_mod, routing, routing_absorb, schedule, secrets, skill as skill_mod,
-    updater as upd,
+    personal as personal_mod, routing, routing_absorb, schedule, secrets,
+    session_pins::{self, PinError},
+    skill as skill_mod, updater as upd,
     verdict::VerdictClassifier,
     web as web_mod,
 };
@@ -280,6 +281,20 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
     Tag {
         #[command(subcommand)]
         sub: TagCmd,
+    },
+
+    /// Pin a customer to a Claude Code session from a given time on
+    /// (spec 008). Refuses names that don't resolve to a known customer
+    /// or alias.
+    Pin {
+        /// Customer name or alias (case-insensitive).
+        customer: String,
+        /// The Claude Code session id.
+        #[arg(long)]
+        session: String,
+        /// RFC-3339 timestamp the pin takes effect from. Default: now.
+        #[arg(long)]
+        at: Option<String>,
     },
 
     /// Claude Code hook — reads a JSON event from stdin and records it.
@@ -831,6 +846,11 @@ pub fn run_with<W: Write>(
             TagCmd::Work { glob } => cmd_tag_work(glob, out, cli.json),
             TagCmd::Reclassify { day } => cmd_tag_reclassify(day, out, cli.json),
         },
+        Cmd::Pin {
+            customer,
+            session,
+            at,
+        } => cmd_pin(&customer, &session, at, out),
         Cmd::HookRun => cmd_hook_run(),
         Cmd::Daemon { sub, socket, tcp } => match sub {
             None => cmd_daemon(socket, tcp),
@@ -3159,6 +3179,52 @@ fn cmd_tag_reclassify<W: Write>(day: Option<String>, out: &mut W, json: bool) ->
         )?;
     }
     Ok(())
+}
+
+/// `worklog pin <customer> --session <id> [--at <rfc3339>]` (spec 008,
+/// design.md contract T003). Exit codes: 0 pinned, 2 unknown customer
+/// (known customers listed on stderr, nothing stored), 1 any other error.
+fn cmd_pin<W: Write>(customer: &str, session: &str, at: Option<String>, out: &mut W) -> Result<()> {
+    let paths = Paths::resolve()?;
+    let conn = db::open(&paths.db)?;
+    let registry = billing_registry::Registry::load(&conn)?;
+    let at = match at {
+        Some(s) => chrono::DateTime::parse_from_rfc3339(&s)
+            .with_context(|| format!("invalid --at timestamp {s}"))?
+            .with_timezone(&chrono::Utc),
+        None => chrono::Utc::now(),
+    };
+    let cwd = std::env::current_dir().context("resolving cwd")?;
+    let branch = git::current_branch(&cwd);
+
+    match session_pins::pin(
+        &conn,
+        &registry,
+        session,
+        &cwd,
+        customer,
+        at,
+        branch.as_deref(),
+    ) {
+        Ok(stored) => {
+            let short: String = stored.session_id.chars().take(8).collect();
+            writeln!(
+                out,
+                "Pinned {short} to {} from {}",
+                stored.customer,
+                local_hhmm(&stored.from_at.to_rfc3339())
+            )?;
+            Ok(())
+        }
+        Err(PinError::UnknownCustomer { known }) => {
+            eprintln!(
+                "unknown customer {customer:?} — known customers: {}",
+                known.join(", ")
+            );
+            std::process::exit(2);
+        }
+        Err(PinError::Other(e)) => Err(e),
+    }
 }
 
 fn cmd_infer<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()> {
