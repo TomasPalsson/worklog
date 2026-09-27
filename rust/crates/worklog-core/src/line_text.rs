@@ -218,12 +218,20 @@ pub fn generate_with_default_provider(
 }
 
 /// Every distinct billing line of `day`, reported as `not_generated` with
-/// `reason` — used when the model invoker itself couldn't be built.
+/// `reason` — used when the model invoker itself couldn't be built. A
+/// hand-edited (manual-origin) line is skipped (FR-31): generation would
+/// have skipped it too, so it's not "not generated".
 fn report_for_invoker_error(conn: &Connection, day: &str, reason: &str) -> Result<LineTextReport> {
-    let keys = distinct_keys(conn, day)?;
+    let mut not_generated = Vec::new();
+    for key in distinct_keys(conn, day)? {
+        if stored_origin(conn, &key)? == Some(LineTextOrigin::Manual) {
+            continue;
+        }
+        not_generated.push((key, reason.to_string()));
+    }
     Ok(LineTextReport {
         generated: Vec::new(),
-        not_generated: keys.into_iter().map(|k| (k, reason.to_string())).collect(),
+        not_generated,
     })
 }
 

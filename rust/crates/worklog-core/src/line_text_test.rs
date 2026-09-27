@@ -377,3 +377,52 @@ fn line_text_invoker_error_reports_every_line_key_not_generated() {
         .iter()
         .all(|(_, reason)| reason == "provider not configured"));
 }
+
+#[test]
+fn line_text_invoker_error_skips_manual_origin_lines() {
+    // NF-5: a hand-edited line would have been skipped by generate_for_day
+    // too (FR-31) — an invoker-construction failure must not report it as
+    // "not generated" either, since generation was never going to touch
+    // it in the first place.
+    let conn = db::open_memory().unwrap();
+    let day = "2026-06-08";
+    pin_folder(&conn, "line-text-folder-manual", "Acme Corp");
+    pin_folder(&conn, "line-text-folder-auto", "Beta ehf");
+    seed_block(
+        &conn,
+        day,
+        "2026-06-08T09:00:00+00:00",
+        "2026-06-08T09:30:00+00:00",
+        1800,
+        "line-text-folder-manual",
+        "e1",
+    );
+    seed_block(
+        &conn,
+        day,
+        "2026-06-08T10:00:00+00:00",
+        "2026-06-08T10:30:00+00:00",
+        1800,
+        "line-text-folder-auto",
+        "e2",
+    );
+    let manual_key = BillingLineKey {
+        day: day.to_string(),
+        folder: "line-text-folder-manual".to_string(),
+        customer: "Acme Corp".to_string(),
+    };
+    set_manual(
+        &conn,
+        &manual_key,
+        "Eitthvað sem eigandinn skrifaði sjálfur.",
+    )
+    .unwrap();
+
+    let report = report_for_invoker_error(&conn, day, "provider not configured").unwrap();
+    assert!(report.generated.is_empty());
+    assert_eq!(report.not_generated.len(), 1, "{:?}", report.not_generated);
+    assert!(
+        report.not_generated.iter().all(|(k, _)| k != &manual_key),
+        "the hand-edited line must never be reported as not_generated"
+    );
+}
