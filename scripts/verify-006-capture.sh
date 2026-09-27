@@ -22,12 +22,28 @@ sqlite3 "$LIVE_DB" ".backup '$WORK/worklog.db'"
 export WORKLOG_HOME="$WORK"
 "$BIN" db migrate >/dev/null
 
+# S1: repo::upsert_event may store raw_json as a deflate BLOB when that's
+# smaller than the original TEXT (raw_json.rs). Decode it here so growth
+# and secret checks measure the ORIGINAL JSON, never compressed bytes —
+# otherwise this gate goes silently blind to secrets inside a BLOB.
 day_bytes() {
-  sqlite3 "$WORK/worklog.db" "SELECT COALESCE(SUM(
-      LENGTH(source) + LENGTH(source_id) + LENGTH(started_at) + LENGTH(title)
-      + COALESCE(LENGTH(details), 0) + COALESCE(LENGTH(project_path), 0)
-      + COALESCE(LENGTH(session_id), 0) + COALESCE(LENGTH(raw_json), 0)), 0)
-    FROM events WHERE started_at LIKE '$DAY%'"
+  python3 - "$WORK/worklog.db" "$DAY%" <<'PY'
+import sqlite3, sys, zlib
+conn = sqlite3.connect(sys.argv[1])
+total = 0
+for source, source_id, started_at, title, details, project_path, session_id, raw_json in conn.execute(
+    "SELECT source, source_id, started_at, title, details, project_path, "
+    "session_id, raw_json FROM events WHERE started_at LIKE ?",
+    (sys.argv[2],),
+):
+    total += len(source) + len(source_id) + len(started_at) + len(title)
+    total += len(details or "") + len(project_path or "") + len(session_id or "")
+    if raw_json is not None:
+        if isinstance(raw_json, bytes):
+            raw_json = zlib.decompress(raw_json, -15).decode("utf-8")
+        total += len(raw_json)
+print(total)
+PY
 }
 
 before=$(day_bytes)
@@ -39,9 +55,20 @@ after=$(day_bytes)
 growth=$((after - before))
 
 pattern='gh[oprsu]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{20,}|A(KIA|SIA)[0-9A-Z]{16}|xox[abprs]-[A-Za-z0-9-]{10,}|sk-ant-[A-Za-z0-9_-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|AIza[0-9A-Za-z_-]{35}|(sk|rk)_live_[A-Za-z0-9]{10,}'
-hits=$(sqlite3 "$WORK/worklog.db" \
-  "SELECT COALESCE(raw_json, '') || ' ' || title || ' ' || COALESCE(details, '') FROM events WHERE raw_json IS NOT NULL" \
-  | grep -Ec "$pattern" || true)
+hits=$(python3 - "$WORK/worklog.db" <<'PY' | grep -Ec "$pattern" || true
+import sqlite3, sys, zlib
+conn = sqlite3.connect(sys.argv[1])
+for raw_json, title, details in conn.execute(
+    "SELECT raw_json, title, details FROM events WHERE raw_json IS NOT NULL"
+):
+    if isinstance(raw_json, bytes):
+        try:
+            raw_json = zlib.decompress(raw_json, -15).decode("utf-8")
+        except Exception:
+            raw_json = ""
+    print((raw_json or "") + " " + title + " " + (details or ""))
+PY
+)
 
 rows=$(sqlite3 "$WORK/worklog.db" "SELECT source || ' ' || COUNT(*) FROM events WHERE started_at LIKE '$DAY%' AND raw_json IS NOT NULL GROUP BY source")
 echo "day: $DAY"

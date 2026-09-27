@@ -4,6 +4,8 @@
 //! FR-18). Adds no time to any block (FR-17).
 use super::CollectReport;
 use crate::clues_contract::{HelperKind, RawRecord, SOURCE_CLAUDE_HELPER, SOURCE_CLAUDE_MESSAGE};
+use crate::collectors::claude_agent_files::{self, AgentMeta};
+use crate::collectors::claude_transcript_cache;
 use crate::collectors::claude_transcripts::{line_key, Window};
 use crate::collectors::fish::repo_root_for;
 use crate::models::Event;
@@ -14,7 +16,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 use serde_json::Value;
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// What Claude did in one minute, as names and paths only.
 pub(super) struct WorkMinute {
@@ -211,39 +213,6 @@ pub(super) fn emit_helper_minute(
     Ok(())
 }
 
-/// `agentType`/`description`/`taskKind` from an `agent-<id>.meta.json`
-/// sibling; missing or unreadable meta falls back to a bare "subagent".
-struct AgentMeta {
-    helper_kind: HelperKind,
-    title: String,
-}
-
-#[derive(serde::Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct RawAgentMeta {
-    agent_type: Option<String>,
-    description: Option<String>,
-    task_kind: Option<String>,
-}
-
-fn read_agent_meta(jsonl_path: &Path) -> AgentMeta {
-    let meta_path = jsonl_path.with_extension("meta.json");
-    let raw: RawAgentMeta = std::fs::read_to_string(&meta_path)
-        .ok()
-        .and_then(|c| serde_json::from_str(&c).ok())
-        .unwrap_or_default();
-    let title = match (raw.agent_type, raw.description) {
-        (Some(t), Some(d)) => format!("{t}: {d}"),
-        _ => "subagent".to_string(),
-    };
-    let helper_kind = if raw.task_kind.as_deref() == Some("in_process_teammate") {
-        HelperKind::Teammate
-    } else {
-        HelperKind::Subagent
-    };
-    AgentMeta { helper_kind, title }
-}
-
 /// Every `agent-*.jsonl` directly in `subagents_dir` and under
 /// `subagents_dir/workflows/*/` (never `journal.jsonl`).
 pub(super) fn collect_helpers_for_session(
@@ -253,7 +222,7 @@ pub(super) fn collect_helpers_for_session(
     seen: &mut HashSet<String>,
     report: &mut CollectReport,
 ) -> Result<()> {
-    for path in agent_files_in(subagents_dir) {
+    for path in claude_agent_files::agent_files_in(subagents_dir) {
         process_agent_file(conn, &path, win, seen, report)?;
     }
     let Ok(workflow_dirs) = std::fs::read_dir(subagents_dir.join("workflows")) else {
@@ -263,26 +232,11 @@ pub(super) fn collect_helpers_for_session(
         if !entry.path().is_dir() {
             continue;
         }
-        for path in agent_files_in(&entry.path()) {
+        for path in claude_agent_files::agent_files_in(&entry.path()) {
             process_agent_file(conn, &path, win, seen, report)?;
         }
     }
     Ok(())
-}
-
-fn agent_files_in(dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("agent-") && n.ends_with(".jsonl"))
-        })
-        .collect()
 }
 
 fn process_agent_file(
@@ -298,17 +252,35 @@ fn process_agent_file(
     let Ok(modified) = meta.modified() else {
         return Ok(());
     };
-    let modified_ts = modified
+    let mtime_ns = modified
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
+        .map(|d| d.as_nanos() as i64)
         .unwrap_or(0);
+    let modified_ts = mtime_ns / 1_000_000_000;
     // Only files untouched since before the window can be skipped: an
     // agent still writing after `until` holds lines from inside it.
     if modified_ts < win.since_ts {
         return Ok(());
     }
-    let agent_meta = read_agent_meta(path);
-    collect_agent_file(conn, path, &agent_meta, win, seen, report)
+
+    let path_str = path.to_string_lossy().into_owned();
+    // Helper files never consult background-job state, so the cache key's
+    // extra tag is a fixed empty string (see claude_transcripts.rs).
+    claude_transcript_cache::skip_or_read(
+        conn,
+        &path_str,
+        win.since_ts,
+        win.until_ts,
+        meta.len(),
+        mtime_ns,
+        "",
+        seen,
+        report,
+        |seen, claimed, report| {
+            let agent_meta = claude_agent_files::read_agent_meta(path);
+            collect_agent_file(conn, path, &agent_meta, win, seen, claimed, report)
+        },
+    )
 }
 
 fn collect_agent_file(
@@ -317,6 +289,7 @@ fn collect_agent_file(
     meta: &AgentMeta,
     win: &Window,
     seen: &mut HashSet<String>,
+    claimed: &mut Vec<String>,
     report: &mut CollectReport,
 ) -> Result<()> {
     let Ok(content) = std::fs::read_to_string(path) else {
@@ -338,7 +311,7 @@ fn collect_agent_file(
         let Some(key) = line_key(&value, win.since_ts, win.until_ts) else {
             continue;
         };
-        if !seen.insert(key.uuid.to_string()) {
+        if !claude_transcript_cache::claim(seen, claimed, key.uuid) {
             continue;
         }
         let project_path = value

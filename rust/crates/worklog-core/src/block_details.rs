@@ -51,7 +51,10 @@ pub fn details_for_block(conn: &Connection, block_id: i64) -> Result<Vec<DetailR
     if !session_ids.is_empty() {
         let span_start = parse_ts(&block.started_at);
         let span_end = parse_ts(&block.ended_at);
-        let candidates = helper_activity_for_sessions(conn, &session_ids)?;
+        let day_bounds = span_start
+            .zip(span_end)
+            .map(|(s, en)| widen_day_bounds(s, en));
+        let candidates = helper_activity_for_sessions(conn, &session_ids, day_bounds.as_ref())?;
         events.extend(candidates.into_iter().filter(|e| {
             if e.id.is_some_and(|id| linked_ids.contains(&id)) {
                 return false;
@@ -94,12 +97,29 @@ fn to_detail_row(e: Event) -> DetailRow {
     }
 }
 
-/// `claude_tool`/`claude_helper`/`claude_message` events for any of
-/// `session_ids` — one query regardless of how many sessions the block
-/// touches. Span filtering happens in Rust (`parse_ts`) because blocks
-/// and events store ISO strings in slightly different formats.
-fn helper_activity_for_sessions(conn: &Connection, session_ids: &[String]) -> Result<Vec<Event>> {
+/// Calendar-day bounds (`YYYY-MM-DD`) for a coarse SQL pre-filter on `events.started_at`: a naive timestamp's
+/// leading date is already its UTC date, and an RFC3339 offset shifts only the instant, so the date written is at
+/// most one UTC day off. Widening the span's UTC days by one day each side is thus a superset for every
+/// `parse_ts`-accepted format, so SQL can only ever remove rows the Rust filter below would remove too.
+fn widen_day_bounds(span_start: DateTime<Utc>, span_end: DateTime<Utc>) -> (String, String) {
+    let lo = span_start.date_naive() - chrono::Duration::days(1);
+    let hi = span_end.date_naive() + chrono::Duration::days(1);
+    (
+        lo.format("%Y-%m-%d").to_string(),
+        hi.format("%Y-%m-%d").to_string(),
+    )
+}
+
+/// `claude_tool`/`claude_helper`/`claude_message` events for any of `session_ids` — one query regardless of how
+/// many sessions the block touches. `day_bounds` narrows the SQL pre-filter (see `widen_day_bounds`); the exact
+/// filter still runs in Rust (`parse_ts`) since blocks/events use slightly different ISO formats.
+fn helper_activity_for_sessions(
+    conn: &Connection,
+    session_ids: &[String],
+    day_bounds: Option<&(String, String)>,
+) -> Result<Vec<Event>> {
     let placeholders = vec!["?"; session_ids.len()].join(",");
+    let day_filter = day_bounds.map_or("", |_| " AND substr(started_at, 1, 10) BETWEEN ? AND ?");
     let sql = format!(
         "SELECT id, source, source_id, started_at, ended_at,
                 duration_seconds, title, details, repo,
@@ -107,7 +127,7 @@ fn helper_activity_for_sessions(conn: &Connection, session_ids: &[String]) -> Re
                 tempo_worklog_id, raw_json
            FROM events
           WHERE source IN (?, ?, ?)
-            AND session_id IN ({placeholders})"
+            AND session_id IN ({placeholders}){day_filter}"
     );
     let mut stmt = conn.prepare(&sql)?;
     let params = [
@@ -116,7 +136,12 @@ fn helper_activity_for_sessions(conn: &Connection, session_ids: &[String]) -> Re
         SOURCE_CLAUDE_MESSAGE,
     ]
     .into_iter()
-    .chain(session_ids.iter().map(String::as_str));
+    .chain(session_ids.iter().map(String::as_str))
+    .chain(
+        day_bounds
+            .into_iter()
+            .flat_map(|(lo, hi)| [lo.as_str(), hi.as_str()]),
+    );
     let rows = stmt.query_map(params_from_iter(params), |r| {
         Ok(Event {
             id: Some(r.get(0)?),
@@ -132,7 +157,7 @@ fn helper_activity_for_sessions(conn: &Connection, session_ids: &[String]) -> Re
             jira_issue: r.get(10)?,
             session_id: r.get(11)?,
             tempo_worklog_id: r.get(12)?,
-            raw_json: r.get(13)?,
+            raw_json: crate::raw_json::decode_raw_json(r, 13)?,
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -154,231 +179,7 @@ fn parse_ts(s: &str) -> Option<DateTime<Utc>> {
     None
 }
 
+// Tests live in block_details_test.rs (same module, split file for line budget).
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::db;
-    use rusqlite::params;
-
-    const START: &str = "2026-04-18T09:00:00+00:00";
-    const END: &str = "2026-04-18T09:30:00+00:00";
-
-    fn seed_block(conn: &Connection, start: &str, end: &str) -> i64 {
-        conn.execute(
-            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
-             VALUES ('2026-04-18', ?1, ?2, 1800)",
-            params![start, end],
-        )
-        .unwrap();
-        conn.last_insert_rowid()
-    }
-
-    fn seed_event(conn: &Connection, source: &str, source_id: &str, started_at: &str) -> i64 {
-        repo::upsert_event(
-            conn,
-            &Event::minimal(source, source_id, started_at, "title"),
-        )
-        .unwrap()
-    }
-
-    fn set_raw(conn: &Connection, event_id: i64, raw: &str) {
-        conn.execute(
-            "UPDATE events SET raw_json = ?1 WHERE id = ?2",
-            params![raw, event_id],
-        )
-        .unwrap();
-    }
-
-    fn set_session(conn: &Connection, event_id: i64, session_id: &str) {
-        conn.execute(
-            "UPDATE events SET session_id = ?1 WHERE id = ?2",
-            params![session_id, event_id],
-        )
-        .unwrap();
-    }
-
-    fn link(conn: &Connection, block_id: i64, event_id: i64) {
-        conn.execute(
-            "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
-            params![block_id, event_id],
-        )
-        .unwrap();
-    }
-
-    fn tool_raw(session_id: &str) -> String {
-        serde_json::to_string(&RawRecord::ClaudeTool {
-            session_id: session_id.to_string(),
-            tool: "Bash".to_string(),
-            input: serde_json::json!({}),
-            output: None,
-            output_cut_bytes: 0,
-            files: vec![],
-        })
-        .unwrap()
-    }
-
-    #[test]
-    fn block_details_unknown_block_errors() {
-        let conn = db::open_memory().unwrap();
-        assert!(details_for_block(&conn, 999).is_err());
-    }
-
-    #[test]
-    fn block_details_time_orders_linked_events_with_parsed_raw() {
-        let conn = db::open_memory().unwrap();
-        let bid = seed_block(&conn, START, END);
-        // Inserted out of time order to prove the result is sorted, not
-        // insertion-ordered.
-        let e_later = seed_event(&conn, "shell", "a", "2026-04-18T09:10:00+00:00");
-        set_raw(
-            &conn,
-            e_later,
-            &serde_json::to_string(&RawRecord::Shell {
-                command: "ls".to_string(),
-                cwd: None,
-            })
-            .unwrap(),
-        );
-        let e_earlier = seed_event(&conn, "claude_prompt", "b", "2026-04-18T09:05:00+00:00");
-        set_raw(
-            &conn,
-            e_earlier,
-            &serde_json::to_string(&RawRecord::ClaudePrompt {
-                session_id: "s1".to_string(),
-                text: "fix bug".to_string(),
-            })
-            .unwrap(),
-        );
-        link(&conn, bid, e_later);
-        link(&conn, bid, e_earlier);
-
-        let rows = details_for_block(&conn, bid).unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].id, e_earlier);
-        assert_eq!(rows[1].id, e_later);
-        assert_eq!(
-            rows[0].raw,
-            Some(RawRecord::ClaudePrompt {
-                session_id: "s1".to_string(),
-                text: "fix bug".to_string(),
-            })
-        );
-        assert_eq!(
-            rows[1].raw,
-            Some(RawRecord::Shell {
-                command: "ls".to_string(),
-                cwd: None,
-            })
-        );
-    }
-
-    #[test]
-    fn block_details_includes_claude_tool_row_of_linked_session_inside_span() {
-        let conn = db::open_memory().unwrap();
-        let bid = seed_block(&conn, START, END);
-        let prompt = seed_event(&conn, "claude_prompt", "p", "2026-04-18T09:05:00+00:00");
-        set_session(&conn, prompt, "s1");
-        link(&conn, bid, prompt);
-
-        let tool = seed_event(
-            &conn,
-            SOURCE_CLAUDE_TOOL,
-            "s1:1",
-            "2026-04-18T09:12:00+00:00",
-        );
-        set_session(&conn, tool, "s1");
-        set_raw(&conn, tool, &tool_raw("s1"));
-
-        let rows = details_for_block(&conn, bid).unwrap();
-        assert_eq!(rows.len(), 2);
-        assert!(rows.iter().any(|r| r.id == tool));
-    }
-
-    #[test]
-    fn block_details_excludes_claude_tool_row_outside_span() {
-        let conn = db::open_memory().unwrap();
-        let bid = seed_block(&conn, START, END);
-        let prompt = seed_event(&conn, "claude_prompt", "p", "2026-04-18T09:05:00+00:00");
-        set_session(&conn, prompt, "s1");
-        link(&conn, bid, prompt);
-
-        // Outside [09:00, 09:30].
-        let tool = seed_event(
-            &conn,
-            SOURCE_CLAUDE_TOOL,
-            "s1:1",
-            "2026-04-18T10:00:00+00:00",
-        );
-        set_session(&conn, tool, "s1");
-        set_raw(&conn, tool, &tool_raw("s1"));
-
-        let rows = details_for_block(&conn, bid).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert!(rows.iter().all(|r| r.id != tool));
-    }
-
-    #[test]
-    fn block_details_excludes_claude_tool_row_from_unrelated_session() {
-        let conn = db::open_memory().unwrap();
-        let bid = seed_block(&conn, START, END);
-        let prompt = seed_event(&conn, "claude_prompt", "p", "2026-04-18T09:05:00+00:00");
-        set_session(&conn, prompt, "s1");
-        link(&conn, bid, prompt);
-
-        // Inside the span, but a different session than any linked event.
-        let tool = seed_event(
-            &conn,
-            SOURCE_CLAUDE_TOOL,
-            "s2:1",
-            "2026-04-18T09:12:00+00:00",
-        );
-        set_session(&conn, tool, "s2");
-        set_raw(&conn, tool, &tool_raw("s2"));
-
-        let rows = details_for_block(&conn, bid).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert!(rows.iter().all(|r| r.id != tool));
-    }
-
-    #[test]
-    fn block_details_malformed_raw_json_yields_none() {
-        let conn = db::open_memory().unwrap();
-        let bid = seed_block(&conn, START, END);
-        let e = seed_event(&conn, "shell", "a", "2026-04-18T09:10:00+00:00");
-        set_raw(&conn, e, "{not json");
-        link(&conn, bid, e);
-
-        let rows = details_for_block(&conn, bid).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].raw, None);
-    }
-
-    #[test]
-    fn block_details_thousand_events_under_one_second() {
-        let conn = db::open_memory().unwrap();
-        let bid = seed_block(
-            &conn,
-            "2026-04-18T00:00:00+00:00",
-            "2026-04-18T23:59:59+00:00",
-        );
-        for i in 0..1000 {
-            let started_at = format!("2026-04-18T{:02}:{:02}:00+00:00", i / 60 % 24, i % 60);
-            let e = seed_event(&conn, SOURCE_CLAUDE_TOOL, &format!("s1:{i}"), &started_at);
-            set_session(&conn, e, "s1");
-            set_raw(&conn, e, &tool_raw("s1"));
-            link(&conn, bid, e);
-        }
-
-        let start = std::time::Instant::now();
-        let rows = details_for_block(&conn, bid).unwrap();
-        let elapsed = start.elapsed();
-
-        assert_eq!(rows.len(), 1000);
-        assert!(
-            elapsed.as_secs_f64() < 1.0,
-            "details_for_block took {elapsed:?}, want < 1s"
-        );
-        assert!(rows.windows(2).all(|w| w[0].started_at <= w[1].started_at));
-        assert!(matches!(rows[0].raw, Some(RawRecord::ClaudeTool { .. })));
-    }
-}
+#[path = "block_details_test.rs"]
+mod tests;

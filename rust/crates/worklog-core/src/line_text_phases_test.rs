@@ -126,6 +126,69 @@ fn prepare_invoke_commit_round_trip_generates_and_stores() {
     assert_eq!(origin, crate::clues_contract::LineTextOrigin::Generated);
 }
 
+/// SLICE T11 round 2: a fake invoker whose `invoke_many` reuses the same
+/// production `bounded_concurrent_invoke` helper `ClaudeSubprocess` /
+/// `LiteLLMInvoker` do — each call sleeps 200ms. Proves both the timing
+/// win (bounded to `MAX_CONCURRENT_INVOKES` at once, not run one at a
+/// time) and that `invoke_many` zips every reply back onto its OWN prep
+/// regardless of completion order (`bounded_concurrent_invoke` always
+/// returns in `users`' order, but a wrong caller could still zip a
+/// shuffled `Vec` onto the wrong preps).
+struct SlowEchoInvoker;
+
+impl crate::estimate::ModelInvoker for SlowEchoInvoker {
+    fn invoke(
+        &self,
+        _s: &str,
+        user: &str,
+        _sc: &serde_json::Value,
+        _m: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        Ok(serde_json::json!({"text": format!("{GOOD_TEXT} ({user})")}))
+    }
+
+    fn invoke_many(
+        &self,
+        system: &str,
+        users: &[String],
+        schema: &serde_json::Value,
+        model: &str,
+    ) -> Vec<anyhow::Result<serde_json::Value>> {
+        crate::claude_subprocess::bounded_concurrent_invoke(self, system, users, schema, model)
+    }
+}
+
+#[test]
+fn invoke_many_runs_concurrently_and_keeps_reply_order() {
+    let preps: Vec<Prep> = (0..6)
+        .map(|i| Prep {
+            key: crate::clues_contract::BillingLineKey {
+                day: "2026-07-04".to_string(),
+                folder: format!("line-text-phase-concurrent-folder-{i}"),
+                customer: format!("Customer {i}"),
+            },
+            user_msg: format!("prompt-{i}"),
+        })
+        .collect();
+
+    let started = std::time::Instant::now();
+    let replies = invoke_many(&preps, &SlowEchoInvoker, "model");
+    let elapsed = started.elapsed();
+
+    for (i, reply) in replies.iter().enumerate() {
+        assert_eq!(reply, &Ok(format!("{GOOD_TEXT} (prompt-{i})")));
+    }
+    // Sequential would be 6 * 200ms = 1200ms; bounded concurrency
+    // (MAX_CONCURRENT_INVOKES) runs them in parallel, ~200–400ms. Generous headroom
+    // for CI/scheduling noise while still proving it's nowhere near
+    // sequential.
+    assert!(
+        elapsed < std::time::Duration::from_millis(900),
+        "invoke_many took {elapsed:?}, expected well under the 1200ms sequential time"
+    );
+}
+
 #[test]
 fn prepare_skips_an_already_manual_line() {
     let conn = db::open_memory().unwrap();

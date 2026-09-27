@@ -5,6 +5,8 @@ use crate::estimate::{parse_response, ModelInvoker};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::thread::JoinHandle;
 use std::time::Instant;
 
@@ -106,6 +108,77 @@ impl ModelInvoker for ClaudeSubprocess {
         let (child, out_handle, err_handle) = spawn_and_feed(&args, &envs, user)?;
         wait_for_reply(child, out_handle, err_handle, self.timeout_secs())
     }
+
+    fn invoke_many(
+        &self,
+        system: &str,
+        users: &[String],
+        schema: &Value,
+        model: &str,
+    ) -> Vec<Result<Value>> {
+        bounded_concurrent_invoke(self, system, users, schema, model)
+    }
+}
+
+/// Upper bound on simultaneous `invoke` calls a single [`bounded_concurrent_invoke`]
+/// batch runs at once — each `claude -p` shell-out / LiteLLM HTTP call is
+/// I/O-bound (waiting on the model, not this machine's CPU), so a handful
+/// of them in flight together shortens the day/line-text passes without
+/// the core contention T10's concurrency probe found for compute-bound
+/// work (see perf/README.md). Measured on a real 22-block day with
+/// `claude -p` on haiku: 4 → 160 s, 8 → 78 s, 22/22 replies ok.
+const MAX_CONCURRENT_INVOKES: usize = 8;
+
+/// Shared `invoke_many` fan-out for invokers whose `invoke` is safe to
+/// call from multiple threads at once (`ClaudeSubprocess`'s `claude -p`
+/// shell-out, `LiteLLMInvoker`'s HTTP call). A rolling window of
+/// `min(`[`MAX_CONCURRENT_INVOKES`]`, users.len())` worker threads each
+/// pull the next index off a shared counter until none remain, so a
+/// fast call is immediately followed by another instead of waiting out
+/// its chunk's slowest call. Always returns results in `users`' order,
+/// regardless of which call finishes first, so a caller can zip them
+/// back onto its own per-item state unchanged (SLICE T11).
+pub(crate) fn bounded_concurrent_invoke<I: ModelInvoker + Sync>(
+    invoker: &I,
+    system: &str,
+    users: &[String],
+    schema: &Value,
+    model: &str,
+) -> Vec<Result<Value>> {
+    let n = users.len();
+    let slots: Vec<Mutex<Option<Result<Value>>>> = (0..n).map(|_| Mutex::new(None)).collect();
+    let next = AtomicUsize::new(0);
+    let worker_count = MAX_CONCURRENT_INVOKES.min(n);
+    std::thread::scope(|scope| {
+        for _ in 0..worker_count {
+            let slots = &slots;
+            let next = &next;
+            scope.spawn(move || loop {
+                let i = next.fetch_add(1, Ordering::SeqCst);
+                if i >= n {
+                    return;
+                }
+                // Catch a panic per item (not per worker thread) so one
+                // bad call doesn't take the rest of this worker's share
+                // of the index range down with it — same "one thread's
+                // panic maps to one item's Err" contract the old
+                // per-chunk `join()` gave every call.
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    invoker.invoke(system, &users[i], schema, model)
+                }))
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("invoke thread panicked")));
+                *slots[i].lock().unwrap() = Some(result);
+            });
+        }
+    });
+    slots
+        .into_iter()
+        .map(|slot| {
+            slot.into_inner()
+                .unwrap_or(None)
+                .unwrap_or_else(|| Err(anyhow::anyhow!("invoke result missing")))
+        })
+        .collect()
 }
 
 /// Spawns `claude`, starts draining its stdout/stderr pipes on their own

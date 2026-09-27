@@ -16,6 +16,7 @@ groups (no renormalisation). `--self-test` exercises those two pure
 functions on fakes, so it runs with the system python3 — it never
 imports rlcd.
 """
+import functools
 import json
 import os
 import sys
@@ -80,9 +81,15 @@ def classify(state, options):
         # Verdict favours a lone named option whatever the text says (measured: a PR link
         # 0.63 vs "pool" 0.56), so one candidate is never guessed — a rule covers it.
         return options[0], 0.0, 0.0, 1.0
+    return _evaluate(json.dumps(state), tuple(options))
+
+
+# The model is deterministic (same input, same probabilities), and the 15-min tick asks
+# again about every event it left unsorted, so an answer is computed once per server.
+@functools.lru_cache(maxsize=4096)
+def _evaluate(context, options):
     from rlcd import Choice, Option
 
-    context = json.dumps(state)
     queries = [
         Choice(
             id=str(index),

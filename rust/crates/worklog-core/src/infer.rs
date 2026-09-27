@@ -509,7 +509,7 @@ fn infer_event_row(r: &rusqlite::Row) -> rusqlite::Result<InferEvent> {
         .unwrap_or_else(|_| Utc::now());
     let source: String = r.get(1)?;
     let db_title: Option<String> = r.get(7)?;
-    let raw_json: Option<String> = r.get(8)?;
+    let raw_json = crate::raw_json::decode_raw_json(r, 8)?;
     let title = if source == "claude_turn" {
         raw_json
             .as_deref()

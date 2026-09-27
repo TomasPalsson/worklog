@@ -632,14 +632,19 @@ async fn day_summary(
 fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
     let blocks = repo::list_blocks_for_day(conn, day)?;
     let day_parsed = NaiveDate::parse_from_str(day, "%Y-%m-%d").ok();
-    let overlaps = day_parsed
-        .map(|d| overlaps::day_overlaps(conn, d))
-        .transpose()?
-        .unwrap_or_default();
-    let activity = day_parsed
-        .map(|d| overlaps::day_activity(conn, d))
-        .transpose()?
-        .unwrap_or_default();
+    // `overlaps::day_overlaps` and `overlaps::day_activity` each called
+    // `infer::load_day_events` for the same day; load it once here and
+    // feed both via their `_from_events`/preloaded-slice variants.
+    let (overlaps, activity) = match day_parsed {
+        Some(d) => {
+            let events = infer::load_day_events(conn, d)?;
+            (
+                overlaps::day_overlaps_from_events(conn, d, &events)?,
+                overlaps::compute_activity(&events),
+            )
+        }
+        None => (vec![], vec![]),
+    };
     let allocations: Vec<SavedAllocation> = day_parsed
         .map(|d| overlaps::load_allocations(conn, d))
         .transpose()?
