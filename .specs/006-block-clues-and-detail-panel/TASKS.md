@@ -30,7 +30,7 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core in
 ## Phase 2 — Capture everything locally (phase B)
 Goal: every existing source stores what it reads, secret-scrubbed, including helper activity.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core collectors scrub` — green with the UI untouched.
-- [ ] T007 Secret scrubber (FR-11, B6) — files: rust/crates/worklog-core/src/scrub.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core scrub` — after: CHK001
+- [x] T007 Secret scrubber (FR-11, B6) — files: rust/crates/worklog-core/src/scrub.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core scrub` — after: CHK001 — done: fe87315
 - [ ] T008 [P] Shell: full command + cwd into RawRecord::Shell (FR-12) — files: rust/crates/worklog-core/src/collectors/fish.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core collectors::fish` — after: T007
 - [ ] T009 [P] Reflog: full message into RawRecord::Reflog (FR-13) — files: rust/crates/worklog-core/src/collectors/reflog.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core collectors::reflog` — after: T007
 - [ ] T010 [P] Transcripts: prompt text, tool inputs, outputs capped at 2 KB, files (FR-14, FR-15) — files: rust/crates/worklog-core/src/collectors/claude_tools.rs, rust/crates/worklog-core/src/collectors/claude_transcripts.rs, rust/crates/worklog-core/src/collectors/claude_transcripts_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core collectors::claude` — after: T007
