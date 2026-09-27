@@ -105,20 +105,13 @@ runs, 2026-09-27. CLI runs start on a fresh clone, so the DB file is cold in the
 
 ## Next (resume here)
 
-State 2026-09-27 ~16:00: PR #54 merged to main (`d2587fe`); `perf/evals` rebased on it.
-Done on the branch: #1–#6 in the change log. Baselines: `worklog-base3` = #3.
-Slice branches (built in isolated worktrees `.claude/worktrees/wf_a517011d-04f-{1..5}`):
-- `perf/s-ticks`: reviewed BLOCK (cache survived a purge; missing-file uuid-ownership gap;
-  unbounded growth). Re-ported + fixed on `perf/r2-ticks` (#7 in the change log) — ported
-  onto `perf/evals` tip via a 3-way patch, both findings fixed, retention added.
-- `perf/s-describe`: review said FIX — (1) estimate phase-3 UPDATE must skip rows that
-  became `manual` meanwhile; (2) its line_text half has no production caller (the daemon
-  uses `daemon_line_text::generate_day`) → drop it, parallelise that path instead with
-  invoke outside the DB lock.
-Then: tool-input trim in `collectors/claude_tools.rs` (owner OK'd; keep the 9 preview keys
-file_path/notebook_path/path/command/pattern/description/prompt/url/query verbatim; for
-default-case tools cap each string at 200 chars); raw_json compression (plain zstd 1.9×;
-a dictionary must not be committed — trained on private data); one PR to main.
+State 2026-09-27 ~18:30: `perf/evals` = main `d2587fe` + change log #1–#10 (not pushed:
+the push was blocked by the permission gate — owner pushes). Baseline binary for new work:
+`worklog-base6` (= #10). Round 4 in flight: `perf/r4-coldtick` — parse each transcript line
+once (T3 1536 → 1170 ms, 1.31×) with per-FILE transactions (a whole-run transaction held
+the write lock ~1 s+ and would stall the daemon / hook-run). Dropped after review: day-page
+enrichment fold (+265 lines in daemon.rs for 1.03–1.12×; INNER JOIN also changed counts
+for dangling block_events). T11 real: 8 prompts 246 s → 51.5 s at 4-way.
 
 Idea sweep 2 (fresh generators + critics), queued for round 3 after round 2 merges:
 T3 cold tick — parse each transcript line once (claude_tools::collect_tool_outputs re-parses
@@ -158,6 +151,7 @@ as small separate commits, and are announced to that session first. Never deploy
 | 7 | transcript_file_cache: skip byte-identical .jsonl on repeat ticks; purge clears it; missing file resets the window; ≤ 1 window kept | T2b | steady tick 1320.7 → 50.7 ms (26×); cache ≈ 1 MB | T2/T2b/T2c/T9 PASS* (declared table); round-1 review BLOCK fixed, round-2 SHIP |
 | 8 | `claude -p` block estimates + billing-line texts 4 at a time, applied in original order; estimate never overwrites a block that turned `manual` mid-batch | T11 | real `claude -p`, 8 captured prompts, same flags: 246.4 s → 51.5 s (4.8×), $0.143 vs $0.117 | order + manual-race unit tests; reviewer SHIP |
 | 9 | trim claude_tool input to what toolPreview shows | S1 | fresh 4-day ingest 12.91 → 12.16 MB (with #7's ~1 MB table) | toolPreview identical for all 2,241 tool rows (perf/trim.test.ts); reviewer SHIP |
+| 10 | raw_json stored as raw-deflate BLOB when smaller; one decoder at the 3 SQL readers (TEXT legacy rows stay readable, corrupt BLOB → None, strict UTF-8); verify-006-capture.sh decodes before grepping for secrets | S1 | fresh 4-day ingest 12.16 → 8.65 MB (after VACUUM 11.88 → 8.38) | all 15 scenarios PASS (dumpDb inflates); planted-secret test; reviewer SHIP |
 | 7 | `transcript_file_cache` (perf/s-ticks R2): skip byte-identical `.jsonl`s on repeat ticks; fixed the BLOCK review found — purge now clears the cache in the same transaction (else a purged row never came back), a missing cached path invalidates its whole window (cross-file uuid ownership), and retention keeps at most one window | T2, T2b | T2b steady tick 1262 → 49 ms (25.5×); cache table ≈1.0 MB after 4 consecutive day ticks (was 5.1 MB unbounded) | T2/T2b/T2c/T9 PASS* (PERF_IGNORE for the new SCHEMA lines + purge's "bytes freed", both explained by the new table); 3 new unit tests incl. a purge→re-collect repro that fails without the fix; 991 tests pass |
 
 ## How to run
