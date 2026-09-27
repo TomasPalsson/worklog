@@ -35,7 +35,7 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core` �
 Goal: the Owner sees "pinned" in the day view and the block detail view and can still change it.
 Independent test: `cd web && bun test && bun run typecheck` — green.
 - [x] T008 show pinned in day and detail views (B9) — files: web/lib/tenants.ts, web/components/BlockCustomerSplit.tsx, web/components/BlockCustomerSplit.test.tsx, web/app/[day]/block/[id]/page.tsx — verify: `cd web && bun test components/BlockCustomerSplit.test.tsx` — after: T007 — done: 7edb869
-- [x] CHK001 human-verify the pin flow live — files: .specs/008-session-customer-pins/verify/CHK001.md — verify: human: in vitinn-infra on a feature branch, a new session told "work on the Sjúkra config", then /clear + /flow:next on the same branch; after the day rebuild both sessions' blocks show "Sjúkra (pinned)" in the day view and Claude never asked — after: T005, T006, T008 — done: 932c61b by user
+- [x] CHK001 human-verify the pin flow live — files: .specs/008-session-customer-pins/verify/CHK001.md — verify: human: in vitinn-infra on a feature branch, a new session told "work on the Sjúkra config", then /clear + /flow:next on the same branch; after the day rebuild both sessions' blocks show "Sjúkra (pinned)" in the day view and Claude never asked — after: T005, T006, T008 — done: 0d721f0 by user
 
 ## Gates
 - [ ] G001 project gates clean — files: . — verify: `flow check --fix`
