@@ -50,7 +50,7 @@ Independent test: `cd web && bun test lib/detailRows.test.ts components/BlockDet
 ## Phase 4 — Billing-line texts (phase D)
 Goal: each billing line carries 2–3 Icelandic sentences a boss understands, built only from the D-02 send-list.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core clues_send line_text billing` — green with a fake estimator.
-- [ ] T018 D-02 input builders; no forbidden field ever serialized (FR-28, B6) — files: rust/crates/worklog-core/src/clues_send.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core clues_send` — after: CHK002
+- [x] T018 D-02 input builders; no forbidden field ever serialized (FR-28, B6) — files: rust/crates/worklog-core/src/clues_send.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core clues_send` — after: CHK002 — done: 27e4a77
 - [ ] T019 Per-block writer sends only `DescriptionInput` (FR-29, A13 leak fix) — files: rust/crates/worklog-core/src/estimate.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core estimate` — after: T018
 - [ ] T020 Line texts: Icelandic prompt, validate, generate per day, manual never overwritten, failure keeps previous text (FR-26, FR-27, FR-31, FR-35, B9, B10) — files: rust/crates/worklog-core/src/line_text.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core line_text` — after: T018
 - [ ] T021 Export uses the stored line text, else today's joined/fallback text (FR-32) — files: rust/crates/worklog-core/src/billing.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core billing` — after: T020
