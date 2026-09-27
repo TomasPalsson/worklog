@@ -5,7 +5,7 @@
 import { afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { BillingFolderMap, BillingRow } from "@/lib/types";
-import type { LineTextKey, SetLineTextInput } from "@/lib/daemonLineText";
+import type { LineTextKey, LineTextStatusResult, SetLineTextInput } from "@/lib/daemonLineText";
 import { ToastHost } from "./ToastHost";
 
 const saveBillingFolder = mock(async (_f: BillingFolderMap) => ({
@@ -29,7 +29,11 @@ const saveLineText = mock(async (_i: SetLineTextInput) => ({
 }));
 const regenerateLineText = mock(async (_i: LineTextKey) => ({
   ok: true as const,
-  data: { generated: true },
+  data: { started: true },
+}));
+const lineTextStatus = mock(async (_i: LineTextKey): Promise<{ ok: true; data: LineTextStatusResult }> => ({
+  ok: true as const,
+  data: { state: "done" },
 }));
 mock.module("next/navigation", () => ({
   useRouter: () => ({ refresh: mock(() => {}) }),
@@ -67,6 +71,7 @@ afterEach(() => {
   moveLineDeild.mockClear();
   saveLineText.mockClear();
   regenerateLineText.mockClear();
+  lineTextStatus.mockClear();
 });
 
 function row(overrides: Partial<BillingRow>): BillingRow {
@@ -234,6 +239,8 @@ describe("BillingGroup line text (FR-26/FR-31/FR-33/FR-35)", () => {
         knownVerkefni={[]}
         saveLineText={saveLineText}
         regenerateLineText={regenerateLineText}
+        lineTextStatus={lineTextStatus}
+        pollIntervalMs={1}
       >
         {null}
       </BillingGroup>,
@@ -293,10 +300,10 @@ describe("BillingGroup line text (FR-26/FR-31/FR-33/FR-35)", () => {
     expect(screen.getByText("Old text")).toBeTruthy();
   });
 
-  it("shows the reason in a toast when Regenerate doesn't generate", async () => {
-    regenerateLineText.mockImplementationOnce(async () => ({
+  it("shows the reason in a toast when the job settles failed", async () => {
+    lineTextStatus.mockImplementationOnce(async () => ({
       ok: true as const,
-      data: { generated: false, reason: "hand-edited" },
+      data: { state: "failed", reason: "hand-edited" } as LineTextStatusResult,
     }));
     render(
       <>
@@ -308,6 +315,8 @@ describe("BillingGroup line text (FR-26/FR-31/FR-33/FR-35)", () => {
           knownVerkefni={[]}
           saveLineText={saveLineText}
           regenerateLineText={regenerateLineText}
+          lineTextStatus={lineTextStatus}
+          pollIntervalMs={1}
         >
           {null}
         </BillingGroup>
@@ -315,6 +324,64 @@ describe("BillingGroup line text (FR-26/FR-31/FR-33/FR-35)", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Regenerate" }));
     await waitFor(() => expect(regenerateLineText).toHaveBeenCalled());
+    await waitFor(() => expect(lineTextStatus).toHaveBeenCalled());
     await waitFor(() => expect(screen.getByText(/hand-edited/)).toBeTruthy());
+  });
+
+  it("shows a rejection toast when regenerate is already running", async () => {
+    regenerateLineText.mockImplementationOnce(async () => ({
+      ok: true as const,
+      data: { started: false, reason: "already running" },
+    }));
+    render(
+      <>
+        <ToastHost />
+        <BillingGroup
+          row={row({ text_origin: "generated" })}
+          folderPin={pin}
+          customers={customers}
+          knownVerkefni={[]}
+          saveLineText={saveLineText}
+          regenerateLineText={regenerateLineText}
+          lineTextStatus={lineTextStatus}
+          pollIntervalMs={1}
+        >
+          {null}
+        </BillingGroup>
+      </>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Regenerate" }));
+    await waitFor(() => expect(regenerateLineText).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByText(/already running/)).toBeTruthy());
+    expect(lineTextStatus).not.toHaveBeenCalled();
+  });
+
+  it("polls running→done: shows Writing…, disables the button, then toasts and refreshes", async () => {
+    lineTextStatus.mockImplementationOnce(async () => ({
+      ok: true as const,
+      data: { state: "running" } as LineTextStatusResult,
+    }));
+    render(
+      <>
+        <ToastHost />
+        <BillingGroup
+          row={row({ text_origin: "generated" })}
+          folderPin={pin}
+          customers={customers}
+          knownVerkefni={[]}
+          saveLineText={saveLineText}
+          regenerateLineText={regenerateLineText}
+          lineTextStatus={lineTextStatus}
+          pollIntervalMs={1}
+        >
+          {null}
+        </BillingGroup>
+      </>,
+    );
+    const button = screen.getByRole("button", { name: "Regenerate" });
+    fireEvent.click(button);
+    await waitFor(() => expect(screen.getByText("Writing…")).toBeTruthy());
+    await waitFor(() => expect(lineTextStatus).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByText("Regenerated")).toBeTruthy());
   });
 });

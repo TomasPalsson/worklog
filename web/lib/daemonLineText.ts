@@ -23,15 +23,35 @@ export async function setLineText(input: SetLineTextInput): Promise<{ ok: true }
 }
 
 export interface RegenerateLineResult {
-  generated: boolean;
-  /** Why nothing was (re)generated — e.g. `"hand-edited"`. Present only
-   * when `generated` is false. */
+  started: boolean;
+  /** Why the job didn't start — e.g. `"already running"`. Present only
+   * when `started` is false. */
   reason?: string;
 }
 
-/** Re-run text generation for exactly one billing line (FR-33). A hand-
- * edited line comes back `generated: false` with `reason: "hand-edited"`
- * and is left untouched. */
+/** Starts text generation for exactly one billing line in the
+ * background and returns immediately (FR-33) — poll `lineTextStatus`
+ * for the outcome. A second call for a key already running comes back
+ * `started: false` with `reason: "already running"`. */
 export async function regenerateLine(input: LineTextKey): Promise<RegenerateLineResult> {
   return call("POST", "/billing/lines/regenerate", input);
+}
+
+export type LineTextJobState = "idle" | "running" | "done" | "failed";
+
+export interface LineTextStatusResult {
+  state: LineTextJobState;
+  /** Present only when `state` is `"failed"` — e.g. `"hand-edited"`. */
+  reason?: string;
+}
+
+/** Polled while a regenerate is in flight. `"idle"` means nothing has
+ * ever been requested for this key this daemon run. */
+export async function lineTextStatus(key: LineTextKey): Promise<LineTextStatusResult> {
+  const q = new URLSearchParams({
+    day: key.day,
+    folder: key.folder,
+    customer: key.customer,
+  }).toString();
+  return call("GET", `/billing/lines/status?${q}`);
 }

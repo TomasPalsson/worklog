@@ -39,7 +39,8 @@
 //! * `GET  /export/:day`                 — billing rows + rendered text/csv/json for a day
 //! * `POST /export/:day/mark`            — mark a day's blocks as billed (idempotent)
 //! * `POST /billing/lines/text`          — { day, folder, customer, text } hand-edit a line's invoice text
-//! * `POST /billing/lines/regenerate`    — { day, folder, customer } re-run text generation for one line
+//! * `POST /billing/lines/regenerate`    — { day, folder, customer } starts text generation for one line in the background, returns { started }
+//! * `GET  /billing/lines/status`         — ?day=&folder=&customer= poll the in-flight regenerate job's state
 //! * `POST /browser/heartbeat`           — { Heartbeat } from the add-on, requires moz-extension:// Origin
 //! * `GET  /days/:day/routed?include_hidden=` — browser/Slack events for a day (default excludes dismissed/noise)
 //! * `POST /events/:id/label`            — { LabelRequest } manual label, optionally creating a rule
@@ -84,6 +85,7 @@ use crate::collectors::{jira, tempo};
 use crate::deild_contract;
 use crate::elsewhere;
 use crate::git::{self, CommitEntry};
+use crate::line_text_jobs;
 use crate::personal;
 use crate::routing;
 use crate::routing_absorb;
@@ -115,6 +117,9 @@ pub struct AppState {
     /// exactly one and serialise access. Cheap compared to the code path
     /// we are serving (a single keystroke or click).
     pub conn: Mutex<Connection>,
+    /// In-flight billing-line regenerate jobs (spec change set:
+    /// background regenerate) — never touches sqlite itself.
+    pub line_text_jobs: line_text_jobs::JobTracker,
 }
 
 pub type Shared = Arc<AppState>;
@@ -174,6 +179,7 @@ pub fn router(state: Shared) -> Router {
             "/billing/lines/regenerate",
             post(daemon_line_text::regenerate),
         )
+        .route("/billing/lines/status", get(daemon_line_text::status))
         .route("/billing/tenants", get(daemon_tenants::list_tenants))
         .route("/billing/tenants/link", post(daemon_tenants::link_tenant))
         .route(
@@ -323,6 +329,7 @@ pub fn new_state() -> Result<Shared> {
     let conn = db::open(&paths.db)?;
     Ok(Arc::new(AppState {
         conn: Mutex::new(conn),
+        line_text_jobs: Default::default(),
     }))
 }
 
@@ -374,6 +381,7 @@ pub fn spawn_prune_loop(
 pub fn state_from_conn(conn: Connection) -> Shared {
     Arc::new(AppState {
         conn: Mutex::new(conn),
+        line_text_jobs: Default::default(),
     })
 }
 
@@ -2666,6 +2674,7 @@ mod tests {
         .unwrap();
         Arc::new(AppState {
             conn: Mutex::new(conn),
+            line_text_jobs: Default::default(),
         })
     }
 
@@ -2809,6 +2818,7 @@ mod tests {
 
         let app = router(Arc::new(AppState {
             conn: Mutex::new(conn),
+            line_text_jobs: Default::default(),
         }));
         let resp = app
             .oneshot(
@@ -3721,6 +3731,7 @@ mod tests {
         }
         Arc::new(AppState {
             conn: Mutex::new(conn),
+            line_text_jobs: Default::default(),
         })
     }
 
@@ -4080,6 +4091,7 @@ mod tests {
         }
         Arc::new(AppState {
             conn: Mutex::new(conn),
+            line_text_jobs: Default::default(),
         })
     }
 
@@ -4346,8 +4358,53 @@ mod tests {
         assert!(line_text::text_for(&conn, &key).unwrap().is_none());
     }
 
+    fn line_text_status_query(key: &crate::clues_contract::BillingLineKey) -> String {
+        // Test-only: these fixtures never contain other URL-unsafe
+        // characters, so a bare space replacement is enough.
+        format!(
+            "/billing/lines/status?day={}&folder={}&customer={}",
+            key.day,
+            key.folder,
+            key.customer.replace(' ', "%20")
+        )
+    }
+
+    /// Polls `GET /billing/lines/status` until it stops reporting
+    /// `"running"` or `budget` elapses, returning the last-seen body.
+    async fn poll_line_text_status(
+        app: Router,
+        key: &crate::clues_contract::BillingLineKey,
+    ) -> Value {
+        let step = std::time::Duration::from_millis(5);
+        let budget = std::time::Duration::from_millis(2000);
+        let mut waited = std::time::Duration::ZERO;
+        loop {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::get(line_text_status_query(key))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let v = read_json(resp).await;
+            if v["state"] != "running" || waited >= budget {
+                return v;
+            }
+            tokio::time::sleep(step).await;
+            waited += step;
+        }
+    }
+
+    /// FR-33/FR-31/FR-35, background contract (spec change set:
+    /// background regenerate): the route returns `started: true`
+    /// immediately — no model call on the request path, proven here
+    /// because a hand-edited line's job settles to `"failed"` /
+    /// `"hand-edited"` without ever reaching a model invoker — and the
+    /// stored text is left untouched.
     #[tokio::test(flavor = "current_thread")]
-    async fn line_text_regenerate_on_manual_line_returns_reason_and_leaves_text() {
+    async fn line_text_regenerate_on_manual_line_starts_then_settles_failed() {
         let state = state_with_block();
         let key = crate::clues_contract::BillingLineKey {
             day: "2026-04-18".to_string(),
@@ -4369,6 +4426,7 @@ mod tests {
             .unwrap(),
         );
         let resp = app
+            .clone()
             .oneshot(
                 Request::post("/billing/lines/regenerate")
                     .header("content-type", "application/json")
@@ -4379,12 +4437,116 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let v = read_json(resp).await;
-        assert_eq!(v["generated"], false);
-        assert_eq!(v["reason"], "hand-edited");
+        assert_eq!(v["started"], true);
+
+        let status = poll_line_text_status(app, &key).await;
+        assert_eq!(status["state"], "failed");
+        assert_eq!(status["reason"], "hand-edited");
+
         let conn = state.conn.lock().await;
         let (text, origin) = line_text::text_for(&conn, &key).unwrap().unwrap();
         assert_eq!(text, manual_text);
         assert_eq!(origin, crate::clues_contract::LineTextOrigin::Manual);
+    }
+
+    /// A second regenerate for a key already running is rejected rather
+    /// than racing the first.
+    #[tokio::test(flavor = "current_thread")]
+    async fn line_text_regenerate_rejects_a_second_call_while_running() {
+        let state = state_with_block();
+        let key = crate::clues_contract::BillingLineKey {
+            day: "2026-04-18".to_string(),
+            folder: "acme-project".to_string(),
+            customer: "Acme Corp".to_string(),
+        };
+        // Simulate a job already in flight without spawning a real one.
+        assert!(state.line_text_jobs.try_start(key.clone()));
+
+        let app = router(state.clone());
+        let body = Body::from(
+            serde_json::to_vec(&json!({
+                "day": key.day,
+                "folder": key.folder,
+                "customer": key.customer,
+            }))
+            .unwrap(),
+        );
+        let resp = app
+            .oneshot(
+                Request::post("/billing/lines/regenerate")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["started"], false);
+        assert_eq!(v["reason"], "already running");
+    }
+
+    /// `GET /billing/lines/status` maps every `JobState` to its wire
+    /// shape, including `"idle"` for a key nothing has ever tracked.
+    #[tokio::test(flavor = "current_thread")]
+    async fn line_text_status_maps_every_job_state() {
+        let state = state_with_block();
+        let key = crate::clues_contract::BillingLineKey {
+            day: "2026-04-18".to_string(),
+            folder: "acme-project".to_string(),
+            customer: "Acme Corp".to_string(),
+        };
+        let app = router(state.clone());
+
+        let idle = app
+            .clone()
+            .oneshot(
+                Request::get(line_text_status_query(&key))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read_json(idle).await["state"], "idle");
+
+        state.line_text_jobs.try_start(key.clone());
+        let running = app
+            .clone()
+            .oneshot(
+                Request::get(line_text_status_query(&key))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read_json(running).await["state"], "running");
+
+        state.line_text_jobs.finish(key.clone(), Ok(()));
+        let done = app
+            .clone()
+            .oneshot(
+                Request::get(line_text_status_query(&key))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read_json(done).await["state"], "done");
+
+        state
+            .line_text_jobs
+            .finish(key.clone(), Err("boom".to_string()));
+        let failed = app
+            .oneshot(
+                Request::get(line_text_status_query(&key))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(failed).await;
+        assert_eq!(v["state"], "failed");
+        assert_eq!(v["reason"], "boom");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -4731,6 +4893,7 @@ mod tests {
         (
             Arc::new(AppState {
                 conn: Mutex::new(conn),
+                line_text_jobs: Default::default(),
             }),
             a,
             b,
@@ -4847,6 +5010,7 @@ mod tests {
         }
         let state = Arc::new(AppState {
             conn: Mutex::new(conn),
+            line_text_jobs: Default::default(),
         });
         let resp = router(state)
             .oneshot(
@@ -4946,6 +5110,7 @@ mod tests {
         let bid = conn.last_insert_rowid();
         let state = Arc::new(AppState {
             conn: Mutex::new(conn),
+            line_text_jobs: Default::default(),
         });
         let resp = router(state)
             .oneshot(

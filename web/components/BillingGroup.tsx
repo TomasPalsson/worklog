@@ -4,6 +4,7 @@ import { ComponentProps, ReactNode, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 
 import {
+  lineTextStatusAction,
   regenerateLineText as regenerateLineTextAction,
   saveLineText as saveLineTextAction,
 } from "@/app/actions-line-text";
@@ -13,6 +14,17 @@ import type { BillingCustomer, BillingFolderMap, BillingRow } from "@/lib/types"
 import { CustomerPin, DeildMover, VerkefniPin } from "./BillingPins";
 import { ClaudeMark } from "./SourceIcon";
 import { Check, CircleAlert, Pencil, RefreshCw, Sparkles } from "lucide-react";
+
+/** Poll cadence for an in-flight regenerate job (spec change set:
+ * background regenerate). */
+const POLL_INTERVAL_MS = 2000;
+/** Give up waiting after this long — the job itself keeps running on
+ * the daemon; the UI just stops polling and lets the user try again. */
+const POLL_MAX_MS = 4 * 60 * 1000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 interface Props {
   row: BillingRow;
@@ -34,6 +46,10 @@ interface Props {
    * as `moveLineDeild`. */
   saveLineText?: typeof saveLineTextAction;
   regenerateLineText?: typeof regenerateLineTextAction;
+  lineTextStatus?: typeof lineTextStatusAction;
+  /** Test-only override of the poll cadence — a real 2s cadence would
+   * make the polling flow's own test agonisingly slow. */
+  pollIntervalMs?: number;
   children: ReactNode;
 }
 
@@ -71,6 +87,8 @@ export function BillingGroup({
   moveLineDeild,
   saveLineText = saveLineTextAction,
   regenerateLineText = regenerateLineTextAction,
+  lineTextStatus = lineTextStatusAction,
+  pollIntervalMs = POLL_INTERVAL_MS,
   children,
 }: Props) {
   const router = useRouter();
@@ -113,13 +131,40 @@ export function BillingGroup({
         toast.error(`Couldn't ${verb} — ${r.error}`);
         return;
       }
-      if (!r.data.generated) {
+      if (!r.data.started) {
         toast.error(`Not ${verb}d — ${r.data.reason ?? "unknown reason"}`);
         return;
       }
-      toast.ok(verb === "generate" ? "Generated" : "Regenerated");
-      router.refresh();
+      await pollUntilSettled();
     });
+  }
+
+  /** Polls `GET /billing/lines/status` every `pollIntervalMs` until the
+   * background job is `"done"`/`"failed"`, or `POLL_MAX_MS` elapses —
+   * the job itself keeps running on the daemon either way. */
+  async function pollUntilSettled() {
+    const deadline = Date.now() + POLL_MAX_MS;
+    for (;;) {
+      const s = await lineTextStatus(lineKey);
+      if (!s.ok) {
+        toast.error(`Couldn't check ${verb} status — ${s.error}`);
+        return;
+      }
+      if (s.data.state === "done") {
+        toast.ok(verb === "generate" ? "Generated" : "Regenerated");
+        router.refresh();
+        return;
+      }
+      if (s.data.state === "failed") {
+        toast.error(`Not ${verb}d — ${s.data.reason ?? "unknown reason"}`);
+        return;
+      }
+      if (Date.now() >= deadline) {
+        toast.error(`Still ${verb === "generate" ? "generating" : "regenerating"} — check back later`);
+        return;
+      }
+      await sleep(pollIntervalMs);
+    }
   }
 
   return (
@@ -206,7 +251,7 @@ export function BillingGroup({
                       className={pending ? "billing-spin" : undefined}
                     />
                   )}
-                  {verb === "generate" ? "Generate" : "Regenerate"}
+                  {pending ? "Writing…" : verb === "generate" ? "Generate" : "Regenerate"}
                 </button>
               </span>
             </>

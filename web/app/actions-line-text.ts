@@ -7,9 +7,11 @@
 
 import { revalidatePath } from "next/cache";
 import {
+  lineTextStatus as daemonLineTextStatus,
   regenerateLine as daemonRegenerateLine,
   setLineText as daemonSetLineText,
   type LineTextKey,
+  type LineTextStatusResult,
   type RegenerateLineResult,
   type SetLineTextInput,
 } from "@/lib/daemonLineText";
@@ -38,9 +40,23 @@ export async function saveLineText(input: SetLineTextInput): Promise<ActionResul
   return run(() => daemonSetLineText(input), input.day);
 }
 
-/** Re-run text generation for one billing line (FR-33). */
+/** Starts text generation for one billing line in the background (FR-33)
+ * — poll `lineTextStatusAction` for the outcome. */
 export async function regenerateLineText(
   input: LineTextKey,
 ): Promise<ActionResult<RegenerateLineResult>> {
   return run(() => daemonRegenerateLine(input), input.day);
+}
+
+/** Poll a billing line's regenerate job state (spec change set:
+ * background regenerate). No `revalidatePath` — this is a pure poll;
+ * the caller refreshes the page itself once the job settles. */
+export async function lineTextStatusAction(
+  input: LineTextKey,
+): Promise<ActionResult<LineTextStatusResult>> {
+  try {
+    return { ok: true, data: await daemonLineTextStatus(input) };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message || "unknown error" };
+  }
 }

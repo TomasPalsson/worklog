@@ -2,7 +2,7 @@
 //! FR-33/FR-35). Child module of `daemon.rs` (via `#[path]`) so it reuses
 //! its private `with_conn`/`ApiError` — see design.md §4.
 
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use crate::clues_contract::BillingLineKey;
 use crate::estimate;
 use crate::line_text;
+use crate::line_text_jobs::JobState;
 
 use super::{with_conn, ApiError, Shared};
 
@@ -53,11 +54,14 @@ pub struct RegenerateBody {
     pub customer: String,
 }
 
-/// Re-run text generation for exactly one billing line (FR-33). A hand-
-/// edited line comes back `generated: false` with `reason: "hand-edited"`
-/// and is left untouched; any other failure also leaves the stored text
-/// untouched (FR-35). Always 200 — the caller distinguishes success from
-/// "not generated" via the `generated` field, not the HTTP status.
+/// Starts text generation for exactly one billing line in the
+/// background and returns immediately (FR-33) — no model call ever
+/// happens on the request path. A second regenerate for a key already
+/// running is rejected with `started: false` rather than racing the
+/// first. Poll `GET /billing/lines/status` for the outcome: a
+/// hand-edited line (FR-31) or any other failure surfaces there as
+/// `"failed"` with a `reason`, and the stored text is left untouched
+/// either way (FR-35).
 pub async fn regenerate(
     State(state): State<Shared>,
     Json(body): Json<RegenerateBody>,
@@ -72,11 +76,43 @@ pub async fn regenerate(
         folder,
         customer,
     };
-    let result = run_line_text_job(state, key).await;
-    Ok(Json(match result {
-        Ok(()) => json!({ "generated": true }),
-        Err(reason) => json!({ "generated": false, "reason": reason }),
-    }))
+    if !state.line_text_jobs.try_start(key.clone()) {
+        return Ok(Json(
+            json!({ "started": false, "reason": "already running" }),
+        ));
+    }
+    let job_state = state.clone();
+    let job_key = key.clone();
+    tokio::spawn(async move {
+        let result = run_line_text_job(job_state.clone(), job_key.clone()).await;
+        job_state.line_text_jobs.finish(job_key, result);
+    });
+    Ok(Json(json!({ "started": true })))
+}
+
+#[derive(Deserialize)]
+pub struct StatusQuery {
+    pub day: String,
+    pub folder: String,
+    pub customer: String,
+}
+
+/// Polled by the web UI while a regenerate is in flight (spec change
+/// set: background regenerate). `"idle"` means nothing has ever been
+/// requested for this key this daemon run — never a promise that a
+/// stored text exists.
+pub async fn status(State(state): State<Shared>, Query(q): Query<StatusQuery>) -> Json<Value> {
+    let key = BillingLineKey {
+        day: q.day,
+        folder: q.folder,
+        customer: q.customer,
+    };
+    Json(match state.line_text_jobs.state(&key) {
+        None => json!({ "state": "idle" }),
+        Some(JobState::Running) => json!({ "state": "running" }),
+        Some(JobState::Done) => json!({ "state": "done" }),
+        Some(JobState::Failed(reason)) => json!({ "state": "failed", "reason": reason }),
+    })
 }
 
 /// Generates every distinct billing line's text for `day`, one

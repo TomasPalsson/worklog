@@ -37,6 +37,7 @@ mod infer_carry_shares;
 mod infer_evidence;
 pub mod infer_lanes;
 pub mod line_text;
+mod line_text_jobs;
 pub mod local_clone;
 pub mod models;
 pub mod overlap_store;
