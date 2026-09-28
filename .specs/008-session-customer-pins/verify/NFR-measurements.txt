@@ -1,0 +1,1 @@
+session-hint timing, release build, fresh scratch DB, vitinn-infra worktree cwd, 20 runs: median 15 ms, p95 16 ms, max 33 ms (NFR: <=300 ms p95). Start text on the live 21-customer registry with a 36-char session id: 540 chars (NFR: <=600).

@@ -24,6 +24,7 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core se
 - [x] T003 pin command (B4) — files: rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-cli/tests/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-cli pin` — after: T001, T002 — done: 4942182
 - [x] T004 start instruction and inheritance (B5) — files: rust/crates/worklog-core/src/session_pins.rs, rust/crates/worklog-core/src/session_pins_test.rs, rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-cli/tests/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core start_text` — after: T003 — done: f9f8e7b
 - [x] T005 installer keeps both hooks (B6) — files: rust/crates/worklog-core/src/hook.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core hook::tests` — after: T004 — done: 932c61b
+- [ ] T009 start text stays within 600 chars (NFR) — files: rust/crates/worklog-core/src/session_pins.rs, rust/crates/worklog-core/src/session_pins_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core start_text_stays_within_600_chars` — after: T004
 
 ## Phase 2 — Pins drive blocks
 Goal: a pinned session's minutes land in its customer's lane, and the block's customer line says "pinned".

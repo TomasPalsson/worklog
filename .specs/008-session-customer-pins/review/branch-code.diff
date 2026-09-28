@@ -1,0 +1,3173 @@
+diff --git a/rust/crates/worklog-cli/src/cli.rs b/rust/crates/worklog-cli/src/cli.rs
+index b1c749a..ea51b8f 100644
+--- a/rust/crates/worklog-cli/src/cli.rs
++++ b/rust/crates/worklog-cli/src/cli.rs
+@@ -2,30 +2,31 @@
+ //!
+ //! Kept in `lib.rs` so integration tests can invoke `worklog_cli::run_with`
+ //! with explicit argv without spawning a subprocess. `main.rs` simply calls
+ //! `run()` which uses the real `std::env::args`.
+ 
+ use std::io::{self, IsTerminal, Read, Write};
+ 
+ use anyhow::{Context, Result};
+ use clap::{CommandFactory, Parser, Subcommand};
+ use worklog_core::{
+-    billing, block_service,
++    billing, billing_registry, block_service,
+     collectors::{
+         claude_transcripts as claude_transcripts_col, fish as fish_col, gcal as gcal_col,
+         github as gh, jira as jira_col, reflog as reflog_col, slack as slack_col,
+         tempo as tempo_col,
+     },
+-    daemon as daemon_mod, db, estimate, hook, hook_run, http, infer,
++    daemon as daemon_mod, db, estimate, git, hook, hook_run, http, infer,
+     paths::Paths,
+-    personal as personal_mod, routing, routing_absorb, schedule, secrets, skill as skill_mod,
+-    updater as upd,
++    personal as personal_mod, routing, routing_absorb, schedule, secrets,
++    session_pins::{self, PinError},
++    skill as skill_mod, updater as upd,
+     verdict::VerdictClassifier,
+     web as web_mod,
+ };
+ 
+ use crate::style;
+ 
+ /// Clap styles applied to every help surface. Matches the `console`
+ /// colour palette used by `style.rs` so help + status output feel like
+ /// one CLI. `AnsiColor::Cyan` is reused for section headers, and valid
+ /// values get a matching green to keep the palette tight.
+@@ -275,24 +276,44 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
+         sub: BlockCmd,
+     },
+ 
+     /// Personal/work classification — manage the auto-classifier and
+     /// re-evaluate existing blocks against the current ruleset.
+     Tag {
+         #[command(subcommand)]
+         sub: TagCmd,
+     },
+ 
++    /// Pin a customer to a Claude Code session from a given time on
++    /// (spec 008). Refuses names that don't resolve to a known customer
++    /// or alias.
++    Pin {
++        /// Customer name or alias (case-insensitive).
++        customer: String,
++        /// The Claude Code session id.
++        #[arg(long)]
++        session: String,
++        /// RFC-3339 timestamp the pin takes effect from. Default: now.
++        #[arg(long)]
++        at: Option<String>,
++    },
++
+     /// Claude Code hook — reads a JSON event from stdin and records it.
+     #[command(name = "hook-run", hide = true)]
+     HookRun,
+ 
++    /// Claude Code session-start hook — reads SessionStart JSON from
++    /// stdin and prints the pin instruction for a shared /Work repo, if
++    /// any (spec 008). Never fails: any error prints nothing and exits 0.
++    #[command(name = "session-hint", hide = true)]
++    SessionHint,
++
+     /// Start the axum unix-socket IPC server (foreground) OR manage the
+     /// background service unit that supervises it. Bare `worklog daemon`
+     /// keeps running in the foreground like before; the install / status
+     /// / uninstall subcommands write a launchd plist / systemd user unit.
+     Daemon {
+         #[command(subcommand)]
+         sub: Option<DaemonCmd>,
+         /// Override the socket path (default: <data>/api.sock).
+         #[arg(long)]
+         socket: Option<std::path::PathBuf>,
+@@ -824,21 +845,27 @@ pub fn run_with<W: Write>(
+                 cmd_block_split(id, first_minutes, out, cli.json)
+             }
+             BlockCmd::Personal { id, work } => cmd_block_personal(id, work, out, cli.json),
+         },
+         Cmd::Tag { sub } => match sub {
+             TagCmd::List => cmd_tag_list(out, cli.json),
+             TagCmd::Personal { glob } => cmd_tag_personal(glob, out, cli.json),
+             TagCmd::Work { glob } => cmd_tag_work(glob, out, cli.json),
+             TagCmd::Reclassify { day } => cmd_tag_reclassify(day, out, cli.json),
+         },
++        Cmd::Pin {
++            customer,
++            session,
++            at,
++        } => cmd_pin(&customer, &session, at, out),
+         Cmd::HookRun => cmd_hook_run(),
++        Cmd::SessionHint => cmd_session_hint(out),
+         Cmd::Daemon { sub, socket, tcp } => match sub {
+             None => cmd_daemon(socket, tcp),
+             Some(DaemonCmd::Install { command }) => cmd_daemon_install(command, out, cli.json),
+             Some(DaemonCmd::Uninstall) => cmd_daemon_uninstall(out, cli.json),
+             Some(DaemonCmd::Status) => cmd_daemon_status(out, cli.json),
+         },
+         Cmd::Verdict { sub } => match sub {
+             VerdictCmd::Serve => cmd_verdict_serve(),
+             VerdictCmd::Status => cmd_verdict_status(out, cli.json),
+         },
+@@ -3154,20 +3181,66 @@ fn cmd_tag_reclassify<W: Write>(day: Option<String>, out: &mut W, json: bool) ->
+             stats.total,
+             if stats.total == 1 { "" } else { "s" },
+             stats.changed_to_personal,
+             stats.changed_to_work,
+             stats.unchanged
+         )?;
+     }
+     Ok(())
+ }
+ 
++/// `worklog pin <customer> --session <id> [--at <rfc3339>]` (spec 008,
++/// design.md contract T003). Exit codes: 0 pinned, 2 unknown customer
++/// (known customers listed on stderr, nothing stored), 1 any other error.
++fn cmd_pin<W: Write>(customer: &str, session: &str, at: Option<String>, out: &mut W) -> Result<()> {
++    let paths = Paths::resolve()?;
++    let conn = db::open(&paths.db)?;
++    let registry = billing_registry::Registry::load(&conn)?;
++    let at = match at {
++        Some(s) => chrono::DateTime::parse_from_rfc3339(&s)
++            .with_context(|| format!("invalid --at timestamp {s}"))?
++            .with_timezone(&chrono::Utc),
++        None => chrono::Utc::now(),
++    };
++    let cwd = std::env::current_dir().context("resolving cwd")?;
++    let branch = git::current_branch(&cwd);
++
++    match session_pins::pin(
++        &conn,
++        &registry,
++        session,
++        &cwd,
++        customer,
++        at,
++        branch.as_deref(),
++    ) {
++        Ok(stored) => {
++            let short: String = stored.session_id.chars().take(8).collect();
++            writeln!(
++                out,
++                "Pinned {short} to {} from {}",
++                stored.customer,
++                local_hhmm(&stored.from_at.to_rfc3339())
++            )?;
++            Ok(())
++        }
++        Err(PinError::UnknownCustomer { known }) => {
++            eprintln!(
++                "unknown customer {customer:?} — known customers: {}",
++                known.join(", ")
++            );
++            std::process::exit(2);
++        }
++        Err(PinError::Other(e)) => Err(e),
++    }
++}
++
+ fn cmd_infer<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()> {
+     let paths = Paths::resolve()?;
+     paths.ensure()?;
+     let conn = db::open(&paths.db)?;
+     let day = parse_day(day.as_deref())?;
+     // Saved splits included — a rebuild must never undo the owner's choice.
+     let blocks = worklog_core::infer_allocations::build_day_blocks(&conn, day)?;
+     infer::persist_blocks(&conn, day, &blocks)?;
+ 
+     if json {
+@@ -3416,20 +3489,58 @@ impl StepOutcome {
+         }
+     }
+ }
+ 
+ fn cmd_hook_run() -> Result<()> {
+     // All output goes to stderr (handled inside hook_run::run_from_stdin) so
+     // Claude Code never sees bytes on stdout.
+     hook_run::run_from_stdin()
+ }
+ 
++/// `worklog session-hint`. Every failure is swallowed and prints nothing —
++/// a broken payload, a missing db, or an unreadable registry must never
++/// block or fail a Claude Code session start (design.md §2, contract T004).
++fn cmd_session_hint<W: Write>(out: &mut W) -> Result<()> {
++    let mut buf = String::new();
++    if io::stdin().read_to_string(&mut buf).is_err() {
++        return Ok(());
++    }
++    let Ok(payload) = serde_json::from_str::<serde_json::Value>(&buf) else {
++        return Ok(());
++    };
++    let Some(session_id) = payload.get("session_id").and_then(|v| v.as_str()) else {
++        return Ok(());
++    };
++    let Some(cwd) = payload.get("cwd").and_then(|v| v.as_str()) else {
++        return Ok(());
++    };
++    let Ok(paths) = Paths::resolve() else {
++        return Ok(());
++    };
++    let Ok(conn) = db::open(&paths.db) else {
++        return Ok(());
++    };
++    let Ok(registry) = billing_registry::Registry::load(&conn) else {
++        return Ok(());
++    };
++    if let Ok(Some(text)) = session_pins::start_text(
++        &conn,
++        &registry,
++        session_id,
++        std::path::Path::new(cwd),
++        chrono::Utc::now(),
++    ) {
++        let _ = writeln!(out, "{text}");
++    }
++    Ok(())
++}
++
+ fn cmd_daemon_install<W: Write>(command: Option<String>, out: &mut W, json: bool) -> Result<()> {
+     let cmd = command.unwrap_or_else(worklog_core::daemon_service::default_command);
+     let status = worklog_core::daemon_service::install(&cmd)?;
+     if json {
+         writeln!(out, "{}", serde_json::to_string_pretty(&status)?)?;
+         return Ok(());
+     }
+     style::ok(
+         out,
+         &format!(
+diff --git a/rust/crates/worklog-cli/tests/cli.rs b/rust/crates/worklog-cli/tests/cli.rs
+index 77bc30b..65e8e60 100644
+--- a/rust/crates/worklog-cli/tests/cli.rs
++++ b/rust/crates/worklog-cli/tests/cli.rs
+@@ -334,20 +334,31 @@ fn hook_run_writes_claude_event_from_stdin() {
+ fn hook_run_exits_zero_on_malformed_stdin() {
+     let home = TempDir::new().unwrap();
+     cmd(&home).args(["db", "migrate"]).assert().success();
+     cmd(&home)
+         .arg("hook-run")
+         .write_stdin("not json at all")
+         .assert()
+         .success(); // Never blocks Claude.
+ }
+ 
++#[test]
++fn session_hint_exits_zero_and_prints_nothing_on_garbage_stdin() {
++    let home = TempDir::new().unwrap();
++    cmd(&home)
++        .arg("session-hint")
++        .write_stdin("not json at all")
++        .assert()
++        .success()
++        .stdout(predicate::str::is_empty());
++}
++
+ #[test]
+ fn secret_rm_reports_absent_cleanly() {
+     let home = TempDir::new().unwrap();
+     cmd(&home)
+         .args(["secret", "rm", "nonexistent_key"])
+         .assert()
+         .success();
+ }
+ 
+ // ─────────────────────────── `worklog day` ───────────────────────────
+@@ -623,10 +634,42 @@ fn export_on_empty_day_prints_no_blocks_notice() {
+ /// rejects it up-front (exit non-zero) before any db/day handling.
+ #[test]
+ fn export_rejects_unknown_format() {
+     let home = TempDir::new().unwrap();
+     cmd(&home)
+         .args(["export", "--day", "2026-07-23", "--format", "bogus"])
+         .assert()
+         .failure()
+         .stderr(predicate::str::contains("--format"));
+ }
++
++// ─────────────────────────── `worklog pin` (B4) ───────────────────────────
++
++/// B4: pinning a name that resolves to no known customer or alias
++/// refuses, exits 2 (design.md §3), lists the known customers on
++/// stderr, and stores nothing.
++#[test]
++fn pin_refuses_unknown_customer() {
++    let home = TempDir::new().unwrap();
++    cmd(&home).args(["db", "migrate"]).assert().success();
++    cmd(&home)
++        .current_dir(home.path())
++        .args(["pin", "Sjukra tryggingar", "--session", "sess-1"])
++        .assert()
++        .code(2)
++        .stderr(predicate::str::contains("APRÓ"));
++}
++
++/// Happy path: a name that resolves to a known customer pins the
++/// session and prints a confirmation naming the session and customer.
++#[test]
++fn pin_stores_a_known_customer() {
++    let home = TempDir::new().unwrap();
++    cmd(&home).args(["db", "migrate"]).assert().success();
++    cmd(&home)
++        .current_dir(home.path())
++        .args(["pin", "APRÓ", "--session", "sess-1"])
++        .assert()
++        .success()
++        .stdout(predicate::str::contains("Pinned"))
++        .stdout(predicate::str::contains("APRÓ"));
++}
+diff --git a/rust/crates/worklog-core/sql/schema.sql b/rust/crates/worklog-core/sql/schema.sql
+index 020ec3c..21e9180 100644
+--- a/rust/crates/worklog-core/sql/schema.sql
++++ b/rust/crates/worklog-core/sql/schema.sql
+@@ -321,20 +321,38 @@ CREATE TABLE IF NOT EXISTS billing_line_texts (
+ -- size + mtime_ns haven't changed since it was last fully read for this
+ -- exact [since_ts, until_ts) window is skipped outright instead of
+ -- re-read + re-parsed. `claimed_uuids_json` is the JSON array of line
+ -- uuids the file itself won the cross-file dedupe race for last time (a
+ -- resumed session can copy an older file's lines, same uuid, into a new
+ -- file), so a skip still reseeds the run's `seen` set exactly as a full
+ -- read would. `events_written` replays into CollectReport so a skip never
+ -- changes `worklog day`'s printed "events=N". `extra_key` is an additional
+ -- cache-key component for state a file's own bytes don't capture — the
+ -- background-job session set for session files, empty for helper files.
++-- ───────────────────────── session pins (spec 008) ─────────────────────────
++-- A statement "session S is for customer C from time T on"
++-- (design.md §1). `source` is 'claude' (set by the pin command) or
++-- 'inherited' (copied into a new session on the same branch at start).
++-- See session_pins.rs.
++CREATE TABLE IF NOT EXISTS session_pins (
++    session_id TEXT NOT NULL,
++    customer TEXT NOT NULL,
++    from_at TEXT NOT NULL,
++    folder TEXT NOT NULL,
++    branch TEXT,
++    source TEXT NOT NULL,
++    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
++    PRIMARY KEY (session_id, from_at)
++);
++
++CREATE INDEX IF NOT EXISTS idx_session_pins_branch ON session_pins(folder, branch, from_at);
++
+ CREATE TABLE IF NOT EXISTS transcript_file_cache (
+     path TEXT NOT NULL,
+     since_ts INTEGER NOT NULL,
+     until_ts INTEGER NOT NULL,
+     size INTEGER NOT NULL,
+     mtime_ns INTEGER NOT NULL,
+     claimed_uuids_json TEXT NOT NULL,
+     events_written INTEGER NOT NULL DEFAULT 0,
+     extra_key TEXT NOT NULL DEFAULT '',
+     PRIMARY KEY(path, since_ts, until_ts)
+diff --git a/rust/crates/worklog-core/src/billing_registry.rs b/rust/crates/worklog-core/src/billing_registry.rs
+index a25f56c..a05141a 100644
+--- a/rust/crates/worklog-core/src/billing_registry.rs
++++ b/rust/crates/worklog-core/src/billing_registry.rs
+@@ -164,20 +164,37 @@ impl Registry {
+             if matched && !hits.contains(&c.name.as_str()) {
+                 hits.push(&c.name);
+             }
+         }
+         match hits.as_slice() {
+             [only] => Some((*only).to_owned()),
+             _ => None,
+         }
+     }
+ 
++    /// Find the customer whose name or one of its aliases equals `name`
++    /// exactly (case-insensitively) — used by the pin command, where the
++    /// model names a customer outright rather than mentioning it in
++    /// running text (see [`Self::customer_in_text`]).
++    pub fn customer_named(&self, name: &str) -> Option<String> {
++        let name = name.trim();
++        if name.is_empty() {
++            return None;
++        }
++        let needle = name.to_lowercase();
++        self.customers.iter().find_map(|c| {
++            let hit = c.name.to_lowercase() == needle
++                || c.aliases.iter().any(|a| a.to_lowercase() == needle);
++            hit.then(|| c.name.clone())
++        })
++    }
++
+     /// Resolve one line's billing fields.
+     ///
+     /// Ladder: a folder pinned to a customer wins outright; otherwise the
+     /// customer is matched out of `text` (the block's Jira ticket summary
+     /// plus its description); otherwise `None`. `verkefni` only ever
+     /// comes from a folder pin.
+     pub fn resolve(&self, folder: &str, text: &str) -> Resolved {
+         let entry = self.folder_entry(folder);
+         let verkefni = entry.and_then(|e| e.verkefni.clone());
+         let billable = entry.map(|e| e.billable).unwrap_or(true);
+@@ -468,285 +485,12 @@ pub fn seed_tenant_roots_if_empty(conn: &Connection) -> Result<bool> {
+                 "UPDATE billing_folder_map SET multi_tenant = 1 WHERE folder = ?1",
+                 params![folder],
+             )
+             .context("flip multi_tenant on an existing folder pin")?;
+         }
+     }
+     Ok(true)
+ }
+ 
+ #[cfg(test)]
+-mod tests {
+-    use super::*;
+-    use crate::db;
+-
+-    fn conn() -> Connection {
+-        db::open_memory().unwrap()
+-    }
+-
+-    #[test]
+-    fn alias_matching_respects_word_boundaries() {
+-        assert!(alias_matches("Villur hjá VÍS", "VÍS"));
+-        assert!(alias_matches("Agent fyrir RL - Atlassian", "RL"));
+-        // Short aliases must not fire inside longer words.
+-        assert!(!alias_matches("this is true", "RU"));
+-        assert!(!alias_matches("RUNNING the agent", "RU"));
+-        // Boundary characters other than space still count.
+-        assert!(alias_matches("Spjallbúbbla inn á ru.is", "ru.is"));
+-        assert!(alias_matches("MMS - lagfæringar", "MMS"));
+-    }
+-
+-    #[test]
+-    fn alias_matching_is_case_insensitive() {
+-        assert!(alias_matches("document analyzer fyrir sjúkra", "Sjúkra"));
+-        assert!(alias_matches("Tempo MCP fyrir Apró", "APRÓ"));
+-    }
+-
+-    #[test]
+-    fn customer_in_text_needs_an_unambiguous_hit() {
+-        let reg = Registry {
+-            customers: vec![
+-                Customer {
+-                    id: None,
+-                    name: "Sjúkra".into(),
+-                    aliases: vec![],
+-                },
+-                Customer {
+-                    id: None,
+-                    name: "MMS".into(),
+-                    aliases: vec![],
+-                },
+-            ],
+-            folders: vec![],
+-        };
+-        assert_eq!(
+-            reg.customer_in_text("Document analyzer fyrir Sjúkra"),
+-            Some("Sjúkra".into())
+-        );
+-        // Two customers named → ambiguous → left blank, never guessed.
+-        assert_eq!(reg.customer_in_text("Sjúkra and MMS sync"), None);
+-        assert_eq!(reg.customer_in_text("no customer here"), None);
+-    }
+-
+-    #[test]
+-    fn resolve_prefers_a_folder_pin_over_text() {
+-        let reg = Registry {
+-            customers: vec![Customer {
+-                id: None,
+-                name: "MMS".into(),
+-                aliases: vec![],
+-            }],
+-            folders: vec![FolderMap {
+-                id: None,
+-                folder: "sjukra".into(),
+-                customer: Some("Sjúkra".into()),
+-                verkefni: Some("[P] Vöktun".into()),
+-                billable: true,
+-                multi_tenant: false,
+-            }],
+-        };
+-        // Text mentions MMS but the folder is pinned to Sjúkra.
+-        let r = reg.resolve("sjukra", "MMS schema sync");
+-        assert_eq!(r.customer, Some("Sjúkra".into()));
+-        assert_eq!(r.verkefni, Some("[P] Vöktun".into()));
+-        assert!(r.billable);
+-    }
+-
+-    #[test]
+-    fn resolve_falls_back_to_text_for_a_shared_folder() {
+-        let reg = Registry {
+-            customers: vec![Customer {
+-                id: None,
+-                name: "Sensa".into(),
+-                aliases: vec![],
+-            }],
+-            folders: vec![FolderMap {
+-                id: None,
+-                folder: "genai-infra".into(),
+-                customer: None, // shared
+-                verkefni: None,
+-                billable: true,
+-                multi_tenant: false,
+-            }],
+-        };
+-        let r = reg.resolve("genai-infra", "Sensa - Deploy Jira MCP í Vitinn-umhverfi");
+-        assert_eq!(r.customer, Some("Sensa".into()));
+-        // verkefni is never guessed.
+-        assert_eq!(r.verkefni, None);
+-    }
+-
+-    #[test]
+-    fn resolve_returns_none_when_undetectable() {
+-        let reg = Registry::default();
+-        let r = reg.resolve("mystery-folder", "some work");
+-        assert_eq!(r.customer, None);
+-        assert_eq!(r.verkefni, None);
+-        assert!(r.billable, "unmapped folders default to billable");
+-    }
+-
+-    #[test]
+-    fn customer_crud_round_trips() {
+-        let c = conn();
+-        let id = upsert_customer(
+-            &c,
+-            &Customer {
+-                id: None,
+-                name: "Sensa".into(),
+-                aliases: vec!["sensa.is".into()],
+-            },
+-        )
+-        .unwrap();
+-        let all = list_customers(&c).unwrap();
+-        assert_eq!(all.len(), 1);
+-        assert_eq!(all[0].name, "Sensa");
+-        assert_eq!(all[0].aliases, vec!["sensa.is".to_string()]);
+-
+-        // Upsert by name updates rather than duplicating.
+-        upsert_customer(
+-            &c,
+-            &Customer {
+-                id: None,
+-                name: "Sensa".into(),
+-                aliases: vec!["sensa.is".into(), "Sensa hf".into()],
+-            },
+-        )
+-        .unwrap();
+-        let all = list_customers(&c).unwrap();
+-        assert_eq!(all.len(), 1);
+-        assert_eq!(all[0].aliases.len(), 2);
+-
+-        assert!(delete_customer(&c, id).unwrap());
+-        assert!(list_customers(&c).unwrap().is_empty());
+-    }
+-
+-    #[test]
+-    fn folder_crud_blanks_normalise_to_null() {
+-        let c = conn();
+-        upsert_folder(
+-            &c,
+-            &FolderMap {
+-                id: None,
+-                folder: "genai-infra".into(),
+-                customer: Some("   ".into()),
+-                verkefni: Some("".into()),
+-                billable: false,
+-                multi_tenant: false,
+-            },
+-        )
+-        .unwrap();
+-        let all = list_folders(&c).unwrap();
+-        assert_eq!(all.len(), 1);
+-        assert_eq!(all[0].customer, None, "whitespace-only clears to NULL");
+-        assert_eq!(all[0].verkefni, None);
+-        assert!(!all[0].billable);
+-    }
+-
+-    #[test]
+-    fn seed_runs_once_and_never_overwrites() {
+-        let c = conn();
+-        assert!(seed_if_empty(&c).unwrap(), "first call seeds");
+-        let customers = list_customers(&c).unwrap();
+-        assert!(customers.iter().any(|x| x.name == "Sjúkra"));
+-        let folders = list_folders(&c).unwrap();
+-        let website = folders.iter().find(|f| f.folder == "apro-website").unwrap();
+-        assert_eq!(website.customer, Some("APRÓ".into()));
+-        assert_eq!(
+-            website.verkefni,
+-            Some("Vefsíður APRÓ og dótturfélaga".into())
+-        );
+-        // genai-infra is seeded as shared (no pinned customer).
+-        let shared = folders.iter().find(|f| f.folder == "genai-infra").unwrap();
+-        assert_eq!(shared.customer, None);
+-
+-        // A second call is a no-op even after the user edits.
+-        upsert_folder(
+-            &c,
+-            &FolderMap {
+-                id: None,
+-                folder: "apro-website".into(),
+-                customer: Some("Edited".into()),
+-                verkefni: None,
+-                billable: true,
+-                multi_tenant: false,
+-            },
+-        )
+-        .unwrap();
+-        assert!(!seed_if_empty(&c).unwrap(), "second call does nothing");
+-        let folders = list_folders(&c).unwrap();
+-        let website = folders.iter().find(|f| f.folder == "apro-website").unwrap();
+-        assert_eq!(
+-            website.customer,
+-            Some("Edited".into()),
+-            "seed must not clobber a user edit"
+-        );
+-    }
+-
+-    #[test]
+-    fn seed_tenant_roots_flags_vitinn_and_genai_infra_multi_tenant() {
+-        // FR-01, FR-02: a fresh db lists both folders flagged multi_tenant
+-        // with their tenant roots.
+-        let c = conn();
+-        assert!(seed_tenant_roots_if_empty(&c).unwrap(), "first call seeds");
+-
+-        let roots: Vec<(String, String)> = c
+-            .prepare("SELECT folder, root FROM billing_tenant_roots ORDER BY folder")
+-            .unwrap()
+-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+-            .unwrap()
+-            .collect::<std::result::Result<_, _>>()
+-            .unwrap();
+-        assert_eq!(
+-            roots,
+-            vec![
+-                (
+-                    "genai-infra".to_string(),
+-                    "terraform/workspaces/*".to_string()
+-                ),
+-                ("vitinn-infra".to_string(), "tenants".to_string()),
+-            ]
+-        );
+-
+-        let folders = list_folders(&c).unwrap();
+-        let vitinn = folders.iter().find(|f| f.folder == "vitinn-infra").unwrap();
+-        assert!(vitinn.multi_tenant);
+-        assert_eq!(
+-            vitinn.customer,
+-            Some("APRÓ".into()),
+-            "missing pin defaults to the house customer"
+-        );
+-
+-        let genai = folders.iter().find(|f| f.folder == "genai-infra").unwrap();
+-        assert!(genai.multi_tenant);
+-
+-        // A second call is a no-op.
+-        assert!(
+-            !seed_tenant_roots_if_empty(&c).unwrap(),
+-            "second call does nothing"
+-        );
+-    }
+-
+-    #[test]
+-    fn seed_tenant_roots_never_overwrites_an_existing_pin() {
+-        // A2/A1: a folder already pinned by the user (or an earlier
+-        // seed_if_empty) keeps its customer — only multi_tenant flips on.
+-        let c = conn();
+-        upsert_folder(
+-            &c,
+-            &FolderMap {
+-                id: None,
+-                folder: "genai-infra".into(),
+-                customer: None, // shared, as seed_if_empty leaves it
+-                verkefni: None,
+-                billable: true,
+-                multi_tenant: false,
+-            },
+-        )
+-        .unwrap();
+-
+-        assert!(seed_tenant_roots_if_empty(&c).unwrap());
+-
+-        let folders = list_folders(&c).unwrap();
+-        let genai = folders.iter().find(|f| f.folder == "genai-infra").unwrap();
+-        assert_eq!(genai.customer, None, "existing pin must not be overwritten");
+-        assert!(genai.multi_tenant);
+-    }
+-}
++#[path = "billing_registry_test.rs"]
++mod tests;
+diff --git a/rust/crates/worklog-core/src/billing_registry_test.rs b/rust/crates/worklog-core/src/billing_registry_test.rs
+new file mode 100644
+index 0000000..92f68e5
+--- /dev/null
++++ b/rust/crates/worklog-core/src/billing_registry_test.rs
+@@ -0,0 +1,296 @@
++use super::*;
++use crate::db;
++
++fn conn() -> Connection {
++    db::open_memory().unwrap()
++}
++
++#[test]
++fn alias_matching_respects_word_boundaries() {
++    assert!(alias_matches("Villur hjá VÍS", "VÍS"));
++    assert!(alias_matches("Agent fyrir RL - Atlassian", "RL"));
++    // Short aliases must not fire inside longer words.
++    assert!(!alias_matches("this is true", "RU"));
++    assert!(!alias_matches("RUNNING the agent", "RU"));
++    // Boundary characters other than space still count.
++    assert!(alias_matches("Spjallbúbbla inn á ru.is", "ru.is"));
++    assert!(alias_matches("MMS - lagfæringar", "MMS"));
++}
++
++#[test]
++fn alias_matching_is_case_insensitive() {
++    assert!(alias_matches("document analyzer fyrir sjúkra", "Sjúkra"));
++    assert!(alias_matches("Tempo MCP fyrir Apró", "APRÓ"));
++}
++
++#[test]
++fn customer_in_text_needs_an_unambiguous_hit() {
++    let reg = Registry {
++        customers: vec![
++            Customer {
++                id: None,
++                name: "Sjúkra".into(),
++                aliases: vec![],
++            },
++            Customer {
++                id: None,
++                name: "MMS".into(),
++                aliases: vec![],
++            },
++        ],
++        folders: vec![],
++    };
++    assert_eq!(
++        reg.customer_in_text("Document analyzer fyrir Sjúkra"),
++        Some("Sjúkra".into())
++    );
++    // Two customers named → ambiguous → left blank, never guessed.
++    assert_eq!(reg.customer_in_text("Sjúkra and MMS sync"), None);
++    assert_eq!(reg.customer_in_text("no customer here"), None);
++}
++
++#[test]
++fn resolve_prefers_a_folder_pin_over_text() {
++    let reg = Registry {
++        customers: vec![Customer {
++            id: None,
++            name: "MMS".into(),
++            aliases: vec![],
++        }],
++        folders: vec![FolderMap {
++            id: None,
++            folder: "sjukra".into(),
++            customer: Some("Sjúkra".into()),
++            verkefni: Some("[P] Vöktun".into()),
++            billable: true,
++            multi_tenant: false,
++        }],
++    };
++    // Text mentions MMS but the folder is pinned to Sjúkra.
++    let r = reg.resolve("sjukra", "MMS schema sync");
++    assert_eq!(r.customer, Some("Sjúkra".into()));
++    assert_eq!(r.verkefni, Some("[P] Vöktun".into()));
++    assert!(r.billable);
++}
++
++#[test]
++fn resolve_falls_back_to_text_for_a_shared_folder() {
++    let reg = Registry {
++        customers: vec![Customer {
++            id: None,
++            name: "Sensa".into(),
++            aliases: vec![],
++        }],
++        folders: vec![FolderMap {
++            id: None,
++            folder: "genai-infra".into(),
++            customer: None, // shared
++            verkefni: None,
++            billable: true,
++            multi_tenant: false,
++        }],
++    };
++    let r = reg.resolve("genai-infra", "Sensa - Deploy Jira MCP í Vitinn-umhverfi");
++    assert_eq!(r.customer, Some("Sensa".into()));
++    // verkefni is never guessed.
++    assert_eq!(r.verkefni, None);
++}
++
++#[test]
++fn resolve_returns_none_when_undetectable() {
++    let reg = Registry::default();
++    let r = reg.resolve("mystery-folder", "some work");
++    assert_eq!(r.customer, None);
++    assert_eq!(r.verkefni, None);
++    assert!(r.billable, "unmapped folders default to billable");
++}
++
++#[test]
++fn customer_crud_round_trips() {
++    let c = conn();
++    let id = upsert_customer(
++        &c,
++        &Customer {
++            id: None,
++            name: "Sensa".into(),
++            aliases: vec!["sensa.is".into()],
++        },
++    )
++    .unwrap();
++    let all = list_customers(&c).unwrap();
++    assert_eq!(all.len(), 1);
++    assert_eq!(all[0].name, "Sensa");
++    assert_eq!(all[0].aliases, vec!["sensa.is".to_string()]);
++
++    // Upsert by name updates rather than duplicating.
++    upsert_customer(
++        &c,
++        &Customer {
++            id: None,
++            name: "Sensa".into(),
++            aliases: vec!["sensa.is".into(), "Sensa hf".into()],
++        },
++    )
++    .unwrap();
++    let all = list_customers(&c).unwrap();
++    assert_eq!(all.len(), 1);
++    assert_eq!(all[0].aliases.len(), 2);
++
++    assert!(delete_customer(&c, id).unwrap());
++    assert!(list_customers(&c).unwrap().is_empty());
++}
++
++#[test]
++fn folder_crud_blanks_normalise_to_null() {
++    let c = conn();
++    upsert_folder(
++        &c,
++        &FolderMap {
++            id: None,
++            folder: "genai-infra".into(),
++            customer: Some("   ".into()),
++            verkefni: Some("".into()),
++            billable: false,
++            multi_tenant: false,
++        },
++    )
++    .unwrap();
++    let all = list_folders(&c).unwrap();
++    assert_eq!(all.len(), 1);
++    assert_eq!(all[0].customer, None, "whitespace-only clears to NULL");
++    assert_eq!(all[0].verkefni, None);
++    assert!(!all[0].billable);
++}
++
++#[test]
++fn seed_runs_once_and_never_overwrites() {
++    let c = conn();
++    assert!(seed_if_empty(&c).unwrap(), "first call seeds");
++    let customers = list_customers(&c).unwrap();
++    assert!(customers.iter().any(|x| x.name == "Sjúkra"));
++    let folders = list_folders(&c).unwrap();
++    let website = folders.iter().find(|f| f.folder == "apro-website").unwrap();
++    assert_eq!(website.customer, Some("APRÓ".into()));
++    assert_eq!(
++        website.verkefni,
++        Some("Vefsíður APRÓ og dótturfélaga".into())
++    );
++    // genai-infra is seeded as shared (no pinned customer).
++    let shared = folders.iter().find(|f| f.folder == "genai-infra").unwrap();
++    assert_eq!(shared.customer, None);
++
++    // A second call is a no-op even after the user edits.
++    upsert_folder(
++        &c,
++        &FolderMap {
++            id: None,
++            folder: "apro-website".into(),
++            customer: Some("Edited".into()),
++            verkefni: None,
++            billable: true,
++            multi_tenant: false,
++        },
++    )
++    .unwrap();
++    assert!(!seed_if_empty(&c).unwrap(), "second call does nothing");
++    let folders = list_folders(&c).unwrap();
++    let website = folders.iter().find(|f| f.folder == "apro-website").unwrap();
++    assert_eq!(
++        website.customer,
++        Some("Edited".into()),
++        "seed must not clobber a user edit"
++    );
++}
++
++#[test]
++fn seed_tenant_roots_flags_vitinn_and_genai_infra_multi_tenant() {
++    // FR-01, FR-02: a fresh db lists both folders flagged multi_tenant
++    // with their tenant roots.
++    let c = conn();
++    assert!(seed_tenant_roots_if_empty(&c).unwrap(), "first call seeds");
++
++    let roots: Vec<(String, String)> = c
++        .prepare("SELECT folder, root FROM billing_tenant_roots ORDER BY folder")
++        .unwrap()
++        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
++        .unwrap()
++        .collect::<std::result::Result<_, _>>()
++        .unwrap();
++    assert_eq!(
++        roots,
++        vec![
++            (
++                "genai-infra".to_string(),
++                "terraform/workspaces/*".to_string()
++            ),
++            ("vitinn-infra".to_string(), "tenants".to_string()),
++        ]
++    );
++
++    let folders = list_folders(&c).unwrap();
++    let vitinn = folders.iter().find(|f| f.folder == "vitinn-infra").unwrap();
++    assert!(vitinn.multi_tenant);
++    assert_eq!(
++        vitinn.customer,
++        Some("APRÓ".into()),
++        "missing pin defaults to the house customer"
++    );
++
++    let genai = folders.iter().find(|f| f.folder == "genai-infra").unwrap();
++    assert!(genai.multi_tenant);
++
++    // A second call is a no-op.
++    assert!(
++        !seed_tenant_roots_if_empty(&c).unwrap(),
++        "second call does nothing"
++    );
++}
++
++#[test]
++fn seed_tenant_roots_never_overwrites_an_existing_pin() {
++    // A2/A1: a folder already pinned by the user (or an earlier
++    // seed_if_empty) keeps its customer — only multi_tenant flips on.
++    let c = conn();
++    upsert_folder(
++        &c,
++        &FolderMap {
++            id: None,
++            folder: "genai-infra".into(),
++            customer: None, // shared, as seed_if_empty leaves it
++            verkefni: None,
++            billable: true,
++            multi_tenant: false,
++        },
++    )
++    .unwrap();
++
++    assert!(seed_tenant_roots_if_empty(&c).unwrap());
++
++    let folders = list_folders(&c).unwrap();
++    let genai = folders.iter().find(|f| f.folder == "genai-infra").unwrap();
++    assert_eq!(genai.customer, None, "existing pin must not be overwritten");
++    assert!(genai.multi_tenant);
++}
++
++#[test]
++fn customer_named_matches_name_or_alias_case_insensitively() {
++    let reg = Registry {
++        customers: vec![Customer {
++            id: None,
++            name: "Sjúkra".into(),
++            aliases: vec!["Sjukratryggingar".into()],
++        }],
++        folders: vec![],
++    };
++    assert_eq!(reg.customer_named("sjúkra"), Some("Sjúkra".into()));
++    assert_eq!(reg.customer_named("SJÚKRA"), Some("Sjúkra".into()));
++    assert_eq!(
++        reg.customer_named("sjukratryggingar"),
++        Some("Sjúkra".into())
++    );
++    // A substring match is not enough — customer_named needs the whole
++    // name/alias, unlike customer_in_text's free-text search.
++    assert_eq!(reg.customer_named("Sjukratryggingar hf"), None);
++    assert_eq!(reg.customer_named("Sjukra tryggingar"), None);
++    assert_eq!(reg.customer_named(""), None);
++}
+diff --git a/rust/crates/worklog-core/src/git.rs b/rust/crates/worklog-core/src/git.rs
+index 4b1336f..1d05640 100644
+--- a/rust/crates/worklog-core/src/git.rs
++++ b/rust/crates/worklog-core/src/git.rs
+@@ -119,20 +119,44 @@ fn run_git_log(cwd: &Path, since: &str, until: &str) -> Result<Vec<CommitEntry>>
+         if let Some(remote) = git_remote_origin(cwd) {
+             for e in &mut entries {
+                 e.github_url = derive_github_url(&remote, &e.sha);
+             }
+         }
+     }
+ 
+     Ok(entries)
+ }
+ 
++/// The branch checked out at `dir`, or `None` on detached HEAD, a
++/// non-repo, or any git error.
++pub fn current_branch(dir: &Path) -> Option<String> {
++    if !dir.is_dir() {
++        return None;
++    }
++    let output = Command::new("git")
++        .arg("-C")
++        .arg(dir)
++        .arg("branch")
++        .arg("--show-current")
++        .output()
++        .ok()?;
++    if !output.status.success() {
++        return None;
++    }
++    let branch = String::from_utf8(output.stdout).ok()?.trim().to_owned();
++    if branch.is_empty() {
++        None
++    } else {
++        Some(branch)
++    }
++}
++
+ fn git_remote_origin(cwd: &Path) -> Option<String> {
+     let output = Command::new("git")
+         .arg("-C")
+         .arg(cwd)
+         .arg("remote")
+         .arg("get-url")
+         .arg("origin")
+         .output()
+         .ok()?;
+     if !output.status.success() {
+@@ -230,20 +254,42 @@ pub(crate) fn derive_github_url(remote_url: &str, sha: &str) -> Option<String> {
+     if owner.is_empty() || repo.is_empty() {
+         return None;
+     }
+     Some(format!("https://github.com/{owner}/{repo}/commit/{sha}"))
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn current_branch_returns_checked_out_branch_name() {
++        let tmp = tempfile::tempdir().unwrap();
++        seed_repo(tmp.path());
++        run(tmp.path(), &["checkout", "-q", "-b", "feat/x"]);
++        assert_eq!(current_branch(tmp.path()), Some("feat/x".to_owned()));
++    }
++
++    #[test]
++    fn current_branch_returns_none_for_detached_head() {
++        let tmp = tempfile::tempdir().unwrap();
++        seed_repo(tmp.path());
++        run(tmp.path(), &["checkout", "-q", "--detach", "HEAD"]);
++        assert_eq!(current_branch(tmp.path()), None);
++    }
++
++    #[test]
++    fn current_branch_returns_none_for_non_repo() {
++        let tmp = tempfile::tempdir().unwrap();
++        assert_eq!(current_branch(tmp.path()), None);
++    }
++
+     #[test]
+     fn derive_github_url_handles_ssh_form() {
+         let url = derive_github_url("git@github.com:TomasPalsson/worklog.git", "abc123").unwrap();
+         assert_eq!(url, "https://github.com/TomasPalsson/worklog/commit/abc123");
+     }
+ 
+     #[test]
+     fn derive_github_url_handles_https_form() {
+         let url = derive_github_url("https://github.com/TomasPalsson/worklog", "deadbeef").unwrap();
+         assert_eq!(
+diff --git a/rust/crates/worklog-core/src/hook.rs b/rust/crates/worklog-core/src/hook.rs
+index fe4a664..43597aa 100644
+--- a/rust/crates/worklog-core/src/hook.rs
++++ b/rust/crates/worklog-core/src/hook.rs
+@@ -84,20 +84,35 @@ pub fn default_command() -> String {
+     }
+     if let Some(p) = which::which_ok("worklog-rs") {
+         return format!("{} hook-run", p.to_string_lossy());
+     }
+     if let Some(p) = which::which_ok("worklog") {
+         return format!("{} hook-run", p.to_string_lossy());
+     }
+     "worklog hook-run".to_owned()
+ }
+ 
++/// Derive the `session-hint` invocation from the recorder's `hook-run`
++/// command, keeping the same binary/back-compat alias.
++// ponytail: falls back to appending " session-hint" when neither suffix
++// matches (the bare legacy `worklog-hook` binary); upgrade if that binary
++// ever needs to run session-hint too.
++fn session_hint_command(command: &str) -> String {
++    if let Some(prefix) = command.strip_suffix("hook-run") {
++        return format!("{prefix}session-hint");
++    }
++    if let Some(prefix) = command.strip_suffix("hook run") {
++        return format!("{prefix}session-hint");
++    }
++    format!("{command} session-hint")
++}
++
+ pub fn install(command: &str) -> Result<HookStatus> {
+     let path = settings_path()?;
+     let mut root = read_settings(&path)?;
+     let hooks = root
+         .entry("hooks".to_owned())
+         .or_insert_with(|| Value::Object(Map::new()));
+     let hooks_obj = hooks.as_object_mut().context("`hooks` must be an object")?;
+ 
+     // Sweep worklog handlers out of EVERY hook key before re-adding them
+     // to the current EVENTS set. Older worklog versions registered extra
+@@ -122,20 +137,27 @@ pub fn install(command: &str) -> Result<HookStatus> {
+         let arr = handlers
+             .as_array_mut()
+             .context("event handler list must be an array")?;
+         // Drop any previous worklog handlers so we never leave duplicates.
+         arr.retain(|h| !is_worklog_handler(h));
+         arr.push(json!({
+             "hooks": [
+                 { "type": "command", "command": command }
+             ]
+         }));
++        if *ev == "SessionStart" {
++            arr.push(json!({
++                "hooks": [
++                    { "type": "command", "command": session_hint_command(command) }
++                ]
++            }));
++        }
+     }
+ 
+     write_settings(&path, &Value::Object(root))?;
+     Ok(HookStatus {
+         settings_path: path,
+         installed: true,
+         events: EVENTS.iter().map(|s| (*s).to_owned()).collect(),
+         command: Some(command.to_owned()),
+     })
+ }
+@@ -316,41 +338,85 @@ mod tests {
+     fn install_creates_handlers_for_every_event() {
+         let (_g, _t) = enter(tempdir().unwrap());
+         let cmd = "/usr/bin/worklog hook run";
+         install(cmd).unwrap();
+ 
+         let raw = std::fs::read_to_string(settings_path().unwrap()).unwrap();
+         let root: Value = serde_json::from_str(&raw).unwrap();
+         let hooks = root.get("hooks").unwrap().as_object().unwrap();
+         for ev in EVENTS {
+             let arr = hooks.get(*ev).unwrap().as_array().unwrap();
+-            assert_eq!(arr.len(), 1, "event {ev} must have 1 handler, got {arr:?}");
++            let expected = if *ev == "SessionStart" { 2 } else { 1 };
++            assert_eq!(
++                arr.len(),
++                expected,
++                "event {ev} must have {expected} handler(s), got {arr:?}"
++            );
+             let handler = arr[0].get("hooks").unwrap().as_array().unwrap();
+             assert_eq!(handler[0]["command"].as_str().unwrap(), cmd);
+         }
+     }
+ 
++    #[test]
++    fn install_keeps_recorder_and_start_hint() {
++        let (_g, _t) = enter(tempdir().unwrap());
++        let cmd = "/usr/bin/worklog hook-run";
++        install(cmd).unwrap();
++        install(cmd).unwrap(); // idempotent: re-running must not duplicate
++
++        let raw = std::fs::read_to_string(settings_path().unwrap()).unwrap();
++        let root: Value = serde_json::from_str(&raw).unwrap();
++        let hooks = root.get("hooks").unwrap().as_object().unwrap();
++
++        // SessionStart carries both the recorder and the start-hint command.
++        let start = hooks.get("SessionStart").unwrap().as_array().unwrap();
++        assert_eq!(
++            start.len(),
++            2,
++            "SessionStart must have exactly 2 handlers, got {start:?}"
++        );
++        let commands: Vec<&str> = start
++            .iter()
++            .map(|h| h["hooks"][0]["command"].as_str().unwrap())
++            .collect();
++        assert_eq!(
++            commands,
++            vec!["/usr/bin/worklog hook-run", "/usr/bin/worklog session-hint"]
++        );
++
++        // Every other event keeps only the recorder.
++        for ev in EVENTS {
++            if *ev == "SessionStart" {
++                continue;
++            }
++            let arr = hooks.get(*ev).unwrap().as_array().unwrap();
++            assert_eq!(arr.len(), 1, "event {ev} must have 1 handler, got {arr:?}");
++            assert_eq!(arr[0]["hooks"][0]["command"].as_str().unwrap(), cmd);
++        }
++    }
++
+     #[test]
+     fn install_is_idempotent() {
+         let (_g, _t) = enter(tempdir().unwrap());
+         let cmd = "worklog hook run";
+         install(cmd).unwrap();
+         install(cmd).unwrap();
+         let s = status().unwrap();
+         assert!(s.installed);
+         assert_eq!(s.events.len(), EVENTS.len());
+ 
+         let raw = std::fs::read_to_string(settings_path().unwrap()).unwrap();
+         let root: Value = serde_json::from_str(&raw).unwrap();
+         let hooks = root.get("hooks").unwrap().as_object().unwrap();
+         for ev in EVENTS {
+-            assert_eq!(hooks.get(*ev).unwrap().as_array().unwrap().len(), 1);
++            let expected = if *ev == "SessionStart" { 2 } else { 1 };
++            assert_eq!(hooks.get(*ev).unwrap().as_array().unwrap().len(), expected);
+         }
+     }
+ 
+     #[test]
+     fn install_sweeps_worklog_handlers_off_legacy_event_keys() {
+         // Regression: an older worklog may have registered handlers on event
+         // keys that are NOT in the current EVENTS set. `install`'s per-event
+         // loop only manages EVENTS, so without the up-front full sweep those
+         // stale worklog handlers would linger forever on the retired keys.
+         //
+@@ -386,21 +452,22 @@ mod tests {
+         assert!(
+             hooks.get("Notification").is_none(),
+             "stale Notification worklog handler must be swept"
+         );
+         // PreCompact keeps the unrelated handler, loses the worklog one.
+         let pre = hooks.get("PreCompact").unwrap().as_array().unwrap();
+         assert_eq!(pre.len(), 1, "only the non-worklog handler should remain");
+         assert!(!is_worklog_handler(&pre[0]));
+         // …and the intended events are still installed.
+         for ev in EVENTS {
+-            assert_eq!(hooks.get(*ev).unwrap().as_array().unwrap().len(), 1);
++            let expected = if *ev == "SessionStart" { 2 } else { 1 };
++            assert_eq!(hooks.get(*ev).unwrap().as_array().unwrap().len(), expected);
+         }
+     }
+ 
+     #[test]
+     fn install_replaces_an_earlier_python_handler() {
+         let (_g, _t) = enter(tempdir().unwrap());
+         let settings = json!({
+             "hooks": {
+                 "Stop": [
+                     { "hooks": [{ "type": "command", "command": "/old/worklog hook run" }] }
+diff --git a/rust/crates/worklog-core/src/infer_allocations.rs b/rust/crates/worklog-core/src/infer_allocations.rs
+index 453621b..585f9c4 100644
+--- a/rust/crates/worklog-core/src/infer_allocations.rs
++++ b/rust/crates/worklog-core/src/infer_allocations.rs
+@@ -25,23 +25,28 @@ pub struct AllocationWindow {
+ }
+ 
+ /// A day's blocks with its saved splits applied — the ONE rebuild every
+ /// caller uses (daemon, `worklog infer`, `worklog day`), so no path can
+ /// quietly undo the owner's choice.
+ pub fn build_day_blocks(
+     conn: &rusqlite::Connection,
+     day: chrono::NaiveDate,
+ ) -> anyhow::Result<Vec<InferBlock>> {
+     let mut events = crate::infer::load_day_events(conn, day)?;
++    let mut session_ids: Vec<String> = events.iter().filter_map(|e| e.session_id.clone()).collect();
++    session_ids.sort();
++    session_ids.dedup();
++    let pins = crate::session_pins::pins_for_sessions(conn, &session_ids)?;
+     crate::session_customers::tag_sessions(
+         &mut events,
+         &crate::billing_registry::Registry::load(conn)?,
++        &pins,
+     );
+     let windows: Vec<AllocationWindow> = crate::overlaps::load_allocations(conn, day)?
+         .into_iter()
+         .map(|(started_at, ended_at, shares)| AllocationWindow {
+             started_at,
+             ended_at,
+             shares,
+         })
+         .collect();
+     Ok(crate::infer::build_blocks_with_allocations(
+diff --git a/rust/crates/worklog-core/src/infer_allocations_db_test.rs b/rust/crates/worklog-core/src/infer_allocations_db_test.rs
+index 80bb73d..7d1e5de 100644
+--- a/rust/crates/worklog-core/src/infer_allocations_db_test.rs
++++ b/rust/crates/worklog-core/src/infer_allocations_db_test.rs
+@@ -13,20 +13,22 @@ fn shares(pairs: &[(&str, f64)]) -> BTreeMap<String, f64> {
+ }
+ 
+ const A: &str = "/Users/dev/Desktop/Work/vitinn-infra";
+ const C: &str = "/Users/dev/Desktop/Work/lyfjastofnun";
+ 
+ /// Every path that rebuilds a day (daemon, `worklog infer`, `worklog
+ /// day` on the 15-min schedule) must honour a saved split — the CLI
+ /// used to rebuild without it and undo the owner's choice.
+ #[test]
+ fn day_rebuild_reads_the_saved_split() {
++    let _g = crate::tz::test_env_lock();
++    std::env::remove_var("WORKLOG_TZ");
+     use crate::models::Event;
+     let conn = crate::db::open_memory().unwrap();
+     let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
+     for i in 0..30u32 {
+         let p = if i < 10 { A } else { C };
+         let mut e = Event::minimal(
+             "claude_turn",
+             format!("t{i}"),
+             at(9, i * 2).to_rfc3339(),
+             "prompt",
+@@ -64,20 +66,22 @@ fn day_rebuild_reads_the_saved_split() {
+     assert!(
+         total >= 55 * 60,
+         "the saved 100% split must hold, got {total}s"
+     );
+ }
+ 
+ /// Saving a split and then resetting it must not lose the tickets the
+ /// owner put on blocks in that range.
+ #[test]
+ fn tickets_survive_a_split_and_its_reset() {
++    let _g = crate::tz::test_env_lock();
++    std::env::remove_var("WORKLOG_TZ");
+     use crate::models::Event;
+     let conn = crate::db::open_memory().unwrap();
+     let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
+     for i in 0..30u32 {
+         let p = if i < 10 { A } else { C };
+         let mut e = Event::minimal(
+             "claude_turn",
+             format!("t{i}"),
+             at(9, i * 2).to_rfc3339(),
+             "prompt",
+@@ -151,20 +155,22 @@ fn seed_two_session_stretches(conn: &rusqlite::Connection, title_a: &str, title_
+             e.session_id = Some(session.into());
+             crate::repo::upsert_event(conn, &e).unwrap();
+         }
+     }
+ }
+ 
+ /// A folder shared by two customers' sessions must yield separate blocks
+ /// per customer, not one lane that mixes both (session lanes, FR-05).
+ #[test]
+ fn two_customer_sessions_split_into_separate_blocks() {
++    let _g = crate::tz::test_env_lock();
++    std::env::remove_var("WORKLOG_TZ");
+     use crate::billing_registry::{upsert_customer, Customer};
+     let conn = crate::db::open_memory().unwrap();
+     let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
+     upsert_customer(
+         &conn,
+         &Customer {
+             id: None,
+             name: "Sjúkra".into(),
+             aliases: vec![],
+         },
+@@ -224,20 +230,22 @@ fn two_customer_sessions_split_into_separate_blocks() {
+             "saved block {id} must read as vitinn-infra"
+         );
+     }
+ }
+ 
+ /// On real data every `claude_turn` is titled "prompt"; the owner's message
+ /// lives in `raw_json` (`RawRecord::ClaudePrompt`). Session lanes must
+ /// resolve the customer from there, not from the (uniform) DB title.
+ #[test]
+ fn prompt_text_names_the_session_customer() {
++    let _g = crate::tz::test_env_lock();
++    std::env::remove_var("WORKLOG_TZ");
+     use crate::billing_registry::{upsert_customer, Customer};
+     use crate::clues_contract::RawRecord;
+     use crate::models::Event;
+     let conn = crate::db::open_memory().unwrap();
+     let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
+     upsert_customer(
+         &conn,
+         &Customer {
+             id: None,
+             name: "Sjúkra".into(),
+@@ -296,24 +304,106 @@ fn prompt_text_names_the_session_customer() {
+             .filter_map(|e| e.session_id.as_deref())
+             .map(|s| (s, ()))
+             .collect();
+         assert!(
+             sessions.len() <= 1,
+             "block must not mix both sessions, got {sessions:?}"
+         );
+     }
+ }
+ 
++/// A pin must beat the text guess: two sessions whose prompts both name
++/// the same customer would normally stay a single unsplit lane (see
++/// `two_sessions_same_customer_matches_no_customer_registry` below), but
++/// pinning one of them to a different customer must split the lane
++/// anyway — the pin, not the shared text, decides.
++#[test]
++fn pin_beats_text_guess() {
++    let _g = crate::tz::test_env_lock();
++    std::env::remove_var("WORKLOG_TZ");
++    use crate::billing_registry::{upsert_customer, Customer, Registry};
++    let conn = crate::db::open_memory().unwrap();
++    let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
++    upsert_customer(
++        &conn,
++        &Customer {
++            id: None,
++            name: "Sjúkra".into(),
++            aliases: vec![],
++        },
++    )
++    .unwrap();
++    upsert_customer(
++        &conn,
++        &Customer {
++            id: None,
++            name: "APRÓ".into(),
++            aliases: vec![],
++        },
++    )
++    .unwrap();
++    seed_two_session_stretches(&conn, "Sjúkra onboarding call", "Sjúkra followup");
++
++    let registry = Registry::load(&conn).unwrap();
++    crate::session_pins::pin(
++        &conn,
++        &registry,
++        "sessA",
++        std::path::Path::new(SHARED),
++        "APRÓ",
++        at(0, 0),
++        None,
++    )
++    .unwrap();
++
++    let blocks = build_day_blocks(&conn, day).unwrap();
++    let non_calendar: Vec<&InferBlock> = blocks.iter().filter(|b| !b.is_calendar).collect();
++    for b in &non_calendar {
++        let sessions: BTreeMap<&str, ()> = b
++            .events
++            .iter()
++            .filter_map(|e| e.session_id.as_deref())
++            .map(|s| (s, ()))
++            .collect();
++        assert!(
++            sessions.len() <= 1,
++            "a pin splitting the lane must not mix both sessions in one block, got {sessions:?}"
++        );
++    }
++    let session_a_blocks = non_calendar
++        .iter()
++        .filter(|b| {
++            b.events
++                .iter()
++                .any(|e| e.session_id.as_deref() == Some("sessA"))
++        })
++        .count();
++    let session_b_blocks = non_calendar
++        .iter()
++        .filter(|b| {
++            b.events
++                .iter()
++                .any(|e| e.session_id.as_deref() == Some("sessB"))
++        })
++        .count();
++    assert!(
++        session_a_blocks > 0 && session_b_blocks > 0,
++        "the pin must split sessA (APRÓ) from sessB (Sjúkra) despite matching text, got sessA={session_a_blocks} sessB={session_b_blocks}"
++    );
++}
++
+ /// Both sessions naming the same customer must not split the lane —
+ /// the registry then behaves exactly as if it held no customers (FR-04).
+ #[test]
+ fn two_sessions_same_customer_matches_no_customer_registry() {
++    let _g = crate::tz::test_env_lock();
++    std::env::remove_var("WORKLOG_TZ");
+     use crate::billing_registry::{upsert_customer, Customer};
+     let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
+ 
+     let with_customer = crate::db::open_memory().unwrap();
+     upsert_customer(
+         &with_customer,
+         &Customer {
+             id: None,
+             name: "Sjúkra".into(),
+             aliases: vec![],
+diff --git a/rust/crates/worklog-core/src/lib.rs b/rust/crates/worklog-core/src/lib.rs
+index e9b7721..64ee0be 100644
+--- a/rust/crates/worklog-core/src/lib.rs
++++ b/rust/crates/worklog-core/src/lib.rs
+@@ -51,20 +51,21 @@ pub mod raw_json;
+ pub mod repo;
+ pub mod routing;
+ pub mod routing_absorb;
+ pub mod routing_contract;
+ pub mod routing_dismiss;
+ pub mod schedule;
+ pub mod scrub;
+ mod scrub_assignment;
+ pub mod secrets;
+ mod session_customers;
++pub mod session_pins;
+ pub mod sessions;
+ pub mod skill;
+ pub mod tenant_clues;
+ pub mod tenant_contract;
+ pub mod tenant_shares;
+ pub mod tenant_split;
+ pub mod tenants;
+ pub mod timeline;
+ pub mod tz;
+ pub mod updater;
+diff --git a/rust/crates/worklog-core/src/session_customers.rs b/rust/crates/worklog-core/src/session_customers.rs
+index 4ef6752..11f7920 100644
+--- a/rust/crates/worklog-core/src/session_customers.rs
++++ b/rust/crates/worklog-core/src/session_customers.rs
+@@ -1,57 +1,102 @@
+ //! Splits a shared repo folder's lane by session customer.
+ //!
+ //! A folder like `vitinn-infra` can host two different customers' Claude
+ //! sessions back to back. When a folder's sessions name at least two
+ //! distinct customers, each resolved session's events get `lane_tag` set
+ //! so `infer_lanes::lane_key` gives it its own lane; a folder that never
+ //! shows more than one named customer stays a single lane (R1 unchanged).
++//!
++//! A session pin always wins over the text guess: an event takes the pin
++//! whose `from_at` is the latest one at or before its own timestamp, so a
++//! mid-session pin switch moves only the events from that time on; events
++//! before the earliest applicable pin (or in an unpinned session) fall
++//! back to the session's text guess.
+ 
+ use std::collections::{BTreeMap, BTreeSet};
+ 
+ use crate::billing_registry::Registry;
+ use crate::infer::InferEvent;
+ use crate::infer_lanes::lane_folder;
++use crate::session_pins::SessionPin;
+ 
+-pub(crate) fn tag_sessions(events: &mut [InferEvent], registry: &Registry) {
+-    let mut sessions: BTreeMap<(Option<String>, String), Vec<usize>> = BTreeMap::new();
+-    for (i, e) in events.iter().enumerate() {
+-        if let Some(sid) = e.session_id.clone() {
+-            sessions.entry((lane_folder(e), sid)).or_default().push(i);
+-        }
++/// Per-event resolved customer: the pin covering the event's timestamp, or
++/// the session's text guess when no pin covers it yet.
++fn resolve_events(
++    events: &[InferEvent],
++    registry: &Registry,
++    sessions: &BTreeMap<(Option<String>, String), Vec<usize>>,
++    pins: &[SessionPin],
++) -> BTreeMap<usize, String> {
++    let mut pins_by_session: BTreeMap<&str, Vec<&SessionPin>> = BTreeMap::new();
++    for p in pins {
++        pins_by_session
++            .entry(p.session_id.as_str())
++            .or_default()
++            .push(p);
+     }
+ 
+-    let mut resolved: BTreeMap<(Option<String>, String), String> = BTreeMap::new();
+-    for (key, idxs) in &sessions {
++    let mut resolved: BTreeMap<usize, String> = BTreeMap::new();
++    for (key, idxs) in sessions {
++        let (_, session_id) = key;
+         let text = idxs
+             .iter()
+             .flat_map(|&i| [events[i].title.as_deref(), events[i].jira_issue.as_deref()])
+             .flatten()
+             .collect::<Vec<_>>()
+             .join("\n");
+-        if let Some(customer) = registry.customer_in_text(&text) {
+-            resolved.insert(key.clone(), customer);
++        let text_guess = registry.customer_in_text(&text);
++        let session_pins = pins_by_session.get(session_id.as_str());
++        for &i in idxs {
++            let pinned = session_pins.and_then(|ps| {
++                ps.iter()
++                    .filter(|p| p.from_at <= events[i].ts)
++                    .max_by_key(|p| p.from_at)
++                    .map(|p| p.customer.clone())
++            });
++            if let Some(customer) = pinned.or_else(|| text_guess.clone()) {
++                resolved.insert(i, customer);
++            }
+         }
+     }
++    resolved
++}
+ 
+-    let mut customers_by_folder: BTreeMap<Option<String>, BTreeSet<&str>> = BTreeMap::new();
+-    for ((folder, _), customer) in &resolved {
+-        customers_by_folder
+-            .entry(folder.clone())
+-            .or_default()
+-            .insert(customer.as_str());
++pub(crate) fn tag_sessions(events: &mut [InferEvent], registry: &Registry, pins: &[SessionPin]) {
++    let mut sessions: BTreeMap<(Option<String>, String), Vec<usize>> = BTreeMap::new();
++    for (i, e) in events.iter().enumerate() {
++        if let Some(sid) = e.session_id.clone() {
++            sessions.entry((lane_folder(e), sid)).or_default().push(i);
++        }
+     }
+ 
+-    for (key, customer) in &resolved {
++    let resolved = resolve_events(events, registry, &sessions, pins);
++
++    let mut customers_by_folder: BTreeMap<Option<String>, BTreeSet<String>> = BTreeMap::new();
++    for (key, idxs) in &sessions {
++        let (folder, _) = key;
++        for &i in idxs {
++            if let Some(customer) = resolved.get(&i) {
++                customers_by_folder
++                    .entry(folder.clone())
++                    .or_default()
++                    .insert(customer.clone());
++            }
++        }
++    }
++
++    for (key, idxs) in &sessions {
+         let (folder, _) = key;
+         if customers_by_folder.get(folder).map_or(0, BTreeSet::len) < 2 {
+             continue;
+         }
+-        for &i in &sessions[key] {
+-            events[i].lane_tag = Some(customer.clone());
++        for &i in idxs {
++            if let Some(customer) = resolved.get(&i) {
++                events[i].lane_tag = Some(customer.clone());
++            }
+         }
+     }
+ }
+ 
+ #[cfg(test)]
+ #[path = "session_customers_test.rs"]
+ mod tests;
+diff --git a/rust/crates/worklog-core/src/session_customers_test.rs b/rust/crates/worklog-core/src/session_customers_test.rs
+index 1f93394..308851e 100644
+--- a/rust/crates/worklog-core/src/session_customers_test.rs
++++ b/rust/crates/worklog-core/src/session_customers_test.rs
+@@ -1,14 +1,15 @@
+ //! Tests for session customer tagging (`session_customers`).
+ 
+ use super::*;
+ use crate::billing_registry::Customer;
++use crate::session_pins::SessionPin;
+ use chrono::{TimeZone, Utc};
+ 
+ fn ev(session: &str, project: &str, title: Option<&str>, jira: Option<&str>) -> InferEvent {
+     InferEvent {
+         ts: Utc.with_ymd_and_hms(2026, 9, 23, 9, 0, 0).unwrap(),
+         source: "claude_turn".into(),
+         duration_seconds: None,
+         jira_issue: jira.map(str::to_string),
+         event_id: None,
+         project_path: Some(project.to_string()),
+@@ -36,62 +37,62 @@ const FOLDER: &str = "/Users/dev/Desktop/Work/vitinn-infra";
+ 
+ #[test]
+ fn two_customers_in_one_repo_tag_both() {
+     let reg = registry(&["Acme", "Globex"]);
+     let mut events = vec![
+         ev("A", FOLDER, Some("Acme onboarding"), None),
+         ev("A", FOLDER, Some("more Acme work"), None),
+         ev("B", FOLDER, Some("Globex migration"), None),
+         ev("B", FOLDER, Some("Globex followup"), None),
+     ];
+-    tag_sessions(&mut events, &reg);
++    tag_sessions(&mut events, &reg, &[]);
+     assert!(events[0..2]
+         .iter()
+         .all(|e| e.lane_tag.as_deref() == Some("Acme")));
+     assert!(events[2..4]
+         .iter()
+         .all(|e| e.lane_tag.as_deref() == Some("Globex")));
+     assert!(events
+         .iter()
+         .all(|e| e.project_path.as_deref() == Some(FOLDER)));
+ }
+ 
+ #[test]
+ fn one_customer_tags_nothing() {
+     let reg = registry(&["Acme", "Globex"]);
+ 
+     // Both sessions name the same customer.
+     let mut same = vec![
+         ev("A", FOLDER, Some("Acme onboarding"), None),
+         ev("B", FOLDER, Some("Acme followup"), None),
+     ];
+-    tag_sessions(&mut same, &reg);
++    tag_sessions(&mut same, &reg, &[]);
+     assert!(same.iter().all(|e| e.lane_tag.is_none()));
+ 
+     // One session resolves, the other names nothing.
+     let mut mixed = vec![
+         ev("A", FOLDER, Some("Acme onboarding"), None),
+         ev("B", FOLDER, Some("routine maintenance"), None),
+     ];
+-    tag_sessions(&mut mixed, &reg);
++    tag_sessions(&mut mixed, &reg, &[]);
+     assert!(mixed.iter().all(|e| e.lane_tag.is_none()));
+ }
+ 
+ #[test]
+ fn unresolved_session_stays_untagged() {
+     let reg = registry(&["Acme", "Globex"]);
+     let mut events = vec![
+         ev("A", FOLDER, Some("Acme onboarding"), None),
+         ev("B", FOLDER, Some("Globex migration"), None),
+         ev("C", FOLDER, Some("Acme and Globex sync"), None), // names both -> ambiguous
+     ];
+-    tag_sessions(&mut events, &reg);
++    tag_sessions(&mut events, &reg, &[]);
+     assert_eq!(events[0].lane_tag.as_deref(), Some("Acme"));
+     assert_eq!(events[1].lane_tag.as_deref(), Some("Globex"));
+     assert_eq!(events[2].lane_tag, None);
+ }
+ 
+ #[test]
+ fn session_less_event_stays_untagged() {
+     let reg = registry(&["Acme", "Globex"]);
+     let mut events = vec![
+         ev("A", FOLDER, Some("Acme onboarding"), None),
+@@ -102,34 +103,108 @@ fn session_less_event_stays_untagged() {
+         ts,
+         source: "shell".into(),
+         duration_seconds: None,
+         jira_issue: None,
+         event_id: None,
+         project_path: Some(FOLDER.to_string()),
+         session_id: None,
+         title: None,
+         lane_tag: None,
+     });
+-    tag_sessions(&mut events, &reg);
++    tag_sessions(&mut events, &reg, &[]);
+     assert_eq!(
+         events[2].lane_tag, None,
+         "a session-less event stays untagged"
+     );
+     assert!(
+         events
+             .iter()
+             .all(|e| e.project_path.as_deref() == Some(FOLDER)),
+         "project_path must be untouched by tagging"
+     );
+ }
+ 
++fn pin(session: &str, customer: &str, from_at: chrono::DateTime<Utc>) -> SessionPin {
++    SessionPin {
++        session_id: session.to_string(),
++        customer: customer.to_string(),
++        from_at,
++        folder: FOLDER.to_string(),
++        branch: None,
++        source: "claude".to_string(),
++    }
++}
++
++fn ev_at(session: &str, ts: chrono::DateTime<Utc>) -> InferEvent {
++    InferEvent {
++        ts,
++        source: "claude_turn".into(),
++        duration_seconds: None,
++        jira_issue: None,
++        event_id: None,
++        project_path: Some(FOLDER.to_string()),
++        session_id: Some(session.to_string()),
++        title: Some("routine maintenance".into()),
++        lane_tag: None,
++    }
++}
++
++#[test]
++fn pin_beats_text_guess() {
++    let reg = registry(&["Acme", "Globex"]);
++    let switch_at = Utc.with_ymd_and_hms(2026, 9, 23, 9, 10, 0).unwrap();
++    let mut events = vec![
++        // Session A's own text says Acme, but it is pinned to Globex from
++        // the start — the pin must win.
++        ev("A", FOLDER, Some("Acme onboarding"), None),
++        ev("A", FOLDER, Some("more Acme work"), None),
++        // Session B is never pinned; its text guess (Acme) stands.
++        ev("B", FOLDER, Some("Acme followup"), None),
++        // Session C switches mid-session: before `switch_at` it falls back
++        // to its own text guess (Globex); from `switch_at` on the pin
++        // (Acme) applies.
++        ev_at("C", switch_at - chrono::Duration::minutes(5)),
++        ev_at("C", switch_at),
++        ev_at("C", switch_at + chrono::Duration::minutes(5)),
++    ];
++    events[3].title = Some("Globex prep".into());
++    events[4].title = Some("Globex prep".into());
++    events[5].title = Some("Globex prep".into());
++
++    let pins = vec![
++        pin(
++            "A",
++            "Globex",
++            Utc.with_ymd_and_hms(2026, 9, 23, 0, 0, 0).unwrap(),
++        ),
++        pin("C", "Acme", switch_at),
++    ];
++
++    tag_sessions(&mut events, &reg, &pins);
++
++    assert!(
++        events[0..2]
++            .iter()
++            .all(|e| e.lane_tag.as_deref() == Some("Globex")),
++        "the pin must beat session A's own text guess of Acme"
++    );
++    assert_eq!(events[2].lane_tag.as_deref(), Some("Acme"));
++    assert_eq!(
++        events[3].lane_tag.as_deref(),
++        Some("Globex"),
++        "before the pin's from_at, the text guess fills in"
++    );
++    assert_eq!(events[4].lane_tag.as_deref(), Some("Acme"));
++    assert_eq!(events[5].lane_tag.as_deref(), Some("Acme"));
++}
++
+ #[test]
+ fn two_folders_one_customer_each_tags_nothing() {
+     const FOLDER_B: &str = "/Users/dev/Desktop/Work/otherproj";
+     let reg = registry(&["Acme", "Globex"]);
+     let mut events = vec![
+         ev("A", FOLDER, Some("Acme onboarding"), None),
+         ev("B", FOLDER_B, Some("Globex migration"), None),
+     ];
+-    tag_sessions(&mut events, &reg);
++    tag_sessions(&mut events, &reg, &[]);
+     assert!(events.iter().all(|e| e.lane_tag.is_none()));
+ }
+diff --git a/rust/crates/worklog-core/src/session_pins.rs b/rust/crates/worklog-core/src/session_pins.rs
+new file mode 100644
+index 0000000..ad7e335
+--- /dev/null
++++ b/rust/crates/worklog-core/src/session_pins.rs
+@@ -0,0 +1,252 @@
++//! Session customer pins — "session S is for customer C from time T on"
++//! (spec 008, design.md §1). Stored in `session_pins`; a pin is set by
++//! the `worklog pin` command (`source = "claude"`) or copied into a new
++//! session on the same branch at start (`source = "inherited"`).
++
++use std::path::Path;
++
++use anyhow::{Context, Result};
++use chrono::DateTime;
++use chrono::Utc;
++use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
++
++use crate::billing;
++use crate::billing_registry::Registry;
++use crate::git;
++
++/// One pin row.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct SessionPin {
++    pub session_id: String,
++    pub customer: String,
++    pub from_at: DateTime<Utc>,
++    pub folder: String,
++    pub branch: Option<String>,
++    pub source: String,
++}
++
++/// Why `pin` refused to store a pin.
++#[derive(Debug)]
++pub enum PinError {
++    /// `name` didn't resolve to a known customer or alias — nothing was
++    /// stored. `known` is every customer name, for the caller to print.
++    UnknownCustomer {
++        known: Vec<String>,
++    },
++    Other(anyhow::Error),
++}
++
++impl From<anyhow::Error> for PinError {
++    fn from(e: anyhow::Error) -> Self {
++        Self::Other(e)
++    }
++}
++
++/// `true` for the branches a pin never applies to (§1, `is_default_branch`).
++pub fn is_default_branch(branch: &str) -> bool {
++    matches!(branch, "main" | "master")
++}
++
++/// The `worklog session-hint` start-of-session text (design.md §4,
++/// contract T004), or `None` when nothing should be printed.
++///
++/// Gated on `cwd` actually living under `~/Desktop/Work` (FR-01, §2.2) —
++/// `billing::billable_work_folder` is the strict form of the lookup;
++/// unlike `work_folder_for_path` it refuses to fall back to a bare
++/// basename for paths outside the work prefix, so a folder name outside
++/// `~/Desktop/Work` can never coincidentally match a registered
++/// multi-tenant folder — and on top of the multi_tenant check.
++pub fn start_text(
++    conn: &Connection,
++    registry: &Registry,
++    session_id: &str,
++    cwd: &Path,
++    now: DateTime<Utc>,
++) -> Result<Option<String>> {
++    let Some(folder) = billing::billable_work_folder(&cwd.to_string_lossy()) else {
++        return Ok(None);
++    };
++    let multi_tenant = registry
++        .folders
++        .iter()
++        .any(|f| f.folder == folder && f.multi_tenant);
++    if !multi_tenant {
++        return Ok(None);
++    }
++
++    if let Some(branch) = git::current_branch(cwd) {
++        if let Some(branch_pin) = pin_for_branch(conn, &folder, &branch)? {
++            let inherited = store_pin(
++                conn,
++                session_id,
++                &branch_pin.customer,
++                now,
++                &folder,
++                Some(&branch),
++                "inherited",
++            )?;
++            return Ok(Some(format!(
++                "This session is for {} (pinned from branch {branch}). If you switch \
++                 customer, run: worklog pin <name> --session {session_id}",
++                inherited.customer
++            )));
++        }
++    }
++
++    let customers = registry
++        .customers
++        .iter()
++        .map(|c| c.name.as_str())
++        .collect::<Vec<_>>()
++        .join(", ");
++    Ok(Some(format!(
++        "Shared repo — work out this session's customer from the repo, the prompt, and \
++         the files you touch. When it's clear, pin it without asking: worklog pin <name> \
++         --session {session_id}. When it's unclear and the Owner is present, ask once. \
++         When nobody is present (a background or unattended run), pin nothing. Known \
++         customers: {customers}."
++    )))
++}
++
++/// Pin `session_id` to `name` from `at` on.
++///
++/// `name` must resolve to a known customer name or alias
++/// (case-insensitively) via [`Registry::customer_named`] — anything else
++/// is refused and nothing is stored. Re-pinning the same session at the
++/// same `at` overwrites that row; a different `at` adds a new one, so a
++/// session can carry several pins across time.
++pub fn pin(
++    conn: &Connection,
++    registry: &Registry,
++    session_id: &str,
++    cwd: &Path,
++    name: &str,
++    at: DateTime<Utc>,
++    branch: Option<&str>,
++) -> Result<SessionPin, PinError> {
++    let customer = registry
++        .customer_named(name)
++        .ok_or_else(|| PinError::UnknownCustomer {
++            known: registry.customers.iter().map(|c| c.name.clone()).collect(),
++        })?;
++    let folder = billing::work_folder_for_path(&cwd.to_string_lossy()).ok_or_else(|| {
++        anyhow::anyhow!("cwd {} is not under a usable work folder", cwd.display())
++    })?;
++
++    Ok(store_pin(
++        conn, session_id, &customer, at, &folder, branch, "claude",
++    )?)
++}
++
++/// Shared INSERT behind [`pin`] (`source = "claude"`) and the branch
++/// inheritance in [`start_text`] (`source = "inherited"`).
++fn store_pin(
++    conn: &Connection,
++    session_id: &str,
++    customer: &str,
++    at: DateTime<Utc>,
++    folder: &str,
++    branch: Option<&str>,
++    source: &str,
++) -> Result<SessionPin> {
++    conn.execute(
++        "INSERT INTO session_pins (session_id, customer, from_at, folder, branch, source)
++         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
++         ON CONFLICT(session_id, from_at) DO UPDATE SET
++             customer = excluded.customer,
++             folder = excluded.folder,
++             branch = excluded.branch,
++             source = excluded.source",
++        params![
++            session_id,
++            customer,
++            at.to_rfc3339(),
++            folder,
++            branch,
++            source
++        ],
++    )
++    .context("inserting session pin")?;
++
++    Ok(SessionPin {
++        session_id: session_id.to_owned(),
++        customer: customer.to_owned(),
++        from_at: at,
++        folder: folder.to_owned(),
++        branch: branch.map(str::to_owned),
++        source: source.to_owned(),
++    })
++}
++
++/// The latest pin for `branch` in `folder`, or `None` on a default
++/// branch (a pin is never inherited there) or when nothing is pinned.
++pub fn pin_for_branch(conn: &Connection, folder: &str, branch: &str) -> Result<Option<SessionPin>> {
++    if is_default_branch(branch) {
++        return Ok(None);
++    }
++    let row = conn
++        .query_row(
++            "SELECT session_id, customer, from_at, folder, branch, source
++               FROM session_pins
++              WHERE folder = ?1 AND branch = ?2
++              ORDER BY from_at DESC
++              LIMIT 1",
++            params![folder, branch],
++            row_to_raw,
++        )
++        .optional()
++        .context("loading branch pin")?;
++    row.map(raw_to_pin).transpose()
++}
++
++/// Every pin row for the given session ids, ordered by session then time.
++pub fn pins_for_sessions(conn: &Connection, session_ids: &[String]) -> Result<Vec<SessionPin>> {
++    if session_ids.is_empty() {
++        return Ok(Vec::new());
++    }
++    let placeholders = vec!["?"; session_ids.len()].join(",");
++    let sql = format!(
++        "SELECT session_id, customer, from_at, folder, branch, source
++           FROM session_pins
++          WHERE session_id IN ({placeholders})
++          ORDER BY session_id, from_at"
++    );
++    let mut stmt = conn.prepare(&sql)?;
++    let rows = stmt
++        .query_map(params_from_iter(session_ids.iter()), row_to_raw)?
++        .collect::<std::result::Result<Vec<_>, _>>()
++        .context("reading session pins")?;
++    rows.into_iter().map(raw_to_pin).collect()
++}
++
++type RawPin = (String, String, String, String, Option<String>, String);
++
++fn row_to_raw(row: &rusqlite::Row) -> rusqlite::Result<RawPin> {
++    Ok((
++        row.get(0)?,
++        row.get(1)?,
++        row.get(2)?,
++        row.get(3)?,
++        row.get(4)?,
++        row.get(5)?,
++    ))
++}
++
++fn raw_to_pin(raw: RawPin) -> Result<SessionPin> {
++    let (session_id, customer, from_at, folder, branch, source) = raw;
++    let from_at = DateTime::parse_from_rfc3339(&from_at)
++        .with_context(|| format!("parsing session_pins.from_at {from_at}"))?
++        .with_timezone(&Utc);
++    Ok(SessionPin {
++        session_id,
++        customer,
++        from_at,
++        folder,
++        branch,
++        source,
++    })
++}
++
++#[cfg(test)]
++#[path = "session_pins_test.rs"]
++mod tests;
+diff --git a/rust/crates/worklog-core/src/session_pins_test.rs b/rust/crates/worklog-core/src/session_pins_test.rs
+new file mode 100644
+index 0000000..de6cad5
+--- /dev/null
++++ b/rust/crates/worklog-core/src/session_pins_test.rs
+@@ -0,0 +1,493 @@
++use std::path::Path;
++use std::process::Command;
++
++use chrono::{TimeZone, Utc};
++
++use super::*;
++use crate::billing_registry::{Customer, FolderMap};
++use crate::db;
++
++fn home() -> String {
++    dirs::home_dir().unwrap().to_string_lossy().into_owned()
++}
++
++fn work(sub: &str) -> String {
++    format!("{}/Desktop/Work/{sub}", home())
++}
++
++fn registry() -> Registry {
++    Registry {
++        customers: vec![
++            Customer {
++                id: None,
++                name: "Sjúkra".into(),
++                aliases: vec!["Sjukratryggingar".into()],
++            },
++            Customer {
++                id: None,
++                name: "APRÓ".into(),
++                aliases: vec![],
++            },
++        ],
++        folders: vec![],
++    }
++}
++
++fn at(h: u32, m: u32) -> DateTime<Utc> {
++    Utc.with_ymd_and_hms(2026, 9, 27, h, m, 0).unwrap()
++}
++
++#[test]
++fn pin_stores_a_resolved_customer() {
++    let conn = db::open_memory().unwrap();
++    let reg = registry();
++    let cwd = work("vitinn-infra/tenants/sjukra");
++
++    let stored = pin(
++        &conn,
++        &reg,
++        "sess-1",
++        Path::new(&cwd),
++        "sjúkra",
++        at(9, 0),
++        Some("feat/x"),
++    )
++    .unwrap();
++
++    assert_eq!(stored.session_id, "sess-1");
++    assert_eq!(stored.customer, "Sjúkra");
++    assert_eq!(stored.from_at, at(9, 0));
++    assert_eq!(stored.folder, "vitinn-infra");
++    assert_eq!(stored.branch.as_deref(), Some("feat/x"));
++    assert_eq!(stored.source, "claude");
++
++    let rows = pins_for_sessions(&conn, &["sess-1".to_string()]).unwrap();
++    assert_eq!(rows, vec![stored]);
++}
++
++#[test]
++fn pin_matches_a_customer_alias_case_insensitively() {
++    let conn = db::open_memory().unwrap();
++    let reg = registry();
++    let cwd = work("vitinn-infra");
++
++    let stored = pin(
++        &conn,
++        &reg,
++        "sess-1",
++        Path::new(&cwd),
++        "SJUKRATRYGGINGAR",
++        at(9, 0),
++        None,
++    )
++    .unwrap();
++
++    assert_eq!(stored.customer, "Sjúkra");
++}
++
++#[test]
++fn pin_refuses_an_unknown_customer_and_stores_nothing() {
++    let conn = db::open_memory().unwrap();
++    let reg = registry();
++    let cwd = work("vitinn-infra");
++
++    let err = pin(
++        &conn,
++        &reg,
++        "sess-1",
++        Path::new(&cwd),
++        "Sjukra tryggingar",
++        at(9, 0),
++        None,
++    )
++    .expect_err("unknown customer must be refused");
++
++    match err {
++        PinError::UnknownCustomer { known } => {
++            assert_eq!(known, vec!["Sjúkra".to_string(), "APRÓ".to_string()]);
++        }
++        PinError::Other(e) => panic!("expected UnknownCustomer, got {e:#}"),
++    }
++
++    let rows = pins_for_sessions(&conn, &["sess-1".to_string()]).unwrap();
++    assert!(rows.is_empty(), "a refused pin must store nothing");
++}
++
++#[test]
++fn pin_fails_when_cwd_has_no_work_folder() {
++    let conn = db::open_memory().unwrap();
++    let reg = registry();
++
++    let err = pin(
++        &conn,
++        &reg,
++        "sess-1",
++        Path::new(""),
++        "Sjúkra",
++        at(9, 0),
++        None,
++    )
++    .expect_err("an unusable cwd must not be pinned");
++    assert!(matches!(err, PinError::Other(_)));
++}
++
++#[test]
++fn re_pinning_at_the_same_time_overwrites_the_row() {
++    let conn = db::open_memory().unwrap();
++    let reg = registry();
++    let cwd = work("vitinn-infra");
++
++    pin(
++        &conn,
++        &reg,
++        "sess-1",
++        Path::new(&cwd),
++        "Sjúkra",
++        at(9, 0),
++        None,
++    )
++    .unwrap();
++    pin(
++        &conn,
++        &reg,
++        "sess-1",
++        Path::new(&cwd),
++        "APRÓ",
++        at(9, 0),
++        None,
++    )
++    .unwrap();
++
++    let rows = pins_for_sessions(&conn, &["sess-1".to_string()]).unwrap();
++    assert_eq!(rows.len(), 1, "same (session, from_at) is one row");
++    assert_eq!(rows[0].customer, "APRÓ");
++}
++
++#[test]
++fn re_pinning_at_a_new_time_adds_a_second_row() {
++    let conn = db::open_memory().unwrap();
++    let reg = registry();
++    let cwd = work("vitinn-infra");
++
++    pin(
++        &conn,
++        &reg,
++        "sess-1",
++        Path::new(&cwd),
++        "Sjúkra",
++        at(9, 0),
++        None,
++    )
++    .unwrap();
++    pin(
++        &conn,
++        &reg,
++        "sess-1",
++        Path::new(&cwd),
++        "APRÓ",
++        at(11, 0),
++        None,
++    )
++    .unwrap();
++
++    let rows = pins_for_sessions(&conn, &["sess-1".to_string()]).unwrap();
++    assert_eq!(rows.len(), 2);
++    assert_eq!(rows[0].customer, "Sjúkra");
++    assert_eq!(rows[0].from_at, at(9, 0));
++    assert_eq!(rows[1].customer, "APRÓ");
++    assert_eq!(rows[1].from_at, at(11, 0));
++}
++
++#[test]
++fn pin_for_branch_returns_the_latest_pin() {
++    let conn = db::open_memory().unwrap();
++    let reg = registry();
++    let cwd = work("vitinn-infra");
++
++    pin(
++        &conn,
++        &reg,
++        "sess-1",
++        Path::new(&cwd),
++        "Sjúkra",
++        at(9, 0),
++        Some("feat/x"),
++    )
++    .unwrap();
++    pin(
++        &conn,
++        &reg,
++        "sess-2",
++        Path::new(&cwd),
++        "APRÓ",
++        at(11, 0),
++        Some("feat/x"),
++    )
++    .unwrap();
++
++    let latest = pin_for_branch(&conn, "vitinn-infra", "feat/x")
++        .unwrap()
++        .expect("a pin exists");
++    assert_eq!(latest.session_id, "sess-2");
++    assert_eq!(latest.customer, "APRÓ");
++}
++
++#[test]
++fn pin_for_branch_never_inherits_on_a_default_branch() {
++    let conn = db::open_memory().unwrap();
++    let reg = registry();
++    let cwd = work("vitinn-infra");
++
++    pin(
++        &conn,
++        &reg,
++        "sess-1",
++        Path::new(&cwd),
++        "Sjúkra",
++        at(9, 0),
++        Some("main"),
++    )
++    .unwrap();
++
++    assert_eq!(pin_for_branch(&conn, "vitinn-infra", "main").unwrap(), None);
++    assert_eq!(
++        pin_for_branch(&conn, "vitinn-infra", "master").unwrap(),
++        None
++    );
++}
++
++#[test]
++fn pin_for_branch_returns_none_when_nothing_is_pinned() {
++    let conn = db::open_memory().unwrap();
++    assert_eq!(
++        pin_for_branch(&conn, "vitinn-infra", "feat/x").unwrap(),
++        None
++    );
++}
++
++#[test]
++fn pins_for_sessions_filters_to_the_given_ids() {
++    let conn = db::open_memory().unwrap();
++    let reg = registry();
++    let cwd = work("vitinn-infra");
++
++    pin(
++        &conn,
++        &reg,
++        "sess-1",
++        Path::new(&cwd),
++        "Sjúkra",
++        at(9, 0),
++        None,
++    )
++    .unwrap();
++    pin(
++        &conn,
++        &reg,
++        "sess-2",
++        Path::new(&cwd),
++        "APRÓ",
++        at(9, 0),
++        None,
++    )
++    .unwrap();
++    pin(
++        &conn,
++        &reg,
++        "sess-3",
++        Path::new(&cwd),
++        "APRÓ",
++        at(9, 0),
++        None,
++    )
++    .unwrap();
++
++    let rows = pins_for_sessions(&conn, &["sess-1".to_string(), "sess-3".to_string()]).unwrap();
++    let ids: Vec<&str> = rows.iter().map(|p| p.session_id.as_str()).collect();
++    assert_eq!(ids, vec!["sess-1", "sess-3"]);
++}
++
++#[test]
++fn pins_for_sessions_returns_empty_for_no_ids() {
++    let conn = db::open_memory().unwrap();
++    assert_eq!(pins_for_sessions(&conn, &[]).unwrap(), Vec::new());
++}
++
++#[test]
++fn is_default_branch_matches_main_and_master_only() {
++    assert!(is_default_branch("main"));
++    assert!(is_default_branch("master"));
++    assert!(!is_default_branch("feat/x"));
++    assert!(!is_default_branch("Main"));
++}
++
++fn multi_tenant_folder(folder: &str) -> FolderMap {
++    FolderMap {
++        id: None,
++        folder: folder.into(),
++        customer: None,
++        verkefni: None,
++        billable: true,
++        multi_tenant: true,
++    }
++}
++
++fn init_git_repo(path: &Path, branch: &str) {
++    let out = Command::new("git")
++        .arg("-C")
++        .arg(path)
++        .args(["init", "-q", "-b", branch])
++        .output()
++        .unwrap();
++    assert!(
++        out.status.success(),
++        "git init failed: {}",
++        String::from_utf8_lossy(&out.stderr)
++    );
++}
++
++#[test]
++fn start_text_inherits_branch_pin() {
++    let conn = db::open_memory().unwrap();
++    let mut reg = registry();
++
++    // `billing::billable_work_folder` (the strict /Work gate `start_text`
++    // now uses) and `git::current_branch` both require a *real* directory,
++    // and the folder must genuinely sit under `~/Desktop/Work` for the
++    // gate to pass — a tempdir elsewhere no longer qualifies. A uniquely
++    // named `TempDir` created directly inside the real work root is the
++    // only way to satisfy both without an env-var override (which would
++    // race other tests touching the same process-global `OnceLock` in
++    // `billing::work_prefix`); the random suffix means the registered
++    // folder name can never collide with a real project, and the
++    // directory is removed again when `repo_dir` drops.
++    let work_root = std::path::Path::new(&home()).join("Desktop/Work");
++    std::fs::create_dir_all(&work_root).unwrap();
++    let repo_dir = tempfile::Builder::new()
++        .prefix("session-pins-test-")
++        .tempdir_in(&work_root)
++        .unwrap();
++    let folder_name = repo_dir
++        .path()
++        .file_name()
++        .unwrap()
++        .to_str()
++        .unwrap()
++        .to_owned();
++    reg.folders.push(multi_tenant_folder(&folder_name));
++    init_git_repo(repo_dir.path(), "feat/x");
++
++    pin(
++        &conn,
++        &reg,
++        "sess-1",
++        repo_dir.path(),
++        "Sjúkra",
++        at(9, 0),
++        Some("feat/x"),
++    )
++    .unwrap();
++
++    let text = start_text(&conn, &reg, "sess-2", repo_dir.path(), at(10, 0))
++        .unwrap()
++        .expect("a branch pin must produce inherited start text");
++
++    assert_eq!(
++        text,
++        "This session is for Sjúkra (pinned from branch feat/x). If you switch customer, run: worklog pin <name> --session sess-2"
++    );
++
++    let rows = pins_for_sessions(&conn, &["sess-2".to_string()]).unwrap();
++    assert_eq!(rows.len(), 1, "inheritance must store one pin row");
++    assert_eq!(rows[0].customer, "Sjúkra");
++    assert_eq!(rows[0].source, "inherited");
++    assert_eq!(rows[0].branch.as_deref(), Some("feat/x"));
++    assert_eq!(rows[0].from_at, at(10, 0));
++}
++
++#[test]
++fn start_text_prints_the_pin_instruction_in_a_multi_tenant_folder() {
++    let conn = db::open_memory().unwrap();
++    let mut reg = registry();
++    reg.folders.push(multi_tenant_folder("vitinn-infra"));
++
++    // Non-existent path: `git::current_branch` returns `None` for it, so
++    // this exercises the "no branch pin" leg of `start_text`, not the
++    // inheritance leg covered by `start_text_inherits_branch_pin`.
++    let cwd = work("vitinn-infra");
++
++    let text = start_text(&conn, &reg, "sess-9", Path::new(&cwd), at(9, 0))
++        .unwrap()
++        .expect("a multi-tenant folder must print the pin instruction");
++
++    assert!(
++        text.contains("worklog pin <name> --session sess-9"),
++        "instruction must carry the exact pin command: {text}"
++    );
++    assert!(text.contains("Sjúkra"), "must list known customers: {text}");
++    assert!(text.contains("APRÓ"), "must list known customers: {text}");
++    assert!(
++        text.chars().count() <= 600,
++        "start text must be at most 600 chars, was {}",
++        text.chars().count()
++    );
++
++    // No branch pin existed, so nothing gets stored for this session.
++    assert!(pins_for_sessions(&conn, &["sess-9".to_string()])
++        .unwrap()
++        .is_empty());
++}
++
++#[test]
++fn start_text_is_none_when_the_folder_is_not_multi_tenant() {
++    let conn = db::open_memory().unwrap();
++    let mut reg = registry();
++    reg.folders.push(FolderMap {
++        id: None,
++        folder: "apro-skills".into(),
++        customer: Some("APRÓ".into()),
++        verkefni: None,
++        billable: true,
++        multi_tenant: false,
++    });
++    let cwd = work("apro-skills");
++
++    assert_eq!(
++        start_text(&conn, &reg, "sess-1", Path::new(&cwd), at(9, 0)).unwrap(),
++        None
++    );
++}
++
++#[test]
++fn start_text_is_none_outside_a_registered_work_folder() {
++    let conn = db::open_memory().unwrap();
++    let reg = registry();
++    let cwd = Path::new("/tmp/does-not-exist/personal-blog");
++
++    assert_eq!(
++        start_text(&conn, &reg, "sess-1", cwd, at(9, 0)).unwrap(),
++        None
++    );
++}
++
++#[test]
++fn start_text_is_none_outside_desktop_work_even_when_basename_matches() {
++    let conn = db::open_memory().unwrap();
++    let mut reg = registry();
++    reg.folders.push(multi_tenant_folder("vitinn-infra"));
++    // Same basename as a registered multi-tenant folder, but reached from
++    // outside `~/Desktop/Work` — `work_folder_for_path`'s lenient fallback
++    // must not be enough to fire the instruction here (FR-01, §2.2).
++    let cwd = Path::new("/tmp/not-work/vitinn-infra");
++
++    assert_eq!(
++        start_text(&conn, &reg, "sess-1", cwd, at(9, 0)).unwrap(),
++        None
++    );
++    assert!(
++        pins_for_sessions(&conn, &["sess-1".to_string()])
++            .unwrap()
++            .is_empty(),
++        "a path outside /Work must never write an inherited pin"
++    );
++}
+diff --git a/rust/crates/worklog-core/src/tenant_contract.rs b/rust/crates/worklog-core/src/tenant_contract.rs
+index 24e95f7..62daa23 100644
+--- a/rust/crates/worklog-core/src/tenant_contract.rs
++++ b/rust/crates/worklog-core/src/tenant_contract.rs
+@@ -79,20 +79,22 @@ pub struct Clue {
+ }
+ 
+ /// Where a block's split came from.
+ #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+ #[serde(rename_all = "snake_case")]
+ pub enum SplitOrigin {
+     /// Computed from timestamped clues.
+     Clues,
+     /// The owner's saved shares.
+     Manual,
++    /// The block's pinned session(s) named exactly one customer (spec 008).
++    Pinned,
+     /// No timestamped clue: the summary clue, else the folder's normal
+     /// resolution (pin, then text alias match).
+     Fallback,
+ }
+ 
+ /// One customer's part of one block. `intervals` are `[start, end)` epoch
+ /// seconds inside the block; across a block's slices they never overlap and
+ /// sum exactly to the block's duration.
+ #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+ pub struct CustomerSlice {
+diff --git a/rust/crates/worklog-core/src/tenant_split.rs b/rust/crates/worklog-core/src/tenant_split.rs
+index c87fe15..7bb9ea8 100644
+--- a/rust/crates/worklog-core/src/tenant_split.rs
++++ b/rust/crates/worklog-core/src/tenant_split.rs
+@@ -1,19 +1,21 @@
+ //! The per-block customer split rules for multi-tenant infra folders (spec 005).
+ 
+-use std::collections::BTreeMap;
++use std::collections::{BTreeMap, BTreeSet};
+ 
+ use anyhow::Result;
+ use rusqlite::Connection;
+ 
+ use crate::billing_registry::Registry;
+ use crate::models::Block;
++use crate::repo;
++use crate::session_pins::pins_for_sessions;
+ use crate::tenant_clues::clues_for_block;
+ use crate::tenant_contract::{Clue, CustomerSlice, SplitOrigin, HOUSE_CUSTOMER};
+ use crate::tenant_shares::{load_shares, slices_from_shares};
+ use crate::tenants::tenant_customer_map;
+ 
+ /// Split `[start, end)` between customers by the rules in order:
+ /// drop House (`APRÓ`) clues when any other customer has a clue (FR-07);
+ /// within each minute keep only the strongest remaining clue (FR-08); give
+ /// every second to its nearest clue, an exact tie going to the earlier one
+ /// (FR-06). `None` when `clues` has no timestamped clue left to split on.
+@@ -96,62 +98,114 @@ fn merge_adjacent(intervals: Vec<(i64, i64)>) -> Vec<(i64, i64)> {
+ /// `block`'s wall-clock interval as epoch seconds. Mirrors (privately)
+ /// `billing::block_interval` — duration, not `ended_at`, is the canonical
+ /// logged time.
+ fn block_interval(block: &Block) -> (i64, i64) {
+     let start = chrono::DateTime::parse_from_rfc3339(&block.started_at)
+         .map(|d| d.timestamp())
+         .unwrap_or(0);
+     (start, start + block.duration_seconds.max(0))
+ }
+ 
++/// The single customer named by `block`'s events whose session carries a
++/// pin covering their timestamp (latest `from_at` ≤ event time, mirroring
++/// `session_customers::tag_sessions`) — `None` unless EVERY event that
++/// carries a session_id is covered by a pin and all of them agree on one
++/// customer. An event before its session's earliest pin is "uncovered" and
++/// makes the whole block bail out to `None`, else a minute logged before
++/// the pin took effect would be invented onto the pinned customer's
++/// invoice line (FR-07, contract THE FIVE #2). Events with no session_id
++/// carry no pin and are ignored either way.
++fn pinned_customer_for_block(conn: &Connection, block: &Block) -> Result<Option<String>> {
++    let events = repo::list_events_for_block(conn, block.id)?;
++    let mut session_ids: Vec<String> = events.iter().filter_map(|e| e.session_id.clone()).collect();
++    session_ids.sort();
++    session_ids.dedup();
++    if session_ids.is_empty() {
++        return Ok(None);
++    }
++
++    let pins = pins_for_sessions(conn, &session_ids)?;
++    let mut customers: BTreeSet<String> = BTreeSet::new();
++    for event in &events {
++        let Some(session_id) = &event.session_id else {
++            continue;
++        };
++        let Ok(at) = chrono::DateTime::parse_from_rfc3339(&event.started_at) else {
++            continue;
++        };
++        let at = at.with_timezone(&chrono::Utc);
++        let covering = pins
++            .iter()
++            .filter(|p| &p.session_id == session_id && p.from_at <= at)
++            .max_by_key(|p| p.from_at);
++        match covering {
++            Some(pin) => {
++                customers.insert(pin.customer.clone());
++            }
++            None => return Ok(None),
++        }
++    }
++
++    Ok((customers.len() == 1).then(|| customers.into_iter().next().unwrap()))
++}
++
+ /// A non-House customer named in `text` — the summary clue of FR-09, where a
+ /// customer named alongside `APRÓ` beats it. `None` when nothing non-House
+ /// is unambiguously named; the caller then falls back to the folder's
+ /// normal (pin/alias) resolution.
+ fn summary_customer(text: &str, registry: &Registry) -> Option<String> {
+     let without_house = Registry {
+         customers: registry
+             .customers
+             .iter()
+             .filter(|c| c.name != HOUSE_CUSTOMER)
+             .cloned()
+             .collect(),
+         folders: Vec::new(),
+     };
+     without_house.customer_in_text(text)
+ }
+ 
+-/// `block`'s customer slices: the owner's hand-set shares first, else the
+-/// clue split, else (no timestamped clue) a single `Fallback` slice —
+-/// `customer` from the block's own summary when it unambiguously names one,
+-/// else `None` for the folder's normal resolution to fill in. `None`
+-/// overall when `folder` isn't multi-tenant.
++/// `block`'s customer slices: the owner's hand-set shares first, else a
++/// single `Pinned` slice when the block's pinned sessions name exactly one
++/// customer, else the clue split, else (no timestamped clue) a single
++/// `Fallback` slice — `customer` from the block's own summary when it
++/// unambiguously names one, else `None` for the folder's normal resolution
++/// to fill in. `None` overall when `folder` isn't multi-tenant.
+ pub fn tenant_slices_for_block(
+     conn: &Connection,
+     block: &Block,
+     folder: &str,
+     registry: &Registry,
+ ) -> Result<Option<Vec<CustomerSlice>>> {
+     let multi_tenant = registry
+         .folders
+         .iter()
+         .any(|f| f.folder == folder && f.multi_tenant);
+     if !multi_tenant {
+         return Ok(None);
+     }
+ 
+     let (start, end) = block_interval(block);
+ 
+     if let Some(shares) = load_shares(conn, &block.day, &block.started_at)? {
+         return Ok(Some(slices_from_shares(start, end, &shares)));
+     }
+ 
++    if let Some(customer) = pinned_customer_for_block(conn, block)? {
++        return Ok(Some(vec![CustomerSlice {
++            customer: Some(customer),
++            intervals: vec![(start, end)],
++            origin: SplitOrigin::Pinned,
++        }]));
++    }
++
+     let tenants = tenant_customer_map(conn)?;
+     let clues = clues_for_block(conn, block.id, folder, &tenants, registry)?;
+     if let Some(slices) = split_block(start, end, &clues) {
+         return Ok(Some(slices));
+     }
+ 
+     let customer = block
+         .description
+         .as_deref()
+         .and_then(|text| summary_customer(text, registry));
+diff --git a/rust/crates/worklog-core/src/tenant_split_test.rs b/rust/crates/worklog-core/src/tenant_split_test.rs
+index 229157f..059df4d 100644
+--- a/rust/crates/worklog-core/src/tenant_split_test.rs
++++ b/rust/crates/worklog-core/src/tenant_split_test.rs
+@@ -1,17 +1,21 @@
++use std::path::Path;
++
+ use chrono::{DateTime, TimeZone, Utc};
+ use rand::Rng;
++use rusqlite::params;
+ 
+ use super::*;
+ use crate::billing_registry::{Customer, FolderMap};
+ use crate::db::open_memory;
+-use crate::models::Block;
++use crate::models::{Block, Event};
++use crate::session_pins;
+ use crate::tenant_contract::ClueStrength;
+ 
+ fn registry(customer_names: &[&str], folders: &[FolderMap]) -> Registry {
+     Registry {
+         customers: customer_names
+             .iter()
+             .map(|n| Customer {
+                 id: None,
+                 name: (*n).to_string(),
+                 aliases: Vec::new(),
+@@ -37,20 +41,54 @@ fn at(y: i32, m: u32, d: u32, h: u32, min: u32, s: u32) -> DateTime<Utc> {
+ }
+ 
+ fn clue(when: DateTime<Utc>, customer: &str, strength: ClueStrength) -> Clue {
+     Clue {
+         at: when,
+         customer: customer.to_string(),
+         strength,
+     }
+ }
+ 
++fn work(sub: &str) -> String {
++    format!(
++        "{}/Desktop/Work/{sub}",
++        dirs::home_dir().unwrap().to_string_lossy()
++    )
++}
++
++fn seed_block(conn: &Connection, started_at: &str, ended_at: &str, duration_seconds: i64) -> i64 {
++    conn.execute(
++        "INSERT INTO blocks (day, jira_issue, started_at, ended_at, duration_seconds, description, is_personal)
++         VALUES ('2026-01-01', NULL, ?1, ?2, ?3, NULL, 0)",
++        params![started_at, ended_at, duration_seconds],
++    )
++    .unwrap();
++    conn.last_insert_rowid()
++}
++
++fn seed_event(
++    conn: &Connection,
++    block_id: i64,
++    source_id: &str,
++    session_id: &str,
++    started_at: &str,
++) {
++    let mut ev = Event::minimal("claude", source_id, started_at, "work");
++    ev.session_id = Some(session_id.to_string());
++    let event_id = crate::repo::upsert_event(conn, &ev).unwrap();
++    conn.execute(
++        "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
++        params![block_id, event_id],
++    )
++    .unwrap();
++}
++
+ // B5 / FR-06: "Block with clues Sjúkra@13:40, MMS@15:30 splits at the
+ // midpoint; the midpoint second goes to Sjúkra" — the spec's own example.
+ #[test]
+ fn split_gives_seconds_to_nearest_clue() {
+     let start = at(2026, 1, 1, 12, 0, 0).timestamp();
+     let end = at(2026, 1, 1, 17, 0, 0).timestamp();
+     let clues = vec![
+         clue(at(2026, 1, 1, 13, 40, 0), "Sjúkra", ClueStrength::Branch),
+         clue(at(2026, 1, 1, 15, 30, 0), "MMS", ClueStrength::Branch),
+     ];
+@@ -207,10 +245,173 @@ fn slices_sum_exactly_property() {
+         for (from, to) in &intervals {
+             assert_eq!(*from, cursor, "slices must never gap or overlap");
+             cursor = *to;
+         }
+         assert_eq!(
+             cursor, end,
+             "slices must sum exactly to the block's duration"
+         );
+     }
+ }
++
++// FR-07: a block whose only session is pinned to Sjúkra from before the
++// block starts gets a single Pinned slice for the whole block, ahead of
++// clue splitting.
++#[test]
++fn pinned_session_gives_pinned_slice() {
++    let conn = open_memory().unwrap();
++    let reg = registry(&["Sjúkra"], &[multi_tenant_folder("vitinn-infra")]);
++
++    session_pins::pin(
++        &conn,
++        &reg,
++        "sess-1",
++        Path::new(&work("vitinn-infra")),
++        "Sjúkra",
++        at(2026, 1, 1, 8, 0, 0),
++        None,
++    )
++    .unwrap();
++
++    let start = at(2026, 1, 1, 9, 0, 0);
++    let end = at(2026, 1, 1, 10, 0, 0);
++    let block_id = seed_block(&conn, &start.to_rfc3339(), &end.to_rfc3339(), 3600);
++    seed_event(&conn, block_id, "e1", "sess-1", &start.to_rfc3339());
++
++    let block = Block {
++        id: block_id,
++        day: "2026-01-01".to_string(),
++        jira_issue: None,
++        started_at: start.to_rfc3339(),
++        ended_at: end.to_rfc3339(),
++        duration_seconds: 3600,
++        description: None,
++        estimated_by: None,
++        flagged: false,
++        tempo_worklog_id: None,
++        is_personal: false,
++        dirty: false,
++        exported_at: None,
++    };
++
++    let slices = tenant_slices_for_block(&conn, &block, "vitinn-infra", &reg)
++        .unwrap()
++        .unwrap();
++    assert_eq!(
++        slices,
++        vec![CustomerSlice {
++            customer: Some("Sjúkra".to_string()),
++            intervals: vec![(start.timestamp(), end.timestamp())],
++            origin: SplitOrigin::Pinned,
++        }]
++    );
++}
++
++// Contract THE FIVE #2: a block whose sessions' pins name two different
++// customers emits no Pinned slice — it falls through to the fallback rules.
++#[test]
++fn conflicting_pins_do_not_emit_pinned_slice() {
++    let conn = open_memory().unwrap();
++    let reg = registry(&["Sjúkra", "MMS"], &[multi_tenant_folder("vitinn-infra")]);
++
++    session_pins::pin(
++        &conn,
++        &reg,
++        "sess-1",
++        Path::new(&work("vitinn-infra")),
++        "Sjúkra",
++        at(2026, 1, 1, 8, 0, 0),
++        None,
++    )
++    .unwrap();
++    session_pins::pin(
++        &conn,
++        &reg,
++        "sess-2",
++        Path::new(&work("vitinn-infra")),
++        "MMS",
++        at(2026, 1, 1, 8, 0, 0),
++        None,
++    )
++    .unwrap();
++
++    let start = at(2026, 1, 1, 9, 0, 0);
++    let end = at(2026, 1, 1, 10, 0, 0);
++    let block_id = seed_block(&conn, &start.to_rfc3339(), &end.to_rfc3339(), 3600);
++    seed_event(&conn, block_id, "e1", "sess-1", &start.to_rfc3339());
++    seed_event(&conn, block_id, "e2", "sess-2", &start.to_rfc3339());
++
++    let block = Block {
++        id: block_id,
++        day: "2026-01-01".to_string(),
++        jira_issue: None,
++        started_at: start.to_rfc3339(),
++        ended_at: end.to_rfc3339(),
++        duration_seconds: 3600,
++        description: None,
++        estimated_by: None,
++        flagged: false,
++        tempo_worklog_id: None,
++        is_personal: false,
++        dirty: false,
++        exported_at: None,
++    };
++
++    let slices = tenant_slices_for_block(&conn, &block, "vitinn-infra", &reg)
++        .unwrap()
++        .unwrap();
++    assert!(slices.iter().all(|s| s.origin != SplitOrigin::Pinned));
++}
++
++// FR-07 / billing.rs's "nothing that lands on an invoice is invented": a
++// pin's from_at must cover EVERY session event in the block, not just some
++// of them — an event before the pin took effect must not be swept into the
++// pinned customer's slice.
++#[test]
++fn partially_pinned_block_is_not_pinned() {
++    let conn = open_memory().unwrap();
++    let reg = registry(&["Sjúkra"], &[multi_tenant_folder("vitinn-infra")]);
++
++    session_pins::pin(
++        &conn,
++        &reg,
++        "sess-1",
++        Path::new(&work("vitinn-infra")),
++        "Sjúkra",
++        at(2026, 1, 1, 9, 30, 0),
++        None,
++    )
++    .unwrap();
++
++    let start = at(2026, 1, 1, 9, 0, 0);
++    let end = at(2026, 1, 1, 10, 0, 0);
++    let block_id = seed_block(&conn, &start.to_rfc3339(), &end.to_rfc3339(), 3600);
++    seed_event(&conn, block_id, "e1", "sess-1", &start.to_rfc3339());
++    seed_event(
++        &conn,
++        block_id,
++        "e2",
++        "sess-1",
++        &at(2026, 1, 1, 9, 45, 0).to_rfc3339(),
++    );
++
++    let block = Block {
++        id: block_id,
++        day: "2026-01-01".to_string(),
++        jira_issue: None,
++        started_at: start.to_rfc3339(),
++        ended_at: end.to_rfc3339(),
++        duration_seconds: 3600,
++        description: None,
++        estimated_by: None,
++        flagged: false,
++        tempo_worklog_id: None,
++        is_personal: false,
++        dirty: false,
++        exported_at: None,
++    };
++
++    let slices = tenant_slices_for_block(&conn, &block, "vitinn-infra", &reg)
++        .unwrap()
++        .unwrap();
++    assert!(slices.iter().all(|s| s.origin != SplitOrigin::Pinned));
++}
+diff --git a/web/app/[day]/block/[id]/page.tsx b/web/app/[day]/block/[id]/page.tsx
+index 8ed8732..62bc18a 100644
+--- a/web/app/[day]/block/[id]/page.tsx
++++ b/web/app/[day]/block/[id]/page.tsx
+@@ -1,18 +1,19 @@
+ import Link from "next/link";
+ import { notFound } from "next/navigation";
+ import { ArrowLeft } from "lucide-react";
+ import { DaemonError, loadDaySummary } from "@/lib/daemon";
+ import { blockDetails } from "@/lib/daemonDetails";
+ import { formatDayHeading, formatDuration, formatRange } from "@/lib/format";
+ import type { Block } from "@/lib/types";
+ import { BlockDetails } from "@/components/BlockDetails";
++import { BlockCustomerSplit } from "@/components/BlockCustomerSplit";
+ 
+ const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+ 
+ // Every request reads live DB state — never prerender at build time.
+ export const dynamic = "force-dynamic";
+ 
+ function BlockHeader({ day, block }: { day: string; block: Block | undefined }) {
+   const folder = block?.project ?? block?.project_path?.split("/").filter(Boolean).pop();
+   return (
+     <header className="bd-header">
+@@ -42,20 +43,21 @@ export default async function BlockDetailPage({ params }: { params: Promise<{ da
+ 
+   try {
+     const [rows, summary] = await Promise.all([
+       blockDetails(blockId),
+       loadDaySummary(day).catch(() => null),
+     ]);
+     const block = summary?.blocks.find((b) => b.id === blockId);
+     return (
+       <div className="bd-page">
+         <BlockHeader day={day} block={block} />
++        <BlockCustomerSplit blockId={blockId} />
+         <BlockDetails rows={rows} />
+       </div>
+     );
+   } catch (e) {
+     // Degrade inline rather than failing the page, matching the day view.
+     const message = e instanceof DaemonError ? e.message : "unknown error";
+     return (
+       <div className="bd-page">
+         <BlockHeader day={day} block={undefined} />
+         <p className="bd-empty">Can&apos;t load this block — {message}.</p>
+diff --git a/web/components/BlockCustomerSplit.test.tsx b/web/components/BlockCustomerSplit.test.tsx
+index cf7eb12..8b9dbbe 100644
+--- a/web/components/BlockCustomerSplit.test.tsx
++++ b/web/components/BlockCustomerSplit.test.tsx
+@@ -193,20 +193,31 @@ describe("BlockCustomerSplit (B17)", () => {
+   it("lists every registry customer in the Add-customer select, not just the block's own slice customers", async () => {
+     render(<BlockCustomerSplit blockId={101} />);
+     await openEditor();
+ 
+     const addSelect = screen.getByLabelText("Add customer") as HTMLSelectElement;
+     const optionNames = [...addSelect.options].map((o) => o.value).filter(Boolean);
+     expect(optionNames).toContain("Byko");
+     expect(fetchBillingRegistryImpl).toHaveBeenCalled();
+   });
+ 
++  it("shows a pinned block's customer tagged 'pinned', with Change available (FR-08)", async () => {
++    currentSlices = [
++      { customer: "Sjúkra", deild: null, intervals: [[0, 3600]], origin: "pinned", deild_origin: "blank" },
++    ];
++    render(<BlockCustomerSplit blockId={707} />);
++
++    expect(await screen.findByText("Sjúkra")).not.toBeNull();
++    expect(screen.getByText("pinned")).not.toBeNull();
++    expect(screen.getByRole("button", { name: "Change" })).not.toBeNull();
++  });
++
+   it("turns a fallback slice with no resolved customer into a required picker and never saves it as Unresolved (FR-05)", async () => {
+     currentSlices = [
+       { customer: null, deild: null, intervals: [[0, 3600]], origin: "fallback", deild_origin: "blank" },
+     ];
+     render(<BlockCustomerSplit blockId={303} />);
+ 
+     await screen.findByText("Unresolved");
+     fireEvent.click(screen.getByRole("button", { name: "Change" }));
+ 
+     const picker = await screen.findByLabelText("Choose a customer");
+diff --git a/web/components/BlockCustomerSplit.tsx b/web/components/BlockCustomerSplit.tsx
+index fd27524..08169de 100644
+--- a/web/components/BlockCustomerSplit.tsx
++++ b/web/components/BlockCustomerSplit.tsx
+@@ -16,20 +16,21 @@ import {
+   splitEvenly,
+   splitLineText,
+   totalSeconds,
+   useCustomerSplit,
+ } from "@/lib/useCustomerSplit";
+ 
+ const ORIGIN_LABELS: Record<SplitOrigin, string> = {
+   clues: "auto",
+   manual: "set by you",
+   fallback: "guess",
++  pinned: "pinned",
+ };
+ 
+ /** The quiet, non-editing line: split % · origin tag · optional bar · Change. */
+ function SplitDisplay({
+   parts,
+   origin,
+   onChange,
+ }: {
+   parts: Part[];
+   origin: SplitOrigin;
+diff --git a/web/lib/tenants.ts b/web/lib/tenants.ts
+index 0489e1a..3070573 100644
+--- a/web/lib/tenants.ts
++++ b/web/lib/tenants.ts
+@@ -26,21 +26,21 @@ export interface TenantLink {
+ 
+ export async function listTenants(): Promise<Tenant[]> {
+   return call<Tenant[]>("GET", "/billing/tenants");
+ }
+ 
+ export async function linkTenant(link: TenantLink): Promise<{ ok: true }> {
+   return call("POST", "/billing/tenants/link", link);
+ }
+ 
+ /** Where a block's split came from (`tenant_contract::SplitOrigin`). */
+-export type SplitOrigin = "clues" | "manual" | "fallback";
++export type SplitOrigin = "clues" | "manual" | "fallback" | "pinned";
+ 
+ /** One customer's part of one block (`GET /blocks/:id/customer-slices`).
+  * `intervals` are `[start, end)` epoch seconds inside the block. An empty
+  * array means the block's folder isn't multi-tenant — render nothing. */
+ export interface CustomerSlice {
+   customer: string | null;
+   intervals: [number, number][];
+   origin: SplitOrigin;
+ }
+ 
