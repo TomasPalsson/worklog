@@ -277,11 +277,16 @@ pub fn purge_rows(conn: &Connection, cutoff: NaiveDate, dry_run: bool) -> Result
     // has no age bound of its own) — a pin lives exactly as long as its
     // session's events do. Runs after the events delete just above so this
     // sees the post-delete state; an unbilled block still keeps its events
-    // (and so keeps its pin) until IT is purged.
+    // (and so keeps its pin) until IT is purged. `from_at` is bound by the
+    // same cutoff as every sibling delete in this pass — without it, a
+    // fresh pin whose session has no event row yet (written moments before
+    // the recorder's first event, or a recorder that then failed) would be
+    // deleted on ANY purge, however recent its cutoff.
     tx.execute(
         "DELETE FROM session_pins
-         WHERE session_id NOT IN (SELECT session_id FROM events WHERE session_id IS NOT NULL)",
-        [],
+         WHERE from_at < ?2 AND datetime(from_at) < datetime(?1)
+           AND session_id NOT IN (SELECT session_id FROM events WHERE session_id IS NOT NULL)",
+        params![instant_iso, date_bound_iso],
     )
     .context("deleting orphaned session pins past cutoff")?;
     // sessions.started_at is UTC, like events — compare against the same
@@ -944,6 +949,23 @@ mod tests {
             .query_row("SELECT session_id FROM session_pins", [], |r| r.get(0))
             .unwrap();
         assert_eq!(remaining, "sess-new");
+    }
+
+    /// Finding P1: a pin whose session has no event row YET (written
+    /// moments before the recorder's first event, or a recorder that then
+    /// failed) must not be a purge target on ANY cutoff — the delete needs
+    /// the same `from_at` age bound every sibling delete in this pass
+    /// already has, else a brand-new pin is wiped by a purge whose cutoff
+    /// is years in the past.
+    #[test]
+    fn fresh_session_pin_without_events_survives_an_old_cutoff() {
+        let conn = open_memory().unwrap();
+        let cutoff = date("2026-06-20");
+        insert_session_pin(&conn, "sess-fresh", "2026-07-01T09:00:00+00:00");
+
+        let report = purge_rows(&conn, cutoff, false).unwrap();
+        assert_eq!(report.events_deleted, 0);
+        assert_eq!(count(&conn, "session_pins"), 1);
     }
 
     /// B14: an `external = 1` ticket whose only referencing block is older

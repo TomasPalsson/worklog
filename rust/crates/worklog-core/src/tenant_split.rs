@@ -9,7 +9,7 @@ use crate::billing_registry::Registry;
 use crate::infer_lanes::is_lifecycle_row;
 use crate::models::Block;
 use crate::repo;
-use crate::session_pins::{pin_covering, pins_for_sessions};
+use crate::session_pins::{pins_for_sessions, resolve_event_customer};
 use crate::tenant_clues::clues_for_block;
 use crate::tenant_contract::{Clue, CustomerSlice, SplitOrigin, HOUSE_CUSTOMER};
 use crate::tenant_shares::{load_shares, slices_from_shares};
@@ -106,21 +106,26 @@ fn block_interval(block: &Block) -> (i64, i64) {
     (start, start + block.duration_seconds.max(0))
 }
 
-/// The single customer named by `block`'s events whose session carries a
-/// pin covering their timestamp ([`pin_covering`], mirroring
-/// `session_customers::tag_sessions`) — `None` unless EVERY non-lifecycle
-/// event that carries a session_id is covered by a pin and all of them
-/// agree on one customer. Lifecycle rows (`is_lifecycle_row` —
-/// SessionStart/Stop/SessionEnd bookkeeping) are ignored entirely: they
-/// carry no vote of their own, but the SessionStart row's timestamp is
-/// still the session's first event for [`pin_covering`]'s setup-race
-/// reach-back. An event before its session's earliest pin, and outside
-/// that reach-back window, is "uncovered" and makes the whole block bail
-/// out to `None`, else a minute logged before the pin took effect would
-/// be invented onto the pinned customer's invoice line (FR-07, contract
-/// THE FIVE #2). Events with no session_id carry no pin and are ignored
-/// either way.
-fn pinned_customer_for_block(conn: &Connection, block: &Block) -> Result<Option<String>> {
+/// The single customer named by `block`'s events, via the SAME per-event
+/// rule as lanes ([`resolve_event_customer`], shared with
+/// `session_customers::resolve_events` so a block can never go Pinned to
+/// a customer the lanes disagree with) — `None` unless EVERY
+/// non-lifecycle event that carries a session_id resolves via a pin
+/// (genuine or setup-race reach-back) and all of them agree on one
+/// customer. Lifecycle rows (`is_lifecycle_row` — SessionStart/Stop/
+/// SessionEnd bookkeeping) are ignored entirely: they carry no vote of
+/// their own, but the SessionStart row's timestamp is still the
+/// session's first event for the reach-back. An event that instead
+/// resolves to its session's own text guess (or to nothing at all) means
+/// the pin doesn't actually govern that event, so the whole block bails
+/// out to `None` rather than inventing a minute onto the pinned
+/// customer's invoice line (FR-07, contract THE FIVE #2). Events with no
+/// session_id carry no pin and are ignored either way.
+fn pinned_customer_for_block(
+    conn: &Connection,
+    block: &Block,
+    registry: &Registry,
+) -> Result<Option<String>> {
     let events = repo::list_events_for_block(conn, block.id)?;
     let mut session_ids: Vec<String> = events.iter().filter_map(|e| e.session_id.clone()).collect();
     session_ids.sort();
@@ -131,9 +136,12 @@ fn pinned_customer_for_block(conn: &Connection, block: &Block) -> Result<Option<
 
     let pins = pins_for_sessions(conn, &session_ids)?;
 
-    // The session's first event (SessionStart included) anchors
-    // `pin_covering`'s setup-race reach-back.
+    // Per session: the first event (SessionStart included) anchors the
+    // setup-race reach-back; the joined text of its non-lifecycle events
+    // is its text guess — mirrors `session_customers::resolve_events`,
+    // scoped to this block's own events since that's all we have here.
     let mut session_start: BTreeMap<&str, chrono::DateTime<chrono::Utc>> = BTreeMap::new();
+    let mut session_text: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for event in &events {
         let Some(session_id) = &event.session_id else {
             continue;
@@ -146,7 +154,19 @@ fn pinned_customer_for_block(conn: &Connection, block: &Block) -> Result<Option<
             .entry(session_id.as_str())
             .and_modify(|t| *t = (*t).min(at))
             .or_insert(at);
+        if !is_lifecycle_row(&event.source, Some(event.title.as_str())) {
+            let parts = session_text.entry(session_id.as_str()).or_default();
+            parts.push(&event.title);
+            if let Some(jira) = &event.jira_issue {
+                parts.push(jira.as_str());
+            }
+        }
     }
+    let text_guess_for = |session_id: &str| -> Option<String> {
+        session_text
+            .get(session_id)
+            .and_then(|parts| registry.customer_in_text(&parts.join("\n")))
+    };
 
     let mut customers: BTreeSet<String> = BTreeSet::new();
     for event in &events {
@@ -161,11 +181,12 @@ fn pinned_customer_for_block(conn: &Connection, block: &Block) -> Result<Option<
         };
         let at = at.with_timezone(&chrono::Utc);
         let start = session_start[session_id.as_str()];
-        match pin_covering(&pins, session_id, at, start) {
-            Some(pin) => {
-                customers.insert(pin.customer.clone());
+        let text_guess = text_guess_for(session_id);
+        match resolve_event_customer(&pins, session_id, at, start, text_guess.as_deref()) {
+            (Some(customer), true) => {
+                customers.insert(customer);
             }
-            None => return Ok(None),
+            _ => return Ok(None),
         }
     }
 
@@ -215,7 +236,7 @@ pub fn tenant_slices_for_block(
         return Ok(Some(slices_from_shares(start, end, &shares)));
     }
 
-    if let Some(customer) = pinned_customer_for_block(conn, block)? {
+    if let Some(customer) = pinned_customer_for_block(conn, block, registry)? {
         return Ok(Some(vec![CustomerSlice {
             customer: Some(customer),
             intervals: vec![(start, end)],

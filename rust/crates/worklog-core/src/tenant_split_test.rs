@@ -514,3 +514,69 @@ fn real_session_start_is_pinned() {
         }]
     );
 }
+
+// Finding P2: an event that resolves to its session's own text guess
+// (not the pin) must block the Pinned origin — a block can't go Pinned
+// to a customer the lanes would tag differently. A pre-pin event titled
+// "Globex ticket work" (Globex a registered customer) names Globex via
+// text; the setup-race reach-back must lose to that text guess exactly
+// like `session_customers::resolve_events` does, so a pin to Acme 5
+// minutes later must NOT turn this into a Pinned-to-Acme block.
+#[test]
+fn text_guess_disagreeing_with_pin_blocks_pinned_slice() {
+    let conn = open_memory().unwrap();
+    let reg = registry(&["Globex", "Acme"], &[multi_tenant_folder("vitinn-infra")]);
+
+    let t0 = at(2026, 1, 1, 9, 0, 0);
+    session_pins::pin(
+        &conn,
+        &reg,
+        "sess-1",
+        Path::new(&work("vitinn-infra")),
+        "Acme",
+        t0 + chrono::Duration::minutes(5),
+        None,
+    )
+    .unwrap();
+
+    let start = t0;
+    let end = at(2026, 1, 1, 10, 0, 0);
+    let block_id = seed_block(&conn, &start.to_rfc3339(), &end.to_rfc3339(), 3600);
+    seed_titled_event(
+        &conn,
+        block_id,
+        "hook-1",
+        "sess-1",
+        &t0.to_rfc3339(),
+        "Globex ticket work",
+    );
+    seed_titled_event(
+        &conn,
+        block_id,
+        "hook-2",
+        "sess-1",
+        &(t0 + chrono::Duration::minutes(10)).to_rfc3339(),
+        "PostToolUse",
+    );
+
+    let block = Block {
+        id: block_id,
+        day: "2026-01-01".to_string(),
+        jira_issue: None,
+        started_at: start.to_rfc3339(),
+        ended_at: end.to_rfc3339(),
+        duration_seconds: 3600,
+        description: None,
+        estimated_by: None,
+        flagged: false,
+        tempo_worklog_id: None,
+        is_personal: false,
+        dirty: false,
+        exported_at: None,
+    };
+
+    let slices = tenant_slices_for_block(&conn, &block, "vitinn-infra", &reg)
+        .unwrap()
+        .unwrap();
+    assert!(slices.iter().all(|s| s.origin != SplitOrigin::Pinned));
+}

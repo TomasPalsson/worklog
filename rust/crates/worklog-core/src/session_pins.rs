@@ -90,6 +90,39 @@ pub fn pin_covering<'a>(
     (earliest.from_at - session_start <= SETUP_GRACE).then_some(earliest)
 }
 
+/// The single per-event customer resolution rule shared by
+/// `session_customers::resolve_events` (lanes) and
+/// `tenant_split::pinned_customer_for_block` (the Pinned block slice) —
+/// kept in one place so the two can't drift apart, as they once did (a
+/// block could go Pinned to a customer the lanes disagreed with).
+///
+/// A pin genuinely covering `at` (`from_at <= at`) always wins. A pin
+/// that only reaches `at` via [`pin_covering`]'s setup-race reach-back
+/// (its `from_at` is after `at`) instead loses to `text_guess` when one
+/// is available — the reach-back exists to cover setup-minute events
+/// that would otherwise have no signal at all, not to override a
+/// session's own established text guess for a genuine mid-session
+/// re-pin. Returns `(customer, from_pin)`: `from_pin` is `true` only when
+/// the returned customer came from a pin (genuine or reach-back), which
+/// is what a caller that only trusts pins (like the block-level Pinned
+/// origin) needs to require of every event.
+pub fn resolve_event_customer(
+    pins: &[SessionPin],
+    session_id: &str,
+    at: DateTime<Utc>,
+    session_start: DateTime<Utc>,
+    text_guess: Option<&str>,
+) -> (Option<String>, bool) {
+    match pin_covering(pins, session_id, at, session_start) {
+        Some(pin) if pin.from_at <= at => (Some(pin.customer.clone()), true),
+        Some(pin) => match text_guess {
+            Some(guess) => (Some(guess.to_string()), false),
+            None => (Some(pin.customer.clone()), true),
+        },
+        None => (text_guess.map(str::to_string), false),
+    }
+}
+
 /// The `worklog session-hint` start-of-session text (design.md §4,
 /// contract T004), or `None` when nothing should be printed.
 ///

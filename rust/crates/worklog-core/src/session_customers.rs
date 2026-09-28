@@ -17,19 +17,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::billing_registry::Registry;
 use crate::infer::InferEvent;
 use crate::infer_lanes::lane_folder;
-use crate::session_pins::{pin_covering, SessionPin};
+use crate::session_pins::{resolve_event_customer, SessionPin};
 
-/// Per-event resolved customer: the pin covering the event's timestamp, or
-/// the session's text guess when no pin covers it yet.
-///
-/// A pin genuinely covering the event (`from_at <= ts`, [`pin_covering`]'s
-/// ordinary rule) always wins over the text guess, same as before. A pin
-/// that only reaches the event via [`pin_covering`]'s setup-race
-/// reach-back (its `from_at` is after the event's own timestamp) instead
-/// LOSES to an available text guess — the reach-back exists to cover
-/// setup-minute events that would otherwise have no signal at all, not to
-/// override a session's own established text guess for a genuine
-/// mid-session re-pin (see `pin_beats_text_guess`).
+/// Per-event resolved customer, via the shared
+/// [`resolve_event_customer`] rule (pin beats text guess; reach-back
+/// loses to an existing text guess) — kept in one place with
+/// `tenant_split::pinned_customer_for_block` so lanes and the Pinned
+/// block slice can't disagree about the same event.
 fn resolve_events(
     events: &[InferEvent],
     registry: &Registry,
@@ -53,11 +47,8 @@ fn resolve_events(
             .expect("idxs is never empty — sessions only holds non-empty groups");
         for &i in idxs {
             let ts = events[i].ts;
-            let customer = match pin_covering(pins, session_id, ts, session_start) {
-                Some(pin) if pin.from_at <= ts => Some(pin.customer.clone()),
-                Some(pin) => text_guess.clone().or_else(|| Some(pin.customer.clone())),
-                None => text_guess.clone(),
-            };
+            let (customer, _from_pin) =
+                resolve_event_customer(pins, session_id, ts, session_start, text_guess.as_deref());
             if let Some(customer) = customer {
                 resolved.insert(i, customer);
             }
