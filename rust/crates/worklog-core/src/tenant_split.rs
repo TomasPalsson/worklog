@@ -2,13 +2,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rusqlite::Connection;
 
 use crate::billing_registry::Registry;
 use crate::infer_lanes::is_lifecycle_row;
 use crate::models::Block;
 use crate::repo;
+use crate::session_customers::session_contexts;
 use crate::session_pins::{pins_for_sessions, resolve_event_customer};
 use crate::tenant_clues::clues_for_block;
 use crate::tenant_contract::{Clue, CustomerSlice, SplitOrigin, HOUSE_CUSTOMER};
@@ -107,23 +108,26 @@ fn block_interval(block: &Block) -> (i64, i64) {
 }
 
 /// The single customer named by `block`'s events, via the SAME per-event
-/// rule as lanes ([`resolve_event_customer`], shared with
-/// `session_customers::resolve_events` so a block can never go Pinned to
-/// a customer the lanes disagree with) — `None` unless EVERY
+/// rule as lanes ([`resolve_event_customer`], fed the SAME session
+/// context [`session_contexts`] computes for `session_customers::
+/// resolve_events` — a session spans several blocks whenever there's an
+/// idle gap, so its session_start/text_guess must come from the whole
+/// day's events, never just this block's own subset, or a block could go
+/// Pinned to a customer the lanes disagree with) — `None` unless EVERY
 /// non-lifecycle event that carries a session_id resolves via a pin
 /// (genuine or setup-race reach-back) and all of them agree on one
 /// customer. Lifecycle rows (`is_lifecycle_row` — SessionStart/Stop/
 /// SessionEnd bookkeeping) are ignored entirely: they carry no vote of
-/// their own, but the SessionStart row's timestamp is still the
-/// session's first event for the reach-back. An event that instead
-/// resolves to its session's own text guess (or to nothing at all) means
-/// the pin doesn't actually govern that event, so the whole block bails
-/// out to `None` rather than inventing a minute onto the pinned
-/// customer's invoice line (FR-07, contract THE FIVE #2). Events with no
-/// session_id carry no pin and are ignored either way.
+/// their own. An event that instead resolves to its session's own text
+/// guess (or to nothing at all) means the pin doesn't actually govern
+/// that event, so the whole block bails out to `None` rather than
+/// inventing a minute onto the pinned customer's invoice line (FR-07,
+/// contract THE FIVE #2). Events with no session_id carry no pin and are
+/// ignored either way.
 fn pinned_customer_for_block(
     conn: &Connection,
     block: &Block,
+    folder: &str,
     registry: &Registry,
 ) -> Result<Option<String>> {
     let events = repo::list_events_for_block(conn, block.id)?;
@@ -136,37 +140,14 @@ fn pinned_customer_for_block(
 
     let pins = pins_for_sessions(conn, &session_ids)?;
 
-    // Per session: the first event (SessionStart included) anchors the
-    // setup-race reach-back; the joined text of its non-lifecycle events
-    // is its text guess — mirrors `session_customers::resolve_events`,
-    // scoped to this block's own events since that's all we have here.
-    let mut session_start: BTreeMap<&str, chrono::DateTime<chrono::Utc>> = BTreeMap::new();
-    let mut session_text: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for event in &events {
-        let Some(session_id) = &event.session_id else {
-            continue;
-        };
-        let Ok(at) = chrono::DateTime::parse_from_rfc3339(&event.started_at) else {
-            continue;
-        };
-        let at = at.with_timezone(&chrono::Utc);
-        session_start
-            .entry(session_id.as_str())
-            .and_modify(|t| *t = (*t).min(at))
-            .or_insert(at);
-        if !is_lifecycle_row(&event.source, Some(event.title.as_str())) {
-            let parts = session_text.entry(session_id.as_str()).or_default();
-            parts.push(&event.title);
-            if let Some(jira) = &event.jira_issue {
-                parts.push(jira.as_str());
-            }
-        }
-    }
-    let text_guess_for = |session_id: &str| -> Option<String> {
-        session_text
-            .get(session_id)
-            .and_then(|parts| registry.customer_in_text(&parts.join("\n")))
-    };
+    // The lanes' own session context (session_start, text_guess), from
+    // the WHOLE day's events — never just this block's — so a session
+    // spanning multiple blocks is judged the same way here as it is by
+    // `session_customers::tag_sessions`.
+    let day = chrono::NaiveDate::parse_from_str(&block.day, "%Y-%m-%d")
+        .with_context(|| format!("parsing block.day {}", block.day))?;
+    let day_events = crate::infer::load_day_events(conn, day)?;
+    let contexts = session_contexts(&day_events, registry);
 
     let mut customers: BTreeSet<String> = BTreeSet::new();
     for event in &events {
@@ -180,9 +161,12 @@ fn pinned_customer_for_block(
             continue;
         };
         let at = at.with_timezone(&chrono::Utc);
-        let start = session_start[session_id.as_str()];
-        let text_guess = text_guess_for(session_id);
-        match resolve_event_customer(&pins, session_id, at, start, text_guess.as_deref()) {
+        let Some((start, text_guess)) =
+            contexts.get(&(Some(folder.to_string()), session_id.clone()))
+        else {
+            return Ok(None);
+        };
+        match resolve_event_customer(&pins, session_id, at, *start, text_guess.as_deref()) {
             (Some(customer), true) => {
                 customers.insert(customer);
             }
@@ -236,7 +220,7 @@ pub fn tenant_slices_for_block(
         return Ok(Some(slices_from_shares(start, end, &shares)));
     }
 
-    if let Some(customer) = pinned_customer_for_block(conn, block, registry)? {
+    if let Some(customer) = pinned_customer_for_block(conn, block, folder, registry)? {
         return Ok(Some(vec![CustomerSlice {
             customer: Some(customer),
             intervals: vec![(start, end)],

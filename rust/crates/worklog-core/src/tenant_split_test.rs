@@ -85,6 +85,12 @@ fn seed_titled_event(
 ) {
     let mut ev = Event::minimal("claude", source_id, started_at, title);
     ev.session_id = Some(session_id.to_string());
+    // Every test in this file works in the "vitinn-infra" folder — a real
+    // Claude hook event always carries the cwd it fired from
+    // (`InferEvent::project_path`'s doc comment), which `session_contexts`
+    // (via `infer_lanes::lane_folder`) needs to find this session's day-wide
+    // context at all.
+    ev.project_path = Some(work("vitinn-infra"));
     let event_id = crate::repo::upsert_event(conn, &ev).unwrap();
     conn.execute(
         "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
@@ -579,4 +585,111 @@ fn text_guess_disagreeing_with_pin_blocks_pinned_slice() {
         .unwrap()
         .unwrap();
     assert!(slices.iter().all(|s| s.origin != SplitOrigin::Pinned));
+}
+
+// Finding P2 (round 2): a session spans several blocks whenever there's
+// an idle gap. `pinned_customer_for_block` must judge a block's events
+// against the SAME session context (session_start, text_guess) the
+// lanes use — derived from the WHOLE day's events — not just this
+// block's own subset, or a later block could go Pinned to a customer
+// its own session's earlier text guess (and the lanes) disagree with.
+#[test]
+fn session_spanning_blocks_agrees_with_lanes() {
+    let _g = crate::tz::test_env_lock();
+    std::env::remove_var("WORKLOG_TZ");
+
+    let conn = open_memory().unwrap();
+    let reg = registry(&["Globex", "Acme"], &[multi_tenant_folder("vitinn-infra")]);
+
+    let t0 = at(2026, 1, 1, 9, 0, 0);
+    session_pins::pin(
+        &conn,
+        &reg,
+        "sess-1",
+        Path::new(&work("vitinn-infra")),
+        "Acme",
+        t0 + chrono::Duration::hours(3) + chrono::Duration::minutes(1),
+        None,
+    )
+    .unwrap();
+
+    // Block A: the session's real first event, naming Globex in its own
+    // text.
+    let a_start = t0;
+    let a_end = t0 + chrono::Duration::minutes(30);
+    let block_a_id = seed_block(&conn, &a_start.to_rfc3339(), &a_end.to_rfc3339(), 1800);
+    seed_titled_event(
+        &conn,
+        block_a_id,
+        "hook-a1",
+        "sess-1",
+        &t0.to_rfc3339(),
+        "Globex ticket work",
+    );
+
+    // Block B: same session, 3 hours later (the idle gap that opened a
+    // new block) — a generic event with no text guess of its own. The
+    // pin lands one minute after THIS block's own first event, but three
+    // hours after the session's REAL first event (block A's).
+    let b_start = t0 + chrono::Duration::hours(3);
+    let b_end = b_start + chrono::Duration::minutes(30);
+    let block_b_id = seed_block(&conn, &b_start.to_rfc3339(), &b_end.to_rfc3339(), 1800);
+    seed_titled_event(
+        &conn,
+        block_b_id,
+        "hook-b1",
+        "sess-1",
+        &b_start.to_rfc3339(),
+        "PostToolUse",
+    );
+
+    // An unrelated session in the same folder naming Acme — the second
+    // customer this folder needs before the lanes split at all.
+    let mut sess2 = Event::minimal("claude", "hook-c1", t0.to_rfc3339(), "Acme ticket work");
+    sess2.session_id = Some("sess-2".to_string());
+    sess2.project_path = Some(work("vitinn-infra"));
+    crate::repo::upsert_event(&conn, &sess2).unwrap();
+
+    let block_b = Block {
+        id: block_b_id,
+        day: "2026-01-01".to_string(),
+        jira_issue: None,
+        started_at: b_start.to_rfc3339(),
+        ended_at: b_end.to_rfc3339(),
+        duration_seconds: 1800,
+        description: None,
+        estimated_by: None,
+        flagged: false,
+        tempo_worklog_id: None,
+        is_personal: false,
+        dirty: false,
+        exported_at: None,
+    };
+
+    let slices = tenant_slices_for_block(&conn, &block_b, "vitinn-infra", &reg)
+        .unwrap()
+        .unwrap();
+    assert!(
+        slices.iter().all(|s| s.origin != SplitOrigin::Pinned),
+        "block B must not go Pinned to Acme — the session's real first \
+         event (block A) is 3 hours before the pin, well outside \
+         SETUP_GRACE, and its own text guess is Globex"
+    );
+
+    // Lanes must agree: `tag_sessions`, given the same day's events, tags
+    // block B's event Globex too (session sess-1's own text guess), never
+    // Acme.
+    let day = chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let mut day_events = crate::infer::load_day_events(&conn, day).unwrap();
+    let pins = crate::session_pins::pins_for_sessions(&conn, &["sess-1".to_string()]).unwrap();
+    crate::session_customers::tag_sessions(&mut day_events, &reg, &pins);
+    let block_b_event = day_events
+        .iter()
+        .find(|e| e.ts == b_start)
+        .expect("block B's event must be in the day's events");
+    assert_eq!(
+        block_b_event.lane_tag.as_deref(),
+        Some("Globex"),
+        "lanes must tag block B's event Globex, matching its session's text guess"
+    );
 }
