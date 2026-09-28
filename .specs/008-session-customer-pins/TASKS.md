@@ -39,7 +39,7 @@ Independent test: `cd web && bun test && bun run typecheck` — green.
 - [x] CHK001 human-verify the pin flow live — files: .specs/008-session-customer-pins/verify/CHK001.md — verify: human: in vitinn-infra on a feature branch, a new session told "work on the Sjúkra config", then /clear + /flow:next on the same branch; after the day rebuild both sessions' blocks show "Sjúkra (pinned)" in the day view and Claude never asked — after: T005, T006, T008 — done: 0d721f0 by user
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `flow check --fix`
-- [ ] G002 branch review clean — files: . — verify: `flow pass`
-- [ ] G003 verification evidence exists — files: . — verify: `test -s .specs/008-session-customer-pins/verify/`
-- [ ] G004 web gates clean — files: web — verify: `cd web && bun test && bun run typecheck`
+- [x] G001 project gates clean — files: . — verify: `flow check --fix` — done: 467078b
+- [x] G002 branch review clean — files: . — verify: `flow pass` — done: 467078b
+- [x] G003 verification evidence exists — files: . — verify: `test -s .specs/008-session-customer-pins/verify/` — done: 467078b
+- [x] G004 web gates clean — files: web — verify: `cd web && bun test && bun run typecheck` — done: 7edb869
