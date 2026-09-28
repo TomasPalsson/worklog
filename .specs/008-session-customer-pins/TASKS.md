@@ -1,8 +1,8 @@
 Approved: 2026-09-27 by user
 Verified: 2026-09-28 by user (standing approval in the session goal; verify/ not yet read by a human — PR kept draft)
-Base: 7ef08c1
+Base: 99b7cc7
 # Tasks — Session customer pins
-Spec: spec.md · Design: design.md · Base: 83ceaff · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml`
+Spec: spec.md · Design: design.md · Base: ce1306f · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml`
 
 ## Behaviors
 | ID | Given / When / Then | Task | Proven by |
@@ -20,27 +20,27 @@ Spec: spec.md · Design: design.md · Base: 83ceaff · Route: dispatch · Test: 
 ## Phase 1 — Pins exist
 Goal: Claude can pin a customer to its session from the command line, and a new session on the same branch inherits it.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core session_pins` and `cargo test --manifest-path rust/Cargo.toml -p worklog-cli pin` — green.
-- [x] T001 [P] pin store and customer lookup (B1, B2) — files: rust/crates/worklog-core/sql/schema.sql, rust/crates/worklog-core/src/session_pins.rs, rust/crates/worklog-core/src/session_pins_test.rs, rust/crates/worklog-core/src/lib.rs, rust/crates/worklog-core/src/billing_registry.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core session_pins` — done: 47cb872
-- [x] T002 [P] current branch reader (B3) — files: rust/crates/worklog-core/src/git.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core current_branch` — done: 55ec9f0
-- [x] T003 pin command (B4) — files: rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-cli/tests/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-cli pin` — after: T001, T002 — done: 4942182
-- [x] T004 start instruction and inheritance (B5) — files: rust/crates/worklog-core/src/session_pins.rs, rust/crates/worklog-core/src/session_pins_test.rs, rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-cli/tests/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core start_text` — after: T003 — done: f9f8e7b
-- [x] T005 installer keeps both hooks (B6) — files: rust/crates/worklog-core/src/hook.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core hook::tests` — after: T004 — done: 932c61b
-- [x] T009 start text stays within 600 chars (NFR) — files: rust/crates/worklog-core/src/session_pins.rs, rust/crates/worklog-core/src/session_pins_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core start_text_stays_within_600_chars` — after: T004 — done: 2376730
+- [x] T001 [P] pin store and customer lookup (B1, B2) — files: rust/crates/worklog-core/sql/schema.sql, rust/crates/worklog-core/src/session_pins.rs, rust/crates/worklog-core/src/session_pins_test.rs, rust/crates/worklog-core/src/lib.rs, rust/crates/worklog-core/src/billing_registry.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core session_pins` — done: c2e26f4
+- [x] T002 [P] current branch reader (B3) — files: rust/crates/worklog-core/src/git.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core current_branch` — done: add8dca
+- [x] T003 pin command (B4) — files: rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-cli/tests/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-cli pin` — after: T001, T002 — done: f8ff60f
+- [x] T004 start instruction and inheritance (B5) — files: rust/crates/worklog-core/src/session_pins.rs, rust/crates/worklog-core/src/session_pins_test.rs, rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-cli/tests/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core start_text` — after: T003 — done: c9d6231
+- [x] T005 installer keeps both hooks (B6) — files: rust/crates/worklog-core/src/hook.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core hook::tests` — after: T004 — done: d345ad1
+- [x] T009 start text stays within 600 chars (NFR) — files: rust/crates/worklog-core/src/session_pins.rs, rust/crates/worklog-core/src/session_pins_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core start_text_stays_within_600_chars` — after: T004 — done: d2e6f38
 
 ## Phase 2 — Pins drive blocks
 Goal: a pinned session's minutes land in its customer's lane, and the block's customer line says "pinned".
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core` — green, and `bash scripts/verify-inference.sh` exits 0.
-- [x] T006 [P] pins beat the text guess in lanes (B7) — files: rust/crates/worklog-core/src/session_customers.rs, rust/crates/worklog-core/src/session_customers_test.rs, rust/crates/worklog-core/src/infer_allocations.rs, rust/crates/worklog-core/src/infer_allocations_db_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core pin_beats_text_guess` — after: T001 — done: 0ac1465
-- [x] T007 [P] pinned customer line (B8) — files: rust/crates/worklog-core/src/tenant_contract.rs, rust/crates/worklog-core/src/tenant_split.rs, rust/crates/worklog-core/src/tenant_split_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core pinned_session_gives_pinned_slice` — after: T001 — done: ce7997a
+- [x] T006 [P] pins beat the text guess in lanes (B7) — files: rust/crates/worklog-core/src/session_customers.rs, rust/crates/worklog-core/src/session_customers_test.rs, rust/crates/worklog-core/src/infer_allocations.rs, rust/crates/worklog-core/src/infer_allocations_db_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core pin_beats_text_guess` — after: T001 — done: bbc8dfb
+- [x] T007 [P] pinned customer line (B8) — files: rust/crates/worklog-core/src/tenant_contract.rs, rust/crates/worklog-core/src/tenant_split.rs, rust/crates/worklog-core/src/tenant_split_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core pinned_session_gives_pinned_slice` — after: T001 — done: 2729e20
 
 ## Phase 3 — You can see it
 Goal: the Owner sees "pinned" in the day view and the block detail view and can still change it.
 Independent test: `cd web && bun test && bun run typecheck` — green.
-- [x] T008 show pinned in day and detail views (B9) — files: web/lib/tenants.ts, web/components/BlockCustomerSplit.tsx, web/components/BlockCustomerSplit.test.tsx, web/app/[day]/block/[id]/page.tsx — verify: `cd web && bun test components/BlockCustomerSplit.test.tsx` — after: T007 — done: 7edb869
-- [x] CHK001 human-verify the pin flow live — files: .specs/008-session-customer-pins/verify/CHK001.md — verify: human: in vitinn-infra on a feature branch, a new session told "work on the Sjúkra config", then /clear + /flow:next on the same branch; after the day rebuild both sessions' blocks show "Sjúkra (pinned)" in the day view and Claude never asked — after: T005, T006, T008 — done: 0d721f0 by user
+- [x] T008 show pinned in day and detail views (B9) — files: web/lib/tenants.ts, web/components/BlockCustomerSplit.tsx, web/components/BlockCustomerSplit.test.tsx, web/app/[day]/block/[id]/page.tsx — verify: `cd web && bun test components/BlockCustomerSplit.test.tsx` — after: T007 — done: dbddd0c
+- [x] CHK001 human-verify the pin flow live — files: .specs/008-session-customer-pins/verify/CHK001.md — verify: human: in vitinn-infra on a feature branch, a new session told "work on the Sjúkra config", then /clear + /flow:next on the same branch; after the day rebuild both sessions' blocks show "Sjúkra (pinned)" in the day view and Claude never asked — after: T005, T006, T008 — done: 02e17c5 by user
 
 ## Gates
-- [x] G001 project gates clean — files: . — verify: `flow check --fix` — done: 467078b
-- [x] G002 branch review clean — files: . — verify: `flow pass` — done: 467078b
-- [x] G003 verification evidence exists — files: . — verify: `test -s .specs/008-session-customer-pins/verify/` — done: 467078b
-- [x] G004 web gates clean — files: web — verify: `cd web && bun test && bun run typecheck` — done: 7edb869
+- [x] G001 project gates clean — files: . — verify: `flow check --fix` — done: b7a051b
+- [x] G002 branch review clean — files: . — verify: `flow pass` — done: b7a051b
+- [x] G003 verification evidence exists — files: . — verify: `test -s .specs/008-session-customer-pins/verify/` — done: b7a051b
+- [x] G004 web gates clean — files: web — verify: `cd web && bun test && bun run typecheck` — done: dbddd0c
