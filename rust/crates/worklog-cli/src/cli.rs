@@ -9,16 +9,17 @@ use std::io::{self, IsTerminal, Read, Write};
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 use worklog_core::{
-    billing, block_service,
+    billing, billing_registry, block_service,
     collectors::{
         claude_transcripts as claude_transcripts_col, fish as fish_col, gcal as gcal_col,
         github as gh, jira as jira_col, reflog as reflog_col, slack as slack_col,
         tempo as tempo_col,
     },
-    daemon as daemon_mod, db, estimate, hook, hook_run, http, infer,
+    daemon as daemon_mod, db, estimate, git, hook, hook_run, http, infer,
     paths::Paths,
-    personal as personal_mod, routing, routing_absorb, schedule, secrets, skill as skill_mod,
-    updater as upd,
+    personal as personal_mod, routing, routing_absorb, schedule, secrets,
+    session_pins::{self, PinError},
+    skill as skill_mod, updater as upd,
     verdict::VerdictClassifier,
     web as web_mod,
 };
@@ -282,9 +283,29 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
         sub: TagCmd,
     },
 
+    /// Pin a customer to a Claude Code session from a given time on
+    /// (spec 008). Refuses names that don't resolve to a known customer
+    /// or alias.
+    Pin {
+        /// Customer name or alias (case-insensitive).
+        customer: String,
+        /// The Claude Code session id.
+        #[arg(long)]
+        session: String,
+        /// RFC-3339 timestamp the pin takes effect from. Default: now.
+        #[arg(long)]
+        at: Option<String>,
+    },
+
     /// Claude Code hook — reads a JSON event from stdin and records it.
     #[command(name = "hook-run", hide = true)]
     HookRun,
+
+    /// Claude Code session-start hook — reads SessionStart JSON from
+    /// stdin and prints the pin instruction for a shared /Work repo, if
+    /// any (spec 008). Never fails: any error prints nothing and exits 0.
+    #[command(name = "session-hint", hide = true)]
+    SessionHint,
 
     /// Start the axum unix-socket IPC server (foreground) OR manage the
     /// background service unit that supervises it. Bare `worklog daemon`
@@ -831,7 +852,13 @@ pub fn run_with<W: Write>(
             TagCmd::Work { glob } => cmd_tag_work(glob, out, cli.json),
             TagCmd::Reclassify { day } => cmd_tag_reclassify(day, out, cli.json),
         },
+        Cmd::Pin {
+            customer,
+            session,
+            at,
+        } => cmd_pin(&customer, &session, at, out),
         Cmd::HookRun => cmd_hook_run(),
+        Cmd::SessionHint => cmd_session_hint(out),
         Cmd::Daemon { sub, socket, tcp } => match sub {
             None => cmd_daemon(socket, tcp),
             Some(DaemonCmd::Install { command }) => cmd_daemon_install(command, out, cli.json),
@@ -3161,6 +3188,52 @@ fn cmd_tag_reclassify<W: Write>(day: Option<String>, out: &mut W, json: bool) ->
     Ok(())
 }
 
+/// `worklog pin <customer> --session <id> [--at <rfc3339>]` (spec 008,
+/// design.md contract T003). Exit codes: 0 pinned, 2 unknown customer
+/// (known customers listed on stderr, nothing stored), 1 any other error.
+fn cmd_pin<W: Write>(customer: &str, session: &str, at: Option<String>, out: &mut W) -> Result<()> {
+    let paths = Paths::resolve()?;
+    let conn = db::open(&paths.db)?;
+    let registry = billing_registry::Registry::load(&conn)?;
+    let at = match at {
+        Some(s) => chrono::DateTime::parse_from_rfc3339(&s)
+            .with_context(|| format!("invalid --at timestamp {s}"))?
+            .with_timezone(&chrono::Utc),
+        None => chrono::Utc::now(),
+    };
+    let cwd = std::env::current_dir().context("resolving cwd")?;
+    let branch = git::current_branch(&cwd);
+
+    match session_pins::pin(
+        &conn,
+        &registry,
+        session,
+        &cwd,
+        customer,
+        at,
+        branch.as_deref(),
+    ) {
+        Ok(stored) => {
+            let short: String = stored.session_id.chars().take(8).collect();
+            writeln!(
+                out,
+                "Pinned {short} to {} from {}",
+                stored.customer,
+                local_hhmm(&stored.from_at.to_rfc3339())
+            )?;
+            Ok(())
+        }
+        Err(PinError::UnknownCustomer { known }) => {
+            eprintln!(
+                "unknown customer {customer:?} — known customers: {}",
+                known.join(", ")
+            );
+            std::process::exit(2);
+        }
+        Err(PinError::Other(e)) => Err(e),
+    }
+}
+
 fn cmd_infer<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()> {
     let paths = Paths::resolve()?;
     paths.ensure()?;
@@ -3421,6 +3494,44 @@ fn cmd_hook_run() -> Result<()> {
     // All output goes to stderr (handled inside hook_run::run_from_stdin) so
     // Claude Code never sees bytes on stdout.
     hook_run::run_from_stdin()
+}
+
+/// `worklog session-hint`. Every failure is swallowed and prints nothing —
+/// a broken payload, a missing db, or an unreadable registry must never
+/// block or fail a Claude Code session start (design.md §2, contract T004).
+fn cmd_session_hint<W: Write>(out: &mut W) -> Result<()> {
+    let mut buf = String::new();
+    if io::stdin().read_to_string(&mut buf).is_err() {
+        return Ok(());
+    }
+    let Ok(payload) = serde_json::from_str::<serde_json::Value>(&buf) else {
+        return Ok(());
+    };
+    let Some(session_id) = payload.get("session_id").and_then(|v| v.as_str()) else {
+        return Ok(());
+    };
+    let Some(cwd) = payload.get("cwd").and_then(|v| v.as_str()) else {
+        return Ok(());
+    };
+    let Ok(paths) = Paths::resolve() else {
+        return Ok(());
+    };
+    let Ok(conn) = db::open(&paths.db) else {
+        return Ok(());
+    };
+    let Ok(registry) = billing_registry::Registry::load(&conn) else {
+        return Ok(());
+    };
+    if let Ok(Some(text)) = session_pins::start_text(
+        &conn,
+        &registry,
+        session_id,
+        std::path::Path::new(cwd),
+        chrono::Utc::now(),
+    ) {
+        let _ = writeln!(out, "{text}");
+    }
+    Ok(())
 }
 
 fn cmd_daemon_install<W: Write>(command: Option<String>, out: &mut W, json: bool) -> Result<()> {

@@ -272,6 +272,23 @@ pub fn purge_rows(conn: &Connection, cutoff: NaiveDate, dry_run: bool) -> Result
             params![instant_iso, date_bound_iso],
         )
         .context("deleting orphan events past cutoff")? as i64;
+    // A branch name gets reused months later and would otherwise silently
+    // inherit whatever customer it was pinned to last time (`pin_for_branch`
+    // has no age bound of its own) — a pin lives exactly as long as its
+    // session's events do. Runs after the events delete just above so this
+    // sees the post-delete state; an unbilled block still keeps its events
+    // (and so keeps its pin) until IT is purged. `from_at` is bound by the
+    // same cutoff as every sibling delete in this pass — without it, a
+    // fresh pin whose session has no event row yet (written moments before
+    // the recorder's first event, or a recorder that then failed) would be
+    // deleted on ANY purge, however recent its cutoff.
+    tx.execute(
+        "DELETE FROM session_pins
+         WHERE from_at < ?2 AND datetime(from_at) < datetime(?1)
+           AND session_id NOT IN (SELECT session_id FROM events WHERE session_id IS NOT NULL)",
+        params![instant_iso, date_bound_iso],
+    )
+    .context("deleting orphaned session pins past cutoff")?;
     // sessions.started_at is UTC, like events — compare against the same
     // instant. Nothing in worklog has ever deleted a sessions row before
     // this: `reap_stale` only ever sets `ended_at`.
@@ -683,6 +700,31 @@ mod tests {
         conn.last_insert_rowid()
     }
 
+    /// Insert an orphan (unlinked) event carrying `session_id` — the
+    /// `session_pins` purge test's stand-in for a session's activity.
+    fn insert_event_with_session(
+        conn: &Connection,
+        started_at: &str,
+        source_id: &str,
+        session_id: &str,
+    ) -> i64 {
+        let mut e = Event::minimal("github_commit", source_id, started_at, "commit");
+        e.session_id = Some(session_id.to_string());
+        repo::upsert_event(conn, &e).unwrap()
+    }
+
+    /// Insert a `session_pins` row (Finding D). Column values beyond
+    /// `session_id`/`from_at` are irrelevant to the purge predicate, so
+    /// they're fixed placeholders.
+    fn insert_session_pin(conn: &Connection, session_id: &str, from_at: &str) {
+        conn.execute(
+            "INSERT INTO session_pins (session_id, customer, from_at, folder, branch, source)
+             VALUES (?1, 'Acme', ?2, 'acme-website', NULL, 'claude')",
+            params![session_id, from_at],
+        )
+        .unwrap();
+    }
+
     /// Insert a Jira ticket cache row with an explicit `external` flag
     /// (B14/B15/B16).
     fn insert_ticket(conn: &Connection, key: &str, external: i64) {
@@ -883,6 +925,47 @@ mod tests {
         let report = purge_rows(&conn, cutoff, false).unwrap();
         assert_eq!(report.sessions_deleted, 1);
         assert_eq!(count(&conn, "sessions"), 1);
+    }
+
+    /// Finding D: a `session_pins` row whose session's events are ALL
+    /// purged is purged with them — else a branch name reused months
+    /// later would silently inherit the stale pin (`pin_for_branch` has
+    /// no age bound of its own). A pin whose session still has a
+    /// surviving event keeps its pin.
+    #[test]
+    fn session_pin_purged_when_its_session_events_are_gone() {
+        let conn = open_memory().unwrap();
+        let cutoff = date("2026-06-20");
+        insert_event_with_session(&conn, "2026-02-10T09:00:00+00:00", "old-1", "sess-old");
+        insert_session_pin(&conn, "sess-old", "2026-02-10T08:00:00+00:00");
+
+        insert_event_with_session(&conn, "2026-06-25T09:00:00+00:00", "recent-1", "sess-new");
+        insert_session_pin(&conn, "sess-new", "2026-06-25T08:00:00+00:00");
+
+        let report = purge_rows(&conn, cutoff, false).unwrap();
+        assert_eq!(report.events_deleted, 1);
+        assert_eq!(count(&conn, "session_pins"), 1);
+        let remaining: String = conn
+            .query_row("SELECT session_id FROM session_pins", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, "sess-new");
+    }
+
+    /// Finding P1: a pin whose session has no event row YET (written
+    /// moments before the recorder's first event, or a recorder that then
+    /// failed) must not be a purge target on ANY cutoff — the delete needs
+    /// the same `from_at` age bound every sibling delete in this pass
+    /// already has, else a brand-new pin is wiped by a purge whose cutoff
+    /// is years in the past.
+    #[test]
+    fn fresh_session_pin_without_events_survives_an_old_cutoff() {
+        let conn = open_memory().unwrap();
+        let cutoff = date("2026-06-20");
+        insert_session_pin(&conn, "sess-fresh", "2026-07-01T09:00:00+00:00");
+
+        let report = purge_rows(&conn, cutoff, false).unwrap();
+        assert_eq!(report.events_deleted, 0);
+        assert_eq!(count(&conn, "session_pins"), 1);
     }
 
     /// B14: an `external = 1` ticket whose only referencing block is older

@@ -328,6 +328,24 @@ CREATE TABLE IF NOT EXISTS billing_line_texts (
 -- changes `worklog day`'s printed "events=N". `extra_key` is an additional
 -- cache-key component for state a file's own bytes don't capture — the
 -- background-job session set for session files, empty for helper files.
+-- ───────────────────────── session pins (spec 008) ─────────────────────────
+-- A statement "session S is for customer C from time T on"
+-- (design.md §1). `source` is 'claude' (set by the pin command) or
+-- 'inherited' (copied into a new session on the same branch at start).
+-- See session_pins.rs.
+CREATE TABLE IF NOT EXISTS session_pins (
+    session_id TEXT NOT NULL,
+    customer TEXT NOT NULL,
+    from_at TEXT NOT NULL,
+    folder TEXT NOT NULL,
+    branch TEXT,
+    source TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (session_id, from_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_pins_branch ON session_pins(folder, branch, from_at);
+
 CREATE TABLE IF NOT EXISTS transcript_file_cache (
     path TEXT NOT NULL,
     since_ts INTEGER NOT NULL,

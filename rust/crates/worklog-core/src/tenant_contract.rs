@@ -86,6 +86,8 @@ pub enum SplitOrigin {
     Clues,
     /// The owner's saved shares.
     Manual,
+    /// The block's pinned session(s) named exactly one customer (spec 008).
+    Pinned,
     /// No timestamped clue: the summary clue, else the folder's normal
     /// resolution (pin, then text alias match).
     Fallback,

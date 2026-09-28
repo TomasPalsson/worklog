@@ -1,0 +1,21 @@
+Discovered: infer_allocations::db_tests::two_sessions_same_customer_matches_no_customer_registry flakes under parallel cargo test (passes serially) — defer
+Discovered: git.rs and billing_registry.rs are over the 400-line size guard (pre-existing) — defer
+Discovered: that flake's cause — tz.rs/purge.rs tests set WORKLOG_TZ process-wide while build_day_blocks runs twice in the same test, so the two shapes can differ (1 fail in 5 runs on HEAD) — defer
+Ruling: T002 'no timeout on git branch --show-current' — dropped at re-score 15 — local-only command, SessionStart hook is bounded by Claude Code — a hang would delay session start
+Ruling: T007 duplicated 'latest pin <= t' lookup (tenant_split.rs vs session_customers.rs) — dropped at re-score 68 — copies are identical today — future drift if one changes
+Ruling: T004 ≤600-char start text not capped for large customer lists — dropped at re-score 60 — ~20 customers needed to exceed; today's registry is far below — a long hint if the registry grows
+Ruling: start_text_inherits_branch_pin creates+removes a random tempdir under the real ~/Desktop/Work — accepted — start_text has no injectable root; adding one means editing billing.rs/git.rs — a stray dir if the test is killed mid-run
+Discovered: correction to the ≤600-char ruling — on the live registry (21 customers) with a real session id the start text is already 540 chars; 2–3 more customers break NFR — fold into a new task at converge
+Discovered: day page logs a React duplicate-key warning — web/app/[day]/page.tsx:174-175 give UnsortedList and ElsewhereList the same key={day} (pre-existing, untouched by this branch) — defer
+Ruling: T005 bare legacy worklog-hook binary gets '<path> session-hint' — dropped at re-score 78 — binary no longer built or shipped; a failing SessionStart command does not block the session — those installs get no start hint until re-installed
+Ruling: T005 no dedicated uninstall test for the SessionStart pair — dropped at re-score 20 — reviewer ran one and it passes via the generic worklog sweep — a future change to uninstall could regress unnoticed
+Ruling: CHK001 ticked --by user under the Owner's standing approval for this run — the real-Claude 'never asked' leg was not run (nested claude in another dir blocked by permissions) — see verify/CHK001.md
+Ruling: branch review B — worklog pin accepts a cwd outside ~/Desktop/Work (lenient folder) — dropped at re-score 60 — only reachable if Claude leaves /Work against its instruction — a stray pin row for a non-Work folder
+Ruling: branch review C — raw branch name echoed into the start text — dropped at re-score 20 — Claude Code already puts the branch name in context; branches are the Owner's own — a hostile branch name reaches Claude one more time
+Ruling: setup-grace reach-back (first pin within 10 min of session start covers the earlier minutes) loses to an existing text guess in lanes, and lifecycle rows are ignored for the Pinned check — chosen to fix branch-review A without changing pin_beats_text_guess/partially_pinned_block_is_not_pinned — a pre-pin prompt naming another customer keeps that customer
+Ruling: PurgeReport has no session_pins count and dry-run doesn't simulate it — dropped at re-score 75 — informational only — purge reports undercount pin deletions
+Ruling: start text can exceed 600 chars with a ~290+ char session id — dropped at re-score 68 — Claude Code sends 36-char UUIDs — an oversized hint for malformed hook input
+Ruling: per-block day reload in pinned_customer_for_block (verifier measured 84x on a 20-block day) — fixed with a no-pins early exit, not re-scored separately — measured receipt, cheap fix — pinned blocks still reload the day once each
+Ruling: a session event with no project_path misses the day-wide context and the block falls back to not-Pinned — accepted (minor) — false negative only, never a wrong customer — rare sessions outside Work/Projects roots
+Discovered: live re-run of CHK001 with real recorder rows showed fallback, not pinned, when the first prompt names the pinned customer (reach-back pin agreeing with the text guess was treated as a text match) — fixing now
+Ruling: Verified: written under the Owner's standing approval ("I approve of everything… tick --by user or whatever the flow command is"), not after a human read verify/ — PR stays draft until the Owner reviews it

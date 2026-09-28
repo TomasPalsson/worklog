@@ -23,6 +23,7 @@ const ORIGIN_LABELS: Record<SplitOrigin, string> = {
   clues: "auto",
   manual: "set by you",
   fallback: "guess",
+  pinned: "pinned",
 };
 
 /** The quiet, non-editing line: split % · origin tag · optional bar · Change. */

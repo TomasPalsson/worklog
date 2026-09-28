@@ -1,12 +1,16 @@
 //! The per-block customer split rules for multi-tenant infra folders (spec 005).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rusqlite::Connection;
 
 use crate::billing_registry::Registry;
+use crate::infer_lanes::is_lifecycle_row;
 use crate::models::Block;
+use crate::repo;
+use crate::session_customers::session_contexts;
+use crate::session_pins::{pins_for_sessions, resolve_event_customer};
 use crate::tenant_clues::clues_for_block;
 use crate::tenant_contract::{Clue, CustomerSlice, SplitOrigin, HOUSE_CUSTOMER};
 use crate::tenant_shares::{load_shares, slices_from_shares};
@@ -103,6 +107,85 @@ fn block_interval(block: &Block) -> (i64, i64) {
     (start, start + block.duration_seconds.max(0))
 }
 
+/// The single customer named by `block`'s events, via the SAME per-event
+/// rule as lanes ([`resolve_event_customer`], fed the SAME session
+/// context [`session_contexts`] computes for `session_customers::
+/// resolve_events` — a session spans several blocks whenever there's an
+/// idle gap, so its session_start/text_guess must come from the whole
+/// day's events, never just this block's own subset, or a block could go
+/// Pinned to a customer the lanes disagree with) — `None` unless EVERY
+/// non-lifecycle event that carries a session_id resolves via a pin
+/// (genuine or setup-race reach-back) and all of them agree on one
+/// customer. Lifecycle rows (`is_lifecycle_row` — SessionStart/Stop/
+/// SessionEnd bookkeeping) are ignored entirely: they carry no vote of
+/// their own. An event that instead resolves to its session's own text
+/// guess (or to nothing at all) means the pin doesn't actually govern
+/// that event, so the whole block bails out to `None` rather than
+/// inventing a minute onto the pinned customer's invoice line (FR-07,
+/// contract THE FIVE #2). Events with no session_id carry no pin and are
+/// ignored either way.
+fn pinned_customer_for_block(
+    conn: &Connection,
+    block: &Block,
+    folder: &str,
+    registry: &Registry,
+) -> Result<Option<String>> {
+    let events = repo::list_events_for_block(conn, block.id)?;
+    let mut session_ids: Vec<String> = events.iter().filter_map(|e| e.session_id.clone()).collect();
+    session_ids.sort();
+    session_ids.dedup();
+    if session_ids.is_empty() {
+        return Ok(None);
+    }
+
+    let pins = pins_for_sessions(conn, &session_ids)?;
+    if pins.is_empty() {
+        // No session in this block has ever been pinned, so no event in it
+        // can resolve via a pin (`resolve_event_customer` only returns
+        // `from_pin = true` off a `pin_covering` hit) — the block can never
+        // go Pinned. Skip the day-wide event load + `session_contexts`
+        // entirely; almost every block hits this path (see tenant_split.rs
+        // module docs / spec 008 perf finding).
+        return Ok(None);
+    }
+
+    // The lanes' own session context (session_start, text_guess), from
+    // the WHOLE day's events — never just this block's — so a session
+    // spanning multiple blocks is judged the same way here as it is by
+    // `session_customers::tag_sessions`.
+    let day = chrono::NaiveDate::parse_from_str(&block.day, "%Y-%m-%d")
+        .with_context(|| format!("parsing block.day {}", block.day))?;
+    let day_events = crate::infer::load_day_events(conn, day)?;
+    let contexts = session_contexts(&day_events, registry);
+
+    let mut customers: BTreeSet<String> = BTreeSet::new();
+    for event in &events {
+        let Some(session_id) = &event.session_id else {
+            continue;
+        };
+        if is_lifecycle_row(&event.source, Some(event.title.as_str())) {
+            continue;
+        }
+        let Ok(at) = chrono::DateTime::parse_from_rfc3339(&event.started_at) else {
+            continue;
+        };
+        let at = at.with_timezone(&chrono::Utc);
+        let Some((start, text_guess)) =
+            contexts.get(&(Some(folder.to_string()), session_id.clone()))
+        else {
+            return Ok(None);
+        };
+        match resolve_event_customer(&pins, session_id, at, *start, text_guess.as_deref()) {
+            (Some(customer), true) => {
+                customers.insert(customer);
+            }
+            _ => return Ok(None),
+        }
+    }
+
+    Ok((customers.len() == 1).then(|| customers.into_iter().next().unwrap()))
+}
+
 /// A non-House customer named in `text` — the summary clue of FR-09, where a
 /// customer named alongside `APRÓ` beats it. `None` when nothing non-House
 /// is unambiguously named; the caller then falls back to the folder's
@@ -120,11 +203,12 @@ fn summary_customer(text: &str, registry: &Registry) -> Option<String> {
     without_house.customer_in_text(text)
 }
 
-/// `block`'s customer slices: the owner's hand-set shares first, else the
-/// clue split, else (no timestamped clue) a single `Fallback` slice —
-/// `customer` from the block's own summary when it unambiguously names one,
-/// else `None` for the folder's normal resolution to fill in. `None`
-/// overall when `folder` isn't multi-tenant.
+/// `block`'s customer slices: the owner's hand-set shares first, else a
+/// single `Pinned` slice when the block's pinned sessions name exactly one
+/// customer, else the clue split, else (no timestamped clue) a single
+/// `Fallback` slice — `customer` from the block's own summary when it
+/// unambiguously names one, else `None` for the folder's normal resolution
+/// to fill in. `None` overall when `folder` isn't multi-tenant.
 pub fn tenant_slices_for_block(
     conn: &Connection,
     block: &Block,
@@ -143,6 +227,14 @@ pub fn tenant_slices_for_block(
 
     if let Some(shares) = load_shares(conn, &block.day, &block.started_at)? {
         return Ok(Some(slices_from_shares(start, end, &shares)));
+    }
+
+    if let Some(customer) = pinned_customer_for_block(conn, block, folder, registry)? {
+        return Ok(Some(vec![CustomerSlice {
+            customer: Some(customer),
+            intervals: vec![(start, end)],
+            origin: SplitOrigin::Pinned,
+        }]));
     }
 
     let tenants = tenant_customer_map(conn)?;

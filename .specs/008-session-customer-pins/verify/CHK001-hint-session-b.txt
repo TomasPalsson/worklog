@@ -1,0 +1,1 @@
+This session is for Sjúkra (pinned from branch fix/code-interpreter-ecr-pull-through). If you switch customer, run: worklog pin <name> --session chk-sess-b
