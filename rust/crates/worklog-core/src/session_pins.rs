@@ -98,14 +98,17 @@ pub fn pin_covering<'a>(
 ///
 /// A pin genuinely covering `at` (`from_at <= at`) always wins. A pin
 /// that only reaches `at` via [`pin_covering`]'s setup-race reach-back
-/// (its `from_at` is after `at`) instead loses to `text_guess` when one
-/// is available — the reach-back exists to cover setup-minute events
-/// that would otherwise have no signal at all, not to override a
-/// session's own established text guess for a genuine mid-session
-/// re-pin. Returns `(customer, from_pin)`: `from_pin` is `true` only when
-/// the returned customer came from a pin (genuine or reach-back), which
-/// is what a caller that only trusts pins (like the block-level Pinned
-/// origin) needs to require of every event.
+/// (its `from_at` is after `at`) instead loses to a `text_guess` that
+/// names a DIFFERENT customer — the reach-back exists to cover
+/// setup-minute events that would otherwise have no signal at all, not
+/// to override a session's own established text guess for a genuine
+/// mid-session re-pin. When the text guess agrees with the reach-back
+/// pin's customer, it's not a disagreement to defer to — the event
+/// counts as pin-derived. Returns `(customer, from_pin)`: `from_pin` is
+/// `true` only when the returned customer came from a pin (genuine,
+/// reach-back, or a reach-back confirmed by agreement with the text
+/// guess), which is what a caller that only trusts pins (like the
+/// block-level Pinned origin) needs to require of every event.
 pub fn resolve_event_customer(
     pins: &[SessionPin],
     session_id: &str,
@@ -116,8 +119,8 @@ pub fn resolve_event_customer(
     match pin_covering(pins, session_id, at, session_start) {
         Some(pin) if pin.from_at <= at => (Some(pin.customer.clone()), true),
         Some(pin) => match text_guess {
-            Some(guess) => (Some(guess.to_string()), false),
-            None => (Some(pin.customer.clone()), true),
+            Some(guess) if guess != pin.customer => (Some(guess.to_string()), false),
+            _ => (Some(pin.customer.clone()), true),
         },
         None => (text_guess.map(str::to_string), false),
     }

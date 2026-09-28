@@ -521,6 +521,87 @@ fn real_session_start_is_pinned() {
     );
 }
 
+// Bug fix (live end-to-end run): a prompt naming the SAME customer the
+// session later pins to must still count as pin-derived.
+// `resolve_event_customer`'s reach-back-vs-text-guess rule exists for a
+// genuine disagreement (see `text_guess_disagreeing_with_pin_blocks_
+// pinned_slice`, Globex vs Acme), not for a text guess that already
+// agrees with the pin — SessionStart at t0, a prompt at t0+30ms naming
+// Sjúkra, the pin (Sjúkra) landing 60s after t0, tool events after.
+#[test]
+fn prompt_naming_the_pinned_customer_is_pinned() {
+    let conn = open_memory().unwrap();
+    let reg = registry(&["Sjúkra"], &[multi_tenant_folder("vitinn-infra")]);
+
+    let t0 = at(2026, 1, 1, 9, 0, 0);
+    session_pins::pin(
+        &conn,
+        &reg,
+        "sess-1",
+        Path::new(&work("vitinn-infra")),
+        "Sjúkra",
+        t0 + chrono::Duration::seconds(60),
+        None,
+    )
+    .unwrap();
+
+    let start = t0;
+    let end = at(2026, 1, 1, 10, 0, 0);
+    let block_id = seed_block(&conn, &start.to_rfc3339(), &end.to_rfc3339(), 3600);
+    seed_titled_event(
+        &conn,
+        block_id,
+        "hook-1",
+        "sess-1",
+        &t0.to_rfc3339(),
+        "SessionStart",
+    );
+    seed_titled_event(
+        &conn,
+        block_id,
+        "hook-2",
+        "sess-1",
+        &(t0 + chrono::Duration::milliseconds(30)).to_rfc3339(),
+        "UserPromptSubmit — work on the Sjúkra config",
+    );
+    seed_titled_event(
+        &conn,
+        block_id,
+        "hook-3",
+        "sess-1",
+        &(t0 + chrono::Duration::minutes(2)).to_rfc3339(),
+        "PostToolUse",
+    );
+
+    let block = Block {
+        id: block_id,
+        day: "2026-01-01".to_string(),
+        jira_issue: None,
+        started_at: start.to_rfc3339(),
+        ended_at: end.to_rfc3339(),
+        duration_seconds: 3600,
+        description: None,
+        estimated_by: None,
+        flagged: false,
+        tempo_worklog_id: None,
+        is_personal: false,
+        dirty: false,
+        exported_at: None,
+    };
+
+    let slices = tenant_slices_for_block(&conn, &block, "vitinn-infra", &reg)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        slices,
+        vec![CustomerSlice {
+            customer: Some("Sjúkra".to_string()),
+            intervals: vec![(start.timestamp(), end.timestamp())],
+            origin: SplitOrigin::Pinned,
+        }]
+    );
+}
+
 // Finding P2: an event that resolves to its session's own text guess
 // (not the pin) must block the Pinned origin — a block can't go Pinned
 // to a customer the lanes would tag differently. A pre-pin event titled
