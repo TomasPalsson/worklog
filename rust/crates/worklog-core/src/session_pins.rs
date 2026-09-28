@@ -136,19 +136,37 @@ pub fn start_text(
         }
     }
 
-    let customers = registry
+    let names = registry
         .customers
         .iter()
         .map(|c| c.name.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-    Ok(Some(format!(
-        "Shared repo — work out this session's customer from the repo, the prompt, and \
-         the files you touch. When it's clear, pin it without asking: worklog pin <name> \
-         --session {session_id}. When it's unclear and the Owner is present, ask once. \
-         When nobody is present (a background or unattended run), pin nothing. Known \
-         customers: {customers}."
-    )))
+        .collect::<Vec<_>>();
+    let render = |shown: &[&str]| -> String {
+        let more = names.len() - shown.len();
+        let list = shown.join(", ");
+        let list = match (list.is_empty(), more) {
+            (_, 0) => list,
+            (true, more) => format!("… (+{more} more; a wrong name lists them all)"),
+            (false, more) => format!("{list}, … (+{more} more; a wrong name lists them all)"),
+        };
+        format!(
+            "Shared repo — work out this session's customer from the repo, the prompt, and \
+             the files you touch. When it's clear, pin it without asking: worklog pin <name> \
+             --session {session_id}. When it's unclear and the Owner is present, ask once. \
+             When nobody is present (a background or unattended run), pin nothing. Known \
+             customers: {list}."
+        )
+    };
+    // ponytail: shrink-by-one is O(n^2) in customer count, fine for the
+    // tens of customers a real registry holds; revisit with a binary
+    // search if that ever grows into the hundreds.
+    let mut shown = names.len();
+    let mut text = render(&names[..shown]);
+    while text.chars().count() > 600 && shown > 0 {
+        shown -= 1;
+        text = render(&names[..shown]);
+    }
+    Ok(Some(text))
 }
 
 /// Pin `session_id` to `name` from `at` on.

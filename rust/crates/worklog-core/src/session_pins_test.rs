@@ -431,11 +431,70 @@ fn start_text_prints_the_pin_instruction_in_a_multi_tenant_folder() {
         "start text must be at most 600 chars, was {}",
         text.chars().count()
     );
+    assert!(
+        !text.contains("more;"),
+        "a small registry must list every name, not a truncation marker: {text}"
+    );
 
     // No branch pin existed, so nothing gets stored for this session.
     assert!(pins_for_sessions(&conn, &["sess-9".to_string()])
         .unwrap()
         .is_empty());
+}
+
+fn realistic_customers(n: usize) -> Vec<Customer> {
+    let bases = [
+        "Sjúkratryggingar",
+        "Rafmagnsveitan",
+        "Verkfræðistofan",
+        "Húsasmiðjan",
+        "Öryggismiðstöðin",
+        "Landsbankinn",
+        "Kaupfélagið",
+        "Þjónustumiðstöð",
+    ];
+    (0..n)
+        .map(|i| Customer {
+            id: None,
+            name: format!("{}-{i:02}", bases[i % bases.len()]),
+            aliases: vec![],
+        })
+        .collect()
+}
+
+#[test]
+fn start_text_stays_within_600_chars() {
+    let conn = db::open_memory().unwrap();
+    let mut reg = Registry {
+        customers: realistic_customers(40),
+        folders: vec![],
+    };
+    reg.folders.push(multi_tenant_folder("many-tenant"));
+    let cwd = work("many-tenant");
+    let session_id = "550e8400-e29b-41d4-a716-446655440000";
+    assert_eq!(
+        session_id.chars().count(),
+        36,
+        "test session id must be 36 chars"
+    );
+
+    let text = start_text(&conn, &reg, session_id, Path::new(&cwd), at(9, 0))
+        .unwrap()
+        .expect("a multi-tenant folder must print the pin instruction");
+
+    assert!(
+        text.chars().count() <= 600,
+        "start text must be at most 600 chars, was {}",
+        text.chars().count()
+    );
+    assert!(
+        text.contains(&format!("worklog pin <name> --session {session_id}")),
+        "instruction must carry the exact pin command: {text}"
+    );
+    assert!(
+        text.contains("more; a wrong name lists them all"),
+        "a 40-customer list can't all fit; must point at the full list: {text}"
+    );
 }
 
 #[test]
