@@ -1,4 +1,5 @@
 Approved: 2026-09-27 by user
+Verified: 2026-09-28 by user (standing approval in the session goal; verify/ not yet read by a human — PR kept draft)
 Base: 7ef08c1
 # Tasks — Session customer pins
 Spec: spec.md · Design: design.md · Base: 83ceaff · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml`

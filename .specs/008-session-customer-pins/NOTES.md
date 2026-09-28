@@ -18,3 +18,4 @@ Ruling: start text can exceed 600 chars with a ~290+ char session id — dropped
 Ruling: per-block day reload in pinned_customer_for_block (verifier measured 84x on a 20-block day) — fixed with a no-pins early exit, not re-scored separately — measured receipt, cheap fix — pinned blocks still reload the day once each
 Ruling: a session event with no project_path misses the day-wide context and the block falls back to not-Pinned — accepted (minor) — false negative only, never a wrong customer — rare sessions outside Work/Projects roots
 Discovered: live re-run of CHK001 with real recorder rows showed fallback, not pinned, when the first prompt names the pinned customer (reach-back pin agreeing with the text guess was treated as a text match) — fixing now
+Ruling: Verified: written under the Owner's standing approval ("I approve of everything… tick --by user or whatever the flow command is"), not after a human read verify/ — PR stays draft until the Owner reviews it
