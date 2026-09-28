@@ -139,6 +139,15 @@ fn pinned_customer_for_block(
     }
 
     let pins = pins_for_sessions(conn, &session_ids)?;
+    if pins.is_empty() {
+        // No session in this block has ever been pinned, so no event in it
+        // can resolve via a pin (`resolve_event_customer` only returns
+        // `from_pin = true` off a `pin_covering` hit) — the block can never
+        // go Pinned. Skip the day-wide event load + `session_contexts`
+        // entirely; almost every block hits this path (see tenant_split.rs
+        // module docs / spec 008 perf finding).
+        return Ok(None);
+    }
 
     // The lanes' own session context (session_start, text_guess), from
     // the WHOLE day's events — never just this block's — so a session

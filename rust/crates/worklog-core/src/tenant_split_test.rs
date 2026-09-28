@@ -587,6 +587,58 @@ fn text_guess_disagreeing_with_pin_blocks_pinned_slice() {
     assert!(slices.iter().all(|s| s.origin != SplitOrigin::Pinned));
 }
 
+// Perf finding: almost every block has no pinned session at all, and
+// `pinned_customer_for_block` must never pay for the day-wide event load
+// (`infer::load_day_events` + `session_contexts`) in that case. Proven
+// without a timing measurement or a test-only hook: `block.day` is set to
+// a string `chrono::NaiveDate::parse_from_str` can't parse, which the
+// day-wide load path hits unconditionally. If the fast pins-empty return
+// were ever removed (or moved after the day load), this block would
+// error out instead of falling back cleanly.
+#[test]
+fn unpinned_block_skips_the_day_load() {
+    let conn = open_memory().unwrap();
+    let reg = registry(&["Sjúkra"], &[multi_tenant_folder("vitinn-infra")]);
+
+    let start = at(2026, 1, 1, 9, 0, 0);
+    let end = at(2026, 1, 1, 10, 0, 0);
+    let block_id = seed_block(&conn, &start.to_rfc3339(), &end.to_rfc3339(), 3600);
+    // sess-1 carries no pin anywhere in the table.
+    seed_event(&conn, block_id, "e1", "sess-1", &start.to_rfc3339());
+
+    let block = Block {
+        id: block_id,
+        day: "not-a-date".to_string(),
+        jira_issue: None,
+        started_at: start.to_rfc3339(),
+        ended_at: end.to_rfc3339(),
+        duration_seconds: 3600,
+        description: None,
+        estimated_by: None,
+        flagged: false,
+        tempo_worklog_id: None,
+        is_personal: false,
+        dirty: false,
+        exported_at: None,
+    };
+
+    let slices = tenant_slices_for_block(&conn, &block, "vitinn-infra", &reg)
+        .expect(
+            "must not error — with no pins on any of the block's sessions, \
+             pinned_customer_for_block must return Ok(None) before ever \
+             parsing block.day for the day-wide load",
+        )
+        .unwrap();
+    assert_eq!(
+        slices,
+        vec![CustomerSlice {
+            customer: None,
+            intervals: vec![(start.timestamp(), end.timestamp())],
+            origin: SplitOrigin::Fallback,
+        }]
+    );
+}
+
 // Finding P2 (round 2): a session spans several blocks whenever there's
 // an idle gap. `pinned_customer_for_block` must judge a block's events
 // against the SAME session context (session_start, text_guess) the
