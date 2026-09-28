@@ -1,0 +1,469 @@
+ce75728 fix(worklog-core): bound stale-pin purge by cutoff, unify pin-vs-lane resolution
+
+ rust/crates/worklog-core/src/purge.rs             | 28 +++++++++-
+ rust/crates/worklog-core/src/session_customers.rs | 25 +++------
+ rust/crates/worklog-core/src/session_pins.rs      | 33 +++++++++++
+ rust/crates/worklog-core/src/tenant_split.rs      | 67 +++++++++++++++--------
+ rust/crates/worklog-core/src/tenant_split_test.rs | 66 ++++++++++++++++++++++
+ 5 files changed, 176 insertions(+), 43 deletions(-)
+
+diff --git a/rust/crates/worklog-core/src/purge.rs b/rust/crates/worklog-core/src/purge.rs
+index f63eb90..41b3c18 100644
+--- a/rust/crates/worklog-core/src/purge.rs
++++ b/rust/crates/worklog-core/src/purge.rs
+@@ -270,25 +270,30 @@ pub fn purge_rows(conn: &Connection, cutoff: NaiveDate, dry_run: bool) -> Result
+                AND datetime(started_at) < datetime(?1)
+                AND id NOT IN (SELECT event_id FROM block_events)",
+             params![instant_iso, date_bound_iso],
+         )
+         .context("deleting orphan events past cutoff")? as i64;
+     // A branch name gets reused months later and would otherwise silently
+     // inherit whatever customer it was pinned to last time (`pin_for_branch`
+     // has no age bound of its own) — a pin lives exactly as long as its
+     // session's events do. Runs after the events delete just above so this
+     // sees the post-delete state; an unbilled block still keeps its events
+-    // (and so keeps its pin) until IT is purged.
++    // (and so keeps its pin) until IT is purged. `from_at` is bound by the
++    // same cutoff as every sibling delete in this pass — without it, a
++    // fresh pin whose session has no event row yet (written moments before
++    // the recorder's first event, or a recorder that then failed) would be
++    // deleted on ANY purge, however recent its cutoff.
+     tx.execute(
+         "DELETE FROM session_pins
+-         WHERE session_id NOT IN (SELECT session_id FROM events WHERE session_id IS NOT NULL)",
+-        [],
++         WHERE from_at < ?2 AND datetime(from_at) < datetime(?1)
++           AND session_id NOT IN (SELECT session_id FROM events WHERE session_id IS NOT NULL)",
++        params![instant_iso, date_bound_iso],
+     )
+     .context("deleting orphaned session pins past cutoff")?;
+     // sessions.started_at is UTC, like events — compare against the same
+     // instant. Nothing in worklog has ever deleted a sessions row before
+     // this: `reap_stale` only ever sets `ended_at`.
+     let sessions_deleted = tx
+         .execute(
+             "DELETE FROM sessions
+              WHERE started_at < ?2 AND datetime(started_at) < datetime(?1)",
+             params![instant_iso, date_bound_iso],
+@@ -939,20 +944,37 @@ mod tests {
+ 
+         let report = purge_rows(&conn, cutoff, false).unwrap();
+         assert_eq!(report.events_deleted, 1);
+         assert_eq!(count(&conn, "session_pins"), 1);
+         let remaining: String = conn
+             .query_row("SELECT session_id FROM session_pins", [], |r| r.get(0))
+             .unwrap();
+         assert_eq!(remaining, "sess-new");
+     }
+ 
++    /// Finding P1: a pin whose session has no event row YET (written
++    /// moments before the recorder's first event, or a recorder that then
++    /// failed) must not be a purge target on ANY cutoff — the delete needs
++    /// the same `from_at` age bound every sibling delete in this pass
++    /// already has, else a brand-new pin is wiped by a purge whose cutoff
++    /// is years in the past.
++    #[test]
++    fn fresh_session_pin_without_events_survives_an_old_cutoff() {
++        let conn = open_memory().unwrap();
++        let cutoff = date("2026-06-20");
++        insert_session_pin(&conn, "sess-fresh", "2026-07-01T09:00:00+00:00");
++
++        let report = purge_rows(&conn, cutoff, false).unwrap();
++        assert_eq!(report.events_deleted, 0);
++        assert_eq!(count(&conn, "session_pins"), 1);
++    }
++
+     /// B14: an `external = 1` ticket whose only referencing block is older
+     /// than the cutoff is deleted once that block is gone.
+     #[test]
+     fn b14_orphaned_external_ticket_deleted() {
+         let conn = open_memory().unwrap();
+         let cutoff = date("2026-06-20");
+         insert_ticket(&conn, "EXT-1", 1);
+         insert_block_with_ticket(&conn, "2026-02-10", "EXT-1");
+ 
+         let report = purge_rows(&conn, cutoff, false).unwrap();
+diff --git a/rust/crates/worklog-core/src/session_customers.rs b/rust/crates/worklog-core/src/session_customers.rs
+index 141f83f..fa0a9d4 100644
+--- a/rust/crates/worklog-core/src/session_customers.rs
++++ b/rust/crates/worklog-core/src/session_customers.rs
+@@ -10,33 +10,27 @@
+ //! whose `from_at` is the latest one at or before its own timestamp, so a
+ //! mid-session pin switch moves only the events from that time on; events
+ //! before the earliest applicable pin (or in an unpinned session) fall
+ //! back to the session's text guess.
+ 
+ use std::collections::{BTreeMap, BTreeSet};
+ 
+ use crate::billing_registry::Registry;
+ use crate::infer::InferEvent;
+ use crate::infer_lanes::lane_folder;
+-use crate::session_pins::{pin_covering, SessionPin};
++use crate::session_pins::{resolve_event_customer, SessionPin};
+ 
+-/// Per-event resolved customer: the pin covering the event's timestamp, or
+-/// the session's text guess when no pin covers it yet.
+-///
+-/// A pin genuinely covering the event (`from_at <= ts`, [`pin_covering`]'s
+-/// ordinary rule) always wins over the text guess, same as before. A pin
+-/// that only reaches the event via [`pin_covering`]'s setup-race
+-/// reach-back (its `from_at` is after the event's own timestamp) instead
+-/// LOSES to an available text guess — the reach-back exists to cover
+-/// setup-minute events that would otherwise have no signal at all, not to
+-/// override a session's own established text guess for a genuine
+-/// mid-session re-pin (see `pin_beats_text_guess`).
++/// Per-event resolved customer, via the shared
++/// [`resolve_event_customer`] rule (pin beats text guess; reach-back
++/// loses to an existing text guess) — kept in one place with
++/// `tenant_split::pinned_customer_for_block` so lanes and the Pinned
++/// block slice can't disagree about the same event.
+ fn resolve_events(
+     events: &[InferEvent],
+     registry: &Registry,
+     sessions: &BTreeMap<(Option<String>, String), Vec<usize>>,
+     pins: &[SessionPin],
+ ) -> BTreeMap<usize, String> {
+     let mut resolved: BTreeMap<usize, String> = BTreeMap::new();
+     for (key, idxs) in sessions {
+         let (_, session_id) = key;
+         let text = idxs
+@@ -46,25 +40,22 @@ fn resolve_events(
+             .collect::<Vec<_>>()
+             .join("\n");
+         let text_guess = registry.customer_in_text(&text);
+         let session_start = idxs
+             .iter()
+             .map(|&i| events[i].ts)
+             .min()
+             .expect("idxs is never empty — sessions only holds non-empty groups");
+         for &i in idxs {
+             let ts = events[i].ts;
+-            let customer = match pin_covering(pins, session_id, ts, session_start) {
+-                Some(pin) if pin.from_at <= ts => Some(pin.customer.clone()),
+-                Some(pin) => text_guess.clone().or_else(|| Some(pin.customer.clone())),
+-                None => text_guess.clone(),
+-            };
++            let (customer, _from_pin) =
++                resolve_event_customer(pins, session_id, ts, session_start, text_guess.as_deref());
+             if let Some(customer) = customer {
+                 resolved.insert(i, customer);
+             }
+         }
+     }
+     resolved
+ }
+ 
+ pub(crate) fn tag_sessions(events: &mut [InferEvent], registry: &Registry, pins: &[SessionPin]) {
+     let mut sessions: BTreeMap<(Option<String>, String), Vec<usize>> = BTreeMap::new();
+diff --git a/rust/crates/worklog-core/src/session_pins.rs b/rust/crates/worklog-core/src/session_pins.rs
+index 14c7e9e..14b4c6c 100644
+--- a/rust/crates/worklog-core/src/session_pins.rs
++++ b/rust/crates/worklog-core/src/session_pins.rs
+@@ -83,20 +83,53 @@ pub fn pin_covering<'a>(
+             earliest = Some(pin);
+         }
+     }
+     if latest.is_some() {
+         return latest;
+     }
+     let earliest = earliest?;
+     (earliest.from_at - session_start <= SETUP_GRACE).then_some(earliest)
+ }
+ 
++/// The single per-event customer resolution rule shared by
++/// `session_customers::resolve_events` (lanes) and
++/// `tenant_split::pinned_customer_for_block` (the Pinned block slice) —
++/// kept in one place so the two can't drift apart, as they once did (a
++/// block could go Pinned to a customer the lanes disagreed with).
++///
++/// A pin genuinely covering `at` (`from_at <= at`) always wins. A pin
++/// that only reaches `at` via [`pin_covering`]'s setup-race reach-back
++/// (its `from_at` is after `at`) instead loses to `text_guess` when one
++/// is available — the reach-back exists to cover setup-minute events
++/// that would otherwise have no signal at all, not to override a
++/// session's own established text guess for a genuine mid-session
++/// re-pin. Returns `(customer, from_pin)`: `from_pin` is `true` only when
++/// the returned customer came from a pin (genuine or reach-back), which
++/// is what a caller that only trusts pins (like the block-level Pinned
++/// origin) needs to require of every event.
++pub fn resolve_event_customer(
++    pins: &[SessionPin],
++    session_id: &str,
++    at: DateTime<Utc>,
++    session_start: DateTime<Utc>,
++    text_guess: Option<&str>,
++) -> (Option<String>, bool) {
++    match pin_covering(pins, session_id, at, session_start) {
++        Some(pin) if pin.from_at <= at => (Some(pin.customer.clone()), true),
++        Some(pin) => match text_guess {
++            Some(guess) => (Some(guess.to_string()), false),
++            None => (Some(pin.customer.clone()), true),
++        },
++        None => (text_guess.map(str::to_string), false),
++    }
++}
++
+ /// The `worklog session-hint` start-of-session text (design.md §4,
+ /// contract T004), or `None` when nothing should be printed.
+ ///
+ /// Gated on `cwd` actually living under `~/Desktop/Work` (FR-01, §2.2) —
+ /// `billing::billable_work_folder` is the strict form of the lookup;
+ /// unlike `work_folder_for_path` it refuses to fall back to a bare
+ /// basename for paths outside the work prefix, so a folder name outside
+ /// `~/Desktop/Work` can never coincidentally match a registered
+ /// multi-tenant folder — and on top of the multi_tenant check.
+ pub fn start_text(
+diff --git a/rust/crates/worklog-core/src/tenant_split.rs b/rust/crates/worklog-core/src/tenant_split.rs
+index 0539bf2..abf708f 100644
+--- a/rust/crates/worklog-core/src/tenant_split.rs
++++ b/rust/crates/worklog-core/src/tenant_split.rs
+@@ -2,21 +2,21 @@
+ 
+ use std::collections::{BTreeMap, BTreeSet};
+ 
+ use anyhow::Result;
+ use rusqlite::Connection;
+ 
+ use crate::billing_registry::Registry;
+ use crate::infer_lanes::is_lifecycle_row;
+ use crate::models::Block;
+ use crate::repo;
+-use crate::session_pins::{pin_covering, pins_for_sessions};
++use crate::session_pins::{pins_for_sessions, resolve_event_customer};
+ use crate::tenant_clues::clues_for_block;
+ use crate::tenant_contract::{Clue, CustomerSlice, SplitOrigin, HOUSE_CUSTOMER};
+ use crate::tenant_shares::{load_shares, slices_from_shares};
+ use crate::tenants::tenant_customer_map;
+ 
+ /// Split `[start, end)` between customers by the rules in order:
+ /// drop House (`APRÓ`) clues when any other customer has a clue (FR-07);
+ /// within each minute keep only the strongest remaining clue (FR-08); give
+ /// every second to its nearest clue, an exact tie going to the earlier one
+ /// (FR-06). `None` when `clues` has no timestamped clue left to split on.
+@@ -99,80 +99,101 @@ fn merge_adjacent(intervals: Vec<(i64, i64)>) -> Vec<(i64, i64)> {
+ /// `block`'s wall-clock interval as epoch seconds. Mirrors (privately)
+ /// `billing::block_interval` — duration, not `ended_at`, is the canonical
+ /// logged time.
+ fn block_interval(block: &Block) -> (i64, i64) {
+     let start = chrono::DateTime::parse_from_rfc3339(&block.started_at)
+         .map(|d| d.timestamp())
+         .unwrap_or(0);
+     (start, start + block.duration_seconds.max(0))
+ }
+ 
+-/// The single customer named by `block`'s events whose session carries a
+-/// pin covering their timestamp ([`pin_covering`], mirroring
+-/// `session_customers::tag_sessions`) — `None` unless EVERY non-lifecycle
+-/// event that carries a session_id is covered by a pin and all of them
+-/// agree on one customer. Lifecycle rows (`is_lifecycle_row` —
+-/// SessionStart/Stop/SessionEnd bookkeeping) are ignored entirely: they
+-/// carry no vote of their own, but the SessionStart row's timestamp is
+-/// still the session's first event for [`pin_covering`]'s setup-race
+-/// reach-back. An event before its session's earliest pin, and outside
+-/// that reach-back window, is "uncovered" and makes the whole block bail
+-/// out to `None`, else a minute logged before the pin took effect would
+-/// be invented onto the pinned customer's invoice line (FR-07, contract
+-/// THE FIVE #2). Events with no session_id carry no pin and are ignored
+-/// either way.
+-fn pinned_customer_for_block(conn: &Connection, block: &Block) -> Result<Option<String>> {
++/// The single customer named by `block`'s events, via the SAME per-event
++/// rule as lanes ([`resolve_event_customer`], shared with
++/// `session_customers::resolve_events` so a block can never go Pinned to
++/// a customer the lanes disagree with) — `None` unless EVERY
++/// non-lifecycle event that carries a session_id resolves via a pin
++/// (genuine or setup-race reach-back) and all of them agree on one
++/// customer. Lifecycle rows (`is_lifecycle_row` — SessionStart/Stop/
++/// SessionEnd bookkeeping) are ignored entirely: they carry no vote of
++/// their own, but the SessionStart row's timestamp is still the
++/// session's first event for the reach-back. An event that instead
++/// resolves to its session's own text guess (or to nothing at all) means
++/// the pin doesn't actually govern that event, so the whole block bails
++/// out to `None` rather than inventing a minute onto the pinned
++/// customer's invoice line (FR-07, contract THE FIVE #2). Events with no
++/// session_id carry no pin and are ignored either way.
++fn pinned_customer_for_block(
++    conn: &Connection,
++    block: &Block,
++    registry: &Registry,
++) -> Result<Option<String>> {
+     let events = repo::list_events_for_block(conn, block.id)?;
+     let mut session_ids: Vec<String> = events.iter().filter_map(|e| e.session_id.clone()).collect();
+     session_ids.sort();
+     session_ids.dedup();
+     if session_ids.is_empty() {
+         return Ok(None);
+     }
+ 
+     let pins = pins_for_sessions(conn, &session_ids)?;
+ 
+-    // The session's first event (SessionStart included) anchors
+-    // `pin_covering`'s setup-race reach-back.
++    // Per session: the first event (SessionStart included) anchors the
++    // setup-race reach-back; the joined text of its non-lifecycle events
++    // is its text guess — mirrors `session_customers::resolve_events`,
++    // scoped to this block's own events since that's all we have here.
+     let mut session_start: BTreeMap<&str, chrono::DateTime<chrono::Utc>> = BTreeMap::new();
++    let mut session_text: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+     for event in &events {
+         let Some(session_id) = &event.session_id else {
+             continue;
+         };
+         let Ok(at) = chrono::DateTime::parse_from_rfc3339(&event.started_at) else {
+             continue;
+         };
+         let at = at.with_timezone(&chrono::Utc);
+         session_start
+             .entry(session_id.as_str())
+             .and_modify(|t| *t = (*t).min(at))
+             .or_insert(at);
++        if !is_lifecycle_row(&event.source, Some(event.title.as_str())) {
++            let parts = session_text.entry(session_id.as_str()).or_default();
++            parts.push(&event.title);
++            if let Some(jira) = &event.jira_issue {
++                parts.push(jira.as_str());
++            }
++        }
+     }
++    let text_guess_for = |session_id: &str| -> Option<String> {
++        session_text
++            .get(session_id)
++            .and_then(|parts| registry.customer_in_text(&parts.join("\n")))
++    };
+ 
+     let mut customers: BTreeSet<String> = BTreeSet::new();
+     for event in &events {
+         let Some(session_id) = &event.session_id else {
+             continue;
+         };
+         if is_lifecycle_row(&event.source, Some(event.title.as_str())) {
+             continue;
+         }
+         let Ok(at) = chrono::DateTime::parse_from_rfc3339(&event.started_at) else {
+             continue;
+         };
+         let at = at.with_timezone(&chrono::Utc);
+         let start = session_start[session_id.as_str()];
+-        match pin_covering(&pins, session_id, at, start) {
+-            Some(pin) => {
+-                customers.insert(pin.customer.clone());
++        let text_guess = text_guess_for(session_id);
++        match resolve_event_customer(&pins, session_id, at, start, text_guess.as_deref()) {
++            (Some(customer), true) => {
++                customers.insert(customer);
+             }
+-            None => return Ok(None),
++            _ => return Ok(None),
+         }
+     }
+ 
+     Ok((customers.len() == 1).then(|| customers.into_iter().next().unwrap()))
+ }
+ 
+ /// A non-House customer named in `text` — the summary clue of FR-09, where a
+ /// customer named alongside `APRÓ` beats it. `None` when nothing non-House
+ /// is unambiguously named; the caller then falls back to the folder's
+ /// normal (pin/alias) resolution.
+@@ -208,21 +229,21 @@ pub fn tenant_slices_for_block(
+     if !multi_tenant {
+         return Ok(None);
+     }
+ 
+     let (start, end) = block_interval(block);
+ 
+     if let Some(shares) = load_shares(conn, &block.day, &block.started_at)? {
+         return Ok(Some(slices_from_shares(start, end, &shares)));
+     }
+ 
+-    if let Some(customer) = pinned_customer_for_block(conn, block)? {
++    if let Some(customer) = pinned_customer_for_block(conn, block, registry)? {
+         return Ok(Some(vec![CustomerSlice {
+             customer: Some(customer),
+             intervals: vec![(start, end)],
+             origin: SplitOrigin::Pinned,
+         }]));
+     }
+ 
+     let tenants = tenant_customer_map(conn)?;
+     let clues = clues_for_block(conn, block.id, folder, &tenants, registry)?;
+     if let Some(slices) = split_block(start, end, &clues) {
+diff --git a/rust/crates/worklog-core/src/tenant_split_test.rs b/rust/crates/worklog-core/src/tenant_split_test.rs
+index 5190d7c..cebe7ca 100644
+--- a/rust/crates/worklog-core/src/tenant_split_test.rs
++++ b/rust/crates/worklog-core/src/tenant_split_test.rs
+@@ -507,10 +507,76 @@ fn real_session_start_is_pinned() {
+         .unwrap();
+     assert_eq!(
+         slices,
+         vec![CustomerSlice {
+             customer: Some("Sjúkra".to_string()),
+             intervals: vec![(start.timestamp(), end.timestamp())],
+             origin: SplitOrigin::Pinned,
+         }]
+     );
+ }
++
++// Finding P2: an event that resolves to its session's own text guess
++// (not the pin) must block the Pinned origin — a block can't go Pinned
++// to a customer the lanes would tag differently. A pre-pin event titled
++// "Globex ticket work" (Globex a registered customer) names Globex via
++// text; the setup-race reach-back must lose to that text guess exactly
++// like `session_customers::resolve_events` does, so a pin to Acme 5
++// minutes later must NOT turn this into a Pinned-to-Acme block.
++#[test]
++fn text_guess_disagreeing_with_pin_blocks_pinned_slice() {
++    let conn = open_memory().unwrap();
++    let reg = registry(&["Globex", "Acme"], &[multi_tenant_folder("vitinn-infra")]);
++
++    let t0 = at(2026, 1, 1, 9, 0, 0);
++    session_pins::pin(
++        &conn,
++        &reg,
++        "sess-1",
++        Path::new(&work("vitinn-infra")),
++        "Acme",
++        t0 + chrono::Duration::minutes(5),
++        None,
++    )
++    .unwrap();
++
++    let start = t0;
++    let end = at(2026, 1, 1, 10, 0, 0);
++    let block_id = seed_block(&conn, &start.to_rfc3339(), &end.to_rfc3339(), 3600);
++    seed_titled_event(
++        &conn,
++        block_id,
++        "hook-1",
++        "sess-1",
++        &t0.to_rfc3339(),
++        "Globex ticket work",
++    );
++    seed_titled_event(
++        &conn,
++        block_id,
++        "hook-2",
++        "sess-1",
++        &(t0 + chrono::Duration::minutes(10)).to_rfc3339(),
++        "PostToolUse",
++    );
++
++    let block = Block {
++        id: block_id,
++        day: "2026-01-01".to_string(),
++        jira_issue: None,
++        started_at: start.to_rfc3339(),
++        ended_at: end.to_rfc3339(),
++        duration_seconds: 3600,
++        description: None,
++        estimated_by: None,
++        flagged: false,
++        tempo_worklog_id: None,
++        is_personal: false,
++        dirty: false,
++        exported_at: None,
++    };
++
++    let slices = tenant_slices_for_block(&conn, &block, "vitinn-infra", &reg)
++        .unwrap()
++        .unwrap();
++    assert!(slices.iter().all(|s| s.origin != SplitOrigin::Pinned));
++}
