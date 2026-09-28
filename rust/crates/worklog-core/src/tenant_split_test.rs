@@ -72,7 +72,18 @@ fn seed_event(
     session_id: &str,
     started_at: &str,
 ) {
-    let mut ev = Event::minimal("claude", source_id, started_at, "work");
+    seed_titled_event(conn, block_id, source_id, session_id, started_at, "work");
+}
+
+fn seed_titled_event(
+    conn: &Connection,
+    block_id: i64,
+    source_id: &str,
+    session_id: &str,
+    started_at: &str,
+    title: &str,
+) {
+    let mut ev = Event::minimal("claude", source_id, started_at, title);
     ev.session_id = Some(session_id.to_string());
     let event_id = crate::repo::upsert_event(conn, &ev).unwrap();
     conn.execute(
@@ -414,4 +425,92 @@ fn partially_pinned_block_is_not_pinned() {
         .unwrap()
         .unwrap();
     assert!(slices.iter().all(|s| s.origin != SplitOrigin::Pinned));
+}
+
+// Finding A: a REAL session always records a SessionStart hook row (and
+// usually the first prompt) before Claude gets around to running `worklog
+// pin` — the race that made Pinned origin never fire on real data.
+// SessionStart at t0, first prompt at t0+5s, pin at t0+60s, tool events
+// after: the setup-race reach-back (session_pins::SETUP_GRACE) covers the
+// SessionStart/prompt gap, so the whole block is one Pinned slice.
+#[test]
+fn real_session_start_is_pinned() {
+    let conn = open_memory().unwrap();
+    let reg = registry(&["Sjúkra"], &[multi_tenant_folder("vitinn-infra")]);
+
+    let t0 = at(2026, 1, 1, 9, 0, 0);
+    session_pins::pin(
+        &conn,
+        &reg,
+        "sess-1",
+        Path::new(&work("vitinn-infra")),
+        "Sjúkra",
+        t0 + chrono::Duration::seconds(60),
+        None,
+    )
+    .unwrap();
+
+    let start = t0;
+    let end = at(2026, 1, 1, 10, 0, 0);
+    let block_id = seed_block(&conn, &start.to_rfc3339(), &end.to_rfc3339(), 3600);
+    seed_titled_event(
+        &conn,
+        block_id,
+        "hook-1",
+        "sess-1",
+        &t0.to_rfc3339(),
+        "SessionStart",
+    );
+    seed_titled_event(
+        &conn,
+        block_id,
+        "hook-2",
+        "sess-1",
+        &(t0 + chrono::Duration::seconds(5)).to_rfc3339(),
+        "UserPromptSubmit",
+    );
+    seed_titled_event(
+        &conn,
+        block_id,
+        "hook-3",
+        "sess-1",
+        &(t0 + chrono::Duration::seconds(120)).to_rfc3339(),
+        "PostToolUse",
+    );
+    seed_titled_event(
+        &conn,
+        block_id,
+        "hook-4",
+        "sess-1",
+        &(t0 + chrono::Duration::seconds(180)).to_rfc3339(),
+        "PostToolUse",
+    );
+
+    let block = Block {
+        id: block_id,
+        day: "2026-01-01".to_string(),
+        jira_issue: None,
+        started_at: start.to_rfc3339(),
+        ended_at: end.to_rfc3339(),
+        duration_seconds: 3600,
+        description: None,
+        estimated_by: None,
+        flagged: false,
+        tempo_worklog_id: None,
+        is_personal: false,
+        dirty: false,
+        exported_at: None,
+    };
+
+    let slices = tenant_slices_for_block(&conn, &block, "vitinn-infra", &reg)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        slices,
+        vec![CustomerSlice {
+            customer: Some("Sjúkra".to_string()),
+            intervals: vec![(start.timestamp(), end.timestamp())],
+            origin: SplitOrigin::Pinned,
+        }]
+    );
 }

@@ -208,3 +208,75 @@ fn two_folders_one_customer_each_tags_nothing() {
     tag_sessions(&mut events, &reg, &[]);
     assert!(events.iter().all(|e| e.lane_tag.is_none()));
 }
+
+fn untitled_ev_at(session: &str, ts: chrono::DateTime<Utc>) -> InferEvent {
+    InferEvent {
+        ts,
+        source: "claude_turn".into(),
+        duration_seconds: None,
+        jira_issue: None,
+        event_id: None,
+        project_path: Some(FOLDER.to_string()),
+        session_id: Some(session.to_string()),
+        title: None,
+        lane_tag: None,
+    }
+}
+
+fn titled_ev_at(session: &str, ts: chrono::DateTime<Utc>, title: &str) -> InferEvent {
+    InferEvent {
+        title: Some(title.to_string()),
+        ..untitled_ev_at(session, ts)
+    }
+}
+
+// Finding A: a real session's SessionStart hook row and first prompt land
+// before Claude gets around to running `worklog pin` — the setup-race
+// reach-back (session_pins::SETUP_GRACE) must still resolve them to the
+// pin once it lands soon enough, but must not reach back across a much
+// later, genuine mid-session re-pin.
+#[test]
+fn setup_minutes_take_the_first_pin() {
+    let reg = registry(&["Acme", "Globex"]);
+    let t0 = Utc.with_ymd_and_hms(2026, 9, 23, 9, 0, 0).unwrap();
+    let t0c = Utc.with_ymd_and_hms(2026, 9, 23, 11, 0, 0).unwrap();
+
+    let mut events = vec![
+        // Session A: no text guess of its own (SessionStart/first prompt
+        // never name a customer) — the pin, 60s later, must reach back.
+        untitled_ev_at("A", t0),
+        untitled_ev_at("A", t0 + chrono::Duration::seconds(30)),
+        untitled_ev_at("A", t0 + chrono::Duration::seconds(120)),
+        // Session B: names Acme in its own text — the second customer
+        // this folder needs before lane tagging kicks in at all.
+        ev("B", FOLDER, Some("Acme onboarding"), None),
+        // Session C: names Acme early on; its pin (Globex) lands 30
+        // minutes after the session's first event — too far for the
+        // setup-race reach-back — so the early events keep their guess.
+        titled_ev_at("C", t0c, "Acme prep"),
+        titled_ev_at("C", t0c + chrono::Duration::minutes(5), "Acme prep"),
+    ];
+
+    let pins = vec![
+        pin("A", "Globex", t0 + chrono::Duration::seconds(60)),
+        pin("C", "Globex", t0c + chrono::Duration::minutes(30)),
+    ];
+
+    tag_sessions(&mut events, &reg, &pins);
+
+    assert!(
+        events[0..3]
+            .iter()
+            .all(|e| e.lane_tag.as_deref() == Some("Globex")),
+        "setup-minute events with no text guess of their own take the pin \
+         once it lands within SETUP_GRACE of the session's first event"
+    );
+    assert_eq!(events[3].lane_tag.as_deref(), Some("Acme"));
+    assert!(
+        events[4..6]
+            .iter()
+            .all(|e| e.lane_tag.as_deref() == Some("Acme")),
+        "a pin 30 minutes after the session's first event is too far for \
+         the setup-race reach-back — early events keep the text guess"
+    );
+}

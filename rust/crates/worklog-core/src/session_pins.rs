@@ -7,6 +7,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use chrono::DateTime;
+use chrono::Duration;
 use chrono::Utc;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 
@@ -45,6 +46,48 @@ impl From<anyhow::Error> for PinError {
 /// `true` for the branches a pin never applies to (§1, `is_default_branch`).
 pub fn is_default_branch(branch: &str) -> bool {
     matches!(branch, "main" | "master")
+}
+
+/// How close a session's earliest pin must be to that session's first
+/// event for [`pin_covering`]'s setup-race reach-back to cover events
+/// recorded before it. Real sessions record a SessionStart hook row (and
+/// often a first prompt) before Claude gets around to running `worklog
+/// pin` — or before the session-hint's inherited pin lands — so without
+/// this grace window those setup-minute events are never covered by any
+/// pin and FR-07's Pinned origin can't fire on real data.
+pub const SETUP_GRACE: Duration = Duration::minutes(10);
+
+/// The pin covering `session_id`'s event at `at`, or `None`.
+///
+/// The covering pin is the latest of that session's pins with `from_at
+/// <= at`. When no pin qualifies (every pin for the session starts
+/// after `at`), the session's EARLIEST pin still covers it as a
+/// setup-race exception — but only when that earliest pin's `from_at` is
+/// within [`SETUP_GRACE`] of `session_start` (the session's first event
+/// timestamp, as known to the caller). Otherwise `None`: the caller falls
+/// back to its own uncovered-event handling (a text guess, or "not
+/// pinned").
+pub fn pin_covering<'a>(
+    pins: &'a [SessionPin],
+    session_id: &str,
+    at: DateTime<Utc>,
+    session_start: DateTime<Utc>,
+) -> Option<&'a SessionPin> {
+    let mut latest: Option<&SessionPin> = None;
+    let mut earliest: Option<&SessionPin> = None;
+    for pin in pins.iter().filter(|p| p.session_id == session_id) {
+        if pin.from_at <= at && latest.is_none_or(|l| pin.from_at > l.from_at) {
+            latest = Some(pin);
+        }
+        if earliest.is_none_or(|e| pin.from_at < e.from_at) {
+            earliest = Some(pin);
+        }
+    }
+    if latest.is_some() {
+        return latest;
+    }
+    let earliest = earliest?;
+    (earliest.from_at - session_start <= SETUP_GRACE).then_some(earliest)
 }
 
 /// The `worklog session-hint` start-of-session text (design.md §4,

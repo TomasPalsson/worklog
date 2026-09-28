@@ -6,9 +6,10 @@ use anyhow::Result;
 use rusqlite::Connection;
 
 use crate::billing_registry::Registry;
+use crate::infer_lanes::is_lifecycle_row;
 use crate::models::Block;
 use crate::repo;
-use crate::session_pins::pins_for_sessions;
+use crate::session_pins::{pin_covering, pins_for_sessions};
 use crate::tenant_clues::clues_for_block;
 use crate::tenant_contract::{Clue, CustomerSlice, SplitOrigin, HOUSE_CUSTOMER};
 use crate::tenant_shares::{load_shares, slices_from_shares};
@@ -106,14 +107,19 @@ fn block_interval(block: &Block) -> (i64, i64) {
 }
 
 /// The single customer named by `block`'s events whose session carries a
-/// pin covering their timestamp (latest `from_at` ≤ event time, mirroring
-/// `session_customers::tag_sessions`) — `None` unless EVERY event that
-/// carries a session_id is covered by a pin and all of them agree on one
-/// customer. An event before its session's earliest pin is "uncovered" and
-/// makes the whole block bail out to `None`, else a minute logged before
-/// the pin took effect would be invented onto the pinned customer's
-/// invoice line (FR-07, contract THE FIVE #2). Events with no session_id
-/// carry no pin and are ignored either way.
+/// pin covering their timestamp ([`pin_covering`], mirroring
+/// `session_customers::tag_sessions`) — `None` unless EVERY non-lifecycle
+/// event that carries a session_id is covered by a pin and all of them
+/// agree on one customer. Lifecycle rows (`is_lifecycle_row` —
+/// SessionStart/Stop/SessionEnd bookkeeping) are ignored entirely: they
+/// carry no vote of their own, but the SessionStart row's timestamp is
+/// still the session's first event for [`pin_covering`]'s setup-race
+/// reach-back. An event before its session's earliest pin, and outside
+/// that reach-back window, is "uncovered" and makes the whole block bail
+/// out to `None`, else a minute logged before the pin took effect would
+/// be invented onto the pinned customer's invoice line (FR-07, contract
+/// THE FIVE #2). Events with no session_id carry no pin and are ignored
+/// either way.
 fn pinned_customer_for_block(conn: &Connection, block: &Block) -> Result<Option<String>> {
     let events = repo::list_events_for_block(conn, block.id)?;
     let mut session_ids: Vec<String> = events.iter().filter_map(|e| e.session_id.clone()).collect();
@@ -124,7 +130,10 @@ fn pinned_customer_for_block(conn: &Connection, block: &Block) -> Result<Option<
     }
 
     let pins = pins_for_sessions(conn, &session_ids)?;
-    let mut customers: BTreeSet<String> = BTreeSet::new();
+
+    // The session's first event (SessionStart included) anchors
+    // `pin_covering`'s setup-race reach-back.
+    let mut session_start: BTreeMap<&str, chrono::DateTime<chrono::Utc>> = BTreeMap::new();
     for event in &events {
         let Some(session_id) = &event.session_id else {
             continue;
@@ -133,11 +142,26 @@ fn pinned_customer_for_block(conn: &Connection, block: &Block) -> Result<Option<
             continue;
         };
         let at = at.with_timezone(&chrono::Utc);
-        let covering = pins
-            .iter()
-            .filter(|p| &p.session_id == session_id && p.from_at <= at)
-            .max_by_key(|p| p.from_at);
-        match covering {
+        session_start
+            .entry(session_id.as_str())
+            .and_modify(|t| *t = (*t).min(at))
+            .or_insert(at);
+    }
+
+    let mut customers: BTreeSet<String> = BTreeSet::new();
+    for event in &events {
+        let Some(session_id) = &event.session_id else {
+            continue;
+        };
+        if is_lifecycle_row(&event.source, Some(event.title.as_str())) {
+            continue;
+        }
+        let Ok(at) = chrono::DateTime::parse_from_rfc3339(&event.started_at) else {
+            continue;
+        };
+        let at = at.with_timezone(&chrono::Utc);
+        let start = session_start[session_id.as_str()];
+        match pin_covering(&pins, session_id, at, start) {
             Some(pin) => {
                 customers.insert(pin.customer.clone());
             }

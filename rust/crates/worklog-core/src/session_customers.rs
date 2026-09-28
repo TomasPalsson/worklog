@@ -17,24 +17,25 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::billing_registry::Registry;
 use crate::infer::InferEvent;
 use crate::infer_lanes::lane_folder;
-use crate::session_pins::SessionPin;
+use crate::session_pins::{pin_covering, SessionPin};
 
 /// Per-event resolved customer: the pin covering the event's timestamp, or
 /// the session's text guess when no pin covers it yet.
+///
+/// A pin genuinely covering the event (`from_at <= ts`, [`pin_covering`]'s
+/// ordinary rule) always wins over the text guess, same as before. A pin
+/// that only reaches the event via [`pin_covering`]'s setup-race
+/// reach-back (its `from_at` is after the event's own timestamp) instead
+/// LOSES to an available text guess — the reach-back exists to cover
+/// setup-minute events that would otherwise have no signal at all, not to
+/// override a session's own established text guess for a genuine
+/// mid-session re-pin (see `pin_beats_text_guess`).
 fn resolve_events(
     events: &[InferEvent],
     registry: &Registry,
     sessions: &BTreeMap<(Option<String>, String), Vec<usize>>,
     pins: &[SessionPin],
 ) -> BTreeMap<usize, String> {
-    let mut pins_by_session: BTreeMap<&str, Vec<&SessionPin>> = BTreeMap::new();
-    for p in pins {
-        pins_by_session
-            .entry(p.session_id.as_str())
-            .or_default()
-            .push(p);
-    }
-
     let mut resolved: BTreeMap<usize, String> = BTreeMap::new();
     for (key, idxs) in sessions {
         let (_, session_id) = key;
@@ -45,15 +46,19 @@ fn resolve_events(
             .collect::<Vec<_>>()
             .join("\n");
         let text_guess = registry.customer_in_text(&text);
-        let session_pins = pins_by_session.get(session_id.as_str());
+        let session_start = idxs
+            .iter()
+            .map(|&i| events[i].ts)
+            .min()
+            .expect("idxs is never empty — sessions only holds non-empty groups");
         for &i in idxs {
-            let pinned = session_pins.and_then(|ps| {
-                ps.iter()
-                    .filter(|p| p.from_at <= events[i].ts)
-                    .max_by_key(|p| p.from_at)
-                    .map(|p| p.customer.clone())
-            });
-            if let Some(customer) = pinned.or_else(|| text_guess.clone()) {
+            let ts = events[i].ts;
+            let customer = match pin_covering(pins, session_id, ts, session_start) {
+                Some(pin) if pin.from_at <= ts => Some(pin.customer.clone()),
+                Some(pin) => text_guess.clone().or_else(|| Some(pin.customer.clone())),
+                None => text_guess.clone(),
+            };
+            if let Some(customer) = customer {
                 resolved.insert(i, customer);
             }
         }
