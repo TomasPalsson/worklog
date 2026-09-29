@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { subscribe, type ToastMsg } from "@/lib/toast";
+import { dismiss, subscribe, type ToastMsg } from "@/lib/toast";
 
 /**
  * Mounted once at the page root. Subscribes to the in-memory toast
@@ -28,7 +28,14 @@ export function ToastHost() {
           <div key={m.id} className="toast ok">
             {m.text}
             {m.action && (
-              <button type="button" className="toast-action" onClick={m.action.onClick}>
+              <button
+                type="button"
+                className="toast-action"
+                onClick={() => {
+                  m.action?.onClick();
+                  dismiss(m.id);
+                }}
+              >
                 {m.action.label}
               </button>
             )}
@@ -40,7 +47,14 @@ export function ToastHost() {
           <div key={m.id} className="toast error">
             {m.text}
             {m.action && (
-              <button type="button" className="toast-action" onClick={m.action.onClick}>
+              <button
+                type="button"
+                className="toast-action"
+                onClick={() => {
+                  m.action?.onClick();
+                  dismiss(m.id);
+                }}
+              >
                 {m.action.label}
               </button>
             )}

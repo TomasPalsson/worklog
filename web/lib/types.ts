@@ -36,9 +36,14 @@ export interface Block {
   /** Auto-classified from the block's dominant project_path. Personal
    * blocks dim in the UI, skip the estimator, and aren't synced to Tempo. */
   is_personal: boolean;
+  /** Set when the user ignored the block (always with is_personal = true);
+   * it survives Rebuild while the block is unchanged. */
+  ignored_at: string | null;
   /** True when the block has been edited since its `tempo_worklog_id` was
    * written — the next sync PUTs the new values instead of duplicating. */
   dirty: boolean;
+  /** Billing-export canary; set once the day was marked exported. */
+  exported_at?: string | null;
   event_count: number;
   sources: SourceCount[];
   /** Dominant working directory across the block's events — the path the

@@ -34,6 +34,7 @@ const block1: Block = {
   estimated_by: null,
   tempo_worklog_id: null,
   is_personal: false,
+  ignored_at: null,
   dirty: false,
   event_count: 2,
   sources: [],

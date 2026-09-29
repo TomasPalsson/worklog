@@ -14,6 +14,7 @@ mock.module("@/app/actions", () => ({
   setDuration: mock(async () => ({ ok: true as const, data: undefined })),
   setDescription,
   setPersonal: mock(async () => ({ ok: true as const, data: undefined })),
+  setIgnored: mock(async () => ({ ok: true as const, data: undefined })),
   deleteBlock: mock(async () => ({ ok: true as const, data: undefined })),
   describeBlock: mock(async () => ({
     ok: true as const,
@@ -61,6 +62,7 @@ function makeBlock(overrides: Partial<Block>): Block {
     estimated_by: null,
     tempo_worklog_id: null,
     is_personal: false,
+    ignored_at: null,
     dirty: false,
     event_count: 3,
     sources: [{ source: "github_commit", n: 3 }],
@@ -245,5 +247,41 @@ describe("BlockCard billing move alert", () => {
     );
     await waitFor(() => expect(toasts.map((t) => t.text)).toContain("Moved from Apro to Sjúkra"));
     unsub();
+  });
+});
+
+describe("BlockCard ignore button", () => {
+  const ignoreBtn = () => screen.getByRole("button", { name: /^ignore .* block$/ }) as HTMLButtonElement;
+
+  it("is enabled for an unsynced block and there is no delete button", () => {
+    render(<BlockCard block={makeBlock({})} tickets={[]} day="2026-07-25" hideTicketing />);
+    expect(ignoreBtn().disabled).toBe(false);
+    expect(screen.queryByRole("button", { name: /^delete / })).toBeNull();
+  });
+
+  it("is disabled with a reason when the block is synced to Tempo", () => {
+    render(
+      <BlockCard
+        block={makeBlock({ tempo_worklog_id: "TW-1" })}
+        tickets={[]}
+        day="2026-07-25"
+        hideTicketing
+      />,
+    );
+    expect(ignoreBtn().disabled).toBe(true);
+    expect(ignoreBtn().title).toContain("Tempo");
+  });
+
+  it("is disabled when the block was exported for billing", () => {
+    render(
+      <BlockCard
+        block={makeBlock({ exported_at: "2026-07-26T10:00:00Z" })}
+        tickets={[]}
+        day="2026-07-25"
+        hideTicketing
+      />,
+    );
+    expect(ignoreBtn().disabled).toBe(true);
+    expect(ignoreBtn().title).toContain("exported");
   });
 });

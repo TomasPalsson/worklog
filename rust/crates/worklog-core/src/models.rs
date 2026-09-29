@@ -79,6 +79,10 @@ pub struct Block {
     /// Never set or cleared by Tempo sync.
     #[serde(default)]
     pub exported_at: Option<String>,
+    /// Set by `block_service::set_ignored`; such blocks are also
+    /// `is_personal` and stay ignored across a rebuild (see infer.rs).
+    #[serde(default)]
+    pub ignored_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

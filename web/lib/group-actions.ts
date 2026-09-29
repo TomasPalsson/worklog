@@ -7,12 +7,11 @@
 //     more than one block sharing the same ticket. Hidden on the
 //     unassigned bucket (no shared ticket to merge under) and on
 //     solo groups (nothing to merge).
-//   - Sparkles "Describe with Claude" — shown on a block whenever it
-//     is the single surviving block in its assigned ticket group, i.e.
-//     the merged primary OR a block that already started alone. Hidden
-//     on unassigned blocks (the prompt needs ticket context — assign
-//     first) and on members of a multi-block group (merge first so the
-//     description covers the whole logged time).
+//   - Sparkles "Describe with Claude" — shown on every unassigned block
+//     (each is its own line; Claude may also pick its ticket) and on a
+//     block that is the single surviving block in its assigned ticket
+//     group. Hidden on members of a multi-block assigned group (merge
+//     first so the description covers the whole logged time).
 
 /** Minimal shape needed to decide group-level actions. */
 export interface GroupShape {
@@ -36,6 +35,6 @@ export function shouldShowSparkles(
   isSoleInGroup: boolean,
 ): boolean {
   if (block.is_personal) return false;
-  if (!block.jira_issue) return false;
+  if (!block.jira_issue) return true;
   return isSoleInGroup;
 }

@@ -5,6 +5,7 @@ import {
   assignTicket as daemonAssignTicket,
   setDuration as daemonSetDuration,
   setDescription as daemonSetDescription,
+  setIgnored as daemonSetIgnored,
   setPersonal as daemonSetPersonal,
   deleteBlock as daemonDeleteBlock,
   runInfer as daemonRunInfer,
@@ -147,6 +148,15 @@ export async function setPersonal(
     () => daemonSetPersonal(blockId, isPersonal),
     `/${day}`,
   );
+  return r.ok ? { ok: true, data: undefined } : r;
+}
+
+export async function setIgnored(
+  blockId: number,
+  ignored: boolean,
+  day: string,
+): Promise<ActionResult> {
+  const r = await runAction(() => daemonSetIgnored(blockId, ignored), `/${day}`);
   return r.ok ? { ok: true, data: undefined } : r;
 }
 

@@ -143,6 +143,12 @@ export async function setPersonal(blockId: number, isPersonal: boolean) {
   return call("POST", `/blocks/${blockId}/personal`, { is_personal: isPersonal });
 }
 
+/** Ignore (or restore) a block — hides it from the day, billing and Tempo,
+ * and survives Rebuild. The daemon refuses synced/exported blocks. */
+export async function setIgnored(blockId: number, ignored: boolean) {
+  return call("POST", `/blocks/${blockId}/ignore`, { ignored });
+}
+
 export async function runInfer(day: string) {
   return call<{ day: string; blocks: number; minutes: number }>("POST", "/infer", { day });
 }

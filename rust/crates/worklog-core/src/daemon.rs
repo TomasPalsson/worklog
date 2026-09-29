@@ -20,6 +20,7 @@
 //! * `POST /blocks/:id/description`      — { "description": "text" }
 //! * `POST /blocks/:id/delete`           — no body
 //! * `POST /blocks/:id/personal`         — { "is_personal": true }
+//! * `POST /blocks/:id/ignore`           — { "ignored": true }
 //! * `POST /blocks/:id/split`            — { "first_minutes": 20 }
 //! * `POST /blocks/merge`                — { "primary": 1, "absorb": [2,3] }
 //! * `POST /blocks/auto-merge`           — { "day": "YYYY-MM-DD" }
@@ -143,6 +144,7 @@ pub fn router(state: Shared) -> Router {
         .route("/blocks/:id/description", post(set_description))
         .route("/blocks/:id/delete", post(delete_block))
         .route("/blocks/:id/personal", post(set_personal))
+        .route("/blocks/:id/ignore", post(set_ignored))
         .route("/blocks/:id/split", post(split_block))
         .route("/blocks/:id/estimate", post(estimate_block))
         .route("/blocks/merge", post(merge_blocks))
@@ -1242,6 +1244,36 @@ async fn set_personal(
     })
     .await?;
     info!(block_id = id, is_personal, "set personal");
+    Ok(Json(block))
+}
+
+#[derive(Deserialize)]
+pub struct IgnoreBody {
+    pub ignored: bool,
+}
+
+/// Ignore / restore a block. See [`block_service::set_ignored`].
+async fn set_ignored(
+    State(state): State<Shared>,
+    AxumPath(id): AxumPath<i64>,
+    Json(body): Json<IgnoreBody>,
+) -> Result<Json<Block>, ApiError> {
+    let ignored = body.ignored;
+    // Inner Result: set_ignored's failures are user-facing (missing block,
+    // already synced/exported), not 500s.
+    let missing = format!("block {id} not found");
+    let block = with_conn(state, move |c| {
+        Ok(block_service::set_ignored(c, id, ignored))
+    })
+    .await?
+    .map_err(|e| {
+        if e.to_string() == missing {
+            ApiError::NotFound(e)
+        } else {
+            ApiError::bad_request(e)
+        }
+    })?;
+    info!(block_id = id, ignored, "set ignored");
     Ok(Json(block))
 }
 
@@ -4963,6 +4995,37 @@ mod tests {
         let v = read_json(resp).await;
         assert_eq!(v["id"], 1);
         assert_eq!(v["is_personal"], true);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ignore_endpoint_ignores_and_restores() {
+        let app = router(state_with_block());
+        for (ignored, personal) in [(true, true), (false, false)] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::post("/blocks/1/ignore")
+                        .header("content-type", "application/json")
+                        .body(Body::from(format!(r#"{{"ignored":{ignored}}}"#)))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            let v = read_json(resp).await;
+            assert_eq!(v["is_personal"], personal);
+            assert_eq!(v["ignored_at"].is_string(), ignored);
+        }
+        let resp = app
+            .oneshot(
+                Request::post("/blocks/999/ignore")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"ignored":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test(flavor = "current_thread")]
