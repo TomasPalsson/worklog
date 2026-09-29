@@ -176,13 +176,6 @@ mod backend {
                 .set_password(value)
                 .with_context(|| format!("writing keychain item {account}"))
         }
-        fn delete(&self, account: &str) -> Result<bool> {
-            match entry(account)?.delete_credential() {
-                Ok(()) => Ok(true),
-                Err(keyring::Error::NoEntry) => Ok(false),
-                Err(e) => Err(e).with_context(|| format!("deleting keychain item {account}")),
-            }
-        }
     }
 
     pub fn set(key: &str, value: &str) -> Result<()> {

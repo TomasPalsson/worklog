@@ -12,11 +12,11 @@ pub const ACCOUNT: &str = "secrets";
 pub trait Raw {
     fn get(&self, account: &str) -> Result<Option<String>>;
     fn set(&self, account: &str, value: &str) -> Result<()>;
-    fn delete(&self, account: &str) -> Result<bool>;
 }
 
-/// Load the bundle. First run: fold the pre-bundle per-key items into
-/// it (one last prompt each), save it, and drop the old items.
+/// Load the bundle. First run: copy the pre-bundle per-key items into it
+/// (one last prompt each). The old items stay so older worklog builds
+/// still find their secrets; this build never reads them again.
 pub fn load(raw: &dyn Raw) -> Result<HashMap<String, String>> {
     if let Some(json) = raw.get(ACCOUNT)? {
         return serde_json::from_str(&json).context("parsing keychain secret bundle");
@@ -28,9 +28,6 @@ pub fn load(raw: &dyn Raw) -> Result<HashMap<String, String>> {
         }
     }
     save(raw, &map)?;
-    for key in map.keys() {
-        let _ = raw.delete(key);
-    }
     Ok(map)
 }
 
@@ -57,9 +54,6 @@ mod tests {
             self.items.borrow_mut().insert(a.into(), v.into());
             Ok(())
         }
-        fn delete(&self, a: &str) -> Result<bool> {
-            Ok(self.items.borrow_mut().remove(a).is_some())
-        }
     }
 
     #[test]
@@ -74,8 +68,8 @@ mod tests {
             map.get("slack_user_token").map(String::as_str),
             Some("xoxp")
         );
-        // Legacy items gone; only the bundle remains.
-        assert_eq!(raw.items.borrow().len(), 1);
+        // Legacy items kept for older builds; bundle added.
+        assert_eq!(raw.items.borrow().len(), 3);
         assert!(raw.items.borrow().contains_key(ACCOUNT));
 
         // After migration: exactly ONE keychain read (= one prompt max).
