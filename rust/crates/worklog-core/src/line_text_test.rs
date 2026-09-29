@@ -108,6 +108,19 @@ fn line_text_system_prompt_describes_work_items_task_by_task() {
     assert!(SYSTEM_PROMPT_IS.contains("íslensku"));
 }
 
+/// "lagaði vandamál í keyrsluumhverfi" says nothing: each task must name
+/// what was wrong/changed, where, and the effect — when the clues show it.
+#[test]
+fn line_text_system_prompt_asks_for_specifics() {
+    assert!(SYSTEM_PROMPT_IS.contains("hvaða umhverfi"));
+    assert!(
+        SYSTEM_PROMPT_IS.contains("vandamál í keyrsluumhverfi"),
+        "vague counter-example"
+    );
+    assert!(SYSTEM_PROMPT_IS.contains("finna upp"), "still never invent");
+    assert!(!SYSTEM_PROMPT_IS.contains("stafir"), "no char cap");
+}
+
 /// Icelandic devs say "autorouterinn", not a coined "sjálfvirkri
 /// val-á-líkani": the prompt must keep English tech terms (inflected the
 /// Icelandic way) instead of forcing a translation nobody uses.
@@ -124,6 +137,18 @@ fn line_text_system_prompt_keeps_english_tech_terms() {
     assert!(
         SYSTEM_PROMPT_IS.contains("nýyrði"),
         "must forbid coining new words"
+    );
+    // The model wrote "kóðakeyrsla" for the code interpreter and
+    // "framleiðsluumhverfið" for production: say what devs actually say.
+    assert!(SYSTEM_PROMPT_IS.contains("en ekki \"kóðakeyrsla\""));
+    assert!(SYSTEM_PROMPT_IS.contains("í production"));
+    assert!(
+        !SYSTEM_PROMPT_IS.contains("framleiðsluumhverfið,"),
+        "no Icelandic-coined examples"
+    );
+    assert!(
+        SYSTEM_PROMPT_IS.contains("germynd"),
+        "active voice, like devs talk"
     );
 }
 
@@ -143,10 +168,15 @@ fn line_text_validate_rejects_four_sentences() {
     assert!(validate(text).is_err());
 }
 
+/// No length cap: the owner wants detail, and the cap only threw away
+/// otherwise good replies.
 #[test]
-fn line_text_validate_rejects_too_long() {
-    let text = format!("Þetta er löng setning. {}", "a".repeat(450));
-    assert!(validate(&text).is_err());
+fn line_text_validate_accepts_long_text() {
+    let text = format!(
+        "Lagaði villu í production. Uppfærði autorouterinn {}.",
+        "og fleira ".repeat(60)
+    );
+    assert!(validate(&text).is_ok());
 }
 
 #[test]
