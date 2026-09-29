@@ -118,6 +118,8 @@ fn line_text_system_prompt_asks_for_specifics() {
         "vague counter-example"
     );
     assert!(SYSTEM_PROMPT_IS.contains("finna upp"), "still never invent");
+    // More detail must still fit `validate`'s cap, or every reply fails.
+    assert!(SYSTEM_PROMPT_IS.contains("400 stafir"));
 }
 
 /// Icelandic devs say "autorouterinn", not a coined "sjálfvirkri

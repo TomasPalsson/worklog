@@ -32,7 +32,8 @@ framleiðsluumhverfið, prófunarumhverfið, spjallið, útgáfuferlið) og hva�
 Almennt orðalag eins og \"lagaði vandamál í keyrsluumhverfi\" eða \
 \"uppfærði autorouterinn\" segir lesandanum ekkert; skrifaðu frekar t.d. \
 \"lagaði villu sem kom í veg fyrir að code interpreterinn gæti keyrt kóða \
-í framleiðsluumhverfinu\" ef vísbendingarnar sýna það. \
+í framleiðsluumhverfinu\" ef vísbendingarnar sýna það. Allur textinn \
+má vera mest 400 stafir, svo veldu mikilvægustu smáatriðin. \
 Endurtaktu aldrei orðrétt texta úr þessum reitum. \
 Notaðu aldrei tölustafi af neinu tagi, aldrei tímalengd eða fjölda \
 klukkustunda, aldrei PR- eða málsnúmer, aldrei skráarnöfn eða slóðir, \
