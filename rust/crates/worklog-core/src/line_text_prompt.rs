@@ -22,7 +22,11 @@ alveg ef setningafjöldinn leyfir ekki meira. Ef engin \"work_items\" \
 fylgja skaltu lýsa vinnunni út frá hinum vísbendingunum eins og áður. \
 Notaðu aldrei tölustafi af neinu tagi, aldrei tímalengd eða fjölda \
 klukkustunda, aldrei PR- eða málsnúmer, aldrei skráarnöfn eða slóðir, \
-aldrei nöfn á verkfærum eða forritum, og forðastu ensk tæknihugtök þar \
-sem til er íslenskt orð. Ef vísbendingarnar eru fáorðar skaltu lýsa eðli \
+aldrei nöfn á verkfærum eða forritum. Skrifaðu tæknimál eins og \
+íslenskt tæknifólk talar: haltu enska hugtakinu þegar það er orðið sem \
+fólk notar í raun og beygðu það á íslensku (t.d. \"autorouterinn\", \
+\"code interpreterinn\", \"deploya\", \"frontendið\"), notaðu íslenskt \
+orð aðeins ef það er algengt í daglegu tali (t.d. villa, uppfærsla, \
+gagnagrunnur, vefsíða) og búðu aldrei til nýyrði eða orðrétta þýðingu. Ef vísbendingarnar eru fáorðar skaltu lýsa eðli \
 vinnunnar á einfaldan hátt án þess að finna upp á smáatriðum. Svaraðu \
 eingöngu með JSON á forminu {\"text\": \"...\"}.";
