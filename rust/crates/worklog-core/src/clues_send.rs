@@ -8,11 +8,22 @@ use crate::clues_work_items::{self, BlockClue};
 use crate::repo;
 use crate::scrub;
 use anyhow::{anyhow, Result};
+use regex::Regex;
 use rusqlite::Connection;
 use std::collections::HashSet;
+use std::sync::OnceLock;
 
 const MAX_STRING_CHARS: usize = 200; // longest string in a DescriptionInput
 const MAX_LIST_ENTRIES: usize = 30; // longest list in a DescriptionInput
+
+// (chars per entry, entries) for the D-02-amended evidence lists. Worst
+// case ≈ 60k + 30k + 12k + 8k + 10k chars ≈ 30k tokens ≈ $0.004 a call
+// at $0.12/M input; a typical block is a small fraction of that.
+const PROMPTS_CAP: (usize, usize) = (1500, 40);
+const TOOL_CALLS_CAP: (usize, usize) = (300, 100);
+const HELPER_WORK_CAP: (usize, usize) = (200, 60);
+const SHELL_COMMANDS_CAP: (usize, usize) = (200, 40);
+const COMMIT_BODIES_CAP: (usize, usize) = (500, 20);
 
 /// A block's `DescriptionInput`. `Err` for a personal block.
 pub fn build_block_input(conn: &Connection, block_id: i64) -> Result<DescriptionInput> {
@@ -43,6 +54,11 @@ pub fn build_block_input(conn: &Connection, block_id: i64) -> Result<Description
         slack_channels: finalize_list(collected.slack_channels),
         block_descriptions: Vec::new(),
         work_items: Vec::new(),
+        prompts: finalize_capped(collected.prompts, PROMPTS_CAP),
+        tool_calls: finalize_capped(collected.tool_calls, TOOL_CALLS_CAP),
+        helper_work: finalize_capped(collected.helper_work, HELPER_WORK_CAP),
+        shell_commands: finalize_capped(collected.shell_commands, SHELL_COMMANDS_CAP),
+        commit_bodies: finalize_capped(collected.commit_bodies, COMMIT_BODIES_CAP),
     })
 }
 
@@ -83,14 +99,9 @@ pub fn build_line_input(conn: &Connection, key: &BillingLineKey) -> Result<Descr
             file_basenames: input.file_basenames.clone(),
             description: desc,
         });
-        merged.branches.extend(input.branches);
-        merged.change_titles.extend(input.change_titles);
-        merged.file_basenames.extend(input.file_basenames);
-        merged.programs.extend(input.programs);
-        merged.web_domains.extend(input.web_domains);
-        merged.slack_channels.extend(input.slack_channels);
-        candidate_ticket_titles.extend(input.candidate_ticket_titles);
-        jira_keys.push(input.jira_key);
+        candidate_ticket_titles.extend(input.candidate_ticket_titles.clone());
+        jira_keys.push(input.jira_key.clone());
+        merge_block(&mut merged, input);
     }
 
     Ok(DescriptionInput {
@@ -107,7 +118,27 @@ pub fn build_line_input(conn: &Connection, key: &BillingLineKey) -> Result<Descr
         slack_channels: finalize_list(merged.slack_channels),
         block_descriptions: finalize_list(block_descriptions),
         work_items: clues_work_items::group(block_clues),
+        prompts: finalize_capped(merged.prompts, PROMPTS_CAP),
+        tool_calls: finalize_capped(merged.tool_calls, TOOL_CALLS_CAP),
+        helper_work: finalize_capped(merged.helper_work, HELPER_WORK_CAP),
+        shell_commands: finalize_capped(merged.shell_commands, SHELL_COMMANDS_CAP),
+        commit_bodies: finalize_capped(merged.commit_bodies, COMMIT_BODIES_CAP),
     })
+}
+
+/// Folds one block's lists into a line's accumulator.
+fn merge_block(merged: &mut clues_collect::Collected, input: DescriptionInput) {
+    merged.branches.extend(input.branches);
+    merged.change_titles.extend(input.change_titles);
+    merged.file_basenames.extend(input.file_basenames);
+    merged.programs.extend(input.programs);
+    merged.web_domains.extend(input.web_domains);
+    merged.slack_channels.extend(input.slack_channels);
+    merged.prompts.extend(input.prompts);
+    merged.tool_calls.extend(input.tool_calls);
+    merged.helper_work.extend(input.helper_work);
+    merged.shell_commands.extend(input.shell_commands);
+    merged.commit_bodies.extend(input.commit_bodies);
 }
 
 fn row_matches_key(row: &billing::BillingRow, key: &BillingLineKey) -> bool {
@@ -138,15 +169,20 @@ fn shared_value(values: &[Option<String>]) -> Option<String> {
 
 /// Dedupe (first-seen), cap the list and each scrubbed entry (D-02).
 fn finalize_list(items: Vec<String>) -> Vec<String> {
+    finalize_capped(items, (MAX_STRING_CHARS, MAX_LIST_ENTRIES))
+}
+
+/// [`finalize_list`] with its own `(chars per entry, entries)` caps.
+fn finalize_capped(items: Vec<String>, (chars, entries): (usize, usize)) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for item in items {
-        let capped = scrub_str(&item);
+        let capped = scrub_capped(&item, chars);
         if capped.is_empty() || !seen.insert(capped.clone()) {
             continue;
         }
         out.push(capped);
-        if out.len() == MAX_LIST_ENTRIES {
+        if out.len() == entries {
             break;
         }
     }
@@ -155,12 +191,25 @@ fn finalize_list(items: Vec<String>) -> Vec<String> {
 
 /// `scrub::scrub_identifiers` then a hard cap at [`MAX_STRING_CHARS`].
 fn scrub_str(s: &str) -> String {
-    scrub::scrub_identifiers(s)
+    scrub_capped(s, MAX_STRING_CHARS)
+}
+
+/// `scrub::scrub_identifiers`, home dirs shortened to `~/` (no user
+/// names off-machine), then a hard cap at `chars`.
+fn scrub_capped(s: &str, chars: usize) -> String {
+    let scrubbed = scrub::scrub_identifiers(s);
+    home_dir_re()
+        .replace_all(&scrubbed, "~/")
         .chars()
-        .take(MAX_STRING_CHARS)
+        .take(chars)
         .collect::<String>()
         .trim()
         .to_string()
+}
+
+fn home_dir_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"/(?:Users|home)/[^/\s"']+/"#).expect("valid regex"))
 }
 
 #[path = "clues_send_test.rs"]
