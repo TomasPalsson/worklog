@@ -108,6 +108,18 @@ fn line_text_system_prompt_describes_work_items_task_by_task() {
     assert!(SYSTEM_PROMPT_IS.contains("íslensku"));
 }
 
+/// "lagaði vandamál í keyrsluumhverfi" says nothing: each task must name
+/// what was wrong/changed, where, and the effect — when the clues show it.
+#[test]
+fn line_text_system_prompt_asks_for_specifics() {
+    assert!(SYSTEM_PROMPT_IS.contains("hvaða umhverfi"));
+    assert!(
+        SYSTEM_PROMPT_IS.contains("vandamál í keyrsluumhverfi"),
+        "vague counter-example"
+    );
+    assert!(SYSTEM_PROMPT_IS.contains("finna upp"), "still never invent");
+}
+
 /// Icelandic devs say "autorouterinn", not a coined "sjálfvirkri
 /// val-á-líkani": the prompt must keep English tech terms (inflected the
 /// Icelandic way) instead of forcing a translation nobody uses.
