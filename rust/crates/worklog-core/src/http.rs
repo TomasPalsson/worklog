@@ -17,10 +17,15 @@ pub const USER_AGENT: &str = concat!("worklog/", env!("CARGO_PKG_VERSION"));
 /// Construct a pre-configured blocking client. Cheap; callers may cache it
 /// per collector invocation.
 pub fn client() -> Result<Client> {
+    client_with_timeout(Duration::from_secs(30))
+}
+
+/// [`client`] with its own total-request timeout (LLM calls outlast 30s).
+pub fn client_with_timeout(timeout: Duration) -> Result<Client> {
     Client::builder()
         .user_agent(USER_AGENT)
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30))
+        .timeout(timeout)
         .build()
         .context("building reqwest blocking client")
 }

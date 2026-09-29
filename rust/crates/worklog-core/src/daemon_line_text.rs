@@ -272,7 +272,7 @@ async fn run_line_text_job(state: Shared, key: BillingLineKey) -> std::result::R
     let prep = prep_result?;
 
     let (prep, reply) = tokio::task::spawn_blocking(move || {
-        let reply = estimate::build_thinking_invoker(line_text::LINE_TEXT_THINKING_TOKENS)
+        let reply = estimate::build_regenerate_invoker(line_text::LINE_TEXT_THINKING_TOKENS)
             .map_err(|e| e.to_string())
             .and_then(|inv| {
                 line_text::invoke_line(&prep, inv.as_ref(), line_text::LINE_TEXT_MODEL)
