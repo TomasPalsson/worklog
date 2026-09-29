@@ -270,7 +270,7 @@ pub const DEFAULT_LITELLM_MODEL: &str = "anthropic/claude-haiku-4-5";
 
 /// `x-github-repo` sent to the LiteLLM proxy unless the
 /// `litellm_github_repo` secret overrides it.
-pub const DEFAULT_LITELLM_GITHUB_REPO: &str = "TomasPalsson/worklog";
+pub const DEFAULT_LITELLM_GITHUB_REPO: &str = "aproorg/worklog";
 
 /// OpenAI-compatible HTTP invoker. Points at any LiteLLM proxy (or any
 /// OpenAI-shaped endpoint) and POSTs `/v1/chat/completions`. The
@@ -2489,7 +2489,7 @@ mod tests {
         let hit = server.mock(|when, then| {
             when.method(POST)
                 .path("/v1/chat/completions")
-                .header("x-github-repo", "TomasPalsson/worklog");
+                .header("x-github-repo", "aproorg/worklog");
             then.status(200).json_body(openai_envelope(
                 r#"{"jira_issue":null,"minutes":5,"description":"x"}"#,
             ));
