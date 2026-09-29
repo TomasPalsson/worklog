@@ -228,7 +228,7 @@ describe("ChangeNotices", () => {
     expect(screen.queryByText("3 blocks changed while you were away")).toBeNull();
   });
 
-  it("never toasts a user-source batch, but it stays in the catch-up (B15)", async () => {
+  it("never announces the Owner's own edits — no toast, no slip — and marks them seen (B15)", async () => {
     restoreInterval = installIntervalSpy();
     const userChange = change({ id: 9, source: "user", batch: "u1" });
     const fetchUnseenChanges = mock(async (): Promise<ActionResult<ChangeFeed>> =>
@@ -242,7 +242,7 @@ describe("ChangeNotices", () => {
           cursor: 9,
         }),
     );
-    const markChangesSeen = mock(async (): Promise<ActionResult<{ marked: number }>> => ok({ marked: 0 }));
+    const markChangesSeen = mock(async (): Promise<ActionResult<{ marked: number }>> => ok({ marked: 1 }));
 
     render(
       <ChangeNotices
@@ -251,15 +251,42 @@ describe("ChangeNotices", () => {
         markChangesSeen={markChangesSeen}
       />,
     );
-    const chip = await screen.findByText("1 block changed while you were away");
+    await flush();
+    expect(markChangesSeen).toHaveBeenCalledWith(9);
+    expect(screen.queryByText(/changed while you were away/)).toBeNull();
 
     const toasts = captureToasts();
     await tick();
     expect(toasts.added().length).toBe(0);
     toasts.stop();
+  });
 
-    fireEvent.click(chip);
-    expect(await screen.findAllByText(/You/)).toHaveLength(1);
+  it("counts only others' edits in the slip, marks the Owner's seen too, and is gone after closing", async () => {
+    restoreInterval = installIntervalSpy();
+    const unseen = [
+      change({ id: 1, source: "claude" }),
+      change({ id: 2, source: "user", batch: "u" }),
+    ];
+    const fetchUnseenChanges = mock(async (): Promise<ActionResult<ChangeFeed>> =>
+      ok({ changes: unseen, batches: [], cursor: 2 }),
+    );
+    const fetchChanges = mock(async (): Promise<ActionResult<ChangeFeed>> => ok({ changes: [], batches: [], cursor: 2 }));
+    const markChangesSeen = mock(async (): Promise<ActionResult<{ marked: number }>> => ok({ marked: 2 }));
+
+    render(
+      <ChangeNotices
+        fetchChanges={fetchChanges}
+        fetchUnseenChanges={fetchUnseenChanges}
+        markChangesSeen={markChangesSeen}
+      />,
+    );
+    fireEvent.click(await screen.findByText("1 block changed while you were away"));
+    expect(markChangesSeen).toHaveBeenCalledWith(2);
+    expect(screen.getByRole("dialog").textContent).not.toContain("You ");
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByText(/changed/)).toBeNull();
   });
 
   it("shows no toast on the first poll when nothing was unseen, even with old changes (edge)", async () => {
