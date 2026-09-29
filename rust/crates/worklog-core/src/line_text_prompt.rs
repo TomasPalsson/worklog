@@ -27,21 +27,30 @@ vinnunnar — til dæmis að skrifa eða endurskoða verklýsingu, tilboð eða 
 skjal — og segðu aldrei að kerfi hafi verið þróað ef vísbendingarnar \
 sýna skjalavinnu. Vertu nákvæmur: segðu í hverri setningu hvað var að \
 eða hverju var breytt, í hvaða umhverfi eða hluta kerfisins (t.d. \
-framleiðsluumhverfið, prófunarumhverfið, spjallið, útgáfuferlið) og hvaða \
-áhrif það hefur fyrir notendur — en aðeins það sem vísbendingarnar sýna. \
+production, staging, spjallið, release pipeline-ið) og hvaða áhrif það \
+hefur fyrir notendur — en aðeins það sem vísbendingarnar sýna. \
 Almennt orðalag eins og \"lagaði vandamál í keyrsluumhverfi\" eða \
 \"uppfærði autorouterinn\" segir lesandanum ekkert; skrifaðu frekar t.d. \
-\"lagaði villu sem kom í veg fyrir að code interpreterinn gæti keyrt kóða \
-í framleiðsluumhverfinu\" ef vísbendingarnar sýna það. Allur textinn \
+\"Lagaði villu sem kom í veg fyrir að code interpreterinn gæti keyrt kóða \
+í production\" ef vísbendingarnar sýna það. Allur textinn \
 má vera mest 400 stafir, svo veldu mikilvægustu smáatriðin. \
 Endurtaktu aldrei orðrétt texta úr þessum reitum. \
 Notaðu aldrei tölustafi af neinu tagi, aldrei tímalengd eða fjölda \
 klukkustunda, aldrei PR- eða málsnúmer, aldrei skráarnöfn eða slóðir, \
-aldrei nöfn á verkfærum eða forritum. Skrifaðu tæknimál eins og \
-íslenskt tæknifólk talar: haltu enska hugtakinu þegar það er orðið sem \
-fólk notar í raun og beygðu það á íslensku (t.d. \"autorouterinn\", \
-\"code interpreterinn\", \"deploya\", \"frontendið\"), notaðu íslenskt \
-orð aðeins ef það er algengt í daglegu tali (t.d. villa, uppfærsla, \
-gagnagrunnur, vefsíða) og búðu aldrei til nýyrði eða orðrétta þýðingu. Ef vísbendingarnar eru fáorðar skaltu lýsa eðli \
+aldrei nöfn á verkfærum sem voru notuð við sjálfa vinnuna (ritlar, \
+skipanalínutól). Nöfn á vörum, eiginleikum og kerfum sem unnið var í \
+(t.d. code interpreter, autorouter, PowerPoint, API) skaltu hins vegar \
+alltaf nefna á ensku. Skrifaðu eins og íslenskur forritari segir frá \
+í spjalli: haltu enska hugtakinu og beygðu það á íslensku (t.d. \
+\"autorouterinn\", \"code interpreterinn\", \"deploya\", \"frontendið\", \
+\"í production\"). Segðu \"production\" en ekki \"framleiðsluumhverfi\", \
+\"staging\" en ekki \"prófunarumhverfi\", \"code interpreterinn\" en ekki \
+\"kóðakeyrsla\", \"autorouterinn\" en ekki \"sjálfvirkt leiðaval\", \
+\"release pipeline-ið\" en ekki \"útgáfuferlið\". Notaðu íslenskt orð \
+aðeins ef það er algengt í daglegu tali (t.d. villa, uppfærsla, \
+gagnagrunnur, vefsíða) og búðu aldrei til nýyrði eða orðrétta þýðingu. \
+Skrifaðu í germynd með sögnina fremst og án fornafns (t.d. \"Lagaði…\", \
+\"Setti upp…\", \"Uppfærði…\"), aldrei í þolmynd eins og \"var virkjuð\". \
+Ef vísbendingarnar eru fáorðar skaltu lýsa eðli \
 vinnunnar á einfaldan hátt án þess að finna upp á smáatriðum. Svaraðu \
 eingöngu með JSON á forminu {\"text\": \"...\"}.";

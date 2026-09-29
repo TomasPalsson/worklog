@@ -139,6 +139,18 @@ fn line_text_system_prompt_keeps_english_tech_terms() {
         SYSTEM_PROMPT_IS.contains("nýyrði"),
         "must forbid coining new words"
     );
+    // The model wrote "kóðakeyrsla" for the code interpreter and
+    // "framleiðsluumhverfið" for production: say what devs actually say.
+    assert!(SYSTEM_PROMPT_IS.contains("en ekki \"kóðakeyrsla\""));
+    assert!(SYSTEM_PROMPT_IS.contains("í production"));
+    assert!(
+        !SYSTEM_PROMPT_IS.contains("framleiðsluumhverfið,"),
+        "no Icelandic-coined examples"
+    );
+    assert!(
+        SYSTEM_PROMPT_IS.contains("germynd"),
+        "active voice, like devs talk"
+    );
 }
 
 #[test]
