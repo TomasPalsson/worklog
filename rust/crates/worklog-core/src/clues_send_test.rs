@@ -321,7 +321,7 @@ fn clues_send_block_input_errors_for_personal_block() {
 }
 
 #[test]
-fn clues_send_claude_helper_summary_never_leaks_but_yields_a_branch() {
+fn clues_send_claude_helper_summary_never_leaks_but_yields_branch_and_files() {
     let conn = db::open_memory().unwrap();
     let bid = seed_block(
         &conn,
@@ -356,8 +356,53 @@ fn clues_send_claude_helper_summary_never_leaks_but_yields_a_branch() {
 
     let input = build_block_input(&conn, bid).unwrap();
     assert_eq!(input.branches, vec!["fix-login".to_string()]);
-    // Helper file edits are never surfaced (only claude_work's are, per spec).
-    assert!(input.file_basenames.is_empty());
+    // Basenames only (D-02): the summary's paths never leave whole.
+    assert_eq!(input.file_basenames, vec!["login.rs".to_string()]);
+}
+
+/// A session whose real work ran in workflow subagents (2026-09-28 VÍS
+/// block: every SOW edit was a helper's) must still hand the writer the
+/// edited file basenames — D-02 sends basenames from any source.
+#[test]
+fn clues_send_claude_helper_edited_files_reach_the_writer() {
+    let conn = db::open_memory().unwrap();
+    let bid = seed_block(
+        &conn,
+        "2026-09-28",
+        "2026-09-28T13:28:00+00:00",
+        "2026-09-28T14:20:00+00:00",
+        3120,
+        None,
+        None,
+        false,
+    );
+    seed_event(
+        &conn,
+        bid,
+        Event {
+            raw_json: Some(
+                serde_json::to_string(&RawRecord::Helper {
+                    parent_session_id: "s1".into(),
+                    helper_kind: HelperKind::Subagent,
+                    summary: "Edit ×7, Bash ×2, Read · edited SOW_MCP_Knowledge_Services_VIS.md"
+                        .into(),
+                })
+                .unwrap(),
+            ),
+            ..Event::minimal(
+                SOURCE_CLAUDE_HELPER,
+                "h-sow",
+                "2026-09-28T13:40:00+00:00",
+                "workflow-subagent: draft:new-sow",
+            )
+        },
+    );
+
+    let input = build_block_input(&conn, bid).unwrap();
+    assert_eq!(
+        input.file_basenames,
+        vec!["SOW_MCP_Knowledge_Services_VIS.md".to_string()]
+    );
 }
 
 /// Two blocks folded into one billing line: descriptions merge and

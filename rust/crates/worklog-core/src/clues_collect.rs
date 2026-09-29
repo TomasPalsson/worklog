@@ -74,6 +74,7 @@ impl Collected {
             if let Some(b) = branch_from_summary(summary) {
                 self.branches.push(b);
             }
+            self.file_basenames.extend(edited_basenames(summary));
         }
     }
 
