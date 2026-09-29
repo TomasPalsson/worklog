@@ -271,7 +271,6 @@ fn clues_send_block_input_never_leaks_forbidden_fields() {
         "DM-TEXT",
         "Jón Jónsson",
         "mpdm-",
-        "COMMIT-BODY-TEXT",
         "aproorg/secret-repo",
         "/Users/",
         "ABC-12",
@@ -379,8 +378,14 @@ fn clues_send_block_input_carries_prompts_tools_and_helper_work() {
     assert_eq!(input.prompts.len(), 1);
     let prompt = &input.prompts[0];
     assert!(prompt.starts_with("got this from vis"), "{prompt}");
-    assert!(!prompt.contains("anna@vis.is"), "email must be scrubbed: {prompt}");
-    assert!(!prompt.contains("fn leaked"), "code must be stripped: {prompt}");
+    assert!(
+        !prompt.contains("anna@vis.is"),
+        "email must be scrubbed: {prompt}"
+    );
+    assert!(
+        !prompt.contains("fn leaked"),
+        "code must be stripped: {prompt}"
+    );
     assert!(prompt.chars().count() <= 1500, "prompt must be capped");
     assert_eq!(
         input.tool_calls,
@@ -699,7 +704,9 @@ fn clues_send_line_input_groups_work_items_by_branch_not_time() {
         vec!["other-branch".to_string()]
     );
 
-    let json = serde_json::to_string(&input).unwrap();
+    // Shell commands ride in `shell_commands` since D-02 was amended
+    // (2026-09-29), but never inside a work item.
+    let json = serde_json::to_string(&input.work_items).unwrap();
     assert!(
         !json.contains("WORK-ITEM-SECRET") && !json.contains("internal.example.com"),
         "leaked forbidden field through work_items: {json}"

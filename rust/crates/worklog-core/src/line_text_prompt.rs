@@ -20,6 +20,12 @@ tilheyrir öðru. Minni verkefni sem eftir standa má nefna saman í einni \
 stuttri setningu sem endar á \"auk minni verkefna\", eða sleppa þeim \
 alveg ef setningafjöldinn leyfir ekki meira. Ef engin \"work_items\" \
 fylgja skaltu lýsa vinnunni út frá hinum vísbendingunum eins og áður. \
+\"prompts\" eru beiðnir notandans sjálfs og sýna best hvað var í raun \
+gert og fyrir hvern; \"helper_work\", \"tool_calls\", \"shell_commands\" \
+og \"commit_bodies\" sýna framkvæmdina. Lýstu raunverulegu eðli \
+vinnunnar — til dæmis að skrifa eða endurskoða verklýsingu, tilboð eða \
+skjal — og segðu aldrei að kerfi hafi verið þróað ef vísbendingarnar \
+sýna skjalavinnu. Endurtaktu aldrei orðrétt texta úr þessum reitum. \
 Notaðu aldrei tölustafi af neinu tagi, aldrei tímalengd eða fjölda \
 klukkustunda, aldrei PR- eða málsnúmer, aldrei skráarnöfn eða slóðir, \
 aldrei nöfn á verkfærum eða forritum. Skrifaðu tæknimál eins og \

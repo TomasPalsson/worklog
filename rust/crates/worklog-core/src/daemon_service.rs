@@ -143,7 +143,9 @@ pub fn restart_if_running_with(
 
 /// Real restart command per platform. Skipped under tests (env override).
 fn kick_platform() -> Result<()> {
-    if std::env::var_os(ENV_SCHEDULE_HOME).is_some() {
+    // `cfg!(test)`: updater's run_update tests reach here without the env
+    // override and used to kickstart the developer's real daemon.
+    if cfg!(test) || std::env::var_os(ENV_SCHEDULE_HOME).is_some() {
         // Test mode — never actually touch the real user supervisor.
         return Ok(());
     }
