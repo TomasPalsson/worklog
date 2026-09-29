@@ -1464,8 +1464,9 @@ async fn estimate_block(
                 &estimate::ClaudeSubprocess::default(),
                 estimate::DEFAULT_MODEL,
             ),
+            // Only the review UI's per-block button lands here.
             estimate::ProviderChoice::LiteLLM(inv) => {
-                estimate::invoke_block_estimate(&prep, &inv, estimate::DEFAULT_MODEL)
+                estimate::invoke_block_estimate(&prep, &inv.varied(), estimate::DEFAULT_MODEL)
             }
         }?;
         Ok::<_, anyhow::Error>((prep, reply))

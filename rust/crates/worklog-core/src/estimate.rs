@@ -218,6 +218,17 @@ pub fn build_thinking_invoker(thinking_tokens: u32) -> Result<Box<dyn ModelInvok
     })
 }
 
+/// [`build_thinking_invoker`] for an explicit regenerate: a LiteLLM
+/// invoker is [`LiteLLMInvoker::varied`].
+pub fn build_regenerate_invoker(thinking_tokens: u32) -> Result<Box<dyn ModelInvoker>> {
+    Ok(match resolve_provider()? {
+        ProviderChoice::ClaudeSubprocess => {
+            Box::new(ClaudeSubprocess::with_thinking(thinking_tokens))
+        }
+        ProviderChoice::LiteLLM(inv) => Box::new(inv.varied()),
+    })
+}
+
 /// Test seam — tests pass a fake invoker so we don't shell out to `claude`.
 pub trait ModelInvoker {
     fn invoke(&self, system: &str, user: &str, schema: &Value, model: &str) -> Result<Value>;
@@ -272,6 +283,9 @@ pub const DEFAULT_LITELLM_MODEL: &str = "anthropic/claude-haiku-4-5";
 /// `litellm_github_repo` secret overrides it.
 pub const DEFAULT_LITELLM_GITHUB_REPO: &str = "aproorg/worklog";
 
+/// Temperature for an explicit regenerate ([`LiteLLMInvoker::varied`]).
+pub const REGENERATE_TEMPERATURE: f64 = 0.7;
+
 /// OpenAI-compatible HTTP invoker. Points at any LiteLLM proxy (or any
 /// OpenAI-shaped endpoint) and POSTs `/v1/chat/completions`. The
 /// response's `choices[0].message.content` is handed to
@@ -295,6 +309,8 @@ pub struct LiteLLMInvoker {
     /// `x-github-repo` header value; the Apró proxy rejects requests
     /// without it.
     github_repo: String,
+    /// 0 for automatic runs; [`REGENERATE_TEMPERATURE`] via [`Self::varied`].
+    temperature: f64,
     client: reqwest::blocking::Client,
     /// Memoised `system + schema hint` — the upstream estimator passes
     /// the same `system` and `schema` for every block in a single
@@ -356,6 +372,7 @@ impl LiteLLMInvoker {
             default_model: model.into(),
             github_repo: DEFAULT_LITELLM_GITHUB_REPO.to_owned(),
             client: crate::http::client()?,
+            temperature: 0.0,
             system_with_schema: std::sync::OnceLock::new(),
         })
     }
@@ -378,6 +395,13 @@ impl LiteLLMInvoker {
     /// The model the invoker falls back to when the caller passes
     /// `""`. Exposed so `worklog doctor` can print the user-configured
     /// default without needing to re-read the secret.
+    /// For an explicit regenerate: the owner wants new wording, which
+    /// temperature 0 on unchanged evidence would never give.
+    pub fn varied(mut self) -> Self {
+        self.temperature = REGENERATE_TEMPERATURE;
+        self
+    }
+
     pub fn configured_model(&self) -> &str {
         &self.default_model
     }
@@ -485,7 +509,9 @@ impl LiteLLMInvoker {
                 { "role": "user",   "content": user },
             ],
             "response_format": { "type": "json_object" },
-            "temperature":     0,
+            "temperature":     self.temperature,
+            // The proxy replays a saved response for an identical request.
+            "cache":           { "no-cache": true },
             "max_tokens":      512,
         }))
     }
@@ -2485,7 +2511,7 @@ mod tests {
         let inv = LiteLLMInvoker::new("http://localhost:4000", "k", "gpt-6-luna").unwrap();
         let schema = response_schema();
         let plain = inv.build_request_body("SYS", "u", &schema, "").unwrap();
-        assert_eq!(plain["temperature"], 0);
+        assert_eq!(plain["temperature"].as_f64(), Some(0.0), "{plain}");
         let varied = inv
             .varied()
             .build_request_body("SYS", "u", &schema, "")
