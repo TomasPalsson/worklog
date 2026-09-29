@@ -40,8 +40,11 @@ pub fn details_for_block(conn: &Connection, block_id: i64) -> Result<Vec<DetailR
 
     let linked = repo::list_events_for_block(conn, block_id)?;
     let linked_ids: HashSet<i64> = linked.iter().filter_map(|e| e.id).collect();
+    // A lifecycle rider (another session's SessionStart/Stop ping, R3)
+    // never widens the block to its whole session's activity.
     let session_ids: Vec<String> = linked
         .iter()
+        .filter(|e| !crate::infer_lanes::is_lifecycle_row(&e.source, Some(e.title.as_str())))
         .filter_map(|e| e.session_id.clone())
         .collect::<HashSet<_>>()
         .into_iter()

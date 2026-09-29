@@ -159,6 +159,59 @@ fn block_details_excludes_claude_tool_row_outside_span() {
     assert!(rows.iter().all(|r| r.id != tool));
 }
 
+/// 2026-09-28 VÍS block 5935: a genai-infra session's SessionStart ping
+/// rode into the block (R3 lifecycle rider), and its 69 in-span RU-chatbot
+/// tool calls followed it into the description writer's evidence.
+#[test]
+fn block_details_excludes_tool_rows_of_a_lifecycle_rider_session() {
+    let conn = db::open_memory().unwrap();
+    let bid = seed_block(&conn, START, END);
+    let prompt = seed_event(&conn, "claude_prompt", "p", "2026-04-18T09:05:00+00:00");
+    set_session(&conn, prompt, "s1");
+    link(&conn, bid, prompt);
+
+    let rider = repo::upsert_event(
+        &conn,
+        &Event::minimal(
+            "claude",
+            "start",
+            "2026-04-18T09:06:00+00:00",
+            "SessionStart",
+        ),
+    )
+    .unwrap();
+    set_session(&conn, rider, "s2");
+    link(&conn, bid, rider);
+
+    let own_tool = seed_event(
+        &conn,
+        SOURCE_CLAUDE_TOOL,
+        "s1:1",
+        "2026-04-18T09:10:00+00:00",
+    );
+    set_session(&conn, own_tool, "s1");
+    set_raw(&conn, own_tool, &tool_raw("s1"));
+    let rider_tool = seed_event(
+        &conn,
+        SOURCE_CLAUDE_TOOL,
+        "s2:1",
+        "2026-04-18T09:12:00+00:00",
+    );
+    set_session(&conn, rider_tool, "s2");
+    set_raw(&conn, rider_tool, &tool_raw("s2"));
+
+    let ids: Vec<i64> = details_for_block(&conn, bid)
+        .unwrap()
+        .iter()
+        .map(|r| r.id)
+        .collect();
+    assert!(ids.contains(&own_tool), "{ids:?}");
+    assert!(
+        !ids.contains(&rider_tool),
+        "rider session's tools leaked: {ids:?}"
+    );
+}
+
 #[test]
 fn block_details_excludes_claude_tool_row_from_unrelated_session() {
     let conn = db::open_memory().unwrap();
