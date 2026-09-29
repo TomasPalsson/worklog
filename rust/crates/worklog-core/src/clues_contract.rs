@@ -81,7 +81,7 @@ pub enum HelperKind {
 
 /// Everything the description writer may see (D-02). Built only by
 /// `clues_send::build_block_input` / `build_line_input`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct DescriptionInput {
     pub day: String,
     pub minutes: i64,
@@ -104,6 +104,22 @@ pub struct DescriptionInput {
     /// non-empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub work_items: Vec<WorkItem>,
+    /// Claude prompt text, code-stripped and scrubbed (D-02 amended
+    /// 2026-09-29: the owner's words are the best signal of intent).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prompts: Vec<String>,
+    /// `"<Tool> <compact input JSON>"` per Claude tool call.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<String>,
+    /// `"<helper title> · <summary>"` per subagent/workflow/job minute.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub helper_work: Vec<String>,
+    /// Full shell commands.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shell_commands: Vec<String>,
+    /// Commit/PR bodies.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commit_bodies: Vec<String>,
 }
 
 /// One task's worth of grouped clues within a billing line — built only

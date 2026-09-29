@@ -12,6 +12,7 @@ use rusqlite::Connection;
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
+const SOURCE_CLAUDE_TURN: &str = "claude_turn";
 const SOURCE_CLAUDE_WORK: &str = "claude_work";
 const SOURCE_GIT_REFLOG: &str = "git_reflog";
 const SOURCE_SHELL: &str = "shell";
@@ -27,6 +28,11 @@ pub struct Collected {
     pub programs: Vec<String>,
     pub web_domains: Vec<String>,
     pub slack_channels: Vec<String>,
+    pub prompts: Vec<String>,
+    pub tool_calls: Vec<String>,
+    pub helper_work: Vec<String>,
+    pub shell_commands: Vec<String>,
+    pub commit_bodies: Vec<String>,
 }
 
 /// Collects every row's clues into one [`Collected`] accumulator.
@@ -41,6 +47,7 @@ pub fn collect(conn: &Connection, rows: &[DetailRow]) -> Collected {
 impl Collected {
     fn absorb(&mut self, conn: &Connection, row: &DetailRow) {
         match row.source.as_str() {
+            SOURCE_CLAUDE_TURN => self.absorb_prompt(row),
             SOURCE_CLAUDE_TOOL => self.absorb_claude_tool(row),
             SOURCE_CLAUDE_WORK => self.absorb_claude_work(row),
             SOURCE_CLAUDE_HELPER => self.absorb_claude_helper(row),
@@ -53,11 +60,21 @@ impl Collected {
         }
     }
 
+    fn absorb_prompt(&mut self, row: &DetailRow) {
+        if let Some(RawRecord::ClaudePrompt { text, .. }) = &row.raw {
+            self.prompts.push(crate::estimate::redact_code(text));
+        }
+    }
+
     fn absorb_claude_tool(&mut self, row: &DetailRow) {
-        if let Some(RawRecord::ClaudeTool { files, .. }) = &row.raw {
+        if let Some(RawRecord::ClaudeTool {
+            tool, input, files, ..
+        }) = &row.raw
+        {
             for f in files {
                 self.file_basenames.push(basename(f));
             }
+            self.tool_calls.push(format!("{tool} {input}"));
         }
     }
 
@@ -75,6 +92,7 @@ impl Collected {
                 self.branches.push(b);
             }
             self.file_basenames.extend(edited_basenames(summary));
+            self.helper_work.push(format!("{} · {summary}", row.title));
         }
     }
 
@@ -96,6 +114,9 @@ impl Collected {
         if !is_env_assignment(&row.title) {
             self.programs.push(row.title.clone());
         }
+        if let Some(RawRecord::Shell { command, .. }) = &row.raw {
+            self.shell_commands.push(command.clone());
+        }
     }
 
     fn absorb_firefox(&mut self, row: &DetailRow) {
@@ -116,6 +137,9 @@ impl Collected {
     fn absorb_change_title(&mut self, row: &DetailRow) {
         if let Some(t) = strip_pr_ticket(&row.title) {
             self.change_titles.push(t);
+        }
+        if let Some(RawRecord::Commit { body, .. }) = &row.raw {
+            self.commit_bodies.push(body.clone());
         }
     }
 }

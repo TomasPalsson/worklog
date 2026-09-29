@@ -262,10 +262,10 @@ fn clues_send_block_input_never_leaks_forbidden_fields() {
         "empty work_items must be omitted: {json}"
     );
 
+    // D-02 amended 2026-09-29 (owner): prompt text, tool inputs, shell
+    // commands and commit bodies are now sent; Slack text, DM names,
+    // page titles, repo names, home paths and emails still are not.
     for forbidden in [
-        "SECRET-PROMPT-TEXT",
-        "SECRET-TOOL-INPUT",
-        "internal.example.com/secret",
         "Private page title",
         "SLACK-MESSAGE-TEXT",
         "DM-TEXT",
@@ -290,12 +290,106 @@ fn clues_send_block_input_never_leaks_forbidden_fields() {
         "team-dev",
         "fix login",
         folder,
+        "SECRET-PROMPT-TEXT",
+        "SECRET-TOOL-INPUT",
+        "internal.example.com/secret",
+        "COMMIT-BODY-TEXT",
     ] {
         assert!(
             json.contains(expected),
             "missing expected clue: {expected}\n{json}"
         );
     }
+}
+
+/// The 2026-09-28 VÍS block: the writer must see what was asked and
+/// what the helpers did, not just the folder (D-02 amended).
+#[test]
+fn clues_send_block_input_carries_prompts_tools_and_helper_work() {
+    let conn = db::open_memory().unwrap();
+    let bid = seed_block(
+        &conn,
+        "2026-09-28",
+        "2026-09-28T11:59:00+00:00",
+        "2026-09-28T12:15:00+00:00",
+        960,
+        None,
+        None,
+        false,
+    );
+    let long_tail = "x".repeat(5000);
+    seed_event(
+        &conn,
+        bid,
+        Event {
+            raw_json: Some(
+                serde_json::to_string(&RawRecord::ClaudePrompt {
+                    session_id: "s1".into(),
+                    text: format!(
+                        "got this from vis, mail anna@vis.is\n```rust\nfn leaked() {{}}\n```\n{long_tail}"
+                    ),
+                })
+                .unwrap(),
+            ),
+            ..Event::minimal("claude_turn", "p1", "2026-09-28T11:59:14+00:00", "prompt")
+        },
+    );
+    seed_event(
+        &conn,
+        bid,
+        Event {
+            raw_json: Some(
+                serde_json::to_string(&RawRecord::ClaudeTool {
+                    session_id: "s1".into(),
+                    tool: "Write".into(),
+                    input: serde_json::json!({
+                        "file_path": "/Users/tomas/Desktop/Work/apro-pdf-workspace/SOW.md"
+                    }),
+                    output: None,
+                    output_cut_bytes: 0,
+                    files: vec![],
+                })
+                .unwrap(),
+            ),
+            ..Event::minimal("claude_tool", "t1", "2026-09-28T12:01:00+00:00", "Write")
+        },
+    );
+    seed_event(
+        &conn,
+        bid,
+        Event {
+            raw_json: Some(
+                serde_json::to_string(&RawRecord::Helper {
+                    parent_session_id: "s1".into(),
+                    helper_kind: HelperKind::Subagent,
+                    summary: "Read ×3, Bash".into(),
+                })
+                .unwrap(),
+            ),
+            ..Event::minimal(
+                SOURCE_CLAUDE_HELPER,
+                "h1",
+                "2026-09-28T12:02:00+00:00",
+                "workflow-subagent: draft:new-sow",
+            )
+        },
+    );
+
+    let input = build_block_input(&conn, bid).unwrap();
+    assert_eq!(input.prompts.len(), 1);
+    let prompt = &input.prompts[0];
+    assert!(prompt.starts_with("got this from vis"), "{prompt}");
+    assert!(!prompt.contains("anna@vis.is"), "email must be scrubbed: {prompt}");
+    assert!(!prompt.contains("fn leaked"), "code must be stripped: {prompt}");
+    assert!(prompt.chars().count() <= 1500, "prompt must be capped");
+    assert_eq!(
+        input.tool_calls,
+        vec![r#"Write {"file_path":"~/Desktop/Work/apro-pdf-workspace/SOW.md"}"#.to_string()]
+    );
+    assert_eq!(
+        input.helper_work,
+        vec!["workflow-subagent: draft:new-sow · Read ×3, Bash".to_string()]
+    );
 }
 
 #[test]
