@@ -32,8 +32,7 @@ hefur fyrir notendur — en aðeins það sem vísbendingarnar sýna. \
 Almennt orðalag eins og \"lagaði vandamál í keyrsluumhverfi\" eða \
 \"uppfærði autorouterinn\" segir lesandanum ekkert; skrifaðu frekar t.d. \
 \"Lagaði villu sem kom í veg fyrir að code interpreterinn gæti keyrt kóða \
-í production\" ef vísbendingarnar sýna það. Allur textinn \
-má vera mest 400 stafir, svo veldu mikilvægustu smáatriðin. \
+í production\" ef vísbendingarnar sýna það. \
 Endurtaktu aldrei orðrétt texta úr þessum reitum. \
 Notaðu aldrei tölustafi af neinu tagi, aldrei tímalengd eða fjölda \
 klukkustunda, aldrei PR- eða málsnúmer, aldrei skráarnöfn eða slóðir, \

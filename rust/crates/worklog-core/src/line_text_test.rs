@@ -118,8 +118,7 @@ fn line_text_system_prompt_asks_for_specifics() {
         "vague counter-example"
     );
     assert!(SYSTEM_PROMPT_IS.contains("finna upp"), "still never invent");
-    // More detail must still fit `validate`'s cap, or every reply fails.
-    assert!(SYSTEM_PROMPT_IS.contains("400 stafir"));
+    assert!(!SYSTEM_PROMPT_IS.contains("stafir"), "no char cap");
 }
 
 /// Icelandic devs say "autorouterinn", not a coined "sjálfvirkri
@@ -169,10 +168,15 @@ fn line_text_validate_rejects_four_sentences() {
     assert!(validate(text).is_err());
 }
 
+/// No length cap: the owner wants detail, and the cap only threw away
+/// otherwise good replies.
 #[test]
-fn line_text_validate_rejects_too_long() {
-    let text = format!("Þetta er löng setning. {}", "a".repeat(450));
-    assert!(validate(&text).is_err());
+fn line_text_validate_accepts_long_text() {
+    let text = format!(
+        "Lagaði villu í production. Uppfærði autorouterinn {}.",
+        "og fleira ".repeat(60)
+    );
+    assert!(validate(&text).is_ok());
 }
 
 #[test]

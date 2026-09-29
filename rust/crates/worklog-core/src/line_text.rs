@@ -26,7 +26,6 @@ pub use prompt::SYSTEM_PROMPT_IS;
 /// per-block estimator's, for a handful of calls a day.
 pub const LINE_TEXT_MODEL: &str = "claude-sonnet-5";
 
-const MAX_CHARS: usize = 400;
 const MIN_SENTENCES: usize = 2;
 const MAX_SENTENCES: usize = 3;
 const PATH_EXTENSIONS: &[&str] = &[
@@ -39,9 +38,6 @@ pub fn validate(text: &str) -> std::result::Result<String, String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Err("empty".to_string());
-    }
-    if trimmed.chars().count() > MAX_CHARS {
-        return Err(format!("too long (max {MAX_CHARS} chars)"));
     }
     let sentences = count_sentences(trimmed);
     if !(MIN_SENTENCES..=MAX_SENTENCES).contains(&sentences) {
