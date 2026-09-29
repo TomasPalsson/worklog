@@ -2466,6 +2466,33 @@ mod tests {
         assert_eq!(inv.resolve_model(DEFAULT_MODEL), "gpt-6-luna");
     }
 
+    /// Probed 2026-09-29: the Apró proxy replays a saved *response* for a
+    /// byte-identical request (38s → 0.2s), so a regenerate with unchanged
+    /// evidence came back unchanged. `cache.no-cache` forces a real call.
+    #[test]
+    fn litellm_request_skips_proxy_response_cache() {
+        let inv = LiteLLMInvoker::new("http://localhost:4000", "k", "gpt-6-luna").unwrap();
+        let body = inv
+            .build_request_body("SYS", "user", &response_schema(), "")
+            .unwrap();
+        assert_eq!(body["cache"]["no-cache"], true, "{body}");
+    }
+
+    /// Automatic runs stay deterministic; an explicit regenerate asks the
+    /// model for fresh wording.
+    #[test]
+    fn litellm_varied_invoker_raises_temperature_for_regenerate() {
+        let inv = LiteLLMInvoker::new("http://localhost:4000", "k", "gpt-6-luna").unwrap();
+        let schema = response_schema();
+        let plain = inv.build_request_body("SYS", "u", &schema, "").unwrap();
+        assert_eq!(plain["temperature"], 0);
+        let varied = inv
+            .varied()
+            .build_request_body("SYS", "u", &schema, "")
+            .unwrap();
+        assert!(varied["temperature"].as_f64().unwrap() > 0.0, "{varied}");
+    }
+
     /// Probed 2026-09-29 against the Apró proxy: an unmarked system
     /// prompt is cache-*written* on every call and never read; a
     /// `cache_control` block is read back at a tenth of the input price.
