@@ -23,7 +23,8 @@ import type { BlockChange, ChangeFeed } from "@/lib/deildir";
 function change(overrides: Partial<BlockChange> & { id: number }): BlockChange {
   return {
     day: "2026-09-25",
-    started_at: "2026-09-25T14:00:00Z",
+    // One block per id, so every fixture change is its own net edit.
+    started_at: `2026-09-25T14:${String(overrides.id % 60).padStart(2, "0")}:00Z`,
     field: "description",
     old: "old text",
     new: "new text",
@@ -148,14 +149,14 @@ describe("ChangeNotices", () => {
       />,
     );
 
-    const chip = await screen.findByText("3 changes since your last visit");
+    const chip = await screen.findByText("3 blocks changed while you were away");
     expect(screen.queryAllByText(/Verdict/).length).toBe(0); // not shown until opened
 
     fireEvent.click(chip);
 
     expect(await screen.findAllByText(/Verdict/)).toHaveLength(3);
     expect(markChangesSeen).toHaveBeenCalledWith(3);
-    expect(screen.queryByText("3 changes since your last visit")).toBeNull();
+    expect(screen.queryByText("3 blocks changed while you were away")).toBeNull();
   });
 
   it("a live toast's Show only opens the list — it does not mark the catch-up seen or clear its chip (F5)", async () => {
@@ -185,7 +186,7 @@ describe("ChangeNotices", () => {
       />,
     );
     await flush();
-    expect(screen.getByText("3 changes since your last visit")).not.toBeNull();
+    expect(screen.getByText("3 blocks changed while you were away")).not.toBeNull();
 
     const toasts = captureToasts();
     await tick();
@@ -196,7 +197,7 @@ describe("ChangeNotices", () => {
     added[0].action?.onClick();
 
     expect(markChangesSeen).not.toHaveBeenCalled();
-    expect(screen.queryByText("3 changes since your last visit")).not.toBeNull();
+    expect(screen.queryByText("3 blocks changed while you were away")).not.toBeNull();
   });
 
   it("opening the catch-up chip marks seen up to the chip's own max id (F5)", async () => {
@@ -220,11 +221,11 @@ describe("ChangeNotices", () => {
       />,
     );
 
-    const chip = await screen.findByText("3 changes since your last visit");
+    const chip = await screen.findByText("3 blocks changed while you were away");
     fireEvent.click(chip);
 
     expect(markChangesSeen).toHaveBeenCalledWith(3);
-    expect(screen.queryByText("3 changes since your last visit")).toBeNull();
+    expect(screen.queryByText("3 blocks changed while you were away")).toBeNull();
   });
 
   it("never toasts a user-source batch, but it stays in the catch-up (B15)", async () => {
@@ -250,7 +251,7 @@ describe("ChangeNotices", () => {
         markChangesSeen={markChangesSeen}
       />,
     );
-    const chip = await screen.findByText("1 changes since your last visit");
+    const chip = await screen.findByText("1 block changed while you were away");
 
     const toasts = captureToasts();
     await tick();
@@ -327,6 +328,104 @@ describe("ChangeNotices", () => {
     // poll never advanced it.
     expect(fetchChanges).toHaveBeenNthCalledWith(1, 5);
     expect(fetchChanges).toHaveBeenNthCalledWith(2, 5);
+    toasts.stop();
+  });
+
+  it("merges a rebuild clear + Claude rewrite into one word diff, closable with Esc", async () => {
+    restoreInterval = installIntervalSpy();
+    const at = "2026-09-25T13:50:00Z";
+    const unseen = [
+      change({ id: 1, started_at: at, source: "rebuild", old: "Add tool toggles for agents", new: null }),
+      change({ id: 2, started_at: at, source: "claude", old: null, new: "Build tool switches for agents" }),
+    ];
+    const fetchUnseenChanges = mock(async (): Promise<ActionResult<ChangeFeed>> =>
+      ok({ changes: unseen, batches: [], cursor: 2 }),
+    );
+    const fetchChanges = mock(async (): Promise<ActionResult<ChangeFeed>> => ok({ changes: [], batches: [], cursor: 2 }));
+    const markChangesSeen = mock(async (): Promise<ActionResult<{ marked: number }>> => ok({ marked: 2 }));
+
+    const { container } = render(
+      <ChangeNotices
+        fetchChanges={fetchChanges}
+        fetchUnseenChanges={fetchUnseenChanges}
+        markChangesSeen={markChangesSeen}
+      />,
+    );
+    fireEvent.click(await screen.findByText("1 block changed while you were away"));
+
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.textContent).toContain("by Block rebuild + Claude");
+    expect(dialog.textContent).not.toContain("—");
+    const dels = [...container.querySelectorAll(".change-blocks del")].map((e) => e.textContent);
+    const inss = [...container.querySelectorAll(".change-blocks ins")].map((e) => e.textContent);
+    expect(dels.join("")).toContain("Add");
+    expect(dels.join("")).toContain("toggles");
+    expect(inss.join("")).toContain("Build");
+    expect(inss.join("")).toContain("switches");
+    expect(markChangesSeen).toHaveBeenCalledWith(2);
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("shows no chip when every unseen change cancels out, but still marks them seen", async () => {
+    restoreInterval = installIntervalSpy();
+    const at = "2026-09-25T13:50:00Z";
+    const unseen = [
+      change({ id: 1, started_at: at, source: "rebuild", old: "Same", new: null }),
+      change({ id: 2, started_at: at, source: "claude", old: null, new: "Same" }),
+    ];
+    const fetchUnseenChanges = mock(async (): Promise<ActionResult<ChangeFeed>> =>
+      ok({ changes: unseen, batches: [], cursor: 2 }),
+    );
+    const fetchChanges = mock(async (): Promise<ActionResult<ChangeFeed>> => ok({ changes: [], batches: [], cursor: 2 }));
+    const markChangesSeen = mock(async (): Promise<ActionResult<{ marked: number }>> => ok({ marked: 2 }));
+
+    render(
+      <ChangeNotices
+        fetchChanges={fetchChanges}
+        fetchUnseenChanges={fetchUnseenChanges}
+        markChangesSeen={markChangesSeen}
+      />,
+    );
+    await flush();
+    expect(markChangesSeen).toHaveBeenCalledWith(2);
+    expect(screen.queryByText(/changed while you were away/)).toBeNull();
+  });
+
+  it("toasts a rebuild and the Claude rewrite in one poll as a single notice", async () => {
+    restoreInterval = installIntervalSpy();
+    const at = "2026-09-25T13:50:00Z";
+    const fetchUnseenChanges = mock(async (): Promise<ActionResult<ChangeFeed>> =>
+      ok({ changes: [], batches: [], cursor: 5 }),
+    );
+    const fetchChanges = mock(
+      async (): Promise<ActionResult<ChangeFeed>> =>
+        ok({
+          changes: [
+            change({ id: 6, started_at: at, source: "rebuild", batch: "r", old: "Old", new: null }),
+            change({ id: 7, started_at: at, source: "claude", batch: "c", old: null, new: "New" }),
+          ],
+          batches: [
+            { batch: "r", source: "rebuild", count: 1 },
+            { batch: "c", source: "claude", count: 1 },
+          ],
+          cursor: 7,
+        }),
+    );
+    const markChangesSeen = mock(async (): Promise<ActionResult<{ marked: number }>> => ok({ marked: 0 }));
+
+    render(
+      <ChangeNotices
+        fetchChanges={fetchChanges}
+        fetchUnseenChanges={fetchUnseenChanges}
+        markChangesSeen={markChangesSeen}
+      />,
+    );
+    await flush();
+    const toasts = captureToasts();
+    await tick();
+    expect(toasts.added().map((t) => t.text)).toEqual(["Block rebuild + Claude changed 1 block"]);
     toasts.stop();
   });
 });
