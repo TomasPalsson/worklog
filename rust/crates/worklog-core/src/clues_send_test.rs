@@ -321,7 +321,7 @@ fn clues_send_block_input_errors_for_personal_block() {
 }
 
 #[test]
-fn clues_send_claude_helper_summary_never_leaks_but_yields_a_branch() {
+fn clues_send_claude_helper_summary_never_leaks_but_yields_branch_and_files() {
     let conn = db::open_memory().unwrap();
     let bid = seed_block(
         &conn,
@@ -356,8 +356,8 @@ fn clues_send_claude_helper_summary_never_leaks_but_yields_a_branch() {
 
     let input = build_block_input(&conn, bid).unwrap();
     assert_eq!(input.branches, vec!["fix-login".to_string()]);
-    // Helper file edits are never surfaced (only claude_work's are, per spec).
-    assert!(input.file_basenames.is_empty());
+    // Basenames only (D-02): the summary's paths never leave whole.
+    assert_eq!(input.file_basenames, vec!["login.rs".to_string()]);
 }
 
 /// A session whose real work ran in workflow subagents (2026-09-28 VÍS
