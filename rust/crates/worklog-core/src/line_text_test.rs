@@ -117,8 +117,14 @@ fn line_text_system_prompt_keeps_english_tech_terms() {
         !SYSTEM_PROMPT_IS.contains("forðastu ensk tæknihugtök"),
         "must not force translating English tech terms"
     );
-    assert!(SYSTEM_PROMPT_IS.contains("autorouterinn"), "example of an inflected loanword");
-    assert!(SYSTEM_PROMPT_IS.contains("nýyrði"), "must forbid coining new words");
+    assert!(
+        SYSTEM_PROMPT_IS.contains("autorouterinn"),
+        "example of an inflected loanword"
+    );
+    assert!(
+        SYSTEM_PROMPT_IS.contains("nýyrði"),
+        "must forbid coining new words"
+    );
 }
 
 #[test]
