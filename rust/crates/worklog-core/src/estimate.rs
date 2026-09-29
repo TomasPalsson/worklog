@@ -324,7 +324,7 @@ pub struct LiteLLMInvoker {
 }
 
 /// Hard cap on the `/v1/chat/completions` response body. A compliant
-/// proxy responding to `max_tokens: 512` emits at most ~3 KB; we grant
+/// proxy responding to `max_tokens: 4096` emits at most ~20 KB; we grant
 /// 1 MiB headroom for multi-turn or reasoning envelopes while bounding
 /// the OOM surface from a hostile / compromised proxy (which could
 /// otherwise stream gigabytes of JSON into `serde_json::from_slice`).
@@ -514,7 +514,8 @@ impl LiteLLMInvoker {
             "temperature":     self.temperature,
             // The proxy replays a saved response for an identical request.
             "cache":           { "no-cache": true },
-            "max_tokens":      512,
+            // Reasoning models (gpt-6-luna) think inside this budget.
+            "max_tokens":      4096,
         }))
     }
 }
@@ -1392,6 +1393,10 @@ pub fn parse_response(raw: &str) -> Result<Value> {
     }
     anyhow::bail!("no JSON object in response")
 }
+
+#[cfg(test)]
+#[path = "estimate_litellm_test.rs"]
+mod litellm_test;
 
 #[cfg(test)]
 mod tests {
