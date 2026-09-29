@@ -108,6 +108,19 @@ fn line_text_system_prompt_describes_work_items_task_by_task() {
     assert!(SYSTEM_PROMPT_IS.contains("íslensku"));
 }
 
+/// Icelandic devs say "autorouterinn", not a coined "sjálfvirkri
+/// val-á-líkani": the prompt must keep English tech terms (inflected the
+/// Icelandic way) instead of forcing a translation nobody uses.
+#[test]
+fn line_text_system_prompt_keeps_english_tech_terms() {
+    assert!(
+        !SYSTEM_PROMPT_IS.contains("forðastu ensk tæknihugtök"),
+        "must not force translating English tech terms"
+    );
+    assert!(SYSTEM_PROMPT_IS.contains("autorouterinn"), "example of an inflected loanword");
+    assert!(SYSTEM_PROMPT_IS.contains("nýyrði"), "must forbid coining new words");
+}
+
 #[test]
 fn line_text_validate_accepts_good_icelandic_text() {
     assert_eq!(validate(GOOD_TEXT).unwrap(), GOOD_TEXT);
