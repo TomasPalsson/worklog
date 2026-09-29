@@ -18,6 +18,7 @@ import { DayStrip } from "@/components/DayStrip";
 import { ElsewhereList } from "@/components/ElsewhereList";
 import { EmptyState } from "@/components/EmptyState";
 import { TicketGroup } from "@/components/TicketGroup";
+import { IgnoredLine } from "@/components/IgnoredLine";
 import { UnsortedList } from "@/components/UnsortedList";
 import type { Block, BillingCustomer, BillingRegistry, BillingRow, RoutedEvent } from "@/lib/types";
 import { COOKIE_NAME as VIEW_COOKIE, normaliseView } from "@/lib/view-mode";
@@ -62,7 +63,13 @@ export default async function DayPage({
     throw e;
   }
 
-  const { blocks, total_seconds: total, gaps, overlaps, activity, allocations } = summary;
+  const { gaps, overlaps, activity, allocations } = summary;
+  // Ignored blocks (always is_personal too) are split out first so they
+  // vanish from the strip, groups, totals and the personal section.
+  const ignoredBlocks = summary.blocks.filter((b) => b.ignored_at);
+  const blocks = summary.blocks.filter((b) => !b.ignored_at);
+  const total =
+    summary.total_seconds - ignoredBlocks.reduce((acc, b) => acc + b.duration_seconds, 0);
   const { tickets, meta: cache } = ticketsResp;
 
   // Browser/Slack events for the day (B12) — degrades to an empty feed on
@@ -265,6 +272,7 @@ export default async function DayPage({
           )}
         </>
       )}
+      <IgnoredLine blocks={ignoredBlocks} day={day} />
     </>
   );
 }

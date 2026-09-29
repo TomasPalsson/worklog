@@ -99,6 +99,9 @@ CREATE TABLE IF NOT EXISTS blocks (
     -- Tempo-independent; purge.rs treats this the same as a synced
     -- tempo_worklog_id.
     exported_at TEXT,
+    -- User-ignored block (ISO time). Always paired with is_personal = 1 so
+    -- every personal exclusion applies; survives rebuilds via infer.rs carry.
+    ignored_at TEXT,
     -- Wall-clock span (ended_at - started_at, seconds) of the block at the
     -- moment its description was last written by the estimator. Compared
     -- against, not the current duration_seconds, so a description survives

@@ -77,6 +77,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     ensure_blocks_dirty(conn).context("ensuring blocks.dirty")?;
     ensure_blocks_exported_at(conn).context("ensuring blocks.exported_at")?;
     ensure_blocks_described_seconds(conn).context("ensuring blocks.described_seconds")?;
+    ensure_blocks_ignored_at(conn).context("ensuring blocks.ignored_at")?;
     ensure_jira_tickets_issue_id(conn).context("ensuring jira_tickets.issue_id")?;
     ensure_jira_tickets_external(conn).context("ensuring jira_tickets.external")?;
     ensure_events_routing_columns(conn).context("ensuring events routing columns")?;
@@ -167,6 +168,20 @@ fn ensure_blocks_exported_at(conn: &Connection) -> Result<()> {
     if !has {
         conn.execute("ALTER TABLE blocks ADD COLUMN exported_at TEXT", [])
             .context("ALTER TABLE blocks ADD exported_at")?;
+    }
+    Ok(())
+}
+
+fn ensure_blocks_ignored_at(conn: &Connection) -> Result<()> {
+    let has: bool = conn
+        .prepare("PRAGMA table_info(blocks)")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter()
+        .any(|c| c == "ignored_at");
+    if !has {
+        conn.execute("ALTER TABLE blocks ADD COLUMN ignored_at TEXT", [])
+            .context("ALTER TABLE blocks ADD ignored_at")?;
     }
     Ok(())
 }

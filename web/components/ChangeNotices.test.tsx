@@ -354,10 +354,10 @@ describe("ChangeNotices", () => {
     fireEvent.click(await screen.findByText("1 block changed while you were away"));
 
     const dialog = screen.getByRole("dialog");
-    expect(dialog.textContent).toContain("by Block rebuild + Claude");
+    expect(dialog.textContent).toContain("Claude, after a block rebuild, reworded the description");
     expect(dialog.textContent).not.toContain("—");
-    const dels = [...container.querySelectorAll(".change-blocks del")].map((e) => e.textContent);
-    const inss = [...container.querySelectorAll(".change-blocks ins")].map((e) => e.textContent);
+    const dels = [...container.querySelectorAll(".chg-text del")].map((e) => e.textContent);
+    const inss = [...container.querySelectorAll(".chg-text ins")].map((e) => e.textContent);
     expect(dels.join("")).toContain("Add");
     expect(dels.join("")).toContain("toggles");
     expect(inss.join("")).toContain("Build");

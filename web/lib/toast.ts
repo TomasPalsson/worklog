@@ -47,6 +47,12 @@ export const toast = {
   notice: (text: string, action?: ToastAction) => push("ok", text, 10000, action),
 };
 
+/** Removes a toast now — used when its action button is clicked. */
+export function dismiss(id: number) {
+  queue = queue.filter((m) => m.id !== id);
+  emit();
+}
+
 export function subscribe(listener: Listener): () => void {
   listeners.add(listener);
   listener(queue);

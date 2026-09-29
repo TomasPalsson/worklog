@@ -139,6 +139,43 @@ pub fn set_personal(conn: &Connection, block_id: i64, is_personal: bool) -> Resu
     Ok(block)
 }
 
+/// Ignore (or restore) a block: hide it from the day, billing, Tempo sync
+/// and estimation, and keep it hidden across "Rebuild blocks" (see the
+/// carry rule in `infer::persist_blocks`). Implemented as `is_personal = 1`
+/// plus an `ignored_at` marker so every existing personal exclusion applies.
+/// Refuses blocks already synced to Tempo or exported for billing; never
+/// clears `tempo_worklog_id` / `exported_at`.
+pub fn set_ignored(conn: &Connection, block_id: i64, ignored: bool) -> Result<Block> {
+    let block = repo::get_block(conn, block_id)?
+        .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
+    if ignored {
+        let set = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.is_empty());
+        if set(&block.tempo_worklog_id) {
+            anyhow::bail!("already synced to Tempo — remove the worklog there first");
+        }
+        if set(&block.exported_at) {
+            anyhow::bail!("already exported for billing");
+        }
+        conn.execute(
+            "UPDATE blocks SET ignored_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                    is_personal = 1 WHERE id = ?1",
+            params![block_id],
+        )
+    } else {
+        // ponytail: restore assumes the block was work before; store prior
+        // is_personal if that ever matters.
+        conn.execute(
+            "UPDATE blocks SET ignored_at = NULL, is_personal = 0 WHERE id = ?1",
+            params![block_id],
+        )
+    }
+    .context("set_ignored")?;
+    let block = repo::get_block(conn, block_id)?
+        .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
+    change_log::refresh_day_logged(conn, &block.day, ChangeSource::User);
+    Ok(block)
+}
+
 /// Mark every one of `day`'s blocks as exported for billing — the
 /// `exported_at` canary. Idempotent (AC-022): only blocks that haven't
 /// been marked yet (`exported_at` NULL or empty) are touched, so
@@ -403,6 +440,52 @@ mod tests {
         )
         .unwrap();
         conn.last_insert_rowid()
+    }
+
+    #[test]
+    fn set_ignored_sets_and_clears_both_flags() {
+        let conn = open_memory().unwrap();
+        let id = seed(&conn);
+        let got = set_ignored(&conn, id, true).unwrap();
+        assert!(got.ignored_at.is_some());
+        assert!(got.is_personal);
+        let got = set_ignored(&conn, id, false).unwrap();
+        assert!(got.ignored_at.is_none());
+        assert!(!got.is_personal);
+    }
+
+    #[test]
+    fn set_ignored_refuses_synced_and_exported_blocks() {
+        let conn = open_memory().unwrap();
+        let synced = seed(&conn);
+        conn.execute(
+            "UPDATE blocks SET tempo_worklog_id = 'TW-1' WHERE id = ?1",
+            params![synced],
+        )
+        .unwrap();
+        let err = set_ignored(&conn, synced, true).unwrap_err().to_string();
+        assert!(err.contains("Tempo"), "{err}");
+        let exported = seed(&conn);
+        mark_exported(&conn, "2026-04-18").unwrap();
+        let err = set_ignored(&conn, exported, true).unwrap_err().to_string();
+        assert!(err.contains("exported"), "{err}");
+        let got = repo::get_block(&conn, synced).unwrap().unwrap();
+        assert_eq!(got.tempo_worklog_id.as_deref(), Some("TW-1"));
+        assert!(!got.is_personal && got.ignored_at.is_none());
+    }
+
+    #[test]
+    fn set_ignored_allows_empty_tempo_id_and_reports_missing() {
+        let conn = open_memory().unwrap();
+        let id = seed(&conn);
+        conn.execute(
+            "UPDATE blocks SET tempo_worklog_id = '' WHERE id = ?1",
+            params![id],
+        )
+        .unwrap();
+        assert!(set_ignored(&conn, id, true).is_ok());
+        let err = set_ignored(&conn, 9999, true).unwrap_err().to_string();
+        assert!(err.contains("not found"), "{err}");
     }
 
     #[test]

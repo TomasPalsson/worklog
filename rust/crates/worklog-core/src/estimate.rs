@@ -2154,6 +2154,28 @@ mod tests {
     }
 
     #[test]
+    fn estimate_skips_ignored_blocks() {
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-18', '2026-04-18T09:00:00+00:00', '2026-04-18T09:30:00+00:00', 1800)",
+            [],
+        )
+        .unwrap();
+        let bid = conn.last_insert_rowid();
+        crate::block_service::set_ignored(&conn, bid, true).unwrap();
+        let invoker = FixedInvoker(json!({"jira_issue": null, "minutes": 30, "description": "no"}));
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let stats = estimate_day_with(&conn, day, "m", &invoker).unwrap();
+        assert_eq!((stats.estimated, stats.skipped), (0, 1));
+        assert!(repo::get_block(&conn, bid)
+            .unwrap()
+            .unwrap()
+            .description
+            .is_none());
+    }
+
+    #[test]
     fn estimate_drops_inferred_ticket_when_not_in_candidates() {
         // If the regex-inferred ticket on the block doesn't match any
         // real Jira project (e.g. `FINDING-01` from /pentest output or

@@ -1,15 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState, useTransition } from "react";
-import { Check, Coffee, FolderGit2, Sparkles, Trash2 } from "lucide-react";
+import { Check, Coffee, EyeOff, FolderGit2, Sparkles } from "lucide-react";
 import { BlockDetailsLink } from "./BlockDetailsLink";
 import type { Block, JiraTicket, SourceCount } from "@/lib/types";
 import { formatDuration, formatProjectPath, formatRange } from "@/lib/format";
 import {
-  deleteBlock,
   describeBlock,
   setDescription,
   setDuration,
+  setIgnored,
   setPersonal,
 } from "@/app/actions";
 import { shouldShowSparkles } from "@/lib/group-actions";
@@ -174,12 +174,20 @@ export function BlockCard({
     });
   };
 
-  const onDelete = () => {
-    const label = `the ${timeRangeLabel} block${block.jira_issue ? ` on ${block.jira_issue}` : ""}`;
-    if (!confirm(`Delete ${label}? This also removes links to its events.`)) return;
+  const exported = !!block.exported_at;
+  const ignoreLocked = synced || exported;
+
+  const onIgnore = () => {
     start(async () => {
-      const r = await deleteBlock(block.id, day);
-      if (!r.ok) toast.error(`Delete failed — ${r.error}`);
+      const r = await setIgnored(block.id, true, day);
+      if (!r.ok) {
+        toast.error(`Ignore failed — ${r.error}`);
+        return;
+      }
+      toast.ok(`Ignored ${timeRangeLabel}`, {
+        label: "Undo",
+        onClick: () => void setIgnored(block.id, false, day),
+      });
     });
   };
 
@@ -361,13 +369,20 @@ export function BlockCard({
         </button>
         <button
           type="button"
-          className="icon-btn danger"
-          title="Delete block"
-          aria-label={`delete ${timeRangeLabel} block`}
+          className="icon-btn"
+          title={
+            synced
+              ? "Already synced to Tempo — remove the worklog there first"
+              : exported
+                ? "Already exported for billing"
+                : "Ignore — hide from the day, billing and Tempo. Survives Rebuild."
+          }
+          aria-label={`ignore ${timeRangeLabel} block`}
           aria-busy={isPending || undefined}
-          onClick={onDelete}
+          disabled={ignoreLocked}
+          onClick={onIgnore}
         >
-          <Trash2 />
+          <EyeOff />
         </button>
       </div>
     </article>

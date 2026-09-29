@@ -41,11 +41,19 @@ export default async function WeekPage({
     throw e;
   }
 
-  const dayCols = days.map((d, i) => ({
-    day: d,
-    blocks: summaries[i].blocks,
-    totalSeconds: summaries[i].total_seconds,
-  }));
+  // Ignored blocks are hidden everywhere: drop them (and their seconds)
+  // before any work/personal totals are derived.
+  const dayCols = days.map((d, i) => {
+    const kept = summaries[i].blocks.filter((b) => !b.ignored_at);
+    const ignoredSeconds = summaries[i].blocks
+      .filter((b) => b.ignored_at)
+      .reduce((s, b) => s + b.duration_seconds, 0);
+    return {
+      day: d,
+      blocks: kept,
+      totalSeconds: summaries[i].total_seconds - ignoredSeconds,
+    };
+  });
 
   const workSeconds = dayCols.reduce(
     (acc, c) =>

@@ -48,6 +48,7 @@ mock.module("@/app/actions", () => ({
   setDescription: okVoid(),
   setPersonal: okVoid(),
   deleteBlock: okVoid(),
+  setIgnored: okVoid(),
   describeBlock: mock(async () => ({ ok: true as const, data: { minutes: 0, jira_issue: null } })),
   fetchBlockEvents: okList(),
   fetchBlockCommits: okList(),

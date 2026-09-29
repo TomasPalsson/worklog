@@ -4380,6 +4380,7 @@ mod tests {
             is_personal: false,
             dirty: false,
             exported_at: None,
+            ignored_at: None,
         }
     }
 

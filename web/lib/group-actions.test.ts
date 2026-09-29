@@ -35,11 +35,10 @@ describe("shouldShowSparkles", () => {
     ).toBe(true);
   });
 
-  // B12: unassigned block — hidden (Claude needs ticket context).
-  it("B12: hides on an unassigned block even when sole in its bucket", () => {
-    expect(
-      shouldShowSparkles({ jira_issue: null, is_personal: false }, true),
-    ).toBe(false);
+  // Unassigned blocks are each their own line, so regenerating one
+  // needs no merge; Claude may also pick the ticket.
+  it("shows on an unassigned block, even among many unassigned", () => {
+    expect(shouldShowSparkles({ jira_issue: null, is_personal: false }, false)).toBe(true);
   });
 
   it("hides when the block is one of several in its group (must merge first)", () => {

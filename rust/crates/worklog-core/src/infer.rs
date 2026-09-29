@@ -564,7 +564,7 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
         // ensures the earliest-starting new block claims the earliest
         // prior.
         let mut stmt = conn.prepare(
-            "SELECT started_at, ended_at, jira_issue, description, estimated_by, tempo_worklog_id, exported_at, described_seconds
+            "SELECT started_at, ended_at, jira_issue, description, estimated_by, tempo_worklog_id, exported_at, described_seconds, ignored_at
                FROM blocks WHERE day = ?1 ORDER BY started_at",
         )?;
         let iter = stmt.query_map(params![day_iso], |r| {
@@ -577,6 +577,7 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
                 tempo_worklog_id: r.get(5)?,
                 exported_at: r.get(6)?,
                 described_seconds: r.get(7)?,
+                ignored_at: r.get(8)?,
             })
         })?;
         for row in iter {
@@ -685,13 +686,22 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
         let has_real_ticket = jira_issue
             .as_deref()
             .is_some_and(|k| jira_ticket_known(&tx, k));
-        let is_personal = path_personal && !has_real_ticket;
+        // Carry an ignore only when the block starts at exactly the same
+        // instant (strict map hit, not the overlap fallback) and did not
+        // grow past the prior end. A block that grew may now hold real work,
+        // so the ignore is dropped rather than silently swallowing it.
+        let ignored_at = prior.get(&started_key).and_then(|c| {
+            let ign = c.ignored_at.clone()?;
+            let (_, prior_end) = parse_pair(&c.started_at, &c.ended_at)?;
+            (b.ended_at <= prior_end).then_some(ign)
+        });
+        let is_personal = ignored_at.is_some() || (path_personal && !has_real_ticket);
         tx.execute(
             "INSERT INTO blocks (
                 day, jira_issue, started_at, ended_at,
                 duration_seconds, description, estimated_by, flagged,
-                tempo_worklog_id, is_personal, exported_at, described_seconds
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                tempo_worklog_id, is_personal, exported_at, described_seconds, ignored_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 b.day,
                 jira_issue,
@@ -705,6 +715,7 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
                 if is_personal { 1 } else { 0 },
                 exported_at,
                 described_seconds,
+                ignored_at,
             ],
         )
         .context("inserting block")?;
@@ -769,6 +780,7 @@ struct CarryRow {
     tempo_worklog_id: Option<String>,
     exported_at: Option<String>,
     described_seconds: Option<i64>,
+    ignored_at: Option<String>,
 }
 
 /// Overlap check on ISO-8601 timestamps. Parses each string to a
@@ -887,6 +899,51 @@ mod tests {
             s.starts_with("2026-04-18T09:00:00.") && s.ends_with("+00:00"),
             "block_iso should emit sub-seconds for non-zero nanos: {s}"
         );
+    }
+
+    fn ib(start: (u32, u32), end: (u32, u32)) -> InferBlock {
+        let mut b = new_block(&ev(start.0, start.1, "claude_turn"));
+        b.ended_at = at(end.0, end.1);
+        b.duration_seconds = (b.ended_at - b.started_at).num_seconds();
+        b
+    }
+
+    fn ignored_state(conn: &rusqlite::Connection) -> (Option<String>, i64) {
+        conn.query_row("SELECT ignored_at, is_personal FROM blocks", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn persist_blocks_keeps_ignore_when_block_unchanged() {
+        let conn = open_memory().unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        persist_blocks(&conn, day, &[ib((9, 0), (9, 30))]).unwrap();
+        conn.execute(
+            "UPDATE blocks SET ignored_at = '2026-04-18T12:00:00Z', is_personal = 1",
+            [],
+        )
+        .unwrap();
+        persist_blocks(&conn, day, &[ib((9, 0), (9, 30))]).unwrap();
+        assert_eq!(
+            ignored_state(&conn),
+            (Some("2026-04-18T12:00:00Z".to_string()), 1)
+        );
+    }
+
+    #[test]
+    fn persist_blocks_drops_ignore_when_block_grows() {
+        let conn = open_memory().unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        persist_blocks(&conn, day, &[ib((9, 0), (9, 30))]).unwrap();
+        conn.execute(
+            "UPDATE blocks SET ignored_at = '2026-04-18T12:00:00Z', is_personal = 1",
+            [],
+        )
+        .unwrap();
+        persist_blocks(&conn, day, &[ib((9, 0), (10, 0))]).unwrap();
+        assert_eq!(ignored_state(&conn).0, None);
     }
 
     fn at(h: u32, m: u32) -> DateTime<Utc> {
