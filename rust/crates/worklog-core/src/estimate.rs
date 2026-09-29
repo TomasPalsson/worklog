@@ -371,8 +371,10 @@ impl LiteLLMInvoker {
             api_key: api_key.into(),
             default_model: model.into(),
             github_repo: DEFAULT_LITELLM_GITHUB_REPO.to_owned(),
-            client: crate::http::client()?,
             temperature: 0.0,
+            // A real (uncached) gpt-6-luna call on a full block measured
+            // well past the shared 30s collector timeout.
+            client: crate::http::client_with_timeout(std::time::Duration::from_secs(120))?,
             system_with_schema: std::sync::OnceLock::new(),
         })
     }
