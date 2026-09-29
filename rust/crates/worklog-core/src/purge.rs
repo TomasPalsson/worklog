@@ -4,8 +4,8 @@
 //! 20th) through the day before `cycle_start_day` in the following
 //! month. Once a cycle's submission window has shut (the second business
 //! day after it ends, default the 23rd) nothing can add hours to it any
-//! more, so retaining its rows has no value. `cutoff_for_cycle` derives
-//! that boundary; `purge_rows` deletes every row strictly older than it
+//! more; its rows are kept one further cycle as evidence for the invoice,
+//! then dropped. `cutoff_for_cycle` derives that boundary; `purge_rows` deletes every row strictly older than it
 //! from `blocks` (and, by cascade, `block_events`), `events`, and
 //! `sessions`, plus every manually-picked (`external = 1`) `jira_tickets`
 //! entry no surviving block references any more.
@@ -124,12 +124,15 @@ pub fn cycle_start_on_or_before(d: NaiveDate, cycle_start_day: u32) -> NaiveDate
 
 /// The billing-cycle cutoff: the earliest local day whose data survives.
 /// `grace = close_day - cycle_start_day + 1` (4 with the defaults);
-/// everything older than `cycle_start_on_or_before(today - grace days)`
-/// is fair game.
+/// `cycle_start_on_or_before(today - grace days)` is the start of the
+/// newest closed-or-open cycle, and the cycle before it is kept too as
+/// evidence for the last invoice — so only data older than that
+/// previous cycle's start is fair game.
 pub fn cutoff_for_cycle(today: NaiveDate, cycle_start_day: u32, close_day: u32) -> NaiveDate {
     let grace = close_day.saturating_sub(cycle_start_day) + 1;
     let anchor = today - chrono::Duration::days(i64::from(grace));
-    cycle_start_on_or_before(anchor, cycle_start_day)
+    let current = cycle_start_on_or_before(anchor, cycle_start_day);
+    cycle_start_on_or_before(current - chrono::Duration::days(1), cycle_start_day)
 }
 
 /// A plain rolling-window cutoff, `days` before `today` — the
@@ -752,20 +755,21 @@ mod tests {
         NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
     }
 
-    /// B1-B6: the authoritative cutoff table from spec Appendix A,
-    /// checked date-by-date at the documented defaults.
+    /// B1-B6: the spec Appendix A cutoff table, shifted one cycle back
+    /// because the just-closed cycle is retained as evidence, checked
+    /// date-by-date at the documented defaults.
     #[test]
     fn b1_through_b6_cutoff_for_cycle_table() {
         let cases: &[(&str, &str)] = &[
-            ("2026-07-24", "2026-07-20"),
-            ("2026-07-23", "2026-06-20"),
-            ("2026-07-05", "2026-06-20"),
-            ("2026-07-19", "2026-06-20"),
-            ("2026-07-20", "2026-06-20"),
-            ("2026-08-19", "2026-07-20"),
-            ("2026-08-24", "2026-08-20"),
-            ("2026-03-05", "2026-02-20"),
-            ("2026-01-02", "2025-12-20"),
+            ("2026-07-24", "2026-06-20"),
+            ("2026-07-23", "2026-05-20"),
+            ("2026-07-05", "2026-05-20"),
+            ("2026-07-19", "2026-05-20"),
+            ("2026-07-20", "2026-05-20"),
+            ("2026-08-19", "2026-06-20"),
+            ("2026-08-24", "2026-07-20"),
+            ("2026-03-05", "2026-01-20"),
+            ("2026-01-02", "2025-11-20"),
         ];
         for (today_str, expected_str) in cases {
             let today = date(today_str);
@@ -862,7 +866,7 @@ mod tests {
         let today = date("2026-07-24");
         let cycle_cutoff = cutoff_for_cycle(today, DEFAULT_CYCLE_START_DAY, DEFAULT_CLOSE_DAY);
         let days_cutoff = cutoff_for_days(today, 90);
-        assert_eq!(cycle_cutoff, date("2026-07-20"));
+        assert_eq!(cycle_cutoff, date("2026-06-20"));
         assert_eq!(days_cutoff, date("2026-04-25"));
         assert_ne!(cycle_cutoff, days_cutoff);
     }
