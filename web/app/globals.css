@@ -2511,29 +2511,6 @@ button {
   transform: translateY(1px);
 }
 
-/* Seen: the slip steps back to paper, a way back into the list. */
-.chg-slip[data-seen] {
-  min-height: 40px;
-  padding: 9px 14px 9px 12px;
-  border-color: var(--border-strong);
-  border-left-color: var(--border-strong);
-  background: var(--bg-raised);
-  font-size: 13px;
-}
-
-.chg-slip[data-seen] .chg-slip-msg {
-  font-weight: 500;
-  color: var(--fg-muted);
-}
-
-.chg-slip[data-seen] .chg-slip-action {
-  color: var(--fg);
-}
-
-.chg-close:active {
-  background: var(--border);
-}
-
 .chg-slip:focus-visible,
 .chg-close:focus-visible,
 .chg-time:focus-visible {

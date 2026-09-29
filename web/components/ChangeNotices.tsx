@@ -189,10 +189,9 @@ export function ChangeNotices({
   markChangesSeen?: typeof actions.markChangesSeen;
 }) {
   const [catchUp, setCatchUp] = useState<BlockChange[] | null>(null);
-  // Once opened, the catch-up is seen but stays re-openable for this visit.
-  const [catchUpSeen, setCatchUpSeen] = useState(false);
-  const [listFromCatchUp, setListFromCatchUp] = useState(false);
-  const slipRef = useRef<HTMLButtonElement>(null);
+  // Highest unseen id on mount, the Owner's own edits included, so opening
+  // the slip marks everything up to it seen.
+  const seenUpToRef = useRef(0);
   const [listChanges, setListChanges] = useState<BlockChange[] | null>(null);
   // The live poll's high-water mark. Starts at the unseen feed's cursor so
   // the first live poll never re-announces what the catch-up already
@@ -209,13 +208,16 @@ export function ChangeNotices({
       if (cancelled || !r.ok) return;
       cursorRef.current = r.data.cursor;
       if (r.data.changes.length === 0) return;
-      // Changes that cancel out (a rebuild clearing a description Claude
+      seenUpToRef.current = Math.max(...r.data.changes.map((c) => c.id));
+      // The Owner's own edits did not happen "while you were away", and
+      // changes that cancel out (a rebuild clearing a description Claude
       // then rewrites verbatim) are nothing to announce — just mark seen.
-      if (countBlocks(summariseChanges(r.data.changes)) === 0) {
-        void markChangesSeen(Math.max(...r.data.changes.map((c) => c.id)));
+      const theirs = r.data.changes.filter((c) => c.source !== "user");
+      if (countBlocks(summariseChanges(theirs)) === 0) {
+        void markChangesSeen(seenUpToRef.current);
         return;
       }
-      setCatchUp(r.data.changes);
+      setCatchUp(theirs);
     })();
     return () => {
       cancelled = true;
@@ -250,10 +252,7 @@ export function ChangeNotices({
           label: "Show",
           // The toast's Show only opens the list — it must not mark the
           // catch-up's older unseen changes seen or clear its chip.
-          onClick: () => {
-            setListFromCatchUp(false);
-            setListChanges(pollChanges);
-          },
+          onClick: () => setListChanges(pollChanges),
         });
       })();
     }, LIVE_POLL_SECONDS * 1000);
@@ -261,16 +260,10 @@ export function ChangeNotices({
   }, [fetchChanges]);
 
   // Esc closes the list; focus lands on its close button so the
-  // keyboard is already inside the dialog, and returns to the slip after.
+  // keyboard is already inside the dialog.
   const listOpen = listChanges !== null;
-  const wasOpen = useRef(false);
   useEffect(() => {
-    if (!listOpen) {
-      if (wasOpen.current) slipRef.current?.focus();
-      wasOpen.current = false;
-      return;
-    }
-    wasOpen.current = true;
+    if (!listOpen) return;
     closeRef.current?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setListChanges(null);
@@ -279,15 +272,13 @@ export function ChangeNotices({
     return () => window.removeEventListener("keydown", onKey);
   }, [listOpen]);
 
-  // Opening the catch-up slip is what marks its changes seen — the live
-  // toast's own "Show" (above) never touches seen state or this slip.
+  // Opening the catch-up slip marks its changes seen and retires the slip
+  // for good — the live toast's own "Show" (above) never touches either.
   function openCatchUp() {
     if (!catchUp) return;
-    setListFromCatchUp(true);
     setListChanges(catchUp);
-    if (catchUpSeen) return;
-    setCatchUpSeen(true);
-    void markChangesSeen(Math.max(...catchUp.map((c) => c.id)));
+    setCatchUp(null);
+    void markChangesSeen(seenUpToRef.current);
   }
 
   const catchUpBlocks = countBlocks(catchUpDays);
@@ -296,20 +287,10 @@ export function ChangeNotices({
 
   return (
     <>
-      {catchUpBlocks > 0 && !(listOpen && listFromCatchUp) && (
-        <button
-          ref={slipRef}
-          type="button"
-          className="chg-slip"
-          data-seen={catchUpSeen || undefined}
-          onClick={openCatchUp}
-        >
-          {catchUpSeen ? (
-            <span className="chg-slip-msg">{plural(catchUpBlocks, "block")} changed</span>
-          ) : (
-            <span className="chg-slip-msg">{plural(catchUpBlocks, "block")} changed while you were away</span>
-          )}
-          <span className="chg-slip-action">{catchUpSeen ? "Reopen" : "Review"}</span>
+      {catchUpBlocks > 0 && (
+        <button type="button" className="chg-slip" onClick={openCatchUp}>
+          <span className="chg-slip-msg">{plural(catchUpBlocks, "block")} changed while you were away</span>
+          <span className="chg-slip-action">Review</span>
         </button>
       )}
       {listOpen && (
