@@ -6,3 +6,6 @@ Discovered: T004 Tempo sync on a compressed day has no allow test (no Tempo mock
 Ruling: T008 card.folder_path follows billing's folder (lifecycle rows skipped, submodule map) while live stitch_day_summary votes its own folder (neither) — kept on billing; the daemon's own comment says it must mirror billing::work_folder_for_block, so the live vote is the drifted side — cost if wrong: a compressed block's day-summary path can differ from its pre-compression label when lifecycle/submodule rows decide the folder
 Discovered: stitch_day_summary folder vote does not skip lifecycle rows or use the submodule map, so it can disagree with billing::work_folder_for_block despite its comment — defer
 Discovered: T008 review minors — folder_path None-when-folder-won-by-repo/submodule untested; capped_ranked extracted at 2 call sites — defer
+Discovered: wave T005/T009/T010 review — dropped after re-score (<80): getBlockDigest untested (30, matches project norm), empty personal card renders a blank panel (60), B12 named test missing (55) → folded into T012 so the acceptance row has its proof
+Discovered: billing zips card paths with path_counts, so a card with paths but no counts drops its paths (titles fall back to weight 1) — latent, no v1 card shipped — defer
+Discovered: daemon.rs is 6480 lines (size-guard max 400), pre-existing — defer
