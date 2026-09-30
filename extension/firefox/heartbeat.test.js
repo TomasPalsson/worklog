@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildHeartbeat, shouldSend } from "./heartbeat.js";
+import { buildHeartbeat, shouldSend, skipReason } from "./heartbeat.js";
 
 describe("shouldSend", () => {
   const base = {
@@ -36,6 +36,37 @@ describe("shouldSend", () => {
 
   test("false with no focused window", () => {
     expect(shouldSend({ ...base, windowFocused: false })).toBe(false);
+  });
+});
+
+describe("skipReason", () => {
+  const base = {
+    paused: false,
+    incognito: false,
+    containerName: null,
+    idleState: "active",
+    windowFocused: true,
+  };
+
+  test("null when nothing suppresses the heartbeat", () => {
+    expect(skipReason(base)).toBeNull();
+  });
+
+  test("names each suppressor", () => {
+    expect(skipReason({ ...base, paused: true })).toBe("paused");
+    expect(skipReason({ ...base, incognito: true })).toBe("incognito");
+    expect(skipReason({ ...base, containerName: "Personal" })).toBe("personal_container");
+    expect(skipReason({ ...base, idleState: "idle" })).toBe("idle");
+    expect(skipReason({ ...base, idleState: "locked" })).toBe("idle");
+    expect(skipReason({ ...base, windowFocused: false })).toBe("unfocused");
+  });
+
+  test("reports the first suppressor in fixed order", () => {
+    const everything = { paused: true, incognito: true, containerName: "Personal", idleState: "idle", windowFocused: false };
+    expect(skipReason(everything)).toBe("paused");
+    expect(skipReason({ ...everything, paused: false })).toBe("incognito");
+    expect(skipReason({ ...everything, paused: false, incognito: false })).toBe("personal_container");
+    expect(skipReason({ ...everything, paused: false, incognito: false, containerName: null })).toBe("idle");
   });
 });
 
