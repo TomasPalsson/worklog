@@ -375,7 +375,11 @@ fn oversized_card_is_cut_to_every_cap() {
     };
     within(&card.eval_titles, MAX_EVAL_TITLES, EVAL_TITLE_CHARS);
     within(&card.paths, MAX_PATHS, PROJECT_PATH_CHARS);
-    within(&card.invoice_titles, MAX_INVOICE_TITLES, INVOICE_TITLE_CHARS);
+    within(
+        &card.invoice_titles,
+        MAX_INVOICE_TITLES,
+        INVOICE_TITLE_CHARS,
+    );
     within(&card.branches, MAX_BRANCHES, BRANCH_CHARS);
     within(&card.change_titles, MAX_CHANGE_TITLES, CHANGE_TITLE_CHARS);
     within(&card.prompts, MAX_PROMPTS, PROMPT_CHARS);
