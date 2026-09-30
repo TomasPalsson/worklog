@@ -3060,6 +3060,50 @@ mod tests {
     }
 
     #[test]
+    fn day_summary_path_of_carded_block_is_the_billing_folder_path() {
+        // B13: lyf's 5 events over two worktrees beat genai's 4 in one, but
+        // the personal-classify path (raw most-common) is genai's. The card
+        // must show the same path the live day summary shows.
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-18', '2026-04-18T09:00:00+00:00', '2026-04-18T09:30:00+00:00', 1800)",
+            [],
+        )
+        .unwrap();
+        let bid = conn.last_insert_rowid();
+        let lyf = "/home/u/Desktop/Work/lyf/.claude/worktrees/a";
+        let lyf_b = "/home/u/Desktop/Work/lyf/.claude/worktrees/b";
+        let genai = "/home/u/Desktop/Work/genai/.claude/worktrees/c";
+        let paths = [lyf, lyf, lyf, lyf_b, lyf_b, genai, genai, genai, genai];
+        for (i, path) in paths.iter().enumerate() {
+            let mut ev = Event::minimal(
+                "claude",
+                format!("e{i}").as_str(),
+                "2026-04-18T09:05:00+00:00",
+                "prompt",
+            );
+            ev.project_path = Some(path.to_string());
+            let eid = repo::upsert_event(&conn, &ev).unwrap();
+            conn.execute(
+                "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+                params![bid, eid],
+            )
+            .unwrap();
+        }
+        let live = stitch_day_summary(&conn, "2026-04-18").unwrap();
+        assert_eq!(live.blocks[0].project_path.as_deref(), Some(lyf));
+
+        let card = block_digest::build_digest(&conn, bid).unwrap();
+        assert!(block_digest::write_digest(&conn, bid, &card).unwrap());
+        conn.execute("DELETE FROM block_events", []).unwrap();
+
+        let carded = stitch_day_summary(&conn, "2026-04-18").unwrap();
+        assert_eq!(carded.blocks[0].project_path.as_deref(), Some(lyf));
+        assert_eq!(carded.blocks[0].project.as_deref(), Some("lyf"));
+    }
+
+    #[test]
     fn day_summary_project_path_agrees_when_repo_folder_wins() {
         // Regression for the confirmed defect: a block with 6 GitHub events
         // (project_path NULL, repo "org/AcmeBackend") and 5 Claude events
