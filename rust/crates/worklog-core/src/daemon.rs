@@ -205,6 +205,11 @@ pub fn router(state: Shared) -> Router {
             "/browser/heartbeat",
             post(browser_heartbeat).options(browser_heartbeat_preflight),
         )
+        .route("/browser/status", get(get_browser_status))
+        .route(
+            "/browser/recording",
+            post(set_browser_recording).options(browser_heartbeat_preflight),
+        )
         .route("/days/:day/routed", get(routed_events))
         .route("/events/:id/label", post(set_event_label))
         .route("/events/:id/dismiss", post(dismiss_event_handler))
@@ -2348,6 +2353,60 @@ async fn browser_heartbeat_preflight(headers: HeaderMap) -> Result<Response, Api
         .into_response())
 }
 
+fn browser_status(
+    conn: &Connection,
+    now: DateTime<Utc>,
+) -> Result<routing_contract::BrowserStatus> {
+    let offset = crate::tz::day_offset();
+    Ok(routing_contract::BrowserStatus {
+        in_work_hours: configured_work_hours().contains(now, offset),
+        recording_until: browser_ingest::recording_until(conn, now)?,
+        minutes_today: browser_ingest::minutes_today(conn, now, offset)?,
+        work_hours: configured_work_hours_raw(),
+    })
+}
+
+async fn get_browser_status(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let origin = require_extension_origin(&headers)?.to_string();
+    let status = with_conn(state, |c| browser_status(c, Utc::now())).await?;
+    Ok((
+        [(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, origin)],
+        Json(status),
+    )
+        .into_response())
+}
+
+#[derive(Deserialize)]
+struct RecordingRequest {
+    on: bool,
+}
+
+async fn set_browser_recording(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Json(request): Json<RecordingRequest>,
+) -> Result<Response, ApiError> {
+    let origin = require_extension_origin(&headers)?.to_string();
+    let hours = configured_work_hours();
+    let status = with_conn(state, move |c| {
+        let now = Utc::now();
+        let until = request
+            .on
+            .then(|| hours.auto_stop_at(now, crate::tz::day_offset()));
+        browser_ingest::set_recording(c, until)?;
+        browser_status(c, now)
+    })
+    .await?;
+    Ok((
+        [(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, origin)],
+        Json(status),
+    )
+        .into_response())
+}
+
 /// The Firefox add-on's heartbeat endpoint.
 async fn browser_heartbeat(
     State(state): State<Shared>,
@@ -2359,7 +2418,8 @@ async fn browser_heartbeat(
     let hours = configured_work_hours();
     let offset = crate::tz::day_offset();
     let outcome = with_conn(state, move |c| {
-        browser_ingest::ingest_heartbeat(c, &hb, &hours, offset)
+        let recording_until = browser_ingest::recording_until(c, Utc::now())?;
+        browser_ingest::ingest_heartbeat(c, &hb, &hours, offset, recording_until)
     })
     .await?;
 
@@ -5509,6 +5569,90 @@ mod tests {
             resp.headers().get("access-control-allow-origin").unwrap(),
             "moz-extension://abc-123"
         );
+    }
+
+    async fn browser_status_body(resp: Response) -> routing_contract::BrowserStatus {
+        let bytes = body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn browser_recording_roundtrip() {
+        let app = router(state_from_conn(open_memory().unwrap()));
+        let origin = "moz-extension://abc-123";
+        let set_recording = |body: &'static str| {
+            Request::post("/browser/recording")
+                .header("content-type", "application/json")
+                .header("origin", origin)
+                .body(Body::from(body))
+                .unwrap()
+        };
+        let get_status = || {
+            Request::get("/browser/status")
+                .header("origin", origin)
+                .body(Body::empty())
+                .unwrap()
+        };
+
+        let resp = app
+            .clone()
+            .oneshot(set_recording(r#"{"on":true}"#))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get("access-control-allow-origin").unwrap(),
+            origin
+        );
+        let on = browser_status_body(resp).await;
+        assert!(on.recording_until.is_some_and(|until| until > Utc::now()));
+
+        let resp = app.clone().oneshot(get_status()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            browser_status_body(resp).await.recording_until,
+            on.recording_until
+        );
+
+        let resp = app
+            .clone()
+            .oneshot(set_recording(r#"{"on":false}"#))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(browser_status_body(resp).await.recording_until, None);
+
+        let resp = app.clone().oneshot(get_status()).await.unwrap();
+        assert_eq!(browser_status_body(resp).await.recording_until, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn browser_status_requires_extension_origin() {
+        let app = router(state_from_conn(open_memory().unwrap()));
+        for origin in [None, Some("http://evil.test")] {
+            for (method, path, body) in [
+                ("GET", "/browser/status", ""),
+                ("POST", "/browser/recording", r#"{"on":true}"#),
+            ] {
+                let mut request = Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .header("content-type", "application/json");
+                if let Some(origin) = origin {
+                    request = request.header("origin", origin);
+                }
+                let resp = app
+                    .clone()
+                    .oneshot(request.body(Body::from(body)).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    resp.status(),
+                    StatusCode::FORBIDDEN,
+                    "{method} {path} origin {origin:?}"
+                );
+            }
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

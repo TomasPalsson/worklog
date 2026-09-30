@@ -29,6 +29,8 @@ pub const DEFAULT_ABSTAIN_MARGIN: f64 = 1.20;
 /// be, e.g. `1.10`.
 pub const RUNNER_UP_RATIO_KEY: &str = "WORKLOG_ROUTE_RUNNER_UP_RATIO";
 pub const DEFAULT_RUNNER_UP_RATIO: f64 = 1.10;
+/// `meta` key holding the RFC3339 UTC end of the add-on recording override.
+pub const BROWSER_RECORDING_UNTIL_KEY: &str = "browser_recording_until";
 /// Both ratios must lie in this closed range.
 pub const RATIO_RANGE: (f64, f64) = (1.0, 5.0);
 pub const VERDICT_GIT_URL: &str = "git+https://github.com/Heman10x-NGU/Verdict-open-jev";
@@ -42,6 +44,15 @@ pub const PERSONAL_CONTAINER: &str = "Personal";
 pub const IGNORE_FOLDER: &str = "__ignore__";
 /// Max recent fixes passed to the model as hints (FR-20).
 pub const MAX_HINT_EXAMPLES: usize = 5;
+
+/// What the add-on popup shows: recording state and today's tally.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BrowserStatus {
+    pub in_work_hours: bool,
+    pub recording_until: Option<DateTime<Utc>>,
+    pub minutes_today: i64,
+    pub work_hours: String,
+}
 
 /// Where an event's project label came from. Stored in
 /// `events.label_origin` as the lowercase string.

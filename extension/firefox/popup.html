@@ -1,22 +1,69 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
   <head>
     <meta charset="utf-8" />
-    <style>
-      body {
-        font-family: sans-serif;
-        width: 160px;
-        padding: 8px;
-      }
-      label {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-      }
-    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Worklog</title>
+    <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <label><input type="checkbox" id="paused" /> Paused</label>
-    <script src="popup.js"></script>
+<!--
+SEED KEY: cd25feea  (reroll 0) · mode operate · platform web
+WORLD: wayfinding-aicher — Wayfinding / Signage Systems (Otl Aicher) — A modular pictogram grid and one accent color per zone make legibility-at-a-glance the entire design system.
+ARCHETYPE: cardless-table — Real HTML tables and definition lists instead of div cards; separation from table rules, not box-shadow; sticky header row; row-level actions
+  first viewport: A toolbar/filter row, then data starts immediately; primary action: Row-level (inline icons/menu), not page-level buttons; scroll: Table scrolls internally with a sticky header
+  mobile: Rows become two-line list items with the 2-3 most important columns; the rest behind a row expand
+STRATEGY: restrained — one fixed accent color per category/zone from a small palette, applied only to that zone's chrome and icons
+PALETTE SEED: seed-15-5 · oklch(0.97 0.018 223) · #e9f8fe · role ground · text on it: black · A faintly blue-tinted paper stock, barely there (paper stock, faint blue tint)
+  avoid: a saturated accent competing with the restraint here
+DISPLAY FONT: System UI Stack (system-stack; weights OS-dependent, typically 100-900) · system stack (no webfont)
+BODY FONT: System UI Stack (system-stack; weights OS-dependent, typically 100-900) · system stack (no webfont)
+  type notes: a single geometric sans is used at every scale, matching the pictogram system's stroke weight; labels always pair with their pictogram, never icon-only.
+MOTION MOMENT: selecting a zone or category smoothly desaturates every other zone's accent color to neutral, isolating the active one, mirroring how airport signage isolates the relevant terminal · easing quick linear crossfade, 150-200ms · never: mixed icon styles animating differently from each other, decorative icon animation unrelated to selection state, parallax
+GRAMMAR:
+  - All pictograms derive from a single strict base-unit grid (same stroke weight, same construction module) — no imported icon set mixed in.
+  - Exactly one accent color is assigned per category/zone and used consistently for that zone's icons and chrome only.
+  - Every pictogram is paired with a text label at first use; icons never stand alone as the sole identifier.
+  - Legibility at a glance/small size is the binding constraint — no icon or label falls below a tested minimum size.
+  - The same base module that builds the pictograms also governs spacing and grid alignment across the whole layout.
+MATERIALS: extruded aluminum signage panel; silkscreen-printed pictogram plate; backlit acrylic directory panel
+ANTECEDENTS: the Otl Aicher pictogram system for the 1972 Munich Olympics; an international airport's gate-and-facility signage system; a hospital's color-coded department wayfinding wall map
+REFUSE: mixed icon styles (line, filled, illustrative) in one system; icon-only labels with no accompanying text at first use; more than one typeface family
+COSTUME TELL: illustrative, detailed icons with inconsistent stroke weights and an icon grid that doesn't line up — Aicher-lineage grammar depends on every pictogram sharing one strict construction module.
+SCENE: A developer at their desk glances at the toolbar popup between tasks to see if this browsing counts toward today's worklog; light or dark follows the OS (prefers-color-scheme).
+FIRST VIEWPORT: 320px-wide popup, no scroll: a signage status band on top (zone pictogram + the status word as the largest text, one line of detail); under it a definition list (Tab / Today / Time left) with tabular figures separated by hairline rules; the single filled primary button full-width at the bottom, the Open worklog link beside/below it.
+THESIS: The popup is a sign, not a settings panel: one status zone colour and one word answer 'am I being counted?' at a glance; it refuses the default toggle-checkbox-plus-card extension popup.
+-->
+    <svg width="0" height="0" aria-hidden="true" focusable="false" style="position: absolute">
+      <symbol id="icon-recording" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></symbol>
+      <symbol id="icon-paused" viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></symbol>
+      <symbol id="icon-outside" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></symbol>
+      <symbol id="icon-not_counted" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M6 6l12 12"/></symbol>
+      <symbol id="icon-daemon_down" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 16.5v.5"/></symbol>
+      <symbol id="icon-open" viewBox="0 0 24 24"><path d="M9 5h10v10M19 5L5 19"/></symbol>
+    </svg>
+    <main id="sign" data-status="loading">
+      <header class="band">
+        <svg class="pictogram" width="32" height="32" aria-hidden="true"><use id="pictogram" href="#icon-outside"/></svg>
+        <div>
+          <h1 id="headline">Worklog</h1>
+          <p id="detail" role="status">Checking status…</p>
+        </div>
+      </header>
+      <dl>
+        <div><dt>Tab</dt><dd id="tab">—</dd></div>
+        <div><dt>Today</dt><dd id="today">—</dd></div>
+        <div id="row-left" hidden><dt>Time left</dt><dd id="left"></dd></div>
+      </dl>
+      <div class="actions">
+        <button type="button" id="primary" hidden></button>
+        <button type="button" id="secondary" class="quiet" hidden></button>
+        <a href="http://127.0.0.1:3333" id="open" class="link">
+          <svg width="16" height="16" aria-hidden="true"><use href="#icon-open"/></svg>Open worklog
+        </a>
+      </div>
+    </main>
+    <script type="module" src="popup.js"></script>
   </body>
 </html>
