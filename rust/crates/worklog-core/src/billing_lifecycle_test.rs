@@ -194,3 +194,83 @@ fn card_worktree_clues_only_count_for_their_own_folder() {
     assert_eq!(other.len(), 1);
     assert_eq!(other[0].customer, "Globex");
 }
+
+fn seed_card(conn: &Connection, card: crate::digest_contract::BlockDigest) -> i64 {
+    let b = seed_block(conn, "2026-09-25T10:36:00+00:00", 960);
+    crate::block_digest::write_digest(conn, b, &card).unwrap();
+    b
+}
+
+#[test]
+fn title_and_path_counts_sum_across_cards_survive_compression() {
+    use crate::digest_contract::BlockDigest;
+    let c = open_memory().unwrap();
+    let a = seed_card(
+        &c,
+        BlockDigest {
+            invoice_titles: vec!["Alpha".into(), "Beta".into()],
+            invoice_title_counts: vec![1, 3],
+            paths: vec!["/p/a".into(), "/p/b".into()],
+            path_counts: vec![5, 1],
+            ..Default::default()
+        },
+    );
+    let b = seed_card(
+        &c,
+        BlockDigest {
+            invoice_titles: vec!["Alpha".into()],
+            invoice_title_counts: vec![1],
+            paths: vec!["/p/b".into()],
+            path_counts: vec![6],
+            ..Default::default()
+        },
+    );
+    // Beta 3 beats Alpha 1+1; /p/b 1+6 beats /p/a 5.
+    assert_eq!(
+        dominant_title_for_blocks(&c, &[a, b]).unwrap(),
+        Some("Beta".into())
+    );
+    assert_eq!(
+        distinct_paths_for_blocks(&c, &[a, b]).unwrap(),
+        vec!["/p/b".to_string(), "/p/a".to_string()]
+    );
+}
+
+#[test]
+fn v1_card_titles_weigh_one_each_survive_compression() {
+    let c = open_memory().unwrap();
+    let a = seed_card(
+        &c,
+        crate::digest_contract::BlockDigest {
+            invoice_titles: vec!["Zed".into(), "Alpha".into()],
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        dominant_title_for_blocks(&c, &[a]).unwrap(),
+        Some("Alpha".into())
+    );
+}
+
+#[test]
+fn live_and_card_counts_merge_survive_compression() {
+    let c = open_memory().unwrap();
+    let card = seed_card(
+        &c,
+        crate::digest_contract::BlockDigest {
+            paths: vec!["/p/a".into(), "/p/b".into()],
+            path_counts: vec![2, 2],
+            ..Default::default()
+        },
+    );
+    let live = seed_block(&c, "2026-09-25T11:36:00+00:00", 960);
+    seed_event(&c, live, "l1", "/p/b", "x");
+    seed_event(&c, live, "l2", "/p/c", "x");
+    seed_event(&c, live, "l3", "/p/c", "x");
+    seed_event(&c, live, "l4", "/p/c", "x");
+    // c 3, b 2+1, a 2
+    assert_eq!(
+        distinct_paths_for_blocks(&c, &[card, live]).unwrap(),
+        vec!["/p/c".to_string(), "/p/b".to_string(), "/p/a".to_string()]
+    );
+}
