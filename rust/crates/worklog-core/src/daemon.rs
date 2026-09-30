@@ -2359,7 +2359,7 @@ async fn browser_heartbeat(
     let hours = configured_work_hours();
     let offset = crate::tz::day_offset();
     let outcome = with_conn(state, move |c| {
-        browser_ingest::ingest_heartbeat(c, &hb, &hours, offset)
+        browser_ingest::ingest_heartbeat(c, &hb, &hours, offset, None)
     })
     .await?;
 
