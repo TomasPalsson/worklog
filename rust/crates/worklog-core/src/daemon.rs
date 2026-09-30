@@ -3680,7 +3680,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn compressed_day_allow_and_refuse() {
+    async fn compressed_day_allow_and_refuse_allows_hand_edits() {
         let refused = ApiError::from(anyhow::anyhow!(
             "{}: 2026-04-18",
             crate::digest_contract::DAY_COMPRESSED
@@ -3696,12 +3696,27 @@ mod tests {
 
         let state = state_with_block();
         compress_seeded_day(&state);
-        let app = router(state);
+        crate::billing_registry::upsert_customer(
+            &state.conn.try_lock().unwrap(),
+            &crate::billing_registry::Customer {
+                id: None,
+                name: "Acme".into(),
+                aliases: Vec::new(),
+            },
+        )
+        .unwrap();
+        let app = router(state.clone());
+        // Personal goes last: customer shares refuse a personal block.
         for (path, body) in [
             ("/blocks/1/description", json!({"description": "hand edit"})),
             ("/blocks/1/ticket", json!({"jira_issue": "PROJ-1"})),
-            ("/blocks/1/personal", json!({"is_personal": true})),
+            (
+                "/blocks/1/customer-shares",
+                json!({"rows": [{"customer": "Acme", "deild": null, "fraction": 1.0}]}),
+            ),
             ("/blocks/1/ignore", json!({"ignored": true})),
+            ("/export/2026-04-18/mark", json!({})),
+            ("/blocks/1/personal", json!({"is_personal": true})),
         ] {
             let resp = app
                 .clone()
@@ -3715,7 +3730,25 @@ mod tests {
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::OK, "{path}");
         }
+        {
+            let conn = state.conn.try_lock().unwrap();
+            let (exported, shares): (Option<String>, Option<String>) = conn
+                .query_row(
+                    "SELECT b.exported_at, s.rows_json FROM blocks b
+                       LEFT JOIN block_customer_shares s
+                         ON s.day = b.day AND s.started_at = b.started_at
+                      WHERE b.id = 1",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert!(exported.is_some(), "mark exported must stamp the block");
+            assert!(shares.unwrap().contains("Acme"), "split must be saved");
+        }
+    }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn compressed_day_allow_and_refuse_refuses_rebuilds() {
         let state = state_with_block();
         compress_seeded_day(&state);
         let window = || {
