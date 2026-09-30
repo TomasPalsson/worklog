@@ -1646,7 +1646,10 @@ fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bo
     // actually deleted), even though `today` above stays UTC-derived —
     // changing cmd_collect's own notion of "today" is a behaviour change
     // beyond this slice.
-    let since = collect_since(requested_since, worklog_core::tz::local_date(chrono::Utc::now()));
+    let since = collect_since(
+        requested_since,
+        worklog_core::tz::local_date(chrono::Utc::now()),
+    );
     if since != requested_since {
         tracing::debug!(
             requested = %requested_since,
@@ -2524,9 +2527,8 @@ fn print_day_empty_diagnostic<W: Write>(
     // 2. Day is past the billing-cycle pruner's cutoff, so any Claude Code
     //    activity for that day has already been compressed into cards. The
     //    boundary is the same horizon the compression run uses.
-    let cutoff = worklog_core::block_digest::horizon(worklog_core::tz::local_date(
-        chrono::Utc::now(),
-    ));
+    let cutoff =
+        worklog_core::block_digest::horizon(worklog_core::tz::local_date(chrono::Utc::now()));
     if day < cutoff {
         style::info(
             out,
@@ -4647,7 +4649,10 @@ mod tests {
     fn collect_since_clamps_to_the_horizon() {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 30).unwrap();
         let horizon = worklog_core::block_digest::horizon(today);
-        assert_eq!(collect_since(today - chrono::Duration::days(400), today), horizon);
+        assert_eq!(
+            collect_since(today - chrono::Duration::days(400), today),
+            horizon
+        );
         let recent = today - chrono::Duration::days(7);
         assert_eq!(collect_since(recent, today), recent);
     }

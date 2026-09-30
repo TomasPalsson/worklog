@@ -169,8 +169,10 @@ impl CardStats {
 }
 
 fn transcript_cache_rows(conn: &Connection) -> Result<i64> {
-    conn.query_row("SELECT COUNT(*) FROM transcript_file_cache", [], |r| r.get(0))
-        .context("counting transcript cache rows")
+    conn.query_row("SELECT COUNT(*) FROM transcript_file_cache", [], |r| {
+        r.get(0)
+    })
+    .context("counting transcript cache rows")
 }
 
 /// Builds the card of every block before `horizon` that has none, and —
@@ -941,7 +943,11 @@ mod tests {
         let big = insert_block(&conn, "2026-02-11", None, None, None);
         let third = insert_block(&conn, "2026-02-12", None, None, None);
         for i in 0..5 {
-            let e = insert_event(&conn, &format!("2026-02-11T09:0{i}:00+00:00"), &format!("e{i}"));
+            let e = insert_event(
+                &conn,
+                &format!("2026-02-11T09:0{i}:00+00:00"),
+                &format!("e{i}"),
+            );
             link(&conn, big, e);
         }
         let _ = (small, third);
@@ -1007,7 +1013,11 @@ mod tests {
         for age in [30, 45, 60, 89] {
             let day = (today - chrono::Duration::days(age)).to_string();
             let bid = insert_block(&conn, &day, None, None, None);
-            let e = insert_event(&conn, &format!("{day}T09:05:00+00:00"), &format!("age-{age}"));
+            let e = insert_event(
+                &conn,
+                &format!("{day}T09:05:00+00:00"),
+                &format!("age-{age}"),
+            );
             link(&conn, bid, e);
         }
         let opts = PruneOptions {
