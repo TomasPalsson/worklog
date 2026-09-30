@@ -43,24 +43,29 @@ pub fn build_digest(conn: &Connection, block_id: i64) -> Result<BlockDigest> {
     let events = repo::list_events_for_block(conn, block_id)?;
     let (eval_repos, eval_titles) = eval_evidence(&events);
 
+    let (paths, path_counts) = capped_ranked(
+        ranked_by_count(events.iter().filter_map(|e| e.project_path.clone())),
+        MAX_PATHS,
+        PROJECT_PATH_CHARS,
+    );
+    let (invoice_titles, invoice_title_counts) = capped_ranked(
+        ranked_by_count(
+            events
+                .iter()
+                .filter(|e| !e.source.starts_with("claude"))
+                .map(|e| e.title.trim().to_string()),
+        ),
+        MAX_INVOICE_TITLES,
+        INVOICE_TITLE_CHARS,
+    );
+
     let mut card = BlockDigest {
         eval_repos,
         eval_titles,
-        paths: capped(
-            ranked_by_count(events.iter().filter_map(|e| e.project_path.clone())),
-            MAX_PATHS,
-            PROJECT_PATH_CHARS,
-        ),
-        invoice_titles: capped(
-            ranked_by_count(
-                events
-                    .iter()
-                    .filter(|e| !e.source.starts_with("claude"))
-                    .map(|e| e.title.trim().to_string()),
-            ),
-            MAX_INVOICE_TITLES,
-            INVOICE_TITLE_CHARS,
-        ),
+        paths,
+        path_counts,
+        invoice_titles,
+        invoice_title_counts,
         event_count: events.len() as i64,
         events_by_source: count_by(events.iter().map(|e| e.source.clone())),
         session_count: events
@@ -80,8 +85,19 @@ pub fn build_digest(conn: &Connection, block_id: i64) -> Result<BlockDigest> {
         return Ok(card);
     }
 
-    card.folder = billing::work_folder_for_block(conn, block_id)?
-        .map(|folder| truncate(&folder, FOLDER_CHARS));
+    let folder = billing::work_folder_for_block(conn, block_id)?;
+    card.folder = folder.as_deref().map(|f| truncate(f, FOLDER_CHARS));
+    card.folder_path = folder.as_deref().and_then(|folder| {
+        ranked_by_count(
+            events
+                .iter()
+                .filter_map(|e| e.project_path.clone())
+                .filter(|p| billing::work_folder_for_path(p).as_deref() == Some(folder)),
+        )
+        .into_iter()
+        .next()
+        .map(|(path, _)| truncate(&path, PROJECT_PATH_CHARS))
+    });
     card.pinned_customer = pinned_customer(conn, &block, card.folder.as_deref())?;
     add_estimation_evidence(conn, block_id, &mut card)?;
     Ok(card)
@@ -205,15 +221,26 @@ fn count_by(items: impl Iterator<Item = String>) -> BTreeMap<String, i64> {
     counts
 }
 
-/// Distinct non-empty items, most frequent first, ties alphabetical.
-fn ranked_by_count(items: impl Iterator<Item = String>) -> Vec<String> {
+/// Distinct non-empty items with their counts, most frequent first, ties alphabetical.
+fn ranked_by_count(items: impl Iterator<Item = String>) -> Vec<(String, i64)> {
     let mut counts: HashMap<String, i64> = HashMap::new();
     for item in items.filter(|i| !i.is_empty()) {
         *counts.entry(item).or_insert(0) += 1;
     }
     let mut ranked: Vec<(String, i64)> = counts.into_iter().collect();
     ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    ranked.into_iter().map(|(item, _)| item).collect()
+    ranked
+}
+
+/// `capped` over a ranked list; counts are the uncapped ones, in list order.
+fn capped_ranked(
+    ranked: Vec<(String, i64)>,
+    max_items: usize,
+    max_chars: usize,
+) -> (Vec<String>, Vec<i64>) {
+    let counts = ranked.iter().take(max_items).map(|(_, n)| *n).collect();
+    let items = ranked.into_iter().map(|(item, _)| item).collect();
+    (capped(items, max_items, max_chars), counts)
 }
 
 /// Secrets redacted, then distinct in first-seen order. Redacting first
