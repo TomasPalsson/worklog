@@ -1,29 +1,15 @@
-//! Retention policy — billing-cycle-aligned, rail-free deletion.
+//! Compression run — blocks are kept, their raw rows are not.
 //!
-//! The owner bills in cycles that run `cycle_start_day` (default the
-//! 20th) through the day before `cycle_start_day` in the following
-//! month. Once a cycle's submission window has shut (the second business
-//! day after it ends, default the 23rd) nothing can add hours to it any
-//! more; its rows are kept one further cycle as evidence for the invoice,
-//! then dropped. `cutoff_for_cycle` derives that boundary; `purge_rows` deletes every row strictly older than it
-//! from `blocks` (and, by cascade, `block_events`), `events`, and
-//! `sessions`, plus every manually-picked (`external = 1`) `jira_tickets`
-//! entry no surviving block references any more.
-//!
-//! Deliberately rail-free: sync state (`tempo_worklog_id`), export state
-//! (`exported_at`), edit provenance (`estimated_by`), the pending-edit
-//! flag (`dirty`), and personal classification (`is_personal`) make no
-//! difference to what gets deleted. The previous version of this module
-//! exempted unsynced and hand-edited blocks; that exemption made
-//! personal blocks (which can never sync or export) immortal and made
-//! dirty blocks (which do carry a `tempo_worklog_id`) *more* likely to
-//! be deleted than protected. See spec 002-billing-cycle-pruner §1.1.
-//! Recoverability comes from a pre-prune snapshot ([`run`]'s `VACUUM
-//! INTO` step), not from exemptions.
-//!
-//! `blocks_deleted_unbilled` on [`PurgeReport`] exists so that loss is
-//! visible: it counts deleted blocks that carried neither a Tempo id nor
-//! an `exported_at` marker, i.e. work nobody will ever be paid for.
+//! Everything older than the horizon (`block_digest::horizon`, 90 days)
+//! is squeezed into one card per block, then the raw rows the card
+//! replaces are deleted: events, sessions, session pins, the transcript
+//! cache, and orphaned manually-picked (`external = 1`) `jira_tickets`
+//! entries. `blocks` are never deleted, so `tempo_worklog_id`,
+//! `exported_at`, `estimated_by`, `dirty` and `is_personal` are untouched
+//! by construction. [`purge_rows`] does the work in one transaction —
+//! a card that fails rolls the whole run back — and [`run`] snapshots the
+//! database first (`VACUUM INTO`), so recoverability comes from that
+//! snapshot.
 //!
 //! `billing_customers` and `billing_folder_map` are never touched by any
 //! cutoff — they are persistent, UI-edited registry tables, not time
@@ -45,9 +31,10 @@ pub const DEFAULT_RETENTION_DAYS: i64 = 30;
 /// [`LAST_REPORT_KEY`], [`last_prune`]) round-trips.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PurgeReport {
-    /// ISO `YYYY-MM-DD` — anything before this is fair game.
+    /// ISO `YYYY-MM-DD` — the horizon; anything before it is compressed.
     pub cutoff_date: String,
-    /// Blocks that were (or would be) deleted.
+    /// Always 0: blocks are never deleted. Kept so persisted reports
+    /// from before the compression run still deserialize.
     pub blocks_deleted: i64,
     /// Blocks that received (or would receive) a card this run.
     #[serde(default)]
@@ -55,16 +42,14 @@ pub struct PurgeReport {
     /// Total size in bytes of the card JSON written (or that would be).
     #[serde(default)]
     pub card_bytes: i64,
-    /// Subset of `blocks_deleted` that had NEITHER `tempo_worklog_id` NOR
-    /// `exported_at` — work that was never billed. Not a rail: these are
-    /// still deleted. It exists so the loss is visible instead of silent.
+    /// Always 0, like `blocks_deleted`.
     pub blocks_deleted_unbilled: i64,
     /// Events (orphan or cascaded) that were (or would be) deleted.
     pub events_deleted: i64,
     /// Sessions that were (or would be) deleted.
     pub sessions_deleted: i64,
     /// Manually-picked (`external = 1`) ticket cache entries deleted
-    /// because no surviving block references them any more.
+    /// because no block references them.
     /// Collector-owned (`external = 0`) entries are never touched.
     pub tickets_deleted: i64,
     /// Disk space reclaimed, in bytes. Left at the default of `0` by
@@ -1423,7 +1408,12 @@ mod tests {
 
         let filler = "x".repeat(2000);
         for i in 0..300 {
-            insert_bulky_event(&conn, "2026-02-10T09:00:00+00:00", &format!("bulk-{i}"), &filler);
+            insert_bulky_event(
+                &conn,
+                "2026-02-10T09:00:00+00:00",
+                &format!("bulk-{i}"),
+                &filler,
+            );
         }
 
         let size_before_delete = std::fs::metadata(&db_path).unwrap().len();

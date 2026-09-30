@@ -1642,7 +1642,8 @@ fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bo
     // actually deleted), even though `today` above stays UTC-derived —
     // changing cmd_collect's own notion of "today" is a behaviour change
     // beyond this slice.
-    let cutoff = worklog_core::block_digest::horizon(worklog_core::tz::local_date(chrono::Utc::now()));
+    let cutoff =
+        worklog_core::block_digest::horizon(worklog_core::tz::local_date(chrono::Utc::now()));
     let since = effective_since(requested_since, cutoff);
     if since != requested_since {
         tracing::debug!(
