@@ -307,3 +307,87 @@ fn personal_card_keeps_counts_but_has_no_folder_path() {
     assert_eq!(card.invoice_title_counts, vec![2]);
     assert_eq!(card.folder_path, None);
 }
+
+#[test]
+fn oversized_card_is_cut_to_every_cap() {
+    let conn = db::open_memory().unwrap();
+    conn.execute(
+        "INSERT INTO jira_tickets (key, summary) VALUES ('ABC-1', ?1)",
+        [format!("summary {}", "s".repeat(300))],
+    )
+    .unwrap();
+    let block_id = seed_block(&conn, false, Some("ABC-1"));
+    let mut minute = 0;
+    let mut next = || {
+        minute += 1;
+        minute
+    };
+    for index in 0..10 {
+        let title = format!("{index}-{}", "t".repeat(300));
+        seed_event(&conn, block_id, "github_commit", next(), &title, |event| {
+            event.project_path = Some(format!("/tmp/{index}{}", "d".repeat(300)));
+        });
+    }
+    for index in 0..7 {
+        let text = format!("prompt number {index} {}", "p".repeat(300));
+        seed_event(&conn, block_id, "claude_turn", next(), "turn", |event| {
+            event.raw_json = raw(&RawRecord::ClaudePrompt {
+                session_id: "s1".to_string(),
+                text,
+            });
+        });
+    }
+    seed_event(&conn, block_id, "claude_turn", next(), "turn", |event| {
+        event.raw_json = raw(&RawRecord::ClaudePrompt {
+            session_id: "s1".to_string(),
+            text: "too short".to_string(),
+        });
+    });
+    for index in 0..20 {
+        let tool = format!("Tool{}", index % 10);
+        let file = format!("/src/{index}{}", "f".repeat(300));
+        seed_event(&conn, block_id, "claude_tool", next(), "tool", |event| {
+            event.raw_json = raw(&RawRecord::ClaudeTool {
+                session_id: "s1".to_string(),
+                tool,
+                input: serde_json::json!({}),
+                output: None,
+                output_cut_bytes: 0,
+                files: vec![file],
+            });
+        });
+    }
+    for index in 0..5 {
+        let details = format!("branch {index}{}", "b".repeat(100));
+        seed_event(&conn, block_id, "claude_work", next(), "work", |event| {
+            event.details = Some(details);
+        });
+    }
+
+    let card = build_digest(&conn, block_id).unwrap();
+
+    let within = |items: &[String], max_items: usize, max_chars: usize| {
+        assert_eq!(items.len(), max_items, "{items:?}");
+        assert!(
+            items.iter().all(|s| s.chars().count() <= max_chars),
+            "{items:?}"
+        );
+    };
+    within(&card.eval_titles, MAX_EVAL_TITLES, EVAL_TITLE_CHARS);
+    within(&card.paths, MAX_PATHS, PROJECT_PATH_CHARS);
+    within(&card.invoice_titles, MAX_INVOICE_TITLES, INVOICE_TITLE_CHARS);
+    within(&card.branches, MAX_BRANCHES, BRANCH_CHARS);
+    within(&card.change_titles, MAX_CHANGE_TITLES, CHANGE_TITLE_CHARS);
+    within(&card.prompts, MAX_PROMPTS, PROMPT_CHARS);
+    within(&card.files, MAX_FILES, PROJECT_PATH_CHARS);
+    assert_eq!(card.prompt_count, 7, "the short prompt is dropped");
+    assert!(card.prompts.iter().all(|p| p.starts_with("prompt number")));
+    assert_eq!(card.tool_counts.len(), MAX_TOOLS);
+    assert_eq!(card.files_distinct, 20);
+    assert!(card.project_path.unwrap().chars().count() <= PROJECT_PATH_CHARS);
+    assert_eq!(card.folder.unwrap().chars().count(), FOLDER_CHARS);
+    assert_eq!(
+        card.jira_summary.unwrap().chars().count(),
+        JIRA_SUMMARY_CHARS
+    );
+}
