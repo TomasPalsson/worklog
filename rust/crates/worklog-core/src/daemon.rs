@@ -479,7 +479,7 @@ impl ApiError {
 impl<E: Into<anyhow::Error>> From<E> for ApiError {
     fn from(e: E) -> Self {
         let e = e.into();
-        if e.to_string().starts_with(DAY_COMPRESSED) {
+        if e.chain().any(|c| c.to_string().starts_with(DAY_COMPRESSED)) {
             Self::Conflict(e)
         } else {
             Self::Internal(e)
@@ -1583,6 +1583,7 @@ pub struct InferResponse {
 /// allocation save/delete handlers, which must re-run it so blocks
 /// reflect the owner's choice (or its removal) immediately.
 async fn reinfer_day(state: Shared, day: NaiveDate) -> Result<(usize, i64), ApiError> {
+    refuse_compressed(state.clone(), day).await?;
     // Route before building blocks (design decision 4, PR #41): three
     // phases, mirroring `run_estimate`, so the sqlite mutex is never held
     // across the (slow, network) classifier call.
@@ -1608,6 +1609,18 @@ async fn reinfer_day(state: Shared, day: NaiveDate) -> Result<(usize, i64), ApiE
     })
     .await?;
     Ok((count, minutes))
+}
+
+/// Checked before any write so a refused action leaves the day untouched.
+async fn refuse_compressed(state: Shared, day: NaiveDate) -> Result<(), ApiError> {
+    with_conn(state, move |c| {
+        if crate::block_digest::day_is_compressed(c, &day.to_string())? {
+            anyhow::bail!("{DAY_COMPRESSED}: {day}");
+        }
+        Ok(())
+    })
+    .await?;
+    Ok(())
 }
 
 async fn run_infer(
@@ -1661,6 +1674,7 @@ async fn save_allocation_handler(
         )));
     }
     validate_shares(&body.shares)?;
+    refuse_compressed(state.clone(), day_parsed).await?;
 
     let shares = body.shares.clone();
     with_conn(state.clone(), move |c| {
@@ -1713,6 +1727,7 @@ async fn delete_allocation_handler(
         .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{day}`: {e}")))?;
     let started_at = parse_allocation_ts(&body.started_at)?;
     let ended_at = parse_allocation_ts(&body.ended_at)?;
+    refuse_compressed(state.clone(), day_parsed).await?;
     with_conn(state.clone(), move |c| {
         overlaps::delete_allocation(c, day_parsed, started_at, ended_at)
     })
@@ -3700,6 +3715,67 @@ mod tests {
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::OK, "{path}");
         }
+
+        let state = state_with_block();
+        compress_seeded_day(&state);
+        let window = || {
+            Body::from(
+                serde_json::to_vec(&json!({
+                    "started_at": "2026-04-18T09:00:00+00:00",
+                    "ended_at": "2026-04-18T09:30:00+00:00",
+                    "shares": {"proj": 1.0},
+                }))
+                .unwrap(),
+            )
+        };
+        let app = router(state.clone());
+        for (path, body) in [
+            ("/blocks/1/estimate", Body::empty()),
+            (
+                "/infer",
+                Body::from(serde_json::to_vec(&json!({"day": "2026-04-18"})).unwrap()),
+            ),
+            (
+                "/estimate",
+                Body::from(serde_json::to_vec(&json!({"day": "2026-04-18"})).unwrap()),
+            ),
+            (
+                "/blocks/auto-merge",
+                Body::from(serde_json::to_vec(&json!({"day": "2026-04-18"})).unwrap()),
+            ),
+            ("/days/2026-04-18/allocations", window()),
+            ("/days/2026-04-18/allocations/delete", window()),
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::post(path)
+                        .header("content-type", "application/json")
+                        .body(body)
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::CONFLICT, "{path}");
+            let msg = read_json(resp).await["error"].as_str().unwrap().to_owned();
+            assert!(msg.starts_with("day is compressed"), "{path}: {msg}");
+        }
+        let rows: i64 = state
+            .conn
+            .try_lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM overlap_allocations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "refused allocation must not write");
+    }
+
+    #[test]
+    fn wrapped_refusal_still_conflicts() {
+        let e = anyhow::anyhow!("day is compressed: 2026-04-18").context("persist failed");
+        assert_eq!(
+            ApiError::from(e).into_response().status(),
+            StatusCode::CONFLICT
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
