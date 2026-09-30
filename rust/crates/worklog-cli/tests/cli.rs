@@ -821,7 +821,8 @@ fn db_purge_dry_run_reports() {
         "events deleted: 3",
         "sessions deleted: 0",
         "cache rows deleted: 0",
-        "bytes freed: n/a (dry run)",
+        "bytes freed: ~",
+        "(estimate)",
     ] {
         assert!(out.contains(needle), "missing {needle:?} in:\n{out}");
     }

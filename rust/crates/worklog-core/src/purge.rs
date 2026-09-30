@@ -915,6 +915,52 @@ mod tests {
         assert_eq!(dry.sessions_deleted, real.sessions_deleted);
     }
 
+    /// B7: a dry run estimates the bytes a real run frees from the pages its
+    /// deletes release, then rolls everything back — no table changes.
+    #[test]
+    fn compress_dry_run_estimates_bytes_freed() {
+        let conn = open_memory().unwrap();
+        insert_block(&conn, "2026-02-10", None, None, None);
+        let filler = "x".repeat(2000);
+        for i in 0..200 {
+            let id = format!("old-{i}");
+            let s = if i == 0 { "s1" } else { "s2" };
+            let eid = insert_event_with_session(&conn, "2026-02-10T09:05:00+00:00", &id, s);
+            conn.execute("UPDATE events SET title = ?1 WHERE id = ?2", params![filler, eid])
+                .unwrap();
+        }
+        insert_session(&conn, "s1", "2026-02-10T09:00:00+00:00");
+        insert_session_pin(&conn, "s1", "2026-02-10T09:00:00+00:00");
+        conn.execute(
+            "INSERT INTO transcript_file_cache
+                 (path, since_ts, until_ts, size, mtime_ns, claimed_uuids_json)
+             VALUES ('/t.jsonl', 0, 1, 1, 1, '[]')",
+            [],
+        )
+        .unwrap();
+        let tables = [
+            "blocks",
+            "events",
+            "sessions",
+            "block_digest",
+            "session_pins",
+            "transcript_file_cache",
+            "block_events",
+        ];
+        let before: Vec<i64> = tables.iter().map(|t| count(&conn, t)).collect();
+        let blocks_before = blocks_snapshot(&conn);
+
+        let dry = purge_rows(&conn, date("2026-06-20"), true).unwrap();
+
+        assert!(dry.dry_run);
+        assert_eq!(dry.events_deleted, 200);
+        assert!(dry.bytes_freed > 0, "bytes_freed was {}", dry.bytes_freed);
+        let after: Vec<i64> = tables.iter().map(|t| count(&conn, t)).collect();
+        assert_eq!(after, before);
+        assert_eq!(blocks_snapshot(&conn), blocks_before);
+        assert!(conn.is_autocommit());
+    }
+
     /// Spec section 3 error path: an unwritable snapshot leaves zero cards.
     #[test]
     fn compress_unwritable_snapshot_leaves_zero_cards() {
