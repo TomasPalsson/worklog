@@ -267,10 +267,9 @@ fn live_and_card_counts_merge_survive_compression() {
     seed_event(&c, live, "l1", "/p/b", "x");
     seed_event(&c, live, "l2", "/p/c", "x");
     seed_event(&c, live, "l3", "/p/c", "x");
-    seed_event(&c, live, "l4", "/p/c", "x");
-    // c 3, b 2+1, a 2
+    // b 2+1, a 2, c 2 (a/c tie breaks by path)
     assert_eq!(
         distinct_paths_for_blocks(&c, &[card, live]).unwrap(),
-        vec!["/p/c".to_string(), "/p/b".to_string(), "/p/a".to_string()]
+        vec!["/p/b".to_string(), "/p/a".to_string(), "/p/c".to_string()]
     );
 }

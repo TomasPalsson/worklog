@@ -359,12 +359,14 @@ pub(crate) fn submodule_repo_map_under(root: &std::path::Path) -> HashMap<String
 /// ticket titles are eligible.
 fn dominant_title_for_blocks(conn: &Connection, block_ids: &[i64]) -> Result<Option<String>> {
     let (cards, live_ids) = cards_and_live_ids(conn, block_ids)?;
-    // A carded block keeps only its ranked titles, so it casts one vote
-    // for its top title.
-    let mut titles: Vec<String> = cards
-        .iter()
-        .filter_map(|card| card.invoice_titles.first().cloned())
-        .collect();
+    let mut counts: HashMap<String, i64> = HashMap::new();
+    // A v1 card has titles but no counts; each title then weighs 1.
+    for card in &cards {
+        for (i, title) in card.invoice_titles.iter().enumerate() {
+            let weight = card.invoice_title_counts.get(i).copied().unwrap_or(1);
+            add_title_weight(&mut counts, title, weight);
+        }
+    }
     if !live_ids.is_empty() {
         let placeholders = vec!["?"; live_ids.len()].join(",");
         let sql = format!(
@@ -378,19 +380,21 @@ fn dominant_title_for_blocks(conn: &Connection, block_ids: &[i64]) -> Result<Opt
         let live_titles: Vec<String> = stmt
             .query_map(params_from_iter(live_ids.iter()), |r| r.get::<_, String>(0))?
             .collect::<std::result::Result<_, _>>()?;
-        titles.extend(live_titles);
-    }
-
-    let mut counts: HashMap<String, u32> = HashMap::new();
-    for title in titles {
-        let title = title.trim();
-        if !title.is_empty() {
-            *counts.entry(title.to_string()).or_insert(0) += 1;
+        for title in &live_titles {
+            add_title_weight(&mut counts, title, 1);
         }
     }
-    let mut ranked: Vec<(String, u32)> = counts.into_iter().collect();
+
+    let mut ranked: Vec<(String, i64)> = counts.into_iter().collect();
     ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     Ok(ranked.into_iter().next().map(|(title, _)| title))
+}
+
+fn add_title_weight(counts: &mut HashMap<String, i64>, title: &str, weight: i64) {
+    let title = title.trim();
+    if !title.is_empty() {
+        *counts.entry(title.to_string()).or_insert(0) += weight;
+    }
 }
 
 /// Distinct `project_path`s across a set of blocks' events, most-used
@@ -401,31 +405,35 @@ fn dominant_title_for_blocks(conn: &Connection, block_ids: &[i64]) -> Result<Opt
 fn distinct_paths_for_blocks(conn: &Connection, block_ids: &[i64]) -> Result<Vec<String>> {
     const MAX_PATHS: usize = 4;
     let (cards, live_ids) = cards_and_live_ids(conn, block_ids)?;
-    let mut paths: Vec<String> = Vec::new();
+    let mut counts: HashMap<String, i64> = HashMap::new();
     if !live_ids.is_empty() {
         let placeholders = vec!["?"; live_ids.len()].join(",");
         let sql = format!(
-            "SELECT e.project_path, COUNT(*) n
+            "SELECT e.project_path, COUNT(*)
                FROM events e
                JOIN block_events be ON be.event_id = e.id
               WHERE be.block_id IN ({placeholders})
                 AND e.project_path IS NOT NULL
-              GROUP BY e.project_path
-              ORDER BY n DESC, e.project_path
-              LIMIT {MAX_PATHS}"
+              GROUP BY e.project_path"
         );
         let mut stmt = conn.prepare(&sql)?;
-        paths = stmt
-            .query_map(params_from_iter(live_ids.iter()), |r| r.get::<_, String>(0))?
+        let live_rows = stmt
+            .query_map(params_from_iter(live_ids.iter()), |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
-    }
-    for path in cards.into_iter().flat_map(|card| card.paths) {
-        if !paths.contains(&path) {
-            paths.push(path);
+        for (path, n) in live_rows {
+            *counts.entry(path).or_insert(0) += n;
         }
     }
-    paths.truncate(MAX_PATHS);
-    Ok(paths)
+    for card in &cards {
+        for (path, n) in card.paths.iter().zip(&card.path_counts) {
+            *counts.entry(path.clone()).or_insert(0) += n;
+        }
+    }
+    let mut ranked: Vec<(String, i64)> = counts.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    Ok(ranked.into_iter().take(MAX_PATHS).map(|(p, _)| p).collect())
 }
 
 /// Splits `block_ids` into the cards of compressed blocks and the ids
