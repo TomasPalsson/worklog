@@ -676,8 +676,88 @@ fn pin_stores_a_known_customer() {
 
 // ─────────────────────────── `worklog eval --details` ───────────────────────────
 
-/// The verdict helper owns a fixed port, so the rendering is covered by
-/// unit tests in `eval_cmd`; here we only pin the flag on the binary.
+/// Answers one `/match` request on the helper's fixed port with `n` hits.
+fn fake_verdict(n: usize) -> (String, std::thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let handle = std::thread::spawn(move || {
+        let (mut sock, _) = listener.accept().unwrap();
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let read = sock.read(&mut chunk).unwrap();
+            buf.extend_from_slice(&chunk[..read]);
+            let text = String::from_utf8_lossy(&buf).to_string();
+            let Some((head, body)) = text.split_once("\r\n\r\n") else {
+                continue;
+            };
+            let len: usize = head
+                .to_lowercase()
+                .lines()
+                .find_map(|l| {
+                    l.strip_prefix("content-length:")
+                        .map(|v| v.trim().parse().unwrap())
+                })
+                .unwrap_or(0);
+            if body.len() >= len {
+                break;
+            }
+        }
+        let body = format!("{{\"matches\":{:?}}}", vec![true; n]);
+        write!(
+            sock,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+    });
+    (url, handle)
+}
+
+#[test]
+fn eval_details_prints_cards() {
+    use worklog_core::{block_digest::write_digest, db, digest_contract::BlockDigest};
+    let home = TempDir::new().unwrap();
+    cmd(&home).args(["db", "migrate"]).assert().success();
+    let conn = db::open(&home.path().join("worklog.db")).unwrap();
+    for (day, desc) in [("2026-01-05", "stored"), ("2026-01-06", "rebuilt")] {
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds, description)
+             VALUES (?1, ?1 || 'T09:00:00Z', ?1 || 'T10:00:00Z', 3600, ?2)",
+            rusqlite::params![day, desc],
+        )
+        .unwrap();
+    }
+    let stored = BlockDigest {
+        change_titles: vec!["Fix login bug".into()],
+        active_minutes: 7,
+        folder: Some("acme".into()),
+        ..BlockDigest::default()
+    };
+    write_digest(&conn, 1, &stored).unwrap();
+    drop(conn);
+
+    let (url, server) = fake_verdict(2);
+    let out = cmd(&home)
+        .env("WORKLOG_VERDICT_URL", url)
+        .args(["eval", "login", "--details"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    server.join().unwrap();
+    let out = String::from_utf8(out).unwrap();
+
+    let details = &out[out.find("rebuilt").expect("table row")..];
+    assert!(details.contains("change_titles: Fix login bug"), "{out}");
+    assert!(details.contains("active_minutes: 7"), "{out}");
+    assert!(details.contains("folder: acme"), "{out}");
+    // Block 2 has no stored card, so the fallback builds one from its events.
+    assert!(details.contains("active_minutes: 60"), "{out}");
+}
+
 #[test]
 fn eval_details_flag_is_documented() {
     let home = TempDir::new().unwrap();
