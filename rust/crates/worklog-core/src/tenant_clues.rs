@@ -113,14 +113,18 @@ fn clues_from_card(card: &BlockDigest, folder: &str, registry: &Registry) -> Vec
     else {
         return Vec::new();
     };
-    if card.folder.as_deref() != Some(folder) {
-        return Vec::new();
-    }
     let worktrees = card
         .paths
         .iter()
+        .filter(|path| billing::work_folder_for_path(path).as_deref() == Some(folder))
         .filter_map(|path| worktree_name(Some(path)));
-    card.branches
+    // Branches carry no folder on the card; only the dominant folder claims them.
+    let branches = if card.folder.as_deref() == Some(folder) {
+        card.branches.as_slice()
+    } else {
+        &[]
+    };
+    branches
         .iter()
         .map(String::as_str)
         .chain(worktrees)

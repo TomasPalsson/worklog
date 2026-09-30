@@ -155,3 +155,42 @@ fn pinned_customer_and_branch_clues_survive_compression() {
     assert_eq!(clues[0].customer, "Globex");
     assert_eq!(clues[0].strength, ClueStrength::Branch);
 }
+
+#[test]
+fn card_worktree_clues_only_count_for_their_own_folder() {
+    use crate::billing_registry::Customer;
+
+    let c = open_memory().unwrap();
+    let b = seed_block(&c, "2026-09-25T10:36:00+00:00", 960);
+    let card = crate::digest_contract::BlockDigest {
+        folder: Some("infra".into()),
+        paths: vec![
+            work("infra/.claude/worktrees/acme-fix"),
+            work("other/.claude/worktrees/globex-fix"),
+        ],
+        first_at: Some("2026-09-25T10:36:00+00:00".into()),
+        ..Default::default()
+    };
+    crate::block_digest::write_digest(&c, b, &card).unwrap();
+    let registry = Registry {
+        customers: ["Acme", "Globex"]
+            .iter()
+            .map(|name| Customer {
+                id: None,
+                name: (*name).to_string(),
+                aliases: Vec::new(),
+            })
+            .collect(),
+        folders: Vec::new(),
+    };
+    let clues =
+        crate::tenant_clues::clues_for_block(&c, b, "infra", &Default::default(), &registry)
+            .unwrap();
+    assert_eq!(clues.len(), 1);
+    assert_eq!(clues[0].customer, "Acme");
+    let other =
+        crate::tenant_clues::clues_for_block(&c, b, "other", &Default::default(), &registry)
+            .unwrap();
+    assert_eq!(other.len(), 1);
+    assert_eq!(other[0].customer, "Globex");
+}
