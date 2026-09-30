@@ -1475,6 +1475,14 @@ fn effective_since(requested: chrono::NaiveDate, cutoff: chrono::NaiveDate) -> c
     requested.max(cutoff)
 }
 
+fn collect_since(
+    requested: chrono::NaiveDate,
+    local_today: chrono::NaiveDate,
+) -> chrono::NaiveDate {
+    let _ = (requested, local_today);
+    unimplemented!()
+}
+
 /// True when `worklog collect <target>` should run `source`: either the
 /// umbrella `all`, or `target` naming `source` directly.
 fn wants(target: CollectTarget, source: CollectTarget) -> bool {
@@ -4643,6 +4651,17 @@ mod tests {
         let requested = chrono::NaiveDate::from_ymd_opt(2026, 7, 18).unwrap();
         let cutoff = chrono::NaiveDate::from_ymd_opt(2026, 6, 20).unwrap();
         assert_eq!(effective_since(requested, cutoff), requested);
+    }
+
+    /// FR-11: the collect window's start never reaches back past the
+    /// 90-day horizon of the local day.
+    #[test]
+    fn collect_since_clamps_to_the_horizon() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 30).unwrap();
+        let horizon = worklog_core::block_digest::horizon(today);
+        assert_eq!(collect_since(today - chrono::Duration::days(400), today), horizon);
+        let recent = today - chrono::Duration::days(7);
+        assert_eq!(collect_since(recent, today), recent);
     }
 
     /// Boundary: requested == cutoff must return that exact date, with no

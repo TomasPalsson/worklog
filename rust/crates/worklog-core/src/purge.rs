@@ -42,6 +42,15 @@ pub struct PurgeReport {
     /// Total size in bytes of the card JSON written (or that would be).
     #[serde(default)]
     pub card_bytes: i64,
+    /// Median size in bytes of the cards written this run (0 when none).
+    #[serde(default)]
+    pub card_bytes_median: i64,
+    /// Largest card written this run (0 when none).
+    #[serde(default)]
+    pub card_bytes_max: i64,
+    /// Transcript-cache rows deleted (or that would be).
+    #[serde(default)]
+    pub cache_rows_deleted: i64,
     /// Always 0, like `blocks_deleted`.
     pub blocks_deleted_unbilled: i64,
     /// Events (orphan or cascaded) that were (or would be) deleted.
@@ -894,6 +903,100 @@ mod tests {
         assert_eq!(count(&conn, "block_digest"), 0);
     }
 
+    /// FR-15: the report carries the median and max card size, and the
+    /// number of transcript-cache rows the run clears.
+    #[test]
+    fn compress_report_has_card_median_max_and_cache_rows() {
+        let conn = open_memory().unwrap();
+        let small = insert_block(&conn, "2026-02-10", None, None, None);
+        let big = insert_block(&conn, "2026-02-11", None, None, None);
+        let third = insert_block(&conn, "2026-02-12", None, None, None);
+        for i in 0..5 {
+            let e = insert_event(&conn, &format!("2026-02-11T09:0{i}:00+00:00"), &format!("e{i}"));
+            link(&conn, big, e);
+        }
+        let _ = (small, third);
+        for path in ["/a", "/b"] {
+            conn.execute(
+                "INSERT INTO transcript_file_cache
+                 (path, since_ts, until_ts, size, mtime_ns, claimed_uuids_json)
+                 VALUES (?1, 0, 1, 1, 1, '[]')",
+                [path],
+            )
+            .unwrap();
+        }
+        let dry = purge_rows(&conn, date("2026-06-20"), true).unwrap();
+        assert_eq!(dry.cache_rows_deleted, 2);
+        assert_eq!(count(&conn, "transcript_file_cache"), 2);
+
+        let report = purge_rows(&conn, date("2026-06-20"), false).unwrap();
+
+        let mut sizes: Vec<i64> = conn
+            .prepare("SELECT LENGTH(json) FROM block_digest ORDER BY LENGTH(json)")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(sizes.len(), 3);
+        assert_eq!(report.card_bytes_max, sizes.pop().unwrap());
+        assert_eq!(report.card_bytes_median, sizes[1]);
+        assert_eq!(report.cache_rows_deleted, 2);
+        assert_eq!(count(&conn, "transcript_file_cache"), 0);
+        assert_eq!(dry.card_bytes_max, report.card_bytes_max);
+    }
+
+    /// B7: a block on a surviving day keeps an event that started before
+    /// the horizon instant (local midnight in a non-UTC zone); an
+    /// unlinked event at the same instant goes.
+    #[test]
+    fn compress_block_spanning_midnight_keeps_its_events() {
+        let _g = crate::tz::test_env_lock();
+        std::env::set_var("WORKLOG_TZ", "-05:00");
+        let conn = open_memory().unwrap();
+        let bid = insert_block(&conn, "2026-06-20", None, None, None);
+        let linked = insert_event(&conn, "2026-06-20T03:00:00+00:00", "spanning");
+        link(&conn, bid, linked);
+        insert_event(&conn, "2026-06-20T03:00:00+00:00", "unlinked");
+
+        let report = purge_rows(&conn, date("2026-06-20"), false);
+        std::env::remove_var("WORKLOG_TZ");
+        let report = report.unwrap();
+
+        assert_eq!(report.events_deleted, 1);
+        assert_eq!(count(&conn, "events"), 1);
+        assert_eq!(count(&conn, "block_events"), 1);
+        assert_eq!(count(&conn, "block_digest"), 0);
+    }
+
+    /// B8/FR-16: with default cycle settings and blocks aged 30 to 89
+    /// days, nothing is carded and nothing is deleted.
+    #[test]
+    fn compress_default_cycle_settings_delete_no_block() {
+        let conn = open_memory().unwrap();
+        let today = chrono::Utc::now().date_naive();
+        for age in [30, 45, 60, 89] {
+            let day = (today - chrono::Duration::days(age)).to_string();
+            let bid = insert_block(&conn, &day, None, None, None);
+            let e = insert_event(&conn, &format!("{day}T09:05:00+00:00"), &format!("age-{age}"));
+            link(&conn, bid, e);
+        }
+        let opts = PruneOptions {
+            cutoff: crate::block_digest::horizon(today),
+            dry_run: false,
+            snapshot_to: None,
+            db_path: None,
+        };
+
+        let report = prune_if_due(&conn, &opts).unwrap().unwrap();
+
+        assert_eq!(report.blocks_carded, 0);
+        assert_eq!(report.blocks_deleted, 0);
+        assert_eq!(count(&conn, "blocks"), 4);
+        assert_eq!(count(&conn, "block_digest"), 0);
+        assert_eq!(count(&conn, "events"), 4);
+    }
+
     fn link(conn: &Connection, block_id: i64, event_id: i64) {
         conn.execute(
             "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
@@ -1674,6 +1777,9 @@ mod tests {
             blocks_deleted: 12,
             blocks_carded: 7,
             card_bytes: 900,
+            card_bytes_median: 100,
+            card_bytes_max: 400,
+            cache_rows_deleted: 5,
             blocks_deleted_unbilled: 3,
             events_deleted: 145,
             sessions_deleted: 4,
@@ -1691,6 +1797,9 @@ mod tests {
         assert_eq!(round_tripped.blocks_deleted, report.blocks_deleted);
         assert_eq!(round_tripped.blocks_carded, report.blocks_carded);
         assert_eq!(round_tripped.card_bytes, report.card_bytes);
+        assert_eq!(round_tripped.card_bytes_median, report.card_bytes_median);
+        assert_eq!(round_tripped.card_bytes_max, report.card_bytes_max);
+        assert_eq!(round_tripped.cache_rows_deleted, report.cache_rows_deleted);
         assert_eq!(
             round_tripped.blocks_deleted_unbilled,
             report.blocks_deleted_unbilled

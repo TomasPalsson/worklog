@@ -767,3 +767,91 @@ fn eval_details_flag_is_documented() {
         .success()
         .stdout(predicate::str::contains("--details"));
 }
+
+fn seed_old_block_with_events(home: &TempDir) {
+    use worklog_core::db;
+    cmd(home).args(["db", "migrate"]).assert().success();
+    let conn = db::open(&home.path().join("worklog.db")).unwrap();
+    conn.execute(
+        "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+         VALUES ('2020-01-05', '2020-01-05T09:00:00Z', '2020-01-05T10:00:00Z', 3600)",
+        [],
+    )
+    .unwrap();
+    for i in 0..3 {
+        conn.execute(
+            "INSERT INTO events (source, source_id, started_at, title)
+             VALUES ('github_commit', ?1, '2020-01-05T09:10:00Z', 'old commit')",
+            [format!("old-{i}")],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO block_events (block_id, event_id) VALUES (1, ?1)",
+            [i + 1],
+        )
+        .unwrap();
+    }
+}
+
+fn table_count(home: &TempDir, table: &str) -> i64 {
+    let conn = worklog_core::db::open(&home.path().join("worklog.db")).unwrap();
+    conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
+fn db_purge_dry_run_reports() {
+    let home = TempDir::new().unwrap();
+    seed_old_block_with_events(&home);
+
+    let out = cmd(&home)
+        .args(["db", "purge", "--dry-run"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let out = String::from_utf8(out).unwrap();
+
+    for needle in [
+        "horizon",
+        "blocks carded: 1",
+        "card bytes median:",
+        "max:",
+        "events deleted: 3",
+        "sessions deleted: 0",
+        "cache rows deleted: 0",
+        "bytes freed: n/a (dry run)",
+    ] {
+        assert!(out.contains(needle), "missing {needle:?} in:\n{out}");
+    }
+    assert_eq!(table_count(&home, "blocks"), 1);
+    assert_eq!(table_count(&home, "events"), 3);
+    assert_eq!(table_count(&home, "block_events"), 3);
+    assert_eq!(table_count(&home, "block_digest"), 0);
+}
+
+#[test]
+fn db_purge_rejects_days_below_one_and_changes_nothing() {
+    let home = TempDir::new().unwrap();
+    seed_old_block_with_events(&home);
+    for days in ["0", "-5"] {
+        cmd(&home)
+            .args(["db", "purge", &format!("--days={days}")])
+            .assert()
+            .failure();
+    }
+    assert_eq!(table_count(&home, "events"), 3);
+    assert_eq!(table_count(&home, "block_digest"), 0);
+}
+
+#[test]
+fn db_purge_help_says_blocks_are_never_deleted() {
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["db", "purge", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("never deleted"))
+        .stdout(predicate::str::contains("billing cycle").not());
+}
