@@ -247,3 +247,63 @@ fn eval_titles_stay_unscrubbed() {
     let card = build_digest(&conn, block_id).unwrap();
     assert_eq!(card.eval_titles, vec![title]);
 }
+
+#[test]
+fn card_counts_track_lists_before_caps() {
+    let conn = db::open_memory().unwrap();
+    let block_id = seed_commit_block(&conn);
+
+    let card = build_digest(&conn, block_id).unwrap();
+
+    assert_eq!(card.path_counts, vec![3, 2, 2, 2]);
+    assert_eq!(card.invoice_title_counts, vec![2, 1, 1, 1, 1]);
+    assert_eq!(card.folder_path.as_deref(), Some("/tmp/p2"));
+}
+
+#[test]
+fn folder_path_is_most_used_path_inside_the_winning_folder() {
+    let conn = db::open_memory().unwrap();
+    let block_id = seed_block(&conn, false, None);
+    let events = [
+        ("/tmp/proj/.claude/worktrees/b", "github_commit"),
+        ("/tmp/proj/.claude/worktrees/b", "github_commit"),
+        ("/tmp/proj/.claude/worktrees/a", "github_commit"),
+        ("/tmp/proj/.claude/worktrees/a", "claude_session"),
+        ("/tmp/other", "github_commit"),
+        ("/tmp/other", "github_commit"),
+        ("/tmp/other", "github_commit"),
+    ];
+    for (minute, (path, source)) in events.into_iter().enumerate() {
+        seed_event(&conn, block_id, source, minute, "same title", |event| {
+            event.project_path = Some(path.to_string());
+        });
+    }
+
+    let card = build_digest(&conn, block_id).unwrap();
+
+    assert_eq!(card.folder.as_deref(), Some("proj"));
+    assert_eq!(
+        card.folder_path.as_deref(),
+        Some("/tmp/proj/.claude/worktrees/a")
+    );
+    assert_eq!(card.invoice_titles, vec!["same title"]);
+    assert_eq!(card.invoice_title_counts, vec![6]);
+}
+
+#[test]
+fn personal_card_keeps_counts_but_has_no_folder_path() {
+    let conn = db::open_memory().unwrap();
+    let block_id = seed_block(&conn, true, None);
+    for minute in 0..2 {
+        seed_event(&conn, block_id, "shell", minute, "ls", |event| {
+            event.project_path = Some("/tmp/personal-project".to_string());
+        });
+    }
+
+    let card = build_digest(&conn, block_id).unwrap();
+
+    assert_eq!(card.paths, vec!["/tmp/personal-project"]);
+    assert_eq!(card.path_counts, vec![2]);
+    assert_eq!(card.invoice_title_counts, vec![2]);
+    assert_eq!(card.folder_path, None);
+}
