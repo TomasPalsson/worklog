@@ -343,13 +343,13 @@ pub fn socket_path() -> Result<PathBuf> {
     Ok(crate::paths::Paths::resolve()?.socket)
 }
 
-/// How often the daemon's billing-cycle-prune due-check runs — once on
+/// How often the daemon's compression due-check runs — once on
 /// start, then on this cadence forever after (spec 002 FR-023 / B39).
 /// Named + exported so a test can assert the value without waiting for
 /// it to elapse.
 pub const PRUNE_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 
-/// Spawn the daemon's periodic billing-cycle prune due-check: runs once
+/// Spawn the daemon's periodic compression due-check: runs once
 /// immediately, then every [`PRUNE_CHECK_INTERVAL`] thereafter, for as
 /// long as the returned handle lives. Skipped entirely — no db access,
 /// no path resolution — when [`crate::purge::pruning_enabled`] is

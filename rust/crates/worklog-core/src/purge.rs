@@ -22,10 +22,6 @@ use crate::block_digest;
 use crate::collectors::claude_transcript_cache;
 use rusqlite::{params, Connection, OptionalExtension};
 
-/// Default retention window for the `--days` CLI override. Unrelated to
-/// the billing cycle; a plain rolling window.
-pub const DEFAULT_RETENTION_DAYS: i64 = 30;
-
 /// What the purge did (or would have done, if `dry_run`). Deserialize is
 /// needed alongside Serialize so a report persisted to `meta` (see
 /// [`LAST_REPORT_KEY`], [`last_prune`]) round-trips.
@@ -151,9 +147,35 @@ const EVENT_IS_EXPIRED: &str = "e.started_at < ?3
      AND e.id NOT IN (SELECT event_id FROM block_events
                        WHERE block_id IN (SELECT id FROM blocks WHERE day >= ?2))";
 
+/// Size totals of the cards a run builds.
+#[derive(Default)]
+struct CardStats {
+    carded: i64,
+    bytes: i64,
+    median: i64,
+    max: i64,
+}
+
+impl CardStats {
+    fn of(mut sizes: Vec<i64>) -> Self {
+        sizes.sort_unstable();
+        CardStats {
+            carded: sizes.len() as i64,
+            bytes: sizes.iter().sum(),
+            median: sizes.get(sizes.len() / 2).copied().unwrap_or(0),
+            max: sizes.last().copied().unwrap_or(0),
+        }
+    }
+}
+
+fn transcript_cache_rows(conn: &Connection) -> Result<i64> {
+    conn.query_row("SELECT COUNT(*) FROM transcript_file_cache", [], |r| r.get(0))
+        .context("counting transcript cache rows")
+}
+
 /// Builds the card of every block before `horizon` that has none, and —
-/// unless `dry_run` — writes it. Returns `(blocks carded, card bytes)`.
-fn card_old_blocks(conn: &Connection, horizon_iso: &str, dry_run: bool) -> Result<(i64, i64)> {
+/// unless `dry_run` — writes it.
+fn card_old_blocks(conn: &Connection, horizon_iso: &str, dry_run: bool) -> Result<CardStats> {
     let ids: Vec<i64> = conn
         .prepare(
             "SELECT id FROM blocks
@@ -163,17 +185,17 @@ fn card_old_blocks(conn: &Connection, horizon_iso: &str, dry_run: bool) -> Resul
         .query_map(params![horizon_iso], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()
         .context("listing blocks past the horizon without a card")?;
-    let mut card_bytes = 0;
+    let mut sizes = Vec::with_capacity(ids.len());
     for &id in &ids {
         let card = block_digest::build_digest(conn, id)
             .with_context(|| format!("building the card for block {id}"))?;
-        card_bytes += serde_json::to_string(&card)?.len() as i64;
+        sizes.push(serde_json::to_string(&card)?.len() as i64);
         if !dry_run {
             block_digest::write_digest(conn, id, &card)
                 .with_context(|| format!("writing the card for block {id}"))?;
         }
     }
-    Ok((ids.len() as i64, card_bytes))
+    Ok(CardStats::of(sizes))
 }
 
 /// Compress everything before `horizon`: give every block on an older day
@@ -219,7 +241,7 @@ pub fn purge_rows(conn: &Connection, horizon: NaiveDate, dry_run: bool) -> Resul
     let bounds = params![instant_iso, horizon_iso, date_bound_iso];
 
     if dry_run {
-        let (blocks_carded, card_bytes) = card_old_blocks(conn, &horizon_iso, true)?;
+        let cards = card_old_blocks(conn, &horizon_iso, true)?;
         let events_deleted: i64 = conn
             .query_row(
                 &format!("SELECT COUNT(*) FROM events e WHERE {EVENT_IS_EXPIRED}"),
@@ -253,11 +275,14 @@ pub fn purge_rows(conn: &Connection, horizon: NaiveDate, dry_run: bool) -> Resul
             .context("counting orphaned external jira tickets")?;
         return Ok(PurgeReport {
             cutoff_date: horizon_iso,
-            blocks_carded,
-            card_bytes,
+            blocks_carded: cards.carded,
+            card_bytes: cards.bytes,
+            card_bytes_median: cards.median,
+            card_bytes_max: cards.max,
             events_deleted,
             sessions_deleted,
             tickets_deleted,
+            cache_rows_deleted: transcript_cache_rows(conn)?,
             dry_run,
             ..Default::default()
         });
@@ -268,7 +293,7 @@ pub fn purge_rows(conn: &Connection, horizon: NaiveDate, dry_run: bool) -> Resul
     // `execute()`'s rows-changed return value IS the count — no separate
     // counting query to drift from the delete.
     let tx = conn.unchecked_transaction()?;
-    let (blocks_carded, card_bytes) = card_old_blocks(&tx, &horizon_iso, false)?;
+    let cards = card_old_blocks(&tx, &horizon_iso, false)?;
     let events_deleted = tx
         .execute(
             &format!("DELETE FROM events WHERE id IN (SELECT e.id FROM events e WHERE {EVENT_IS_EXPIRED})"),
@@ -312,16 +337,20 @@ pub fn purge_rows(conn: &Connection, horizon: NaiveDate, dry_run: bool) -> Resul
     // A cached transcript fingerprint doesn't know the events delete above
     // just ran — without this, an untouched file stays skipped forever and
     // its deleted rows never come back on a later tick.
+    let cache_rows_deleted = transcript_cache_rows(&tx)?;
     claude_transcript_cache::clear_after_events_delete(&tx)?;
     tx.commit()?;
 
     Ok(PurgeReport {
         cutoff_date: horizon_iso,
-        blocks_carded,
-        card_bytes,
+        blocks_carded: cards.carded,
+        card_bytes: cards.bytes,
+        card_bytes_median: cards.median,
+        card_bytes_max: cards.max,
         events_deleted,
         sessions_deleted,
         tickets_deleted,
+        cache_rows_deleted,
         dry_run,
         ..Default::default()
     })
