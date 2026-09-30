@@ -867,7 +867,7 @@ fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
                     event_count: card.event_count,
                     confidence: crate::timeline::block_confidence(sources.len()).to_owned(),
                     sources,
-                    project_path: card.project_path,
+                    project_path: card.folder_path,
                     project: card.folder,
                     block,
                 }
