@@ -890,8 +890,11 @@ mod tests {
             let id = format!("old-{i}");
             let s = if i == 0 { "s1" } else { "s2" };
             let eid = insert_event_with_session(&conn, "2026-02-10T09:05:00+00:00", &id, s);
-            conn.execute("UPDATE events SET title = ?1 WHERE id = ?2", params![filler, eid])
-                .unwrap();
+            conn.execute(
+                "UPDATE events SET title = ?1 WHERE id = ?2",
+                params![filler, eid],
+            )
+            .unwrap();
         }
         insert_session(&conn, "s1", "2026-02-10T09:00:00+00:00");
         insert_session_pin(&conn, "s1", "2026-02-10T09:00:00+00:00");
