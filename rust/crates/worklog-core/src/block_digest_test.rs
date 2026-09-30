@@ -1,7 +1,6 @@
 use super::*;
 use crate::clues_contract::RawRecord;
 use crate::db;
-use crate::digest_contract::*;
 use rusqlite::params;
 
 const DAY: &str = "2026-04-18";
@@ -32,6 +31,13 @@ fn seed_event(
     );
     tweak(&mut event);
     let event_id = crate::repo::upsert_event(conn, &event).unwrap();
+    // upsert_event scrubs at storage time; write the raw values so the card's
+    // own scrubbing is what the tests exercise.
+    conn.execute(
+        "UPDATE events SET title = ?1, details = ?2, raw_json = ?3 WHERE id = ?4",
+        params![event.title, event.details, event.raw_json, event_id],
+    )
+    .unwrap();
     conn.execute(
         "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
         params![block_id, event_id],
