@@ -273,3 +273,48 @@ fn live_and_card_counts_merge_survive_compression() {
         vec!["/p/b".to_string(), "/p/a".to_string(), "/p/c".to_string()]
     );
 }
+
+#[test]
+fn multi_block_titles_survive_compression() {
+    let c = open_memory().unwrap();
+    let b1 = seed_block(&c, "2026-09-25T10:36:00+00:00", 960);
+    let b2 = seed_block(&c, "2026-09-25T11:36:00+00:00", 960);
+    let mut n = 0;
+    let mut add = |block: i64, title: &str, times: usize, path: &str| {
+        for _ in 0..times {
+            n += 1;
+            let mut ev = Event::minimal(
+                "github_commit",
+                &format!("gc{n}"),
+                "2026-09-25T10:40:00Z",
+                title,
+            );
+            ev.project_path = Some(path.to_string());
+            let eid = repository::upsert_event(&c, &ev).unwrap();
+            c.execute(
+                "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+                params![block, eid],
+            )
+            .unwrap();
+        }
+    };
+    // Per-card weight 1 would tie A 2 : B 2 and pick A; real counts give B 6.
+    add(b1, "A", 1, &work("apro-skills"));
+    add(b1, "B", 1, &work("apro-skills"));
+    add(b2, "A", 1, &work("apro-skills/api"));
+    add(b2, "B", 5, &work("apro-skills/api"));
+
+    let title = dominant_title_for_blocks(&c, &[b1, b2]).unwrap();
+    let paths = distinct_paths_for_blocks(&c, &[b1, b2]).unwrap();
+    assert_eq!(title, Some("B".into()));
+
+    for b in [b1, b2] {
+        let card = crate::block_digest::build_digest(&c, b).unwrap();
+        assert!(crate::block_digest::write_digest(&c, b, &card).unwrap());
+    }
+    c.execute("DELETE FROM block_events", []).unwrap();
+    c.execute("DELETE FROM events", []).unwrap();
+
+    assert_eq!(dominant_title_for_blocks(&c, &[b1, b2]).unwrap(), title);
+    assert_eq!(distinct_paths_for_blocks(&c, &[b1, b2]).unwrap(), paths);
+}
