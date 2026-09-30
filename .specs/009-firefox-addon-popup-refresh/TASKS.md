@@ -15,15 +15,15 @@ Spec: spec.md · Design: design.md · Base: 1a6034c · Route: dispatch · Test: 
 ## Phase 1 — Daemon recording override
 Goal: the daemon can record outside work hours on request, auto-stops next day at work end, and reports status.
 Independent test: `cargo test --manifest-path rust/Cargo.toml browser` — green with the add-on untouched.
-- [ ] T001 Recording override, auto-stop, minutes-today in core (B1, B2, B3); update the one caller at daemon.rs `ingest_heartbeat(c, &hb, &hours, offset)` to pass `None` so the crate compiles — files: rust/crates/worklog-core/src/routing_contract.rs, rust/crates/worklog-core/src/browser_ingest.rs, rust/crates/worklog-core/src/daemon.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core browser_ingest`
-- [ ] T002 GET /browser/status and POST/OPTIONS /browser/recording (B4) — files: rust/crates/worklog-core/src/daemon.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core browser_` — after: T001
+- [x] T001 Recording override, auto-stop, minutes-today in core (B1, B2, B3); update the one caller at daemon.rs `ingest_heartbeat(c, &hb, &hours, offset)` to pass `None` so the crate compiles — files: rust/crates/worklog-core/src/routing_contract.rs, rust/crates/worklog-core/src/browser_ingest.rs, rust/crates/worklog-core/src/daemon.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core browser_ingest` — done: cf78426
+- [x] T002 GET /browser/status and POST/OPTIONS /browser/recording (B4) — files: rust/crates/worklog-core/src/daemon.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core browser_` — after: T001 — done: ad74e67
 
 ## Phase 2 — Popup
 Goal: the popup shows status, counted tab, minutes today and time left, has one context-aware button, and links to the review site — designed with /design:vary, UX first.
 Independent test: `bun test extension/firefox` — green with the daemon stubbed.
-- [ ] T003 [P] Pure popup view-state + formatters (B5) — files: extension/firefox/popup-state.js, extension/firefox/popup-state.test.js — verify: `bun test extension/firefox/popup-state.test.js`
-- [ ] T004 Popup UI via /design:vary + background lastHeartbeat + skip reasons (B6) — files: extension/firefox/background.js, extension/firefox/heartbeat.js, extension/firefox/heartbeat.test.js, extension/firefox/popup.html, extension/firefox/popup.js, extension/firefox/popup.css, extension/firefox/README.md — verify: `bun test extension/firefox && npx --yes web-ext lint --source-dir extension/firefox` — after: T002, T003
-- [ ] CHK001 human-verify the popup end to end outside work hours — files: extension/firefox/popup.html — verify: human: user loads the add-on, presses Start recording, browses ~2 min, sees ~2 min today + time left, Open worklog opens http://127.0.0.1:3333, and says the popup feels clear at a glance — after: T004
+- [x] T003 [P] Pure popup view-state + formatters (B5) — files: extension/firefox/popup-state.js, extension/firefox/popup-state.test.js — verify: `bun test extension/firefox/popup-state.test.js` — done: 1f89ca0
+- [x] T004 Popup UI via /design:vary + background lastHeartbeat + skip reasons (B6) — files: extension/firefox/background.js, extension/firefox/heartbeat.js, extension/firefox/heartbeat.test.js, extension/firefox/popup.html, extension/firefox/popup.js, extension/firefox/popup.css, extension/firefox/README.md — verify: `bun test extension/firefox && npx --yes web-ext lint --source-dir extension/firefox` — after: T002, T003 — done: 0e60923
+- [x] CHK001 human-verify the popup end to end outside work hours — files: extension/firefox/popup.html — verify: human: user loads the add-on, presses Start recording, browses ~2 min, sees ~2 min today + time left, Open worklog opens http://127.0.0.1:3333, and says the popup feels clear at a glance — after: T004 — done: 0e60923 by user
 
 ## Gates
 - [ ] G001 project gates clean — files: . — verify: `flow check --fix`
