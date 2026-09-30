@@ -1,3 +1,5 @@
+Approved: 2026-09-30 by user
+Base: 98bbdf7
 # Tasks — Compress blocks after 90 days
 Spec: spec.md · Design: design.md · Base: e5aa122 · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && (cd web && bun test)`
 
