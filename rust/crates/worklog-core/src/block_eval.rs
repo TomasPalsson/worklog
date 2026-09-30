@@ -120,6 +120,9 @@ fn block_state(conn: &Connection, block: &Block) -> Result<Value> {
             titles.push(title);
         }
     }
+    // Arrays + nulls, not flat " | "-joined strings: hand-scored on 137
+    // real blocks, flat strings caught one more right block but six
+    // wrong ones (~2h45m of false time); this shape had none wrong.
     Ok(json!({
         "description": block.description,
         "jira_issue": block.jira_issue,
