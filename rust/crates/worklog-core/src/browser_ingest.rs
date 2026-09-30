@@ -461,6 +461,19 @@ mod tests {
     }
 
     #[test]
+    fn recording_override_survives_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worklog.db");
+        let now = saturday_noon();
+        let until = now + Duration::hours(2);
+        let conn = db::open(&path).unwrap();
+        set_recording(&conn, Some(until)).unwrap();
+        drop(conn);
+        let reopened = db::open(&path).unwrap();
+        assert_eq!(recording_until(&reopened, now).unwrap(), Some(until));
+    }
+
+    #[test]
     fn recording_until_ignores_garbage() {
         let conn = db::open_memory().unwrap();
         meta_set(&conn, BROWSER_RECORDING_UNTIL_KEY, "not a date").unwrap();
