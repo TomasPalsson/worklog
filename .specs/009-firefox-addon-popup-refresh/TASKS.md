@@ -1,5 +1,6 @@
+Approved: 2026-09-30 by user
 # Tasks — Firefox add-on popup refresh
-Spec: spec.md · Design: design.md · Base: ca57013 · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && bun test extension/firefox`
+Spec: spec.md · Design: design.md · Base: 1a6034c · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && bun test extension/firefox`
 
 ## Behaviors
 | ID | Given / When / Then | Task | Proven by |
