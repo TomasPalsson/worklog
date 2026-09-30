@@ -349,6 +349,16 @@ CREATE TABLE IF NOT EXISTS session_pins (
 
 CREATE INDEX IF NOT EXISTS idx_session_pins_branch ON session_pins(folder, branch, from_at);
 
+-- The card kept for a block after its raw events are deleted (spec 010).
+-- `json` is a digest_contract::BlockDigest. A card is written once and
+-- never replaced.
+CREATE TABLE IF NOT EXISTS block_digest (
+    block_id INTEGER PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE,
+    version INTEGER NOT NULL,
+    built_at TEXT NOT NULL,
+    json TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS transcript_file_cache (
     path TEXT NOT NULL,
     since_ts INTEGER NOT NULL,
