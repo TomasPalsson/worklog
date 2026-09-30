@@ -44,6 +44,7 @@ Goal: once a day, everything older than 90 days is squeezed into cards and the r
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core purge` — green.
 - [x] T006 compression run replaces block deletion (B7, B8) — files: rust/crates/worklog-core/src/purge.rs, rust/crates/worklog-core/src/daemon.rs, rust/crates/worklog-cli/src/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml -- purge compress effective_since` — after: T002, T003, T004, T007, T009, T010 — done: 3312c64
 - [x] T013 dry-run estimates bytes freed (B7) — files: rust/crates/worklog-core/src/purge.rs, rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-cli/tests/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml -- compress_dry_run db_purge_dry_run` — after: T006 — done: d1832e1
+- [x] T014 tenant pin tests take the tz env lock (flake: t9 sets WORKLOG_TZ=-23:59 while they read it) — files: rust/crates/worklog-core/src/tenant_split_test.rs, rust/crates/worklog-core/src/tenant_shares_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib -- tenant_split tenant_shares` — after: T013 — done: 54ee613
 - [x] CHK001 human-verify on a copy of your real database — files: rust/crates/worklog-core/src/purge.rs — verify: human: on a copy with `--days 3`, the dry-run shows card sizes (median ≤ 1 KB) and freed bytes, and one `worklog eval` query gives the same total before and after compressing — after: T006, T013 — done: d1832e1 by user
 
 ## Gates
