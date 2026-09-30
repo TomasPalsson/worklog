@@ -102,3 +102,7 @@ THE FIVE   as T001.
 ## Contract for T010 — day summary shows the card's folder path
 CALLS      stitch_day_summary: carded block → `project_path: card.folder_path` (not `card.project_path`, which stays the personal-classify input); live path unchanged.
 THE FIVE   as T001.
+
+## Contract for T013 — dry-run estimates bytes freed
+CALLS      purge::purge_rows(dry_run = true) runs the SAME transaction body as the real run (cards, then every §4.3 delete), reads `PRAGMA freelist_count` before and after the deletes, sets `bytes_freed = (after − before) × PRAGMA page_size` (floor 0), then ROLLS BACK — never commits; the separate dry-run COUNT(*) queries are deleted (the real path's counts are reused). `run()` still skips snapshot and VACUUM on dry-run and must keep the estimate. CLI prints `bytes freed: ~N (estimate)` on dry-run instead of `n/a (dry run)`.
+THE FIVE   as T001.
