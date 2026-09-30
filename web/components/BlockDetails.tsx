@@ -75,6 +75,10 @@ function DigestCard({ digest }: { digest: BlockDigest }) {
 }
 
 export function BlockDetails({ rows, digest }: { rows: DetailRow[]; digest?: BlockDigest | null }) {
+  return rows.length === 0 && digest ? <DigestCard digest={digest} /> : <BlockTimeline rows={rows} />;
+}
+
+function BlockTimeline({ rows }: { rows: DetailRow[] }) {
   const timeline = useMemo(() => buildTimeline(rows), [rows]);
   const sources = useMemo(() => sourcesPresent(timeline), [timeline]);
   const counts = useMemo(() => countsBySource(timeline), [timeline]);
@@ -84,8 +88,6 @@ export function BlockDetails({ rows, digest }: { rows: DetailRow[]; digest?: Blo
   const [allOpen, setAllOpen] = useState<boolean | null>(null);
   const folded = foldRepeats(filterTimeline(timeline, enabled), itemKey);
   const hasSessions = timeline.some((item) => item.kind === "session");
-
-  if (rows.length === 0 && digest) return <DigestCard digest={digest} />;
 
   const toggle = (source: SourceKind) =>
     setEnabled((prev) => {
