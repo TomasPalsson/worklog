@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 pub const HORIZON_DAYS: i64 = 90;
 
 /// Bumped only if the card shape changes; stored per row.
-pub const DIGEST_VERSION: i64 = 1;
+pub const DIGEST_VERSION: i64 = 2;
 
 /// Error text every refusal on a compressed day uses (CLI + daemon).
 pub const DAY_COMPRESSED: &str = "day is compressed";
@@ -45,7 +45,15 @@ pub struct BlockDigest {
     pub folder: Option<String>,
     pub project_path: Option<String>,
     pub paths: Vec<String>,
+    /// Events per entry of `paths`, same order, so several cards can be
+    /// summed the way billing counts live events.
+    pub path_counts: Vec<i64>,
     pub invoice_titles: Vec<String>,
+    /// Events per entry of `invoice_titles`, same order.
+    pub invoice_title_counts: Vec<i64>,
+    /// Most-used path whose project root is `folder` (ties: smallest);
+    /// what the day summary shows. `None` when no path maps to `folder`.
+    pub folder_path: Option<String>,
     pub pinned_customer: Option<String>,
     // --- day summary / detail panel
     pub event_count: i64,

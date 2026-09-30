@@ -89,3 +89,16 @@ THE FIVE   as T001.
 ## Contract for T007 — eval prints cards
 CALLS      `worklog eval "<q>" --details` → after the table, per matched block: day, time, then non-empty card fields (change_titles, prompts, branches, active_minutes, folder)
 THE FIVE   as T001.
+
+## Contract for T008 — card keeps counts and the folder's path
+CONTRACT   rust/crates/worklog-core/src/digest_contract.rs (DIGEST_VERSION 2: path_counts, invoice_title_counts, folder_path) — already edited by the orchestrator; import, never edit.
+CALLS      block_digest builder fills `path_counts[i]` = events carrying `paths[i]`, `invoice_title_counts[i]` = eligible events (source not `claude%`, trimmed title) carrying `invoice_titles[i]`, both before any cap and in list order; `folder_path` = most-used `project_path` among the block's events with `billing::work_folder_for_path(p) == folder` (ties: lexicographically smallest), `None` when none; same stage-2 rule as daemon `stitch_day_summary`. Personal blocks: counts and folder_path follow the same rules as paths/project_path (not estimation fields).
+THE FIVE   as T001.
+
+## Contract for T009 — billing sums card counts
+CALLS      billing::dominant_title_for_blocks adds each card's `invoice_titles[i]` with weight `invoice_title_counts[i]` (weight 1 when the counts vec is shorter — a v1 card) to the live per-event counts, then the existing count-desc/title-asc ranking; distinct_paths_for_blocks merges live `(path, COUNT(*))` rows (no SQL LIMIT) with each card's `(paths[i], path_counts[i])`, sums, ranks count-desc/path-asc, truncates to MAX_PATHS.
+THE FIVE   as T001.
+
+## Contract for T010 — day summary shows the card's folder path
+CALLS      stitch_day_summary: carded block → `project_path: card.folder_path` (not `card.project_path`, which stays the personal-classify input); live path unchanged.
+THE FIVE   as T001.

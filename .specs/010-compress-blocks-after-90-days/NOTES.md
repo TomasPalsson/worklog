@@ -1,2 +1,5 @@
 Discovered: T001 review minors — card caps for prompts/branches/files/tools untested; invoice-title `claude` source filter is case-sensitive vs billing's LIKE; files reuse PROJECT_PATH_CHARS — defer
 Discovered: T001 review F2 (card paths drop '' vs billing IS NOT NULL) re-scored 20, dropped — no writer stores '' (repo.rs COALESCE)
+Ruling: card v1 lost cross-block billing parity (one vote per card for the invoice title; unranked path merge) and the day-summary path (folder-first vs raw dominant) — fixed by DIGEST_VERSION 2 counts + folder_path (T008–T010); residual gap: a title outside a block's top 5 or past 120 chars can still change a multi-block line's title — accepted, cost: invoice text wording on rare multi-block lines
+Ruling: T003 workflow review diff was empty (review-package artifact bug), finding parked by the ladder — T003 code is covered again by the gating whole-branch review
+Discovered: T004 Tempo sync on a compressed day has no allow test (no Tempo mock in daemon tests) — defer
