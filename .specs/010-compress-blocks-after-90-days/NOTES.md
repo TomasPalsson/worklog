@@ -10,3 +10,4 @@ Discovered: wave T005/T009/T010 review — dropped after re-score (<80): getBloc
 Discovered: billing zips card paths with path_counts, so a card with paths but no counts drops its paths (titles fall back to weight 1) — latent, no v1 card shipped — defer
 Discovered: daemon.rs is 6480 lines (size-guard max 400), pre-existing — defer
 Discovered: T006 review minors — transcript cache still cleared wholesale (spec §4.3 says by window); b26 'delete must not have run' block-count assert now vacuous; block_service.rs:186 doc still says purge deletes blocks; web SettingsFormSections.tsx:99 text says data is deleted at billing-cycle close — defer
+Discovered: T013 review minors — purge.rs docs at ~60-68, ~340-342, ~859 still say dry-run writes nothing / bytes_freed stays 0 (now: writes then rolls back, returns estimate); dry-run now takes the SQLite write lock on the live DB — fold doc fix into gating fix dispatch
