@@ -49,6 +49,6 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core pu
 - [x] CHK001 human-verify on a copy of your real database — files: rust/crates/worklog-core/src/purge.rs — verify: human: on a copy with `--days 3`, the dry-run shows card sizes (median ≤ 1 KB) and freed bytes, and one `worklog eval` query gives the same total before and after compressing — after: T006, T013 — done: d1832e1 by user
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `flow check --fix`
-- [ ] G002 branch review clean — files: . — verify: `flow pass`
-- [ ] G003 verification evidence exists — files: . — verify: `test -s verify/`
+- [x] G001 project gates clean — files: . — verify: `flow check --fix` — done: 5857066
+- [x] G002 branch review clean — files: . — verify: `flow pass` — done: 5857066
+- [x] G003 verification evidence exists — files: . — verify: `test -s verify/` — done: 5857066
