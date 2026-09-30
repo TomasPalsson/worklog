@@ -303,6 +303,43 @@ fn infer_on_empty_day_prints_zero_blocks() {
 }
 
 #[test]
+fn compressed_day_exits_2() {
+    let home = TempDir::new().unwrap();
+    cmd(&home).args(["db", "migrate"]).assert().success();
+    let conn = rusqlite::Connection::open(home.path().join("worklog.db")).unwrap();
+    conn.execute(
+        "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+         VALUES ('2026-01-05', '2026-01-05T09:00:00+00:00', '2026-01-05T10:00:00+00:00', 3600)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO block_digest (block_id, version, built_at, json)
+         VALUES (last_insert_rowid(), 1, '2026-01-06T00:00:00Z', '{}')",
+        [],
+    )
+    .unwrap();
+    let dump = |c: &rusqlite::Connection| -> Vec<(i64, String, i64)> {
+        let mut st = c
+            .prepare("SELECT id, started_at, duration_seconds FROM blocks ORDER BY id")
+            .unwrap();
+        let rows = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap();
+        rows.map(Result::unwrap).collect()
+    };
+    let before = dump(&conn);
+    cmd(&home)
+        .args(["infer", "--day", "2026-01-05"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            worklog_core::digest_contract::DAY_COMPRESSED,
+        ));
+    assert_eq!(dump(&conn), before);
+}
+
+#[test]
 fn estimate_errors_without_db() {
     let home = TempDir::new().unwrap();
     cmd(&home)
@@ -672,4 +709,187 @@ fn pin_stores_a_known_customer() {
         .success()
         .stdout(predicate::str::contains("Pinned"))
         .stdout(predicate::str::contains("APRÓ"));
+}
+
+// ─────────────────────────── `worklog eval --details` ───────────────────────────
+
+/// Answers one `/match` request on the helper's fixed port with `n` hits.
+fn fake_verdict(n: usize) -> (String, std::thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let handle = std::thread::spawn(move || {
+        let (mut sock, _) = listener.accept().unwrap();
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let read = sock.read(&mut chunk).unwrap();
+            buf.extend_from_slice(&chunk[..read]);
+            let text = String::from_utf8_lossy(&buf).to_string();
+            let Some((head, body)) = text.split_once("\r\n\r\n") else {
+                continue;
+            };
+            let len: usize = head
+                .to_lowercase()
+                .lines()
+                .find_map(|l| {
+                    l.strip_prefix("content-length:")
+                        .map(|v| v.trim().parse().unwrap())
+                })
+                .unwrap_or(0);
+            if body.len() >= len {
+                break;
+            }
+        }
+        let body = format!("{{\"matches\":{:?}}}", vec![true; n]);
+        write!(
+            sock,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+    });
+    (url, handle)
+}
+
+#[test]
+fn eval_details_prints_cards() {
+    use worklog_core::{block_digest::write_digest, db, digest_contract::BlockDigest};
+    let home = TempDir::new().unwrap();
+    cmd(&home).args(["db", "migrate"]).assert().success();
+    let conn = db::open(&home.path().join("worklog.db")).unwrap();
+    for (day, desc) in [("2026-01-05", "stored"), ("2026-01-06", "rebuilt")] {
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds, description)
+             VALUES (?1, ?1 || 'T09:00:00Z', ?1 || 'T10:00:00Z', 3600, ?2)",
+            rusqlite::params![day, desc],
+        )
+        .unwrap();
+    }
+    let stored = BlockDigest {
+        change_titles: vec!["Fix login bug".into()],
+        active_minutes: 7,
+        folder: Some("acme".into()),
+        ..BlockDigest::default()
+    };
+    write_digest(&conn, 1, &stored).unwrap();
+    drop(conn);
+
+    let (url, server) = fake_verdict(2);
+    let out = cmd(&home)
+        .env("WORKLOG_VERDICT_URL", url)
+        .args(["eval", "login", "--details"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    server.join().unwrap();
+    let out = String::from_utf8(out).unwrap();
+
+    let details = &out[out.find("rebuilt").expect("table row")..];
+    assert!(details.contains("change_titles: Fix login bug"), "{out}");
+    assert!(details.contains("active_minutes: 7"), "{out}");
+    assert!(details.contains("folder: acme"), "{out}");
+    // Block 2 has no stored card, so the fallback builds one from its events.
+    assert!(details.contains("active_minutes: 60"), "{out}");
+}
+
+#[test]
+fn eval_details_flag_is_documented() {
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["eval", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--details"));
+}
+
+fn seed_old_block_with_events(home: &TempDir) {
+    use worklog_core::db;
+    cmd(home).args(["db", "migrate"]).assert().success();
+    let conn = db::open(&home.path().join("worklog.db")).unwrap();
+    conn.execute(
+        "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+         VALUES ('2020-01-05', '2020-01-05T09:00:00Z', '2020-01-05T10:00:00Z', 3600)",
+        [],
+    )
+    .unwrap();
+    for i in 0..3 {
+        conn.execute(
+            "INSERT INTO events (source, source_id, started_at, title)
+             VALUES ('github_commit', ?1, '2020-01-05T09:10:00Z', 'old commit')",
+            [format!("old-{i}")],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO block_events (block_id, event_id) VALUES (1, ?1)",
+            [i + 1],
+        )
+        .unwrap();
+    }
+}
+
+fn table_count(home: &TempDir, table: &str) -> i64 {
+    let conn = worklog_core::db::open(&home.path().join("worklog.db")).unwrap();
+    conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
+fn db_purge_dry_run_reports() {
+    let home = TempDir::new().unwrap();
+    seed_old_block_with_events(&home);
+
+    let out = cmd(&home)
+        .args(["db", "purge", "--dry-run"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let out = String::from_utf8(out).unwrap();
+
+    for needle in [
+        "horizon",
+        "blocks carded: 1",
+        "card bytes median:",
+        "max:",
+        "events deleted: 3",
+        "sessions deleted: 0",
+        "cache rows deleted: 0",
+        "bytes freed: ~",
+        "(estimate)",
+    ] {
+        assert!(out.contains(needle), "missing {needle:?} in:\n{out}");
+    }
+    assert_eq!(table_count(&home, "blocks"), 1);
+    assert_eq!(table_count(&home, "events"), 3);
+    assert_eq!(table_count(&home, "block_events"), 3);
+    assert_eq!(table_count(&home, "block_digest"), 0);
+}
+
+#[test]
+fn db_purge_rejects_days_below_one_and_changes_nothing() {
+    let home = TempDir::new().unwrap();
+    seed_old_block_with_events(&home);
+    for days in ["0", "-5"] {
+        cmd(&home)
+            .args(["db", "purge", &format!("--days={days}")])
+            .assert()
+            .failure();
+    }
+    assert_eq!(table_count(&home, "events"), 3);
+    assert_eq!(table_count(&home, "block_digest"), 0);
+}
+
+#[test]
+fn db_purge_help_says_blocks_are_never_deleted() {
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["db", "purge", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("never deleted"))
+        .stdout(predicate::str::contains("billing cycle").not());
 }

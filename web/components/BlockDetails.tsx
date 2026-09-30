@@ -18,6 +18,7 @@ import {
 } from "@/lib/detailRows";
 import { foldRepeats, rowText, type RowText } from "@/lib/detailText";
 import { formatEventTime } from "@/lib/format-event";
+import type { BlockDigest } from "@/lib/types";
 import { SessionCard } from "./BlockDetailsSession";
 import { SOURCE_ICON } from "./SourceIcon";
 
@@ -52,7 +53,32 @@ function itemKey(item: TimelineItem): string {
   return item.kind === "event" ? `${item.source}|${rowText(item.row).text}` : `session|${item.sessionId}`;
 }
 
-export function BlockDetails({ rows }: { rows: DetailRow[] }) {
+function DigestCard({ digest }: { digest: BlockDigest }) {
+  return (
+    <div className="bd-card">
+      {digest.change_titles.length > 0 && (
+        <ul aria-label="Changes">
+          {digest.change_titles.map((title) => (
+            <li key={title}>{title}</li>
+          ))}
+        </ul>
+      )}
+      {digest.prompts.length > 0 && (
+        <ul aria-label="Prompts">
+          {digest.prompts.map((prompt) => (
+            <li key={prompt}>{prompt}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+export function BlockDetails({ rows, digest }: { rows: DetailRow[]; digest?: BlockDigest | null }) {
+  return rows.length === 0 && digest ? <DigestCard digest={digest} /> : <BlockTimeline rows={rows} />;
+}
+
+function BlockTimeline({ rows }: { rows: DetailRow[] }) {
   const timeline = useMemo(() => buildTimeline(rows), [rows]);
   const sources = useMemo(() => sourcesPresent(timeline), [timeline]);
   const counts = useMemo(() => countsBySource(timeline), [timeline]);

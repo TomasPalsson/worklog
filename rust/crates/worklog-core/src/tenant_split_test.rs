@@ -276,6 +276,7 @@ fn slices_sum_exactly_property() {
 // clue splitting.
 #[test]
 fn pinned_session_gives_pinned_slice() {
+    let _g = crate::tz::test_env_lock();
     let conn = open_memory().unwrap();
     let reg = registry(&["Sjúkra"], &[multi_tenant_folder("vitinn-infra")]);
 
@@ -329,6 +330,7 @@ fn pinned_session_gives_pinned_slice() {
 // customers emits no Pinned slice — it falls through to the fallback rules.
 #[test]
 fn conflicting_pins_do_not_emit_pinned_slice() {
+    let _g = crate::tz::test_env_lock();
     let conn = open_memory().unwrap();
     let reg = registry(&["Sjúkra", "MMS"], &[multi_tenant_folder("vitinn-infra")]);
 
@@ -388,6 +390,7 @@ fn conflicting_pins_do_not_emit_pinned_slice() {
 // pinned customer's slice.
 #[test]
 fn partially_pinned_block_is_not_pinned() {
+    let _g = crate::tz::test_env_lock();
     let conn = open_memory().unwrap();
     let reg = registry(&["Sjúkra"], &[multi_tenant_folder("vitinn-infra")]);
 
@@ -445,6 +448,7 @@ fn partially_pinned_block_is_not_pinned() {
 // SessionStart/prompt gap, so the whole block is one Pinned slice.
 #[test]
 fn real_session_start_is_pinned() {
+    let _g = crate::tz::test_env_lock();
     let conn = open_memory().unwrap();
     let reg = registry(&["Sjúkra"], &[multi_tenant_folder("vitinn-infra")]);
 
@@ -535,6 +539,7 @@ fn real_session_start_is_pinned() {
 // Sjúkra, the pin (Sjúkra) landing 60s after t0, tool events after.
 #[test]
 fn prompt_naming_the_pinned_customer_is_pinned() {
+    let _g = crate::tz::test_env_lock();
     let conn = open_memory().unwrap();
     let reg = registry(&["Sjúkra"], &[multi_tenant_folder("vitinn-infra")]);
 
@@ -617,6 +622,7 @@ fn prompt_naming_the_pinned_customer_is_pinned() {
 // minutes later must NOT turn this into a Pinned-to-Acme block.
 #[test]
 fn text_guess_disagreeing_with_pin_blocks_pinned_slice() {
+    let _g = crate::tz::test_env_lock();
     let conn = open_memory().unwrap();
     let reg = registry(&["Globex", "Acme"], &[multi_tenant_folder("vitinn-infra")]);
 

@@ -80,10 +80,12 @@ use crate::billing;
 use crate::billing_deildir;
 use crate::billing_registry;
 use crate::block_details;
+use crate::block_digest;
 use crate::browser_ingest;
 use crate::change_log;
 use crate::collectors::{jira, tempo};
 use crate::deild_contract;
+use crate::digest_contract::{BlockDigest, DAY_COMPRESSED};
 use crate::elsewhere;
 use crate::git::{self, CommitEntry};
 use crate::line_text_jobs;
@@ -138,6 +140,7 @@ pub fn router(state: Shared) -> Router {
         .route("/accounts", get(list_accounts))
         .route("/blocks/:id/events", get(block_events))
         .route("/blocks/:id/details", get(block_details_route))
+        .route("/blocks/:id/digest", get(block_digest_route))
         .route("/blocks/:id/commits", get(block_commits))
         .route("/blocks/:id/ticket", post(assign_ticket))
         .route("/blocks/:id/duration", post(set_duration))
@@ -345,13 +348,13 @@ pub fn socket_path() -> Result<PathBuf> {
     Ok(crate::paths::Paths::resolve()?.socket)
 }
 
-/// How often the daemon's billing-cycle-prune due-check runs — once on
+/// How often the daemon's compression due-check runs — once on
 /// start, then on this cadence forever after (spec 002 FR-023 / B39).
 /// Named + exported so a test can assert the value without waiting for
 /// it to elapse.
 pub const PRUNE_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 
-/// Spawn the daemon's periodic billing-cycle prune due-check: runs once
+/// Spawn the daemon's periodic compression due-check: runs once
 /// immediately, then every [`PRUNE_CHECK_INTERVAL`] thereafter, for as
 /// long as the returned handle lives. Skipped entirely — no db access,
 /// no path resolution — when [`crate::purge::pruning_enabled`] is
@@ -392,12 +395,11 @@ pub fn state_from_conn(conn: Connection) -> Shared {
     })
 }
 
-/// One tick of [`spawn_prune_loop`]: resolve the current cycle cutoff
+/// One tick of [`spawn_prune_loop`]: resolve the current 90-day horizon
 /// and hand it to [`crate::purge::prune_if_due`], swallowing any
-/// failure. A real prune (the due path) logs exactly one `info!` line
-/// naming the cutoff and every deletion count, plus an additional
-/// `warn!` when any deleted block was never billed — that loss must not
-/// be silent (spec 002 §5.6, FR-018, FR-022 / B32). A not-due check logs
+/// failure. A real run (the due path) logs exactly one `info!` line
+/// naming the horizon, the cards written and every deletion count. A
+/// not-due check logs
 /// nothing at `info` level — it fires on a 6h timer forever and would be
 /// pure noise (spec 002 §5.6 / B33) — only a `trace!` for anyone
 /// watching that closely. A failure logs `warn!` naming the failing
@@ -411,13 +413,8 @@ async fn prune_due_check_once(state: Shared, snapshot_to: &Path, db_path: &Path)
     let outcome =
         tokio::task::spawn_blocking(move || -> Result<Option<crate::purge::PurgeReport>> {
             let today = crate::tz::local_date(chrono::Utc::now());
-            let cutoff = crate::purge::cutoff_for_cycle(
-                today,
-                crate::purge::configured_cycle_start_day(),
-                crate::purge::configured_close_day(),
-            );
             let opts = crate::purge::PruneOptions {
-                cutoff,
+                cutoff: crate::block_digest::horizon(today),
                 dry_run: false,
                 snapshot_to: Some(snapshot_to.as_path()),
                 db_path: Some(db_path.as_path()),
@@ -431,29 +428,22 @@ async fn prune_due_check_once(state: Shared, snapshot_to: &Path, db_path: &Path)
         Ok(Ok(Some(report))) => {
             info!(
                 cutoff = %report.cutoff_date,
-                blocks_deleted = report.blocks_deleted,
-                blocks_deleted_unbilled = report.blocks_deleted_unbilled,
+                blocks_carded = report.blocks_carded,
+                card_bytes = report.card_bytes,
                 events_deleted = report.events_deleted,
                 sessions_deleted = report.sessions_deleted,
                 tickets_deleted = report.tickets_deleted,
-                "billing-cycle prune completed"
+                "compression run completed"
             );
-            if report.blocks_deleted_unbilled > 0 {
-                warn!(
-                    "billing-cycle prune deleted {} never-billed block(s) \
-                     (no Tempo id and no exported_at marker) — that work is gone",
-                    report.blocks_deleted_unbilled
-                );
-            }
         }
         Ok(Ok(None)) => {
             // Not due — a total no-op. No `info!` here: this tick fires
             // every 6h forever, so logging it at `info` would be pure
             // noise (spec 002 §5.6).
-            tracing::trace!("billing-cycle prune due-check: not due, nothing to do");
+            tracing::trace!("compression due-check: not due, nothing to do");
         }
-        Ok(Err(e)) => warn!("billing-cycle prune due-check failed: {e:#}"),
-        Err(e) => warn!("billing-cycle prune due-check task panicked: {e}"),
+        Ok(Err(e)) => warn!("compression due-check failed: {e:#}"),
+        Err(e) => warn!("compression due-check task panicked: {e}"),
     }
 }
 
@@ -468,6 +458,7 @@ pub enum ApiError {
     BadRequest(anyhow::Error),
     NotFound(anyhow::Error),
     Forbidden(anyhow::Error),
+    Conflict(anyhow::Error),
     Internal(anyhow::Error),
 }
 
@@ -479,7 +470,12 @@ impl ApiError {
 
 impl<E: Into<anyhow::Error>> From<E> for ApiError {
     fn from(e: E) -> Self {
-        Self::Internal(e.into())
+        let e = e.into();
+        if e.chain().any(|c| c.to_string().starts_with(DAY_COMPRESSED)) {
+            Self::Conflict(e)
+        } else {
+            Self::Internal(e)
+        }
     }
 }
 
@@ -489,6 +485,7 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest(e) => (StatusCode::BAD_REQUEST, e),
             ApiError::NotFound(e) => (StatusCode::NOT_FOUND, e),
             ApiError::Forbidden(e) => (StatusCode::FORBIDDEN, e),
+            ApiError::Conflict(e) => (StatusCode::CONFLICT, e),
             ApiError::Internal(e) => (StatusCode::INTERNAL_SERVER_ERROR, e),
         };
         // For 400, emit only the top-level message (no `{:#}` chain
@@ -499,9 +496,10 @@ impl IntoResponse for ApiError {
         // via `error!()` where the developer needs it, and the client
         // needs enough context to file a useful bug report.
         let (msg, log_msg) = match status {
-            StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND | StatusCode::FORBIDDEN => {
-                (format!("{err}"), None)
-            }
+            StatusCode::BAD_REQUEST
+            | StatusCode::NOT_FOUND
+            | StatusCode::FORBIDDEN
+            | StatusCode::CONFLICT => (format!("{err}"), None),
             _ => (format!("{err:#}"), Some(format!("{err:#}"))),
         };
         if let Some(m) = log_msg {
@@ -846,21 +844,40 @@ fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
         })
         .collect();
 
-    let enriched = blocks
-        .into_iter()
-        .map(|block| {
-            let id = block.id;
-            let sources = sources_by_block.remove(&id).unwrap_or_default();
-            BlockSummary {
-                event_count: counts.get(&id).copied().unwrap_or(0),
-                confidence: crate::timeline::block_confidence(sources.len()).to_owned(),
-                sources,
-                project_path: best_path.remove(&id),
-                project: best_folder.remove(&id),
-                block,
+    let mut enriched = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        let id = block.id;
+        let summary = match block_digest::digest_for_block(conn, id)? {
+            Some(card) => {
+                let mut sources: Vec<SourceCount> = card
+                    .events_by_source
+                    .into_iter()
+                    .map(|(source, n)| SourceCount { source, n })
+                    .collect();
+                sources.sort_by_key(|s| std::cmp::Reverse(s.n));
+                BlockSummary {
+                    event_count: card.event_count,
+                    confidence: crate::timeline::block_confidence(sources.len()).to_owned(),
+                    sources,
+                    project_path: card.folder_path,
+                    project: card.folder,
+                    block,
+                }
             }
-        })
-        .collect();
+            None => {
+                let sources = sources_by_block.remove(&id).unwrap_or_default();
+                BlockSummary {
+                    event_count: counts.get(&id).copied().unwrap_or(0),
+                    confidence: crate::timeline::block_confidence(sources.len()).to_owned(),
+                    sources,
+                    project_path: best_path.remove(&id),
+                    project: best_folder.remove(&id),
+                    block,
+                }
+            }
+        };
+        enriched.push(summary);
+    }
 
     Ok(DaySummary {
         day: day.to_owned(),
@@ -1132,6 +1149,18 @@ async fn block_details_route(
         .await
         .map_err(ApiError::NotFound)?;
     Ok(Json(rows))
+}
+
+/// `GET /blocks/:id/digest`: the card kept after a block's raw events are
+/// deleted. No card (or no block) → 404.
+async fn block_digest_route(
+    State(state): State<Shared>,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<Json<BlockDigest>, ApiError> {
+    with_conn(state, move |c| block_digest::digest_for_block(c, id))
+        .await?
+        .map(Json)
+        .ok_or_else(|| ApiError::NotFound(anyhow::anyhow!("block {id} has no digest")))
 }
 
 /// Per-block commit sidecar — returns the commits that landed inside
@@ -1546,6 +1575,7 @@ pub struct InferResponse {
 /// allocation save/delete handlers, which must re-run it so blocks
 /// reflect the owner's choice (or its removal) immediately.
 async fn reinfer_day(state: Shared, day: NaiveDate) -> Result<(usize, i64), ApiError> {
+    refuse_compressed(state.clone(), day).await?;
     // Route before building blocks (design decision 4, PR #41): three
     // phases, mirroring `run_estimate`, so the sqlite mutex is never held
     // across the (slow, network) classifier call.
@@ -1571,6 +1601,18 @@ async fn reinfer_day(state: Shared, day: NaiveDate) -> Result<(usize, i64), ApiE
     })
     .await?;
     Ok((count, minutes))
+}
+
+/// Checked before any write so a refused action leaves the day untouched.
+async fn refuse_compressed(state: Shared, day: NaiveDate) -> Result<(), ApiError> {
+    with_conn(state, move |c| {
+        if crate::block_digest::day_is_compressed(c, &day.to_string())? {
+            anyhow::bail!("{DAY_COMPRESSED}: {day}");
+        }
+        Ok(())
+    })
+    .await?;
+    Ok(())
 }
 
 async fn run_infer(
@@ -1624,6 +1666,7 @@ async fn save_allocation_handler(
         )));
     }
     validate_shares(&body.shares)?;
+    refuse_compressed(state.clone(), day_parsed).await?;
 
     let shares = body.shares.clone();
     with_conn(state.clone(), move |c| {
@@ -1676,6 +1719,7 @@ async fn delete_allocation_handler(
         .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{day}`: {e}")))?;
     let started_at = parse_allocation_ts(&body.started_at)?;
     let ended_at = parse_allocation_ts(&body.ended_at)?;
+    refuse_compressed(state.clone(), day_parsed).await?;
     with_conn(state.clone(), move |c| {
         overlaps::delete_allocation(c, day_parsed, started_at, ended_at)
     })
@@ -3063,6 +3107,50 @@ mod tests {
     }
 
     #[test]
+    fn day_summary_path_of_carded_block_is_the_billing_folder_path() {
+        // B13: lyf's 5 events over two worktrees beat genai's 4 in one, but
+        // the personal-classify path (raw most-common) is genai's. The card
+        // must show the same path the live day summary shows.
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-18', '2026-04-18T09:00:00+00:00', '2026-04-18T09:30:00+00:00', 1800)",
+            [],
+        )
+        .unwrap();
+        let bid = conn.last_insert_rowid();
+        let lyf = "/home/u/Desktop/Work/lyf/.claude/worktrees/a";
+        let lyf_b = "/home/u/Desktop/Work/lyf/.claude/worktrees/b";
+        let genai = "/home/u/Desktop/Work/genai/.claude/worktrees/c";
+        let paths = [lyf, lyf, lyf, lyf_b, lyf_b, genai, genai, genai, genai];
+        for (i, path) in paths.iter().enumerate() {
+            let mut ev = Event::minimal(
+                "claude",
+                format!("e{i}").as_str(),
+                "2026-04-18T09:05:00+00:00",
+                "prompt",
+            );
+            ev.project_path = Some(path.to_string());
+            let eid = repo::upsert_event(&conn, &ev).unwrap();
+            conn.execute(
+                "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+                params![bid, eid],
+            )
+            .unwrap();
+        }
+        let live = stitch_day_summary(&conn, "2026-04-18").unwrap();
+        assert_eq!(live.blocks[0].project_path.as_deref(), Some(lyf));
+
+        let card = block_digest::build_digest(&conn, bid).unwrap();
+        assert!(block_digest::write_digest(&conn, bid, &card).unwrap());
+        conn.execute("DELETE FROM block_events", []).unwrap();
+
+        let carded = stitch_day_summary(&conn, "2026-04-18").unwrap();
+        assert_eq!(carded.blocks[0].project_path.as_deref(), Some(lyf));
+        assert_eq!(carded.blocks[0].project.as_deref(), Some("lyf"));
+    }
+
+    #[test]
     fn day_summary_project_path_agrees_when_repo_folder_wins() {
         // Regression for the confirmed defect: a block with 6 GitHub events
         // (project_path NULL, repo "org/AcmeBackend") and 5 Claude events
@@ -3602,6 +3690,246 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Writes a hand-built card for block 1 and deletes its events, so the
+    /// day looks compressed.
+    fn compress_seeded_day(state: &Shared) {
+        let conn = state.conn.try_lock().unwrap();
+        let card = crate::digest_contract::BlockDigest {
+            event_count: 7,
+            events_by_source: [("claude".to_owned(), 5), ("github_commit".to_owned(), 2)].into(),
+            folder: Some("proj".to_owned()),
+            project_path: Some("/home/u/Desktop/Work/proj".to_owned()),
+            folder_path: Some("/home/u/Desktop/Work/proj".to_owned()),
+            ..Default::default()
+        };
+        assert!(crate::block_digest::write_digest(&conn, 1, &card).unwrap());
+        conn.execute("DELETE FROM block_events", []).unwrap();
+        conn.execute("DELETE FROM events", []).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn digest_route_and_summary() {
+        let state = state_with_block();
+        let app = router(state.clone());
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::get("/blocks/1/digest")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "no card yet");
+
+        compress_seeded_day(&state);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::get("/blocks/1/digest")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["event_count"], 7);
+        assert_eq!(v["project_path"], "/home/u/Desktop/Work/proj");
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::get("/days/2026-04-18")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        let block = &v["blocks"][0];
+        assert_eq!(block["event_count"], 7);
+        assert_eq!(block["project_path"], "/home/u/Desktop/Work/proj");
+        assert_eq!(block["project"], "proj");
+        assert_eq!(block["sources"][0]["source"], "claude");
+        assert_eq!(block["sources"][0]["n"], 5);
+        assert_eq!(block["sources"][1]["source"], "github_commit");
+        assert_eq!(block["sources"][1]["n"], 2);
+
+        let resp = app
+            .oneshot(
+                Request::get("/blocks/999/digest")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn compressed_day_allow_and_refuse_allows_hand_edits() {
+        let refused = ApiError::from(anyhow::anyhow!(
+            "{}: 2026-04-18",
+            crate::digest_contract::DAY_COMPRESSED
+        ))
+        .into_response();
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            read_json(refused).await["error"],
+            "day is compressed: 2026-04-18"
+        );
+        let other = ApiError::from(anyhow::anyhow!("disk on fire")).into_response();
+        assert_eq!(other.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let state = state_with_block();
+        compress_seeded_day(&state);
+        crate::billing_registry::upsert_customer(
+            &state.conn.try_lock().unwrap(),
+            &crate::billing_registry::Customer {
+                id: None,
+                name: "Acme".into(),
+                aliases: Vec::new(),
+            },
+        )
+        .unwrap();
+        let app = router(state.clone());
+        // Personal goes last: customer shares refuse a personal block.
+        for (path, body) in [
+            ("/blocks/1/description", json!({"description": "hand edit"})),
+            ("/blocks/1/ticket", json!({"jira_issue": "PROJ-1"})),
+            (
+                "/blocks/1/customer-shares",
+                json!({"rows": [{"customer": "Acme", "deild": null, "fraction": 1.0}]}),
+            ),
+            ("/blocks/1/ignore", json!({"ignored": true})),
+            ("/export/2026-04-18/mark", json!({})),
+            ("/blocks/1/personal", json!({"is_personal": true})),
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::post(path)
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "{path}");
+        }
+        {
+            let conn = state.conn.try_lock().unwrap();
+            let (exported, shares): (Option<String>, Option<String>) = conn
+                .query_row(
+                    "SELECT b.exported_at, s.rows_json FROM blocks b
+                       LEFT JOIN block_customer_shares s
+                         ON s.day = b.day AND s.started_at = b.started_at
+                      WHERE b.id = 1",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert!(exported.is_some(), "mark exported must stamp the block");
+            assert!(shares.unwrap().contains("Acme"), "split must be saved");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn compressed_day_allow_unignore() {
+        let state = state_with_block();
+        compress_seeded_day(&state);
+        let app = router(state.clone());
+        for ignored in [true, false] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::post("/blocks/1/ignore")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::to_vec(&json!({ "ignored": ignored })).unwrap(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "ignored={ignored}");
+            let conn = state.conn.try_lock().unwrap();
+            let ignored_at: Option<String> = conn
+                .query_row("SELECT ignored_at FROM blocks WHERE id = 1", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(ignored_at.is_some(), ignored);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn compressed_day_allow_and_refuse_refuses_rebuilds() {
+        let state = state_with_block();
+        compress_seeded_day(&state);
+        let window = || {
+            Body::from(
+                serde_json::to_vec(&json!({
+                    "started_at": "2026-04-18T09:00:00+00:00",
+                    "ended_at": "2026-04-18T09:30:00+00:00",
+                    "shares": {"proj": 1.0},
+                }))
+                .unwrap(),
+            )
+        };
+        let app = router(state.clone());
+        for (path, body) in [
+            ("/blocks/1/estimate", Body::empty()),
+            (
+                "/infer",
+                Body::from(serde_json::to_vec(&json!({"day": "2026-04-18"})).unwrap()),
+            ),
+            (
+                "/estimate",
+                Body::from(serde_json::to_vec(&json!({"day": "2026-04-18"})).unwrap()),
+            ),
+            (
+                "/blocks/auto-merge",
+                Body::from(serde_json::to_vec(&json!({"day": "2026-04-18"})).unwrap()),
+            ),
+            ("/days/2026-04-18/allocations", window()),
+            ("/days/2026-04-18/allocations/delete", window()),
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::post(path)
+                        .header("content-type", "application/json")
+                        .body(body)
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::CONFLICT, "{path}");
+            let msg = read_json(resp).await["error"].as_str().unwrap().to_owned();
+            assert!(msg.starts_with("day is compressed"), "{path}: {msg}");
+        }
+        let rows: i64 = state
+            .conn
+            .try_lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM overlap_allocations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "refused allocation must not write");
+    }
+
+    #[test]
+    fn wrapped_refusal_still_conflicts() {
+        let e = anyhow::anyhow!("day is compressed: 2026-04-18").context("persist failed");
+        assert_eq!(
+            ApiError::from(e).into_response().status(),
+            StatusCode::CONFLICT
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -5385,7 +5713,11 @@ mod tests {
         let count: i64 = guard
             .query_row("SELECT COUNT(*) FROM blocks", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 0, "the old block must have been pruned on start");
+        assert_eq!(count, 1, "blocks are never deleted");
+        let cards: i64 = guard
+            .query_row("SELECT COUNT(*) FROM block_digest", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cards, 1, "the old block must have been carded on start");
         assert!(
             crate::purge::meta_get(&guard, crate::purge::LATCH_KEY)
                 .unwrap()
@@ -5395,6 +5727,71 @@ mod tests {
         drop(guard);
 
         std::env::remove_var("WORKLOG_PRUNE_ENABLED");
+    }
+
+    fn seed_synced_block_aged(conn: &Connection, age: i64) {
+        let day = (chrono::Utc::now().date_naive() - chrono::Duration::days(age)).to_string();
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds,
+                                 tempo_worklog_id, exported_at)
+             VALUES (?1, ?1 || 'T09:00:00+00:00', ?1 || 'T09:30:00+00:00',
+                     1800, 'tempo-1', '2026-01-01')",
+            [&day],
+        )
+        .unwrap();
+        let block_id = conn.last_insert_rowid();
+        let event = Event::minimal(
+            "github_commit",
+            format!("age-{age}"),
+            format!("{day}T09:05:00+00:00"),
+            "commit",
+        );
+        let event_id = repo::upsert_event(conn, &event).unwrap();
+        conn.execute(
+            "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+            params![block_id, event_id],
+        )
+        .unwrap();
+    }
+
+    /// Billing-cycle settings no longer move the compression horizon: a
+    /// tick with the tightest cycle still leaves 65-85 day old blocks alone.
+    #[tokio::test(flavor = "current_thread")]
+    async fn prune_tick_ignores_cycle_settings() {
+        let _g = prune_env_lock().await;
+        std::env::set_var("WORKLOG_PRUNE_ENABLED", "1");
+        std::env::set_var("WORKLOG_BILLING_CYCLE_START_DAY", "1");
+        std::env::set_var("WORKLOG_BILLING_CLOSE_DAY", "1");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("worklog.db");
+        let state = state_from_conn(crate::db::open(&db_path).unwrap());
+        for age in [65, 75, 85] {
+            seed_synced_block_aged(&*state.conn.lock().await, age);
+        }
+
+        prune_due_check_once(
+            state.clone(),
+            &tmp.path().join("worklog.db.preprune"),
+            &db_path,
+        )
+        .await;
+
+        let guard = state.conn.lock().await;
+        let counts: (i64, i64, i64) = guard
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM block_digest), (SELECT COUNT(*) FROM blocks),
+                        (SELECT COUNT(*) FROM events)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(counts, (0, 3, 3), "cards, blocks, events");
+        drop(guard);
+
+        std::env::remove_var("WORKLOG_PRUNE_ENABLED");
+        std::env::remove_var("WORKLOG_BILLING_CYCLE_START_DAY");
+        std::env::remove_var("WORKLOG_BILLING_CLOSE_DAY");
     }
 
     /// The guard that exists because this actually happened: a test whose

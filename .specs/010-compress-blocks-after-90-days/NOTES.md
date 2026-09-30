@@ -1,0 +1,20 @@
+Discovered: T001 review minors — card caps for prompts/branches/files/tools untested; invoice-title `claude` source filter is case-sensitive vs billing's LIKE; files reuse PROJECT_PATH_CHARS — defer
+Discovered: T001 review F2 (card paths drop '' vs billing IS NOT NULL) re-scored 20, dropped — no writer stores '' (repo.rs COALESCE)
+Ruling: card v1 lost cross-block billing parity (one vote per card for the invoice title; unranked path merge) and the day-summary path (folder-first vs raw dominant) — fixed by DIGEST_VERSION 2 counts + folder_path (T008–T010); residual gap: a title outside a block's top 5 or past 120 chars can still change a multi-block line's title — accepted, cost: invoice text wording on rare multi-block lines
+Ruling: T003 workflow review diff was empty (review-package artifact bug), finding parked by the ladder — T003 code is covered again by the gating whole-branch review
+Discovered: T004 Tempo sync on a compressed day has no allow test (no Tempo mock in daemon tests) — defer
+Ruling: T008 card.folder_path follows billing's folder (lifecycle rows skipped, submodule map) while live stitch_day_summary votes its own folder (neither) — kept on billing; the daemon's own comment says it must mirror billing::work_folder_for_block, so the live vote is the drifted side — cost if wrong: a compressed block's day-summary path can differ from its pre-compression label when lifecycle/submodule rows decide the folder
+Discovered: stitch_day_summary folder vote does not skip lifecycle rows or use the submodule map, so it can disagree with billing::work_folder_for_block despite its comment — defer
+Discovered: T008 review minors — folder_path None-when-folder-won-by-repo/submodule untested; capped_ranked extracted at 2 call sites — defer
+Discovered: wave T005/T009/T010 review — dropped after re-score (<80): getBlockDigest untested (30, matches project norm), empty personal card renders a blank panel (60), B12 named test missing (55) → folded into T012 so the acceptance row has its proof
+Discovered: billing zips card paths with path_counts, so a card with paths but no counts drops its paths (titles fall back to weight 1) — latent, no v1 card shipped — defer
+Discovered: daemon.rs is 6480 lines (size-guard max 400), pre-existing — defer
+Discovered: T006 review minors — transcript cache still cleared wholesale (spec §4.3 says by window); b26 'delete must not have run' block-count assert now vacuous; block_service.rs:186 doc still says purge deletes blocks; web SettingsFormSections.tsx:99 text says data is deleted at billing-cycle close — defer
+Discovered: T013 review minors — purge.rs docs at ~60-68, ~340-342, ~859 still say dry-run writes nothing / bytes_freed stays 0 (now: writes then rolls back, returns estimate); dry-run now takes the SQLite write lock on the live DB — fold doc fix into gating fix dispatch
+Discovered: tests that read WORKLOG_TZ via load_day_events/utc_window_for_local_day without crate::tz::test_env_lock can race purge t9 (-23:59) — only the 5 observed tenant tests are fixed in T014; other readers in elsewhere/overlaps/routing/hook_run/repo tests unaudited — defer → issue
+Ruling: gating review kept 0 of 21 (all < 80); spec-backed ones folded into T015 (CLI exit 2 — Journey 3; FR-11 on `worklog day --day`) so acceptance rows are real
+Discovered: block_service split/merge and POST /blocks/:id/delete on a compressed day can move/drop a carded block's card or destroy it irrecoverably (not in spec §4.2 lists) — defer → issue
+Discovered: `eval --details` prints card prompts/titles raw — terminal control sequences from captured text are not stripped — defer
+Discovered: WORKLOG_VERDICT_URL is honoured in release builds (test override) — defer
+Discovered: cycle_start_day/close_day settings no longer drive deletes but remain user-facing (web Settings text) — defer
+Discovered: T015 review minors — 'N cards' status wording unasserted; cmd_day clamp wiring untested (helper only); exit 2 via daemon 409 path untested — defer

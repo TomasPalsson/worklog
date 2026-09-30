@@ -179,6 +179,35 @@ export interface CommitEntry {
   github_url?: string;
 }
 
+/** The compact card kept for a block once its raw events are purged.
+ * Mirrors `BlockDigest` in worklog-core `digest_contract.rs`. */
+export interface BlockDigest {
+  eval_repos: string[];
+  eval_titles: string[];
+  folder: string | null;
+  project_path: string | null;
+  paths: string[];
+  path_counts: number[];
+  invoice_titles: string[];
+  invoice_title_counts: number[];
+  folder_path: string | null;
+  pinned_customer: string | null;
+  event_count: number;
+  events_by_source: Record<string, number>;
+  session_count: number;
+  active_minutes: number;
+  first_at: string | null;
+  last_at: string | null;
+  jira_summary: string | null;
+  branches: string[];
+  change_titles: string[];
+  prompts: string[];
+  prompt_count: number;
+  files: string[];
+  files_distinct: number;
+  tool_counts: Record<string, number>;
+}
+
 // ───────────────────────── settings ─────────────────────────
 
 /** One credential/config key as `GET /settings` returns it. Token-like

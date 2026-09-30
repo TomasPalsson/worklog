@@ -10,11 +10,13 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::{billing, models::Block, repo, routing_contract::CLASSIFIER_ADDR};
-
-/// Event titles sent per block — enough to name the work, short enough
-/// to fit the model's context.
-const MAX_TITLES: usize = 6;
+use crate::{
+    billing,
+    block_digest::{digest_for_block, eval_evidence},
+    models::Block,
+    repo,
+    routing_contract::CLASSIFIER_ADDR,
+};
 
 #[derive(Debug, Serialize)]
 pub struct EvalReport {
@@ -109,17 +111,10 @@ fn work_blocks(conn: &Connection) -> Result<Vec<Block>> {
 /// repos and first few distinct titles of its events, so undescribed
 /// blocks still carry evidence.
 fn block_state(conn: &Connection, block: &Block) -> Result<Value> {
-    let mut repos: Vec<String> = Vec::new();
-    let mut titles: Vec<String> = Vec::new();
-    for e in repo::list_events_for_block(conn, block.id)? {
-        if let Some(r) = e.repo.filter(|r| !repos.contains(r)) {
-            repos.push(r);
-        }
-        let title: String = e.title.chars().take(80).collect();
-        if titles.len() < MAX_TITLES && !titles.contains(&title) {
-            titles.push(title);
-        }
-    }
+    let (repos, titles) = match digest_for_block(conn, block.id)? {
+        Some(card) => (card.eval_repos, card.eval_titles),
+        None => eval_evidence(&repo::list_events_for_block(conn, block.id)?),
+    };
     // Arrays + nulls, not flat " | "-joined strings: hand-scored on 137
     // real blocks, flat strings caught one more right block but six
     // wrong ones (~2h45m of false time); this shape had none wrong.
@@ -201,6 +196,24 @@ mod tests {
         assert_eq!(report.total_seconds, 5400 + 900);
         assert_eq!(report.first_day.as_deref(), Some("2026-09-01"));
         assert_eq!(report.last_day.as_deref(), Some("2026-09-03"));
+    }
+
+    #[test]
+    fn block_state_survive_compression_reads_the_card() {
+        let conn = open_memory().unwrap();
+        seed(&conn, "2026-01-01", "2026-01-01T09:00:00Z", 600, "x");
+        let id = conn.last_insert_rowid();
+        let card = crate::digest_contract::BlockDigest {
+            eval_repos: vec!["aproorg/worklog".into()],
+            eval_titles: vec!["Fix the export".into()],
+            ..Default::default()
+        };
+        crate::block_digest::write_digest(&conn, id, &card).unwrap();
+        let block = repo::get_block(&conn, id).unwrap().unwrap();
+
+        let state = block_state(&conn, &block).unwrap();
+        assert_eq!(state["repos"], json!(["aproorg/worklog"]));
+        assert_eq!(state["titles"], json!(["Fix the export"]));
     }
 
     #[test]

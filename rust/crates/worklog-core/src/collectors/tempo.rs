@@ -1254,6 +1254,59 @@ mod tests {
     }
 
     #[test]
+    fn tempo_sync_works_on_a_compressed_day() {
+        let server = MockServer::start();
+        let post_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/worklogs")
+                .json_body_partial(r#"{"timeSpentSeconds": 1800}"#);
+            then.status(200)
+                .json_body(json!({ "tempoWorklogId": 4242 }));
+        });
+        let conn = open_memory().unwrap();
+        let id = insert_block(
+            &conn,
+            "2026-04-18",
+            "2026-04-18T09:00:00Z",
+            "2026-04-18T09:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("Set up the combobox"),
+        );
+        assert!(
+            crate::block_digest::write_digest(&conn, id, &Default::default()).unwrap(),
+            "card written"
+        );
+        assert!(crate::block_digest::day_is_compressed(&conn, "2026-04-18").unwrap());
+        let events: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(events, 0, "a compressed day has no raw events");
+
+        let (report, results) = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+
+        post_mock.assert();
+        assert_eq!(report.errors, Vec::<String>::new());
+        assert_eq!(report.synced, 1);
+        assert_eq!(results[0].status, "synced");
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT tempo_worklog_id FROM blocks WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored.as_deref(), Some("4242"));
+    }
+
+    #[test]
     fn sync_skips_blocks_without_jira_issue() {
         let server = MockServer::start();
         // No mock set — if sync tried to POST it'd fail, proving we skipped.

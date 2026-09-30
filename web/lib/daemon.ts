@@ -213,6 +213,7 @@ import type {
   BillingFolderMap,
   BillingRegistry,
   Block,
+  BlockDigest,
   CommitEntry,
   CreateTicketInput,
   DayGap,
@@ -320,6 +321,16 @@ export async function listBlockEvents(blockId: number): Promise<Event[]> {
  */
 export async function listBlockCommits(blockId: number): Promise<CommitEntry[]> {
   return call<CommitEntry[]>("GET", `/blocks/${blockId}/commits`);
+}
+
+/** The block's compact card, or null when it has none (404). */
+export async function getBlockDigest(id: number): Promise<BlockDigest | null> {
+  try {
+    return await call<BlockDigest>("GET", `/blocks/${id}/digest`);
+  } catch (e) {
+    if (e instanceof DaemonError && e.status === 404) return null;
+    throw e;
+  }
 }
 
 // ───────────────────────── billing export ─────────────────────────

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
-import { DaemonError, loadDaySummary } from "@/lib/daemon";
+import { DaemonError, getBlockDigest, loadDaySummary } from "@/lib/daemon";
 import { blockDetails } from "@/lib/daemonDetails";
 import { formatDayHeading, formatDuration, formatRange } from "@/lib/format";
 import type { Block } from "@/lib/types";
@@ -42,16 +42,17 @@ export default async function BlockDetailPage({ params }: { params: Promise<{ da
   if (!Number.isInteger(blockId)) notFound();
 
   try {
-    const [rows, summary] = await Promise.all([
+    const [rows, summary, digest] = await Promise.all([
       blockDetails(blockId),
       loadDaySummary(day).catch(() => null),
+      getBlockDigest(blockId).catch(() => null),
     ]);
     const block = summary?.blocks.find((b) => b.id === blockId);
     return (
       <div className="bd-page">
         <BlockHeader day={day} block={block} />
         <BlockCustomerSplit blockId={blockId} />
-        <BlockDetails rows={rows} />
+        <BlockDetails rows={rows} digest={digest} />
       </div>
     );
   } catch (e) {

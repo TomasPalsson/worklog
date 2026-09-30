@@ -550,6 +550,7 @@ pub fn estimate_day_with<I: ModelInvoker>(
 ) -> Result<EstimateStats> {
     let mut stats = EstimateStats::default();
     let day_iso = day.to_string();
+    bail_if_compressed(conn, &day_iso)?;
     let batch = change_log::new_batch(ChangeSource::Claude);
 
     let open_tickets = load_open_tickets(conn)?;
@@ -805,6 +806,7 @@ pub fn prepare_block_estimate(
             other => anyhow::Error::from(other),
         })?;
 
+    bail_if_compressed(conn, &block.day)?;
     if block.is_personal {
         anyhow::bail!(
             "block {block_id} is personal — toggle it back to work before \
@@ -887,6 +889,7 @@ pub fn commit_block_estimate(
 ) -> Result<EstimatedBlock> {
     let block = &prep.block;
     let block_id = block.id;
+    bail_if_compressed(conn, &block.day)?;
     let BlockEstimateReply {
         description,
         minutes,
@@ -948,6 +951,7 @@ pub fn commit_block_estimate(
 /// - blocks with a hand-set split saved in `block_customer_shares`
 ///   (merging would strand that split from the surviving block)
 pub fn merge_same_ticket_adjacent(conn: &Connection, day_iso: &str) -> Result<u32> {
+    bail_if_compressed(conn, day_iso)?;
     let blocks = load_blocks_for_estimator(conn, day_iso)?;
     let mut removed = 0;
     let mut i = 0;
@@ -975,6 +979,13 @@ pub fn merge_same_ticket_adjacent(conn: &Connection, day_iso: &str) -> Result<u3
         }
     }
     Ok(removed)
+}
+
+fn bail_if_compressed(conn: &Connection, day: &str) -> Result<()> {
+    if crate::block_digest::day_is_compressed(conn, day)? {
+        anyhow::bail!("{}: {day}", crate::digest_contract::DAY_COMPRESSED);
+    }
+    Ok(())
 }
 
 fn block_has_saved_split(conn: &Connection, day: &str, started_at: &str) -> Result<bool> {
@@ -1408,6 +1419,65 @@ mod tests {
     use crate::models::{Event, JiraTicket};
     use crate::repo;
     use crate::tenant_shares;
+
+    #[test]
+    fn compressed_day_refuses_merge_and_redescribe() {
+        let conn = crate::db::open_memory().unwrap();
+        let a = insert_block_with(
+            &conn,
+            "2026-04-18",
+            "2026-04-18T09:00:00+00:00",
+            "2026-04-18T09:30:00+00:00",
+            1800,
+            Some("ABC-1"),
+            None,
+            None,
+        );
+        insert_block_with(
+            &conn,
+            "2026-04-18",
+            "2026-04-18T09:30:00+00:00",
+            "2026-04-18T10:00:00+00:00",
+            1800,
+            Some("ABC-1"),
+            None,
+            None,
+        );
+        let prep = prepare_block_estimate(&conn, a, &[]).unwrap();
+        crate::block_digest::write_digest(&conn, a, &Default::default()).unwrap();
+        let before = blocks_snapshot(&conn);
+        let err = merge_same_ticket_adjacent(&conn, "2026-04-18").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!("{}: 2026-04-18", crate::digest_contract::DAY_COMPRESSED)
+        );
+        let reply = BlockEstimateReply {
+            description: "rewritten".into(),
+            minutes: 5,
+            ticket: None,
+        };
+        let err = commit_block_estimate(&conn, &prep, reply).err().unwrap();
+        assert_eq!(err.to_string(), "day is compressed: 2026-04-18");
+        let err = prepare_block_estimate(&conn, a, &[]).err().unwrap();
+        assert_eq!(
+            err.to_string(),
+            format!("{}: 2026-04-18", crate::digest_contract::DAY_COMPRESSED)
+        );
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let err =
+            estimate_day_with(&conn, day, "m", &FixedInvoker(serde_json::json!({}))).unwrap_err();
+        assert_eq!(err.to_string(), "day is compressed: 2026-04-18");
+        assert_eq!(blocks_snapshot(&conn), before);
+    }
+
+    fn blocks_snapshot(conn: &Connection) -> Vec<Vec<rusqlite::types::Value>> {
+        let mut stmt = conn.prepare("SELECT * FROM blocks ORDER BY id").unwrap();
+        let n = stmt.column_count();
+        stmt.query_map([], |r| (0..n).map(|i| r.get(i)).collect())
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    }
 
     fn insert_block(conn: &Connection) -> i64 {
         conn.execute(

@@ -256,6 +256,10 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
     Eval {
         /// What the work was about, in plain words.
         query: String,
+        /// After the table, print each matched block's card: titles,
+        /// prompts, branches, active minutes and folder.
+        #[arg(long)]
+        details: bool,
     },
 
     /// Export a day's blocks as billing line items grouped by
@@ -528,19 +532,15 @@ pub enum DbCmd {
     Info,
     /// Print the resolved db path.
     Path,
-    /// Delete blocks, their linked events, and orphan events older than
-    /// the cutoff. Rail-free: sync state, edit provenance, pending edits
-    /// and personal classification make no difference — once a block's
-    /// cycle has closed it goes regardless. With no `--days`, the cutoff
-    /// is the current billing cycle's close (20th → 19th by default);
-    /// `--days N` overrides it with a plain rolling window, equally
-    /// rail-free.
+    /// Compress blocks older than the horizon (default 90 days) into
+    /// cards and delete their raw events, sessions and cache rows. Blocks
+    /// are never deleted.
     Purge {
-        /// Explicit rolling-window override in days. Omit for the
-        /// default billing-cycle cutoff.
-        #[arg(long)]
+        /// Horizon in days before today (at least 1). Omit for the
+        /// default 90.
+        #[arg(long, value_parser = clap::value_parser!(i64).range(1..))]
         days: Option<i64>,
-        /// Report what would be deleted without touching the database.
+        /// Report what would be compressed without touching the database.
         #[arg(long)]
         dry_run: bool,
     },
@@ -832,7 +832,7 @@ pub fn run_with<W: Write>(
         } => cmd_day(day, serve, no_serve, &model, out, cli.json),
         Cmd::Summary { day } => cmd_summary(day, out, cli.json),
         Cmd::Week { day } => cmd_week(day, out, cli.json),
-        Cmd::Eval { query } => crate::eval_cmd::cmd_eval(&query, out, cli.json),
+        Cmd::Eval { query, details } => crate::eval_cmd::cmd_eval(&query, out, cli.json, details),
         Cmd::Export { day, format, mark } => cmd_export(day, format, mark, out, cli.json),
         Cmd::Block { sub } => match sub {
             BlockCmd::List { day } => cmd_block_list(day, out, cli.json),
@@ -1159,11 +1159,7 @@ fn cmd_db_purge<W: Write>(days: Option<i64>, dry_run: bool, out: &mut W, json: b
     let today = worklog_core::tz::local_date(chrono::Utc::now());
     let cutoff = match days {
         Some(d) => worklog_core::purge::cutoff_for_days(today, d),
-        None => worklog_core::purge::cutoff_for_cycle(
-            today,
-            worklog_core::purge::configured_cycle_start_day(),
-            worklog_core::purge::configured_close_day(),
-        ),
+        None => worklog_core::block_digest::horizon(today),
     };
     let snapshot_to = paths.data_dir.join("worklog.db.preprune");
     let opts = worklog_core::purge::PruneOptions {
@@ -1178,31 +1174,22 @@ fn cmd_db_purge<W: Write>(days: Option<i64>, dry_run: bool, out: &mut W, json: b
         return Ok(());
     }
     let prefix = if dry_run { "(dry-run) " } else { "" };
-    if report.blocks_deleted + report.events_deleted == 0 {
-        style::info(
-            out,
-            &format!("{prefix}nothing to purge before {}", report.cutoff_date),
-        )?;
+    let bytes_freed = if dry_run {
+        format!("~{} (estimate)", report.bytes_freed)
     } else {
-        let verb = if dry_run { "would delete" } else { "deleted" };
-        style::ok(
-            out,
-            &format!(
-                "{prefix}{verb} {} block(s) + {} event(s) before {}",
-                report.blocks_deleted, report.events_deleted, report.cutoff_date
-            ),
-        )?;
-    }
-    if report.blocks_deleted_unbilled > 0 {
-        let verb = if dry_run { "would be" } else { "were" };
-        style::warn(
-            out,
-            &format!(
-                "{} never-billed block(s) {verb} deleted (no Tempo sync, no export marker)",
-                report.blocks_deleted_unbilled
-            ),
-        )?;
-    }
+        report.bytes_freed.to_string()
+    };
+    writeln!(out, "{prefix}horizon: {}", report.cutoff_date)?;
+    writeln!(out, "blocks carded: {}", report.blocks_carded)?;
+    writeln!(
+        out,
+        "card bytes median: {}  max: {}",
+        report.card_bytes_median, report.card_bytes_max
+    )?;
+    writeln!(out, "events deleted: {}", report.events_deleted)?;
+    writeln!(out, "sessions deleted: {}", report.sessions_deleted)?;
+    writeln!(out, "cache rows deleted: {}", report.cache_rows_deleted)?;
+    writeln!(out, "bytes freed: {bytes_freed}")?;
     if let Some(snapshot_path) = &report.snapshot_path {
         style::info(
             out,
@@ -1485,6 +1472,23 @@ fn effective_since(requested: chrono::NaiveDate, cutoff: chrono::NaiveDate) -> c
     requested.max(cutoff)
 }
 
+fn collect_since(
+    requested: chrono::NaiveDate,
+    local_today: chrono::NaiveDate,
+) -> chrono::NaiveDate {
+    effective_since(requested, worklog_core::block_digest::horizon(local_today))
+}
+
+/// The `[since, until)` window `worklog day` collects for `day`, clamped to
+/// the horizon like every other collect path.
+fn day_collect_window(
+    day: chrono::NaiveDate,
+    local_today: chrono::NaiveDate,
+) -> (chrono::NaiveDate, chrono::NaiveDate) {
+    let since = collect_since(day, local_today);
+    (since, since.max(day + chrono::Duration::days(1)))
+}
+
 /// True when `worklog collect <target>` should run `source`: either the
 /// umbrella `all`, or `target` naming `source` directly.
 fn wants(target: CollectTarget, source: CollectTarget) -> bool {
@@ -1652,17 +1656,15 @@ fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bo
     // actually deleted), even though `today` above stays UTC-derived —
     // changing cmd_collect's own notion of "today" is a behaviour change
     // beyond this slice.
-    let cutoff = worklog_core::purge::cutoff_for_cycle(
+    let since = collect_since(
+        requested_since,
         worklog_core::tz::local_date(chrono::Utc::now()),
-        worklog_core::purge::configured_cycle_start_day(),
-        worklog_core::purge::configured_close_day(),
     );
-    let since = effective_since(requested_since, cutoff);
     if since != requested_since {
         tracing::debug!(
             requested = %requested_since,
-            cutoff = %cutoff,
-            "collect: clamped lookback start forward to the prune cutoff"
+            since = %since,
+            "collect: clamped lookback start forward to the compression horizon"
         );
     }
 
@@ -2533,23 +2535,16 @@ fn print_day_empty_diagnostic<W: Write>(
     }
 
     // 2. Day is past the billing-cycle pruner's cutoff, so any Claude Code
-    //    activity for that day has already been purged. The cutoff here
-    //    uses the SAME computation the pruner uses — `purge::cutoff_for_cycle`
-    //    over the configured cycle-start/close days — so the diagnostic
-    //    flips on the same boundary the pruner uses.
-    let today = chrono::Utc::now().date_naive();
-    let cutoff = worklog_core::purge::cutoff_for_cycle(
-        today,
-        worklog_core::purge::configured_cycle_start_day(),
-        worklog_core::purge::configured_close_day(),
-    );
+    //    activity for that day has already been compressed into cards. The
+    //    boundary is the same horizon the compression run uses.
+    let cutoff =
+        worklog_core::block_digest::horizon(worklog_core::tz::local_date(chrono::Utc::now()));
     if day < cutoff {
         style::info(
             out,
             &format!(
-                "no blocks for {day_str} — its billing cycle has closed and the \
-                 pruner already removed data before {cutoff}, so this day no \
-                 longer has Claude Code activity on file."
+                "no blocks for {day_str} — data before {cutoff} was compressed \
+                 into cards, so this day no longer has Claude Code activity on file."
             ),
         )?;
         return Ok(());
@@ -2877,8 +2872,8 @@ fn last_prune_line(lp: Option<&worklog_core::purge::LastPrune>) -> String {
             let total =
                 r.blocks_deleted + r.events_deleted + r.sessions_deleted + r.tickets_deleted;
             format!(
-                "{} · {} blocks, {} events · {total} rows removed · {}",
-                r.cutoff_date, r.blocks_deleted, r.events_deleted, lp.ran_at
+                "{} · {} cards, {} events · {total} rows removed · {}",
+                r.cutoff_date, r.blocks_carded, r.events_deleted, lp.ran_at
             )
         }
     }
@@ -2951,6 +2946,7 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
                 })),
                 "last_prune": last_prune.as_ref().map(|lp| serde_json::json!({
                     "cutoff": lp.report.cutoff_date,
+                    "blocks_carded": lp.report.blocks_carded,
                     "blocks_deleted": lp.report.blocks_deleted,
                     "blocks_deleted_unbilled": lp.report.blocks_deleted_unbilled,
                     "events_deleted": lp.report.events_deleted,
@@ -3334,8 +3330,8 @@ fn cmd_day<W: Write>(
         out,
         "collecting jira + github + gcal + slack + shell + reflog + transcripts …",
     )?;
-    let since = day_parsed;
-    let until = day_parsed + chrono::Duration::days(1);
+    let (since, until) =
+        day_collect_window(day_parsed, worklog_core::tz::local_date(chrono::Utc::now()));
     let outcomes = collect_targets(CollectTarget::All, since, until)?;
 
     // Turn a source's `CollectOutcome` into the `StepOutcome` the empty-day
@@ -4528,6 +4524,7 @@ mod tests {
                 bytes_freed: 4096,
                 snapshot_path: Some("/tmp/worklog.db.preprune".to_owned()),
                 dry_run: false,
+                ..Default::default()
             },
             ran_at: ran_at.to_owned(),
         }
@@ -4655,6 +4652,37 @@ mod tests {
         let requested = chrono::NaiveDate::from_ymd_opt(2026, 7, 18).unwrap();
         let cutoff = chrono::NaiveDate::from_ymd_opt(2026, 6, 20).unwrap();
         assert_eq!(effective_since(requested, cutoff), requested);
+    }
+
+    /// FR-11: the collect window's start never reaches back past the
+    /// 90-day horizon of the local day.
+    #[test]
+    fn collect_since_clamps_to_the_horizon() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 30).unwrap();
+        let horizon = worklog_core::block_digest::horizon(today);
+        assert_eq!(
+            collect_since(today - chrono::Duration::days(400), today),
+            horizon
+        );
+        let recent = today - chrono::Duration::days(7);
+        assert_eq!(collect_since(recent, today), recent);
+    }
+
+    /// B3: `worklog day` on a compressed day collects nothing from before
+    /// the horizon, and a recent day keeps its own one-day window.
+    #[test]
+    fn day_collect_clamps_to_the_horizon() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 30).unwrap();
+        let horizon = worklog_core::block_digest::horizon(today);
+        let old = today - chrono::Duration::days(200);
+        let (since, until) = day_collect_window(old, today);
+        assert_eq!(since, horizon);
+        assert!(until <= since, "window must be empty: {since}..{until}");
+        let recent = today - chrono::Duration::days(3);
+        assert_eq!(
+            day_collect_window(recent, today),
+            (recent, recent + chrono::Duration::days(1))
+        );
     }
 
     /// Boundary: requested == cutoff must return that exact date, with no

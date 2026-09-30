@@ -1,29 +1,15 @@
-//! Retention policy — billing-cycle-aligned, rail-free deletion.
+//! Compression run — blocks are kept, their raw rows are not.
 //!
-//! The owner bills in cycles that run `cycle_start_day` (default the
-//! 20th) through the day before `cycle_start_day` in the following
-//! month. Once a cycle's submission window has shut (the second business
-//! day after it ends, default the 23rd) nothing can add hours to it any
-//! more; its rows are kept one further cycle as evidence for the invoice,
-//! then dropped. `cutoff_for_cycle` derives that boundary; `purge_rows` deletes every row strictly older than it
-//! from `blocks` (and, by cascade, `block_events`), `events`, and
-//! `sessions`, plus every manually-picked (`external = 1`) `jira_tickets`
-//! entry no surviving block references any more.
-//!
-//! Deliberately rail-free: sync state (`tempo_worklog_id`), export state
-//! (`exported_at`), edit provenance (`estimated_by`), the pending-edit
-//! flag (`dirty`), and personal classification (`is_personal`) make no
-//! difference to what gets deleted. The previous version of this module
-//! exempted unsynced and hand-edited blocks; that exemption made
-//! personal blocks (which can never sync or export) immortal and made
-//! dirty blocks (which do carry a `tempo_worklog_id`) *more* likely to
-//! be deleted than protected. See spec 002-billing-cycle-pruner §1.1.
-//! Recoverability comes from a pre-prune snapshot ([`run`]'s `VACUUM
-//! INTO` step), not from exemptions.
-//!
-//! `blocks_deleted_unbilled` on [`PurgeReport`] exists so that loss is
-//! visible: it counts deleted blocks that carried neither a Tempo id nor
-//! an `exported_at` marker, i.e. work nobody will ever be paid for.
+//! Everything older than the horizon (`block_digest::horizon`, 90 days)
+//! is squeezed into one card per block, then the raw rows the card
+//! replaces are deleted: events, sessions, session pins, the transcript
+//! cache, and orphaned manually-picked (`external = 1`) `jira_tickets`
+//! entries. `blocks` are never deleted, so `tempo_worklog_id`,
+//! `exported_at`, `estimated_by`, `dirty` and `is_personal` are untouched
+//! by construction. [`purge_rows`] does the work in one transaction —
+//! a card that fails rolls the whole run back — and [`run`] snapshots the
+//! database first (`VACUUM INTO`), so recoverability comes from that
+//! snapshot.
 //!
 //! `billing_customers` and `billing_folder_map` are never touched by any
 //! cutoff — they are persistent, UI-edited registry tables, not time
@@ -32,42 +18,53 @@
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
 
+use crate::block_digest;
 use crate::collectors::claude_transcript_cache;
 use rusqlite::{params, Connection, OptionalExtension};
-
-/// Default retention window for the `--days` CLI override. Unrelated to
-/// the billing cycle; a plain rolling window.
-pub const DEFAULT_RETENTION_DAYS: i64 = 30;
 
 /// What the purge did (or would have done, if `dry_run`). Deserialize is
 /// needed alongside Serialize so a report persisted to `meta` (see
 /// [`LAST_REPORT_KEY`], [`last_prune`]) round-trips.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PurgeReport {
-    /// ISO `YYYY-MM-DD` — anything before this is fair game.
+    /// ISO `YYYY-MM-DD` — the horizon; anything before it is compressed.
     pub cutoff_date: String,
-    /// Blocks that were (or would be) deleted.
+    /// Always 0: blocks are never deleted. Kept so persisted reports
+    /// from before the compression run still deserialize.
     pub blocks_deleted: i64,
-    /// Subset of `blocks_deleted` that had NEITHER `tempo_worklog_id` NOR
-    /// `exported_at` — work that was never billed. Not a rail: these are
-    /// still deleted. It exists so the loss is visible instead of silent.
+    /// Blocks that received (or would receive) a card this run.
+    #[serde(default)]
+    pub blocks_carded: i64,
+    /// Total size in bytes of the card JSON written (or that would be).
+    #[serde(default)]
+    pub card_bytes: i64,
+    /// Median size in bytes of the cards written this run (0 when none).
+    #[serde(default)]
+    pub card_bytes_median: i64,
+    /// Largest card written this run (0 when none).
+    #[serde(default)]
+    pub card_bytes_max: i64,
+    /// Transcript-cache rows deleted (or that would be).
+    #[serde(default)]
+    pub cache_rows_deleted: i64,
+    /// Always 0, like `blocks_deleted`.
     pub blocks_deleted_unbilled: i64,
     /// Events (orphan or cascaded) that were (or would be) deleted.
     pub events_deleted: i64,
     /// Sessions that were (or would be) deleted.
     pub sessions_deleted: i64,
     /// Manually-picked (`external = 1`) ticket cache entries deleted
-    /// because no surviving block references them any more.
+    /// because no block references them.
     /// Collector-owned (`external = 0`) entries are never touched.
     pub tickets_deleted: i64,
-    /// Disk space reclaimed, in bytes. Left at the default of `0` by
-    /// [`purge_rows`] directly; populated by [`run`] after its post-delete
-    /// `VACUUM`.
+    /// Disk space reclaimed, in bytes. A real run measures it in [`run`]
+    /// after its post-delete `VACUUM`; a dry run estimates it from the
+    /// pages its rolled-back deletes released.
     pub bytes_freed: i64,
     /// Where the pre-prune snapshot was written. Left at the default of
     /// `None` by [`purge_rows`] directly; populated by [`run`].
     pub snapshot_path: Option<String>,
-    /// If true, nothing was actually written to the database.
+    /// If true, the run was executed and rolled back: nothing persisted.
     pub dry_run: bool,
 }
 
@@ -142,190 +139,184 @@ pub fn cutoff_for_days(today: NaiveDate, days: i64) -> NaiveDate {
     today - chrono::Duration::days(days)
 }
 
-/// Delete every block (and, via cascade, its `block_events` rows) whose
-/// local `day` is before `cutoff`, every event before `cutoff` that no
-/// surviving block references, every session before `cutoff`, and every
-/// manually-picked (`external = 1`) ticket cache entry no surviving
-/// block references any more. Rail-free: sync state, edit provenance,
-/// pending edits and personal classification make no difference.
-/// `dry_run` writes nothing and reports simulated counts that mirror
-/// exactly what a real run would delete.
-pub fn purge_rows(conn: &Connection, cutoff: NaiveDate, dry_run: bool) -> Result<PurgeReport> {
-    let cutoff_iso = cutoff.to_string();
-    // The exact UTC instant of local midnight at the cutoff — events and
+/// Predicate on `events e`: past the horizon instant and not linked to a
+/// block that survives (`day >= horizon`). `?1` is the horizon instant,
+/// `?2` the horizon date, `?3` the index pre-filter bound.
+const EVENT_IS_EXPIRED: &str = "e.started_at < ?3
+     AND datetime(e.started_at) < datetime(?1)
+     AND e.id NOT IN (SELECT event_id FROM block_events
+                       WHERE block_id IN (SELECT id FROM blocks WHERE day >= ?2))";
+
+/// Size totals of the cards a run builds.
+#[derive(Default)]
+struct CardStats {
+    carded: i64,
+    bytes: i64,
+    median: i64,
+    max: i64,
+}
+
+impl CardStats {
+    fn of(mut sizes: Vec<i64>) -> Self {
+        sizes.sort_unstable();
+        CardStats {
+            carded: sizes.len() as i64,
+            bytes: sizes.iter().sum(),
+            median: sizes.get(sizes.len() / 2).copied().unwrap_or(0),
+            max: sizes.last().copied().unwrap_or(0),
+        }
+    }
+}
+
+fn transcript_cache_rows(conn: &Connection) -> Result<i64> {
+    conn.query_row("SELECT COUNT(*) FROM transcript_file_cache", [], |r| {
+        r.get(0)
+    })
+    .context("counting transcript cache rows")
+}
+
+fn pragma_i64(conn: &Connection, name: &str) -> Result<i64> {
+    conn.query_row(&format!("PRAGMA {name}"), [], |r| r.get(0))
+        .with_context(|| format!("reading PRAGMA {name}"))
+}
+
+/// Builds and writes the card of every block before `horizon` that has none.
+fn card_old_blocks(conn: &Connection, horizon_iso: &str) -> Result<CardStats> {
+    let ids: Vec<i64> = conn
+        .prepare(
+            "SELECT id FROM blocks
+             WHERE day < ?1 AND id NOT IN (SELECT block_id FROM block_digest)
+             ORDER BY id",
+        )?
+        .query_map(params![horizon_iso], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()
+        .context("listing blocks past the horizon without a card")?;
+    let mut sizes = Vec::with_capacity(ids.len());
+    for &id in &ids {
+        let card = block_digest::build_digest(conn, id)
+            .with_context(|| format!("building the card for block {id}"))?;
+        sizes.push(serde_json::to_string(&card)?.len() as i64);
+        block_digest::write_digest(conn, id, &card)
+            .with_context(|| format!("writing the card for block {id}"))?;
+    }
+    Ok(CardStats::of(sizes))
+}
+
+/// Compress everything before `horizon`: give every block on an older day
+/// a card, then delete the raw rows that card replaces — events before the
+/// horizon instant not linked to a surviving block (their `block_events`
+/// links cascade), sessions with no event left, orphaned session pins, the
+/// transcript cache, and orphaned manually-picked (`external = 1`) ticket
+/// cache entries. Blocks are never deleted, whatever their sync, export,
+/// edit or personal state. One transaction: a card that cannot be built
+/// or written rolls the whole run back. `dry_run` does all of it, reports
+/// what it did (with `bytes_freed` estimated from the pages released) and
+/// rolls back.
+pub fn purge_rows(conn: &Connection, horizon: NaiveDate, dry_run: bool) -> Result<PurgeReport> {
+    let horizon_iso = horizon.to_string();
+    // The exact UTC instant of local midnight at the horizon — events and
     // sessions store UTC timestamps, so comparing them against a bare
     // local-date string would skew by the configured offset. `day`, in
     // contrast, is itself a local-date string and compares directly.
-    let instant_iso = crate::tz::utc_window_for_local_day(cutoff).0.to_rfc3339();
-    // Index-usable pre-filter for the four `datetime(started_at) <
-    // datetime(?1)` predicates below: that expression can't use
-    // idx_events_started/idx_sessions_started because SQLite must call
-    // datetime() on every row before it can compare. `started_at <
-    // date_bound_iso` is a plain string comparison the index CAN drive,
-    // ANDed in front of the original (unchanged) predicate as a superset
-    // filter — it only has to be provably true for every row the exact
-    // predicate matches, never exact itself.
+    let instant_iso = crate::tz::utc_window_for_local_day(horizon).0.to_rfc3339();
+    // Index-usable pre-filter for the `datetime(started_at) < datetime(?1)`
+    // predicates below: that expression can't use idx_events_started/
+    // idx_sessions_started because SQLite must call datetime() on every
+    // row before it can compare. `started_at < date_bound_iso` is a plain
+    // string comparison the index CAN drive, ANDed in front of the exact
+    // predicate as a superset filter — it only has to be provably true for
+    // every row the exact predicate matches, never exact itself.
     //
     // Proof: a row matches the exact predicate only if its UTC instant is
     // < the instant named by `instant_iso`, which is local midnight at
-    // `cutoff` — never later than 23:59:59 UTC on `cutoff`'s own calendar
-    // date (`utc_window_for_local_day` cannot shift local midnight past
-    // the end of `cutoff`'s UTC day). So a matching row's UTC-instant date
-    // is <= `cutoff`. `started_at` strings carry an offset of at most
-    // ±14:00 (well under 24h), so the *literal* calendar date written in
-    // the string can differ from the UTC-instant date by at most one day,
-    // giving a literal date <= `cutoff + 1 day`. `date_bound_iso` below is
-    // `cutoff + 2 days` formatted as a bare `YYYY-MM-DD` (10 chars, no
-    // time part): its date is strictly greater than `cutoff + 1 day`, so
-    // the first 10 characters of any matching row's `started_at` compare
-    // less than it — and once an earlier character differs, whatever
-    // follows (a 'T'/space plus time and offset) can't change the
-    // comparison back.
-    let date_bound_iso = (cutoff + chrono::Duration::days(2)).to_string();
+    // `horizon` — never later than 23:59:59 UTC on `horizon`'s own
+    // calendar date (`utc_window_for_local_day` cannot shift local
+    // midnight past the end of `horizon`'s UTC day). So a matching row's
+    // UTC-instant date is <= `horizon`. `started_at` strings carry an
+    // offset of at most ±14:00 (well under 24h), so the *literal* calendar
+    // date written in the string can differ from the UTC-instant date by
+    // at most one day, giving a literal date <= `horizon + 1 day`.
+    // `date_bound_iso` below is `horizon + 2 days` formatted as a bare
+    // `YYYY-MM-DD` (10 chars, no time part): its date is strictly greater
+    // than `horizon + 1 day`, so the first 10 characters of any matching
+    // row's `started_at` compare less than it — and once an earlier
+    // character differs, whatever follows (a 'T'/space plus time and
+    // offset) can't change the comparison back.
+    let date_bound_iso = (horizon + chrono::Duration::days(2)).to_string();
+    let bounds = params![instant_iso, horizon_iso, date_bound_iso];
 
-    // Never-billed count is taken BEFORE any deletion — the rows (and
-    // the markers that would prove they were never billed) are gone
-    // once the delete runs.
-    let blocks_deleted_unbilled: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM blocks
-             WHERE day < ?1
-               AND (tempo_worklog_id IS NULL OR tempo_worklog_id = '')
-               AND (exported_at IS NULL OR exported_at = '')",
-            params![cutoff_iso],
-            |r| r.get(0),
-        )
-        .context("counting never-billed blocks past cutoff")?;
-
-    if dry_run {
-        let blocks_deleted: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM blocks WHERE day < ?1",
-                params![cutoff_iso],
-                |r| r.get(0),
-            )
-            .context("counting blocks past cutoff")?;
-        // Simulates the post-block-delete state: an event only survives
-        // if it's linked to a block that would survive (day >= cutoff).
-        let events_deleted: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM events
-                 WHERE started_at < ?3
-                   AND datetime(started_at) < datetime(?1)
-                   AND id NOT IN (
-                       SELECT event_id FROM block_events
-                        WHERE block_id IN (SELECT id FROM blocks WHERE day >= ?2)
-                   )",
-                params![instant_iso, cutoff_iso, date_bound_iso],
-                |r| r.get(0),
-            )
-            .context("counting orphan events past cutoff")?;
-        // sessions.started_at is UTC, like events — compare against the
-        // same instant, never the local cutoff string.
-        let sessions_deleted: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sessions
-                 WHERE started_at < ?2 AND datetime(started_at) < datetime(?1)",
-                params![instant_iso, date_bound_iso],
-                |r| r.get(0),
-            )
-            .context("counting sessions past cutoff")?;
-        // Simulates the post-block-delete state for the ticket cache:
-        // a manually-picked (external = 1) ticket only survives if some
-        // surviving block (day >= cutoff) still references it.
-        let tickets_deleted: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM jira_tickets
-                 WHERE external = 1
-                   AND key NOT IN (SELECT jira_issue FROM blocks
-                                    WHERE jira_issue IS NOT NULL AND day >= ?1)",
-                params![cutoff_iso],
-                |r| r.get(0),
-            )
-            .context("counting orphaned external jira tickets past cutoff")?;
-        return Ok(PurgeReport {
-            cutoff_date: cutoff_iso,
-            blocks_deleted,
-            blocks_deleted_unbilled,
-            events_deleted,
-            sessions_deleted,
-            tickets_deleted,
-            dry_run,
-            ..Default::default()
-        });
-    }
-
-    // Real run — one transaction. block_events cascades away with its
-    // parent block (ON DELETE CASCADE in schema.sql, FK enforcement is
-    // enabled in db::configure), so once the block delete lands, any
-    // event still referenced by block_events belongs to a surviving
-    // block; everything else strictly older than the cutoff is an
-    // orphan and goes too. `execute()`'s rows-changed return value IS
-    // the count — no separate counting query to drift from the delete.
+    // One transaction for both modes, cards first so nothing is deleted that
+    // a card has not captured. Dropping `tx` on any error rolls it all back,
+    // and a dry run rolls back on purpose — so its counts are the real
+    // run's. `execute()`'s rows-changed return value IS the count.
     let tx = conn.unchecked_transaction()?;
-    let blocks_deleted = tx
-        .execute("DELETE FROM blocks WHERE day < ?1", params![cutoff_iso])
-        .context("deleting blocks past cutoff")? as i64;
+    let cards = card_old_blocks(&tx, &horizon_iso)?;
+    let freelist_before = pragma_i64(&tx, "freelist_count")?;
     let events_deleted = tx
         .execute(
-            "DELETE FROM events
-             WHERE started_at < ?2
-               AND datetime(started_at) < datetime(?1)
-               AND id NOT IN (SELECT event_id FROM block_events)",
-            params![instant_iso, date_bound_iso],
+            &format!("DELETE FROM events WHERE id IN (SELECT e.id FROM events e WHERE {EVENT_IS_EXPIRED})"),
+            bounds,
         )
-        .context("deleting orphan events past cutoff")? as i64;
+        .context("deleting expired events")? as i64;
     // A branch name gets reused months later and would otherwise silently
     // inherit whatever customer it was pinned to last time (`pin_for_branch`
     // has no age bound of its own) — a pin lives exactly as long as its
     // session's events do. Runs after the events delete just above so this
-    // sees the post-delete state; an unbilled block still keeps its events
-    // (and so keeps its pin) until IT is purged. `from_at` is bound by the
-    // same cutoff as every sibling delete in this pass — without it, a
-    // fresh pin whose session has no event row yet (written moments before
-    // the recorder's first event, or a recorder that then failed) would be
-    // deleted on ANY purge, however recent its cutoff.
+    // sees the post-delete state. `from_at` is bound by the same horizon as
+    // every sibling delete in this pass — without it, a fresh pin whose
+    // session has no event row yet (written moments before the recorder's
+    // first event, or a recorder that then failed) would be deleted on ANY
+    // run, however recent its horizon.
     tx.execute(
         "DELETE FROM session_pins
-         WHERE from_at < ?2 AND datetime(from_at) < datetime(?1)
+         WHERE from_at < ?3 AND datetime(from_at) < datetime(?1)
            AND session_id NOT IN (SELECT session_id FROM events WHERE session_id IS NOT NULL)",
-        params![instant_iso, date_bound_iso],
+        bounds,
     )
-    .context("deleting orphaned session pins past cutoff")?;
-    // sessions.started_at is UTC, like events — compare against the same
-    // instant. Nothing in worklog has ever deleted a sessions row before
-    // this: `reap_stale` only ever sets `ended_at`.
+    .context("deleting orphaned session pins past the horizon")?;
     let sessions_deleted = tx
         .execute(
             "DELETE FROM sessions
-             WHERE started_at < ?2 AND datetime(started_at) < datetime(?1)",
-            params![instant_iso, date_bound_iso],
+             WHERE started_at < ?3 AND datetime(started_at) < datetime(?1)
+               AND session_id NOT IN (SELECT session_id FROM events WHERE session_id IS NOT NULL)",
+            bounds,
         )
-        .context("deleting sessions past cutoff")? as i64;
-    // Runs after the blocks delete, so only surviving blocks remain to
-    // reference a ticket. Collector-owned entries (external = 0) are
-    // never touched — that cache's lifecycle belongs to the collector.
-    let tickets_deleted =
-        tx.execute(
+        .context("deleting sessions past the horizon")? as i64;
+    // Collector-owned entries (external = 0) are never touched — that
+    // cache's lifecycle belongs to the collector.
+    let tickets_deleted = tx
+        .execute(
             "DELETE FROM jira_tickets
              WHERE external = 1
                AND key NOT IN (SELECT jira_issue FROM blocks WHERE jira_issue IS NOT NULL)",
             [],
         )
-        .context("deleting orphaned external jira tickets past cutoff")? as i64;
+        .context("deleting orphaned external jira tickets")? as i64;
     // A cached transcript fingerprint doesn't know the events delete above
     // just ran — without this, an untouched file stays skipped forever and
     // its deleted rows never come back on a later tick.
+    let cache_rows_deleted = transcript_cache_rows(&tx)?;
     claude_transcript_cache::clear_after_events_delete(&tx)?;
-    tx.commit()?;
+    let freed_pages = pragma_i64(&tx, "freelist_count")? - freelist_before;
+    let bytes_freed = if dry_run {
+        tx.rollback()?;
+        freed_pages.max(0) * pragma_i64(conn, "page_size")?
+    } else {
+        tx.commit()?;
+        0
+    };
 
     Ok(PurgeReport {
-        cutoff_date: cutoff_iso,
-        blocks_deleted,
-        blocks_deleted_unbilled,
+        cutoff_date: horizon_iso,
+        blocks_carded: cards.carded,
+        card_bytes: cards.bytes,
+        card_bytes_median: cards.median,
+        card_bytes_max: cards.max,
         events_deleted,
         sessions_deleted,
         tickets_deleted,
+        cache_rows_deleted,
+        bytes_freed,
         dry_run,
         ..Default::default()
     })
@@ -347,8 +338,9 @@ pub struct PruneOptions<'a> {
 /// (spec 002 §5.4):
 ///
 /// 1. `dry_run` skips both the snapshot and the reclaim step entirely — it
-///    delegates straight to [`purge_rows`] and returns its simulated
-///    report.
+///    delegates straight to [`purge_rows`], which executes the whole run
+///    and rolls it back, and returns that report with `bytes_freed` as an
+///    estimate.
 /// 2. Otherwise, the database is snapshotted FIRST via `VACUUM INTO`,
 ///    before any delete. `VACUUM INTO` refuses to overwrite an existing
 ///    file, so a stale snapshot from a previous prune is removed first. If
@@ -658,17 +650,15 @@ mod tests {
         conn.last_insert_rowid()
     }
 
-    /// Insert a block carrying `filler` in its `description` — used to
-    /// bulk up a file-backed database with enough pages for a `VACUUM` to
+    /// Insert an orphan event whose title is `filler` — used to bulk up a
+    /// file-backed database with enough pages for a `VACUUM` to
     /// meaningfully shrink (B21).
-    fn insert_bulky_block(conn: &Connection, day: &str, filler: &str) -> i64 {
-        conn.execute(
-            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds, description)
-             VALUES (?1, ?1 || 'T09:00:00+00:00', ?1 || 'T09:30:00+00:00', 1800, ?2)",
-            params![day, filler],
+    fn insert_bulky_event(conn: &Connection, started_at: &str, source_id: &str, filler: &str) {
+        repo::upsert_event(
+            conn,
+            &Event::minimal("github_commit", source_id, started_at, filler),
         )
         .unwrap();
-        conn.last_insert_rowid()
     }
 
     fn insert_event(conn: &Connection, started_at: &str, source_id: &str) -> i64 {
@@ -738,6 +728,328 @@ mod tests {
         .unwrap();
     }
 
+    fn blocks_snapshot(conn: &Connection) -> Vec<String> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id || '|' || day || '|' || started_at || '|' || ended_at || '|' ||
+                        duration_seconds || '|' || is_personal || '|' ||
+                        COALESCE(tempo_worklog_id, '~') || '|' || COALESCE(exported_at, '~')
+                 FROM blocks ORDER BY id",
+            )
+            .unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    }
+
+    /// FR-01/FR-02: every old block gets a card, no block row changes, and
+    /// the report's byte total is the card JSON actually stored.
+    #[test]
+    fn compress_cards_every_old_block_and_leaves_block_rows_byte_identical() {
+        let conn = open_memory().unwrap();
+        insert_block(&conn, "2026-02-10", Some("tempo-1"), None, None);
+        insert_block(&conn, "2026-02-11", None, None, None);
+        insert_block_with_flags(&conn, "2026-02-12", None, 0, 1);
+        let recent = insert_block(&conn, "2026-06-25", None, None, None);
+        let before = blocks_snapshot(&conn);
+
+        let report = purge_rows(&conn, date("2026-06-20"), false).unwrap();
+
+        assert_eq!(blocks_snapshot(&conn), before);
+        assert_eq!(report.blocks_deleted, 0);
+        assert_eq!(report.blocks_carded, 3);
+        assert_eq!(count(&conn, "block_digest"), 3);
+        let has_recent_card: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM block_digest WHERE block_id = ?1)",
+                [recent],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!has_recent_card);
+        let stored_bytes: i64 = conn
+            .query_row("SELECT SUM(LENGTH(json)) FROM block_digest", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(report.card_bytes, stored_bytes);
+    }
+
+    /// FR-03: an event linked only to a carded block goes with its link
+    /// row, while the block and its card stay; the card holds the event
+    /// count that was computed before the delete.
+    #[test]
+    fn compress_deletes_old_events_and_links_but_keeps_block_and_card() {
+        let conn = open_memory().unwrap();
+        let bid = insert_block(&conn, "2026-02-10", None, None, None);
+        let eid = insert_event(&conn, "2026-02-10T09:05:00+00:00", "old-linked");
+        link(&conn, bid, eid);
+
+        let report = purge_rows(&conn, date("2026-06-20"), false).unwrap();
+
+        assert_eq!(report.events_deleted, 1);
+        assert_eq!(count(&conn, "events"), 0);
+        assert_eq!(count(&conn, "block_events"), 0);
+        assert_eq!(count(&conn, "blocks"), 1);
+        let card = crate::block_digest::digest_for_block(&conn, bid)
+            .unwrap()
+            .expect("card must exist");
+        assert_eq!(card.event_count, 1);
+    }
+
+    /// FR-03: a session that still has a surviving event is kept.
+    #[test]
+    fn compress_keeps_session_that_still_has_an_event() {
+        let conn = open_memory().unwrap();
+        let bid = insert_block(&conn, "2026-06-25", None, None, None);
+        insert_session(&conn, "sess-kept", "2026-02-10T09:00:00+00:00");
+        let old = insert_event_with_session(&conn, "2026-02-10T09:00:00+00:00", "e1", "sess-kept");
+        link(&conn, bid, old);
+        insert_session(&conn, "sess-gone", "2026-02-10T09:00:00+00:00");
+
+        let report = purge_rows(&conn, date("2026-06-20"), false).unwrap();
+
+        assert_eq!(report.events_deleted, 0);
+        assert_eq!(report.sessions_deleted, 1);
+        let left: String = conn
+            .query_row("SELECT session_id FROM sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, "sess-kept");
+    }
+
+    /// Spec section 3 error path: a card that fails to write rolls the
+    /// whole run back — zero cards, zero deletes.
+    #[test]
+    fn compress_card_failure_rolls_back_cards_and_deletes() {
+        let conn = open_memory().unwrap();
+        let first = insert_block(&conn, "2026-02-10", None, None, None);
+        let second = insert_block(&conn, "2026-02-11", None, None, None);
+        let eid = insert_event(&conn, "2026-02-10T09:05:00+00:00", "old");
+        link(&conn, first, eid);
+        conn.execute_batch(&format!(
+            "CREATE TRIGGER fail_card BEFORE INSERT ON block_digest
+             WHEN NEW.block_id = {second}
+             BEGIN SELECT RAISE(ABORT, 'card write failed'); END;"
+        ))
+        .unwrap();
+
+        let result = purge_rows(&conn, date("2026-06-20"), false);
+
+        assert!(result.is_err());
+        assert_eq!(count(&conn, "block_digest"), 0);
+        assert_eq!(count(&conn, "events"), 1);
+        assert_eq!(count(&conn, "block_events"), 1);
+        assert_eq!(count(&conn, "blocks"), 2);
+    }
+
+    /// A run over already-carded blocks writes no second card.
+    #[test]
+    fn compress_second_run_cards_nothing_new() {
+        let conn = open_memory().unwrap();
+        insert_block(&conn, "2026-02-10", None, None, None);
+        purge_rows(&conn, date("2026-06-20"), false).unwrap();
+
+        let again = purge_rows(&conn, date("2026-06-20"), false).unwrap();
+
+        assert_eq!(again.blocks_carded, 0);
+        assert_eq!(again.card_bytes, 0);
+        assert_eq!(count(&conn, "block_digest"), 1);
+    }
+
+    /// FR-15: a dry run executes the compression and rolls it back, so its
+    /// report matches what a real run then does and nothing persists.
+    #[test]
+    fn compress_dry_run_report_matches_the_real_run() {
+        let conn = open_memory().unwrap();
+        let bid = insert_block(&conn, "2026-02-10", None, None, None);
+        let eid = insert_event_with_session(&conn, "2026-02-10T09:05:00+00:00", "e", "s1");
+        link(&conn, bid, eid);
+        insert_session(&conn, "s1", "2026-02-10T09:00:00+00:00");
+        let cutoff = date("2026-06-20");
+
+        let dry = purge_rows(&conn, cutoff, true).unwrap();
+        assert_eq!(count(&conn, "block_digest"), 0);
+        assert_eq!(count(&conn, "events"), 1);
+        let real = purge_rows(&conn, cutoff, false).unwrap();
+
+        assert!(dry.card_bytes > 0);
+        assert_eq!(dry.blocks_carded, real.blocks_carded);
+        assert_eq!(dry.card_bytes, real.card_bytes);
+        assert_eq!(dry.events_deleted, real.events_deleted);
+        assert_eq!(dry.sessions_deleted, real.sessions_deleted);
+    }
+
+    /// B7: a dry run estimates the bytes a real run frees from the pages its
+    /// deletes release, then rolls everything back — no table changes.
+    #[test]
+    fn compress_dry_run_estimates_bytes_freed() {
+        let conn = open_memory().unwrap();
+        insert_block(&conn, "2026-02-10", None, None, None);
+        let filler = "x".repeat(2000);
+        for i in 0..200 {
+            let id = format!("old-{i}");
+            let s = if i == 0 { "s1" } else { "s2" };
+            let eid = insert_event_with_session(&conn, "2026-02-10T09:05:00+00:00", &id, s);
+            conn.execute(
+                "UPDATE events SET title = ?1 WHERE id = ?2",
+                params![filler, eid],
+            )
+            .unwrap();
+        }
+        insert_session(&conn, "s1", "2026-02-10T09:00:00+00:00");
+        insert_session_pin(&conn, "s1", "2026-02-10T09:00:00+00:00");
+        conn.execute(
+            "INSERT INTO transcript_file_cache
+                 (path, since_ts, until_ts, size, mtime_ns, claimed_uuids_json)
+             VALUES ('/t.jsonl', 0, 1, 1, 1, '[]')",
+            [],
+        )
+        .unwrap();
+        let tables = [
+            "blocks",
+            "events",
+            "sessions",
+            "block_digest",
+            "session_pins",
+            "transcript_file_cache",
+            "block_events",
+        ];
+        let before: Vec<i64> = tables.iter().map(|t| count(&conn, t)).collect();
+        let blocks_before = blocks_snapshot(&conn);
+
+        let dry = purge_rows(&conn, date("2026-06-20"), true).unwrap();
+
+        assert!(dry.dry_run);
+        assert_eq!(dry.events_deleted, 200);
+        assert!(dry.bytes_freed > 0, "bytes_freed was {}", dry.bytes_freed);
+        let after: Vec<i64> = tables.iter().map(|t| count(&conn, t)).collect();
+        assert_eq!(after, before);
+        assert_eq!(blocks_snapshot(&conn), blocks_before);
+        assert!(conn.is_autocommit());
+    }
+
+    /// Spec section 3 error path: an unwritable snapshot leaves zero cards.
+    #[test]
+    fn compress_unwritable_snapshot_leaves_zero_cards() {
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("worklog.db");
+        let conn = crate::db::open(&db_path).unwrap();
+        insert_block(&conn, "2026-02-10", None, None, None);
+        let unwritable = tmp.path().join("nope").join("worklog.db.preprune");
+        let opts = PruneOptions {
+            cutoff: date("2026-06-20"),
+            dry_run: false,
+            snapshot_to: Some(unwritable.as_path()),
+            db_path: Some(db_path.as_path()),
+        };
+
+        assert!(run(&conn, &opts).is_err());
+        assert_eq!(count(&conn, "block_digest"), 0);
+    }
+
+    /// FR-15: the report carries the median and max card size, and the
+    /// number of transcript-cache rows the run clears.
+    #[test]
+    fn compress_report_has_card_median_max_and_cache_rows() {
+        let conn = open_memory().unwrap();
+        let small = insert_block(&conn, "2026-02-10", None, None, None);
+        let big = insert_block(&conn, "2026-02-11", None, None, None);
+        let third = insert_block(&conn, "2026-02-12", None, None, None);
+        for i in 0..5 {
+            let e = insert_event(
+                &conn,
+                &format!("2026-02-11T09:0{i}:00+00:00"),
+                &format!("e{i}"),
+            );
+            link(&conn, big, e);
+        }
+        let _ = (small, third);
+        for path in ["/a", "/b"] {
+            conn.execute(
+                "INSERT INTO transcript_file_cache
+                 (path, since_ts, until_ts, size, mtime_ns, claimed_uuids_json)
+                 VALUES (?1, 0, 1, 1, 1, '[]')",
+                [path],
+            )
+            .unwrap();
+        }
+        let dry = purge_rows(&conn, date("2026-06-20"), true).unwrap();
+        assert_eq!(dry.cache_rows_deleted, 2);
+        assert_eq!(count(&conn, "transcript_file_cache"), 2);
+
+        let report = purge_rows(&conn, date("2026-06-20"), false).unwrap();
+
+        let mut sizes: Vec<i64> = conn
+            .prepare("SELECT LENGTH(json) FROM block_digest ORDER BY LENGTH(json)")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(sizes.len(), 3);
+        assert_eq!(report.card_bytes_max, sizes.pop().unwrap());
+        assert_eq!(report.card_bytes_median, sizes[1]);
+        assert_eq!(report.cache_rows_deleted, 2);
+        assert_eq!(count(&conn, "transcript_file_cache"), 0);
+        assert_eq!(dry.card_bytes_max, report.card_bytes_max);
+    }
+
+    /// B7: a block on a surviving day keeps an event that started before
+    /// the horizon instant (local midnight in a non-UTC zone); an
+    /// unlinked event at the same instant goes.
+    #[test]
+    fn compress_block_spanning_midnight_keeps_its_events() {
+        let _g = crate::tz::test_env_lock();
+        std::env::set_var("WORKLOG_TZ", "-05:00");
+        let conn = open_memory().unwrap();
+        let bid = insert_block(&conn, "2026-06-20", None, None, None);
+        let linked = insert_event(&conn, "2026-06-20T03:00:00+00:00", "spanning");
+        link(&conn, bid, linked);
+        insert_event(&conn, "2026-06-20T03:00:00+00:00", "unlinked");
+
+        let report = purge_rows(&conn, date("2026-06-20"), false);
+        std::env::remove_var("WORKLOG_TZ");
+        let report = report.unwrap();
+
+        assert_eq!(report.events_deleted, 1);
+        assert_eq!(count(&conn, "events"), 1);
+        assert_eq!(count(&conn, "block_events"), 1);
+        assert_eq!(count(&conn, "block_digest"), 0);
+    }
+
+    /// B8/FR-16: with default cycle settings and blocks aged 30 to 89
+    /// days, nothing is carded and nothing is deleted.
+    #[test]
+    fn compress_default_cycle_settings_delete_no_block() {
+        let conn = open_memory().unwrap();
+        let today = chrono::Utc::now().date_naive();
+        for age in [30, 45, 60, 89] {
+            let day = (today - chrono::Duration::days(age)).to_string();
+            let bid = insert_block(&conn, &day, None, None, None);
+            let e = insert_event(
+                &conn,
+                &format!("{day}T09:05:00+00:00"),
+                &format!("age-{age}"),
+            );
+            link(&conn, bid, e);
+        }
+        let opts = PruneOptions {
+            cutoff: crate::block_digest::horizon(today),
+            dry_run: false,
+            snapshot_to: None,
+            db_path: None,
+        };
+
+        let report = prune_if_due(&conn, &opts).unwrap().unwrap();
+
+        assert_eq!(report.blocks_carded, 0);
+        assert_eq!(report.blocks_deleted, 0);
+        assert_eq!(count(&conn, "blocks"), 4);
+        assert_eq!(count(&conn, "block_digest"), 0);
+        assert_eq!(count(&conn, "events"), 4);
+    }
+
     fn link(conn: &Connection, block_id: i64, event_id: i64) {
         conn.execute(
             "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
@@ -795,10 +1107,10 @@ mod tests {
     }
 
     /// B8: hand-edited, edited-since-sync, never-synced, personal — and
-    /// exported-but-unsynced — blocks are ALL deleted once past the
-    /// cutoff. No exemption survives the rail-free rewrite.
+    /// exported-but-unsynced — blocks are ALL carded once past the
+    /// horizon, and none is deleted.
     #[test]
-    fn b8_all_block_classes_deleted_no_exemption() {
+    fn b8_all_block_classes_carded_none_deleted() {
         let conn = open_memory().unwrap();
         let old = "2026-02-10";
         insert_block(&conn, old, Some("tempo-1"), Some("manual"), None); // manual
@@ -810,8 +1122,10 @@ mod tests {
 
         let cutoff = date("2026-06-20");
         let report = purge_rows(&conn, cutoff, false).unwrap();
-        assert_eq!(report.blocks_deleted, 6);
-        assert_eq!(count(&conn, "blocks"), 0);
+        assert_eq!(report.blocks_deleted, 0);
+        assert_eq!(report.blocks_carded, 6);
+        assert_eq!(count(&conn, "blocks"), 6);
+        assert_eq!(count(&conn, "block_digest"), 6);
     }
 
     /// B9: a block newer than the cutoff survives along with every
@@ -853,10 +1167,12 @@ mod tests {
 
         let report = purge_rows(&conn, cutoff, true).unwrap();
         assert!(report.dry_run);
-        assert_eq!(report.blocks_deleted, 2);
+        assert_eq!(report.blocks_deleted, 0);
+        assert_eq!(report.blocks_carded, 2);
         assert_eq!(report.events_deleted, 1);
         assert_eq!(count(&conn, "blocks"), before_blocks);
         assert_eq!(count(&conn, "events"), before_events);
+        assert_eq!(count(&conn, "block_digest"), 0);
     }
 
     /// B11: `cutoff_for_cycle` and `cutoff_for_days` compute different,
@@ -871,24 +1187,25 @@ mod tests {
         assert_ne!(cycle_cutoff, days_cutoff);
     }
 
-    /// B12: `purge_rows` deletes a manual block under a `--days`-style
-    /// cutoff too — the override is equally rail-free.
+    /// B12: `purge_rows` cards a manual block under a `--days`-style
+    /// cutoff too and never deletes it.
     #[test]
-    fn b12_purge_rows_deletes_manual_block_under_days_style_cutoff() {
+    fn b12_purge_rows_cards_manual_block_under_days_style_cutoff() {
         let conn = open_memory().unwrap();
         let today = date("2026-07-24");
         let cutoff = cutoff_for_days(today, 30);
         insert_block(&conn, "2026-05-01", Some("tempo-9"), Some("manual"), None);
 
         let report = purge_rows(&conn, cutoff, false).unwrap();
-        assert_eq!(report.blocks_deleted, 1);
-        assert_eq!(count(&conn, "blocks"), 0);
+        assert_eq!(report.blocks_deleted, 0);
+        assert_eq!(report.blocks_carded, 1);
+        assert_eq!(count(&conn, "blocks"), 1);
     }
 
-    /// B37: of three deleted blocks — one synced, one exported, one
-    /// with neither marker — exactly the last is never-billed.
+    /// B37: no block is deleted, so the never-billed loss counter stays
+    /// zero even for a block with neither marker.
     #[test]
-    fn b37_blocks_deleted_unbilled_counts_only_the_never_billed_subset() {
+    fn b37_unbilled_block_is_kept_and_loss_counter_stays_zero() {
         let conn = open_memory().unwrap();
         let cutoff = date("2026-06-20");
         insert_block(&conn, "2026-02-10", Some("tempo-1"), None, None);
@@ -902,8 +1219,9 @@ mod tests {
         insert_block(&conn, "2026-02-12", None, None, None);
 
         let report = purge_rows(&conn, cutoff, false).unwrap();
-        assert_eq!(report.blocks_deleted, 3);
-        assert_eq!(report.blocks_deleted_unbilled, 1);
+        assert_eq!(report.blocks_deleted, 0);
+        assert_eq!(report.blocks_deleted_unbilled, 0);
+        assert_eq!(count(&conn, "blocks"), 3);
     }
 
     /// The cutoff is always rendered as a plain ISO `YYYY-MM-DD` — the
@@ -972,18 +1290,19 @@ mod tests {
         assert_eq!(count(&conn, "session_pins"), 1);
     }
 
-    /// B14: an `external = 1` ticket whose only referencing block is older
-    /// than the cutoff is deleted once that block is gone.
+    /// B14: an `external = 1` ticket no block references is deleted; one
+    /// still referenced by a (carded) old block is kept.
     #[test]
-    fn b14_orphaned_external_ticket_deleted() {
+    fn b14_orphaned_external_ticket_deleted_referenced_one_kept() {
         let conn = open_memory().unwrap();
         let cutoff = date("2026-06-20");
         insert_ticket(&conn, "EXT-1", 1);
-        insert_block_with_ticket(&conn, "2026-02-10", "EXT-1");
+        insert_ticket(&conn, "EXT-9", 1);
+        insert_block_with_ticket(&conn, "2026-02-10", "EXT-9");
 
         let report = purge_rows(&conn, cutoff, false).unwrap();
         assert_eq!(report.tickets_deleted, 1);
-        assert_eq!(count(&conn, "jira_tickets"), 0);
+        assert_eq!(count(&conn, "jira_tickets"), 1);
     }
 
     /// B15: an `external = 1` ticket referenced by a block NEWER than the
@@ -1085,7 +1404,6 @@ mod tests {
         insert_session(&conn, "sess-old", "2026-02-10T09:00:00+00:00");
         insert_session(&conn, "sess-new", "2026-06-25T09:00:00+00:00");
         insert_ticket(&conn, "EXT-1", 1);
-        insert_block_with_ticket(&conn, "2026-02-10", "EXT-1");
         insert_ticket(&conn, "CACHE-1", 0);
 
         let before_sessions = count(&conn, "sessions");
@@ -1118,7 +1436,8 @@ mod tests {
             db_path: Some(db_path.as_path()),
         };
         let report = run(&conn, &opts).unwrap();
-        assert_eq!(report.blocks_deleted, 2);
+        assert_eq!(report.blocks_deleted, 0);
+        assert_eq!(report.blocks_carded, 2);
         assert!(snapshot_path.is_file());
 
         // The snapshot is a self-contained, openable db with the rows the
@@ -1128,6 +1447,10 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM blocks", [], |r| r.get(0))
             .unwrap();
         assert_eq!(blocks, 2);
+        let snap_cards: i64 = snap_conn
+            .query_row("SELECT COUNT(*) FROM block_digest", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(snap_cards, 0, "the snapshot is taken before any card");
     }
 
     /// B18: a pre-existing (stale) file at the snapshot path is replaced —
@@ -1241,7 +1564,12 @@ mod tests {
 
         let filler = "x".repeat(2000);
         for i in 0..300 {
-            insert_bulky_block(&conn, "2026-02-10", &format!("{filler}-{i}"));
+            insert_bulky_event(
+                &conn,
+                "2026-02-10T09:00:00+00:00",
+                &format!("bulk-{i}"),
+                &filler,
+            );
         }
 
         let size_before_delete = std::fs::metadata(&db_path).unwrap().len();
@@ -1255,7 +1583,7 @@ mod tests {
         };
         let report = run(&conn, &opts).unwrap();
 
-        assert_eq!(report.blocks_deleted, 300);
+        assert_eq!(report.events_deleted, 300);
         assert!(report.bytes_freed >= 0);
         let size_after = std::fs::metadata(&db_path).unwrap().len();
         assert!(
@@ -1338,7 +1666,8 @@ mod tests {
             db_path: Some(db_path.as_path()),
         };
         let report = prune_if_due(&conn, &opts).unwrap().unwrap();
-        assert_eq!(report.blocks_deleted, 1);
+        assert_eq!(report.blocks_deleted, 0);
+        assert_eq!(report.blocks_carded, 1);
         assert_eq!(
             meta_get(&conn, LATCH_KEY).unwrap(),
             Some("2026-06-20".to_string())
@@ -1364,7 +1693,8 @@ mod tests {
         };
         let first = prune_if_due(&conn, &opts).unwrap();
         assert!(first.is_some());
-        assert_eq!(count(&conn, "blocks"), 0);
+        assert_eq!(count(&conn, "blocks"), 1);
+        assert_eq!(count(&conn, "block_digest"), 1);
 
         let second = prune_if_due(&conn, &opts).unwrap();
         assert!(
@@ -1440,8 +1770,9 @@ mod tests {
         let stored_json = meta_get(&conn, LAST_REPORT_KEY).unwrap().unwrap();
         let stored: PurgeReport = serde_json::from_str(&stored_json).unwrap();
         assert_eq!(stored.cutoff_date, returned.cutoff_date);
-        assert_eq!(stored.blocks_deleted, returned.blocks_deleted);
-        assert_eq!(stored.blocks_deleted, 2);
+        assert_eq!(stored.blocks_carded, returned.blocks_carded);
+        assert_eq!(stored.blocks_carded, 2);
+        assert_eq!(stored.blocks_deleted, 0);
 
         let ran_at = meta_get(&conn, LAST_RUN_KEY).unwrap().unwrap();
         chrono::DateTime::parse_from_rfc3339(&ran_at)
@@ -1449,7 +1780,7 @@ mod tests {
 
         let lp = last_prune(&conn).unwrap().unwrap();
         assert_eq!(lp.report.cutoff_date, returned.cutoff_date);
-        assert_eq!(lp.report.blocks_deleted, returned.blocks_deleted);
+        assert_eq!(lp.report.blocks_carded, returned.blocks_carded);
         assert_eq!(lp.ran_at, ran_at);
     }
 
@@ -1497,6 +1828,11 @@ mod tests {
         let report = PurgeReport {
             cutoff_date: "2026-06-20".to_string(),
             blocks_deleted: 12,
+            blocks_carded: 7,
+            card_bytes: 900,
+            card_bytes_median: 100,
+            card_bytes_max: 400,
+            cache_rows_deleted: 5,
             blocks_deleted_unbilled: 3,
             events_deleted: 145,
             sessions_deleted: 4,
@@ -1512,6 +1848,11 @@ mod tests {
         let round_tripped: PurgeReport = serde_json::from_str(&stored_json).unwrap();
         assert_eq!(round_tripped.cutoff_date, report.cutoff_date);
         assert_eq!(round_tripped.blocks_deleted, report.blocks_deleted);
+        assert_eq!(round_tripped.blocks_carded, report.blocks_carded);
+        assert_eq!(round_tripped.card_bytes, report.card_bytes);
+        assert_eq!(round_tripped.card_bytes_median, report.card_bytes_median);
+        assert_eq!(round_tripped.card_bytes_max, report.card_bytes_max);
+        assert_eq!(round_tripped.cache_rows_deleted, report.cache_rows_deleted);
         assert_eq!(
             round_tripped.blocks_deleted_unbilled,
             report.blocks_deleted_unbilled

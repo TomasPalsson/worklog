@@ -193,6 +193,7 @@ fn reinfer(conn: &Connection, day: chrono::NaiveDate) {
 
 #[test]
 fn shares_survive_reinfer() {
+    let _g = crate::tz::test_env_lock();
     let conn = open_memory().unwrap();
     seed_multi_tenant_folder(&conn);
     // Two events 3 minutes apart cluster into one >=5-minute block.
@@ -413,6 +414,7 @@ fn slices_from_rows_last_slice_absorbs_the_rounding_remainder() {
 
 #[test]
 fn shares_survive_when_block_start_moves() {
+    let _g = crate::tz::test_env_lock();
     // Regression for the orphaned-owner-row bug: block_customer_shares is
     // keyed by the block's exact started_at, and persist_blocks deletes +
     // re-inserts a day's blocks on every re-infer. A rebuilt block whose

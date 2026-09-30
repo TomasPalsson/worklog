@@ -8,6 +8,8 @@ use rusqlite::Connection;
 
 use crate::billing;
 use crate::billing_registry::Registry;
+use crate::block_digest::digest_for_block;
+use crate::digest_contract::BlockDigest;
 use crate::repo;
 use crate::tenant_contract::{Clue, ClueStrength};
 use crate::tenants;
@@ -30,6 +32,9 @@ pub fn clues_for_block(
     tenant_customers: &HashMap<(String, String), String>,
     registry: &Registry,
 ) -> Result<Vec<Clue>> {
+    if let Some(card) = digest_for_block(conn, block_id)? {
+        return Ok(clues_from_card(&card, folder, registry));
+    }
     let roots: Vec<String> = tenants::list_roots(conn)?
         .into_iter()
         .filter(|r| r.folder == folder)
@@ -94,6 +99,42 @@ pub fn clues_for_block(
         }
     }
     Ok(clues)
+}
+
+/// Branch clues from a compressed block's card, all stamped at its first
+/// event: the card keeps no per-event times, and edited tenant paths
+/// shrank to file basenames, so no tenant-path clue survives.
+fn clues_from_card(card: &BlockDigest, folder: &str, registry: &Registry) -> Vec<Clue> {
+    let Some(at) = card
+        .first_at
+        .as_deref()
+        .and_then(|text| DateTime::parse_from_rfc3339(text).ok())
+        .map(|at| at.with_timezone(&Utc))
+    else {
+        return Vec::new();
+    };
+    let worktrees = card
+        .paths
+        .iter()
+        .filter(|path| billing::work_folder_for_path(path).as_deref() == Some(folder))
+        .filter_map(|path| worktree_name(Some(path)));
+    // Branches carry no folder on the card; only the dominant folder claims them.
+    let branches = if card.folder.as_deref() == Some(folder) {
+        card.branches.as_slice()
+    } else {
+        &[]
+    };
+    branches
+        .iter()
+        .map(String::as_str)
+        .chain(worktrees)
+        .filter_map(|text| registry.customer_in_text(text))
+        .map(|customer| Clue {
+            at,
+            customer,
+            strength: ClueStrength::Branch,
+        })
+        .collect()
 }
 
 /// The tenant directory name in `path` when it falls under one of `roots`
