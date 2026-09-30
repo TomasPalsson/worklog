@@ -387,17 +387,35 @@ mod tests {
     }
 
     #[test]
-    fn recording_override_bypasses_work_hours_only_before_its_end() {
+    fn ingest_stores_outside_hours_while_recording() {
+        let conn = db::open_memory().unwrap();
+        let hours = WorkHours::parse(DEFAULT_WORK_HOURS).unwrap();
+        let plus_two = FixedOffset::east_opt(2 * 3600).unwrap();
+        // Wed 2026-04-15 06:00 local (+02:00) = 04:00Z, before the 09:00 start.
+        let ts = Utc.with_ymd_and_hms(2026, 4, 15, 4, 0, 0).unwrap();
+        let until = hours.auto_stop_at(ts, plus_two);
+        assert!(matches!(
+            ingest_heartbeat(&conn, &hb(ts), &hours, plus_two, None).unwrap(),
+            IngestOutcome::Filtered("outside_work_hours")
+        ));
+        assert!(matches!(
+            ingest_heartbeat(&conn, &hb(ts), &hours, plus_two, Some(until)).unwrap(),
+            IngestOutcome::Stored(_)
+        ));
+    }
+
+    #[test]
+    fn expired_override_filters_again() {
         let conn = db::open_memory().unwrap();
         let hours = WorkHours::parse(DEFAULT_WORK_HOURS).unwrap();
         let until = Utc.with_ymd_and_hms(2026, 4, 18, 13, 0, 0).unwrap();
-        let inside = ingest_heartbeat(&conn, &hb(saturday_noon()), &hours, utc(), Some(until));
-        assert!(matches!(inside.unwrap(), IngestOutcome::Stored(_)));
-        let at_end = ingest_heartbeat(&conn, &hb(until), &hours, utc(), Some(until)).unwrap();
-        assert!(matches!(
-            at_end,
-            IngestOutcome::Filtered("outside_work_hours")
-        ));
+        for ts in [until, until + Duration::minutes(1)] {
+            let outcome = ingest_heartbeat(&conn, &hb(ts), &hours, utc(), Some(until)).unwrap();
+            assert!(matches!(
+                outcome,
+                IngestOutcome::Filtered("outside_work_hours")
+            ));
+        }
     }
 
     #[test]
@@ -412,19 +430,20 @@ mod tests {
     }
 
     #[test]
-    fn auto_stop_is_next_local_day_at_work_end() {
+    fn auto_stop_is_next_day_work_end() {
         let hours = WorkHours::parse(DEFAULT_WORK_HOURS).unwrap();
         let plus_two = FixedOffset::east_opt(2 * 3600).unwrap();
-        // Sat 23:30 local (+02:00) is still Sat, so the stop is Sun 17:00 local = 15:00Z.
-        let now = Utc.with_ymd_and_hms(2026, 4, 18, 21, 30, 0).unwrap();
+        // Wed 06:00 local (+02:00) = 04:00Z -> Thu 17:00 local = 15:00Z.
+        let wednesday = Utc.with_ymd_and_hms(2026, 4, 15, 4, 0, 0).unwrap();
         assert_eq!(
-            hours.auto_stop_at(now, plus_two),
-            Utc.with_ymd_and_hms(2026, 4, 19, 15, 0, 0).unwrap()
+            hours.auto_stop_at(wednesday, plus_two),
+            Utc.with_ymd_and_hms(2026, 4, 16, 15, 0, 0).unwrap()
         );
-        // Same instant read in UTC is Sat 21:30, stop Sun 17:00Z.
+        // Fri 18:00 local (UTC) -> Sat 17:00 local.
+        let friday = Utc.with_ymd_and_hms(2026, 4, 17, 18, 0, 0).unwrap();
         assert_eq!(
-            hours.auto_stop_at(now, utc()),
-            Utc.with_ymd_and_hms(2026, 4, 19, 17, 0, 0).unwrap()
+            hours.auto_stop_at(friday, utc()),
+            Utc.with_ymd_and_hms(2026, 4, 18, 17, 0, 0).unwrap()
         );
     }
 
@@ -465,6 +484,11 @@ mod tests {
             let ts = Utc.with_ymd_and_hms(2026, 4, day, hour, minute, 0).unwrap();
             ingest_heartbeat(&conn, &hb(ts), &hours, utc(), Some(until)).unwrap();
         }
-        assert_eq!(minutes_today(&conn, saturday_noon(), plus_two).unwrap(), 3);
+        // Two heartbeats in one minute are one event (FR-05).
+        for second in [5, 40] {
+            let ts = Utc.with_ymd_and_hms(2026, 4, 18, 10, 0, second).unwrap();
+            ingest_heartbeat(&conn, &hb(ts), &hours, utc(), Some(until)).unwrap();
+        }
+        assert_eq!(minutes_today(&conn, saturday_noon(), plus_two).unwrap(), 4);
     }
 }
