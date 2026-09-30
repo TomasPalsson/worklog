@@ -80,10 +80,12 @@ use crate::billing;
 use crate::billing_deildir;
 use crate::billing_registry;
 use crate::block_details;
+use crate::block_digest;
 use crate::browser_ingest;
 use crate::change_log;
 use crate::collectors::{jira, tempo};
 use crate::deild_contract;
+use crate::digest_contract::{BlockDigest, DAY_COMPRESSED};
 use crate::elsewhere;
 use crate::git::{self, CommitEntry};
 use crate::line_text_jobs;
@@ -138,6 +140,7 @@ pub fn router(state: Shared) -> Router {
         .route("/accounts", get(list_accounts))
         .route("/blocks/:id/events", get(block_events))
         .route("/blocks/:id/details", get(block_details_route))
+        .route("/blocks/:id/digest", get(block_digest_route))
         .route("/blocks/:id/commits", get(block_commits))
         .route("/blocks/:id/ticket", post(assign_ticket))
         .route("/blocks/:id/duration", post(set_duration))
@@ -463,6 +466,7 @@ pub enum ApiError {
     BadRequest(anyhow::Error),
     NotFound(anyhow::Error),
     Forbidden(anyhow::Error),
+    Conflict(anyhow::Error),
     Internal(anyhow::Error),
 }
 
@@ -474,7 +478,12 @@ impl ApiError {
 
 impl<E: Into<anyhow::Error>> From<E> for ApiError {
     fn from(e: E) -> Self {
-        Self::Internal(e.into())
+        let e = e.into();
+        if e.to_string().starts_with(DAY_COMPRESSED) {
+            Self::Conflict(e)
+        } else {
+            Self::Internal(e)
+        }
     }
 }
 
@@ -484,6 +493,7 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest(e) => (StatusCode::BAD_REQUEST, e),
             ApiError::NotFound(e) => (StatusCode::NOT_FOUND, e),
             ApiError::Forbidden(e) => (StatusCode::FORBIDDEN, e),
+            ApiError::Conflict(e) => (StatusCode::CONFLICT, e),
             ApiError::Internal(e) => (StatusCode::INTERNAL_SERVER_ERROR, e),
         };
         // For 400, emit only the top-level message (no `{:#}` chain
@@ -494,9 +504,10 @@ impl IntoResponse for ApiError {
         // via `error!()` where the developer needs it, and the client
         // needs enough context to file a useful bug report.
         let (msg, log_msg) = match status {
-            StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND | StatusCode::FORBIDDEN => {
-                (format!("{err}"), None)
-            }
+            StatusCode::BAD_REQUEST
+            | StatusCode::NOT_FOUND
+            | StatusCode::FORBIDDEN
+            | StatusCode::CONFLICT => (format!("{err}"), None),
             _ => (format!("{err:#}"), Some(format!("{err:#}"))),
         };
         if let Some(m) = log_msg {
@@ -841,21 +852,40 @@ fn stitch_day_summary(conn: &Connection, day: &str) -> Result<DaySummary> {
         })
         .collect();
 
-    let enriched = blocks
-        .into_iter()
-        .map(|block| {
-            let id = block.id;
-            let sources = sources_by_block.remove(&id).unwrap_or_default();
-            BlockSummary {
-                event_count: counts.get(&id).copied().unwrap_or(0),
-                confidence: crate::timeline::block_confidence(sources.len()).to_owned(),
-                sources,
-                project_path: best_path.remove(&id),
-                project: best_folder.remove(&id),
-                block,
+    let mut enriched = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        let id = block.id;
+        let summary = match block_digest::digest_for_block(conn, id)? {
+            Some(card) => {
+                let mut sources: Vec<SourceCount> = card
+                    .events_by_source
+                    .into_iter()
+                    .map(|(source, n)| SourceCount { source, n })
+                    .collect();
+                sources.sort_by_key(|s| std::cmp::Reverse(s.n));
+                BlockSummary {
+                    event_count: card.event_count,
+                    confidence: crate::timeline::block_confidence(sources.len()).to_owned(),
+                    sources,
+                    project_path: card.project_path,
+                    project: card.folder,
+                    block,
+                }
             }
-        })
-        .collect();
+            None => {
+                let sources = sources_by_block.remove(&id).unwrap_or_default();
+                BlockSummary {
+                    event_count: counts.get(&id).copied().unwrap_or(0),
+                    confidence: crate::timeline::block_confidence(sources.len()).to_owned(),
+                    sources,
+                    project_path: best_path.remove(&id),
+                    project: best_folder.remove(&id),
+                    block,
+                }
+            }
+        };
+        enriched.push(summary);
+    }
 
     Ok(DaySummary {
         day: day.to_owned(),
@@ -1127,6 +1157,18 @@ async fn block_details_route(
         .await
         .map_err(ApiError::NotFound)?;
     Ok(Json(rows))
+}
+
+/// `GET /blocks/:id/digest`: the card kept after a block's raw events are
+/// deleted. No card (or no block) → 404.
+async fn block_digest_route(
+    State(state): State<Shared>,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<Json<BlockDigest>, ApiError> {
+    with_conn(state, move |c| block_digest::digest_for_block(c, id))
+        .await?
+        .map(Json)
+        .ok_or_else(|| ApiError::NotFound(anyhow::anyhow!("block {id} has no digest")))
 }
 
 /// Per-block commit sidecar — returns the commits that landed inside
@@ -3542,6 +3584,122 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Writes a hand-built card for block 1 and deletes its events, so the
+    /// day looks compressed.
+    fn compress_seeded_day(state: &Shared) {
+        let conn = state.conn.try_lock().unwrap();
+        let card = crate::digest_contract::BlockDigest {
+            event_count: 7,
+            events_by_source: [("claude".to_owned(), 5), ("github_commit".to_owned(), 2)].into(),
+            folder: Some("proj".to_owned()),
+            project_path: Some("/home/u/Desktop/Work/proj".to_owned()),
+            ..Default::default()
+        };
+        assert!(crate::block_digest::write_digest(&conn, 1, &card).unwrap());
+        conn.execute("DELETE FROM block_events", []).unwrap();
+        conn.execute("DELETE FROM events", []).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn digest_route_and_summary() {
+        let state = state_with_block();
+        let app = router(state.clone());
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::get("/blocks/1/digest")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "no card yet");
+
+        compress_seeded_day(&state);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::get("/blocks/1/digest")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["event_count"], 7);
+        assert_eq!(v["project_path"], "/home/u/Desktop/Work/proj");
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::get("/days/2026-04-18")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        let block = &v["blocks"][0];
+        assert_eq!(block["event_count"], 7);
+        assert_eq!(block["project_path"], "/home/u/Desktop/Work/proj");
+        assert_eq!(block["project"], "proj");
+        assert_eq!(block["sources"][0]["source"], "claude");
+        assert_eq!(block["sources"][0]["n"], 5);
+        assert_eq!(block["sources"][1]["source"], "github_commit");
+        assert_eq!(block["sources"][1]["n"], 2);
+
+        let resp = app
+            .oneshot(
+                Request::get("/blocks/999/digest")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn compressed_day_allow_and_refuse() {
+        let refused = ApiError::from(anyhow::anyhow!(
+            "{}: 2026-04-18",
+            crate::digest_contract::DAY_COMPRESSED
+        ))
+        .into_response();
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            read_json(refused).await["error"],
+            "day is compressed: 2026-04-18"
+        );
+        let other = ApiError::from(anyhow::anyhow!("disk on fire")).into_response();
+        assert_eq!(other.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let state = state_with_block();
+        compress_seeded_day(&state);
+        let app = router(state);
+        for (path, body) in [
+            ("/blocks/1/description", json!({"description": "hand edit"})),
+            ("/blocks/1/ticket", json!({"jira_issue": "PROJ-1"})),
+            ("/blocks/1/personal", json!({"is_personal": true})),
+            ("/blocks/1/ignore", json!({"ignored": true})),
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::post(path)
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "{path}");
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
