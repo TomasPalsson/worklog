@@ -545,7 +545,7 @@ fn iso_prefix(s: &str) -> String {
 pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) -> Result<()> {
     let day_iso = day.to_string();
     if crate::block_digest::day_is_compressed(conn, &day_iso)? {
-        anyhow::bail!(crate::digest_contract::DAY_COMPRESSED);
+        anyhow::bail!("{}: {day_iso}", crate::digest_contract::DAY_COMPRESSED);
     }
     // Load once per persist pass — cheap and avoids re-reading the TOML
     // for every block. classify() is pure given the config.
@@ -919,7 +919,7 @@ mod tests {
     }
 
     #[test]
-    fn compressed_day_refuses_persist_blocks() {
+    fn compressed_day_refuses_rebuild() {
         let conn = open_memory().unwrap();
         let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
         persist_blocks(&conn, day, &[ib((9, 0), (9, 30))]).unwrap();
@@ -927,12 +927,18 @@ mod tests {
             .query_row("SELECT id FROM blocks", [], |r| r.get(0))
             .unwrap();
         crate::block_digest::write_digest(&conn, id, &Default::default()).unwrap();
+        let snapshot = |conn: &rusqlite::Connection| -> Vec<Vec<rusqlite::types::Value>> {
+            let mut stmt = conn.prepare("SELECT * FROM blocks ORDER BY id").unwrap();
+            let n = stmt.column_count();
+            stmt.query_map([], |r| (0..n).map(|i| r.get(i)).collect())
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        };
+        let before = snapshot(&conn);
         let err = persist_blocks(&conn, day, &[]).unwrap_err();
-        assert_eq!(err.to_string(), crate::digest_contract::DAY_COMPRESSED);
-        let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM blocks", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(n, 1);
+        assert_eq!(err.to_string(), "day is compressed: 2026-04-18");
+        assert_eq!(snapshot(&conn), before);
     }
 
     #[test]
