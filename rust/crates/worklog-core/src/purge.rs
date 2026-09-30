@@ -57,14 +57,14 @@ pub struct PurgeReport {
     /// because no block references them.
     /// Collector-owned (`external = 0`) entries are never touched.
     pub tickets_deleted: i64,
-    /// Disk space reclaimed, in bytes. Left at the default of `0` by
-    /// [`purge_rows`] directly; populated by [`run`] after its post-delete
-    /// `VACUUM`.
+    /// Disk space reclaimed, in bytes. A real run measures it in [`run`]
+    /// after its post-delete `VACUUM`; a dry run estimates it from the
+    /// pages its rolled-back deletes released.
     pub bytes_freed: i64,
     /// Where the pre-prune snapshot was written. Left at the default of
     /// `None` by [`purge_rows`] directly; populated by [`run`].
     pub snapshot_path: Option<String>,
-    /// If true, nothing was actually written to the database.
+    /// If true, the run was executed and rolled back: nothing persisted.
     pub dry_run: bool,
 }
 
@@ -338,8 +338,9 @@ pub struct PruneOptions<'a> {
 /// (spec 002 §5.4):
 ///
 /// 1. `dry_run` skips both the snapshot and the reclaim step entirely — it
-///    delegates straight to [`purge_rows`] and returns its simulated
-///    report.
+///    delegates straight to [`purge_rows`], which executes the whole run
+///    and rolls it back, and returns that report with `bytes_freed` as an
+///    estimate.
 /// 2. Otherwise, the database is snapshotted FIRST via `VACUUM INTO`,
 ///    before any delete. `VACUUM INTO` refuses to overwrite an existing
 ///    file, so a stale snapshot from a previous prune is removed first. If
@@ -856,8 +857,8 @@ mod tests {
         assert_eq!(count(&conn, "block_digest"), 1);
     }
 
-    /// FR-15: a dry run reports what a real run then does, and writes
-    /// nothing itself.
+    /// FR-15: a dry run executes the compression and rolls it back, so its
+    /// report matches what a real run then does and nothing persists.
     #[test]
     fn compress_dry_run_report_matches_the_real_run() {
         let conn = open_memory().unwrap();

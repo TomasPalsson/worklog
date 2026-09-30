@@ -1485,7 +1485,8 @@ fn day_collect_window(
     day: chrono::NaiveDate,
     local_today: chrono::NaiveDate,
 ) -> (chrono::NaiveDate, chrono::NaiveDate) {
-    unimplemented!("{day} {local_today}")
+    let since = collect_since(day, local_today);
+    (since, since.max(day + chrono::Duration::days(1)))
 }
 
 /// True when `worklog collect <target>` should run `source`: either the
@@ -2871,8 +2872,8 @@ fn last_prune_line(lp: Option<&worklog_core::purge::LastPrune>) -> String {
             let total =
                 r.blocks_deleted + r.events_deleted + r.sessions_deleted + r.tickets_deleted;
             format!(
-                "{} · {} blocks, {} events · {total} rows removed · {}",
-                r.cutoff_date, r.blocks_deleted, r.events_deleted, lp.ran_at
+                "{} · {} cards, {} events · {total} rows removed · {}",
+                r.cutoff_date, r.blocks_carded, r.events_deleted, lp.ran_at
             )
         }
     }
@@ -2945,6 +2946,7 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
                 })),
                 "last_prune": last_prune.as_ref().map(|lp| serde_json::json!({
                     "cutoff": lp.report.cutoff_date,
+                    "blocks_carded": lp.report.blocks_carded,
                     "blocks_deleted": lp.report.blocks_deleted,
                     "blocks_deleted_unbilled": lp.report.blocks_deleted_unbilled,
                     "events_deleted": lp.report.events_deleted,
@@ -3328,8 +3330,8 @@ fn cmd_day<W: Write>(
         out,
         "collecting jira + github + gcal + slack + shell + reflog + transcripts …",
     )?;
-    let since = day_parsed;
-    let until = day_parsed + chrono::Duration::days(1);
+    let (since, until) =
+        day_collect_window(day_parsed, worklog_core::tz::local_date(chrono::Utc::now()));
     let outcomes = collect_targets(CollectTarget::All, since, until)?;
 
     // Turn a source's `CollectOutcome` into the `StepOutcome` the empty-day

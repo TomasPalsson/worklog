@@ -10,5 +10,14 @@
 #![forbid(unsafe_code)]
 
 fn main() -> miette::Result<()> {
-    worklog_cli::run().map_err(|e| miette::Report::msg(format!("{e:#}")))
+    worklog_cli::run().map_err(|e| {
+        if e.chain().any(|c| {
+            c.to_string()
+                .starts_with(worklog_core::digest_contract::DAY_COMPRESSED)
+        }) {
+            eprintln!("{e:#}");
+            std::process::exit(2);
+        }
+        miette::Report::msg(format!("{e:#}"))
+    })
 }
