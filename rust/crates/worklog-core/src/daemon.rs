@@ -3780,6 +3780,35 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn compressed_day_allow_unignore() {
+        let state = state_with_block();
+        compress_seeded_day(&state);
+        let app = router(state.clone());
+        for ignored in [true, false] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::post("/blocks/1/ignore")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::to_vec(&json!({ "ignored": ignored })).unwrap(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "ignored={ignored}");
+            let conn = state.conn.try_lock().unwrap();
+            let ignored_at: Option<String> = conn
+                .query_row("SELECT ignored_at FROM blocks WHERE id = 1", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(ignored_at.is_some(), ignored);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn compressed_day_allow_and_refuse_refuses_rebuilds() {
         let state = state_with_block();
         compress_seeded_day(&state);
@@ -5638,6 +5667,71 @@ mod tests {
         drop(guard);
 
         std::env::remove_var("WORKLOG_PRUNE_ENABLED");
+    }
+
+    fn seed_synced_block_aged(conn: &Connection, age: i64) {
+        let day = (chrono::Utc::now().date_naive() - chrono::Duration::days(age)).to_string();
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds,
+                                 tempo_worklog_id, exported_at)
+             VALUES (?1, ?1 || 'T09:00:00+00:00', ?1 || 'T09:30:00+00:00',
+                     1800, 'tempo-1', '2026-01-01')",
+            [&day],
+        )
+        .unwrap();
+        let block_id = conn.last_insert_rowid();
+        let event = Event::minimal(
+            "github_commit",
+            format!("age-{age}"),
+            format!("{day}T09:05:00+00:00"),
+            "commit",
+        );
+        let event_id = repo::upsert_event(conn, &event).unwrap();
+        conn.execute(
+            "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+            params![block_id, event_id],
+        )
+        .unwrap();
+    }
+
+    /// Billing-cycle settings no longer move the compression horizon: a
+    /// tick with the tightest cycle still leaves 65-85 day old blocks alone.
+    #[tokio::test(flavor = "current_thread")]
+    async fn prune_tick_ignores_cycle_settings() {
+        let _g = prune_env_lock().await;
+        std::env::set_var("WORKLOG_PRUNE_ENABLED", "1");
+        std::env::set_var("WORKLOG_BILLING_CYCLE_START_DAY", "1");
+        std::env::set_var("WORKLOG_BILLING_CLOSE_DAY", "1");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("worklog.db");
+        let state = state_from_conn(crate::db::open(&db_path).unwrap());
+        for age in [65, 75, 85] {
+            seed_synced_block_aged(&*state.conn.lock().await, age);
+        }
+
+        prune_due_check_once(
+            state.clone(),
+            &tmp.path().join("worklog.db.preprune"),
+            &db_path,
+        )
+        .await;
+
+        let guard = state.conn.lock().await;
+        let counts: (i64, i64, i64) = guard
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM block_digest), (SELECT COUNT(*) FROM blocks),
+                        (SELECT COUNT(*) FROM events)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(counts, (0, 3, 3), "cards, blocks, events");
+        drop(guard);
+
+        std::env::remove_var("WORKLOG_PRUNE_ENABLED");
+        std::env::remove_var("WORKLOG_BILLING_CYCLE_START_DAY");
+        std::env::remove_var("WORKLOG_BILLING_CLOSE_DAY");
     }
 
     /// The guard that exists because this actually happened: a test whose
