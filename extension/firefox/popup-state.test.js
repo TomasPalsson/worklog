@@ -4,12 +4,12 @@ import { formatMinutes, formatTimeLeft, viewState } from "./popup-state.js";
 const now = new Date("2026-09-30T12:00:00Z");
 const future = "2026-09-30T15:30:00Z";
 const past = "2026-09-30T11:00:00Z";
-const status = (over = {}) => ({
+const status = (overrides = {}) => ({
   in_work_hours: true,
   recording_until: null,
   minutes_today: 75,
   work_hours: "Mon-Fri 09:00-17:00",
-  ...over,
+  ...overrides,
 });
 const tabBeat = (reason = null) => ({
   ts: "2026-09-30T11:59:00Z",
@@ -18,22 +18,22 @@ const tabBeat = (reason = null) => ({
   stored: reason === null,
   reason,
 });
-const input = (over = {}) => ({
+const input = (overrides = {}) => ({
   status: status(),
   daemonDown: false,
   paused: false,
   lastHeartbeat: tabBeat(),
   now,
-  ...over,
+  ...overrides,
 });
 
 describe("formatMinutes", () => {
   test.each([
-    [0, "0m"],
-    [45, "45m"],
-    [60, "1h"],
-    [75, "1h 15m"],
-    [125, "2h 5m"],
+    [0, "0 min"],
+    [45, "45 min"],
+    [60, "1 h 00 min"],
+    [75, "1 h 15 min"],
+    [125, "2 h 05 min"],
   ])("%d -> %s", (minutes, text) => {
     expect(formatMinutes(minutes)).toBe(text);
   });
@@ -41,13 +41,13 @@ describe("formatMinutes", () => {
 
 describe("formatTimeLeft", () => {
   test("hours and minutes", () => {
-    expect(formatTimeLeft(future, now)).toBe("3h 30m");
+    expect(formatTimeLeft(future, now)).toBe("3 h 30 min");
   });
   test("minutes only", () => {
-    expect(formatTimeLeft("2026-09-30T12:20:00Z", now)).toBe("20m");
+    expect(formatTimeLeft("2026-09-30T12:20:00Z", now)).toBe("20 min");
   });
   test("under a minute", () => {
-    expect(formatTimeLeft("2026-09-30T12:00:30Z", now)).toBe("<1m");
+    expect(formatTimeLeft("2026-09-30T12:00:30Z", now)).toBe("<1 min");
   });
   test("null when none or expired", () => {
     expect(formatTimeLeft(null, now)).toBeNull();
@@ -75,7 +75,7 @@ describe("viewState", () => {
     expect(state.primary.action).toBe("pause");
     expect(state.secondary).toBeNull();
     expect(state.tab).toEqual({ title: "Docs", url: "https://example.com/docs" });
-    expect(state.minutesToday).toBe("1h 15m");
+    expect(state.minutesToday).toBe("1 h 15 min");
     expect(state.timeLeft).toBeNull();
   });
 
@@ -118,13 +118,24 @@ describe("viewState", () => {
     expect(state.status).toBe("recording");
     expect(state.primary.action).toBe("stop");
     expect(state.secondary).toBeNull();
-    expect(state.timeLeft).toBe("3h 30m");
+    expect(state.timeLeft).toBe("3 h 30 min");
   });
 
   test("override inside work hours: pause primary, stop secondary", () => {
     const state = viewState(input({ status: status({ recording_until: future }) }));
     expect(state.primary.action).toBe("pause");
     expect(state.secondary.action).toBe("stop");
+  });
+
+  test("FR-07 primary label for every rule", () => {
+    const label = (overrides) => viewState(input(overrides)).primary?.label ?? null;
+    const outside = status({ in_work_hours: false });
+    expect(label({ daemonDown: true })).toBeNull();
+    expect(label({ paused: true })).toBe("Resume");
+    expect(label({ paused: true, status: outside })).toBe("Resume");
+    expect(label({})).toBe("Pause");
+    expect(label({ status: status({ in_work_hours: false, recording_until: future }) })).toBe("Stop recording");
+    expect(label({ status: outside })).toBe("Start recording");
   });
 
   test("paused with override: no secondary", () => {

@@ -24,8 +24,8 @@ const MINUTE_MILLISECONDS = 60_000;
 export function formatMinutes(minutes) {
   const hours = Math.floor(minutes / 60);
   const remainder = minutes % 60;
-  if (hours === 0) return `${remainder}m`;
-  return remainder === 0 ? `${hours}h` : `${hours}h ${remainder}m`;
+  if (hours === 0) return `${remainder} min`;
+  return `${hours} h ${String(remainder).padStart(2, "0")} min`;
 }
 
 export function formatTimeLeft(recordingUntil, now) {
@@ -33,7 +33,7 @@ export function formatTimeLeft(recordingUntil, now) {
   const millisecondsLeft = new Date(recordingUntil) - now;
   if (millisecondsLeft <= 0) return null;
   const minutes = Math.floor(millisecondsLeft / MINUTE_MILLISECONDS);
-  return minutes === 0 ? "<1m" : formatMinutes(minutes);
+  return minutes === 0 ? "<1 min" : formatMinutes(minutes);
 }
 
 function classify({ status, daemonDown, paused, reason, overrideActive }) {
@@ -67,7 +67,7 @@ function buttons({ status, paused, overrideActive }) {
     };
   }
   if (overrideActive) return { primary: { label: "Stop recording", action: "stop" }, secondary: null };
-  return { primary: { label: "Record now", action: "start" }, secondary: null };
+  return { primary: { label: "Start recording", action: "start" }, secondary: null };
 }
 
 export function viewState({ status, daemonDown, paused, lastHeartbeat, now }) {
