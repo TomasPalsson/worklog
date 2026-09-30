@@ -256,6 +256,10 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
     Eval {
         /// What the work was about, in plain words.
         query: String,
+        /// After the table, print each matched block's card: titles,
+        /// prompts, branches, active minutes and folder.
+        #[arg(long)]
+        details: bool,
     },
 
     /// Export a day's blocks as billing line items grouped by
@@ -832,7 +836,7 @@ pub fn run_with<W: Write>(
         } => cmd_day(day, serve, no_serve, &model, out, cli.json),
         Cmd::Summary { day } => cmd_summary(day, out, cli.json),
         Cmd::Week { day } => cmd_week(day, out, cli.json),
-        Cmd::Eval { query } => crate::eval_cmd::cmd_eval(&query, out, cli.json),
+        Cmd::Eval { query, details } => crate::eval_cmd::cmd_eval(&query, out, cli.json, details),
         Cmd::Export { day, format, mark } => cmd_export(day, format, mark, out, cli.json),
         Cmd::Block { sub } => match sub {
             BlockCmd::List { day } => cmd_block_list(day, out, cli.json),

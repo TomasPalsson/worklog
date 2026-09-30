@@ -673,3 +673,17 @@ fn pin_stores_a_known_customer() {
         .stdout(predicate::str::contains("Pinned"))
         .stdout(predicate::str::contains("APRÓ"));
 }
+
+// ─────────────────────────── `worklog eval --details` ───────────────────────────
+
+/// The verdict helper owns a fixed port, so the rendering is covered by
+/// unit tests in `eval_cmd`; here we only pin the flag on the binary.
+#[test]
+fn eval_details_flag_is_documented() {
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["eval", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--details"));
+}
