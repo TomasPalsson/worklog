@@ -49,7 +49,7 @@ fn clap_styles() -> clap::builder::Styles {
 /// would need lifetime gymnastics in the derive attribute.
 const HELP_OVERVIEW: &str = "\x1b[1;36m\
 commands by area\x1b[0m
-  daily workflow       \x1b[32mday  summary  week  export  block  sync\x1b[0m
+  daily workflow       \x1b[32mday  summary  week  eval  export  block  sync\x1b[0m
   data collection      \x1b[32mcollect  infer  estimate  hook\x1b[0m
   review UI            \x1b[32mweb  serve\x1b[0m
   setup & diagnostics  \x1b[32msetup  status  doctor  db  secret  completions  version\x1b[0m
@@ -248,6 +248,14 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
         /// YYYY-MM-DD end of the window; default today (local TZ).
         #[arg(long)]
         day: Option<String>,
+    },
+
+    /// Ask Verdict which work blocks are about QUERY and total their
+    /// time, e.g. `worklog eval "code interpreter"`. Needs
+    /// `worklog verdict serve` running.
+    Eval {
+        /// What the work was about, in plain words.
+        query: String,
     },
 
     /// Export a day's blocks as billing line items grouped by
@@ -824,6 +832,7 @@ pub fn run_with<W: Write>(
         } => cmd_day(day, serve, no_serve, &model, out, cli.json),
         Cmd::Summary { day } => cmd_summary(day, out, cli.json),
         Cmd::Week { day } => cmd_week(day, out, cli.json),
+        Cmd::Eval { query } => crate::eval_cmd::cmd_eval(&query, out, cli.json),
         Cmd::Export { day, format, mark } => cmd_export(day, format, mark, out, cli.json),
         Cmd::Block { sub } => match sub {
             BlockCmd::List { day } => cmd_block_list(day, out, cli.json),
@@ -1933,7 +1942,7 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 /// Render a duration in seconds as `Nh MMm` (or `Nm` under an hour).
-fn human_dur(secs: i64) -> String {
+pub(crate) fn human_dur(secs: i64) -> String {
     let mins = (secs.max(0) + 30) / 60;
     if mins >= 60 {
         format!("{}h {:02}m", mins / 60, mins % 60)

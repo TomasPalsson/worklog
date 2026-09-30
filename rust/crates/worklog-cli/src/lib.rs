@@ -5,6 +5,7 @@
 
 pub mod cli;
 pub mod daemon_client;
+mod eval_cmd;
 pub mod style;
 pub mod wizard;
 

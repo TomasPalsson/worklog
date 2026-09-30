@@ -479,7 +479,7 @@ pub(crate) fn block_interval(block: &Block) -> (i64, i64) {
 /// Total length of the union of `[start, end)` intervals — stretches
 /// covered twice count once, so a meeting held during coding is never
 /// double-billed. Mirrors `worklog_cli::cli::union_seconds`.
-fn union_seconds(mut intervals: Vec<(i64, i64)>) -> i64 {
+pub(crate) fn union_seconds(mut intervals: Vec<(i64, i64)>) -> i64 {
     intervals.sort_by_key(|&(s, _)| s);
     let mut total = 0;
     let mut cur: Option<(i64, i64)> = None;
