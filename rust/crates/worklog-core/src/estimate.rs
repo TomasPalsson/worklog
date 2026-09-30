@@ -805,6 +805,7 @@ pub fn prepare_block_estimate(
             other => anyhow::Error::from(other),
         })?;
 
+    bail_if_compressed(conn, &block.day)?;
     if block.is_personal {
         anyhow::bail!(
             "block {block_id} is personal — toggle it back to work before \
@@ -948,6 +949,7 @@ pub fn commit_block_estimate(
 /// - blocks with a hand-set split saved in `block_customer_shares`
 ///   (merging would strand that split from the surviving block)
 pub fn merge_same_ticket_adjacent(conn: &Connection, day_iso: &str) -> Result<u32> {
+    bail_if_compressed(conn, day_iso)?;
     let blocks = load_blocks_for_estimator(conn, day_iso)?;
     let mut removed = 0;
     let mut i = 0;
@@ -975,6 +977,13 @@ pub fn merge_same_ticket_adjacent(conn: &Connection, day_iso: &str) -> Result<u3
         }
     }
     Ok(removed)
+}
+
+fn bail_if_compressed(conn: &Connection, day: &str) -> Result<()> {
+    if crate::block_digest::day_is_compressed(conn, day)? {
+        anyhow::bail!(crate::digest_contract::DAY_COMPRESSED);
+    }
+    Ok(())
 }
 
 fn block_has_saved_split(conn: &Connection, day: &str, started_at: &str) -> Result<bool> {
@@ -1408,6 +1417,40 @@ mod tests {
     use crate::models::{Event, JiraTicket};
     use crate::repo;
     use crate::tenant_shares;
+
+    #[test]
+    fn compressed_day_refuses_merge_and_redescribe() {
+        let conn = crate::db::open_memory().unwrap();
+        let a = insert_block_with(
+            &conn,
+            "2026-04-18",
+            "2026-04-18T09:00:00+00:00",
+            "2026-04-18T09:30:00+00:00",
+            1800,
+            Some("ABC-1"),
+            None,
+            None,
+        );
+        insert_block_with(
+            &conn,
+            "2026-04-18",
+            "2026-04-18T09:30:00+00:00",
+            "2026-04-18T10:00:00+00:00",
+            1800,
+            Some("ABC-1"),
+            None,
+            None,
+        );
+        crate::block_digest::write_digest(&conn, a, &Default::default()).unwrap();
+        let err = merge_same_ticket_adjacent(&conn, "2026-04-18").unwrap_err();
+        assert_eq!(err.to_string(), crate::digest_contract::DAY_COMPRESSED);
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM blocks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2);
+        let err = prepare_block_estimate(&conn, a, &[]).err().unwrap();
+        assert_eq!(err.to_string(), crate::digest_contract::DAY_COMPRESSED);
+    }
 
     fn insert_block(conn: &Connection) -> i64 {
         conn.execute(

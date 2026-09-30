@@ -544,6 +544,9 @@ fn iso_prefix(s: &str) -> String {
 
 pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) -> Result<()> {
     let day_iso = day.to_string();
+    if crate::block_digest::day_is_compressed(conn, &day_iso)? {
+        anyhow::bail!(crate::digest_contract::DAY_COMPRESSED);
+    }
     // Load once per persist pass — cheap and avoids re-reading the TOML
     // for every block. classify() is pure given the config.
     let personal_cfg = crate::personal::PersonalConfig::load();
@@ -913,6 +916,23 @@ mod tests {
             Ok((r.get(0)?, r.get(1)?))
         })
         .unwrap()
+    }
+
+    #[test]
+    fn compressed_day_refuses_persist_blocks() {
+        let conn = open_memory().unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        persist_blocks(&conn, day, &[ib((9, 0), (9, 30))]).unwrap();
+        let id: i64 = conn
+            .query_row("SELECT id FROM blocks", [], |r| r.get(0))
+            .unwrap();
+        crate::block_digest::write_digest(&conn, id, &Default::default()).unwrap();
+        let err = persist_blocks(&conn, day, &[]).unwrap_err();
+        assert_eq!(err.to_string(), crate::digest_contract::DAY_COMPRESSED);
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM blocks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
     }
 
     #[test]
