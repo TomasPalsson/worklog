@@ -1,3 +1,4 @@
+Verified: 2026-09-30 by user (pre-approved: /flow:next --finish)
 Approved: 2026-09-30 by user
 Base: 98bbdf7
 # Tasks — Compress blocks after 90 days
