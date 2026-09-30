@@ -1479,6 +1479,15 @@ fn collect_since(
     effective_since(requested, worklog_core::block_digest::horizon(local_today))
 }
 
+/// The `[since, until)` window `worklog day` collects for `day`, clamped to
+/// the horizon like every other collect path.
+fn day_collect_window(
+    day: chrono::NaiveDate,
+    local_today: chrono::NaiveDate,
+) -> (chrono::NaiveDate, chrono::NaiveDate) {
+    unimplemented!("{day} {local_today}")
+}
+
 /// True when `worklog collect <target>` should run `source`: either the
 /// umbrella `all`, or `target` naming `source` directly.
 fn wants(target: CollectTarget, source: CollectTarget) -> bool {
@@ -4655,6 +4664,23 @@ mod tests {
         );
         let recent = today - chrono::Duration::days(7);
         assert_eq!(collect_since(recent, today), recent);
+    }
+
+    /// B3: `worklog day` on a compressed day collects nothing from before
+    /// the horizon, and a recent day keeps its own one-day window.
+    #[test]
+    fn day_collect_clamps_to_the_horizon() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 30).unwrap();
+        let horizon = worklog_core::block_digest::horizon(today);
+        let old = today - chrono::Duration::days(200);
+        let (since, until) = day_collect_window(old, today);
+        assert_eq!(since, horizon);
+        assert!(until <= since, "window must be empty: {since}..{until}");
+        let recent = today - chrono::Duration::days(3);
+        assert_eq!(
+            day_collect_window(recent, today),
+            (recent, recent + chrono::Duration::days(1))
+        );
     }
 
     /// Boundary: requested == cutoff must return that exact date, with no

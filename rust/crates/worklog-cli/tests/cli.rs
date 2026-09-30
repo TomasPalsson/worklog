@@ -303,6 +303,43 @@ fn infer_on_empty_day_prints_zero_blocks() {
 }
 
 #[test]
+fn compressed_day_exits_2() {
+    let home = TempDir::new().unwrap();
+    cmd(&home).args(["db", "migrate"]).assert().success();
+    let conn = rusqlite::Connection::open(home.path().join("worklog.db")).unwrap();
+    conn.execute(
+        "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+         VALUES ('2026-01-05', '2026-01-05T09:00:00+00:00', '2026-01-05T10:00:00+00:00', 3600)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO block_digest (block_id, version, built_at, json)
+         VALUES (last_insert_rowid(), 1, '2026-01-06T00:00:00Z', '{}')",
+        [],
+    )
+    .unwrap();
+    let dump = |c: &rusqlite::Connection| -> Vec<(i64, String, i64)> {
+        let mut st = c
+            .prepare("SELECT id, started_at, duration_seconds FROM blocks ORDER BY id")
+            .unwrap();
+        let rows = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap();
+        rows.map(Result::unwrap).collect()
+    };
+    let before = dump(&conn);
+    cmd(&home)
+        .args(["infer", "--day", "2026-01-05"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            worklog_core::digest_contract::DAY_COMPRESSED,
+        ));
+    assert_eq!(dump(&conn), before);
+}
+
+#[test]
 fn estimate_errors_without_db() {
     let home = TempDir::new().unwrap();
     cmd(&home)
