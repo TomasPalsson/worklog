@@ -138,6 +138,18 @@ describe("viewState", () => {
     expect(label({ status: outside })).toBe("Start recording");
   });
 
+  test("FR-08 paused outside work hours: paused", () => {
+    const state = viewState(
+      input({ paused: true, status: status({ in_work_hours: false }), lastHeartbeat: tabBeat("outside_work_hours") }),
+    );
+    expect(state.status).toBe("paused");
+  });
+
+  test("FR-08 incognito in work hours, not paused: not counted", () => {
+    const state = viewState(input({ lastHeartbeat: tabBeat("incognito") }));
+    expect(state.status).toBe("not_counted");
+  });
+
   test("paused with override: no secondary", () => {
     const state = viewState(input({ paused: true, status: status({ recording_until: future }) }));
     expect(state.secondary).toBeNull();
