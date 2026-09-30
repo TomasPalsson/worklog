@@ -5,7 +5,7 @@ use std::io::Write;
 use anyhow::Result;
 use worklog_core::{
     block_digest::{build_digest, digest_for_block},
-    db,
+    block_eval, db,
     digest_contract::BlockDigest,
     models::Block,
     paths::Paths,
@@ -19,7 +19,11 @@ pub fn cmd_eval<W: Write>(query: &str, out: &mut W, json: bool, details: bool) -
         anyhow::bail!("db not initialized. Run `worklog db migrate` first.");
     }
     let conn = db::open(&paths.db)?;
-    let report = worklog_core::block_eval::eval(&conn, query)?;
+    // The helper owns a fixed port; the override lets tests run without it.
+    let report = match std::env::var("WORKLOG_VERDICT_URL") {
+        Ok(url) => block_eval::eval_with(&conn, query, &reqwest::blocking::Client::new(), &url)?,
+        Err(_) => block_eval::eval(&conn, query)?,
+    };
     if json {
         writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
         return Ok(());

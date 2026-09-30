@@ -20,7 +20,7 @@ Spec: spec.md · Design: design.md · Base: e5aa122 · Route: dispatch · Test: 
 ## Phase 1 — The card exists
 Goal: any block can be turned into a small summary card that holds everything eval, billing and estimating need.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core block_digest` — green.
-- [ ] T001 card table and builder (B1, B2) — files: rust/crates/worklog-core/src/digest_contract.rs, rust/crates/worklog-core/src/block_digest.rs, rust/crates/worklog-core/src/block_digest_test.rs, rust/crates/worklog-core/sql/schema.sql, rust/crates/worklog-core/src/lib.rs, rust/crates/worklog-core/src/block_eval.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core block_digest`
+- [x] T001 card table and builder (B1, B2) — files: rust/crates/worklog-core/src/digest_contract.rs, rust/crates/worklog-core/src/block_digest.rs, rust/crates/worklog-core/src/block_digest_test.rs, rust/crates/worklog-core/sql/schema.sql, rust/crates/worklog-core/src/lib.rs, rust/crates/worklog-core/src/block_eval.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core block_digest` — done: 9eb411e
 
 ## Phase 2 — Old days are safe to compress
 Goal: every screen and command works on a block whose raw events are gone, and nothing can rebuild an old day from nothing.
