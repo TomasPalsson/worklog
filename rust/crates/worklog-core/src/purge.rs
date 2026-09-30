@@ -175,9 +175,13 @@ fn transcript_cache_rows(conn: &Connection) -> Result<i64> {
     .context("counting transcript cache rows")
 }
 
-/// Builds the card of every block before `horizon` that has none, and —
-/// unless `dry_run` — writes it.
-fn card_old_blocks(conn: &Connection, horizon_iso: &str, dry_run: bool) -> Result<CardStats> {
+fn pragma_i64(conn: &Connection, name: &str) -> Result<i64> {
+    conn.query_row(&format!("PRAGMA {name}"), [], |r| r.get(0))
+        .with_context(|| format!("reading PRAGMA {name}"))
+}
+
+/// Builds and writes the card of every block before `horizon` that has none.
+fn card_old_blocks(conn: &Connection, horizon_iso: &str) -> Result<CardStats> {
     let ids: Vec<i64> = conn
         .prepare(
             "SELECT id FROM blocks
@@ -192,10 +196,8 @@ fn card_old_blocks(conn: &Connection, horizon_iso: &str, dry_run: bool) -> Resul
         let card = block_digest::build_digest(conn, id)
             .with_context(|| format!("building the card for block {id}"))?;
         sizes.push(serde_json::to_string(&card)?.len() as i64);
-        if !dry_run {
-            block_digest::write_digest(conn, id, &card)
-                .with_context(|| format!("writing the card for block {id}"))?;
-        }
+        block_digest::write_digest(conn, id, &card)
+            .with_context(|| format!("writing the card for block {id}"))?;
     }
     Ok(CardStats::of(sizes))
 }
@@ -207,8 +209,9 @@ fn card_old_blocks(conn: &Connection, horizon_iso: &str, dry_run: bool) -> Resul
 /// transcript cache, and orphaned manually-picked (`external = 1`) ticket
 /// cache entries. Blocks are never deleted, whatever their sync, export,
 /// edit or personal state. One transaction: a card that cannot be built
-/// or written rolls the whole run back. `dry_run` writes nothing and
-/// reports counts that mirror what a real run would do.
+/// or written rolls the whole run back. `dry_run` does all of it, reports
+/// what it did (with `bytes_freed` estimated from the pages released) and
+/// rolls back.
 pub fn purge_rows(conn: &Connection, horizon: NaiveDate, dry_run: bool) -> Result<PurgeReport> {
     let horizon_iso = horizon.to_string();
     // The exact UTC instant of local midnight at the horizon — events and
@@ -242,60 +245,13 @@ pub fn purge_rows(conn: &Connection, horizon: NaiveDate, dry_run: bool) -> Resul
     let date_bound_iso = (horizon + chrono::Duration::days(2)).to_string();
     let bounds = params![instant_iso, horizon_iso, date_bound_iso];
 
-    if dry_run {
-        let cards = card_old_blocks(conn, &horizon_iso, true)?;
-        let events_deleted: i64 = conn
-            .query_row(
-                &format!("SELECT COUNT(*) FROM events e WHERE {EVENT_IS_EXPIRED}"),
-                bounds,
-                |r| r.get(0),
-            )
-            .context("counting expired events")?;
-        // Simulates the post-events-delete state: a session survives if it
-        // still has any event that would survive.
-        let sessions_deleted: i64 = conn
-            .query_row(
-                &format!(
-                    "SELECT COUNT(*) FROM sessions s
-                     WHERE s.started_at < ?3 AND datetime(s.started_at) < datetime(?1)
-                       AND NOT EXISTS (SELECT 1 FROM events e
-                                        WHERE e.session_id = s.session_id
-                                          AND NOT ({EVENT_IS_EXPIRED}))"
-                ),
-                bounds,
-                |r| r.get(0),
-            )
-            .context("counting sessions past the horizon")?;
-        let tickets_deleted: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM jira_tickets
-                 WHERE external = 1
-                   AND key NOT IN (SELECT jira_issue FROM blocks WHERE jira_issue IS NOT NULL)",
-                [],
-                |r| r.get(0),
-            )
-            .context("counting orphaned external jira tickets")?;
-        return Ok(PurgeReport {
-            cutoff_date: horizon_iso,
-            blocks_carded: cards.carded,
-            card_bytes: cards.bytes,
-            card_bytes_median: cards.median,
-            card_bytes_max: cards.max,
-            events_deleted,
-            sessions_deleted,
-            tickets_deleted,
-            cache_rows_deleted: transcript_cache_rows(conn)?,
-            dry_run,
-            ..Default::default()
-        });
-    }
-
-    // Real run — one transaction, cards first so nothing is deleted that a
-    // card has not captured. Dropping `tx` on any error rolls it all back.
-    // `execute()`'s rows-changed return value IS the count — no separate
-    // counting query to drift from the delete.
+    // One transaction for both modes, cards first so nothing is deleted that
+    // a card has not captured. Dropping `tx` on any error rolls it all back,
+    // and a dry run rolls back on purpose — so its counts are the real
+    // run's. `execute()`'s rows-changed return value IS the count.
     let tx = conn.unchecked_transaction()?;
-    let cards = card_old_blocks(&tx, &horizon_iso, false)?;
+    let cards = card_old_blocks(&tx, &horizon_iso)?;
+    let freelist_before = pragma_i64(&tx, "freelist_count")?;
     let events_deleted = tx
         .execute(
             &format!("DELETE FROM events WHERE id IN (SELECT e.id FROM events e WHERE {EVENT_IS_EXPIRED})"),
@@ -341,7 +297,14 @@ pub fn purge_rows(conn: &Connection, horizon: NaiveDate, dry_run: bool) -> Resul
     // its deleted rows never come back on a later tick.
     let cache_rows_deleted = transcript_cache_rows(&tx)?;
     claude_transcript_cache::clear_after_events_delete(&tx)?;
-    tx.commit()?;
+    let freed_pages = pragma_i64(&tx, "freelist_count")? - freelist_before;
+    let bytes_freed = if dry_run {
+        tx.rollback()?;
+        freed_pages.max(0) * pragma_i64(conn, "page_size")?
+    } else {
+        tx.commit()?;
+        0
+    };
 
     Ok(PurgeReport {
         cutoff_date: horizon_iso,
@@ -353,6 +316,7 @@ pub fn purge_rows(conn: &Connection, horizon: NaiveDate, dry_run: bool) -> Resul
         sessions_deleted,
         tickets_deleted,
         cache_rows_deleted,
+        bytes_freed,
         dry_run,
         ..Default::default()
     })

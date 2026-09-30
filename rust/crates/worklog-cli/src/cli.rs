@@ -1175,7 +1175,7 @@ fn cmd_db_purge<W: Write>(days: Option<i64>, dry_run: bool, out: &mut W, json: b
     }
     let prefix = if dry_run { "(dry-run) " } else { "" };
     let bytes_freed = if dry_run {
-        "n/a (dry run)".to_owned()
+        format!("~{} (estimate)", report.bytes_freed)
     } else {
         report.bytes_freed.to_string()
     };
