@@ -111,7 +111,12 @@ fn card_matches_eval_evidence_and_caps() {
         crate::billing::work_folder_for_block(&conn, block_id).unwrap()
     );
     let expected_invoice: Vec<String> = (0..MAX_INVOICE_TITLES)
-        .map(|index| long_title(index).chars().take(INVOICE_TITLE_CHARS).collect())
+        .map(|index| {
+            long_title(index)
+                .chars()
+                .take(INVOICE_TITLE_CHARS)
+                .collect()
+        })
         .collect();
     assert_eq!(card.invoice_titles, expected_invoice);
 

@@ -10,11 +10,9 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::{billing, models::Block, repo, routing_contract::CLASSIFIER_ADDR};
-
-/// Event titles sent per block — enough to name the work, short enough
-/// to fit the model's context.
-const MAX_TITLES: usize = 6;
+use crate::{
+    billing, block_digest::eval_evidence, models::Block, repo, routing_contract::CLASSIFIER_ADDR,
+};
 
 #[derive(Debug, Serialize)]
 pub struct EvalReport {
@@ -109,17 +107,7 @@ fn work_blocks(conn: &Connection) -> Result<Vec<Block>> {
 /// repos and first few distinct titles of its events, so undescribed
 /// blocks still carry evidence.
 fn block_state(conn: &Connection, block: &Block) -> Result<Value> {
-    let mut repos: Vec<String> = Vec::new();
-    let mut titles: Vec<String> = Vec::new();
-    for e in repo::list_events_for_block(conn, block.id)? {
-        if let Some(r) = e.repo.filter(|r| !repos.contains(r)) {
-            repos.push(r);
-        }
-        let title: String = e.title.chars().take(80).collect();
-        if titles.len() < MAX_TITLES && !titles.contains(&title) {
-            titles.push(title);
-        }
-    }
+    let (repos, titles) = eval_evidence(&repo::list_events_for_block(conn, block.id)?);
     // Arrays + nulls, not flat " | "-joined strings: hand-scored on 137
     // real blocks, flat strings caught one more right block but six
     // wrong ones (~2h45m of false time); this shape had none wrong.
