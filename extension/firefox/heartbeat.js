@@ -13,6 +13,11 @@ export function shouldSend(state) {
   return skipReason(state) === null;
 }
 
+export function storableTab(tab, containerName) {
+  if (!tab || tab.incognito || containerName === PERSONAL_CONTAINER) return { title: null, url: null };
+  return { title: tab.title, url: tab.url };
+}
+
 export function buildHeartbeat(tab, containerName, now) {
   return {
     ts: now.toISOString(),

@@ -72,8 +72,13 @@ async function perform(button) {
   button.textContent = "Working…";
   try {
     if (action === "pause" || action === "resume") {
-      paused = action === "pause";
-      await browser.storage.local.set({ paused });
+      const next = action === "pause";
+      try {
+        await browser.storage.local.set({ paused: next });
+        paused = next;
+      } catch {
+        // Keep the stored value; render below shows the truth.
+      }
       await fetchStatus();
     } else {
       await setRecording(action === "start");

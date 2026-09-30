@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildHeartbeat, shouldSend, skipReason } from "./heartbeat.js";
+import { buildHeartbeat, shouldSend, skipReason, storableTab } from "./heartbeat.js";
 
 describe("shouldSend", () => {
   const base = {
@@ -67,6 +67,26 @@ describe("skipReason", () => {
     expect(skipReason({ ...everything, paused: false })).toBe("incognito");
     expect(skipReason({ ...everything, paused: false, incognito: false })).toBe("personal_container");
     expect(skipReason({ ...everything, paused: false, incognito: false, containerName: null })).toBe("idle");
+  });
+});
+
+describe("storableTab", () => {
+  const tab = { url: "https://example.com/", title: "Example", incognito: false };
+
+  test("keeps title and url of a normal tab", () => {
+    expect(storableTab(tab, null)).toEqual({ title: "Example", url: "https://example.com/" });
+  });
+
+  test("hides an incognito tab", () => {
+    expect(storableTab({ ...tab, incognito: true }, null)).toEqual({ title: null, url: null });
+  });
+
+  test("hides a tab in the Personal container", () => {
+    expect(storableTab(tab, "Personal")).toEqual({ title: null, url: null });
+  });
+
+  test("returns nulls when there is no tab", () => {
+    expect(storableTab(null, null)).toEqual({ title: null, url: null });
   });
 });
 

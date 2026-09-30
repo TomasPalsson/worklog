@@ -61,8 +61,9 @@ body {
   align-items: center;
   gap: calc(var(--unit) * 2);
   padding: calc(var(--unit) * 2);
-  background: var(--band);
-  border-bottom: 1px solid var(--rule);
+  background: color-mix(in srgb, var(--accent) 12%, var(--ground));
+  border-bottom: 1px solid var(--accent);
+  transition: background-color 180ms linear, border-color 180ms linear;
 }
 
 .pictogram {
@@ -132,31 +133,41 @@ button, .link {
   text-decoration: none;
 }
 
-.link svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.link svg { fill: none; stroke: currentColor; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
 
 #primary {
   border: 2px solid var(--accent);
   background: var(--accent);
   color: var(--on-accent);
+  transition: background-color 180ms linear, border-color 180ms linear;
 }
 
 #primary:hover { filter: brightness(1.1); }
 #primary:active { filter: brightness(0.9); }
 
-.quiet, .link {
+.quiet {
   border: 1px solid var(--muted);
   background: transparent;
   color: var(--ink);
 }
 
-.link { text-underline-offset: 3px; }
-.quiet:hover, .link:hover { border-color: var(--ink); }
+.link {
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-weight: 400;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.quiet:hover { border-color: var(--ink); }
 .quiet:active, .link:active { background: var(--band); }
+.link:hover { text-decoration-thickness: 2px; }
 
 button:disabled { cursor: progress; opacity: 0.7; }
 
 :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 
 @media (prefers-reduced-motion: reduce) {
-  .pictogram { transition: none; }
+  .pictogram, .band, #primary { transition: none; }
 }

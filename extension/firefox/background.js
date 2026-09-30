@@ -1,4 +1,4 @@
-import { buildHeartbeat, skipReason } from "./heartbeat.js";
+import { buildHeartbeat, skipReason, storableTab } from "./heartbeat.js";
 
 const HEARTBEAT_URL = "http://127.0.0.1:9323/browser/heartbeat";
 const ALARM_NAME = "heartbeat";
@@ -32,8 +32,9 @@ async function collectState() {
   return { paused: Boolean(paused), idleState, windowFocused, tab, containerName };
 }
 
-async function record(tab, stored, reason) {
-  const lastHeartbeat = { ts: new Date().toISOString(), title: tab?.title ?? null, url: tab?.url ?? null, stored, reason };
+async function record(tab, containerName, stored, reason) {
+  const { title, url } = storableTab(tab, containerName);
+  const lastHeartbeat = { ts: new Date().toISOString(), title, url, stored, reason };
   await browser.storage.local.set({ lastHeartbeat });
 }
 
@@ -43,9 +44,7 @@ async function tick() {
 
   const reason = skipReason({ paused, incognito, containerName, idleState, windowFocused });
   if (reason !== null) {
-    // Private and Personal tabs never leave the browser, not even into storage.
-    const hidden = reason === "incognito" || reason === "personal_container";
-    await record(hidden ? null : tab, false, reason);
+    await record(tab, containerName, false, reason);
     return;
   }
 
@@ -56,11 +55,12 @@ async function tick() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(heartbeat),
     });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const outcome = await response.json();
-    await record(tab, Boolean(outcome.stored), outcome.reason ?? null);
+    await record(tab, containerName, Boolean(outcome.stored), outcome.reason ?? null);
   } catch {
     // Daemon down: never retry, just surface it to the popup.
-    await record(tab, false, "daemon_down");
+    await record(tab, containerName, false, "daemon_down");
   }
 }
 
