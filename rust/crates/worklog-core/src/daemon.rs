@@ -3654,6 +3654,7 @@ mod tests {
             events_by_source: [("claude".to_owned(), 5), ("github_commit".to_owned(), 2)].into(),
             folder: Some("proj".to_owned()),
             project_path: Some("/home/u/Desktop/Work/proj".to_owned()),
+            folder_path: Some("/home/u/Desktop/Work/proj".to_owned()),
             ..Default::default()
         };
         assert!(crate::block_digest::write_digest(&conn, 1, &card).unwrap());
