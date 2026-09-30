@@ -130,6 +130,9 @@ fn pinned_customer_for_block(
     folder: &str,
     registry: &Registry,
 ) -> Result<Option<String>> {
+    if let Some(card) = crate::block_digest::digest_for_block(conn, block.id)? {
+        return Ok(card.pinned_customer);
+    }
     let events = repo::list_events_for_block(conn, block.id)?;
     let mut session_ids: Vec<String> = events.iter().filter_map(|e| e.session_id.clone()).collect();
     session_ids.sort();

@@ -63,3 +63,95 @@ fn work_folder_for_block_skips_lifecycle_riders() {
         "lifecycle riders must never outvote a block's real events"
     );
 }
+
+fn compress(conn: &Connection, block_id: i64) {
+    let card = crate::block_digest::build_digest(conn, block_id).unwrap();
+    assert!(crate::block_digest::write_digest(conn, block_id, &card).unwrap());
+    conn.execute("DELETE FROM block_events", []).unwrap();
+    conn.execute("DELETE FROM events", []).unwrap();
+}
+
+#[test]
+fn billing_and_personal_readers_survive_compression() {
+    let c = open_memory().unwrap();
+    let b = seed_block(&c, "2026-09-25T10:36:00+00:00", 960);
+    seed_event(&c, b, "hook1", &work("apro-skills"), "PreToolUse");
+    seed_event(&c, b, "hook2", &work("apro-skills"), "PreToolUse");
+    let mut commit = Event::minimal("github", "c1", "2026-09-25T10:40:00Z", "Fix the export");
+    commit.project_path = Some(work("apro-skills/api"));
+    let eid = repository::upsert_event(&c, &commit).unwrap();
+    c.execute(
+        "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+        params![b, eid],
+    )
+    .unwrap();
+
+    compress(&c, b);
+
+    assert_eq!(
+        work_folder_for_block(&c, b).unwrap(),
+        Some("apro-skills".into())
+    );
+    assert_eq!(
+        dominant_title_for_blocks(&c, &[b]).unwrap(),
+        Some("Fix the export".into())
+    );
+    assert_eq!(
+        distinct_paths_for_blocks(&c, &[b]).unwrap(),
+        vec![work("apro-skills"), work("apro-skills/api")]
+    );
+    assert_eq!(
+        crate::personal::dominant_project_path_for_block(&c, b).unwrap(),
+        Some(work("apro-skills"))
+    );
+}
+
+#[test]
+fn pinned_customer_and_branch_clues_survive_compression() {
+    use crate::billing_registry::{Customer, FolderMap};
+    use crate::tenant_contract::{ClueStrength, SplitOrigin};
+
+    let c = open_memory().unwrap();
+    let b = seed_block(&c, "2026-09-25T10:36:00+00:00", 960);
+    let card = crate::digest_contract::BlockDigest {
+        folder: Some("infra".into()),
+        pinned_customer: Some("Acme".into()),
+        branches: vec!["feature/globex-login".into()],
+        first_at: Some("2026-09-25T10:36:00+00:00".into()),
+        ..Default::default()
+    };
+    crate::block_digest::write_digest(&c, b, &card).unwrap();
+    let registry = Registry {
+        customers: ["Acme", "Globex"]
+            .iter()
+            .map(|name| Customer {
+                id: None,
+                name: (*name).to_string(),
+                aliases: Vec::new(),
+            })
+            .collect(),
+        folders: vec![FolderMap {
+            id: None,
+            folder: "infra".into(),
+            customer: None,
+            verkefni: None,
+            billable: true,
+            multi_tenant: true,
+        }],
+    };
+    let block = repository::get_block(&c, b).unwrap().unwrap();
+
+    let slices = crate::tenant_split::tenant_slices_for_block(&c, &block, "infra", &registry)
+        .unwrap()
+        .unwrap();
+    assert_eq!(slices.len(), 1);
+    assert_eq!(slices[0].customer.as_deref(), Some("Acme"));
+    assert_eq!(slices[0].origin, SplitOrigin::Pinned);
+
+    let clues =
+        crate::tenant_clues::clues_for_block(&c, b, "infra", &Default::default(), &registry)
+            .unwrap();
+    assert_eq!(clues.len(), 1);
+    assert_eq!(clues[0].customer, "Globex");
+    assert_eq!(clues[0].strength, ClueStrength::Branch);
+}

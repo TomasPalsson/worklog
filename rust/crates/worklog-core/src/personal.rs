@@ -273,6 +273,9 @@ pub fn reclassify_blocks(conn: &Connection, day_filter: Option<&str>) -> Result<
 /// daemon can look up a block's git working directory without
 /// duplicating the query.
 pub fn dominant_project_path_for_block(conn: &Connection, block_id: i64) -> Result<Option<String>> {
+    if let Some(card) = crate::block_digest::digest_for_block(conn, block_id)? {
+        return Ok(card.project_path);
+    }
     let mut stmt = conn.prepare(
         "SELECT e.project_path
            FROM events e

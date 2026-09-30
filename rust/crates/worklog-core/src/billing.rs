@@ -237,6 +237,9 @@ pub(crate) fn work_prefix() -> Option<&'static str> {
 /// whose events only carry a GitHub repo). `None` when the block has
 /// neither — e.g. a pure calendar or Jira block.
 pub fn work_folder_for_block(conn: &Connection, block_id: i64) -> Result<Option<String>> {
+    if let Some(card) = crate::block_digest::digest_for_block(conn, block_id)? {
+        return Ok(card.folder);
+    }
     let mut stmt = conn.prepare(
         "SELECT e.project_path, e.repo, e.source, e.title
            FROM events e
@@ -355,23 +358,28 @@ pub(crate) fn submodule_repo_map_under(root: &std::path::Path) -> HashMap<String
 /// belongs on a customer's invoice, so only commit / PR / calendar /
 /// ticket titles are eligible.
 fn dominant_title_for_blocks(conn: &Connection, block_ids: &[i64]) -> Result<Option<String>> {
-    if block_ids.is_empty() {
-        return Ok(None);
+    let (cards, live_ids) = cards_and_live_ids(conn, block_ids)?;
+    // A carded block keeps only its ranked titles, so it casts one vote
+    // for its top title.
+    let mut titles: Vec<String> = cards
+        .iter()
+        .filter_map(|card| card.invoice_titles.first().cloned())
+        .collect();
+    if !live_ids.is_empty() {
+        let placeholders = vec!["?"; live_ids.len()].join(",");
+        let sql = format!(
+            "SELECT e.title
+               FROM events e
+               JOIN block_events be ON be.event_id = e.id
+              WHERE be.block_id IN ({placeholders})
+                AND e.source NOT LIKE 'claude%'"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let live_titles: Vec<String> = stmt
+            .query_map(params_from_iter(live_ids.iter()), |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<_, _>>()?;
+        titles.extend(live_titles);
     }
-    let placeholders = vec!["?"; block_ids.len()].join(",");
-    let sql = format!(
-        "SELECT e.title
-           FROM events e
-           JOIN block_events be ON be.event_id = e.id
-          WHERE be.block_id IN ({placeholders})
-            AND e.source NOT LIKE 'claude%'"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let titles: Vec<String> = stmt
-        .query_map(params_from_iter(block_ids.iter()), |r| {
-            r.get::<_, String>(0)
-        })?
-        .collect::<std::result::Result<_, _>>()?;
 
     let mut counts: HashMap<String, u32> = HashMap::new();
     for title in titles {
@@ -391,28 +399,50 @@ fn dominant_title_for_blocks(conn: &Connection, block_ids: &[i64]) -> Result<Opt
 /// Aggregated in SQL rather than in Rust because a single block can carry
 /// thousands of Claude hook events.
 fn distinct_paths_for_blocks(conn: &Connection, block_ids: &[i64]) -> Result<Vec<String>> {
-    if block_ids.is_empty() {
-        return Ok(Vec::new());
-    }
     const MAX_PATHS: usize = 4;
-    let placeholders = vec!["?"; block_ids.len()].join(",");
-    let sql = format!(
-        "SELECT e.project_path, COUNT(*) n
-           FROM events e
-           JOIN block_events be ON be.event_id = e.id
-          WHERE be.block_id IN ({placeholders})
-            AND e.project_path IS NOT NULL
-          GROUP BY e.project_path
-          ORDER BY n DESC, e.project_path
-          LIMIT {MAX_PATHS}"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let paths = stmt
-        .query_map(params_from_iter(block_ids.iter()), |r| {
-            r.get::<_, String>(0)
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let (cards, live_ids) = cards_and_live_ids(conn, block_ids)?;
+    let mut paths: Vec<String> = Vec::new();
+    if !live_ids.is_empty() {
+        let placeholders = vec!["?"; live_ids.len()].join(",");
+        let sql = format!(
+            "SELECT e.project_path, COUNT(*) n
+               FROM events e
+               JOIN block_events be ON be.event_id = e.id
+              WHERE be.block_id IN ({placeholders})
+                AND e.project_path IS NOT NULL
+              GROUP BY e.project_path
+              ORDER BY n DESC, e.project_path
+              LIMIT {MAX_PATHS}"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        paths = stmt
+            .query_map(params_from_iter(live_ids.iter()), |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+    }
+    for path in cards.into_iter().flat_map(|card| card.paths) {
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    paths.truncate(MAX_PATHS);
     Ok(paths)
+}
+
+/// Splits `block_ids` into the cards of compressed blocks and the ids
+/// that still have live events.
+fn cards_and_live_ids(
+    conn: &Connection,
+    block_ids: &[i64],
+) -> Result<(Vec<crate::digest_contract::BlockDigest>, Vec<i64>)> {
+    let mut cards = Vec::new();
+    let mut live_ids = Vec::new();
+    for &block_id in block_ids {
+        match crate::block_digest::digest_for_block(conn, block_id)? {
+            Some(card) => cards.push(card),
+            None => live_ids.push(block_id),
+        }
+    }
+    Ok((cards, live_ids))
 }
 
 /// The Jira ticket summary for a block's ticket, when both exist. Feeds
