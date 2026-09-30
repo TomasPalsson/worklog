@@ -1,10 +1,13 @@
 {
   "manifest_version": 2,
   "name": "Worklog",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Reports active-tab time to the local worklog daemon during work hours.",
   "browser_specific_settings": {
-    "gecko": { "id": "worklog@tomasari.is" }
+    "gecko": {
+      "id": "worklog@tomasari.is",
+      "data_collection_permissions": { "required": ["browsingActivity"] }
+    }
   },
   "permissions": [
     "tabs",
