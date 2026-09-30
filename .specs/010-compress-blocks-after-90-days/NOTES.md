@@ -17,3 +17,4 @@ Discovered: block_service split/merge and POST /blocks/:id/delete on a compresse
 Discovered: `eval --details` prints card prompts/titles raw — terminal control sequences from captured text are not stripped — defer
 Discovered: WORKLOG_VERDICT_URL is honoured in release builds (test override) — defer
 Discovered: cycle_start_day/close_day settings no longer drive deletes but remain user-facing (web Settings text) — defer
+Discovered: T015 review minors — 'N cards' status wording unasserted; cmd_day clamp wiring untested (helper only); exit 2 via daemon 409 path untested — defer
