@@ -32,6 +32,7 @@
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
 
+use crate::block_digest;
 use crate::collectors::claude_transcript_cache;
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -148,111 +149,118 @@ pub fn cutoff_for_days(today: NaiveDate, days: i64) -> NaiveDate {
     today - chrono::Duration::days(days)
 }
 
-/// Delete every block (and, via cascade, its `block_events` rows) whose
-/// local `day` is before `cutoff`, every event before `cutoff` that no
-/// surviving block references, every session before `cutoff`, and every
-/// manually-picked (`external = 1`) ticket cache entry no surviving
-/// block references any more. Rail-free: sync state, edit provenance,
-/// pending edits and personal classification make no difference.
-/// `dry_run` writes nothing and reports simulated counts that mirror
-/// exactly what a real run would delete.
-pub fn purge_rows(conn: &Connection, cutoff: NaiveDate, dry_run: bool) -> Result<PurgeReport> {
-    let cutoff_iso = cutoff.to_string();
-    // The exact UTC instant of local midnight at the cutoff — events and
+/// Predicate on `events e`: past the horizon instant and not linked to a
+/// block that survives (`day >= horizon`). `?1` is the horizon instant,
+/// `?2` the horizon date, `?3` the index pre-filter bound.
+const EVENT_IS_EXPIRED: &str = "e.started_at < ?3
+     AND datetime(e.started_at) < datetime(?1)
+     AND e.id NOT IN (SELECT event_id FROM block_events
+                       WHERE block_id IN (SELECT id FROM blocks WHERE day >= ?2))";
+
+/// Builds the card of every block before `horizon` that has none, and —
+/// unless `dry_run` — writes it. Returns `(blocks carded, card bytes)`.
+fn card_old_blocks(conn: &Connection, horizon_iso: &str, dry_run: bool) -> Result<(i64, i64)> {
+    let ids: Vec<i64> = conn
+        .prepare(
+            "SELECT id FROM blocks
+             WHERE day < ?1 AND id NOT IN (SELECT block_id FROM block_digest)
+             ORDER BY id",
+        )?
+        .query_map(params![horizon_iso], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()
+        .context("listing blocks past the horizon without a card")?;
+    let mut card_bytes = 0;
+    for &id in &ids {
+        let card = block_digest::build_digest(conn, id)
+            .with_context(|| format!("building the card for block {id}"))?;
+        card_bytes += serde_json::to_string(&card)?.len() as i64;
+        if !dry_run {
+            block_digest::write_digest(conn, id, &card)
+                .with_context(|| format!("writing the card for block {id}"))?;
+        }
+    }
+    Ok((ids.len() as i64, card_bytes))
+}
+
+/// Compress everything before `horizon`: give every block on an older day
+/// a card, then delete the raw rows that card replaces — events before the
+/// horizon instant not linked to a surviving block (their `block_events`
+/// links cascade), sessions with no event left, orphaned session pins, the
+/// transcript cache, and orphaned manually-picked (`external = 1`) ticket
+/// cache entries. Blocks are never deleted, whatever their sync, export,
+/// edit or personal state. One transaction: a card that cannot be built
+/// or written rolls the whole run back. `dry_run` writes nothing and
+/// reports counts that mirror what a real run would do.
+pub fn purge_rows(conn: &Connection, horizon: NaiveDate, dry_run: bool) -> Result<PurgeReport> {
+    let horizon_iso = horizon.to_string();
+    // The exact UTC instant of local midnight at the horizon — events and
     // sessions store UTC timestamps, so comparing them against a bare
     // local-date string would skew by the configured offset. `day`, in
     // contrast, is itself a local-date string and compares directly.
-    let instant_iso = crate::tz::utc_window_for_local_day(cutoff).0.to_rfc3339();
-    // Index-usable pre-filter for the four `datetime(started_at) <
-    // datetime(?1)` predicates below: that expression can't use
-    // idx_events_started/idx_sessions_started because SQLite must call
-    // datetime() on every row before it can compare. `started_at <
-    // date_bound_iso` is a plain string comparison the index CAN drive,
-    // ANDed in front of the original (unchanged) predicate as a superset
-    // filter — it only has to be provably true for every row the exact
-    // predicate matches, never exact itself.
+    let instant_iso = crate::tz::utc_window_for_local_day(horizon).0.to_rfc3339();
+    // Index-usable pre-filter for the `datetime(started_at) < datetime(?1)`
+    // predicates below: that expression can't use idx_events_started/
+    // idx_sessions_started because SQLite must call datetime() on every
+    // row before it can compare. `started_at < date_bound_iso` is a plain
+    // string comparison the index CAN drive, ANDed in front of the exact
+    // predicate as a superset filter — it only has to be provably true for
+    // every row the exact predicate matches, never exact itself.
     //
     // Proof: a row matches the exact predicate only if its UTC instant is
     // < the instant named by `instant_iso`, which is local midnight at
-    // `cutoff` — never later than 23:59:59 UTC on `cutoff`'s own calendar
-    // date (`utc_window_for_local_day` cannot shift local midnight past
-    // the end of `cutoff`'s UTC day). So a matching row's UTC-instant date
-    // is <= `cutoff`. `started_at` strings carry an offset of at most
-    // ±14:00 (well under 24h), so the *literal* calendar date written in
-    // the string can differ from the UTC-instant date by at most one day,
-    // giving a literal date <= `cutoff + 1 day`. `date_bound_iso` below is
-    // `cutoff + 2 days` formatted as a bare `YYYY-MM-DD` (10 chars, no
-    // time part): its date is strictly greater than `cutoff + 1 day`, so
-    // the first 10 characters of any matching row's `started_at` compare
-    // less than it — and once an earlier character differs, whatever
-    // follows (a 'T'/space plus time and offset) can't change the
-    // comparison back.
-    let date_bound_iso = (cutoff + chrono::Duration::days(2)).to_string();
-
-    // Never-billed count is taken BEFORE any deletion — the rows (and
-    // the markers that would prove they were never billed) are gone
-    // once the delete runs.
-    let blocks_deleted_unbilled: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM blocks
-             WHERE day < ?1
-               AND (tempo_worklog_id IS NULL OR tempo_worklog_id = '')
-               AND (exported_at IS NULL OR exported_at = '')",
-            params![cutoff_iso],
-            |r| r.get(0),
-        )
-        .context("counting never-billed blocks past cutoff")?;
+    // `horizon` — never later than 23:59:59 UTC on `horizon`'s own
+    // calendar date (`utc_window_for_local_day` cannot shift local
+    // midnight past the end of `horizon`'s UTC day). So a matching row's
+    // UTC-instant date is <= `horizon`. `started_at` strings carry an
+    // offset of at most ±14:00 (well under 24h), so the *literal* calendar
+    // date written in the string can differ from the UTC-instant date by
+    // at most one day, giving a literal date <= `horizon + 1 day`.
+    // `date_bound_iso` below is `horizon + 2 days` formatted as a bare
+    // `YYYY-MM-DD` (10 chars, no time part): its date is strictly greater
+    // than `horizon + 1 day`, so the first 10 characters of any matching
+    // row's `started_at` compare less than it — and once an earlier
+    // character differs, whatever follows (a 'T'/space plus time and
+    // offset) can't change the comparison back.
+    let date_bound_iso = (horizon + chrono::Duration::days(2)).to_string();
+    let bounds = params![instant_iso, horizon_iso, date_bound_iso];
 
     if dry_run {
-        let blocks_deleted: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM blocks WHERE day < ?1",
-                params![cutoff_iso],
-                |r| r.get(0),
-            )
-            .context("counting blocks past cutoff")?;
-        // Simulates the post-block-delete state: an event only survives
-        // if it's linked to a block that would survive (day >= cutoff).
+        let (blocks_carded, card_bytes) = card_old_blocks(conn, &horizon_iso, true)?;
         let events_deleted: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM events
-                 WHERE started_at < ?3
-                   AND datetime(started_at) < datetime(?1)
-                   AND id NOT IN (
-                       SELECT event_id FROM block_events
-                        WHERE block_id IN (SELECT id FROM blocks WHERE day >= ?2)
-                   )",
-                params![instant_iso, cutoff_iso, date_bound_iso],
+                &format!("SELECT COUNT(*) FROM events e WHERE {EVENT_IS_EXPIRED}"),
+                bounds,
                 |r| r.get(0),
             )
-            .context("counting orphan events past cutoff")?;
-        // sessions.started_at is UTC, like events — compare against the
-        // same instant, never the local cutoff string.
+            .context("counting expired events")?;
+        // Simulates the post-events-delete state: a session survives if it
+        // still has any event that would survive.
         let sessions_deleted: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM sessions
-                 WHERE started_at < ?2 AND datetime(started_at) < datetime(?1)",
-                params![instant_iso, date_bound_iso],
+                &format!(
+                    "SELECT COUNT(*) FROM sessions s
+                     WHERE s.started_at < ?3 AND datetime(s.started_at) < datetime(?1)
+                       AND NOT EXISTS (SELECT 1 FROM events e
+                                        WHERE e.session_id = s.session_id
+                                          AND NOT ({EVENT_IS_EXPIRED}))"
+                ),
+                bounds,
                 |r| r.get(0),
             )
-            .context("counting sessions past cutoff")?;
-        // Simulates the post-block-delete state for the ticket cache:
-        // a manually-picked (external = 1) ticket only survives if some
-        // surviving block (day >= cutoff) still references it.
+            .context("counting sessions past the horizon")?;
         let tickets_deleted: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM jira_tickets
                  WHERE external = 1
-                   AND key NOT IN (SELECT jira_issue FROM blocks
-                                    WHERE jira_issue IS NOT NULL AND day >= ?1)",
-                params![cutoff_iso],
+                   AND key NOT IN (SELECT jira_issue FROM blocks WHERE jira_issue IS NOT NULL)",
+                [],
                 |r| r.get(0),
             )
-            .context("counting orphaned external jira tickets past cutoff")?;
+            .context("counting orphaned external jira tickets")?;
         return Ok(PurgeReport {
-            cutoff_date: cutoff_iso,
-            blocks_deleted,
-            blocks_deleted_unbilled,
+            cutoff_date: horizon_iso,
+            blocks_carded,
+            card_bytes,
             events_deleted,
             sessions_deleted,
             tickets_deleted,
@@ -261,64 +269,52 @@ pub fn purge_rows(conn: &Connection, cutoff: NaiveDate, dry_run: bool) -> Result
         });
     }
 
-    // Real run — one transaction. block_events cascades away with its
-    // parent block (ON DELETE CASCADE in schema.sql, FK enforcement is
-    // enabled in db::configure), so once the block delete lands, any
-    // event still referenced by block_events belongs to a surviving
-    // block; everything else strictly older than the cutoff is an
-    // orphan and goes too. `execute()`'s rows-changed return value IS
-    // the count — no separate counting query to drift from the delete.
+    // Real run — one transaction, cards first so nothing is deleted that a
+    // card has not captured. Dropping `tx` on any error rolls it all back.
+    // `execute()`'s rows-changed return value IS the count — no separate
+    // counting query to drift from the delete.
     let tx = conn.unchecked_transaction()?;
-    let blocks_deleted = tx
-        .execute("DELETE FROM blocks WHERE day < ?1", params![cutoff_iso])
-        .context("deleting blocks past cutoff")? as i64;
+    let (blocks_carded, card_bytes) = card_old_blocks(&tx, &horizon_iso, false)?;
     let events_deleted = tx
         .execute(
-            "DELETE FROM events
-             WHERE started_at < ?2
-               AND datetime(started_at) < datetime(?1)
-               AND id NOT IN (SELECT event_id FROM block_events)",
-            params![instant_iso, date_bound_iso],
+            &format!("DELETE FROM events WHERE id IN (SELECT e.id FROM events e WHERE {EVENT_IS_EXPIRED})"),
+            bounds,
         )
-        .context("deleting orphan events past cutoff")? as i64;
+        .context("deleting expired events")? as i64;
     // A branch name gets reused months later and would otherwise silently
     // inherit whatever customer it was pinned to last time (`pin_for_branch`
     // has no age bound of its own) — a pin lives exactly as long as its
     // session's events do. Runs after the events delete just above so this
-    // sees the post-delete state; an unbilled block still keeps its events
-    // (and so keeps its pin) until IT is purged. `from_at` is bound by the
-    // same cutoff as every sibling delete in this pass — without it, a
-    // fresh pin whose session has no event row yet (written moments before
-    // the recorder's first event, or a recorder that then failed) would be
-    // deleted on ANY purge, however recent its cutoff.
+    // sees the post-delete state. `from_at` is bound by the same horizon as
+    // every sibling delete in this pass — without it, a fresh pin whose
+    // session has no event row yet (written moments before the recorder's
+    // first event, or a recorder that then failed) would be deleted on ANY
+    // run, however recent its horizon.
     tx.execute(
         "DELETE FROM session_pins
-         WHERE from_at < ?2 AND datetime(from_at) < datetime(?1)
+         WHERE from_at < ?3 AND datetime(from_at) < datetime(?1)
            AND session_id NOT IN (SELECT session_id FROM events WHERE session_id IS NOT NULL)",
-        params![instant_iso, date_bound_iso],
+        bounds,
     )
-    .context("deleting orphaned session pins past cutoff")?;
-    // sessions.started_at is UTC, like events — compare against the same
-    // instant. Nothing in worklog has ever deleted a sessions row before
-    // this: `reap_stale` only ever sets `ended_at`.
+    .context("deleting orphaned session pins past the horizon")?;
     let sessions_deleted = tx
         .execute(
             "DELETE FROM sessions
-             WHERE started_at < ?2 AND datetime(started_at) < datetime(?1)",
-            params![instant_iso, date_bound_iso],
+             WHERE started_at < ?3 AND datetime(started_at) < datetime(?1)
+               AND session_id NOT IN (SELECT session_id FROM events WHERE session_id IS NOT NULL)",
+            bounds,
         )
-        .context("deleting sessions past cutoff")? as i64;
-    // Runs after the blocks delete, so only surviving blocks remain to
-    // reference a ticket. Collector-owned entries (external = 0) are
-    // never touched — that cache's lifecycle belongs to the collector.
-    let tickets_deleted =
-        tx.execute(
+        .context("deleting sessions past the horizon")? as i64;
+    // Collector-owned entries (external = 0) are never touched — that
+    // cache's lifecycle belongs to the collector.
+    let tickets_deleted = tx
+        .execute(
             "DELETE FROM jira_tickets
              WHERE external = 1
                AND key NOT IN (SELECT jira_issue FROM blocks WHERE jira_issue IS NOT NULL)",
             [],
         )
-        .context("deleting orphaned external jira tickets past cutoff")? as i64;
+        .context("deleting orphaned external jira tickets")? as i64;
     // A cached transcript fingerprint doesn't know the events delete above
     // just ran — without this, an untouched file stays skipped forever and
     // its deleted rows never come back on a later tick.
@@ -326,9 +322,9 @@ pub fn purge_rows(conn: &Connection, cutoff: NaiveDate, dry_run: bool) -> Result
     tx.commit()?;
 
     Ok(PurgeReport {
-        cutoff_date: cutoff_iso,
-        blocks_deleted,
-        blocks_deleted_unbilled,
+        cutoff_date: horizon_iso,
+        blocks_carded,
+        card_bytes,
         events_deleted,
         sessions_deleted,
         tickets_deleted,

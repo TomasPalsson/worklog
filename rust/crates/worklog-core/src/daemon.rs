@@ -390,12 +390,11 @@ pub fn state_from_conn(conn: Connection) -> Shared {
     })
 }
 
-/// One tick of [`spawn_prune_loop`]: resolve the current cycle cutoff
+/// One tick of [`spawn_prune_loop`]: resolve the current 90-day horizon
 /// and hand it to [`crate::purge::prune_if_due`], swallowing any
-/// failure. A real prune (the due path) logs exactly one `info!` line
-/// naming the cutoff and every deletion count, plus an additional
-/// `warn!` when any deleted block was never billed — that loss must not
-/// be silent (spec 002 §5.6, FR-018, FR-022 / B32). A not-due check logs
+/// failure. A real run (the due path) logs exactly one `info!` line
+/// naming the horizon, the cards written and every deletion count. A
+/// not-due check logs
 /// nothing at `info` level — it fires on a 6h timer forever and would be
 /// pure noise (spec 002 §5.6 / B33) — only a `trace!` for anyone
 /// watching that closely. A failure logs `warn!` naming the failing
@@ -409,13 +408,8 @@ async fn prune_due_check_once(state: Shared, snapshot_to: &Path, db_path: &Path)
     let outcome =
         tokio::task::spawn_blocking(move || -> Result<Option<crate::purge::PurgeReport>> {
             let today = crate::tz::local_date(chrono::Utc::now());
-            let cutoff = crate::purge::cutoff_for_cycle(
-                today,
-                crate::purge::configured_cycle_start_day(),
-                crate::purge::configured_close_day(),
-            );
             let opts = crate::purge::PruneOptions {
-                cutoff,
+                cutoff: crate::block_digest::horizon(today),
                 dry_run: false,
                 snapshot_to: Some(snapshot_to.as_path()),
                 db_path: Some(db_path.as_path()),
@@ -429,29 +423,22 @@ async fn prune_due_check_once(state: Shared, snapshot_to: &Path, db_path: &Path)
         Ok(Ok(Some(report))) => {
             info!(
                 cutoff = %report.cutoff_date,
-                blocks_deleted = report.blocks_deleted,
-                blocks_deleted_unbilled = report.blocks_deleted_unbilled,
+                blocks_carded = report.blocks_carded,
+                card_bytes = report.card_bytes,
                 events_deleted = report.events_deleted,
                 sessions_deleted = report.sessions_deleted,
                 tickets_deleted = report.tickets_deleted,
-                "billing-cycle prune completed"
+                "compression run completed"
             );
-            if report.blocks_deleted_unbilled > 0 {
-                warn!(
-                    "billing-cycle prune deleted {} never-billed block(s) \
-                     (no Tempo id and no exported_at marker) — that work is gone",
-                    report.blocks_deleted_unbilled
-                );
-            }
         }
         Ok(Ok(None)) => {
             // Not due — a total no-op. No `info!` here: this tick fires
             // every 6h forever, so logging it at `info` would be pure
             // noise (spec 002 §5.6).
-            tracing::trace!("billing-cycle prune due-check: not due, nothing to do");
+            tracing::trace!("compression due-check: not due, nothing to do");
         }
-        Ok(Err(e)) => warn!("billing-cycle prune due-check failed: {e:#}"),
-        Err(e) => warn!("billing-cycle prune due-check task panicked: {e}"),
+        Ok(Err(e)) => warn!("compression due-check failed: {e:#}"),
+        Err(e) => warn!("compression due-check task panicked: {e}"),
     }
 }
 

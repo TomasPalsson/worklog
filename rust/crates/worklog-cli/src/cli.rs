@@ -1163,11 +1163,7 @@ fn cmd_db_purge<W: Write>(days: Option<i64>, dry_run: bool, out: &mut W, json: b
     let today = worklog_core::tz::local_date(chrono::Utc::now());
     let cutoff = match days {
         Some(d) => worklog_core::purge::cutoff_for_days(today, d),
-        None => worklog_core::purge::cutoff_for_cycle(
-            today,
-            worklog_core::purge::configured_cycle_start_day(),
-            worklog_core::purge::configured_close_day(),
-        ),
+        None => worklog_core::block_digest::horizon(today),
     };
     let snapshot_to = paths.data_dir.join("worklog.db.preprune");
     let opts = worklog_core::purge::PruneOptions {
@@ -1182,28 +1178,18 @@ fn cmd_db_purge<W: Write>(days: Option<i64>, dry_run: bool, out: &mut W, json: b
         return Ok(());
     }
     let prefix = if dry_run { "(dry-run) " } else { "" };
-    if report.blocks_deleted + report.events_deleted == 0 {
+    if report.blocks_carded + report.events_deleted == 0 {
         style::info(
             out,
-            &format!("{prefix}nothing to purge before {}", report.cutoff_date),
+            &format!("{prefix}nothing to compress before {}", report.cutoff_date),
         )?;
     } else {
-        let verb = if dry_run { "would delete" } else { "deleted" };
+        let verb = if dry_run { "would card" } else { "carded" };
         style::ok(
             out,
             &format!(
-                "{prefix}{verb} {} block(s) + {} event(s) before {}",
-                report.blocks_deleted, report.events_deleted, report.cutoff_date
-            ),
-        )?;
-    }
-    if report.blocks_deleted_unbilled > 0 {
-        let verb = if dry_run { "would be" } else { "were" };
-        style::warn(
-            out,
-            &format!(
-                "{} never-billed block(s) {verb} deleted (no Tempo sync, no export marker)",
-                report.blocks_deleted_unbilled
+                "{prefix}{verb} {} block(s) ({} card bytes) and delete {} event(s) before {}",
+                report.blocks_carded, report.card_bytes, report.events_deleted, report.cutoff_date
             ),
         )?;
     }
@@ -1656,11 +1642,7 @@ fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bo
     // actually deleted), even though `today` above stays UTC-derived —
     // changing cmd_collect's own notion of "today" is a behaviour change
     // beyond this slice.
-    let cutoff = worklog_core::purge::cutoff_for_cycle(
-        worklog_core::tz::local_date(chrono::Utc::now()),
-        worklog_core::purge::configured_cycle_start_day(),
-        worklog_core::purge::configured_close_day(),
-    );
+    let cutoff = worklog_core::block_digest::horizon(worklog_core::tz::local_date(chrono::Utc::now()));
     let since = effective_since(requested_since, cutoff);
     if since != requested_since {
         tracing::debug!(
