@@ -5,8 +5,9 @@
 import { afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { DetailRow } from "@/lib/clues_contract";
+import type { BlockDigest } from "@/lib/types";
 
-let BlockDetails: (props: { rows: DetailRow[] }) => React.JSX.Element;
+let BlockDetails: (props: { rows: DetailRow[]; digest?: BlockDigest | null }) => React.JSX.Element;
 
 beforeAll(async () => {
   const mod = await import("./BlockDetails");
@@ -157,5 +158,28 @@ describe("BlockDetails timeline", () => {
     expect(screen.getByText("now fix the test")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /Collapse all/ }));
     expect(screen.queryByText("now fix the test")).toBeNull();
+  });
+
+  it("B6: a block with no events shows the card's change titles and prompts", () => {
+    const digest = {
+      change_titles: ["Fix the login redirect", "Bump deps"],
+      prompts: ["make the login page redirect after sign-in"],
+      event_count: 12,
+    } as BlockDigest;
+    render(<BlockDetails rows={[]} digest={digest} />);
+    expect(screen.getByText("Fix the login redirect")).toBeTruthy();
+    expect(screen.getByText("Bump deps")).toBeTruthy();
+    expect(screen.getByText("make the login page redirect after sign-in")).toBeTruthy();
+  });
+
+  it("B6: with events present the card is not shown", () => {
+    const digest = { change_titles: ["Card only title"], prompts: [] } as unknown as BlockDigest;
+    render(<BlockDetails rows={fixtureRows()} digest={digest} />);
+    expect(screen.queryByText("Card only title")).toBeNull();
+  });
+
+  it("B6: no events and no card keeps the empty message", () => {
+    render(<BlockDetails rows={[]} digest={null} />);
+    expect(screen.getByText(/Nothing to show/)).toBeTruthy();
   });
 });
