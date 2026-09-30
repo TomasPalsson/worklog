@@ -223,7 +223,11 @@ fn personal_and_secrets() {
     .unwrap();
     let personal = seed_block(&conn, true, Some("ABC-1"));
     seed_evidence(&conn, personal);
+    seed_event(&conn, personal, "shell", 5, "ls", |event| {
+        event.project_path = Some("/tmp/personal-project".to_string());
+    });
     let card = build_digest(&conn, personal).unwrap();
+    assert_eq!(card.project_path.as_deref(), Some("/tmp/personal-project"));
     assert!(card.prompts.is_empty());
     assert_eq!(card.prompt_count, 0);
     assert!(card.change_titles.is_empty());
