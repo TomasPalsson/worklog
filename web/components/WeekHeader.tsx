@@ -8,7 +8,7 @@ import {
   todayISO,
 } from "@/lib/format";
 import { ThemeToggle } from "./ThemeToggle";
-import { WeekJumper } from "./WeekJumper";
+import { DateJumper } from "./DateJumper";
 
 interface Props {
   monday: string;
@@ -52,7 +52,12 @@ export function WeekHeader({
         >
           <ChevronLeft size={16} strokeWidth={1.75} />
         </Link>
-        {!isCurrentWeek && (
+        {/* Always rendered: the arrows must not shift under the cursor. */}
+        {isCurrentWeek ? (
+          <span className="day-nav-btn today" aria-disabled="true" aria-current="true">
+            This week
+          </span>
+        ) : (
           <Link href={`/week/${thisMonday}`} className="day-nav-btn today">
             This week
           </Link>
@@ -64,7 +69,7 @@ export function WeekHeader({
         >
           <ChevronRight size={16} strokeWidth={1.75} />
         </Link>
-        <WeekJumper focusedDay={monday} />
+        <DateJumper focusedDay={monday} view="week" />
         <Link
           href={`/${today}`}
           className="day-nav-btn week-day-link"

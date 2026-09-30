@@ -1,59 +1,55 @@
 "use client";
 
-import { useState } from "react";
+import { useRef } from "react";
 import { useRouter } from "next/navigation";
 import { Calendar } from "lucide-react";
 import { mondayOf } from "@/lib/format";
 
 interface Props {
-  /** The currently focused day, used to seed the date input. Defaults
-   * to the week's Monday so the picker opens on something the user
-   * recognises. */
+  /** The day the picker opens on. */
   focusedDay: string;
+  /** Which page a picked date opens: that day, or the week holding it. */
+  view: "day" | "week";
 }
 
 /**
- * Native `<input type="date">` driven jump-to-week picker. Browsers
- * render this as a real calendar popup on every platform we care about
- * (Chromium, Safari, Firefox); no JS calendar dep needed.
- *
- * Submitting any day in a week navigates to that week's Monday.
+ * Arrow-sized jump-to-date button: a native date input stretched invisibly
+ * over the icon, so browsers show their own calendar. A wider control made
+ * the nav overflow and drift with the heading. Picking a date navigates.
  */
-export function WeekJumper({ focusedDay }: Props) {
+export function DateJumper({ focusedDay, view }: Props) {
   const router = useRouter();
-  const [value, setValue] = useState(focusedDay);
+  const input = useRef<HTMLInputElement>(null);
 
   function go(next: string) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(next)) return;
-    router.push(`/week/${mondayOf(next)}`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(next) || next === focusedDay) return;
+    // Typing a year by keyboard passes through 0002, 0020, 0202 first.
+    if (Number(next.slice(0, 4)) < 1000) return;
+    router.push(view === "week" ? `/week/${mondayOf(next)}` : `/${next}`);
   }
 
   return (
-    <form
-      className="week-jumper"
-      onSubmit={(e) => {
-        e.preventDefault();
-        go(value);
-      }}
-    >
-      <label className="week-jumper-label">
-        <Calendar size={14} strokeWidth={1.75} aria-hidden />
-        <span className="visually-hidden">jump to date</span>
-        <input
-          type="date"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          // Submit immediately on picker selection so users don't need
-          // the explicit button. Form fallback covers keyboard users
-          // who type the date manually and press Enter.
-          onBlur={() => value !== focusedDay && go(value)}
-          aria-label="jump to date"
-          className="week-jumper-input"
-        />
-      </label>
-      <button type="submit" className="week-jumper-go">
-        Jump
-      </button>
-    </form>
+    <label className="day-nav-btn date-jumper" data-tip="Jump to date">
+      <Calendar size={16} strokeWidth={1.75} aria-hidden />
+      <input
+        // Re-seed when the arrows move to another day: the component is
+        // reused across client navigations.
+        key={focusedDay}
+        ref={input}
+        type="date"
+        defaultValue={focusedDay}
+        onChange={(e) => go(e.target.value)}
+        // Chromium only opens the calendar from its own indicator.
+        onClick={() => {
+          try {
+            input.current?.showPicker?.();
+          } catch {
+            // Unsupported or not user-activated; the native click still works.
+          }
+        }}
+        aria-label="jump to date"
+        className="date-jumper-input"
+      />
+    </label>
   );
 }

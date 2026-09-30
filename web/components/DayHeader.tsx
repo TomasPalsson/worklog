@@ -6,6 +6,7 @@ import { ThemeToggle } from "./ThemeToggle";
 import { SettingsPanel } from "./SettingsPanel";
 import { ExportPanel } from "./ExportPanel";
 import { ViewToggle } from "./ViewToggle";
+import { DateJumper } from "./DateJumper";
 
 interface Props {
   day: string;
@@ -67,7 +68,12 @@ export function DayHeader({
         >
           <ChevronLeft size={16} strokeWidth={1.75} />
         </Link>
-        {!isToday && (
+        {/* Always rendered: the arrows must not shift under the cursor. */}
+        {isToday ? (
+          <span className="day-nav-btn today" aria-disabled="true" aria-current="date">
+            Today
+          </span>
+        ) : (
           <Link href={`/${today}`} className="day-nav-btn today" data-tip="Jump to today">
             Today
           </Link>
@@ -80,6 +86,7 @@ export function DayHeader({
         >
           <ChevronRight size={16} strokeWidth={1.75} />
         </Link>
+        <DateJumper focusedDay={day} view="day" />
         <Link
           href={`/week/${mondayOf(day)}`}
           className="day-nav-btn week-day-link"
