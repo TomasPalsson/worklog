@@ -77,7 +77,7 @@ async function perform(button) {
         await browser.storage.local.set({ paused: next });
         paused = next;
       } catch {
-        // Keep the stored value; render below shows the truth.
+        // A failed write leaves `paused` unchanged; render() reports the real state.
       }
       await fetchStatus();
     } else {

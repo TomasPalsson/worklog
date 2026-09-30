@@ -1,43 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildHeartbeat, shouldSend, skipReason, storableTab } from "./heartbeat.js";
-
-describe("shouldSend", () => {
-  const base = {
-    paused: false,
-    incognito: false,
-    containerName: null,
-    idleState: "active",
-    windowFocused: true,
-  };
-
-  test("true when active, focused, not paused/incognito/personal", () => {
-    expect(shouldSend(base)).toBe(true);
-  });
-
-  test("false when paused", () => {
-    expect(shouldSend({ ...base, paused: true })).toBe(false);
-  });
-
-  test("false when incognito", () => {
-    expect(shouldSend({ ...base, incognito: true })).toBe(false);
-  });
-
-  test("false in the Personal container", () => {
-    expect(shouldSend({ ...base, containerName: "Personal" })).toBe(false);
-  });
-
-  test("false when idle", () => {
-    expect(shouldSend({ ...base, idleState: "idle" })).toBe(false);
-  });
-
-  test("false when locked", () => {
-    expect(shouldSend({ ...base, idleState: "locked" })).toBe(false);
-  });
-
-  test("false with no focused window", () => {
-    expect(shouldSend({ ...base, windowFocused: false })).toBe(false);
-  });
-});
+import { buildHeartbeat, skipReason, storableTab } from "./heartbeat.js";
 
 describe("skipReason", () => {
   const base = {
@@ -61,12 +23,17 @@ describe("skipReason", () => {
     expect(skipReason({ ...base, windowFocused: false })).toBe("unfocused");
   });
 
-  test("reports the first suppressor in fixed order", () => {
+  test("reports the first suppressor in spec order", () => {
     const everything = { paused: true, incognito: true, containerName: "Personal", idleState: "idle", windowFocused: false };
-    expect(skipReason(everything)).toBe("paused");
-    expect(skipReason({ ...everything, paused: false })).toBe("incognito");
-    expect(skipReason({ ...everything, paused: false, incognito: false })).toBe("personal_container");
-    expect(skipReason({ ...everything, paused: false, incognito: false, containerName: null })).toBe("idle");
+    expect(skipReason(everything)).toBe("incognito");
+    expect(skipReason({ ...everything, incognito: false })).toBe("personal_container");
+    expect(skipReason({ ...everything, incognito: false, containerName: null })).toBe("paused");
+    expect(skipReason({ ...everything, incognito: false, containerName: null, paused: false })).toBe("idle");
+  });
+
+  test("privacy reasons outrank paused", () => {
+    expect(skipReason({ ...base, paused: true, containerName: "Personal" })).toBe("personal_container");
+    expect(skipReason({ ...base, paused: true, incognito: true })).toBe("incognito");
   });
 });
 
