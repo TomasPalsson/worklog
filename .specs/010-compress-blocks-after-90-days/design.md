@@ -1,0 +1,91 @@
+# Design — Compress blocks after 90 days
+
+## 1. Contract file + language
+
+Contract: `rust/crates/worklog-core/src/digest_contract.rs` (copied verbatim from `.specs/010-compress-blocks-after-90-days/digest_contract.rs` by T001; owner: orchestrator).
+
+| canonical | identifier | defined in | banned synonyms |
+|---|---|---|---|
+| card | `BlockDigest` | digest_contract.rs | summary, archive, snapshot |
+| card table | `block_digest` | sql/schema.sql | block_summary, block_archive |
+| horizon | `HORIZON_DAYS`, `digest::horizon(today) -> NaiveDate` | contract / block_digest.rs | retention, cutoff_days |
+| compressed day | `digest::day_is_compressed(conn, day) -> Result<bool>` | block_digest.rs | frozen, archived |
+| refusal text | `DAY_COMPRESSED` | contract | any other wording |
+
+- Table (T001, `sql/schema.sql`, `CREATE TABLE IF NOT EXISTS` — `db::migrate` applies it):
+  `block_digest(block_id INTEGER PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE, version INTEGER NOT NULL, built_at TEXT NOT NULL, json TEXT NOT NULL)`
+- Timestamps UTC ISO-8601; `day` compared as `YYYY-MM-DD` text. All sync (rusqlite).
+
+Module `rust/crates/worklog-core/src/block_digest.rs` (T001) exports exactly:
+```rust
+pub fn horizon(today: NaiveDate) -> NaiveDate;                       // today - HORIZON_DAYS
+pub fn eval_evidence(events: &[Event]) -> (Vec<String>, Vec<String>); // lifted from block_eval.rs:112-122, unchanged logic
+pub fn build_digest(conn: &Connection, block_id: i64) -> Result<BlockDigest>;
+pub fn write_digest(conn: &Connection, block_id: i64, d: &BlockDigest) -> Result<bool>; // INSERT OR IGNORE; true if written
+pub fn digest_for_block(conn: &Connection, block_id: i64) -> Result<Option<BlockDigest>>;
+pub fn day_is_compressed(conn: &Connection, day: &str) -> Result<bool>;
+```
+
+## 2. Trust boundaries
+
+| boundary | input | parse fn | failure |
+|---|---|---|---|
+| `block_digest.json` row | JSON text | `serde_json::from_str::<BlockDigest>` | per block: log to stderr, treat as `None` |
+| claude_turn raw_json (prompts) | deflated JSON | `raw_json` decoder | per event: skip |
+| prompts on card | user text | `scrub::scrub_secrets` before truncation | always applied |
+
+## 3. Error taxonomy
+
+Refusals on a compressed day are `anyhow::bail!("{DAY_COMPRESSED}: {day}")`. Daemon maps any error whose text starts with `DAY_COMPRESSED` to HTTP 409 with the existing error body shape; CLI exits 2.
+
+## 5. Shared resources
+
+- DB handle: `&Connection` passed in; nobody opens their own.
+- Clock: `today` is a parameter everywhere (`purge` computes it once via `tz`); no `Utc::now()` inside block_digest.rs.
+
+## 6. Deliberately duplicated
+
+- none — the one place logic must not drift (eval evidence) is shared via `eval_evidence`, not copied.
+
+## 7. Decisions
+
+- In the context of readers for old blocks, facing 8 call sites that join `block_events`, we chose "read `digest_for_block` first; if `Some`, use it, else run today's query" and rejected a view/virtual table, to keep each reader's diff local, accepting 8 small branches. Makes hard: billing.rs, tenant_split.rs, tenant_clues.rs, personal.rs, daemon.rs, block_details.rs, block_eval.rs.
+- In the context of rebuilds, facing `persist_blocks` deleting all blocks of a day, we chose a guard on `day_is_compressed` inside `persist_blocks` and `merge_same_ticket_adjacent` and re-description, rejected a clock-based guard, so it follows data not dates. Makes hard: infer.rs, estimate.rs.
+- In the context of purge, we chose one transaction: write missing cards → delete events/sessions/transcript cache by age → delete orphan session_pins, and rejected deleting blocks. Makes hard: purge.rs.
+
+## Complexity Tracking
+
+| Violation | Why needed | Simpler alternative rejected because |
+|---|---|---|
+
+## Contract for T001 — card table and builder
+CONTRACT   rust/crates/worklog-core/src/digest_contract.rs — copy verbatim from the spec dir, then import from it.
+NAMES      card=BlockDigest, table=block_digest, horizon(), day_is_compressed(), eval_evidence()
+MODULE     rust/crates/worklog-core/src/block_digest.rs · may import: digest_contract, repo, models, billing, personal, tenant_split, clues_send, clues_collect, scrub, raw_json · exports: the six fns in §1
+CALLS      billing::work_folder_for_block, personal::dominant_project_path_for_block, billing distinct_paths / dominant_title queries, tenant_split::pinned_customer_for_block, clues_send::build_block_input (Err for personal → estimation fields empty); scrub::scrub_secrets on prompts, change_titles, branches, files BEFORE truncation; eval_repos/eval_titles never scrubbed (parity)
+THE FIVE   (1) NEVER invent an error type, field name or result shape that already exists in the contract — copy the literal declaration. (2) NEVER type a boundary function's parameter as the narrow type; the narrow type is only ever the RETURN of a fallible function. (3) NEVER add a mode, flag or extra required parameter to a shared abstraction the design handed you — duplicate it inside your task and say so. (4) NEVER refactor or rename outside the task's `files:` list — a change to an unlisted file is a defect. (5) NEVER abbreviate inside an identifier. Spell the word.
+
+## Contract for T002 — freeze compressed days
+CONTRACT   rust/crates/worklog-core/src/digest_contract.rs (DAY_COMPRESSED)
+CALLS      block_digest::day_is_compressed(conn, day) at the top of infer::persist_blocks, estimate::merge_same_ticket_adjacent, and the re-description entry in estimate.rs; bail with DAY_COMPRESSED
+THE FIVE   as T001.
+
+## Contract for T003 — eval and billing read the card
+CALLS      block_digest::digest_for_block(conn, id) first in block_eval::block_state (eval_repos/eval_titles), billing::work_folder_for_block (folder), dominant_title_for_blocks (invoice_titles[0]), distinct_paths_for_blocks (paths), tenant_split::pinned_customer_for_block (pinned_customer), tenant_clues::clues_for_block, personal::dominant_project_path_for_block (project_path); block_eval uses block_digest::eval_evidence for the live path
+THE FIVE   as T001.
+
+## Contract for T004 — daemon serves the card
+CALLS      GET /blocks/:id/digest → 200 BlockDigest JSON | 404; stitch_day_summary uses event_count / events_by_source / project_path from the card when present; DAY_COMPRESSED errors → 409
+THE FIVE   as T001.
+
+## Contract for T005 — detail panel shows the card
+CALLS      web/lib/daemon.ts getBlockDigest(id): Promise<BlockDigest | null> (404 → null); type BlockDigest in web/lib/types.ts mirrors the Rust field names (snake_case)
+THE FIVE   as T001.
+
+## Contract for T006 — compression run
+CALLS      purge::run / prune_if_due / purge_rows reworked; horizon = block_digest::horizon(today); latch meta key `last_prune_cutoff` stores the horizon date so it runs at most once a day, advanced only on commit; one transaction per run (cards → deletes per spec §4.3 → orphan pins); snapshot stays `worklog.db.preprune`; PurgeReport gains `blocks_carded: i64` and `card_bytes: i64`, `blocks_deleted` stays and must be 0; cli `effective_since` clamps to horizon
+THE FIVE   as T001.
+
+## Contract for T007 — eval prints cards
+CALLS      `worklog eval "<q>" --details` → after the table, per matched block: day, time, then non-empty card fields (change_titles, prompts, branches, active_minutes, folder)
+THE FIVE   as T001.
