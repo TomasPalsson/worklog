@@ -5637,7 +5637,11 @@ mod tests {
         let count: i64 = guard
             .query_row("SELECT COUNT(*) FROM blocks", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 0, "the old block must have been pruned on start");
+        assert_eq!(count, 1, "blocks are never deleted");
+        let cards: i64 = guard
+            .query_row("SELECT COUNT(*) FROM block_digest", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cards, 1, "the old block must have been carded on start");
         assert!(
             crate::purge::meta_get(&guard, crate::purge::LATCH_KEY)
                 .unwrap()

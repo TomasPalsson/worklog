@@ -4532,6 +4532,7 @@ mod tests {
                 bytes_freed: 4096,
                 snapshot_path: Some("/tmp/worklog.db.preprune".to_owned()),
                 dry_run: false,
+                ..Default::default()
             },
             ran_at: ran_at.to_owned(),
         }

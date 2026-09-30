@@ -48,6 +48,12 @@ pub struct PurgeReport {
     pub cutoff_date: String,
     /// Blocks that were (or would be) deleted.
     pub blocks_deleted: i64,
+    /// Blocks that received (or would receive) a card this run.
+    #[serde(default)]
+    pub blocks_carded: i64,
+    /// Total size in bytes of the card JSON written (or that would be).
+    #[serde(default)]
+    pub card_bytes: i64,
     /// Subset of `blocks_deleted` that had NEITHER `tempo_worklog_id` NOR
     /// `exported_at` — work that was never billed. Not a rail: these are
     /// still deleted. It exists so the loss is visible instead of silent.
@@ -658,17 +664,15 @@ mod tests {
         conn.last_insert_rowid()
     }
 
-    /// Insert a block carrying `filler` in its `description` — used to
-    /// bulk up a file-backed database with enough pages for a `VACUUM` to
+    /// Insert an orphan event whose title is `filler` — used to bulk up a
+    /// file-backed database with enough pages for a `VACUUM` to
     /// meaningfully shrink (B21).
-    fn insert_bulky_block(conn: &Connection, day: &str, filler: &str) -> i64 {
-        conn.execute(
-            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds, description)
-             VALUES (?1, ?1 || 'T09:00:00+00:00', ?1 || 'T09:30:00+00:00', 1800, ?2)",
-            params![day, filler],
+    fn insert_bulky_event(conn: &Connection, started_at: &str, source_id: &str, filler: &str) {
+        repo::upsert_event(
+            conn,
+            &Event::minimal("github_commit", source_id, started_at, filler),
         )
         .unwrap();
-        conn.last_insert_rowid()
     }
 
     fn insert_event(conn: &Connection, started_at: &str, source_id: &str) -> i64 {
@@ -738,6 +742,177 @@ mod tests {
         .unwrap();
     }
 
+    fn blocks_snapshot(conn: &Connection) -> Vec<String> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id || '|' || day || '|' || started_at || '|' || ended_at || '|' ||
+                        duration_seconds || '|' || is_personal || '|' ||
+                        COALESCE(tempo_worklog_id, '~') || '|' || COALESCE(exported_at, '~')
+                 FROM blocks ORDER BY id",
+            )
+            .unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    }
+
+    /// FR-01/FR-02: every old block gets a card, no block row changes, and
+    /// the report's byte total is the card JSON actually stored.
+    #[test]
+    fn compress_cards_every_old_block_and_leaves_block_rows_byte_identical() {
+        let conn = open_memory().unwrap();
+        insert_block(&conn, "2026-02-10", Some("tempo-1"), None, None);
+        insert_block(&conn, "2026-02-11", None, None, None);
+        insert_block_with_flags(&conn, "2026-02-12", None, 0, 1);
+        let recent = insert_block(&conn, "2026-06-25", None, None, None);
+        let before = blocks_snapshot(&conn);
+
+        let report = purge_rows(&conn, date("2026-06-20"), false).unwrap();
+
+        assert_eq!(blocks_snapshot(&conn), before);
+        assert_eq!(report.blocks_deleted, 0);
+        assert_eq!(report.blocks_carded, 3);
+        assert_eq!(count(&conn, "block_digest"), 3);
+        let has_recent_card: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM block_digest WHERE block_id = ?1)",
+                [recent],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!has_recent_card);
+        let stored_bytes: i64 = conn
+            .query_row("SELECT SUM(LENGTH(json)) FROM block_digest", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(report.card_bytes, stored_bytes);
+    }
+
+    /// FR-03: an event linked only to a carded block goes with its link
+    /// row, while the block and its card stay; the card holds the event
+    /// count that was computed before the delete.
+    #[test]
+    fn compress_deletes_old_events_and_links_but_keeps_block_and_card() {
+        let conn = open_memory().unwrap();
+        let bid = insert_block(&conn, "2026-02-10", None, None, None);
+        let eid = insert_event(&conn, "2026-02-10T09:05:00+00:00", "old-linked");
+        link(&conn, bid, eid);
+
+        let report = purge_rows(&conn, date("2026-06-20"), false).unwrap();
+
+        assert_eq!(report.events_deleted, 1);
+        assert_eq!(count(&conn, "events"), 0);
+        assert_eq!(count(&conn, "block_events"), 0);
+        assert_eq!(count(&conn, "blocks"), 1);
+        let card = crate::block_digest::digest_for_block(&conn, bid)
+            .unwrap()
+            .expect("card must exist");
+        assert_eq!(card.event_count, 1);
+    }
+
+    /// FR-03: a session that still has a surviving event is kept.
+    #[test]
+    fn compress_keeps_session_that_still_has_an_event() {
+        let conn = open_memory().unwrap();
+        let bid = insert_block(&conn, "2026-06-25", None, None, None);
+        insert_session(&conn, "sess-kept", "2026-02-10T09:00:00+00:00");
+        let old = insert_event_with_session(&conn, "2026-02-10T09:00:00+00:00", "e1", "sess-kept");
+        link(&conn, bid, old);
+        insert_session(&conn, "sess-gone", "2026-02-10T09:00:00+00:00");
+
+        let report = purge_rows(&conn, date("2026-06-20"), false).unwrap();
+
+        assert_eq!(report.events_deleted, 0);
+        assert_eq!(report.sessions_deleted, 1);
+        let left: String = conn
+            .query_row("SELECT session_id FROM sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, "sess-kept");
+    }
+
+    /// Spec section 3 error path: a card that fails to write rolls the
+    /// whole run back — zero cards, zero deletes.
+    #[test]
+    fn compress_card_failure_rolls_back_cards_and_deletes() {
+        let conn = open_memory().unwrap();
+        let first = insert_block(&conn, "2026-02-10", None, None, None);
+        let second = insert_block(&conn, "2026-02-11", None, None, None);
+        let eid = insert_event(&conn, "2026-02-10T09:05:00+00:00", "old");
+        link(&conn, first, eid);
+        conn.execute_batch(&format!(
+            "CREATE TRIGGER fail_card BEFORE INSERT ON block_digest
+             WHEN NEW.block_id = {second}
+             BEGIN SELECT RAISE(ABORT, 'card write failed'); END;"
+        ))
+        .unwrap();
+
+        let result = purge_rows(&conn, date("2026-06-20"), false);
+
+        assert!(result.is_err());
+        assert_eq!(count(&conn, "block_digest"), 0);
+        assert_eq!(count(&conn, "events"), 1);
+        assert_eq!(count(&conn, "block_events"), 1);
+        assert_eq!(count(&conn, "blocks"), 2);
+    }
+
+    /// A run over already-carded blocks writes no second card.
+    #[test]
+    fn compress_second_run_cards_nothing_new() {
+        let conn = open_memory().unwrap();
+        insert_block(&conn, "2026-02-10", None, None, None);
+        purge_rows(&conn, date("2026-06-20"), false).unwrap();
+
+        let again = purge_rows(&conn, date("2026-06-20"), false).unwrap();
+
+        assert_eq!(again.blocks_carded, 0);
+        assert_eq!(again.card_bytes, 0);
+        assert_eq!(count(&conn, "block_digest"), 1);
+    }
+
+    /// FR-15: a dry run reports what a real run then does, and writes
+    /// nothing itself.
+    #[test]
+    fn compress_dry_run_report_matches_the_real_run() {
+        let conn = open_memory().unwrap();
+        let bid = insert_block(&conn, "2026-02-10", None, None, None);
+        let eid = insert_event_with_session(&conn, "2026-02-10T09:05:00+00:00", "e", "s1");
+        link(&conn, bid, eid);
+        insert_session(&conn, "s1", "2026-02-10T09:00:00+00:00");
+        let cutoff = date("2026-06-20");
+
+        let dry = purge_rows(&conn, cutoff, true).unwrap();
+        assert_eq!(count(&conn, "block_digest"), 0);
+        assert_eq!(count(&conn, "events"), 1);
+        let real = purge_rows(&conn, cutoff, false).unwrap();
+
+        assert!(dry.card_bytes > 0);
+        assert_eq!(dry.blocks_carded, real.blocks_carded);
+        assert_eq!(dry.card_bytes, real.card_bytes);
+        assert_eq!(dry.events_deleted, real.events_deleted);
+        assert_eq!(dry.sessions_deleted, real.sessions_deleted);
+    }
+
+    /// Spec section 3 error path: an unwritable snapshot leaves zero cards.
+    #[test]
+    fn compress_unwritable_snapshot_leaves_zero_cards() {
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("worklog.db");
+        let conn = crate::db::open(&db_path).unwrap();
+        insert_block(&conn, "2026-02-10", None, None, None);
+        let unwritable = tmp.path().join("nope").join("worklog.db.preprune");
+        let opts = PruneOptions {
+            cutoff: date("2026-06-20"),
+            dry_run: false,
+            snapshot_to: Some(unwritable.as_path()),
+            db_path: Some(db_path.as_path()),
+        };
+
+        assert!(run(&conn, &opts).is_err());
+        assert_eq!(count(&conn, "block_digest"), 0);
+    }
+
     fn link(conn: &Connection, block_id: i64, event_id: i64) {
         conn.execute(
             "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
@@ -795,10 +970,10 @@ mod tests {
     }
 
     /// B8: hand-edited, edited-since-sync, never-synced, personal — and
-    /// exported-but-unsynced — blocks are ALL deleted once past the
-    /// cutoff. No exemption survives the rail-free rewrite.
+    /// exported-but-unsynced — blocks are ALL carded once past the
+    /// horizon, and none is deleted.
     #[test]
-    fn b8_all_block_classes_deleted_no_exemption() {
+    fn b8_all_block_classes_carded_none_deleted() {
         let conn = open_memory().unwrap();
         let old = "2026-02-10";
         insert_block(&conn, old, Some("tempo-1"), Some("manual"), None); // manual
@@ -810,8 +985,10 @@ mod tests {
 
         let cutoff = date("2026-06-20");
         let report = purge_rows(&conn, cutoff, false).unwrap();
-        assert_eq!(report.blocks_deleted, 6);
-        assert_eq!(count(&conn, "blocks"), 0);
+        assert_eq!(report.blocks_deleted, 0);
+        assert_eq!(report.blocks_carded, 6);
+        assert_eq!(count(&conn, "blocks"), 6);
+        assert_eq!(count(&conn, "block_digest"), 6);
     }
 
     /// B9: a block newer than the cutoff survives along with every
@@ -853,10 +1030,12 @@ mod tests {
 
         let report = purge_rows(&conn, cutoff, true).unwrap();
         assert!(report.dry_run);
-        assert_eq!(report.blocks_deleted, 2);
+        assert_eq!(report.blocks_deleted, 0);
+        assert_eq!(report.blocks_carded, 2);
         assert_eq!(report.events_deleted, 1);
         assert_eq!(count(&conn, "blocks"), before_blocks);
         assert_eq!(count(&conn, "events"), before_events);
+        assert_eq!(count(&conn, "block_digest"), 0);
     }
 
     /// B11: `cutoff_for_cycle` and `cutoff_for_days` compute different,
@@ -871,24 +1050,25 @@ mod tests {
         assert_ne!(cycle_cutoff, days_cutoff);
     }
 
-    /// B12: `purge_rows` deletes a manual block under a `--days`-style
-    /// cutoff too — the override is equally rail-free.
+    /// B12: `purge_rows` cards a manual block under a `--days`-style
+    /// cutoff too and never deletes it.
     #[test]
-    fn b12_purge_rows_deletes_manual_block_under_days_style_cutoff() {
+    fn b12_purge_rows_cards_manual_block_under_days_style_cutoff() {
         let conn = open_memory().unwrap();
         let today = date("2026-07-24");
         let cutoff = cutoff_for_days(today, 30);
         insert_block(&conn, "2026-05-01", Some("tempo-9"), Some("manual"), None);
 
         let report = purge_rows(&conn, cutoff, false).unwrap();
-        assert_eq!(report.blocks_deleted, 1);
-        assert_eq!(count(&conn, "blocks"), 0);
+        assert_eq!(report.blocks_deleted, 0);
+        assert_eq!(report.blocks_carded, 1);
+        assert_eq!(count(&conn, "blocks"), 1);
     }
 
-    /// B37: of three deleted blocks — one synced, one exported, one
-    /// with neither marker — exactly the last is never-billed.
+    /// B37: no block is deleted, so the never-billed loss counter stays
+    /// zero even for a block with neither marker.
     #[test]
-    fn b37_blocks_deleted_unbilled_counts_only_the_never_billed_subset() {
+    fn b37_unbilled_block_is_kept_and_loss_counter_stays_zero() {
         let conn = open_memory().unwrap();
         let cutoff = date("2026-06-20");
         insert_block(&conn, "2026-02-10", Some("tempo-1"), None, None);
@@ -902,8 +1082,9 @@ mod tests {
         insert_block(&conn, "2026-02-12", None, None, None);
 
         let report = purge_rows(&conn, cutoff, false).unwrap();
-        assert_eq!(report.blocks_deleted, 3);
-        assert_eq!(report.blocks_deleted_unbilled, 1);
+        assert_eq!(report.blocks_deleted, 0);
+        assert_eq!(report.blocks_deleted_unbilled, 0);
+        assert_eq!(count(&conn, "blocks"), 3);
     }
 
     /// The cutoff is always rendered as a plain ISO `YYYY-MM-DD` — the
@@ -972,18 +1153,19 @@ mod tests {
         assert_eq!(count(&conn, "session_pins"), 1);
     }
 
-    /// B14: an `external = 1` ticket whose only referencing block is older
-    /// than the cutoff is deleted once that block is gone.
+    /// B14: an `external = 1` ticket no block references is deleted; one
+    /// still referenced by a (carded) old block is kept.
     #[test]
-    fn b14_orphaned_external_ticket_deleted() {
+    fn b14_orphaned_external_ticket_deleted_referenced_one_kept() {
         let conn = open_memory().unwrap();
         let cutoff = date("2026-06-20");
         insert_ticket(&conn, "EXT-1", 1);
-        insert_block_with_ticket(&conn, "2026-02-10", "EXT-1");
+        insert_ticket(&conn, "EXT-9", 1);
+        insert_block_with_ticket(&conn, "2026-02-10", "EXT-9");
 
         let report = purge_rows(&conn, cutoff, false).unwrap();
         assert_eq!(report.tickets_deleted, 1);
-        assert_eq!(count(&conn, "jira_tickets"), 0);
+        assert_eq!(count(&conn, "jira_tickets"), 1);
     }
 
     /// B15: an `external = 1` ticket referenced by a block NEWER than the
@@ -1085,7 +1267,6 @@ mod tests {
         insert_session(&conn, "sess-old", "2026-02-10T09:00:00+00:00");
         insert_session(&conn, "sess-new", "2026-06-25T09:00:00+00:00");
         insert_ticket(&conn, "EXT-1", 1);
-        insert_block_with_ticket(&conn, "2026-02-10", "EXT-1");
         insert_ticket(&conn, "CACHE-1", 0);
 
         let before_sessions = count(&conn, "sessions");
@@ -1118,7 +1299,8 @@ mod tests {
             db_path: Some(db_path.as_path()),
         };
         let report = run(&conn, &opts).unwrap();
-        assert_eq!(report.blocks_deleted, 2);
+        assert_eq!(report.blocks_deleted, 0);
+        assert_eq!(report.blocks_carded, 2);
         assert!(snapshot_path.is_file());
 
         // The snapshot is a self-contained, openable db with the rows the
@@ -1128,6 +1310,10 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM blocks", [], |r| r.get(0))
             .unwrap();
         assert_eq!(blocks, 2);
+        let snap_cards: i64 = snap_conn
+            .query_row("SELECT COUNT(*) FROM block_digest", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(snap_cards, 0, "the snapshot is taken before any card");
     }
 
     /// B18: a pre-existing (stale) file at the snapshot path is replaced —
@@ -1241,7 +1427,7 @@ mod tests {
 
         let filler = "x".repeat(2000);
         for i in 0..300 {
-            insert_bulky_block(&conn, "2026-02-10", &format!("{filler}-{i}"));
+            insert_bulky_event(&conn, "2026-02-10T09:00:00+00:00", &format!("bulk-{i}"), &filler);
         }
 
         let size_before_delete = std::fs::metadata(&db_path).unwrap().len();
@@ -1255,7 +1441,7 @@ mod tests {
         };
         let report = run(&conn, &opts).unwrap();
 
-        assert_eq!(report.blocks_deleted, 300);
+        assert_eq!(report.events_deleted, 300);
         assert!(report.bytes_freed >= 0);
         let size_after = std::fs::metadata(&db_path).unwrap().len();
         assert!(
@@ -1338,7 +1524,8 @@ mod tests {
             db_path: Some(db_path.as_path()),
         };
         let report = prune_if_due(&conn, &opts).unwrap().unwrap();
-        assert_eq!(report.blocks_deleted, 1);
+        assert_eq!(report.blocks_deleted, 0);
+        assert_eq!(report.blocks_carded, 1);
         assert_eq!(
             meta_get(&conn, LATCH_KEY).unwrap(),
             Some("2026-06-20".to_string())
@@ -1364,7 +1551,8 @@ mod tests {
         };
         let first = prune_if_due(&conn, &opts).unwrap();
         assert!(first.is_some());
-        assert_eq!(count(&conn, "blocks"), 0);
+        assert_eq!(count(&conn, "blocks"), 1);
+        assert_eq!(count(&conn, "block_digest"), 1);
 
         let second = prune_if_due(&conn, &opts).unwrap();
         assert!(
@@ -1440,8 +1628,9 @@ mod tests {
         let stored_json = meta_get(&conn, LAST_REPORT_KEY).unwrap().unwrap();
         let stored: PurgeReport = serde_json::from_str(&stored_json).unwrap();
         assert_eq!(stored.cutoff_date, returned.cutoff_date);
-        assert_eq!(stored.blocks_deleted, returned.blocks_deleted);
-        assert_eq!(stored.blocks_deleted, 2);
+        assert_eq!(stored.blocks_carded, returned.blocks_carded);
+        assert_eq!(stored.blocks_carded, 2);
+        assert_eq!(stored.blocks_deleted, 0);
 
         let ran_at = meta_get(&conn, LAST_RUN_KEY).unwrap().unwrap();
         chrono::DateTime::parse_from_rfc3339(&ran_at)
@@ -1449,7 +1638,7 @@ mod tests {
 
         let lp = last_prune(&conn).unwrap().unwrap();
         assert_eq!(lp.report.cutoff_date, returned.cutoff_date);
-        assert_eq!(lp.report.blocks_deleted, returned.blocks_deleted);
+        assert_eq!(lp.report.blocks_carded, returned.blocks_carded);
         assert_eq!(lp.ran_at, ran_at);
     }
 
@@ -1497,6 +1686,8 @@ mod tests {
         let report = PurgeReport {
             cutoff_date: "2026-06-20".to_string(),
             blocks_deleted: 12,
+            blocks_carded: 7,
+            card_bytes: 900,
             blocks_deleted_unbilled: 3,
             events_deleted: 145,
             sessions_deleted: 4,
@@ -1512,6 +1703,8 @@ mod tests {
         let round_tripped: PurgeReport = serde_json::from_str(&stored_json).unwrap();
         assert_eq!(round_tripped.cutoff_date, report.cutoff_date);
         assert_eq!(round_tripped.blocks_deleted, report.blocks_deleted);
+        assert_eq!(round_tripped.blocks_carded, report.blocks_carded);
+        assert_eq!(round_tripped.card_bytes, report.card_bytes);
         assert_eq!(
             round_tripped.blocks_deleted_unbilled,
             report.blocks_deleted_unbilled
