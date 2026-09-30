@@ -285,7 +285,7 @@ fn multi_block_titles_survive_compression() {
             n += 1;
             let mut ev = Event::minimal(
                 "github_commit",
-                &format!("gc{n}"),
+                format!("gc{n}"),
                 "2026-09-25T10:40:00Z",
                 title,
             );
