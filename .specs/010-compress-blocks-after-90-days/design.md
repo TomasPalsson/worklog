@@ -106,3 +106,7 @@ THE FIVE   as T001.
 ## Contract for T013 — dry-run estimates bytes freed
 CALLS      purge::purge_rows(dry_run = true) runs the SAME transaction body as the real run (cards, then every §4.3 delete), reads `PRAGMA freelist_count` before and after the deletes, sets `bytes_freed = (after − before) × PRAGMA page_size` (floor 0), then ROLLS BACK — never commits; the separate dry-run COUNT(*) queries are deleted (the real path's counts are reused). `run()` still skips snapshot and VACUUM on dry-run and must keep the estimate. CLI prints `bytes freed: ~N (estimate)` on dry-run instead of `n/a (dry run)`.
 THE FIVE   as T001.
+
+## Contract for T015 — CLI exit 2, every collect clamps, carded wording
+CALLS      main.rs: an error whose chain contains `digest_contract::DAY_COMPRESSED` ("day is compressed") prints the message and exits 2 (all other errors keep today's exit code) — test `compressed_day_exits_2` runs `worklog infer --day <compressed day>` against a DB with a card on that day and asserts exit 2 + stderr text + blocks byte-identical. cli.rs: every call that collects (incl. `worklog day --day <old>` → collect_targets) passes its since through the existing `collect_since(requested, local_today)` helper — test `day_collect_clamps_to_the_horizon` (unit-level on the since the day path computes). cli.rs `last_prune_line` / status JSON: human line says "N cards, X events" not "0 blocks". purge.rs: doc comments for `dry_run`, `bytes_freed`, `run()` and the dry-run test say the dry run executes and rolls back and returns an estimate.
+THE FIVE   as T001.

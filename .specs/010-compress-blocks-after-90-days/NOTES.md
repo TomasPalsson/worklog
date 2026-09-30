@@ -12,3 +12,8 @@ Discovered: daemon.rs is 6480 lines (size-guard max 400), pre-existing — defer
 Discovered: T006 review minors — transcript cache still cleared wholesale (spec §4.3 says by window); b26 'delete must not have run' block-count assert now vacuous; block_service.rs:186 doc still says purge deletes blocks; web SettingsFormSections.tsx:99 text says data is deleted at billing-cycle close — defer
 Discovered: T013 review minors — purge.rs docs at ~60-68, ~340-342, ~859 still say dry-run writes nothing / bytes_freed stays 0 (now: writes then rolls back, returns estimate); dry-run now takes the SQLite write lock on the live DB — fold doc fix into gating fix dispatch
 Discovered: tests that read WORKLOG_TZ via load_day_events/utc_window_for_local_day without crate::tz::test_env_lock can race purge t9 (-23:59) — only the 5 observed tenant tests are fixed in T014; other readers in elsewhere/overlaps/routing/hook_run/repo tests unaudited — defer → issue
+Ruling: gating review kept 0 of 21 (all < 80); spec-backed ones folded into T015 (CLI exit 2 — Journey 3; FR-11 on `worklog day --day`) so acceptance rows are real
+Discovered: block_service split/merge and POST /blocks/:id/delete on a compressed day can move/drop a carded block's card or destroy it irrecoverably (not in spec §4.2 lists) — defer → issue
+Discovered: `eval --details` prints card prompts/titles raw — terminal control sequences from captured text are not stripped — defer
+Discovered: WORKLOG_VERDICT_URL is honoured in release builds (test override) — defer
+Discovered: cycle_start_day/close_day settings no longer drive deletes but remain user-facing (web Settings text) — defer
