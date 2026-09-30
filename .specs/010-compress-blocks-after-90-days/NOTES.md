@@ -9,3 +9,4 @@ Discovered: T008 review minors — folder_path None-when-folder-won-by-repo/subm
 Discovered: wave T005/T009/T010 review — dropped after re-score (<80): getBlockDigest untested (30, matches project norm), empty personal card renders a blank panel (60), B12 named test missing (55) → folded into T012 so the acceptance row has its proof
 Discovered: billing zips card paths with path_counts, so a card with paths but no counts drops its paths (titles fall back to weight 1) — latent, no v1 card shipped — defer
 Discovered: daemon.rs is 6480 lines (size-guard max 400), pre-existing — defer
+Discovered: T006 review minors — transcript cache still cleared wholesale (spec §4.3 says by window); b26 'delete must not have run' block-count assert now vacuous; block_service.rs:186 doc still says purge deletes blocks; web SettingsFormSections.tsx:99 text says data is deleted at billing-cycle close — defer

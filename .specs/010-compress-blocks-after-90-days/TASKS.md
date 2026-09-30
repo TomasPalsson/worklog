@@ -17,7 +17,7 @@ Spec: spec.md · Design: design.md · Base: e5aa122 · Route: dispatch · Test: 
 | B8 (P0) | Given collect with since older than the horizon, then since clamps to the horizon | T006 | cli b41_effective_since_clamps_forward_to_cutoff (updated) |
 | B9 (P0) | Given `worklog eval "<q>" --details`, then each matched block's card fields print after the table | T007 | cli eval_details_prints_cards |
 | B11 (P0) | Given a block with events, when its card is built, then `path_counts`/`invoice_title_counts` hold the event count of each listed path/title (same order), and `folder_path` is the most-used path whose project root is `folder` (ties: smallest), `None` when none maps | T008 | block_digest_test::card_counts_and_folder_path |
-| B12 (P0) | Given two blocks on one export line — block 1 titles A×1, B×1; block 2 title B×5 — when both are carded and their events deleted, then the line's title (B) and paths equal the pre-deletion export | T009 | billing_lifecycle_test::multi_block_titles_survive_compression |
+| B12 (P0) | Given two blocks on one export line — block 1 titles A×1, B×1; block 2 titles A×1, B×5 — when both are carded and their events deleted, then the line's title (B) and paths equal the pre-deletion export | T009 | billing_lifecycle_test::multi_block_titles_survive_compression |
 | B13 (P0) | Given a work block whose most-used raw path lies outside its billed folder, when it is carded and its events deleted, then GET /days/:day `project_path` equals the pre-deletion value | T010 | daemon tests day_summary_path_survives_compression |
 
 ## Phase 1 — The card exists
@@ -36,13 +36,13 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml && (cd web && bun 
 - [x] T008 card keeps counts and the folder's path (B11) — files: rust/crates/worklog-core/src/block_digest.rs, rust/crates/worklog-core/src/block_digest_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core block_digest` — after: T001 — done: aa254ad
 - [x] T009 [P] billing sums card counts across blocks (B12) — files: rust/crates/worklog-core/src/billing.rs, rust/crates/worklog-core/src/billing_lifecycle_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core survive_compression` — after: T008 — done: bde3ee1
 - [x] T010 [P] day summary shows the card's folder path (B13) — files: rust/crates/worklog-core/src/daemon.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core day_summary_path` — after: T008 — done: 46fc939
-- [ ] T011 block page passes the card to the detail panel (B6) — files: web/app/[day]/block/[id]/page.tsx — verify: `cd web && bun test BlockDetails && bun run typecheck` — after: T005
-- [ ] T012 [P] multi-block billing parity test on built cards (B12) — files: rust/crates/worklog-core/src/billing_lifecycle_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core multi_block_titles_survive_compression` — after: T009
+- [x] T011 block page passes the card to the detail panel (B6) — files: web/app/[day]/block/[id]/page.tsx — verify: `cd web && bun test BlockDetails && bun run typecheck` — after: T005 — done: 2727cf0
+- [x] T012 [P] multi-block billing parity test on built cards (B12) — files: rust/crates/worklog-core/src/billing_lifecycle_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core multi_block_titles_survive_compression` — after: T009 — done: cdfbde1
 
 ## Phase 3 — Compression runs
 Goal: once a day, everything older than 90 days is squeezed into cards and the raw data is deleted; blocks are never deleted.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core purge` — green.
-- [ ] T006 compression run replaces block deletion (B7, B8) — files: rust/crates/worklog-core/src/purge.rs, rust/crates/worklog-core/src/daemon.rs, rust/crates/worklog-cli/src/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml -- purge compress effective_since` — after: T002, T003, T004, T007, T009, T010
+- [x] T006 compression run replaces block deletion (B7, B8) — files: rust/crates/worklog-core/src/purge.rs, rust/crates/worklog-core/src/daemon.rs, rust/crates/worklog-cli/src/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml -- purge compress effective_since` — after: T002, T003, T004, T007, T009, T010 — done: 3312c64
 - [ ] CHK001 human-verify on a copy of your real database — files: rust/crates/worklog-core/src/purge.rs — verify: human: on a copy with `--days 3`, the dry-run shows card sizes (median ≤ 1 KB) and freed bytes, and one `worklog eval` query gives the same total before and after compressing — after: T006
 
 ## Gates
