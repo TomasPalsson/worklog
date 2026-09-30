@@ -8,6 +8,7 @@ pub mod billing;
 pub mod billing_deildir;
 pub mod billing_registry;
 pub mod block_details;
+pub mod block_eval;
 pub mod block_service;
 pub mod browser;
 pub mod browser_ingest;

@@ -7,6 +7,9 @@ Binds 127.0.0.1 only. Endpoints:
                      response {"choice": <one of options>, "probability": <0..1>,
                                 "runner_up": <0..1>, "abstain": <0..1>}
                      empty options -> 400
+  POST /match     -> body {"query": <text>, "states": [<json>, ...]}
+                     response {"matches": [<bool>, ...]} (one per state; used by `worklog eval`)
+                     empty query -> 400
 
 Verdict caps a single Choice query at 24 real options (plus its
 abstention option). `split_groups`/`merge_groups` below split larger
@@ -102,6 +105,27 @@ def _evaluate(context, options):
     return merge_groups(result.probabilities for result in batch.results)
 
 
+def match(query, states):
+    return [_match_one(json.dumps(state), query) for state in states]
+
+
+# A two-way Choice, not a Noul: measured on real blocks, Noul said "true" to
+# everything, while "<query>" vs "something other than <query>" separated them.
+@functools.lru_cache(maxsize=4096)
+def _match_one(context, query):
+    from rlcd import Choice, Option
+
+    choice = Choice(
+        id="match",
+        question="What is this work activity about?",
+        options=(
+            Option(id="match", description=query),
+            Option(id="other", description=f"something other than {query}"),
+        ),
+    )
+    return ENGINE.evaluate(context, [choice]).results[0].selected_id == "match"
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path != "/health":
@@ -112,26 +136,37 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
-        if self.path != "/classify":
+        if self.path not in ("/classify", "/match"):
             self.send_response(404)
             self.end_headers()
             return
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length) or b"{}")
+        if self.path == "/match":
+            query = body.get("query", "").strip()
+            if not query:
+                self.send_response(400)
+                self.end_headers()
+                return
+            self._send_json({"matches": match(query, body.get("states", []))})
+            return
         options = body.get("options", [])
         if not options:
             self.send_response(400)
             self.end_headers()
             return
         choice, probability, runner_up, abstain = classify(body.get("state", {}), options)
-        payload = json.dumps(
+        self._send_json(
             {
                 "choice": choice,
                 "probability": probability,
                 "runner_up": runner_up,
                 "abstain": abstain,
             }
-        ).encode()
+        )
+
+    def _send_json(self, body):
+        payload = json.dumps(body).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
