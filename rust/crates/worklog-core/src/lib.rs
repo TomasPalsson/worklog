@@ -40,6 +40,7 @@ mod infer_carry_shares;
 mod infer_evidence;
 mod infer_lane_tags;
 pub mod infer_lanes;
+mod infer_session_folder;
 pub mod line_text;
 mod line_text_jobs;
 pub mod local_clone;

@@ -28,7 +28,12 @@ web-ext sign --source-dir extension/firefox --channel unlisted \
 
 Requires an addons.mozilla.org API key/secret pair.
 
-## Pause
+## Popup
 
-Click the toolbar icon and toggle "Paused" to stop heartbeats until turned
-back on.
+Click the toolbar icon to see whether the current tab is being counted, the
+minutes recorded today and, when recording was forced on, the time left. The
+single filled button adapts: Pause, Resume, Start recording or Stop recording.
+"Start recording" overrides the work-hours filter until the end of the next
+work day; the daemon enforces and expires it. "Open worklog" opens the review
+site at `http://127.0.0.1:3333`. Pause is stored per browser and stops
+heartbeats until resumed.

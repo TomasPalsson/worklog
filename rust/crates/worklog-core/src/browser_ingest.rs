@@ -5,12 +5,18 @@
 //! heartbeat minute. See spec 003 T002.
 
 use anyhow::{anyhow, Context, Result};
-use chrono::{DateTime, Datelike, FixedOffset, NaiveTime, SecondsFormat, Timelike, Utc, Weekday};
+use chrono::{
+    DateTime, Datelike, Duration, FixedOffset, NaiveTime, SecondsFormat, TimeZone, Timelike, Utc,
+    Weekday,
+};
 use rusqlite::{params, Connection};
 
 use crate::models::Event;
+use crate::purge::{meta_get, meta_set};
 use crate::repo;
-use crate::routing_contract::{Heartbeat, PERSONAL_CONTAINER, SOURCE_FIREFOX};
+use crate::routing_contract::{
+    Heartbeat, BROWSER_RECORDING_UNTIL_KEY, PERSONAL_CONTAINER, SOURCE_FIREFOX,
+};
 
 /// Editable work-hours window, e.g. `Mon-Fri 09:00-17:00`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +68,15 @@ impl WorkHours {
             && time >= self.start_time
             && time < self.end_time
     }
+
+    /// End of the work day after the local day `now` falls on, as a UTC instant.
+    pub fn auto_stop_at(&self, now: DateTime<Utc>, offset: FixedOffset) -> DateTime<Utc> {
+        let next_day = now.with_timezone(&offset).date_naive() + Duration::days(1);
+        offset
+            .from_local_datetime(&next_day.and_time(self.end_time))
+            .unwrap()
+            .with_timezone(&Utc)
+    }
 }
 
 /// Inclusive day range, wrapping past Sunday (e.g. `Fri-Mon`) so an
@@ -89,6 +104,7 @@ pub fn ingest_heartbeat(
     hb: &Heartbeat,
     hours: &WorkHours,
     offset: FixedOffset,
+    recording_until: Option<DateTime<Utc>>,
 ) -> Result<IngestOutcome> {
     if hb.incognito {
         return Ok(IngestOutcome::Filtered("incognito"));
@@ -96,7 +112,8 @@ pub fn ingest_heartbeat(
     if hb.container.as_deref() == Some(PERSONAL_CONTAINER) {
         return Ok(IngestOutcome::Filtered("personal_container"));
     }
-    if !hours.contains(hb.ts, offset) {
+    let recording = recording_until.is_some_and(|until| hb.ts < until);
+    if !recording && !hours.contains(hb.ts, offset) {
         return Ok(IngestOutcome::Filtered("outside_work_hours"));
     }
 
@@ -117,6 +134,64 @@ pub fn ingest_heartbeat(
     )
     .context("updating events.container")?;
     Ok(IngestOutcome::Stored(id))
+}
+
+/// The stored recording-override end, or `None` when missing, unparseable
+/// or already past.
+pub fn recording_until(conn: &Connection, now: DateTime<Utc>) -> Result<Option<DateTime<Utc>>> {
+    let Some(raw) = meta_get(conn, BROWSER_RECORDING_UNTIL_KEY)? else {
+        return Ok(None);
+    };
+    let until = match DateTime::parse_from_rfc3339(&raw) {
+        Ok(parsed) => parsed.with_timezone(&Utc),
+        Err(err) => {
+            eprintln!("worklog: ignoring unparseable {BROWSER_RECORDING_UNTIL_KEY} {raw:?}: {err}");
+            return Ok(None);
+        }
+    };
+    Ok((until > now).then_some(until))
+}
+
+/// Store the recording-override end; `None` deletes it.
+pub fn set_recording(conn: &Connection, until: Option<DateTime<Utc>>) -> Result<()> {
+    match until {
+        Some(until) => meta_set(
+            conn,
+            BROWSER_RECORDING_UNTIL_KEY,
+            &until.to_rfc3339_opts(SecondsFormat::Secs, true),
+        ),
+        None => {
+            conn.execute(
+                "DELETE FROM meta WHERE key = ?1",
+                params![BROWSER_RECORDING_UNTIL_KEY],
+            )
+            .context("clearing recording override")?;
+            Ok(())
+        }
+    }
+}
+
+/// Firefox events started on the local day `now` falls on (one per minute).
+pub fn minutes_today(conn: &Connection, now: DateTime<Utc>, offset: FixedOffset) -> Result<i64> {
+    let midnight = now
+        .with_timezone(&offset)
+        .date_naive()
+        .and_time(NaiveTime::MIN);
+    let start = offset
+        .from_local_datetime(&midnight)
+        .unwrap()
+        .with_timezone(&Utc);
+    let end = start + Duration::days(1);
+    conn.query_row(
+        "SELECT COUNT(*) FROM events WHERE source = ?1 AND started_at >= ?2 AND started_at < ?3",
+        params![
+            SOURCE_FIREFOX,
+            start.to_rfc3339_opts(SecondsFormat::Secs, true),
+            end.to_rfc3339_opts(SecondsFormat::Secs, true)
+        ],
+        |r| r.get(0),
+    )
+    .context("counting today's browser minutes")
 }
 
 #[cfg(test)]
@@ -186,7 +261,7 @@ mod tests {
         let conn = db::open_memory().unwrap();
         let hours = WorkHours::parse(DEFAULT_WORK_HOURS).unwrap();
         let ts = Utc.with_ymd_and_hms(2026, 4, 14, 10, 30, 12).unwrap();
-        let outcome = ingest_heartbeat(&conn, &hb(ts), &hours, utc()).unwrap();
+        let outcome = ingest_heartbeat(&conn, &hb(ts), &hours, utc(), None).unwrap();
         let id = match outcome {
             IngestOutcome::Stored(id) => id,
             IngestOutcome::Filtered(reason) => panic!("expected stored, got filtered: {reason}"),
@@ -210,11 +285,11 @@ mod tests {
         let hours = WorkHours::parse(DEFAULT_WORK_HOURS).unwrap();
         let first = Utc.with_ymd_and_hms(2026, 4, 14, 10, 30, 0).unwrap();
         let second = Utc.with_ymd_and_hms(2026, 4, 14, 10, 30, 45).unwrap();
-        let id1 = match ingest_heartbeat(&conn, &hb(first), &hours, utc()).unwrap() {
+        let id1 = match ingest_heartbeat(&conn, &hb(first), &hours, utc(), None).unwrap() {
             IngestOutcome::Stored(id) => id,
             IngestOutcome::Filtered(reason) => panic!("expected stored, got filtered: {reason}"),
         };
-        let id2 = match ingest_heartbeat(&conn, &hb(second), &hours, utc()).unwrap() {
+        let id2 = match ingest_heartbeat(&conn, &hb(second), &hours, utc(), None).unwrap() {
             IngestOutcome::Stored(id) => id,
             IngestOutcome::Filtered(reason) => panic!("expected stored, got filtered: {reason}"),
         };
@@ -232,7 +307,7 @@ mod tests {
         let ts = Utc.with_ymd_and_hms(2026, 4, 14, 10, 0, 0).unwrap();
         let mut heartbeat = hb(ts);
         heartbeat.incognito = true;
-        let outcome = ingest_heartbeat(&conn, &heartbeat, &hours, utc()).unwrap();
+        let outcome = ingest_heartbeat(&conn, &heartbeat, &hours, utc(), None).unwrap();
         assert!(matches!(outcome, IngestOutcome::Filtered("incognito")));
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
@@ -247,7 +322,7 @@ mod tests {
         let ts = Utc.with_ymd_and_hms(2026, 4, 14, 10, 0, 0).unwrap();
         let mut heartbeat = hb(ts);
         heartbeat.container = Some(PERSONAL_CONTAINER.to_string());
-        let outcome = ingest_heartbeat(&conn, &heartbeat, &hours, utc()).unwrap();
+        let outcome = ingest_heartbeat(&conn, &heartbeat, &hours, utc(), None).unwrap();
         assert!(matches!(
             outcome,
             IngestOutcome::Filtered("personal_container")
@@ -268,7 +343,7 @@ mod tests {
         let hours = WorkHours::parse(DEFAULT_WORK_HOURS).unwrap();
         let first = Utc.with_ymd_and_hms(2026, 4, 14, 10, 30, 0).unwrap();
         let second = Utc.with_ymd_and_hms(2026, 4, 14, 10, 30, 45).unwrap();
-        let id = match ingest_heartbeat(&conn, &hb(first), &hours, utc()).unwrap() {
+        let id = match ingest_heartbeat(&conn, &hb(first), &hours, utc(), None).unwrap() {
             IngestOutcome::Stored(id) => id,
             IngestOutcome::Filtered(reason) => panic!("expected stored, got filtered: {reason}"),
         };
@@ -278,7 +353,7 @@ mod tests {
         )
         .unwrap();
 
-        ingest_heartbeat(&conn, &hb(second), &hours, utc()).unwrap();
+        ingest_heartbeat(&conn, &hb(second), &hours, utc(), None).unwrap();
 
         let (project_path, label_origin): (Option<String>, Option<String>) = conn
             .query_row(
@@ -296,7 +371,7 @@ mod tests {
         let conn = db::open_memory().unwrap();
         let hours = WorkHours::parse(DEFAULT_WORK_HOURS).unwrap();
         let ts = Utc.with_ymd_and_hms(2026, 4, 14, 18, 30, 0).unwrap();
-        let outcome = ingest_heartbeat(&conn, &hb(ts), &hours, utc()).unwrap();
+        let outcome = ingest_heartbeat(&conn, &hb(ts), &hours, utc(), None).unwrap();
         assert!(matches!(
             outcome,
             IngestOutcome::Filtered("outside_work_hours")
@@ -305,5 +380,128 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    fn saturday_noon() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 4, 18, 12, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn ingest_stores_outside_hours_while_recording() {
+        let conn = db::open_memory().unwrap();
+        let hours = WorkHours::parse(DEFAULT_WORK_HOURS).unwrap();
+        let plus_two = FixedOffset::east_opt(2 * 3600).unwrap();
+        // Wed 2026-04-15 06:00 local (+02:00) = 04:00Z, before the 09:00 start.
+        let ts = Utc.with_ymd_and_hms(2026, 4, 15, 4, 0, 0).unwrap();
+        let until = hours.auto_stop_at(ts, plus_two);
+        assert!(matches!(
+            ingest_heartbeat(&conn, &hb(ts), &hours, plus_two, None).unwrap(),
+            IngestOutcome::Filtered("outside_work_hours")
+        ));
+        assert!(matches!(
+            ingest_heartbeat(&conn, &hb(ts), &hours, plus_two, Some(until)).unwrap(),
+            IngestOutcome::Stored(_)
+        ));
+    }
+
+    #[test]
+    fn expired_override_filters_again() {
+        let conn = db::open_memory().unwrap();
+        let hours = WorkHours::parse(DEFAULT_WORK_HOURS).unwrap();
+        let until = Utc.with_ymd_and_hms(2026, 4, 18, 13, 0, 0).unwrap();
+        for ts in [until, until + Duration::minutes(1)] {
+            let outcome = ingest_heartbeat(&conn, &hb(ts), &hours, utc(), Some(until)).unwrap();
+            assert!(matches!(
+                outcome,
+                IngestOutcome::Filtered("outside_work_hours")
+            ));
+        }
+    }
+
+    #[test]
+    fn recording_override_still_filters_incognito() {
+        let conn = db::open_memory().unwrap();
+        let hours = WorkHours::parse(DEFAULT_WORK_HOURS).unwrap();
+        let until = Utc.with_ymd_and_hms(2026, 4, 19, 17, 0, 0).unwrap();
+        let mut heartbeat = hb(saturday_noon());
+        heartbeat.incognito = true;
+        let outcome = ingest_heartbeat(&conn, &heartbeat, &hours, utc(), Some(until)).unwrap();
+        assert!(matches!(outcome, IngestOutcome::Filtered("incognito")));
+    }
+
+    #[test]
+    fn auto_stop_is_next_day_work_end() {
+        let hours = WorkHours::parse(DEFAULT_WORK_HOURS).unwrap();
+        let plus_two = FixedOffset::east_opt(2 * 3600).unwrap();
+        // Wed 06:00 local (+02:00) = 04:00Z -> Thu 17:00 local = 15:00Z.
+        let wednesday = Utc.with_ymd_and_hms(2026, 4, 15, 4, 0, 0).unwrap();
+        assert_eq!(
+            hours.auto_stop_at(wednesday, plus_two),
+            Utc.with_ymd_and_hms(2026, 4, 16, 15, 0, 0).unwrap()
+        );
+        // Fri 18:00 local (UTC) -> Sat 17:00 local.
+        let friday = Utc.with_ymd_and_hms(2026, 4, 17, 18, 0, 0).unwrap();
+        assert_eq!(
+            hours.auto_stop_at(friday, utc()),
+            Utc.with_ymd_and_hms(2026, 4, 18, 17, 0, 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn recording_until_round_trips_and_expires() {
+        let conn = db::open_memory().unwrap();
+        let now = saturday_noon();
+        assert_eq!(recording_until(&conn, now).unwrap(), None);
+        let until = now + Duration::hours(2);
+        set_recording(&conn, Some(until)).unwrap();
+        assert_eq!(recording_until(&conn, now).unwrap(), Some(until));
+        assert_eq!(recording_until(&conn, until).unwrap(), None);
+        set_recording(&conn, None).unwrap();
+        assert_eq!(recording_until(&conn, now).unwrap(), None);
+    }
+
+    #[test]
+    fn recording_override_survives_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worklog.db");
+        let now = saturday_noon();
+        let until = now + Duration::hours(2);
+        let conn = db::open(&path).unwrap();
+        set_recording(&conn, Some(until)).unwrap();
+        drop(conn);
+        let reopened = db::open(&path).unwrap();
+        assert_eq!(recording_until(&reopened, now).unwrap(), Some(until));
+    }
+
+    #[test]
+    fn recording_until_ignores_garbage() {
+        let conn = db::open_memory().unwrap();
+        meta_set(&conn, BROWSER_RECORDING_UNTIL_KEY, "not a date").unwrap();
+        assert_eq!(recording_until(&conn, saturday_noon()).unwrap(), None);
+    }
+
+    #[test]
+    fn minutes_today_counts_only_the_local_day() {
+        let conn = db::open_memory().unwrap();
+        let hours = WorkHours::parse(DEFAULT_WORK_HOURS).unwrap();
+        let until = Utc.with_ymd_and_hms(2026, 4, 30, 0, 0, 0).unwrap();
+        let plus_two = FixedOffset::east_opt(2 * 3600).unwrap();
+        // Local Sat 2026-04-18 spans 2026-04-17T22:00Z .. 2026-04-18T22:00Z.
+        for (day, hour, minute) in [
+            (17, 21, 59),
+            (17, 22, 0),
+            (17, 22, 1),
+            (18, 21, 59),
+            (18, 22, 0),
+        ] {
+            let ts = Utc.with_ymd_and_hms(2026, 4, day, hour, minute, 0).unwrap();
+            ingest_heartbeat(&conn, &hb(ts), &hours, utc(), Some(until)).unwrap();
+        }
+        // Two heartbeats in one minute are one event (FR-05).
+        for second in [5, 40] {
+            let ts = Utc.with_ymd_and_hms(2026, 4, 18, 10, 0, second).unwrap();
+            ingest_heartbeat(&conn, &hb(ts), &hours, utc(), Some(until)).unwrap();
+        }
+        assert_eq!(minutes_today(&conn, saturday_noon(), plus_two).unwrap(), 4);
     }
 }

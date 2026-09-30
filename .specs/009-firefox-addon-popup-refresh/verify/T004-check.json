@@ -1,0 +1,72 @@
+{
+ "files": 8,
+ "verdict": "PASS",
+ "checks": [
+  {
+   "id": "seed-key-present",
+   "status": "PASS",
+   "evidence": [
+    {
+     "file": "extension/firefox/popup.html",
+     "line": 12,
+     "snippet": "=\"popup.css\" /> </head> <body> <!-- SEED KEY: cd25feea (reroll 0) · mode operate · platform web WORLD: wayfinding-a"
+    }
+   ],
+   "detail": "contract block found"
+  },
+  {
+   "id": "contrast",
+   "status": "UNKNOWN",
+   "evidence": [],
+   "detail": "0 literal fg/bg pairs checked, 0 below WCAG minimum; CSS-variable cascades are not resolved here — verify those from a screenshot"
+  },
+  {
+   "id": "focus-visible",
+   "status": "PASS",
+   "evidence": [],
+   "detail": "a :focus-visible rule with a visible treatment exists"
+  },
+  {
+   "id": "states-present",
+   "status": "PASS",
+   "evidence": [],
+   "detail": "7/9 states have evidence (default + hover, focus-visible, active, disabled, loading, error); missing: success, empty"
+  },
+  {
+   "id": "reduced-motion",
+   "status": "PASS",
+   "evidence": [],
+   "detail": "prefers-reduced-motion handled"
+  },
+  {
+   "id": "img-dimensions",
+   "status": "UNKNOWN",
+   "evidence": [],
+   "detail": "0 <img>, 0 without width+height or aspect-ratio (CLS risk)"
+  },
+  {
+   "id": "font-weights-loaded",
+   "status": "UNKNOWN",
+   "evidence": [],
+   "detail": "no webfont loading found (system stack, or fonts loaded outside these files)"
+  },
+  {
+   "id": "arbitrary-tailwind-values",
+   "status": "PASS",
+   "evidence": [],
+   "detail": "0 arbitrary values (e.g. p-[17px], bg-[#1a5276]); each one bypasses the token scale"
+  },
+  {
+   "id": "banned-phrase-scan",
+   "status": "PASS",
+   "evidence": [],
+   "detail": "0 AI-vocabulary phrases; 4 em dashes in 2431 words (1.0 per 600; >7 reads machine-written)"
+  },
+  {
+   "id": "template-tells",
+   "status": "PASS",
+   "evidence": [],
+   "detail": "none of the common template tells detected"
+  }
+ ]
+}

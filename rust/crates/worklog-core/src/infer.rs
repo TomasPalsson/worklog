@@ -497,7 +497,9 @@ pub fn load_day_events(conn: &Connection, day: NaiveDate) -> Result<Vec<InferEve
         ],
         infer_event_row,
     )?;
-    iter.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    let mut events: Vec<InferEvent> = iter.collect::<Result<_, _>>()?;
+    crate::infer_session_folder::fill_session_folders(&mut events);
+    Ok(events)
 }
 
 /// Row mapper shared by `load_day_events`'s query — split out to keep the
