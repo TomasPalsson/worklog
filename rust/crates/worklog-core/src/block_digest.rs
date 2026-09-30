@@ -74,14 +74,14 @@ pub fn build_digest(conn: &Connection, block_id: i64) -> Result<BlockDigest> {
         jira_summary: jira_summary(conn, &block)?,
         ..BlockDigest::default()
     };
+    card.project_path = personal::dominant_project_path_for_block(conn, block_id)?
+        .map(|path| truncate(&path, PROJECT_PATH_CHARS));
     if block.is_personal {
         return Ok(card);
     }
 
     card.folder = billing::work_folder_for_block(conn, block_id)?
         .map(|folder| truncate(&folder, FOLDER_CHARS));
-    card.project_path = personal::dominant_project_path_for_block(conn, block_id)?
-        .map(|path| truncate(&path, PROJECT_PATH_CHARS));
     card.pinned_customer = pinned_customer(conn, &block, card.folder.as_deref())?;
     add_estimation_evidence(conn, block_id, &mut card)?;
     Ok(card)
