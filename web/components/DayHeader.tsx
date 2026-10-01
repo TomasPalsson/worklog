@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ChevronLeft, ChevronRight, Wallet } from "lucide-react";
+import { ChevronLeft, ChevronRight, ListChecks, Wallet } from "lucide-react";
 import { mondayOf, shiftDay, todayISO } from "@/lib/format";
 import type { ViewMode } from "@/lib/view-mode";
 import { ThemeToggle } from "./ThemeToggle";
@@ -96,6 +96,14 @@ export function DayHeader({
           Week
         </Link>
         <ExportPanel day={day} />
+        <Link
+          href="/tasks"
+          className="theme-toggle"
+          aria-label="My Tasks"
+          data-tip="My Tasks — your Jira tickets"
+        >
+          <ListChecks size={15} strokeWidth={1.75} />
+        </Link>
         <Link
           href={`/billing?from=${day}`}
           className="theme-toggle"
