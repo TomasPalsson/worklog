@@ -145,6 +145,27 @@ CREATE TABLE IF NOT EXISTS jira_tickets (
 
 CREATE INDEX IF NOT EXISTS idx_jira_tickets_updated ON jira_tickets(updated);
 
+-- Read-back of the user's Tempo worklogs. `owner` is 'worklog' for rows this
+-- tool pushed and 'outside' for everything entered elsewhere.
+CREATE TABLE IF NOT EXISTS tempo_remote_worklogs (
+    tempo_worklog_id TEXT PRIMARY KEY,
+    day TEXT NOT NULL,
+    issue_id INTEGER NOT NULL,
+    jira_issue TEXT,
+    seconds INTEGER NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    owner TEXT NOT NULL CHECK (owner IN ('worklog','outside')),
+    pulled_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tempo_remote_day_issue ON tempo_remote_worklogs(day, issue_id);
+
+CREATE TABLE IF NOT EXISTS tempo_required_days (
+    day TEXT PRIMARY KEY,
+    required_seconds INTEGER NOT NULL CHECK (required_seconds >= 0),
+    pulled_at TEXT NOT NULL
+);
+
 -- ───────────────────────── billing registry ─────────────────────────
 -- Backs the billing export's Viðskiptamaður / Verkefni resolution.
 -- Lives in SQLite (not a config file) so it is edited entirely from the
