@@ -1681,6 +1681,82 @@ mod tests {
         assert!(results[0].payload.is_some());
     }
 
+    fn store_outside(conn: &Connection, issue_id: i64) {
+        crate::tempo_remote::store_week(
+            conn,
+            NaiveDate::from_ymd_opt(2026, 4, 13).unwrap(),
+            &[PulledWorklog {
+                tempo_worklog_id: "777".into(),
+                day: "2026-04-18".into(),
+                issue_id,
+                seconds: 3600,
+                description: "logged in Tempo UI".into(),
+            }],
+            &[],
+            "2026-04-18T20:00:00Z",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn sync_skips_line_with_outside_worklog_b9() {
+        let server = MockServer::start();
+        let post = server.mock(|when, then| {
+            when.method(POST).path("/worklogs");
+            then.status(200).json_body(json!({"tempoWorklogId": 1}));
+        });
+        let conn = open_memory().unwrap();
+        seed_two_blocks(&conn);
+        store_outside(&conn, 10000);
+
+        let (report, results) = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+
+        post.assert_hits(0);
+        assert_eq!(results.len(), 2);
+        for r in &results {
+            assert_eq!(r.status, "skipped");
+            assert_eq!(
+                r.reason.as_deref(),
+                Some("already in Tempo \u{2014} logged outside worklog")
+            );
+            assert!(r.tempo_id.is_none() && r.http_status.is_none());
+        }
+        assert_eq!(report.synced, 0);
+        assert_eq!(
+            count_blocks_with_tempo(&conn, "2026-04-18", "PROJ-1", ""),
+            0
+        );
+    }
+
+    #[test]
+    fn sync_still_posts_when_outside_worklog_is_on_another_issue() {
+        let server = MockServer::start();
+        let post = server.mock(|when, then| {
+            when.method(POST).path("/worklogs");
+            then.status(200).json_body(json!({"tempoWorklogId": 5}));
+        });
+        let conn = open_memory().unwrap();
+        seed_two_blocks(&conn);
+        store_outside(&conn, 20000);
+
+        sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+        post.assert_hits(1);
+    }
+
     #[test]
     fn sync_wont_reposted_already_synced_blocks() {
         let server = MockServer::start();
