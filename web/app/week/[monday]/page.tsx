@@ -7,6 +7,8 @@ import {
 } from "@/lib/format";
 import { WeekHeader } from "@/components/WeekHeader";
 import { WeekGrid } from "@/components/WeekGrid";
+import { WeekCloseout } from "@/components/WeekCloseout";
+import { closeout } from "@/lib/daemonHub";
 
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -29,8 +31,12 @@ export default async function WeekPage({
   // Fan out — 7 small daemon hits in parallel beats one bespoke
   // /weeks/:monday endpoint for now. Local loopback HTTP is sub-ms.
   let summaries: Awaited<ReturnType<typeof loadDaySummary>>[];
+  let weekCloseout: Awaited<ReturnType<typeof closeout>>;
   try {
-    summaries = await Promise.all(days.map((d) => loadDaySummary(d)));
+    [summaries, weekCloseout] = await Promise.all([
+      Promise.all(days.map((d) => loadDaySummary(d))),
+      closeout(monday),
+    ]);
   } catch (e) {
     if (e instanceof DaemonError) {
       throw new Error(
@@ -88,6 +94,7 @@ export default async function WeekPage({
         workBlocks={workBlocks}
         personalSummary={personalSummary}
       />
+      <WeekCloseout closeout={weekCloseout} />
       <WeekGrid days={dayCols} />
     </>
   );

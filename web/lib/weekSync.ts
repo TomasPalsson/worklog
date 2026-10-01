@@ -12,9 +12,22 @@ export type WeekSyncOutcome =
   | { ok: false; day: string | null; error: string };
 
 export async function syncWeek(
-  _monday: string,
-  _pendingDays: string[],
-  _deps: WeekSyncDeps,
+  monday: string,
+  pendingDays: string[],
+  { pull, syncDay }: WeekSyncDeps,
 ): Promise<WeekSyncOutcome> {
-  throw new Error("not implemented");
+  const before = await pull(monday);
+  if (!before.ok) return { ok: false, day: null, error: before.error };
+  let synced = 0;
+  let skipped = 0;
+  for (const day of pendingDays) {
+    const res = await syncDay(day);
+    if (!res.ok) return { ok: false, day, error: res.error };
+    if (res.data.errors.length > 0) return { ok: false, day, error: res.data.errors.join("; ") };
+    synced += res.data.synced;
+    skipped += res.data.skipped;
+  }
+  const after = await pull(monday);
+  if (!after.ok) return { ok: false, day: null, error: after.error };
+  return { ok: true, synced, skipped };
 }
