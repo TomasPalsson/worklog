@@ -3414,7 +3414,9 @@ fn cmd_day<W: Write>(
             let mut generated_count = 0;
             for (key, descriptions, source_hash) in pending {
                 let text = tempo_lines::generate_text(invoker_ref, &key, &descriptions, model);
-                if let Err(e) = tempo_lines::commit_generated(&conn, &key, &text, &source_hash, false) {
+                if let Err(e) =
+                    tempo_lines::commit_generated(&conn, &key, &text, &source_hash, false)
+                {
                     style::warn(out, &format!("line text commit failed: {e}"))?;
                     continue;
                 }
