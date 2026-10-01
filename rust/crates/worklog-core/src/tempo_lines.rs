@@ -12,10 +12,16 @@ use crate::tempo_line_contract::{
     SetTempoLineHours, SetTempoLineText, TempoLine, TempoLineKey, HALF_HOUR_SECONDS,
 };
 use crate::updater::crypto::sha256_hex;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::BTreeMap;
+
+/// Caller-supplied hours that are not a positive multiple of half an hour;
+/// the daemon maps it to 400 by type, not by message.
+#[derive(Debug, thiserror::Error)]
+#[error("hours override must be a positive multiple of 30 minutes, got {0}s")]
+pub struct InvalidHours(pub i64);
 
 struct StoredRow {
     text: Option<String>,
@@ -192,7 +198,7 @@ pub fn set_text(conn: &Connection, body: &SetTempoLineText) -> Result<Option<Tem
 pub fn set_hours(conn: &Connection, body: &SetTempoLineHours) -> Result<Option<TempoLine>> {
     if let Some(seconds) = body.seconds {
         if seconds <= 0 || seconds % HALF_HOUR_SECONDS != 0 {
-            bail!("hours override must be a positive multiple of 30 minutes, got {seconds}s");
+            return Err(InvalidHours(seconds).into());
         }
     }
     let key = TempoLineKey {

@@ -41,7 +41,7 @@ pub async fn set_hours(
     let line = with_conn(state, move |c| tempo_lines::set_hours(c, &body))
         .await
         .map_err(|e| {
-            if e.to_string().starts_with("hours override must be") {
+            if e.is::<tempo_lines::InvalidHours>() {
                 ApiError::bad_request(e)
             } else {
                 ApiError::from(e)
