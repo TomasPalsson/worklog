@@ -30,6 +30,7 @@ use crate::estimate::{self, ModelInvoker};
 use crate::http::{self, RequestBuilderExt};
 use crate::models::TempoAccount;
 use crate::repo;
+use crate::tempo_hub_contract::{HubError, PulledWorklog, RequiredDay, TEMPO_PAGE_LIMIT};
 use crate::tempo_line_contract::TempoLineKey;
 use crate::tempo_lines;
 
@@ -945,7 +946,7 @@ struct JiraIssueLookup {
 /// trust it. Otherwise call `/rest/api/3/myself` and cache the result
 /// in the `jira_account_id` secret so subsequent runs skip the network
 /// hop.
-fn resolve_account_id(author: &str, client: &Client) -> Result<String> {
+pub fn resolve_account_id(author: &str, client: &Client) -> Result<String> {
     if author.contains(':') && !author.contains('@') {
         // Looks like an accountId already.
         return Ok(author.to_owned());
@@ -1083,10 +1084,134 @@ pub fn list_accounts_with(auth: &TempoAuth, client: &Client) -> Result<Vec<Tempo
         .collect())
 }
 
+// ───────────────────────── read-back ─────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct WorklogPage {
+    #[serde(default)]
+    results: Vec<RemoteWorklogValue>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RemoteWorklogValue {
+    #[serde(rename = "tempoWorklogId")]
+    tempo_worklog_id: i64,
+    #[serde(rename = "startDate")]
+    start_date: String,
+    issue: RemoteIssue,
+    #[serde(rename = "timeSpentSeconds")]
+    time_spent_seconds: i64,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RemoteIssue {
+    id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ScheduleResponse {
+    #[serde(default)]
+    results: Vec<ScheduleDay>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ScheduleDay {
+    date: String,
+    #[serde(rename = "requiredSeconds")]
+    required_seconds: i64,
+}
+
+fn get_hub_json<T: serde::de::DeserializeOwned>(
+    auth: &TempoAuth,
+    client: &Client,
+    url: &str,
+    query: &[(&str, String)],
+) -> Result<T> {
+    let resp = client
+        .get(url)
+        .bearer_auth(&auth.token)
+        .query(query)
+        .send()
+        .with_context(|| format!("tempo GET {url}"))?;
+    let status = resp.status();
+    let text = resp.text().unwrap_or_default();
+    if !status.is_success() {
+        return Err(HubError::Upstream {
+            service: "Tempo",
+            status: status.as_u16(),
+            body: text,
+        }
+        .into());
+    }
+    serde_json::from_str(&text).with_context(|| format!("decode tempo response from {url}: {text}"))
+}
+
+pub fn list_worklogs_with(
+    auth: &TempoAuth,
+    account_id: &str,
+    from: NaiveDate,
+    to: NaiveDate,
+    client: &Client,
+) -> Result<Vec<PulledWorklog>> {
+    let url = format!("{}/worklogs/user/{account_id}", auth.base_url);
+    let mut pulled = Vec::new();
+    loop {
+        let page: WorklogPage = get_hub_json(
+            auth,
+            client,
+            &url,
+            &[
+                ("from", from.to_string()),
+                ("to", to.to_string()),
+                ("limit", TEMPO_PAGE_LIMIT.to_string()),
+                ("offset", pulled.len().to_string()),
+            ],
+        )?;
+        let full_page = page.results.len() == TEMPO_PAGE_LIMIT;
+        pulled.extend(page.results.into_iter().map(|w| PulledWorklog {
+            tempo_worklog_id: w.tempo_worklog_id.to_string(),
+            day: w.start_date,
+            issue_id: w.issue.id,
+            seconds: w.time_spent_seconds,
+            description: w.description.unwrap_or_default(),
+        }));
+        if !full_page {
+            return Ok(pulled);
+        }
+    }
+}
+
+pub fn user_schedule_with(
+    auth: &TempoAuth,
+    account_id: &str,
+    from: NaiveDate,
+    to: NaiveDate,
+    client: &Client,
+) -> Result<Vec<RequiredDay>> {
+    let url = format!("{}/user-schedule/{account_id}", auth.base_url);
+    let parsed: ScheduleResponse = get_hub_json(
+        auth,
+        client,
+        &url,
+        &[("from", from.to_string()), ("to", to.to_string())],
+    )?;
+    Ok(parsed
+        .results
+        .into_iter()
+        .map(|d| RequiredDay {
+            day: d.date,
+            required_seconds: d.required_seconds,
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::open_memory;
+    use crate::tempo_hub_contract::{HubError, PulledWorklog, RequiredDay};
     use crate::tempo_line_contract::{SetTempoLineHours, SetTempoLineText};
     use httpmock::prelude::*;
     use serde_json::json;
@@ -2243,5 +2368,153 @@ mod tests {
         assert_eq!(results[0].status, "error");
         assert_eq!(results[0].http_status, Some(400));
         assert_eq!(report.errors.len(), 1);
+    }
+
+    fn page_of(count: usize, first_id: usize) -> serde_json::Value {
+        let results: Vec<_> = (0..count)
+            .map(|n| {
+                json!({
+                    "tempoWorklogId": first_id + n,
+                    "startDate": "2026-04-14",
+                    "issue": {"id": 10000 + n},
+                    "timeSpentSeconds": 1800,
+                    "description": "work"
+                })
+            })
+            .collect();
+        json!({"results": results})
+    }
+
+    #[test]
+    fn list_worklogs_follows_full_pages_and_stops_on_short_page() {
+        let server = MockServer::start();
+        let first = server.mock(|when, then| {
+            when.method(GET)
+                .path("/worklogs/user/557058:abc")
+                .query_param("from", "2026-04-13")
+                .query_param("to", "2026-04-19")
+                .query_param("limit", "1000")
+                .query_param("offset", "0");
+            then.status(200).json_body(page_of(1000, 1));
+        });
+        let second = server.mock(|when, then| {
+            when.method(GET)
+                .path("/worklogs/user/557058:abc")
+                .query_param("offset", "1000");
+            then.status(200).json_body(page_of(3, 5000));
+        });
+        let from = NaiveDate::from_ymd_opt(2026, 4, 13).unwrap();
+        let to = NaiveDate::from_ymd_opt(2026, 4, 19).unwrap();
+        let rows = list_worklogs_with(
+            &auth(server.base_url()),
+            "557058:abc",
+            from,
+            to,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+        first.assert();
+        second.assert();
+        assert_eq!(rows.len(), 1003);
+        assert_eq!(
+            rows[1000],
+            PulledWorklog {
+                tempo_worklog_id: "5000".into(),
+                day: "2026-04-14".into(),
+                issue_id: 10000,
+                seconds: 1800,
+                description: "work".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn list_worklogs_non_2xx_is_upstream_error() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/worklogs/user/557058:abc");
+            then.status(401).body("bad token");
+        });
+        let day = day();
+        let err = list_worklogs_with(
+            &auth(server.base_url()),
+            "557058:abc",
+            day,
+            day,
+            &http::client().unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<HubError>(),
+            Some(&HubError::Upstream {
+                service: "Tempo",
+                status: 401,
+                body: "bad token".into()
+            })
+        );
+    }
+
+    #[test]
+    fn user_schedule_maps_days_and_required_seconds() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/user-schedule/557058:abc")
+                .query_param("from", "2026-04-13")
+                .query_param("to", "2026-04-14");
+            then.status(200).json_body(json!({"results": [
+                {"date": "2026-04-13", "requiredSeconds": 28800},
+                {"date": "2026-04-14", "requiredSeconds": 0}
+            ]}));
+        });
+        let from = NaiveDate::from_ymd_opt(2026, 4, 13).unwrap();
+        let to = NaiveDate::from_ymd_opt(2026, 4, 14).unwrap();
+        let days = user_schedule_with(
+            &auth(server.base_url()),
+            "557058:abc",
+            from,
+            to,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            days,
+            vec![
+                RequiredDay {
+                    day: "2026-04-13".into(),
+                    required_seconds: 28800
+                },
+                RequiredDay {
+                    day: "2026-04-14".into(),
+                    required_seconds: 0
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn user_schedule_non_2xx_is_upstream_error() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/user-schedule/557058:abc");
+            then.status(500).body("boom");
+        });
+        let day = day();
+        let err = user_schedule_with(
+            &auth(server.base_url()),
+            "557058:abc",
+            day,
+            day,
+            &http::client().unwrap(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<HubError>(),
+            Some(HubError::Upstream {
+                service: "Tempo",
+                status: 500,
+                ..
+            })
+        ));
     }
 }
