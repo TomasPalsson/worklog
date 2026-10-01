@@ -1045,8 +1045,12 @@ fn merge_block_into(conn: &Connection, dst: i64, src: i64) -> Result<()> {
     let new_dur = duration_seconds_between(&new_start, &new_end);
 
     conn.execute(
-        "UPDATE blocks SET started_at = ?1, ended_at = ?2, duration_seconds = ?3 WHERE id = ?4",
-        params![new_start, new_end, new_dur, dst],
+        "UPDATE blocks SET started_at = ?1, ended_at = ?2, duration_seconds = ?3,
+                ticket_origin = CASE WHEN ticket_origin = 'manual'
+                                       OR (SELECT ticket_origin FROM blocks WHERE id = ?5) = 'manual'
+                                     THEN 'manual' ELSE ticket_origin END
+          WHERE id = ?4",
+        params![new_start, new_end, new_dur, dst, src],
     )?;
     // Re-point junction rows. block_events uniqueness is per (block_id,
     // event_id) so we use INSERT OR IGNORE to handle any (theoretical)
@@ -1569,6 +1573,45 @@ mod tests {
         assert_eq!(remaining[0].1, "2026-05-12T09:00:00+00:00");
         assert_eq!(remaining[0].2, "2026-05-12T10:00:00+00:00");
         let _ = b;
+    }
+
+    fn origin_of_survivor_after_merge(
+        first_origin: &str,
+        second_origin: &str,
+    ) -> Option<TicketOrigin> {
+        let conn = open_memory().unwrap();
+        let first = insert_block_with_origin(&conn, Some("GENAI-1"), first_origin);
+        conn.execute(
+            "INSERT INTO blocks (day, jira_issue, ticket_origin, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-18', 'GENAI-1', ?1, '2026-04-18T10:31:00+00:00', '2026-04-18T11:00:00+00:00', 1740)",
+            params![second_origin],
+        )
+        .unwrap();
+        assert_eq!(merge_same_ticket_adjacent(&conn, "2026-04-18").unwrap(), 1);
+        repo::get_block(&conn, first)
+            .unwrap()
+            .unwrap()
+            .ticket_origin
+    }
+
+    #[test]
+    fn merge_keeps_manual_origin_when_either_block_is_manual() {
+        assert_eq!(
+            origin_of_survivor_after_merge("auto", "manual"),
+            Some(TicketOrigin::Manual)
+        );
+        assert_eq!(
+            origin_of_survivor_after_merge("manual", "auto"),
+            Some(TicketOrigin::Manual)
+        );
+    }
+
+    #[test]
+    fn merge_of_two_auto_blocks_leaves_origin_auto() {
+        assert_eq!(
+            origin_of_survivor_after_merge("auto", "auto"),
+            Some(TicketOrigin::Auto)
+        );
     }
 
     #[test]

@@ -387,9 +387,9 @@ pub fn split_block(conn: &Connection, block_id: i64, first_minutes: u32) -> Resu
     // The tail is a brand-new, unsynced block — no tempo_worklog_id.
     tx.execute(
         "INSERT INTO blocks
-            (day, jira_issue, started_at, ended_at, duration_seconds,
+            (day, jira_issue, ticket_origin, started_at, ended_at, duration_seconds,
              description, estimated_by, flagged, tempo_worklog_id, is_personal, dirty)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'manual', ?7, NULL, ?8, 0)",
+         VALUES (?1, ?2, ?9, ?3, ?4, ?5, ?6, 'manual', ?7, NULL, ?8, 0)",
         params![
             block.day,
             block.jira_issue,
@@ -399,6 +399,9 @@ pub fn split_block(conn: &Connection, block_id: i64, first_minutes: u32) -> Resu
             block.description,
             block.flagged as i64,
             block.is_personal as i64,
+            block
+                .ticket_origin
+                .map(crate::tempo_line_contract::TicketOrigin::as_str),
         ],
     )
     .context("split_block: inserting tail block")?;
@@ -1029,6 +1032,21 @@ mod tests {
         // first block shrank — synced, so it must come out dirty
         assert!(out.first.dirty);
         assert_eq!(out.first.tempo_worklog_id.as_deref(), Some("tmp-3"));
+    }
+
+    #[test]
+    fn split_tail_inherits_manual_ticket_origin() {
+        let conn = open_memory().unwrap();
+        let id = seed_at(
+            &conn,
+            "2026-04-18T09:00:00+00:00",
+            "2026-04-18T10:00:00+00:00",
+            3600,
+        );
+        assign_ticket(&conn, id, Some("PROJ-1")).unwrap();
+        let out = split_block(&conn, id, 25).unwrap();
+        assert_eq!(out.second.jira_issue.as_deref(), Some("PROJ-1"));
+        assert_eq!(out.second.ticket_origin, Some(TicketOrigin::Manual));
     }
 
     #[test]
