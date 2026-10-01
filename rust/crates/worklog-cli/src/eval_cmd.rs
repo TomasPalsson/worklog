@@ -120,6 +120,7 @@ mod tests {
             dirty: false,
             exported_at: None,
             ignored_at: None,
+            ticket_origin: None,
         }
     }
 
