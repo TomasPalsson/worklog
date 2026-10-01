@@ -19,7 +19,7 @@ use worklog_core::{
     paths::Paths,
     personal as personal_mod, routing, routing_absorb, schedule, secrets,
     session_pins::{self, PinError},
-    skill as skill_mod, updater as upd,
+    skill as skill_mod, tempo_lines, updater as upd,
     verdict::VerdictClassifier,
     web as web_mod,
 };
@@ -3403,6 +3403,35 @@ fn cmd_day<W: Write>(
             ),
         )?,
         Err(e) => style::warn(out, &format!("estimate skipped: {e}"))?,
+    }
+
+    // --- generate line texts -----------------------------------------------
+    let day_str = day_parsed.to_string();
+    match tempo_lines::pending_generation(&conn, &day_str, None) {
+        Ok(pending) => {
+            let invoker_opt = estimate::build_invoker().ok();
+            let invoker_ref = invoker_opt.as_deref();
+            let mut generated_count = 0;
+            for (key, descriptions, source_hash) in pending {
+                let text = tempo_lines::generate_text(invoker_ref, &key, &descriptions, model);
+                if let Err(e) = tempo_lines::commit_generated(&conn, &key, &text, &source_hash, false) {
+                    style::warn(out, &format!("line text commit failed: {e}"))?;
+                    continue;
+                }
+                generated_count += 1;
+            }
+            if generated_count > 0 {
+                style::ok(
+                    out,
+                    &format!(
+                        "generated {} line text{}",
+                        generated_count,
+                        if generated_count == 1 { "" } else { "s" }
+                    ),
+                )?;
+            }
+        }
+        Err(e) => style::warn(out, &format!("line text generation skipped: {e}"))?,
     }
 
     // --- summary --------------------------------------------------------
