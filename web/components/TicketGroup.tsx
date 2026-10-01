@@ -232,6 +232,7 @@ export function TicketGroup({
                     {pending ? "Writing…" : verb === "generate" ? "Generate" : "Regenerate"}
                   </button>
                   <input
+                    className="ticket-line-hours"
                     type="text"
                     inputMode="decimal"
                     size={4}
