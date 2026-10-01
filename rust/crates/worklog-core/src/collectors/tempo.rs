@@ -726,7 +726,7 @@ const SUMMARY_MAX_CHARS: usize = 250;
 
 /// Hard cap on the worklog description sent to Tempo. Truncates on a
 /// char boundary and appends `…` to make the cut visible.
-fn cap_description(s: &str) -> String {
+pub(crate) fn cap_description(s: &str) -> String {
     if s.chars().count() <= SUMMARY_MAX_CHARS {
         s.to_owned()
     } else {
@@ -765,7 +765,7 @@ fn description_response_schema() -> Value {
 ///   * multiple distinct → ask the invoker for a one-sentence summary;
 ///     fall back to `;`-joined distinct descriptions on any failure or
 ///     when no invoker is configured / dry_run is set.
-fn summarize_descriptions(
+pub(crate) fn summarize_descriptions(
     invoker: Option<&dyn ModelInvoker>,
     issue: &str,
     descriptions: &[String],
