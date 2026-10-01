@@ -33,6 +33,7 @@ use crate::repo;
 use crate::tempo_hub_contract::{HubError, PulledWorklog, RequiredDay, TEMPO_PAGE_LIMIT};
 use crate::tempo_line_contract::TempoLineKey;
 use crate::tempo_lines;
+use crate::tempo_remote;
 
 use super::CollectReport;
 
@@ -225,6 +226,23 @@ pub fn sync_day_with_invoker(
 
         match classification {
             GroupClassification::AllUnsynced => {
+                let numeric_id: i64 = issue_id
+                    .parse()
+                    .with_context(|| format!("non-numeric issueId {issue_id:?} for {issue}"))?;
+                if tempo_remote::outside_exists(conn, &day.to_string(), numeric_id)? {
+                    for b in &eligible_in_group {
+                        report.skipped += 1;
+                        results.push(SyncResult {
+                            block_id: b.id,
+                            status: "skipped",
+                            reason: Some("already in Tempo \u{2014} logged outside worklog".into()),
+                            tempo_id: None,
+                            payload: None,
+                            http_status: None,
+                        });
+                    }
+                    continue;
+                }
                 sync_group_aggregated(
                     conn,
                     auth,
