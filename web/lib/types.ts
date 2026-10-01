@@ -453,3 +453,81 @@ export function sourceKind(raw: string): SourceKind {
   if (raw.startsWith("jira")) return "jira";
   return "other";
 }
+
+// ───────────────────── Tempo hub (spec 012) ─────────────────────
+// Mirrors rust/crates/worklog-core/src/tempo_hub_contract.rs.
+
+export type StatusCategory = "new" | "indeterminate" | "done";
+
+export interface TaskRow {
+  key: string;
+  summary: string;
+  status: string | null;
+  status_category: StatusCategory | null;
+  url: string | null;
+  assigned: boolean;
+  week_seconds: number;
+  today_seconds: number;
+  last_worked_day: string | null;
+}
+
+export interface TasksResponse {
+  monday: string;
+  today: string;
+  tasks: TaskRow[];
+  last_fetched: string | null;
+}
+
+export interface Transition {
+  id: string;
+  name: string;
+  to_status: string;
+  to_category: StatusCategory | null;
+}
+
+export interface TransitionBody {
+  transition_id: string;
+}
+
+export interface TicketStatus {
+  key: string;
+  status: string;
+  status_category: StatusCategory | null;
+}
+
+export interface CommentBody {
+  text: string;
+}
+
+export interface TicketDraft {
+  comment: string;
+  suggested_transition_id: string | null;
+  transitions: Transition[];
+}
+
+export type WorklogOwner = "worklog" | "outside";
+
+export interface PullReport {
+  monday: string;
+  worklogs: number;
+  outside: number;
+  schedule_days: number;
+  pulled_at: string;
+}
+
+export interface CloseoutDay {
+  day: string;
+  logged_seconds: number;
+  synced_seconds: number;
+  tempo_seconds: number;
+  outside_seconds: number;
+  required_seconds: number | null;
+  unticketed_seconds: number;
+  pending_lines: number;
+}
+
+export interface WeekCloseout {
+  monday: string;
+  days: CloseoutDay[];
+  pulled_at: string | null;
+}
