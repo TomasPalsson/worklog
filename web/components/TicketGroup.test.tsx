@@ -157,45 +157,183 @@ describe("TicketGroup line text", () => {
     await waitFor(() => expect(regenerate).toHaveBeenCalledTimes(1));
     expect(regenerate.mock.calls[0][0]).toEqual(key);
   });
+
+  it("returns focus to Edit text after the editor closes", () => {
+    renderGroup(group(), line());
+    fireEvent.click(screen.getByRole("button", { name: /Edit text/ }));
+    fireEvent.keyDown(screen.getByLabelText("Edit line text for PROJ-1"), { key: "Escape" });
+    expect(document.activeElement?.textContent).toMatch(/Edit text/);
+  });
+
+  it("drops the replace confirm when you start editing instead", () => {
+    renderGroup(group(), line({ text_origin: "manual" }));
+    fireEvent.click(screen.getByRole("button", { name: /Regenerate/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Edit text/ }));
+    fireEvent.keyDown(screen.getByLabelText("Edit line text for PROJ-1"), { key: "Escape" });
+    expect(screen.queryByRole("button", { name: /Replace your text/ })).toBeNull();
+  });
+
+  it("asks once more before regenerating over your own text", async () => {
+    renderGroup(group(), line({ text_origin: "manual" }));
+    fireEvent.click(screen.getByRole("button", { name: /Regenerate/ }));
+    expect(regenerate).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /Replace your text/ }));
+    await waitFor(() => expect(regenerate).toHaveBeenCalledTimes(1));
+  });
 });
 
 describe("TicketGroup hours", () => {
-  it("shows the effective hours", () => {
+  // The billed figure itself is the control: click it, type, Enter.
+  function openHours() {
+    fireEvent.click(screen.getByRole("button", { name: /Change billed hours for PROJ-1/ }));
+    return screen.getByLabelText("Hours for PROJ-1") as HTMLInputElement;
+  }
+
+  it("shows the effective hours on the hours button", () => {
     renderGroup(group(), line({ effective_seconds: 7200, hours_override_seconds: 7200 }));
-    expect(screen.getByText("2.0h billed")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /2\.0h billed/ })).toBeTruthy();
+  });
+
+  it("has no hours input until the figure is clicked", () => {
+    renderGroup(group(), line());
+    expect(screen.queryByLabelText("Hours for PROJ-1")).toBeNull();
+  });
+
+  it("opens prefilled with the billed hours", () => {
+    renderGroup(group(), line());
+    expect(openHours().value).toBe("1.5");
   });
 
   it("saves a half-hour override in seconds", async () => {
     renderGroup(group(), line());
-    const box = screen.getByLabelText("Hours for PROJ-1");
+    const box = openHours();
     fireEvent.change(box, { target: { value: "2.5" } });
     fireEvent.keyDown(box, { key: "Enter" });
     await waitFor(() => expect(saveHours).toHaveBeenCalledTimes(1));
     expect(saveHours.mock.calls[0]).toEqual([key, 9000]);
   });
 
+  it("does not save when the value is unchanged", () => {
+    renderGroup(group(), line());
+    fireEvent.keyDown(openHours(), { key: "Enter" });
+    expect(saveHours).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("Hours for PROJ-1")).toBeNull();
+  });
+
+  it("cancels on Escape without saving", () => {
+    renderGroup(group(), line());
+    const box = openHours();
+    fireEvent.change(box, { target: { value: "3" } });
+    fireEvent.keyDown(box, { key: "Escape" });
+    expect(saveHours).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("Hours for PROJ-1")).toBeNull();
+  });
+
   it("clears the override when the box is emptied", async () => {
     renderGroup(group(), line({ hours_override_seconds: 3600, effective_seconds: 3600 }));
-    const box = screen.getByLabelText("Hours for PROJ-1");
+    const box = openHours();
     fireEvent.change(box, { target: { value: "" } });
     fireEvent.keyDown(box, { key: "Enter" });
     await waitFor(() => expect(saveHours).toHaveBeenCalledTimes(1));
     expect(saveHours.mock.calls[0]).toEqual([key, null]);
   });
 
+  it("marks an override and names the tracked hours", () => {
+    renderGroup(group(), line({ hours_override_seconds: 7200, effective_seconds: 7200 }));
+    expect(screen.getByText("hours changed · 1.5h tracked")).toBeTruthy();
+  });
+
   it("rejects a non-half-hour value inline without calling the action", () => {
     renderGroup(group(), line());
-    const box = screen.getByLabelText("Hours for PROJ-1");
+    const box = openHours();
     fireEvent.change(box, { target: { value: "1.3" } });
     fireEvent.keyDown(box, { key: "Enter" });
-    expect(screen.getByText(/multiple of half an hour/)).toBeTruthy();
+    const alert = screen.getByText("1.3h isn't a half-hour step — try 1.5").closest('[role="alert"]');
+    expect(alert).toBeTruthy();
+    expect(box.getAttribute("aria-invalid")).toBe("true");
     expect(saveHours).not.toHaveBeenCalled();
+  });
+
+  it("accepts a decimal comma", async () => {
+    renderGroup(group(), line());
+    const box = openHours();
+    fireEvent.change(box, { target: { value: "2,5" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(saveHours).toHaveBeenCalledTimes(1));
+    expect(saveHours.mock.calls[0]).toEqual([key, 9000]);
+  });
+
+  it("accepts a trailing h", async () => {
+    renderGroup(group(), line());
+    const box = openHours();
+    fireEvent.change(box, { target: { value: "2h" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(saveHours).toHaveBeenCalledTimes(1));
+    expect(saveHours.mock.calls[0]).toEqual([key, 7200]);
+  });
+
+  it("rejects non-numbers and more than a day", () => {
+    renderGroup(group(), line());
+    const box = openHours();
+    for (const value of ["1e1", "0x10", "25"]) {
+      fireEvent.change(box, { target: { value } });
+      fireEvent.keyDown(box, { key: "Enter" });
+      expect(box.getAttribute("aria-invalid")).toBe("true");
+    }
+    expect(saveHours).not.toHaveBeenCalled();
+  });
+
+  it("steps by half an hour with the arrow keys", () => {
+    renderGroup(group(), line());
+    const box = openHours();
+    fireEvent.keyDown(box, { key: "ArrowUp" });
+    expect(box.value).toBe("2");
+    fireEvent.keyDown(box, { key: "ArrowDown" });
+    fireEvent.keyDown(box, { key: "ArrowDown" });
+    expect(box.value).toBe("1");
+  });
+
+  it("drops an invalid value on blur and says so", async () => {
+    renderGroup(group(), line());
+    const box = openHours();
+    fireEvent.change(box, { target: { value: "1.3" } });
+    fireEvent.blur(box);
+    expect(saveHours).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("Hours for PROJ-1")).toBeNull();
+    await waitFor(() => expect(screen.getByText(/Not saved — 1\.3h isn't a half-hour step/)).toBeTruthy());
+  });
+
+  it("steps from a typed value to the next half-hour boundary", () => {
+    renderGroup(group(), line());
+    const box = openHours();
+    fireEvent.change(box, { target: { value: "1.3" } });
+    fireEvent.keyDown(box, { key: "ArrowUp" });
+    expect(box.value).toBe("1.5");
+    fireEvent.change(box, { target: { value: "1.3" } });
+    fireEvent.keyDown(box, { key: "ArrowDown" });
+    expect(box.value).toBe("1");
+  });
+
+  it("keeps the box focused after a rejected save so Esc still works", async () => {
+    saveHours.mockImplementationOnce(async () => ({ ok: false, error: "hours must be positive" }));
+    renderGroup(group(), line());
+    const box = openHours();
+    fireEvent.change(box, { target: { value: "2" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(screen.getByText("hours must be positive")).toBeTruthy());
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Hours for PROJ-1")));
+  });
+
+  it("returns focus to the hours after Escape", () => {
+    renderGroup(group(), line());
+    fireEvent.keyDown(openHours(), { key: "Escape" });
+    expect(document.activeElement?.getAttribute("aria-label")).toMatch(/Change billed hours for PROJ-1/);
   });
 
   it("shows a daemon rejection inline", async () => {
     saveHours.mockImplementationOnce(async () => ({ ok: false, error: "hours must be positive" }));
     renderGroup(group(), line());
-    const box = screen.getByLabelText("Hours for PROJ-1");
+    const box = openHours();
     fireEvent.change(box, { target: { value: "1" } });
     fireEvent.keyDown(box, { key: "Enter" });
     await waitFor(() => expect(screen.getByText("hours must be positive")).toBeTruthy());

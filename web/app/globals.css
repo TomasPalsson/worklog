@@ -1569,6 +1569,222 @@ button {
   transform: rotate(90deg);
 }
 
+/* ── ticket line: an assigned group with its Tempo line ──
+   Two rows on the left (ticket + state, then the worklog text), the billed
+   hours on the right where the eye lands for a number — the same column the
+   billing view uses. */
+.ticket-group > summary.ticket-line-summary {
+  gap: 16px;
+}
+.ticket-line-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ticket-line-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+/* Merge is a group action, so it rides with the ticket, not the hours —
+   keeping the hours column flush right on every line. Quiet until hovered so
+   the billed figure stays the row's focal point. */
+.ticket-line-head .merge-btn {
+  min-height: 28px;
+  padding: 4px 10px;
+  margin-left: 0;
+  font-size: 11.5px;
+  border-color: transparent;
+  background: transparent;
+}
+.ticket-line-head .merge-btn:hover:not(:disabled) {
+  border-color: var(--sage);
+  background: var(--sage-bg);
+}
+.ticket-line-head .merge-btn svg {
+  width: 12px;
+  height: 12px;
+}
+.ticket-line-text {
+  gap: 4px;
+  cursor: auto;
+  user-select: text;
+}
+.ticket-line-text .billing-text {
+  max-width: 72ch;
+  font-family: var(--font-sans, inherit);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--fg);
+  -webkit-line-clamp: 2;
+}
+/* The text's provenance is a quiet note beside its actions, not a badge. */
+.ticket-line-text .billing-text-controls {
+  gap: 2px;
+  font-family: var(--font-sans, inherit);
+}
+/* Armed "Replace your text?" — the same tone as the armed Sync button. */
+.ticket-line-text .billing-text-controls button[data-confirm="true"] {
+  border-color: var(--amber);
+  background: var(--amber-bg);
+  color: var(--amber-ink);
+}
+.ticket-line-text .billing-text-origin {
+  height: auto;
+  padding: 0 8px 0 0;
+  margin-right: 0;
+  border: 0;
+  background: none;
+  color: var(--fg-subtle);
+  font-size: 11.5px;
+}
+.ticket-line-text .billing-text-origin-none {
+  color: var(--amber-ink);
+}
+
+/* Billed hours, edited in place. Button and field share one footprint so
+   switching between them doesn't move the row. */
+/* Fixed width: opening the box or showing an error never reflows the text. */
+.line-hours {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  /* Wide enough that the longest note ("1.3h isn't a half-hour step — try
+     1.5") stays on one line beside its icon. */
+  width: 14.5rem;
+  /* Room for the figure plus one note line, shown or not. */
+  min-height: 56px;
+  justify-content: center;
+}
+.line-hours-btn,
+.line-hours-field {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  min-height: 36px;
+  padding: 4px 8px;
+  margin-right: -8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+}
+.line-hours-btn {
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+  transition:
+    background-color 120ms cubic-bezier(0.25, 1, 0.5, 1),
+    border-color 120ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+.line-hours-btn:hover {
+  background: var(--bg-sunk);
+  border-color: var(--border);
+}
+.line-hours-btn:active {
+  background: var(--border);
+}
+.line-hours-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+/* A dotted rule under the figure says "this number is editable" at rest;
+   it turns solid on hover. */
+.line-hours-btn:hover .line-hours-value {
+  text-decoration-style: solid;
+}
+.line-hours-btn .line-hours-value {
+  text-decoration: underline dotted var(--fg-subtle);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 5px;
+}
+.line-hours-value,
+.line-hours-input {
+  font-family: var(--font-mono);
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 26px;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+.line-hours-unit {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-subtle);
+}
+.line-hours-field {
+  margin-right: 0;
+  border-color: var(--border-strong);
+  background: var(--bg-sunk);
+}
+.line-hours-field:focus-within {
+  box-shadow: var(--ring);
+}
+/* After :focus-within so the error tone replaces the focus ring. */
+.line-hours-field:has([aria-invalid="true"]) {
+  border-color: var(--terracotta);
+  box-shadow: 0 0 0 3px var(--terracotta-bg);
+}
+.line-hours-field[aria-busy="true"] {
+  opacity: 0.6;
+}
+.line-hours-input {
+  width: 4ch;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  text-align: right;
+}
+/* The field draws the ring; the bare input inside it must not draw a second. */
+.line-hours-input:focus,
+.line-hours-input:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+.line-hours-note,
+.line-hours-error {
+  font-family: var(--font-sans, inherit);
+  font-size: 11.5px;
+  line-height: 1.35;
+  text-align: right;
+}
+.line-hours-note {
+  color: var(--fg-subtle);
+}
+.line-hours-error {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--terracotta);
+}
+.line-hours-error svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .line-hours-btn {
+    transition: none;
+  }
+}
+@media (max-width: 720px) {
+  .ticket-group > summary.ticket-line-summary {
+    flex-wrap: wrap;
+  }
+  .line-hours {
+    align-items: flex-start;
+    width: auto;
+  }
+  .line-hours-btn,
+  .line-hours-field {
+    margin-right: 0;
+  }
+}
+
 /* "Merge all" pill inside the assigned-group summary. Sits between the
    description preview and the disclosure chevron. Hidden in
    single-block groups + the unassigned bucket via `canMergeGroup`
@@ -2333,8 +2549,7 @@ button {
   gap: 4px;
 }
 
-.duration-edit input,
-.ticket-line-hours {
+.duration-edit input {
   width: 54px;
   padding: 2px 6px;
   text-align: right;
@@ -2345,8 +2560,7 @@ button {
   background: var(--bg-raised);
 }
 
-.duration-edit input:focus,
-.ticket-line-hours:focus {
+.duration-edit input:focus {
   outline: none;
   box-shadow: var(--ring);
   border-color: var(--border-strong);
