@@ -129,3 +129,17 @@ describe("WeekHeader nav", () => {
     expect(labels().slice(0, 3)).toEqual(["previous week", "This week", "next week"]);
   });
 });
+
+describe("My Tasks link (B14)", () => {
+  it("day header links to /tasks", () => {
+    header("2026-01-05");
+    const link = screen.getByRole("link", { name: "My Tasks" });
+    expect(link.getAttribute("href")).toBe("/tasks");
+  });
+
+  it("week header links to /tasks", () => {
+    render(<WeekHeader monday="2026-01-05" workSeconds={0} workBlocks={0} />);
+    const link = screen.getByRole("link", { name: "My Tasks" });
+    expect(link.getAttribute("href")).toBe("/tasks");
+  });
+});
