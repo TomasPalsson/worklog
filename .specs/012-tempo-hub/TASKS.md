@@ -49,7 +49,7 @@ Independent test: `cd web && bun test && bun run typecheck` — green with the d
 - [ ] T013 [P] Week close-out panel, gap flag and Sync week loop (B12, B15, B17) — files: web/components/WeekCloseout.tsx, web/components/WeekCloseout.test.tsx, web/lib/weekSync.ts, web/lib/weekSync.test.ts, web/app/week/[monday]/page.tsx — verify: `cd web && bun test lib/weekSync.test.ts components/WeekCloseout.test.tsx && bun run typecheck` — after: T012
 - [ ] T014 [P] My Tasks links in day and week headers (B14) — files: web/components/DayHeader.tsx, web/components/WeekHeader.tsx, web/components/DayHeader.test.tsx — verify: `cd web && bun test components/DayHeader.test.tsx` — after: T012
 - [ ] T015 Close-out panel styles — files: web/app/globals.css — verify: `cd web && bun run build` — after: T013
-- [ ] CHK016 human-verify My Tasks and week close-out against real Jira and Tempo — files: web/app/tasks/page.tsx, web/components/WeekCloseout.tsx — verify: human: user moves one ticket's status and posts an AI-drafted comment (both show in Jira), and a second Sync week reports 0 synced
+- [ ] CHK016 human-verify My Tasks and week close-out against real Jira and Tempo — files: web/app/tasks/page.tsx, web/components/WeekCloseout.tsx — verify: human: user moves one ticket's status and posts an AI-drafted comment (both show in Jira), and a second Sync week reports 0 synced — after: T013, T014, T015
 
 ## Gates
 - [ ] G001 project gates clean — files: . — verify: `flow check --fix`
