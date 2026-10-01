@@ -55,13 +55,13 @@ interface Props {
 
 /** FR-35: a line with no stored text ever reads as "not generated" —
  * never implied to be the writer's output. */
-function OriginIcon({ origin }: { origin: BillingRow["text_origin"] }) {
+export function OriginIcon({ origin }: { origin: BillingRow["text_origin"] }) {
   if (origin === "generated") return <ClaudeMark size={11} />;
   if (origin === "manual") return <Pencil width={11} height={11} aria-hidden="true" />;
   return <CircleAlert width={11} height={11} aria-hidden="true" />;
 }
 
-function originLabel(origin: BillingRow["text_origin"]): string {
+export function originLabel(origin: BillingRow["text_origin"]): string {
   if (origin === "manual") return "edited by you";
   if (origin === "generated") return "generated";
   return "not generated";
