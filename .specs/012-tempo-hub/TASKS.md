@@ -38,8 +38,8 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core` �
 ## Phase 2 — Daemon routes
 Goal: the web app can list tasks, move and comment on tickets, get an AI draft, pull a week from Tempo and read the close-out, without the daemon lock held during any outside call.
 Independent test: `cargo test --manifest-path rust/Cargo.toml` — green with web untouched.
-- [ ] T009 Task routes: /tasks, transitions, transition, comment, draft (B5, B6, B11) — files: rust/crates/worklog-core/src/daemon_tasks.rs, rust/crates/worklog-core/src/daemon_tasks_test.rs, rust/crates/worklog-core/src/daemon.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core daemon_tasks` — after: T002, T006, T008
-- [ ] T010 Week routes: /tempo/pull, /weeks/:monday/closeout — files: rust/crates/worklog-core/src/daemon_week.rs, rust/crates/worklog-core/src/daemon_week_test.rs, rust/crates/worklog-core/src/daemon.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core daemon_week` — after: T003, T004, T007, T009
+- [x] T009 Task routes: /tasks, transitions, transition, comment, draft (B5, B6, B11) — files: rust/crates/worklog-core/src/daemon_tasks.rs, rust/crates/worklog-core/src/daemon_tasks_test.rs, rust/crates/worklog-core/src/daemon.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core daemon_tasks` — after: T002, T006, T008 — done: 5cac982
+- [x] T010 Week routes: /tempo/pull, /weeks/:monday/closeout — files: rust/crates/worklog-core/src/daemon_week.rs, rust/crates/worklog-core/src/daemon_week_test.rs, rust/crates/worklog-core/src/daemon.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core daemon_week` — after: T003, T004, T007, T009 — done: f280157
 
 ## Phase 3 — Screens
 Goal: My Tasks page and the week close-out panel work end to end, reachable from the day and week headers.
