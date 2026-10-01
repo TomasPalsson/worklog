@@ -44,11 +44,11 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml` — green with we
 ## Phase 3 — Screens
 Goal: My Tasks page and the week close-out panel work end to end, reachable from the day and week headers.
 Independent test: `cd web && bun test && bun run typecheck` — green with the daemon mocked.
-- [ ] T011 Web types, daemon client and Server Actions for the hub — files: web/lib/types.ts, web/lib/daemonHub.ts, web/lib/daemon.ts, web/app/actions-hub.ts, web/app/actions-hub.test.ts — verify: `cd web && bun test app/actions-hub.test.ts && bun run typecheck` — after: T010
-- [ ] T012 My Tasks page: cards, status menu, comment box, Draft with AI (B13) — files: web/app/tasks/page.tsx, web/components/TaskBoard.tsx, web/components/TaskCard.tsx, web/components/TaskBoard.test.tsx, web/app/globals.css — verify: `cd web && bun test components/TaskBoard.test.tsx && bun run typecheck` — after: T011
-- [ ] T013 [P] Week close-out panel, gap flag and Sync week loop (B12, B15, B17) — files: web/components/WeekCloseout.tsx, web/components/WeekCloseout.test.tsx, web/lib/weekSync.ts, web/lib/weekSync.test.ts, web/app/week/[monday]/page.tsx — verify: `cd web && bun test lib/weekSync.test.ts components/WeekCloseout.test.tsx && bun run typecheck` — after: T012
-- [ ] T014 [P] My Tasks links in day and week headers (B14) — files: web/components/DayHeader.tsx, web/components/WeekHeader.tsx, web/components/DayHeader.test.tsx — verify: `cd web && bun test components/DayHeader.test.tsx` — after: T012
-- [ ] T015 Close-out panel styles — files: web/app/globals.css — verify: `cd web && bun run build` — after: T013
+- [x] T011 Web types, daemon client and Server Actions for the hub — files: web/lib/types.ts, web/lib/daemonHub.ts, web/lib/daemon.ts, web/app/actions-hub.ts, web/app/actions-hub.test.ts — verify: `cd web && bun test app/actions-hub.test.ts && bun run typecheck` — after: T010 — done: 9b3ffd8
+- [x] T012 My Tasks page: cards, status menu, comment box, Draft with AI (B13) — files: web/app/tasks/page.tsx, web/components/TaskBoard.tsx, web/components/TaskCard.tsx, web/components/TaskBoard.test.tsx, web/app/globals.css — verify: `cd web && bun test components/TaskBoard.test.tsx && bun run typecheck` — after: T011 — done: 81b7b0e
+- [x] T013 [P] Week close-out panel, gap flag and Sync week loop (B12, B15, B17) — files: web/components/WeekCloseout.tsx, web/components/WeekCloseout.test.tsx, web/lib/weekSync.ts, web/lib/weekSync.test.ts, web/app/week/[monday]/page.tsx — verify: `cd web && bun test lib/weekSync.test.ts components/WeekCloseout.test.tsx && bun run typecheck` — after: T012 — done: 3e8315d
+- [x] T014 [P] My Tasks links in day and week headers (B14) — files: web/components/DayHeader.tsx, web/components/WeekHeader.tsx, web/components/DayHeader.test.tsx — verify: `cd web && bun test components/DayHeader.test.tsx` — after: T012 — done: c08b297
+- [x] T015 Close-out panel styles — files: web/app/globals.css — verify: `cd web && bun run build` — after: T013 — done: e6860f2
 - [ ] CHK016 human-verify My Tasks and week close-out against real Jira and Tempo — files: web/app/tasks/page.tsx, web/components/WeekCloseout.tsx — verify: human: user moves one ticket's status and posts an AI-drafted comment (both show in Jira), and a second Sync week reports 0 synced — after: T013, T014, T015
 
 ## Gates
