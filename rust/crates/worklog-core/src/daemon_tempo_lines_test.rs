@@ -216,3 +216,37 @@ async fn estimate_route_reports_tempo_lines_count() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(report["tempo_lines"], 0);
 }
+
+fn failing_invoker() -> anyhow::Result<Box<dyn ModelInvoker>> {
+    struct Failing;
+    impl ModelInvoker for Failing {
+        fn invoke(
+            &self,
+            _system: &str,
+            _user: &str,
+            _schema: &serde_json::Value,
+            _model: &str,
+        ) -> anyhow::Result<serde_json::Value> {
+            anyhow::bail!("model unreachable")
+        }
+    }
+    Ok(Box::new(Failing))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn failed_generation_stores_no_text_and_is_not_counted() {
+    let state = state_with_two_block_line();
+    let generated = generate_tempo_lines(state.clone(), DAY.to_string(), None, failing_invoker)
+        .await
+        .unwrap();
+    assert!(generated.is_empty());
+    let (_, lines) = call(&state, get_day()).await;
+    assert_eq!(lines[0]["text"], serde_json::Value::Null);
+
+    let count = count_generated_tempo_lines(state.clone(), DAY.to_string(), failing_invoker).await;
+    assert_eq!(count, 0);
+    let retried = generate_tempo_lines(state, DAY.to_string(), None, fixed_invoker)
+        .await
+        .unwrap();
+    assert_eq!(retried, vec![key()]);
+}

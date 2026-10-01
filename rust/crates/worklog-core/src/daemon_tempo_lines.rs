@@ -54,13 +54,10 @@ pub async fn regenerate(
     State(state): State<Shared>,
     Json(key): Json<TempoLineKey>,
 ) -> Result<Json<TempoLine>, ApiError> {
-    let generated = generate_tempo_lines(state.clone(), key.day.clone(), Some(key.clone()), || {
+    generate_tempo_lines(state.clone(), key.day.clone(), Some(key.clone()), || {
         estimate::build_regenerate_invoker(line_text::LINE_TEXT_THINKING_TOKENS)
     })
     .await?;
-    if generated.is_empty() {
-        return Err(ApiError::NotFound(anyhow::anyhow!("no such ticket line")));
-    }
     let line = with_conn(state, move |c| tempo_lines::line_for(c, &key)).await?;
     line_or_not_found(line)
 }
@@ -90,14 +87,14 @@ where
         let invoker = make_invoker()?;
         Ok(pending
             .into_iter()
-            .map(|(key, descriptions, hash)| {
+            .filter_map(|(key, descriptions, hash)| {
                 let text = tempo_lines::generate_text(
                     Some(invoker.as_ref()),
                     &key,
                     &descriptions,
                     line_text::LINE_TEXT_MODEL,
                 );
-                (key, text, hash)
+                text.map(|text| (key, text, hash))
             })
             .collect())
     })

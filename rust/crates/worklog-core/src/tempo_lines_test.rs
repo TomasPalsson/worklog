@@ -330,15 +330,37 @@ fn generate_text_uses_invoker_summary_or_joined_fallback() {
     let descriptions = vec!["Alpha".to_string(), "Beta".to_string()];
     let invoker = FixedInvoker(serde_json::json!({"description": "Implement alpha and beta"}));
     assert_eq!(
-        generate_text(Some(&invoker), &key("APRO-1"), &descriptions, "m"),
-        "Implement alpha and beta"
+        generate_text(Some(&invoker), &key("APRO-1"), &descriptions, "m").as_deref(),
+        Some("Implement alpha and beta")
     );
     assert_eq!(
-        generate_text(None, &key("APRO-1"), &descriptions, "m"),
-        "Alpha; Beta"
+        generate_text(None, &key("APRO-1"), &descriptions, "m").as_deref(),
+        Some("Alpha; Beta")
     );
     assert_eq!(
-        generate_text(None, &key("APRO-1"), &[], "m"),
-        "Work on APRO-1"
+        generate_text(None, &key("APRO-1"), &[], "m").as_deref(),
+        Some("Work on APRO-1")
+    );
+}
+
+struct FailingInvoker;
+impl crate::estimate::ModelInvoker for FailingInvoker {
+    fn invoke(
+        &self,
+        _system: &str,
+        _user: &str,
+        _schema: &serde_json::Value,
+        _model: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        anyhow::bail!("model unreachable")
+    }
+}
+
+#[test]
+fn generate_text_is_none_when_the_model_call_fails() {
+    let descriptions = vec!["Alpha".to_string(), "Beta".to_string()];
+    assert_eq!(
+        generate_text(Some(&FailingInvoker), &key("APRO-1"), &descriptions, "m"),
+        None
     );
 }

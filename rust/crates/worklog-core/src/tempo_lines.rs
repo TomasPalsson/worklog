@@ -4,7 +4,9 @@
 
 use crate::billing::{block_interval, union_seconds};
 use crate::clues_contract::LineTextOrigin;
-use crate::collectors::tempo::{round_to_half_hour, summarize_descriptions};
+use crate::collectors::tempo::{
+    round_to_half_hour, summarize_descriptions, try_summarize_descriptions,
+};
 use crate::estimate::ModelInvoker;
 use crate::models::Block;
 use crate::repo;
@@ -270,8 +272,8 @@ pub fn generate_text(
     key: &TempoLineKey,
     descriptions: &[String],
     model: &str,
-) -> String {
-    summarize_descriptions(invoker, &key.jira_issue, descriptions, model, false)
+) -> Option<String> {
+    try_summarize_descriptions(invoker, &key.jira_issue, descriptions, model, false)
 }
 
 /// Stores generated text; a hand-written text is kept unless `force`.

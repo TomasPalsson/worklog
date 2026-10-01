@@ -451,9 +451,13 @@ fn sync_group_aggregated(
                     .into_iter()
                     .next()
                     .with_context(|| format!("no descriptions for {issue} on {day_str}"))?;
-            let text = tempo_lines::generate_text(invoker, &key, &descriptions, model);
-            tempo_lines::commit_generated(conn, &key, &text, &source_hash, false)?;
-            text
+            match tempo_lines::generate_text(invoker, &key, &descriptions, model) {
+                Some(text) => {
+                    tempo_lines::commit_generated(conn, &key, &text, &source_hash, false)?;
+                    text
+                }
+                None => line.fallback_text,
+            }
         }
     };
 
@@ -784,6 +788,11 @@ pub(crate) fn summarize_descriptions(
     model: &str,
     dry_run: bool,
 ) -> String {
+    try_summarize_descriptions(invoker, issue, descriptions, model, dry_run)
+        .unwrap_or_else(|| joined_descriptions(descriptions))
+}
+
+fn distinct_descriptions(descriptions: &[String]) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut unique: Vec<String> = Vec::new();
     for d in descriptions {
@@ -795,15 +804,33 @@ pub(crate) fn summarize_descriptions(
             unique.push(t.to_owned());
         }
     }
+    unique
+}
+
+fn joined_descriptions(descriptions: &[String]) -> String {
+    cap_description(&distinct_descriptions(descriptions).join("; "))
+}
+
+/// Like `summarize_descriptions`, but `None` when the invoker was called and
+/// failed or returned no usable description, so callers can tell a real
+/// summary from a fallback.
+pub(crate) fn try_summarize_descriptions(
+    invoker: Option<&dyn ModelInvoker>,
+    issue: &str,
+    descriptions: &[String],
+    model: &str,
+    dry_run: bool,
+) -> Option<String> {
+    let unique = distinct_descriptions(descriptions);
 
     if unique.is_empty() {
-        return format!("Work on {issue}");
+        return Some(format!("Work on {issue}"));
     }
     if unique.len() == 1 {
-        return cap_description(&unique[0]);
+        return Some(cap_description(&unique[0]));
     }
 
-    let joined_fallback = || cap_description(&unique.join("; "));
+    let joined_fallback = || Some(cap_description(&unique.join("; ")));
 
     if dry_run {
         return joined_fallback();
@@ -821,19 +848,16 @@ pub(crate) fn summarize_descriptions(
     let reply = match invoker.invoke(DESCRIPTION_SYSTEM_PROMPT, &user_msg, &schema, model) {
         Ok(v) => v,
         Err(e) => {
-            debug!(issue, error = %e, "description summariser failed; using joined fallback");
-            return joined_fallback();
+            debug!(issue, error = %e, "description summariser failed");
+            return None;
         }
     };
-    let summary = reply
+    reply
         .get("description")
         .and_then(|v| v.as_str())
         .map(str::trim)
-        .filter(|s| !s.is_empty());
-    match summary {
-        Some(s) => cap_description(s),
-        None => joined_fallback(),
-    }
+        .filter(|s| !s.is_empty())
+        .map(cap_description)
 }
 
 /// Delete a worklog entry from Tempo. Used when the user deletes a
@@ -2088,6 +2112,68 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.synced, 1);
+    }
+
+    #[test]
+    fn failed_summary_sends_joined_fallback_and_stores_no_text() {
+        struct FailingInvoker;
+        impl ModelInvoker for FailingInvoker {
+            fn invoke(
+                &self,
+                _: &str,
+                _: &str,
+                _: &serde_json::Value,
+                _: &str,
+            ) -> anyhow::Result<serde_json::Value> {
+                anyhow::bail!("model unreachable")
+            }
+        }
+        let server = MockServer::start();
+        let post_mock = server.mock(|when, then| {
+            when.method(POST).path("/worklogs").json_body_partial(
+                r#"{"description": "Implement OAuth refresh; Review API spec"}"#,
+            );
+            then.status(200).json_body(json!({"tempoWorklogId": 1}));
+        });
+        let conn = open_memory().unwrap();
+        let day_s = "2026-04-18";
+        insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T09:00:00Z",
+            "2026-04-18T09:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("Implement OAuth refresh"),
+        );
+        insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T10:00:00Z",
+            "2026-04-18T10:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("Review API spec"),
+        );
+
+        let (report, _) = sync_day_with_invoker(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+            Some(&FailingInvoker),
+            estimate::DEFAULT_MODEL,
+        )
+        .unwrap();
+        assert_eq!(report.synced, 1);
+        post_mock.assert();
+        let key = TempoLineKey {
+            day: day_s.to_string(),
+            jira_issue: "PROJ-1".to_string(),
+        };
+        let line = tempo_lines::line_for(&conn, &key).unwrap().unwrap();
+        assert_eq!(line.text, None);
     }
 
     #[test]
