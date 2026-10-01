@@ -1,6 +1,6 @@
 "use client";
 
-import { ReactNode, useRef, useState, useTransition } from "react";
+import { ReactNode, useEffect, useRef, useState, useTransition } from "react";
 import { Check, GitMerge, Pencil, RefreshCw, Sparkles } from "lucide-react";
 import type { BlockGroup } from "@/app/[day]/page";
 import { formatBilledHours, formatTotalHours } from "@/lib/format";
@@ -11,9 +11,10 @@ import {
   saveTempoLineHours,
   saveTempoLineText,
 } from "@/app/actions-tempo-lines";
-import { HALF_HOUR_SECONDS, type TempoLine } from "@/lib/tempo_line_contract";
+import type { TempoLine } from "@/lib/tempo_line_contract";
 import { toast } from "@/lib/toast";
 import { OriginIcon, originLabel } from "./BillingGroup";
+import { LineHours } from "./LineHours";
 
 interface Props {
   group: BlockGroup;
@@ -49,19 +50,43 @@ export function TicketGroup({
 }: Props) {
   const blockNoun = group.blocks.length === 1 ? "block" : "blocks";
   const showMerge = canMergeGroup(group);
+  // Separate transitions so a merge never shows "Writing…" on the text controls.
   const [pending, startTransition] = useTransition();
+  const [merging, startMerge] = useTransition();
   const summaryRef = useRef<HTMLElement>(null);
+  const editButtonRef = useRef<HTMLButtonElement>(null);
+  const refocusEdit = useRef(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
-  const [hoursDraft, setHoursDraft] = useState(
-    line?.hours_override_seconds ? String(line.hours_override_seconds / 3600) : "",
-  );
-  const [hoursError, setHoursError] = useState<string | null>(null);
   const lineKey = line && { day: line.day, jira_issue: line.jira_issue };
   const lineText = line ? (line.text ?? line.fallback_text) : "";
   const verb = line?.text_origin ? "regenerate" : "generate";
+  // Regenerating over the Owner's own text takes a second click, like Sync.
+  const [confirmReplace, setConfirmReplace] = useState(false);
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const disarmReplace = () => {
+    if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    confirmTimer.current = null;
+    setConfirmReplace(false);
+  };
+  useEffect(() => () => {
+    if (confirmTimer.current) clearTimeout(confirmTimer.current);
+  }, []);
+
+  // Closing the text editor puts focus back on its "Edit text" button.
+  useEffect(() => {
+    if (!editing && refocusEdit.current) {
+      refocusEdit.current = false;
+      editButtonRef.current?.focus();
+    }
+  }, [editing]);
+  const endEdit = () => {
+    refocusEdit.current = true;
+    setEditing(false);
+  };
 
   const beginEdit = () => {
+    disarmReplace();
     setDraft(lineText);
     setEditing(true);
   };
@@ -75,13 +100,19 @@ export function TicketGroup({
         toast.error(`Couldn't save — ${r.error}`);
         return;
       }
-      setEditing(false);
+      endEdit();
       toast.ok(text.trim() === "" ? "Reset to generated text" : "Saved");
     });
   };
 
   const regenerateLine = () => {
     if (!lineKey) return;
+    if (line?.text_origin === "manual" && !confirmReplace) {
+      setConfirmReplace(true);
+      confirmTimer.current = setTimeout(disarmReplace, 4000);
+      return;
+    }
+    disarmReplace();
     startTransition(async () => {
       const r = await regenerate(lineKey);
       if (!r.ok) {
@@ -92,34 +123,15 @@ export function TicketGroup({
     });
   };
 
-  const saveLineHours = () => {
-    if (!lineKey) return;
-    const trimmed = hoursDraft.trim();
-    const seconds = trimmed === "" ? null : Math.round(Number(trimmed) * 3600);
-    if (seconds !== null && !(seconds % HALF_HOUR_SECONDS === 0)) {
-      setHoursError("Hours must be a multiple of half an hour");
-      return;
-    }
-    startTransition(async () => {
-      const r = await saveHours(lineKey, seconds);
-      if (!r.ok) {
-        setHoursError(r.error);
-        return;
-      }
-      setHoursError(null);
-      toast.ok(seconds === null ? "Hours reset" : "Hours saved");
-    });
-  };
-
   const runMerge = () => {
-    if (pending) return;
+    if (merging) return;
     const sorted = [...group.blocks].sort((a, b) =>
       a.started_at < b.started_at ? -1 : a.started_at > b.started_at ? 1 : 0,
     );
     const primary = sorted[0]?.id;
     if (primary === undefined) return;
     const absorb = sorted.slice(1).map((b) => b.id);
-    startTransition(async () => {
+    startMerge(async () => {
       const r = await mergeGroup(primary, absorb, day);
       if (!r.ok) {
         toast.error(`Merge failed — ${r.error}`);
@@ -152,37 +164,48 @@ export function TicketGroup({
     }
   };
 
+  const mergeButton = showMerge && (
+    <button
+      type="button"
+      className="merge-btn"
+      disabled={merging}
+      aria-busy={merging || undefined}
+      onClick={onMergeClick}
+      onKeyDown={onMergeKeyDown}
+      title={`Merge all ${group.blocks.length} blocks on ${group.label} into one`}
+      aria-label={`merge all blocks on ${group.label}`}
+    >
+      <GitMerge aria-hidden="true" />
+      {/* Text is wrapped in a polite live region so screen readers
+          announce the "Merging…" → "Merge all" flip — aria-busy
+          alone doesn't trigger an announcement in most ATs. */}
+      <span aria-live="polite">{merging ? "Merging…" : "Merge all"}</span>
+    </button>
+  );
+
   return (
     <details
       className={`ticket-group ${group.unassigned ? "unassigned" : "assigned"} sync-${group.syncState}`}
       open={group.defaultOpen}
     >
-      <summary ref={summaryRef} tabIndex={0}>
-        <span className="ticket-group-label">{group.label}</span>
-        <span className="ticket-group-meta">
-          {group.blocks.length} {blockNoun}
-        </span>
-        {group.unassigned ? (
-          <span className="ticket-group-meta">
-            {formatTotalHours(group.totalSeconds)}
-          </span>
-        ) : (
-          // Assigned groups sync as one Tempo worklog, rounded to the
-          // nearest half hour — show what will actually be billed, with
-          // the raw tracked time in the tooltip. "0h" flags a group
-          // under 15 min that won't sync.
-          <span
-            className="ticket-group-meta"
-            title={`${formatTotalHours(group.totalSeconds)} tracked`}
-          >
-            {formatBilledHours(line ? line.effective_seconds : group.totalSeconds)} billed
-          </span>
-        )}
-        <SyncChip state={group.syncState} />
-        {line ? (
-          // Clicks here must not toggle the <details>.
-          <span className="billing-text-wrap" onClick={(e) => e.stopPropagation()}>
-            {editing ? (
+      <summary ref={summaryRef} tabIndex={0} className={line && lineKey ? "ticket-line-summary" : undefined}>
+        {line && lineKey ? (
+          // A Tempo line reads like the worklog it becomes: ticket and
+          // state on top, the worklog text under it, the billed hours —
+          // editable in place — on the right.
+          <>
+            <span className="ticket-line-main">
+              <span className="ticket-line-head">
+                <span className="ticket-group-label">{group.label}</span>
+                <span className="ticket-group-meta">
+                  {group.blocks.length} {blockNoun}
+                </span>
+                <SyncChip state={group.syncState} />
+                {mergeButton}
+              </span>
+              {/* Clicks here must not toggle the <details>. */}
+              <span className="billing-text-wrap ticket-line-text" onClick={(e) => e.stopPropagation()}>
+                {editing ? (
               <span className="billing-text-edit">
                 <textarea
                   aria-label={`Edit line text for ${group.label}`}
@@ -191,7 +214,7 @@ export function TicketGroup({
                   autoFocus
                   onChange={(e) => setDraft(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Escape") setEditing(false);
+                    if (e.key === "Escape") endEdit();
                     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) saveLineText();
                   }}
                 />
@@ -200,7 +223,7 @@ export function TicketGroup({
                     <Check width={12} height={12} aria-hidden="true" />
                     Save
                   </button>
-                  <button type="button" onClick={() => setEditing(false)} disabled={pending}>
+                  <button type="button" onClick={endEdit} disabled={pending}>
                     Cancel
                   </button>
                   <span className="billing-text-hint">⌘↵ to save · Esc to cancel · empty resets to generated</span>
@@ -214,11 +237,18 @@ export function TicketGroup({
                     <OriginIcon origin={line.text_origin} />
                     {originLabel(line.text_origin)}
                   </span>
-                  <button type="button" onClick={beginEdit} disabled={pending}>
+                  <button type="button" ref={editButtonRef} onClick={beginEdit} disabled={pending}>
                     <Pencil width={12} height={12} aria-hidden="true" />
-                    Edit
+                    Edit text
                   </button>
-                  <button type="button" onClick={regenerateLine} disabled={pending}>
+                  <button
+                    type="button"
+                    onClick={regenerateLine}
+                    disabled={pending}
+                    data-confirm={confirmReplace ? "true" : undefined}
+                    aria-live="polite"
+                    title={confirmReplace ? "Click again — this replaces the text you wrote" : undefined}
+                  >
                     {verb === "generate" && !pending ? (
                       <Sparkles width={12} height={12} aria-hidden="true" />
                     ) : (
@@ -229,50 +259,50 @@ export function TicketGroup({
                         className={pending ? "billing-spin" : undefined}
                       />
                     )}
-                    {pending ? "Writing…" : verb === "generate" ? "Generate" : "Regenerate"}
+                    {pending
+                      ? "Writing…"
+                      : confirmReplace
+                        ? "Replace your text?"
+                        : verb === "generate"
+                          ? "Generate"
+                          : "Regenerate"}
                   </button>
-                  <input
-                    className="ticket-line-hours"
-                    type="text"
-                    inputMode="decimal"
-                    size={4}
-                    aria-label={`Hours for ${group.label}`}
-                    placeholder={String(line.union_seconds / 3600)}
-                    value={hoursDraft}
-                    disabled={pending}
-                    onChange={(e) => setHoursDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") saveLineHours();
-                    }}
-                  />
-                  {hoursError && <span role="alert">{hoursError}</span>}
                 </span>
               </>
             )}
-          </span>
+              </span>
+            </span>
+            <LineHours label={group.label} line={line} lineKey={lineKey} saveHours={saveHours} />
+          </>
         ) : (
-          <span className="ticket-group-description" title={group.previewDescription}>
-            {group.previewDescription}
-          </span>
+          <>
+            <span className="ticket-group-label">{group.label}</span>
+            <span className="ticket-group-meta">
+              {group.blocks.length} {blockNoun}
+            </span>
+            {group.unassigned ? (
+              <span className="ticket-group-meta">
+                {formatTotalHours(group.totalSeconds)}
+              </span>
+            ) : (
+              // Assigned groups sync as one Tempo worklog, rounded to the
+              // nearest half hour — show what will actually be billed, with
+              // the raw tracked time in the tooltip. "0h" flags a group
+              // under 15 min that won't sync.
+              <span
+                className="ticket-group-meta"
+                title={`${formatTotalHours(group.totalSeconds)} tracked`}
+              >
+                {formatBilledHours(group.totalSeconds)} billed
+              </span>
+            )}
+            <SyncChip state={group.syncState} />
+            <span className="ticket-group-description" title={group.previewDescription}>
+              {group.previewDescription}
+            </span>
+          </>
         )}
-        {showMerge && (
-          <button
-            type="button"
-            className="merge-btn"
-            disabled={pending}
-            aria-busy={pending || undefined}
-            onClick={onMergeClick}
-            onKeyDown={onMergeKeyDown}
-            title={`Merge all ${group.blocks.length} blocks on ${group.label} into one`}
-            aria-label={`merge all blocks on ${group.label}`}
-          >
-            <GitMerge aria-hidden="true" />
-            {/* Text is wrapped in a polite live region so screen readers
-                announce the "Merging…" → "Merge all" flip — aria-busy
-                alone doesn't trigger an announcement in most ATs. */}
-            <span aria-live="polite">{pending ? "Merging…" : "Merge all"}</span>
-          </button>
-        )}
+        {!(line && lineKey) && mergeButton}
         <span className="ticket-group-hint" aria-hidden="true" />
       </summary>
       <div className="ticket-group-body">{children}</div>
