@@ -1,5 +1,6 @@
 # Tasks — Tempo ticket auto-pick
-Spec: spec.md · Design: design.md · Base: d0b5774 · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && (cd web && bun test)`
+Approved: 2026-10-01 by user
+Spec: spec.md · Design: design.md · Base: b1b1de1 · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && (cd web && bun test)`
 
 ## Behaviors
 | ID | Given / When / Then | Task | Proven by |
@@ -38,7 +39,7 @@ Independent test: `cd web && bun test && bun run typecheck` — green with the d
 - [ ] T009 Web client and server actions for ticket lines — files: web/lib/daemonTempoLines.ts, web/app/actions-tempo-lines.ts, web/app/actions-tempo-lines.test.ts — verify: `cd web && bun test app/actions-tempo-lines.test.ts` — after: T007
 - [ ] T010 [P] "auto" tag on BlockCard (B10) — files: web/lib/types.ts, web/components/BlockCard.tsx, web/components/BlockCard.test.tsx — verify: `cd web && bun test components/BlockCard.test.tsx` — after: T007
 - [ ] T011 TicketGroup line text, regenerate and hours override (B11) — files: web/components/TicketGroup.tsx, web/components/TicketGroup.test.tsx, web/components/BillingGroup.tsx, web/app/[day]/page.tsx — verify: `cd web && bun test components/TicketGroup.test.tsx components/BillingGroup.test.tsx` — after: T009
-- [ ] CHK001 human-verify the day review and a real sync — files: web/components/TicketGroup.tsx — verify: human: Owner opens a day in the Tickets view, sees every block ticketed (auto ones tagged), each line with a description and union hours, sets one line to 2h, presses "Sync to Tempo", and Tempo shows exactly that text and 2h
+- [ ] CHK001 human-verify the day review and a real sync — files: web/components/TicketGroup.tsx — verify: human: Owner opens a day in the Tickets view, sees every block ticketed (auto ones tagged), each line with a description and union hours, sets one line to 2h, presses "Sync to Tempo", and Tempo shows exactly that text and 2h — after: T011
 
 ## Gates
 - [ ] G001 project gates clean — files: . — verify: `flow check --fix`
