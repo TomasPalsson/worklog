@@ -118,6 +118,9 @@ mod daemon_tempo_lines;
 #[path = "daemon_changes.rs"]
 mod daemon_changes;
 
+#[path = "daemon_tasks.rs"]
+mod daemon_tasks;
+
 pub struct AppState {
     /// Single shared connection — SQLite + rusqlite is !Send, so we keep
     /// exactly one and serialise access. Cheap compared to the code path
@@ -195,6 +198,14 @@ pub fn router(state: Shared) -> Router {
             "/tempo/lines/regenerate",
             post(daemon_tempo_lines::regenerate),
         )
+        .route("/tasks", get(daemon_tasks::list_tasks))
+        .route(
+            "/tickets/:key/transitions",
+            get(daemon_tasks::list_transitions),
+        )
+        .route("/tickets/:key/transition", post(daemon_tasks::transition))
+        .route("/tickets/:key/comment", post(daemon_tasks::comment))
+        .route("/tickets/:key/draft", post(daemon_tasks::draft))
         .route("/billing/tenants", get(daemon_tenants::list_tenants))
         .route("/billing/tenants/link", post(daemon_tenants::link_tenant))
         .route(
@@ -2810,6 +2821,10 @@ mod tests {
 
     mod daemon_tempo_lines {
         include!("daemon_tempo_lines_test.rs");
+    }
+
+    mod daemon_tasks {
+        include!("daemon_tasks_test.rs");
     }
 
     fn state_with_block() -> Shared {
