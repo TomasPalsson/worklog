@@ -784,3 +784,85 @@ fn summarize_counts_are_zero_on_fresh_db() {
     assert_eq!(s.sessions, 0);
     assert_eq!(s.jira_tickets, 0);
 }
+
+#[test]
+fn migrate_adds_ticket_origin_to_legacy_blocks_table_and_keeps_existing_rows_null() {
+    // Spec 011 T001: pre-v17 blocks have no ticket_origin; the column is added
+    // and existing rows stay NULL (read as Auto).
+    let conn = Connection::open_in_memory().unwrap();
+    configure(&conn).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE blocks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            day TEXT NOT NULL,
+            jira_issue TEXT,
+            started_at TEXT NOT NULL,
+            ended_at TEXT NOT NULL,
+            duration_seconds INTEGER NOT NULL,
+            description TEXT,
+            estimated_by TEXT,
+            flagged INTEGER NOT NULL DEFAULT 0,
+            tempo_worklog_id TEXT,
+            is_personal INTEGER NOT NULL DEFAULT 0,
+            dirty INTEGER NOT NULL DEFAULT 0,
+            exported_at TEXT,
+            ignored_at TEXT,
+            described_seconds INTEGER,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO blocks (day, jira_issue, started_at, ended_at, duration_seconds)
+         VALUES ('2026-09-30', 'APRO-1', '2026-09-30T09:00:00Z', '2026-09-30T10:00:00Z', 3600)",
+        [],
+    )
+    .unwrap();
+    conn.pragma_update(None, "user_version", 16).unwrap();
+
+    migrate(&conn).unwrap();
+
+    let origin: Option<String> = conn
+        .query_row("SELECT ticket_origin FROM blocks LIMIT 1", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(origin, None);
+    assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+}
+
+#[test]
+fn schema_version_is_17_and_blocks_reject_a_ticket_origin_outside_the_check_constraint() {
+    let conn = open_memory().unwrap();
+    assert!(current_version(&conn).unwrap() >= 17);
+    let insert = |origin: &str| {
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds, ticket_origin)
+             VALUES ('2026-09-30', '2026-09-30T09:00:00Z', '2026-09-30T10:00:00Z', 3600, ?1)",
+            [origin],
+        )
+    };
+    for origin in ["event", "auto", "manual"] {
+        insert(origin).unwrap();
+    }
+    insert("guessed")
+        .expect_err("ticket_origin outside ('event','auto','manual') must be rejected");
+}
+
+#[test]
+fn tempo_line_texts_enforces_origin_and_half_hour_override_and_keys_by_day_and_issue() {
+    let conn = open_memory().unwrap();
+    let insert = |issue: &str, origin: Option<&str>, override_seconds: Option<i64>| {
+        conn.execute(
+            "INSERT INTO tempo_line_texts
+                (day, jira_issue, text, text_origin, source_hash, hours_override_seconds, updated_at)
+             VALUES ('2026-09-30', ?1, NULL, ?2, NULL, ?3, '2026-09-30T09:00:00Z')",
+            rusqlite::params![issue, origin, override_seconds],
+        )
+    };
+    insert("APRO-1", Some("generated"), Some(5400)).unwrap();
+    insert("APRO-2", Some("manual"), None).unwrap();
+    insert("APRO-3", None, None).unwrap();
+    insert("APRO-1", None, None).expect_err("(day, jira_issue) is the primary key");
+    insert("APRO-4", Some("guessed"), None).expect_err("text_origin outside the check list");
+    insert("APRO-5", None, Some(0)).expect_err("override must be positive");
+    insert("APRO-6", None, Some(2700)).expect_err("override must be a multiple of 1800");
+}

@@ -15,7 +15,7 @@ pub const SCHEMA_SQL: &str = include_str!("../sql/schema.sql");
 /// Monotonic integer version of the schema, bumped by future migrations.
 /// Stored in `PRAGMA user_version` so we can detect stale dbs without adding
 /// a dedicated table.
-pub const SCHEMA_VERSION: i32 = 16;
+pub const SCHEMA_VERSION: i32 = 17;
 
 /// Open a connection at `path`, enable WAL + FK, and run migrations.
 pub fn open(path: &Path) -> Result<Connection> {
@@ -86,6 +86,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     ensure_block_customer_shares_rows_json(conn)
         .context("ensuring block_customer_shares.rows_json")?;
     ensure_events_elsewhere(conn).context("ensuring events.elsewhere")?;
+    ensure_blocks_ticket_origin(conn).context("ensuring blocks.ticket_origin")?;
     if from_version < 14 {
         seed_deildir_from_folder_pins(conn).context("seeding billing_deildir from folder pins")?;
     }
@@ -307,6 +308,24 @@ fn seed_deildir_from_folder_pins(conn: &Connection) -> Result<()> {
             params![customer, verkefni],
         )
         .context("seed billing_deildir from folder pin")?;
+    }
+    Ok(())
+}
+
+fn ensure_blocks_ticket_origin(conn: &Connection) -> Result<()> {
+    let has: bool = conn
+        .prepare("PRAGMA table_info(blocks)")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter()
+        .any(|c| c == "ticket_origin");
+    if !has {
+        conn.execute(
+            "ALTER TABLE blocks ADD COLUMN ticket_origin TEXT
+             CHECK(ticket_origin IN ('event', 'auto', 'manual'))",
+            [],
+        )
+        .context("ALTER TABLE blocks ADD ticket_origin")?;
     }
     Ok(())
 }
