@@ -1787,6 +1787,22 @@ pub struct EstimateBody {
     pub model: Option<String>,
 }
 
+async fn count_generated_tempo_lines(
+    state: Shared,
+    day: String,
+    build_invoker: impl FnOnce() -> anyhow::Result<Box<dyn estimate::ModelInvoker>> + Send + 'static,
+) -> usize {
+    daemon_tempo_lines::generate_tempo_lines(state, day, None, build_invoker)
+        .await
+        .map_or_else(
+            |e| {
+                warn!(error = %e, "tempo line text generation failed");
+                0
+            },
+            |generated| generated.len(),
+        )
+}
+
 /// Run the AI estimator for every un-estimated block on the requested day.
 /// Shells out to `claude -p` under the hood, which can take a few seconds
 /// per block, so this is a long-ish request. Fine for a single-user tool.
@@ -1810,17 +1826,10 @@ async fn run_estimate(
     // failure never fails the estimate call — the estimate itself
     // already succeeded (FR-26).
     let line_texts = daemon_line_text::generate_day(state.clone(), day_str.clone()).await;
-    let tempo_lines = daemon_tempo_lines::generate_tempo_lines(state, day_str, None, || {
+    let tempo_lines = count_generated_tempo_lines(state, day_str, || {
         estimate::build_regenerate_invoker(crate::line_text::LINE_TEXT_THINKING_TOKENS)
     })
-    .await
-    .map_or_else(
-        |e| {
-            warn!(error = %e, "tempo line text generation failed");
-            0
-        },
-        |generated| generated.len(),
-    );
+    .await;
     Ok(Json(json!({
         "day":       body.day,
         "estimated": stats.estimated,

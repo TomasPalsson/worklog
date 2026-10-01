@@ -7,7 +7,7 @@ use rusqlite::params;
 use tower::ServiceExt;
 
 use crate::daemon::daemon_tempo_lines::generate_tempo_lines;
-use crate::daemon::{router, state_from_conn, Shared};
+use crate::daemon::{count_generated_tempo_lines, router, state_from_conn, Shared};
 use crate::db::open_memory;
 use crate::estimate::{FixedInvoker, ModelInvoker};
 use crate::tempo_line_contract::TempoLineKey;
@@ -198,4 +198,21 @@ async fn generation_stores_text_once_and_skips_fresh_and_manual_lines_unless_for
     assert_eq!(forced, vec![key()]);
     let (_, lines) = call(&state, get_day()).await;
     assert_eq!(lines[0]["text"], "Implement alpha and beta");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn estimate_pass_counts_only_newly_generated_lines() {
+    let state = state_with_two_block_line();
+    let first = count_generated_tempo_lines(state.clone(), DAY.to_string(), fixed_invoker).await;
+    assert_eq!(first, 1);
+    let second = count_generated_tempo_lines(state, DAY.to_string(), fixed_invoker).await;
+    assert_eq!(second, 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn estimate_route_reports_tempo_lines_count() {
+    let state = state_from_conn(open_memory().unwrap());
+    let (status, report) = call(&state, post("/estimate", &format!(r#"{{"day":"{DAY}"}}"#))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(report["tempo_lines"], 0);
 }
