@@ -480,6 +480,7 @@ pub enum ApiError {
     NotFound(anyhow::Error),
     Forbidden(anyhow::Error),
     Conflict(anyhow::Error),
+    BadGateway(anyhow::Error),
     Internal(anyhow::Error),
 }
 
@@ -507,6 +508,7 @@ impl IntoResponse for ApiError {
             ApiError::NotFound(e) => (StatusCode::NOT_FOUND, e),
             ApiError::Forbidden(e) => (StatusCode::FORBIDDEN, e),
             ApiError::Conflict(e) => (StatusCode::CONFLICT, e),
+            ApiError::BadGateway(e) => (StatusCode::BAD_GATEWAY, e),
             ApiError::Internal(e) => (StatusCode::INTERNAL_SERVER_ERROR, e),
         };
         // For 400, emit only the top-level message (no `{:#}` chain
@@ -520,7 +522,8 @@ impl IntoResponse for ApiError {
             StatusCode::BAD_REQUEST
             | StatusCode::NOT_FOUND
             | StatusCode::FORBIDDEN
-            | StatusCode::CONFLICT => (format!("{err}"), None),
+            | StatusCode::CONFLICT
+            | StatusCode::BAD_GATEWAY => (format!("{err}"), None),
             _ => (format!("{err:#}"), Some(format!("{err:#}"))),
         };
         if let Some(m) = log_msg {
