@@ -1,4 +1,5 @@
 # Tasks — Tempo hub
+Approved: 2026-10-01 by user
 Spec: spec.md · Design: design.md · Base: 5b084dc · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && (cd web && bun test)`
 
 ## Behaviors
