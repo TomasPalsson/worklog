@@ -9,6 +9,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use crate::models::{Block, Event, JiraTicket};
 use crate::raw_json::{decode_raw_json, encode_raw_json};
 use crate::scrub;
+use crate::tempo_hub_contract::StatusCategory;
 use crate::tempo_line_contract::TicketOrigin;
 
 // ───────────────────────── events ─────────────────────────
@@ -277,6 +278,33 @@ pub fn upsert_ticket(conn: &Connection, t: &JiraTicket) -> Result<()> {
     )
     .context("upsert jira ticket")?;
     Ok(())
+}
+
+pub fn set_ticket_status(
+    conn: &Connection,
+    key: &str,
+    status: &str,
+    category: Option<StatusCategory>,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE jira_tickets SET status = ?2, status_category = ?3 WHERE key = ?1",
+        params![key, status, category.map(StatusCategory::as_str)],
+    )
+    .context("set jira ticket status")?;
+    Ok(())
+}
+
+/// Assigned tickets absent from a complete refresh are no longer open
+/// for the user; externals are picked by hand and never aged out.
+pub fn mark_unreturned_done(conn: &Connection, returned_keys: &[String]) -> Result<usize> {
+    let keys = serde_json::to_string(returned_keys)?;
+    conn.execute(
+        "UPDATE jira_tickets SET status_category = 'done'
+          WHERE external = 0
+            AND key NOT IN (SELECT value FROM json_each(?1))",
+        params![keys],
+    )
+    .context("mark unreturned jira tickets done")
 }
 
 /// Cache a ticket the user picked manually via the in-UI Jira search.
