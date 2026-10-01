@@ -19,6 +19,7 @@ import { TicketCombobox } from "./TicketCombobox";
 import { EventList } from "./EventList";
 import { CommitList } from "./CommitList";
 import { BlockCustomerSplit } from "./BlockCustomerSplit";
+import { isAutoTicket } from "@/lib/tempo_line_contract";
 import { scrollToBlock } from "@/lib/scrollToBlock";
 
 interface Props {
@@ -280,6 +281,11 @@ export function BlockCard({
               tickets={tickets}
               day={day}
             />
+          )}
+          {!hideTicketing && isAutoTicket(block.jira_issue, block.ticket_origin) && (
+            <span className="auto-tag" title="Ticket picked automatically">
+              auto
+            </span>
           )}
           {!hideTicketing && synced && !dirty && (
             <span className="synced-tag" title={`Synced to Tempo · id ${block.tempo_worklog_id}`}>
