@@ -54,10 +54,11 @@ fn get(path: &str) -> Request<Body> {
     Request::get(path).body(Body::empty()).unwrap()
 }
 
-fn cached_status(state: &Shared) -> (String, Option<String>) {
+async fn cached_status(state: &Shared) -> (String, Option<String>) {
     state
         .conn
-        .blocking_lock()
+        .lock()
+        .await
         .query_row(
             "SELECT status, status_category FROM jira_tickets WHERE key = 'APRO-1'",
             [],
@@ -97,7 +98,7 @@ async fn transition_stores_the_status_jira_reports_afterwards() {
     assert_eq!(status.status, "Done");
     assert_eq!(status.status_category, Some(StatusCategory::Done));
     assert_eq!(
-        cached_status(&state),
+        cached_status(&state).await,
         ("Done".to_string(), Some("done".to_string()))
     );
 }
@@ -130,7 +131,7 @@ async fn jira_rejecting_a_transition_is_a_502_with_jiras_body_and_no_cache_chang
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["error"], "Jira said 400: Transition 99 is not valid");
     assert_eq!(
-        cached_status(&state),
+        cached_status(&state).await,
         ("To Do".to_string(), Some("new".to_string()))
     );
 }
