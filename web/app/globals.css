@@ -5158,3 +5158,37 @@ button {
   .elsewhere-row { grid-template-columns: 40px 22px minmax(0, 1fr); }
   .elsewhere-row select, .elsewhere-row button { grid-column: 3; }
 }
+
+.task-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.task-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+}
+.task-card-head { display: flex; align-items: baseline; gap: 10px; }
+.task-key { font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); }
+.task-summary { flex: 1; min-width: 0; font-weight: 500; }
+.task-status {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: var(--slate-bg);
+  color: var(--slate);
+}
+.task-status[data-category="indeterminate"] { background: var(--amber-bg); color: var(--amber-ink); }
+.task-status[data-category="done"] { background: var(--sage-bg); color: var(--sage-ink); }
+.task-hours { display: flex; gap: 14px; font-size: 12px; color: var(--fg-muted); }
+.task-transitions, .task-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.task-transitions .merge-btn, .task-actions .merge-btn { margin-left: 0; }
+.task-comment {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunk);
+  resize: vertical;
+}
+.task-error { margin: 0; font-size: 12px; color: var(--terracotta); }
