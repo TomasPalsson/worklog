@@ -33,7 +33,7 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core` �
 - [x] T006 [P] Task board query (B1, B2, B3) — files: rust/crates/worklog-core/src/task_board.rs, rust/crates/worklog-core/src/task_board_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core task_board` — after: T001 — done: e5a5768
 - [x] T007 [P] Week close-out query (B10) — files: rust/crates/worklog-core/src/week_closeout.rs, rust/crates/worklog-core/src/week_closeout_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core week_closeout` — after: T001 — done: c661212
 - [x] T008 [P] AI ticket update draft (B7) — files: rust/crates/worklog-core/src/task_draft.rs, rust/crates/worklog-core/src/task_draft_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core task_draft` — after: T001 — done: 261e0eb
-- [ ] T005 Sync skips a line that already has an outside worklog (B9) — files: rust/crates/worklog-core/src/collectors/tempo.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core collectors::tempo` — after: T003, T004
+- [x] T005 Sync skips a line that already has an outside worklog (B9) — files: rust/crates/worklog-core/src/collectors/tempo.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core collectors::tempo` — after: T003, T004 — done: fba1b5d
 
 ## Phase 2 — Daemon routes
 Goal: the web app can list tasks, move and comment on tickets, get an AI draft, pull a week from Tempo and read the close-out, without the daemon lock held during any outside call.
