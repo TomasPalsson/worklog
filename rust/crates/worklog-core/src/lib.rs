@@ -66,6 +66,7 @@ pub mod session_pins;
 pub mod sessions;
 pub mod skill;
 pub mod tenant_clues;
+pub mod tempo_line_contract;
 pub mod tenant_contract;
 pub mod tenant_shares;
 pub mod tenant_split;
