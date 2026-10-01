@@ -80,8 +80,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     ensure_blocks_ignored_at(conn).context("ensuring blocks.ignored_at")?;
     ensure_jira_tickets_issue_id(conn).context("ensuring jira_tickets.issue_id")?;
     ensure_jira_tickets_external(conn).context("ensuring jira_tickets.external")?;
-    ensure_jira_tickets_status_category(conn)
-        .context("ensuring jira_tickets.status_category")?;
+    ensure_jira_tickets_status_category(conn).context("ensuring jira_tickets.status_category")?;
     ensure_events_routing_columns(conn).context("ensuring events routing columns")?;
     ensure_billing_folder_map_multi_tenant(conn)
         .context("ensuring billing_folder_map.multi_tenant")?;
@@ -245,8 +244,11 @@ fn ensure_jira_tickets_status_category(conn: &Connection) -> Result<()> {
         .iter()
         .any(|c| c == "status_category");
     if !has {
-        conn.execute("ALTER TABLE jira_tickets ADD COLUMN status_category TEXT", [])
-            .context("ALTER TABLE jira_tickets ADD status_category")?;
+        conn.execute(
+            "ALTER TABLE jira_tickets ADD COLUMN status_category TEXT",
+            [],
+        )
+        .context("ALTER TABLE jira_tickets ADD status_category")?;
     }
     Ok(())
 }
