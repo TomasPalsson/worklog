@@ -41,7 +41,12 @@ pub fn store_week(
                 (tempo_worklog_id, day, issue_id, jira_issue, seconds, description, owner, pulled_at)
              VALUES (?1, ?2, ?3,
                 (SELECT key FROM jira_tickets WHERE issue_id = CAST(?3 AS TEXT)),
-                ?4, ?5, ?6, ?7)",
+                ?4, ?5, ?6, ?7)
+             ON CONFLICT(tempo_worklog_id) DO UPDATE SET
+                day = excluded.day, issue_id = excluded.issue_id,
+                jira_issue = excluded.jira_issue, seconds = excluded.seconds,
+                description = excluded.description, owner = excluded.owner,
+                pulled_at = excluded.pulled_at",
             params![
                 w.tempo_worklog_id,
                 w.day,
@@ -56,7 +61,9 @@ pub fn store_week(
     }
     for d in schedule {
         tx.execute(
-            "INSERT INTO tempo_required_days (day, required_seconds, pulled_at) VALUES (?1, ?2, ?3)",
+            "INSERT INTO tempo_required_days (day, required_seconds, pulled_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(day) DO UPDATE SET
+                required_seconds = excluded.required_seconds, pulled_at = excluded.pulled_at",
             params![d.day, d.required_seconds, pulled_at],
         )
         .context("insert tempo_required_days")?;

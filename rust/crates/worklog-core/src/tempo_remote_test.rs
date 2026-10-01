@@ -169,3 +169,27 @@ fn outside_exists_matches_day_issue_and_owner() {
     assert!(!outside_exists(&conn, "2026-09-30", 5).unwrap());
     assert!(!outside_exists(&conn, "2026-10-01", 6).unwrap());
 }
+
+#[test]
+fn repull_is_idempotent_when_rows_move_weeks_or_fall_outside() {
+    let conn = db::open_memory().unwrap();
+    let first = [pulled("9", "2026-09-27", 5, 600)];
+    store_week(&conn, monday(), &first, &[], PULLED_AT).unwrap();
+
+    let moved = [
+        pulled("9", "2026-09-29", 5, 900),
+        pulled("8", "2026-09-27", 5, 300),
+    ];
+    let sched = [required("2026-10-06", 100)];
+    store_week(&conn, monday(), &moved, &sched, PULLED_AT).unwrap();
+    store_week(&conn, monday(), &moved, &sched, PULLED_AT).unwrap();
+    store_week(&conn, next_monday(), &[], &sched, PULLED_AT).unwrap();
+
+    let week = list_week(&conn, monday()).unwrap();
+    assert_eq!(week.len(), 1);
+    assert_eq!(
+        (week[0].tempo_worklog_id.as_str(), week[0].seconds),
+        ("9", 900)
+    );
+    assert_eq!(required_days(&conn), vec![("2026-10-06".to_string(), 100)]);
+}
