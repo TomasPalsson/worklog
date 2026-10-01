@@ -2406,6 +2406,20 @@ button {
   border: 1px dashed var(--border);
 }
 
+/* "auto" ticket pill — muted, solid border so it reads apart from personal */
+.auto-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  background: var(--bg-sunk);
+  border: 1px solid var(--border);
+}
+
 /* DayHeader personal-time annotation — sits next to the work total
    muted so the eye lands on the work figure first. */
 .day-total-personal {
