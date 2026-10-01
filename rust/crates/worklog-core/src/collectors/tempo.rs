@@ -443,7 +443,7 @@ fn sync_group_aggregated(
         .min()
         .unwrap_or("");
     let description = match line.text {
-        Some(text) => text,
+        Some(text) => cap_description(&text),
         None if dry_run => line.fallback_text,
         None => {
             let (_, descriptions, source_hash) =
@@ -1196,6 +1196,44 @@ mod tests {
         )
         .unwrap();
         post.assert_hits(1);
+    }
+
+    #[test]
+    fn sync_caps_long_stored_line_text() {
+        let long_text = "x".repeat(300);
+        let capped = cap_description(&long_text);
+        assert!(capped.chars().count() <= 250);
+        let server = MockServer::start();
+        let post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/worklogs")
+                .json_body_partial(json!({ "description": capped }).to_string());
+            then.status(200).json_body(json!({"tempoWorklogId": 9}));
+        });
+        let conn = open_memory().unwrap();
+        seed_two_blocks(&conn);
+        let key = line_key();
+        tempo_lines::set_text(
+            &conn,
+            &SetTempoLineText {
+                day: key.day.clone(),
+                jira_issue: key.jira_issue.clone(),
+                text: long_text.clone(),
+            },
+        )
+        .unwrap();
+
+        sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+        post.assert_hits(1);
+        let stored = tempo_lines::line_for(&conn, &key).unwrap().unwrap();
+        assert_eq!(stored.text.as_deref(), Some(long_text.as_str()));
     }
 
     #[test]
