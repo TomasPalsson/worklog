@@ -112,6 +112,9 @@ mod daemon_line_text;
 #[path = "daemon_deildir.rs"]
 mod daemon_deildir;
 
+#[path = "daemon_tempo_lines.rs"]
+mod daemon_tempo_lines;
+
 #[path = "daemon_changes.rs"]
 mod daemon_changes;
 
@@ -185,6 +188,13 @@ pub fn router(state: Shared) -> Router {
             post(daemon_line_text::regenerate),
         )
         .route("/billing/lines/status", get(daemon_line_text::status))
+        .route("/tempo/lines/:day", get(daemon_tempo_lines::list_lines))
+        .route("/tempo/lines/text", post(daemon_tempo_lines::set_text))
+        .route("/tempo/lines/hours", post(daemon_tempo_lines::set_hours))
+        .route(
+            "/tempo/lines/regenerate",
+            post(daemon_tempo_lines::regenerate),
+        )
         .route("/billing/tenants", get(daemon_tenants::list_tenants))
         .route("/billing/tenants/link", post(daemon_tenants::link_tenant))
         .route(
@@ -1799,12 +1809,24 @@ async fn run_estimate(
     // held across any of those `claude -p` round trips. A line-text
     // failure never fails the estimate call — the estimate itself
     // already succeeded (FR-26).
-    let line_texts = daemon_line_text::generate_day(state, day_str).await;
+    let line_texts = daemon_line_text::generate_day(state.clone(), day_str.clone()).await;
+    let tempo_lines = daemon_tempo_lines::generate_tempo_lines(state, day_str, None, || {
+        estimate::build_regenerate_invoker(crate::line_text::LINE_TEXT_THINKING_TOKENS)
+    })
+    .await
+    .map_or_else(
+        |e| {
+            warn!(error = %e, "tempo line text generation failed");
+            0
+        },
+        |generated| generated.len(),
+    );
     Ok(Json(json!({
         "day":       body.day,
         "estimated": stats.estimated,
         "skipped":   stats.skipped,
         "failed":    stats.failed,
+        "tempo_lines": tempo_lines,
         "line_texts": {
             "generated": line_texts.generated.len(),
             "not_generated": line_texts.not_generated.iter().map(|(key, reason)| json!({
@@ -2775,6 +2797,10 @@ mod tests {
 
     mod changes {
         include!("daemon_changes_test.rs");
+    }
+
+    mod daemon_tempo_lines {
+        include!("daemon_tempo_lines_test.rs");
     }
 
     fn state_with_block() -> Shared {
