@@ -3302,6 +3302,27 @@ fn cmd_estimate<W: Write>(day: Option<String>, model: &str, out: &mut W, json: b
     Ok(())
 }
 
+struct FailureRecordingInvoker<'a> {
+    inner: &'a dyn estimate::ModelInvoker,
+    failed: std::cell::Cell<bool>,
+}
+
+impl estimate::ModelInvoker for FailureRecordingInvoker<'_> {
+    fn invoke(
+        &self,
+        system: &str,
+        user: &str,
+        schema: &serde_json::Value,
+        model: &str,
+    ) -> Result<serde_json::Value> {
+        let reply = self.inner.invoke(system, user, schema, model);
+        if reply.is_err() {
+            self.failed.set(true);
+        }
+        reply
+    }
+}
+
 /// Generates and commits the pending ticket-line texts. Without an invoker
 /// nothing is committed, so a later run with a working model still generates
 /// them.
@@ -3319,9 +3340,23 @@ fn generate_line_texts<W: Write>(
     let Some(invoker) = invoker else {
         return Ok(());
     };
+    let recorder = FailureRecordingInvoker {
+        inner: invoker,
+        failed: std::cell::Cell::new(false),
+    };
     let mut generated_count = 0;
     for (key, descriptions, source_hash) in pending {
-        let text = tempo_lines::generate_text(Some(invoker), &key, &descriptions, model);
+        recorder.failed.set(false);
+        let text = tempo_lines::generate_text(Some(&recorder), &key, &descriptions, model);
+        // A failed call yields the joined fallback; committing it would hide
+        // the line from later runs until its blocks change.
+        if recorder.failed.get() {
+            style::warn(
+                out,
+                &format!("line text generation failed for {}", key.jira_issue),
+            )?;
+            continue;
+        }
         if let Err(e) = commit(&key, &text, &source_hash) {
             style::warn(out, &format!("line text commit failed: {e}"))?;
             continue;
@@ -4435,6 +4470,19 @@ mod tests {
         }
     }
 
+    struct FailingInvoker;
+    impl estimate::ModelInvoker for FailingInvoker {
+        fn invoke(
+            &self,
+            _system: &str,
+            _user: &str,
+            _schema: &serde_json::Value,
+            _model: &str,
+        ) -> Result<serde_json::Value> {
+            anyhow::bail!("rate limited")
+        }
+    }
+
     fn line_text_conn() -> rusqlite::Connection {
         let conn = db::open_memory().unwrap();
         for (start, description) in [
@@ -4484,6 +4532,14 @@ mod tests {
         let (conn, out) = run_generate_line_texts(None);
         assert_eq!(stored_text_count(&conn), 0);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn generate_line_texts_with_failing_model_stores_nothing_and_warns() {
+        let (conn, out) = run_generate_line_texts(Some(&FailingInvoker));
+        assert_eq!(stored_text_count(&conn), 0);
+        assert!(!out.contains("generated"));
+        assert!(out.contains("line text generation failed"));
     }
 
     #[test]
