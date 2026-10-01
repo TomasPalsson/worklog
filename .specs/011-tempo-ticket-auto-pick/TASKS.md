@@ -1,5 +1,6 @@
 # Tasks — Tempo ticket auto-pick
 Approved: 2026-10-01 by user
+Verified: 2026-10-01 by user (pre-approved: /flow:next --finish)
 Spec: spec.md · Design: design.md · Base: b1b1de1 · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && (cd web && bun test)`
 
 ## Behaviors
@@ -20,28 +21,38 @@ Spec: spec.md · Design: design.md · Base: b1b1de1 · Route: dispatch · Test: 
 ## Phase 1 — Hand-set tickets stay put
 Goal: every block ticket knows who set it, and the scheduler never replaces one the Owner set.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core` — green with web untouched.
-- [ ] T001 Schema: blocks.ticket_origin + tempo_line_texts, version 17 — files: rust/crates/worklog-core/sql/schema.sql, rust/crates/worklog-core/src/db.rs, rust/crates/worklog-core/src/db_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core db_test`
-- [ ] T002 Block.ticket_origin field; assign_ticket records manual (B1) — files: rust/crates/worklog-core/src/models.rs, rust/crates/worklog-core/src/repo.rs, rust/crates/worklog-core/src/block_service.rs, rust/crates/worklog-core/src/daemon.rs, rust/crates/worklog-core/src/infer.rs, rust/crates/worklog-core/src/tenant_split_test.rs, rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-cli/src/eval_cmd.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core block_service` — after: T001
-- [ ] T003 [P] infer writes event origin and keeps manual tickets (B2, B3) — files: rust/crates/worklog-core/src/infer.rs, rust/crates/worklog-core/src/infer_allocations_db_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core infer_allocations_db_test` — after: T002
-- [ ] T004 [P] estimator writes auto origin and keeps manual tickets (B4, B5) — files: rust/crates/worklog-core/src/estimate.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core estimate::` — after: T002
+- [x] T001 Schema: blocks.ticket_origin + tempo_line_texts, version 17 — files: rust/crates/worklog-core/sql/schema.sql, rust/crates/worklog-core/src/db.rs, rust/crates/worklog-core/src/db_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core db::tests` — done: 2817d4a
+- [x] T002 Block.ticket_origin field; assign_ticket records manual (B1) — files: rust/crates/worklog-core/src/models.rs, rust/crates/worklog-core/src/repo.rs, rust/crates/worklog-core/src/block_service.rs, rust/crates/worklog-core/src/daemon.rs, rust/crates/worklog-core/src/infer.rs, rust/crates/worklog-core/src/tenant_split_test.rs, rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-cli/src/eval_cmd.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core block_service` — after: T001 — done: 0cc5600
+- [x] T003 [P] infer writes event origin and keeps manual tickets (B2, B3) — files: rust/crates/worklog-core/src/infer.rs, rust/crates/worklog-core/src/infer_allocations_db_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core infer_allocations::db_tests` — after: T002 — done: 6418eb8
+- [x] T004 [P] estimator writes auto origin and keeps manual tickets (B4, B5) — files: rust/crates/worklog-core/src/estimate.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core estimate::` — after: T002 — done: a230a48
 
 ## Phase 2 — Ticket lines hold what Tempo gets
 Goal: each ticket line has a stored description, union hours and an optional override, and sync sends exactly those.
 Independent test: `cargo test --manifest-path rust/Cargo.toml` — green with web untouched.
-- [ ] T005 [P] tempo_lines module: read, edit, hours, generation (B6, B7) — files: rust/crates/worklog-core/src/tempo_lines.rs, rust/crates/worklog-core/src/tempo_lines_test.rs, rust/crates/worklog-core/src/lib.rs, rust/crates/worklog-core/src/collectors/tempo.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core tempo_lines` — after: T002
-- [ ] T006 [P] Sync sends stored line text and effective hours (B8) — files: rust/crates/worklog-core/src/collectors/tempo.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core collectors::tempo` — after: T005
-- [ ] T007 [P] Daemon /tempo/lines routes; estimate run generates line texts (B9) — files: rust/crates/worklog-core/src/daemon_tempo_lines.rs, rust/crates/worklog-core/src/daemon_tempo_lines_test.rs, rust/crates/worklog-core/src/daemon.rs, rust/crates/worklog-core/src/lib.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core daemon_tempo_lines` — after: T005
-- [ ] T008 [P] `worklog day` generates missing line texts (B9) — files: rust/crates/worklog-cli/src/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-cli` — after: T005
+- [x] T005 [P] tempo_lines module: read, edit, hours, generation (B6, B7) — files: rust/crates/worklog-core/src/tempo_lines.rs, rust/crates/worklog-core/src/tempo_lines_test.rs, rust/crates/worklog-core/src/lib.rs, rust/crates/worklog-core/src/collectors/tempo.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core tempo_lines` — after: T002 — done: 937ee7f
+- [x] T006 [P] Sync sends stored line text and effective hours (B8) — files: rust/crates/worklog-core/src/collectors/tempo.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core collectors::tempo` — after: T005 — done: a26a21d
+- [x] T007 [P] Daemon /tempo/lines routes; estimate run generates line texts (B9) — files: rust/crates/worklog-core/src/daemon_tempo_lines.rs, rust/crates/worklog-core/src/daemon_tempo_lines_test.rs, rust/crates/worklog-core/src/daemon.rs, rust/crates/worklog-core/src/lib.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core daemon_tempo_lines` — after: T005 — done: 0866b93
+- [x] T008 [P] `worklog day` generates missing line texts (B9) — files: rust/crates/worklog-cli/src/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-cli` — after: T005 — done: dd78561
+- [x] T012 A failed model call is never stored as generated line text (A7) — files: rust/crates/worklog-core/src/tempo_lines.rs, rust/crates/worklog-core/src/tempo_lines_test.rs, rust/crates/worklog-core/src/collectors/tempo.rs, rust/crates/worklog-core/src/daemon_tempo_lines.rs, rust/crates/worklog-core/src/daemon_tempo_lines_test.rs, rust/crates/worklog-cli/src/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml` — after: T006, T007, T008 — done: c634173
 
 ## Phase 3 — Review screen
 Goal: the Tickets view shows auto tags, line descriptions you can edit or regenerate, and an hours box.
 Independent test: `cd web && bun test && bun run typecheck` — green with the daemon mocked.
-- [ ] T009 Web client and server actions for ticket lines — files: web/lib/daemonTempoLines.ts, web/app/actions-tempo-lines.ts, web/app/actions-tempo-lines.test.ts — verify: `cd web && bun test app/actions-tempo-lines.test.ts` — after: T007
-- [ ] T010 [P] "auto" tag on BlockCard (B10) — files: web/lib/types.ts, web/components/BlockCard.tsx, web/components/BlockCard.test.tsx — verify: `cd web && bun test components/BlockCard.test.tsx` — after: T007
-- [ ] T011 TicketGroup line text, regenerate and hours override (B11) — files: web/components/TicketGroup.tsx, web/components/TicketGroup.test.tsx, web/components/BillingGroup.tsx, web/app/[day]/page.tsx — verify: `cd web && bun test components/TicketGroup.test.tsx components/BillingGroup.test.tsx` — after: T009
-- [ ] CHK001 human-verify the day review and a real sync — files: web/components/TicketGroup.tsx — verify: human: Owner opens a day in the Tickets view, sees every block ticketed (auto ones tagged), each line with a description and union hours, sets one line to 2h, presses "Sync to Tempo", and Tempo shows exactly that text and 2h — after: T011
+- [x] T009 Web client and server actions for ticket lines — files: web/lib/daemonTempoLines.ts, web/app/actions-tempo-lines.ts, web/app/actions-tempo-lines.test.ts — verify: `cd web && bun test app/actions-tempo-lines.test.ts` — after: T007 — done: 8b1ce6d
+- [x] T010 [P] "auto" tag on BlockCard (B10) — files: web/lib/types.ts, web/components/BlockCard.tsx, web/components/BlockCard.test.tsx — verify: `cd web && bun test components/BlockCard.test.tsx` — after: T007 — done: 391c542
+- [x] T013 Style the "auto" tag like its sibling pills — files: web/app/globals.css — verify: `grep -q "^\.auto-tag {" web/app/globals.css` — after: T010 — done: b0371ac
+- [x] T011 TicketGroup line text, regenerate and hours override (B11) — files: web/components/TicketGroup.tsx, web/components/TicketGroup.test.tsx, web/components/BillingGroup.tsx, web/app/[day]/page.tsx — verify: `cd web && bun test components/TicketGroup.test.tsx components/BillingGroup.test.tsx` — after: T009 — done: 75ea446
+- [x] T014 Hours box uses the duration-input style (was a bare white box on dark theme) — files: web/app/globals.css, web/components/TicketGroup.tsx — verify: `cd web && bun test components/TicketGroup.test.tsx && grep -q "ticket-line-hours" app/globals.css` — after: T011, T013 — done: 11ed022
+- [x] CHK001 human-verify the day review and a real sync — files: web/components/TicketGroup.tsx — verify: human: Owner opens a day in the Tickets view, sees every block ticketed (auto ones tagged), each line with a description and union hours, sets one line to 2h, presses "Sync to Tempo", and Tempo shows exactly that text and 2h — after: T011 — done: 11ed022 by user
+
+## Phase 4 — Branch-review follow-ups
+Goal: a hand-set ticket survives splits and auto-merges, and no description over 250 chars reaches Tempo.
+Independent test: `cargo test --manifest-path rust/Cargo.toml` — green.
+- [x] T015 [P] Manual ticket lock survives split and auto-merge (FR-04) — files: rust/crates/worklog-core/src/block_service.rs, rust/crates/worklog-core/src/estimate.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core` — after: T012 — done: 958b634
+- [x] T016 [P] Stored line text is capped at 250 chars when synced (NFR) — files: rust/crates/worklog-core/src/collectors/tempo.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core collectors::tempo` — after: T012 — done: a8b83bf
+- [x] T017 BlockCard test's app/actions mock exports mergeGroup, so it can share a run with TicketGroup.test — files: web/components/BlockCard.test.tsx — verify: `cd web && bun test components/BlockCard.test.tsx components/TicketGroup.test.tsx` — after: T014 — done: e8fd89b
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `flow check --fix`
-- [ ] G002 branch review clean — files: . — verify: `flow pass`
-- [ ] G003 verification evidence exists — files: . — verify: `test -s verify/`
+- [x] G001 project gates clean — files: . — verify: `flow check --fix` — done: 958b634
+- [x] G002 branch review clean — files: . — verify: `flow pass` — done: 958b634
+- [x] G003 verification evidence exists — files: . — verify: `test -s verify/` — done: 958b634
