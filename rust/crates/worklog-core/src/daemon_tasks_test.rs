@@ -120,8 +120,7 @@ async fn jira_rejecting_a_transition_is_a_502_with_jiras_body_and_no_cache_chang
         "99".to_string(),
     )
     .await
-    .err()
-    .expect("jira's 400 must fail the route");
+    .expect_err("jira's 400 must fail the route");
     let response = error.into_response();
 
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
