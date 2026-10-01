@@ -30,6 +30,8 @@ use crate::estimate::{self, ModelInvoker};
 use crate::http::{self, RequestBuilderExt};
 use crate::models::TempoAccount;
 use crate::repo;
+use crate::tempo_line_contract::TempoLineKey;
+use crate::tempo_lines;
 
 use super::CollectReport;
 
@@ -404,11 +406,18 @@ fn sync_group_aggregated(
     report: &mut CollectReport,
     results: &mut Vec<SyncResult>,
 ) -> Result<()> {
-    // Aggregate totals from the full group (synced + unsynced) so we
-    // PUT the right number on a re-sync that added a new block, then
-    // round to the nearest half hour — Tempo only ever sees 0.5h units.
+    let day_str = all_in_group
+        .first()
+        .map(|b| b.day.clone())
+        .unwrap_or_default();
+    let key = TempoLineKey {
+        day: day_str.clone(),
+        jira_issue: issue.to_owned(),
+    };
+    let line = tempo_lines::line_for(conn, &key)?
+        .with_context(|| format!("no ticket line for {issue} on {day_str}"))?;
+    let total_seconds = line.effective_seconds;
     let raw_seconds: i64 = all_in_group.iter().map(|b| b.duration_seconds).sum();
-    let total_seconds = round_to_half_hour(raw_seconds);
     // A whole ticket-day that rounds to 0 (under 15 min of tracked work)
     // is below the half-hour minimum — skip rather than POST a 0s
     // worklog. Any pre-existing Tempo entry is left untouched.
@@ -433,15 +442,24 @@ fn sync_group_aggregated(
         .map(|b| b.started_at.as_str())
         .min()
         .unwrap_or("");
-    let day_str = all_in_group
-        .first()
-        .map(|b| b.day.clone())
-        .unwrap_or_default();
-    let descriptions: Vec<String> = all_in_group
-        .iter()
-        .filter_map(|b| b.description.clone())
-        .collect();
-    let description = summarize_descriptions(invoker, issue, &descriptions, model, dry_run);
+    let description = match line.text {
+        Some(text) => cap_description(&text),
+        None if dry_run => line.fallback_text,
+        None => {
+            let (_, descriptions, source_hash) =
+                tempo_lines::pending_generation(conn, &day_str, Some(&key))?
+                    .into_iter()
+                    .next()
+                    .with_context(|| format!("no descriptions for {issue} on {day_str}"))?;
+            match tempo_lines::generate_text(invoker, &key, &descriptions, model) {
+                Some(text) => {
+                    tempo_lines::commit_generated(conn, &key, &text, &source_hash, false)?;
+                    text
+                }
+                None => line.fallback_text,
+            }
+        }
+    };
 
     let payload = json!({
         "issueId":          issue_id,
@@ -543,15 +561,13 @@ fn sync_group_aggregated(
         }
     };
 
-    // Write the resolved tempo id back to every eligible block in the
-    // group — the new ones get the id for the first time, dirty ones
-    // get `dirty = 0` cleared. Clean already-synced blocks aren't in
-    // the eligible set so they're left untouched (their state is
-    // already correct).
+    // Write the resolved tempo id back to every block in the group.
+    // Storing generated line text marks synced blocks dirty, so the
+    // clean ones are rewritten too (same id, `dirty = 0`).
     {
         let mut stmt =
             conn.prepare("UPDATE blocks SET tempo_worklog_id = ?1, dirty = 0 WHERE id = ?2")?;
-        for b in eligible_in_group {
+        for b in all_in_group {
             stmt.execute(params![tempo_id, b.id])?;
         }
     }
@@ -726,7 +742,7 @@ const SUMMARY_MAX_CHARS: usize = 250;
 
 /// Hard cap on the worklog description sent to Tempo. Truncates on a
 /// char boundary and appends `…` to make the cut visible.
-fn cap_description(s: &str) -> String {
+pub(crate) fn cap_description(s: &str) -> String {
     if s.chars().count() <= SUMMARY_MAX_CHARS {
         s.to_owned()
     } else {
@@ -765,13 +781,18 @@ fn description_response_schema() -> Value {
 ///   * multiple distinct → ask the invoker for a one-sentence summary;
 ///     fall back to `;`-joined distinct descriptions on any failure or
 ///     when no invoker is configured / dry_run is set.
-fn summarize_descriptions(
+pub(crate) fn summarize_descriptions(
     invoker: Option<&dyn ModelInvoker>,
     issue: &str,
     descriptions: &[String],
     model: &str,
     dry_run: bool,
 ) -> String {
+    try_summarize_descriptions(invoker, issue, descriptions, model, dry_run)
+        .unwrap_or_else(|| joined_descriptions(descriptions))
+}
+
+fn distinct_descriptions(descriptions: &[String]) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut unique: Vec<String> = Vec::new();
     for d in descriptions {
@@ -783,15 +804,33 @@ fn summarize_descriptions(
             unique.push(t.to_owned());
         }
     }
+    unique
+}
+
+fn joined_descriptions(descriptions: &[String]) -> String {
+    cap_description(&distinct_descriptions(descriptions).join("; "))
+}
+
+/// Like `summarize_descriptions`, but `None` when the invoker was called and
+/// failed or returned no usable description, so callers can tell a real
+/// summary from a fallback.
+pub(crate) fn try_summarize_descriptions(
+    invoker: Option<&dyn ModelInvoker>,
+    issue: &str,
+    descriptions: &[String],
+    model: &str,
+    dry_run: bool,
+) -> Option<String> {
+    let unique = distinct_descriptions(descriptions);
 
     if unique.is_empty() {
-        return format!("Work on {issue}");
+        return Some(format!("Work on {issue}"));
     }
     if unique.len() == 1 {
-        return cap_description(&unique[0]);
+        return Some(cap_description(&unique[0]));
     }
 
-    let joined_fallback = || cap_description(&unique.join("; "));
+    let joined_fallback = || Some(cap_description(&unique.join("; ")));
 
     if dry_run {
         return joined_fallback();
@@ -809,19 +848,16 @@ fn summarize_descriptions(
     let reply = match invoker.invoke(DESCRIPTION_SYSTEM_PROMPT, &user_msg, &schema, model) {
         Ok(v) => v,
         Err(e) => {
-            debug!(issue, error = %e, "description summariser failed; using joined fallback");
-            return joined_fallback();
+            debug!(issue, error = %e, "description summariser failed");
+            return None;
         }
     };
-    let summary = reply
+    reply
         .get("description")
         .and_then(|v| v.as_str())
         .map(str::trim)
-        .filter(|s| !s.is_empty());
-    match summary {
-        Some(s) => cap_description(s),
-        None => joined_fallback(),
-    }
+        .filter(|s| !s.is_empty())
+        .map(cap_description)
 }
 
 /// Delete a worklog entry from Tempo. Used when the user deletes a
@@ -1051,6 +1087,7 @@ pub fn list_accounts_with(auth: &TempoAuth, client: &Client) -> Result<Vec<Tempo
 mod tests {
     use super::*;
     use crate::db::open_memory;
+    use crate::tempo_line_contract::{SetTempoLineHours, SetTempoLineText};
     use httpmock::prelude::*;
     use serde_json::json;
 
@@ -1089,6 +1126,161 @@ mod tests {
             author: "tomas@p5.is".into(),
             base_url: base,
         }
+    }
+
+    fn seed_two_blocks(conn: &Connection) {
+        insert_block(
+            conn,
+            "2026-04-18",
+            "2026-04-18T09:00:00Z",
+            "2026-04-18T09:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("wrote parser"),
+        );
+        insert_block(
+            conn,
+            "2026-04-18",
+            "2026-04-18T10:00:00Z",
+            "2026-04-18T10:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("wrote parser"),
+        );
+    }
+
+    fn line_key() -> TempoLineKey {
+        TempoLineKey {
+            day: "2026-04-18".into(),
+            jira_issue: "PROJ-1".into(),
+        }
+    }
+
+    #[test]
+    fn sync_sends_stored_line_text_and_hours_override() {
+        let server = MockServer::start();
+        let post = server.mock(|when, then| {
+            when.method(POST).path("/worklogs").json_body_partial(
+                r#"{"timeSpentSeconds": 5400, "description": "Hand written line"}"#,
+            );
+            then.status(200).json_body(json!({"tempoWorklogId": 9}));
+        });
+        let conn = open_memory().unwrap();
+        seed_two_blocks(&conn);
+        let key = line_key();
+        tempo_lines::set_text(
+            &conn,
+            &SetTempoLineText {
+                day: key.day.clone(),
+                jira_issue: key.jira_issue.clone(),
+                text: "Hand written line".into(),
+            },
+        )
+        .unwrap();
+        tempo_lines::set_hours(
+            &conn,
+            &SetTempoLineHours {
+                day: key.day.clone(),
+                jira_issue: key.jira_issue.clone(),
+                seconds: Some(5400),
+            },
+        )
+        .unwrap();
+
+        sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+        post.assert_hits(1);
+    }
+
+    #[test]
+    fn sync_caps_long_stored_line_text() {
+        let long_text = "x".repeat(300);
+        let capped = cap_description(&long_text);
+        assert!(capped.chars().count() <= 250);
+        let server = MockServer::start();
+        let post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/worklogs")
+                .json_body_partial(json!({ "description": capped }).to_string());
+            then.status(200).json_body(json!({"tempoWorklogId": 9}));
+        });
+        let conn = open_memory().unwrap();
+        seed_two_blocks(&conn);
+        let key = line_key();
+        tempo_lines::set_text(
+            &conn,
+            &SetTempoLineText {
+                day: key.day.clone(),
+                jira_issue: key.jira_issue.clone(),
+                text: long_text.clone(),
+            },
+        )
+        .unwrap();
+
+        sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+        post.assert_hits(1);
+        let stored = tempo_lines::line_for(&conn, &key).unwrap().unwrap();
+        assert_eq!(stored.text.as_deref(), Some(long_text.as_str()));
+    }
+
+    #[test]
+    fn sync_generates_and_stores_text_when_line_has_none() {
+        let server = MockServer::start();
+        let post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/worklogs")
+                .json_body_partial(r#"{"timeSpentSeconds": 3600, "description": "wrote parser"}"#);
+            then.status(200).json_body(json!({"tempoWorklogId": 9}));
+        });
+        let conn = open_memory().unwrap();
+        seed_two_blocks(&conn);
+
+        sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+        post.assert_hits(1);
+        let stored = tempo_lines::line_for(&conn, &line_key()).unwrap().unwrap();
+        assert_eq!(stored.text.as_deref(), Some("wrote parser"));
+    }
+
+    #[test]
+    fn dry_run_uses_fallback_text_and_writes_nothing() {
+        let conn = open_memory().unwrap();
+        seed_two_blocks(&conn);
+        let server = MockServer::start();
+
+        let (_, results) = sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            true,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            results[0].payload.as_ref().unwrap()["description"],
+            "wrote parser"
+        );
+        let stored = tempo_lines::line_for(&conn, &line_key()).unwrap().unwrap();
+        assert_eq!(stored.text, None);
     }
 
     #[test]
@@ -1958,6 +2150,68 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.synced, 1);
+    }
+
+    #[test]
+    fn failed_summary_sends_joined_fallback_and_stores_no_text() {
+        struct FailingInvoker;
+        impl ModelInvoker for FailingInvoker {
+            fn invoke(
+                &self,
+                _: &str,
+                _: &str,
+                _: &serde_json::Value,
+                _: &str,
+            ) -> anyhow::Result<serde_json::Value> {
+                anyhow::bail!("model unreachable")
+            }
+        }
+        let server = MockServer::start();
+        let post_mock = server.mock(|when, then| {
+            when.method(POST).path("/worklogs").json_body_partial(
+                r#"{"description": "Implement OAuth refresh; Review API spec"}"#,
+            );
+            then.status(200).json_body(json!({"tempoWorklogId": 1}));
+        });
+        let conn = open_memory().unwrap();
+        let day_s = "2026-04-18";
+        insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T09:00:00Z",
+            "2026-04-18T09:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("Implement OAuth refresh"),
+        );
+        insert_block(
+            &conn,
+            day_s,
+            "2026-04-18T10:00:00Z",
+            "2026-04-18T10:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("Review API spec"),
+        );
+
+        let (report, _) = sync_day_with_invoker(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+            Some(&FailingInvoker),
+            estimate::DEFAULT_MODEL,
+        )
+        .unwrap();
+        assert_eq!(report.synced, 1);
+        post_mock.assert();
+        let key = TempoLineKey {
+            day: day_s.to_string(),
+            jira_issue: "PROJ-1".to_string(),
+        };
+        let line = tempo_lines::line_for(&conn, &key).unwrap().unwrap();
+        assert_eq!(line.text, None);
     }
 
     #[test]

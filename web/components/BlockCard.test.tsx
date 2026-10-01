@@ -31,6 +31,7 @@ mock.module("@/app/actions", () => ({
   // Bun's mock.module is process-wide: BillingGroup.test mocks this same
   // specifier, so both must export every name either file's tree imports.
   saveBillingFolder: mock(async () => ({ ok: true as const, data: undefined })),
+  mergeGroup: mock(async () => ({ ok: true as const, data: undefined })),
 }));
 
 let BlockCard: (props: {
@@ -283,5 +284,42 @@ describe("BlockCard ignore button", () => {
     );
     expect(ignoreBtn().disabled).toBe(true);
     expect(ignoreBtn().title).toContain("exported");
+  });
+});
+
+describe("auto ticket tag", () => {
+  const renderCard = (overrides: Partial<Block>) =>
+    render(<BlockCard block={makeBlock(overrides)} tickets={[]} day="2026-07-25" />);
+
+  it("shows beside a ticket the Owner did not set", () => {
+    renderCard({ jira_issue: "ABC-1", ticket_origin: "auto" });
+    expect(screen.getByText("auto")).toBeTruthy();
+  });
+
+  it("shows for a pre-spec row with a ticket and no origin", () => {
+    renderCard({ jira_issue: "ABC-1", ticket_origin: null });
+    expect(screen.getByText("auto")).toBeTruthy();
+  });
+
+  it("is hidden for a manually set ticket", () => {
+    renderCard({ jira_issue: "ABC-1", ticket_origin: "manual" });
+    expect(screen.queryByText("auto")).toBeNull();
+  });
+
+  it("is hidden when the block has no ticket", () => {
+    renderCard({ jira_issue: null, ticket_origin: "auto" });
+    expect(screen.queryByText("auto")).toBeNull();
+  });
+
+  it("is hidden when ticketing is hidden", () => {
+    render(
+      <BlockCard
+        block={makeBlock({ jira_issue: "ABC-1", ticket_origin: "auto" })}
+        tickets={[]}
+        day="2026-07-25"
+        hideTicketing
+      />,
+    );
+    expect(screen.queryByText("auto")).toBeNull();
   });
 });

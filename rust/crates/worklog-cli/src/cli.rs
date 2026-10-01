@@ -19,7 +19,7 @@ use worklog_core::{
     paths::Paths,
     personal as personal_mod, routing, routing_absorb, schedule, secrets,
     session_pins::{self, PinError},
-    skill as skill_mod, updater as upd,
+    skill as skill_mod, tempo_lines, updater as upd,
     verdict::VerdictClassifier,
     web as web_mod,
 };
@@ -3302,6 +3302,49 @@ fn cmd_estimate<W: Write>(day: Option<String>, model: &str, out: &mut W, json: b
     Ok(())
 }
 
+/// Generates and commits the pending ticket-line texts. Without an invoker
+/// nothing is committed, so a later run with a working model still generates
+/// them.
+fn generate_line_texts<W: Write>(
+    pending: Vec<(
+        worklog_core::tempo_line_contract::TempoLineKey,
+        Vec<String>,
+        String,
+    )>,
+    invoker: Option<&dyn estimate::ModelInvoker>,
+    model: &str,
+    mut commit: impl FnMut(&worklog_core::tempo_line_contract::TempoLineKey, &str, &str) -> Result<()>,
+    out: &mut W,
+) -> Result<()> {
+    let Some(invoker) = invoker else {
+        return Ok(());
+    };
+    let mut generated_count = 0;
+    for (key, descriptions, source_hash) in pending {
+        let Some(text) = tempo_lines::generate_text(Some(invoker), &key, &descriptions, model)
+        else {
+            style::warn(
+                out,
+                &format!("line text generation failed for {}", key.jira_issue),
+            )?;
+            continue;
+        };
+        if let Err(e) = commit(&key, &text, &source_hash) {
+            style::warn(out, &format!("line text commit failed: {e}"))?;
+            continue;
+        }
+        generated_count += 1;
+    }
+    if generated_count > 0 {
+        let plural = if generated_count == 1 { "" } else { "s" };
+        style::ok(
+            out,
+            &format!("generated {generated_count} line text{plural}"),
+        )?;
+    }
+    Ok(())
+}
+
 fn cmd_day<W: Write>(
     day: Option<String>,
     serve: bool,
@@ -3403,6 +3446,24 @@ fn cmd_day<W: Write>(
             ),
         )?,
         Err(e) => style::warn(out, &format!("estimate skipped: {e}"))?,
+    }
+
+    // --- generate line texts -----------------------------------------------
+    let invoker = estimate::build_invoker().ok();
+    let generated =
+        tempo_lines::pending_generation(&conn, &day_parsed.to_string(), None).and_then(|pending| {
+            generate_line_texts(
+                pending,
+                invoker.as_deref(),
+                model,
+                |key, text, source_hash| {
+                    tempo_lines::commit_generated(&conn, key, text, source_hash, false)
+                },
+                out,
+            )
+        });
+    if let Err(e) = generated {
+        style::warn(out, &format!("line text generation skipped: {e}"))?;
     }
 
     // --- summary --------------------------------------------------------
@@ -4368,6 +4429,101 @@ mod tests {
     use super::*;
     use worklog_core::models::Block;
 
+    struct CannedInvoker;
+    impl estimate::ModelInvoker for CannedInvoker {
+        fn invoke(
+            &self,
+            _system: &str,
+            _user: &str,
+            _schema: &serde_json::Value,
+            _model: &str,
+        ) -> Result<serde_json::Value> {
+            Ok(serde_json::json!({ "description": "Summarised by model" }))
+        }
+    }
+
+    struct FailingInvoker;
+    impl estimate::ModelInvoker for FailingInvoker {
+        fn invoke(
+            &self,
+            _system: &str,
+            _user: &str,
+            _schema: &serde_json::Value,
+            _model: &str,
+        ) -> Result<serde_json::Value> {
+            anyhow::bail!("rate limited")
+        }
+    }
+
+    fn line_text_conn() -> rusqlite::Connection {
+        let conn = db::open_memory().unwrap();
+        for (start, description) in [
+            ("2026-09-30T10:00:00Z", "Alpha"),
+            ("2026-09-30T11:00:00Z", "Beta"),
+        ] {
+            conn.execute(
+                "INSERT INTO blocks (day, jira_issue, started_at, ended_at, duration_seconds, description)
+                 VALUES ('2026-09-30', 'APRO-1', ?1, ?1, 1800, ?2)",
+                rusqlite::params![start, description],
+            )
+            .unwrap();
+        }
+        conn
+    }
+
+    fn stored_text_count(conn: &rusqlite::Connection) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM tempo_line_texts WHERE text IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn run_generate_line_texts(
+        invoker: Option<&dyn estimate::ModelInvoker>,
+    ) -> (rusqlite::Connection, String) {
+        let conn = line_text_conn();
+        let pending = tempo_lines::pending_generation(&conn, "2026-09-30", None).unwrap();
+        let mut out = Vec::new();
+        generate_line_texts(
+            pending,
+            invoker,
+            "m",
+            |key, text, source_hash| {
+                tempo_lines::commit_generated(&conn, key, text, source_hash, false)
+            },
+            &mut out,
+        )
+        .unwrap();
+        (conn, String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn generate_line_texts_without_invoker_stores_nothing() {
+        let (conn, out) = run_generate_line_texts(None);
+        assert_eq!(stored_text_count(&conn), 0);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn generate_line_texts_with_failing_model_stores_nothing_and_warns() {
+        let (conn, out) = run_generate_line_texts(Some(&FailingInvoker));
+        assert_eq!(stored_text_count(&conn), 0);
+        assert!(!out.contains("generated"));
+        assert!(out.contains("line text generation failed"));
+    }
+
+    #[test]
+    fn generate_line_texts_stores_model_text_and_reports_count() {
+        let (conn, out) = run_generate_line_texts(Some(&CannedInvoker));
+        let text: String = conn
+            .query_row("SELECT text FROM tempo_line_texts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(text, "Summarised by model");
+        assert!(out.contains("generated 1 line text"));
+    }
+
     /// A minimal work block — only the fields `aggregate_day` /
     /// `overlapping_pairs` read are meaningful.
     fn block(id: i64, start: &str, dur_secs: i64, ticket: Option<&str>) -> Block {
@@ -4386,6 +4542,7 @@ mod tests {
             dirty: false,
             exported_at: None,
             ignored_at: None,
+            ticket_origin: None,
         }
     }
 

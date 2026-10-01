@@ -33,7 +33,7 @@ pub fn assign_ticket(conn: &Connection, block_id: i64, key: Option<&str>) -> Res
         conn.execute(
             &format!(
                 "UPDATE blocks
-                    SET jira_issue = ?1, is_personal = 0, dirty = {MARK_DIRTY_IF_SYNCED}
+                    SET jira_issue = ?1, ticket_origin = 'manual', is_personal = 0, dirty = {MARK_DIRTY_IF_SYNCED}
                   WHERE id = ?2"
             ),
             params![key, block_id],
@@ -43,7 +43,7 @@ pub fn assign_ticket(conn: &Connection, block_id: i64, key: Option<&str>) -> Res
         conn.execute(
             &format!(
                 "UPDATE blocks
-                    SET jira_issue = NULL, dirty = {MARK_DIRTY_IF_SYNCED}
+                    SET jira_issue = NULL, ticket_origin = 'manual', dirty = {MARK_DIRTY_IF_SYNCED}
                   WHERE id = ?1"
             ),
             params![block_id],
@@ -387,9 +387,9 @@ pub fn split_block(conn: &Connection, block_id: i64, first_minutes: u32) -> Resu
     // The tail is a brand-new, unsynced block — no tempo_worklog_id.
     tx.execute(
         "INSERT INTO blocks
-            (day, jira_issue, started_at, ended_at, duration_seconds,
+            (day, jira_issue, ticket_origin, started_at, ended_at, duration_seconds,
              description, estimated_by, flagged, tempo_worklog_id, is_personal, dirty)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'manual', ?7, NULL, ?8, 0)",
+         VALUES (?1, ?2, ?9, ?3, ?4, ?5, ?6, 'manual', ?7, NULL, ?8, 0)",
         params![
             block.day,
             block.jira_issue,
@@ -399,6 +399,9 @@ pub fn split_block(conn: &Connection, block_id: i64, first_minutes: u32) -> Resu
             block.description,
             block.flagged as i64,
             block.is_personal as i64,
+            block
+                .ticket_origin
+                .map(crate::tempo_line_contract::TicketOrigin::as_str),
         ],
     )
     .context("split_block: inserting tail block")?;
@@ -431,6 +434,7 @@ mod tests {
     use crate::billing_registry;
     use crate::db::open_memory;
     use crate::deild_contract::ChangeField;
+    use crate::tempo_line_contract::TicketOrigin;
 
     fn seed(conn: &Connection) -> i64 {
         conn.execute(
@@ -496,6 +500,27 @@ mod tests {
         assert_eq!(got.jira_issue.as_deref(), Some("PROJ-1"));
         let got = assign_ticket(&conn, id, None).unwrap();
         assert!(got.jira_issue.is_none());
+    }
+
+    #[test]
+    fn assign_ticket_records_manual_origin_on_set_and_on_clear() {
+        let conn = open_memory().unwrap();
+        let id = seed(&conn);
+        conn.execute(
+            "UPDATE blocks SET ticket_origin = 'auto' WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+        let got = assign_ticket(&conn, id, Some("PROJ-1")).unwrap();
+        assert_eq!(got.ticket_origin, Some(TicketOrigin::Manual));
+        conn.execute(
+            "UPDATE blocks SET ticket_origin = 'event' WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+        let got = assign_ticket(&conn, id, None).unwrap();
+        assert!(got.jira_issue.is_none());
+        assert_eq!(got.ticket_origin, Some(TicketOrigin::Manual));
     }
 
     #[test]
@@ -1007,6 +1032,21 @@ mod tests {
         // first block shrank — synced, so it must come out dirty
         assert!(out.first.dirty);
         assert_eq!(out.first.tempo_worklog_id.as_deref(), Some("tmp-3"));
+    }
+
+    #[test]
+    fn split_tail_inherits_manual_ticket_origin() {
+        let conn = open_memory().unwrap();
+        let id = seed_at(
+            &conn,
+            "2026-04-18T09:00:00+00:00",
+            "2026-04-18T10:00:00+00:00",
+            3600,
+        );
+        assign_ticket(&conn, id, Some("PROJ-1")).unwrap();
+        let out = split_block(&conn, id, 25).unwrap();
+        assert_eq!(out.second.jira_issue.as_deref(), Some("PROJ-1"));
+        assert_eq!(out.second.ticket_origin, Some(TicketOrigin::Manual));
     }
 
     #[test]

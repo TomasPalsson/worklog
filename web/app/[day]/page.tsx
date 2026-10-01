@@ -9,6 +9,8 @@ import {
   routedForDay,
 } from "@/lib/daemon";
 import { elsewhereForDay, type ElsewhereItem } from "@/lib/daemonElsewhere";
+import { tempoLines } from "@/lib/daemonTempoLines";
+import type { TempoLine } from "@/lib/tempo_line_contract";
 import { formatDayHeading, formatTotalHours } from "@/lib/format";
 import { DayHeader } from "@/components/DayHeader";
 import { ActionBar } from "@/components/ActionBar";
@@ -80,16 +82,19 @@ export default async function DayPage({
   let routedEvents: RoutedEvent[] = [];
   let registry: BillingRegistry | null = null;
   let elsewhereItems: ElsewhereItem[] = [];
+  let lines: TempoLine[] = [];
   try {
-    [routedEvents, registry, elsewhereItems] = await Promise.all([
+    [routedEvents, registry, elsewhereItems, lines] = await Promise.all([
       routedForDay(day, true),
       loadBillingRegistry(),
       elsewhereForDay(day),
+      tempoLines(day).catch((): TempoLine[] => []),
     ]);
   } catch {
     routedEvents = [];
     registry = null;
     elsewhereItems = [];
+    lines = [];
   }
   const folderOptions = registry
     ? Array.from(
@@ -224,7 +229,12 @@ export default async function DayPage({
           ) : workGroups.length > 0 ? (
             <div className="ticket-groups">
               {workGroups.map((g) => (
-                <TicketGroup key={g.key} group={g} day={day}>
+                <TicketGroup
+                  key={g.key}
+                  group={g}
+                  day={day}
+                  line={g.unassigned ? undefined : lines.find((l) => l.jira_issue === g.key)}
+                >
                   <ul className="blocks" role="list">
                     {g.blocks.map((b) => (
                       <li key={b.id}>

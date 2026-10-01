@@ -664,7 +664,11 @@ pub fn estimate_day_with<I: ModelInvoker>(
                 "UPDATE blocks
                 SET description        = ?1,
                     duration_seconds   = ?2,
-                    jira_issue         = ?3,
+                    jira_issue         = CASE WHEN ticket_origin = 'manual'
+                                      THEN jira_issue ELSE ?3 END,
+                    ticket_origin      = CASE WHEN ticket_origin = 'manual' OR ?3 IS jira_issue
+                                      THEN ticket_origin
+                                      WHEN ?3 IS NULL THEN NULL ELSE 'auto' END,
                     estimated_by       = 'claude_p',
                     described_seconds  = ?5
               WHERE id = ?4
@@ -908,7 +912,11 @@ pub fn commit_block_estimate(
             "UPDATE blocks
                 SET description        = ?1,
                     duration_seconds   = ?2,
-                    jira_issue         = ?3,
+                    jira_issue         = CASE WHEN ticket_origin = 'manual'
+                                      THEN jira_issue ELSE ?3 END,
+                    ticket_origin      = CASE WHEN ticket_origin = 'manual' OR ?3 IS jira_issue
+                                      THEN ticket_origin
+                                      WHEN ?3 IS NULL THEN NULL ELSE 'auto' END,
                     estimated_by       = 'claude_p',
                     described_seconds  = ?5
               WHERE id = ?4",
@@ -927,6 +935,13 @@ pub fn commit_block_estimate(
              likely deleted in another tab while Claude was running"
         );
     }
+    let jira_issue: Option<String> = conn
+        .query_row(
+            "SELECT jira_issue FROM blocks WHERE id = ?1",
+            [block.id],
+            |r| r.get(0),
+        )
+        .context("reading back block ticket")?;
 
     // One batch for this single-block run (D-07); a refresh failure must
     // not fail the estimate — the write above already committed.
@@ -936,7 +951,7 @@ pub fn commit_block_estimate(
         block_id: block.id,
         description,
         minutes,
-        jira_issue: ticket,
+        jira_issue,
     })
 }
 
@@ -1030,8 +1045,12 @@ fn merge_block_into(conn: &Connection, dst: i64, src: i64) -> Result<()> {
     let new_dur = duration_seconds_between(&new_start, &new_end);
 
     conn.execute(
-        "UPDATE blocks SET started_at = ?1, ended_at = ?2, duration_seconds = ?3 WHERE id = ?4",
-        params![new_start, new_end, new_dur, dst],
+        "UPDATE blocks SET started_at = ?1, ended_at = ?2, duration_seconds = ?3,
+                ticket_origin = CASE WHEN ticket_origin = 'manual'
+                                       OR (SELECT ticket_origin FROM blocks WHERE id = ?5) = 'manual'
+                                     THEN 'manual' ELSE ticket_origin END
+          WHERE id = ?4",
+        params![new_start, new_end, new_dur, dst, src],
     )?;
     // Re-point junction rows. block_events uniqueness is per (block_id,
     // event_id) so we use INSERT OR IGNORE to handle any (theoretical)
@@ -1418,6 +1437,7 @@ mod tests {
     use crate::deild_contract::{BlockShares, ChangeField, ShareRow};
     use crate::models::{Event, JiraTicket};
     use crate::repo;
+    use crate::tempo_line_contract::TicketOrigin;
     use crate::tenant_shares;
 
     #[test]
@@ -1553,6 +1573,45 @@ mod tests {
         assert_eq!(remaining[0].1, "2026-05-12T09:00:00+00:00");
         assert_eq!(remaining[0].2, "2026-05-12T10:00:00+00:00");
         let _ = b;
+    }
+
+    fn origin_of_survivor_after_merge(
+        first_origin: &str,
+        second_origin: &str,
+    ) -> Option<TicketOrigin> {
+        let conn = open_memory().unwrap();
+        let first = insert_block_with_origin(&conn, Some("GENAI-1"), first_origin);
+        conn.execute(
+            "INSERT INTO blocks (day, jira_issue, ticket_origin, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-18', 'GENAI-1', ?1, '2026-04-18T10:31:00+00:00', '2026-04-18T11:00:00+00:00', 1740)",
+            params![second_origin],
+        )
+        .unwrap();
+        assert_eq!(merge_same_ticket_adjacent(&conn, "2026-04-18").unwrap(), 1);
+        repo::get_block(&conn, first)
+            .unwrap()
+            .unwrap()
+            .ticket_origin
+    }
+
+    #[test]
+    fn merge_keeps_manual_origin_when_either_block_is_manual() {
+        assert_eq!(
+            origin_of_survivor_after_merge("auto", "manual"),
+            Some(TicketOrigin::Manual)
+        );
+        assert_eq!(
+            origin_of_survivor_after_merge("manual", "auto"),
+            Some(TicketOrigin::Manual)
+        );
+    }
+
+    #[test]
+    fn merge_of_two_auto_blocks_leaves_origin_auto() {
+        assert_eq!(
+            origin_of_survivor_after_merge("auto", "auto"),
+            Some(TicketOrigin::Auto)
+        );
     }
 
     #[test]
@@ -2318,6 +2377,131 @@ mod tests {
         .unwrap();
         let block = repo::get_block(&conn, bid).unwrap().unwrap();
         assert_eq!(block.jira_issue.as_deref(), Some("GENAI-1"));
+    }
+
+    fn upsert_open_ticket(conn: &Connection, key: &str) {
+        repo::upsert_ticket(
+            conn,
+            &JiraTicket {
+                key: key.into(),
+                summary: "Real ticket".into(),
+                status: Some("In Progress".into()),
+                project_key: Some("PROJ".into()),
+                updated: Some("2026-04-18T00:00:00Z".into()),
+                issue_id: None,
+            },
+        )
+        .unwrap();
+    }
+
+    fn insert_block_with_origin(conn: &Connection, jira: Option<&str>, origin: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO blocks (day, jira_issue, ticket_origin, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-18', ?1, ?2, '2026-04-18T10:00:00+00:00', '2026-04-18T10:30:00+00:00', 1800)",
+            params![jira, origin],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn pick_ticket_reply(key: Option<&str>) -> FixedInvoker {
+        FixedInvoker(json!({"jira_issue": key, "minutes": 30, "description": "Work"}))
+    }
+
+    #[test]
+    fn estimate_day_keeps_manual_ticket_but_writes_description() {
+        let conn = open_memory().unwrap();
+        upsert_open_ticket(&conn, "PROJ-1");
+        upsert_open_ticket(&conn, "PROJ-7");
+        let bid = insert_block_with_origin(&conn, Some("PROJ-7"), "manual");
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        estimate_day_with(&conn, day, "m", &pick_ticket_reply(Some("PROJ-1"))).unwrap();
+        let block = repo::get_block(&conn, bid).unwrap().unwrap();
+        assert_eq!(block.jira_issue.as_deref(), Some("PROJ-7"));
+        assert_eq!(block.ticket_origin, Some(TicketOrigin::Manual));
+        assert_eq!(block.description.as_deref(), Some("Work"));
+    }
+
+    #[test]
+    fn estimate_day_keeps_manually_cleared_ticket_empty() {
+        let conn = open_memory().unwrap();
+        upsert_open_ticket(&conn, "PROJ-1");
+        let bid = insert_block_with_origin(&conn, None, "manual");
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        estimate_day_with(&conn, day, "m", &pick_ticket_reply(Some("PROJ-1"))).unwrap();
+        let block = repo::get_block(&conn, bid).unwrap().unwrap();
+        assert_eq!(block.jira_issue, None);
+        assert_eq!(block.ticket_origin, Some(TicketOrigin::Manual));
+    }
+
+    #[test]
+    fn estimate_day_marks_a_newly_picked_ticket_as_auto() {
+        let conn = open_memory().unwrap();
+        upsert_open_ticket(&conn, "PROJ-1");
+        let bid = insert_block_with_origin(&conn, None, "event");
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        estimate_day_with(&conn, day, "m", &pick_ticket_reply(Some("PROJ-1"))).unwrap();
+        let block = repo::get_block(&conn, bid).unwrap().unwrap();
+        assert_eq!(block.jira_issue.as_deref(), Some("PROJ-1"));
+        assert_eq!(block.ticket_origin, Some(TicketOrigin::Auto));
+    }
+
+    #[test]
+    fn estimate_day_same_ticket_keeps_event_origin() {
+        let conn = open_memory().unwrap();
+        upsert_open_ticket(&conn, "PROJ-1");
+        let bid = insert_block_with_origin(&conn, Some("PROJ-1"), "event");
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        estimate_day_with(&conn, day, "m", &pick_ticket_reply(Some("PROJ-1"))).unwrap();
+        let block = repo::get_block(&conn, bid).unwrap().unwrap();
+        assert_eq!(block.ticket_origin, Some(TicketOrigin::Event));
+    }
+
+    #[test]
+    fn estimate_day_null_pick_keeps_current_ticket_and_origin() {
+        let conn = open_memory().unwrap();
+        upsert_open_ticket(&conn, "PROJ-1");
+        let bid = insert_block_with_origin(&conn, Some("PROJ-1"), "auto");
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        estimate_day_with(&conn, day, "m", &pick_ticket_reply(None)).unwrap();
+        let block = repo::get_block(&conn, bid).unwrap().unwrap();
+        assert_eq!(block.jira_issue.as_deref(), Some("PROJ-1"));
+        assert_eq!(block.ticket_origin, Some(TicketOrigin::Auto));
+    }
+
+    #[test]
+    fn estimate_block_keeps_manual_ticket_and_reports_it() {
+        let conn = open_memory().unwrap();
+        upsert_open_ticket(&conn, "PROJ-1");
+        upsert_open_ticket(&conn, "PROJ-7");
+        let bid = insert_block_with_origin(&conn, Some("PROJ-7"), "manual");
+        let out = estimate_block_with(&conn, bid, &pick_ticket_reply(Some("PROJ-1")), "m").unwrap();
+        assert_eq!(out.jira_issue.as_deref(), Some("PROJ-7"));
+        let block = repo::get_block(&conn, bid).unwrap().unwrap();
+        assert_eq!(block.jira_issue.as_deref(), Some("PROJ-7"));
+        assert_eq!(block.ticket_origin, Some(TicketOrigin::Manual));
+        assert_eq!(block.description.as_deref(), Some("Work"));
+    }
+
+    #[test]
+    fn estimate_block_clears_origin_with_an_unvalidated_ticket() {
+        let conn = open_memory().unwrap();
+        let bid = insert_block_with_origin(&conn, Some("FINDING-01"), "event");
+        estimate_block_with(&conn, bid, &pick_ticket_reply(None), "m").unwrap();
+        let block = repo::get_block(&conn, bid).unwrap().unwrap();
+        assert_eq!(block.jira_issue, None);
+        assert_eq!(block.ticket_origin, None);
+    }
+
+    #[test]
+    fn estimate_block_marks_a_newly_picked_ticket_as_auto() {
+        let conn = open_memory().unwrap();
+        upsert_open_ticket(&conn, "PROJ-1");
+        let bid = insert_block_with_origin(&conn, None, "event");
+        let out = estimate_block_with(&conn, bid, &pick_ticket_reply(Some("PROJ-1")), "m").unwrap();
+        assert_eq!(out.jira_issue.as_deref(), Some("PROJ-1"));
+        let block = repo::get_block(&conn, bid).unwrap().unwrap();
+        assert_eq!(block.ticket_origin, Some(TicketOrigin::Auto));
     }
 
     #[test]

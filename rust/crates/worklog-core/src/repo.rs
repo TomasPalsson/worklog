@@ -9,6 +9,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use crate::models::{Block, Event, JiraTicket};
 use crate::raw_json::{decode_raw_json, encode_raw_json};
 use crate::scrub;
+use crate::tempo_line_contract::TicketOrigin;
 
 // ───────────────────────── events ─────────────────────────
 
@@ -145,7 +146,7 @@ pub fn list_blocks_for_day(conn: &Connection, day: &str) -> Result<Vec<Block>> {
     let mut stmt = conn.prepare(
         "SELECT id, day, jira_issue, started_at, ended_at, duration_seconds,
                 description, estimated_by, flagged, tempo_worklog_id, is_personal, dirty,
-                exported_at, ignored_at
+                exported_at, ignored_at, ticket_origin
            FROM blocks
           WHERE day = ?1
           ORDER BY started_at",
@@ -166,6 +167,10 @@ pub fn list_blocks_for_day(conn: &Connection, day: &str) -> Result<Vec<Block>> {
             dirty: r.get::<_, i64>(11)? != 0,
             exported_at: r.get(12)?,
             ignored_at: r.get(13)?,
+            ticket_origin: r
+                .get::<_, Option<String>>(14)?
+                .as_deref()
+                .and_then(TicketOrigin::parse),
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -211,7 +216,7 @@ pub fn get_block(conn: &Connection, id: i64) -> Result<Option<Block>> {
         .query_row(
             "SELECT id, day, jira_issue, started_at, ended_at, duration_seconds,
                     description, estimated_by, flagged, tempo_worklog_id, is_personal, dirty,
-                    exported_at, ignored_at
+                    exported_at, ignored_at, ticket_origin
                FROM blocks WHERE id = ?1",
             params![id],
             |r| {
@@ -230,6 +235,10 @@ pub fn get_block(conn: &Connection, id: i64) -> Result<Option<Block>> {
                     dirty: r.get::<_, i64>(11)? != 0,
                     exported_at: r.get(12)?,
                     ignored_at: r.get(13)?,
+                    ticket_origin: r
+                        .get::<_, Option<String>>(14)?
+                        .as_deref()
+                        .and_then(TicketOrigin::parse),
                 })
             },
         )

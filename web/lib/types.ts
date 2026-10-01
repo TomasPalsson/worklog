@@ -3,6 +3,7 @@
 
 import type { Deild } from "./deildir";
 import type { LineTextOrigin } from "./clues_contract";
+import type { TicketOrigin } from "./tempo_line_contract";
 
 /** A row from the `events` table as the daemon returns it. */
 export interface Event {
@@ -27,6 +28,7 @@ export interface Block {
   id: number;
   day: string;
   jira_issue: string | null;
+  ticket_origin?: TicketOrigin | null;
   started_at: string; // ISO-8601 UTC
   ended_at: string; // ISO-8601 UTC
   duration_seconds: number;

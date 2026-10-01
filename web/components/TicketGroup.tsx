@@ -1,16 +1,29 @@
 "use client";
 
-import { ReactNode, useRef, useTransition } from "react";
-import { GitMerge } from "lucide-react";
+import { ReactNode, useRef, useState, useTransition } from "react";
+import { Check, GitMerge, Pencil, RefreshCw, Sparkles } from "lucide-react";
 import type { BlockGroup } from "@/app/[day]/page";
 import { formatBilledHours, formatTotalHours } from "@/lib/format";
 import { canMergeGroup } from "@/lib/group-actions";
 import { mergeGroup } from "@/app/actions";
+import {
+  regenerateTempoLineText,
+  saveTempoLineHours,
+  saveTempoLineText,
+} from "@/app/actions-tempo-lines";
+import { HALF_HOUR_SECONDS, type TempoLine } from "@/lib/tempo_line_contract";
 import { toast } from "@/lib/toast";
+import { OriginIcon, originLabel } from "./BillingGroup";
 
 interface Props {
   group: BlockGroup;
   day: string;
+  /** The day's Tempo line for this ticket; absent for the unassigned group. */
+  line?: TempoLine;
+  /** Test-only overrides for the Tempo line server actions, as BillingGroup does. */
+  saveText?: typeof saveTempoLineText;
+  saveHours?: typeof saveTempoLineHours;
+  regenerate?: typeof regenerateTempoLineText;
   children: ReactNode;
 }
 
@@ -25,11 +38,78 @@ interface Props {
  * Assigned multi-block groups also get a "Merge all" button that
  * folds the rest of the group into the earliest-start block.
  */
-export function TicketGroup({ group, day, children }: Props) {
+export function TicketGroup({
+  group,
+  day,
+  line,
+  saveText = saveTempoLineText,
+  saveHours = saveTempoLineHours,
+  regenerate = regenerateTempoLineText,
+  children,
+}: Props) {
   const blockNoun = group.blocks.length === 1 ? "block" : "blocks";
   const showMerge = canMergeGroup(group);
   const [pending, startTransition] = useTransition();
   const summaryRef = useRef<HTMLElement>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [hoursDraft, setHoursDraft] = useState(
+    line?.hours_override_seconds ? String(line.hours_override_seconds / 3600) : "",
+  );
+  const [hoursError, setHoursError] = useState<string | null>(null);
+  const lineKey = line && { day: line.day, jira_issue: line.jira_issue };
+  const lineText = line ? (line.text ?? line.fallback_text) : "";
+  const verb = line?.text_origin ? "regenerate" : "generate";
+
+  const beginEdit = () => {
+    setDraft(lineText);
+    setEditing(true);
+  };
+
+  const saveLineText = () => {
+    if (!lineKey) return;
+    const text = draft;
+    startTransition(async () => {
+      const r = await saveText(lineKey, text);
+      if (!r.ok) {
+        toast.error(`Couldn't save — ${r.error}`);
+        return;
+      }
+      setEditing(false);
+      toast.ok(text.trim() === "" ? "Reset to generated text" : "Saved");
+    });
+  };
+
+  const regenerateLine = () => {
+    if (!lineKey) return;
+    startTransition(async () => {
+      const r = await regenerate(lineKey);
+      if (!r.ok) {
+        toast.error(`Couldn't ${verb} — ${r.error}`);
+        return;
+      }
+      toast.ok(verb === "generate" ? "Generated" : "Regenerated");
+    });
+  };
+
+  const saveLineHours = () => {
+    if (!lineKey) return;
+    const trimmed = hoursDraft.trim();
+    const seconds = trimmed === "" ? null : Math.round(Number(trimmed) * 3600);
+    if (seconds !== null && !(seconds % HALF_HOUR_SECONDS === 0)) {
+      setHoursError("Hours must be a multiple of half an hour");
+      return;
+    }
+    startTransition(async () => {
+      const r = await saveHours(lineKey, seconds);
+      if (!r.ok) {
+        setHoursError(r.error);
+        return;
+      }
+      setHoursError(null);
+      toast.ok(seconds === null ? "Hours reset" : "Hours saved");
+    });
+  };
 
   const runMerge = () => {
     if (pending) return;
@@ -95,13 +175,86 @@ export function TicketGroup({ group, day, children }: Props) {
             className="ticket-group-meta"
             title={`${formatTotalHours(group.totalSeconds)} tracked`}
           >
-            {formatBilledHours(group.totalSeconds)} billed
+            {formatBilledHours(line ? line.effective_seconds : group.totalSeconds)} billed
           </span>
         )}
         <SyncChip state={group.syncState} />
-        <span className="ticket-group-description" title={group.previewDescription}>
-          {group.previewDescription}
-        </span>
+        {line ? (
+          // Clicks here must not toggle the <details>.
+          <span className="billing-text-wrap" onClick={(e) => e.stopPropagation()}>
+            {editing ? (
+              <span className="billing-text-edit">
+                <textarea
+                  aria-label={`Edit line text for ${group.label}`}
+                  value={draft}
+                  disabled={pending}
+                  autoFocus
+                  onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") setEditing(false);
+                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) saveLineText();
+                  }}
+                />
+                <span className="billing-text-edit-actions">
+                  <button type="button" className="billing-text-primary" onClick={saveLineText} disabled={pending}>
+                    <Check width={12} height={12} aria-hidden="true" />
+                    Save
+                  </button>
+                  <button type="button" onClick={() => setEditing(false)} disabled={pending}>
+                    Cancel
+                  </button>
+                  <span className="billing-text-hint">⌘↵ to save · Esc to cancel · empty resets to generated</span>
+                </span>
+              </span>
+            ) : (
+              <>
+                <span className="billing-text">{lineText}</span>
+                <span className="billing-text-controls">
+                  <span className={`billing-text-origin billing-text-origin-${line.text_origin ?? "none"}`}>
+                    <OriginIcon origin={line.text_origin} />
+                    {originLabel(line.text_origin)}
+                  </span>
+                  <button type="button" onClick={beginEdit} disabled={pending}>
+                    <Pencil width={12} height={12} aria-hidden="true" />
+                    Edit
+                  </button>
+                  <button type="button" onClick={regenerateLine} disabled={pending}>
+                    {verb === "generate" && !pending ? (
+                      <Sparkles width={12} height={12} aria-hidden="true" />
+                    ) : (
+                      <RefreshCw
+                        width={12}
+                        height={12}
+                        aria-hidden="true"
+                        className={pending ? "billing-spin" : undefined}
+                      />
+                    )}
+                    {pending ? "Writing…" : verb === "generate" ? "Generate" : "Regenerate"}
+                  </button>
+                  <input
+                    className="ticket-line-hours"
+                    type="text"
+                    inputMode="decimal"
+                    size={4}
+                    aria-label={`Hours for ${group.label}`}
+                    placeholder={String(line.union_seconds / 3600)}
+                    value={hoursDraft}
+                    disabled={pending}
+                    onChange={(e) => setHoursDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") saveLineHours();
+                    }}
+                  />
+                  {hoursError && <span role="alert">{hoursError}</span>}
+                </span>
+              </>
+            )}
+          </span>
+        ) : (
+          <span className="ticket-group-description" title={group.previewDescription}>
+            {group.previewDescription}
+          </span>
+        )}
         {showMerge && (
           <button
             type="button"

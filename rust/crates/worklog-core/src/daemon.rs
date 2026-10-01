@@ -112,6 +112,9 @@ mod daemon_line_text;
 #[path = "daemon_deildir.rs"]
 mod daemon_deildir;
 
+#[path = "daemon_tempo_lines.rs"]
+mod daemon_tempo_lines;
+
 #[path = "daemon_changes.rs"]
 mod daemon_changes;
 
@@ -185,6 +188,13 @@ pub fn router(state: Shared) -> Router {
             post(daemon_line_text::regenerate),
         )
         .route("/billing/lines/status", get(daemon_line_text::status))
+        .route("/tempo/lines/:day", get(daemon_tempo_lines::list_lines))
+        .route("/tempo/lines/text", post(daemon_tempo_lines::set_text))
+        .route("/tempo/lines/hours", post(daemon_tempo_lines::set_hours))
+        .route(
+            "/tempo/lines/regenerate",
+            post(daemon_tempo_lines::regenerate),
+        )
         .route("/billing/tenants", get(daemon_tenants::list_tenants))
         .route("/billing/tenants/link", post(daemon_tenants::link_tenant))
         .route(
@@ -1777,6 +1787,22 @@ pub struct EstimateBody {
     pub model: Option<String>,
 }
 
+async fn count_generated_tempo_lines(
+    state: Shared,
+    day: String,
+    build_invoker: impl FnOnce() -> anyhow::Result<Box<dyn estimate::ModelInvoker>> + Send + 'static,
+) -> usize {
+    daemon_tempo_lines::generate_tempo_lines(state, day, None, build_invoker)
+        .await
+        .map_or_else(
+            |e| {
+                warn!(error = %e, "tempo line text generation failed");
+                0
+            },
+            |generated| generated.len(),
+        )
+}
+
 /// Run the AI estimator for every un-estimated block on the requested day.
 /// Shells out to `claude -p` under the hood, which can take a few seconds
 /// per block, so this is a long-ish request. Fine for a single-user tool.
@@ -1799,12 +1825,17 @@ async fn run_estimate(
     // held across any of those `claude -p` round trips. A line-text
     // failure never fails the estimate call — the estimate itself
     // already succeeded (FR-26).
-    let line_texts = daemon_line_text::generate_day(state, day_str).await;
+    let line_texts = daemon_line_text::generate_day(state.clone(), day_str.clone()).await;
+    let tempo_lines = count_generated_tempo_lines(state, day_str, || {
+        estimate::build_regenerate_invoker(crate::line_text::LINE_TEXT_THINKING_TOKENS)
+    })
+    .await;
     Ok(Json(json!({
         "day":       body.day,
         "estimated": stats.estimated,
         "skipped":   stats.skipped,
         "failed":    stats.failed,
+        "tempo_lines": tempo_lines,
         "line_texts": {
             "generated": line_texts.generated.len(),
             "not_generated": line_texts.not_generated.iter().map(|(key, reason)| json!({
@@ -2775,6 +2806,10 @@ mod tests {
 
     mod changes {
         include!("daemon_changes_test.rs");
+    }
+
+    mod daemon_tempo_lines {
+        include!("daemon_tempo_lines_test.rs");
     }
 
     fn state_with_block() -> Shared {

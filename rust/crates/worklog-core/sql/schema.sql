@@ -108,6 +108,10 @@ CREATE TABLE IF NOT EXISTS blocks (
     -- gradual growth but is dropped once the block outgrows the length it
     -- was actually written for. NULL for manual text and pre-migration rows.
     described_seconds INTEGER,
+    -- Who set jira_issue: 'event' (the block's events share one key),
+    -- 'auto' (estimator pick) or 'manual' (Owner). NULL = pre-v17 row,
+    -- behaves like 'auto'.
+    ticket_origin TEXT CHECK(ticket_origin IN ('event', 'auto', 'manual')),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -316,6 +320,21 @@ CREATE TABLE IF NOT EXISTS billing_line_texts (
     origin TEXT NOT NULL CHECK(origin IN ('generated', 'manual')),
     updated_at TEXT NOT NULL,
     PRIMARY KEY(day, folder, customer)
+);
+
+-- ───────────────────────── tempo ticket lines (spec 011) ─────────────────────────
+-- One row per (day, jira_issue): the stored worklog text and optional
+-- hours override for that ticket line. `hours_override_seconds` is a
+-- positive multiple of 30 minutes; see tempo_line_contract.rs.
+CREATE TABLE IF NOT EXISTS tempo_line_texts (
+    day TEXT NOT NULL,
+    jira_issue TEXT NOT NULL,
+    text TEXT,
+    text_origin TEXT CHECK(text_origin IN ('generated', 'manual')),
+    source_hash TEXT,
+    hours_override_seconds INTEGER CHECK(hours_override_seconds IS NULL OR (hours_override_seconds > 0 AND hours_override_seconds % 1800 = 0)),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(day, jira_issue)
 );
 
 -- ───────────────────── transcript file cache (perf T2) ─────────────────────

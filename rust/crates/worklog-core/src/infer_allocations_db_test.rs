@@ -433,3 +433,101 @@ fn two_sessions_same_customer_matches_no_customer_registry() {
         "one resolved customer must not split the folder's lane"
     );
 }
+
+fn seed_keyed_events(conn: &rusqlite::Connection, key: &str) {
+    use crate::models::Event;
+    for i in 0..30u32 {
+        let mut e = Event::minimal(
+            "claude_turn",
+            format!("k{i}"),
+            at(9, i * 2).to_rfc3339(),
+            "prompt",
+        );
+        e.project_path = Some(A.into());
+        e.jira_issue = Some(key.into());
+        crate::repo::upsert_event(conn, &e).unwrap();
+    }
+}
+
+fn rebuild_day(conn: &rusqlite::Connection, day: chrono::NaiveDate) {
+    let blocks = build_day_blocks(conn, day).unwrap();
+    crate::infer::persist_blocks(conn, day, &blocks).unwrap();
+}
+
+fn stored_ticket(conn: &rusqlite::Connection) -> (Option<String>, Option<String>) {
+    conn.query_row("SELECT jira_issue, ticket_origin FROM blocks", [], |r| {
+        Ok((r.get(0)?, r.get(1)?))
+    })
+    .unwrap()
+}
+
+#[test]
+fn event_key_is_stored_with_event_origin() {
+    let _g = crate::tz::test_env_lock();
+    std::env::remove_var("WORKLOG_TZ");
+    let conn = crate::db::open_memory().unwrap();
+    let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
+    seed_keyed_events(&conn, "PROJ-5");
+    rebuild_day(&conn, day);
+    assert_eq!(
+        stored_ticket(&conn),
+        (Some("PROJ-5".into()), Some("event".into()))
+    );
+}
+
+#[test]
+fn manual_ticket_survives_rebuild_with_a_different_event_key() {
+    let _g = crate::tz::test_env_lock();
+    std::env::remove_var("WORKLOG_TZ");
+    let conn = crate::db::open_memory().unwrap();
+    let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
+    seed_keyed_events(&conn, "PROJ-5");
+    rebuild_day(&conn, day);
+    conn.execute(
+        "UPDATE blocks SET jira_issue = 'MINE-1', ticket_origin = 'manual'",
+        [],
+    )
+    .unwrap();
+    rebuild_day(&conn, day);
+    assert_eq!(
+        stored_ticket(&conn),
+        (Some("MINE-1".into()), Some("manual".into()))
+    );
+}
+
+#[test]
+fn manually_cleared_ticket_stays_empty_after_rebuild() {
+    let _g = crate::tz::test_env_lock();
+    std::env::remove_var("WORKLOG_TZ");
+    let conn = crate::db::open_memory().unwrap();
+    let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
+    seed_keyed_events(&conn, "PROJ-5");
+    rebuild_day(&conn, day);
+    conn.execute(
+        "UPDATE blocks SET jira_issue = NULL, ticket_origin = 'manual'",
+        [],
+    )
+    .unwrap();
+    rebuild_day(&conn, day);
+    assert_eq!(stored_ticket(&conn), (None, Some("manual".into())));
+}
+
+#[test]
+fn auto_ticket_keeps_its_origin_across_rebuild() {
+    let _g = crate::tz::test_env_lock();
+    std::env::remove_var("WORKLOG_TZ");
+    let conn = crate::db::open_memory().unwrap();
+    let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
+    seed_keyed_events(&conn, "PROJ-5");
+    rebuild_day(&conn, day);
+    conn.execute(
+        "UPDATE blocks SET jira_issue = 'AUTO-2', ticket_origin = 'auto'",
+        [],
+    )
+    .unwrap();
+    rebuild_day(&conn, day);
+    assert_eq!(
+        stored_ticket(&conn),
+        (Some("AUTO-2".into()), Some("auto".into()))
+    );
+}

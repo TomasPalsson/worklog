@@ -4,6 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::tempo_line_contract::TicketOrigin;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Event {
     pub id: Option<i64>,
@@ -83,6 +85,8 @@ pub struct Block {
     /// `is_personal` and stay ignored across a rebuild (see infer.rs).
     #[serde(default)]
     pub ignored_at: Option<String>,
+    #[serde(default)]
+    pub ticket_origin: Option<TicketOrigin>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
