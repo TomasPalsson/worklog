@@ -666,9 +666,9 @@ pub fn estimate_day_with<I: ModelInvoker>(
                     duration_seconds   = ?2,
                     jira_issue         = CASE WHEN ticket_origin = 'manual'
                                       THEN jira_issue ELSE ?3 END,
-                    ticket_origin      = CASE WHEN ticket_origin = 'manual' OR ?3 IS NULL
-                                                OR ?3 IS jira_issue
-                                      THEN ticket_origin ELSE 'auto' END,
+                    ticket_origin      = CASE WHEN ticket_origin = 'manual' OR ?3 IS jira_issue
+                                      THEN ticket_origin
+                                      WHEN ?3 IS NULL THEN NULL ELSE 'auto' END,
                     estimated_by       = 'claude_p',
                     described_seconds  = ?5
               WHERE id = ?4
@@ -914,9 +914,9 @@ pub fn commit_block_estimate(
                     duration_seconds   = ?2,
                     jira_issue         = CASE WHEN ticket_origin = 'manual'
                                       THEN jira_issue ELSE ?3 END,
-                    ticket_origin      = CASE WHEN ticket_origin = 'manual' OR ?3 IS NULL
-                                                OR ?3 IS jira_issue
-                                      THEN ticket_origin ELSE 'auto' END,
+                    ticket_origin      = CASE WHEN ticket_origin = 'manual' OR ?3 IS jira_issue
+                                      THEN ticket_origin
+                                      WHEN ?3 IS NULL THEN NULL ELSE 'auto' END,
                     estimated_by       = 'claude_p',
                     described_seconds  = ?5
               WHERE id = ?4",
@@ -2438,6 +2438,16 @@ mod tests {
         assert_eq!(block.jira_issue.as_deref(), Some("PROJ-7"));
         assert_eq!(block.ticket_origin, Some(TicketOrigin::Manual));
         assert_eq!(block.description.as_deref(), Some("Work"));
+    }
+
+    #[test]
+    fn estimate_block_clears_origin_with_an_unvalidated_ticket() {
+        let conn = open_memory().unwrap();
+        let bid = insert_block_with_origin(&conn, Some("FINDING-01"), "event");
+        estimate_block_with(&conn, bid, &pick_ticket_reply(None), "m").unwrap();
+        let block = repo::get_block(&conn, bid).unwrap().unwrap();
+        assert_eq!(block.jira_issue, None);
+        assert_eq!(block.ticket_origin, None);
     }
 
     #[test]
