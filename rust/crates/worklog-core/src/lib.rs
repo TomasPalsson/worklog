@@ -65,8 +65,12 @@ mod session_customers;
 pub mod session_pins;
 pub mod sessions;
 pub mod skill;
+pub mod task_board;
+pub mod task_draft;
+pub mod tempo_hub_contract;
 pub mod tempo_line_contract;
 pub mod tempo_lines;
+pub mod tempo_remote;
 pub mod tenant_clues;
 pub mod tenant_contract;
 pub mod tenant_shares;
@@ -78,6 +82,7 @@ pub mod updater;
 pub mod upgrade_006;
 pub mod verdict;
 pub mod web;
+pub mod week_closeout;
 
 pub use crate::paths::Paths;
 
