@@ -31,6 +31,7 @@ mock.module("@/app/actions", () => ({
   // Bun's mock.module is process-wide: BillingGroup.test mocks this same
   // specifier, so both must export every name either file's tree imports.
   saveBillingFolder: mock(async () => ({ ok: true as const, data: undefined })),
+  mergeGroup: mock(async () => ({ ok: true as const, data: undefined })),
 }));
 
 let BlockCard: (props: {
