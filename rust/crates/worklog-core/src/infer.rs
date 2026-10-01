@@ -19,6 +19,8 @@ use chrono::{DateTime, Duration, NaiveDate, Utc};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
+use crate::tempo_line_contract::{ticket_locked, TicketOrigin};
+
 // Bumped from 20 → 30. AI-paired coding has long autonomous stretches
 // where Claude runs tools for 20+ min without firing a UserPromptSubmit/Stop
 // pair; 20 split those into dropped sub-MIN_BLOCK slivers. 30 keeps the
@@ -569,7 +571,7 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
         // ensures the earliest-starting new block claims the earliest
         // prior.
         let mut stmt = conn.prepare(
-            "SELECT started_at, ended_at, jira_issue, description, estimated_by, tempo_worklog_id, exported_at, described_seconds, ignored_at
+            "SELECT started_at, ended_at, jira_issue, description, estimated_by, tempo_worklog_id, exported_at, described_seconds, ignored_at, ticket_origin
                FROM blocks WHERE day = ?1 ORDER BY started_at",
         )?;
         let iter = stmt.query_map(params![day_iso], |r| {
@@ -583,6 +585,9 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
                 exported_at: r.get(6)?,
                 described_seconds: r.get(7)?,
                 ignored_at: r.get(8)?,
+                ticket_origin: r
+                    .get::<_, Option<String>>(9)?
+                    .and_then(|s| TicketOrigin::parse(&s)),
             })
         })?;
         for row in iter {
@@ -678,10 +683,16 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
             .filter(|_| keeps_description)
             .and_then(|c| c.described_seconds);
         let exported_at = carry.and_then(|c| c.exported_at.clone());
-        // Preserve manual ticket override if present; otherwise trust inference.
-        let jira_issue = carry
-            .and_then(|c| c.jira_issue.clone())
-            .or_else(|| b.jira_issue.clone());
+        // A hand-set ticket (even a cleared one) is kept; any other prior
+        // ticket is kept with its origin; otherwise trust inference.
+        let (jira_issue, ticket_origin) = match carry {
+            Some(c) if ticket_locked(c.ticket_origin) => (c.jira_issue.clone(), c.ticket_origin),
+            Some(c) if c.jira_issue.is_some() => (c.jira_issue.clone(), c.ticket_origin),
+            _ => match b.jira_issue.clone() {
+                Some(key) => (Some(key), Some(TicketOrigin::Event)),
+                None => (None, None),
+            },
+        };
 
         // path-based classifier gives the first signal, but a jira_issue
         // that's actually a cached ticket (R7) is a stronger one — a spec
@@ -705,8 +716,8 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
             "INSERT INTO blocks (
                 day, jira_issue, started_at, ended_at,
                 duration_seconds, description, estimated_by, flagged,
-                tempo_worklog_id, is_personal, exported_at, described_seconds, ignored_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                tempo_worklog_id, is_personal, exported_at, described_seconds, ignored_at, ticket_origin
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 b.day,
                 jira_issue,
@@ -721,6 +732,7 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
                 exported_at,
                 described_seconds,
                 ignored_at,
+                ticket_origin.map(TicketOrigin::as_str),
             ],
         )
         .context("inserting block")?;
@@ -786,6 +798,7 @@ struct CarryRow {
     exported_at: Option<String>,
     described_seconds: Option<i64>,
     ignored_at: Option<String>,
+    ticket_origin: Option<TicketOrigin>,
 }
 
 /// Overlap check on ISO-8601 timestamps. Parses each string to a
