@@ -512,6 +512,7 @@ pub fn fetch_status_with(
 
 /// Paragraphs split on blank lines; single newlines become `hardBreak`.
 fn adf_comment(text: &str) -> serde_json::Value {
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
     let paragraphs: Vec<_> = text
         .split("\n\n")
         .filter(|p| !p.trim().is_empty())
@@ -1084,5 +1085,10 @@ mod tests {
         )
         .unwrap();
         m.assert();
+    }
+
+    #[test]
+    fn adf_comment_normalises_crlf() {
+        assert_eq!(adf_comment("a\r\nb\r\n\r\nc"), adf_comment("a\nb\n\nc"));
     }
 }
