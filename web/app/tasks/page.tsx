@@ -7,7 +7,8 @@ import { ChevronLeft } from "lucide-react";
 import { TaskBoard } from "@/components/TaskBoard";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { tasks } from "@/lib/daemonHub";
-import { formatDayHeading, todayISO } from "@/lib/format";
+import { formatDayHeading, formatDuration, todayISO } from "@/lib/format";
+import { weekTotal } from "@/lib/taskBoard";
 
 export const metadata = {
   title: "My Tasks · worklog",
@@ -15,12 +16,18 @@ export const metadata = {
 
 export const dynamic = "force-dynamic";
 
+const fetchedAt = (iso: string) =>
+  new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+
 export default async function TasksPage() {
-  const { tasks: rows } = await tasks();
+  const { tasks: rows, last_fetched } = await tasks();
   const today = todayISO();
+  const parts = [`${rows.length} tickets`, `${formatDuration(weekTotal(rows))} logged this week`];
+  if (last_fetched) parts.push(`Jira cache from ${fetchedAt(last_fetched)}`);
+  const lede = parts.join(" · ");
 
   return (
-    <main className="reg-page">
+    <main className="reg-page tasks-page">
       <header className="reg-page-header">
         <div>
           <Link href={`/${today}`} className="reg-back" data-tip="Back to the day view">
@@ -28,6 +35,7 @@ export default async function TasksPage() {
             {formatDayHeading(today)}
           </Link>
           <h1>My Tasks</h1>
+          <p className="tasks-lede">{lede}</p>
         </div>
         <ThemeToggle />
       </header>

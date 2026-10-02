@@ -5,6 +5,7 @@ import { beforeAll, beforeEach, describe, expect, it, mock } from "bun:test";
 import type {
   PullReport,
   TasksResponse,
+  TicketDetail,
   TicketDraft,
   TicketStatus,
   Transition,
@@ -31,6 +32,19 @@ const ticketDraft: TicketDraft = {
   suggested_transition_id: "31",
   transitions: transitionList,
 };
+const ticketDetail: TicketDetail = {
+  key: "ABC-1",
+  summary: "Fix login",
+  status: "To Do",
+  status_category: "new",
+  issue_type: "Bug",
+  priority: "High",
+  assignee: "Tomas",
+  updated: "2026-09-20T10:00:00.000+0000",
+  url: "https://x.atlassian.net/browse/ABC-1",
+  description: "Steps",
+  comments: [{ id: "1", author: "Tomas", created: "2026-09-20T10:00:00.000+0000", body: "hi" }],
+};
 const report: PullReport = {
   monday: "2026-09-21",
   worklogs: 3,
@@ -45,6 +59,7 @@ const transitionsImpl = mock(async (_key: string) => transitionList);
 const transitionImpl = mock(async (_key: string, _id: string) => status);
 const commentImpl = mock(async (_key: string, _text: string) => ({ ok: true as const }));
 const draftImpl = mock(async (_key: string) => ticketDraft);
+const detailImpl = mock(async (_key: string) => ticketDetail);
 const pullImpl = mock(async (_monday: string) => report);
 const closeoutImpl = mock(async (_monday: string) => closeoutBody);
 
@@ -53,6 +68,7 @@ mock.module("@/lib/daemonHub", () => ({
   transitions: (k: string) => transitionsImpl(k),
   transition: (k: string, id: string) => transitionImpl(k, id),
   comment: (k: string, t: string) => commentImpl(k, t),
+  detail: (k: string) => detailImpl(k),
   draft: (k: string) => draftImpl(k),
   pullTempo: (m: string) => pullImpl(m),
   closeout: (m: string) => closeoutImpl(m),
@@ -72,6 +88,7 @@ beforeEach(() => {
     transitionImpl,
     commentImpl,
     draftImpl,
+    detailImpl,
     pullImpl,
     closeoutImpl,
   ]) {
@@ -88,6 +105,12 @@ describe("reads", () => {
 
   it("loadTransitions returns the list", async () => {
     expect(await hub.loadTransitions("ABC-1")).toEqual({ ok: true, data: transitionList });
+  });
+
+  it("loadTicketDetail returns the detail without revalidating", async () => {
+    expect(await hub.loadTicketDetail("ABC-1")).toEqual({ ok: true, data: ticketDetail });
+    expect(detailImpl).toHaveBeenCalledWith("ABC-1");
+    expect(revalidateImpl).not.toHaveBeenCalled();
   });
 
   it("draftTicketUpdate returns the draft", async () => {

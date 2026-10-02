@@ -8,6 +8,7 @@ import * as hub from "@/lib/daemonHub";
 import type {
   PullReport,
   TasksResponse,
+  TicketDetail,
   TicketDraft,
   TicketStatus,
   Transition,
@@ -40,6 +41,10 @@ export async function loadTasks(monday?: string): Promise<ActionResult<TasksResp
 
 export async function loadTransitions(key: string): Promise<ActionResult<Transition[]>> {
   return run(() => hub.transitions(key));
+}
+
+export async function loadTicketDetail(key: string): Promise<ActionResult<TicketDetail>> {
+  return run(() => hub.detail(key));
 }
 
 export async function transitionTicket(
