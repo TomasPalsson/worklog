@@ -175,7 +175,7 @@ describe("Time card", () => {
     const t = ".task-time";
     expect(value(t, "This week").textContent).toBe("1h 30m");
     expect(value(t, "Today").textContent).toBe("30m");
-    expect(terms(t)).toEqual(["This week", "Today", "Tempo"]);
+    expect(terms(t)).toEqual(["Today", "This week", "Tempo"]);
     await waitFor(() => expect(value(t, "Tempo").textContent).toContain("not sent"));
     cleanup();
     open(actions(), row({ today_seconds: 0 }));

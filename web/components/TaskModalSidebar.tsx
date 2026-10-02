@@ -1,24 +1,14 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 
-import { formatDuration } from "@/lib/format";
 import { formatStamp, localToday } from "@/lib/taskBoard";
 import type { TaskRow, TicketDetail } from "@/lib/types";
 import type { TaskActions } from "./TaskCard";
 import { DueChip, Labels, PriorityGlyph, TypeIcon } from "./TaskCardMeta";
-import { tempoState } from "./tempoState";
+import { Row, TimeCard } from "./TaskModalTime";
 import { StatusButton, type Shown } from "./TaskStatusButton";
 import type { BlocksLoad } from "./useWorkLog";
-
-function Row({ term, children }: { term: string; children: ReactNode }) {
-  return (
-    <div className="task-dl-row">
-      <dt>{term}</dt>
-      <dd>{children}</dd>
-    </div>
-  );
-}
 
 interface DetailsProps {
   task: TaskRow;
@@ -33,6 +23,8 @@ function Details({ task, detail, today, done, wide }: DetailsProps) {
   const type = detail?.issue_type ?? task.issue_type;
   const priority = detail?.priority ?? task.priority;
   const updated = detail?.updated ?? task.updated;
+  const due = detail?.due_date ?? task.due_date;
+  const labels = detail?.labels.length ? detail.labels : task.labels;
   // The cached row only knows whether the ticket is assigned to the Owner, not to whom.
   const assignee = detail ? detail.assignee : task.assigned ? "You" : null;
   // Always open beside the main column; on small screens a toggle, closed to start with.
@@ -44,6 +36,7 @@ function Details({ task, detail, today, done, wide }: DetailsProps) {
       </summary>
       <dl>
         {assignee && <Row term="Assignee">{assignee}</Row>}
+        {detail?.reporter && <Row term="Reporter">{detail.reporter}</Row>}
         {priority && (
           <Row term="Priority">
             <PriorityGlyph priority={priority} />
@@ -56,57 +49,22 @@ function Details({ task, detail, today, done, wide }: DetailsProps) {
             <span aria-hidden="true">{type}</span>
           </Row>
         )}
-        {task.due_date && (
+        {due && (
           <Row term="Due">
-            <DueChip due={task.due_date} today={today ?? localToday()} done={done} />
+            <DueChip due={due} today={today ?? localToday()} done={done} />
           </Row>
         )}
-        {task.labels.length > 0 && (
+        {labels.length > 0 && (
           <Row term="Labels">
-            <Labels labels={task.labels} />
+            <Labels labels={labels} />
           </Row>
         )}
+        {detail && detail.components.length > 0 && <Row term="Components">{detail.components.join(", ")}</Row>}
+        {detail && detail.fix_versions.length > 0 && <Row term="Fix versions">{detail.fix_versions.join(", ")}</Row>}
+        {detail?.created && <Row term="Created">{formatStamp(detail.created)}</Row>}
         {updated && <Row term="Updated">{formatStamp(updated)}</Row>}
       </dl>
     </details>
-  );
-}
-
-/** Said once: the state in words, and for days still to send a Show unsent day button that jumps to the first of them. */
-function TempoRow({ load, onTempo }: { load: BlocksLoad; onTempo: () => void }) {
-  const tempo = tempoState(load);
-  if (!tempo) return <span className="task-none">—</span>;
-  return (
-    <span className="task-tempo-line">
-      <span className="task-tempo" data-tone={tempo.tone}>
-        {tempo.text}
-      </span>
-      {tempo.review && (
-        <span className="task-tempo-act">
-          <span aria-hidden="true">{" · "}</span>
-          <button type="button" className="task-review" aria-label="Show the first unsent day" onClick={onTempo}>
-            Show unsent day
-          </button>
-        </span>
-      )}
-    </span>
-  );
-}
-
-function TimeCard({ task, load, onTempo }: { task: TaskRow; load: BlocksLoad; onTempo: () => void }) {
-  return (
-    <section className="task-side-card task-time" aria-labelledby="task-time-label">
-      <h3 id="task-time-label" className="task-label">
-        Time
-      </h3>
-      <dl>
-        <Row term="This week">{formatDuration(task.week_seconds)}</Row>
-        {task.today_seconds > 0 && <Row term="Today">{formatDuration(task.today_seconds)}</Row>}
-        <Row term="Tempo">
-          <TempoRow load={load} onTempo={onTempo} />
-        </Row>
-      </dl>
-    </section>
   );
 }
 
@@ -123,11 +81,14 @@ export interface SidebarProps {
   load: BlocksLoad;
   onStatus: (next: Shown) => void;
   onTempo: () => void;
+  /** Reload the work log once the Time card has pulled fresh Tempo numbers. */
+  onPulled?: () => void | Promise<void>;
   /** At the widths with a sidebar; below that the status and time sit under the title instead. */
   wide: boolean;
 }
 
-export function TaskModalSidebar({ task, actions, today, detail, shown, syncedAt, load, onStatus, onTempo, wide }: SidebarProps) {
+export function TaskModalSidebar({ task, actions, today, detail, shown, syncedAt, load, onStatus, onTempo, onPulled, wide }: SidebarProps) {
+  const time = <TimeCard task={task} detail={detail} load={load} onTempo={onTempo} onPulled={onPulled} />;
   return (
     <aside className="task-modal-side" aria-label={`Details for ${task.key}`}>
       {wide && (
@@ -135,10 +96,11 @@ export function TaskModalSidebar({ task, actions, today, detail, shown, syncedAt
           <div className="task-side-status">
             <StatusButton taskKey={task.key} shown={shown} actions={actions} onStatus={onStatus} />
           </div>
-          <TimeCard task={task} load={load} onTempo={onTempo} />
+          {time}
         </>
       )}
       <Details task={task} detail={detail} today={today} done={shown.status_category === "done"} wide={wide} />
+      {!wide && time}
       {syncedAt && <p className="task-side-foot">{`Jira synced at ${clock(syncedAt)}`}</p>}
     </aside>
   );

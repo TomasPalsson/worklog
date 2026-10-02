@@ -6266,3 +6266,17 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
 @media (max-width: 759px) {
   .task-rel-meta { display: none; }
 }
+
+/* ── ticket-full: W1 time card + details ── */
+.task-today, .task-estimate { display: grid; gap: 4px; min-width: 0; }
+.task-today-ticket { font-size: 12px; color: var(--fg-muted); }
+.task-meter { display: block; height: 6px; border-radius: var(--radius-sm); background: var(--bg-sunk); overflow: hidden; }
+.task-meter > span { display: block; height: 100%; background: var(--sage-ink); }
+.task-meter[data-over] > span { background: var(--amber-ink); }
+.task-time-foot { margin: 12px 0 0; font-size: 12px; color: var(--fg-subtle); }
+.task-time-foot .task-review { min-height: 36px; font-size: 12px; }
+.task-time-foot .task-review:disabled { color: var(--fg-subtle); cursor: progress; text-decoration: none; }
+.task-modal-side .task-time { min-width: 0; }
+@media (pointer: coarse) {
+  .task-time-foot .task-review { min-height: 40px; }
+}
