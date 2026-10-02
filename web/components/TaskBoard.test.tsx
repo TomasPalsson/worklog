@@ -93,6 +93,26 @@ describe("TaskBoard", () => {
     expect(calls(a.commentOnTicket)[0]).toEqual(["ABC-1", "shipped"]);
   });
 
+  it("Post is disabled while a post is in flight", async () => {
+    let resolve!: (v: { ok: true; data: { ok: true } }) => void;
+    const pending = new Promise<{ ok: true; data: { ok: true } }>((r) => (resolve = r));
+    const a = actions({ commentOnTicket: mock(() => pending) });
+    render(<TaskBoard actions={a} tasks={[row({})]} />);
+    const post = screen.getByRole("button", { name: "Post comment" }) as HTMLButtonElement;
+    const box = screen.getByRole("textbox", { name: "Comment on ABC-1" }) as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: "shipped" } });
+    expect(post.disabled).toBe(false);
+    fireEvent.click(post);
+    await waitFor(() => expect(calls(a.commentOnTicket).length).toBe(1));
+    // Text is still present, so only busy can be disabling Post here.
+    expect(box.value).toBe("shipped");
+    expect(post.disabled).toBe(true);
+    resolve({ ok: true, data: { ok: true } });
+    await waitFor(() => expect(box.value).toBe(""));
+    fireEvent.change(box, { target: { value: "again" } });
+    expect(post.disabled).toBe(false);
+  });
+
   it("Draft with AI fills the comment and flags the suggested transition without applying it", async () => {
     const a = actions();
     render(<TaskBoard actions={a} tasks={[row({})]} />);
