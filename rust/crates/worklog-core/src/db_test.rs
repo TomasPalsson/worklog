@@ -869,7 +869,7 @@ fn tempo_line_texts_enforces_origin_and_half_hour_override_and_keys_by_day_and_i
 
 #[test]
 fn schema_v18_adds_status_category_and_tempo_readback_tables() {
-    assert_eq!(SCHEMA_VERSION, 18);
+    assert_eq!(SCHEMA_VERSION, 19);
     let conn = open_memory().unwrap();
     conn.execute(
         "INSERT INTO jira_tickets (key, summary) VALUES ('APRO-1', 's')",
@@ -932,5 +932,38 @@ fn migrate_from_v17_adds_status_category_to_existing_jira_tickets() {
         )
         .unwrap();
     assert_eq!(category, None);
-    assert_eq!(current_version(&conn).unwrap(), 18);
+    assert_eq!(current_version(&conn).unwrap(), 19);
+    assert_eq!(
+        detail_columns(&conn),
+        DETAIL_COLUMNS,
+        "v18 table gains the detail columns"
+    );
+}
+
+const DETAIL_COLUMNS: [&str; 5] = [
+    "issue_type",
+    "priority",
+    "due_date",
+    "labels",
+    "parent_summary",
+];
+
+fn detail_columns(conn: &Connection) -> Vec<String> {
+    let cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(jira_tickets)")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .collect::<std::result::Result<_, _>>()
+        .unwrap();
+    DETAIL_COLUMNS
+        .iter()
+        .filter(|n| cols.iter().any(|c| c == *n))
+        .map(|n| n.to_string())
+        .collect()
+}
+
+#[test]
+fn schema_v19_fresh_db_has_jira_ticket_detail_columns() {
+    assert_eq!(detail_columns(&open_memory().unwrap()), DETAIL_COLUMNS);
 }

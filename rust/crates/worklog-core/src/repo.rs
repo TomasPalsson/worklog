@@ -294,6 +294,40 @@ pub fn set_ticket_status(
     Ok(())
 }
 
+/// Rich Jira fields shown on My Tasks cards.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct TicketDetails {
+    pub issue_type: Option<String>,
+    pub priority: Option<String>,
+    pub due_date: Option<String>,
+    pub labels: Vec<String>,
+    pub parent_summary: Option<String>,
+}
+
+/// Overwrites all five detail columns; `labels` is a JSON array, NULL when empty.
+pub fn set_ticket_details(conn: &Connection, key: &str, d: &TicketDetails) -> Result<()> {
+    let labels = if d.labels.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(&d.labels).context("encode labels")?)
+    };
+    conn.execute(
+        "UPDATE jira_tickets
+            SET issue_type = ?2, priority = ?3, due_date = ?4, labels = ?5, parent_summary = ?6
+          WHERE key = ?1",
+        params![
+            key,
+            d.issue_type,
+            d.priority,
+            d.due_date,
+            labels,
+            d.parent_summary
+        ],
+    )
+    .context("set jira ticket details")?;
+    Ok(())
+}
+
 /// Assigned tickets absent from a complete refresh are no longer open
 /// for the user; externals are picked by hand and never aged out.
 pub fn mark_unreturned_done(conn: &Connection, returned_keys: &[String]) -> Result<usize> {

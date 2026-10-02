@@ -57,6 +57,20 @@ pub struct TaskRow {
     pub today_seconds: i64,
     /// Latest day (YYYY-MM-DD) with a ticket line for this key, any week.
     pub last_worked_day: Option<String>,
+    /// Jira issue type name ("Bug", "Story", "Task", "Epic", "Sub-task", …); None until a refresh stores it.
+    pub issue_type: Option<String>,
+    /// Jira priority name ("Highest", "High", "Medium", "Low", "Lowest", …).
+    pub priority: Option<String>,
+    /// Jira `duedate`, YYYY-MM-DD.
+    pub due_date: Option<String>,
+    /// Jira labels, as Jira sent them; empty when none.
+    pub labels: Vec<String>,
+    /// Summary of the parent issue (epic or parent story), if any.
+    pub parent_summary: Option<String>,
+    /// Jira `updated` from the cache (ISO-8601 as Jira sent it).
+    pub updated: Option<String>,
+    /// Effective seconds per day of the requested week, Monday first, always 7 entries.
+    pub day_seconds: Vec<i64>,
 }
 
 /// `GET /tasks?monday=` response.

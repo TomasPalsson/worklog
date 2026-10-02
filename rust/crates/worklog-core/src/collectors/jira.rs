@@ -45,6 +45,26 @@ struct Fields {
     summary: Option<String>,
     status: Option<Status>,
     updated: Option<String>,
+    issuetype: Option<Named>,
+    priority: Option<Named>,
+    duedate: Option<String>,
+    labels: Option<Vec<String>>,
+    parent: Option<Parent>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Named {
+    name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Parent {
+    fields: Option<ParentFields>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ParentFields {
+    summary: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -117,7 +137,11 @@ pub fn fetch_open_tickets_with(
         let mut query = vec![
             ("jql", JQL.to_owned()),
             ("maxResults", MAX_RESULTS.to_string()),
-            ("fields", "summary,status,updated,project".to_owned()),
+            (
+                "fields",
+                "summary,status,updated,project,issuetype,priority,duedate,labels,parent"
+                    .to_owned(),
+            ),
         ];
         if let Some(t) = page_token.take() {
             query.push(("nextPageToken", t));
@@ -134,6 +158,17 @@ pub fn fetch_open_tickets_with(
         for issue in body.issues {
             let project_key = issue.key.split_once('-').map(|(p, _)| p.to_owned());
             let status = issue.fields.status;
+            let details = repo::TicketDetails {
+                issue_type: issue.fields.issuetype.and_then(|n| n.name),
+                priority: issue.fields.priority.and_then(|n| n.name),
+                due_date: issue.fields.duedate,
+                labels: issue.fields.labels.unwrap_or_default(),
+                parent_summary: issue
+                    .fields
+                    .parent
+                    .and_then(|p| p.fields)
+                    .and_then(|f| f.summary),
+            };
             let ticket = JiraTicket {
                 key: issue.key,
                 summary: issue.fields.summary.unwrap_or_default(),
@@ -150,6 +185,7 @@ pub fn fetch_open_tickets_with(
                 ticket.status.as_deref().unwrap_or(""),
                 category,
             )?;
+            repo::set_ticket_details(conn, &ticket.key, &details)?;
             returned.push(ticket.key);
             report.tickets_written += 1;
         }
@@ -1048,6 +1084,47 @@ mod tests {
         assert_eq!(cat("A-2").as_deref(), Some("done"));
         assert_eq!(cat("GONE-1").as_deref(), Some("done"));
         assert_eq!(cat("EXT-1"), None);
+    }
+
+    #[test]
+    fn refresh_stores_details_and_nulls_when_absent() {
+        let server = MockServer::start();
+        let rich = json!({"key": "A-1", "fields": {"summary": "s",
+            "status": {"name": "St", "statusCategory": {"key": "new"}},
+            "issuetype": {"name": "Bug"}, "priority": {"name": "High"},
+            "duedate": "2026-10-04", "labels": ["x", "y"],
+            "parent": {"key": "A-0", "fields": {"summary": "Epic one"}}}});
+        server.mock(|when, then| {
+            when.method(GET).path("/rest/api/3/search/jql").query_param(
+                "fields",
+                "summary,status,updated,project,issuetype,priority,duedate,labels,parent",
+            );
+            then.status(200)
+                .json_body(json!({"issues": [rich, issue("A-2", "new")]}));
+        });
+        let conn = open_memory().unwrap();
+        fetch_open_tickets_with(&conn, &test_auth(&server), &http::client().unwrap()).unwrap();
+        let row = |key: &str| -> [Option<String>; 5] {
+            conn.query_row(
+                "SELECT issue_type, priority, due_date, labels, parent_summary
+                   FROM jira_tickets WHERE key = ?1",
+                [key],
+                |r| Ok([r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?]),
+            )
+            .unwrap()
+        };
+        let s = |v: &str| Some(v.to_owned());
+        assert_eq!(
+            row("A-1"),
+            [
+                s("Bug"),
+                s("High"),
+                s("2026-10-04"),
+                s(r#"["x","y"]"#),
+                s("Epic one")
+            ]
+        );
+        assert_eq!(row("A-2"), [None, None, None, None, None]);
     }
 
     #[test]
