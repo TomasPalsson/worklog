@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef, useState, type MutableRefObject, type ReactNode, type RefObject } from "react";
-import { Clock, Copy, ExternalLink, MessageSquare, X } from "lucide-react";
+import { ExternalLink, X } from "lucide-react";
 
 import type { StatusCategory, TaskRow, TicketComment, TicketDetail } from "@/lib/types";
 import { TaskActivity, useActivityTab, type Tab } from "./TaskActivity";
@@ -9,9 +9,12 @@ import type { TaskActions } from "./TaskCard";
 import { ParentRow, TypeIcon } from "./TaskCardMeta";
 import type { Drafts } from "./TaskComposer";
 import { TaskDescription } from "./TaskDescription";
-import { TaskModalSidebar, type TempoKind } from "./TaskModalSidebar";
+import { CopyKey } from "./TaskCopyKey";
+import { TaskModalSidebar } from "./TaskModalSidebar";
+import { TaskModalSummary } from "./TaskModalSummary";
 import type { Shown } from "./TaskStatusButton";
 import { useModalShell } from "./useModalShell";
+import { useWide } from "./useWide";
 import { useTicketDetail } from "./useTicketDetail";
 import { useWorkLog } from "./useWorkLog";
 
@@ -34,14 +37,6 @@ interface HeadProps {
 }
 
 function Head({ task, type, url, onCopied, onClose }: HeadProps) {
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(task.key);
-      onCopied(`Copied ${task.key}.`);
-    } catch {
-      /* no clipboard (insecure origin, denied): nothing to announce */
-    }
-  }
   return (
     <header className="task-modal-head">
       <div className="task-crumb">
@@ -51,9 +46,7 @@ function Head({ task, type, url, onCopied, onClose }: HeadProps) {
           /
         </span>
         <span className="task-key">{task.key}</span>
-        <button type="button" className="task-icon-btn" aria-label={`Copy ${task.key}`} data-tip="Copy key" onClick={copy}>
-          <Copy size={14} aria-hidden="true" />
-        </button>
+        <CopyKey taskKey={task.key} onCopied={onCopied} />
       </div>
       {url && (
         <a href={url} target="_blank" rel="noreferrer" className="task-modal-jira">
@@ -68,29 +61,19 @@ function Head({ task, type, url, onCopied, onClose }: HeadProps) {
   );
 }
 
-/** The epic it belongs to, the title, and the two things people open a ticket to do. */
-function Title({ id, task, onLog, onComment }: { id: string; task: TaskRow; onLog: () => void; onComment: () => void }) {
+/** The epic it belongs to, then the title. */
+function Title({ id, task }: { id: string; task: TaskRow }) {
   return (
     <>
       {task.parent_summary && <ParentRow text={task.parent_summary} />}
       <h2 id={id} className="task-headline">
         {task.summary}
       </h2>
-      <div className="task-quick">
-        <button type="button" className="task-btn-secondary" onClick={onLog}>
-          <Clock size={13} aria-hidden="true" />
-          Log time
-        </button>
-        <button type="button" className="task-btn-secondary" onClick={onComment}>
-          <MessageSquare size={13} aria-hidden="true" />
-          Comment
-        </button>
-      </div>
     </>
   );
 }
 
-/** What the dialog's parts share: the status shown, posted comments, the live region and the quick-action signals. */
+/** What the dialog's parts share: the status shown, posted comments, the live region and the Tempo jump. */
 function useModalState(
   { task, onStatus }: TaskModalProps,
   detail: TicketDetail | null,
@@ -100,9 +83,7 @@ function useModalState(
   const [extra, setExtra] = useState<TicketComment[]>([]);
   const [changed, setChanged] = useState<Shown | null>(null);
   const [announce, setAnnounce] = useState("");
-  const [logSignal, setLogSignal] = useState(0);
-  const [composeSignal, setComposeSignal] = useState(0);
-  const [jump, setJump] = useState<{ kind: TempoKind; n: number } | null>(null);
+  const [jump, setJump] = useState(0);
   // Live Jira status once loaded; a change made here wins over both until the dialog closes.
   const shown: Shown = changed ?? (detail ? { status: detail.status, status_category: detail.status_category } : task);
   const report = (s: Shown) => {
@@ -113,9 +94,9 @@ function useModalState(
     setExtra((l) => [...l, { id: `local-${l.length}`, author: "You", created: new Date().toISOString(), body }]);
     setAnnounce(`Comment posted to ${task.key}.`);
   };
-  // After the Work log tab has rendered, bring the first day in that Tempo state into view.
+  // After the Work log tab has rendered, bring the first day that still needs Tempo into view.
   useEffect(() => {
-    if (jump) dialog.current?.querySelector(`.task-day[data-state="${jump.kind}"]`)?.scrollIntoView?.({ block: "center" });
+    if (jump) dialog.current?.querySelector('.task-day[data-state="none"], .task-day[data-state="changed"]')?.scrollIntoView?.({ block: "center" });
   }, [jump, dialog]);
   return {
     extra,
@@ -124,13 +105,7 @@ function useModalState(
     posted,
     announce,
     setAnnounce,
-    logSignal,
-    composeSignal,
-    onLogHandled: () => setLogSignal(0),
-    onComposeHandled: () => setComposeSignal(0),
-    logTime: () => (choose("work"), setLogSignal((n) => n + 1)),
-    compose: () => (choose("comments"), setComposeSignal((n) => n + 1)),
-    jumpTo: (kind: TempoKind) => (choose("work"), setJump((j) => ({ kind, n: (j?.n ?? 0) + 1 }))),
+    jumpTo: () => (choose("work"), setJump((n) => n + 1)),
   };
 }
 
@@ -159,6 +134,7 @@ export function TaskModal(props: TaskModalProps) {
   const { tab, choose, engage } = useActivityTab(task.week_seconds, work);
   const detail = load.s === "ok" ? load.detail : null;
   const m = useModalState(props, detail, dialog, choose);
+  const wide = useWide();
 
   return (
     <Backdrop onClose={onClose}>
@@ -166,7 +142,8 @@ export function TaskModal(props: TaskModalProps) {
         <Head task={task} type={detail?.issue_type ?? task.issue_type} url={detail?.url ?? task.url} onCopied={m.setAnnounce} onClose={onClose} />
         <div className="task-modal-body">
           <div className="task-modal-main">
-            <Title id={titleId} task={task} onLog={m.logTime} onComment={m.compose} />
+            <Title id={titleId} task={task} />
+            {!wide && <TaskModalSummary task={task} actions={actions} shown={m.shown} load={work.load} onStatus={m.report} onTempo={m.jumpTo} />}
             <TaskDescription taskKey={task.key} load={load} retry={retry} />
             <TaskActivity
               tab={tab}
@@ -180,11 +157,7 @@ export function TaskModal(props: TaskModalProps) {
               onAnnounce={m.setAnnounce}
               onPosted={m.posted}
               onMoved={m.report}
-              logSignal={m.logSignal}
-              composeSignal={m.composeSignal}
               onEngage={engage}
-              onLogHandled={m.onLogHandled}
-              onComposeHandled={m.onComposeHandled}
             />
           </div>
           <TaskModalSidebar
@@ -197,6 +170,7 @@ export function TaskModal(props: TaskModalProps) {
             load={work.load}
             onStatus={m.report}
             onTempo={m.jumpTo}
+            wide={wide}
           />
         </div>
         <p className="task-sr" role="status" aria-live="polite">

@@ -82,19 +82,14 @@ export function TaskWorkLog({
   actions,
   work,
   onAnnounce,
-  logSignal = 0,
-  onHandled,
 }: {
   taskKey: string;
   actions: TaskActions;
   work: WorkLog;
   onAnnounce: (message: string) => void;
-  /** Bumped by the quick action; opens the form (also when this tab mounts after the bump). */
-  logSignal?: number;
-  onHandled?: () => void;
 }) {
   const { load, retry, refetch } = work;
-  const [logging, setLogging] = useState(logSignal > 0);
+  const [logging, setLogging] = useState(false);
   const [logged, setLogged] = useState<Logged | null>(null);
   const logBtn = useRef<HTMLButtonElement>(null);
   const head = useRef<HTMLDivElement>(null);
@@ -103,11 +98,6 @@ export function TaskWorkLog({
     refocus.current = true;
     setLogging(false);
   };
-  useEffect(() => {
-    if (logSignal === 0) return;
-    setLogging(true);
-    onHandled?.();
-  }, [logSignal, onHandled]);
   useEffect(() => {
     if (logging) head.current?.scrollIntoView?.({ block: "nearest" });
   }, [logging]);

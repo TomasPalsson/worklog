@@ -40,3 +40,22 @@ it("the dialog is a centred, capped box that goes full-screen on small screens",
 it("dialog motion is switched off for reduced motion", () => {
   expect(css).toContain(".task-card, .task-modal, .task-modal-backdrop { transition: none; animation: none; }");
 });
+
+const phone = css.slice(css.indexOf("@media (max-width: 759px)"), css.indexOf("@media (pointer: coarse)"));
+
+it("on phones the body is the one scroller: the columns neither scroll nor have a fixed height", () => {
+  expect(phone).toContain(".task-modal-body { display: flex; flex-direction: column; gap: 16px; overflow-x: hidden; overflow-y: auto;");
+  expect(phone).toContain(".task-modal-main, .task-modal-side { display: grid; gap: 16px; min-width: 0; height: auto; overflow: visible; }");
+  expect(phone).toContain(".task-headline { font-size: 22px; line-height: 1.2; }");
+});
+
+it("touch screens get 40px targets for the small icon, day, Log time and tab buttons", () => {
+  const coarse = css.slice(css.indexOf("@media (pointer: coarse)"));
+  expect(coarse).toContain(".task-icon-btn { min-width: 40px; min-height: 40px; }");
+  expect(coarse).toContain('.task-day-trigger, .task-log-open, .task-tabs [role="tab"] { min-height: 40px; }');
+});
+
+it("the description clamps to four lines, and a busy status button shows the progress cursor", () => {
+  expect(css).toContain(".task-prose:not([data-open]) { max-height: calc(14px * 1.6 * 4); overflow: hidden; }");
+  expect(rule(".task-status:disabled, .task-menu button:disabled, .task-chooser button:disabled, .task-move-menu button:disabled")).toContain("cursor: progress");
+});

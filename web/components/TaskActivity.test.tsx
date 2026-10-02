@@ -1,7 +1,7 @@
-// Activity: the Work log / Comments tablist, which tab opens first, the quick actions and the comment thread.
+// Activity: the Work log / Comments tablist, which tab opens first, the Log time form and the comment thread.
 
 import { afterEach, describe, expect, it, mock } from "bun:test";
-import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { block, day, payload } from "./workLogTestKit";
 import { actions, detail, open, quiet, row } from "./taskModalTestKit";
 
@@ -94,11 +94,13 @@ describe("which tab opens first", () => {
     await screen.findByText(/Steps to reproduce/);
   });
 
-  it("quick actions switch tabs but are not remembered", async () => {
-    open(actions(), row({ week_seconds: 1800 }));
-    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
-    expect(window.localStorage.getItem("worklog.ticketTab")).toBeNull();
-    await screen.findByText(/Steps to reproduce/);
+  it("does not flip to Work log once focus has entered Activity", async () => {
+    let finish!: (v: unknown) => void;
+    open(actions({ loadTicketBlocks: mock(() => new Promise((r) => (finish = r))) }), quiet());
+    expect(selected()).toMatch(/^Comments/);
+    fireEvent.focus(screen.getByRole("textbox", { name: "Add a comment" })); // the user starts typing
+    await act(async () => finish({ ok: true, data: payload([day()]) }));
+    expect(selected()).toMatch(/^Comments/);
   });
 
   it("works with storage that throws", async () => {
@@ -117,42 +119,46 @@ describe("which tab opens first", () => {
   });
 });
 
-describe("quick actions", () => {
-  it("Log time switches to the Work log and opens the form", async () => {
-    open(actions(), quiet());
-    expect(selected()).toMatch(/^Comments/);
-    fireEvent.click(screen.getAllByRole("button", { name: "Log time" })[0]);
-    expect(selected()).toMatch(/^Work log/);
+describe("Log time", () => {
+  const logTime = () => screen.getAllByRole("button", { name: "Log time" })[0];
+
+  it("has no quick-action row under the title, and no Comment button", async () => {
+    open(actions());
+    expect(document.querySelector(".task-quick")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Comment" })).toBeNull();
+    expect(screen.queryByText("Activity", { selector: ".task-label" })).toBeNull();
+    await screen.findByText(/Steps to reproduce/);
+  });
+
+  it("opens the form from the Work log head", async () => {
+    open(actions());
+    fireEvent.click(logTime());
     expect(screen.getByLabelText("What you did")).not.toBeNull();
     expect(document.activeElement).toBe(screen.getByLabelText("Day"));
     await screen.findByText(/Steps to reproduce/);
   });
 
-  it("Log time on the Work log tab opens the form too, and again after it was closed", async () => {
+  it("does not reopen the form when the tab is left and come back to after Cancel", async () => {
     open(actions());
-    const quick = () => screen.getAllByRole("button", { name: "Log time" })[0];
-    fireEvent.click(quick());
-    expect(screen.getByLabelText("What you did")).not.toBeNull();
+    fireEvent.click(logTime());
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(tab(/Comments/));
+    fireEvent.click(tab(/Work log/));
     expect(screen.queryByLabelText("What you did")).toBeNull();
-    fireEvent.click(quick());
-    expect(screen.getByLabelText("What you did")).not.toBeNull();
     await screen.findByText(/Steps to reproduce/);
   });
+});
 
-  it("Comment switches to Comments and focuses the composer", async () => {
+describe("switching to Comments", () => {
+  it("by click or by arrow key leaves focus on the tab, not in the composer", async () => {
     open(actions());
-    expect(selected()).toMatch(/^Work log/);
-    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
-    expect(selected()).toMatch(/^Comments/);
-    expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Add a comment" }));
+    fireEvent.click(tab(/Comments/));
+    expect(document.activeElement).not.toBe(screen.getByRole("textbox", { name: "Add a comment" }));
+    fireEvent.click(tab(/Work log/));
+    fireEvent.keyDown(tab(/Work log/), { key: "ArrowRight" });
+    expect(document.activeElement).toBe(tab(/Comments/));
+    expect(document.querySelector(".task-composer")?.hasAttribute("data-expanded")).toBe(false);
     await screen.findByText(/Steps to reproduce/);
-  });
-
-  it("are the only two buttons in the quick row", () => {
-    open(actions());
-    const names = [...document.querySelectorAll(".task-quick button")].map((b) => b.textContent);
-    expect(names).toEqual(["Log time", "Comment"]);
   });
 });
 

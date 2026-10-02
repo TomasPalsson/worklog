@@ -6,7 +6,7 @@ import { Skeleton } from "./TaskSkeleton";
 import type { DetailLoad } from "./useTicketDetail";
 import { useOverflow } from "./useOverflow";
 
-/** About twelve lines are shown; longer text fades out under a Show more toggle (only when it really overflows). */
+/** Four lines are shown; longer text fades out under a Show more toggle (only when it really overflows). */
 function Prose({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
   const p = useRef<HTMLParagraphElement>(null);

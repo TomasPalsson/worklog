@@ -80,12 +80,12 @@ export function SyncTrigger({ sync, label, inTempo, changed }: { sync: Sync; lab
       ref={sync.trigger}
       type="button"
       className="task-btn-secondary task-day-trigger"
-      aria-label={changed ? `Preview update ${label} in Tempo` : `Preview send ${label} to Tempo`}
+      aria-label={`${changed ? "Update Tempo" : "Send to Tempo"}, ${label}`}
       disabled={step.s === "running"}
       onClick={sync.dryRun}
     >
       <UploadCloud size={12} aria-hidden="true" />
-      {step.s === "running" ? "Checking…" : changed ? "Update" : "Send"}
+      {step.s === "running" ? "Checking…" : changed ? "Update Tempo" : "Send to Tempo"}
     </button>
   );
 }

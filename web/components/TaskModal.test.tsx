@@ -26,7 +26,8 @@ describe("TaskModal reading", () => {
     expect(await screen.findByText("No work logged on ABC-1 in the last 14 days.")).not.toBeNull();
     expect(calls(a.loadTicketBlocks)[0]).toEqual(["ABC-1"]);
     const labels = [...document.querySelectorAll(".task-modal-main .task-label")].map((n) => n.textContent);
-    expect(labels).toEqual(["Description", "Activity"]);
+    expect(labels).toEqual(["Description"]); // the tablist carries the name "Activity"; no label repeats it
+    expect(document.querySelector(".task-description")?.nextElementSibling?.className).toBe("task-activity");
   });
 
   it("shows the epic above the title when there is one", () => {

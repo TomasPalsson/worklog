@@ -40,7 +40,7 @@ describe("day row", () => {
   it("the day label sits in an h4 and the preview heading is an h5", async () => {
     await open();
     expect(document.querySelector("h4 .task-day-label")?.textContent).toBe("Thu 1 Oct");
-    fireEvent.click(btn("Preview send Thu 1 Oct to Tempo"));
+    fireEvent.click(btn("Send to Tempo, Thu 1 Oct"));
     expect((await screen.findByText("Preview — nothing sent yet")).tagName).toBe("H5");
   });
 
@@ -57,10 +57,10 @@ describe("day row", () => {
       day({ day: "2026-10-02", blocks: [block({ tempo_worklog_id: "a", dirty: true })] }),
       day({ day: "2026-10-01" }),
     ]);
-    const send = btn("Preview send Thu 1 Oct to Tempo");
-    expect(send.textContent).toBe("Send");
+    const send = btn("Send to Tempo, Thu 1 Oct");
+    expect(send.textContent).toBe("Send to Tempo");
     expect(screen.getByText("Not in Tempo").closest("h4")?.nextElementSibling).toBe(send);
-    expect(btn("Preview update Fri 2 Oct in Tempo").textContent).toBe("Update");
+    expect(btn("Update Tempo, Fri 2 Oct").textContent).toBe("Update Tempo");
   });
 
   it("an In Tempo day has no send action", async () => {

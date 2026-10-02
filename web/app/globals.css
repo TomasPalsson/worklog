@@ -5819,8 +5819,6 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
   letter-spacing: -0.015em;
   color: var(--fg);
 }
-.task-quick { display: flex; gap: 8px; margin-top: 8px; }
-.task-quick .task-btn-secondary { min-height: 32px; padding: 0 12px; }
 .task-description, .task-activity { margin-top: 28px; }
 .task-description > .task-label, .task-activity > .task-label { margin: 0 0 8px; }
 .task-status-wrap { position: relative; display: block; }
@@ -5869,15 +5867,18 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 .task-dl-row dt { color: var(--fg-muted); }
 .task-dl-row dd { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .task-none { color: var(--fg-subtle); }
-.task-tempo { padding: 1px 8px; border: 0; border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: 12px; background: var(--slate-bg); color: var(--slate-ink); }
-.task-tempo[data-tone="ok"] { background: var(--sage-bg); color: var(--sage-ink); }
-.task-tempo[data-tone="changed"] { background: var(--amber-bg); color: var(--amber-ink); }
-button.task-tempo { cursor: pointer; }
-button.task-tempo:hover { text-decoration: underline; }
-button.task-tempo:focus-visible { outline: none; box-shadow: var(--ring); }
+.task-tempo[data-tone="ok"] { color: var(--sage-ink); }
+.task-tempo[data-tone="changed"] { color: var(--amber-ink); }
+/* a control that reads as one: underlined and full-strength, unlike the muted text around it */
+.task-review {
+  padding: 0; border: 0; background: none; color: var(--fg); font: inherit; font-weight: 500;
+  text-decoration: underline; text-underline-offset: 3px; cursor: pointer;
+}
+.task-review:hover { text-decoration-thickness: 2px; }
+.task-review:focus-visible { outline: none; border-radius: var(--radius-sm); box-shadow: var(--ring); }
 .task-side-foot { margin: 0; font-size: 12px; color: var(--fg-subtle); }
 .task-prose { max-width: 72ch; margin: 0; font-size: 14px; line-height: 1.6; white-space: pre-wrap; color: var(--fg); }
-.task-prose:not([data-open]) { max-height: calc(14px * 1.6 * 12); overflow: hidden; }
+.task-prose:not([data-open]) { max-height: calc(14px * 1.6 * 4); overflow: hidden; }
 .task-prose[data-clamped] { -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 48px), transparent); mask-image: linear-gradient(to bottom, #000 calc(100% - 48px), transparent); }
 .task-description .task-link-btn { margin-top: 6px; }
 .task-empty { margin: 0; font-size: 13px; color: var(--fg-subtle); }
@@ -6102,14 +6103,22 @@ button.task-tempo:focus-visible { outline: none; box-shadow: var(--ring); }
 .task-block-row:focus-visible, .task-day-toggle:focus-visible, .task-link-btn:focus-visible,
 .task-log-form :focus-visible, .task-day-edit :focus-visible, .task-day-text-edit textarea:focus-visible { outline: none; box-shadow: var(--ring); }
 
-/* ticket dialog on small screens: full-screen, one column in the order people need it */
+/* ticket dialog on small screens: full-screen, the body is the one scroller, status and hours come right after the title */
 @media (max-width: 759px) {
   .task-modal-backdrop { place-items: stretch; }
   .task-modal { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
   .task-modal-head { padding-left: 16px; }
   .task-modal-body { display: flex; flex-direction: column; gap: 16px; overflow-x: hidden; overflow-y: auto; padding: 16px; }
-  .task-modal-main, .task-modal-side { display: grid; gap: 16px; min-width: 0; }
+  .task-modal-main, .task-modal-side { display: grid; gap: 16px; min-width: 0; height: auto; overflow: visible; }
   .task-modal-main > *, .task-modal-side > * { min-width: 0; margin-top: 0; }
+  .task-headline { font-size: 22px; line-height: 1.2; }
+  .task-summary { display: grid; gap: 8px; }
+  .task-summary-line { margin: 0; font-size: 13px; color: var(--fg-muted); }
+}
+/* fingers: the small controls in the dialog reach 40px */
+@media (pointer: coarse) {
+  .task-icon-btn { min-width: 40px; min-height: 40px; }
+  .task-day-trigger, .task-log-open, .task-tabs [role="tab"] { min-height: 40px; }
 }
 
 .closeout { display: grid; gap: 12px; }

@@ -125,6 +125,13 @@ describe("Use tracked time", () => {
     expect(calls(a.loadTicketBlocks)).toHaveLength(2);
   });
 
+  it("puts focus back on the day's ⋯ button, the menu item having gone", async () => {
+    await open([byHand()]);
+    pick("Use tracked time");
+    await settle();
+    expect(document.activeElement).toBe(more());
+  });
+
   it("shows Jira's refusal inline", async () => {
     await open([byHand()], { saveTempoLineHours: mock(async () => ({ ok: false, error: "nope" })) });
     pick("Use tracked time");

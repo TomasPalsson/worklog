@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type MutableRefObject } from "react";
+import { useEffect, useState, type MutableRefObject } from "react";
 import { Sparkles, X } from "lucide-react";
 
 import type { TicketStatus, Transition } from "@/lib/types";
@@ -82,15 +82,9 @@ function Count({ n }: { n: number }) {
 }
 
 /** One quiet field until it is used; focus or any text opens the count, Draft with AI, suggestion and Post. */
-export function TaskComposer({ focusSignal = 0, onHandled, ...props }: Props & { focusSignal?: number; onHandled?: () => void }) {
+export function TaskComposer(props: Props) {
   const c = useComposer(props);
   const [focused, setFocused] = useState(false);
-  const box = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => {
-    if (focusSignal === 0) return;
-    box.current?.focus();
-    onHandled?.();
-  }, [focusSignal, onHandled]);
   const expanded = focused || c.text !== "" || c.suggested !== null || c.error !== null || c.busy;
   return (
     <form
@@ -103,7 +97,6 @@ export function TaskComposer({ focusSignal = 0, onHandled, ...props }: Props & {
       }}
     >
       <textarea
-        ref={box}
         aria-label="Add a comment"
         placeholder="Add a comment…"
         rows={1}

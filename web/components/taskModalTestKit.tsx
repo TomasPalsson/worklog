@@ -1,7 +1,7 @@
 // Shared fixtures for the TaskModal* / TaskActivity tests.
 
 import { mock } from "bun:test";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import type { TaskRow, TicketDetail, TicketDraft, Transition } from "@/lib/types";
 import type { TaskActions } from "./TaskCard";
 import { TaskModal } from "./TaskModal";
@@ -84,3 +84,25 @@ export function open(a: TaskActions, task = row()) {
 }
 
 export const dialog = () => screen.getByRole("dialog");
+
+const realMatchMedia = window.matchMedia;
+/** Put the viewport at phone or desktop width; `set` flips it while a dialog is open. Call `restoreViewport` after each test. */
+export function viewport(wide: boolean) {
+  const listeners = new Set<() => void>();
+  let isWide = wide;
+  window.matchMedia = ((media: string) => ({
+    media,
+    get matches() {
+      return media.includes("min-width") ? isWide : false;
+    },
+    addEventListener: (_: string, f: () => void) => listeners.add(f),
+    removeEventListener: (_: string, f: () => void) => listeners.delete(f),
+  })) as never;
+  return {
+    set: (next: boolean) => {
+      isWide = next;
+      act(() => listeners.forEach((f) => f()));
+    },
+  };
+}
+export const restoreViewport = () => void (window.matchMedia = realMatchMedia);

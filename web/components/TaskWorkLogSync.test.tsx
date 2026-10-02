@@ -13,7 +13,7 @@ const sync = (real: Sync, dry: Sync = { synced: 1 }) =>
     data: { day: "", dry_run: isDry, skipped: 0, errors: [] as string[], ...(isDry ? dry : real) },
   }));
 
-const PREVIEW = "Preview send Thu 1 Oct to Tempo";
+const PREVIEW = "Send to Tempo, Thu 1 Oct";
 
 describe("preview", () => {
   const start = async (runSync = sync({ synced: 1 })) => {
@@ -96,7 +96,7 @@ describe("strips stay visible when the day is folded", () => {
   it("opening the preview on a folded day opens the day, since the preview points at its text", async () => {
     await open([day({ day: "2026-10-02" }), day()]);
     expect(toggle().getAttribute("aria-expanded")).toBe("false");
-    fireEvent.click(btn("Preview send Thu 1 Oct to Tempo"));
+    fireEvent.click(btn("Send to Tempo, Thu 1 Oct"));
     expect(toggle().getAttribute("aria-expanded")).toBe("true");
   });
 
@@ -127,7 +127,7 @@ describe("Changed since sent is explained", () => {
 
   it("the update preview lists In Tempo and Will be instead of Hours", async () => {
     await open([changedDay()]);
-    fireEvent.click(btn("Preview update Thu 1 Oct in Tempo"));
+    fireEvent.click(btn("Update Tempo, Thu 1 Oct"));
     await screen.findByText("Preview — Tempo will be updated");
     const box = document.querySelector(".task-day-preview") as HTMLElement;
     expect(box.textContent).toContain("In Tempo1h");
@@ -148,7 +148,7 @@ describe("focus after Send", () => {
 
   it("an update says Tempo updated and focuses it", async () => {
     await open([changedDay()]);
-    fireEvent.click(btn("Preview update Thu 1 Oct in Tempo"));
+    fireEvent.click(btn("Update Tempo, Thu 1 Oct"));
     fireEvent.click(await screen.findByText("Update Tempo", { selector: "button" }));
     const strip = await screen.findByText("Tempo updated · 1h 30m");
     expect(document.activeElement).toBe(strip);

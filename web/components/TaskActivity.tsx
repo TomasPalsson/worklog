@@ -131,13 +131,8 @@ export interface ActivityProps {
   onAnnounce: (message: string) => void;
   onPosted: (text: string) => void;
   onMoved: (next: TicketStatus) => void;
-  /** Bumped by the quick actions. */
-  logSignal: number;
-  composeSignal: number;
-  /** Called once a signal has been acted on, so a later remount of the tab does not act on it again. */
+  /** Called when focus enters Activity, so the default tab stops following the Work log load. */
   onEngage?: () => void;
-  onLogHandled?: () => void;
-  onComposeHandled?: () => void;
 }
 
 /** Work log and Comments behind one tablist, so only one of them is on screen at a time. */
@@ -149,14 +144,11 @@ export function TaskActivity(p: ActivityProps) {
     comments: comments === null ? null : String(comments),
   };
   return (
-    <section className="task-activity" aria-labelledby="task-activity-label" onFocusCapture={p.onEngage}>
-      <h3 id="task-activity-label" className="task-label">
-        Activity
-      </h3>
+    <section className="task-activity" onFocusCapture={p.onEngage}>
       <Tabs tab={p.tab} onTab={p.onTab} counts={counts} />
       <div role="tabpanel" id={`task-panel-${p.tab}`} aria-labelledby={`task-tab-${p.tab}`} className="task-tabpanel">
         {p.tab === "work" ? (
-          <TaskWorkLog taskKey={p.taskKey} actions={p.actions} work={p.work} onAnnounce={p.onAnnounce} logSignal={p.logSignal} onHandled={p.onLogHandled} />
+          <TaskWorkLog taskKey={p.taskKey} actions={p.actions} work={p.work} onAnnounce={p.onAnnounce} />
         ) : (
           <>
             <TaskComposer
@@ -165,8 +157,6 @@ export function TaskActivity(p: ActivityProps) {
               actions={p.actions}
               onPosted={p.onPosted}
               onMoved={p.onMoved}
-              focusSignal={p.composeSignal}
-              onHandled={p.onComposeHandled}
             />
             <CommentList detail={p.detail} extra={p.extra} />
           </>

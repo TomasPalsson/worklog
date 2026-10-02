@@ -14,6 +14,7 @@ const value = (cls: string, term: string) => {
   const dt = [...card(cls).querySelectorAll("dt")].find((n) => n.textContent === term) as HTMLElement;
   return dt.nextElementSibling as HTMLElement;
 };
+const terms = (cls: string) => [...card(cls).querySelectorAll("dt")].map((n) => n.textContent);
 const withDays = (days: ReturnType<typeof day>[]) =>
   actions({ loadTicketBlocks: mock(async () => ({ ok: true as const, data: payload(days) })) });
 
@@ -95,6 +96,14 @@ describe("status button", () => {
     expect(chip.disabled).toBe(false);
   });
 
+  it("hands focus back to the status button after a successful move", async () => {
+    open(actions());
+    fireEvent.click(screen.getByTestId("status-ABC-1"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Start → In Progress" }));
+    await waitFor(() => expect(screen.getByTestId("status-ABC-1").textContent).toBe("In Progress"));
+    expect(document.activeElement).toBe(screen.getByTestId("status-ABC-1"));
+  });
+
   it("shows Jira's refusal under the button", async () => {
     open(actions({ transitionTicket: mock(async () => ({ ok: false as const, error: "Resolution is required" })) }));
     fireEvent.click(screen.getByTestId("status-ABC-1"));
@@ -130,13 +139,16 @@ describe("Details", () => {
     expect(within(value(d, "Type")).getByText("Bug", { selector: "[aria-hidden]" })).toBeTruthy();
   });
 
-  it("shows None for what Jira has no value for", async () => {
+  it("leaves out the rows Jira has no value for", async () => {
     open(actions({ loadTicketDetail: mock(async () => ({ ok: true as const, data: detail({ assignee: null, priority: null, issue_type: null, updated: null }) })) }));
-    await waitFor(() => expect(value(".task-details", "Assignee").textContent).toBe("None"));
-    for (const term of ["Priority", "Type", "Due", "Labels", "Updated"]) {
-      expect(value(".task-details", term).textContent).toBe("None");
-      expect(value(".task-details", term).querySelector(".task-none")).toBeTruthy();
-    }
+    await waitFor(() => expect(terms(".task-details")).toEqual([]));
+    expect(card(".task-details").textContent).not.toContain("None");
+  });
+
+  it("lists only the rows that have a value", async () => {
+    open(actions(), row({ due_date: "2026-10-30" }));
+    await screen.findByText(/Steps to reproduce/);
+    expect(terms(".task-details")).toEqual(["Assignee", "Priority", "Type", "Due", "Updated"]); // no Labels
   });
 
   it("shows an unknown priority as text only", async () => {
@@ -151,14 +163,14 @@ describe("Details", () => {
     expect(card(".task-details").hasAttribute("open")).toBe(true);
   });
 
-  it("an unassigned ticket reads None", () => {
+  it("an unassigned ticket has no Assignee row", () => {
     open(actions(), row({ assigned: false }));
-    expect(value(".task-details", "Assignee").textContent).toBe("None");
+    expect(terms(".task-details")).not.toContain("Assignee");
   });
 });
 
 describe("Time card", () => {
-  it("shows this week, today (a dash at 0) and the last 14 days once the work log has loaded", async () => {
+  it("shows this week, today (left out at 0) and the last 14 days once the work log has loaded", async () => {
     open(withDays([day({ line_seconds: 5400 }), day({ day: "2026-09-30", line_seconds: 1800 })]));
     const t = ".task-time";
     expect(value(t, "This week").textContent).toBe("1h 30m");
@@ -167,7 +179,7 @@ describe("Time card", () => {
     await waitFor(() => expect(value(t, "Last 14 days").textContent).toBe("2h"));
     cleanup();
     open(actions(), row({ today_seconds: 0 }));
-    expect(value(t, "Today").textContent).toBe("—");
+    expect(terms(t)).toEqual(["This week", "Last 14 days", "Tempo"]);
     await screen.findByText(/Steps to reproduce/);
   });
 
@@ -175,6 +187,7 @@ describe("Time card", () => {
     open(withDays([day({ blocks: [block({ tempo_worklog_id: "w" })] })]));
     await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("All sent"));
     expect(value(".task-time", "Tempo").querySelector("button")).toBeNull();
+    expect(value(".task-time", "Tempo").querySelector(".task-tempo")?.getAttribute("data-tone")).toBe("ok");
   });
 
   it("says how many days are not sent, and how many changed since sent", async () => {
@@ -185,22 +198,29 @@ describe("Time card", () => {
         changedDay({ day: "2026-10-01" }),
       ]),
     );
-    await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("2 days not sent1 changed since sent"));
-    const [none, changed] = [...value(".task-time", "Tempo").querySelectorAll("button")];
-    expect(none.getAttribute("data-tone")).toBe("none");
-    expect(changed.getAttribute("data-tone")).toBe("changed");
+    await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("2 days not sent, 1 day changed since sent · Review"));
+    expect(value(".task-time", "Tempo").querySelectorAll("button")).toHaveLength(1); // said once, with one Review
   });
 
   it("says 1 day in the singular and shows a dash with nothing logged", async () => {
     open(withDays([day()]));
-    await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("1 day not sent"));
+    await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("1 day not sent · Review"));
     cleanup();
     open(actions());
     await screen.findByText(/Steps to reproduce/);
     expect(value(".task-time", "Tempo").textContent).toBe("—");
   });
 
-  it("clicking the Tempo summary switches to the Work log and scrolls to the first such day", async () => {
+  it("Review is a button, the state beside it is plain text", async () => {
+    open(withDays([changedDay()]));
+    await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("1 day changed since sent · Review"));
+    const text = value(".task-time", "Tempo").querySelector("span.task-tempo") as HTMLElement;
+    expect(text.getAttribute("data-tone")).toBe("changed");
+    expect(text.tagName).toBe("SPAN");
+    expect(value(".task-time", "Tempo").querySelector("button")?.className).toBe("task-review");
+  });
+
+  it("clicking Review switches to the Work log and scrolls to the first such day", async () => {
     window.localStorage.setItem("worklog.ticketTab", "comments");
     const scroll = mock((_o: unknown) => {});
     (HTMLElement.prototype as unknown as { scrollIntoView: unknown }).scrollIntoView = scroll;
