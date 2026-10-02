@@ -294,3 +294,42 @@ async fn unforced_generation_still_copies_a_single_description_without_the_model
     let (_, lines) = call(&state, get_day()).await;
     assert_eq!(lines[0]["text"], "Alpha");
 }
+
+static SEEN: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+fn recording_invoker() -> anyhow::Result<Box<dyn ModelInvoker>> {
+    struct Recording;
+    impl ModelInvoker for Recording {
+        fn invoke(
+            &self,
+            system: &str,
+            user: &str,
+            _schema: &serde_json::Value,
+            _model: &str,
+        ) -> anyhow::Result<serde_json::Value> {
+            SEEN.lock()
+                .unwrap()
+                .push((system.to_string(), user.to_string()));
+            Ok(serde_json::json!({"description": "Reword alpha"}))
+        }
+    }
+    Ok(Box::new(Recording))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn forced_regenerate_hands_the_current_text_to_the_model_to_reword() {
+    let state = state_with_one_block_line();
+    generate_tempo_lines(state.clone(), DAY.to_string(), None, failing_invoker)
+        .await
+        .unwrap();
+    SEEN.lock().unwrap().clear();
+    generate_tempo_lines(state.clone(), DAY.to_string(), Some(key()), recording_invoker)
+        .await
+        .unwrap();
+    let seen = SEEN.lock().unwrap().clone();
+    assert_eq!(seen.len(), 1);
+    assert!(seen[0].1.contains(r#""previous_text":"Alpha""#), "{}", seen[0].1);
+    assert!(seen[0].0.contains("noticeably different"), "{}", seen[0].0);
+    let (_, lines) = call(&state, get_day()).await;
+    assert_eq!(lines[0]["text"], "Reword alpha");
+}

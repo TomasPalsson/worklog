@@ -881,7 +881,7 @@ pub(crate) fn try_summarize_descriptions(
         return joined_fallback();
     };
 
-    match ask_model(invoker, issue, &unique, model) {
+    match ask_model(invoker, issue, &unique, None, model) {
         Ok(text) => Some(text),
         Err(e) => {
             debug!(issue, error = %e, "description summariser failed");
@@ -895,12 +895,19 @@ pub(crate) fn ask_model(
     invoker: &dyn ModelInvoker,
     issue: &str,
     unique: &[String],
+    previous: Option<&str>,
     model: &str,
 ) -> anyhow::Result<String> {
-    let user_msg = serde_json::to_string(&json!({ "issue": issue, "block_descriptions": unique }))
-        .unwrap_or_default();
+    let mut payload = json!({ "issue": issue, "block_descriptions": unique });
+    let mut system = DESCRIPTION_SYSTEM_PROMPT.to_string();
+    if let Some(previous) = previous.filter(|p| !p.trim().is_empty()) {
+        // A Regenerate the user asked for: a fresh wording, not the same sentence back.
+        payload["previous_text"] = json!(previous);
+        system.push_str(" previous_text is the current worklog text; write a noticeably different, still accurate wording.");
+    }
+    let user_msg = serde_json::to_string(&payload).unwrap_or_default();
     let schema = description_response_schema();
-    let reply = invoker.invoke(DESCRIPTION_SYSTEM_PROMPT, &user_msg, &schema, model)?;
+    let reply = invoker.invoke(&system, &user_msg, &schema, model)?;
     reply
         .get("description")
         .and_then(|v| v.as_str())
