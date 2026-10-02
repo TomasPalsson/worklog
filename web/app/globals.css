@@ -5585,7 +5585,9 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
   text-align: left;
   cursor: grab;
 }
-.task-card-btn:focus-visible { outline: none; box-shadow: var(--ring); }
+/* Ring the whole card, not just the button, so the undo/error row below sits inside it. */
+.task-card-btn:focus-visible { outline: none; box-shadow: none; }
+.task-card:has(> .task-card-btn:focus-visible) { box-shadow: var(--ring); }
 .task-card-top { display: flex; align-items: center; gap: 8px; }
 .task-key { font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); white-space: nowrap; }
 .task-tag {
