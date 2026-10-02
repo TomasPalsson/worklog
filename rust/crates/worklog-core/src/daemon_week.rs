@@ -6,27 +6,19 @@
 use anyhow::Context;
 use axum::extract::{Path as AxumPath, State};
 use axum::Json;
-use chrono::{Datelike, Duration, NaiveDate, SecondsFormat, Utc, Weekday};
+use chrono::{Duration, NaiveDate, SecondsFormat, Utc};
 use serde::Deserialize;
 
 use crate::collectors::tempo::{self, TempoAuth};
-use crate::tempo_hub_contract::{HubError, PullReport, WeekCloseout};
+use crate::tempo_hub_contract::{PullReport, WeekCloseout};
 use crate::{tempo_remote, week_closeout};
 
+use super::daemon_tasks::{hub_error, parse_monday};
 use super::{with_conn, ApiError, Shared};
 
 #[derive(Deserialize)]
 pub struct PullBody {
     monday: String,
-}
-
-fn parse_monday(raw: &str) -> Result<NaiveDate, ApiError> {
-    match raw.parse::<NaiveDate>() {
-        Ok(monday) if monday.weekday() == Weekday::Mon => Ok(monday),
-        _ => Err(ApiError::BadRequest(
-            HubError::InvalidInput(format!("`{raw}` is not a Monday (YYYY-MM-DD)")).into(),
-        )),
-    }
 }
 
 pub async fn pull(
@@ -64,17 +56,10 @@ pub(crate) async fn pull_week(
     })
     .await
     .context("spawn_blocking")?
-    .map_err(upstream_as_bad_gateway)?;
+    .map_err(hub_error)?;
     let pulled_at = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
     Ok(with_conn(state, move |c| {
         tempo_remote::store_week(c, monday, &worklogs, &schedule, &pulled_at)
     })
     .await?)
-}
-
-fn upstream_as_bad_gateway(error: anyhow::Error) -> ApiError {
-    match error.downcast_ref::<HubError>() {
-        Some(HubError::Upstream { .. }) => ApiError::BadGateway(error),
-        _ => ApiError::from(error),
-    }
 }

@@ -26,7 +26,7 @@ pub struct TasksQuery {
     monday: Option<String>,
 }
 
-fn hub_error(error: anyhow::Error) -> ApiError {
+pub(super) fn hub_error(error: anyhow::Error) -> ApiError {
     match error.downcast_ref::<HubError>() {
         Some(HubError::InvalidInput(_)) => ApiError::BadRequest(error),
         Some(HubError::NotFound(_)) => ApiError::NotFound(error),
@@ -66,16 +66,20 @@ fn validated_comment(text: &str) -> Result<&str, ApiError> {
     }
 }
 
-fn requested_monday(raw: Option<&str>, today: NaiveDate) -> Result<NaiveDate, ApiError> {
-    let Some(raw) = raw else {
-        return Ok(today - Duration::days(today.weekday().num_days_from_monday().into()));
-    };
+pub(super) fn parse_monday(raw: &str) -> Result<NaiveDate, ApiError> {
     match raw.parse::<NaiveDate>() {
         Ok(monday) if monday.weekday() == Weekday::Mon => Ok(monday),
         _ => Err(invalid_input(format!(
             "`{raw}` is not a Monday (YYYY-MM-DD)"
         ))),
     }
+}
+
+fn requested_monday(raw: Option<&str>, today: NaiveDate) -> Result<NaiveDate, ApiError> {
+    let Some(raw) = raw else {
+        return Ok(today - Duration::days(today.weekday().num_days_from_monday().into()));
+    };
+    parse_monday(raw)
 }
 
 async fn jira_call<T, F>(auth: JiraAuth, call: F) -> Result<T, ApiError>
@@ -211,4 +215,22 @@ where
     .await
     .context("spawn_blocking")??;
     Ok(draft)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_monday_accepts_monday_and_rejects_others() {
+        assert!(matches!(
+            parse_monday("2026-09-28"),
+            Ok(d) if d == NaiveDate::from_ymd_opt(2026, 9, 28).unwrap()
+        ));
+        assert!(matches!(
+            parse_monday("2026-09-29"),
+            Err(ApiError::BadRequest(_))
+        ));
+        assert!(matches!(parse_monday("nope"), Err(ApiError::BadRequest(_))));
+    }
 }
