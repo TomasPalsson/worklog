@@ -5377,13 +5377,15 @@ button {
 }
 
 /* ── My Tasks: broadsheet board + reading panel ─────────────────────── */
-.tasks-page { max-width: 1320px; }
+/* the layout's main.page caps width at 980px; the board needs the full viewport */
+main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
+.tasks-page { max-width: 1320px; margin: 0 auto; padding: 28px 32px 64px; }
 /* panel open: drop the centering so the board sits left of the fixed panel */
 .tasks-page:has(.task-board.has-panel) {
   max-width: none;
-  margin-left: 0;
-  padding-left: 24px;
-  padding-right: calc(min(520px, 100vw) + 24px);
+  margin: 0;
+  padding-left: 32px;
+  padding-right: calc(min(520px, 100vw) + 32px);
 }
 .task-sr {
   position: absolute;
@@ -5702,7 +5704,7 @@ button {
   line-height: 1.15;
   letter-spacing: -0.015em;
 }
-.task-panel:focus { outline: none; }
+.task-panel:focus, .task-panel:focus-visible { outline: none; box-shadow: none; }
 .task-meta {
   display: flex;
   flex-wrap: wrap;
@@ -5811,7 +5813,7 @@ button {
 @media (max-width: 900px) {
   .task-board { grid-template-columns: 1fr; }
   .task-panel { width: 100vw; }
-  .tasks-page:has(.task-board.has-panel) { padding-right: 24px; }
+  .tasks-page:has(.task-board.has-panel) { padding-right: 32px; }
   .task-col, .task-col:first-child, .task-col:last-child { min-height: 0; padding: 0 0 20px; border-left: 0; }
 }
 @media (prefers-reduced-motion: reduce) {

@@ -86,7 +86,7 @@ export function TaskComposer(props: Props) {
       <label htmlFor="task-composer-text" className="task-label">
         Add a comment
       </label>
-      <textarea id="task-composer-text" rows={4} value={c.text} onChange={(e) => c.setText(e.target.value)} />
+      <textarea id="task-composer-text" rows={2} value={c.text} onChange={(e) => c.setText(e.target.value)} />
       <div className="task-composer-meta">
         <Count n={c.text.length} />
         {c.suggested && (
