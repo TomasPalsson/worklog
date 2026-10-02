@@ -73,20 +73,20 @@ describe("preview", () => {
   });
 
   it("nothing sent: names the first reason in plain words", async () => {
-    const results = [{ block_id: 1, status: "skipped", reason: "already in Tempo — logged outside worklog" }];
+    const results = [{ block_id: 1, status: "skipped", reason: "no jira_issue — assign one in the UI" }];
     await start(sync({ synced: 0, results }));
     fireEvent.click(btn("Send"));
-    const msg = await screen.findByText(/^Nothing was sent to Tempo for ABC-1 on Thu 1 Oct: already in Tempo/);
-    expect(msg.textContent).toBe("Nothing was sent to Tempo for ABC-1 on Thu 1 Oct: already in Tempo — logged outside worklog.");
+    const msg = await screen.findByText(/^Nothing was sent to Tempo for ABC-1 on Thu 1 Oct: no jira_issue/);
+    expect(msg.textContent).toBe("Nothing was sent to Tempo for ABC-1 on Thu 1 Oct: no jira_issue — assign one in the UI.");
     expect(document.body.textContent).not.toMatch(/daemon|issue mapping/i);
   });
 
   it("a dry run with nothing to send says why and skips the preview", async () => {
-    const results = [{ block_id: 1, status: "skipped", reason: "already in Tempo — logged outside worklog" }];
+    const results = [{ block_id: 1, status: "skipped", reason: "no jira_issue — assign one in the UI" }];
     const runSync = sync({ synced: 0 }, { synced: 0, results });
     await open([day()], { runSync });
     fireEvent.click(btn(PREVIEW));
-    expect(await screen.findByText(/^Nothing was sent to Tempo for ABC-1 on Thu 1 Oct: already in Tempo/)).toBeTruthy();
+    expect(await screen.findByText(/^Nothing was sent to Tempo for ABC-1 on Thu 1 Oct: no jira_issue/)).toBeTruthy();
     expect(screen.queryByRole("group", { name: /^Confirm sending/ })).toBeNull();
     expect(runSync.mock.calls).toHaveLength(1);
   });

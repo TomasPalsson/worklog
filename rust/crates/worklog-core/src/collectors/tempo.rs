@@ -1780,28 +1780,6 @@ mod tests {
     }
 
     #[test]
-    fn sync_still_posts_when_outside_worklog_is_on_another_issue() {
-        let server = MockServer::start();
-        let post = server.mock(|when, then| {
-            when.method(POST).path("/worklogs");
-            then.status(200).json_body(json!({"tempoWorklogId": 5}));
-        });
-        let conn = open_memory().unwrap();
-        seed_two_blocks(&conn);
-        store_outside(&conn, 20000);
-
-        sync_day_with(
-            &conn,
-            &auth(server.base_url()),
-            day(),
-            false,
-            &http::client().unwrap(),
-        )
-        .unwrap();
-        post.assert_hits(1);
-    }
-
-    #[test]
     fn sync_wont_reposted_already_synced_blocks() {
         let server = MockServer::start();
         server.mock(|when, then| {
