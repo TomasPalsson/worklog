@@ -76,8 +76,14 @@ where
     F: FnOnce() -> Result<Box<dyn ModelInvoker>> + Send + 'static,
 {
     let forced = force.is_some();
-    let pending = with_conn(state.clone(), move |c| {
-        tempo_lines::pending_generation(c, &day, force.as_ref())
+    let (pending, previous) = with_conn(state.clone(), move |c| {
+        let pending = tempo_lines::pending_generation(c, &day, force.as_ref())?;
+        // The text a forced Regenerate replaces, so the model rewords it.
+        let previous = match &force {
+            Some(key) => tempo_lines::line_for(c, key)?.and_then(|line| line.text),
+            None => None,
+        };
+        Ok((pending, previous))
     })
     .await?;
     if pending.is_empty() {
@@ -94,6 +100,7 @@ where
                         invoker.as_ref(),
                         &key,
                         &descriptions,
+                        previous.as_deref(),
                         line_text::LINE_TEXT_MODEL,
                     )?;
                     Ok((key, text, hash))

@@ -283,6 +283,7 @@ pub fn rewrite_text(
     invoker: &dyn ModelInvoker,
     key: &TempoLineKey,
     descriptions: &[String],
+    previous: Option<&str>,
     model: &str,
 ) -> Result<String> {
     let unique = distinct_descriptions(descriptions);
@@ -292,7 +293,7 @@ pub fn rewrite_text(
             key.jira_issue
         );
     }
-    ask_model(invoker, &key.jira_issue, &unique, model)
+    ask_model(invoker, &key.jira_issue, &unique, previous, model)
 }
 
 /// Stores generated text; a hand-written text is kept unless `force`.
