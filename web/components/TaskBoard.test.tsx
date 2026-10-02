@@ -113,4 +113,56 @@ describe("TaskBoard", () => {
     expect((await screen.findByRole("alert")).textContent).toBe("claude timed out");
     expect((screen.getByRole("textbox", { name: "Comment on ABC-1" }) as HTMLTextAreaElement).value).toBe("");
   });
+
+  async function draftThenEdit(a: TaskActions) {
+    render(<TaskBoard actions={a} tasks={[row({})]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Draft with AI" }));
+    const box = screen.getByRole("textbox", { name: "Comment on ABC-1" }) as HTMLTextAreaElement;
+    await waitFor(() => expect(box.value).toBe("Fixed the login redirect."));
+    return box;
+  }
+
+  it("Post applies the kept suggested transition before the comment", async () => {
+    const order: string[] = [];
+    const a = actions({
+      transitionTicket: mock(async (key: string) => {
+        order.push("transition");
+        return { ok: true as const, data: { key, status: "Done", status_category: "done" as const } };
+      }),
+      commentOnTicket: mock(async () => {
+        order.push("comment");
+        return { ok: true as const, data: { ok: true as const } };
+      }),
+    });
+    const box = await draftThenEdit(a);
+    fireEvent.click(screen.getByRole("button", { name: "Post comment" }));
+    await waitFor(() => expect(box.value).toBe(""));
+    expect(order).toEqual(["transition", "comment"]);
+    expect(calls(a.transitionTicket)[0]).toEqual(["ABC-1", "31"]);
+    expect(calls(a.commentOnTicket)[0]).toEqual(["ABC-1", "Fixed the login redirect."]);
+    expect(screen.getByTestId("status-ABC-1").textContent).toBe("Done");
+  });
+
+  it("dropping the suggestion makes Post comment only", async () => {
+    const a = actions();
+    const box = await draftThenEdit(a);
+    fireEvent.click(screen.getByRole("button", { name: "Drop suggestion" }));
+    expect(screen.queryByRole("button", { name: "Finish → Done (suggested)" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Post comment" }));
+    await waitFor(() => expect(box.value).toBe(""));
+    expect(calls(a.transitionTicket).length).toBe(0);
+    expect(calls(a.commentOnTicket).length).toBe(1);
+  });
+
+  it("a rejected transition shows Jira's error, keeps the draft, and posts no comment", async () => {
+    const a = actions({
+      transitionTicket: mock(async () => ({ ok: false as const, error: "Resolution is required" })),
+    });
+    const box = await draftThenEdit(a);
+    fireEvent.click(screen.getByRole("button", { name: "Post comment" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("Resolution is required");
+    expect(box.value).toBe("Fixed the login redirect.");
+    expect(calls(a.commentOnTicket).length).toBe(0);
+    expect(screen.getByTestId("status-ABC-1").textContent).toBe("To Do");
+  });
 });

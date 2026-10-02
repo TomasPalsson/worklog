@@ -38,6 +38,12 @@ function useTaskCard(task: TaskRow, actions: TaskActions) {
     setBusy(false);
   }
 
+  function applyMove(next: { status: string | null }) {
+    setStatus(next.status);
+    setTransitions(null);
+    setSuggestedId(null);
+  }
+
   return {
     status,
     transitions,
@@ -50,15 +56,19 @@ function useTaskCard(task: TaskRow, actions: TaskActions) {
     move: (t: Transition) =>
       attempt(
         () => actions.transitionTicket(task.key, t.id),
-        (next) => {
-          setStatus(next.status);
-          setTransitions(null);
-          setSuggestedId(null);
-        },
+        applyMove,
       ),
+    dropSuggestion: () => setSuggestedId(null),
     post: () =>
       attempt(
-        () => actions.commentOnTicket(task.key, comment.trim()),
+        async () => {
+          if (suggestedId) {
+            const moved = await actions.transitionTicket(task.key, suggestedId);
+            if (!moved.ok) return moved;
+            applyMove(moved.data);
+          }
+          return actions.commentOnTicket(task.key, comment.trim());
+        },
         () => setComment(""),
       ),
     draft: () =>
@@ -120,6 +130,11 @@ export function TaskCard({ task, actions }: { task: TaskRow; actions: TaskAction
               {`${t.name} → ${t.to_status}${t.id === s.suggestedId ? " (suggested)" : ""}`}
             </button>
           ))}
+          {s.suggestedId && (
+            <button type="button" className="merge-btn" disabled={s.busy} onClick={s.dropSuggestion}>
+              Drop suggestion
+            </button>
+          )}
         </div>
       )}
 
