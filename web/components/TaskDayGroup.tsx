@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { ChevronRight } from "lucide-react";
+import { ArrowUpRight, ChevronRight } from "lucide-react";
 
 import { formatDuration, formatRange, shortMonthDay, shortWeekday } from "@/lib/format";
 import type { RawBlock, TicketDay } from "@/lib/types";
@@ -63,7 +63,10 @@ function BlockRow({ block, fresh }: { block: RawBlock; fresh: boolean }) {
           <span className="task-block-desc task-block-none">No description</span>
         )}
         {block.estimated_by === "manual" && <span className="task-block-tag">Edited</span>}
-        <ChevronRight size={14} className="task-block-go" aria-hidden="true" />
+        <span className="task-block-go" title="Opens the block page">
+          <ArrowUpRight size={14} aria-hidden="true" />
+          <span className="task-sr">Opens the block page</span>
+        </span>
       </Link>
     </li>
   );
@@ -110,7 +113,12 @@ export function DayGroup({ day, taskKey, actions, onSaved, onAnnounce, logged, e
             <span className="task-day-label">{label}</span>
             <span className="task-day-hours">{formatDuration(day.line_seconds)}</span>
             <span className="task-day-chip" data-chip={CHIP_TONE[chip]} title={changed ? changedNote(day) : undefined}>
-              {chip}
+              <span className="task-chip-long">{chip}</span>
+              {changed && (
+                <span className="task-chip-short" aria-hidden="true">
+                  Changed
+                </span>
+              )}
             </span>
           </button>
         </h4>
@@ -146,7 +154,6 @@ function DayBody({ day, changed, editingText, freshId }: { day: TicketDay; chang
     <div className="task-day-body">
       {!editingText && day.line_text && <LineText text={day.line_text} />}
       {note && <p className="task-day-note">{note}</p>}
-      {changed && <p className="task-day-note">{changedNote(day)}</p>}
       <ul className="task-block-list">
         {day.blocks.map((b) => (
           <BlockRow key={b.id} block={b} fresh={freshId === b.id} />

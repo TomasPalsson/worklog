@@ -4,7 +4,7 @@ import type { BlocksLoad } from "./useWorkLog";
 export interface TempoState {
   text: string;
   tone: "ok" | "none" | "changed";
-  /** There is a day to go and fix; the text then comes with a Show day action. */
+  /** There is a day to go and fix; the text then comes with a Show unsent day action. */
   review: boolean;
 }
 

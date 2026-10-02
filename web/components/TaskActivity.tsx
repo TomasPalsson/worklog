@@ -77,7 +77,7 @@ function Tabs({ tab, onTab, counts }: { tab: Tab; onTab: (t: Tab) => void; count
           onClick={() => onTab(t)}
         >
           {label[t]}
-          {counts[t] && <span className="task-tab-count">{counts[t]}</span>}
+          {counts[t] && <span className="task-tab-count" data-tab={t}>{counts[t]}</span>}
         </button>
       ))}
     </div>

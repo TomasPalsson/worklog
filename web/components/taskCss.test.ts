@@ -70,10 +70,10 @@ it("day rows keep label, hours and chip on one line and wrap the actions under t
 
 const phoneRows = phone.slice(phone.indexOf("/* day rows: line 1"));
 
-it("phone day row: the chip wraps under day/hours instead of truncating, line 2 is a full-width action beside the menu", () => {
-  expect(phoneRows).toContain(".task-day-toggle { flex-wrap: wrap; gap: 4px 6px; padding: 0 4px; }");
+it("phone day row: line 1 never wraps (short chip), line 2 is a full-width action beside the menu", () => {
+  expect(phoneRows).toContain(".task-day-toggle { flex-wrap: nowrap; gap: 6px; padding: 0 4px; min-width: 0; }");
   expect(phoneRows).not.toMatch(/\.task-day-chip\s*\{[^}]*text-overflow/);
-  expect(phoneRows).toContain(".task-day-trigger { flex: 1 1 0; min-width: 0; margin-left: 32px; }");
+  expect(phoneRows).toContain(".task-day-trigger { flex: 1 1 0; min-width: 0; margin-left: 24px; }");
   expect(rule(".task-day-head")).toContain("min-width: 0"); // the head can shrink inside the row
   expect(rule(".task-day-menu-wrap")).toContain("flex: none"); // the menu keeps its size; the button takes the rest
 });
@@ -84,8 +84,8 @@ it("phone filter fills the row instead of a fixed 280px; tabs never wrap", () =>
   expect(css).toContain('.task-tabs [role="tab"] { white-space: nowrap; }');
 });
 
-it("the day's send action is the primary button, compact: 32px, 40px on touch", () => {
-  expect(rule(".task-day-trigger")).toContain("min-height: 32px");
+it("the day's send action is the primary button, compact: 36px, 40px on touch", () => {
+  expect(rule(".task-day-trigger")).toContain("min-height: 36px");
   expect(rule(".task-log-open, .task-day-older")).toContain("min-height: 28px");
 });
 
@@ -121,7 +121,7 @@ it("the phone Jira link is a 40px icon with a right-anchored tooltip", () => {
   expect(css).toContain(".task-modal-jira-icon[data-tip]::after {");
 });
 
-it("the Tempo state text may wrap in the sidebar, but '· Show day' never splits", () => {
+it("the Tempo state text may wrap in the sidebar, but '· Show unsent day' never splits", () => {
   expect(rule(".task-tempo-line")).not.toContain("white-space: nowrap");
   expect(rule(".task-tempo-act")).toContain("white-space: nowrap");
 });

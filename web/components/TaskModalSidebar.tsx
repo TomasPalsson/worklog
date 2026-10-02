@@ -72,7 +72,7 @@ function Details({ task, detail, today, done, wide }: DetailsProps) {
   );
 }
 
-/** Said once: the state in words, and for days still to send a Show day button that jumps to the first of them. */
+/** Said once: the state in words, and for days still to send a Show unsent day button that jumps to the first of them. */
 function TempoRow({ load, onTempo }: { load: BlocksLoad; onTempo: () => void }) {
   const tempo = tempoState(load);
   if (!tempo) return <span className="task-none">—</span>;
@@ -85,7 +85,7 @@ function TempoRow({ load, onTempo }: { load: BlocksLoad; onTempo: () => void }) 
         <span className="task-tempo-act">
           <span aria-hidden="true">{" · "}</span>
           <button type="button" className="task-review" aria-label="Show the first unsent day" onClick={onTempo}>
-            Show day
+            Show unsent day
           </button>
         </span>
       )}

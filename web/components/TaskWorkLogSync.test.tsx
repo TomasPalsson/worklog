@@ -113,16 +113,17 @@ describe("strips stay visible when the day is folded", () => {
 });
 
 describe("Changed since sent is explained", () => {
-  it("chip title and a day note give In Tempo -> now", async () => {
+  it("the chip title gives In Tempo -> now, and the Tempo state is not repeated as a day note", async () => {
     await open([changedDay()]);
     const note = "Edited after it was sent · In Tempo: 1h → now 1h 30m";
-    expect(screen.getByText("Changed since sent").getAttribute("title")).toBe(note);
-    expect(screen.getByText(note).tagName).toBe("P");
+    expect(screen.getByText("Changed since sent").closest(".task-day-chip")!.getAttribute("title")).toBe(note);
+    expect(screen.queryByText(note)).toBeNull();
+    expect(document.querySelector(".task-day-body")?.textContent ?? "").not.toContain("Edited after");
   });
 
   it("omits the arrow part when Tempo's hours are unknown", async () => {
     await open([changedDay({ in_tempo_seconds: null })]);
-    expect(screen.getByText("Edited after it was sent to Tempo")).toBeTruthy();
+    expect(screen.getByText("Changed since sent").closest(".task-day-chip")!.getAttribute("title")).toBe("Edited after it was sent to Tempo");
   });
 
   it("the update preview lists In Tempo and Will be instead of Hours", async () => {

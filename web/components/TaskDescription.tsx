@@ -10,11 +10,13 @@ import { useOverflow } from "./useOverflow";
 function Prose({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
   const p = useRef<HTMLParagraphElement>(null);
-  const overflows = useOverflow(p, text, open);
+  // The preview never spends a line on empty space: runs of blank lines become one paragraph break.
+  const shown = open ? text : text.trim().replace(/\n(?:[ \t]*\n){2,}/g, "\n\n");
+  const overflows = useOverflow(p, shown, open);
   return (
     <>
       <p ref={p} className="task-prose" data-open={open || undefined}>
-        {text}
+        {shown}
       </p>
       {overflows && (
         <button type="button" className="task-more" aria-expanded={open} onClick={() => setOpen((o) => !o)}>

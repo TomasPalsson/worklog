@@ -198,22 +198,22 @@ describe("Time card", () => {
         changedDay({ day: "2026-10-01" }),
       ]),
     );
-    await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("2 days not sent, 1 day changed since sent · Show day"));
-    expect(value(".task-time", "Tempo").querySelectorAll("button")).toHaveLength(1); // said once, with one Show day
+    await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("2 days not sent, 1 day changed since sent · Show unsent day"));
+    expect(value(".task-time", "Tempo").querySelectorAll("button")).toHaveLength(1); // said once, with one Show unsent day
   });
 
   it("says 1 day in the singular and shows a dash with nothing logged", async () => {
     open(withDays([day()]));
-    await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("1 day not sent · Show day"));
+    await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("1 day not sent · Show unsent day"));
     cleanup();
     open(actions());
     await screen.findByText(/Steps to reproduce/);
     expect(value(".task-time", "Tempo").textContent).toBe("—");
   });
 
-  it("Show day is a button labelled for the first unsent day, the state beside it is plain text", async () => {
+  it("Show unsent day is a button labelled for the first unsent day, the state beside it is plain text", async () => {
     open(withDays([changedDay()]));
-    await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("1 day changed since sent · Show day"));
+    await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("1 day changed since sent · Show unsent day"));
     const text = value(".task-time", "Tempo").querySelector("span.task-tempo") as HTMLElement;
     expect(text.getAttribute("data-tone")).toBe("changed");
     expect(text.tagName).toBe("SPAN");
@@ -222,7 +222,7 @@ describe("Time card", () => {
     expect(b.getAttribute("aria-label")).toBe("Show the first unsent day");
   });
 
-  it("clicking Show day switches to the Work log and scrolls to the first such day", async () => {
+  it("clicking Show unsent day switches to the Work log and scrolls to the first such day", async () => {
     window.localStorage.setItem("worklog.ticketTab", "comments");
     const scroll = mock((_o: unknown) => {});
     (HTMLElement.prototype as unknown as { scrollIntoView: unknown }).scrollIntoView = scroll;

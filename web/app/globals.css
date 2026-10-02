@@ -5899,7 +5899,7 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 .task-empty { margin: 0; font-size: 13px; color: var(--fg-subtle); }
 .task-skel { display: grid; gap: 8px; }
 .task-skel i { display: block; height: 12px; border-radius: var(--radius-sm); background: var(--bg-sunk); }
-.task-tabs { display: flex; gap: 20px; border-bottom: 1px solid var(--border); }
+.task-tabs { display: flex; flex-wrap: nowrap; min-width: 0; max-width: 100%; overflow-x: clip; gap: 20px; border-bottom: 1px solid var(--border); }
 .task-tabs [role="tab"] {
   position: relative;
   display: inline-flex;
@@ -6039,12 +6039,12 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 .task-day-toggle[aria-expanded="true"] .task-day-chev { transform: rotate(90deg); }
 @media (prefers-reduced-motion: reduce) { .task-day-chev { transition: none; } }
 .task-log-open, .task-day-older { flex: none; min-height: 28px; padding: 0 12px; font-size: 12px; }
-.task-day-trigger { flex: none; min-height: 32px; padding: 0 12px; font-size: 12px; }
+.task-day-trigger { flex: none; min-height: 36px; padding: 0 12px; font-size: 12px; }
 .task-day-older { margin-top: 16px; }
 .task-day > :not(.task-day-row):not(.task-day-body) { margin-right: 8px; margin-left: 32px; }
 .task-day-body { padding: 0 8px 12px 32px; }
 .task-icon-btn {
-  position: relative; flex: none; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px;
+  position: relative; flex: none; display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px;
   border: 0; border-radius: var(--radius-sm); background: none; color: var(--fg-subtle); cursor: pointer;
 }
 .task-icon-btn:hover { background: var(--bg-sunk); color: var(--fg); }
@@ -6057,6 +6057,7 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
   padding: 1px 8px; border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: 12px;
   font-weight: 500; letter-spacing: 0.02em; border: 1px solid transparent;
 }
+.task-chip-short { display: none; }
 .task-day-chip[data-chip="none"] { background: var(--slate-bg); color: var(--slate-ink); }
 .task-day-chip[data-chip="ok"] { border-color: transparent; background: var(--sage-bg); color: var(--sage-ink); }
 .task-day-chip[data-chip="changed"] { background: var(--amber-bg); color: var(--amber-ink); }
@@ -6099,7 +6100,7 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 .task-block-desc { min-width: 0; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: 13px; }
 .task-block-row:hover .task-block-desc, .task-block-row:focus-visible .task-block-desc { text-decoration: underline; }
 .task-block-tag { grid-column: 4; }
-.task-block-go { grid-column: 5; align-self: center; color: var(--fg-subtle); }
+.task-block-go { position: relative; display: inline-flex; grid-column: 5; align-self: center; color: var(--fg-subtle); }
 .task-block-none { color: var(--fg-subtle); }
 .task-block-tag { font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); }
 .task-log-form { display: grid; gap: 12px; margin-bottom: 12px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-raised); }
@@ -6132,16 +6133,22 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
   .task-headline { font-size: 22px; line-height: 1.2; }
   .task-summary { display: grid; gap: 8px; }
   .task-summary-line { margin: 0; font-size: 13px; color: var(--fg-muted); }
-  /* day rows: line 1 is chevron, day, hours, chip; line 2 is the actions, right-aligned */
+  /* day rows: line 1 is chevron, day, hours, chip (nowrap); line 2 is the actions on the day label's left edge, so two left edges */
   .task-day-row { flex-wrap: wrap; justify-content: flex-end; padding-bottom: 4px; }
   .task-day-head { flex: 1 0 100%; }
-  /* The chip drops under the day/hours on the narrowest phones rather than being cut short. */
-  .task-day-toggle { flex-wrap: wrap; gap: 4px 6px; padding: 0 4px; }
+  /* The short chip ("Changed") lets all four fit on one line at 320px; the full state stays for screen readers. */
+  .task-day-toggle { flex-wrap: nowrap; gap: 6px; padding: 0 4px; min-width: 0; }
+  .task-chip-short { display: inline; }
+  .task-chip-long:has(+ .task-chip-short) { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .task-day-chip { position: relative; }
+  .task-prose:not([data-open]) { -webkit-line-clamp: 2; }
+  .task-day > :not(.task-day-row):not(.task-day-body) { margin-left: 24px; }
+  .task-day-body { padding-left: 24px; }
   /* A phone-width filter: the box takes the row instead of a fixed 280px that pushed the page wider. */
   .task-filter { flex: 1 1 100%; min-width: 0; }
   .task-filter-box { flex: 1 1 auto; min-width: 0; }
   .task-filter input { width: 100%; }
-  .task-day-trigger { flex: 1 1 0; min-width: 0; margin-left: 32px; }
+  .task-day-trigger { flex: 1 1 0; min-width: 0; margin-left: 24px; }
   /* block rows: time and length on top, the description full width below, the chevron centred on the right */
   .task-block-row { grid-template-columns: auto auto minmax(0, 1fr) auto; column-gap: 4px; row-gap: 2px; align-items: center; }
   .task-block-range { grid-column: 1; grid-row: 1; color: var(--fg-muted); }
@@ -6155,6 +6162,12 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 @media (pointer: coarse) {
   .task-icon-btn { min-width: 40px; min-height: 40px; }
   .task-day-trigger, .task-log-open, .task-tabs [role="tab"], .task-more { min-height: 40px; }
+}
+/* narrowest phones: tighter tabs, and no hours pill on Work log (the day rows show the hours) */
+@media (max-width: 359px) {
+  .task-tabs { gap: 12px; }
+  .task-tabs [role="tab"] { padding: 0 4px; }
+  .task-tab-count[data-tab="work"] { display: none; }
 }
 
 .closeout { display: grid; gap: 12px; }

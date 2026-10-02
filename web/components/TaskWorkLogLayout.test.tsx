@@ -14,9 +14,9 @@ describe("day row", () => {
       day({ day: "2026-10-02", blocks: [block({ tempo_worklog_id: "a", dirty: true })] }),
       day({ day: "2026-10-01" }),
     ]);
-    expect(screen.getByText("Sent").getAttribute("data-chip")).toBe("ok");
-    expect(screen.getByText("Changed since sent").getAttribute("data-chip")).toBe("changed");
-    expect(screen.getByText("Not sent").getAttribute("data-chip")).toBe("none");
+    expect(screen.getByText("Sent").closest(".task-day-chip")!.getAttribute("data-chip")).toBe("ok");
+    expect(screen.getByText("Changed since sent").closest(".task-day-chip")!.getAttribute("data-chip")).toBe("changed");
+    expect(screen.getByText("Not sent").closest(".task-day-chip")!.getAttribute("data-chip")).toBe("none");
   });
 
   it("is one line: chevron, label, plain hours and chip in the disclosure button, then the actions", async () => {
@@ -32,9 +32,9 @@ describe("day row", () => {
     expect(more().textContent).toBe("");
   });
 
-  it("block rows end in a chevron", async () => {
+  it("block rows end in an icon whose glyph is hidden from screen readers (the sr text says where it goes)", async () => {
     await open();
-    expect(document.querySelector(".task-block-row .task-block-go")?.getAttribute("aria-hidden")).toBe("true");
+    expect(document.querySelector(".task-block-row .task-block-go svg")?.getAttribute("aria-hidden")).toBe("true");
   });
 
   it("the day label sits in an h4 and the preview heading is an h5", async () => {
