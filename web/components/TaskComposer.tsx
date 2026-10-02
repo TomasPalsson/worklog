@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState, type MutableRefObject } from "react";
 import { Sparkles, X } from "lucide-react";
 
 import type { TicketStatus, Transition } from "@/lib/types";
@@ -8,16 +8,24 @@ import type { TaskActions } from "./TaskCard";
 
 const MAX = 5000;
 
+/** Unsent comments by ticket key, owned by the board so they survive closing or switching cards. */
+export type Drafts = Record<string, { text: string; suggested: Transition | null }>;
+
 interface Props {
   taskKey: string;
+  drafts?: MutableRefObject<Drafts>;
   actions: TaskActions;
   onPosted: (text: string) => void;
   onMoved: (next: TicketStatus) => void;
 }
 
-function useComposer({ taskKey, actions, onPosted, onMoved }: Props) {
-  const [text, setText] = useState("");
-  const [suggested, setSuggested] = useState<Transition | null>(null);
+function useComposer({ taskKey, actions, onPosted, onMoved, drafts }: Props) {
+  const saved = drafts?.current[taskKey];
+  const [text, setText] = useState(saved?.text ?? "");
+  const [suggested, setSuggested] = useState<Transition | null>(saved?.suggested ?? null);
+  useEffect(() => {
+    if (drafts) drafts.current[taskKey] = { text, suggested };
+  }, [drafts, taskKey, text, suggested]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const trimmed = text.trim();

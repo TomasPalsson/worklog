@@ -222,6 +222,31 @@ describe("TaskBoard panel", () => {
     expect(document.activeElement).toBe(button);
   });
 
+  it("Esc with the chooser open cancels only the chooser; the panel stays", async () => {
+    const a = actions({ loadTransitions: mock(async () => ({ ok: true as const, data: [start, review, done] })) });
+    render(<TaskBoard actions={a} tasks={tasks} />);
+    fireEvent.click(within(card("ABC-1")).getByRole("button"));
+    await screen.findByText("Long description");
+    await drag("ABC-1", "indeterminate");
+    await screen.findByRole("group", { name: /Move ABC-1/ });
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("group", { name: /Move ABC-1/ })).toBeNull();
+    expect(screen.queryByRole("dialog")).not.toBeNull();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("an unsent comment survives closing the panel and switching cards", async () => {
+    render(<TaskBoard actions={actions()} tasks={tasks} />);
+    fireEvent.click(within(card("ABC-1")).getByRole("button"));
+    fireEvent.change(await screen.findByLabelText("Add a comment"), { target: { value: "half written" } });
+    fireEvent.click(within(card("ABC-2")).getByRole("button"));
+    expect((await screen.findByLabelText("Add a comment") as HTMLTextAreaElement).value).toBe("");
+    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.click(within(card("ABC-1")).getByRole("button"));
+    expect((await screen.findByLabelText("Add a comment") as HTMLTextAreaElement).value).toBe("half written");
+  });
+
   it("a status change in the panel moves the card to its new column", async () => {
     const a = actions();
     render(<TaskBoard actions={a} tasks={tasks} />);

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 
 import {
   commentOnTicket,
@@ -13,6 +13,7 @@ import { COLUMNS, columnOf, columnTitle, movesInto, type Column } from "@/lib/ta
 import { toast } from "@/lib/toast";
 import type { TaskRow, Transition } from "@/lib/types";
 import { TaskCard, type TaskActions } from "./TaskCard";
+import type { Drafts } from "./TaskComposer";
 import { TaskColumn, type Chooser } from "./TaskColumn";
 import { TaskPanel, type TaskPanelProps } from "./TaskPanel";
 
@@ -145,17 +146,33 @@ const EMPTY = (
 function useChooserEscape(active: boolean, cancel: () => void) {
   useEffect(() => {
     if (!active) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && cancel();
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    // Capture phase + preventDefault: the panel's Esc handler sees defaultPrevented and stays open.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      cancel();
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
   }, [active, cancel]);
+}
+
+/** Which card's panel is open; drafts outlive the panel so closing or switching never loses a comment. */
+function usePanel() {
+  const [openKey, setOpenKey] = useState<string | null>(null);
+  const drafts = useRef<Drafts>({});
+  const closePanel = useCallback(() => {
+    if (openKey) document.querySelector<HTMLElement>(`[data-task-key="${openKey}"] button`)?.focus();
+    setOpenKey(null);
+  }, [openKey]);
+  return { openKey, setOpenKey, drafts, closePanel };
 }
 
 export function TaskBoard({ tasks, actions = realActions }: { tasks: TaskRow[]; actions?: TaskActions }) {
   const [rows, setRows] = useState(tasks);
   const [text, setText] = useState("");
   const [onlyWorked, setOnlyWorked] = useState(false);
-  const [openKey, setOpenKey] = useState<string | null>(null);
+  const { openKey, setOpenKey, drafts, closePanel } = usePanel();
 
   const patch = useCallback<Patch>(
     (key, s) => setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...s } : r))),
@@ -165,11 +182,6 @@ export function TaskBoard({ tasks, actions = realActions }: { tasks: TaskRow[]; 
   const colOf = (r: TaskRow) => m.placed[r.key] ?? columnOf(r.status_category);
   const drag = useDrag(rows, colOf, m.move);
   useChooserEscape(m.chooser !== null, m.cancel);
-
-  const closePanel = useCallback(() => {
-    if (openKey) document.querySelector<HTMLElement>(`[data-task-key="${openKey}"] button`)?.focus();
-    setOpenKey(null);
-  }, [openKey]);
 
   if (rows.length === 0) return EMPTY;
 
@@ -181,7 +193,7 @@ export function TaskBoard({ tasks, actions = realActions }: { tasks: TaskRow[]; 
   return (
     <>
       <Toolbar text={text} onlyWorked={onlyWorked} setText={setText} setOnlyWorked={setOnlyWorked} />
-      <div className="task-board">
+      <div className={open ? "task-board has-panel" : "task-board"}>
         {COLUMNS.map(({ id }) => {
           const cards = visible.filter((r) => colOf(r) === id);
           return (
@@ -215,7 +227,7 @@ export function TaskBoard({ tasks, actions = realActions }: { tasks: TaskRow[]; 
         })}
       </div>
       {open && (
-        <TaskPanel key={open.key} task={open} actions={actions} onClose={closePanel} onStatus={(s) => patch(open.key, s)} />
+        <TaskPanel key={open.key} drafts={drafts} task={open} actions={actions} onClose={closePanel} onStatus={(s) => patch(open.key, s)} />
       )}
     </>
   );

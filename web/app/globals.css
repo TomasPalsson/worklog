@@ -5403,6 +5403,8 @@ button {
 .task-check { display: inline-flex; align-items: center; gap: 8px; padding-bottom: 8px; font-size: 13px; }
 
 .task-board { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: stretch; }
+/* the fixed reading panel owns the right edge; keep every column reachable beside it */
+.task-board.has-panel { padding-right: min(560px, 100vw); }
 .task-col {
   min-height: 320px;
   padding: 0 16px 24px;
@@ -5662,6 +5664,7 @@ button {
 
 @media (max-width: 900px) {
   .task-board { grid-template-columns: 1fr; }
+  .task-board.has-panel { padding-right: 0; }
   .task-col, .task-col:first-child, .task-col:last-child { min-height: 0; padding: 0 0 20px; border-left: 0; }
 }
 @media (prefers-reduced-motion: reduce) {

@@ -1,13 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { ChevronDown, ExternalLink, X } from "lucide-react";
 
 import { formatDuration } from "@/lib/format";
 import { formatStamp } from "@/lib/taskBoard";
 import type { StatusCategory, TaskRow, TicketComment, TicketDetail, TicketStatus, Transition } from "@/lib/types";
 import type { TaskActions } from "./TaskCard";
-import { TaskComposer } from "./TaskComposer";
+import { TaskComposer, type Drafts } from "./TaskComposer";
 
 type Load = { s: "loading" } | { s: "error"; error: string } | { s: "ok"; detail: TicketDetail };
 
@@ -15,6 +15,7 @@ export interface TaskPanelProps {
   task: TaskRow;
   actions: TaskActions;
   onClose: () => void;
+  drafts?: MutableRefObject<Drafts>;
   onStatus: (next: { status: string | null; status_category: StatusCategory | null }) => void;
 }
 
@@ -171,14 +172,14 @@ function Body({ load, retry, extra, taskKey }: { load: Load; retry: () => void; 
 }
 
 export function TaskPanel(props: TaskPanelProps) {
-  const { task, actions, onClose, onStatus } = props;
+  const { task, actions, onClose, onStatus, drafts } = props;
   const { load, retry } = useDetail(task.key, actions);
   const [extra, setExtra] = useState<TicketComment[]>([]);
   const head = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => head.current?.focus(), []);
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !e.defaultPrevented && onClose();
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
@@ -210,7 +211,7 @@ export function TaskPanel(props: TaskPanelProps) {
         <Meta {...props} detail={detail} />
         <Body load={load} retry={retry} extra={extra} taskKey={task.key} />
       </div>
-      <TaskComposer taskKey={task.key} actions={actions} onPosted={posted} onMoved={moved} />
+      <TaskComposer drafts={drafts} taskKey={task.key} actions={actions} onPosted={posted} onMoved={moved} />
     </aside>
   );
 }
