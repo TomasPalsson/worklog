@@ -1,15 +1,19 @@
 "use client";
 
-import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useEffect, useId, useRef, useState, type MutableRefObject, type ReactNode, type RefObject } from "react";
 import { ExternalLink, X } from "lucide-react";
 
 import { localToday } from "@/lib/taskBoard";
-import type { JiraTicket, StatusCategory, TaskRow, TicketDetail } from "@/lib/types";
+import type { JiraTicket, StatusCategory, TaskRow, TicketComment, TicketDetail } from "@/lib/types";
 import type { TaskActions } from "./TaskCard";
 import { ParentRow, TypeIcon } from "./TaskCardMeta";
+import { TaskComments } from "./TaskComments";
+import type { Drafts } from "./TaskComposer";
 import { TaskDescription } from "./TaskDescription";
+import { TaskDetails } from "./TaskDetails";
 import { CopyKey } from "./TaskCopyKey";
 import { TaskHours } from "./TaskHours";
+import { TaskRelated } from "./TaskRelated";
 import { TaskModalSidebar } from "./TaskModalSidebar";
 import { TaskModalSummary } from "./TaskModalSummary";
 import type { Shown } from "./TaskStatusButton";
@@ -28,6 +32,13 @@ export interface TaskModalProps {
   onStatus: (next: { status: string | null; status_category: StatusCategory | null }) => void;
   /** The board's tickets, offered first in the work log's Move picker. */
   tickets?: JiraTicket[];
+  /** Unsent comments by ticket key, owned by the board so they survive closing or switching cards. */
+  drafts?: MutableRefObject<Drafts>;
+  /** Board keys and how to open one; related issues not on the board open in Jira. */
+  knownKeys?: Set<string>;
+  onOpenTicket?: (key: string) => void;
+  /** Whether the Jira fold is open; owned by the board so it holds across tickets. */
+  jiraOpen?: MutableRefObject<boolean>;
 }
 
 interface HeadProps {
@@ -89,13 +100,14 @@ function Title({ id, task }: { id: string; task: TaskRow }) {
   );
 }
 
-/** What the dialog's parts share: the status shown, the live region and the Tempo jump. */
+/** What the dialog's parts share: the status shown, posted comments, the live region and the Tempo jump. */
 function useModalState(
   { task, onStatus }: TaskModalProps,
   detail: TicketDetail | null,
   dialog: RefObject<HTMLElement | null>,
   work: WorkLog,
 ) {
+  const [extra, setExtra] = useState<TicketComment[]>([]);
   const [changed, setChanged] = useState<Shown | null>(null);
   const [announce, setAnnounce] = useState("");
   const [jump, setJump] = useState(0);
@@ -105,13 +117,19 @@ function useModalState(
     setChanged({ status_category: s.status_category, status: s.status });
     onStatus({ status: s.status, status_category: s.status_category });
   };
+  const posted = (body: string) => {
+    setExtra((l) => [...l, { id: `local-${l.length}`, author: "You", created: new Date().toISOString(), body }]);
+    setAnnounce(`Comment posted to ${task.key}.`);
+  };
   // After every day has rendered, bring the first day that still needs Tempo into view.
   useEffect(() => {
     if (jump) dialog.current?.querySelector('.task-day[data-state="none"], .task-day[data-state="changed"]')?.scrollIntoView?.({ block: "center" });
   }, [jump, dialog]);
   return {
+    extra,
     shown,
     report,
+    posted,
     announce,
     setAnnounce,
     jumpTo: () => (work.setShowAll(true), setJump((n) => n + 1)),
@@ -134,7 +152,7 @@ function Backdrop({ onClose, children }: { onClose: () => void; children: ReactN
 
 /** A ticket as a Jira-style dialog: title, time, work log and description on the left; status, time and details on the right. */
 export function TaskModal(props: TaskModalProps) {
-  const { task, actions, onClose } = props;
+  const { task, actions, onClose, drafts } = props;
   const titleId = useId();
   const dialog = useRef<HTMLDivElement>(null);
   const shell = useModalShell(dialog, onClose);
@@ -143,6 +161,8 @@ export function TaskModal(props: TaskModalProps) {
   const detail = load.s === "ok" ? load.detail : null;
   const m = useModalState(props, detail, dialog, work);
   const wide = useWide();
+  const localOpen = useRef(false);
+  const foldOpen = props.jiraOpen ?? localOpen;
 
   return (
     <Backdrop onClose={onClose}>
@@ -155,9 +175,12 @@ export function TaskModal(props: TaskModalProps) {
             <TaskHours taskKey={task.key} load={work.load} today={props.today ?? localToday()} onTempo={m.jumpTo} onRetry={work.retry} />
             <h3 className="task-label task-worklog-title">Work log</h3>
             <TaskWorkLog taskKey={task.key} actions={actions} work={work} onAnnounce={m.setAnnounce} tickets={props.tickets} />
-            <details className="task-desc-fold">
-              <summary>Description</summary>
+            <details className="task-jira-fold" open={foldOpen.current} onToggle={(e) => void (foldOpen.current = e.currentTarget.open)}>
+              <summary>Jira — description, comments, details</summary>
               <TaskDescription taskKey={task.key} load={load} retry={retry} />
+              <TaskDetails task={task} detail={detail} today={props.today} done={m.shown.status_category === "done"} />
+              <TaskRelated detail={detail} knownKeys={props.knownKeys} onOpen={props.onOpenTicket} />
+              <TaskComments taskKey={task.key} actions={actions} detail={load} extra={m.extra} drafts={drafts} onPosted={m.posted} onMoved={m.report} />
             </details>
           </div>
           <TaskModalSidebar

@@ -21,14 +21,14 @@ describe("TaskModal reading", () => {
     expect(screen.getByRole("link", { name: /Open in Jira/ }).getAttribute("href")).toBe("https://jira.example/browse/ABC-1");
   });
 
-  it("leads with the work log (no ledger on an empty ticket), then a collapsed Description, and loads the work log for the key", async () => {
+  it("leads with the work log (no ledger on an empty ticket), then a collapsed Jira fold, and loads the work log for the key", async () => {
     const a = actions();
     open(a);
     expect(await screen.findByText("Nothing tracked on ABC-1 yet. Time from your sessions lands here on its own — or log it by hand.")).not.toBeNull();
     expect(calls(a.loadTicketBlocks)[0]).toEqual(["ABC-1"]);
     const labels = [...document.querySelectorAll(".task-modal-main .task-label")].map((n) => n.textContent);
-    expect(labels).toEqual(["Work log", "Description"]);
-    const fold = document.querySelector(".task-desc-fold") as HTMLDetailsElement;
+    expect(labels.slice(0, 1)).toEqual(["Work log"]);
+    const fold = document.querySelector(".task-jira-fold") as HTMLDetailsElement;
     expect(fold.open).toBe(false);
     expect(fold.previousElementSibling?.className).toBe("task-work");
   });

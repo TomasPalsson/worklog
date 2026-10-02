@@ -48,13 +48,13 @@ describe("summary under the title", () => {
     expect([...document.querySelectorAll(".task-modal-side .task-label")].map((n) => n.textContent)).toEqual(["Tempo"]);
   });
 
-  it("tab order matches the page: title, status, then the ledger, work log and description", () => {
+  it("tab order matches the page: title, status, then the ledger, work log and Jira fold", () => {
     viewport(false);
     open(actions(), quiet());
     const order = [...document.querySelectorAll(".task-modal-body button, .task-modal-body summary")];
     const status = order.indexOf(screen.getByTestId("status-ABC-1"));
     expect(status).toBe(0);
-    expect(order.indexOf(screen.getByText("Description", { selector: "summary" }))).toBeGreaterThan(status);
+    expect(order.indexOf(screen.getByText(/^Jira — /, { selector: "summary" }))).toBeGreaterThan(status);
   });
 
   it("its Tempo part scrolls to the first day still to send", async () => {

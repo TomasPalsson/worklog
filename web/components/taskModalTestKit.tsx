@@ -1,7 +1,7 @@
 // Shared fixtures for the TaskModal* / TaskActivity tests.
 
 import { mock } from "bun:test";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { TaskRow, TicketDetail, TicketDraft, Transition } from "@/lib/types";
 import type { TaskActions } from "./TaskCard";
 import { TaskModal } from "./TaskModal";
@@ -119,3 +119,6 @@ export function viewport(wide: boolean) {
   };
 }
 export const restoreViewport = () => void (window.matchMedia = realMatchMedia);
+
+/** Open the dialog's collapsed Jira section (description, details, related, comments). */
+export const unfold = () => fireEvent.click(screen.getByText(/^Jira — /));

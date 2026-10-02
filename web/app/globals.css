@@ -6313,11 +6313,14 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
 .task-time .task-figs { grid-template-columns: 1fr; gap: 8px; }
 .task-time .task-fig-value { white-space: nowrap; }
 .task-worklog-title { margin: 24px 0 8px; }
-.task-desc-fold { margin-top: 24px; }
-.task-desc-fold > summary { cursor: pointer; font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); min-height: 32px; }
-.task-desc-fold > summary:focus-visible { outline: none; border-radius: var(--radius-sm); box-shadow: var(--ring); }
-.task-desc-fold .task-description { margin-top: 8px; }
-.task-desc-fold .task-description > .task-label { display: none; }
+.task-jira-fold { margin-top: 24px; }
+.task-jira-fold > summary { cursor: pointer; font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); min-height: 32px; }
+.task-jira-fold > summary:focus-visible { outline: none; border-radius: var(--radius-sm); box-shadow: var(--ring); }
+.task-jira-fold > section { margin-top: 24px; }
+.task-jira-fold > summary + section { margin-top: 16px; }
+.task-jira-fold > section > .task-label { margin: 0 0 8px; }
+.task-details dl { display: grid; gap: 8px; margin: 0; }
+.task-comments-section .task-comments { margin-top: 16px; }
 .task-summary-line .task-tempo { margin-left: 8px; }
 .task-rel-row, .task-rel-more { transition: background-color 150ms cubic-bezier(0.25, 1, 0.5, 1), transform 150ms cubic-bezier(0.25, 1, 0.5, 1); }
 .task-rel-row:active, .task-rel-more:active, .task-block-move:active, .task-time-foot .task-review:active:not(:disabled) { transform: translateY(1px); }

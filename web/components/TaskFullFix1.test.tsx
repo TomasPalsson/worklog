@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { TaskRow } from "@/lib/types";
 import { TaskBoard } from "./TaskBoard";
+import { TaskRelated } from "./TaskRelated";
 import { block, day, payload } from "./workLogTestKit";
 import { actions, detail, open, restoreViewport, row, viewport } from "./taskModalTestKit";
 
@@ -62,6 +63,31 @@ describe("phone summary has one Today", () => {
     viewport(false);
     open(actions({ loadTicketBlocks: mock(() => new Promise(() => {})) }));
     expect(lines()).toEqual(["Today 30m"]);
+  });
+});
+
+describe("Related", () => {
+  const ref = { key: "ABC-9", summary: "Other", status: "To Do", status_category: "new" as const, issue_type: "Task" };
+
+  it("keeps a Jira context path in the browse link", () => {
+    render(<TaskRelated detail={detail({ url: "https://host/jira/browse/A-1", subtasks: [ref] })} />);
+    expect(screen.getByRole("link", { name: /ABC-9/ }).getAttribute("href")).toBe("https://host/jira/browse/ABC-9");
+  });
+
+  it("says Show all N with what it shows", () => {
+    const many = (n: number) => Array.from({ length: n }, (_, i) => ({ ...ref, key: `ABC-${i + 10}` }));
+    render(
+      <TaskRelated
+        detail={detail({
+          subtasks: many(6),
+          links: many(7).map((issue) => ({ relation: "blocks", issue })),
+          attachments: many(8).map((r) => ({ filename: r.key, size_bytes: 10, url: "https://x/y", created: null, author: null })),
+        })}
+      />,
+    );
+    for (const name of ["Show all 6 subtasks", "Show all 7 linked issues", "Show all 8 attachments"]) {
+      expect(screen.getByRole("button", { name })).toBeTruthy();
+    }
   });
 });
 
