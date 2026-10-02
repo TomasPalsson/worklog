@@ -98,7 +98,7 @@ fn line_text_prefers_stored_over_fallback_and_seconds_honour_override() {
 fn tracked_seconds_is_the_unrounded_union_and_flags_hand_set_hours() {
     let conn = open_memory().unwrap();
     // Two overlapping 40-minute blocks (09:00, 09:20) = 60 min union;
-    // a lone 40-minute block on another day rounds down to 30 min.
+    // a lone 40-minute block on another day rounds up to 1h.
     for (day, start) in [
         ("2026-10-02", "09:00"),
         ("2026-10-02", "09:20"),
@@ -118,7 +118,7 @@ fn tracked_seconds_is_the_unrounded_union_and_flags_hand_set_hours() {
     );
     assert_eq!(
         (out.days[1].tracked_seconds, out.days[1].line_seconds),
-        (2400, 1800)
+        (2400, 3600)
     );
     assert!(!out.days[0].hours_set_by_hand && !out.days[1].hours_set_by_hand);
     let hours = SetTempoLineHours {

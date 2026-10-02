@@ -40,7 +40,7 @@ function hoursProblem(seconds: number): string | null {
 export function hoursNote(day: TicketDay): string | null {
   const tracked = formatDuration(day.tracked_seconds);
   if (day.hours_set_by_hand) return `Set by hand · ${tracked} tracked`;
-  return day.line_seconds !== day.tracked_seconds ? `Rounded to the nearest half hour from ${tracked} tracked` : null;
+  return day.line_seconds !== day.tracked_seconds ? `Rounded up to the next half hour from ${tracked} tracked` : null;
 }
 
 /** Sage confirmation strip ("Sent to Tempo", "Logged 30m"); stays until the dialog closes. `focus` moves focus to it on mount. */

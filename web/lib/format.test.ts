@@ -65,18 +65,19 @@ describe("formatTotalHours", () => {
 });
 
 describe("roundToHalfHour", () => {
-  it("rounds to the nearest half hour with ties up", () => {
+  it("rounds up to the next half hour", () => {
     expect(roundToHalfHour(1800)).toBe(1800);
     expect(roundToHalfHour(5400)).toBe(5400);
     expect(roundToHalfHour(26 * 60 + 40)).toBe(1800); // 26m40s → 0.5h
-    expect(roundToHalfHour(44 * 60)).toBe(1800); // 44m → 0.5h
-    expect(roundToHalfHour(45 * 60)).toBe(3600); // 45m tie → 1h
+    expect(roundToHalfHour(31 * 60)).toBe(3600); // 31m → 1h
+    expect(roundToHalfHour(44 * 60)).toBe(3600); // 44m → 1h
+    expect(roundToHalfHour(85 * 60)).toBe(5400); // 1h 25m → 1.5h
   });
 
   it("floors anything under 15 min to 0", () => {
     expect(roundToHalfHour(0)).toBe(0);
     expect(roundToHalfHour(14 * 60)).toBe(0);
-    expect(roundToHalfHour(15 * 60)).toBe(1800); // 15m tie → 0.5h
+    expect(roundToHalfHour(15 * 60)).toBe(1800); // 15m → 0.5h
     expect(roundToHalfHour(-100)).toBe(0);
   });
 });

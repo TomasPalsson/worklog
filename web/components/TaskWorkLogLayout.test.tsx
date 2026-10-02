@@ -124,7 +124,7 @@ describe("hours note", () => {
 
   it("rounded hours", async () => {
     await open([day({ line_seconds: 1800, tracked_seconds: 2400 })]);
-    expect(note("Rounded to the nearest half hour from 40m tracked")).toBeTruthy();
+    expect(note("Rounded up to the next half hour from 40m tracked")).toBeTruthy();
   });
 
   it("no note when hours equal the tracked time", async () => {
@@ -134,13 +134,13 @@ describe("hours note", () => {
 
   it("states the rounding rule", async () => {
     await open([day({ line_seconds: 1800, tracked_seconds: 6120 })]);
-    expect(screen.getByText("Rounded to the nearest half hour from 1h 42m tracked")).toBeTruthy();
+    expect(screen.getByText("Rounded up to the next half hour from 1h 42m tracked")).toBeTruthy();
   });
 
   it("is part of the open day, not the row", async () => {
     await open([day({ line_seconds: 1800, tracked_seconds: 2400 })]);
     fireEvent.click(toggle());
-    expect(note("Rounded to the nearest half hour from 40m tracked")).toBeNull();
+    expect(note("Rounded up to the next half hour from 40m tracked")).toBeNull();
   });
 });
 

@@ -49,7 +49,7 @@ export function formatTotalHours(seconds: number): string {
 }
 
 /**
- * Round seconds to the nearest half hour, ties rounding up, with a zero
+ * Round seconds UP to the next half hour (1h 25m → 1.5h), with a zero
  * floor — the mirror of the Rust `round_to_half_hour` used at Tempo sync.
  * Under 15 min rounds to 0 (below the 0.5h minimum). Keep the two in
  * step: this is what the UI shows as "billable", and the daemon logs the
@@ -57,7 +57,8 @@ export function formatTotalHours(seconds: number): string {
  */
 export function roundToHalfHour(seconds: number): number {
   if (seconds <= 0) return 0;
-  return Math.floor((seconds + 900) / 1800) * 1800;
+  if (seconds < 900) return 0;
+  return Math.ceil(seconds / 1800) * 1800;
 }
 
 /**
