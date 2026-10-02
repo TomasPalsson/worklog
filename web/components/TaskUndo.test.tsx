@@ -116,11 +116,12 @@ describe("TaskBoard undo", () => {
 });
 
 describe("TaskBoard card details", () => {
-  it("Move trigger has a tooltip and arrow keys cycle the menu with wrap, Home and End", () => {
+  it("Move trigger has a tooltip and arrow keys cycle the menu with wrap, Home and End", async () => {
     render(<TaskBoard actions={actions([[start]])} tasks={[row()]} />);
     const btn = screen.getByRole("button", { name: "Move ABC-1" });
     expect(btn.getAttribute("data-tip")).toBe("Move");
     fireEvent.click(btn);
+    await screen.findByRole("menuitem", { name: "Move to In Progress" });
     const [first, last] = screen.getAllByRole("menuitem");
     expect(document.activeElement).toBe(first);
     fireEvent.keyDown(first, { key: "ArrowDown" });
@@ -144,5 +145,20 @@ describe("TaskBoard card details", () => {
     );
     expect(within(card("ABC-1")).queryByText("not assigned")).not.toBeNull();
     expect(within(card("ABC-2")).queryByText("not assigned")).toBeNull();
+  });
+});
+
+describe("Undo strip does not reflow the card", () => {
+  it("replaces the hours line while it shows and gives it back afterwards", async () => {
+    await movedWithUndo([[start]], 150);
+    const c = within(card("ABC-1"));
+    expect(c.queryByText(/this week/)).toBeNull();
+    expect(c.getByText("Moved to In Progress")).not.toBeNull();
+    expect(card("ABC-1").querySelectorAll(".task-card-hours").length).toBe(1); // placeholder row keeps the height
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 250));
+    });
+    expect(c.queryByRole("button", { name: "Undo" })).toBeNull();
+    expect(c.getByText("1h 30m this week")).not.toBeNull();
   });
 });

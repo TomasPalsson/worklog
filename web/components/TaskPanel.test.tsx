@@ -147,8 +147,8 @@ describe("TaskPanel reading", () => {
     const same: Transition = { id: "41", name: "Done", to_status: "done", to_category: "done" };
     open(actions({ loadTransitions: mock(async () => ({ ok: true as const, data: [start, same] })) }));
     fireEvent.click(screen.getByTestId("status-ABC-1"));
-    expect(await screen.findByRole("button", { name: "Start → In Progress" })).not.toBeNull();
-    expect(screen.getByRole("button", { name: "Done" })).not.toBeNull();
+    expect(await screen.findByRole("menuitem", { name: "Start → In Progress" })).not.toBeNull();
+    expect(screen.getByRole("menuitem", { name: "Done" })).not.toBeNull();
     await screen.findByText(/Steps to reproduce/);
   });
 
@@ -156,7 +156,7 @@ describe("TaskPanel reading", () => {
     const a = actions();
     const { onStatus } = open(a);
     fireEvent.click(screen.getByTestId("status-ABC-1"));
-    fireEvent.click(await screen.findByRole("button", { name: "Start → In Progress" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Start → In Progress" }));
     await waitFor(() => expect(onStatus.mock.calls.length).toBe(1));
     expect(calls(a.transitionTicket)[0]).toEqual(["ABC-1", "11"]);
     expect(onStatus.mock.calls[0][0]).toEqual({ status: "In Progress", status_category: "indeterminate" });
@@ -280,14 +280,14 @@ describe("TaskPanel fix round 2", () => {
   it("status menu closes on Esc without closing the panel, and on an outside click", async () => {
     const { onClose } = open(actions());
     fireEvent.click(screen.getByTestId("status-ABC-1"));
-    await screen.findByRole("button", { name: "Start → In Progress" });
+    await screen.findByRole("menuitem", { name: "Start → In Progress" });
     fireEvent.keyDown(document, { key: "Escape" });
-    expect(screen.queryByRole("button", { name: "Start → In Progress" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Start → In Progress" })).toBeNull();
     expect(onClose.mock.calls.length).toBe(0);
     fireEvent.click(screen.getByTestId("status-ABC-1"));
-    await screen.findByRole("button", { name: "Start → In Progress" });
+    await screen.findByRole("menuitem", { name: "Start → In Progress" });
     fireEvent.mouseDown(document.body);
-    expect(screen.queryByRole("button", { name: "Start → In Progress" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Start → In Progress" })).toBeNull();
     await screen.findByText(/Steps to reproduce/);
   });
 
@@ -340,5 +340,40 @@ describe("TaskPanel fix round 2", () => {
     open(actions());
     expect(await screen.findByText("Priority High")).not.toBeNull();
     expect(screen.getByText("Assignee Ada")).not.toBeNull();
+  });
+});
+
+describe("TaskPanel status menu parity", () => {
+  it("is a menu of menuitems, focuses the first, and ArrowUp/Down wrap with Home/End", async () => {
+    const { onClose } = open(actions({ loadTransitions: mock(async () => ({ ok: true as const, data: [start, done] })) }));
+    fireEvent.click(screen.getByTestId("status-ABC-1"));
+    const [first, last] = await screen.findAllByRole("menuitem");
+    expect(screen.getByRole("menu")).not.toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(first));
+    fireEvent.keyDown(first, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(last);
+    fireEvent.keyDown(last, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(first);
+    fireEvent.keyDown(first, { key: "End" });
+    expect(document.activeElement).toBe(last);
+    fireEvent.keyDown(last, { key: "Home" });
+    expect(document.activeElement).toBe(first);
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(onClose.mock.calls.length).toBe(0);
+  });
+
+  it("while a status change runs the chip reads Moving… and is disabled", async () => {
+    let finish: (v: unknown) => void = () => {};
+    const a = actions({ transitionTicket: mock(() => new Promise((res) => (finish = res))) });
+    open(a);
+    fireEvent.click(screen.getByTestId("status-ABC-1"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Start → In Progress" }));
+    const chip = screen.getByTestId("status-ABC-1") as HTMLButtonElement;
+    await waitFor(() => expect(chip.textContent).toContain("Moving…"));
+    expect(chip.disabled).toBe(true);
+    finish({ ok: true, data: { key: "ABC-1", status: "In Progress", status_category: "indeterminate" } });
+    await waitFor(() => expect(chip.textContent).toContain("In Progress"));
+    expect(chip.disabled).toBe(false);
   });
 });

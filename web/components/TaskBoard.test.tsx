@@ -115,7 +115,10 @@ describe("TaskBoard filters", () => {
     fireEvent.change(filter, { target: { value: "DOCS" } });
     expect(screen.queryByText("Spike cache")).toBeNull();
     expect(screen.getByText("Ship docs")).not.toBeNull();
-    expect(within(col("new")).getByText("No tickets match “DOCS”.")).not.toBeNull();
+    fireEvent.change(filter, { target: { value: "zzz" } });
+    // one board-level line, not one per column
+    expect(screen.getAllByText("No tickets match “zzz”.").length).toBe(1);
+    expect(within(col("new")).queryByText("No tickets match “zzz”.")).toBeNull();
   });
 
   it("'Only tickets I worked this week' hides cards with no hours", () => {
@@ -208,8 +211,11 @@ describe("TaskBoard drag to move", () => {
     expect(within(col("done")).getByText("Drop a ticket here, or use Move on a card")).not.toBeNull();
     expect(within(col("new")).queryByText("Drop a ticket here, or use Move on a card")).toBeNull();
     fireEvent.change(screen.getByLabelText("Filter"), { target: { value: "zzz" } });
-    expect(within(col("done")).queryByText("Drop a ticket here, or use Move on a card")).toBeNull();
-    expect(within(col("done")).getByText("No tickets match “zzz”.")).not.toBeNull();
+    expect(screen.queryByText("Drop a ticket here, or use Move on a card")).toBeNull();
+    expect(screen.getAllByText("No tickets match “zzz”.").length).toBe(1);
+    fireEvent.change(screen.getByLabelText("Filter"), { target: { value: "abc-1" } });
+    expect(screen.queryByText("No tickets match “abc-1”.")).toBeNull();
+    expect(within(col("done")).getByText("Drop a ticket here, or use Move on a card")).not.toBeNull();
   });
 
   it("the hovered column says release to move", () => {
@@ -222,44 +228,22 @@ describe("TaskBoard drag to move", () => {
 
 const moveVia = async (key: string, item: string) => {
   fireEvent.click(screen.getByRole("button", { name: `Move ${key}` }));
+  const entry = await screen.findByRole("menuitem", { name: item });
   await act(async () => {
-    fireEvent.click(screen.getByRole("menuitem", { name: item }));
+    fireEvent.click(entry);
   });
 };
 
 describe("TaskBoard Move menu", () => {
-  it("lists only the other columns and has menu semantics", () => {
+  it("lists only the other columns and has menu semantics", async () => {
     render(<TaskBoard actions={actions()} tasks={[row({})]} />);
     const btn = screen.getByRole("button", { name: "Move ABC-1" });
     expect(btn.getAttribute("aria-haspopup")).toBe("menu");
     expect(btn.parentElement?.parentElement).toBe(card("ABC-1"));
     fireEvent.click(btn);
+    await screen.findByRole("menuitem", { name: "Move to Done" });
     const items = screen.getAllByRole("menuitem").map((n) => n.textContent);
     expect(items).toEqual(["Move to In Progress", "Move to Done"]);
-  });
-
-  it("one matching transition runs exactly like a drop", async () => {
-    const a = actions();
-    render(<TaskBoard actions={a} tasks={tasks} />);
-    await moveVia("ABC-1", "Move to In Progress");
-    await waitFor(() => expect(within(col("indeterminate")).getByText("Fix login")).not.toBeNull());
-    expect(calls(a.transitionTicket)[0]).toEqual(["ABC-1", "11"]);
-  });
-
-  it("several matching transitions open the chooser", async () => {
-    const a = actions({ loadTransitions: mock(async () => ({ ok: true as const, data: [start, review, done] })) });
-    render(<TaskBoard actions={a} tasks={tasks} />);
-    await moveVia("ABC-1", "Move to In Progress");
-    expect(await screen.findByRole("group", { name: "Move ABC-1 to In Progress?" })).not.toBeNull();
-    expect(calls(a.transitionTicket).length).toBe(0);
-  });
-
-  it("no matching transition shows the error and calls nothing", async () => {
-    const a = actions({ loadTransitions: mock(async () => ({ ok: true as const, data: [start] })) });
-    render(<TaskBoard actions={a} tasks={tasks} />);
-    await moveVia("ABC-1", "Move to Done");
-    expect(await within(card("ABC-1")).findByText(/Couldn't move to Done — Jira has no move/)).not.toBeNull();
-    expect(calls(a.transitionTicket).length).toBe(0);
   });
 
   it("Esc closes the menu, returns focus to the Move button and keeps the panel open", async () => {
@@ -268,7 +252,7 @@ describe("TaskBoard Move menu", () => {
     await screen.findByRole("dialog");
     const btn = screen.getByRole("button", { name: "Move ABC-1" });
     fireEvent.click(btn);
-    fireEvent.keyDown(screen.getByRole("menuitem", { name: "Move to Done" }), { key: "Escape" });
+    fireEvent.keyDown(await screen.findByRole("menuitem", { name: "Move to Done" }), { key: "Escape" });
     expect(screen.queryByRole("menu")).toBeNull();
     expect(document.activeElement).toBe(btn);
     expect(screen.queryByRole("dialog")).not.toBeNull();
@@ -362,7 +346,7 @@ describe("TaskBoard panel", () => {
     render(<TaskBoard actions={a} tasks={tasks} />);
     fireEvent.click(cardBtn("ABC-1"));
     fireEvent.click(await screen.findByTestId("status-ABC-1"));
-    fireEvent.click(await screen.findByRole("button", { name: "Start → In Progress" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Start → In Progress" }));
     await waitFor(() => expect(within(col("indeterminate")).getByText("Fix login")).not.toBeNull());
     expect(screen.getByTestId("status-ABC-1").textContent).toContain("In Progress");
     expect(calls(a.transitionTicket)[0]).toEqual(["ABC-1", "11"]);

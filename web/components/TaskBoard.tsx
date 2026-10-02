@@ -33,7 +33,8 @@ const focusCard = (key: string) =>
 
 type UndoMap = Record<string, { from: Column; to: Column }>;
 type Timer = { handle?: ReturnType<typeof setTimeout>; left: number; since: number };
-type MoveError = { text: string; target: Column; back: boolean };
+type MoveOpts = { back?: boolean; focus?: boolean; transitions?: Transition[] };
+type MoveError ={ text: string; target: Column; back: boolean };
 
 /** The "Moved to X · Undo" strip: one per card, gone after `ms` or on that card's next move. */
 function useUndo(ms: number) {
@@ -121,10 +122,11 @@ function useMoves(patch: Patch, actions: TaskActions, undoMs: number) {
     settle(key, target, res.ok ? undefined : res.error, back);
   }
 
-  async function move(row: TaskRow, target: Column, from: Column, { back = false, focus = false } = {}) {
+  async function move(row: TaskRow, target: Column, from: Column, { back = false, focus = false, transitions }: MoveOpts = {}) {
     if (focus) wantFocus.current.add(row.key);
     begin(row.key, target);
-    const res = await actions.loadTransitions(row.key);
+    // The Move menu already asked Jira; reuse its answer rather than asking twice.
+    const res = transitions ? { ok: true as const, data: transitions } : await actions.loadTransitions(row.key);
     if (!res.ok) return settle(row.key, target, res.error, back);
     const moves = movesInto(res.data, target);
     if (moves.length === 1) return run(row.key, target, moves[0], from, back, false); // focus already queued by `move`
@@ -243,7 +245,7 @@ export function TaskBoard({ tasks, actions = realActions, undoMs = 8000 }: {
   const m = useMoves(patch, actions, undoMs);
   const colOf = (r: TaskRow) => m.placed[r.key] ?? columnOf(r.status_category);
   // One flow for a drop and for the Move menu; dropping on the card's own column is a no-op.
-  const moveTo = (key: string, target: Column, opts?: { back?: boolean; focus?: boolean }) => {
+  const moveTo = (key: string, target: Column, opts?: MoveOpts) => {
     const row = rows.find((r) => r.key === key);
     if (row && colOf(row) !== target) m.move(row, target, colOf(row), opts);
   };
@@ -253,8 +255,8 @@ export function TaskBoard({ tasks, actions = realActions, undoMs = 8000 }: {
   if (rows.length === 0) return EMPTY;
 
   const q = text.trim();
-  const note = q ? `No tickets match “${q}”.` : onlyWorked ? "No tickets match the filter." : null;
   const visible = rows.filter((r) => matches(r, text, onlyWorked));
+  const note = visible.length > 0 ? null : q ? `No tickets match “${q}”.` : "No tickets match the filter.";
   const open = rows.find((r) => r.key === openKey);
   const undoFor = (key: string) => {
     const u = m.undoable[key];
@@ -267,6 +269,7 @@ export function TaskBoard({ tasks, actions = realActions, undoMs = 8000 }: {
       <p className="task-sr" role="status" aria-live="polite">
         {m.announce}
       </p>
+      {note && <p className="task-board-note">{note}</p>}
       <div className="task-board-scroll">
       <div className={open ? "task-board has-panel" : "task-board"}>
         {COLUMNS.map(({ id }) => {
@@ -277,7 +280,6 @@ export function TaskBoard({ tasks, actions = realActions, undoMs = 8000 }: {
               id={id}
               count={cards.length}
               over={drag.over === id}
-              note={cards.length === 0 ? note : null}
               hint={cards.length === 0 && !note}
               chooser={m.chooser?.column === id ? m.chooser : null}
               onPick={(t) => m.chooser && m.run(m.chooser.key, id, t, m.chooser.from, m.chooser.back)}
@@ -299,7 +301,8 @@ export function TaskBoard({ tasks, actions = realActions, undoMs = 8000 }: {
                   }}
                   landed={m.landed === r.key}
                   undo={undoFor(r.key)}
-                  onMove={(to) => moveTo(r.key, to, { focus: true })}
+                  loadTransitions={() => actions.loadTransitions(r.key)}
+                  onMove={(to, transitions) => moveTo(r.key, to, { focus: true, transitions })}
                   onDismissError={() => m.dismiss(r.key)}
                   onOpen={() => setOpenKey(r.key)}
                   onDragStart={(dt) => drag.start(r.key, dt)}

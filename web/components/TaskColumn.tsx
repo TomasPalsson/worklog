@@ -19,7 +19,6 @@ interface Props {
   id: Column;
   count: number;
   over: boolean;
-  note: string | null;
   hint: boolean;
   chooser: Chooser | null;
   onPick: (t: Transition) => void;
@@ -76,7 +75,6 @@ export function TaskColumn(p: Props) {
         </span>
       </h2>
       {p.chooser && <ChooserBox chooser={p.chooser} title={title} onPick={p.onPick} onCancel={p.onCancel} />}
-      {p.note && <p className="task-col-note">{p.note}</p>}
       {p.hint && <p className="task-col-hint">Drop a ticket here, or use Move on a card</p>}
       <ul className="task-list">{p.children}</ul>
     </section>

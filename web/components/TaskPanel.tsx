@@ -8,6 +8,7 @@ import { formatStamp, transitionLabel } from "@/lib/taskBoard";
 import type { StatusCategory, TaskRow, TicketComment, TicketDetail, TicketStatus, Transition } from "@/lib/types";
 import type { TaskActions } from "./TaskCard";
 import { TaskComposer, type Drafts } from "./TaskComposer";
+import { menuKeys } from "./menuKeys";
 
 type Load = { s: "loading" } | { s: "error"; error: string } | { s: "ok"; detail: TicketDetail };
 
@@ -74,6 +75,7 @@ function StatusChip({ task, shown, actions, onStatus }: Pick<TaskPanelProps, "ta
   const [menu, setMenu] = useState<Transition[] | null>(null);
   const wrap = useRef<HTMLSpanElement>(null);
   const [busy, setBusy] = useState(false);
+  const [moving, setMoving] = useState(false);
   useMenuDismiss(menu !== null, wrap, () => setMenu(null));
   const [error, setError] = useState<string | null>(null);
 
@@ -89,6 +91,7 @@ function StatusChip({ task, shown, actions, onStatus }: Pick<TaskPanelProps, "ta
 
   async function move(t: Transition) {
     setBusy(true);
+    setMoving(true);
     setError(null);
     const res = await actions.transitionTicket(task.key, t.id);
     if (res.ok) {
@@ -96,6 +99,7 @@ function StatusChip({ task, shown, actions, onStatus }: Pick<TaskPanelProps, "ta
       setMenu(null);
     } else setError(res.error);
     setBusy(false);
+    setMoving(false);
   }
 
   return (
@@ -110,13 +114,13 @@ function StatusChip({ task, shown, actions, onStatus }: Pick<TaskPanelProps, "ta
         disabled={busy}
         onClick={toggle}
       >
-        {shown.status ?? "No status"}
+        {moving ? "Moving…" : (shown.status ?? "No status")}
         <ChevronDown size={12} aria-hidden="true" />
       </button>
       {menu && (
-        <span className="task-menu">
-          {menu.map((t) => (
-            <button key={t.id} type="button" disabled={busy} onClick={() => move(t)}>
+        <span className="task-menu" role="menu" onKeyDown={menuKeys}>
+          {menu.map((t, i) => (
+            <button key={t.id} type="button" role="menuitem" autoFocus={i === 0} disabled={busy} onClick={() => move(t)}>
               {transitionLabel(t)}
             </button>
           ))}

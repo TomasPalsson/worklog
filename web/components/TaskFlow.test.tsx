@@ -52,8 +52,9 @@ const wait = (ms: number) =>
 
 async function moveVia(key: string, item: string) {
   fireEvent.click(screen.getByRole("button", { name: `Move ${key}` }));
+  const entry = await screen.findByRole("menuitem", { name: item });
   await act(async () => {
-    fireEvent.click(screen.getByRole("menuitem", { name: item }));
+    fireEvent.click(entry);
   });
 }
 

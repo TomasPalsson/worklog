@@ -12,7 +12,7 @@ import type {
 } from "@/app/actions-hub";
 import { formatDuration } from "@/lib/format";
 import type { Column } from "@/lib/taskBoard";
-import type { TaskRow } from "@/lib/types";
+import type { TaskRow, Transition } from "@/lib/types";
 import { TaskMoveMenu } from "./TaskMoveMenu";
 
 export interface TaskActions {
@@ -34,13 +34,16 @@ export interface TaskCardProps {
   undo?: { to: string; run: () => void; hold: (held: boolean) => void };
   onRetry: () => void;
   onOpen: () => void;
-  onMove: (to: Column) => void;
+  loadTransitions: () => ReturnType<TaskActions["loadTransitions"]>;
+  onMove: (to: Column, transitions?: Transition[]) => void;
   onDismissError: () => void;
   onDragStart: (dataTransfer: DataTransfer | null) => void;
   onDragEnd: () => void;
 }
 
-function Hours({ task, pending }: Pick<TaskCardProps, "task" | "pending">) {
+function Hours({ task, pending, undoing }: Pick<TaskCardProps, "task" | "pending"> & { undoing: boolean }) {
+  // The Undo strip sits over this row; keep the row's height so showing it never reflows the card.
+  if (undoing) return <span className="task-card-hours" aria-hidden="true">{" "}</span>;
   if (pending) return <span className="task-card-hours">Moving…</span>;
   if (task.week_seconds === 0) return <span className="task-card-hours task-card-idle">Not worked this week</span>;
   const today = task.today_seconds > 0 ? ` · ${formatDuration(task.today_seconds)} today` : "";
@@ -97,10 +100,10 @@ export function TaskCard(p: TaskCardProps) {
           )}
         </span>
         <span className="task-summary">{task.summary}</span>
-        {!p.error && <Hours task={task} pending={p.pending} />}
+        {!p.error && <Hours task={task} pending={p.pending} undoing={!!p.undo && !p.pending} />}
       </button>
       <GripVertical className="task-grip" size={14} aria-hidden="true" />
-      {!p.pending && <TaskMoveMenu taskKey={task.key} column={p.column} onMove={p.onMove} />}
+      {!p.pending && <TaskMoveMenu taskKey={task.key} column={p.column} load={p.loadTransitions} onMove={p.onMove} />}
       {p.undo && !p.pending && (
         <div className="task-card-undo">
           <span>{`Moved to ${p.undo.to}`}</span>

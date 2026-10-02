@@ -1,18 +1,37 @@
 "use client";
 
-import { useRef, useState, type FocusEvent, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type FocusEvent, type KeyboardEvent } from "react";
 import { ArrowRightLeft } from "lucide-react";
 
-import { COLUMNS, type Column } from "@/lib/taskBoard";
+import type { ActionResult } from "@/app/actions";
+import { COLUMNS, movesInto, type Column } from "@/lib/taskBoard";
+import type { Transition } from "@/lib/types";
+import { menuKeys } from "./menuKeys";
 
 /** Non-drag way to move a card: a button beside the card's main button and a menu of the other columns. */
-export function TaskMoveMenu({ taskKey, column, onMove }: {
+export function TaskMoveMenu({ taskKey, column, load, onMove }: {
   taskKey: string;
   column: Column;
-  onMove: (to: Column) => void;
+  load: () => Promise<ActionResult<Transition[]>>;
+  /** `transitions` is what Jira offered, or undefined when the lookup failed. */
+  onMove: (to: Column, transitions?: Transition[]) => void;
 }) {
   const [open, setOpen] = useState(false);
+  // null while Jira is being asked; false when the lookup failed (items stay enabled and the move re-checks).
+  const [offered, setOffered] = useState<Transition[] | null | false>(null);
   const trigger = useRef<HTMLButtonElement>(null);
+  const loader = useRef(load);
+  loader.current = load;
+
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
+    setOffered(null);
+    loader.current().then((res) => live && setOffered(res.ok ? res.data : false));
+    return () => {
+      live = false;
+    };
+  }, [open]);
 
   const close = () => {
     setOpen(false);
@@ -24,12 +43,7 @@ export function TaskMoveMenu({ taskKey, column, onMove }: {
       e.preventDefault(); // the panel's Esc handler sees defaultPrevented and stays open
       return close();
     }
-    const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')];
-    const at = items.indexOf(document.activeElement as HTMLElement);
-    const next = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: items.length - 1 }[e.key];
-    if (next === undefined || items.length === 0) return;
-    e.preventDefault();
-    items[(next + items.length) % items.length].focus();
+    menuKeys(e);
   };
   const onBlur = (e: FocusEvent) => {
     if (open && !e.currentTarget.contains(e.relatedTarget as Node | null)) setOpen(false);
@@ -51,20 +65,26 @@ export function TaskMoveMenu({ taskKey, column, onMove }: {
       </button>
       {open && (
         <div role="menu" className="task-move-menu">
-          {COLUMNS.filter((c) => c.id !== column).map((c, i) => (
-            <button
-              key={c.id}
-              type="button"
-              role="menuitem"
-              autoFocus={i === 0}
-              onClick={() => {
-                setOpen(false);
-                onMove(c.id);
-              }}
-            >
-              {`Move to ${c.title}`}
-            </button>
-          ))}
+          {COLUMNS.filter((c) => c.id !== column).map((c, i) => {
+            const none = !!offered && movesInto(offered, c.id).length === 0;
+            const blocked = offered === null || none;
+            return (
+              <button
+                key={c.id}
+                type="button"
+                role="menuitem"
+                aria-disabled={blocked || undefined}
+                autoFocus={i === 0}
+                onClick={() => {
+                  if (blocked) return;
+                  setOpen(false);
+                  onMove(c.id, offered || undefined);
+                }}
+              >
+                {offered === null ? `${c.title} — Checking Jira…` : none ? `${c.title} — no Jira move` : `Move to ${c.title}`}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
