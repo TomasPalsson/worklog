@@ -70,12 +70,18 @@ it("day rows keep label, hours and chip on one line and wrap the actions under t
 
 const phoneRows = phone.slice(phone.indexOf("/* day rows: line 1"));
 
-it("phone day row: line 1 never wraps or overlaps, line 2 is a full-width action beside the menu", () => {
-  expect(phoneRows).toContain(".task-day-toggle { flex-wrap: nowrap; gap: 6px; padding: 0 4px; }");
-  expect(phoneRows).toContain(".task-day-chip { min-width: 0; overflow: hidden; text-overflow: ellipsis; }");
+it("phone day row: the chip wraps under day/hours instead of truncating, line 2 is a full-width action beside the menu", () => {
+  expect(phoneRows).toContain(".task-day-toggle { flex-wrap: wrap; gap: 4px 6px; padding: 0 4px; }");
+  expect(phoneRows).not.toMatch(/\.task-day-chip\s*\{[^}]*text-overflow/);
   expect(phoneRows).toContain(".task-day-trigger { flex: 1 1 0; min-width: 0; margin-left: 32px; }");
   expect(rule(".task-day-head")).toContain("min-width: 0"); // the head can shrink inside the row
   expect(rule(".task-day-menu-wrap")).toContain("flex: none"); // the menu keeps its size; the button takes the rest
+});
+
+it("phone filter fills the row instead of a fixed 280px; tabs never wrap", () => {
+  expect(phoneRows).toContain(".task-filter { flex: 1 1 100%; min-width: 0; }");
+  expect(phoneRows).toContain(".task-filter input { width: 100%; }");
+  expect(css).toContain('.task-tabs [role="tab"] { white-space: nowrap; }');
 });
 
 it("the day's send action is the primary button, compact: 32px, 40px on touch", () => {
