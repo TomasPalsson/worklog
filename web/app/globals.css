@@ -4354,7 +4354,8 @@ button {
 .day-nav [data-tip]::after,
 .reg-actions [data-tip]::after,
 .reg-page-header > [data-tip]::after,
-.task-move [data-tip]::after {
+.task-move [data-tip]::after,
+.task-icon-btn[data-tip]::after {
   left: auto;
   right: 0;
   translate: 0 -3px;
@@ -4366,7 +4367,9 @@ button {
 .reg-page-header > [data-tip]:hover::after,
 .reg-page-header > [data-tip]:focus-visible::after,
 .task-move [data-tip]:hover::after,
-.task-move [data-tip]:focus-visible::after {
+.task-move [data-tip]:focus-visible::after,
+.task-icon-btn[data-tip]:hover::after,
+.task-icon-btn[data-tip]:focus-visible::after {
   translate: 0 0;
 }
 
