@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Pencil, Type } from "lucide-react";
 
 import { formatDuration } from "@/lib/format";
 import type { TicketDay } from "@/lib/types";
@@ -17,7 +16,7 @@ export interface Common {
   onSaved: () => void;
   label: string;
   day: TicketDay;
-  /** Panel live region. */
+  /** Dialog live region. */
   onAnnounce?: (message: string) => void;
 }
 
@@ -41,18 +40,7 @@ export function hoursNote(day: TicketDay): string | null {
   return day.line_seconds !== day.tracked_seconds ? `Rounded to the nearest half hour from ${tracked} tracked` : null;
 }
 
-/** Focus returns to the opener when an editor closes: call `back()` right before closing it. */
-function useReturnFocus(editing: boolean) {
-  const btn = useRef<HTMLButtonElement>(null);
-  const want = useRef(false);
-  useEffect(() => {
-    if (!editing && want.current) btn.current?.focus();
-    want.current = false;
-  }, [editing]);
-  return { btn, back: () => void (want.current = true) };
-}
-
-/** Sage confirmation strip ("Sent to Tempo", "Logged 30m"); stays until the panel closes. `focus` moves focus to it on mount. */
+/** Sage confirmation strip ("Sent to Tempo", "Logged 30m"); stays until the dialog closes. `focus` moves focus to it on mount. */
 export function DaySent({ children, focus, plain }: { children: React.ReactNode; focus?: boolean; plain?: boolean }) {
   const el = useRef<HTMLParagraphElement>(null);
   useEffect(() => {
@@ -65,86 +53,42 @@ export function DaySent({ children, focus, plain }: { children: React.ReactNode;
   );
 }
 
-/** Tracked time rounded the way the daemon rounds a line: nearest half hour, below 15m is nothing. */
-const roundedTracked = (day: TicketDay) => Math.round(day.tracked_seconds / HALF_HOUR) * HALF_HOUR;
-
-/** The day's billed hours: a button that turns into a small hours input. */
-export function HoursEdit({ taskKey, actions, onSaved, label, day }: Common) {
-  const [draft, setDraft] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+/** Writes the day's billed hours; shared by the hours editor and the "Use tracked time" menu item. */
+export function useHoursWrite({ taskKey, actions, onSaved, day }: Common) {
   const [busy, setBusy] = useState(false);
-  const { btn, back } = useReturnFocus(draft !== null);
+  const [error, setError] = useState<string | null>(null);
 
-  async function save() {
-    const seconds = parseHours(draft ?? "");
-    const problem = hoursProblem(seconds);
-    if (problem) return setError(problem);
-    await write(seconds);
-  }
-
-  /** `null` clears the override: the daemon goes back to the tracked, rounded hours. */
-  async function write(seconds: number | null) {
+  /** `null` clears the override: the daemon goes back to the tracked, rounded hours. True when it was saved. */
+  async function write(seconds: number | null): Promise<boolean> {
     setBusy(true);
+    setError(null);
     const res = await actions.saveTempoLineHours({ day: day.day, jira_issue: taskKey }, seconds);
     setBusy(false);
-    if (!res.ok) return setError(res.error);
-    back();
-    setDraft(null);
+    if (!res.ok) {
+      setError(res.error);
+      return false;
+    }
     onSaved();
+    return true;
   }
-
-  if (draft === null) {
-    return (
-      <button
-        ref={btn}
-        type="button"
-        className="task-day-hours"
-        aria-label={`${formatDuration(day.line_seconds)} — edit hours for ${label}`}
-        onClick={() => {
-          setDraft(String(day.line_seconds / 3600));
-          setError(null);
-        }}
-      >
-        {formatDuration(day.line_seconds)}
-        <Pencil size={12} aria-hidden="true" />
-      </button>
-    );
-  }
-  return (
-    <HoursInput
-      label={label}
-      draft={draft}
-      busy={busy}
-      error={error}
-      onChange={(v) => {
-        setDraft(v);
-        setError(null);
-      }}
-      onSave={save}
-      onUseTracked={day.hours_set_by_hand ? () => write(null) : undefined}
-      tracked={formatDuration(roundedTracked(day))}
-      onCancel={() => {
-        back();
-        setDraft(null);
-      }}
-    />
-  );
+  return { busy, error, setError, write };
 }
 
-interface HoursInputProps {
-  label: string;
-  draft: string;
-  busy: boolean;
-  error: string | null;
-  onChange: (v: string) => void;
-  onSave: () => void;
-  onCancel: () => void;
-  /** Present only while the hours are set by hand. */
-  onUseTracked?: () => void;
-  tracked: string;
-}
+export type HoursWrite = ReturnType<typeof useHoursWrite>;
 
-function HoursInput({ label, draft, busy, error, onChange, onSave, onCancel, onUseTracked, tracked }: HoursInputProps) {
+/** The day's billed hours as a small input; mounted only while editing. */
+export function HoursEdit({ label, day, io, onDone }: { label: string; day: TicketDay; io: HoursWrite; onDone: () => void }) {
+  const [draft, setDraft] = useState(String(day.line_seconds / 3600));
+  const [problem, setProblem] = useState<string | null>(null);
+
+  async function save() {
+    const seconds = parseHours(draft);
+    const bad = hoursProblem(seconds);
+    if (bad) return setProblem(bad);
+    if (await io.write(seconds)) onDone();
+  }
+
+  const error = problem ?? io.error;
   return (
     <span className="task-day-edit">
       <label>
@@ -155,27 +99,26 @@ function HoursInput({ label, draft, busy, error, onChange, onSave, onCancel, onU
           aria-label={`Hours for ${label}`}
           value={draft}
           autoFocus
-          disabled={busy}
-          onChange={(e) => onChange(e.target.value)}
+          disabled={io.busy}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            setProblem(null);
+            io.setError(null);
+          }}
           onKeyDown={(e) => {
-            if (e.key === "Enter") onSave();
+            if (e.key === "Enter") save();
             else if (e.key === "Escape") {
               e.preventDefault();
-              onCancel();
+              onDone();
             }
           }}
         />
         <span aria-hidden="true">h</span>
       </label>
-      <button type="button" className="task-btn-secondary" disabled={busy} onClick={onSave}>
+      <button type="button" className="task-btn-secondary" disabled={io.busy} onClick={save}>
         Save hours
       </button>
-      {onUseTracked && (
-        <button type="button" className="task-btn-secondary" disabled={busy} onClick={onUseTracked}>
-          {`Use tracked time (${tracked})`}
-        </button>
-      )}
-      <button type="button" className="task-btn-secondary" disabled={busy} onClick={onCancel}>
+      <button type="button" className="task-btn-secondary" disabled={io.busy} onClick={onDone}>
         Cancel
       </button>
       {error && (
@@ -187,54 +130,29 @@ function HoursInput({ label, draft, busy, error, onChange, onSave, onCancel, onU
   );
 }
 
-/** "Edit" for the line text; opens a textarea that saves through the line-text action. */
-export function TextEdit({ taskKey, actions, onSaved, label, day, children }: Common & { children?: React.ReactNode }) {
-  const [draft, setDraft] = useState<string | null>(null);
+/** Textarea for the Tempo line text; mounted only while editing, saves through the line-text action. */
+export function TextEdit({ taskKey, actions, onSaved, label, day, onDone }: Common & { onDone: () => void }) {
+  const [draft, setDraft] = useState(day.line_text);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const { btn: editBtn, back } = useReturnFocus(draft !== null);
-  const close = () => {
-    back();
-    setDraft(null);
-  };
 
-  // Esc cancels this edit only: the saved text stays and the panel stays open.
+  // Esc cancels this edit only: the saved text stays and the dialog stays open.
   function onKeyDown(e: React.KeyboardEvent) {
     if (e.key !== "Escape") return;
     e.preventDefault();
     e.stopPropagation();
-    close();
+    onDone();
   }
 
   async function save() {
     setBusy(true);
-    const res = await actions.saveTempoLineText({ day: day.day, jira_issue: taskKey }, draft ?? "");
+    const res = await actions.saveTempoLineText({ day: day.day, jira_issue: taskKey }, draft);
     setBusy(false);
     if (!res.ok) return setError(res.error);
-    close();
+    onDone();
     onSaved();
   }
 
-  if (draft === null) {
-    return (
-      <div className="task-day-textrow">
-        {children}
-        <button
-          ref={editBtn}
-          type="button"
-          className="task-icon-btn"
-          aria-label={`Edit Tempo text for ${label}`}
-          data-tip="Edit Tempo text"
-          onClick={() => {
-            setDraft(day.line_text);
-            setError(null);
-          }}
-        >
-          <Type size={14} aria-hidden="true" />
-        </button>
-      </div>
-    );
-  }
   return (
     <span className="task-day-text-edit">
       <textarea
@@ -253,7 +171,7 @@ export function TextEdit({ taskKey, actions, onSaved, label, day, children }: Co
         <button type="button" className="task-btn-secondary" disabled={busy} onClick={save}>
           Save text
         </button>
-        <button type="button" className="task-btn-secondary" disabled={busy} onClick={close}>
+        <button type="button" className="task-btn-secondary" disabled={busy} onClick={onDone}>
           Cancel
         </button>
         {error && (

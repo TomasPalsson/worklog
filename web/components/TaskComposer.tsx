@@ -81,20 +81,36 @@ function Count({ n }: { n: number }) {
   );
 }
 
+/** One quiet field until it is used; focus or any text opens the count, Draft with AI, suggestion and Post. */
 export function TaskComposer(props: Props) {
   const c = useComposer(props);
+  const [focused, setFocused] = useState(false);
+  const expanded = focused || c.text !== "" || c.suggested !== null || c.error !== null || c.busy;
   return (
-    <form className="task-composer" onSubmit={(e) => e.preventDefault()}>
-      <label htmlFor="task-composer-text" className="task-label">
-        Add a comment
-      </label>
+    <form
+      className="task-composer"
+      data-expanded={expanded || undefined}
+      onSubmit={(e) => e.preventDefault()}
+      onFocus={() => setFocused(true)}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget)) setFocused(false);
+      }}
+    >
       <textarea
-        id="task-composer-text"
+        aria-label="Add a comment"
+        placeholder="Add a comment…"
         rows={1}
-        data-filled={c.text !== "" || undefined}
         value={c.text}
         onChange={(e) => c.setText(e.target.value)}
       />
+      {expanded && <ComposerBody c={c} />}
+    </form>
+  );
+}
+
+function ComposerBody({ c }: { c: ReturnType<typeof useComposer> }) {
+  return (
+    <>
       <div className="task-composer-meta">
         <Count n={c.text.length} />
         {c.suggested && (
@@ -106,7 +122,8 @@ export function TaskComposer(props: Props) {
           </span>
         )}
       </div>
-      <div className="task-composer-actions">
+      {/* mousedown must not pull focus off the field, or the buttons would vanish before the click lands */}
+      <div className="task-composer-actions" onMouseDown={(e) => e.preventDefault()}>
         <button type="button" className="task-btn-secondary" disabled={c.busy} onClick={c.draft}>
           <Sparkles size={13} aria-hidden="true" />
           {c.busyWith === "draft" ? "Drafting…" : "Draft with AI"}
@@ -125,6 +142,6 @@ export function TaskComposer(props: Props) {
           {c.error}
         </p>
       )}
-    </form>
+    </>
   );
 }

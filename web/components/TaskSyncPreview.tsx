@@ -24,7 +24,7 @@ export function SyncPreview(p: {
   useEffect(() => send.current?.focus(), []);
   const { day } = p;
   const known = p.changed && day.in_tempo_seconds != null;
-  // Esc is scoped to this preview (never document-wide) and keeps the panel open.
+  // Esc is scoped to this preview (never document-wide) and keeps the dialog open.
   function onKeyDown(e: React.KeyboardEvent) {
     if (e.key !== "Escape" || p.sending) return;
     e.preventDefault();
@@ -53,7 +53,7 @@ export function SyncPreview(p: {
         {day.line_text && (
           <>
             <dt>Text</dt>
-            <dd>as shown above</dd>
+            <dd>as shown below</dd>
           </>
         )}
       </dl>

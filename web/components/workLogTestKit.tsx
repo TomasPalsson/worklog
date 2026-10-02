@@ -2,10 +2,11 @@
 // (aria-label, else text) with a plain DOM scan: getByRole walks the whole tree and costs ~0.5s a call here.
 
 import { expect, mock } from "bun:test";
-import { act, render } from "@testing-library/react";
+import { act, fireEvent, render } from "@testing-library/react";
 import type { RawBlock, TicketBlocks, TicketDay } from "@/lib/types";
 import type { TaskActions } from "./TaskCard";
 import { TaskWorkLog } from "./TaskWorkLog";
+import { useWorkLog } from "./useWorkLog";
 
 export const block = (over: Partial<RawBlock> = {}): RawBlock =>
   ({
@@ -42,6 +43,12 @@ const ok = { ok: true as const, data: {} };
 export const syncOk = () => mock(async () => ({ ok: true as const, data: { synced: 1, errors: [], results: [] as never[] } }));
 export const calls = (fn: unknown) => (fn as ReturnType<typeof mock>).mock.calls;
 
+/** What the modal does around the tab: owns the loaded days, so the tests exercise the tab on its own. */
+export function Harness({ actions, onAnnounce }: { actions: TaskActions; onAnnounce: (m: string) => void }) {
+  const work = useWorkLog("ABC-1", actions);
+  return <TaskWorkLog taskKey="ABC-1" actions={actions} work={work} onAnnounce={onAnnounce} />;
+}
+
 export async function open(days: TicketDay[] = [day()], over: Record<string, unknown> = {}) {
   const a = {
     loadTicketBlocks: mock(async () => ({ ok: true as const, data: payload(days) })),
@@ -54,7 +61,7 @@ export async function open(days: TicketDay[] = [day()], over: Record<string, unk
   const onAnnounce = mock((_m: string) => {});
   // act flushes the resolved load directly; waitFor's polling cost a flat 1s per call here.
   await act(async () => {
-    render(<TaskWorkLog taskKey="ABC-1" actions={a} onAnnounce={onAnnounce} />);
+    render(<Harness actions={a} onAnnounce={onAnnounce} />);
   });
   expect(document.querySelector(".task-skel")).toBeNull();
   return { a, onAnnounce };
@@ -75,8 +82,19 @@ export const btn = (name: string | RegExp): HTMLButtonElement => {
 };
 
 export const logTime = () => btn("Log time");
-export const hoursBtn = () => btn("1h 30m — edit hours for Thu 1 Oct");
-export const textBtn = () => btn("Edit Tempo text for Thu 1 Oct");
+
+/** The "⋯" button on a day row. */
+export const more = (label = "Thu 1 Oct") => btn(`More for ${label}`);
+
+/** Opens a day's "⋯" menu and picks an item from it. */
+export function pick(item: string, label = "Thu 1 Oct") {
+  fireEvent.click(more(label));
+  fireEvent.click(btn(item));
+}
+
+/** A day row's disclosure button. */
+export const toggle = (label = "Thu 1 Oct") =>
+  [...document.querySelectorAll<HTMLButtonElement>(".task-day-toggle")].find((b) => b.textContent?.includes(label)) as HTMLButtonElement;
 
 /** Flush pending promises and the renders they cause (RTL's waitFor polls with a ~1s floor in this setup). */
 export const settle = () =>

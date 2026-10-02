@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it, mock } from "bun:test";
 import { cleanup, fireEvent, screen } from "@testing-library/react";
-import { btn, calls, changedDay, day, open, settle } from "./workLogTestKit";
+import { btn, calls, changedDay, day, open, settle, toggle } from "./workLogTestKit";
 
 afterEach(cleanup);
 
@@ -13,7 +13,7 @@ const sync = (real: Sync, dry: Sync = { synced: 1 }) =>
     data: { day: "", dry_run: isDry, skipped: 0, errors: [] as string[], ...(isDry ? dry : real) },
   }));
 
-const PREVIEW = "Preview send Thu 1 Oct to Tempo";
+const PREVIEW = "Send to Tempo, Thu 1 Oct";
 
 describe("preview", () => {
   const start = async (runSync = sync({ synced: 1 })) => {
@@ -28,9 +28,9 @@ describe("preview", () => {
     const box = document.querySelector(".task-day-preview") as HTMLElement;
     expect(box.textContent).toContain("Hours1h 30m");
     expect(box.textContent).toContain("DayThu 1 Oct");
-    expect(box.textContent).not.toContain("Ticket"); // the panel is the ticket
+    expect(box.textContent).not.toContain("Ticket"); // the dialog is the ticket
     expect(box.textContent).not.toContain("2026-10-01");
-    expect(box.textContent).toContain("Textas shown above");
+    expect(box.textContent).toContain("Textas shown below");
     expect(box.textContent).not.toContain("“");
     expect(screen.getByText("Sends only this ticket's line for this day to Tempo.")).toBeTruthy();
   });
@@ -80,22 +80,55 @@ describe("preview", () => {
   });
 });
 
+describe("strips stay visible when the day is folded", () => {
+  it("the Sent to Tempo strip and the open preview survive folding the day", async () => {
+    await open();
+    fireEvent.click(btn(PREVIEW));
+    await screen.findByText("Preview — nothing sent yet");
+    fireEvent.click(toggle()); // fold: the day was open
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByText("Preview — nothing sent yet")).toBeTruthy();
+    fireEvent.click(btn("Send to Tempo"));
+    expect(await screen.findByText("Sent to Tempo · 1h 30m")).toBeTruthy();
+    expect(document.querySelector(".task-day-body")).toBeNull();
+  });
+
+  it("opening the preview on a folded day opens the day, since the preview points at its text", async () => {
+    await open([day({ day: "2026-10-02" }), day()]);
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(btn("Send to Tempo, Thu 1 Oct"));
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("logging time on a folded day opens it and shows the Logged strip", async () => {
+    await open();
+    fireEvent.click(toggle()); // fold
+    fireEvent.click(btn("Log time"));
+    fireEvent.change(screen.getByLabelText("What you did"), { target: { value: "x" } });
+    fireEvent.click(btn(/^Log \d/)); // the stubbed log lands on Thu 1 Oct
+    await settle();
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("Logged 1h")).toBeTruthy();
+  });
+});
+
 describe("Changed since sent is explained", () => {
-  it("chip title and a day note give In Tempo -> now", async () => {
+  it("the chip title gives In Tempo -> now, and the Tempo state is not repeated as a day note", async () => {
     await open([changedDay()]);
     const note = "Edited after it was sent · In Tempo: 1h → now 1h 30m";
-    expect(screen.getByText("Changed since sent").getAttribute("title")).toBe(note);
-    expect(screen.getByText(note).tagName).toBe("P");
+    expect(screen.getByText("Changed since sent").closest(".task-day-chip")!.getAttribute("title")).toBe(note);
+    expect(screen.queryByText(note)).toBeNull();
+    expect(document.querySelector(".task-day-body")?.textContent ?? "").not.toContain("Edited after");
   });
 
   it("omits the arrow part when Tempo's hours are unknown", async () => {
     await open([changedDay({ in_tempo_seconds: null })]);
-    expect(screen.getByText("Edited after it was sent to Tempo")).toBeTruthy();
+    expect(screen.getByText("Changed since sent").closest(".task-day-chip")!.getAttribute("title")).toBe("Edited after it was sent to Tempo");
   });
 
   it("the update preview lists In Tempo and Will be instead of Hours", async () => {
     await open([changedDay()]);
-    fireEvent.click(btn("Preview update Thu 1 Oct in Tempo"));
+    fireEvent.click(btn("Update Tempo, Thu 1 Oct"));
     await screen.findByText("Preview — Tempo will be updated");
     const box = document.querySelector(".task-day-preview") as HTMLElement;
     expect(box.textContent).toContain("In Tempo1h");
@@ -116,7 +149,7 @@ describe("focus after Send", () => {
 
   it("an update says Tempo updated and focuses it", async () => {
     await open([changedDay()]);
-    fireEvent.click(btn("Preview update Thu 1 Oct in Tempo"));
+    fireEvent.click(btn("Update Tempo, Thu 1 Oct"));
     fireEvent.click(await screen.findByText("Update Tempo", { selector: "button" }));
     const strip = await screen.findByText("Tempo updated · 1h 30m");
     expect(document.activeElement).toBe(strip);

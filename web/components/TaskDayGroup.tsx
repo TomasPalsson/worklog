@@ -2,25 +2,27 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { ChevronRight } from "lucide-react";
+import { ArrowUpRight, ChevronRight } from "lucide-react";
 
 import { formatDuration, formatRange, shortMonthDay, shortWeekday } from "@/lib/format";
 import type { RawBlock, TicketDay } from "@/lib/types";
 import type { TaskActions } from "./TaskCard";
+import { DayMenu } from "./TaskDayMenu";
 import { SyncBody, SyncTrigger, useSync } from "./TaskDaySync";
-import { DaySent, HoursEdit, TextEdit, hoursNote } from "./TaskDayTools";
+import { DaySent, HoursEdit, TextEdit, hoursNote, useHoursWrite } from "./TaskDayTools";
 import { changedNote } from "./TaskSyncPreview";
+import { useOverflow } from "./useOverflow";
 
-type Chip = "In Tempo" | "Changed since sent" | "Not in Tempo";
+export type Chip = "Sent" | "Changed since sent" | "Not sent";
 
 const synced = (b: RawBlock) => !!b.tempo_worklog_id;
 
-function chipOf(blocks: RawBlock[]): Chip {
+export function chipOf(blocks: RawBlock[]): Chip {
   if (blocks.some((b) => synced(b) && b.dirty)) return "Changed since sent";
-  return blocks.every(synced) ? "In Tempo" : "Not in Tempo";
+  return blocks.every(synced) ? "Sent" : "Not sent";
 }
 
-const CHIP_TONE: Record<Chip, string> = { "In Tempo": "ok", "Changed since sent": "changed", "Not in Tempo": "none" };
+export const CHIP_TONE: Record<Chip, string> = { Sent: "ok", "Changed since sent": "changed", "Not sent": "none" };
 
 /** "Thu 1 Oct". */
 export const dayLabel = (day: string) =>
@@ -29,18 +31,8 @@ export const dayLabel = (day: string) =>
 /** Clamped to two lines; "more" appears only when the text really overflows (measured, not guessed). */
 function LineText({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
-  const [overflows, setOverflows] = useState(false);
   const span = useRef<HTMLSpanElement>(null);
-  useEffect(() => {
-    const el = span.current;
-    if (!el || open) return; // open text never overflows; keep the last measurement so "less" stays
-    const measure = () => setOverflows(el.scrollHeight > el.clientHeight + 1);
-    measure();
-    if (typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [text, open]);
+  const overflows = useOverflow(span, text, open);
   return (
     <p className="task-day-text" data-open={open || undefined}>
       <span ref={span}>{text}</span>
@@ -71,20 +63,16 @@ function BlockRow({ block, fresh }: { block: RawBlock; fresh: boolean }) {
           <span className="task-block-desc task-block-none">No description</span>
         )}
         {block.estimated_by === "manual" && <span className="task-block-tag">Edited</span>}
-        <ChevronRight size={14} className="task-block-go" aria-hidden="true" />
+        <span className="task-block-go" title="Opens the block page">
+          <ArrowUpRight size={14} aria-hidden="true" />
+          <span className="task-sr">Opens the block page</span>
+        </span>
       </Link>
     </li>
   );
 }
 
-export function DayGroup({
-  day,
-  taskKey,
-  actions,
-  onSaved,
-  onAnnounce,
-  logged,
-}: {
+interface DayGroupProps {
   day: TicketDay;
   taskKey: string;
   actions: TaskActions;
@@ -92,32 +80,83 @@ export function DayGroup({
   onAnnounce?: (message: string) => void;
   /** The block just logged through the form, if any. */
   logged?: { id: number; day: string; duration: string } | null;
-}) {
+  expanded: boolean;
+  onExpand: (open: boolean) => void;
+}
+
+/** One day: a single disclosure row (hours, Tempo state, next action, "⋯"), then what the row opened, then the details. */
+export function DayGroup({ day, taskKey, actions, onSaved, onAnnounce, logged, expanded, onExpand }: DayGroupProps) {
   const chip = chipOf(day.blocks);
   const label = dayLabel(day.day);
-  const note = hoursNote(day);
   const changed = chip === "Changed since sent";
   const tools = { taskKey, actions, onSaved, onAnnounce, label, day };
-  const inTempo = chip === "In Tempo";
-  const sync = useSync({ ...tools, inTempo, changed });
+  const sync = useSync({ ...tools, inTempo: chip === "Sent", changed });
+  const hours = useHoursWrite(tools);
+  const [editing, setEditing] = useState<"hours" | "text" | null>(null);
+  const more = useRef<HTMLButtonElement>(null);
+  const done = () => {
+    setEditing(null);
+    more.current?.focus();
+  };
+  const edit = (what: "hours" | "text") => {
+    hours.setError(null);
+    setEditing(what);
+  };
+  // The preview points at the day's text below it, so opening one opens the day.
+  const trigger = { ...sync, dryRun: () => (onExpand(true), sync.dryRun()) };
   return (
-    <div className="task-day">
-      <div className="task-day-head">
-        <h4 className="task-day-label">{label}</h4>
-        <HoursEdit {...tools} />
-        <span className="task-day-chip" data-chip={CHIP_TONE[chip]} title={changed ? changedNote(day) : undefined}>
-          {chip}
-        </span>
-        <SyncTrigger sync={sync} label={label} inTempo={inTempo} changed={changed} />
+    <div className="task-day" data-state={CHIP_TONE[chip]} data-day={day.day}>
+      <div className="task-day-row">
+        <h4 className="task-day-head">
+          <button type="button" className="task-day-toggle" aria-expanded={expanded} onClick={() => onExpand(!expanded)}>
+            <ChevronRight size={14} className="task-day-chev" aria-hidden="true" />
+            <span className="task-day-label">{label}</span>
+            <span className="task-day-hours">{formatDuration(day.line_seconds)}</span>
+            <span className="task-day-chip" data-chip={CHIP_TONE[chip]} title={changed ? changedNote(day) : undefined}>
+              <span className="task-chip-long">{chip}</span>
+              {changed && (
+                <span className="task-chip-short" aria-hidden="true">
+                  Changed
+                </span>
+              )}
+            </span>
+          </button>
+        </h4>
+        <SyncTrigger sync={trigger} label={label} inTempo={chip === "Sent"} changed={changed} />
+        <DayMenu
+          label={label}
+          byHand={day.hours_set_by_hand}
+          busy={hours.busy}
+          btn={more}
+          onEditHours={() => edit("hours")}
+          onUseTracked={() => hours.write(null)}
+          onEditText={() => edit("text")}
+        />
       </div>
-      {note && <p className="task-day-note">{note}</p>}
-      {changed && <p className="task-day-note">{changedNote(day)}</p>}
       {logged?.day === day.day && <DaySent>{`Logged ${logged.duration}`}</DaySent>}
-      <TextEdit {...tools}>{day.line_text && <LineText text={day.line_text} />}</TextEdit>
       <SyncBody sync={sync} label={label} day={day} changed={changed} />
+      {editing === "hours" && <HoursEdit label={label} day={day} io={hours} onDone={done} />}
+      {editing === "text" && <TextEdit {...tools} onDone={done} />}
+      {editing !== "hours" && hours.error && (
+        <p role="alert" className="task-error">
+          {hours.error}
+        </p>
+      )}
+      {expanded && <DayBody day={day} changed={changed} editingText={editing === "text"} freshId={logged?.id} />}
+    </div>
+  );
+}
+
+/** What an open day adds: why the hours are what they are, the Tempo text, and the blocks. */
+function DayBody({ day, changed, editingText, freshId }: { day: TicketDay; changed: boolean; editingText: boolean; freshId?: number }) {
+  const note = hoursNote(day);
+  return (
+    <div className="task-day-body">
+      {!editingText && day.line_text && <LineText text={day.line_text} />}
+      {note && <p className="task-day-note">{note}</p>}
       <ul className="task-block-list">
         {day.blocks.map((b) => (
-          <BlockRow key={b.id} block={b} fresh={logged?.id === b.id} />
+          <BlockRow key={b.id} block={b} fresh={freshId === b.id} />
         ))}
       </ul>
     </div>
