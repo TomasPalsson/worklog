@@ -4,9 +4,10 @@ import { useEffect, useRef, useState, type MutableRefObject, type RefObject } fr
 import { ChevronDown, ExternalLink, X } from "lucide-react";
 
 import { formatDuration } from "@/lib/format";
-import { formatStamp, transitionLabel } from "@/lib/taskBoard";
+import { formatStamp, localToday, transitionLabel } from "@/lib/taskBoard";
 import type { StatusCategory, TaskRow, TicketComment, TicketDetail, TicketStatus, Transition } from "@/lib/types";
 import type { TaskActions } from "./TaskCard";
+import { DueChip, Labels, ParentRow } from "./TaskCardMeta";
 import { TaskComposer, type Drafts } from "./TaskComposer";
 import { menuKeys } from "./menuKeys";
 
@@ -14,6 +15,8 @@ type Load = { s: "loading" } | { s: "error"; error: string } | { s: "ok"; detail
 
 export interface TaskPanelProps {
   task: TaskRow;
+  /** Board's today (YYYY-MM-DD) for the due chip; defaults to the local date. */
+  today?: string;
   actions: TaskActions;
   onClose: () => void;
   drafts?: MutableRefObject<Drafts>;
@@ -136,7 +139,7 @@ function StatusChip({ task, shown, actions, onStatus }: Pick<TaskPanelProps, "ta
   );
 }
 
-function Meta({ task, detail, shown, actions, onStatus }: TaskPanelProps & { detail: TicketDetail | null; shown: Shown }) {
+function Meta({ task, today, detail, shown, actions, onStatus }: TaskPanelProps & { detail: TicketDetail | null; shown: Shown }) {
   const items = [
     detail?.issue_type,
     detail?.priority && `Priority ${detail.priority}`,
@@ -144,11 +147,22 @@ function Meta({ task, detail, shown, actions, onStatus }: TaskPanelProps & { det
   ];
   return (
     <>
+      {task.parent_summary && <ParentRow text={task.parent_summary} />}
       <div className="task-meta">
         <StatusChip task={task} shown={shown} actions={actions} onStatus={onStatus} />
         {items.filter(Boolean).map((v) => (
           <span key={v}>{v}</span>
         ))}
+        {task.due_date && (
+          <span>
+            <DueChip due={task.due_date} today={today ?? localToday()} done={shown.status_category === "done"} />
+          </span>
+        )}
+        {task.labels.length > 0 && (
+          <span>
+            <Labels labels={task.labels} />
+          </span>
+        )}
       </div>
       <p className="task-hours">
         {[

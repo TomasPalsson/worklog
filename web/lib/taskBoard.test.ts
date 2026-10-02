@@ -1,6 +1,19 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
-import { columnOf, COLUMNS, formatStamp, movesInto, ticketCount, transitionLabel, weekTotal } from "./taskBoard";
+import {
+  columnOf,
+  COLUMNS,
+  dueState,
+  formatStamp,
+  movesInto,
+  relativeAge,
+  shortDate,
+  sparkHeights,
+  ticketCount,
+  transitionLabel,
+  weekMax,
+  weekTotal,
+} from "./taskBoard";
 import type { TaskRow, Transition } from "./types";
 
 const t = (id: string, to_category: Transition["to_category"]): Transition => ({
@@ -54,5 +67,41 @@ describe("taskBoard", () => {
     expect(formatStamp("2026-09-05T08:07:00")).toBe("5 Sep, 08:07");
     expect(formatStamp("2026-09-05T08:07:00.000+0000")).toMatch(/^\d{1,2} Sep, \d\d:\d\d$/);
     expect(formatStamp("nope")).toBe("nope");
+  });
+});
+
+describe("card helpers", () => {
+  it("dueState classifies against today", () => {
+    expect(dueState("2026-10-01", "2026-10-03")).toEqual({ state: "overdue", days: -2 });
+    expect(dueState("2026-10-03", "2026-10-03")).toEqual({ state: "today", days: 0 });
+    expect(dueState("2026-10-05", "2026-10-03").state).toBe("soon");
+    expect(dueState("2026-10-06", "2026-10-03").state).toBe("later");
+    expect(dueState("2026-11-01", "2026-10-30")).toEqual({ state: "soon", days: 2 });
+  });
+
+  it("shortDate renders d MMM", () => {
+    expect(shortDate("2026-10-04")).toBe("4 Oct");
+  });
+
+  it("relativeAge buckets and tolerates Jira offsets", () => {
+    const now = new Date("2026-10-02T12:00:00Z");
+    expect(relativeAge("2026-10-02T11:59:30Z", now)).toBe("just now");
+    expect(relativeAge("2026-10-02T11:15:00Z", now)).toBe("45m ago");
+    expect(relativeAge("2026-10-02T09:00:00Z", now)).toBe("3h ago");
+    expect(relativeAge("2026-09-30T12:00:00.000+0000", now)).toBe("2d ago");
+    expect(relativeAge("nope", now)).toBe("");
+  });
+
+  it("sparkHeights scales to the max, floors at 2px", () => {
+    expect(sparkHeights([0, 3600, 7200, 1], 7200)).toEqual([2, 8, 16, 2]);
+    expect(sparkHeights([0, 0], 1)).toEqual([2, 2]);
+    expect(sparkHeights([100], 100, 20)).toEqual([20]);
+  });
+
+  it("weekMax is the biggest day, at least 1", () => {
+    const rows = [{ day_seconds: [0, 5, 0, 0, 0, 0, 0] }, { day_seconds: [9, 0, 0, 0, 0, 0, 0] }] as TaskRow[];
+    expect(weekMax(rows)).toBe(9);
+    expect(weekMax([])).toBe(1);
+    expect(weekMax([{ day_seconds: [0, 0, 0, 0, 0, 0, 0] }] as TaskRow[])).toBe(1);
   });
 });

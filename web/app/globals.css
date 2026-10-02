@@ -5618,6 +5618,44 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
   color: var(--fg-muted);
 }
 .task-card-idle { color: var(--fg-subtle); }
+/* Richer card rows. Head leaves room on the right for the absolutely-placed Move button. */
+.task-card-top { padding-right: 24px; }
+.task-type, .task-priority { display: inline-flex; align-items: center; flex: none; }
+.task-due {
+  margin-left: auto;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.task-due[data-state="overdue"] { border-color: var(--terracotta-ink); background: var(--terracotta-bg); color: var(--terracotta-ink); }
+.task-due[data-state="today"], .task-due[data-state="soon"] { border-color: var(--amber-ink); background: var(--amber-bg); color: var(--amber-ink); }
+.task-parent { display: flex; align-items: center; gap: 4px; min-width: 0; font-size: 12px; color: var(--fg-muted); }
+.task-parent svg { flex: none; }
+.task-parent span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-labels { display: flex; flex-wrap: wrap; gap: 4px; }
+.task-label-chip {
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunk);
+  color: var(--fg-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.task-card-foot { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.task-updated { margin-left: auto; font-family: var(--font-mono); font-size: 12px; color: var(--fg-subtle); white-space: nowrap; }
+.task-spark { display: inline-flex; align-items: flex-end; gap: 2px; height: 16px; flex: none; }
+.task-spark i { display: block; width: 4px; border-radius: 1px; background: var(--slate); opacity: 0.55; }
+.task-spark[data-column="indeterminate"] i { background: var(--amber); }
+.task-spark[data-column="done"] i { background: var(--sage); }
+.task-spark i[data-today] { opacity: 1; }
+.task-spark i[data-zero] { background: var(--border); opacity: 1; }
+/* In the panel the parent line sits under the headline and the chips share the meta row. */
+.task-panel .task-parent { margin-top: 6px; }
+.task-panel .task-due { margin-left: 0; }
 .task-card-error {
   display: flex;
   align-items: flex-start;
