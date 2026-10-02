@@ -1,5 +1,6 @@
 "use client";
 
+import { UploadCloud } from "lucide-react";
 import { useEffect, useRef } from "react";
 
 import { formatDuration } from "@/lib/format";
@@ -12,7 +13,7 @@ export function changedNote(day: TicketDay): string {
   return `Edited after it was sent · In Tempo: ${formatDuration(day.in_tempo_seconds)} → now ${formatDuration(day.line_seconds)}`;
 }
 
-export function SyncPreview(p: {
+export function SyncConfirm(p: {
   label: string;
   day: TicketDay;
   changed: boolean;
@@ -23,8 +24,8 @@ export function SyncPreview(p: {
   const send = useRef<HTMLButtonElement>(null);
   useEffect(() => send.current?.focus(), []);
   const { day } = p;
-  const known = p.changed && day.in_tempo_seconds != null;
-  // Esc is scoped to this preview (never document-wide) and keeps the dialog open.
+  const hours = formatDuration(day.line_seconds);
+  // Esc is scoped to this confirm (never document-wide) and keeps the dialog open.
   function onKeyDown(e: React.KeyboardEvent) {
     if (e.key !== "Escape" || p.sending) return;
     e.preventDefault();
@@ -32,35 +33,22 @@ export function SyncPreview(p: {
     p.onCancel();
   }
   return (
-    <div className="task-day-preview" onKeyDown={onKeyDown}>
-      <h5>{p.changed ? "Preview — Tempo will be updated" : "Preview — nothing sent yet"}</h5>
-      <dl>
-        {known ? (
-          <>
-            <dt>In Tempo</dt>
-            <dd>{formatDuration(day.in_tempo_seconds ?? 0)}</dd>
-            <dt>Will be</dt>
-            <dd>{formatDuration(day.line_seconds)}</dd>
-          </>
-        ) : (
-          <>
-            <dt>Hours</dt>
-            <dd>{formatDuration(day.line_seconds)}</dd>
-          </>
-        )}
-        <dt>Day</dt>
-        <dd>{p.label}</dd>
-        {day.line_text && (
-          <>
-            <dt>Text</dt>
-            <dd>as shown below</dd>
-          </>
-        )}
-      </dl>
-      <p>Sends only this ticket&apos;s line for this day to Tempo.</p>
-      <span className="task-day-edit">
+    <div className="task-day-confirm" role="group" aria-label={`Confirm sending ${p.label} to Tempo`} onKeyDown={onKeyDown}>
+      <p className="task-day-confirm-q">
+        <UploadCloud size={14} aria-hidden="true" />
+        <span>
+          {!p.changed ? (
+            <>Send <strong>{hours}</strong>{day.line_text && " and the text below"} to Tempo for <span className="task-nowrap">{p.label}?</span></>
+          ) : day.in_tempo_seconds != null ? (
+            <>Update Tempo: <strong>{formatDuration(day.in_tempo_seconds)} → {hours}</strong>?</>
+          ) : (
+            <>Update <strong>{hours}</strong> in Tempo for <span className="task-nowrap">{p.label}?</span></>
+          )}
+        </span>
+      </p>
+      <span className="task-day-confirm-act">
         <button ref={send} type="button" className="task-btn-primary" disabled={p.sending} onClick={p.onSend}>
-          {p.sending ? "Sending…" : p.changed ? "Update Tempo" : "Send to Tempo"}
+          {p.sending ? (p.changed ? "Updating…" : "Sending…") : p.changed ? "Update" : "Send"}
         </button>
         <button type="button" className="task-btn-secondary" disabled={p.sending} onClick={p.onCancel}>
           Cancel

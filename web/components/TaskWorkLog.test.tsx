@@ -305,9 +305,9 @@ describe("sync to Tempo", () => {
   it("dry-runs first, previews, and sends only after confirm", async () => {
     const { a } = await ready();
     fireEvent.click(screen.getByRole("button", { name: "Send to Tempo, Wed 30 Sep" }));
-    expect(await screen.findByText("Preview — nothing sent yet")).toBeTruthy();
+    expect(await screen.findByRole("group", { name: /^Confirm sending/ })).toBeTruthy();
     expect(calls(a.runSync)).toEqual([["2026-09-30", true, "ABC-1"]]);
-    fireEvent.click(screen.getByRole("button", { name: "Send to Tempo" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
     expect(await screen.findByText("Sent to Tempo · 30m")).toBeTruthy();
     expect(calls(a.runSync)).toEqual([
       ["2026-09-30", true, "ABC-1"],
@@ -319,7 +319,7 @@ describe("sync to Tempo", () => {
   it("does not repeat the line text in the preview; it points at the text below", async () => {
     await ready(actions({ loadTicketBlocks: loads([day({ line_text: "Worked on login" })]) }));
     fireEvent.click(screen.getByRole("button", { name: /^Send to Tempo, / }));
-    expect(await screen.findByText("as shown below")).toBeTruthy();
+    expect(await screen.findByRole("group", { name: /^Confirm sending/ })).toBeTruthy();
     expect(screen.getAllByText("Worked on login")).toHaveLength(1);
   });
 
@@ -328,7 +328,7 @@ describe("sync to Tempo", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send to Tempo, Wed 30 Sep" }));
     fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
     expect(calls(a.runSync)).toHaveLength(1);
-    expect(screen.queryByRole("button", { name: "Send to Tempo" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
   });
 
   it("shows errors from the real run", async () => {
@@ -338,7 +338,7 @@ describe("sync to Tempo", () => {
     }));
     await ready(actions({ runSync: run }));
     fireEvent.click(screen.getByRole("button", { name: "Send to Tempo, Wed 30 Sep" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Send to Tempo" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
     expect(await screen.findByText("Tempo said 400")).toBeTruthy();
   });
 
@@ -356,7 +356,7 @@ describe("sync to Tempo", () => {
     });
     await ready(actions({ loadTicketBlocks: load, runSync: run }));
     fireEvent.click(screen.getByRole("button", { name: /^Send to Tempo, / }));
-    fireEvent.click(await screen.findByRole("button", { name: "Send to Tempo" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
     expect(await screen.findByText("Sent")).toBeTruthy();
     expect(screen.getByText("Sent to Tempo · 1h")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^Send to Tempo, / })).toBeNull();
@@ -370,7 +370,7 @@ describe("sync to Tempo", () => {
     await ready(actions({ loadTicketBlocks: loads([day({ day: "2026-09-30", line_seconds: 0 })]), runSync: run }));
     fireEvent.click(screen.getByRole("button", { name: /^Send to Tempo, / }));
     expect(await screen.findByText("Nothing was sent to Tempo for ABC-1 on Wed 30 Sep. It may already be in Tempo, or have no hours.")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Send to Tempo" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
   });
 
   it("shows a failed dry run", async () => {

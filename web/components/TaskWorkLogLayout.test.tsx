@@ -37,11 +37,11 @@ describe("day row", () => {
     expect(document.querySelector(".task-block-row .task-block-go svg")?.getAttribute("aria-hidden")).toBe("true");
   });
 
-  it("the day label sits in an h4 and the preview heading is an h5", async () => {
+  it("the day label sits in an h4 and the confirm is a labelled group", async () => {
     await open();
     expect(document.querySelector("h4 .task-day-label")?.textContent).toBe("Thu 1 Oct");
     fireEvent.click(btn("Send to Tempo, Thu 1 Oct"));
-    expect((await screen.findByText("Preview — nothing sent yet")).tagName).toBe("H5");
+    expect((await screen.findByRole("group", { name: "Confirm sending Thu 1 Oct to Tempo" })).className).toBe("task-day-confirm");
   });
 
   it("the summary sits in the head line, even with the form open", async () => {
