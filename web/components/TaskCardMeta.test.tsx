@@ -175,10 +175,24 @@ describe("TaskCard with rich data", () => {
         day_seconds: [0, 0, 0, 0, 3600, 0, 0],
       }),
     );
-    for (const sel of ["[data-type='bug']", ".task-due", ".task-parent", ".task-labels", ".task-updated"]) {
+    for (const sel of ["[data-type='bug']", ".task-due", ".task-parent", ".task-updated"]) {
       expect(container.querySelector(sel)).not.toBeNull();
     }
+    expect(container.querySelector(".task-labels")).toBeNull(); // labels are Jira noise on the card
     expect(screen.getByText("Updated 3h ago")).toBeTruthy();
     expect(screen.getByRole("img").getAttribute("aria-label")).toContain("Fri 1h");
+  });
+});
+
+describe("TaskCard idle line", () => {
+  it("says when it was last worked once this week is empty", () => {
+    card(row({ week_seconds: 0, last_worked_day: "2026-09-21" }));
+    expect(screen.getByText("Last worked 21 Sep")).toBeTruthy();
+    expect(screen.queryByText("Not worked this week")).toBeNull();
+  });
+
+  it("keeps Not worked this week for a ticket never worked", () => {
+    card(row({ week_seconds: 0, last_worked_day: null }));
+    expect(screen.getByText("Not worked this week")).toBeTruthy();
   });
 });

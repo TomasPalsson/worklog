@@ -47,9 +47,9 @@ describe("day row", () => {
   it("the summary sits in the head line, even with the form open", async () => {
     await open();
     const head = () => (document.querySelector(".task-work-head") as HTMLElement).textContent;
-    expect(head()).toContain("1 day · last 14 days");
+    expect(head()).toContain("1 day");
     fireEvent.click(logTime());
-    expect(head()).toContain("1 day · last 14 days");
+    expect(head()).toContain("1 day");
   });
 
   it("the next action sits right after the day, named Send; Update once it changed", async () => {

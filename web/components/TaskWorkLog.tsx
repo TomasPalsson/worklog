@@ -19,7 +19,7 @@ function LogButton({ onClick, btn }: { onClick: () => void; btn?: React.Ref<HTML
   );
 }
 
-const summary = ({ days }: TicketBlocks) => `${days.length} ${days.length === 1 ? "day" : "days"} · last 14 days`;
+const summary = ({ days }: TicketBlocks) => `${days.length} ${days.length === 1 ? "day" : "days"}`;
 
 type Logged = { id: number; day: string; duration: string };
 
@@ -38,12 +38,12 @@ interface DaysProps {
 const RECENT_DAYS = 5;
 
 function Days({ data, taskKey, actions, work, onAnnounce, onLog, logged, tickets }: DaysProps) {
-  const [all, setAll] = useState(false);
+  const { showAll: all, setShowAll: setAll } = work;
   const n = data.days.length;
   if (n === 0) {
     return (
       <div className="task-empty-row">
-        <p className="task-empty">{`No work logged on ${taskKey} in the last 14 days.`}</p>
+        <p className="task-empty">{`No work logged on ${taskKey} yet.`}</p>
         {onLog && <LogButton onClick={onLog} />}
       </div>
     );
@@ -76,7 +76,7 @@ function Days({ data, taskKey, actions, work, onAnnounce, onLog, logged, tickets
   );
 }
 
-/** The Work log tab: days as disclosure rows, with the Log time form directly under the head line. */
+/** The work log: days as disclosure rows, with the Log time form directly under the head line. */
 export function TaskWorkLog({
   taskKey,
   actions,

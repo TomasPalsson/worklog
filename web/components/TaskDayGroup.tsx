@@ -5,6 +5,7 @@ import Link from "next/link";
 import { ArrowUpRight, ChevronRight } from "lucide-react";
 
 import { formatDuration, formatRange, shortMonthDay, shortWeekday } from "@/lib/format";
+import { chipOf, type Chip } from "@/lib/ticketHours";
 import type { JiraTicket, RawBlock, TicketDay } from "@/lib/types";
 import type { TaskActions } from "./TaskCard";
 import { BlockMove } from "./TaskBlockMove";
@@ -14,14 +15,7 @@ import { DaySent, HoursEdit, TextEdit, hoursNote, useDayOps, useHoursWrite } fro
 import { changedNote } from "./TaskSyncPreview";
 import { useOverflow } from "./useOverflow";
 
-export type Chip = "Sent" | "Changed since sent" | "Not sent";
-
-const synced = (b: RawBlock) => !!b.tempo_worklog_id;
-
-export function chipOf(blocks: RawBlock[]): Chip {
-  if (blocks.some((b) => synced(b) && b.dirty)) return "Changed since sent";
-  return blocks.every(synced) ? "Sent" : "Not sent";
-}
+export { chipOf, type Chip };
 
 export const CHIP_TONE: Record<Chip, string> = { Sent: "ok", "Changed since sent": "changed", "Not sent": "none" };
 

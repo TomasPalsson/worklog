@@ -115,18 +115,9 @@ function TempoRow({ load, onTempo }: { load: BlocksLoad; onTempo: () => void }) 
   );
 }
 
-function LoggedRow({ detail, data }: { detail: TicketDetail | null; data: TicketBlocks | null }) {
-  const everyone = detail?.time_spent_seconds ?? null;
+function LoggedRow({ data }: { data: TicketBlocks | null }) {
   const you = data?.in_tempo_total_seconds ?? null;
-  if (everyone === null && you === null) return null;
-  return (
-    <Row term="Logged on ticket">
-      <span className="task-today">
-        {everyone !== null && <span>{`${formatDuration(everyone)} by everyone`}</span>}
-        {you !== null && <span>{`${formatDuration(you)} by you`}</span>}
-      </span>
-    </Row>
-  );
+  return you === null ? null : <Row term="In Tempo (you)">{formatDuration(you)}</Row>;
 }
 
 function EstimateRow({ detail }: { detail: TicketDetail | null }) {
@@ -229,15 +220,14 @@ export function TimeCard({ task, detail, load, onTempo, onPulled, onRetry, onAnn
   return (
     <section className="task-side-card task-time" aria-labelledby="task-time-label">
       <h3 id="task-time-label" className="task-label">
-        Time
+        Tempo
       </h3>
       <dl>
         {view ? <TodayRow view={view} /> : task.today_seconds > 0 && <Row term="Today">{formatDuration(task.today_seconds)}</Row>}
-        <Row term="This week">{formatDuration(task.week_seconds)}</Row>
         <Row term="Tempo">
           <TempoRow load={load} onTempo={onTempo} />
         </Row>
-        <LoggedRow detail={detail} data={data} />
+        <LoggedRow data={data} />
         <EstimateRow detail={detail} />
       </dl>
       {data ? <PullFoot at={data.pulled_at} pull={pull} onPulled={onPulled} onAnnounce={onAnnounce} /> : <LoadFoot load={load} onRetry={onRetry} />}

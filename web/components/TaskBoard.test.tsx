@@ -348,18 +348,6 @@ describe("TaskBoard panel", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("an unsent comment survives closing the panel and switching cards", async () => {
-    render(<TaskBoard actions={actions()} tasks={tasks} />);
-    fireEvent.click(cardBtn("ABC-1"));
-    fireEvent.click(await screen.findByRole("tab", { name: /Comments/ }));
-    fireEvent.change(await screen.findByLabelText("Add a comment"), { target: { value: "half written" } });
-    fireEvent.click(cardBtn("ABC-2"));
-    expect((await screen.findByLabelText("Add a comment") as HTMLTextAreaElement).value).toBe("");
-    fireEvent.keyDown(document, { key: "Escape" });
-    fireEvent.click(cardBtn("ABC-1"));
-    expect((await screen.findByLabelText("Add a comment") as HTMLTextAreaElement).value).toBe("half written");
-  });
-
   it("a status change in the panel moves the card to its new column", async () => {
     const a = actions();
     render(<TaskBoard actions={a} tasks={tasks} />);

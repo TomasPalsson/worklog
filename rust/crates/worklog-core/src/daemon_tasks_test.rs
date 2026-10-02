@@ -18,8 +18,8 @@ const MONDAY: &str = "2026-09-28";
 fn state_with_ticket() -> Shared {
     let conn = open_memory().unwrap();
     conn.execute(
-        "INSERT INTO jira_tickets (key, summary, status, status_category, external, fetched_at)
-         VALUES ('APRO-1', 'Fix the thing', 'To Do', 'new', 0, '2026-09-30T08:00:00Z')",
+        "INSERT INTO jira_tickets (key, summary, status, status_category, external, fetched_at, updated)
+         VALUES ('APRO-1', 'Fix the thing', 'To Do', 'new', 0, '2026-09-30T08:00:00Z', '2026-09-29T10:00:00.000+0000')",
         [],
     )
     .unwrap();

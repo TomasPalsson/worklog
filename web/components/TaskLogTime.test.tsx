@@ -157,7 +157,7 @@ describe("log confirmation", () => {
 describe("empty state", () => {
   it("offers a Log time button that opens the form", async () => {
     await open([]);
-    expect(screen.getByText("No work logged on ABC-1 in the last 14 days.")).toBeTruthy();
+    expect(screen.getByText("No work logged on ABC-1 yet.")).toBeTruthy();
     const buttons = btns("Log time");
     expect(buttons).toHaveLength(2);
     fireEvent.click(buttons[1]);

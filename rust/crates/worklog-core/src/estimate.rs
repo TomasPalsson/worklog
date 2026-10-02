@@ -23,6 +23,7 @@ use crate::clues_contract::DescriptionInput;
 use crate::clues_send;
 use crate::deild_contract::ChangeSource;
 use crate::tenant_shares;
+use crate::ticket_activity;
 
 pub const DEFAULT_MODEL: &str = "claude-haiku-4-5";
 const ROUND_MINUTES: i64 = 15;
@@ -553,7 +554,7 @@ pub fn estimate_day_with<I: ModelInvoker>(
     bail_if_compressed(conn, &day_iso)?;
     let batch = change_log::new_batch(ChangeSource::Claude);
 
-    let open_tickets = load_open_tickets(conn)?;
+    let open_tickets = load_open_tickets(conn, day)?;
     let blocks = load_blocks_for_estimator(conn, &day_iso)?;
 
     // Phase 1: build every block's prompt up front, in the same DB-read
@@ -818,7 +819,11 @@ pub fn prepare_block_estimate(
         );
     }
 
-    let open_tickets = load_open_tickets(conn)?;
+    let block_day: NaiveDate = block
+        .day
+        .parse()
+        .with_context(|| format!("block day {:?} is not YYYY-MM-DD", block.day))?;
+    let open_tickets = load_open_tickets(conn, block_day)?;
     let events = load_block_events(conn, block.id)?;
     let literals = collect_literal_matches(&events);
     let clues = clues_for_block(conn, &block);
@@ -1106,25 +1111,36 @@ struct PendingEstimate {
     user_msg: String,
 }
 
-fn load_open_tickets(conn: &Connection) -> Result<Vec<Candidate>> {
+/// Live tickets only: no dead status (Backlog/Cancel/..) and active within `STALE_DAYS` of `day`.
+fn load_open_tickets(conn: &Connection, day: NaiveDate) -> Result<Vec<Candidate>> {
     // `external = 0` filters out tickets the user picked manually via the
     // in-UI Jira search — those are intentionally hidden from the
     // estimator so Claude only ever auto-assigns from the user's actual
     // assignee=currentUser() set.
     let mut stmt = conn.prepare(
-        "SELECT key, summary FROM jira_tickets
+        "SELECT key, summary, status FROM jira_tickets
           WHERE external = 0
           ORDER BY updated DESC",
     )?;
+    let active = ticket_activity::active_keys(conn, day)?;
     let rows = stmt
         .query_map([], |r| {
-            Ok(Candidate {
-                key: r.get(0)?,
-                summary: r.get(1)?,
-            })
+            Ok((
+                Candidate {
+                    key: r.get(0)?,
+                    summary: r.get(1)?,
+                },
+                r.get::<_, Option<String>>(2)?,
+            ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(rows)
+    Ok(rows
+        .into_iter()
+        .filter(|(c, status)| {
+            !ticket_activity::is_dead_status(status.as_deref()) && active.contains(&c.key)
+        })
+        .map(|(c, _)| c)
+        .collect())
 }
 
 fn load_blocks_for_estimator(conn: &Connection, day_iso: &str) -> Result<Vec<BlockRow>> {
@@ -2125,7 +2141,7 @@ mod tests {
                 summary: "fix thing".into(),
                 status: Some("In Progress".into()),
                 project_key: Some("PROJ".into()),
-                updated: None,
+                updated: Some("2026-04-10T10:00:00.000+0000".into()),
                 issue_id: None,
             },
         )
@@ -2993,9 +3009,77 @@ mod tests {
             },
         )
         .unwrap();
-        let candidates = load_open_tickets(&conn).unwrap();
+        let candidates = load_open_tickets(&conn, "2026-04-20".parse().unwrap()).unwrap();
         let keys: Vec<&str> = candidates.iter().map(|c| c.key.as_str()).collect();
         assert_eq!(keys, vec!["MINE-1"], "external pick must be filtered out");
+    }
+
+    fn seed_ticket_row(conn: &Connection, key: &str, status: &str, updated: &str) {
+        repo::upsert_ticket(
+            conn,
+            &JiraTicket {
+                key: key.into(),
+                summary: format!("{key} summary"),
+                status: Some(status.into()),
+                project_key: None,
+                updated: Some(updated.into()),
+                issue_id: None,
+            },
+        )
+        .unwrap();
+    }
+
+    fn candidate_keys(conn: &Connection, day: &str) -> Vec<String> {
+        load_open_tickets(conn, day.parse().unwrap())
+            .unwrap()
+            .into_iter()
+            .map(|c| c.key)
+            .collect()
+    }
+
+    #[test]
+    fn load_open_tickets_excludes_cancelled_and_backlog() {
+        let conn = open_memory().unwrap();
+        let recent = "2026-09-25T10:00:00.000+0000";
+        seed_ticket_row(&conn, "LIVE-1", "In Progress", recent);
+        seed_ticket_row(&conn, "DEAD-1", "Cancel", recent);
+        seed_ticket_row(&conn, "BACK-1", "Backlog", recent);
+        assert_eq!(candidate_keys(&conn, "2026-09-28"), vec!["LIVE-1"]);
+    }
+
+    #[test]
+    fn load_open_tickets_drops_stale_unless_hand_set_block_nearby() {
+        let conn = open_memory().unwrap();
+        let old = "2026-07-30T10:00:00.000+0000";
+        seed_ticket_row(&conn, "OLD-1", "In Progress", old);
+        seed_ticket_row(&conn, "OLD-2", "In Progress", old);
+        assert!(candidate_keys(&conn, "2026-09-28").is_empty());
+        conn.execute(
+            "INSERT INTO blocks (day, jira_issue, started_at, ended_at, duration_seconds, ticket_origin)
+             VALUES ('2026-09-25', 'OLD-2', '2026-09-25T09:00:00+00:00', '2026-09-25T10:00:00+00:00', 3600, 'manual')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(candidate_keys(&conn, "2026-09-28"), vec!["OLD-2"]);
+    }
+
+    #[test]
+    fn cancelled_ticket_never_reaches_the_block_prompt() {
+        let conn = open_memory().unwrap();
+        let bid = seed_block_with_forbidden_fields(&conn);
+        let recent = "2026-05-28T10:00:00.000+0000";
+        seed_ticket_row(&conn, "LIVE-1", "In Progress", recent);
+        seed_ticket_row(&conn, "DEAD-1", "Cancel", recent);
+        let prep = prepare_block_estimate(&conn, bid, &[]).unwrap();
+        let invoker = CapturingInvoker::new(json!({
+            "jira_issue": null,
+            "minutes": 30,
+            "description": "Work"
+        }));
+        invoke_block_estimate(&prep, &invoker, "test-model").unwrap();
+        let captured = invoker.captured_user.borrow().clone().unwrap();
+        assert!(captured.contains("LIVE-1"), "{captured}");
+        assert!(!captured.contains("DEAD-1"), "{captured}");
     }
 
     /// B2: per-block estimate writes description + duration + jira_issue +
@@ -3011,7 +3095,7 @@ mod tests {
                 summary: "fix thing".into(),
                 status: Some("In Progress".into()),
                 project_key: Some("PROJ".into()),
-                updated: None,
+                updated: Some("2026-04-10T10:00:00.000+0000".into()),
                 issue_id: None,
             },
         )

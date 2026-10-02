@@ -24,7 +24,6 @@ export function TaskModalSummary({ task, actions, shown, load, onStatus, onTempo
   const tempo = tempoState(load);
   const today = todayView(load.s === "ok" ? load.data.today : undefined);
   const parts = [
-    <span key="week">{`This week ${formatDuration(task.week_seconds)}`}</span>,
     !today && task.today_seconds > 0 && <span key="today">{`Today ${formatDuration(task.today_seconds)}`}</span>,
     tempo &&
       (tempo.review ? (

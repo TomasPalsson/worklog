@@ -1,8 +1,11 @@
-//! My Tasks board (spec 012): the cached assigned-open tickets plus any
-//! ticket with a ticket line this week, with that week's hours.
+//! My Tasks board (spec 012): the cached assigned-open tickets that are still
+//! active (Jira update or hand-set block in the last `STALE_DAYS`) plus any
+//! ticket with a ticket line this week, with that week's hours. Dead statuses
+//! (Backlog, Cancel, ..) are off the board even with hours this week.
 
 use crate::tempo_hub_contract::{StatusCategory, TaskRow, TasksResponse};
 use crate::tempo_lines;
+use crate::ticket_activity::{active_keys, is_dead_status};
 use anyhow::{Context, Result};
 use chrono::{Duration, NaiveDate};
 use rusqlite::Connection;
@@ -52,12 +55,19 @@ pub fn tasks(
         }
     }
 
+    let active = active_keys(conn, today)?;
     let keys: BTreeSet<&String> = cached
         .iter()
-        .filter(|(_, ticket)| ticket.assigned)
+        .filter(|(key, ticket)| {
+            ticket.assigned && (active.contains(*key) || worked.contains_key(*key))
+        })
         .map(|(key, _)| key)
         .chain(worked.keys())
-        .filter(|key| !cached.get(*key).is_some_and(is_backlog))
+        .filter(|key| {
+            !cached
+                .get(*key)
+                .is_some_and(|t| is_dead_status(t.status.as_deref()))
+        })
         .collect();
     let base = jira_base_url.map(|url| url.trim_end_matches('/'));
     let mut rows: Vec<TaskRow> = keys
@@ -103,14 +113,6 @@ pub fn tasks(
         tasks: rows,
         last_fetched,
     })
-}
-
-/// Parked in the Backlog: off the board even with hours this week (they stay on the day/week pages).
-fn is_backlog(ticket: &CachedTicket) -> bool {
-    ticket
-        .status
-        .as_deref()
-        .is_some_and(|s| s.eq_ignore_ascii_case("backlog"))
 }
 
 fn cached_tickets(conn: &Connection) -> Result<HashMap<String, CachedTicket>> {

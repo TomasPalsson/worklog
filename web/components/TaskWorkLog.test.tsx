@@ -84,20 +84,20 @@ function show(a: TaskActions = actions()) {
 
 async function ready(a: TaskActions = actions()) {
   const r = show(a);
-  await screen.findByText(/^\d+ days? · last 14 days$/);
+  await screen.findByText(/^\d+ days?$/);
   return r;
 }
 
 describe("TaskWorkLog read", () => {
   it("summarises the day count and loads for the key", async () => {
     const { a } = show();
-    expect(await screen.findByText("2 days · last 14 days")).toBeTruthy();
+    expect(await screen.findByText("2 days")).toBeTruthy();
     expect(calls(a.loadTicketBlocks)[0]).toEqual(["ABC-1"]);
   });
 
   it("says 1 day in the singular", async () => {
     show(actions({ loadTicketBlocks: loads([day()]) }));
-    expect(await screen.findByText("1 day · last 14 days")).toBeTruthy();
+    expect(await screen.findByText("1 day")).toBeTruthy();
   });
 
   it("groups newest first with plain day labels", async () => {
@@ -162,7 +162,7 @@ describe("TaskWorkLog read", () => {
 
   it("empty state", async () => {
     show(actions({ loadTicketBlocks: loads([]) }));
-    expect(await screen.findByText("No work logged on ABC-1 in the last 14 days.")).toBeTruthy();
+    expect(await screen.findByText("No work logged on ABC-1 yet.")).toBeTruthy();
   });
 
   it("loading skeleton", () => {
