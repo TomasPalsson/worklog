@@ -2,6 +2,7 @@
 // `call` transport.
 
 import { call } from "./daemon";
+import { withBlocksDefaults, withDetailDefaults } from "./daemonDefaults";
 import type {
   CommentBody,
   LogTimeBody,
@@ -31,7 +32,7 @@ export async function transitions(key: string): Promise<Transition[]> {
 }
 
 export async function detail(key: string): Promise<TicketDetail> {
-  return call("GET", ticketPath(key, "detail"));
+  return withDetailDefaults(await call("GET", ticketPath(key, "detail")));
 }
 
 export async function transition(key: string, transitionId: string): Promise<TicketStatus> {
@@ -57,7 +58,7 @@ export async function closeout(monday: string): Promise<WeekCloseout> {
 }
 
 export async function blocks(key: string): Promise<TicketBlocks> {
-  return call("GET", ticketPath(key, "blocks"));
+  return withBlocksDefaults(await call("GET", ticketPath(key, "blocks")));
 }
 
 export async function logTime(key: string, body: LogTimeBody): Promise<RawBlock> {
