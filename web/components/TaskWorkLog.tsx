@@ -52,6 +52,8 @@ function LogButton({ onClick, btn }: { onClick: () => void; btn?: React.Ref<HTML
   );
 }
 
+type Logged = { id: number; day: string; duration: string };
+
 interface DaysProps {
   data: TicketBlocks;
   taskKey: string;
@@ -60,9 +62,10 @@ interface DaysProps {
   onAnnounce: (message: string) => void;
   /** Opens the log form; undefined while it is already open. */
   onLog?: () => void;
+  logged: Logged | null;
 }
 
-function Days({ data, taskKey, actions, onSaved, onAnnounce, onLog }: DaysProps) {
+function Days({ data, taskKey, actions, onSaved, onAnnounce, onLog, logged }: DaysProps) {
   const n = data.days.length;
   if (n === 0) {
     return (
@@ -77,7 +80,7 @@ function Days({ data, taskKey, actions, onSaved, onAnnounce, onLog }: DaysProps)
     <>
       <p className="task-work-summary">{`${formatDuration(total)} over ${n} ${n === 1 ? "day" : "days"}`}</p>
       {data.days.map((d) => (
-        <DayGroup key={d.day} day={d} taskKey={taskKey} actions={actions} onSaved={onSaved} onAnnounce={onAnnounce} />
+        <DayGroup key={d.day} day={d} taskKey={taskKey} actions={actions} onSaved={onSaved} onAnnounce={onAnnounce} logged={logged} />
       ))}
     </>
   );
@@ -94,6 +97,7 @@ export function TaskWorkLog({
 }) {
   const { load, retry, refetch } = useBlocks(taskKey, actions);
   const [logging, setLogging] = useState(false);
+  const [logged, setLogged] = useState<Logged | null>(null);
   const logBtn = useRef<HTMLButtonElement>(null);
   const refocus = useRef(false);
   const close = () => {
@@ -117,7 +121,8 @@ export function TaskWorkLog({
           actions={actions}
           today={load.s === "ok" ? load.data.to : undefined}
           onClose={close}
-          onLogged={(message) => {
+          onLogged={(message, block, duration) => {
+            setLogged({ id: block.id, day: block.day, duration });
             close();
             onAnnounce(message);
             refetch();
@@ -139,6 +144,7 @@ export function TaskWorkLog({
           actions={actions}
           onSaved={refetch}
           onAnnounce={onAnnounce}
+          logged={logged}
           onLog={logging ? undefined : () => setLogging(true)}
         />}
     </section>

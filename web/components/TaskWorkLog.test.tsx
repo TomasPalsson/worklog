@@ -33,6 +33,8 @@ const day = (over: Partial<TicketDay> = {}): TicketDay => ({
   day: "2026-10-01",
   line_seconds: 3600,
   line_text: "Worked on login",
+  tracked_seconds: over.line_seconds ?? 3600,
+  hours_set_by_hand: false,
   blocks: [block()],
   ...over,
 });
@@ -91,11 +93,12 @@ describe("TaskWorkLog read", () => {
     expect(await screen.findByText("1h over 1 day")).toBeTruthy();
   });
 
-  it("groups newest first and links each day", async () => {
+  it("groups newest first with plain day labels", async () => {
     await ready();
-    const links = screen.getAllByRole("link", { name: /^(Thu 1 Oct|Wed 30 Sep)$/ });
-    expect(links.map((l) => l.textContent)).toEqual(["Thu 1 Oct", "Wed 30 Sep"]);
-    expect(links[0].getAttribute("href")).toBe("/2026-10-01");
+    const labels = [...document.querySelectorAll(".task-day-label")];
+    expect(labels.map((l) => l.textContent)).toEqual(["Thu 1 Oct", "Wed 30 Sep"]);
+    // The day label is plain text; the block rows are the links.
+    expect(screen.queryAllByRole("link", { name: /^(Thu 1 Oct|Wed 30 Sep)$/ })).toHaveLength(0);
   });
 
   it("chips: all synced, changed since sync, not synced", async () => {
@@ -120,9 +123,17 @@ describe("TaskWorkLog read", () => {
 
   it("long line text can be expanded", async () => {
     const long = "word ".repeat(80).trim();
-    await ready(actions({ loadTicketBlocks: loads([day({ line_text: long })]) }));
-    fireEvent.click(screen.getByRole("button", { name: "more" }));
-    expect(screen.getByRole("button", { name: "less" })).toBeTruthy();
+    // The toggle follows measured overflow, so simulate a clamped element.
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => 60 });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 36 });
+    try {
+      await ready(actions({ loadTicketBlocks: loads([day({ line_text: long })]) }));
+      fireEvent.click(screen.getByRole("button", { name: "more" }));
+      expect(screen.getByRole("button", { name: "less" })).toBeTruthy();
+    } finally {
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollHeight;
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientHeight;
+    }
   });
 
   it("block rows link to the block page with range, duration and description", async () => {
@@ -183,7 +194,7 @@ describe("log time", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Log \d/ }));
     expect(screen.getByText("Say what you did.")).toBeTruthy();
     fill("x");
-    fireEvent.change(screen.getByLabelText("Length (minutes)"), { target: { value: "0" } });
+    fireEvent.change(screen.getByLabelText("Length"), { target: { value: "0" } });
     fireEvent.click(screen.getByRole("button", { name: /^Log / }));
     expect(screen.getByText("Length must be 1 to 720 minutes.")).toBeTruthy();
     expect(calls(a.logTicketTime)).toHaveLength(0);
@@ -192,7 +203,7 @@ describe("log time", () => {
   it("chips set the length and the button names it", async () => {
     await openForm();
     fireEvent.click(screen.getByRole("button", { name: "2h" }));
-    expect((screen.getByLabelText("Length (minutes)") as HTMLInputElement).value).toBe("120");
+    expect((screen.getByLabelText("Length") as HTMLInputElement).value).toBe("120");
     expect(screen.getByRole("button", { name: "Log 2h" })).toBeTruthy();
   });
 

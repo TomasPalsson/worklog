@@ -34,6 +34,22 @@ function hoursProblem(seconds: number): string | null {
   return null;
 }
 
+/** Why the day's hours are what they are; null when they simply equal the tracked time. */
+export function hoursNote(day: TicketDay): string | null {
+  const tracked = formatDuration(day.tracked_seconds);
+  if (day.hours_set_by_hand) return `Set by hand · ${tracked} tracked`;
+  return day.line_seconds !== day.tracked_seconds ? `Rounded from ${tracked} tracked` : null;
+}
+
+/** Sage confirmation strip ("Sent to Tempo", "Logged 30m"); stays until the panel closes. */
+export function DaySent({ children }: { children: React.ReactNode }) {
+  return (
+    <p role="status" className="task-day-sent">
+      {children}
+    </p>
+  );
+}
+
 /** The day's billed hours: a button that turns into a small hours input. */
 export function HoursEdit({ taskKey, actions, onSaved, label, day }: Common) {
   const [draft, setDraft] = useState<string | null>(null);
@@ -58,7 +74,7 @@ export function HoursEdit({ taskKey, actions, onSaved, label, day }: Common) {
         type="button"
         className="task-day-hours"
         aria-label={`Edit hours for ${label}`}
-        title="Change the hours sent to Tempo"
+        title={hoursNote(day) ?? "Change the hours sent to Tempo"}
         onClick={() => {
           setDraft(String(day.line_seconds / 3600));
           setError(null);
@@ -138,6 +154,21 @@ export function TextEdit({ taskKey, actions, onSaved, label, day }: Common) {
   const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const editBtn = useRef<HTMLButtonElement>(null);
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (draft === null && refocus.current) editBtn.current?.focus();
+    refocus.current = false;
+  }, [draft]);
+
+  // Esc cancels this edit only: the saved text stays and the panel stays open.
+  function onKeyDown(e: React.KeyboardEvent) {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopPropagation();
+    refocus.current = true;
+    setDraft(null);
+  }
 
   async function save() {
     setBusy(true);
@@ -151,6 +182,7 @@ export function TextEdit({ taskKey, actions, onSaved, label, day }: Common) {
   if (draft === null) {
     return (
       <button
+        ref={editBtn}
         type="button"
         className="task-link-btn"
         aria-label={`Edit text for ${label}`}
@@ -172,6 +204,7 @@ export function TextEdit({ taskKey, actions, onSaved, label, day }: Common) {
         value={draft}
         autoFocus
         disabled={busy}
+        onKeyDown={onKeyDown}
         onChange={(e) => {
           setDraft(e.target.value);
           setError(null);
@@ -226,13 +259,18 @@ function useEscape(active: boolean, onEscape: () => void) {
 }
 
 /** Two-step Tempo sync for one ticket-day: dry run, preview, then send on confirm. */
-export function SyncTool({ taskKey, actions, onSaved, onAnnounce, label, day, inTempo }: Common & { inTempo: boolean }) {
+export function SyncTool({ taskKey, actions, onSaved, onAnnounce, label, day, inTempo, changed }: Common & { inTempo: boolean; changed: boolean }) {
   const [step, setStep] = useState<Step>({ s: "idle" });
   const [sending, setSending] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (step.s === "idle" && refocus.current) trigger.current?.focus();
+    refocus.current = false;
+  }, [step.s]);
   const cancel = () => {
+    refocus.current = true;
     setStep({ s: "idle" });
-    trigger.current?.focus();
   };
   useEscape(step.s === "preview" && !sending, cancel);
 
@@ -261,26 +299,24 @@ export function SyncTool({ taskKey, actions, onSaved, onAnnounce, label, day, in
   const busy = step.s === "running" || sending;
   return (
     <div className="task-day-sync">
-      {!inTempo && step.s !== "sent" && (
+      {!inTempo && step.s !== "sent" && step.s !== "preview" && (
         <button
           ref={trigger}
           type="button"
           className="task-link-btn"
-          aria-label={`Preview sync ${label} to Tempo`}
+          aria-label={changed ? `Preview update ${label} in Tempo` : `Preview sync ${label} to Tempo`}
           disabled={busy}
           onClick={dryRun}
         >
           <UploadCloud size={12} aria-hidden="true" />
-          {step.s === "running" ? "Checking…" : "Preview sync"}
+          {step.s === "running" ? "Checking…" : changed ? "Preview update" : "Preview sync"}
         </button>
       )}
       {step.s === "preview" && (
-        <SyncPreview taskKey={taskKey} label={label} day={day} sending={sending} onSend={send} onCancel={cancel} />
+        <SyncPreview taskKey={taskKey} label={label} day={day} changed={changed} sending={sending} onSend={send} onCancel={cancel} />
       )}
       {step.s === "sent" && (
-        <p role="status" className="task-day-sent">
-          {`Sent to Tempo · ${step.hours}`}
-        </p>
+        <DaySent>{`Sent to Tempo · ${step.hours}`}</DaySent>
       )}
       {step.s === "nothing" && <p role="status">{step.msg}</p>}
       {step.s === "error" && (
@@ -296,6 +332,7 @@ function SyncPreview(p: {
   taskKey: string;
   label: string;
   day: TicketDay;
+  changed: boolean;
   sending: boolean;
   onSend: () => void;
   onCancel: () => void;
@@ -305,7 +342,7 @@ function SyncPreview(p: {
   const { day } = p;
   return (
     <div className="task-day-preview">
-      <h4>Preview — nothing sent yet</h4>
+      <h4>{p.changed ? "Preview — Tempo will be updated" : "Preview — nothing sent yet"}</h4>
       <dl>
         <dt>Hours</dt>
         <dd>{formatDuration(day.line_seconds)}</dd>

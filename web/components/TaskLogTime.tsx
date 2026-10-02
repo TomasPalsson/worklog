@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useId, useRef, useState } from "react";
 
+import type { RawBlock } from "@/lib/types";
 import { formatDuration, todayISO } from "@/lib/format";
 import type { TaskActions } from "./TaskCard";
 import { dayLabel } from "./TaskDayGroup";
@@ -40,7 +41,7 @@ export function TaskLogTime({
   today?: string;
   actions: TaskActions;
   /** Called after the block is created, with the announcement text. */
-  onLogged: (message: string) => void;
+  onLogged: (message: string, block: RawBlock, duration: string) => void;
   onClose: () => void;
 }) {
   const today = serverToday ?? todayISO();
@@ -53,16 +54,23 @@ export function TaskLogTime({
   const [fieldErr, setFieldErr] = useState<{ length?: string | null; description?: string | null }>({});
   const minutes = length.trim() === "" ? NaN : Number(length);
 
-  // Esc closes the form first (capture + preventDefault so the panel stays open).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      e.preventDefault();
-      onClose();
-    };
-    document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
-  }, [onClose]);
+  const [discarding, setDiscarding] = useState(false);
+  const descRef = useRef<HTMLTextAreaElement>(null);
+  const lengthId = useId();
+
+  // Esc is scoped to this form (never document-wide). A typed description asks before it is thrown away.
+  function onKeyDown(e: React.KeyboardEvent) {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (discarding) return keepEditing();
+    if (description.trim()) return setDiscarding(true);
+    onClose();
+  }
+  function keepEditing() {
+    setDiscarding(false);
+    descRef.current?.focus();
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -77,11 +85,12 @@ export function TaskLogTime({
     const res = await actions.logTicketTime(taskKey, form);
     setBusy(false);
     if (!res.ok) return setError(res.error);
-    onLogged(`Logged ${formatDuration(minutes * 60)} on ${taskKey}.`);
+    const duration = formatDuration(minutes * 60);
+    onLogged(`Logged ${duration} on ${taskKey}.`, res.data, duration);
   }
 
   return (
-    <form className="task-log-form" onSubmit={submit} noValidate>
+    <form className="task-log-form" onSubmit={submit} onKeyDown={onKeyDown} noValidate>
       <div className="task-log-row">
         <label>
           Day
@@ -93,9 +102,10 @@ export function TaskLogTime({
           <input type="time" value={start} disabled={busy} onChange={(e) => setStart(e.target.value)} />
         </label>
         <div className="task-log-field">
-        <label>
-          Length (minutes)
+        <label htmlFor={lengthId}>Length</label>
+        <span className="task-log-suffixed">
           <input
+            id={lengthId}
             type="number"
             min={1}
             max={720}
@@ -108,7 +118,8 @@ export function TaskLogTime({
             }}
             onBlur={() => setFieldErr((f) => ({ ...f, length: lengthProblem(minutes) }))}
           />
-        </label>
+          <span aria-hidden="true">min</span>
+        </span>
         {fieldErr.length && (
           <span role="alert" className="task-error">
             {fieldErr.length}
@@ -127,6 +138,7 @@ export function TaskLogTime({
       <label>
         What you did
         <textarea
+          ref={descRef}
           rows={3}
           maxLength={500}
           value={description}
@@ -148,6 +160,17 @@ export function TaskLogTime({
       {error && (
         <p role="alert" className="task-error">
           {error}
+        </p>
+      )}
+      {discarding && (
+        <p role="alert" className="task-log-discard">
+          Discard this entry?
+          <button type="button" className="task-btn-secondary" onClick={onClose}>
+            Discard
+          </button>
+          <button type="button" className="task-btn-secondary" onClick={keepEditing}>
+            Keep editing
+          </button>
         </p>
       )}
       <div className="task-log-actions">

@@ -586,6 +586,10 @@ export interface TicketDay {
   day: string;
   line_seconds: number;
   line_text: string;
+  /** Real tracked time (blocks' union, overlaps removed, unrounded); 0 with no line. */
+  tracked_seconds: number;
+  /** `line_seconds` is a hand-set override rather than the half-hour-rounded union. */
+  hours_set_by_hand: boolean;
   blocks: RawBlock[];
 }
 

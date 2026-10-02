@@ -27,6 +27,8 @@ const day = (over: Partial<TicketDay> = {}): TicketDay => ({
   day: "2026-10-01",
   line_seconds: 5400,
   line_text: "Worked on login",
+  tracked_seconds: over.line_seconds ?? 3600,
+  hours_set_by_hand: false,
   blocks: [block()],
   ...over,
 });
@@ -54,7 +56,7 @@ async function open(days: TicketDay[] = [day()], runSync = sync({ synced: 1 })) 
 }
 
 describe("day head", () => {
-  it("tones the chips: unsynced amber, changed terracotta, synced sage", async () => {
+  it("tones the chips: unsynced slate, changed amber, synced sage", async () => {
     await open([
       day({ day: "2026-10-03", blocks: [block({ tempo_worklog_id: "a" })] }),
       day({ day: "2026-10-02", blocks: [block({ tempo_worklog_id: "a", dirty: true })] }),
@@ -144,7 +146,7 @@ describe("log form", () => {
   it("Esc closes the form (prevented) and returns focus to Log time", async () => {
     await openForm();
     // fireEvent returns false when a handler called preventDefault.
-    expect(fireEvent.keyDown(document.body, { key: "Escape" })).toBe(false);
+    expect(fireEvent.keyDown(screen.getByLabelText("What you did"), { key: "Escape" })).toBe(false);
     await waitFor(() => expect(screen.queryByLabelText("What you did")).toBeNull());
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Log time" }));
   });
@@ -153,8 +155,8 @@ describe("log form", () => {
     await openForm();
     fireEvent.blur(screen.getByLabelText("What you did"));
     expect(screen.getByText("Say what you did.")).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("Length (minutes)"), { target: { value: "721" } });
-    fireEvent.blur(screen.getByLabelText("Length (minutes)"));
+    fireEvent.change(screen.getByLabelText("Length"), { target: { value: "721" } });
+    fireEvent.blur(screen.getByLabelText("Length"));
     expect(screen.getByText("Length must be 1 to 720 minutes.")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("What you did"), { target: { value: "x" } });
     expect(screen.queryByText("Say what you did.")).toBeNull();

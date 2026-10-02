@@ -1,13 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { ChevronRight } from "lucide-react";
 
 import { formatDuration, formatRange, shortMonthDay, shortWeekday } from "@/lib/format";
 import type { RawBlock, TicketDay } from "@/lib/types";
 import type { TaskActions } from "./TaskCard";
-import { HoursEdit, SyncTool, TextEdit } from "./TaskDayTools";
+import { DaySent, HoursEdit, SyncTool, TextEdit, hoursNote } from "./TaskDayTools";
 
 type Chip = "In Tempo" | "Changed since sync" | "Not synced";
 
@@ -24,14 +24,25 @@ const CHIP_TONE: Record<Chip, string> = { "In Tempo": "ok", "Changed since sync"
 export const dayLabel = (day: string) =>
   `${shortWeekday(day)} ${Number(day.slice(8))} ${shortMonthDay(day).split(" ")[0]}`;
 
-const CLAMP_CHARS = 140;
-
+/** Clamped to two lines; "more" appears only when the text really overflows (measured, not guessed). */
 function LineText({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  const span = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    const el = span.current;
+    if (!el || open) return; // open text never overflows; keep the last measurement so "less" stays
+    const measure = () => setOverflows(el.scrollHeight > el.clientHeight + 1);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [text, open]);
   return (
     <p className="task-day-text" data-open={open || undefined}>
-      <span>{text}</span>
-      {text.length > CLAMP_CHARS && (
+      <span ref={span}>{text}</span>
+      {overflows && (
         <button type="button" className="task-link-btn" onClick={() => setOpen((o) => !o)}>
           {open ? "less" : "more"}
         </button>
@@ -40,10 +51,14 @@ function LineText({ text }: { text: string }) {
   );
 }
 
-function BlockRow({ block }: { block: RawBlock }) {
+function BlockRow({ block, fresh }: { block: RawBlock; fresh: boolean }) {
+  const row = useRef<HTMLAnchorElement>(null);
+  useEffect(() => {
+    if (fresh) row.current?.scrollIntoView?.({ block: "nearest" });
+  }, [fresh]);
   return (
     <li>
-      <Link href={`/${block.day}/block/${block.id}`} className="task-block-row">
+      <Link ref={row} href={`/${block.day}/block/${block.id}`} className="task-block-row" data-fresh={fresh || undefined}>
         <span className="task-block-range">{formatRange(block.started_at, block.ended_at)}</span>
         <span className="task-block-dur">{formatDuration(block.duration_seconds)}</span>
         {block.description ? (
@@ -66,33 +81,37 @@ export function DayGroup({
   actions,
   onSaved,
   onAnnounce,
+  logged,
 }: {
   day: TicketDay;
   taskKey: string;
   actions: TaskActions;
   onSaved: () => void;
   onAnnounce?: (message: string) => void;
+  /** The block just logged through the form, if any. */
+  logged?: { id: number; day: string; duration: string } | null;
 }) {
   const chip = chipOf(day.blocks);
   const label = dayLabel(day.day);
+  const note = hoursNote(day);
   const tools = { taskKey, actions, onSaved, onAnnounce, label, day };
   return (
     <div className="task-day">
       <div className="task-day-head">
-        <Link href={`/${day.day}`} className="task-day-label">
-          {label}
-        </Link>
+        <span className="task-day-label">{label}</span>
         <HoursEdit {...tools} />
         <span className="task-day-chip" data-chip={CHIP_TONE[chip]}>
           {chip}
         </span>
         <TextEdit {...tools} />
       </div>
+      {note && <p className="task-day-note">{note}</p>}
+      {logged?.day === day.day && <DaySent>{`Logged ${logged.duration}`}</DaySent>}
       {day.line_text && <LineText text={day.line_text} />}
-      <SyncTool {...tools} inTempo={chip === "In Tempo"} />
+      <SyncTool {...tools} inTempo={chip === "In Tempo"} changed={chip === "Changed since sync"} />
       <ul className="task-block-list">
         {day.blocks.map((b) => (
-          <BlockRow key={b.id} block={b} />
+          <BlockRow key={b.id} block={b} fresh={logged?.id === b.id} />
         ))}
       </ul>
     </div>
