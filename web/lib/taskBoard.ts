@@ -5,8 +5,8 @@ import type { StatusCategory, TaskRow, Transition } from "./types";
 export type Column = "new" | "indeterminate" | "done";
 
 export const COLUMNS: { id: Column; title: string }[] = [
-  { id: "new", title: "To do" },
-  { id: "indeterminate", title: "In progress" },
+  { id: "new", title: "To Do" },
+  { id: "indeterminate", title: "In Progress" },
   { id: "done", title: "Done" },
 ];
 

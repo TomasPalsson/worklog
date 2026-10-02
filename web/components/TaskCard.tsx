@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef, type FocusEvent } from "react";
 import { GripVertical, X } from "lucide-react";
 
 import type {
@@ -30,7 +31,8 @@ export interface TaskCardProps {
   dragging: boolean;
   landed: boolean;
   error: string | undefined;
-  undo?: { to: string; run: () => void };
+  undo?: { to: string; run: () => void; hold: (held: boolean) => void };
+  onRetry: () => void;
   onOpen: () => void;
   onMove: (to: Column) => void;
   onDismissError: () => void;
@@ -45,8 +47,31 @@ function Hours({ task, pending }: Pick<TaskCardProps, "task" | "pending">) {
   return <span className="task-card-hours">{`${formatDuration(task.week_seconds)} this week${today}`}</span>;
 }
 
+/** Hover or focus inside the card pauses the Undo countdown. */
+function useUndoHold(undo: TaskCardProps["undo"]) {
+  const flags = useRef({ hover: false, focus: false });
+  const hold = undo?.hold;
+  const set = (k: "hover" | "focus", v: boolean) => {
+    flags.current[k] = v;
+    hold?.(flags.current.hover || flags.current.focus);
+  };
+  const offered = hold !== undefined;
+  useEffect(() => {
+    if (offered && (flags.current.hover || flags.current.focus)) hold?.(true);
+  }, [offered]); // only when a fresh strip appears under an already-held card
+  return {
+    onMouseEnter: () => set("hover", true),
+    onMouseLeave: () => set("hover", false),
+    onFocus: () => set("focus", true),
+    onBlur: (e: FocusEvent) => {
+      if (!e.currentTarget.contains(e.relatedTarget as Node | null)) set("focus", false);
+    },
+  };
+}
+
 export function TaskCard(p: TaskCardProps) {
   const { task } = p;
+  const holdProps = useUndoHold(p.undo);
   return (
     <li
       className="task-card"
@@ -60,6 +85,7 @@ export function TaskCard(p: TaskCardProps) {
       draggable={!p.pending}
       onDragStart={(e) => p.onDragStart(e.dataTransfer ?? null)}
       onDragEnd={p.onDragEnd}
+      {...holdProps}
     >
       <button type="button" className="task-card-btn" aria-expanded={p.selected} onClick={p.onOpen}>
         <span className="task-card-top">
@@ -77,7 +103,7 @@ export function TaskCard(p: TaskCardProps) {
       {!p.pending && <TaskMoveMenu taskKey={task.key} column={p.column} onMove={p.onMove} />}
       {p.undo && !p.pending && (
         <div className="task-card-undo">
-          <span>{`Moved to ${p.undo.to} ·`}</span>
+          <span>{`Moved to ${p.undo.to}`}</span>
           <button type="button" onClick={p.undo.run}>
             Undo
           </button>
@@ -86,6 +112,9 @@ export function TaskCard(p: TaskCardProps) {
       {p.error && (
         <div className="task-card-error">
           <span>{p.error}</span>
+          <button type="button" className="task-card-retry" onClick={p.onRetry}>
+            Try again
+          </button>
           <button type="button" aria-label="Dismiss error" onClick={p.onDismissError}>
             <X size={12} aria-hidden="true" />
           </button>

@@ -5411,7 +5411,7 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 
 .task-label, .task-col-head, .task-section h3 {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -5535,9 +5535,9 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
   background: transparent;
   color: var(--fg-muted);
   cursor: pointer;
-  opacity: 0;
+  opacity: 0.55;
 }
-.task-card:hover .task-move-btn, .task-card:focus-within .task-move-btn, .task-move[data-open] .task-move-btn { opacity: 1; }
+.task-card:hover .task-move-btn, .task-card:focus-within .task-move-btn, .task-move-btn:hover, .task-move-btn:focus-visible, .task-move[data-open] .task-move-btn { opacity: 1; }
 .task-move[data-open] .task-move-btn::after { display: none; }
 .task-move-btn:hover { background: var(--bg-sunk); color: var(--fg); }
 .task-move-btn:focus-visible { outline: none; box-shadow: var(--ring); }
@@ -5569,7 +5569,7 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 }
 .task-move-menu button:hover, .task-move-menu button:focus-visible { background: var(--bg-sunk); outline: none; }
 .task-card[data-pending] { opacity: 0.6; }
-.task-card[data-selected] { box-shadow: inset 2px 0 0 var(--slate), var(--elevation-1); }
+.task-card[data-selected] { border-color: var(--border-strong); background: var(--bg-sunk); box-shadow: inset 2px 0 0 var(--slate), var(--elevation-1); }
 .task-card[data-selected][data-column="indeterminate"] { box-shadow: inset 2px 0 0 var(--amber), var(--elevation-1); }
 .task-card[data-selected][data-column="done"] { box-shadow: inset 2px 0 0 var(--sage), var(--elevation-1); }
 .task-card-btn {
@@ -5637,6 +5637,13 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
   cursor: pointer;
 }
 .task-card-error button:hover { background: var(--terracotta-bg); }
+.task-card-error .task-card-retry {
+  width: auto;
+  padding: 0 6px;
+  font: inherit;
+  font-weight: 500;
+  text-decoration: underline;
+}
 .task-card-undo {
   display: flex;
   align-items: center;
@@ -5646,7 +5653,8 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
   color: var(--fg-muted);
 }
 .task-card-undo button {
-  padding: 2px 6px;
+  min-height: 24px;
+  padding: 4px 8px;
   border: 0;
   border-radius: var(--radius-sm);
   background: none;
@@ -5804,7 +5812,7 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
   field-sizing: content;
 }
 .task-composer-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.task-count { font-family: var(--font-mono); font-size: 11px; color: var(--fg-muted); }
+.task-count { font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); }
 .task-count[data-level="near"] { color: var(--amber-ink); }
 .task-count[data-level="over"] { color: var(--terracotta-ink); }
 .task-suggest {
@@ -5847,6 +5855,11 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 .task-composer :focus-visible, .task-btn-secondary:focus-visible, .task-status:focus-visible { outline: none; box-shadow: var(--ring); }
 .task-error { margin: 0; font-size: 12px; color: var(--terracotta-ink); }
 
+/* pressed feedback */
+.task-move-btn:active, .task-move-menu button:active, .task-chooser button:active, .task-menu button:active,
+.task-card-undo button:active, .task-card-error button:active, .task-suggest button:active,
+.task-btn-primary:active, .task-btn-secondary:active { transform: translateY(1px); }
+
 @media (max-width: 900px) {
   .task-board { grid-template-columns: 1fr; }
   .task-panel { width: 100vw; }
@@ -5857,6 +5870,9 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
   .task-card, .task-panel { transition: none; animation: none; }
   .task-card[data-landed]::after { animation: none; opacity: 0; }
   .task-card:hover, .task-card:focus-within { transform: none; }
+  .task-move-btn:active, .task-move-menu button:active, .task-chooser button:active, .task-menu button:active,
+  .task-card-undo button:active, .task-card-error button:active, .task-suggest button:active,
+  .task-btn-primary:active, .task-btn-secondary:active { transform: none; }
 }
 
 .closeout { display: grid; gap: 12px; }

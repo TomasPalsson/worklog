@@ -28,33 +28,54 @@ const realActions: TaskActions = {
 type StatusPatch = Parameters<TaskPanelProps["onStatus"]>[0];
 type Patch = (key: string, s: StatusPatch) => void;
 
+const focusCard = (key: string) =>
+  document.querySelector<HTMLElement>(`[data-task-key="${key}"] .task-card-btn`)?.focus();
+
 type UndoMap = Record<string, { from: Column; to: Column }>;
+type Timer = { handle?: ReturnType<typeof setTimeout>; left: number; since: number };
+type MoveError = { text: string; target: Column; back: boolean };
 
 /** The "Moved to X · Undo" strip: one per card, gone after `ms` or on that card's next move. */
 function useUndo(ms: number) {
   const [undoable, setUndoable] = useState<UndoMap>({});
-  const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const timers = useRef<Record<string, Timer>>({});
   const clear = useCallback((key: string) => {
-    clearTimeout(timers.current[key]);
+    clearTimeout(timers.current[key]?.handle);
     delete timers.current[key];
     setUndoable(({ [key]: _, ...rest }) => rest);
   }, []);
+  const arm = (key: string, t: Timer) => {
+    t.since = Date.now();
+    t.handle = setTimeout(() => clear(key), t.left);
+  };
   const offer = (key: string, from: Column, to: Column) => {
     if (from === to) return;
-    clearTimeout(timers.current[key]);
+    clearTimeout(timers.current[key]?.handle);
     setUndoable((u) => ({ ...u, [key]: { from, to } }));
-    timers.current[key] = setTimeout(() => clear(key), ms);
+    arm(key, (timers.current[key] = { left: ms, since: 0 }));
   };
-  useEffect(() => () => Object.values(timers.current).forEach(clearTimeout), []);
-  return { undoable, clearUndo: clear, offerUndo: offer };
+  /** Hover or focus inside the card freezes the countdown; leaving resumes with what was left. */
+  const hold = (key: string, held: boolean) => {
+    const t = timers.current[key];
+    if (!t) return;
+    if (held && t.handle) {
+      clearTimeout(t.handle);
+      t.handle = undefined;
+      t.left -= Date.now() - t.since;
+    } else if (!held && !t.handle) arm(key, t);
+  };
+  useEffect(() => () => Object.values(timers.current).forEach((t) => clearTimeout(t.handle)), []);
+  return { undoable, clearUndo: clear, offerUndo: offer, holdUndo: hold };
 }
 
 /** Optimistic move: placement, pending flags, per-card errors, chooser, spoken outcome, landing highlight. */
 function useMoves(patch: Patch, actions: TaskActions, undoMs: number) {
-  const { undoable, clearUndo, offerUndo } = useUndo(undoMs);
+  const { undoable, clearUndo, offerUndo, holdUndo } = useUndo(undoMs);
   const [placed, setPlaced] = useState<Record<string, Column>>({});
   const [pending, setPending] = useState<Set<string>>(new Set());
-  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [errors, setErrors] = useState<Record<string, MoveError>>({});
+  const [refocus, setRefocus] = useState<{ key: string } | null>(null);
+  const wantFocus = useRef(new Set<string>());
   const [chooser, setChooser] = useState<Chooser | null>(null);
   const [announce, setAnnounce] = useState("");
   const [landed, setLanded] = useState<string | null>(null);
@@ -67,17 +88,22 @@ function useMoves(patch: Patch, actions: TaskActions, undoMs: number) {
     setPending((p) => new Set(p).add(key));
     dismiss(key);
   };
-  const settle = (key: string, target: Column, reason?: string) => {
+  const settle = (key: string, target: Column, reason?: string, back = false) => {
     setPlaced(({ [key]: _, ...rest }) => rest);
     setPending((p) => new Set([...p].filter((k) => k !== key)));
+    if (wantFocus.current.delete(key)) setRefocus({ key });
     if (!reason) return;
-    setErrors((e) => ({ ...e, [key]: `Couldn't move to ${columnTitle(target)} — ${reason}` }));
+    setErrors((e) => ({ ...e, [key]: { text: `Couldn't move to ${columnTitle(target)} — ${reason}`, target, back } }));
     setAnnounce(`Couldn't move ${key} to ${columnTitle(target)}.`);
   };
+  // After a menu/undo/chooser move the card remounts elsewhere; put focus back on it once state settles.
+  useEffect(() => {
+    if (refocus) focusCard(refocus.key);
+  }, [refocus]);
   const succeed = (key: string, s: StatusPatch, from: Column) => {
     patch(key, s);
     const to = columnOf(s.status_category);
-    setAnnounce(`Moved ${key} to ${columnTitle(to)}.`);
+    setAnnounce(`Moved ${key} to ${columnTitle(to)}.${from === to ? "" : " Undo available."}`);
     setLanded(key);
     offerUndo(key, from, to);
   };
@@ -87,22 +113,26 @@ function useMoves(patch: Patch, actions: TaskActions, undoMs: number) {
     return () => clearTimeout(t);
   }, [landed]);
 
-  async function run(key: string, target: Column, t: Transition, from: Column) {
+  async function run(key: string, target: Column, t: Transition, from: Column, back = false, focus = true) {
+    if (focus) wantFocus.current.add(key);
     begin(key, target);
     const res = await actions.transitionTicket(key, t.id);
     if (res.ok) succeed(key, { status: res.data.status, status_category: res.data.status_category }, from);
-    settle(key, target, res.ok ? undefined : res.error);
+    settle(key, target, res.ok ? undefined : res.error, back);
   }
 
-  async function move(row: TaskRow, target: Column, from: Column, back = false) {
+  async function move(row: TaskRow, target: Column, from: Column, { back = false, focus = false } = {}) {
+    if (focus) wantFocus.current.add(row.key);
     begin(row.key, target);
     const res = await actions.loadTransitions(row.key);
-    if (!res.ok) return settle(row.key, target, res.error);
+    if (!res.ok) return settle(row.key, target, res.error, back);
     const moves = movesInto(res.data, target);
-    if (moves.length === 1) return run(row.key, target, moves[0], from);
+    if (moves.length === 1) return run(row.key, target, moves[0], from, back, false); // focus already queued by `move`
     if (moves.length > 1) {
+      wantFocus.current.delete(row.key); // the chooser takes focus instead
       settle(row.key, target);
-      return setChooser({ key: row.key, column: target, transitions: moves, from });
+      setAnnounce(`Choose how to move ${row.key} to ${columnTitle(target)}.`);
+      return setChooser({ key: row.key, column: target, transitions: moves, from, back });
     }
     const status = row.status ?? "its status";
     settle(
@@ -111,10 +141,15 @@ function useMoves(patch: Patch, actions: TaskActions, undoMs: number) {
       back
         ? `Jira has no way back to ${columnTitle(target)} from ${status}.`
         : `Jira has no move from ${status} to ${columnTitle(target)}.`,
+      back,
     );
   }
 
-  return { placed, pending, errors, chooser, announce, landed, undoable, offerUndo, dismiss, cancel: () => setChooser(null), move, run };
+  const cancel = () => {
+    setChooser(null);
+    if (chooser) focusCard(chooser.key);
+  };
+  return { placed, pending, errors, chooser, announce, landed, undoable, offerUndo, holdUndo, dismiss, cancel, move, run };
 }
 
 /** Native HTML5 DnD state. The key lives in React state; dataTransfer is a fallback. */
@@ -185,7 +220,7 @@ function usePanel() {
   const [openKey, setOpenKey] = useState<string | null>(null);
   const drafts = useRef<Drafts>({});
   const closePanel = useCallback(() => {
-    if (openKey) document.querySelector<HTMLElement>(`[data-task-key="${openKey}"] button`)?.focus();
+    if (openKey) focusCard(openKey);
     setOpenKey(null);
   }, [openKey]);
   return { openKey, setOpenKey, drafts, closePanel };
@@ -208,9 +243,9 @@ export function TaskBoard({ tasks, actions = realActions, undoMs = 8000 }: {
   const m = useMoves(patch, actions, undoMs);
   const colOf = (r: TaskRow) => m.placed[r.key] ?? columnOf(r.status_category);
   // One flow for a drop and for the Move menu; dropping on the card's own column is a no-op.
-  const moveTo = (key: string, target: Column, back = false) => {
+  const moveTo = (key: string, target: Column, opts?: { back?: boolean; focus?: boolean }) => {
     const row = rows.find((r) => r.key === key);
-    if (row && colOf(row) !== target) m.move(row, target, colOf(row), back);
+    if (row && colOf(row) !== target) m.move(row, target, colOf(row), opts);
   };
   const drag = useDrag(moveTo);
   useChooserEscape(m.chooser !== null, m.cancel);
@@ -223,7 +258,7 @@ export function TaskBoard({ tasks, actions = realActions, undoMs = 8000 }: {
   const open = rows.find((r) => r.key === openKey);
   const undoFor = (key: string) => {
     const u = m.undoable[key];
-    return u && { to: columnTitle(u.to), run: () => moveTo(key, u.from, true) };
+    return u && { to: columnTitle(u.to), run: () => moveTo(key, u.from, { back: true, focus: true }), hold: (h: boolean) => m.holdUndo(key, h) };
   };
 
   return (
@@ -245,7 +280,7 @@ export function TaskBoard({ tasks, actions = realActions, undoMs = 8000 }: {
               note={cards.length === 0 ? note : null}
               hint={cards.length === 0 && !note}
               chooser={m.chooser?.column === id ? m.chooser : null}
-              onPick={(t) => m.chooser && m.run(m.chooser.key, id, t, m.chooser.from)}
+              onPick={(t) => m.chooser && m.run(m.chooser.key, id, t, m.chooser.from, m.chooser.back)}
               onCancel={m.cancel}
               {...drag.column(id)}
             >
@@ -257,10 +292,14 @@ export function TaskBoard({ tasks, actions = realActions, undoMs = 8000 }: {
                   selected={openKey === r.key}
                   pending={m.pending.has(r.key)}
                   dragging={drag.dragKey === r.key}
-                  error={m.errors[r.key]}
+                  error={m.errors[r.key]?.text}
+                  onRetry={() => {
+                    const e = m.errors[r.key];
+                    if (e) moveTo(r.key, e.target, { back: e.back, focus: true });
+                  }}
                   landed={m.landed === r.key}
                   undo={undoFor(r.key)}
-                  onMove={(to) => moveTo(r.key, to)}
+                  onMove={(to) => moveTo(r.key, to, { focus: true })}
                   onDismissError={() => m.dismiss(r.key)}
                   onOpen={() => setOpenKey(r.key)}
                   onDragStart={(dt) => drag.start(r.key, dt)}

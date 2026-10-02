@@ -1,6 +1,6 @@
 "use client";
 
-import type { DragEvent, ReactNode } from "react";
+import { useEffect, useRef, type DragEvent, type ReactNode } from "react";
 
 import { COLUMNS, transitionLabel, type Column } from "@/lib/taskBoard";
 import type { Transition } from "@/lib/types";
@@ -11,6 +11,8 @@ export interface Chooser {
   transitions: Transition[];
   /** Column the card sat in, so a successful pick can offer Undo. */
   from: Column;
+  /** True for an Undo, so a retry keeps the "way back" wording. */
+  back: boolean;
 }
 
 interface Props {
@@ -34,8 +36,13 @@ function ChooserBox({ chooser, title, onPick, onCancel }: {
   onPick: (t: Transition) => void;
   onCancel: () => void;
 }) {
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    box.current?.scrollIntoView?.({ block: "nearest" });
+    box.current?.querySelector("button")?.focus();
+  }, []);
   return (
-    <div role="group" aria-label={`Move ${chooser.key} to ${title}?`} className="task-chooser">
+    <div ref={box} role="group" aria-label={`Move ${chooser.key} to ${title}?`} className="task-chooser">
       <p>{`Move ${chooser.key} to ${title}?`}</p>
       {chooser.transitions.map((t) => (
         <button key={t.id} type="button" onClick={() => onPick(t)}>
@@ -70,7 +77,7 @@ export function TaskColumn(p: Props) {
       </h2>
       {p.chooser && <ChooserBox chooser={p.chooser} title={title} onPick={p.onPick} onCancel={p.onCancel} />}
       {p.note && <p className="task-col-note">{p.note}</p>}
-      {p.hint && <p className="task-col-hint">Drop a ticket here</p>}
+      {p.hint && <p className="task-col-hint">Drop a ticket here, or use Move on a card</p>}
       <ul className="task-list">{p.children}</ul>
     </section>
   );

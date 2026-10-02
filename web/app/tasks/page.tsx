@@ -23,7 +23,7 @@ export default async function TasksPage() {
   const { tasks: rows, last_fetched } = await tasks();
   const today = todayISO();
   const parts = [ticketCount(rows.length), `${formatDuration(weekTotal(rows))} logged this week`];
-  if (last_fetched) parts.push(`Jira cache from ${fetchedAt(last_fetched)}`);
+  if (last_fetched) parts.push(`Jira synced at ${fetchedAt(last_fetched)}`);
   const lede = parts.join(" · ");
 
   return (

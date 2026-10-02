@@ -69,7 +69,7 @@ describe("TaskBoard undo", () => {
 
   it("shows the strip after a move and one way back applies it", async () => {
     const { a, undo } = await movedWithUndo([[start], [back]]);
-    expect(within(card("ABC-1")).getByText("Moved to In progress ·")).not.toBeNull();
+    expect(within(card("ABC-1")).getByText("Moved to In Progress")).not.toBeNull();
     await act(async () => {
       fireEvent.click(undo);
     });
@@ -82,7 +82,7 @@ describe("TaskBoard undo", () => {
     await act(async () => {
       fireEvent.click(undo);
     });
-    expect(await screen.findByRole("group", { name: "Move ABC-1 to To do?" })).not.toBeNull();
+    expect(await screen.findByRole("group", { name: "Move ABC-1 to To Do?" })).not.toBeNull();
     expect(calls(a.transitionTicket).length).toBe(1);
   });
 
@@ -92,7 +92,7 @@ describe("TaskBoard undo", () => {
       fireEvent.click(undo);
     });
     expect(
-      await within(card("ABC-1")).findByText("Couldn't move to To do — Jira has no way back to To do from In Progress."),
+      await within(card("ABC-1")).findByText("Couldn't move to To Do — Jira has no way back to To Do from In Progress."),
     ).not.toBeNull();
     expect(calls(a.transitionTicket).length).toBe(1);
   });
@@ -110,7 +110,7 @@ describe("TaskBoard undo", () => {
     await movedWithUndo([[start], [back]]);
     await drag("ABC-1", "new");
     await waitFor(() => expect(within(col("new")).getByText("Fix login")).not.toBeNull());
-    expect(within(card("ABC-1")).getByText("Moved to To do ·")).not.toBeNull();
+    expect(within(card("ABC-1")).getByText("Moved to To Do")).not.toBeNull();
     expect(within(card("ABC-1")).getAllByRole("button", { name: "Undo" }).length).toBe(1);
   });
 });

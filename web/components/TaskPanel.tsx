@@ -120,7 +120,7 @@ function StatusChip({ task, shown, actions, onStatus }: Pick<TaskPanelProps, "ta
               {transitionLabel(t)}
             </button>
           ))}
-          {menu.length === 0 && <em>No moves available.</em>}
+          {menu.length === 0 && <em>Jira offers no status changes for this ticket right now.</em>}
         </span>
       )}
       {error && (

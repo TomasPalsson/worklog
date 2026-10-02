@@ -16,7 +16,7 @@ describe("taskBoard", () => {
     expect(columnOf("indeterminate")).toBe("indeterminate");
     expect(columnOf("new")).toBe("new");
     expect(columnOf(null)).toBe("new");
-    expect(COLUMNS.map((c) => c.title)).toEqual(["To do", "In progress", "Done"]);
+    expect(COLUMNS.map((c) => c.title)).toEqual(["To Do", "In Progress", "Done"]);
   });
 
   it("movesInto keeps matching transitions and never matches a null category", () => {
