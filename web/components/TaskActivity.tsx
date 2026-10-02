@@ -33,8 +33,12 @@ function remembered(): Tab | null {
 export function useActivityTab(weekSeconds: number, work: WorkLog) {
   const [picked, setPicked] = useState<Tab | null>(null);
   const [stored] = useState(remembered);
+  const [locked, setLocked] = useState<Tab | null>(null);
   const hasBlocks = work.load.s === "ok" && work.load.data.days.length > 0;
-  const tab = picked ?? stored ?? (weekSeconds > 0 || hasBlocks ? "work" : "comments");
+  const fallback: Tab = weekSeconds > 0 || hasBlocks ? "work" : "comments";
+  const tab = picked ?? stored ?? locked ?? fallback;
+  // Once focus is inside Activity the default stops following the Work log load, which would swap tabs under a typist.
+  const engage = () => setLocked((l) => l ?? fallback);
   const choose = (next: Tab, remember = false) => {
     setPicked(next);
     if (!remember) return;
@@ -44,7 +48,7 @@ export function useActivityTab(weekSeconds: number, work: WorkLog) {
       /* no memory, no harm */
     }
   };
-  return { tab, choose };
+  return { tab, choose, engage };
 }
 
 function Tabs({ tab, onTab, counts }: { tab: Tab; onTab: (t: Tab) => void; counts: Record<Tab, string | null> }) {
@@ -130,6 +134,10 @@ export interface ActivityProps {
   /** Bumped by the quick actions. */
   logSignal: number;
   composeSignal: number;
+  /** Called once a signal has been acted on, so a later remount of the tab does not act on it again. */
+  onEngage?: () => void;
+  onLogHandled?: () => void;
+  onComposeHandled?: () => void;
 }
 
 /** Work log and Comments behind one tablist, so only one of them is on screen at a time. */
@@ -141,14 +149,14 @@ export function TaskActivity(p: ActivityProps) {
     comments: comments === null ? null : String(comments),
   };
   return (
-    <section className="task-activity" aria-labelledby="task-activity-label">
+    <section className="task-activity" aria-labelledby="task-activity-label" onFocusCapture={p.onEngage}>
       <h3 id="task-activity-label" className="task-label">
         Activity
       </h3>
       <Tabs tab={p.tab} onTab={p.onTab} counts={counts} />
       <div role="tabpanel" id={`task-panel-${p.tab}`} aria-labelledby={`task-tab-${p.tab}`} className="task-tabpanel">
         {p.tab === "work" ? (
-          <TaskWorkLog taskKey={p.taskKey} actions={p.actions} work={p.work} onAnnounce={p.onAnnounce} logSignal={p.logSignal} />
+          <TaskWorkLog taskKey={p.taskKey} actions={p.actions} work={p.work} onAnnounce={p.onAnnounce} logSignal={p.logSignal} onHandled={p.onLogHandled} />
         ) : (
           <>
             <TaskComposer
@@ -158,6 +166,7 @@ export function TaskActivity(p: ActivityProps) {
               onPosted={p.onPosted}
               onMoved={p.onMoved}
               focusSignal={p.composeSignal}
+              onHandled={p.onComposeHandled}
             />
             <CommentList detail={p.detail} extra={p.extra} />
           </>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
 
 import { transitionLabel } from "@/lib/taskBoard";
@@ -24,6 +24,13 @@ function useStatusMenu({ taskKey, actions, onStatus }: Omit<Props, "shown">) {
   const [busy, setBusy] = useState(false);
   const [moving, setMoving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const refocus = useRef(false);
+  // The menu (and its focused item) is gone after a move; hand focus back once the button is enabled again.
+  useEffect(() => {
+    if (!busy && menu === null && refocus.current) trigger.current?.focus();
+    refocus.current = false;
+  }, [busy, menu]);
 
   async function toggle() {
     if (menu) return setMenu(null);
@@ -42,12 +49,13 @@ function useStatusMenu({ taskKey, actions, onStatus }: Omit<Props, "shown">) {
     const res = await actions.transitionTicket(taskKey, t.id);
     if (res.ok) {
       onStatus({ status: res.data.status, status_category: res.data.status_category });
+      refocus.current = true;
       setMenu(null);
     } else setError(res.error);
     setBusy(false);
     setMoving(false);
   }
-  return { menu, close: () => setMenu(null), busy, moving, error, toggle, move };
+  return { trigger, menu, close: () => setMenu(null), busy, moving, error, toggle, move };
 }
 
 /** The ticket's status as one prominent button; it opens Jira's own transitions for this ticket. */
@@ -59,6 +67,7 @@ export function StatusButton(props: Props) {
   return (
     <div ref={wrap} className="task-status-wrap">
       <button
+        ref={s.trigger}
         type="button"
         className="task-status"
         data-category={shown.status_category ?? undefined}

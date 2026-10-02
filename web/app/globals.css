@@ -6108,18 +6108,8 @@ button.task-tempo:focus-visible { outline: none; box-shadow: var(--ring); }
   .task-modal { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
   .task-modal-head { padding-left: 16px; }
   .task-modal-body { display: flex; flex-direction: column; gap: 16px; overflow-x: hidden; overflow-y: auto; padding: 16px; }
-  .task-modal-main, .task-modal-side { display: contents; }
-  .task-modal-main > *, .task-modal-side > * { min-width: 0; }
-  .task-modal-main > .task-parent { order: 1; margin: 0; }
-  .task-headline { order: 2; font-size: 22px; }
-  .task-quick { order: 3; margin-top: 0; }
-  .task-side-status { order: 4; }
-  .task-time { order: 5; }
-  .task-description { order: 6; margin-top: 0; }
-  .task-activity { order: 7; margin-top: 0; }
-  .task-details { order: 8; }
-  .task-side-foot { order: 9; }
-  .task-modal-jira { display: none; }
+  .task-modal-main, .task-modal-side { display: grid; gap: 16px; min-width: 0; }
+  .task-modal-main > *, .task-modal-side > * { min-width: 0; margin-top: 0; }
 }
 
 .closeout { display: grid; gap: 12px; }

@@ -126,6 +126,8 @@ function useModalState(
     setAnnounce,
     logSignal,
     composeSignal,
+    onLogHandled: () => setLogSignal(0),
+    onComposeHandled: () => setComposeSignal(0),
     logTime: () => (choose("work"), setLogSignal((n) => n + 1)),
     compose: () => (choose("comments"), setComposeSignal((n) => n + 1)),
     jumpTo: (kind: TempoKind) => (choose("work"), setJump((j) => ({ kind, n: (j?.n ?? 0) + 1 }))),
@@ -154,7 +156,7 @@ export function TaskModal(props: TaskModalProps) {
   const shell = useModalShell(dialog, onClose);
   const { load, retry } = useTicketDetail(task.key, actions);
   const work = useWorkLog(task.key, actions);
-  const { tab, choose } = useActivityTab(task.week_seconds, work);
+  const { tab, choose, engage } = useActivityTab(task.week_seconds, work);
   const detail = load.s === "ok" ? load.detail : null;
   const m = useModalState(props, detail, dialog, choose);
 
@@ -180,6 +182,9 @@ export function TaskModal(props: TaskModalProps) {
               onMoved={m.report}
               logSignal={m.logSignal}
               composeSignal={m.composeSignal}
+              onEngage={engage}
+              onLogHandled={m.onLogHandled}
+              onComposeHandled={m.onComposeHandled}
             />
           </div>
           <TaskModalSidebar

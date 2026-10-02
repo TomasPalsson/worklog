@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { formatDuration } from "@/lib/format";
 import { formatStamp, localToday } from "@/lib/taskBoard";
@@ -38,11 +38,21 @@ function Details({ task, detail, today, done }: DetailsProps) {
   const updated = detail?.updated ?? task.updated;
   // The cached row only knows whether the ticket is assigned to the Owner, not to whom.
   const assignee = detail ? detail.assignee : task.assigned ? "You" : null;
-  // Closed on small screens, where the details are the least urgent thing in the dialog.
-  const [open] = useState(() => typeof window.matchMedia !== "function" || window.matchMedia("(min-width: 760px)").matches);
+  // Always open beside the main column; on small screens a toggle, closed to start with.
+  const [wide, setWide] = useState(() => typeof window.matchMedia !== "function" || window.matchMedia("(min-width: 760px)").matches);
+  const [folded, setFolded] = useState(false);
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const q = window.matchMedia("(min-width: 760px)");
+    const on = () => setWide(q.matches);
+    q.addEventListener?.("change", on);
+    return () => q.removeEventListener?.("change", on);
+  }, []);
   return (
-    <details className="task-side-card task-details" open={open}>
-      <summary className="task-label">Details</summary>
+    <details className="task-side-card task-details" open={wide || folded} onToggle={(e) => !wide && setFolded(e.currentTarget.open)}>
+      <summary className="task-label" tabIndex={wide ? -1 : undefined}>
+        Details
+      </summary>
       <dl>
         <Row term="Assignee">{assignee ?? <None />}</Row>
         <Row term="Priority">

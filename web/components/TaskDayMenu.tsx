@@ -49,6 +49,8 @@ export function DayMenu({ label, byHand, busy, btn, onEditHours, onUseTracked, o
               autoFocus={i === 0}
               disabled={busy}
               onClick={() => {
+                // The item unmounts with the menu; keep focus on the trigger rather than letting it fall to <body>.
+                wrap.current?.querySelector("button")?.focus();
                 setOpen(false);
                 run();
               }}
