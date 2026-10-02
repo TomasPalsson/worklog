@@ -5,11 +5,12 @@ import Link from "next/link";
 import { ArrowUpRight, ChevronRight } from "lucide-react";
 
 import { formatDuration, formatRange, shortMonthDay, shortWeekday } from "@/lib/format";
-import type { RawBlock, TicketDay } from "@/lib/types";
+import type { JiraTicket, RawBlock, TicketDay } from "@/lib/types";
 import type { TaskActions } from "./TaskCard";
+import { BlockMove } from "./TaskBlockMove";
 import { DayMenu } from "./TaskDayMenu";
 import { SyncBody, SyncTrigger, useSync } from "./TaskDaySync";
-import { DaySent, HoursEdit, TextEdit, hoursNote, useHoursWrite } from "./TaskDayTools";
+import { DaySent, HoursEdit, TextEdit, hoursNote, useDayOps, useHoursWrite } from "./TaskDayTools";
 import { changedNote } from "./TaskSyncPreview";
 import { useOverflow } from "./useOverflow";
 
@@ -45,13 +46,13 @@ function LineText({ text }: { text: string }) {
   );
 }
 
-function BlockRow({ block, fresh }: { block: RawBlock; fresh: boolean }) {
+function BlockRow({ block, fresh, tickets, onMoved }: { block: RawBlock; fresh: boolean; tickets: JiraTicket[]; onMoved: () => void }) {
   const row = useRef<HTMLAnchorElement>(null);
   useEffect(() => {
     if (fresh) row.current?.scrollIntoView?.({ block: "nearest" });
   }, [fresh]);
   return (
-    <li>
+    <li className="task-block-item">
       <Link ref={row} href={`/${block.day}/block/${block.id}`} className="task-block-row" data-fresh={fresh || undefined}>
         <span className="task-block-range">{formatRange(block.started_at, block.ended_at)}</span>
         <span className="task-block-dur">{formatDuration(block.duration_seconds)}</span>
@@ -68,6 +69,7 @@ function BlockRow({ block, fresh }: { block: RawBlock; fresh: boolean }) {
           <span className="task-sr">Opens the block page</span>
         </span>
       </Link>
+      <BlockMove block={block} tickets={tickets} onMoved={onMoved} />
     </li>
   );
 }
@@ -82,16 +84,19 @@ interface DayGroupProps {
   logged?: { id: number; day: string; duration: string } | null;
   expanded: boolean;
   onExpand: (open: boolean) => void;
+  /** The board's tickets, offered first in the Move picker; live Jira search covers the rest. */
+  tickets?: JiraTicket[];
 }
 
 /** One day: a single disclosure row (hours, Tempo state, next action, "⋯"), then what the row opened, then the details. */
-export function DayGroup({ day, taskKey, actions, onSaved, onAnnounce, logged, expanded, onExpand }: DayGroupProps) {
+export function DayGroup({ day, taskKey, actions, onSaved, onAnnounce, logged, expanded, onExpand, tickets = [] }: DayGroupProps) {
   const chip = chipOf(day.blocks);
   const label = dayLabel(day.day);
   const changed = chip === "Changed since sent";
   const tools = { taskKey, actions, onSaved, onAnnounce, label, day };
   const sync = useSync({ ...tools, inTempo: chip === "Sent", changed });
   const hours = useHoursWrite(tools);
+  const ops = useDayOps(tools);
   const [editing, setEditing] = useState<"hours" | "text" | null>(null);
   const more = useRef<HTMLButtonElement>(null);
   const done = () => {
@@ -126,13 +131,15 @@ export function DayGroup({ day, taskKey, actions, onSaved, onAnnounce, logged, e
         <DayMenu
           label={label}
           byHand={day.hours_set_by_hand}
-          busy={hours.busy}
+          busy={hours.busy || !!ops.busy}
+          ops={ops}
           btn={more}
           onEditHours={() => edit("hours")}
           onUseTracked={() => hours.write(null)}
           onEditText={() => edit("text")}
         />
       </div>
+      {ops.busy && <DaySent plain>{ops.busy}</DaySent>}
       {logged?.day === day.day && <DaySent>{`Logged ${logged.duration}`}</DaySent>}
       <SyncBody sync={sync} label={label} day={day} changed={changed} />
       {editing === "hours" && <HoursEdit label={label} day={day} io={hours} onDone={done} />}
@@ -142,13 +149,14 @@ export function DayGroup({ day, taskKey, actions, onSaved, onAnnounce, logged, e
           {hours.error}
         </p>
       )}
-      {expanded && <DayBody day={day} changed={changed} editingText={editing === "text"} freshId={logged?.id} />}
+      {expanded && <DayBody day={day} editingText={editing === "text"} freshId={logged?.id} tickets={tickets} onMoved={onSaved} />}
     </div>
   );
 }
 
 /** What an open day adds: why the hours are what they are, the Tempo text, and the blocks. */
-function DayBody({ day, changed, editingText, freshId }: { day: TicketDay; changed: boolean; editingText: boolean; freshId?: number }) {
+function DayBody(p: { day: TicketDay; editingText: boolean; freshId?: number; tickets: JiraTicket[]; onMoved: () => void }) {
+  const { day, editingText, freshId, tickets, onMoved } = p;
   const note = hoursNote(day);
   return (
     <div className="task-day-body">
@@ -156,7 +164,7 @@ function DayBody({ day, changed, editingText, freshId }: { day: TicketDay; chang
       {note && <p className="task-day-note">{note}</p>}
       <ul className="task-block-list">
         {day.blocks.map((b) => (
-          <BlockRow key={b.id} block={b} fresh={freshId === b.id} />
+          <BlockRow key={b.id} block={b} fresh={freshId === b.id} tickets={tickets} onMoved={onMoved} />
         ))}
       </ul>
     </div>

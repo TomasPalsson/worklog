@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Plus } from "lucide-react";
 
-import type { TicketBlocks } from "@/lib/types";
+import type { JiraTicket, TicketBlocks } from "@/lib/types";
 import { DayGroup } from "./TaskDayGroup";
 import { TaskLogTime } from "./TaskLogTime";
 import { Skeleton } from "./TaskSkeleton";
@@ -32,11 +32,12 @@ interface DaysProps {
   /** Opens the log form; undefined while it is already open. */
   onLog?: () => void;
   logged: Logged | null;
+  tickets: JiraTicket[];
 }
 
 const RECENT_DAYS = 5;
 
-function Days({ data, taskKey, actions, work, onAnnounce, onLog, logged }: DaysProps) {
+function Days({ data, taskKey, actions, work, onAnnounce, onLog, logged, tickets }: DaysProps) {
   const [all, setAll] = useState(false);
   const n = data.days.length;
   if (n === 0) {
@@ -63,6 +64,7 @@ function Days({ data, taskKey, actions, work, onAnnounce, onLog, logged }: DaysP
           logged={logged}
           expanded={work.isOpen(d.day, i === 0)}
           onExpand={(open) => work.setOpen(d.day, open)}
+          tickets={tickets}
         />
       ))}
       {shown.length < n && (
@@ -80,11 +82,14 @@ export function TaskWorkLog({
   actions,
   work,
   onAnnounce,
+  tickets = [],
 }: {
   taskKey: string;
   actions: TaskActions;
   work: WorkLog;
   onAnnounce: (message: string) => void;
+  /** The board's tickets for the Move picker; defaults to none (live Jira search still works). */
+  tickets?: JiraTicket[];
 }) {
   const { load, retry, refetch } = work;
   const [logging, setLogging] = useState(false);
@@ -142,6 +147,7 @@ export function TaskWorkLog({
           work={work}
           onAnnounce={onAnnounce}
           logged={logged}
+          tickets={tickets}
           onLog={logging ? undefined : () => setLogging(true)}
         />
       )}

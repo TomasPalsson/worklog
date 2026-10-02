@@ -3,7 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 
 import { formatDuration } from "@/lib/format";
+import { mergeGroup } from "@/app/actions";
+import { regenerateTempoLineText } from "@/app/actions-tempo-lines";
 import type { TicketDay } from "@/lib/types";
+import { toast } from "@/lib/toast";
 import type { TaskActions } from "./TaskCard";
 
 const HALF_HOUR = 1800;
@@ -183,3 +186,32 @@ export function TextEdit({ taskKey, actions, onSaved, label, day, onDone }: Comm
     </span>
   );
 }
+
+/** The day menu's two heavier tools: write the Tempo text again with AI, and merge the day's blocks into one. */
+export function useDayOps({ taskKey, onSaved, day }: Common) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const hasLine = day.line_seconds > 0 || day.line_text !== "";
+
+  async function regenerate() {
+    setBusy("Writing…");
+    const res = await regenerateTempoLineText({ day: day.day, jira_issue: taskKey });
+    setBusy(null);
+    if (!res.ok) return void toast.error(`Couldn't write new text — ${res.error}`);
+    toast.ok("New Tempo text written");
+    onSaved();
+  }
+
+  /** The earliest block keeps its place; the rest fold into it. */
+  async function merge() {
+    const [primary, ...rest] = [...day.blocks].sort((a, b) => a.started_at.localeCompare(b.started_at));
+    setBusy("Merging…");
+    const res = await mergeGroup(primary.id, rest.map((b) => b.id), day.day);
+    setBusy(null);
+    if (!res.ok) return void toast.error(`Merge failed — ${res.error}`);
+    toast.ok(`Merged ${day.blocks.length} blocks`);
+    onSaved();
+  }
+  return { busy, hasLine, regenerate, merge, blocks: day.blocks.length };
+}
+
+export type DayOps = ReturnType<typeof useDayOps>;
