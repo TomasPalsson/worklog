@@ -64,6 +64,9 @@ export function TaskLogTime({
     e.preventDefault();
     e.stopPropagation();
     if (discarding) return keepEditing();
+    cancel();
+  }
+  function cancel() {
     if (description.trim()) return setDiscarding(true);
     onClose();
   }
@@ -94,7 +97,7 @@ export function TaskLogTime({
       <div className="task-log-row">
         <label>
           Day
-          <input type="date" value={day} max={today} disabled={busy} onChange={(e) => setDay(e.target.value)} />
+          <input type="date" value={day} max={today} autoFocus disabled={busy} onChange={(e) => setDay(e.target.value)} />
         </label>
         {/^\d{4}-\d\d-\d\d$/.test(day) && <span className="task-log-day">{dayLabel(day)}</span>}
         <label>
@@ -129,7 +132,13 @@ export function TaskLogTime({
       </div>
       <div className="task-log-chips">
         {CHIPS.map(([text, m]) => (
-          <button key={text} type="button" className="task-btn-secondary" disabled={busy} onClick={() => setLength(String(m))}>
+          <button
+            key={text}
+            type="button"
+            className="task-btn-secondary"
+            aria-pressed={minutes === m}
+            disabled={busy}
+            onClick={() => setLength(String(m))}>
             {text}
           </button>
         ))}
@@ -177,7 +186,7 @@ export function TaskLogTime({
         <button type="submit" className="task-btn-primary" disabled={busy}>
           {busy ? "Logging…" : `Log ${Number.isFinite(minutes) ? formatDuration(minutes * 60) : ""}`.trim()}
         </button>
-        <button type="button" className="task-btn-secondary" disabled={busy} onClick={onClose}>
+        <button type="button" className="task-btn-secondary" disabled={busy} onClick={cancel}>
           Cancel
         </button>
       </div>

@@ -52,6 +52,9 @@ function LogButton({ onClick, btn }: { onClick: () => void; btn?: React.Ref<HTML
   );
 }
 
+const summary = ({ days }: TicketBlocks) =>
+  `${formatDuration(days.reduce((sum, d) => sum + d.line_seconds, 0))} over ${days.length} ${days.length === 1 ? "day" : "days"}`;
+
 type Logged = { id: number; day: string; duration: string };
 
 interface DaysProps {
@@ -75,10 +78,8 @@ function Days({ data, taskKey, actions, onSaved, onAnnounce, onLog, logged }: Da
       </div>
     );
   }
-  const total = data.days.reduce((sum, d) => sum + d.line_seconds, 0);
   return (
     <>
-      <p className="task-work-summary">{`${formatDuration(total)} over ${n} ${n === 1 ? "day" : "days"}`}</p>
       {data.days.map((d) => (
         <DayGroup key={d.day} day={d} taskKey={taskKey} actions={actions} onSaved={onSaved} onAnnounce={onAnnounce} logged={logged} />
       ))}
@@ -112,7 +113,10 @@ export function TaskWorkLog({
   return (
     <section className="task-section task-work">
       <div className="task-work-head">
-        <h3>Work logged · last 14 days</h3>
+        <div className="task-work-title">
+          <h3>Work logged · last 14 days</h3>
+          {load.s === "ok" && load.data.days.length > 0 && <span className="task-work-summary">{summary(load.data)}</span>}
+        </div>
         {!logging && <LogButton btn={logBtn} onClick={() => setLogging(true)} />}
       </div>
       {logging && (

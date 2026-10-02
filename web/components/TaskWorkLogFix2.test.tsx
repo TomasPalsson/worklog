@@ -29,6 +29,7 @@ const day = (over: Partial<TicketDay> = {}): TicketDay => ({
   line_text: "Worked on login",
   tracked_seconds: 5400,
   hours_set_by_hand: false,
+  in_tempo_seconds: null,
   blocks: [block()],
   ...over,
 });
@@ -51,12 +52,12 @@ async function open(days: TicketDay[] = [day()], over: Record<string, unknown> =
 describe("Esc never destroys a draft", () => {
   it("Esc in the text editor cancels only that edit and returns focus", async () => {
     const { a } = await open();
-    fireEvent.click(screen.getByRole("button", { name: "Edit text for Thu 1 Oct" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit Tempo text for Thu 1 Oct" }));
     const box = screen.getByLabelText("Line text for Thu 1 Oct") as HTMLTextAreaElement;
     fireEvent.change(box, { target: { value: "half typed" } });
     expect(fireEvent.keyDown(box, { key: "Escape" })).toBe(false);
     expect(screen.queryByLabelText("Line text for Thu 1 Oct")).toBeNull();
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Edit text for Thu 1 Oct" }));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Edit Tempo text for Thu 1 Oct" }));
     expect(screen.getByText("Worked on login")).toBeTruthy();
     expect((a.saveTempoLineText as unknown as ReturnType<typeof mock>).mock.calls).toHaveLength(0);
   });

@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Pencil, UploadCloud } from "lucide-react";
+import { Pencil, Type, UploadCloud } from "lucide-react";
 
 import { formatDuration } from "@/lib/format";
 import type { TicketDay } from "@/lib/types";
 import type { TaskActions } from "./TaskCard";
+import { SyncPreview } from "./TaskSyncPreview";
 
 const HALF_HOUR = 1800;
 const DAY_SECONDS = 24 * 3600;
@@ -41,6 +42,17 @@ export function hoursNote(day: TicketDay): string | null {
   return day.line_seconds !== day.tracked_seconds ? `Rounded from ${tracked} tracked` : null;
 }
 
+/** Focus returns to the opener when an editor closes: call `back()` right before closing it. */
+function useReturnFocus(editing: boolean) {
+  const btn = useRef<HTMLButtonElement>(null);
+  const want = useRef(false);
+  useEffect(() => {
+    if (!editing && want.current) btn.current?.focus();
+    want.current = false;
+  }, [editing]);
+  return { btn, back: () => void (want.current = true) };
+}
+
 /** Sage confirmation strip ("Sent to Tempo", "Logged 30m"); stays until the panel closes. */
 export function DaySent({ children }: { children: React.ReactNode }) {
   return (
@@ -55,6 +67,7 @@ export function HoursEdit({ taskKey, actions, onSaved, label, day }: Common) {
   const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const { btn, back } = useReturnFocus(draft !== null);
 
   async function save() {
     const seconds = parseHours(draft ?? "");
@@ -64,6 +77,7 @@ export function HoursEdit({ taskKey, actions, onSaved, label, day }: Common) {
     const res = await actions.saveTempoLineHours({ day: day.day, jira_issue: taskKey }, seconds);
     setBusy(false);
     if (!res.ok) return setError(res.error);
+    back();
     setDraft(null);
     onSaved();
   }
@@ -71,6 +85,7 @@ export function HoursEdit({ taskKey, actions, onSaved, label, day }: Common) {
   if (draft === null) {
     return (
       <button
+        ref={btn}
         type="button"
         className="task-day-hours"
         aria-label={`Edit hours for ${label}`}
@@ -96,7 +111,10 @@ export function HoursEdit({ taskKey, actions, onSaved, label, day }: Common) {
         setError(null);
       }}
       onSave={save}
-      onCancel={() => setDraft(null)}
+      onCancel={() => {
+        back();
+        setDraft(null);
+      }}
     />
   );
 }
@@ -150,24 +168,22 @@ function HoursInput({ label, draft, busy, error, onChange, onSave, onCancel }: H
 }
 
 /** "Edit" for the line text; opens a textarea that saves through the line-text action. */
-export function TextEdit({ taskKey, actions, onSaved, label, day }: Common) {
+export function TextEdit({ taskKey, actions, onSaved, label, day, children }: Common & { children?: React.ReactNode }) {
   const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const editBtn = useRef<HTMLButtonElement>(null);
-  const refocus = useRef(false);
-  useEffect(() => {
-    if (draft === null && refocus.current) editBtn.current?.focus();
-    refocus.current = false;
-  }, [draft]);
+  const { btn: editBtn, back } = useReturnFocus(draft !== null);
+  const close = () => {
+    back();
+    setDraft(null);
+  };
 
   // Esc cancels this edit only: the saved text stays and the panel stays open.
   function onKeyDown(e: React.KeyboardEvent) {
     if (e.key !== "Escape") return;
     e.preventDefault();
     e.stopPropagation();
-    refocus.current = true;
-    setDraft(null);
+    close();
   }
 
   async function save() {
@@ -175,25 +191,28 @@ export function TextEdit({ taskKey, actions, onSaved, label, day }: Common) {
     const res = await actions.saveTempoLineText({ day: day.day, jira_issue: taskKey }, draft ?? "");
     setBusy(false);
     if (!res.ok) return setError(res.error);
-    setDraft(null);
+    close();
     onSaved();
   }
 
   if (draft === null) {
     return (
-      <button
-        ref={editBtn}
-        type="button"
-        className="task-link-btn"
-        aria-label={`Edit text for ${label}`}
-        onClick={() => {
-          setDraft(day.line_text);
-          setError(null);
-        }}
-      >
-        <Pencil size={12} aria-hidden="true" />
-        Edit text
-      </button>
+      <>
+        {children}
+        <button
+          ref={editBtn}
+          type="button"
+          className="task-link-btn"
+          aria-label={`Edit Tempo text for ${label}`}
+          onClick={() => {
+            setDraft(day.line_text);
+            setError(null);
+          }}
+        >
+          <Type size={12} aria-hidden="true" />
+          Edit Tempo text
+        </button>
+      </>
     );
   }
   return (
@@ -214,7 +233,7 @@ export function TextEdit({ taskKey, actions, onSaved, label, day }: Common) {
         <button type="button" className="task-btn-secondary" disabled={busy} onClick={save}>
           Save text
         </button>
-        <button type="button" className="task-btn-secondary" disabled={busy} onClick={() => setDraft(null)}>
+        <button type="button" className="task-btn-secondary" disabled={busy} onClick={close}>
           Cancel
         </button>
         {error && (
@@ -244,20 +263,6 @@ function nothingSent(taskKey: string, label: string, data: SyncData): string {
   return reason ? `${head}: ${reason}.` : `${head}. It may already be in Tempo, or have no hours.`;
 }
 
-/** Esc cancels the preview (capture + preventDefault so the panel stays open). */
-function useEscape(active: boolean, onEscape: () => void) {
-  useEffect(() => {
-    if (!active) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      e.preventDefault();
-      onEscape();
-    };
-    document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
-  }, [active, onEscape]);
-}
-
 /** Two-step Tempo sync for one ticket-day: dry run, preview, then send on confirm. */
 export function SyncTool({ taskKey, actions, onSaved, onAnnounce, label, day, inTempo, changed }: Common & { inTempo: boolean; changed: boolean }) {
   const [step, setStep] = useState<Step>({ s: "idle" });
@@ -272,7 +277,6 @@ export function SyncTool({ taskKey, actions, onSaved, onAnnounce, label, day, in
     refocus.current = true;
     setStep({ s: "idle" });
   };
-  useEscape(step.s === "preview" && !sending, cancel);
 
   async function dryRun() {
     setStep({ s: "running" });
@@ -324,43 +328,6 @@ export function SyncTool({ taskKey, actions, onSaved, onAnnounce, label, day, in
           {step.msg}
         </p>
       )}
-    </div>
-  );
-}
-
-function SyncPreview(p: {
-  taskKey: string;
-  label: string;
-  day: TicketDay;
-  changed: boolean;
-  sending: boolean;
-  onSend: () => void;
-  onCancel: () => void;
-}) {
-  const send = useRef<HTMLButtonElement>(null);
-  useEffect(() => send.current?.focus(), []);
-  const { day } = p;
-  return (
-    <div className="task-day-preview">
-      <h4>{p.changed ? "Preview — Tempo will be updated" : "Preview — nothing sent yet"}</h4>
-      <dl>
-        <dt>Hours</dt>
-        <dd>{formatDuration(day.line_seconds)}</dd>
-        <dt>Day</dt>
-        <dd>{p.label}</dd>
-        <dt>Ticket</dt>
-        <dd>{p.taskKey}</dd>
-      </dl>
-      {day.line_text && <blockquote>{`“${day.line_text}”`}</blockquote>}
-      <p>Sends only this ticket&apos;s line for this day to Tempo.</p>
-      <span className="task-day-edit">
-        <button ref={send} type="button" className="task-btn-primary" disabled={p.sending} onClick={p.onSend}>
-          {p.sending ? "Sending…" : "Send to Tempo"}
-        </button>
-        <button type="button" className="task-btn-secondary" disabled={p.sending} onClick={p.onCancel}>
-          Cancel
-        </button>
-      </span>
     </div>
   );
 }

@@ -35,6 +35,7 @@ const day = (over: Partial<TicketDay> = {}): TicketDay => ({
   line_text: "Worked on login",
   tracked_seconds: over.line_seconds ?? 3600,
   hours_set_by_hand: false,
+  in_tempo_seconds: null,
   blocks: [block()],
   ...over,
 });
@@ -271,7 +272,7 @@ describe("edit the day", () => {
 
   it("edits the line text and refetches", async () => {
     const { a } = await ready();
-    fireEvent.click(screen.getByRole("button", { name: "Edit text for Thu 1 Oct" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit Tempo text for Thu 1 Oct" }));
     fireEvent.change(screen.getByLabelText("Line text for Thu 1 Oct"), { target: { value: "New text" } });
     fireEvent.click(screen.getByRole("button", { name: "Save text" }));
     await waitFor(() => expect(calls(a.saveTempoLineText)).toHaveLength(1));
@@ -302,10 +303,11 @@ describe("sync to Tempo", () => {
     await waitFor(() => expect(calls(a.loadTicketBlocks)).toHaveLength(2));
   });
 
-  it("includes the line text in the preview", async () => {
+  it("does not repeat the line text in the preview; it points at the text above", async () => {
     await ready(actions({ loadTicketBlocks: loads([day({ line_text: "Worked on login" })]) }));
     fireEvent.click(screen.getByRole("button", { name: /^Preview sync .* to Tempo$/ }));
-    expect(await screen.findByText(/“Worked on login”/)).toBeTruthy();
+    expect(await screen.findByText("as shown above")).toBeTruthy();
+    expect(screen.getAllByText("Worked on login")).toHaveLength(1);
   });
 
   it("Cancel sends nothing", async () => {

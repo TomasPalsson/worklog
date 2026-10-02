@@ -29,6 +29,7 @@ const day = (over: Partial<TicketDay> = {}): TicketDay => ({
   line_text: "Worked on login",
   tracked_seconds: over.line_seconds ?? 3600,
   hours_set_by_hand: false,
+  in_tempo_seconds: null,
   blocks: [block()],
   ...over,
 });
@@ -72,7 +73,7 @@ describe("day head", () => {
     const b = screen.getByRole("button", { name: "Edit hours for Thu 1 Oct" });
     expect(b.textContent).toBe("1h 30m");
     expect(b.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
-    expect(screen.getByRole("button", { name: "Edit text for Thu 1 Oct" }).textContent).toBe("Edit text");
+    expect(screen.getByRole("button", { name: "Edit Tempo text for Thu 1 Oct" }).textContent).toBe("Edit Tempo text");
   });
 
   it("block rows end in a chevron", async () => {
@@ -89,14 +90,15 @@ describe("preview", () => {
     return r;
   };
 
-  it("shows labelled lines, the formatted day, the quote and the note", async () => {
+  it("shows labelled lines, the formatted day, the text pointer and the note", async () => {
     await start();
     const box = document.querySelector(".task-day-preview") as HTMLElement;
     expect(box.textContent).toContain("Hours1h 30m");
     expect(box.textContent).toContain("DayThu 1 Oct");
     expect(box.textContent).toContain("TicketABC-1");
     expect(box.textContent).not.toContain("2026-10-01");
-    expect(screen.getByText("“Worked on login”")).toBeTruthy();
+    expect(box.textContent).toContain("Textas shown above");
+    expect(box.textContent).not.toContain("“");
     expect(screen.getByText("Sends only this ticket's line for this day to Tempo.")).toBeTruthy();
   });
 
@@ -104,7 +106,7 @@ describe("preview", () => {
     const { runSync } = await start();
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Send to Tempo" }));
     // fireEvent returns false when a handler called preventDefault.
-    expect(fireEvent.keyDown(document.body, { key: "Escape" })).toBe(false);
+    expect(fireEvent.keyDown(document.activeElement as Element, { key: "Escape" })).toBe(false);
     await waitFor(() => expect(screen.queryByText("Preview — nothing sent yet")).toBeNull());
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Preview sync Thu 1 Oct to Tempo" }));
     expect(runSync.mock.calls).toHaveLength(1);

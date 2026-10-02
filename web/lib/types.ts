@@ -590,6 +590,8 @@ export interface TicketDay {
   tracked_seconds: number;
   /** `line_seconds` is a hand-set override rather than the half-hour-rounded union. */
   hours_set_by_hand: boolean;
+  /** Seconds Tempo held for this ticket that day at the last pull; null when never pulled. */
+  in_tempo_seconds: number | null;
   blocks: RawBlock[];
 }
 

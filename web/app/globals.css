@@ -25,8 +25,8 @@
   /* ink */
   --fg:         oklch(0.19 0.01 260);      /* body */
   --fg-muted:   oklch(0.48 0.015 260);     /* meta, timestamps — was 0.52 */
-  --fg-subtle:  oklch(0.58 0.01 260);      /* placeholder + inline helper —
-                                              was 0.68; 4.5:1 AA on --bg */
+  --fg-subtle:  oklch(0.54 0.01 260);      /* placeholder + inline helper —
+                                              was 0.68, then 0.58; darker for AA contrast on --bg-sunk */
 
   /* state */
   --sage:       oklch(0.72 0.10 145);      /* assigned / success */
@@ -5929,7 +5929,9 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 /* Work logged (reading panel) */
 .task-work-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
 .task-work-head h3 { margin: 0; }
+.task-work-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 8px; min-width: 0; }
 .task-work-summary { margin: 0; font-size: 12px; color: var(--fg-muted); }
+.task-work-summary::before { content: "·"; margin-right: 8px; }
 .task-empty-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
 .task-link-btn {
   display: inline-flex; align-items: center; gap: 4px;
@@ -5944,12 +5946,12 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 .task-day + .task-day { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border-strong); }
 .task-day:last-child { padding-bottom: 0; }
 .task-day-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
-.task-day-label { font-size: 13px; font-weight: 500; color: var(--fg); }
+.task-day-label { margin: 0; font-size: 13px; font-weight: 500; color: var(--fg-muted); }
 .task-day-note { margin: 2px 0 0; font-size: 12px; color: var(--fg-muted); }
 .task-day-hours {
   display: inline-flex; align-items: center; gap: 4px; min-height: 28px; padding: 0 4px; border: 0;
   border-radius: var(--radius-sm); background: none; color: var(--fg); cursor: pointer;
-  font-family: var(--font-mono); font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono); font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums;
   text-decoration: underline dotted var(--border-strong); text-decoration-thickness: 1px; text-underline-offset: 3px;
 }
 .task-day-hours:hover { background: var(--bg-sunk); }
@@ -5962,7 +5964,6 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 .task-day-chip[data-chip="none"] { background: var(--slate-bg); color: var(--slate-ink); }
 .task-day-chip[data-chip="ok"] { border-color: transparent; background: var(--sage-bg); color: var(--sage-ink); }
 .task-day-chip[data-chip="changed"] { background: var(--amber-bg); color: var(--amber-ink); }
-.task-day-head .task-link-btn { margin-left: auto; }
 .task-day-text { margin: 6px 0 0; font-size: 13px; color: var(--fg-muted); line-height: 1.5; }
 .task-day-text span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; white-space: pre-wrap; }
 .task-day-text[data-open] span { display: block; }
@@ -5980,11 +5981,10 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
   display: grid; gap: 8px; justify-items: start; width: 100%; padding: 12px 14px;
   border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-sunk);
 }
-.task-day-preview h4 { margin: 0; font-family: var(--font-mono); font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg-muted); }
+.task-day-preview h5 { margin: 0; font-family: var(--font-mono); font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg-muted); }
 .task-day-preview dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0; }
 .task-day-preview dt { font-size: 12px; color: var(--fg-muted); }
 .task-day-preview dd { margin: 0; font-family: var(--font-mono); font-size: 13px; color: var(--fg); }
-.task-day-preview blockquote { margin: 0; font-size: 13px; color: var(--fg); white-space: pre-wrap; }
 .task-day-preview p { margin: 0; font-size: 12px; color: var(--fg-muted); }
 .task-day-preview .task-btn-primary, .task-day-preview .task-btn-secondary { min-height: 36px; padding: 0 14px; font-size: 13px; }
 .task-block-list { list-style: none; margin: 8px 0 0; padding: 0; }
@@ -6019,6 +6019,7 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 .task-log-discard .task-btn-secondary { flex: none; min-height: 28px; padding: 0 10px; font-size: 12px; }
 .task-log-chips, .task-log-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .task-log-chips .task-btn-secondary { min-height: 28px; padding: 0 10px; font-size: 12px; }
+.task-log-chips .task-btn-secondary[aria-pressed="true"] { background: var(--bg-sunk); border-color: var(--border-strong); color: var(--fg); font-weight: 600; }
 .task-log-actions .task-btn-primary { flex: none; }
 .task-block-row:focus-visible, .task-day-hours:focus-visible, .task-day-label:focus-visible, .task-link-btn:focus-visible,
 .task-log-form :focus-visible, .task-day-edit :focus-visible, .task-day-text-edit textarea:focus-visible { outline: none; box-shadow: var(--ring); }

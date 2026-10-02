@@ -8,6 +8,7 @@ import { formatDuration, formatRange, shortMonthDay, shortWeekday } from "@/lib/
 import type { RawBlock, TicketDay } from "@/lib/types";
 import type { TaskActions } from "./TaskCard";
 import { DaySent, HoursEdit, SyncTool, TextEdit, hoursNote } from "./TaskDayTools";
+import { changedNote } from "./TaskSyncPreview";
 
 type Chip = "In Tempo" | "Changed since sync" | "Not synced";
 
@@ -94,21 +95,22 @@ export function DayGroup({
   const chip = chipOf(day.blocks);
   const label = dayLabel(day.day);
   const note = hoursNote(day);
+  const changed = chip === "Changed since sync";
   const tools = { taskKey, actions, onSaved, onAnnounce, label, day };
   return (
     <div className="task-day">
       <div className="task-day-head">
-        <span className="task-day-label">{label}</span>
+        <h4 className="task-day-label">{label}</h4>
         <HoursEdit {...tools} />
-        <span className="task-day-chip" data-chip={CHIP_TONE[chip]}>
+        <span className="task-day-chip" data-chip={CHIP_TONE[chip]} title={changed ? changedNote(day) : undefined}>
           {chip}
         </span>
-        <TextEdit {...tools} />
       </div>
       {note && <p className="task-day-note">{note}</p>}
+      {changed && <p className="task-day-note">{changedNote(day)}</p>}
       {logged?.day === day.day && <DaySent>{`Logged ${logged.duration}`}</DaySent>}
-      {day.line_text && <LineText text={day.line_text} />}
-      <SyncTool {...tools} inTempo={chip === "In Tempo"} changed={chip === "Changed since sync"} />
+      <TextEdit {...tools}>{day.line_text && <LineText text={day.line_text} />}</TextEdit>
+      <SyncTool {...tools} inTempo={chip === "In Tempo"} changed={changed} />
       <ul className="task-block-list">
         {day.blocks.map((b) => (
           <BlockRow key={b.id} block={b} fresh={logged?.id === b.id} />
