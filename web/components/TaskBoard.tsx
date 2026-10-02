@@ -28,8 +28,30 @@ const realActions: TaskActions = {
 type StatusPatch = Parameters<TaskPanelProps["onStatus"]>[0];
 type Patch = (key: string, s: StatusPatch) => void;
 
+type UndoMap = Record<string, { from: Column; to: Column }>;
+
+/** The "Moved to X · Undo" strip: one per card, gone after `ms` or on that card's next move. */
+function useUndo(ms: number) {
+  const [undoable, setUndoable] = useState<UndoMap>({});
+  const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const clear = useCallback((key: string) => {
+    clearTimeout(timers.current[key]);
+    delete timers.current[key];
+    setUndoable(({ [key]: _, ...rest }) => rest);
+  }, []);
+  const offer = (key: string, from: Column, to: Column) => {
+    if (from === to) return;
+    clearTimeout(timers.current[key]);
+    setUndoable((u) => ({ ...u, [key]: { from, to } }));
+    timers.current[key] = setTimeout(() => clear(key), ms);
+  };
+  useEffect(() => () => Object.values(timers.current).forEach(clearTimeout), []);
+  return { undoable, clearUndo: clear, offerUndo: offer };
+}
+
 /** Optimistic move: placement, pending flags, per-card errors, chooser, spoken outcome, landing highlight. */
-function useMoves(patch: Patch, actions: TaskActions) {
+function useMoves(patch: Patch, actions: TaskActions, undoMs: number) {
+  const { undoable, clearUndo, offerUndo } = useUndo(undoMs);
   const [placed, setPlaced] = useState<Record<string, Column>>({});
   const [pending, setPending] = useState<Set<string>>(new Set());
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -40,6 +62,7 @@ function useMoves(patch: Patch, actions: TaskActions) {
   const dismiss = (key: string) => setErrors(({ [key]: _, ...rest }) => rest);
   const begin = (key: string, target: Column) => {
     setChooser(null);
+    clearUndo(key);
     setPlaced((p) => ({ ...p, [key]: target }));
     setPending((p) => new Set(p).add(key));
     dismiss(key);
@@ -51,10 +74,12 @@ function useMoves(patch: Patch, actions: TaskActions) {
     setErrors((e) => ({ ...e, [key]: `Couldn't move to ${columnTitle(target)} — ${reason}` }));
     setAnnounce(`Couldn't move ${key} to ${columnTitle(target)}.`);
   };
-  const succeed = (key: string, s: StatusPatch) => {
+  const succeed = (key: string, s: StatusPatch, from: Column) => {
     patch(key, s);
-    setAnnounce(`Moved ${key} to ${columnTitle(columnOf(s.status_category))}.`);
+    const to = columnOf(s.status_category);
+    setAnnounce(`Moved ${key} to ${columnTitle(to)}.`);
     setLanded(key);
+    offerUndo(key, from, to);
   };
   useEffect(() => {
     if (!landed) return;
@@ -62,27 +87,34 @@ function useMoves(patch: Patch, actions: TaskActions) {
     return () => clearTimeout(t);
   }, [landed]);
 
-  async function run(key: string, target: Column, t: Transition) {
+  async function run(key: string, target: Column, t: Transition, from: Column) {
     begin(key, target);
     const res = await actions.transitionTicket(key, t.id);
-    if (res.ok) succeed(key, { status: res.data.status, status_category: res.data.status_category });
+    if (res.ok) succeed(key, { status: res.data.status, status_category: res.data.status_category }, from);
     settle(key, target, res.ok ? undefined : res.error);
   }
 
-  async function move(row: TaskRow, target: Column) {
+  async function move(row: TaskRow, target: Column, from: Column, back = false) {
     begin(row.key, target);
     const res = await actions.loadTransitions(row.key);
     if (!res.ok) return settle(row.key, target, res.error);
     const moves = movesInto(res.data, target);
-    if (moves.length === 1) return run(row.key, target, moves[0]);
+    if (moves.length === 1) return run(row.key, target, moves[0], from);
     if (moves.length > 1) {
       settle(row.key, target);
-      return setChooser({ key: row.key, column: target, transitions: moves });
+      return setChooser({ key: row.key, column: target, transitions: moves, from });
     }
-    settle(row.key, target, `Jira has no move from ${row.status ?? "its status"} to ${columnTitle(target)} for ${row.key}.`);
+    const status = row.status ?? "its status";
+    settle(
+      row.key,
+      target,
+      back
+        ? `Jira has no way back to ${columnTitle(target)} from ${status}.`
+        : `Jira has no move from ${status} to ${columnTitle(target)}.`,
+    );
   }
 
-  return { placed, pending, errors, chooser, announce, landed, dismiss, cancel: () => setChooser(null), move, run };
+  return { placed, pending, errors, chooser, announce, landed, undoable, offerUndo, dismiss, cancel: () => setChooser(null), move, run };
 }
 
 /** Native HTML5 DnD state. The key lives in React state; dataTransfer is a fallback. */
@@ -159,7 +191,11 @@ function usePanel() {
   return { openKey, setOpenKey, drafts, closePanel };
 }
 
-export function TaskBoard({ tasks, actions = realActions }: { tasks: TaskRow[]; actions?: TaskActions }) {
+export function TaskBoard({ tasks, actions = realActions, undoMs = 8000 }: {
+  tasks: TaskRow[];
+  actions?: TaskActions;
+  undoMs?: number;
+}) {
   const [rows, setRows] = useState(tasks);
   const [text, setText] = useState("");
   const [onlyWorked, setOnlyWorked] = useState(false);
@@ -169,12 +205,12 @@ export function TaskBoard({ tasks, actions = realActions }: { tasks: TaskRow[]; 
     (key, s) => setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...s } : r))),
     [],
   );
-  const m = useMoves(patch, actions);
+  const m = useMoves(patch, actions, undoMs);
   const colOf = (r: TaskRow) => m.placed[r.key] ?? columnOf(r.status_category);
   // One flow for a drop and for the Move menu; dropping on the card's own column is a no-op.
-  const moveTo = (key: string, target: Column) => {
+  const moveTo = (key: string, target: Column, back = false) => {
     const row = rows.find((r) => r.key === key);
-    if (row && colOf(row) !== target) m.move(row, target);
+    if (row && colOf(row) !== target) m.move(row, target, colOf(row), back);
   };
   const drag = useDrag(moveTo);
   useChooserEscape(m.chooser !== null, m.cancel);
@@ -185,11 +221,15 @@ export function TaskBoard({ tasks, actions = realActions }: { tasks: TaskRow[]; 
   const note = q ? `No tickets match “${q}”.` : onlyWorked ? "No tickets match the filter." : null;
   const visible = rows.filter((r) => matches(r, text, onlyWorked));
   const open = rows.find((r) => r.key === openKey);
+  const undoFor = (key: string) => {
+    const u = m.undoable[key];
+    return u && { to: columnTitle(u.to), run: () => moveTo(key, u.from, true) };
+  };
 
   return (
     <>
       <TaskToolbar text={text} onlyWorked={onlyWorked} setText={setText} setOnlyWorked={setOnlyWorked} />
-      <p className="sr-only" role="status" aria-live="polite">
+      <p className="task-sr" role="status" aria-live="polite">
         {m.announce}
       </p>
       <div className="task-board-scroll">
@@ -205,7 +245,7 @@ export function TaskBoard({ tasks, actions = realActions }: { tasks: TaskRow[]; 
               note={cards.length === 0 ? note : null}
               hint={cards.length === 0 && !note}
               chooser={m.chooser?.column === id ? m.chooser : null}
-              onPick={(t) => m.chooser && m.run(m.chooser.key, id, t)}
+              onPick={(t) => m.chooser && m.run(m.chooser.key, id, t, m.chooser.from)}
               onCancel={m.cancel}
               {...drag.column(id)}
             >
@@ -219,6 +259,7 @@ export function TaskBoard({ tasks, actions = realActions }: { tasks: TaskRow[]; 
                   dragging={drag.dragKey === r.key}
                   error={m.errors[r.key]}
                   landed={m.landed === r.key}
+                  undo={undoFor(r.key)}
                   onMove={(to) => moveTo(r.key, to)}
                   onDismissError={() => m.dismiss(r.key)}
                   onOpen={() => setOpenKey(r.key)}
@@ -232,7 +273,11 @@ export function TaskBoard({ tasks, actions = realActions }: { tasks: TaskRow[]; 
       </div>
       </div>
       {open && (
-        <TaskPanel key={open.key} drafts={drafts} task={open} actions={actions} onClose={closePanel} onStatus={(s) => patch(open.key, s)} />
+        <TaskPanel key={open.key} drafts={drafts} task={open} actions={actions} onClose={closePanel} onStatus={(s) => {
+          m.offerUndo(open.key, colOf(open), columnOf(s.status_category));
+          patch(open.key, s);
+        }}
+        />
       )}
     </>
   );

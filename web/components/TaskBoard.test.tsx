@@ -171,7 +171,7 @@ describe("TaskBoard drag to move", () => {
     render(<TaskBoard actions={a} tasks={tasks} />);
     await drag("ABC-1", "done");
     expect(
-      await within(card("ABC-1")).findByText("Couldn't move to Done — Jira has no move from To Do to Done for ABC-1."),
+      await within(card("ABC-1")).findByText("Couldn't move to Done — Jira has no move from To Do to Done."),
     ).not.toBeNull();
     expect(calls(a.transitionTicket).length).toBe(0);
     expect(within(col("new")).getByText("Fix login")).not.toBeNull();

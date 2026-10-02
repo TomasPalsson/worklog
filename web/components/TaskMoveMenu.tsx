@@ -18,10 +18,18 @@ export function TaskMoveMenu({ taskKey, column, onMove }: {
     setOpen(false);
     trigger.current?.focus();
   };
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (!open || e.key !== "Escape") return;
-    e.preventDefault(); // the panel's Esc handler sees defaultPrevented and stays open
-    close();
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (!open) return;
+    if (e.key === "Escape") {
+      e.preventDefault(); // the panel's Esc handler sees defaultPrevented and stays open
+      return close();
+    }
+    const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+    const at = items.indexOf(document.activeElement as HTMLElement);
+    const next = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: items.length - 1 }[e.key];
+    if (next === undefined || items.length === 0) return;
+    e.preventDefault();
+    items[(next + items.length) % items.length].focus();
   };
   const onBlur = (e: FocusEvent) => {
     if (open && !e.currentTarget.contains(e.relatedTarget as Node | null)) setOpen(false);
@@ -34,6 +42,7 @@ export function TaskMoveMenu({ taskKey, column, onMove }: {
         type="button"
         className="task-move-btn"
         aria-label={`Move ${taskKey}`}
+        data-tip="Move"
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type MutableRefObject } from "react";
+import { useEffect, useRef, useState, type MutableRefObject, type RefObject } from "react";
 import { ChevronDown, ExternalLink, X } from "lucide-react";
 
 import { formatDuration } from "@/lib/format";
@@ -48,9 +48,33 @@ function Skeleton() {
 
 type Shown = { status: string | null; status_category: StatusCategory | null };
 
+/** Esc (capture + preventDefault, so the panel stays open) and an outside click close the status menu. */
+function useMenuDismiss(open: boolean, wrap: RefObject<HTMLElement | null>, close: () => void) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      close();
+      wrap.current?.querySelector<HTMLElement>(".task-status")?.focus();
+    };
+    const onDown = (e: Event) => {
+      if (!wrap.current?.contains(e.target as Node)) close();
+    };
+    document.addEventListener("keydown", onKey, true);
+    document.addEventListener("mousedown", onDown);
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("mousedown", onDown);
+    };
+  }, [open, wrap, close]);
+}
+
 function StatusChip({ task, shown, actions, onStatus }: Pick<TaskPanelProps, "task" | "actions" | "onStatus"> & { shown: Shown }) {
   const [menu, setMenu] = useState<Transition[] | null>(null);
+  const wrap = useRef<HTMLSpanElement>(null);
   const [busy, setBusy] = useState(false);
+  useMenuDismiss(menu !== null, wrap, () => setMenu(null));
   const [error, setError] = useState<string | null>(null);
 
   async function toggle() {
@@ -75,7 +99,7 @@ function StatusChip({ task, shown, actions, onStatus }: Pick<TaskPanelProps, "ta
   }
 
   return (
-    <span className="task-status-wrap">
+    <span ref={wrap} className="task-status-wrap">
       <button
         type="button"
         className="task-status"
@@ -109,7 +133,11 @@ function StatusChip({ task, shown, actions, onStatus }: Pick<TaskPanelProps, "ta
 }
 
 function Meta({ task, detail, shown, actions, onStatus }: TaskPanelProps & { detail: TicketDetail | null; shown: Shown }) {
-  const items = [detail?.issue_type, detail?.priority, detail?.assignee];
+  const items = [
+    detail?.issue_type,
+    detail?.priority && `Priority ${detail.priority}`,
+    detail?.assignee && `Assignee ${detail.assignee}`,
+  ];
   return (
     <>
       <div className="task-meta">
@@ -191,8 +219,15 @@ export function TaskPanel(props: TaskPanelProps) {
 
   const detail = load.s === "ok" ? load.detail : null;
   const url = detail?.url ?? task.url;
-  const posted = (body: string) =>
+  const [announce, setAnnounce] = useState("");
+  const posted = (body: string) => {
     setExtra((l) => [...l, { id: `local-${l.length}`, author: "You", created: new Date().toISOString(), body }]);
+    setAnnounce(`Comment posted to ${task.key}.`);
+  };
+  useEffect(() => {
+    if (extra.length === 0) return;
+    dialog.current?.querySelector(".task-comments li:last-child")?.scrollIntoView?.({ block: "nearest" });
+  }, [extra]);
   // Live Jira status once loaded; a change made here wins over both until the panel closes.
   const shown: Shown = changed ?? (detail ? { status: detail.status, status_category: detail.status_category } : task);
   const report = (s: Shown) => {
@@ -222,6 +257,9 @@ export function TaskPanel(props: TaskPanelProps) {
         <Meta {...props} onStatus={report} detail={detail} shown={shown} />
         <Body load={load} retry={retry} extra={extra} taskKey={task.key} />
       </div>
+      <p className="task-sr" role="status" aria-live="polite">
+        {announce}
+      </p>
       <TaskComposer drafts={drafts} taskKey={task.key} actions={actions} onPosted={posted} onMoved={moved} />
     </aside>
   );

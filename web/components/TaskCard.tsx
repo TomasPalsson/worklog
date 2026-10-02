@@ -30,6 +30,7 @@ export interface TaskCardProps {
   dragging: boolean;
   landed: boolean;
   error: string | undefined;
+  undo?: { to: string; run: () => void };
   onOpen: () => void;
   onMove: (to: Column) => void;
   onDismissError: () => void;
@@ -63,7 +64,7 @@ export function TaskCard(p: TaskCardProps) {
       <button type="button" className="task-card-btn" aria-expanded={p.selected} onClick={p.onOpen}>
         <span className="task-card-top">
           <span className="task-key">{task.key}</span>
-          {!task.assigned && (
+          {!task.assigned && p.column !== "done" && (
             <span className="task-tag" title="Not assigned to you — shown because you logged time on it this week">
               not assigned
             </span>
@@ -74,9 +75,17 @@ export function TaskCard(p: TaskCardProps) {
       </button>
       <GripVertical className="task-grip" size={14} aria-hidden="true" />
       {!p.pending && <TaskMoveMenu taskKey={task.key} column={p.column} onMove={p.onMove} />}
+      {p.undo && !p.pending && (
+        <div className="task-card-undo">
+          <span>{`Moved to ${p.undo.to} ·`}</span>
+          <button type="button" onClick={p.undo.run}>
+            Undo
+          </button>
+        </div>
+      )}
       {p.error && (
         <div className="task-card-error">
-          <span title={p.error}>{p.error}</span>
+          <span>{p.error}</span>
           <button type="button" aria-label="Dismiss error" onClick={p.onDismissError}>
             <X size={12} aria-hidden="true" />
           </button>

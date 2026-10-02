@@ -89,7 +89,8 @@ describe("TaskPanel reading", () => {
     const bodies = screen.getAllByText(/one$/).map((n) => n.textContent);
     expect(bodies).toEqual(["first one", "second one"]);
     expect(screen.getByText("Bug")).not.toBeNull();
-    expect(screen.getByText("Ada")).not.toBeNull();
+    expect(screen.getByText("Priority High")).not.toBeNull();
+    expect(screen.getByText("Assignee Ada")).not.toBeNull();
     expect(screen.getByRole("link", { name: /Open in Jira/ }).getAttribute("href")).toBe(
       "https://jira.example/browse/ABC-1",
     );
@@ -266,5 +267,72 @@ describe("TaskComposer", () => {
     expect(box().value).toBe("Fixed the login redirect.");
     expect(calls(a.commentOnTicket).length).toBe(0);
     expect(onStatus.mock.calls.length).toBe(0);
+  });
+});
+
+describe("TaskPanel fix round 2", () => {
+  it("status menu closes on Esc without closing the panel, and on an outside click", async () => {
+    const { onClose } = open(actions());
+    fireEvent.click(screen.getByTestId("status-ABC-1"));
+    await screen.findByRole("button", { name: "Start → In Progress" });
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("button", { name: "Start → In Progress" })).toBeNull();
+    expect(onClose.mock.calls.length).toBe(0);
+    fireEvent.click(screen.getByTestId("status-ABC-1"));
+    await screen.findByRole("button", { name: "Start → In Progress" });
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole("button", { name: "Start → In Progress" })).toBeNull();
+    await screen.findByText(/Steps to reproduce/);
+  });
+
+  it("announces a posted comment in a task-sr live region inside the panel", async () => {
+    open(actions());
+    fireEvent.change(box(), { target: { value: "shipped" } });
+    fireEvent.click(post());
+    const region = await screen.findByText("Comment posted to ABC-1.");
+    expect(region.className).toBe("task-sr");
+    expect(region.getAttribute("aria-live")).toBe("polite");
+    expect(screen.getByRole("dialog").contains(region)).toBe(true);
+  });
+
+  it("shows the counter only once there is text, and starts as one row", () => {
+    open(actions());
+    expect(box().getAttribute("rows")).toBe("1");
+    expect(screen.queryByText("0 / 5000")).toBeNull();
+    fireEvent.change(box(), { target: { value: "hi" } });
+    expect(screen.getByText("2 / 5000")).not.toBeNull();
+  });
+
+  it("reads Drafting… while a draft runs and Posting… while posting, both disabled", async () => {
+    let finishDraft!: (v: unknown) => void;
+    const drafting = new Promise((r) => (finishDraft = r));
+    let finishPost!: (v: unknown) => void;
+    const posting = new Promise((r) => (finishPost = r));
+    const a = actions({ draftTicketUpdate: mock(() => drafting), commentOnTicket: mock(() => posting) });
+    open(a);
+    fireEvent.click(screen.getByRole("button", { name: "Draft with AI" }));
+    const busy = await screen.findByRole("button", { name: "Drafting…" });
+    expect((busy as HTMLButtonElement).disabled).toBe(true);
+    finishDraft({ ok: false, error: "nope" });
+    await screen.findByRole("alert");
+    fireEvent.change(box(), { target: { value: "shipped" } });
+    fireEvent.click(post());
+    const busyPost = await screen.findByRole("button", { name: "Posting…" });
+    expect((busyPost as HTMLButtonElement).disabled).toBe(true);
+    finishPost({ ok: true, data: { ok: true } });
+    await waitFor(() => expect(box().value).toBe(""));
+  });
+
+  it("Draft appends after a blank line to typed text", async () => {
+    open(actions());
+    fireEvent.change(box(), { target: { value: "my own note" } });
+    fireEvent.click(screen.getByRole("button", { name: "Draft with AI" }));
+    await waitFor(() => expect(box().value).toBe("my own note\n\nFixed the login redirect."));
+  });
+
+  it("labels the meta row", async () => {
+    open(actions());
+    expect(await screen.findByText("Priority High")).not.toBeNull();
+    expect(screen.getByText("Assignee Ada")).not.toBeNull();
   });
 });

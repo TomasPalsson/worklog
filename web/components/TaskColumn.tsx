@@ -9,6 +9,8 @@ export interface Chooser {
   key: string;
   column: Column;
   transitions: Transition[];
+  /** Column the card sat in, so a successful pick can offer Undo. */
+  from: Column;
 }
 
 interface Props {

@@ -26,19 +26,20 @@ function useComposer({ taskKey, actions, onPosted, onMoved, drafts }: Props) {
   useEffect(() => {
     if (drafts) drafts.current[taskKey] = { text, suggested };
   }, [drafts, taskKey, text, suggested]);
-  const [busy, setBusy] = useState(false);
+  const [busyWith, setBusyWith] = useState<"draft" | "post" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const trimmed = text.trim();
 
   async function draft() {
-    setBusy(true);
+    setBusyWith("draft");
     setError(null);
     const res = await actions.draftTicketUpdate(taskKey);
     if (res.ok) {
-      setText(res.data.comment);
+      // Never destroy typed text: append the draft after a blank line.
+      setText((t) => (t.trim() === "" ? res.data.comment : `${t}\n\n${res.data.comment}`));
       setSuggested(res.data.transitions.find((t) => t.id === res.data.suggested_transition_id) ?? null);
     } else setError(res.error);
-    setBusy(false);
+    setBusyWith(null);
   }
 
   /** Runs the kept suggestion first; a rejection stops before any comment. */
@@ -55,7 +56,7 @@ function useComposer({ taskKey, actions, onPosted, onMoved, drafts }: Props) {
   }
 
   async function post() {
-    setBusy(true);
+    setBusyWith("post");
     setError(null);
     if (await applySuggestion()) {
       const res = await actions.commentOnTicket(taskKey, trimmed);
@@ -64,13 +65,14 @@ function useComposer({ taskKey, actions, onPosted, onMoved, drafts }: Props) {
         setText("");
       } else setError(res.error);
     }
-    setBusy(false);
+    setBusyWith(null);
   }
 
-  return { text, setText, suggested, dropSuggestion: () => setSuggested(null), busy, error, trimmed, draft, post };
+  return { text, setText, suggested, dropSuggestion: () => setSuggested(null), busyWith, busy: busyWith !== null, error, trimmed, draft, post };
 }
 
 function Count({ n }: { n: number }) {
+  if (n === 0) return <span />;
   const level = n > MAX ? "over" : n > 4500 ? "near" : undefined;
   return (
     <span className="task-count" data-level={level}>
@@ -86,7 +88,13 @@ export function TaskComposer(props: Props) {
       <label htmlFor="task-composer-text" className="task-label">
         Add a comment
       </label>
-      <textarea id="task-composer-text" rows={2} value={c.text} onChange={(e) => c.setText(e.target.value)} />
+      <textarea
+        id="task-composer-text"
+        rows={1}
+        data-filled={c.text !== "" || undefined}
+        value={c.text}
+        onChange={(e) => c.setText(e.target.value)}
+      />
       <div className="task-composer-meta">
         <Count n={c.text.length} />
         {c.suggested && (
@@ -101,7 +109,7 @@ export function TaskComposer(props: Props) {
       <div className="task-composer-actions">
         <button type="button" className="task-btn-secondary" disabled={c.busy} onClick={c.draft}>
           <Sparkles size={13} aria-hidden="true" />
-          Draft with AI
+          {c.busyWith === "draft" ? "Drafting…" : "Draft with AI"}
         </button>
         <button
           type="button"
@@ -109,7 +117,7 @@ export function TaskComposer(props: Props) {
           disabled={c.busy || c.trimmed === "" || c.text.length > MAX}
           onClick={c.post}
         >
-          {c.suggested ? `Post and move to ${c.suggested.to_status}` : "Post comment"}
+          {c.busyWith === "post" ? "Posting…" : c.suggested ? `Post and move to ${c.suggested.to_status}` : "Post comment"}
         </button>
       </div>
       {c.error && (
