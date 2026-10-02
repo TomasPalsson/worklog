@@ -214,7 +214,7 @@ function LoadFoot({ load, onRetry }: { load: BlocksLoad; onRetry?: () => void })
   if (load.s !== "error") return null;
   return (
     <p className="task-time-foot" role="alert">
-      Couldn't load Tempo numbers
+      {"Couldn't load Tempo numbers"}
       <span aria-hidden="true">{" · "}</span>
       <button type="button" className="task-review" onClick={onRetry}>
         Try again
