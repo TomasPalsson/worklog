@@ -178,6 +178,7 @@ mod phases;
 /// Prepare/invoke/commit split of [`generate_line`] — the daemon uses
 /// these directly so the sqlite connection lock is never held across
 /// the `claude -p` round trip (see `phases`' own doc comment).
+pub(crate) use phases::reply_to_text;
 pub use phases::{
     commit as commit_line, invoke as invoke_line, invoke_many as invoke_line_many,
     prepare as prepare_line, Prep as LineTextPrep,
@@ -293,14 +294,14 @@ fn stored_origin(conn: &Connection, key: &BillingLineKey) -> Result<Option<LineT
 
 /// `claude -p` sometimes puts the whole `{"text": "..."}` reply inside the
 /// schema's `text` field again; take the inner text when it does.
-fn unwrap_nested_text(text: &str) -> String {
+pub(crate) fn unwrap_nested_text(text: &str) -> String {
     serde_json::from_str::<Value>(text.trim())
         .ok()
         .and_then(|v| v.get("text").and_then(Value::as_str).map(str::to_owned))
         .unwrap_or_else(|| text.to_owned())
 }
 
-fn line_text_schema() -> Value {
+pub(crate) fn line_text_schema() -> Value {
     json!({
         "type": "object",
         "required": ["text"],

@@ -9,6 +9,7 @@ use axum::Json;
 use crate::estimate::{self, ModelInvoker};
 use crate::line_text;
 use crate::tempo_line_contract::{SetTempoLineHours, SetTempoLineText, TempoLine, TempoLineKey};
+use crate::tempo_line_writer;
 use crate::tempo_lines;
 
 use super::{with_conn, ApiError, Shared};
@@ -76,49 +77,40 @@ where
     F: FnOnce() -> Result<Box<dyn ModelInvoker>> + Send + 'static,
 {
     let forced = force.is_some();
-    let (pending, previous) = with_conn(state.clone(), move |c| {
-        let pending = tempo_lines::pending_generation(c, &day, force.as_ref())?;
-        // The text a forced Regenerate replaces, so the model rewords it.
-        let previous = match &force {
-            Some(key) => tempo_lines::line_for(c, key)?.and_then(|line| line.text),
-            None => None,
-        };
-        Ok((pending, previous))
+    let pending = with_conn(state.clone(), move |c| {
+        tempo_lines::pending_generation(c, &day, force.as_ref())
     })
     .await?;
     if pending.is_empty() {
         return Ok(Vec::new());
     }
-    let texts = tokio::task::spawn_blocking(move || -> Result<Vec<_>> {
-        let invoker = make_invoker()?;
-        if forced {
-            // An explicit Generate/Regenerate always asks the model and fails loudly.
-            return pending
-                .into_iter()
-                .map(|(key, descriptions, hash)| {
-                    let text = tempo_lines::rewrite_text(
-                        invoker.as_ref(),
-                        &key,
-                        &descriptions,
-                        previous.as_deref(),
-                        line_text::LINE_TEXT_MODEL,
-                    )?;
-                    Ok((key, text, hash))
-                })
-                .collect();
-        }
+    // Prepare under the lock, then drop it for every model call.
+    let prepared = with_conn(state.clone(), move |c| {
         Ok(pending
             .into_iter()
-            .filter_map(|(key, descriptions, hash)| {
-                let text = tempo_lines::generate_text(
-                    Some(invoker.as_ref()),
-                    &key,
-                    &descriptions,
-                    line_text::LINE_TEXT_MODEL,
-                );
-                text.map(|text| (key, text, hash))
+            .map(|(key, _, hash)| {
+                let msg = tempo_line_writer::prepare(c, &key);
+                (key, msg, hash)
             })
-            .collect())
+            .collect::<Vec<_>>())
+    })
+    .await?;
+    let texts = tokio::task::spawn_blocking(move || -> Result<Vec<_>> {
+        let invoker = make_invoker()?;
+        let mut out = Vec::new();
+        for (key, msg, hash) in prepared {
+            let written = msg.and_then(|m| {
+                tempo_line_writer::write(&m, invoker.as_ref(), line_text::LINE_TEXT_MODEL)
+            });
+            match written {
+                Ok(text) => out.push((key, text, hash)),
+                // An explicit Generate/Regenerate fails loudly; the automatic
+                // pass leaves the line without text (never English fallback).
+                Err(reason) if forced => anyhow::bail!(reason),
+                Err(_) => {}
+            }
+        }
+        Ok(out)
     })
     .await??;
     with_conn(state, move |c| {

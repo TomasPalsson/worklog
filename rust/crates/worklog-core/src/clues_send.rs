@@ -7,10 +7,12 @@ use crate::clues_contract::{BillingLineKey, DescriptionInput};
 use crate::clues_work_items::{self, BlockClue};
 use crate::repo;
 use crate::scrub;
+use crate::tempo_line_contract::TempoLineKey;
+use crate::tempo_lines;
 use anyhow::{anyhow, Result};
 use regex::Regex;
 use rusqlite::Connection;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 const MAX_STRING_CHARS: usize = 200; // longest string in a DescriptionInput
@@ -77,13 +79,45 @@ pub fn build_line_input(conn: &Connection, key: &BillingLineKey) -> Result<Descr
         return Err(anyhow!("no billing line for {where_}"));
     }
     let (block_ids, total_seconds) = union_block_ids(&matching);
+    build_input_for_blocks(conn, &key.day, Some(&key.folder), &block_ids, total_seconds)
+}
 
+/// A ticket line's `DescriptionInput`: the day's blocks on `key.jira_issue`
+/// (same set `tempo_lines` shows), folder = their most common work folder.
+pub fn build_ticket_line_input(conn: &Connection, key: &TempoLineKey) -> Result<DescriptionInput> {
+    let blocks = tempo_lines::blocks_for_ticket(conn, key)?;
+    if blocks.is_empty() {
+        return Err(anyhow!("no blocks for {} on {}", key.jira_issue, key.day));
+    }
+    let total = billing::union_seconds(blocks.iter().map(billing::block_interval).collect());
+    let ids: Vec<i64> = blocks.iter().map(|b| b.id).collect();
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for &id in &ids {
+        if let Some(folder) = billing::work_folder_for_block(conn, id)? {
+            *counts.entry(folder).or_default() += 1;
+        }
+    }
+    // Ties break alphabetically so the folder is deterministic.
+    let folder = counts
+        .into_iter()
+        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
+        .map(|(f, _)| f);
+    build_input_for_blocks(conn, &key.day, folder.as_deref(), &ids, total)
+}
+
+fn build_input_for_blocks(
+    conn: &Connection,
+    day: &str,
+    folder: Option<&str>,
+    block_ids: &[i64],
+    total_seconds: i64,
+) -> Result<DescriptionInput> {
     let mut merged = clues_collect::Collected::default();
     let mut candidate_ticket_titles = Vec::new();
     let mut block_descriptions = Vec::new();
     let mut jira_keys = Vec::new();
     let mut block_clues = Vec::new();
-    for &id in &block_ids {
+    for &id in block_ids {
         let input = build_block_input(conn, id)?;
         let desc = repo::get_block(conn, id)?
             .and_then(|b| b.description)
@@ -105,9 +139,9 @@ pub fn build_line_input(conn: &Connection, key: &BillingLineKey) -> Result<Descr
     }
 
     Ok(DescriptionInput {
-        day: scrub_str(&key.day),
+        day: scrub_str(day),
         minutes: total_seconds / 60,
-        folder: Some(scrub_str(&key.folder)),
+        folder: folder.map(scrub_str),
         branches: finalize_list(merged.branches),
         change_titles: finalize_list(merged.change_titles),
         jira_key: shared_value(&jira_keys),
