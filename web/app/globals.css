@@ -5993,7 +5993,7 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 .task-btn-primary:hover:not(:disabled) { opacity: 0.9; }
 .task-btn-secondary:hover:not(:disabled) { background: var(--bg-sunk); }
 @media (prefers-reduced-motion: reduce) { .task-btn-primary, .task-btn-secondary { transition: none; } }
-.task-composer :focus-visible, .task-btn-secondary:focus-visible, .task-status:focus-visible, .task-modal-close:focus-visible { outline: none; box-shadow: var(--ring); }
+.task-composer :focus-visible, .task-btn-primary:focus-visible, .task-btn-secondary:focus-visible, .task-status:focus-visible, .task-modal-close:focus-visible { outline: none; box-shadow: var(--ring); }
 .task-error { margin: 0; font-size: 12px; color: var(--terracotta-ink); }
 
 /* pressed feedback */
@@ -6076,7 +6076,7 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 .task-day-sent:focus-visible, .task-day-plain:focus-visible { box-shadow: var(--ring); }
 .task-day-sent { margin: 8px 0 0; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--sage-bg); color: var(--sage-ink); font-size: 12px; }
 .task-day-confirm {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 4px 0 8px; padding: 6px 8px 6px 12px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 4px 0 4px; padding: 6px 8px 6px 12px;
   /* Armed like the app's other confirms (.action-btn[data-confirm]): a send to Tempo leaves this app. */
   border-radius: var(--radius-sm); background: var(--amber-bg); box-shadow: inset 2px 0 0 var(--amber);
 }
@@ -6086,10 +6086,12 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 .task-day-confirm-q .task-nowrap { white-space: nowrap; }
 .task-day-confirm-act { display: inline-flex; gap: 8px; margin-left: auto; }
 .task-day-confirm .task-btn-primary, .task-day-confirm .task-btn-secondary { flex: none; min-height: 28px; padding: 0 12px; font-size: 12px; }
+.task-day-confirm .task-btn-secondary { border-color: var(--amber); }
 /* The text that goes to Tempo: same amber rule as the strip, shown in full (no clamp, no "more") while confirming. */
 .task-day[data-confirm] .task-day-text { border-left: 2px solid var(--amber); padding-left: 10px; color: var(--fg); }
 .task-day[data-confirm] .task-day-text span { display: block; }
 .task-day[data-confirm] .task-day-text .task-link-btn { display: none; }
+.task-day[data-confirm] .task-day-text + .task-day-note { margin-top: 4px; }
 @media (prefers-reduced-motion: no-preference) {
   .task-day-confirm { animation: task-confirm-in 180ms cubic-bezier(0.25, 1, 0.5, 1); }
   @keyframes task-confirm-in { from { opacity: 0; transform: translateY(-4px); } }
@@ -6161,6 +6163,9 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
   .task-filter-box { flex: 1 1 auto; min-width: 0; }
   .task-filter input { width: 100%; }
   .task-day-trigger { flex: 1 1 0; min-width: 0; margin-left: 24px; }
+  /* Phone: Send and Cancel share the strip's width at a thumb-sized height. */
+  .task-day-confirm-act { flex: 1 1 100%; }
+  .task-day-confirm .task-btn-primary, .task-day-confirm .task-btn-secondary { flex: 1 1 0; min-height: 40px; }
   /* block rows: time and length on top, the description full width below, the chevron centred on the right */
   .task-block-row { grid-template-columns: auto auto minmax(0, 1fr) auto; column-gap: 4px; row-gap: 2px; align-items: center; }
   .task-block-range { grid-column: 1; grid-row: 1; color: var(--fg-muted); }

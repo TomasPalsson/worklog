@@ -38,7 +38,7 @@ export function SyncConfirm(p: {
         <UploadCloud size={14} aria-hidden="true" />
         <span>
           {!p.changed ? (
-            <>Send <strong>{hours}</strong> to Tempo for <span className="task-nowrap">{p.label}?</span></>
+            <>Send <strong>{hours}</strong>{day.line_text && " and the text below"} to Tempo for <span className="task-nowrap">{p.label}?</span></>
           ) : day.in_tempo_seconds != null ? (
             <>Update Tempo: <strong>{formatDuration(day.in_tempo_seconds)} → {hours}</strong>?</>
           ) : (

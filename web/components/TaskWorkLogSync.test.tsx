@@ -30,7 +30,7 @@ describe("preview", () => {
     const box = document.querySelector(".task-day-confirm") as HTMLElement;
     expect(box.getAttribute("role")).toBe("group");
     expect(box.getAttribute("aria-label")).toBe("Confirm sending Thu 1 Oct to Tempo");
-    expect(box.querySelector(".task-day-confirm-q")!.textContent).toBe("Send 1h 30m to Tempo for Thu 1 Oct?");
+    expect(box.querySelector(".task-day-confirm-q")!.textContent).toBe("Send 1h 30m and the text below to Tempo for Thu 1 Oct?");
     expect(box.querySelector("h5, dl")).toBeNull();
     expect(box.textContent).not.toContain("2026-10-01");
     expect(btn("Send")).toBeTruthy();
