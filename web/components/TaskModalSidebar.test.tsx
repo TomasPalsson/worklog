@@ -211,7 +211,7 @@ describe("Time card", () => {
     expect(value(".task-time", "Tempo").textContent).toBe("—");
   });
 
-  it("Show unsent day is a button labelled for the first unsent day, the state beside it is plain text", async () => {
+  it("Show unsent day is a button whose name is its visible text, the state beside it is plain text", async () => {
     open(withDays([changedDay()]));
     await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("1 day changed since sent · Show unsent day"));
     const text = value(".task-time", "Tempo").querySelector("span.task-tempo") as HTMLElement;
@@ -219,7 +219,8 @@ describe("Time card", () => {
     expect(text.tagName).toBe("SPAN");
     const b = value(".task-time", "Tempo").querySelector("button") as HTMLElement;
     expect(b.className).toBe("task-review");
-    expect(b.getAttribute("aria-label")).toBe("Show the first unsent day");
+    expect(b.getAttribute("aria-label")).toBeNull();
+    expect(b.textContent).toBe("Show unsent day");
   });
 
   it("clicking Show unsent day switches to the Work log and scrolls to the first such day", async () => {

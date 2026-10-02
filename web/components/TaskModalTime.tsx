@@ -106,7 +106,7 @@ function TempoRow({ load, onTempo }: { load: BlocksLoad; onTempo: () => void }) 
       {tempo.review && (
         <span className="task-tempo-act">
           <span aria-hidden="true">{" · "}</span>
-          <button type="button" className="task-review" aria-label="Show the first unsent day" onClick={onTempo}>
+          <button type="button" className="task-review" onClick={onTempo}>
             Show unsent day
           </button>
         </span>
@@ -188,7 +188,7 @@ function PullFoot({ at, pull, onPulled, onAnnounce }: { at: string | null; pull:
       {at ? `Tempo numbers from ${clock(at) ?? "an earlier pull"}` : "Tempo not pulled yet"}
       <span aria-hidden="true">{" · "}</span>
       <button type="button" className="task-review" disabled={busy} onClick={run}>
-        {busy ? "Refreshing…" : at ? "Refresh from Tempo" : "Pull now"}
+        {busy ? "Refreshing…" : at ? "Refresh this week from Tempo" : "Pull this week from Tempo"}
       </button>
     </p>
   );

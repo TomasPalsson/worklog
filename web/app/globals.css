@@ -6309,3 +6309,7 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
   .task-meter > span { transition: none; }
   .task-rel-row:active, .task-rel-more:active, .task-block-move:active, .task-time-foot .task-review:active:not(:disabled) { transform: none; }
 }
+
+/* ── ticket-full: fix2 — sidebar Tempo state stacks above its action (no orphan dot) ── */
+.task-time .task-tempo-line { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.task-time .task-tempo-act > [aria-hidden="true"] { display: none; }
