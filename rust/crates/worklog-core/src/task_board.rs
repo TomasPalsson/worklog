@@ -57,6 +57,7 @@ pub fn tasks(
         .filter(|(_, ticket)| ticket.assigned)
         .map(|(key, _)| key)
         .chain(worked.keys())
+        .filter(|key| !cached.get(*key).is_some_and(is_backlog))
         .collect();
     let base = jira_base_url.map(|url| url.trim_end_matches('/'));
     let mut rows: Vec<TaskRow> = keys
@@ -102,6 +103,14 @@ pub fn tasks(
         tasks: rows,
         last_fetched,
     })
+}
+
+/// Parked in the Backlog: off the board even with hours this week (they stay on the day/week pages).
+fn is_backlog(ticket: &CachedTicket) -> bool {
+    ticket
+        .status
+        .as_deref()
+        .is_some_and(|s| s.eq_ignore_ascii_case("backlog"))
 }
 
 fn cached_tickets(conn: &Connection) -> Result<HashMap<String, CachedTicket>> {

@@ -236,3 +236,23 @@ fn day_seconds_sums_each_day_monday_first() {
         vec![3600, 0, 3600, 0, 0, 0, 0]
     );
 }
+
+#[test]
+fn backlog_tickets_are_hidden_even_when_worked_this_week() {
+    let conn = db::open_memory().unwrap();
+    ticket(&conn, "APRO-1", "Parked", Some("new"), 0);
+    ticket(&conn, "APRO-2", "Parked, worked", Some("new"), 0);
+    ticket(&conn, "APRO-3", "Still to do", Some("new"), 0);
+    conn.execute(
+        "UPDATE jira_tickets SET status = 'Backlog' WHERE key = 'APRO-1'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE jira_tickets SET status = 'BACKLOG' WHERE key = 'APRO-2'",
+        [],
+    )
+    .unwrap();
+    worked(&conn, "APRO-2", "2026-09-29");
+    assert_eq!(keys(&board(&conn)), vec!["APRO-3"]);
+}
