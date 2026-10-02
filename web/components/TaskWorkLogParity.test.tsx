@@ -83,6 +83,31 @@ describe("Regenerate text with AI", () => {
   });
 });
 
+describe("a rejected call never leaves the day busy", () => {
+  it("regenerate: toasts that the service is unreachable and clears Writing…", async () => {
+    regenerate.mockImplementationOnce(async () => {
+      throw new Error("fetch failed");
+    });
+    await kit.open();
+    kit.pick("Regenerate text with AI");
+    await kit.settle();
+    expect(texts()).toContain("Couldn't reach the worklog service");
+    expect(document.querySelector(".task-day-plain")).toBeNull();
+  });
+
+  it("merge: the same", async () => {
+    merge.mockImplementationOnce(async () => {
+      throw new Error("fetch failed");
+    });
+    await kit.open([kit.day({ blocks: twoBlocks() })]);
+    kit.pick("Merge 3 blocks into one");
+    fireEvent.click(kit.btn("Merge"));
+    await kit.settle();
+    expect(texts()).toContain("Couldn't reach the worklog service");
+    expect(document.querySelector(".task-day-plain")).toBeNull();
+  });
+});
+
 describe("Merge blocks into one", () => {
   it("is offered only with two or more blocks", async () => {
     await kit.open();
@@ -112,6 +137,13 @@ describe("Merge blocks into one", () => {
     fireEvent.click(kit.btn("Cancel"));
     expect(merge.mock.calls.length).toBe(0);
     expect(kit.btns("Merge 3 blocks into one").length).toBe(1);
+  });
+
+  it("Cancel puts focus back on the Merge item", async () => {
+    await kit.open([kit.day({ blocks: twoBlocks() })]);
+    kit.pick("Merge 3 blocks into one");
+    fireEvent.click(kit.btn("Cancel"));
+    expect(document.activeElement).toBe(kit.btn("Merge 3 blocks into one"));
   });
 
   it("toasts the daemon's message when the merge fails", async () => {
@@ -154,6 +186,42 @@ describe("Move a block", () => {
     await kit.settle();
     expect(assign.mock.calls[0]).toEqual([1, null, "2026-10-01"]);
     expect(kit.calls(a.loadTicketBlocks).length).toBe(before + 1);
+  });
+
+  const other = { key: "ABC-2", summary: "Spike cache", status: "To Do", updated: null };
+  const option = () => [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((o) => o.textContent?.includes("ABC-2"))!;
+
+  it("opens straight onto the list of the board's tickets", async () => {
+    await kit.open([kit.day()], {}, [other]);
+    fireEvent.click(kit.btn(MOVE));
+    expect(option()).toBeTruthy();
+  });
+
+  it("on success reloads, says Moved to KEY (live region and toast) and focuses the day's toggle", async () => {
+    const { a, onAnnounce } = await kit.open([kit.day()], {}, [other]);
+    fireEvent.click(kit.btn(MOVE));
+    const before = kit.calls(a.loadTicketBlocks).length;
+    await act(async () => void fireEvent.click(option()));
+    await kit.settle();
+    expect(assign.mock.calls.at(-1)).toEqual([1, "ABC-2", "2026-10-01"]);
+    expect(kit.calls(a.loadTicketBlocks).length).toBe(before + 1);
+    expect(onAnnounce.mock.calls.at(-1)).toEqual(["Moved to ABC-2"]);
+    expect(texts()).toContain("Moved to ABC-2");
+    expect(document.querySelector(".task-block-picker")).toBeNull();
+    expect(document.activeElement).toBe(kit.toggle());
+  });
+
+  it("on failure keeps the picker open, and neither reloads nor announces", async () => {
+    assign.mockImplementationOnce(async () => ({ ok: false as const, error: "nope" }) as never);
+    const { a, onAnnounce } = await kit.open([kit.day()], {}, [other]);
+    fireEvent.click(kit.btn(MOVE));
+    const before = kit.calls(a.loadTicketBlocks).length;
+    await act(async () => void fireEvent.click(option()));
+    await kit.settle();
+    expect(texts()).toContain("Assign ticket failed — nope");
+    expect(document.querySelector(".task-block-picker")).not.toBeNull();
+    expect(kit.calls(a.loadTicketBlocks).length).toBe(before);
+    expect(onAnnounce.mock.calls.length).toBe(0);
   });
 
   it("keeps the link to the block page", async () => {

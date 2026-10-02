@@ -192,25 +192,36 @@ export function useDayOps({ taskKey, onSaved, day }: Common) {
   const [busy, setBusy] = useState<string | null>(null);
   const hasLine = day.line_seconds > 0 || day.line_text !== "";
 
-  async function regenerate() {
-    setBusy("Writing…");
-    const res = await regenerateTempoLineText({ day: day.day, jira_issue: taskKey });
-    setBusy(null);
-    if (!res.ok) return void toast.error(`Couldn't write new text — ${res.error}`);
-    toast.ok("New Tempo text written");
-    onSaved();
+  /** Runs one busy op: a rejected call (daemon unreachable) toasts and never leaves the busy label stuck. */
+  async function run(label: string, op: () => Promise<void>) {
+    setBusy(label);
+    try {
+      await op();
+    } catch {
+      toast.error("Couldn't reach the worklog service");
+    } finally {
+      setBusy(null);
+    }
   }
 
+  const regenerate = () =>
+    run("Writing…", async () => {
+      const res = await regenerateTempoLineText({ day: day.day, jira_issue: taskKey });
+      if (!res.ok) return void toast.error(`Couldn't write new text — ${res.error}`);
+      toast.ok("New Tempo text written");
+      onSaved();
+    });
+
   /** The earliest block keeps its place; the rest fold into it. */
-  async function merge() {
-    const [primary, ...rest] = [...day.blocks].sort((a, b) => a.started_at.localeCompare(b.started_at));
-    setBusy("Merging…");
-    const res = await mergeGroup(primary.id, rest.map((b) => b.id), day.day);
-    setBusy(null);
-    if (!res.ok) return void toast.error(`Merge failed — ${res.error}`);
-    toast.ok(`Merged ${day.blocks.length} blocks`);
-    onSaved();
-  }
+  const merge = () =>
+    run("Merging…", async () => {
+      const [primary, ...rest] = [...day.blocks].sort((a, b) => a.started_at.localeCompare(b.started_at));
+      const res = await mergeGroup(primary.id, rest.map((b) => b.id), day.day);
+      if (!res.ok) return void toast.error(`Merge failed — ${res.error}`);
+      toast.ok(`Merged ${day.blocks.length} blocks`);
+      onSaved();
+    });
+
   return { busy, hasLine, regenerate, merge, blocks: day.blocks.length };
 }
 

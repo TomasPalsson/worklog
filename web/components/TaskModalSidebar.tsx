@@ -24,7 +24,7 @@ function Details({ task, detail, today, done, wide }: DetailsProps) {
   const priority = detail?.priority ?? task.priority;
   const updated = detail?.updated ?? task.updated;
   const due = detail?.due_date ?? task.due_date;
-  const labels = detail?.labels.length ? detail.labels : task.labels;
+  const labels = detail ? detail.labels : task.labels;
   // The cached row only knows whether the ticket is assigned to the Owner, not to whom.
   const assignee = detail ? detail.assignee : task.assigned ? "You" : null;
   // Always open beside the main column; on small screens a toggle, closed to start with.
@@ -83,12 +83,16 @@ export interface SidebarProps {
   onTempo: () => void;
   /** Reload the work log once the Time card has pulled fresh Tempo numbers. */
   onPulled?: () => void | Promise<void>;
+  /** Try the work log again after it failed to load. */
+  onRetry?: () => void;
+  /** Dialog live region. */
+  onAnnounce?: (message: string) => void;
   /** At the widths with a sidebar; below that the status and time sit under the title instead. */
   wide: boolean;
 }
 
-export function TaskModalSidebar({ task, actions, today, detail, shown, syncedAt, load, onStatus, onTempo, onPulled, wide }: SidebarProps) {
-  const time = <TimeCard task={task} detail={detail} load={load} onTempo={onTempo} onPulled={onPulled} />;
+export function TaskModalSidebar({ task, actions, today, detail, shown, syncedAt, load, onStatus, onTempo, onPulled, onRetry, onAnnounce, wide }: SidebarProps) {
+  const time = <TimeCard task={task} detail={detail} load={load} onTempo={onTempo} onPulled={onPulled} onRetry={onRetry} onAnnounce={onAnnounce} />;
   return (
     <aside className="task-modal-side" aria-label={`Details for ${task.key}`}>
       {wide && (

@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, type Ref } from "react";
+import { useEffect, useRef, useState, type Ref } from "react";
 import { MoreHorizontal } from "lucide-react";
 
 import type { DayOps } from "./TaskDayTools";
@@ -25,6 +25,14 @@ export function DayMenu({ label, byHand, busy, btn, onEditHours, onUseTracked, o
   const wrap = useRef<HTMLSpanElement>(null);
   useMenuDismiss(open, wrap, () => (setOpen(false), setConfirm(false)));
   const [confirm, setConfirm] = useState(false);
+  const mergeItem = useRef<HTMLButtonElement>(null);
+  const cancelled = useRef(false);
+  // Cancel unmounts the Cancel button: focus goes back to the Merge item it replaced (or the trigger if that is gone).
+  useEffect(() => {
+    if (confirm || !cancelled.current) return;
+    cancelled.current = false;
+    (mergeItem.current ?? wrap.current?.querySelector("button"))?.focus();
+  }, [confirm]);
   const items: [string, () => void, string?][] = [["Edit hours", onEditHours]];
   if (byHand) items.push(["Use tracked time", onUseTracked]);
   items.push(["Edit Tempo text", onEditText]);
@@ -65,7 +73,7 @@ export function DayMenu({ label, byHand, busy, btn, onEditHours, onUseTracked, o
             </button>
           ))}
           {canMerge && !confirm && (
-            <button type="button" role="menuitem" disabled={busy} onClick={() => setConfirm(true)}>
+            <button ref={mergeItem} type="button" role="menuitem" disabled={busy} onClick={() => setConfirm(true)}>
               {`Merge ${ops.blocks} blocks into one`}
             </button>
           )}
@@ -86,7 +94,14 @@ export function DayMenu({ label, byHand, busy, btn, onEditHours, onUseTracked, o
               >
                 Merge
               </button>
-              <button type="button" role="menuitem" onClick={() => setConfirm(false)}>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  cancelled.current = true;
+                  setConfirm(false);
+                }}
+              >
                 Cancel
               </button>
             </span>

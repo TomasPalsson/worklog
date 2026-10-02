@@ -31,8 +31,9 @@ const text = () => (document.querySelector(".task-time") as HTMLElement).textCon
 describe("today", () => {
   it("builds the view", () => {
     expect(todayView(today())).toEqual({
-      worked: "~2h 15m",
+      worked: "about 2h 15m",
       tempo: "1h 30m in Tempo",
+      tempoValue: "1h 30m",
       gap: "45m not in Tempo yet",
       level: false,
       ticket: "45m worked · 30m in Tempo",
@@ -45,7 +46,8 @@ describe("today", () => {
 
   it("says worked vs in Tempo for the day, the gap in the warn tone, and the ticket on its own line", () => {
     card(loaded());
-    expect(text()).toContain("You worked ~2h 15m · 1h 30m in Tempo");
+    const figs = [...document.querySelectorAll(".task-fig")].map((f) => f.textContent);
+    expect(figs).toEqual(["about 2h 15mWorked", "1h 30mIn Tempo"]);
     expect(screen.getByText("45m not in Tempo yet").getAttribute("data-tone")).toBe("changed");
     expect(screen.getByText("This ticket: 45m worked · 30m in Tempo")).toBeTruthy();
   });
@@ -55,7 +57,7 @@ describe("today", () => {
     expect(screen.getByText("Up to date").getAttribute("data-tone")).toBe("ok");
     cleanup();
     card(loaded({ today: today({ in_tempo_seconds: null }) }));
-    expect(text()).toContain("You worked ~2h 15m · not pulled yet");
+    expect([...document.querySelectorAll(".task-fig")].map((f) => f.textContent)).toEqual(["about 2h 15mWorked", "Not pulled yetIn Tempo"]);
   });
 });
 
@@ -97,21 +99,23 @@ describe("refresh", () => {
   it("says when the numbers are from and pulls this week, then reloads the work log", async () => {
     const pull = mock(async (_monday: string) => ({ ok: true as const, data: {} }));
     const onPulled = mock(() => {});
-    card(loaded({ pulled_at: "2026-10-02T14:05:00+00:00" }), { pull, onPulled });
-    expect(document.querySelector(".task-time-foot")?.textContent).toMatch(/^Tempo numbers from \d\d:\d\d · Refresh$/);
-    await act(async () => void fireEvent.click(screen.getByRole("button", { name: "Refresh" })));
+    const onAnnounce = mock((_m: string) => {});
+    card(loaded({ pulled_at: "2026-10-02T14:05:00+00:00" }), { pull, onPulled, onAnnounce });
+    expect(document.querySelector(".task-time-foot")?.textContent).toMatch(/^Tempo numbers from \d\d:\d\d · Refresh from Tempo$/);
+    await act(async () => void fireEvent.click(screen.getByRole("button", { name: "Refresh from Tempo" })));
     expect(pull.mock.calls[0]).toEqual([mondayOf(localToday())]);
     expect(onPulled.mock.calls.length).toBe(1);
+    expect(onAnnounce.mock.calls[0]).toEqual(["Tempo numbers updated"]);
   });
 
   it("is busy while pulling", async () => {
     let finish!: (v: unknown) => void;
     const pull = mock(() => new Promise((r) => (finish = r)));
     card(loaded({ pulled_at: "2026-10-02T14:05:00Z" }), { pull });
-    await act(async () => void fireEvent.click(screen.getByRole("button", { name: "Refresh" })));
+    await act(async () => void fireEvent.click(screen.getByRole("button", { name: "Refresh from Tempo" })));
     expect((screen.getByRole("button", { name: "Refreshing…" }) as HTMLButtonElement).disabled).toBe(true);
     await act(async () => finish({ ok: true, data: {} }));
-    expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Refresh from Tempo" })).toBeTruthy();
   });
 
   it("toasts the daemon's message when the pull fails", async () => {
@@ -120,17 +124,28 @@ describe("refresh", () => {
     const pull = mock(async () => ({ ok: false as const, error: "tempo is down" }));
     const onPulled = mock(() => {});
     card(loaded({ pulled_at: "2026-10-02T14:05:00Z" }), { pull, onPulled });
-    await act(async () => void fireEvent.click(screen.getByRole("button", { name: "Refresh" })));
+    await act(async () => void fireEvent.click(screen.getByRole("button", { name: "Refresh from Tempo" })));
     off();
     expect(seen.map((m) => m.text)).toContain("tempo is down");
     expect(onPulled.mock.calls.length).toBe(0);
   });
 
-  it("offers Pull now when never pulled, and nothing while the work log loads", () => {
+  it("offers Pull now when never pulled", () => {
     card(loaded({ pulled_at: null }));
     expect(document.querySelector(".task-time-foot")?.textContent).toBe("Tempo not pulled yet · Pull now");
-    cleanup();
+  });
+
+  it("holds one line, Loading Tempo numbers…, while the work log loads", () => {
     card({ s: "loading" });
-    expect(document.querySelector(".task-time-foot")).toBeNull();
+    expect(document.querySelectorAll(".task-time-foot").length).toBe(1);
+    expect(document.querySelector(".task-time-foot")?.textContent).toBe("Loading Tempo numbers…");
+  });
+
+  it("says it could not load and Try again calls the retry", () => {
+    const onRetry = mock(() => {});
+    card({ s: "error", error: "down" } as never, { onRetry });
+    expect(document.querySelector(".task-time-foot")?.textContent).toBe("Couldn't load Tempo numbers · Try again");
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(onRetry.mock.calls.length).toBe(1);
   });
 });

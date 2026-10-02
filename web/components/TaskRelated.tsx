@@ -18,13 +18,13 @@ export interface TaskRelatedProps {
   onOpen?: (key: string) => void;
 }
 
-const origin = (url: string): string | null => {
-  try {
-    return new URL(url).origin;
-  } catch {
-    return null;
-  }
+/** Jira's base for `/browse/KEY` links, keeping a context path (`https://host/jira`); null when the url is not a ticket url. */
+const jiraBase = (url: string): string | null => {
+  const at = url.lastIndexOf("/browse/");
+  return at > 0 ? url.slice(0, at) : null;
 };
+
+const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 export function fileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -93,7 +93,7 @@ function Capped<T>({ items, noun, render }: { items: T[]; noun: string; render: 
 function File({ a }: { a: Attachment }) {
   const who = [a.author, a.created && formatStamp(a.created)].filter(Boolean).join(" · ");
   return (
-    <a className="task-rel-row" href={a.url} target="_blank" rel="noreferrer">
+    <a className="task-rel-row task-rel-file" href={a.url} target="_blank" rel="noreferrer">
       <Paperclip size={14} aria-hidden="true" />
       <span className="task-rel-summary">{a.filename}</span>
       <span className="task-rel-meta">{[fileSize(a.size_bytes), who].filter(Boolean).join(" · ")}</span>
@@ -112,7 +112,7 @@ export function TaskRelated({ detail, knownKeys, onOpen }: TaskRelatedProps) {
   if (!detail) return null;
   const { parent, subtasks, links, attachments } = detail;
   if (!parent && !subtasks.length && !links.length && !attachments.length) return null;
-  const base = origin(detail.url);
+  const base = jiraBase(detail.url);
   const row = (issue: IssueRef) => <IssueRow issue={issue} base={base} knownKeys={knownKeys} onOpen={onOpen} />;
   const done = subtasks.filter((s) => s.status_category === "done").length;
   return (
@@ -134,8 +134,8 @@ export function TaskRelated({ detail, knownKeys, onOpen }: TaskRelatedProps) {
       )}
       {groupLinks(links).map(([relation, issues]) => (
         <div key={relation} className="task-rel-group">
-          <h4 className="task-rel-head">{relation}</h4>
-          <Capped items={issues} noun={`issues that ${relation}`} render={row} />
+          <h4 className="task-rel-head">{sentence(relation)}</h4>
+          <Capped items={issues} noun="linked issues" render={row} />
         </div>
       ))}
       {attachments.length > 0 && (

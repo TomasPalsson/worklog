@@ -46,7 +46,15 @@ function LineText({ text }: { text: string }) {
   );
 }
 
-function BlockRow({ block, fresh, tickets, onMoved }: { block: RawBlock; fresh: boolean; tickets: JiraTicket[]; onMoved: () => void }) {
+interface BlockRowProps {
+  block: RawBlock;
+  fresh: boolean;
+  tickets: JiraTicket[];
+  onMoved: () => void | Promise<void>;
+  onAnnounce?: (message: string) => void;
+}
+
+function BlockRow({ block, fresh, tickets, onMoved, onAnnounce }: BlockRowProps) {
   const row = useRef<HTMLAnchorElement>(null);
   useEffect(() => {
     if (fresh) row.current?.scrollIntoView?.({ block: "nearest" });
@@ -69,7 +77,7 @@ function BlockRow({ block, fresh, tickets, onMoved }: { block: RawBlock; fresh: 
           <span className="task-sr">Opens the block page</span>
         </span>
       </Link>
-      <BlockMove block={block} tickets={tickets} onMoved={onMoved} />
+      <BlockMove block={block} tickets={tickets} onMoved={onMoved} onAnnounce={onAnnounce} />
     </li>
   );
 }
@@ -149,22 +157,25 @@ export function DayGroup({ day, taskKey, actions, onSaved, onAnnounce, logged, e
           {hours.error}
         </p>
       )}
-      {expanded && <DayBody day={day} editingText={editing === "text"} freshId={logged?.id} tickets={tickets} onMoved={onSaved} />}
+      {expanded && (
+        <DayBody day={day} editingText={editing === "text"} freshId={logged?.id} tickets={tickets} onMoved={onSaved} onAnnounce={onAnnounce} />
+      )}
     </div>
   );
 }
 
 /** What an open day adds: why the hours are what they are, the Tempo text, and the blocks. */
-function DayBody(p: { day: TicketDay; editingText: boolean; freshId?: number; tickets: JiraTicket[]; onMoved: () => void }) {
-  const { day, editingText, freshId, tickets, onMoved } = p;
+function DayBody(p: Pick<BlockRowProps, "tickets" | "onMoved" | "onAnnounce"> & { day: TicketDay; editingText: boolean; freshId?: number }) {
+  const { day, editingText, freshId, tickets, onMoved, onAnnounce } = p;
   const note = hoursNote(day);
   return (
     <div className="task-day-body">
       {!editingText && day.line_text && <LineText text={day.line_text} />}
       {note && <p className="task-day-note">{note}</p>}
+      {chipOf(day.blocks) === "Changed since sent" && <p className="task-day-note">{changedNote(day)}</p>}
       <ul className="task-block-list">
         {day.blocks.map((b) => (
-          <BlockRow key={b.id} block={b} fresh={freshId === b.id} tickets={tickets} onMoved={onMoved} />
+          <BlockRow key={b.id} block={b} fresh={freshId === b.id} tickets={tickets} onMoved={onMoved} onAnnounce={onAnnounce} />
         ))}
       </ul>
     </div>

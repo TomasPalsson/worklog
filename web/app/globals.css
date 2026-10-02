@@ -5887,7 +5887,7 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 }
 .task-review:hover { text-decoration-thickness: 2px; }
 .task-review:focus-visible { outline: none; border-radius: var(--radius-sm); box-shadow: var(--ring); }
-.task-side-foot { margin: 0; font-size: 12px; color: var(--fg-subtle); }
+.task-side-foot { margin: 0; font-size: 12px; color: var(--fg-muted); }
 .task-prose { max-width: 72ch; margin: 0; font-size: 14px; line-height: 1.6; white-space: pre-wrap; color: var(--fg); }
 .task-prose:not([data-open]) { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; }
 .task-more {
@@ -6264,7 +6264,8 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
   .task-rel-row, .task-rel-more { min-height: 40px; }
 }
 @media (max-width: 759px) {
-  .task-rel-meta { display: none; }
+  .task-rel-file { flex-wrap: wrap; }
+  .task-rel-file .task-rel-meta { flex: 1 0 100%; padding-left: 22px; white-space: normal; }
 }
 
 /* ── ticket-full: work log ── */
@@ -6282,12 +6283,29 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
 .task-today, .task-estimate { display: grid; gap: 4px; min-width: 0; }
 .task-today-ticket { font-size: 12px; color: var(--fg-muted); }
 .task-meter { display: block; height: 6px; border-radius: var(--radius-sm); background: var(--bg-sunk); overflow: hidden; }
-.task-meter > span { display: block; height: 100%; background: var(--sage-ink); }
+.task-meter > span { display: block; width: 100%; height: 100%; background: var(--sage-ink); transform-origin: left; transition: transform 150ms cubic-bezier(0.25, 1, 0.5, 1); }
 .task-meter[data-over] > span { background: var(--amber-ink); }
-.task-time-foot { margin: 12px 0 0; font-size: 12px; color: var(--fg-subtle); }
+.task-time-foot { margin: 12px 0 0; font-size: 12px; color: var(--fg-muted); }
 .task-time-foot .task-review { min-height: 36px; font-size: 12px; }
 .task-time-foot .task-review:disabled { color: var(--fg-subtle); cursor: progress; text-decoration: none; }
 .task-modal-side .task-time { min-width: 0; }
 @media (pointer: coarse) {
   .task-time-foot .task-review { min-height: 40px; }
+}
+
+/* ── ticket-full: fix1 ── */
+.task-figs { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; min-width: 0; }
+.task-fig { display: grid; gap: 2px; min-width: 0; font-variant-numeric: tabular-nums; }
+.task-fig-value { font-size: 15px; font-weight: 600; color: var(--fg); }
+.task-fig-label { font-size: 12px; color: var(--fg-muted); }
+.task-summary-line .task-tempo { margin-left: 8px; }
+.task-rel-row, .task-rel-more { transition: background-color 150ms cubic-bezier(0.25, 1, 0.5, 1), transform 150ms cubic-bezier(0.25, 1, 0.5, 1); }
+.task-rel-row:active, .task-rel-more:active, .task-block-move:active, .task-time-foot .task-review:active:not(:disabled) { transform: translateY(1px); }
+.task-block-move { transition: background-color 150ms cubic-bezier(0.25, 1, 0.5, 1), transform 150ms cubic-bezier(0.25, 1, 0.5, 1); }
+.task-block-picker .combobox { position: relative; flex: 1 1 200px; min-width: 0; }
+.task-block-picker .combobox-popover { left: 0; right: 0; width: auto; max-width: 100%; }
+@media (prefers-reduced-motion: reduce) {
+  .task-rel-row, .task-rel-more, .task-block-move { transition: none; }
+  .task-meter > span { transition: none; }
+  .task-rel-row:active, .task-rel-more:active, .task-block-move:active, .task-time-foot .task-review:active:not(:disabled) { transform: none; }
 }

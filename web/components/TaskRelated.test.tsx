@@ -38,7 +38,7 @@ describe("TaskRelated", () => {
     });
     render(<TaskRelated detail={d} />);
     expect(screen.getByRole("heading", { name: "Related" })).toBeTruthy();
-    expect(screen.getAllByRole("heading", { level: 4 }).map((h) => h.textContent)).toEqual(["Parent", "Subtasks 1 of 2 done", "blocks", "is blocked by"]);
+    expect(screen.getAllByRole("heading", { level: 4 }).map((h) => h.textContent)).toEqual(["Parent", "Subtasks 1 of 2 done", "Blocks", "Is blocked by"]);
     expect(screen.getByText("Summary GENAI-1")).toBeTruthy();
     expect(screen.getByText("Done").getAttribute("data-category")).toBe("done");
   });

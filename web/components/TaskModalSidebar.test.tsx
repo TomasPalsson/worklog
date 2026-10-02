@@ -114,7 +114,7 @@ describe("status button", () => {
 
 describe("Details", () => {
   it("lists assignee, priority, type, due, labels and updated from the live detail", async () => {
-    open(actions(), row({ due_date: "2026-10-30", labels: ["backend", "auth"] }));
+    open(actions({ loadTicketDetail: mock(async () => ({ ok: true as const, data: detail({ labels: ["backend", "auth"] }) })) }), row({ due_date: "2026-10-30" }));
     await screen.findByText(/Steps to reproduce/);
     const d = ".task-details";
     expect(value(d, "Assignee").textContent).toBe("Ada");

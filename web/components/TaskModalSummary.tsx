@@ -5,7 +5,7 @@ import { Fragment } from "react";
 import { formatDuration } from "@/lib/format";
 import type { TaskRow } from "@/lib/types";
 import type { TaskActions } from "./TaskCard";
-import { todayView } from "./TaskModalTime";
+import { TodayGap, todayView } from "./TaskModalTime";
 import { tempoState } from "./tempoState";
 import { StatusButton, type Shown } from "./TaskStatusButton";
 import type { BlocksLoad } from "./useWorkLog";
@@ -25,7 +25,7 @@ export function TaskModalSummary({ task, actions, shown, load, onStatus, onTempo
   const today = todayView(load.s === "ok" ? load.data.today : undefined);
   const parts = [
     <span key="week">{`This week ${formatDuration(task.week_seconds)}`}</span>,
-    task.today_seconds > 0 && <span key="today">{`Today ${formatDuration(task.today_seconds)}`}</span>,
+    !today && task.today_seconds > 0 && <span key="today">{`Today ${formatDuration(task.today_seconds)}`}</span>,
     tempo &&
       (tempo.review ? (
         <button key="tempo" type="button" className="task-review" onClick={onTempo}>
@@ -48,7 +48,12 @@ export function TaskModalSummary({ task, actions, shown, load, onStatus, onTempo
           </Fragment>
         ))}
       </p>
-      {today && <p className="task-summary-line">{`Today ${today.worked} worked ·${today.tempo}`}</p>}
+      {today && (
+        <p className="task-summary-line">
+          {`Today ${today.worked} worked · ${today.tempo}`}
+          <TodayGap view={today} />
+        </p>
+      )}
     </div>
   );
 }

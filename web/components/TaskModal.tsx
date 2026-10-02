@@ -3,7 +3,7 @@
 import { useEffect, useId, useRef, useState, type MutableRefObject, type ReactNode, type RefObject } from "react";
 import { ExternalLink, X } from "lucide-react";
 
-import type { StatusCategory, TaskRow, TicketComment, TicketDetail } from "@/lib/types";
+import type { JiraTicket, StatusCategory, TaskRow, TicketComment, TicketDetail } from "@/lib/types";
 import { TaskActivity, useActivityTab, type Tab } from "./TaskActivity";
 import type { TaskActions } from "./TaskCard";
 import { ParentRow, TypeIcon } from "./TaskCardMeta";
@@ -30,6 +30,8 @@ export interface TaskModalProps {
   /** Board keys and how to open one; related issues not on the board open in Jira. */
   knownKeys?: Set<string>;
   onOpenTicket?: (key: string) => void;
+  /** The board's tickets, offered first in the work log's Move picker. */
+  tickets?: JiraTicket[];
 }
 
 interface HeadProps {
@@ -177,6 +179,7 @@ export function TaskModal(props: TaskModalProps) {
               onPosted={m.posted}
               onMoved={m.report}
               onEngage={engage}
+              tickets={props.tickets}
             />
           </div>
           <TaskModalSidebar
@@ -190,6 +193,8 @@ export function TaskModal(props: TaskModalProps) {
             onStatus={m.report}
             onTempo={m.jumpTo}
             onPulled={work.refetch}
+            onRetry={work.retry}
+            onAnnounce={m.setAnnounce}
             wide={wide}
           />
         </div>

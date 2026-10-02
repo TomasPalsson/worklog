@@ -16,6 +16,10 @@ interface Props {
   current: string | null;
   tickets: JiraTicket[];
   day: string;
+  /** Called once an assign settles (ok or not) with the key it was for (null = cleared). */
+  onAssigned?: (ok: boolean, key: string | null) => void;
+  /** Start with the list open. */
+  defaultOpen?: boolean;
 }
 
 /** Debounce, in ms, between the last keystroke and the live Jira search.
@@ -27,8 +31,8 @@ const SEARCH_DEBOUNCE_MS = 300;
  *  queries explode the JQL match set without giving useful suggestions. */
 const SEARCH_MIN_LEN = 2;
 
-export function TicketCombobox({ blockId, current, tickets, day }: Props) {
-  const [open, setOpen] = useState(false);
+export function TicketCombobox({ blockId, current, tickets, day, onAssigned, defaultOpen = false }: Props) {
+  const [open, setOpen] = useState(defaultOpen);
   const [createOpen, setCreateOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
@@ -172,6 +176,7 @@ export function TicketCombobox({ blockId, current, tickets, day }: Props) {
     startTransition(async () => {
       const res = await assignTicket(blockId, key, day);
       if (!res.ok) toast.error(`Assign ticket failed — ${res.error}`);
+      onAssigned?.(res.ok, key);
     });
   };
 
@@ -180,6 +185,7 @@ export function TicketCombobox({ blockId, current, tickets, day }: Props) {
     startTransition(async () => {
       const res = await assignExternalTicket(blockId, ticket, day);
       if (!res.ok) toast.error(`Assign ticket failed — ${res.error}`);
+      onAssigned?.(res.ok, ticket.key);
     });
   };
 
