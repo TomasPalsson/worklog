@@ -68,6 +68,23 @@ export function relativeAge(iso: string, now: Date): string {
   return `${Math.floor(min / 1440)}d ago`;
 }
 
+const AGO = new Intl.RelativeTimeFormat("en", { numeric: "always" });
+
+/** `just now` / `5 minutes ago` / `3 hours ago` / `2 days ago`; empty when `iso` doesn't parse. */
+export function relativeWords(iso: string, now: Date): string {
+  const t = new Date(iso.replace(/([+-]\d\d)(\d\d)$/, "$1:$2")).getTime();
+  if (Number.isNaN(t)) return "";
+  const min = Math.floor((now.getTime() - t) / 60_000);
+  if (min < 1) return "just now";
+  if (min < 60) return AGO.format(-min, "minute");
+  if (min < 1440) return AGO.format(-Math.floor(min / 60), "hour");
+  return AGO.format(-Math.floor(min / 1440), "day");
+}
+
+/** `Grace Hopper` becomes `GH`; one name gives its first letter; blank gives `?`. */
+export const initials = (name: string): string =>
+  name.trim().split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("") || "?";
+
 /** Bar heights in px: scaled to `maxSeconds`, at least 2px, 2px stub for an idle day. */
 export const sparkHeights = (daySeconds: number[], maxSeconds: number, maxPx = 16): number[] =>
   daySeconds.map((s) => (s > 0 ? Math.max(2, Math.round((s / Math.max(maxSeconds, 1)) * maxPx)) : 2));

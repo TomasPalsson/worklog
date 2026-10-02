@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type MutableRefObject } from "react";
+import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { Sparkles, X } from "lucide-react";
 
 import type { TicketStatus, Transition } from "@/lib/types";
@@ -81,20 +81,41 @@ function Count({ n }: { n: number }) {
   );
 }
 
-export function TaskComposer(props: Props) {
+/** One quiet field until it is used; focus or any text opens the count, Draft with AI, suggestion and Post. */
+export function TaskComposer({ focusSignal = 0, ...props }: Props & { focusSignal?: number }) {
   const c = useComposer(props);
+  const [focused, setFocused] = useState(false);
+  const box = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (focusSignal > 0) box.current?.focus();
+  }, [focusSignal]);
+  const expanded = focused || c.text !== "" || c.suggested !== null || c.error !== null || c.busy;
   return (
-    <form className="task-composer" onSubmit={(e) => e.preventDefault()}>
-      <label htmlFor="task-composer-text" className="task-label">
-        Add a comment
-      </label>
+    <form
+      className="task-composer"
+      data-expanded={expanded || undefined}
+      onSubmit={(e) => e.preventDefault()}
+      onFocus={() => setFocused(true)}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget)) setFocused(false);
+      }}
+    >
       <textarea
-        id="task-composer-text"
+        ref={box}
+        aria-label="Add a comment"
+        placeholder="Add a comment…"
         rows={1}
-        data-filled={c.text !== "" || undefined}
         value={c.text}
         onChange={(e) => c.setText(e.target.value)}
       />
+      {expanded && <ComposerBody c={c} />}
+    </form>
+  );
+}
+
+function ComposerBody({ c }: { c: ReturnType<typeof useComposer> }) {
+  return (
+    <>
       <div className="task-composer-meta">
         <Count n={c.text.length} />
         {c.suggested && (
@@ -106,7 +127,8 @@ export function TaskComposer(props: Props) {
           </span>
         )}
       </div>
-      <div className="task-composer-actions">
+      {/* mousedown must not pull focus off the field, or the buttons would vanish before the click lands */}
+      <div className="task-composer-actions" onMouseDown={(e) => e.preventDefault()}>
         <button type="button" className="task-btn-secondary" disabled={c.busy} onClick={c.draft}>
           <Sparkles size={13} aria-hidden="true" />
           {c.busyWith === "draft" ? "Drafting…" : "Draft with AI"}
@@ -125,6 +147,6 @@ export function TaskComposer(props: Props) {
           {c.error}
         </p>
       )}
-    </form>
+    </>
   );
 }

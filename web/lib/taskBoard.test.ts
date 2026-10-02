@@ -6,7 +6,9 @@ import {
   dueState,
   formatStamp,
   movesInto,
+  initials,
   relativeAge,
+  relativeWords,
   shortDate,
   sparkHeights,
   ticketCount,
@@ -90,6 +92,23 @@ describe("card helpers", () => {
     expect(relativeAge("2026-10-02T09:00:00Z", now)).toBe("3h ago");
     expect(relativeAge("2026-09-30T12:00:00.000+0000", now)).toBe("2d ago");
     expect(relativeAge("nope", now)).toBe("");
+  });
+
+  it("relativeWords spells the age out and tolerates Jira offsets", () => {
+    const now = new Date("2026-10-02T12:00:00Z");
+    expect(relativeWords("2026-10-02T11:59:30Z", now)).toBe("just now");
+    expect(relativeWords("2026-10-02T11:59:00Z", now)).toBe("1 minute ago");
+    expect(relativeWords("2026-10-02T11:15:00Z", now)).toBe("45 minutes ago");
+    expect(relativeWords("2026-10-02T09:00:00Z", now)).toBe("3 hours ago");
+    expect(relativeWords("2026-09-30T12:00:00.000+0000", now)).toBe("2 days ago");
+    expect(relativeWords("nope", now)).toBe("");
+  });
+
+  it("initials takes up to two words and never comes back empty", () => {
+    expect(initials("Grace Hopper")).toBe("GH");
+    expect(initials("Linus")).toBe("L");
+    expect(initials("ada king lovelace")).toBe("AK");
+    expect(initials("  ")).toBe("?");
   });
 
   it("sparkHeights scales to the max, floors at 2px", () => {
