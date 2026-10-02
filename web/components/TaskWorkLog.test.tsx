@@ -162,7 +162,7 @@ describe("TaskWorkLog read", () => {
 
   it("empty state", async () => {
     show(actions({ loadTicketBlocks: loads([]) }));
-    expect(await screen.findByText("No work logged on ABC-1 yet.")).toBeTruthy();
+    expect(await screen.findByText("Nothing tracked on ABC-1 yet. Time from your sessions lands here on its own — or log it by hand.")).toBeTruthy();
   });
 
   it("loading skeleton", () => {

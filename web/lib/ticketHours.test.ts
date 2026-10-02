@@ -11,7 +11,7 @@ const TODAY = "2026-10-02"; // Friday; Monday is 2026-09-28
 
 describe("ticketHours", () => {
   it("is all zero for no days", () => {
-    expect(ticketHours(data([]), TODAY)).toEqual({ total: 0, week: 0, month: 0, days: 0, first: null, last: null, unsent: 0, uninvoiced: 0 });
+    expect(ticketHours(data([]), TODAY)).toEqual({ total: 0, week: 0, month: 0, days: 0, first: null, last: null, unsent: 0, uninvoiced: 0, tracked: 0, unsentDays: 0 });
   });
 
   it("splits week and month on their boundaries", () => {

@@ -27,21 +27,21 @@ function Ledger({ h, today, onTempo }: { h: TicketHours; today: string; onTempo:
   return (
     <>
       <div className="task-hours-head">
-        <span className="task-hours-total" title="Billed hours: each day rounded up to the half hour">{formatDuration(h.total)}</span>
+        <span className="task-hours-total">{formatDuration(h.total)}</span>
         <span className="task-hours-of">on this ticket</span>
       </div>
-      <p className="task-hours-sub">{`${plural(h.days)} · ${first === last && h.last === today ? "" : `${first === last ? first : `${first} – ${last}`} · `}Last worked ${relativeDay(h.last as string, today)}`}</p>
+      <p className="task-hours-sub">{`${plural(h.days)} · ${first === last && h.last === today ? "" : `${first === last ? first : `${first} – ${last}`} · `}Last worked ${relativeDay(h.last as string, today)}${h.tracked > 0 && h.tracked !== h.total ? ` · rounded up per day from ${formatDuration(h.tracked)} tracked` : ""}`}</p>
       <div className="task-hours-figs">
         <Figure value={formatDuration(h.week)} label="This week" />
         <Figure value={formatDuration(h.month)} label="This month" />
         <Figure value={h.unsent > 0 ? formatDuration(h.unsent) : "All sent"} label="To send to Tempo" tone={h.unsent > 0 ? "none" : "ok"}>
           {h.unsent > 0 && (
             <button type="button" className="task-review" onClick={onTempo}>
-              Show unsent day
+              {h.unsentDays === 1 ? "Show unsent day" : `Show ${h.unsentDays} unsent days`}
             </button>
           )}
         </Figure>
-        <Figure value={h.uninvoiced > 0 ? formatDuration(h.uninvoiced) : "All invoiced"} label="Not invoiced" tone={h.uninvoiced > 0 ? "none" : "ok"}>
+        <Figure value={h.uninvoiced > 0 ? formatDuration(h.uninvoiced) : "All invoiced"} label="Not invoiced" tone={h.uninvoiced > 0 ? undefined : "ok"}>
           {h.uninvoiced > 0 && (
             <Link href="/billing" className="task-review">
               Go to billing

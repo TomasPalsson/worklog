@@ -6309,6 +6309,9 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
 .task-hours-sub { margin: 4px 0 0; font-size: 13px; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
 .task-hours-figs { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 16px 24px; margin-top: 16px; min-width: 0; }
 .task-hours .task-fig-value { font-size: 18px; }
+.task-hours .task-review { display: inline-flex; align-items: center; min-height: 24px; }
+.task-time .task-figs { grid-template-columns: 1fr; gap: 8px; }
+.task-time .task-fig-value { white-space: nowrap; }
 .task-worklog-title { margin: 24px 0 8px; }
 .task-desc-fold { margin-top: 24px; }
 .task-desc-fold > summary { cursor: pointer; font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); min-height: 32px; }

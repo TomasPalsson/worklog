@@ -80,7 +80,7 @@ function Figure({ value, label }: { value: string; label: string }) {
 /** The card's focal point: what was worked today against what Tempo has, side by side. */
 function TodayRow({ view }: { view: TodayView }) {
   return (
-    <Row term="Today">
+    <Row term="Today, all tickets">
       <span className="task-today">
         <span className="task-figs">
           <Figure value={view.worked} label="Worked" />

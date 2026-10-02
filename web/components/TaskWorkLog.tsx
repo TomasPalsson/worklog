@@ -45,7 +45,7 @@ function Days({ data, taskKey, actions, work, onAnnounce, onLog, logBtn, logged,
   if (n === 0) {
     return (
       <div className="task-empty-row">
-        <p className="task-empty">{`No work logged on ${taskKey} yet.`}</p>
+        <p className="task-empty">{`Nothing tracked on ${taskKey} yet. Time from your sessions lands here on its own — or log it by hand.`}</p>
         {onLog && <LogButton btn={logBtn} onClick={onLog} />}
       </div>
     );
@@ -114,10 +114,12 @@ export function TaskWorkLog({
 
   return (
     <div className="task-work">
-      <div ref={head} className="task-work-head">
-        <span className="task-work-summary">{load.s === "ok" && load.data.days.length > 0 ? summary(load.data) : ""}</span>
-        {!logging && !empty && <LogButton btn={logBtn} onClick={() => setLogging(true)} />}
-      </div>
+      {!empty && (
+        <div ref={head} className="task-work-head">
+          <span className="task-work-summary">{load.s === "ok" && load.data.days.length > 0 ? summary(load.data) : ""}</span>
+          {!logging && <LogButton btn={logBtn} onClick={() => setLogging(true)} />}
+        </div>
+      )}
       {logging && (
         <TaskLogTime
           taskKey={taskKey}

@@ -24,7 +24,7 @@ describe("TaskModal reading", () => {
   it("leads with the work log (no ledger on an empty ticket), then a collapsed Description, and loads the work log for the key", async () => {
     const a = actions();
     open(a);
-    expect(await screen.findByText("No work logged on ABC-1 yet.")).not.toBeNull();
+    expect(await screen.findByText("Nothing tracked on ABC-1 yet. Time from your sessions lands here on its own — or log it by hand.")).not.toBeNull();
     expect(calls(a.loadTicketBlocks)[0]).toEqual(["ABC-1"]);
     const labels = [...document.querySelectorAll(".task-modal-main .task-label")].map((n) => n.textContent);
     expect(labels).toEqual(["Work log", "Description"]);
@@ -160,7 +160,7 @@ describe("TaskModal closing", () => {
 
   it("Esc inside the log form closes the form, not the dialog", async () => {
     const { onClose } = open(actions());
-    await screen.findByText("No work logged on ABC-1 yet.");
+    await screen.findByText("Nothing tracked on ABC-1 yet. Time from your sessions lands here on its own — or log it by hand.");
     fireEvent.click(screen.getAllByRole("button", { name: "Log time" })[0]);
     expect(fireEvent.keyDown(screen.getByLabelText("What you did"), { key: "Escape" })).toBe(false);
     expect(screen.queryByLabelText("What you did")).toBeNull();

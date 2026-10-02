@@ -157,7 +157,7 @@ describe("log confirmation", () => {
 describe("empty state", () => {
   it("offers a Log time button that opens the form", async () => {
     await open([]);
-    expect(screen.getByText("No work logged on ABC-1 yet.")).toBeTruthy();
+    expect(screen.getByText("Nothing tracked on ABC-1 yet. Time from your sessions lands here on its own — or log it by hand.")).toBeTruthy();
     const buttons = btns("Log time");
     expect(buttons).toHaveLength(1); // only the empty row's; the head one is hidden
     fireEvent.click(buttons[0]);

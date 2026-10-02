@@ -48,6 +48,7 @@ describe("today", () => {
     card(loaded());
     const figs = [...document.querySelectorAll(".task-fig")].map((f) => f.textContent);
     expect(figs).toEqual(["about 2h 15mWorked", "1h 30mIn Tempo"]);
+    expect(document.querySelector(".task-time .task-row-term, .task-time dt")?.textContent).toBe("Today, all tickets");
     expect(screen.getByText("45m not in Tempo yet").getAttribute("data-tone")).toBe("changed");
     expect(screen.getByText("This ticket: 45m worked · 30m in Tempo")).toBeTruthy();
   });
