@@ -77,18 +77,20 @@ describe("TaskModal description clamp", () => {
     delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientHeight;
   });
 
-  it("fades a tall description under Show more and folds it back with Show less", async () => {
+  it("ends a tall description in a four-line clamp above Show more and folds it back with Show less", async () => {
     measure(400, 270);
     open(actions());
     const more = await screen.findByRole("button", { name: "Show more" });
     const prose = document.querySelector(".task-prose") as HTMLElement;
-    expect(prose.hasAttribute("data-clamped")).toBe(true);
+    expect(prose.hasAttribute("data-open")).toBe(false);
+    expect(more.className).toBe("task-more");
     expect(more.getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(more);
-    expect(prose.hasAttribute("data-clamped")).toBe(false);
+    expect(prose.hasAttribute("data-open")).toBe(true);
     expect(screen.getByRole("button", { name: "Show less" }).getAttribute("aria-expanded")).toBe("true");
     fireEvent.click(screen.getByRole("button", { name: "Show less" }));
-    expect(prose.hasAttribute("data-clamped")).toBe(true);
+    expect(prose.hasAttribute("data-open")).toBe(false);
+    expect(prose.hasAttribute("data-clamped")).toBe(false);
   });
 
   it("offers no toggle when the text fits", async () => {

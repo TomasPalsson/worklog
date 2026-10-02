@@ -76,20 +76,20 @@ function show(a: TaskActions = actions()) {
 
 async function ready(a: TaskActions = actions()) {
   const r = show(a);
-  await screen.findByText(/over \d+ days? · last 14 days$/);
+  await screen.findByText(/^\d+ days? · last 14 days$/);
   return r;
 }
 
 describe("TaskWorkLog read", () => {
-  it("summarises the total over the day count and loads for the key", async () => {
+  it("summarises the day count and loads for the key", async () => {
     const { a } = show();
-    expect(await screen.findByText("2h over 2 days · last 14 days")).toBeTruthy();
+    expect(await screen.findByText("2 days · last 14 days")).toBeTruthy();
     expect(calls(a.loadTicketBlocks)[0]).toEqual(["ABC-1"]);
   });
 
   it("says 1 day in the singular", async () => {
     show(actions({ loadTicketBlocks: loads([day()]) }));
-    expect(await screen.findByText("1h over 1 day · last 14 days")).toBeTruthy();
+    expect(await screen.findByText("1 day · last 14 days")).toBeTruthy();
   });
 
   it("groups newest first with plain day labels", async () => {
@@ -110,9 +110,9 @@ describe("TaskWorkLog read", () => {
         ]),
       }),
     );
-    expect(screen.getByText("In Tempo")).toBeTruthy();
+    expect(screen.getByText("Sent")).toBeTruthy();
     expect(screen.getByText("Changed since sent")).toBeTruthy();
-    expect(screen.getByText("Not in Tempo")).toBeTruthy();
+    expect(screen.getByText("Not sent")).toBeTruthy();
   });
 
   it("shows line text and omits it when empty", async () => {
@@ -349,7 +349,7 @@ describe("sync to Tempo", () => {
     await ready(actions({ loadTicketBlocks: load, runSync: run }));
     fireEvent.click(screen.getByRole("button", { name: /^Send to Tempo, / }));
     fireEvent.click(await screen.findByRole("button", { name: "Send to Tempo" }));
-    expect(await screen.findByText("In Tempo")).toBeTruthy();
+    expect(await screen.findByText("Sent")).toBeTruthy();
     expect(screen.getByText("Sent to Tempo · 1h")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^Send to Tempo, / })).toBeNull();
   });

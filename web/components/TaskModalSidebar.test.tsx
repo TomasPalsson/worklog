@@ -170,16 +170,16 @@ describe("Details", () => {
 });
 
 describe("Time card", () => {
-  it("shows this week, today (left out at 0) and the last 14 days once the work log has loaded", async () => {
+  it("shows this week and today (left out at 0), and no second total: the tab count already says the last 14 days", async () => {
     open(withDays([day({ line_seconds: 5400 }), day({ day: "2026-09-30", line_seconds: 1800 })]));
     const t = ".task-time";
     expect(value(t, "This week").textContent).toBe("1h 30m");
     expect(value(t, "Today").textContent).toBe("30m");
-    expect(value(t, "Last 14 days").textContent).toBe("—");
-    await waitFor(() => expect(value(t, "Last 14 days").textContent).toBe("2h"));
+    expect(terms(t)).toEqual(["This week", "Today", "Tempo"]);
+    await waitFor(() => expect(value(t, "Tempo").textContent).toContain("not sent"));
     cleanup();
     open(actions(), row({ today_seconds: 0 }));
-    expect(terms(t)).toEqual(["This week", "Last 14 days", "Tempo"]);
+    expect(terms(t)).toEqual(["This week", "Tempo"]);
     await screen.findByText(/Steps to reproduce/);
   });
 
@@ -198,29 +198,31 @@ describe("Time card", () => {
         changedDay({ day: "2026-10-01" }),
       ]),
     );
-    await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("2 days not sent, 1 day changed since sent · Review"));
-    expect(value(".task-time", "Tempo").querySelectorAll("button")).toHaveLength(1); // said once, with one Review
+    await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("2 days not sent, 1 day changed since sent · Show day"));
+    expect(value(".task-time", "Tempo").querySelectorAll("button")).toHaveLength(1); // said once, with one Show day
   });
 
   it("says 1 day in the singular and shows a dash with nothing logged", async () => {
     open(withDays([day()]));
-    await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("1 day not sent · Review"));
+    await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("1 day not sent · Show day"));
     cleanup();
     open(actions());
     await screen.findByText(/Steps to reproduce/);
     expect(value(".task-time", "Tempo").textContent).toBe("—");
   });
 
-  it("Review is a button, the state beside it is plain text", async () => {
+  it("Show day is a button labelled for the first unsent day, the state beside it is plain text", async () => {
     open(withDays([changedDay()]));
-    await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("1 day changed since sent · Review"));
+    await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("1 day changed since sent · Show day"));
     const text = value(".task-time", "Tempo").querySelector("span.task-tempo") as HTMLElement;
     expect(text.getAttribute("data-tone")).toBe("changed");
     expect(text.tagName).toBe("SPAN");
-    expect(value(".task-time", "Tempo").querySelector("button")?.className).toBe("task-review");
+    const b = value(".task-time", "Tempo").querySelector("button") as HTMLElement;
+    expect(b.className).toBe("task-review");
+    expect(b.getAttribute("aria-label")).toBe("Show the first unsent day");
   });
 
-  it("clicking Review switches to the Work log and scrolls to the first such day", async () => {
+  it("clicking Show day switches to the Work log and scrolls to the first such day", async () => {
     window.localStorage.setItem("worklog.ticketTab", "comments");
     const scroll = mock((_o: unknown) => {});
     (HTMLElement.prototype as unknown as { scrollIntoView: unknown }).scrollIntoView = scroll;

@@ -14,9 +14,9 @@ describe("day row", () => {
       day({ day: "2026-10-02", blocks: [block({ tempo_worklog_id: "a", dirty: true })] }),
       day({ day: "2026-10-01" }),
     ]);
-    expect(screen.getByText("In Tempo").getAttribute("data-chip")).toBe("ok");
+    expect(screen.getByText("Sent").getAttribute("data-chip")).toBe("ok");
     expect(screen.getByText("Changed since sent").getAttribute("data-chip")).toBe("changed");
-    expect(screen.getByText("Not in Tempo").getAttribute("data-chip")).toBe("none");
+    expect(screen.getByText("Not sent").getAttribute("data-chip")).toBe("none");
   });
 
   it("is one line: chevron, label, plain hours and chip in the disclosure button, then the actions", async () => {
@@ -25,7 +25,7 @@ describe("day row", () => {
     const t = toggle();
     expect(t.parentElement?.tagName).toBe("H4");
     expect(t.querySelector(".task-day-chev")?.getAttribute("aria-hidden")).toBe("true");
-    expect([...t.children].map((c) => c.textContent)).toEqual(["", "Thu 1 Oct", "1h 30m", "Not in Tempo"]);
+    expect([...t.children].map((c) => c.textContent)).toEqual(["", "Thu 1 Oct", "1h 30m", "Not sent"]);
     // hours are text now; editing them lives in the menu
     expect(row.querySelector(".task-day-hours")?.tagName).toBe("SPAN");
     expect(row.querySelector(".task-day-hours")?.hasAttribute("title")).toBe(false);
@@ -47,9 +47,9 @@ describe("day row", () => {
   it("the summary sits in the head line, even with the form open", async () => {
     await open();
     const head = () => (document.querySelector(".task-work-head") as HTMLElement).textContent;
-    expect(head()).toContain("1h 30m over 1 day · last 14 days");
+    expect(head()).toContain("1 day · last 14 days");
     fireEvent.click(logTime());
-    expect(head()).toContain("1h 30m over 1 day · last 14 days");
+    expect(head()).toContain("1 day · last 14 days");
   });
 
   it("the next action sits right after the day, named Send; Update once it changed", async () => {
@@ -59,11 +59,33 @@ describe("day row", () => {
     ]);
     const send = btn("Send to Tempo, Thu 1 Oct");
     expect(send.textContent).toBe("Send to Tempo");
-    expect(screen.getByText("Not in Tempo").closest("h4")?.nextElementSibling).toBe(send);
+    expect(screen.getByText("Not sent").closest("h4")?.nextElementSibling).toBe(send);
     expect(btn("Update Tempo, Fri 2 Oct").textContent).toBe("Update Tempo");
   });
 
-  it("an In Tempo day has no send action", async () => {
+  it("Send to Tempo / Update Tempo carry the primary weight; Log time stays secondary", async () => {
+    await open([
+      day({ day: "2026-10-02", blocks: [block({ tempo_worklog_id: "a", dirty: true })] }),
+      day({ day: "2026-10-01" }),
+    ]);
+    for (const name of ["Send to Tempo, Thu 1 Oct", "Update Tempo, Fri 2 Oct"]) {
+      expect(btn(name).classList.contains("task-btn-primary")).toBe(true);
+      expect(btn(name).classList.contains("task-day-trigger")).toBe(true);
+    }
+    expect(logTime().classList.contains("task-btn-secondary")).toBe(true);
+    expect(logTime().classList.contains("task-btn-primary")).toBe(false);
+  });
+
+  it("the rounding note sits in the open body under the Tempo text, not under the header row", async () => {
+    await open([day({ line_seconds: 1800, tracked_seconds: 2400, line_text: "Worked on login" })]);
+    const body = document.querySelector(".task-day-body") as HTMLElement;
+    const kids = [...body.children].map((c) => c.className);
+    expect(kids.indexOf("task-day-text")).toBeLessThan(kids.indexOf("task-day-note"));
+    expect(document.querySelector(".task-day-row + .task-day-note")).toBeNull();
+    expect(document.querySelectorAll(".task-day > .task-day-note")).toHaveLength(0);
+  });
+
+  it("a sent day has no send action", async () => {
     await open([day({ blocks: [block({ tempo_worklog_id: "a" })] })]);
     expect(btns(/^Preview /)).toHaveLength(0);
     expect(more()).toBeTruthy();

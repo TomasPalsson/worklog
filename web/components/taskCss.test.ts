@@ -52,11 +52,12 @@ it("on phones the body is the one scroller: the columns neither scroll nor have 
 it("touch screens get 40px targets for the small icon, day, Log time and tab buttons", () => {
   const coarse = css.slice(css.indexOf("@media (pointer: coarse)"));
   expect(coarse).toContain(".task-icon-btn { min-width: 40px; min-height: 40px; }");
-  expect(coarse).toContain('.task-day-trigger, .task-log-open, .task-tabs [role="tab"] { min-height: 40px; }');
+  expect(coarse).toContain('.task-day-trigger, .task-log-open, .task-tabs [role="tab"], .task-more { min-height: 40px; }');
 });
 
 it("the description clamps to four lines, and a busy status button shows the progress cursor", () => {
-  expect(css).toContain(".task-prose:not([data-open]) { max-height: calc(14px * 1.6 * 4); overflow: hidden; }");
+  expect(css).toContain(".task-prose:not([data-open]) { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; }");
+  expect(css).not.toContain("mask-image: linear-gradient(to bottom, #000 calc(100% - 48px)"); // no ghost line, no fade
   expect(rule(".task-status:disabled, .task-menu button:disabled, .task-chooser button:disabled, .task-move-menu button:disabled")).toContain("cursor: progress");
 });
 
@@ -65,6 +66,48 @@ it("day rows keep label, hours and chip on one line and wrap the actions under t
   const phone = css.slice(css.indexOf("/* day rows: line 1"));
   expect(phone).toContain(".task-day-row { flex-wrap: wrap; justify-content: flex-end;");
   expect(phone).toContain(".task-day-head { flex: 1 0 100%; }");
+});
+
+const phoneRows = phone.slice(phone.indexOf("/* day rows: line 1"));
+
+it("phone day row: line 1 never wraps or overlaps, line 2 is a full-width action beside the menu", () => {
+  expect(phoneRows).toContain(".task-day-toggle { flex-wrap: nowrap; gap: 6px; padding: 0 4px; }");
+  expect(phoneRows).toContain(".task-day-chip { min-width: 0; overflow: hidden; text-overflow: ellipsis; }");
+  expect(phoneRows).toContain(".task-day-trigger { flex: 1 1 0; min-width: 0; margin-left: 32px; }");
+  expect(rule(".task-day-head")).toContain("min-width: 0"); // the head can shrink inside the row
+  expect(rule(".task-day-menu-wrap")).toContain("flex: none"); // the menu keeps its size; the button takes the rest
+});
+
+it("the day's send action is the primary button, compact: 32px, 40px on touch", () => {
+  expect(rule(".task-day-trigger")).toContain("min-height: 32px");
+  expect(rule(".task-log-open, .task-day-older")).toContain("min-height: 28px");
+});
+
+it("phone block rows stack: time and length, then the clamped description, chevron centred on the right", () => {
+  expect(phoneRows).toContain(".task-block-range { grid-column: 1; grid-row: 1; color: var(--fg-muted); }");
+  expect(phoneRows).toContain(".task-block-desc { grid-column: 1 / 4; grid-row: 2; }");
+  expect(phoneRows).toContain(".task-block-go { grid-column: 4; grid-row: 1 / 3; }");
+  expect(phoneRows).toContain('.task-block-dur::before { content: "· "; }');
+  expect(rule(".task-block-desc")).toContain("-webkit-line-clamp: 2");
+  expect(rule(".task-block-range, .task-block-dur")).toContain("font-size: 12px");
+});
+
+it("Show more is a plain 13px muted text button that underlines on hover", () => {
+  const more = css.slice(css.indexOf(".task-more {"), css.indexOf(".task-more:focus-visible"));
+  expect(more).toContain("font-size: 13px");
+  expect(more).toContain("color: var(--fg-muted)");
+  expect(more).toContain(".task-more:hover { text-decoration: underline; }");
+});
+
+it("tab count pills use full-strength text on the sunk fill (contrast), not muted", () => {
+  const r = rule(".task-tab-count");
+  expect(r).toContain("background: var(--bg-sunk)");
+  expect(r).toContain("color: var(--fg);");
+});
+
+it("the change-notice slip is hidden while the ticket dialog is open, and only then", () => {
+  expect(css).toContain('body:has(.task-modal[role="dialog"][aria-modal="true"]) .chg-slip { display: none; }');
+  expect(css.match(/\.chg-slip[^{]*\{[^}]*display: none/g)?.length).toBe(1); // no other rule hides it
 });
 
 it("the phone Jira link is a 40px icon with a right-anchored tooltip", () => {

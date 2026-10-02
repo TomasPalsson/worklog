@@ -6,18 +6,18 @@ import { Skeleton } from "./TaskSkeleton";
 import type { DetailLoad } from "./useTicketDetail";
 import { useOverflow } from "./useOverflow";
 
-/** Four lines are shown; longer text fades out under a Show more toggle (only when it really overflows). */
+/** Four lines are shown; longer text ends in an ellipsis above a Show more toggle (only when it really overflows). */
 function Prose({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
   const p = useRef<HTMLParagraphElement>(null);
   const overflows = useOverflow(p, text, open);
   return (
     <>
-      <p ref={p} className="task-prose" data-open={open || undefined} data-clamped={(overflows && !open) || undefined}>
+      <p ref={p} className="task-prose" data-open={open || undefined}>
         {text}
       </p>
       {overflows && (
-        <button type="button" className="task-link-btn" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        <button type="button" className="task-more" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
           {open ? "Show less" : "Show more"}
         </button>
       )}

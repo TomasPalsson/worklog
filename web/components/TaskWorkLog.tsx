@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Plus } from "lucide-react";
 
-import { formatDuration } from "@/lib/format";
 import type { TicketBlocks } from "@/lib/types";
 import { DayGroup } from "./TaskDayGroup";
 import { TaskLogTime } from "./TaskLogTime";
@@ -20,8 +19,7 @@ function LogButton({ onClick, btn }: { onClick: () => void; btn?: React.Ref<HTML
   );
 }
 
-const summary = ({ days }: TicketBlocks) =>
-  `${formatDuration(days.reduce((sum, d) => sum + d.line_seconds, 0))} over ${days.length} ${days.length === 1 ? "day" : "days"} · last 14 days`;
+const summary = ({ days }: TicketBlocks) => `${days.length} ${days.length === 1 ? "day" : "days"} · last 14 days`;
 
 type Logged = { id: number; day: string; duration: string };
 

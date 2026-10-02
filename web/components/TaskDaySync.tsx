@@ -71,7 +71,7 @@ export function useSync({ taskKey, actions, onSaved, onAnnounce, label, day, cha
 
 export type Sync = ReturnType<typeof useSync>;
 
-/** Small secondary button on the day row; hidden once the day is in Tempo or while the preview is open. */
+/** Compact primary button on the day row; hidden once the day is in Tempo or while the preview is open. */
 export function SyncTrigger({ sync, label, inTempo, changed }: { sync: Sync; label: string; inTempo: boolean; changed: boolean }) {
   const { step } = sync;
   if (inTempo || step.s === "sent" || step.s === "preview") return null;
@@ -79,7 +79,7 @@ export function SyncTrigger({ sync, label, inTempo, changed }: { sync: Sync; lab
     <button
       ref={sync.trigger}
       type="button"
-      className="task-btn-secondary task-day-trigger"
+      className="task-btn-primary task-day-trigger"
       aria-label={`${changed ? "Update Tempo" : "Send to Tempo"}, ${label}`}
       disabled={step.s === "running"}
       onClick={sync.dryRun}

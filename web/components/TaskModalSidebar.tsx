@@ -9,7 +9,7 @@ import type { TaskActions } from "./TaskCard";
 import { DueChip, Labels, PriorityGlyph, TypeIcon } from "./TaskCardMeta";
 import { tempoState } from "./tempoState";
 import { StatusButton, type Shown } from "./TaskStatusButton";
-import { workSeconds, type BlocksLoad } from "./useWorkLog";
+import type { BlocksLoad } from "./useWorkLog";
 
 function Row({ term, children }: { term: string; children: ReactNode }) {
   return (
@@ -72,7 +72,7 @@ function Details({ task, detail, today, done, wide }: DetailsProps) {
   );
 }
 
-/** Said once: the state in words, and for days still to send a Review button that jumps to the first of them. */
+/** Said once: the state in words, and for days still to send a Show day button that jumps to the first of them. */
 function TempoRow({ load, onTempo }: { load: BlocksLoad; onTempo: () => void }) {
   const tempo = tempoState(load);
   if (!tempo) return <span className="task-none">—</span>;
@@ -84,8 +84,8 @@ function TempoRow({ load, onTempo }: { load: BlocksLoad; onTempo: () => void }) 
       {tempo.review && (
         <>
           <span aria-hidden="true">{" · "}</span>
-          <button type="button" className="task-review" onClick={onTempo}>
-            Review
+          <button type="button" className="task-review" aria-label="Show the first unsent day" onClick={onTempo}>
+            Show day
           </button>
         </>
       )}
@@ -94,7 +94,6 @@ function TempoRow({ load, onTempo }: { load: BlocksLoad; onTempo: () => void }) 
 }
 
 function TimeCard({ task, load, onTempo }: { task: TaskRow; load: BlocksLoad; onTempo: () => void }) {
-  const fortnight = workSeconds(load);
   return (
     <section className="task-side-card task-time" aria-labelledby="task-time-label">
       <h3 id="task-time-label" className="task-label">
@@ -103,7 +102,6 @@ function TimeCard({ task, load, onTempo }: { task: TaskRow; load: BlocksLoad; on
       <dl>
         <Row term="This week">{formatDuration(task.week_seconds)}</Row>
         {task.today_seconds > 0 && <Row term="Today">{formatDuration(task.today_seconds)}</Row>}
-        <Row term="Last 14 days">{fortnight === null ? "—" : formatDuration(fortnight)}</Row>
         <Row term="Tempo">
           <TempoRow load={load} onTempo={onTempo} />
         </Row>

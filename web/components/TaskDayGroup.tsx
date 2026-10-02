@@ -13,16 +13,16 @@ import { DaySent, HoursEdit, TextEdit, hoursNote, useHoursWrite } from "./TaskDa
 import { changedNote } from "./TaskSyncPreview";
 import { useOverflow } from "./useOverflow";
 
-export type Chip = "In Tempo" | "Changed since sent" | "Not in Tempo";
+export type Chip = "Sent" | "Changed since sent" | "Not sent";
 
 const synced = (b: RawBlock) => !!b.tempo_worklog_id;
 
 export function chipOf(blocks: RawBlock[]): Chip {
   if (blocks.some((b) => synced(b) && b.dirty)) return "Changed since sent";
-  return blocks.every(synced) ? "In Tempo" : "Not in Tempo";
+  return blocks.every(synced) ? "Sent" : "Not sent";
 }
 
-export const CHIP_TONE: Record<Chip, string> = { "In Tempo": "ok", "Changed since sent": "changed", "Not in Tempo": "none" };
+export const CHIP_TONE: Record<Chip, string> = { Sent: "ok", "Changed since sent": "changed", "Not sent": "none" };
 
 /** "Thu 1 Oct". */
 export const dayLabel = (day: string) =>
@@ -87,7 +87,7 @@ export function DayGroup({ day, taskKey, actions, onSaved, onAnnounce, logged, e
   const label = dayLabel(day.day);
   const changed = chip === "Changed since sent";
   const tools = { taskKey, actions, onSaved, onAnnounce, label, day };
-  const sync = useSync({ ...tools, inTempo: chip === "In Tempo", changed });
+  const sync = useSync({ ...tools, inTempo: chip === "Sent", changed });
   const hours = useHoursWrite(tools);
   const [editing, setEditing] = useState<"hours" | "text" | null>(null);
   const more = useRef<HTMLButtonElement>(null);
@@ -114,7 +114,7 @@ export function DayGroup({ day, taskKey, actions, onSaved, onAnnounce, logged, e
             </span>
           </button>
         </h4>
-        <SyncTrigger sync={trigger} label={label} inTempo={chip === "In Tempo"} changed={changed} />
+        <SyncTrigger sync={trigger} label={label} inTempo={chip === "Sent"} changed={changed} />
         <DayMenu
           label={label}
           byHand={day.hours_set_by_hand}
@@ -144,9 +144,9 @@ function DayBody({ day, changed, editingText, freshId }: { day: TicketDay; chang
   const note = hoursNote(day);
   return (
     <div className="task-day-body">
+      {!editingText && day.line_text && <LineText text={day.line_text} />}
       {note && <p className="task-day-note">{note}</p>}
       {changed && <p className="task-day-note">{changedNote(day)}</p>}
-      {!editingText && day.line_text && <LineText text={day.line_text} />}
       <ul className="task-block-list">
         {day.blocks.map((b) => (
           <BlockRow key={b.id} block={b} fresh={freshId === b.id} />
