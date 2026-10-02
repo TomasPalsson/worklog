@@ -14,8 +14,8 @@ use serde_json::{json, Value};
 use crate::collectors::jira::{self, JiraAuth};
 use crate::estimate::{self, ModelInvoker};
 use crate::tempo_hub_contract::{
-    CommentBody, HubError, TasksResponse, TicketDraft, TicketStatus, Transition, TransitionBody,
-    COMMENT_MAX_CHARS,
+    CommentBody, HubError, TasksResponse, TicketDetail, TicketDraft, TicketStatus, Transition,
+    TransitionBody, COMMENT_MAX_CHARS,
 };
 use crate::{line_text, repo, secrets, task_board, task_draft, tz};
 
@@ -105,6 +105,19 @@ pub async fn list_tasks(
     })
     .await?;
     Ok(Json(response))
+}
+
+pub async fn detail(
+    State(_state): State<Shared>,
+    AxumPath(key): AxumPath<String>,
+) -> Result<Json<TicketDetail>, ApiError> {
+    validated_key(&key)?;
+    let auth = JiraAuth::from_secrets()?;
+    let detail = jira_call(auth, move |auth, client| {
+        jira::fetch_detail_with(auth, &key, client)
+    })
+    .await?;
+    Ok(Json(detail))
 }
 
 pub async fn list_transitions(

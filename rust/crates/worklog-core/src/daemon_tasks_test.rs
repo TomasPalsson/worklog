@@ -165,6 +165,8 @@ async fn a_malformed_ticket_key_is_a_400_on_every_ticket_route() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _) = call(&state, post("/tickets/not-a-key/draft", "{}")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = call(&state, get("/tickets/not-a-key/detail")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test(flavor = "current_thread")]
