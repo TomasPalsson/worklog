@@ -6313,3 +6313,8 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
 /* ── ticket-full: fix2 — sidebar Tempo state stacks above its action (no orphan dot) ── */
 .task-time .task-tempo-line { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
 .task-time .task-tempo-act > [aria-hidden="true"] { display: none; }
+
+/* A ticket line whose Generate/Regenerate failed: the reason stays on the card, with a retry. */
+.ticket-line-error { font-size: 12px; line-height: 1.4; color: var(--terracotta-ink); overflow-wrap: anywhere; }
+.ticket-line-error button { padding: 0; border: 0; background: none; color: inherit; font: inherit; text-decoration: underline; cursor: pointer; }
+.ticket-line-error button:focus-visible { outline: none; box-shadow: var(--ring); border-radius: 2px; }

@@ -158,6 +158,17 @@ describe("TicketGroup line text", () => {
     expect(regenerate.mock.calls[0][0]).toEqual(key);
   });
 
+  it("keeps a failed regenerate's reason on the card, and Try again retries", async () => {
+    regenerate.mockImplementationOnce(async () => ({ ok: false, error: "model unreachable" }) as never);
+    renderGroup(group(), line());
+    fireEvent.click(screen.getByRole("button", { name: /Regenerate/ }));
+    const alert = await screen.findByText(/Couldn't write a new text — model unreachable/);
+    expect(alert.closest('[role="alert"]')).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(regenerate).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText(/Couldn't write a new text/)).toBeNull());
+  });
+
   it("returns focus to Edit text after the editor closes", () => {
     renderGroup(group(), line());
     fireEvent.click(screen.getByRole("button", { name: /Edit text/ }));

@@ -63,6 +63,7 @@ export function TicketGroup({
   const verb = line?.text_origin ? "regenerate" : "generate";
   // Regenerating over the Owner's own text takes a second click, like Sync.
   const [confirmReplace, setConfirmReplace] = useState(false);
+  const [genError, setGenError] = useState<string | null>(null);
   const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const disarmReplace = () => {
     if (confirmTimer.current) clearTimeout(confirmTimer.current);
@@ -87,6 +88,7 @@ export function TicketGroup({
 
   const beginEdit = () => {
     disarmReplace();
+    setGenError(null);
     setDraft(lineText);
     setEditing(true);
   };
@@ -113,9 +115,12 @@ export function TicketGroup({
       return;
     }
     disarmReplace();
+    setGenError(null);
     startTransition(async () => {
       const r = await regenerate(lineKey);
       if (!r.ok) {
+        // Stays on the card (a toast alone is easy to miss), with a retry.
+        setGenError(r.error);
         toast.error(`Couldn't ${verb} — ${r.error}`);
         return;
       }
@@ -268,6 +273,15 @@ export function TicketGroup({
                           : "Regenerate"}
                   </button>
                 </span>
+                {genError && !pending && (
+                  <span className="ticket-line-error" role="alert">
+                    {`Couldn't write a new text — ${genError}`}
+                    <span aria-hidden="true">{" · "}</span>
+                    <button type="button" onClick={regenerateLine}>
+                      Try again
+                    </button>
+                  </span>
+                )}
               </>
             )}
               </span>

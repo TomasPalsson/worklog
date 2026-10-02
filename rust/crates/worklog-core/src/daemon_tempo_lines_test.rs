@@ -250,3 +250,47 @@ async fn failed_generation_stores_no_text_and_is_not_counted() {
         .unwrap();
     assert_eq!(retried, vec![key()]);
 }
+
+fn state_with_one_block_line() -> Shared {
+    let conn = open_memory().unwrap();
+    conn.execute(
+        "INSERT INTO blocks (day, jira_issue, started_at, ended_at, duration_seconds, description)
+         VALUES (?1, 'APRO-1', '2026-09-30T09:00:00+00:00', '2026-09-30T10:00:00+00:00', 3600, 'Alpha')",
+        params![DAY],
+    )
+    .unwrap();
+    state_from_conn(conn)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn forced_regenerate_asks_the_model_even_for_a_single_description() {
+    let state = state_with_one_block_line();
+    let forced = generate_tempo_lines(state.clone(), DAY.to_string(), Some(key()), fixed_invoker)
+        .await
+        .unwrap();
+    assert_eq!(forced, vec![key()]);
+    let (_, lines) = call(&state, get_day()).await;
+    assert_eq!(lines[0]["text"], "Implement alpha and beta");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn forced_regenerate_fails_loudly_when_the_model_fails() {
+    let state = state_with_two_block_line();
+    let err = generate_tempo_lines(state.clone(), DAY.to_string(), Some(key()), failing_invoker)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("model unreachable"), "{err}");
+    let (_, lines) = call(&state, get_day()).await;
+    assert_eq!(lines[0]["text"], serde_json::Value::Null);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn unforced_generation_still_copies_a_single_description_without_the_model() {
+    let state = state_with_one_block_line();
+    let generated = generate_tempo_lines(state.clone(), DAY.to_string(), None, failing_invoker)
+        .await
+        .unwrap();
+    assert_eq!(generated, vec![key()]);
+    let (_, lines) = call(&state, get_day()).await;
+    assert_eq!(lines[0]["text"], "Alpha");
+}

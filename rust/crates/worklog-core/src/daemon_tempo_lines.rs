@@ -85,6 +85,21 @@ where
     }
     let texts = tokio::task::spawn_blocking(move || -> Result<Vec<_>> {
         let invoker = make_invoker()?;
+        if forced {
+            // An explicit Generate/Regenerate always asks the model and fails loudly.
+            return pending
+                .into_iter()
+                .map(|(key, descriptions, hash)| {
+                    let text = tempo_lines::rewrite_text(
+                        invoker.as_ref(),
+                        &key,
+                        &descriptions,
+                        line_text::LINE_TEXT_MODEL,
+                    )?;
+                    Ok((key, text, hash))
+                })
+                .collect();
+        }
         Ok(pending
             .into_iter()
             .filter_map(|(key, descriptions, hash)| {
