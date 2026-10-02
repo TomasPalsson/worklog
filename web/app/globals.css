@@ -6208,3 +6208,61 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 .closeout td:last-child { text-align: center; color: var(--sage-ink); }
 .closeout tr.closeout-gap { background: var(--amber-bg); color: var(--amber-ink); }
 .closeout tr.closeout-gap td:last-child { color: var(--amber-ink); font-weight: 600; }
+
+/* ── ticket-full: related ── */
+.task-related { margin-top: 24px; }
+.task-rel-group { margin-top: 16px; }
+.task-rel-head { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--fg-muted); }
+.task-rel-list { margin: 0; padding: 0; list-style: none; }
+.task-rel-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
+.task-rel-row:focus-visible, .task-rel-more:focus-visible { outline: none; box-shadow: var(--ring); }
+.task-rel-row > svg { flex: none; color: var(--fg-subtle); }
+.task-rel-key { flex: none; font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); }
+.task-rel-summary, .task-rel-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-rel-summary { flex: 1 1 auto; }
+.task-rel-meta { flex: 0 1 auto; font-size: 12px; color: var(--fg-muted); }
+.task-rel-pill {
+  flex: none;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunk);
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 20px;
+}
+.task-rel-pill[data-category="indeterminate"] { background: var(--amber-bg); color: var(--amber-ink); }
+.task-rel-pill[data-category="done"] { background: var(--sage-bg); color: var(--sage-ink); }
+.task-rel-more {
+  min-height: 36px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 13px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+@media (pointer: coarse) {
+  .task-rel-row, .task-rel-more { min-height: 40px; }
+}
+@media (max-width: 759px) {
+  .task-rel-meta { display: none; }
+}

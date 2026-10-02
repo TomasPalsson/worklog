@@ -10,6 +10,7 @@ import { ParentRow, TypeIcon } from "./TaskCardMeta";
 import type { Drafts } from "./TaskComposer";
 import { TaskDescription } from "./TaskDescription";
 import { CopyKey } from "./TaskCopyKey";
+import { TaskRelated } from "./TaskRelated";
 import { TaskModalSidebar } from "./TaskModalSidebar";
 import { TaskModalSummary } from "./TaskModalSummary";
 import type { Shown } from "./TaskStatusButton";
@@ -26,6 +27,9 @@ export interface TaskModalProps {
   onClose: () => void;
   drafts?: MutableRefObject<Drafts>;
   onStatus: (next: { status: string | null; status_category: StatusCategory | null }) => void;
+  /** Board keys and how to open one; related issues not on the board open in Jira. */
+  knownKeys?: Set<string>;
+  onOpenTicket?: (key: string) => void;
 }
 
 interface HeadProps {
@@ -159,6 +163,7 @@ export function TaskModal(props: TaskModalProps) {
             <Title id={titleId} task={task} />
             {!wide && <TaskModalSummary task={task} actions={actions} shown={m.shown} load={work.load} onStatus={m.report} onTempo={m.jumpTo} />}
             <TaskDescription taskKey={task.key} load={load} retry={retry} />
+            <TaskRelated detail={detail} knownKeys={props.knownKeys} onOpen={props.onOpenTicket} />
             <TaskActivity
               tab={tab}
               onTab={(t) => choose(t, true)}
