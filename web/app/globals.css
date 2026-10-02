@@ -4368,7 +4368,8 @@ button {
 .reg-actions [data-tip]::after,
 .reg-page-header > [data-tip]::after,
 .task-move [data-tip]::after,
-.task-icon-btn[data-tip]::after {
+.task-icon-btn[data-tip]::after,
+.task-modal-jira-icon[data-tip]::after {
   left: auto;
   right: 0;
   translate: 0 -3px;
@@ -4382,7 +4383,9 @@ button {
 .task-move [data-tip]:hover::after,
 .task-move [data-tip]:focus-visible::after,
 .task-icon-btn[data-tip]:hover::after,
-.task-icon-btn[data-tip]:focus-visible::after {
+.task-icon-btn[data-tip]:focus-visible::after,
+.task-modal-jira-icon[data-tip]:hover::after,
+.task-modal-jira-icon[data-tip]:focus-visible::after {
   translate: 0 0;
 }
 
@@ -5787,6 +5790,8 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 .task-crumb .task-key { font-size: 13px; color: var(--fg); }
 .task-modal-jira { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--fg-muted); }
 .task-modal-jira:hover { color: var(--fg); }
+.task-modal-jira-icon { position: relative; justify-content: center; width: 40px; height: 40px; border-radius: var(--radius-sm); }
+.task-modal-jira-icon:hover { background: var(--bg-sunk); }
 .task-modal-close {
   display: inline-grid;
   place-items: center;
@@ -5867,6 +5872,7 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 .task-dl-row dt { color: var(--fg-muted); }
 .task-dl-row dd { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .task-none { color: var(--fg-subtle); }
+.task-tempo-line { white-space: nowrap; }
 .task-tempo[data-tone="ok"] { color: var(--sage-ink); }
 .task-tempo[data-tone="changed"] { color: var(--amber-ink); }
 /* a control that reads as one: underlined and full-strength, unlike the muted text around it */
@@ -6033,6 +6039,7 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 .task-icon-btn:hover { background: var(--bg-sunk); color: var(--fg); }
 .task-icon-btn:focus-visible { outline: none; box-shadow: var(--ring); }
 .task-day-label { font-size: 13px; font-weight: 500; color: var(--fg); }
+.task-day-label, .task-day-hours, .task-day-chip { white-space: nowrap; }
 .task-day-note { margin: 0 0 4px; font-size: 12px; color: var(--fg-muted); }
 .task-day-hours { font-family: var(--font-mono); font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .task-day-chip {
@@ -6114,6 +6121,10 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
   .task-headline { font-size: 22px; line-height: 1.2; }
   .task-summary { display: grid; gap: 8px; }
   .task-summary-line { margin: 0; font-size: 13px; color: var(--fg-muted); }
+  /* day rows: line 1 is chevron, day, hours, chip; line 2 is the actions, right-aligned */
+  .task-day-row { flex-wrap: wrap; justify-content: flex-end; padding-bottom: 4px; }
+  .task-day-head { flex: 1 0 100%; }
+  .task-day-toggle { flex-wrap: wrap; row-gap: 2px; }
 }
 /* fingers: the small controls in the dialog reach 40px */
 @media (pointer: coarse) {

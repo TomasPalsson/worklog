@@ -97,7 +97,7 @@ describe("at phone width", () => {
   it("still offers Open in Jira", () => {
     viewport(false);
     open(actions());
-    expect(screen.getByRole("link", { name: /Open in Jira/ }).getAttribute("href")).toBe("https://x.atlassian.net/browse/ABC-1");
+    expect(screen.getByRole("link", { name: "Open ABC-1 in Jira" }).getAttribute("href")).toBe("https://x.atlassian.net/browse/ABC-1");
   });
 
   it("Details starts closed", () => {
@@ -116,5 +116,15 @@ describe("at phone width", () => {
     expect(details().hasAttribute("open")).toBe(false);
     v.set(true);
     expect(details().hasAttribute("open")).toBe(true);
+  });
+});
+
+describe("Jira link in the header", () => {
+  it("is icon-only on phones, named by its aria-label", () => {
+    viewport(false);
+    open(withDays([day()]));
+    const link = screen.getByRole("link", { name: "Open ABC-1 in Jira" });
+    expect(link.getAttribute("data-tip")).toBe("Open in Jira");
+    expect(link.textContent).toBe("");
   });
 });

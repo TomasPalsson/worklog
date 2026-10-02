@@ -77,7 +77,7 @@ function TempoRow({ load, onTempo }: { load: BlocksLoad; onTempo: () => void }) 
   const tempo = tempoState(load);
   if (!tempo) return <span className="task-none">—</span>;
   return (
-    <>
+    <span className="task-tempo-line">
       <span className="task-tempo" data-tone={tempo.tone}>
         {tempo.text}
       </span>
@@ -89,7 +89,7 @@ function TempoRow({ load, onTempo }: { load: BlocksLoad; onTempo: () => void }) 
           </button>
         </>
       )}
-    </>
+    </span>
   );
 }
 

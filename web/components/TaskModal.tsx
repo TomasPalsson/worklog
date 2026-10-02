@@ -37,6 +37,7 @@ interface HeadProps {
 }
 
 function Head({ task, type, url, onCopied, onClose }: HeadProps) {
+  const wide = useWide();
   return (
     <header className="task-modal-head">
       <div className="task-crumb">
@@ -49,10 +50,23 @@ function Head({ task, type, url, onCopied, onClose }: HeadProps) {
         <CopyKey taskKey={task.key} onCopied={onCopied} />
       </div>
       {url && (
-        <a href={url} target="_blank" rel="noreferrer" className="task-modal-jira">
-          Open in Jira
-          <ExternalLink size={12} aria-hidden="true" />
-        </a>
+        wide ? (
+          <a href={url} target="_blank" rel="noreferrer" className="task-modal-jira">
+            Open in Jira
+            <ExternalLink size={12} aria-hidden="true" />
+          </a>
+        ) : (
+          <a
+            href={url}
+            target="_blank"
+            rel="noreferrer"
+            className="task-modal-jira task-modal-jira-icon"
+            aria-label={`Open ${task.key} in Jira`}
+            data-tip="Open in Jira"
+          >
+            <ExternalLink size={16} aria-hidden="true" />
+          </a>
+        )
       )}
       <button type="button" className="task-modal-close" aria-label={`Close ${task.key}`} onClick={onClose}>
         <X size={16} aria-hidden="true" />

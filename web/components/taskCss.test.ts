@@ -59,3 +59,19 @@ it("the description clamps to four lines, and a busy status button shows the pro
   expect(css).toContain(".task-prose:not([data-open]) { max-height: calc(14px * 1.6 * 4); overflow: hidden; }");
   expect(rule(".task-status:disabled, .task-menu button:disabled, .task-chooser button:disabled, .task-move-menu button:disabled")).toContain("cursor: progress");
 });
+
+it("day rows keep label, hours and chip on one line and wrap the actions under them on phones", () => {
+  for (const sel of ["task-day-label", "task-day-hours", "task-day-chip"]) expect(css).toMatch(new RegExp(`\\.${sel}[^{]*\{[^}]*white-space: nowrap`));
+  const phone = css.slice(css.indexOf("/* day rows: line 1"));
+  expect(phone).toContain(".task-day-row { flex-wrap: wrap; justify-content: flex-end;");
+  expect(phone).toContain(".task-day-head { flex: 1 0 100%; }");
+});
+
+it("the phone Jira link is a 40px icon with a right-anchored tooltip", () => {
+  expect(css).toContain(".task-modal-jira-icon { position: relative; justify-content: center; width: 40px; height: 40px;");
+  expect(css).toContain(".task-modal-jira-icon[data-tip]::after {");
+});
+
+it("the Tempo value and its Review button never split across lines", () => {
+  expect(rule(".task-tempo-line")).toContain("white-space: nowrap");
+});
