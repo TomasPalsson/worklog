@@ -1117,14 +1117,18 @@ fn load_open_tickets(conn: &Connection, day: NaiveDate) -> Result<Vec<Candidate>
     // in-UI Jira search — those are intentionally hidden from the
     // estimator so Claude only ever auto-assigns from the user's actual
     // assignee=currentUser() set.
+    // A finished ticket stays pickable for DONE_GRACE_DAYS (late re-estimates), then drops out.
     let mut stmt = conn.prepare(
         "SELECT key, summary, status FROM jira_tickets
           WHERE external = 0
+            AND (COALESCE(status_category, '') != 'done'
+                 OR substr(COALESCE(updated, ''), 1, 10) >= ?1)
           ORDER BY updated DESC",
     )?;
     let active = ticket_activity::active_keys(conn, day)?;
+    let done_cutoff = (day - chrono::Duration::days(ticket_activity::DONE_GRACE_DAYS)).to_string();
     let rows = stmt
-        .query_map([], |r| {
+        .query_map([done_cutoff], |r| {
             Ok((
                 Candidate {
                     key: r.get(0)?,
@@ -3061,6 +3065,22 @@ mod tests {
         )
         .unwrap();
         assert_eq!(candidate_keys(&conn, "2026-09-28"), vec!["OLD-2"]);
+    }
+
+    #[test]
+    fn load_open_tickets_drops_done_tickets_after_a_week() {
+        let conn = open_memory().unwrap();
+        seed_ticket_row(&conn, "DONE-OLD", "To Do", "2026-09-11T10:00:00.000+0000");
+        seed_ticket_row(&conn, "DONE-NEW", "To Do", "2026-09-24T10:00:00.000+0000");
+        seed_ticket_row(&conn, "OPEN-1", "To Do", "2026-09-11T10:00:00.000+0000");
+        conn.execute(
+            "UPDATE jira_tickets SET status_category = 'done' WHERE key LIKE 'DONE-%'",
+            [],
+        )
+        .unwrap();
+        let mut keys = candidate_keys(&conn, "2026-09-28");
+        keys.sort();
+        assert_eq!(keys, vec!["DONE-NEW", "OPEN-1"]);
     }
 
     #[test]

@@ -6295,7 +6295,7 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
 
 /* ── ticket-full: fix1 ── */
 .task-figs { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; min-width: 0; }
-.task-fig { display: grid; gap: 2px; min-width: 0; font-variant-numeric: tabular-nums; }
+.task-fig { display: grid; align-content: start; gap: 2px; min-width: 0; font-variant-numeric: tabular-nums; }
 .task-fig-value { font-size: 15px; font-weight: 600; color: var(--fg); }
 .task-fig-label { font-size: 12px; color: var(--fg-muted); }
 .task-fig[data-tone="ok"] .task-fig-value { color: var(--sage-ink); }

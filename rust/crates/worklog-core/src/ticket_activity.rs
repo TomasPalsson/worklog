@@ -8,6 +8,9 @@ use std::collections::HashSet;
 /// A ticket with no Jira update and no hand/event-set block in this many days is stale.
 pub const STALE_DAYS: i64 = 30;
 
+/// A finished (status category done) ticket stays an AI candidate this long after its last Jira update.
+pub const DONE_GRACE_DAYS: i64 = 7;
+
 /// Statuses nobody bills against: Backlog, and cancelled-like closes.
 pub fn is_dead_status(status: Option<&str>) -> bool {
     let Some(status) = status else { return false };
