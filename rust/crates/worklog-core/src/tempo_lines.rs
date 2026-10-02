@@ -5,7 +5,8 @@
 use crate::billing::{block_interval, union_seconds};
 use crate::clues_contract::LineTextOrigin;
 use crate::collectors::tempo::{
-    round_to_half_hour, summarize_descriptions, try_summarize_descriptions,
+    ask_model, distinct_descriptions, round_to_half_hour, summarize_descriptions,
+    try_summarize_descriptions,
 };
 use crate::estimate::ModelInvoker;
 use crate::models::Block;
@@ -274,6 +275,24 @@ pub fn generate_text(
     model: &str,
 ) -> Option<String> {
     try_summarize_descriptions(invoker, &key.jira_issue, descriptions, model, false)
+}
+
+/// An explicit Generate/Regenerate: always asks the model (copying a lone
+/// description back would look like the button did nothing) and errors loudly.
+pub fn rewrite_text(
+    invoker: &dyn ModelInvoker,
+    key: &TempoLineKey,
+    descriptions: &[String],
+    model: &str,
+) -> Result<String> {
+    let unique = distinct_descriptions(descriptions);
+    if unique.is_empty() {
+        anyhow::bail!(
+            "no block on {} has a description yet — describe a block first",
+            key.jira_issue
+        );
+    }
+    ask_model(invoker, &key.jira_issue, &unique, model)
 }
 
 /// Stores generated text; a hand-written text is kept unless `force`.

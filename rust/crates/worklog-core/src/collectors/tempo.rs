@@ -834,7 +834,7 @@ pub(crate) fn summarize_descriptions(
         .unwrap_or_else(|| joined_descriptions(descriptions))
 }
 
-fn distinct_descriptions(descriptions: &[String]) -> Vec<String> {
+pub(crate) fn distinct_descriptions(descriptions: &[String]) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut unique: Vec<String> = Vec::new();
     for d in descriptions {
@@ -881,25 +881,33 @@ pub(crate) fn try_summarize_descriptions(
         return joined_fallback();
     };
 
-    let schema = description_response_schema();
-    let user_payload = json!({
-        "issue":              issue,
-        "block_descriptions": unique,
-    });
-    let user_msg = serde_json::to_string(&user_payload).unwrap_or_default();
-    let reply = match invoker.invoke(DESCRIPTION_SYSTEM_PROMPT, &user_msg, &schema, model) {
-        Ok(v) => v,
+    match ask_model(invoker, issue, &unique, model) {
+        Ok(text) => Some(text),
         Err(e) => {
             debug!(issue, error = %e, "description summariser failed");
-            return None;
+            None
         }
-    };
+    }
+}
+
+/// One model call over already-distinct descriptions; errors name what went wrong.
+pub(crate) fn ask_model(
+    invoker: &dyn ModelInvoker,
+    issue: &str,
+    unique: &[String],
+    model: &str,
+) -> anyhow::Result<String> {
+    let user_msg = serde_json::to_string(&json!({ "issue": issue, "block_descriptions": unique }))
+        .unwrap_or_default();
+    let schema = description_response_schema();
+    let reply = invoker.invoke(DESCRIPTION_SYSTEM_PROMPT, &user_msg, &schema, model)?;
     reply
         .get("description")
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(cap_description)
+        .ok_or_else(|| anyhow::anyhow!("the AI returned no text"))
 }
 
 /// Delete a worklog entry from Tempo. Used when the user deletes a
