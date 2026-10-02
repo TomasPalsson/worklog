@@ -71,7 +71,7 @@ pub fn invoke_many(
         .collect()
 }
 
-fn reply_to_text(reply: anyhow::Result<Value>) -> std::result::Result<String, String> {
+pub(crate) fn reply_to_text(reply: anyhow::Result<Value>) -> std::result::Result<String, String> {
     let reply = reply.map_err(|e| e.to_string())?;
     let text = reply
         .get("text")

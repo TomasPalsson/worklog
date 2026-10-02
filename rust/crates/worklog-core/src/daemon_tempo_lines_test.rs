@@ -69,7 +69,7 @@ fn key() -> TempoLineKey {
 
 fn fixed_invoker() -> anyhow::Result<Box<dyn ModelInvoker>> {
     Ok(Box::new(FixedInvoker(
-        serde_json::json!({"description": "Implement alpha and beta"}),
+        serde_json::json!({"text": "Lagaði villu í uppsetningu. Prófaði breytinguna."}),
     )))
 }
 
@@ -171,7 +171,7 @@ async fn generation_stores_text_once_and_skips_fresh_and_manual_lines_unless_for
     assert_eq!(generated, vec![key()]);
 
     let (_, lines) = call(&state, get_day()).await;
-    assert_eq!(lines[0]["text"], "Implement alpha and beta");
+    assert_eq!(lines[0]["text"], "Lagaði villu í uppsetningu. Prófaði breytinguna.");
     assert_eq!(lines[0]["text_origin"], "generated");
 
     let again = generate_tempo_lines(state.clone(), DAY.to_string(), None, fixed_invoker)
@@ -197,7 +197,7 @@ async fn generation_stores_text_once_and_skips_fresh_and_manual_lines_unless_for
         .unwrap();
     assert_eq!(forced, vec![key()]);
     let (_, lines) = call(&state, get_day()).await;
-    assert_eq!(lines[0]["text"], "Implement alpha and beta");
+    assert_eq!(lines[0]["text"], "Lagaði villu í uppsetningu. Prófaði breytinguna.");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -270,7 +270,7 @@ async fn forced_regenerate_asks_the_model_even_for_a_single_description() {
         .unwrap();
     assert_eq!(forced, vec![key()]);
     let (_, lines) = call(&state, get_day()).await;
-    assert_eq!(lines[0]["text"], "Implement alpha and beta");
+    assert_eq!(lines[0]["text"], "Lagaði villu í uppsetningu. Prófaði breytinguna.");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -284,52 +284,72 @@ async fn forced_regenerate_fails_loudly_when_the_model_fails() {
     assert_eq!(lines[0]["text"], serde_json::Value::Null);
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn unforced_generation_still_copies_a_single_description_without_the_model() {
-    let state = state_with_one_block_line();
-    let generated = generate_tempo_lines(state.clone(), DAY.to_string(), None, failing_invoker)
-        .await
-        .unwrap();
-    assert_eq!(generated, vec![key()]);
-    let (_, lines) = call(&state, get_day()).await;
-    assert_eq!(lines[0]["text"], "Alpha");
-}
+static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
-static SEEN: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
-
-fn recording_invoker() -> anyhow::Result<Box<dyn ModelInvoker>> {
-    struct Recording;
-    impl ModelInvoker for Recording {
+fn scripted_invoker(
+    replies: &'static [&'static str],
+) -> impl FnOnce() -> anyhow::Result<Box<dyn ModelInvoker>> {
+    struct Scripted(std::sync::Mutex<std::collections::VecDeque<&'static str>>);
+    impl ModelInvoker for Scripted {
         fn invoke(
             &self,
-            system: &str,
+            _system: &str,
             user: &str,
             _schema: &serde_json::Value,
             _model: &str,
         ) -> anyhow::Result<serde_json::Value> {
-            SEEN.lock()
-                .unwrap()
-                .push((system.to_string(), user.to_string()));
-            Ok(serde_json::json!({"description": "Reword alpha"}))
+            SEEN.lock().unwrap().push(user.to_string());
+            let text = self.0.lock().unwrap().pop_front().unwrap_or("x 1");
+            Ok(serde_json::json!({ "text": text }))
         }
     }
-    Ok(Box::new(Recording))
+    move || Ok(Box::new(Scripted(std::sync::Mutex::new(replies.iter().copied().collect()))) as Box<dyn ModelInvoker>)
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn forced_regenerate_hands_the_current_text_to_the_model_to_reword() {
+async fn unforced_generation_never_copies_english_when_the_model_fails() {
     let state = state_with_one_block_line();
-    generate_tempo_lines(state.clone(), DAY.to_string(), None, failing_invoker)
+    let generated = generate_tempo_lines(state.clone(), DAY.to_string(), None, failing_invoker)
         .await
         .unwrap();
-    SEEN.lock().unwrap().clear();
-    generate_tempo_lines(state.clone(), DAY.to_string(), Some(key()), recording_invoker)
-        .await
-        .unwrap();
-    let seen = SEEN.lock().unwrap().clone();
-    assert_eq!(seen.len(), 1);
-    assert!(seen[0].1.contains(r#""previous_text":"Alpha""#), "{}", seen[0].1);
-    assert!(seen[0].0.contains("noticeably different"), "{}", seen[0].0);
+    assert!(generated.is_empty());
     let (_, lines) = call(&state, get_day()).await;
-    assert_eq!(lines[0]["text"], "Reword alpha");
+    assert_eq!(lines[0]["text"], serde_json::Value::Null);
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn digit_reply_is_retried_then_stored_and_the_prompt_carries_the_descriptions() {
+    let state = state_with_two_block_line();
+    SEEN.lock().unwrap().clear();
+    let forced = generate_tempo_lines(
+        state.clone(),
+        DAY.to_string(),
+        Some(key()),
+        scripted_invoker(&["Lagaði 3 villur. Prófaði það.", "Lagaði villu. Prófaði það."]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(forced, vec![key()]);
+    let (_, lines) = call(&state, get_day()).await;
+    assert_eq!(lines[0]["text"], "Lagaði villu. Prófaði það.");
+    let seen = SEEN.lock().unwrap().clone();
+    assert_eq!(seen.len(), 2);
+    assert!(seen[0].contains("Alpha") && seen[0].contains("Beta"), "{}", seen[0]);
+    assert!(seen[1].contains("Síðasta svar var hafnað"), "{}", seen[1]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn three_bad_replies_fail_forced_loudly_and_store_nothing_unforced() {
+    let state = state_with_two_block_line();
+    let bad: &'static [&'static str] = &["a 1", "b 2", "c 3"];
+    let forced = generate_tempo_lines(state.clone(), DAY.to_string(), Some(key()), scripted_invoker(bad)).await;
+    let err = forced.unwrap_err();
+    assert!(err.to_string().contains("(reynt 3 sinnum)"), "{err}");
+    let unforced = generate_tempo_lines(state.clone(), DAY.to_string(), None, scripted_invoker(bad))
+        .await
+        .unwrap();
+    assert!(unforced.is_empty());
+    let (_, lines) = call(&state, get_day()).await;
+    assert_eq!(lines[0]["text"], serde_json::Value::Null);
+}
+
