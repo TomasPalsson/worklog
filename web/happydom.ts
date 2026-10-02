@@ -3,6 +3,13 @@
 // every other web test exercises pure logic and is unaffected — but the
 // registration itself is process-global, so it lives in one preload file
 // per Bun's own testing-library guide rather than per-test setup.
+import { afterEach } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 GlobalRegistrator.register();
+
+// The ticket dialog writes `?ticket=` to the address and remembers its tab; one test must never leak either into the next.
+afterEach(() => {
+  window.history.replaceState(null, "", "/");
+  window.localStorage.clear();
+});

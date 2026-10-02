@@ -254,16 +254,13 @@ describe("TaskBoard Move menu", () => {
     expect(items).toEqual(["Move to In Progress", "Move to Done"]);
   });
 
-  it("Esc closes the menu, returns focus to the Move button and keeps the panel open", async () => {
+  it("Esc closes the menu and returns focus to the Move button", async () => {
     render(<TaskBoard actions={actions()} tasks={tasks} />);
-    fireEvent.click(cardBtn("ABC-1"));
-    await screen.findByRole("dialog");
     const btn = screen.getByRole("button", { name: "Move ABC-1" });
     fireEvent.click(btn);
     fireEvent.keyDown(await screen.findByRole("menuitem", { name: "Move to Done" }), { key: "Escape" });
     expect(screen.queryByRole("menu")).toBeNull();
     expect(document.activeElement).toBe(btn);
-    expect(screen.queryByRole("dialog")).not.toBeNull();
   });
 });
 
@@ -341,6 +338,7 @@ describe("TaskBoard panel", () => {
   it("an unsent comment survives closing the panel and switching cards", async () => {
     render(<TaskBoard actions={actions()} tasks={tasks} />);
     fireEvent.click(cardBtn("ABC-1"));
+    fireEvent.click(await screen.findByRole("tab", { name: /Comments/ }));
     fireEvent.change(await screen.findByLabelText("Add a comment"), { target: { value: "half written" } });
     fireEvent.click(cardBtn("ABC-2"));
     expect((await screen.findByLabelText("Add a comment") as HTMLTextAreaElement).value).toBe("");

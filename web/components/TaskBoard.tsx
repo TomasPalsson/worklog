@@ -18,8 +18,9 @@ import type { TaskRow, Transition } from "@/lib/types";
 import { TaskCard, type TaskActions } from "./TaskCard";
 import type { Drafts } from "./TaskComposer";
 import { TaskColumn, type Chooser } from "./TaskColumn";
-import { TaskPanel, type TaskPanelProps } from "./TaskPanel";
+import { TaskModal, type TaskModalProps } from "./TaskModal";
 import { TaskToolbar } from "./TaskToolbar";
+import { useTicketUrl } from "./useTicketUrl";
 
 const realActions: TaskActions = {
   loadTransitions,
@@ -34,8 +35,11 @@ const realActions: TaskActions = {
   draftTicketUpdate,
 };
 
-type StatusPatch = Parameters<TaskPanelProps["onStatus"]>[0];
+type StatusPatch = Parameters<TaskModalProps["onStatus"]>[0];
 type Patch = (key: string, s: StatusPatch) => void;
+
+// Browsers without `inert` fall back to hiding the board from assistive tech.
+const HAS_INERT = typeof HTMLElement !== "undefined" && "inert" in HTMLElement.prototype;
 
 const focusCard = (key: string) =>
   document.querySelector<HTMLElement>(`[data-task-key="${key}"] .task-card-btn`)?.focus();
@@ -231,7 +235,7 @@ const EMPTY = (
 function useChooserEscape(active: boolean, cancel: () => void) {
   useEffect(() => {
     if (!active) return;
-    // Capture phase + preventDefault: the panel's Esc handler sees defaultPrevented and stays open.
+    // Capture phase + preventDefault: the dialog's Esc handler sees defaultPrevented and stays open.
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.preventDefault();
@@ -242,15 +246,34 @@ function useChooserEscape(active: boolean, cancel: () => void) {
   }, [active, cancel]);
 }
 
-/** Which card's panel is open; drafts outlive the panel so closing or switching never loses a comment. */
-function usePanel() {
+/**
+ * Which card's dialog is open (mirrored in `?ticket=`); drafts outlive the dialog so closing or switching never
+ * loses a comment. Closing hands focus back to the card once the board is no longer inert.
+ */
+function usePanel(known: (key: string) => boolean) {
   const [openKey, setOpenKey] = useState<string | null>(null);
   const drafts = useRef<Drafts>({});
-  const closePanel = useCallback(() => {
-    if (openKey) focusCard(openKey);
+  const current = useRef<string | null>(null);
+  const returnTo = useRef<string | null>(null);
+  current.current = openKey;
+  const url = useTicketUrl(known, (key) => {
+    if (key === null) returnTo.current = current.current;
+    setOpenKey(key);
+  });
+  const openCard = (key: string) => {
+    url.opened(key, openKey !== null);
+    setOpenKey(key);
+  };
+  const closePanel = () => {
+    returnTo.current = openKey;
+    url.closed();
     setOpenKey(null);
+  };
+  useEffect(() => {
+    if (openKey === null && returnTo.current) focusCard(returnTo.current);
+    returnTo.current = null;
   }, [openKey]);
-  return { openKey, setOpenKey, drafts, closePanel };
+  return { openKey, openCard, drafts, closePanel };
 }
 
 export function TaskBoard({ tasks, actions = realActions, undoMs = 8000 }: {
@@ -261,12 +284,13 @@ export function TaskBoard({ tasks, actions = realActions, undoMs = 8000 }: {
   const [rows, setRows] = useState(tasks);
   const [text, setText] = useState("");
   const [onlyWorked, setOnlyWorked] = useState(false);
-  const { openKey, setOpenKey, drafts, closePanel } = usePanel();
-
   const patch = useCallback<Patch>(
     (key, s) => setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...s } : r))),
     [],
   );
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  const { openKey, openCard, drafts, closePanel } = usePanel((key) => rowsRef.current.some((r) => r.key === key));
   const m = useMoves(patch, actions, undoMs);
   const colOf = (r: TaskRow) => m.placed[r.key] ?? columnOf(r.status_category);
   // One flow for a drop and for the Move menu; dropping on the card's own column is a no-op.
@@ -292,13 +316,15 @@ export function TaskBoard({ tasks, actions = realActions, undoMs = 8000 }: {
 
   return (
     <>
-      <TaskToolbar text={text} onlyWorked={onlyWorked} setText={setText} setOnlyWorked={setOnlyWorked} />
       <p className="task-sr" role="status" aria-live="polite">
         {m.announce}
       </p>
+      {/* The dialog is a sibling, not a child: everything behind it is inert while it is open. */}
+      <div className="task-board-root" inert={open ? true : undefined} aria-hidden={open && !HAS_INERT ? true : undefined}>
+      <TaskToolbar text={text} onlyWorked={onlyWorked} setText={setText} setOnlyWorked={setOnlyWorked} />
       {note && <p className="task-board-note">{note}</p>}
       <div className="task-board-scroll">
-      <div className={open ? "task-board has-panel" : "task-board"}>
+      <div className="task-board">
         {COLUMNS.map(({ id }) => {
           const cards = visible.filter((r) => colOf(r) === id);
           return (
@@ -333,7 +359,7 @@ export function TaskBoard({ tasks, actions = realActions, undoMs = 8000 }: {
                   loadTransitions={() => actions.loadTransitions(r.key)}
                   onMove={(to, transitions) => moveTo(r.key, to, { focus: true, transitions })}
                   onDismissError={() => m.dismiss(r.key)}
-                  onOpen={() => setOpenKey(r.key)}
+                  onOpen={() => openCard(r.key)}
                   onDragStart={(dt) => drag.start(r.key, dt)}
                   onDragEnd={drag.end}
                 />
@@ -343,8 +369,9 @@ export function TaskBoard({ tasks, actions = realActions, undoMs = 8000 }: {
         })}
       </div>
       </div>
+      </div>
       {open && (
-        <TaskPanel key={open.key} drafts={drafts} task={open} actions={actions} onClose={closePanel} onStatus={(s) => {
+        <TaskModal key={open.key} drafts={drafts} task={open} actions={actions} onClose={closePanel} onStatus={(s) => {
           m.offerUndo(open.key, colOf(open), columnOf(s.status_category));
           patch(open.key, s);
         }}
