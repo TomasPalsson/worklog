@@ -43,6 +43,17 @@ describe("WeekCloseout gap flag (B17)", () => {
     expect(row("2026-09-21").textContent).toContain("Gap");
   });
 
+  it("gives a gap row the warning class and a clean row none", () => {
+    render(
+      <WeekCloseout
+        closeout={week([day("2026-09-21", { tempo_seconds: 7.5 * H }), day("2026-09-22", {})])}
+        actions={actions()}
+      />,
+    );
+    expect(row("2026-09-21").className).toContain("closeout-gap");
+    expect(row("2026-09-22").className).not.toContain("closeout-gap");
+  });
+
   it("does not flag exactly 8h", () => {
     render(<WeekCloseout closeout={week([day("2026-09-21", {})])} actions={actions()} />);
     expect(row("2026-09-21").textContent).not.toContain("Gap");

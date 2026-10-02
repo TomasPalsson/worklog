@@ -30,7 +30,7 @@ function statusOf(d: CloseoutDay): string {
 
 function DayRow({ d }: { d: CloseoutDay }) {
   return (
-    <tr data-testid={`closeout-${d.day}`}>
+    <tr data-testid={`closeout-${d.day}`} className={isGap(d) ? "closeout-gap" : undefined}>
       <td>{d.day}</td>
       <td>{formatTotalHours(d.logged_seconds)}</td>
       <td>{formatTotalHours(d.synced_seconds)}</td>
