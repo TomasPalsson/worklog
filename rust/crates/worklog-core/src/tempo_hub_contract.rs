@@ -292,6 +292,8 @@ pub struct TicketDay {
     pub tracked_seconds: i64,
     /// True when `line_seconds` is a hand-set override rather than the half-hour-rounded union.
     pub hours_set_by_hand: bool,
+    /// Seconds Tempo held for this ticket that day at the last pull (any owner). None when the day was never pulled or the ticket has no issue id.
+    pub in_tempo_seconds: Option<i64>,
     /// The ticket's blocks that day, oldest first. Personal and ignored blocks are excluded.
     pub blocks: Vec<crate::models::Block>,
 }

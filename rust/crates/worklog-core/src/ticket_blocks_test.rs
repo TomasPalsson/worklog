@@ -136,6 +136,36 @@ fn tracked_seconds_is_the_unrounded_union_and_flags_hand_set_hours() {
 }
 
 #[test]
+fn in_tempo_seconds_is_sum_zero_or_none() {
+    let conn = open_memory().unwrap();
+    seed(&conn, "2026-10-02", "APRO-1", "09:00", "a");
+    seed(&conn, "2026-10-01", "APRO-1", "09:00", "b");
+    seed(&conn, "2026-09-30", "APRO-1", "09:00", "c");
+    conn.execute(
+        "INSERT INTO jira_tickets (key, summary, issue_id) VALUES ('APRO-1', 's', '10001')",
+        [],
+    )
+    .unwrap();
+    for (id, day, issue, secs, owner) in [
+        ("1", "2026-10-02", 10001, 1800, "worklog"),
+        ("2", "2026-10-02", 10001, 600, "outside"),
+        ("3", "2026-10-02", 10002, 9999, "outside"),
+        ("4", "2026-10-01", 10002, 3600, "outside"),
+    ] {
+        conn.execute(
+            "INSERT INTO tempo_remote_worklogs
+                (tempo_worklog_id, day, issue_id, seconds, owner, pulled_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, '2026-10-02T08:00:00Z')",
+            params![id, day, issue, secs, owner],
+        )
+        .unwrap();
+    }
+    let out = ticket_blocks(&conn, "APRO-1", today(), 14).unwrap();
+    let got: Vec<_> = out.days.iter().map(|d| d.in_tempo_seconds).collect();
+    assert_eq!(got, [Some(2400), Some(0), None]);
+}
+
+#[test]
 fn unknown_key_has_no_days() {
     let conn = open_memory().unwrap();
     seed(&conn, "2026-10-02", "APRO-1", "09:00", "a");

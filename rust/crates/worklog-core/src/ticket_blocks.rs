@@ -7,7 +7,7 @@ use crate::tempo_hub_contract::{TicketBlocks, TicketDay};
 use crate::tempo_lines;
 use anyhow::Result;
 use chrono::{Duration, NaiveDate};
-use rusqlite::Connection;
+use rusqlite::{params, Connection, OptionalExtension};
 
 pub fn ticket_blocks(
     conn: &Connection,
@@ -44,6 +44,7 @@ pub fn ticket_blocks(
             (line.effective_seconds, text)
         });
         out.push(TicketDay {
+            in_tempo_seconds: in_tempo_seconds(conn, key, &day)?,
             day,
             line_seconds,
             line_text,
@@ -58,6 +59,33 @@ pub fn ticket_blocks(
         to: today.to_string(),
         days: out,
     })
+}
+
+/// Tempo's seconds for the ticket on `day` at the last pull; None if never pulled.
+fn in_tempo_seconds(conn: &Connection, key: &str, day: &str) -> Result<Option<i64>> {
+    let pulled: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM tempo_remote_worklogs WHERE day = ?1)
+             OR EXISTS (SELECT 1 FROM tempo_required_days WHERE day = ?1)",
+        [day],
+        |r| r.get(0),
+    )?;
+    let issue_id: Option<String> = conn
+        .query_row(
+            "SELECT issue_id FROM jira_tickets WHERE key = ?1",
+            [key],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    let (true, Some(issue_id)) = (pulled, issue_id) else {
+        return Ok(None);
+    };
+    Ok(Some(conn.query_row(
+        "SELECT COALESCE(SUM(seconds), 0) FROM tempo_remote_worklogs
+         WHERE day = ?1 AND CAST(issue_id AS TEXT) = ?2",
+        params![day, issue_id],
+        |r| r.get(0),
+    )?))
 }
 
 #[path = "ticket_blocks_test.rs"]
