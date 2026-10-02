@@ -4346,7 +4346,8 @@ button {
 /* The day nav and the row action buttons sit against the right edge, so a
    centred tooltip would overflow the viewport. Anchor those to the right. */
 .day-nav [data-tip]::after,
-.reg-actions [data-tip]::after {
+.reg-actions [data-tip]::after,
+.reg-page-header > [data-tip]::after {
   left: auto;
   right: 0;
   translate: 0 -3px;
@@ -4354,7 +4355,9 @@ button {
 .day-nav [data-tip]:hover::after,
 .day-nav [data-tip]:focus-visible::after,
 .reg-actions [data-tip]:hover::after,
-.reg-actions [data-tip]:focus-visible::after {
+.reg-actions [data-tip]:focus-visible::after,
+.reg-page-header > [data-tip]:hover::after,
+.reg-page-header > [data-tip]:focus-visible::after {
   translate: 0 0;
 }
 
@@ -5512,6 +5515,9 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 }
 .task-card:hover .task-grip { opacity: 1; }
 .task-move { position: absolute; top: 6px; right: 6px; }
+/* The hover lift gives each card its own stacking context, so an open menu
+   would sit under the next card unless its card is raised. */
+.task-card:has(.task-move[data-open]) { z-index: 10; }
 .task-move-btn {
   display: inline-grid;
   place-items: center;
