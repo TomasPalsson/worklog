@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it, mock } from "bun:test";
 import { cleanup, fireEvent, screen } from "@testing-library/react";
-import { btn, calls, changedDay, day, open, settle } from "./workLogTestKit";
+import { btn, calls, changedDay, day, open, settle, toggle } from "./workLogTestKit";
 
 afterEach(cleanup);
 
@@ -28,9 +28,9 @@ describe("preview", () => {
     const box = document.querySelector(".task-day-preview") as HTMLElement;
     expect(box.textContent).toContain("Hours1h 30m");
     expect(box.textContent).toContain("DayThu 1 Oct");
-    expect(box.textContent).not.toContain("Ticket"); // the panel is the ticket
+    expect(box.textContent).not.toContain("Ticket"); // the dialog is the ticket
     expect(box.textContent).not.toContain("2026-10-01");
-    expect(box.textContent).toContain("Textas shown above");
+    expect(box.textContent).toContain("Textas shown below");
     expect(box.textContent).not.toContain("“");
     expect(screen.getByText("Sends only this ticket's line for this day to Tempo.")).toBeTruthy();
   });
@@ -77,6 +77,38 @@ describe("preview", () => {
     expect(
       await screen.findByText("Nothing was sent to Tempo for ABC-1 on Thu 1 Oct. It may already be in Tempo, or have no hours."),
     ).toBeTruthy();
+  });
+});
+
+describe("strips stay visible when the day is folded", () => {
+  it("the Sent to Tempo strip and the open preview survive folding the day", async () => {
+    await open();
+    fireEvent.click(btn(PREVIEW));
+    await screen.findByText("Preview — nothing sent yet");
+    fireEvent.click(toggle()); // fold: the day was open
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByText("Preview — nothing sent yet")).toBeTruthy();
+    fireEvent.click(btn("Send to Tempo"));
+    expect(await screen.findByText("Sent to Tempo · 1h 30m")).toBeTruthy();
+    expect(document.querySelector(".task-day-body")).toBeNull();
+  });
+
+  it("opening the preview on a folded day opens the day, since the preview points at its text", async () => {
+    await open([day({ day: "2026-10-02" }), day()]);
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(btn("Preview send Thu 1 Oct to Tempo"));
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("logging time on a folded day opens it and shows the Logged strip", async () => {
+    await open();
+    fireEvent.click(toggle()); // fold
+    fireEvent.click(btn("Log time"));
+    fireEvent.change(screen.getByLabelText("What you did"), { target: { value: "x" } });
+    fireEvent.click(btn(/^Log \d/)); // the stubbed log lands on Thu 1 Oct
+    await settle();
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("Logged 1h")).toBeTruthy();
   });
 });
 

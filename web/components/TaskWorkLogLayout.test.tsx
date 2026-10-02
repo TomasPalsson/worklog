@@ -1,13 +1,13 @@
-// "Work logged" section: day head (chips, headings, hours note), clamp toggle, older days, copy and styles.
+// Work log tab: day rows (chips, disclosure, hours note), clamp toggle, older days, copy and styles.
 
 import { afterEach, describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { cleanup, fireEvent, screen } from "@testing-library/react";
-import { block, btn, btns, day, hoursBtn, logTime, open, settle, textBtn } from "./workLogTestKit";
+import { block, btn, btns, day, logTime, more, open, settle, toggle } from "./workLogTestKit";
 
 afterEach(cleanup);
 
-describe("day head", () => {
+describe("day row", () => {
   it("tones the chips: unsynced slate, changed amber, synced sage", async () => {
     await open([
       day({ day: "2026-10-03", blocks: [block({ tempo_worklog_id: "a" })] }),
@@ -19,12 +19,17 @@ describe("day head", () => {
     expect(screen.getByText("Not in Tempo").getAttribute("data-chip")).toBe("none");
   });
 
-  it("hours read as editable: labelled button with a pencil", async () => {
+  it("is one line: chevron, label, plain hours and chip in the disclosure button, then the actions", async () => {
     await open();
-    const b = hoursBtn();
-    expect(b.textContent).toBe("1h 30m");
-    expect(b.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
-    expect(textBtn().getAttribute("data-tip")).toBe("Edit Tempo text");
+    const row = document.querySelector(".task-day-row") as HTMLElement;
+    const t = toggle();
+    expect(t.parentElement?.tagName).toBe("H4");
+    expect(t.querySelector(".task-day-chev")?.getAttribute("aria-hidden")).toBe("true");
+    expect([...t.children].map((c) => c.textContent)).toEqual(["", "Thu 1 Oct", "1h 30m", "Not in Tempo"]);
+    // hours are text now; editing them lives in the menu
+    expect(row.querySelector(".task-day-hours")?.tagName).toBe("SPAN");
+    expect(row.querySelector(".task-day-hours")?.hasAttribute("title")).toBe(false);
+    expect(more().textContent).toBe("");
   });
 
   it("block rows end in a chevron", async () => {
@@ -32,33 +37,58 @@ describe("day head", () => {
     expect(document.querySelector(".task-block-row .task-block-go")?.getAttribute("aria-hidden")).toBe("true");
   });
 
-  it("day label is an h4 and the preview heading an h5", async () => {
+  it("the day label sits in an h4 and the preview heading is an h5", async () => {
     await open();
-    expect(document.querySelector("h4")?.textContent).toBe("Thu 1 Oct");
+    expect(document.querySelector("h4 .task-day-label")?.textContent).toBe("Thu 1 Oct");
     fireEvent.click(btn("Preview send Thu 1 Oct to Tempo"));
     expect((await screen.findByText("Preview — nothing sent yet")).tagName).toBe("H5");
   });
 
-  it("the summary sits in the head row, after the heading, even with the form open", async () => {
+  it("the summary sits in the head line, even with the form open", async () => {
     await open();
     const head = () => (document.querySelector(".task-work-head") as HTMLElement).textContent;
-    expect(head()).toContain("1h 30m over 1 day");
+    expect(head()).toContain("1h 30m over 1 day · last 14 days");
     fireEvent.click(logTime());
-    expect(head()).toContain("1h 30m over 1 day");
+    expect(head()).toContain("1h 30m over 1 day · last 14 days");
   });
 
-  it("the trigger sits in the head right after the chip; Edit Tempo text is an icon with a tip", async () => {
-    await open();
-    const chip = screen.getByText("Not in Tempo");
-    expect(chip.nextElementSibling).toBe(btn("Preview send Thu 1 Oct to Tempo"));
-    const edit = textBtn();
-    expect(edit.getAttribute("data-tip")).toBe("Edit Tempo text");
-    expect(edit.textContent).toBe("");
+  it("the next action sits right after the day, named Send; Update once it changed", async () => {
+    await open([
+      day({ day: "2026-10-02", blocks: [block({ tempo_worklog_id: "a", dirty: true })] }),
+      day({ day: "2026-10-01" }),
+    ]);
+    const send = btn("Preview send Thu 1 Oct to Tempo");
+    expect(send.textContent).toBe("Send");
+    expect(screen.getByText("Not in Tempo").closest("h4")?.nextElementSibling).toBe(send);
+    expect(btn("Preview update Fri 2 Oct in Tempo").textContent).toBe("Update");
   });
 
-  it("the hours name starts with its visible text and has no title", async () => {
-    await open();
-    expect(hoursBtn().hasAttribute("title")).toBe(false);
+  it("an In Tempo day has no send action", async () => {
+    await open([day({ blocks: [block({ tempo_worklog_id: "a" })] })]);
+    expect(btns(/^Preview /)).toHaveLength(0);
+    expect(more()).toBeTruthy();
+  });
+});
+
+describe("disclosure", () => {
+  const two = [day({ day: "2026-10-02", blocks: [block({ id: 1, day: "2026-10-02" })] }), day({ day: "2026-10-01", blocks: [block({ id: 2 })] })];
+
+  it("opens the newest day and folds the rest", async () => {
+    await open(two);
+    expect(toggle("Fri 2 Oct").getAttribute("aria-expanded")).toBe("true");
+    expect(toggle("Thu 1 Oct").getAttribute("aria-expanded")).toBe("false");
+    expect(document.querySelectorAll(".task-day-body")).toHaveLength(1);
+    expect(document.querySelectorAll(".task-block-row")).toHaveLength(1);
+  });
+
+  it("clicking a row opens or folds it, and its neighbours stay as they were", async () => {
+    await open(two);
+    fireEvent.click(toggle("Thu 1 Oct"));
+    expect(toggle("Thu 1 Oct").getAttribute("aria-expanded")).toBe("true");
+    expect(document.querySelectorAll(".task-block-row")).toHaveLength(2);
+    fireEvent.click(toggle("Fri 2 Oct"));
+    expect(toggle("Fri 2 Oct").getAttribute("aria-expanded")).toBe("false");
+    expect(document.querySelectorAll(".task-block-row")).toHaveLength(1);
   });
 });
 
@@ -68,13 +98,11 @@ describe("hours note", () => {
   it("hand-set hours", async () => {
     await open([day({ hours_set_by_hand: true, line_seconds: 5400, tracked_seconds: 2400 })]);
     expect(note("Set by hand · 40m tracked")).toBeTruthy();
-    expect(hoursBtn().hasAttribute("title")).toBe(false);
   });
 
   it("rounded hours", async () => {
     await open([day({ line_seconds: 1800, tracked_seconds: 2400 })]);
     expect(note("Rounded to the nearest half hour from 40m tracked")).toBeTruthy();
-    expect(btn("30m — edit hours for Thu 1 Oct").hasAttribute("title")).toBe(false);
   });
 
   it("no note when hours equal the tracked time", async () => {
@@ -85,6 +113,12 @@ describe("hours note", () => {
   it("states the rounding rule", async () => {
     await open([day({ line_seconds: 1800, tracked_seconds: 6120 })]);
     expect(screen.getByText("Rounded to the nearest half hour from 1h 42m tracked")).toBeTruthy();
+  });
+
+  it("is part of the open day, not the row", async () => {
+    await open([day({ line_seconds: 1800, tracked_seconds: 2400 })]);
+    fireEvent.click(toggle());
+    expect(note("Rounded to the nearest half hour from 40m tracked")).toBeNull();
   });
 });
 

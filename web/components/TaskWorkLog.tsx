@@ -1,47 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Plus } from "lucide-react";
 
 import { formatDuration } from "@/lib/format";
 import type { TicketBlocks } from "@/lib/types";
 import { DayGroup } from "./TaskDayGroup";
 import { TaskLogTime } from "./TaskLogTime";
+import { Skeleton } from "./TaskSkeleton";
 import type { TaskActions } from "./TaskCard";
-
-type Load = { s: "loading" } | { s: "error"; error: string } | { s: "ok"; data: TicketBlocks };
-
-function Skeleton() {
-  return (
-    <div className="task-skel" aria-hidden="true">
-      <i style={{ width: "92%" }} />
-      <i style={{ width: "80%" }} />
-      <i style={{ width: "64%" }} />
-    </div>
-  );
-}
-
-/** Loads on open / key change; `refetch` swaps data in place (no skeleton) after a write. */
-function useBlocks(key: string, actions: TaskActions) {
-  const [load, setLoad] = useState<Load>({ s: "loading" });
-  const [attempt, setAttempt] = useState(0);
-  const loader = actions.loadTicketBlocks;
-  useEffect(() => {
-    let live = true;
-    setLoad({ s: "loading" });
-    loader(key).then((res) => {
-      if (live) setLoad(res.ok ? { s: "ok", data: res.data } : { s: "error", error: res.error });
-    });
-    return () => {
-      live = false;
-    };
-  }, [key, attempt, loader]);
-  const refetch = useCallback(async () => {
-    const res = await loader(key);
-    if (res.ok) setLoad({ s: "ok", data: res.data });
-  }, [key, loader]);
-  return { load, retry: () => setAttempt((n) => n + 1), refetch };
-}
+import type { WorkLog } from "./useWorkLog";
 
 function LogButton({ onClick, btn }: { onClick: () => void; btn?: React.Ref<HTMLButtonElement> }) {
   return (
@@ -53,7 +21,7 @@ function LogButton({ onClick, btn }: { onClick: () => void; btn?: React.Ref<HTML
 }
 
 const summary = ({ days }: TicketBlocks) =>
-  `${formatDuration(days.reduce((sum, d) => sum + d.line_seconds, 0))} over ${days.length} ${days.length === 1 ? "day" : "days"}`;
+  `${formatDuration(days.reduce((sum, d) => sum + d.line_seconds, 0))} over ${days.length} ${days.length === 1 ? "day" : "days"} · last 14 days`;
 
 type Logged = { id: number; day: string; duration: string };
 
@@ -61,7 +29,7 @@ interface DaysProps {
   data: TicketBlocks;
   taskKey: string;
   actions: TaskActions;
-  onSaved: () => void;
+  work: WorkLog;
   onAnnounce: (message: string) => void;
   /** Opens the log form; undefined while it is already open. */
   onLog?: () => void;
@@ -70,7 +38,7 @@ interface DaysProps {
 
 const RECENT_DAYS = 5;
 
-function Days({ data, taskKey, actions, onSaved, onAnnounce, onLog, logged }: DaysProps) {
+function Days({ data, taskKey, actions, work, onAnnounce, onLog, logged }: DaysProps) {
   const [all, setAll] = useState(false);
   const n = data.days.length;
   if (n === 0) {
@@ -86,8 +54,18 @@ function Days({ data, taskKey, actions, onSaved, onAnnounce, onLog, logged }: Da
   const shown = all || hidden.some((d) => d.day === logged?.day) ? data.days : data.days.slice(0, RECENT_DAYS);
   return (
     <>
-      {shown.map((d) => (
-        <DayGroup key={d.day} day={d} taskKey={taskKey} actions={actions} onSaved={onSaved} onAnnounce={onAnnounce} logged={logged} />
+      {shown.map((d, i) => (
+        <DayGroup
+          key={d.day}
+          day={d}
+          taskKey={taskKey}
+          actions={actions}
+          onSaved={work.refetch}
+          onAnnounce={onAnnounce}
+          logged={logged}
+          expanded={work.isOpen(d.day, i === 0)}
+          onExpand={(open) => work.setOpen(d.day, open)}
+        />
       ))}
       {shown.length < n && (
         <button type="button" className="task-btn-secondary task-day-older" onClick={() => setAll(true)}>
@@ -98,17 +76,23 @@ function Days({ data, taskKey, actions, onSaved, onAnnounce, onLog, logged }: Da
   );
 }
 
+/** The Work log tab: days as disclosure rows, with the Log time form directly under the head line. */
 export function TaskWorkLog({
   taskKey,
   actions,
+  work,
   onAnnounce,
+  logSignal = 0,
 }: {
   taskKey: string;
   actions: TaskActions;
+  work: WorkLog;
   onAnnounce: (message: string) => void;
+  /** Bumped by the quick action; opens the form (also when this tab mounts after the bump). */
+  logSignal?: number;
 }) {
-  const { load, retry, refetch } = useBlocks(taskKey, actions);
-  const [logging, setLogging] = useState(false);
+  const { load, retry, refetch } = work;
+  const [logging, setLogging] = useState(logSignal > 0);
   const [logged, setLogged] = useState<Logged | null>(null);
   const logBtn = useRef<HTMLButtonElement>(null);
   const head = useRef<HTMLDivElement>(null);
@@ -118,6 +102,9 @@ export function TaskWorkLog({
     setLogging(false);
   };
   useEffect(() => {
+    if (logSignal > 0) setLogging(true);
+  }, [logSignal]);
+  useEffect(() => {
     if (logging) head.current?.scrollIntoView?.({ block: "nearest" });
   }, [logging]);
   useEffect(() => {
@@ -126,12 +113,9 @@ export function TaskWorkLog({
   }, [logging]);
 
   return (
-    <section className="task-section task-work">
+    <div className="task-work">
       <div ref={head} className="task-work-head">
-        <div className="task-work-title">
-          <h3>Work logged · last 14 days</h3>
-          {load.s === "ok" && load.data.days.length > 0 && <span className="task-work-summary">{summary(load.data)}</span>}
-        </div>
+        <span className="task-work-summary">{load.s === "ok" && load.data.days.length > 0 ? summary(load.data) : ""}</span>
         {!logging && <LogButton btn={logBtn} onClick={() => setLogging(true)} />}
       </div>
       {logging && (
@@ -142,6 +126,7 @@ export function TaskWorkLog({
           onClose={close}
           onLogged={(message, block, duration) => {
             setLogged({ id: block.id, day: block.day, duration });
+            work.setOpen(block.day, true);
             close();
             onAnnounce(message);
             refetch();
@@ -157,15 +142,17 @@ export function TaskWorkLog({
           </button>
         </div>
       )}
-      {load.s === "ok" && <Days
+      {load.s === "ok" && (
+        <Days
           data={load.data}
           taskKey={taskKey}
           actions={actions}
-          onSaved={refetch}
+          work={work}
           onAnnounce={onAnnounce}
           logged={logged}
           onLog={logging ? undefined : () => setLogging(true)}
-        />}
-    </section>
+        />
+      )}
+    </div>
   );
 }

@@ -1,12 +1,11 @@
-// "Work logged" section of the reading panel: blocks grouped by day, Tempo chips,
-// log time, edit the day, two-step sync.
+// Work log tab: blocks grouped by day, Tempo chips, log time, edit the day, two-step sync.
 
 import { afterEach, describe, expect, it, mock } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { formatRange, todayISO } from "@/lib/format";
 import type { RawBlock, TicketBlocks, TicketDay } from "@/lib/types";
 import type { TaskActions } from "./TaskCard";
-import { TaskWorkLog } from "./TaskWorkLog";
+import { Harness, more, toggle } from "./workLogTestKit";
 
 afterEach(cleanup);
 
@@ -71,27 +70,26 @@ const calls = (fn: unknown) => (fn as ReturnType<typeof mock>).mock.calls;
 
 function show(a: TaskActions = actions()) {
   const onAnnounce = mock((_m: string) => {});
-  render(<TaskWorkLog taskKey="ABC-1" actions={a} onAnnounce={onAnnounce} />);
+  render(<Harness actions={a} onAnnounce={onAnnounce} />);
   return { a, onAnnounce };
 }
 
 async function ready(a: TaskActions = actions()) {
   const r = show(a);
-  await screen.findByText(/over \d+ days?$/);
+  await screen.findByText(/over \d+ days? · last 14 days$/);
   return r;
 }
 
 describe("TaskWorkLog read", () => {
   it("summarises the total over the day count and loads for the key", async () => {
     const { a } = show();
-    expect(await screen.findByText("2h over 2 days")).toBeTruthy();
+    expect(await screen.findByText("2h over 2 days · last 14 days")).toBeTruthy();
     expect(calls(a.loadTicketBlocks)[0]).toEqual(["ABC-1"]);
-    expect(screen.getByText(/work logged · last 14 days/i)).toBeTruthy();
   });
 
   it("says 1 day in the singular", async () => {
     show(actions({ loadTicketBlocks: loads([day()]) }));
-    expect(await screen.findByText("1h over 1 day")).toBeTruthy();
+    expect(await screen.findByText("1h over 1 day · last 14 days")).toBeTruthy();
   });
 
   it("groups newest first with plain day labels", async () => {
@@ -148,6 +146,7 @@ describe("TaskWorkLog read", () => {
 
   it("tags manual blocks Edited and shows No description", async () => {
     await ready();
+    fireEvent.click(toggle("Wed 30 Sep")); // only the newest day starts open
     const row = screen.getByText("No description").closest("a") as HTMLElement;
     expect(within(row).getByText("Edited")).toBeTruthy();
     expect(row.getAttribute("href")).toBe("/2026-09-30/block/2");
@@ -242,9 +241,14 @@ describe("log time", () => {
 });
 
 describe("edit the day", () => {
+  const editHours = () => {
+    fireEvent.click(more());
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit hours" }));
+  };
+
   it("saves hours and refetches", async () => {
     const { a } = await ready();
-    fireEvent.click(screen.getByRole("button", { name: /^\S+( \S+)? — edit hours for Thu 1 Oct$/ }));
+    editHours();
     const input = screen.getByLabelText("Hours for Thu 1 Oct") as HTMLInputElement;
     expect(input.value).toBe("1.5");
     fireEvent.change(input, { target: { value: "2" } });
@@ -256,7 +260,7 @@ describe("edit the day", () => {
 
   it("rejects hours that are not a half-hour step", async () => {
     const { a } = await ready();
-    fireEvent.click(screen.getByRole("button", { name: /^\S+( \S+)? — edit hours for Thu 1 Oct$/ }));
+    editHours();
     fireEvent.change(screen.getByLabelText("Hours for Thu 1 Oct"), { target: { value: "1.3" } });
     fireEvent.click(screen.getByRole("button", { name: "Save hours" }));
     expect(screen.getByText(/half-hour step/)).toBeTruthy();
@@ -265,14 +269,15 @@ describe("edit the day", () => {
 
   it("shows an hours save error inline", async () => {
     await ready(actions({ saveTempoLineHours: mock(async () => ({ ok: false, error: "nope" })) }));
-    fireEvent.click(screen.getByRole("button", { name: /^\S+( \S+)? — edit hours for Thu 1 Oct$/ }));
+    editHours();
     fireEvent.click(screen.getByRole("button", { name: "Save hours" }));
     expect(await screen.findByText("nope")).toBeTruthy();
   });
 
   it("edits the line text and refetches", async () => {
     const { a } = await ready();
-    fireEvent.click(screen.getByRole("button", { name: "Edit Tempo text for Thu 1 Oct" }));
+    fireEvent.click(more());
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit Tempo text" }));
     fireEvent.change(screen.getByLabelText("Line text for Thu 1 Oct"), { target: { value: "New text" } });
     fireEvent.click(screen.getByRole("button", { name: "Save text" }));
     await waitFor(() => expect(calls(a.saveTempoLineText)).toHaveLength(1));
@@ -303,10 +308,10 @@ describe("sync to Tempo", () => {
     await waitFor(() => expect(calls(a.loadTicketBlocks)).toHaveLength(2));
   });
 
-  it("does not repeat the line text in the preview; it points at the text above", async () => {
+  it("does not repeat the line text in the preview; it points at the text below", async () => {
     await ready(actions({ loadTicketBlocks: loads([day({ line_text: "Worked on login" })]) }));
     fireEvent.click(screen.getByRole("button", { name: /^Preview send .* to Tempo$/ }));
-    expect(await screen.findByText("as shown above")).toBeTruthy();
+    expect(await screen.findByText("as shown below")).toBeTruthy();
     expect(screen.getAllByText("Worked on login")).toHaveLength(1);
   });
 

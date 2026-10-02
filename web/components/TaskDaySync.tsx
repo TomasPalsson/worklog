@@ -71,7 +71,7 @@ export function useSync({ taskKey, actions, onSaved, onAnnounce, label, day, cha
 
 export type Sync = ReturnType<typeof useSync>;
 
-/** Small secondary button in the day head; hidden once the day is in Tempo or while the preview is open. */
+/** Small secondary button on the day row; hidden once the day is in Tempo or while the preview is open. */
 export function SyncTrigger({ sync, label, inTempo, changed }: { sync: Sync; label: string; inTempo: boolean; changed: boolean }) {
   const { step } = sync;
   if (inTempo || step.s === "sent" || step.s === "preview") return null;
@@ -85,7 +85,7 @@ export function SyncTrigger({ sync, label, inTempo, changed }: { sync: Sync; lab
       onClick={sync.dryRun}
     >
       <UploadCloud size={12} aria-hidden="true" />
-      {step.s === "running" ? "Checking…" : changed ? "Preview update" : "Preview send"}
+      {step.s === "running" ? "Checking…" : changed ? "Update" : "Send"}
     </button>
   );
 }
