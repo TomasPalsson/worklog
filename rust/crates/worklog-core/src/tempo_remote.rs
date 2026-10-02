@@ -100,15 +100,6 @@ pub fn list_week(conn: &Connection, monday: NaiveDate) -> Result<Vec<RemoteWorkl
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-pub fn outside_exists(conn: &Connection, day: &str, issue_id: i64) -> Result<bool> {
-    Ok(conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM tempo_remote_worklogs
-                        WHERE day = ?1 AND issue_id = ?2 AND owner = 'outside')",
-        params![day, issue_id],
-        |r| r.get(0),
-    )?)
-}
-
 fn week_bounds(monday: NaiveDate) -> (String, String) {
     (monday.to_string(), (monday + Duration::days(6)).to_string())
 }

@@ -34,7 +34,6 @@ use crate::tempo_hub_contract::{HubError, PulledWorklog, RequiredDay, TEMPO_PAGE
 use crate::tempo_line_contract::TempoLineKey;
 use crate::tempo_line_writer;
 use crate::tempo_lines;
-use crate::tempo_remote;
 
 use super::CollectReport;
 
@@ -249,24 +248,9 @@ pub fn sync_day_with_invoker_for(
         };
 
         match classification {
+            // Hand-logged Tempo entries on the same ticket-day are extra work worklog can't see
+            // (meetings etc.), not a copy of this line, so they never block it.
             GroupClassification::AllUnsynced => {
-                let numeric_id: i64 = issue_id
-                    .parse()
-                    .with_context(|| format!("non-numeric issueId {issue_id:?} for {issue}"))?;
-                if tempo_remote::outside_exists(conn, &day.to_string(), numeric_id)? {
-                    for b in &eligible_in_group {
-                        report.skipped += 1;
-                        results.push(SyncResult {
-                            block_id: b.id,
-                            status: "skipped",
-                            reason: Some("already in Tempo \u{2014} logged outside worklog".into()),
-                            tempo_id: None,
-                            payload: None,
-                            http_status: None,
-                        });
-                    }
-                    continue;
-                }
                 sync_group_aggregated(
                     conn,
                     auth,
@@ -1764,8 +1748,10 @@ mod tests {
         .unwrap();
     }
 
+    /// Hand-logged Tempo entries are work worklog can't see (meetings etc.), never a copy of
+    /// worklog's own line — so one on the same ticket-day must not stop the full line going out.
     #[test]
-    fn sync_skips_line_with_outside_worklog_b9() {
+    fn sync_posts_full_line_despite_hand_logged_tempo_entry() {
         let server = MockServer::start();
         let post = server.mock(|when, then| {
             when.method(POST).path("/worklogs");
@@ -1784,43 +1770,13 @@ mod tests {
         )
         .unwrap();
 
-        post.assert_hits(0);
-        assert_eq!(results.len(), 2);
-        for r in &results {
-            assert_eq!(r.status, "skipped");
-            assert_eq!(
-                r.reason.as_deref(),
-                Some("already in Tempo \u{2014} logged outside worklog")
-            );
-            assert!(r.tempo_id.is_none() && r.http_status.is_none());
-        }
-        assert_eq!(report.synced, 0);
-        assert_eq!(
-            count_blocks_with_tempo(&conn, "2026-04-18", "PROJ-1", ""),
-            0
-        );
-    }
-
-    #[test]
-    fn sync_still_posts_when_outside_worklog_is_on_another_issue() {
-        let server = MockServer::start();
-        let post = server.mock(|when, then| {
-            when.method(POST).path("/worklogs");
-            then.status(200).json_body(json!({"tempoWorklogId": 5}));
-        });
-        let conn = open_memory().unwrap();
-        seed_two_blocks(&conn);
-        store_outside(&conn, 20000);
-
-        sync_day_with(
-            &conn,
-            &auth(server.base_url()),
-            day(),
-            false,
-            &http::client().unwrap(),
-        )
-        .unwrap();
         post.assert_hits(1);
+        assert_eq!(report.synced, 1);
+        assert!(results.iter().all(|r| r.status != "skipped"), "{results:?}");
+        assert_eq!(
+            count_blocks_with_tempo(&conn, "2026-04-18", "PROJ-1", "1"),
+            2
+        );
     }
 
     #[test]

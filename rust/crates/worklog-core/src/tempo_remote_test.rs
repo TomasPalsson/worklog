@@ -152,25 +152,6 @@ fn repull_replaces_only_that_weeks_rows() {
 }
 
 #[test]
-fn outside_exists_matches_day_issue_and_owner() {
-    let conn = db::open_memory().unwrap();
-    seed_block(&conn, Some("1"));
-    let rows = [
-        pulled("1", "2026-09-29", 5, 600),
-        pulled("2", "2026-09-30", 6, 600),
-    ];
-    store_week(&conn, monday(), &rows, &[], PULLED_AT).unwrap();
-
-    assert!(outside_exists(&conn, "2026-09-30", 6).unwrap());
-    assert!(
-        !outside_exists(&conn, "2026-09-29", 5).unwrap(),
-        "worklog-owned row is not outside"
-    );
-    assert!(!outside_exists(&conn, "2026-09-30", 5).unwrap());
-    assert!(!outside_exists(&conn, "2026-10-01", 6).unwrap());
-}
-
-#[test]
 fn repull_is_idempotent_when_rows_move_weeks_or_fall_outside() {
     let conn = db::open_memory().unwrap();
     let first = [pulled("9", "2026-09-27", 5, 600)];
