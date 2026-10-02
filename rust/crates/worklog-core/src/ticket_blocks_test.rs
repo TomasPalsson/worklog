@@ -95,6 +95,47 @@ fn line_text_prefers_stored_over_fallback_and_seconds_honour_override() {
 }
 
 #[test]
+fn tracked_seconds_is_the_unrounded_union_and_flags_hand_set_hours() {
+    let conn = open_memory().unwrap();
+    // Two overlapping 40-minute blocks (09:00, 09:20) = 60 min union;
+    // a lone 40-minute block on another day rounds down to 30 min.
+    for (day, start) in [
+        ("2026-10-02", "09:00"),
+        ("2026-10-02", "09:20"),
+        ("2026-10-01", "09:00"),
+    ] {
+        let id = seed(&conn, day, "APRO-1", start, "x");
+        conn.execute(
+            "UPDATE blocks SET duration_seconds = 2400 WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+    }
+    let out = ticket_blocks(&conn, "APRO-1", today(), 14).unwrap();
+    assert_eq!(
+        (out.days[0].tracked_seconds, out.days[0].line_seconds),
+        (3600, 3600)
+    );
+    assert_eq!(
+        (out.days[1].tracked_seconds, out.days[1].line_seconds),
+        (2400, 1800)
+    );
+    assert!(!out.days[0].hours_set_by_hand && !out.days[1].hours_set_by_hand);
+    let hours = SetTempoLineHours {
+        day: "2026-10-01".into(),
+        jira_issue: "APRO-1".into(),
+        seconds: Some(5400),
+    };
+    tempo_lines::set_hours(&conn, &hours).unwrap();
+    let out = ticket_blocks(&conn, "APRO-1", today(), 14).unwrap();
+    assert!(out.days[1].hours_set_by_hand && !out.days[0].hours_set_by_hand);
+    assert_eq!(
+        (out.days[1].tracked_seconds, out.days[1].line_seconds),
+        (2400, 5400)
+    );
+}
+
+#[test]
 fn unknown_key_has_no_days() {
     let conn = open_memory().unwrap();
     seed(&conn, "2026-10-02", "APRO-1", "09:00", "a");

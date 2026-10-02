@@ -288,6 +288,10 @@ pub struct TicketDay {
     pub line_seconds: i64,
     /// The line text Tempo gets that day (stored text, else fallback); "" when none.
     pub line_text: String,
+    /// Real tracked time that day: the blocks' union (overlaps removed), NOT rounded. 0 when there is no line.
+    pub tracked_seconds: i64,
+    /// True when `line_seconds` is a hand-set override rather than the half-hour-rounded union.
+    pub hours_set_by_hand: bool,
     /// The ticket's blocks that day, oldest first. Personal and ignored blocks are excluded.
     pub blocks: Vec<crate::models::Block>,
 }

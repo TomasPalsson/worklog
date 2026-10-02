@@ -1,6 +1,7 @@
 //! "Work logged" on a ticket (blocks in the My Tasks panel): the ticket's
 //! blocks per local day over a window, with the day's Tempo line.
 
+use crate::billing::{block_interval, union_seconds};
 use crate::repo;
 use crate::tempo_hub_contract::{TicketBlocks, TicketDay};
 use crate::tempo_lines;
@@ -29,6 +30,12 @@ pub fn ticket_blocks(
         let line = tempo_lines::lines_for_day(conn, &day)?
             .into_iter()
             .find(|line| line.jira_issue == key);
+        let tracked_seconds = line.as_ref().map_or(0, |_| {
+            union_seconds(blocks.iter().map(block_interval).collect())
+        });
+        let hours_set_by_hand = line
+            .as_ref()
+            .is_some_and(|l| l.hours_override_seconds.is_some());
         let (line_seconds, line_text) = line.map_or((0, String::new()), |line| {
             let text = line
                 .text
@@ -40,6 +47,8 @@ pub fn ticket_blocks(
             day,
             line_seconds,
             line_text,
+            tracked_seconds,
+            hours_set_by_hand,
             blocks,
         });
     }
