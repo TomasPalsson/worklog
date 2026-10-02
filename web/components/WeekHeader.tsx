@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, ListChecks } from "lucide-react";
 import {
   formatTotalHours,
   formatWeekRange,
@@ -76,6 +76,13 @@ export function WeekHeader({
           aria-label="switch to day view"
         >
           Day
+        </Link>
+        <Link
+          href="/tasks"
+          className="theme-toggle"
+          aria-label="My Tasks"
+        >
+          <ListChecks size={15} strokeWidth={1.75} />
         </Link>
         <ThemeToggle />
       </nav>

@@ -54,6 +54,10 @@ function timeoutMs(path: string): number {
   if (path.startsWith("/infer")) return 30_000;
   // Jira/Tempo round-trips: project + account listing and issue creation.
   if (path.startsWith("/tickets/create")) return 30_000;
+  // Tempo hub: the AI draft shells out to `claude -p`; the pull pages Tempo.
+  if (path.endsWith("/draft")) return 90_000;
+  if (path.startsWith("/tempo/pull")) return 60_000;
+  if (/^\/tickets\/[^/]+\/(transitions?|comment)$/.test(path)) return 20_000;
   if (path.startsWith("/projects")) return 20_000;
   if (path.startsWith("/accounts")) return 20_000;
   return 10_000;

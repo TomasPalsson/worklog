@@ -118,6 +118,12 @@ mod daemon_tempo_lines;
 #[path = "daemon_changes.rs"]
 mod daemon_changes;
 
+#[path = "daemon_tasks.rs"]
+mod daemon_tasks;
+
+#[path = "daemon_week.rs"]
+mod daemon_week;
+
 pub struct AppState {
     /// Single shared connection — SQLite + rusqlite is !Send, so we keep
     /// exactly one and serialise access. Cheap compared to the code path
@@ -195,6 +201,16 @@ pub fn router(state: Shared) -> Router {
             "/tempo/lines/regenerate",
             post(daemon_tempo_lines::regenerate),
         )
+        .route("/tasks", get(daemon_tasks::list_tasks))
+        .route(
+            "/tickets/:key/transitions",
+            get(daemon_tasks::list_transitions),
+        )
+        .route("/tickets/:key/transition", post(daemon_tasks::transition))
+        .route("/tickets/:key/comment", post(daemon_tasks::comment))
+        .route("/tickets/:key/draft", post(daemon_tasks::draft))
+        .route("/tempo/pull", post(daemon_week::pull))
+        .route("/weeks/:monday/closeout", get(daemon_week::closeout))
         .route("/billing/tenants", get(daemon_tenants::list_tenants))
         .route("/billing/tenants/link", post(daemon_tenants::link_tenant))
         .route(
@@ -469,6 +485,7 @@ pub enum ApiError {
     NotFound(anyhow::Error),
     Forbidden(anyhow::Error),
     Conflict(anyhow::Error),
+    BadGateway(anyhow::Error),
     Internal(anyhow::Error),
 }
 
@@ -496,6 +513,7 @@ impl IntoResponse for ApiError {
             ApiError::NotFound(e) => (StatusCode::NOT_FOUND, e),
             ApiError::Forbidden(e) => (StatusCode::FORBIDDEN, e),
             ApiError::Conflict(e) => (StatusCode::CONFLICT, e),
+            ApiError::BadGateway(e) => (StatusCode::BAD_GATEWAY, e),
             ApiError::Internal(e) => (StatusCode::INTERNAL_SERVER_ERROR, e),
         };
         // For 400, emit only the top-level message (no `{:#}` chain
@@ -509,7 +527,8 @@ impl IntoResponse for ApiError {
             StatusCode::BAD_REQUEST
             | StatusCode::NOT_FOUND
             | StatusCode::FORBIDDEN
-            | StatusCode::CONFLICT => (format!("{err}"), None),
+            | StatusCode::CONFLICT
+            | StatusCode::BAD_GATEWAY => (format!("{err}"), None),
             _ => (format!("{err:#}"), Some(format!("{err:#}"))),
         };
         if let Some(m) = log_msg {
@@ -2810,6 +2829,14 @@ mod tests {
 
     mod daemon_tempo_lines {
         include!("daemon_tempo_lines_test.rs");
+    }
+
+    mod daemon_tasks {
+        include!("daemon_tasks_test.rs");
+    }
+
+    mod daemon_week {
+        include!("daemon_week_test.rs");
     }
 
     fn state_with_block() -> Shared {

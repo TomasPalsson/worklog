@@ -866,3 +866,71 @@ fn tempo_line_texts_enforces_origin_and_half_hour_override_and_keys_by_day_and_i
     insert("APRO-5", None, Some(0)).expect_err("override must be positive");
     insert("APRO-6", None, Some(2700)).expect_err("override must be a multiple of 1800");
 }
+
+#[test]
+fn schema_v18_adds_status_category_and_tempo_readback_tables() {
+    assert_eq!(SCHEMA_VERSION, 18);
+    let conn = open_memory().unwrap();
+    conn.execute(
+        "INSERT INTO jira_tickets (key, summary) VALUES ('APRO-1', 's')",
+        [],
+    )
+    .unwrap();
+    let category: Option<String> = conn
+        .query_row(
+            "SELECT status_category FROM jira_tickets WHERE key='APRO-1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(category, None, "NULL means unknown");
+
+    let insert = |id: &str, owner: &str| {
+        conn.execute(
+            "INSERT INTO tempo_remote_worklogs
+                (tempo_worklog_id, day, issue_id, jira_issue, seconds, description, owner, pulled_at)
+             VALUES (?1, '2026-09-30', 10001, 'APRO-1', 1800, '', ?2, '2026-09-30T09:00:00Z')",
+            rusqlite::params![id, owner],
+        )
+    };
+    insert("1", "worklog").unwrap();
+    insert("2", "outside").unwrap();
+    insert("1", "worklog").expect_err("tempo_worklog_id is the primary key");
+    insert("3", "tempo").expect_err("owner outside ('worklog','outside')");
+
+    let required = |day: &str, seconds: i64| {
+        conn.execute(
+            "INSERT INTO tempo_required_days (day, required_seconds, pulled_at)
+             VALUES (?1, ?2, '2026-09-30T09:00:00Z')",
+            rusqlite::params![day, seconds],
+        )
+    };
+    required("2026-09-30", 28800).unwrap();
+    required("2026-10-01", 0).unwrap();
+    required("2026-09-30", 28800).expect_err("day is the primary key");
+    required("2026-10-02", -1).expect_err("required_seconds must be >= 0");
+}
+
+#[test]
+fn migrate_from_v17_adds_status_category_to_existing_jira_tickets() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE jira_tickets (key TEXT PRIMARY KEY, summary TEXT NOT NULL, status TEXT,
+            project_key TEXT, updated TEXT, issue_id TEXT,
+            external INTEGER NOT NULL DEFAULT 0,
+            fetched_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')));
+         INSERT INTO jira_tickets (key, summary) VALUES ('APRO-9', 'old');",
+    )
+    .unwrap();
+    conn.pragma_update(None, "user_version", 17).unwrap();
+    migrate(&conn).unwrap();
+    let category: Option<String> = conn
+        .query_row(
+            "SELECT status_category FROM jira_tickets WHERE key='APRO-9'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(category, None);
+    assert_eq!(current_version(&conn).unwrap(), 18);
+}

@@ -16,6 +16,7 @@ use tracing::debug;
 use crate::http::{self, RequestBuilderExt};
 use crate::models::{JiraProject, JiraTicket};
 use crate::repo;
+use crate::tempo_hub_contract::{HubError, StatusCategory, Transition};
 
 use super::CollectReport;
 
@@ -25,6 +26,8 @@ const MAX_RESULTS: u32 = 200;
 #[derive(Debug, Deserialize)]
 struct SearchResponse {
     issues: Vec<Issue>,
+    #[serde(default, rename = "nextPageToken")]
+    next_page_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,6 +48,21 @@ struct Fields {
 #[derive(Debug, Deserialize)]
 struct Status {
     name: Option<String>,
+    #[serde(default, rename = "statusCategory")]
+    status_category: Option<CategoryKey>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CategoryKey {
+    key: String,
+}
+
+impl Status {
+    fn category(&self) -> Option<StatusCategory> {
+        self.status_category
+            .as_ref()
+            .and_then(|c| StatusCategory::parse(&c.key))
+    }
 }
 
 /// Credentials captured from the secrets layer. Bundled into a struct so
@@ -91,32 +109,54 @@ pub fn fetch_open_tickets_with(
     // Atlassian retired `/rest/api/3/search` on 2026-04 — new endpoint
     // is `/search/jql` with the same response shape for basic queries.
     let url = format!("{}/rest/api/3/search/jql", auth.base_url);
-    let body: SearchResponse = client
-        .get(&url)
-        .basic_auth(&auth.email, Some(&auth.token))
-        .query(&[
-            ("jql", JQL),
-            ("maxResults", &MAX_RESULTS.to_string()),
-            ("fields", "summary,status,updated,project"),
-        ])
-        .json_ok()
-        .with_context(|| format!("jira search at {url}"))?;
+    let mut returned = Vec::new();
+    let mut page_token: Option<String> = None;
+    loop {
+        let mut query = vec![
+            ("jql", JQL.to_owned()),
+            ("maxResults", MAX_RESULTS.to_string()),
+            ("fields", "summary,status,updated,project".to_owned()),
+        ];
+        if let Some(t) = page_token.take() {
+            query.push(("nextPageToken", t));
+        }
+        let body: SearchResponse = client
+            .get(&url)
+            .basic_auth(&auth.email, Some(&auth.token))
+            .query(&query)
+            .json_ok()
+            .with_context(|| format!("jira search at {url}"))?;
 
-    debug!(issues = body.issues.len(), "jira search returned");
+        debug!(issues = body.issues.len(), "jira search returned");
 
-    for issue in body.issues {
-        let project_key = issue.key.split_once('-').map(|(p, _)| p.to_owned());
-        let ticket = JiraTicket {
-            key: issue.key,
-            summary: issue.fields.summary.unwrap_or_default(),
-            status: issue.fields.status.and_then(|s| s.name),
-            project_key,
-            updated: issue.fields.updated,
-            issue_id: issue.id,
-        };
-        repo::upsert_ticket(conn, &ticket)?;
-        report.tickets_written += 1;
+        for issue in body.issues {
+            let project_key = issue.key.split_once('-').map(|(p, _)| p.to_owned());
+            let status = issue.fields.status;
+            let ticket = JiraTicket {
+                key: issue.key,
+                summary: issue.fields.summary.unwrap_or_default(),
+                status: status.as_ref().and_then(|s| s.name.clone()),
+                project_key,
+                updated: issue.fields.updated,
+                issue_id: issue.id,
+            };
+            repo::upsert_ticket(conn, &ticket)?;
+            let category = status.as_ref().and_then(Status::category);
+            repo::set_ticket_status(
+                conn,
+                &ticket.key,
+                ticket.status.as_deref().unwrap_or(""),
+                category,
+            )?;
+            returned.push(ticket.key);
+            report.tickets_written += 1;
+        }
+        page_token = body.next_page_token;
+        if page_token.is_none() {
+            break;
+        }
     }
+    repo::mark_unreturned_done(conn, &returned)?;
     Ok(report)
 }
 
@@ -367,6 +407,141 @@ pub fn create_issue_with(auth: &JiraAuth, issue: &NewIssue, client: &Client) -> 
         updated: None,
         issue_id: Some(created.id),
     })
+}
+
+// ───────────────────── status, transitions, comments ─────────────────────
+
+#[derive(Debug, Deserialize)]
+struct TransitionsResponse {
+    transitions: Vec<RawTransition>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawTransition {
+    id: String,
+    name: String,
+    to: Status,
+}
+
+#[derive(Debug, Deserialize)]
+struct StatusResponse {
+    fields: StatusFields,
+}
+
+#[derive(Debug, Deserialize)]
+struct StatusFields {
+    status: Status,
+}
+
+/// Send and return the body, mapping any non-2xx to `HubError::Upstream`
+/// so the user sees Jira's own message.
+fn send_expecting_success(req: reqwest::blocking::RequestBuilder, what: &str) -> Result<String> {
+    let resp = req.send().with_context(|| format!("jira {what}"))?;
+    let status = resp.status();
+    let text = resp.text().unwrap_or_default();
+    if !status.is_success() {
+        return Err(HubError::Upstream {
+            service: "Jira",
+            status: status.as_u16(),
+            body: text,
+        }
+        .into());
+    }
+    Ok(text)
+}
+
+pub fn list_transitions_with(
+    auth: &JiraAuth,
+    key: &str,
+    client: &Client,
+) -> Result<Vec<Transition>> {
+    let url = format!("{}/rest/api/3/issue/{key}/transitions", auth.base_url);
+    let text = send_expecting_success(
+        client.get(&url).basic_auth(&auth.email, Some(&auth.token)),
+        "list transitions",
+    )?;
+    let body: TransitionsResponse =
+        serde_json::from_str(&text).with_context(|| format!("decode transitions: {text}"))?;
+    Ok(body
+        .transitions
+        .into_iter()
+        .map(|t| Transition {
+            id: t.id,
+            name: t.name,
+            to_category: t.to.category(),
+            to_status: t.to.name.unwrap_or_default(),
+        })
+        .collect())
+}
+
+pub fn transition_with(
+    auth: &JiraAuth,
+    key: &str,
+    transition_id: &str,
+    client: &Client,
+) -> Result<()> {
+    let url = format!("{}/rest/api/3/issue/{key}/transitions", auth.base_url);
+    send_expecting_success(
+        client
+            .post(&url)
+            .basic_auth(&auth.email, Some(&auth.token))
+            .json(&serde_json::json!({ "transition": { "id": transition_id } })),
+        "transition issue",
+    )?;
+    Ok(())
+}
+
+pub fn fetch_status_with(
+    auth: &JiraAuth,
+    key: &str,
+    client: &Client,
+) -> Result<(String, Option<StatusCategory>)> {
+    let url = format!("{}/rest/api/3/issue/{key}", auth.base_url);
+    let text = send_expecting_success(
+        client
+            .get(&url)
+            .basic_auth(&auth.email, Some(&auth.token))
+            .query(&[("fields", "status")]),
+        "fetch status",
+    )?;
+    let body: StatusResponse =
+        serde_json::from_str(&text).with_context(|| format!("decode status: {text}"))?;
+    let category = body.fields.status.category();
+    Ok((body.fields.status.name.unwrap_or_default(), category))
+}
+
+/// Paragraphs split on blank lines; single newlines become `hardBreak`.
+fn adf_comment(text: &str) -> serde_json::Value {
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+    let paragraphs: Vec<_> = text
+        .split("\n\n")
+        .filter(|p| !p.trim().is_empty())
+        .map(|p| {
+            let mut content = Vec::new();
+            for (i, line) in p.split('\n').enumerate() {
+                if i > 0 {
+                    content.push(serde_json::json!({ "type": "hardBreak" }));
+                }
+                if !line.is_empty() {
+                    content.push(serde_json::json!({ "type": "text", "text": line }));
+                }
+            }
+            serde_json::json!({ "type": "paragraph", "content": content })
+        })
+        .collect();
+    serde_json::json!({ "type": "doc", "version": 1, "content": paragraphs })
+}
+
+pub fn add_comment_with(auth: &JiraAuth, key: &str, text: &str, client: &Client) -> Result<()> {
+    let url = format!("{}/rest/api/3/issue/{key}/comment", auth.base_url);
+    send_expecting_success(
+        client
+            .post(&url)
+            .basic_auth(&auth.email, Some(&auth.token))
+            .json(&serde_json::json!({ "body": adf_comment(text) })),
+        "add comment",
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -697,5 +872,223 @@ mod tests {
         assert_eq!(account_field_value("42"), json!(42));
         assert_eq!(account_field_value(" 7 "), json!(7));
         assert_eq!(account_field_value("ACME-1"), json!("ACME-1"));
+    }
+
+    fn test_auth(server: &MockServer) -> JiraAuth {
+        JiraAuth {
+            base_url: server.base_url(),
+            email: "x".into(),
+            token: "t".into(),
+        }
+    }
+
+    fn first_page(req: &HttpMockRequest) -> bool {
+        !req.query_params
+            .iter()
+            .flatten()
+            .any(|(k, _)| k == "nextPageToken")
+    }
+
+    fn issue(key: &str, cat: &str) -> serde_json::Value {
+        json!({"key": key, "fields": {"summary": "s", "status": {
+            "name": "St", "statusCategory": {"key": cat}}}})
+    }
+
+    #[test]
+    fn refresh_pages_fully_stores_category_and_marks_unreturned_done() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/rest/api/3/search/jql")
+                .query_param("nextPageToken", "p2");
+            then.status(200)
+                .json_body(json!({"issues": [issue("A-2", "done")]}));
+        });
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/rest/api/3/search/jql")
+                .matches(first_page);
+            then.status(200).json_body(
+                json!({"issues": [issue("A-1", "indeterminate")], "nextPageToken": "p2"}),
+            );
+        });
+        let conn = open_memory().unwrap();
+        let mk = |key: &str, ext: i64| {
+            conn.execute(
+                "INSERT INTO jira_tickets (key, summary, external) VALUES (?1, 's', ?2)",
+                rusqlite::params![key, ext],
+            )
+            .unwrap();
+        };
+        mk("GONE-1", 0);
+        mk("EXT-1", 1);
+        let report =
+            fetch_open_tickets_with(&conn, &test_auth(&server), &http::client().unwrap()).unwrap();
+        assert_eq!(report.tickets_written, 2);
+        let cat = |key: &str| -> Option<String> {
+            conn.query_row(
+                "SELECT status_category FROM jira_tickets WHERE key = ?1",
+                [key],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(cat("A-1").as_deref(), Some("indeterminate"));
+        assert_eq!(cat("A-2").as_deref(), Some("done"));
+        assert_eq!(cat("GONE-1").as_deref(), Some("done"));
+        assert_eq!(cat("EXT-1"), None);
+    }
+
+    #[test]
+    fn refresh_failing_page_does_not_mark_done() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/rest/api/3/search/jql")
+                .query_param("nextPageToken", "p2");
+            then.status(500).body("boom");
+        });
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/rest/api/3/search/jql")
+                .matches(first_page);
+            then.status(200)
+                .json_body(json!({"issues": [issue("A-1", "new")], "nextPageToken": "p2"}));
+        });
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO jira_tickets (key, summary, external) VALUES ('GONE-1', 's', 0)",
+            [],
+        )
+        .unwrap();
+        assert!(
+            fetch_open_tickets_with(&conn, &test_auth(&server), &http::client().unwrap()).is_err()
+        );
+        let cat: Option<String> = conn
+            .query_row(
+                "SELECT status_category FROM jira_tickets WHERE key = 'GONE-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cat, None);
+    }
+
+    #[test]
+    fn list_transitions_maps_target_status_and_category() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/rest/api/3/issue/A-1/transitions");
+            then.status(200).json_body(json!({"transitions": [
+                {"id": "31", "name": "Finish", "to": {"name": "Done",
+                    "statusCategory": {"key": "done"}}},
+                {"id": "11", "name": "Weird", "to": {"name": "Limbo",
+                    "statusCategory": {"key": "undefined"}}}
+            ]}));
+        });
+        let got =
+            list_transitions_with(&test_auth(&server), "A-1", &http::client().unwrap()).unwrap();
+        assert_eq!(
+            got,
+            vec![
+                Transition {
+                    id: "31".into(),
+                    name: "Finish".into(),
+                    to_status: "Done".into(),
+                    to_category: Some(StatusCategory::Done),
+                },
+                Transition {
+                    id: "11".into(),
+                    name: "Weird".into(),
+                    to_status: "Limbo".into(),
+                    to_category: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn transition_posts_id_and_accepts_204() {
+        let server = MockServer::start();
+        let m = server.mock(|when, then| {
+            when.method(POST)
+                .path("/rest/api/3/issue/A-1/transitions")
+                .json_body(json!({"transition": {"id": "31"}}));
+            then.status(204);
+        });
+        transition_with(&test_auth(&server), "A-1", "31", &http::client().unwrap()).unwrap();
+        m.assert();
+    }
+
+    #[test]
+    fn transition_surfaces_upstream_error() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/rest/api/3/issue/A-1/transitions");
+            then.status(400).body("bad transition");
+        });
+        let err =
+            transition_with(&test_auth(&server), "A-1", "9", &http::client().unwrap()).unwrap_err();
+        match err.downcast_ref::<HubError>() {
+            Some(HubError::Upstream {
+                service,
+                status,
+                body,
+            }) => {
+                assert_eq!(
+                    (*service, *status, body.as_str()),
+                    ("Jira", 400, "bad transition")
+                );
+            }
+            other => panic!("expected Upstream, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fetch_status_returns_name_and_category() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/rest/api/3/issue/A-1")
+                .query_param("fields", "status");
+            then.status(200)
+                .json_body(json!({"key": "A-1", "fields": {"status": {
+                "name": "In Review", "statusCategory": {"key": "indeterminate"}}}}));
+        });
+        let got = fetch_status_with(&test_auth(&server), "A-1", &http::client().unwrap()).unwrap();
+        assert_eq!(
+            got,
+            ("In Review".to_string(), Some(StatusCategory::Indeterminate))
+        );
+    }
+
+    #[test]
+    fn add_comment_sends_adf_paragraphs_and_hard_breaks() {
+        let server = MockServer::start();
+        let m = server.mock(|when, then| {
+            when.method(POST)
+                .path("/rest/api/3/issue/A-1/comment")
+                .json_body(json!({"body": {"type": "doc", "version": 1, "content": [
+                    {"type": "paragraph", "content": [
+                        {"type": "text", "text": "one"},
+                        {"type": "hardBreak"},
+                        {"type": "text", "text": "two"}]},
+                    {"type": "paragraph", "content": [{"type": "text", "text": "three"}]}
+                ]}}));
+            then.status(201).json_body(json!({"id": "1"}));
+        });
+        add_comment_with(
+            &test_auth(&server),
+            "A-1",
+            "one\ntwo\n\nthree",
+            &http::client().unwrap(),
+        )
+        .unwrap();
+        m.assert();
+    }
+
+    #[test]
+    fn adf_comment_normalises_crlf() {
+        assert_eq!(adf_comment("a\r\nb\r\n\r\nc"), adf_comment("a\nb\n\nc"));
     }
 }
