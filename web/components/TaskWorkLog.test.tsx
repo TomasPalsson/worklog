@@ -39,7 +39,15 @@ const day = (over: Partial<TicketDay> = {}): TicketDay => ({
   ...over,
 });
 
-const payload = (days: TicketDay[]): TicketBlocks => ({ key: "ABC-1", from: "2026-09-19", to: "2026-10-02", days });
+const payload = (days: TicketDay[]): TicketBlocks => ({
+  key: "ABC-1",
+  from: "2026-09-19",
+  to: "2026-10-02",
+  days,
+  in_tempo_total_seconds: null,
+  pulled_at: null,
+  today: { day: "2026-10-02", worked_seconds: 0, in_tempo_seconds: null, ticket_worked_seconds: 0, ticket_in_tempo_seconds: null },
+});
 const loads = (days: TicketDay[]) => mock(async () => ({ ok: true as const, data: payload(days) }));
 
 const two = [

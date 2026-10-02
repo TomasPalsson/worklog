@@ -173,3 +173,112 @@ fn unknown_key_has_no_days() {
     assert!(out.days.is_empty());
     assert_eq!(out.key, "NOPE-9");
 }
+
+fn seed_remote(conn: &Connection, id: &str, day: &str, issue: i64, secs: i64, owner: &str) {
+    conn.execute(
+        "INSERT INTO tempo_remote_worklogs
+            (tempo_worklog_id, day, issue_id, seconds, owner, pulled_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            id,
+            day,
+            issue,
+            secs,
+            owner,
+            format!("2026-10-02T08:0{id}:00Z")
+        ],
+    )
+    .unwrap();
+}
+
+fn seed_ticket(conn: &Connection, key: &str, issue_id: Option<&str>) {
+    conn.execute(
+        "INSERT INTO jira_tickets (key, summary, issue_id) VALUES (?1, 's', ?2)",
+        params![key, issue_id],
+    )
+    .unwrap();
+}
+
+#[test]
+fn nothing_pulled_means_no_totals() {
+    let conn = open_memory().unwrap();
+    seed_ticket(&conn, "APRO-1", Some("10001"));
+    seed(&conn, "2026-10-02", "APRO-1", "09:00", "a");
+    let out = ticket_blocks(&conn, "APRO-1", today(), 14).unwrap();
+    assert_eq!((out.in_tempo_total_seconds, out.pulled_at), (None, None));
+    assert_eq!(out.today.day, "2026-10-02");
+    assert_eq!(out.today.in_tempo_seconds, None);
+    assert_eq!(out.today.ticket_in_tempo_seconds, None);
+}
+
+#[test]
+fn in_tempo_total_sums_every_pulled_day_for_the_issue_and_reports_latest_pull() {
+    let conn = open_memory().unwrap();
+    seed_ticket(&conn, "APRO-1", Some("10001"));
+    seed_ticket(&conn, "APRO-2", None);
+    seed_ticket(&conn, "APRO-3", Some("10003"));
+    seed_remote(&conn, "1", "2026-10-02", 10001, 1800, "worklog");
+    seed_remote(&conn, "2", "2026-09-01", 10001, 3600, "worklog");
+    seed_remote(&conn, "3", "2026-10-01", 10002, 9999, "outside");
+    let total = |key| ticket_blocks(&conn, key, today(), 14).unwrap();
+    let out = total("APRO-1");
+    assert_eq!(out.in_tempo_total_seconds, Some(5400));
+    assert_eq!(out.pulled_at.as_deref(), Some("2026-10-02T08:03:00Z"));
+    // Pulled table has rows but none for this issue: a real zero.
+    assert_eq!(total("APRO-3").in_tempo_total_seconds, Some(0));
+    // No issue id, or unknown ticket: unknown.
+    assert_eq!(total("APRO-2").in_tempo_total_seconds, None);
+    assert_eq!(total("NOPE-9").in_tempo_total_seconds, None);
+}
+
+#[test]
+fn today_totals_union_overlaps_and_skip_personal_and_ignored() {
+    let conn = open_memory().unwrap();
+    seed_ticket(&conn, "APRO-1", Some("10001"));
+    // APRO-1 09:00-10:00 and 09:30-10:30 overlap (90 min); APRO-2 10:00-11:00
+    // extends the run to 11:00; an unticketed block 13:00-14:00 adds an hour.
+    seed(&conn, "2026-10-02", "APRO-1", "09:00", "a");
+    seed(&conn, "2026-10-02", "APRO-1", "09:30", "b");
+    seed(&conn, "2026-10-02", "APRO-2", "10:00", "c");
+    let loose = seed(&conn, "2026-10-02", "APRO-9", "13:00", "d");
+    conn.execute("UPDATE blocks SET jira_issue = NULL WHERE id = ?1", [loose])
+        .unwrap();
+    let personal = seed(&conn, "2026-10-02", "APRO-1", "15:00", "p");
+    conn.execute(
+        "UPDATE blocks SET is_personal = 1 WHERE id = ?1",
+        [personal],
+    )
+    .unwrap();
+    let ignored = seed(&conn, "2026-10-02", "APRO-1", "16:00", "i");
+    conn.execute(
+        "UPDATE blocks SET ignored_at = '2026-10-02T17:00:00Z' WHERE id = ?1",
+        [ignored],
+    )
+    .unwrap();
+    seed(&conn, "2026-10-01", "APRO-1", "09:00", "yesterday");
+    let t = ticket_blocks(&conn, "APRO-1", today(), 14).unwrap().today;
+    assert_eq!(t.worked_seconds, 3600 * 3); // 09:00-11:00 + 13:00-14:00
+    assert_eq!(t.ticket_worked_seconds, 5400);
+}
+
+#[test]
+fn today_in_tempo_is_any_owner_sum_and_ticket_share_is_separate() {
+    let conn = open_memory().unwrap();
+    seed_ticket(&conn, "APRO-1", Some("10001"));
+    seed(&conn, "2026-10-02", "APRO-1", "09:00", "a");
+    seed_remote(&conn, "1", "2026-10-02", 10001, 1800, "worklog");
+    seed_remote(&conn, "2", "2026-10-02", 10002, 600, "outside");
+    seed_remote(&conn, "3", "2026-10-01", 10001, 7200, "worklog");
+    let t = ticket_blocks(&conn, "APRO-1", today(), 14).unwrap().today;
+    assert_eq!(
+        (t.in_tempo_seconds, t.ticket_in_tempo_seconds),
+        (Some(2400), Some(1800))
+    );
+    // A pulled day with no blocks: zero worked, never an error.
+    let yesterday = NaiveDate::from_ymd_opt(2026, 10, 1).unwrap();
+    let other = ticket_blocks(&conn, "NOPE-9", yesterday, 14).unwrap().today;
+    assert_eq!(
+        (other.in_tempo_seconds, other.worked_seconds),
+        (Some(7200), 0)
+    );
+}

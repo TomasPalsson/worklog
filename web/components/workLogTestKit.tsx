@@ -37,7 +37,15 @@ export const day = (over: Partial<TicketDay> = {}): TicketDay => ({
 export const changedDay = (over: Partial<TicketDay> = {}) =>
   day({ in_tempo_seconds: 3600, blocks: [block({ tempo_worklog_id: "w1", dirty: true })], ...over });
 
-export const payload = (days: TicketDay[]): TicketBlocks => ({ key: "ABC-1", from: "2026-09-19", to: "2026-10-02", days });
+export const payload = (days: TicketDay[]): TicketBlocks => ({
+  key: "ABC-1",
+  from: "2026-09-19",
+  to: "2026-10-02",
+  days,
+  in_tempo_total_seconds: null,
+  pulled_at: null,
+  today: { day: "2026-10-02", worked_seconds: 0, in_tempo_seconds: null, ticket_worked_seconds: 0, ticket_in_tempo_seconds: null },
+});
 
 const ok = { ok: true as const, data: {} };
 export const syncOk = () => mock(async () => ({ ok: true as const, data: { synced: 1, errors: [], results: [] as never[] } }));

@@ -277,6 +277,60 @@ pub struct TicketDetail {
     pub description: String,
     /// Oldest first.
     pub comments: Vec<TicketComment>,
+    #[serde(default)]
+    pub reporter: Option<String>,
+    #[serde(default)]
+    pub created: Option<String>,
+    #[serde(default)]
+    pub labels: Vec<String>,
+    #[serde(default)]
+    pub due_date: Option<String>,
+    #[serde(default)]
+    pub components: Vec<String>,
+    #[serde(default)]
+    pub fix_versions: Vec<String>,
+    /// Jira `timetracking.timeSpentSeconds` (everyone's Tempo worklogs).
+    #[serde(default)]
+    pub time_spent_seconds: Option<i64>,
+    #[serde(default)]
+    pub original_estimate_seconds: Option<i64>,
+    #[serde(default)]
+    pub remaining_estimate_seconds: Option<i64>,
+    #[serde(default)]
+    pub parent: Option<IssueRef>,
+    #[serde(default)]
+    pub subtasks: Vec<IssueRef>,
+    #[serde(default)]
+    pub links: Vec<IssueLink>,
+    #[serde(default)]
+    pub attachments: Vec<Attachment>,
+}
+
+/// A related issue (parent, subtask or link target).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssueRef {
+    pub key: String,
+    pub summary: String,
+    pub status: Option<String>,
+    pub status_category: Option<StatusCategory>,
+    pub issue_type: Option<String>,
+}
+
+/// `relation` is Jira's link-type phrase from this issue's side ("blocks", "is blocked by").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssueLink {
+    pub relation: String,
+    pub issue: IssueRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attachment {
+    pub filename: String,
+    pub size_bytes: i64,
+    /// Jira `content` URL (needs Jira auth; open in a new tab).
+    pub url: String,
+    pub created: Option<String>,
+    pub author: Option<String>,
 }
 
 /// One day of work on a ticket, newest day first in `TicketBlocks.days`.
@@ -307,4 +361,24 @@ pub struct TicketBlocks {
     pub to: String,
     /// Only days that have at least one block, newest first.
     pub days: Vec<TicketDay>,
+    /// Owner-pulled Tempo seconds on this issue over all pulled days; None without an issue id or any pull.
+    #[serde(default)]
+    pub in_tempo_total_seconds: Option<i64>,
+    /// Latest `pulled_at` of the Tempo pull table; None = never pulled.
+    #[serde(default)]
+    pub pulled_at: Option<String>,
+    #[serde(default)]
+    pub today: TodayTotals,
+}
+
+/// Today's estimated work vs what Tempo already holds.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TodayTotals {
+    pub day: String,
+    /// Union of today's non-personal, non-ignored blocks (all tickets + unticketed).
+    pub worked_seconds: i64,
+    /// Tempo seconds that day (any owner); None when the day was never pulled.
+    pub in_tempo_seconds: Option<i64>,
+    pub ticket_worked_seconds: i64,
+    pub ticket_in_tempo_seconds: Option<i64>,
 }
