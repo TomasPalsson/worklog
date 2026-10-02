@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Pencil, UploadCloud } from "lucide-react";
 
 import { formatDuration } from "@/lib/format";
@@ -17,6 +17,8 @@ interface Common {
   onSaved: () => void;
   label: string;
   day: TicketDay;
+  /** Panel live region. */
+  onAnnounce?: (message: string) => void;
 }
 
 /** "1.5" / "1,5" / "1.5h" → seconds; NaN when it is not a number. */
@@ -55,7 +57,7 @@ export function HoursEdit({ taskKey, actions, onSaved, label, day }: Common) {
       <button
         type="button"
         className="task-day-hours"
-        aria-label={`Change hours for ${label}`}
+        aria-label={`Edit hours for ${label}`}
         title="Change the hours sent to Tempo"
         onClick={() => {
           setDraft(String(day.line_seconds / 3600));
@@ -63,6 +65,7 @@ export function HoursEdit({ taskKey, actions, onSaved, label, day }: Common) {
         }}
       >
         {formatDuration(day.line_seconds)}
+        <Pencil size={12} aria-hidden="true" />
       </button>
     );
   }
@@ -157,7 +160,7 @@ export function TextEdit({ taskKey, actions, onSaved, label, day }: Common) {
         }}
       >
         <Pencil size={12} aria-hidden="true" />
-        Edit
+        Edit text
       </button>
     );
   }
@@ -195,29 +198,50 @@ type Step =
   | { s: "idle" }
   | { s: "running" }
   | { s: "preview" }
-  | { s: "done"; msg: string }
+  | { s: "sent"; hours: string }
+  | { s: "nothing"; msg: string }
   | { s: "error"; msg: string };
 
-/** Why a sync sent nothing: the daemon reports only a count, so name the cause we can see. */
-function nothingSent(day: TicketDay, skipped: number): string {
-  const why =
-    day.line_seconds === 0
-      ? "this day has no hours to send (under 15 minutes rounds to zero)"
-      : "the daemon skipped it (already in Tempo, or no Tempo account or issue mapping)";
-  return `Nothing sent (${skipped} skipped): ${why}.`;
+type SyncData = { results?: { status: string; reason: string | null }[] };
+
+/** Plain words for a sync that sent nothing: the first reason the daemon gave, else the likely causes. */
+function nothingSent(taskKey: string, label: string, data: SyncData): string {
+  const reason = data.results?.find((r) => r.reason)?.reason?.trim().replace(/\.$/, "");
+  const head = `Nothing was sent to Tempo for ${taskKey} on ${label}`;
+  return reason ? `${head}: ${reason}.` : `${head}. It may already be in Tempo, or have no hours.`;
+}
+
+/** Esc cancels the preview (capture + preventDefault so the panel stays open). */
+function useEscape(active: boolean, onEscape: () => void) {
+  useEffect(() => {
+    if (!active) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      onEscape();
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [active, onEscape]);
 }
 
 /** Two-step Tempo sync for one ticket-day: dry run, preview, then send on confirm. */
-export function SyncTool({ taskKey, actions, onSaved, label, day, inTempo }: Common & { inTempo: boolean }) {
+export function SyncTool({ taskKey, actions, onSaved, onAnnounce, label, day, inTempo }: Common & { inTempo: boolean }) {
   const [step, setStep] = useState<Step>({ s: "idle" });
   const [sending, setSending] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const cancel = () => {
+    setStep({ s: "idle" });
+    trigger.current?.focus();
+  };
+  useEscape(step.s === "preview" && !sending, cancel);
 
   async function dryRun() {
     setStep({ s: "running" });
     const res = await actions.runSync(day.day, true, taskKey);
     if (!res.ok) return setStep({ s: "error", msg: res.error });
     if (res.data.errors.length > 0) return setStep({ s: "error", msg: res.data.errors.join("; ") });
-    if (res.data.synced === 0) return setStep({ s: "done", msg: nothingSent(day, res.data.skipped) });
+    if (res.data.synced === 0) return setStep({ s: "nothing", msg: nothingSent(taskKey, label, res.data) });
     setStep({ s: "preview" });
   }
 
@@ -227,32 +251,38 @@ export function SyncTool({ taskKey, actions, onSaved, label, day, inTempo }: Com
     setSending(false);
     if (!res.ok) return setStep({ s: "error", msg: res.error });
     if (res.data.errors.length > 0) return setStep({ s: "error", msg: res.data.errors.join("; ") });
-    setStep({
-      s: "done",
-      msg: res.data.synced > 0 ? "Sent to Tempo." : nothingSent(day, res.data.skipped),
-    });
+    if (res.data.synced === 0) return setStep({ s: "nothing", msg: nothingSent(taskKey, label, res.data) });
+    const hours = formatDuration(day.line_seconds);
+    setStep({ s: "sent", hours });
+    onAnnounce?.(`Sent ${hours} to Tempo for ${taskKey} on ${label}.`);
     onSaved();
   }
 
   const busy = step.s === "running" || sending;
   return (
     <div className="task-day-sync">
-      {!inTempo && (step.s === "idle" || step.s === "running" || step.s === "error" || step.s === "done") && (
+      {!inTempo && step.s !== "sent" && (
         <button
+          ref={trigger}
           type="button"
           className="task-link-btn"
-          aria-label={`Sync ${label} to Tempo`}
+          aria-label={`Preview sync ${label} to Tempo`}
           disabled={busy}
           onClick={dryRun}
         >
           <UploadCloud size={12} aria-hidden="true" />
-          {step.s === "running" ? "Syncing…" : "Sync to Tempo"}
+          {step.s === "running" ? "Checking…" : "Preview sync"}
         </button>
       )}
       {step.s === "preview" && (
-        <SyncPreview taskKey={taskKey} day={day} sending={sending} onSend={send} onCancel={() => setStep({ s: "idle" })} />
+        <SyncPreview taskKey={taskKey} label={label} day={day} sending={sending} onSend={send} onCancel={cancel} />
       )}
-      {step.s === "done" && <p role="status">{step.msg}</p>}
+      {step.s === "sent" && (
+        <p role="status" className="task-day-sent">
+          {`Sent to Tempo · ${step.hours}`}
+        </p>
+      )}
+      {step.s === "nothing" && <p role="status">{step.msg}</p>}
       {step.s === "error" && (
         <p role="alert" className="task-error">
           {step.msg}
@@ -264,22 +294,31 @@ export function SyncTool({ taskKey, actions, onSaved, label, day, inTempo }: Com
 
 function SyncPreview(p: {
   taskKey: string;
+  label: string;
   day: TicketDay;
   sending: boolean;
   onSend: () => void;
   onCancel: () => void;
 }) {
+  const send = useRef<HTMLButtonElement>(null);
+  useEffect(() => send.current?.focus(), []);
   const { day } = p;
   return (
     <div className="task-day-preview">
-      <p>
-        {`Will send ${formatDuration(day.line_seconds)} to Tempo for ${p.taskKey} on ${day.day}${
-          day.line_text ? `: “${day.line_text}”` : ""
-        }`}
-      </p>
+      <h4>Preview — nothing sent yet</h4>
+      <dl>
+        <dt>Hours</dt>
+        <dd>{formatDuration(day.line_seconds)}</dd>
+        <dt>Day</dt>
+        <dd>{p.label}</dd>
+        <dt>Ticket</dt>
+        <dd>{p.taskKey}</dd>
+      </dl>
+      {day.line_text && <blockquote>{`“${day.line_text}”`}</blockquote>}
+      <p>Sends only this ticket&apos;s line for this day to Tempo.</p>
       <span className="task-day-edit">
-        <button type="button" className="task-btn-primary" disabled={p.sending} onClick={p.onSend}>
-          {p.sending ? "Syncing…" : "Send to Tempo"}
+        <button ref={send} type="button" className="task-btn-primary" disabled={p.sending} onClick={p.onSend}>
+          {p.sending ? "Sending…" : "Send to Tempo"}
         </button>
         <button type="button" className="task-btn-secondary" disabled={p.sending} onClick={p.onCancel}>
           Cancel

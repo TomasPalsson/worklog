@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { ChevronRight } from "lucide-react";
 
 import { formatDuration, formatRange, shortMonthDay, shortWeekday } from "@/lib/format";
 import type { RawBlock, TicketDay } from "@/lib/types";
@@ -20,7 +21,7 @@ function chipOf(blocks: RawBlock[]): Chip {
 const CHIP_TONE: Record<Chip, string> = { "In Tempo": "ok", "Changed since sync": "changed", "Not synced": "none" };
 
 /** "Thu 1 Oct". */
-const dayLabel = (day: string) =>
+export const dayLabel = (day: string) =>
   `${shortWeekday(day)} ${Number(day.slice(8))} ${shortMonthDay(day).split(" ")[0]}`;
 
 const CLAMP_CHARS = 140;
@@ -53,6 +54,7 @@ function BlockRow({ block }: { block: RawBlock }) {
           <span className="task-block-desc task-block-none">No description</span>
         )}
         {block.estimated_by === "manual" && <span className="task-block-tag">Edited</span>}
+        <ChevronRight size={14} className="task-block-go" aria-hidden="true" />
       </Link>
     </li>
   );
@@ -63,15 +65,17 @@ export function DayGroup({
   taskKey,
   actions,
   onSaved,
+  onAnnounce,
 }: {
   day: TicketDay;
   taskKey: string;
   actions: TaskActions;
   onSaved: () => void;
+  onAnnounce?: (message: string) => void;
 }) {
   const chip = chipOf(day.blocks);
   const label = dayLabel(day.day);
-  const tools = { taskKey, actions, onSaved, label, day };
+  const tools = { taskKey, actions, onSaved, onAnnounce, label, day };
   return (
     <div className="task-day">
       <div className="task-day-head">

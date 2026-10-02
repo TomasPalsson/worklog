@@ -232,7 +232,7 @@ describe("log time", () => {
 describe("edit the day", () => {
   it("saves hours and refetches", async () => {
     const { a } = await ready();
-    fireEvent.click(screen.getByRole("button", { name: "Change hours for Thu 1 Oct" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit hours for Thu 1 Oct" }));
     const input = screen.getByLabelText("Hours for Thu 1 Oct") as HTMLInputElement;
     expect(input.value).toBe("1.5");
     fireEvent.change(input, { target: { value: "2" } });
@@ -244,7 +244,7 @@ describe("edit the day", () => {
 
   it("rejects hours that are not a half-hour step", async () => {
     const { a } = await ready();
-    fireEvent.click(screen.getByRole("button", { name: "Change hours for Thu 1 Oct" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit hours for Thu 1 Oct" }));
     fireEvent.change(screen.getByLabelText("Hours for Thu 1 Oct"), { target: { value: "1.3" } });
     fireEvent.click(screen.getByRole("button", { name: "Save hours" }));
     expect(screen.getByText(/half-hour step/)).toBeTruthy();
@@ -253,7 +253,7 @@ describe("edit the day", () => {
 
   it("shows an hours save error inline", async () => {
     await ready(actions({ saveTempoLineHours: mock(async () => ({ ok: false, error: "nope" })) }));
-    fireEvent.click(screen.getByRole("button", { name: "Change hours for Thu 1 Oct" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit hours for Thu 1 Oct" }));
     fireEvent.click(screen.getByRole("button", { name: "Save hours" }));
     expect(await screen.findByText("nope")).toBeTruthy();
   });
@@ -273,17 +273,17 @@ describe("sync to Tempo", () => {
   it("only offers sync when the day is not in Tempo", async () => {
     await ready();
     // 1 Oct is fully synced, 30 Sep is not.
-    expect(screen.getAllByRole("button", { name: /^Sync .* to Tempo$/ })).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "Sync Wed 30 Sep to Tempo" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: /^Preview sync .* to Tempo$/ })).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Preview sync Wed 30 Sep to Tempo" })).toBeTruthy();
   });
 
   it("dry-runs first, previews, and sends only after confirm", async () => {
     const { a } = await ready();
-    fireEvent.click(screen.getByRole("button", { name: "Sync Wed 30 Sep to Tempo" }));
-    expect(await screen.findByText(/Will send 30m to Tempo for ABC-1 on 2026-09-30/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Preview sync Wed 30 Sep to Tempo" }));
+    expect(await screen.findByText("Preview — nothing sent yet")).toBeTruthy();
     expect(calls(a.runSync)).toEqual([["2026-09-30", true, "ABC-1"]]);
     fireEvent.click(screen.getByRole("button", { name: "Send to Tempo" }));
-    expect(await screen.findByText("Sent to Tempo.")).toBeTruthy();
+    expect(await screen.findByText("Sent to Tempo · 30m")).toBeTruthy();
     expect(calls(a.runSync)).toEqual([
       ["2026-09-30", true, "ABC-1"],
       ["2026-09-30", false, "ABC-1"],
@@ -293,13 +293,13 @@ describe("sync to Tempo", () => {
 
   it("includes the line text in the preview", async () => {
     await ready(actions({ loadTicketBlocks: loads([day({ line_text: "Worked on login" })]) }));
-    fireEvent.click(screen.getByRole("button", { name: /^Sync .* to Tempo$/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Preview sync .* to Tempo$/ }));
     expect(await screen.findByText(/“Worked on login”/)).toBeTruthy();
   });
 
   it("Cancel sends nothing", async () => {
     const { a } = await ready();
-    fireEvent.click(screen.getByRole("button", { name: "Sync Wed 30 Sep to Tempo" }));
+    fireEvent.click(screen.getByRole("button", { name: "Preview sync Wed 30 Sep to Tempo" }));
     fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
     expect(calls(a.runSync)).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "Send to Tempo" })).toBeNull();
@@ -311,12 +311,12 @@ describe("sync to Tempo", () => {
       data: { day: "", dry_run: dry, synced: dry ? 1 : 0, skipped: 0, errors: dry ? [] : ["Tempo said 400"] },
     }));
     await ready(actions({ runSync: run }));
-    fireEvent.click(screen.getByRole("button", { name: "Sync Wed 30 Sep to Tempo" }));
+    fireEvent.click(screen.getByRole("button", { name: "Preview sync Wed 30 Sep to Tempo" }));
     fireEvent.click(await screen.findByRole("button", { name: "Send to Tempo" }));
     expect(await screen.findByText("Tempo said 400")).toBeTruthy();
   });
 
-  it("keeps 'Sent to Tempo.' visible after the refetch flips the day to In Tempo", async () => {
+  it("keeps the Sent to Tempo strip visible after the refetch flips the day to In Tempo", async () => {
     let sent = false;
     const load = mock(async () => ({
       ok: true as const,
@@ -329,11 +329,11 @@ describe("sync to Tempo", () => {
       return { ok: true as const, data: { day: "", dry_run: dry, synced: 1, skipped: 0, errors: [] as string[] } };
     });
     await ready(actions({ loadTicketBlocks: load, runSync: run }));
-    fireEvent.click(screen.getByRole("button", { name: /^Sync .* to Tempo$/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Preview sync .* to Tempo$/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Send to Tempo" }));
     expect(await screen.findByText("In Tempo")).toBeTruthy();
-    expect(screen.getByText("Sent to Tempo.")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /^Sync .* to Tempo$/ })).toBeNull();
+    expect(screen.getByText("Sent to Tempo · 1h")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Preview sync .* to Tempo$/ })).toBeNull();
   });
 
   it("a dry run with nothing sendable says why and offers no Send", async () => {
@@ -342,14 +342,14 @@ describe("sync to Tempo", () => {
       data: { day: "", dry_run: true, synced: 0, skipped: 1, errors: [] as string[] },
     }));
     await ready(actions({ loadTicketBlocks: loads([day({ day: "2026-09-30", line_seconds: 0 })]), runSync: run }));
-    fireEvent.click(screen.getByRole("button", { name: /^Sync .* to Tempo$/ }));
-    expect(await screen.findByText(/Nothing sent \(1 skipped\): this day has no hours/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /^Preview sync .* to Tempo$/ }));
+    expect(await screen.findByText("Nothing was sent to Tempo for ABC-1 on Wed 30 Sep. It may already be in Tempo, or have no hours.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Send to Tempo" })).toBeNull();
   });
 
   it("shows a failed dry run", async () => {
     await ready(actions({ runSync: mock(async () => ({ ok: false, error: "no token" })) }));
-    fireEvent.click(screen.getByRole("button", { name: "Sync Wed 30 Sep to Tempo" }));
+    fireEvent.click(screen.getByRole("button", { name: "Preview sync Wed 30 Sep to Tempo" }));
     expect(await screen.findByText("no token")).toBeTruthy();
   });
 });

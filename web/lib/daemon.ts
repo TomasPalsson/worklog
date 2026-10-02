@@ -177,6 +177,8 @@ export async function runSync(day: string, dryRun = true, jiraIssue?: string) {
     synced: number;
     skipped: number;
     errors: string[];
+    /** One row per block the sync looked at; `reason` explains a skip or error. */
+    results?: { block_id: number; status: string; reason: string | null; tempo_id?: string | null }[];
   }>("POST", "/sync", jiraIssue ? { day, dry_run: dryRun, jira_issue: jiraIssue } : { day, dry_run: dryRun });
 }
 
