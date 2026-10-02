@@ -348,13 +348,14 @@ describe("TaskBoard panel", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("an unsent comment survives closing the panel and switching cards", async () => {
+  it("an unsent comment survives closing the panel and switching cards, and the Jira fold stays open", async () => {
     render(<TaskBoard actions={actions()} tasks={tasks} />);
     fireEvent.click(cardBtn("ABC-1"));
-    fireEvent.click(await screen.findByRole("tab", { name: /Comments/ }));
+    fireEvent.click(await screen.findByText(/^Jira — /));
     fireEvent.change(await screen.findByLabelText("Add a comment"), { target: { value: "half written" } });
     fireEvent.click(cardBtn("ABC-2"));
     expect((await screen.findByLabelText("Add a comment") as HTMLTextAreaElement).value).toBe("");
+    expect((document.querySelector(".task-jira-fold") as HTMLDetailsElement).open).toBe(true);
     fireEvent.keyDown(document, { key: "Escape" });
     fireEvent.click(cardBtn("ABC-1"));
     expect((await screen.findByLabelText("Add a comment") as HTMLTextAreaElement).value).toBe("half written");

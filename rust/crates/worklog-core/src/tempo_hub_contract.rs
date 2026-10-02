@@ -356,7 +356,7 @@ pub struct TicketDay {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TicketBlocks {
     pub key: String,
-    /// First and last day of the window (YYYY-MM-DD).
+    /// First day worked on the ticket (today when none) and today (YYYY-MM-DD).
     pub from: String,
     pub to: String,
     /// Only days that have at least one block, newest first.

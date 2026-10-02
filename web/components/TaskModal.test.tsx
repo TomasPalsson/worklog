@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { actions, calls, detail, dialog, open, quiet, row } from "./taskModalTestKit";
+import { block, day, payload } from "./workLogTestKit";
 
 afterEach(cleanup);
 
@@ -20,14 +21,16 @@ describe("TaskModal reading", () => {
     expect(screen.getByRole("link", { name: /Open in Jira/ }).getAttribute("href")).toBe("https://jira.example/browse/ABC-1");
   });
 
-  it("puts Description before Activity and loads the work log for the key on open", async () => {
+  it("leads with the work log (no ledger on an empty ticket), then a collapsed Jira fold, and loads the work log for the key", async () => {
     const a = actions();
     open(a);
-    expect(await screen.findByText("No work logged on ABC-1 in the last 14 days.")).not.toBeNull();
+    expect(await screen.findByText("Nothing tracked on ABC-1 yet. Time from your sessions lands here on its own — or log it by hand.")).not.toBeNull();
     expect(calls(a.loadTicketBlocks)[0]).toEqual(["ABC-1"]);
     const labels = [...document.querySelectorAll(".task-modal-main .task-label")].map((n) => n.textContent);
-    expect(labels).toEqual(["Description"]); // the tablist carries the name "Activity"; no label repeats it
-    expect(document.querySelector(".task-description")?.nextElementSibling?.className).toBe("task-activity");
+    expect(labels.slice(0, 1)).toEqual(["Work log"]);
+    const fold = document.querySelector(".task-jira-fold") as HTMLDetailsElement;
+    expect(fold.open).toBe(false);
+    expect(fold.previousElementSibling?.className).toBe("task-work");
   });
 
   it("shows the epic above the title when there is one", () => {
@@ -157,7 +160,7 @@ describe("TaskModal closing", () => {
 
   it("Esc inside the log form closes the form, not the dialog", async () => {
     const { onClose } = open(actions());
-    await screen.findByText("No work logged on ABC-1 in the last 14 days.");
+    await screen.findByText("Nothing tracked on ABC-1 yet. Time from your sessions lands here on its own — or log it by hand.");
     fireEvent.click(screen.getAllByRole("button", { name: "Log time" })[0]);
     expect(fireEvent.keyDown(screen.getByLabelText("What you did"), { key: "Escape" })).toBe(false);
     expect(screen.queryByLabelText("What you did")).toBeNull();
@@ -191,5 +194,38 @@ describe("TaskModal header", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(screen.queryByText("Copied ABC-1.")).toBeNull();
     await screen.findByText(/Steps to reproduce/);
+  });
+});
+
+describe("TaskModal ticket overview", () => {
+  const days = Array.from({ length: 7 }, (_, i) => {
+    const d = `2026-10-0${7 - i}`;
+    // Only the oldest day is unsent, so it sits behind "Show older".
+    return day({ day: d, blocks: [block({ tempo_worklog_id: i === 6 ? null : "w", exported_at: "2026-10-01T00:00:00Z" })] });
+  });
+  const withDays = () => actions({ loadTicketBlocks: mock(async () => ({ ok: true as const, data: payload(days) })) });
+
+  it("has the ledger and no Jira clutter: no Reporter, no Comments tab", async () => {
+    open(withDays(), row({ labels: ["backend"] }));
+    expect(await screen.findByRole("heading", { name: "Your time" })).toBeTruthy();
+    await waitFor(() => expect(document.querySelector(".task-hours-total")?.textContent).toBe("10h 30m"));
+    expect(screen.queryByText("Reporter")).toBeNull();
+    expect(screen.queryByRole("tab", { name: /Comments/ })).toBeNull();
+    expect(screen.queryByText("Related")).toBeNull();
+  });
+
+  it("Show unsent day reveals an older day hidden behind Show older", async () => {
+    const scroll = mock((_o: unknown) => {});
+    (HTMLElement.prototype as unknown as { scrollIntoView: unknown }).scrollIntoView = scroll;
+    try {
+      open(withDays());
+      await screen.findAllByRole("button", { name: "Show unsent day" });
+      expect(document.querySelector('.task-day[data-day="2026-10-01"]')).toBeNull();
+      fireEvent.click(screen.getAllByRole("button", { name: "Show unsent day" })[0]);
+      await waitFor(() => expect(scroll.mock.calls.length).toBeGreaterThan(0));
+      expect((scroll.mock.contexts.at(-1) as HTMLElement).getAttribute("data-day")).toBe("2026-10-01");
+    } finally {
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollIntoView;
+    }
   });
 });

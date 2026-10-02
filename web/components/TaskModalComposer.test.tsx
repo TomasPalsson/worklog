@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import type { TaskActions } from "./TaskCard";
-import { actions, calls, open, quiet } from "./taskModalTestKit";
+import { actions, calls, open as openDialog, quiet, unfold } from "./taskModalTestKit";
 
 afterEach(cleanup);
 
@@ -11,7 +11,13 @@ const box = () => screen.getByRole("textbox", { name: "Add a comment" }) as HTML
 const post = () => screen.getByRole("button", { name: /^Post/ }) as HTMLButtonElement;
 const draftBtn = () => screen.getByRole("button", { name: "Draft with AI" });
 
-/** The composer lives on the Comments tab, which a ticket with no hours opens by itself. */
+/** The composer lives in the dialog's Jira fold, which these tests open first. */
+function open(...args: Parameters<typeof openDialog>) {
+  const handlers = openDialog(...args);
+  unfold();
+  return handlers;
+}
+
 function openComposer(a: TaskActions) {
   const handlers = open(a, quiet());
   fireEvent.focus(box());

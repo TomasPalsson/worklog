@@ -77,6 +77,7 @@ pub mod tenant_contract;
 pub mod tenant_shares;
 pub mod tenant_split;
 pub mod tenants;
+pub mod ticket_activity;
 pub mod ticket_blocks;
 pub mod ticket_log;
 pub mod timeline;

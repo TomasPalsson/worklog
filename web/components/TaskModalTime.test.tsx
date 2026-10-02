@@ -24,7 +24,7 @@ const today = (over: Partial<TodayTotals> = {}): TodayTotals => ({
 const loaded = (over: Record<string, unknown> = {}) => ({ s: "ok" as const, data: { ...payload([]), today: today(), ...over } });
 
 function card(load: ReturnType<typeof loaded> | { s: "loading" }, props: Record<string, unknown> = {}) {
-  render(<TimeCard task={row({ today_seconds: 0 })} detail={null} load={load} onTempo={() => {}} {...props} />);
+  render(<TimeCard task={row({ today_seconds: 0 })} detail={null} load={load} {...props} />);
 }
 const text = () => (document.querySelector(".task-time") as HTMLElement).textContent;
 
@@ -48,6 +48,7 @@ describe("today", () => {
     card(loaded());
     const figs = [...document.querySelectorAll(".task-fig")].map((f) => f.textContent);
     expect(figs).toEqual(["about 2h 15mWorked", "1h 30mIn Tempo"]);
+    expect(document.querySelector(".task-time .task-row-term, .task-time dt")?.textContent).toBe("Today, all tickets");
     expect(screen.getByText("45m not in Tempo yet").getAttribute("data-tone")).toBe("changed");
     expect(screen.getByText("This ticket: 45m worked · 30m in Tempo")).toBeTruthy();
   });
@@ -62,15 +63,15 @@ describe("today", () => {
 });
 
 describe("ticket totals and estimate", () => {
-  it("shows everyone's and your hours on the ticket", () => {
+  it("shows only your Tempo hours on the ticket, not everyone's", () => {
     card(loaded({ in_tempo_total_seconds: 28800 }), { detail: detail({ time_spent_seconds: 45000 }) });
-    expect(text()).toContain("12h 30m by everyone");
-    expect(text()).toContain("8h by you");
+    expect(text()).toContain("In Tempo (you)8h");
+    expect(text()).not.toContain("by everyone");
   });
 
   it("leaves both out when unknown", () => {
     card(loaded(), { detail: detail() });
-    expect(text()).not.toContain("Logged on ticket");
+    expect(text()).not.toContain("In Tempo (you)");
     expect(text()).not.toContain("Estimate");
   });
 

@@ -3,13 +3,16 @@
 import { useEffect, useId, useRef, useState, type MutableRefObject, type ReactNode, type RefObject } from "react";
 import { ExternalLink, X } from "lucide-react";
 
+import { localToday } from "@/lib/taskBoard";
 import type { JiraTicket, StatusCategory, TaskRow, TicketComment, TicketDetail } from "@/lib/types";
-import { TaskActivity, useActivityTab, type Tab } from "./TaskActivity";
 import type { TaskActions } from "./TaskCard";
 import { ParentRow, TypeIcon } from "./TaskCardMeta";
+import { TaskComments } from "./TaskComments";
 import type { Drafts } from "./TaskComposer";
 import { TaskDescription } from "./TaskDescription";
+import { TaskDetails } from "./TaskDetails";
 import { CopyKey } from "./TaskCopyKey";
+import { TaskHours } from "./TaskHours";
 import { TaskRelated } from "./TaskRelated";
 import { TaskModalSidebar } from "./TaskModalSidebar";
 import { TaskModalSummary } from "./TaskModalSummary";
@@ -17,7 +20,8 @@ import type { Shown } from "./TaskStatusButton";
 import { useModalShell } from "./useModalShell";
 import { useWide } from "./useWide";
 import { useTicketDetail } from "./useTicketDetail";
-import { useWorkLog } from "./useWorkLog";
+import { TaskWorkLog } from "./TaskWorkLog";
+import { useWorkLog, type WorkLog } from "./useWorkLog";
 
 export interface TaskModalProps {
   task: TaskRow;
@@ -25,13 +29,16 @@ export interface TaskModalProps {
   today?: string;
   actions: TaskActions;
   onClose: () => void;
-  drafts?: MutableRefObject<Drafts>;
   onStatus: (next: { status: string | null; status_category: StatusCategory | null }) => void;
+  /** The board's tickets, offered first in the work log's Move picker. */
+  tickets?: JiraTicket[];
+  /** Unsent comments by ticket key, owned by the board so they survive closing or switching cards. */
+  drafts?: MutableRefObject<Drafts>;
   /** Board keys and how to open one; related issues not on the board open in Jira. */
   knownKeys?: Set<string>;
   onOpenTicket?: (key: string) => void;
-  /** The board's tickets, offered first in the work log's Move picker. */
-  tickets?: JiraTicket[];
+  /** Whether the Jira fold is open; owned by the board so it holds across tickets. */
+  jiraOpen?: MutableRefObject<boolean>;
 }
 
 interface HeadProps {
@@ -98,7 +105,7 @@ function useModalState(
   { task, onStatus }: TaskModalProps,
   detail: TicketDetail | null,
   dialog: RefObject<HTMLElement | null>,
-  choose: (tab: Tab) => void,
+  work: WorkLog,
 ) {
   const [extra, setExtra] = useState<TicketComment[]>([]);
   const [changed, setChanged] = useState<Shown | null>(null);
@@ -114,7 +121,7 @@ function useModalState(
     setExtra((l) => [...l, { id: `local-${l.length}`, author: "You", created: new Date().toISOString(), body }]);
     setAnnounce(`Comment posted to ${task.key}.`);
   };
-  // After the Work log tab has rendered, bring the first day that still needs Tempo into view.
+  // After every day has rendered, bring the first day that still needs Tempo into view.
   useEffect(() => {
     if (jump) dialog.current?.querySelector('.task-day[data-state="none"], .task-day[data-state="changed"]')?.scrollIntoView?.({ block: "center" });
   }, [jump, dialog]);
@@ -125,7 +132,7 @@ function useModalState(
     posted,
     announce,
     setAnnounce,
-    jumpTo: () => (choose("work"), setJump((n) => n + 1)),
+    jumpTo: () => (work.setShowAll(true), setJump((n) => n + 1)),
   };
 }
 
@@ -143,7 +150,7 @@ function Backdrop({ onClose, children }: { onClose: () => void; children: ReactN
   );
 }
 
-/** A ticket as a Jira-style dialog: title, description and activity on the left; status, time and details on the right. */
+/** A ticket as a Jira-style dialog: title, time, work log and description on the left; status, time and details on the right. */
 export function TaskModal(props: TaskModalProps) {
   const { task, actions, onClose, drafts } = props;
   const titleId = useId();
@@ -151,10 +158,11 @@ export function TaskModal(props: TaskModalProps) {
   const shell = useModalShell(dialog, onClose);
   const { load, retry } = useTicketDetail(task.key, actions);
   const work = useWorkLog(task.key, actions);
-  const { tab, choose, engage } = useActivityTab(task.week_seconds, work);
   const detail = load.s === "ok" ? load.detail : null;
-  const m = useModalState(props, detail, dialog, choose);
+  const m = useModalState(props, detail, dialog, work);
   const wide = useWide();
+  const localOpen = useRef(false);
+  const foldOpen = props.jiraOpen ?? localOpen;
 
   return (
     <Backdrop onClose={onClose}>
@@ -164,34 +172,25 @@ export function TaskModal(props: TaskModalProps) {
           <div className="task-modal-main">
             <Title id={titleId} task={task} />
             {!wide && <TaskModalSummary task={task} actions={actions} shown={m.shown} load={work.load} onStatus={m.report} onTempo={m.jumpTo} />}
-            <TaskDescription taskKey={task.key} load={load} retry={retry} />
-            <TaskRelated detail={detail} knownKeys={props.knownKeys} onOpen={props.onOpenTicket} />
-            <TaskActivity
-              tab={tab}
-              onTab={(t) => choose(t, true)}
-              taskKey={task.key}
-              actions={actions}
-              work={work}
-              detail={load}
-              extra={m.extra}
-              drafts={drafts}
-              onAnnounce={m.setAnnounce}
-              onPosted={m.posted}
-              onMoved={m.report}
-              onEngage={engage}
-              tickets={props.tickets}
-            />
+            <TaskHours taskKey={task.key} load={work.load} today={props.today ?? localToday()} onTempo={m.jumpTo} onRetry={work.retry} />
+            <h3 className="task-label task-worklog-title">Work log</h3>
+            <TaskWorkLog taskKey={task.key} actions={actions} work={work} onAnnounce={m.setAnnounce} tickets={props.tickets} />
+            <details className="task-jira-fold" open={foldOpen.current} onToggle={(e) => void (foldOpen.current = e.currentTarget.open)}>
+              <summary>Jira — description, comments, details</summary>
+              <TaskDescription taskKey={task.key} load={load} retry={retry} />
+              <TaskDetails task={task} detail={detail} today={props.today} done={m.shown.status_category === "done"} />
+              <TaskRelated detail={detail} knownKeys={props.knownKeys} onOpen={props.onOpenTicket} />
+              <TaskComments taskKey={task.key} actions={actions} detail={load} extra={m.extra} drafts={drafts} onPosted={m.posted} onMoved={m.report} />
+            </details>
           </div>
           <TaskModalSidebar
             task={task}
             actions={actions}
-            today={props.today}
             detail={detail}
             shown={m.shown}
             syncedAt={load.s === "ok" ? load.at : null}
             load={work.load}
             onStatus={m.report}
-            onTempo={m.jumpTo}
             onPulled={work.refetch}
             onRetry={work.retry}
             onAnnounce={m.setAnnounce}

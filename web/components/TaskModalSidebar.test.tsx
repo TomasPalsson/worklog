@@ -1,9 +1,9 @@
-// Ticket dialog sidebar: status button and menu, Details rows, Time card and the Tempo summary.
+// Ticket dialog sidebar: status button and menu, Time card and the Tempo summary.
 
 import { afterEach, describe, expect, it, mock } from "bun:test";
-import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { block, changedDay, day, payload } from "./workLogTestKit";
-import { actions, calls, detail, open, quiet, row, start } from "./taskModalTestKit";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { day, payload } from "./workLogTestKit";
+import { actions, calls, open, row, start } from "./taskModalTestKit";
 import type { Transition } from "@/lib/types";
 
 afterEach(cleanup);
@@ -112,133 +112,18 @@ describe("status button", () => {
   });
 });
 
-describe("Details", () => {
-  it("lists assignee, priority, type, due, labels and updated from the live detail", async () => {
-    open(actions({ loadTicketDetail: mock(async () => ({ ok: true as const, data: detail({ labels: ["backend", "auth"] }) })) }), row({ due_date: "2026-10-30" }));
-    await screen.findByText(/Steps to reproduce/);
-    const d = ".task-details";
-    expect(value(d, "Assignee").textContent).toBe("Ada");
-    expect(value(d, "Priority").textContent).toBe("Priority HighHigh"); // glyph text + name
-    expect(value(d, "Priority").querySelector("svg")).toBeTruthy();
-    expect(within(value(d, "Type")).getByText("Bug", { selector: "[aria-hidden]" })).toBeTruthy();
-    expect(value(d, "Due").textContent).toMatch(/^(Due|Overdue)/);
-    expect(value(d, "Labels").textContent).toBe("backendauth");
-    expect(value(d, "Updated").textContent).toMatch(/^5 Sep, \d\d:\d\d$/);
-  });
-
-  it("shows the cached row until the detail loads, then Jira's values", async () => {
-    let finish!: (v: unknown) => void;
-    open(actions({ loadTicketDetail: mock(() => new Promise((r) => (finish = r))) }), row({ priority: "Medium", issue_type: "Task" }));
-    const d = ".task-details";
-    expect(value(d, "Priority").textContent).toContain("Medium");
-    expect(within(value(d, "Type")).getByText("Task", { selector: "[aria-hidden]" })).toBeTruthy();
-    expect(value(d, "Assignee").textContent).toBe("You"); // the row only knows it is assigned to the Owner
-    finish({ ok: true, data: detail() });
-    await waitFor(() => expect(value(d, "Assignee").textContent).toBe("Ada"));
-    expect(value(d, "Priority").textContent).toContain("High");
-    expect(within(value(d, "Type")).getByText("Bug", { selector: "[aria-hidden]" })).toBeTruthy();
-  });
-
-  it("leaves out the rows Jira has no value for", async () => {
-    open(actions({ loadTicketDetail: mock(async () => ({ ok: true as const, data: detail({ assignee: null, priority: null, issue_type: null, updated: null }) })) }));
-    await waitFor(() => expect(terms(".task-details")).toEqual([]));
-    expect(card(".task-details").textContent).not.toContain("None");
-  });
-
-  it("lists only the rows that have a value", async () => {
-    open(actions(), row({ due_date: "2026-10-30" }));
-    await screen.findByText(/Steps to reproduce/);
-    expect(terms(".task-details")).toEqual(["Assignee", "Priority", "Type", "Due", "Updated"]); // no Labels
-  });
-
-  it("shows an unknown priority as text only", async () => {
-    open(actions({ loadTicketDetail: mock(async () => ({ ok: true as const, data: detail({ priority: "Blocker" }) })) }));
-    await screen.findByText(/Steps to reproduce/);
-    expect(value(".task-details", "Priority").textContent).toBe("Blocker");
-    expect(value(".task-details", "Priority").querySelector("svg")).toBeNull();
-  });
-
-  it("is open beside the main column", () => {
-    open(actions());
-    expect(card(".task-details").hasAttribute("open")).toBe(true);
-  });
-
-  it("an unassigned ticket has no Assignee row", () => {
-    open(actions(), row({ assigned: false }));
-    expect(terms(".task-details")).not.toContain("Assignee");
-  });
-});
-
 describe("Time card", () => {
-  it("shows this week and today (left out at 0), and no second total: the tab count already says the last 14 days", async () => {
+  it("is headed Tempo and shows today (left out at 0); this week lives in the ledger", async () => {
     open(withDays([day({ line_seconds: 5400 }), day({ day: "2026-09-30", line_seconds: 1800 })]));
     const t = ".task-time";
-    expect(value(t, "This week").textContent).toBe("1h 30m");
+    expect(card(t).querySelector(".task-label")?.textContent).toBe("Tempo");
     expect(value(t, "Today").textContent).toBe("30m");
-    expect(terms(t)).toEqual(["Today", "This week", "Tempo"]);
-    await waitFor(() => expect(value(t, "Tempo").textContent).toContain("not sent"));
+    expect(terms(t)).toEqual(["Today"]);
+    expect(screen.queryByText("Show unsent day")).toBeNull(); // the ledger owns the unsent state
     cleanup();
     open(actions(), row({ today_seconds: 0 }));
-    expect(terms(t)).toEqual(["This week", "Tempo"]);
+    expect(terms(t)).toEqual([]);
     await screen.findByText(/Steps to reproduce/);
-  });
-
-  it("says All sent when every day is in Tempo", async () => {
-    open(withDays([day({ blocks: [block({ tempo_worklog_id: "w" })] })]));
-    await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("All sent"));
-    expect(value(".task-time", "Tempo").querySelector("button")).toBeNull();
-    expect(value(".task-time", "Tempo").querySelector(".task-tempo")?.getAttribute("data-tone")).toBe("ok");
-  });
-
-  it("says how many days are not sent, and how many changed since sent", async () => {
-    open(
-      withDays([
-        day({ day: "2026-10-03" }),
-        day({ day: "2026-10-02" }),
-        changedDay({ day: "2026-10-01" }),
-      ]),
-    );
-    await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("2 days not sent, 1 day changed since sent · Show unsent day"));
-    expect(value(".task-time", "Tempo").querySelectorAll("button")).toHaveLength(1); // said once, with one Show unsent day
-  });
-
-  it("says 1 day in the singular and shows a dash with nothing logged", async () => {
-    open(withDays([day()]));
-    await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("1 day not sent · Show unsent day"));
-    cleanup();
-    open(actions());
-    await screen.findByText(/Steps to reproduce/);
-    expect(value(".task-time", "Tempo").textContent).toBe("—");
-  });
-
-  it("Show unsent day is a button whose name is its visible text, the state beside it is plain text", async () => {
-    open(withDays([changedDay()]));
-    await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("1 day changed since sent · Show unsent day"));
-    const text = value(".task-time", "Tempo").querySelector("span.task-tempo") as HTMLElement;
-    expect(text.getAttribute("data-tone")).toBe("changed");
-    expect(text.tagName).toBe("SPAN");
-    const b = value(".task-time", "Tempo").querySelector("button") as HTMLElement;
-    expect(b.className).toBe("task-review");
-    expect(b.getAttribute("aria-label")).toBeNull();
-    expect(b.textContent).toBe("Show unsent day");
-  });
-
-  it("clicking Show unsent day switches to the Work log and scrolls to the first such day", async () => {
-    window.localStorage.setItem("worklog.ticketTab", "comments");
-    const scroll = mock((_o: unknown) => {});
-    (HTMLElement.prototype as unknown as { scrollIntoView: unknown }).scrollIntoView = scroll;
-    try {
-      open(withDays([day({ day: "2026-10-03", blocks: [block({ tempo_worklog_id: "w" })] }), day({ day: "2026-10-02" })]), quiet());
-      expect(screen.getByRole("tab", { name: /Comments/ }).getAttribute("aria-selected")).toBe("true");
-      await waitFor(() => expect(value(".task-time", "Tempo").querySelector("button")).toBeTruthy());
-      fireEvent.click(value(".task-time", "Tempo").querySelector("button") as HTMLElement);
-      expect(screen.getByRole("tab", { name: /Work log/ }).getAttribute("aria-selected")).toBe("true");
-      await waitFor(() => expect(scroll.mock.calls.length).toBeGreaterThan(0));
-      const target = scroll.mock.contexts.at(-1) as HTMLElement;
-      expect(target.getAttribute("data-day")).toBe("2026-10-02");
-    } finally {
-      delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollIntoView;
-    }
   });
 });
 

@@ -247,12 +247,13 @@ function useChooserEscape(active: boolean, cancel: () => void) {
 }
 
 /**
- * Which card's dialog is open (mirrored in `?ticket=`); drafts outlive the dialog so closing or switching never
- * loses a comment. Closing hands focus back to the card once the board is no longer inert.
+ * Which card's dialog is open (mirrored in `?ticket=`); drafts and the Jira fold outlive the dialog so closing or
+ * switching never loses a comment. Closing hands focus back to the card once the board is no longer inert.
  */
 function usePanel(known: (key: string) => boolean) {
   const [openKey, setOpenKey] = useState<string | null>(null);
   const drafts = useRef<Drafts>({});
+  const jiraOpen = useRef(false);
   const current = useRef<string | null>(null);
   const returnTo = useRef<string | null>(null);
   current.current = openKey;
@@ -273,7 +274,7 @@ function usePanel(known: (key: string) => boolean) {
     if (openKey === null && returnTo.current) focusCard(returnTo.current);
     returnTo.current = null;
   }, [openKey]);
-  return { openKey, openCard, drafts, closePanel };
+  return { openKey, openCard, drafts, jiraOpen, closePanel };
 }
 
 export function TaskBoard({ tasks, actions = realActions, undoMs = 8000 }: {
@@ -290,7 +291,7 @@ export function TaskBoard({ tasks, actions = realActions, undoMs = 8000 }: {
   );
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
-  const { openKey, openCard, drafts, closePanel } = usePanel((key) => rowsRef.current.some((r) => r.key === key));
+  const { openKey, openCard, drafts, jiraOpen, closePanel } = usePanel((key) => rowsRef.current.some((r) => r.key === key));
   const m = useMoves(patch, actions, undoMs);
   const colOf = (r: TaskRow) => m.placed[r.key] ?? columnOf(r.status_category);
   // One flow for a drop and for the Move menu; dropping on the card's own column is a no-op.
@@ -371,7 +372,7 @@ export function TaskBoard({ tasks, actions = realActions, undoMs = 8000 }: {
       </div>
       </div>
       {open && (
-        <TaskModal key={open.key} drafts={drafts} task={open} actions={actions} onClose={closePanel}
+        <TaskModal key={open.key} drafts={drafts} jiraOpen={jiraOpen} task={open} actions={actions} onClose={closePanel}
           knownKeys={new Set(rows.map((r) => r.key))} tickets={rows.map(asTicket)} onOpenTicket={openCard} onStatus={(s) => {
           m.offerUndo(open.key, colOf(open), columnOf(s.status_category));
           patch(open.key, s);

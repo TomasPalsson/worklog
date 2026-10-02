@@ -10,8 +10,8 @@ fn date(s: &str) -> NaiveDate {
 
 fn ticket(conn: &Connection, key: &str, summary: &str, category: Option<&str>, external: i64) {
     conn.execute(
-        "INSERT INTO jira_tickets (key, summary, status, status_category, external, fetched_at)
-         VALUES (?1, ?2, 'In Progress', ?3, ?4, ?5)",
+        "INSERT INTO jira_tickets (key, summary, status, status_category, external, fetched_at, updated)
+         VALUES (?1, ?2, 'In Progress', ?3, ?4, ?5, '2026-09-29T10:00:00.000+0000')",
         params![
             key,
             summary,
@@ -255,4 +255,82 @@ fn backlog_tickets_are_hidden_even_when_worked_this_week() {
     .unwrap();
     worked(&conn, "APRO-2", "2026-09-29");
     assert_eq!(keys(&board(&conn)), vec!["APRO-3"]);
+}
+
+fn set_ticket(conn: &Connection, key: &str, status: &str, updated: &str) {
+    conn.execute(
+        "UPDATE jira_tickets SET status = ?2, updated = ?3 WHERE key = ?1",
+        params![key, status, updated],
+    )
+    .unwrap();
+}
+
+#[test]
+fn cancelled_tickets_are_hidden_even_when_worked_this_week() {
+    let conn = db::open_memory().unwrap();
+    ticket(&conn, "APRO-1", "Cancelled, worked", Some("done"), 0);
+    ticket(&conn, "APRO-2", "Cancelled, idle", Some("new"), 0);
+    set_ticket(&conn, "APRO-1", "Cancel", "2026-09-29T10:00:00.000+0000");
+    set_ticket(&conn, "APRO-2", "Cancelled", "2026-09-29T10:00:00.000+0000");
+    worked(&conn, "APRO-1", "2026-09-29");
+    assert!(keys(&board(&conn)).is_empty());
+}
+
+#[test]
+fn stale_assigned_ticket_is_hidden_but_a_recent_one_stays() {
+    let conn = db::open_memory().unwrap();
+    ticket(&conn, "APRO-1", "Stale", Some("indeterminate"), 0);
+    ticket(&conn, "APRO-2", "Fresh", Some("indeterminate"), 0);
+    set_ticket(
+        &conn,
+        "APRO-1",
+        "In Progress",
+        "2026-08-16T10:00:00.000+0000",
+    );
+    set_ticket(
+        &conn,
+        "APRO-2",
+        "In Progress",
+        "2026-09-27T10:00:00.000+0000",
+    );
+    assert_eq!(keys(&board(&conn)), vec!["APRO-2"]);
+}
+
+#[test]
+fn stale_ticket_worked_this_week_stays() {
+    let conn = db::open_memory().unwrap();
+    ticket(
+        &conn,
+        "APRO-1",
+        "Stale but worked",
+        Some("indeterminate"),
+        0,
+    );
+    set_ticket(
+        &conn,
+        "APRO-1",
+        "In Progress",
+        "2026-08-16T10:00:00.000+0000",
+    );
+    worked(&conn, "APRO-1", "2026-09-29");
+    assert_eq!(keys(&board(&conn)), vec!["APRO-1"]);
+}
+
+#[test]
+fn done_ticket_worked_this_week_lands_in_done() {
+    let conn = db::open_memory().unwrap();
+    ticket(&conn, "APRO-1", "Finished", Some("done"), 0);
+    set_ticket(
+        &conn,
+        "APRO-1",
+        "Verification",
+        "2026-09-29T10:00:00.000+0000",
+    );
+    worked(&conn, "APRO-1", "2026-09-29");
+    let response = board(&conn);
+    assert_eq!(keys(&response), vec!["APRO-1"]);
+    assert_eq!(
+        response.tasks[0].status_category,
+        Some(StatusCategory::Done)
+    );
 }

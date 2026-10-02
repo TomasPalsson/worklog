@@ -93,13 +93,6 @@ describe("narrow phones and targets", () => {
     for (const s of ["flex-wrap: nowrap", "min-width: 0", "max-width: 100%", "overflow-x: clip"]) expect(r).toContain(s);
   });
 
-  it("the tab pills carry data-tab so the narrow rule hits only the Work log one", async () => {
-    const days = { key: "ABC-1", from: "2026-09-19", to: "2026-10-02", days: [day()] };
-    open(actions({ loadTicketBlocks: mock(async () => ({ ok: true as const, data: days })) }));
-    await screen.findByText("1h 30m", { selector: '.task-tab-count[data-tab="work"]' });
-    expect(document.querySelector('.task-tab-count[data-tab="comments"]')).toBeTruthy();
-  });
-
   it("desktop targets: day trigger 36px, more and copy-key 36x36 (coarse stays 40)", () => {
     expect(rule(".task-day-trigger")).toContain("min-height: 36px");
     expect(css).toContain("justify-content: center; width: 36px; height: 36px;");

@@ -6,13 +6,14 @@ import type { TaskActions } from "./TaskCard";
 export type BlocksLoad = { s: "loading" } | { s: "error"; error: string } | { s: "ok"; data: TicketBlocks };
 
 /**
- * The ticket's last 14 days of work. Loads on open / key change; `refetch` swaps data in place (no skeleton)
- * after a write. Lives above the tabs so the sidebar and the tab count can read it, and so the days the user
- * expanded survive switching tabs.
+ * The ticket's work, every day it was worked. Loads on open / key change; `refetch` swaps data in place (no
+ * skeleton) after a write. Lives above the log so the ledger and sidebar can read it, and so the days the user
+ * expanded survive a remount.
  */
 export function useWorkLog(key: string, actions: TaskActions) {
   const [load, setLoad] = useState<BlocksLoad>({ s: "loading" });
   const [attempt, setAttempt] = useState(0);
+  const [showAll, setShowAll] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const loader = actions.loadTicketBlocks;
   useEffect(() => {
@@ -32,7 +33,7 @@ export function useWorkLog(key: string, actions: TaskActions) {
   /** An explicit choice wins; otherwise only the newest day is open. */
   const isOpen = (day: string, newest: boolean) => expanded[day] ?? newest;
   const setOpen = useCallback((day: string, open: boolean) => setExpanded((e) => ({ ...e, [day]: open })), []);
-  return { load, retry: () => setAttempt((n) => n + 1), refetch, isOpen, setOpen };
+  return { load, showAll, setShowAll, retry: () => setAttempt((n) => n + 1), refetch, isOpen, setOpen };
 }
 
 export type WorkLog = ReturnType<typeof useWorkLog>;

@@ -1,5 +1,5 @@
 //! "Work logged" on a ticket (blocks in the My Tasks panel): the ticket's
-//! blocks per local day over a window, with the day's Tempo line.
+//! blocks per local day over all time, with the day's Tempo line.
 
 use crate::billing::{block_interval, union_seconds};
 use crate::models::Block;
@@ -8,19 +8,14 @@ use crate::tempo_hub_contract::{TicketBlocks, TicketDay, TodayTotals};
 use crate::tempo_lines;
 use crate::week_closeout::closeout_day;
 use anyhow::Result;
-use chrono::{Duration, NaiveDate};
+use chrono::NaiveDate;
 use rusqlite::{params, Connection, OptionalExtension};
 
-pub fn ticket_blocks(
-    conn: &Connection,
-    key: &str,
-    today: NaiveDate,
-    days: u32,
-) -> Result<TicketBlocks> {
+pub fn ticket_blocks(conn: &Connection, key: &str, today: NaiveDate) -> Result<TicketBlocks> {
+    let worked_days = worked_days(conn, key, &today.to_string())?;
     let mut out = Vec::new();
-    for offset in 0..days {
-        let day = (today - Duration::days(offset.into())).to_string();
-        let blocks: Vec<_> = repo::list_blocks_for_day(conn, &day)?
+    for day in &worked_days {
+        let blocks: Vec<_> = repo::list_blocks_for_day(conn, day)?
             .into_iter()
             .filter(|b| {
                 b.jira_issue.as_deref() == Some(key) && !b.is_personal && b.ignored_at.is_none()
@@ -29,7 +24,7 @@ pub fn ticket_blocks(
         if blocks.is_empty() {
             continue;
         }
-        let line = tempo_lines::lines_for_day(conn, &day)?
+        let line = tempo_lines::lines_for_day(conn, day)?
             .into_iter()
             .find(|line| line.jira_issue == key);
         let tracked_seconds = line.as_ref().map_or(0, |_| {
@@ -46,8 +41,8 @@ pub fn ticket_blocks(
             (line.effective_seconds, text)
         });
         out.push(TicketDay {
-            in_tempo_seconds: in_tempo_seconds(conn, key, &day)?,
-            day,
+            in_tempo_seconds: in_tempo_seconds(conn, key, day)?,
+            day: day.clone(),
             line_seconds,
             line_text,
             tracked_seconds,
@@ -57,7 +52,10 @@ pub fn ticket_blocks(
     }
     Ok(TicketBlocks {
         key: key.to_string(),
-        from: (today - Duration::days(days.saturating_sub(1).into())).to_string(),
+        from: worked_days
+            .last()
+            .cloned()
+            .unwrap_or_else(|| today.to_string()),
         to: today.to_string(),
         days: out,
         in_tempo_total_seconds: in_tempo_total(conn, key)?,
@@ -68,6 +66,19 @@ pub fn ticket_blocks(
         )?,
         today: today_totals(conn, key, &today.to_string())?,
     })
+}
+
+/// Distinct days with a non-personal block on `key` up to `through`, newest first.
+fn worked_days(conn: &Connection, key: &str, through: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT day FROM blocks
+          WHERE jira_issue = ?1 AND is_personal = 0 AND ignored_at IS NULL AND day <= ?2
+          ORDER BY day DESC",
+    )?;
+    let days = stmt
+        .query_map(params![key, through], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(days)
 }
 
 /// Owner-pulled seconds on the ticket over all pulled days; None without an issue id or any pull.

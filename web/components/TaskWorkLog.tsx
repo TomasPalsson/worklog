@@ -19,7 +19,7 @@ function LogButton({ onClick, btn }: { onClick: () => void; btn?: React.Ref<HTML
   );
 }
 
-const summary = ({ days }: TicketBlocks) => `${days.length} ${days.length === 1 ? "day" : "days"} · last 14 days`;
+const summary = ({ days }: TicketBlocks) => `${days.length} ${days.length === 1 ? "day" : "days"}`;
 
 type Logged = { id: number; day: string; duration: string };
 
@@ -31,20 +31,22 @@ interface DaysProps {
   onAnnounce: (message: string) => void;
   /** Opens the log form; undefined while it is already open. */
   onLog?: () => void;
+  /** Focus target for the empty row's Log time button (the head one is hidden then). */
+  logBtn: React.Ref<HTMLButtonElement>;
   logged: Logged | null;
   tickets: JiraTicket[];
 }
 
 const RECENT_DAYS = 5;
 
-function Days({ data, taskKey, actions, work, onAnnounce, onLog, logged, tickets }: DaysProps) {
-  const [all, setAll] = useState(false);
+function Days({ data, taskKey, actions, work, onAnnounce, onLog, logBtn, logged, tickets }: DaysProps) {
+  const { showAll: all, setShowAll: setAll } = work;
   const n = data.days.length;
   if (n === 0) {
     return (
       <div className="task-empty-row">
-        <p className="task-empty">{`No work logged on ${taskKey} in the last 14 days.`}</p>
-        {onLog && <LogButton onClick={onLog} />}
+        <p className="task-empty">{`Nothing tracked on ${taskKey} yet. Time from your sessions lands here on its own — or log it by hand.`}</p>
+        {onLog && <LogButton btn={logBtn} onClick={onLog} />}
       </div>
     );
   }
@@ -76,7 +78,7 @@ function Days({ data, taskKey, actions, work, onAnnounce, onLog, logged, tickets
   );
 }
 
-/** The Work log tab: days as disclosure rows, with the Log time form directly under the head line. */
+/** The work log: days as disclosure rows, with the Log time form directly under the head line. */
 export function TaskWorkLog({
   taskKey,
   actions,
@@ -97,6 +99,7 @@ export function TaskWorkLog({
   const logBtn = useRef<HTMLButtonElement>(null);
   const head = useRef<HTMLDivElement>(null);
   const refocus = useRef(false);
+  const empty = load.s === "ok" && load.data.days.length === 0;
   const close = () => {
     refocus.current = true;
     setLogging(false);
@@ -111,10 +114,12 @@ export function TaskWorkLog({
 
   return (
     <div className="task-work">
-      <div ref={head} className="task-work-head">
-        <span className="task-work-summary">{load.s === "ok" && load.data.days.length > 0 ? summary(load.data) : ""}</span>
-        {!logging && <LogButton btn={logBtn} onClick={() => setLogging(true)} />}
-      </div>
+      {!empty && (
+        <div ref={head} className="task-work-head">
+          <span className="task-work-summary">{load.s === "ok" && load.data.days.length > 0 ? summary(load.data) : ""}</span>
+          {!logging && <LogButton btn={logBtn} onClick={() => setLogging(true)} />}
+        </div>
+      )}
       {logging && (
         <TaskLogTime
           taskKey={taskKey}
@@ -147,6 +152,7 @@ export function TaskWorkLog({
           work={work}
           onAnnounce={onAnnounce}
           logged={logged}
+          logBtn={logBtn}
           tickets={tickets}
           onLog={logging ? undefined : () => setLogging(true)}
         />

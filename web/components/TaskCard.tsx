@@ -15,9 +15,9 @@ import type {
 import type { runSync as runSyncAction } from "@/app/actions";
 import type { saveTempoLineHours, saveTempoLineText } from "@/app/actions-tempo-lines";
 import { formatDuration } from "@/lib/format";
-import { localToday, type Column } from "@/lib/taskBoard";
+import { localToday, shortDate, type Column } from "@/lib/taskBoard";
 import type { TaskRow, Transition } from "@/lib/types";
-import { DueChip, Labels, ParentRow, PriorityGlyph, TypeIcon, UpdatedAgo, WeekSpark } from "./TaskCardMeta";
+import { DueChip, ParentRow, PriorityGlyph, TypeIcon, UpdatedAgo, WeekSpark } from "./TaskCardMeta";
 import { TaskMoveMenu } from "./TaskMoveMenu";
 
 export interface TaskActions {
@@ -59,7 +59,10 @@ function Hours({ task, pending, undoing }: Pick<TaskCardProps, "task" | "pending
   // The Undo strip sits over this row; keep the row's height so showing it never reflows the card.
   if (undoing) return <span className="task-card-hours" aria-hidden="true">{" "}</span>;
   if (pending) return <span className="task-card-hours">Moving…</span>;
-  if (task.week_seconds === 0) return <span className="task-card-hours task-card-idle">Not worked this week</span>;
+  if (task.week_seconds === 0) {
+    const last = task.last_worked_day;
+    return <span className="task-card-hours task-card-idle">{last ? `Last worked ${shortDate(last)}` : "Not worked this week"}</span>;
+  }
   const today = task.today_seconds > 0 ? ` · ${formatDuration(task.today_seconds)} today` : "";
   return <span className="task-card-hours">{`${formatDuration(task.week_seconds)} this week${today}`}</span>;
 }
@@ -134,7 +137,6 @@ export function TaskCard(p: TaskCardProps) {
         </span>
         <span className="task-summary">{task.summary}</span>
         {task.parent_summary && <ParentRow text={task.parent_summary} />}
-        <Labels labels={task.labels} />
         {!p.error && <Footer {...p} today={today} />}
       </button>
       <GripVertical className="task-grip" size={14} aria-hidden="true" />

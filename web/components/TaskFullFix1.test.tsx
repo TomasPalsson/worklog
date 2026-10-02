@@ -1,4 +1,4 @@
-// ticket-full fix round 1: board tickets reach the Move picker, one Today on phones, labels, Jira context path, polish CSS.
+// ticket-full fix round 1: board tickets reach the Move picker, one Today on phones, polish CSS.
 
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -62,16 +62,7 @@ describe("phone summary has one Today", () => {
   it("before the live numbers arrive, only the cached Today shows", () => {
     viewport(false);
     open(actions({ loadTicketBlocks: mock(() => new Promise(() => {})) }));
-    expect(lines()).toEqual(["This week 1h 30m · Today 30m"]);
-  });
-});
-
-describe("Details labels", () => {
-  it("prefer the live detail even when it has none", async () => {
-    viewport(true);
-    open(actions({ loadTicketDetail: mock(async () => ({ ok: true as const, data: detail({ labels: [] }) })) }), row({ labels: ["stale"] }));
-    expect(document.querySelector(".task-details")?.textContent).toContain("stale"); // cached until the detail loads
-    await waitFor(() => expect(document.querySelector(".task-details")?.textContent).not.toContain("stale"));
+    expect(lines()).toEqual(["Today 30m"]);
   });
 });
 

@@ -127,10 +127,7 @@ pub async fn blocks(
 ) -> Result<Json<TicketBlocks>, ApiError> {
     validated_key(&key)?;
     let today = tz::local_date(Utc::now());
-    let out = with_conn(state, move |c| {
-        ticket_blocks::ticket_blocks(c, &key, today, 14)
-    })
-    .await?;
+    let out = with_conn(state, move |c| ticket_blocks::ticket_blocks(c, &key, today)).await?;
     Ok(Json(out))
 }
 

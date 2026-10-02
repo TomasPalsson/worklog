@@ -18,20 +18,23 @@ fn seed(conn: &Connection, day: &str, issue: &str, start: &str, desc: &str) -> i
 }
 
 #[test]
-fn window_is_newest_first_and_skips_empty_days() {
+fn all_time_is_newest_first_and_skips_empty_days() {
     let conn = open_memory().unwrap();
     seed(&conn, "2026-10-02", "APRO-1", "09:00", "a");
     seed(&conn, "2026-09-30", "APRO-1", "10:00", "b");
     seed(&conn, "2026-09-30", "APRO-1", "08:00", "early");
-    seed(&conn, "2026-09-18", "APRO-1", "09:00", "outside");
     seed(&conn, "2026-09-19", "APRO-1", "09:00", "edge");
-    let out = ticket_blocks(&conn, "APRO-1", today(), 14).unwrap();
+    seed(&conn, "2026-08-03", "APRO-1", "09:00", "two months back");
+    let out = ticket_blocks(&conn, "APRO-1", today()).unwrap();
     assert_eq!(
         (out.from.as_str(), out.to.as_str()),
-        ("2026-09-19", "2026-10-02")
+        ("2026-08-03", "2026-10-02")
     );
     let days: Vec<_> = out.days.iter().map(|d| d.day.as_str()).collect();
-    assert_eq!(days, ["2026-10-02", "2026-09-30", "2026-09-19"]);
+    assert_eq!(
+        days,
+        ["2026-10-02", "2026-09-30", "2026-09-19", "2026-08-03"]
+    );
     let order: Vec<_> = out.days[1]
         .blocks
         .iter()
@@ -57,7 +60,7 @@ fn personal_ignored_and_other_ticket_blocks_are_excluded() {
         [ignored],
     )
     .unwrap();
-    let out = ticket_blocks(&conn, "APRO-1", today(), 14).unwrap();
+    let out = ticket_blocks(&conn, "APRO-1", today()).unwrap();
     assert_eq!(out.days.len(), 1);
     assert_eq!(out.days[0].blocks.len(), 1);
     assert_eq!(out.days[0].blocks[0].description.as_deref(), Some("mine"));
@@ -68,7 +71,7 @@ fn line_text_prefers_stored_over_fallback_and_seconds_honour_override() {
     let conn = open_memory().unwrap();
     seed(&conn, "2026-10-02", "APRO-1", "09:00", "did stuff");
     seed(&conn, "2026-10-01", "APRO-1", "09:00", "fallback only");
-    let before = ticket_blocks(&conn, "APRO-1", today(), 14).unwrap();
+    let before = ticket_blocks(&conn, "APRO-1", today()).unwrap();
     assert_eq!(before.days[1].line_text, "fallback only");
     assert_eq!(before.days[1].line_seconds, 3600);
     tempo_lines::set_text(
@@ -89,7 +92,7 @@ fn line_text_prefers_stored_over_fallback_and_seconds_honour_override() {
         },
     )
     .unwrap();
-    let out = ticket_blocks(&conn, "APRO-1", today(), 14).unwrap();
+    let out = ticket_blocks(&conn, "APRO-1", today()).unwrap();
     assert_eq!(out.days[0].line_text, "Stored text");
     assert_eq!(out.days[0].line_seconds, 5400);
 }
@@ -111,7 +114,7 @@ fn tracked_seconds_is_the_unrounded_union_and_flags_hand_set_hours() {
         )
         .unwrap();
     }
-    let out = ticket_blocks(&conn, "APRO-1", today(), 14).unwrap();
+    let out = ticket_blocks(&conn, "APRO-1", today()).unwrap();
     assert_eq!(
         (out.days[0].tracked_seconds, out.days[0].line_seconds),
         (3600, 3600)
@@ -127,7 +130,7 @@ fn tracked_seconds_is_the_unrounded_union_and_flags_hand_set_hours() {
         seconds: Some(5400),
     };
     tempo_lines::set_hours(&conn, &hours).unwrap();
-    let out = ticket_blocks(&conn, "APRO-1", today(), 14).unwrap();
+    let out = ticket_blocks(&conn, "APRO-1", today()).unwrap();
     assert!(out.days[1].hours_set_by_hand && !out.days[0].hours_set_by_hand);
     assert_eq!(
         (out.days[1].tracked_seconds, out.days[1].line_seconds),
@@ -160,7 +163,7 @@ fn in_tempo_seconds_is_sum_zero_or_none() {
         )
         .unwrap();
     }
-    let out = ticket_blocks(&conn, "APRO-1", today(), 14).unwrap();
+    let out = ticket_blocks(&conn, "APRO-1", today()).unwrap();
     let got: Vec<_> = out.days.iter().map(|d| d.in_tempo_seconds).collect();
     assert_eq!(got, [Some(2400), Some(0), None]);
 }
@@ -169,7 +172,7 @@ fn in_tempo_seconds_is_sum_zero_or_none() {
 fn unknown_key_has_no_days() {
     let conn = open_memory().unwrap();
     seed(&conn, "2026-10-02", "APRO-1", "09:00", "a");
-    let out = ticket_blocks(&conn, "NOPE-9", today(), 14).unwrap();
+    let out = ticket_blocks(&conn, "NOPE-9", today()).unwrap();
     assert!(out.days.is_empty());
     assert_eq!(out.key, "NOPE-9");
 }
@@ -204,7 +207,7 @@ fn nothing_pulled_means_no_totals() {
     let conn = open_memory().unwrap();
     seed_ticket(&conn, "APRO-1", Some("10001"));
     seed(&conn, "2026-10-02", "APRO-1", "09:00", "a");
-    let out = ticket_blocks(&conn, "APRO-1", today(), 14).unwrap();
+    let out = ticket_blocks(&conn, "APRO-1", today()).unwrap();
     assert_eq!((out.in_tempo_total_seconds, out.pulled_at), (None, None));
     assert_eq!(out.today.day, "2026-10-02");
     assert_eq!(out.today.in_tempo_seconds, None);
@@ -220,7 +223,7 @@ fn in_tempo_total_sums_every_pulled_day_for_the_issue_and_reports_latest_pull() 
     seed_remote(&conn, "1", "2026-10-02", 10001, 1800, "worklog");
     seed_remote(&conn, "2", "2026-09-01", 10001, 3600, "worklog");
     seed_remote(&conn, "3", "2026-10-01", 10002, 9999, "outside");
-    let total = |key| ticket_blocks(&conn, key, today(), 14).unwrap();
+    let total = |key| ticket_blocks(&conn, key, today()).unwrap();
     let out = total("APRO-1");
     assert_eq!(out.in_tempo_total_seconds, Some(5400));
     assert_eq!(out.pulled_at.as_deref(), Some("2026-10-02T08:03:00Z"));
@@ -256,7 +259,7 @@ fn today_totals_union_overlaps_and_skip_personal_and_ignored() {
     )
     .unwrap();
     seed(&conn, "2026-10-01", "APRO-1", "09:00", "yesterday");
-    let t = ticket_blocks(&conn, "APRO-1", today(), 14).unwrap().today;
+    let t = ticket_blocks(&conn, "APRO-1", today()).unwrap().today;
     assert_eq!(t.worked_seconds, 3600 * 3); // 09:00-11:00 + 13:00-14:00
     assert_eq!(t.ticket_worked_seconds, 5400);
 }
@@ -269,16 +272,26 @@ fn today_in_tempo_is_any_owner_sum_and_ticket_share_is_separate() {
     seed_remote(&conn, "1", "2026-10-02", 10001, 1800, "worklog");
     seed_remote(&conn, "2", "2026-10-02", 10002, 600, "outside");
     seed_remote(&conn, "3", "2026-10-01", 10001, 7200, "worklog");
-    let t = ticket_blocks(&conn, "APRO-1", today(), 14).unwrap().today;
+    let t = ticket_blocks(&conn, "APRO-1", today()).unwrap().today;
     assert_eq!(
         (t.in_tempo_seconds, t.ticket_in_tempo_seconds),
         (Some(2400), Some(1800))
     );
     // A pulled day with no blocks: zero worked, never an error.
     let yesterday = NaiveDate::from_ymd_opt(2026, 10, 1).unwrap();
-    let other = ticket_blocks(&conn, "NOPE-9", yesterday, 14).unwrap().today;
+    let other = ticket_blocks(&conn, "NOPE-9", yesterday).unwrap().today;
     assert_eq!(
         (other.in_tempo_seconds, other.worked_seconds),
         (Some(7200), 0)
     );
+}
+
+#[test]
+fn block_sixty_days_ago_is_included_and_sets_from() {
+    let conn = open_memory().unwrap();
+    seed(&conn, "2026-08-03", "APRO-1", "09:00", "old");
+    let out = ticket_blocks(&conn, "APRO-1", today()).unwrap();
+    assert_eq!(out.from, "2026-08-03");
+    assert_eq!(out.days.len(), 1);
+    assert_eq!(out.days[0].day, "2026-08-03");
 }
