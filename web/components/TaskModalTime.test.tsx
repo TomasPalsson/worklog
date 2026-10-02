@@ -24,7 +24,7 @@ const today = (over: Partial<TodayTotals> = {}): TodayTotals => ({
 const loaded = (over: Record<string, unknown> = {}) => ({ s: "ok" as const, data: { ...payload([]), today: today(), ...over } });
 
 function card(load: ReturnType<typeof loaded> | { s: "loading" }, props: Record<string, unknown> = {}) {
-  render(<TimeCard task={row({ today_seconds: 0 })} detail={null} load={load} onTempo={() => {}} {...props} />);
+  render(<TimeCard task={row({ today_seconds: 0 })} detail={null} load={load} {...props} />);
 }
 const text = () => (document.querySelector(".task-time") as HTMLElement).textContent;
 

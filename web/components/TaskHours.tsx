@@ -1,6 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
+import Link from "next/link";
 
 import { formatDuration } from "@/lib/format";
 import { shortDate } from "@/lib/taskBoard";
@@ -26,21 +27,27 @@ function Ledger({ h, today, onTempo }: { h: TicketHours; today: string; onTempo:
   return (
     <>
       <div className="task-hours-head">
-        <span className="task-hours-total">{formatDuration(h.total)}</span>
+        <span className="task-hours-total" title="Billed hours: each day rounded up to the half hour">{formatDuration(h.total)}</span>
         <span className="task-hours-of">on this ticket</span>
       </div>
-      <p className="task-hours-sub">{`${plural(h.days)} · ${first === last ? first : `${first} – ${last}`} · Last worked ${relativeDay(h.last as string, today)}`}</p>
+      <p className="task-hours-sub">{`${plural(h.days)} · ${first === last && h.last === today ? "" : `${first === last ? first : `${first} – ${last}`} · `}Last worked ${relativeDay(h.last as string, today)}`}</p>
       <div className="task-hours-figs">
         <Figure value={formatDuration(h.week)} label="This week" />
         <Figure value={formatDuration(h.month)} label="This month" />
-        <Figure value={h.unsent > 0 ? formatDuration(h.unsent) : "All sent"} label="Not in Tempo" tone={h.unsent > 0 ? "none" : "ok"}>
+        <Figure value={h.unsent > 0 ? formatDuration(h.unsent) : "All sent"} label="To send to Tempo" tone={h.unsent > 0 ? "none" : "ok"}>
           {h.unsent > 0 && (
             <button type="button" className="task-review" onClick={onTempo}>
               Show unsent day
             </button>
           )}
         </Figure>
-        <Figure value={h.uninvoiced > 0 ? formatDuration(h.uninvoiced) : "All invoiced"} label="Not invoiced" tone={h.uninvoiced > 0 ? undefined : "ok"} />
+        <Figure value={h.uninvoiced > 0 ? formatDuration(h.uninvoiced) : "All invoiced"} label="Not invoiced" tone={h.uninvoiced > 0 ? "none" : "ok"}>
+          {h.uninvoiced > 0 && (
+            <Link href="/billing" className="task-review">
+              Go to billing
+            </Link>
+          )}
+        </Figure>
       </div>
     </>
   );
@@ -67,7 +74,7 @@ export function TaskHours({ taskKey, load, today, onTempo, onRetry }: TaskHoursP
         </button>
       </div>
     );
-  else if (load.data.days.length === 0) body = <p className="task-empty">{`No time on ${taskKey} yet. It shows up here as soon as you work on it.`}</p>;
+  else if (load.data.days.length === 0) return null; // the work log's empty row says it
   else body = <Ledger h={ticketHours(load.data, today)} today={today} onTempo={onTempo} />;
   return (
     <section className="task-hours" aria-labelledby="task-hours-label">

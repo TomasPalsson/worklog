@@ -17,7 +17,6 @@ export interface SidebarProps {
   syncedAt: Date | null;
   load: BlocksLoad;
   onStatus: (next: Shown) => void;
-  onTempo: () => void;
   /** Reload the work log once the Time card has pulled fresh Tempo numbers. */
   onPulled?: () => void | Promise<void>;
   /** Try the work log again after it failed to load. */
@@ -28,8 +27,8 @@ export interface SidebarProps {
   wide: boolean;
 }
 
-export function TaskModalSidebar({ task, actions, detail, shown, syncedAt, load, onStatus, onTempo, onPulled, onRetry, onAnnounce, wide }: SidebarProps) {
-  const time = <TimeCard task={task} detail={detail} load={load} onTempo={onTempo} onPulled={onPulled} onRetry={onRetry} onAnnounce={onAnnounce} />;
+export function TaskModalSidebar({ task, actions, detail, shown, syncedAt, load, onStatus, onPulled, onRetry, onAnnounce, wide }: SidebarProps) {
+  const time = <TimeCard task={task} detail={detail} load={load} onPulled={onPulled} onRetry={onRetry} onAnnounce={onAnnounce} />;
   return (
     <aside className="task-modal-side" aria-label={`Details for ${task.key}`}>
       {wide && (

@@ -7,7 +7,6 @@ import { formatDuration, mondayOf } from "@/lib/format";
 import { localToday } from "@/lib/taskBoard";
 import { toast } from "@/lib/toast";
 import type { TaskRow, TicketBlocks, TicketDetail, TodayTotals } from "@/lib/types";
-import { tempoState } from "./tempoState";
 import type { BlocksLoad } from "./useWorkLog";
 
 export function Row({ term, children }: { term: string; children: ReactNode }) {
@@ -94,27 +93,6 @@ function TodayRow({ view }: { view: TodayView }) {
   );
 }
 
-/** Said once: the state in words, and for days still to send a Show unsent day button that jumps to the first of them. */
-function TempoRow({ load, onTempo }: { load: BlocksLoad; onTempo: () => void }) {
-  const tempo = tempoState(load);
-  if (!tempo) return <span className="task-none">—</span>;
-  return (
-    <span className="task-tempo-line">
-      <span className="task-tempo" data-tone={tempo.tone}>
-        {tempo.text}
-      </span>
-      {tempo.review && (
-        <span className="task-tempo-act">
-          <span aria-hidden="true">{" · "}</span>
-          <button type="button" className="task-review" onClick={onTempo}>
-            Show unsent day
-          </button>
-        </span>
-      )}
-    </span>
-  );
-}
-
 function LoggedRow({ data }: { data: TicketBlocks | null }) {
   const you = data?.in_tempo_total_seconds ?? null;
   return you === null ? null : <Row term="In Tempo (you)">{formatDuration(you)}</Row>;
@@ -189,7 +167,6 @@ export interface TimeCardProps {
   task: TaskRow;
   detail: TicketDetail | null;
   load: BlocksLoad;
-  onTempo: () => void;
   /** Reload the work log after a Tempo pull. */
   onPulled?: () => void | Promise<void>;
   /** Try the work log load again after it failed. */
@@ -214,7 +191,7 @@ function LoadFoot({ load, onRetry }: { load: BlocksLoad; onRetry?: () => void })
   );
 }
 
-export function TimeCard({ task, detail, load, onTempo, onPulled, onRetry, onAnnounce, pull = pullTempoWeek }: TimeCardProps) {
+export function TimeCard({ task, detail, load, onPulled, onRetry, onAnnounce, pull = pullTempoWeek }: TimeCardProps) {
   const data = load.s === "ok" ? load.data : null;
   const view = todayView(data?.today);
   return (
@@ -224,9 +201,6 @@ export function TimeCard({ task, detail, load, onTempo, onPulled, onRetry, onAnn
       </h3>
       <dl>
         {view ? <TodayRow view={view} /> : task.today_seconds > 0 && <Row term="Today">{formatDuration(task.today_seconds)}</Row>}
-        <Row term="Tempo">
-          <TempoRow load={load} onTempo={onTempo} />
-        </Row>
         <LoggedRow data={data} />
         <EstimateRow detail={detail} />
       </dl>

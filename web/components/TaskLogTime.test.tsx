@@ -159,8 +159,8 @@ describe("empty state", () => {
     await open([]);
     expect(screen.getByText("No work logged on ABC-1 yet.")).toBeTruthy();
     const buttons = btns("Log time");
-    expect(buttons).toHaveLength(2);
-    fireEvent.click(buttons[1]);
+    expect(buttons).toHaveLength(1); // only the empty row's; the head one is hidden
+    fireEvent.click(buttons[0]);
     expect(desc()).toBeTruthy();
     expect(btns("Log time")).toHaveLength(0);
   });

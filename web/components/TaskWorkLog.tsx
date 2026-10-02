@@ -31,20 +31,22 @@ interface DaysProps {
   onAnnounce: (message: string) => void;
   /** Opens the log form; undefined while it is already open. */
   onLog?: () => void;
+  /** Focus target for the empty row's Log time button (the head one is hidden then). */
+  logBtn: React.Ref<HTMLButtonElement>;
   logged: Logged | null;
   tickets: JiraTicket[];
 }
 
 const RECENT_DAYS = 5;
 
-function Days({ data, taskKey, actions, work, onAnnounce, onLog, logged, tickets }: DaysProps) {
+function Days({ data, taskKey, actions, work, onAnnounce, onLog, logBtn, logged, tickets }: DaysProps) {
   const { showAll: all, setShowAll: setAll } = work;
   const n = data.days.length;
   if (n === 0) {
     return (
       <div className="task-empty-row">
         <p className="task-empty">{`No work logged on ${taskKey} yet.`}</p>
-        {onLog && <LogButton onClick={onLog} />}
+        {onLog && <LogButton btn={logBtn} onClick={onLog} />}
       </div>
     );
   }
@@ -97,6 +99,7 @@ export function TaskWorkLog({
   const logBtn = useRef<HTMLButtonElement>(null);
   const head = useRef<HTMLDivElement>(null);
   const refocus = useRef(false);
+  const empty = load.s === "ok" && load.data.days.length === 0;
   const close = () => {
     refocus.current = true;
     setLogging(false);
@@ -113,7 +116,7 @@ export function TaskWorkLog({
     <div className="task-work">
       <div ref={head} className="task-work-head">
         <span className="task-work-summary">{load.s === "ok" && load.data.days.length > 0 ? summary(load.data) : ""}</span>
-        {!logging && <LogButton btn={logBtn} onClick={() => setLogging(true)} />}
+        {!logging && !empty && <LogButton btn={logBtn} onClick={() => setLogging(true)} />}
       </div>
       {logging && (
         <TaskLogTime
@@ -147,6 +150,7 @@ export function TaskWorkLog({
           work={work}
           onAnnounce={onAnnounce}
           logged={logged}
+          logBtn={logBtn}
           tickets={tickets}
           onLog={logging ? undefined : () => setLogging(true)}
         />

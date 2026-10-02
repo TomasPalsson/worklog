@@ -168,7 +168,6 @@ export function TaskModal(props: TaskModalProps) {
             syncedAt={load.s === "ok" ? load.at : null}
             load={work.load}
             onStatus={m.report}
-            onTempo={m.jumpTo}
             onPulled={work.refetch}
             onRetry={work.retry}
             onAnnounce={m.setAnnounce}

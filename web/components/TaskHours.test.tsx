@@ -29,9 +29,9 @@ describe("TaskHours", () => {
     expect(retry.mock.calls.length).toBe(1);
   });
 
-  it("explains an empty ticket", () => {
+  it("renders nothing for an empty ticket (the work log says it)", () => {
     show(ok([]));
-    expect(screen.getByText("No time on ABC-1 yet. It shows up here as soon as you work on it.")).toBeTruthy();
+    expect(document.querySelector(".task-hours")).toBeNull();
   });
 
   it("shows the total, span, last worked and the four figures", () => {
@@ -39,18 +39,30 @@ describe("TaskHours", () => {
     expect(screen.getByRole("heading", { name: "Your time" })).toBeTruthy();
     expect(document.querySelector(".task-hours-total")?.textContent).toBe("2h 30m");
     expect(screen.getByText("2 days · 20 Sep – 1 Oct · Last worked yesterday")).toBeTruthy();
-    expect(figs()).toEqual(["1h 30mThis week", "1h 30mThis month", "All sentNot in Tempo", "1hNot invoiced"]);
+    expect(figs()).toEqual(["1h 30mThis week", "1h 30mThis month", "All sentTo send to Tempo", "1hNot invoicedGo to billing"]);
   });
 
-  it("uses a single date when first and last are the same day", () => {
+  it("uses a single date when first and last are the same earlier day", () => {
+    show(ok([day({ day: "2026-10-01", blocks: [sent()] })]));
+    expect(screen.getByText("1 day · 1 Oct · Last worked yesterday")).toBeTruthy();
+  });
+
+  it("drops the date from the sub-line when the only day is today", () => {
     show(ok([day({ day: "2026-10-02", blocks: [sent()] })]));
-    expect(screen.getByText("1 day · 2 Oct · Last worked today")).toBeTruthy();
+    expect(screen.getByText("1 day · Last worked today")).toBeTruthy();
+  });
+
+  it("links to billing in the amber tone when hours are not invoiced", () => {
+    show(ok([day({ blocks: [sent({ exported_at: null })] })]));
+    const fig = screen.getByText("Not invoiced").closest(".task-fig") as HTMLElement;
+    expect(fig.getAttribute("data-tone")).toBe("none");
+    expect(screen.getByRole("link", { name: "Go to billing" }).getAttribute("href")).toBe("/billing");
   });
 
   it("offers Show unsent day when hours are not in Tempo", () => {
     const onTempo = mock(() => {});
     show(ok([day({ day: "2026-10-02", line_seconds: 1800, blocks: [block({ tempo_worklog_id: null })] })]), onTempo);
-    expect(figs()[2]).toBe("30mNot in TempoShow unsent day");
+    expect(figs()[2]).toBe("30mTo send to TempoShow unsent day");
     fireEvent.click(screen.getByRole("button", { name: "Show unsent day" }));
     expect(onTempo.mock.calls.length).toBe(1);
   });
@@ -59,6 +71,7 @@ describe("TaskHours", () => {
     show(ok([day({ blocks: [sent()] })]));
     expect(screen.getByText("All invoiced")).toBeTruthy();
     expect(screen.getByText("All sent")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Go to billing" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Show unsent day" })).toBeNull();
   });
 });

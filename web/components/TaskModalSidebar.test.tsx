@@ -2,8 +2,8 @@
 
 import { afterEach, describe, expect, it, mock } from "bun:test";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
-import { block, changedDay, day, payload } from "./workLogTestKit";
-import { actions, calls, open, quiet, row, start } from "./taskModalTestKit";
+import { day, payload } from "./workLogTestKit";
+import { actions, calls, open, row, start } from "./taskModalTestKit";
 import type { Transition } from "@/lib/types";
 
 afterEach(cleanup);
@@ -118,67 +118,12 @@ describe("Time card", () => {
     const t = ".task-time";
     expect(card(t).querySelector(".task-label")?.textContent).toBe("Tempo");
     expect(value(t, "Today").textContent).toBe("30m");
-    expect(terms(t)).toEqual(["Today", "Tempo"]);
-    await waitFor(() => expect(value(t, "Tempo").textContent).toContain("not sent"));
+    expect(terms(t)).toEqual(["Today"]);
+    expect(screen.queryByText("Show unsent day")).toBeNull(); // the ledger owns the unsent state
     cleanup();
     open(actions(), row({ today_seconds: 0 }));
-    expect(terms(t)).toEqual(["Tempo"]);
+    expect(terms(t)).toEqual([]);
     await screen.findByText(/Steps to reproduce/);
-  });
-
-  it("says All sent when every day is in Tempo", async () => {
-    open(withDays([day({ blocks: [block({ tempo_worklog_id: "w" })] })]));
-    await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("All sent"));
-    expect(value(".task-time", "Tempo").querySelector("button")).toBeNull();
-    expect(value(".task-time", "Tempo").querySelector(".task-tempo")?.getAttribute("data-tone")).toBe("ok");
-  });
-
-  it("says how many days are not sent, and how many changed since sent", async () => {
-    open(
-      withDays([
-        day({ day: "2026-10-03" }),
-        day({ day: "2026-10-02" }),
-        changedDay({ day: "2026-10-01" }),
-      ]),
-    );
-    await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("2 days not sent, 1 day changed since sent · Show unsent day"));
-    expect(value(".task-time", "Tempo").querySelectorAll("button")).toHaveLength(1); // said once, with one Show unsent day
-  });
-
-  it("says 1 day in the singular and shows a dash with nothing logged", async () => {
-    open(withDays([day()]));
-    await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("1 day not sent · Show unsent day"));
-    cleanup();
-    open(actions());
-    await screen.findByText(/Steps to reproduce/);
-    expect(value(".task-time", "Tempo").textContent).toBe("—");
-  });
-
-  it("Show unsent day is a button whose name is its visible text, the state beside it is plain text", async () => {
-    open(withDays([changedDay()]));
-    await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("1 day changed since sent · Show unsent day"));
-    const text = value(".task-time", "Tempo").querySelector("span.task-tempo") as HTMLElement;
-    expect(text.getAttribute("data-tone")).toBe("changed");
-    expect(text.tagName).toBe("SPAN");
-    const b = value(".task-time", "Tempo").querySelector("button") as HTMLElement;
-    expect(b.className).toBe("task-review");
-    expect(b.getAttribute("aria-label")).toBeNull();
-    expect(b.textContent).toBe("Show unsent day");
-  });
-
-  it("clicking Show unsent day scrolls to the first such day", async () => {
-    const scroll = mock((_o: unknown) => {});
-    (HTMLElement.prototype as unknown as { scrollIntoView: unknown }).scrollIntoView = scroll;
-    try {
-      open(withDays([day({ day: "2026-10-03", blocks: [block({ tempo_worklog_id: "w" })] }), day({ day: "2026-10-02" })]), quiet());
-      await waitFor(() => expect(value(".task-time", "Tempo").querySelector("button")).toBeTruthy());
-      fireEvent.click(value(".task-time", "Tempo").querySelector("button") as HTMLElement);
-      await waitFor(() => expect(scroll.mock.calls.length).toBeGreaterThan(0));
-      const target = scroll.mock.contexts.at(-1) as HTMLElement;
-      expect(target.getAttribute("data-day")).toBe("2026-10-02");
-    } finally {
-      delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollIntoView;
-    }
   });
 });
 
