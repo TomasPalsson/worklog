@@ -107,19 +107,41 @@ describe("TaskPanel reading", () => {
       ++n === 1 ? { ok: false as const, error: "jira down" } : { ok: true as const, data: detail() },
     );
     open(actions({ loadTicketDetail: loader }));
-    expect((await screen.findByText(/Couldn't load ABC-1 from Jira — jira down\./)).textContent).toContain("jira down");
+    expect((await screen.findByText("Couldn't load ABC-1 from Jira: jira down")).textContent).toBe("Couldn't load ABC-1 from Jira: jira down");
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(await screen.findByText(/Steps to reproduce/)).not.toBeNull();
     expect(loader.mock.calls.length).toBe(2);
   });
 
-  it("moves focus to the headline on open and Esc or the close button calls onClose", async () => {
+  it("moves focus to the dialog on open and Esc or the close button calls onClose", async () => {
     const { onClose } = open(actions());
-    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Fix login" }));
+    expect(document.activeElement).toBe(screen.getByRole("dialog"));
+    expect(screen.getByRole("heading", { name: "Fix login" }).hasAttribute("tabindex")).toBe(false);
     fireEvent.keyDown(document, { key: "Escape" });
     expect(onClose.mock.calls.length).toBe(1);
     fireEvent.click(screen.getByRole("button", { name: "Close ABC-1" }));
     expect(onClose.mock.calls.length).toBe(2);
+    await screen.findByText(/Steps to reproduce/);
+  });
+
+  it("strips a trailing period from a load error reason", async () => {
+    open(actions({ loadTicketDetail: mock(async () => ({ ok: false as const, error: "jira down." })) }));
+    expect((await screen.findByText(/Couldn't load ABC-1/)).textContent).toBe("Couldn't load ABC-1 from Jira: jira down");
+  });
+
+  it("shows the live Jira status once detail has loaded", async () => {
+    open(actions({ loadTicketDetail: mock(async () => ({ ok: true as const, data: detail({ status: "In Review", status_category: "indeterminate" }) })) }));
+    expect(screen.getByTestId("status-ABC-1").textContent).toBe("To Do");
+    await waitFor(() => expect(screen.getByTestId("status-ABC-1").textContent).toBe("In Review"));
+    expect(screen.getByTestId("status-ABC-1").getAttribute("data-category")).toBe("indeterminate");
+  });
+
+  it("labels a menu move by name only when the name equals the target status", async () => {
+    const same: Transition = { id: "41", name: "Done", to_status: "done", to_category: "done" };
+    open(actions({ loadTransitions: mock(async () => ({ ok: true as const, data: [start, same] })) }));
+    fireEvent.click(screen.getByTestId("status-ABC-1"));
+    expect(await screen.findByRole("button", { name: "Start → In Progress" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Done" })).not.toBeNull();
     await screen.findByText(/Steps to reproduce/);
   });
 

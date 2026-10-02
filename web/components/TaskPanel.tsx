@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { ChevronDown, ExternalLink, X } from "lucide-react";
 
 import { formatDuration } from "@/lib/format";
-import { formatStamp } from "@/lib/taskBoard";
+import { formatStamp, transitionLabel } from "@/lib/taskBoard";
 import type { StatusCategory, TaskRow, TicketComment, TicketDetail, TicketStatus, Transition } from "@/lib/types";
 import type { TaskActions } from "./TaskCard";
 import { TaskComposer, type Drafts } from "./TaskComposer";
@@ -46,7 +46,9 @@ function Skeleton() {
   );
 }
 
-function StatusChip({ task, actions, onStatus }: Pick<TaskPanelProps, "task" | "actions" | "onStatus">) {
+type Shown = { status: string | null; status_category: StatusCategory | null };
+
+function StatusChip({ task, shown, actions, onStatus }: Pick<TaskPanelProps, "task" | "actions" | "onStatus"> & { shown: Shown }) {
   const [menu, setMenu] = useState<Transition[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -77,21 +79,21 @@ function StatusChip({ task, actions, onStatus }: Pick<TaskPanelProps, "task" | "
       <button
         type="button"
         className="task-status"
-        data-category={task.status_category ?? undefined}
+        data-category={shown.status_category ?? undefined}
         data-testid={`status-${task.key}`}
         aria-haspopup="true"
         aria-expanded={menu !== null}
         disabled={busy}
         onClick={toggle}
       >
-        {task.status ?? "No status"}
+        {shown.status ?? "No status"}
         <ChevronDown size={12} aria-hidden="true" />
       </button>
       {menu && (
         <span className="task-menu">
           {menu.map((t) => (
             <button key={t.id} type="button" disabled={busy} onClick={() => move(t)}>
-              {`${t.name} → ${t.to_status}`}
+              {transitionLabel(t)}
             </button>
           ))}
           {menu.length === 0 && <em>No moves available.</em>}
@@ -106,17 +108,19 @@ function StatusChip({ task, actions, onStatus }: Pick<TaskPanelProps, "task" | "
   );
 }
 
-function Meta({ task, detail, actions, onStatus }: TaskPanelProps & { detail: TicketDetail | null }) {
+function Meta({ task, detail, shown, actions, onStatus }: TaskPanelProps & { detail: TicketDetail | null; shown: Shown }) {
   const items = [detail?.issue_type, detail?.priority, detail?.assignee];
   return (
-    <div className="task-meta">
-      <StatusChip task={task} actions={actions} onStatus={onStatus} />
-      {items.filter(Boolean).map((v) => (
-        <span key={v}>{v}</span>
-      ))}
-      {detail?.updated && <span>{`Updated ${formatStamp(detail.updated)}`}</span>}
-      <span>{`${formatDuration(task.week_seconds)} this week · ${formatDuration(task.today_seconds)} today`}</span>
-    </div>
+    <>
+      <div className="task-meta">
+        <StatusChip task={task} shown={shown} actions={actions} onStatus={onStatus} />
+        {items.filter(Boolean).map((v) => (
+          <span key={v}>{v}</span>
+        ))}
+        {detail?.updated && <span>{`Updated ${formatStamp(detail.updated)}`}</span>}
+      </div>
+      <p className="task-hours">{`${formatDuration(task.week_seconds)} this week · ${formatDuration(task.today_seconds)} today`}</p>
+    </>
   );
 }
 
@@ -144,7 +148,7 @@ function Body({ load, retry, extra, taskKey }: { load: Load; retry: () => void; 
   if (load.s === "error") {
     return (
       <div className="task-load-error">
-        <p>{`Couldn't load ${taskKey} from Jira — ${load.error}.`}</p>
+        <p>{`Couldn't load ${taskKey} from Jira: ${load.error.replace(/\.$/, "")}`}</p>
         <button type="button" className="task-btn-secondary" onClick={retry}>
           Try again
         </button>
@@ -175,9 +179,10 @@ export function TaskPanel(props: TaskPanelProps) {
   const { task, actions, onClose, onStatus, drafts } = props;
   const { load, retry } = useDetail(task.key, actions);
   const [extra, setExtra] = useState<TicketComment[]>([]);
-  const head = useRef<HTMLHeadingElement>(null);
+  const dialog = useRef<HTMLElement>(null);
+  const [changed, setChanged] = useState<Shown | null>(null);
 
-  useEffect(() => head.current?.focus(), []);
+  useEffect(() => dialog.current?.focus(), []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && !e.defaultPrevented && onClose();
     document.addEventListener("keydown", onKey);
@@ -188,10 +193,16 @@ export function TaskPanel(props: TaskPanelProps) {
   const url = detail?.url ?? task.url;
   const posted = (body: string) =>
     setExtra((l) => [...l, { id: `local-${l.length}`, author: "You", created: new Date().toISOString(), body }]);
-  const moved = (s: TicketStatus) => onStatus({ status: s.status, status_category: s.status_category });
+  // Live Jira status once loaded; a change made here wins over both until the panel closes.
+  const shown: Shown = changed ?? (detail ? { status: detail.status, status_category: detail.status_category } : task);
+  const report = (s: Shown) => {
+    setChanged({ status: s.status, status_category: s.status_category });
+    onStatus({ status: s.status, status_category: s.status_category });
+  };
+  const moved = (s: TicketStatus) => report(s);
 
   return (
-    <aside className="task-panel" role="dialog" aria-modal="false" aria-labelledby="task-panel-title">
+    <aside ref={dialog} tabIndex={-1} className="task-panel" role="dialog" aria-modal="false" aria-labelledby="task-panel-title">
       <div className="task-panel-top">
         <span className="task-key">{task.key}</span>
         {url && (
@@ -205,10 +216,10 @@ export function TaskPanel(props: TaskPanelProps) {
         </button>
       </div>
       <div className="task-panel-scroll">
-        <h2 id="task-panel-title" ref={head} tabIndex={-1} className="task-headline">
+        <h2 id="task-panel-title" className="task-headline">
           {task.summary}
         </h2>
-        <Meta {...props} detail={detail} />
+        <Meta {...props} onStatus={report} detail={detail} shown={shown} />
         <Body load={load} retry={retry} extra={extra} taskKey={task.key} />
       </div>
       <TaskComposer drafts={drafts} taskKey={task.key} actions={actions} onPosted={posted} onMoved={moved} />

@@ -10,12 +10,12 @@ import {
   transitionTicket,
 } from "@/app/actions-hub";
 import { COLUMNS, columnOf, columnTitle, movesInto, type Column } from "@/lib/taskBoard";
-import { toast } from "@/lib/toast";
 import type { TaskRow, Transition } from "@/lib/types";
 import { TaskCard, type TaskActions } from "./TaskCard";
 import type { Drafts } from "./TaskComposer";
 import { TaskColumn, type Chooser } from "./TaskColumn";
 import { TaskPanel, type TaskPanelProps } from "./TaskPanel";
+import { TaskToolbar } from "./TaskToolbar";
 
 const realActions: TaskActions = {
   loadTransitions,
@@ -28,53 +28,65 @@ const realActions: TaskActions = {
 type StatusPatch = Parameters<TaskPanelProps["onStatus"]>[0];
 type Patch = (key: string, s: StatusPatch) => void;
 
-/** Optimistic drag-to-move: placement, pending flags, per-card errors, chooser. */
+/** Optimistic move: placement, pending flags, per-card errors, chooser, spoken outcome, landing highlight. */
 function useMoves(patch: Patch, actions: TaskActions) {
   const [placed, setPlaced] = useState<Record<string, Column>>({});
   const [pending, setPending] = useState<Set<string>>(new Set());
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [chooser, setChooser] = useState<Chooser | null>(null);
+  const [announce, setAnnounce] = useState("");
+  const [landed, setLanded] = useState<string | null>(null);
 
+  const dismiss = (key: string) => setErrors(({ [key]: _, ...rest }) => rest);
   const begin = (key: string, target: Column) => {
     setChooser(null);
     setPlaced((p) => ({ ...p, [key]: target }));
     setPending((p) => new Set(p).add(key));
-    setErrors(({ [key]: _, ...rest }) => rest);
+    dismiss(key);
   };
-  const settle = (key: string, error?: string) => {
+  const settle = (key: string, target: Column, reason?: string) => {
     setPlaced(({ [key]: _, ...rest }) => rest);
     setPending((p) => new Set([...p].filter((k) => k !== key)));
-    if (error) {
-      setErrors((e) => ({ ...e, [key]: error }));
-      toast.error(error);
-    }
+    if (!reason) return;
+    setErrors((e) => ({ ...e, [key]: `Couldn't move to ${columnTitle(target)} — ${reason}` }));
+    setAnnounce(`Couldn't move ${key} to ${columnTitle(target)}.`);
   };
+  const succeed = (key: string, s: StatusPatch) => {
+    patch(key, s);
+    setAnnounce(`Moved ${key} to ${columnTitle(columnOf(s.status_category))}.`);
+    setLanded(key);
+  };
+  useEffect(() => {
+    if (!landed) return;
+    const t = setTimeout(() => setLanded(null), 1200);
+    return () => clearTimeout(t);
+  }, [landed]);
 
   async function run(key: string, target: Column, t: Transition) {
     begin(key, target);
     const res = await actions.transitionTicket(key, t.id);
-    if (res.ok) patch(key, { status: res.data.status, status_category: res.data.status_category });
-    settle(key, res.ok ? undefined : res.error);
+    if (res.ok) succeed(key, { status: res.data.status, status_category: res.data.status_category });
+    settle(key, target, res.ok ? undefined : res.error);
   }
 
   async function move(row: TaskRow, target: Column) {
     begin(row.key, target);
     const res = await actions.loadTransitions(row.key);
-    if (!res.ok) return settle(row.key, res.error);
+    if (!res.ok) return settle(row.key, target, res.error);
     const moves = movesInto(res.data, target);
     if (moves.length === 1) return run(row.key, target, moves[0]);
     if (moves.length > 1) {
-      settle(row.key);
+      settle(row.key, target);
       return setChooser({ key: row.key, column: target, transitions: moves });
     }
-    settle(row.key, `Jira has no move from ${row.status ?? "its status"} to ${columnTitle(target)} for ${row.key}.`);
+    settle(row.key, target, `Jira has no move from ${row.status ?? "its status"} to ${columnTitle(target)} for ${row.key}.`);
   }
 
-  return { placed, pending, errors, chooser, cancel: () => setChooser(null), move, run };
+  return { placed, pending, errors, chooser, announce, landed, dismiss, cancel: () => setChooser(null), move, run };
 }
 
 /** Native HTML5 DnD state. The key lives in React state; dataTransfer is a fallback. */
-function useDrag(rows: TaskRow[], colOf: (r: TaskRow) => Column, move: (r: TaskRow, c: Column) => void) {
+function useDrag(moveTo: (key: string, c: Column) => void) {
   const [dragKey, setDragKey] = useState<string | null>(null);
   const [over, setOver] = useState<Column | null>(null);
 
@@ -102,9 +114,8 @@ function useDrag(rows: TaskRow[], colOf: (r: TaskRow) => Column, move: (r: TaskR
       onDrop: (e: DragEvent) => {
         e.preventDefault();
         const key = dragKey ?? e.dataTransfer?.getData("text/plain");
-        const row = rows.find((r) => r.key === key);
         end();
-        if (row && colOf(row) !== id) move(row, id);
+        if (key) moveTo(key, id);
       },
     }),
   };
@@ -114,26 +125,6 @@ function matches(t: TaskRow, text: string, onlyWorked: boolean) {
   const q = text.trim().toLowerCase();
   if (onlyWorked && t.week_seconds <= 0) return false;
   return !q || t.key.toLowerCase().includes(q) || t.summary.toLowerCase().includes(q);
-}
-
-function Toolbar(p: {
-  text: string;
-  onlyWorked: boolean;
-  setText: (v: string) => void;
-  setOnlyWorked: (v: boolean) => void;
-}) {
-  return (
-    <div className="task-toolbar">
-      <label className="task-filter">
-        <span className="task-label">Filter</span>
-        <input type="search" value={p.text} onChange={(e) => p.setText(e.target.value)} />
-      </label>
-      <label className="task-check">
-        <input type="checkbox" checked={p.onlyWorked} onChange={(e) => p.setOnlyWorked(e.target.checked)} />
-        Only tickets I worked this week
-      </label>
-    </div>
-  );
 }
 
 const EMPTY = (
@@ -180,7 +171,12 @@ export function TaskBoard({ tasks, actions = realActions }: { tasks: TaskRow[]; 
   );
   const m = useMoves(patch, actions);
   const colOf = (r: TaskRow) => m.placed[r.key] ?? columnOf(r.status_category);
-  const drag = useDrag(rows, colOf, m.move);
+  // One flow for a drop and for the Move menu; dropping on the card's own column is a no-op.
+  const moveTo = (key: string, target: Column) => {
+    const row = rows.find((r) => r.key === key);
+    if (row && colOf(row) !== target) m.move(row, target);
+  };
+  const drag = useDrag(moveTo);
   useChooserEscape(m.chooser !== null, m.cancel);
 
   if (rows.length === 0) return EMPTY;
@@ -192,7 +188,11 @@ export function TaskBoard({ tasks, actions = realActions }: { tasks: TaskRow[]; 
 
   return (
     <>
-      <Toolbar text={text} onlyWorked={onlyWorked} setText={setText} setOnlyWorked={setOnlyWorked} />
+      <TaskToolbar text={text} onlyWorked={onlyWorked} setText={setText} setOnlyWorked={setOnlyWorked} />
+      <p className="sr-only" role="status" aria-live="polite">
+        {m.announce}
+      </p>
+      <div className="task-board-scroll">
       <div className={open ? "task-board has-panel" : "task-board"}>
         {COLUMNS.map(({ id }) => {
           const cards = visible.filter((r) => colOf(r) === id);
@@ -203,6 +203,7 @@ export function TaskBoard({ tasks, actions = realActions }: { tasks: TaskRow[]; 
               count={cards.length}
               over={drag.over === id}
               note={cards.length === 0 ? note : null}
+              hint={cards.length === 0 && !note}
               chooser={m.chooser?.column === id ? m.chooser : null}
               onPick={(t) => m.chooser && m.run(m.chooser.key, id, t)}
               onCancel={m.cancel}
@@ -217,6 +218,9 @@ export function TaskBoard({ tasks, actions = realActions }: { tasks: TaskRow[]; 
                   pending={m.pending.has(r.key)}
                   dragging={drag.dragKey === r.key}
                   error={m.errors[r.key]}
+                  landed={m.landed === r.key}
+                  onMove={(to) => moveTo(r.key, to)}
+                  onDismissError={() => m.dismiss(r.key)}
                   onOpen={() => setOpenKey(r.key)}
                   onDragStart={(dt) => drag.start(r.key, dt)}
                   onDragEnd={drag.end}
@@ -225,6 +229,7 @@ export function TaskBoard({ tasks, actions = realActions }: { tasks: TaskRow[]; 
             </TaskColumn>
           );
         })}
+      </div>
       </div>
       {open && (
         <TaskPanel key={open.key} drafts={drafts} task={open} actions={actions} onClose={closePanel} onStatus={(s) => patch(open.key, s)} />

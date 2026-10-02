@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { columnOf, COLUMNS, formatStamp, movesInto, weekTotal } from "./taskBoard";
+import { readFileSync } from "node:fs";
+import { columnOf, COLUMNS, formatStamp, movesInto, ticketCount, transitionLabel, weekTotal } from "./taskBoard";
 import type { TaskRow, Transition } from "./types";
 
 const t = (id: string, to_category: Transition["to_category"]): Transition => ({
@@ -28,6 +29,25 @@ describe("taskBoard", () => {
     const rows = [{ week_seconds: 60 }, { week_seconds: 90 }] as TaskRow[];
     expect(weekTotal(rows)).toBe(150);
     expect(weekTotal([])).toBe(0);
+  });
+
+  it("transitionLabel shows only the name when it equals the target status", () => {
+    const mk = (name: string, to_status: string): Transition => ({ id: "1", name, to_status, to_category: "done" });
+    expect(transitionLabel(mk("Done", "Done"))).toBe("Done");
+    expect(transitionLabel(mk("done", "Done"))).toBe("done");
+    expect(transitionLabel(mk("Finish", "Done"))).toBe("Finish → Done");
+  });
+
+  it("ticketCount pluralises", () => {
+    expect(ticketCount(1)).toBe("1 ticket");
+    expect(ticketCount(0)).toBe("0 tickets");
+    expect(ticketCount(3)).toBe("3 tickets");
+  });
+
+  it("the tasks page does not nest a <main> inside the layout's <main>", () => {
+    const root = import.meta.dir + "/..";
+    expect(readFileSync(`${root}/app/layout.tsx`, "utf8")).toContain("<main");
+    expect(readFileSync(`${root}/app/tasks/page.tsx`, "utf8")).not.toContain("<main");
   });
 
   it("formatStamp renders d MMM, HH:MM and passes garbage through", () => {

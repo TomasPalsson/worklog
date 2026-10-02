@@ -8,7 +8,7 @@ import { TaskBoard } from "@/components/TaskBoard";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { tasks } from "@/lib/daemonHub";
 import { formatDayHeading, formatDuration, todayISO } from "@/lib/format";
-import { weekTotal } from "@/lib/taskBoard";
+import { ticketCount, weekTotal } from "@/lib/taskBoard";
 
 export const metadata = {
   title: "My Tasks · worklog",
@@ -22,12 +22,12 @@ const fetchedAt = (iso: string) =>
 export default async function TasksPage() {
   const { tasks: rows, last_fetched } = await tasks();
   const today = todayISO();
-  const parts = [`${rows.length} tickets`, `${formatDuration(weekTotal(rows))} logged this week`];
+  const parts = [ticketCount(rows.length), `${formatDuration(weekTotal(rows))} logged this week`];
   if (last_fetched) parts.push(`Jira cache from ${fetchedAt(last_fetched)}`);
   const lede = parts.join(" · ");
 
   return (
-    <main className="reg-page tasks-page">
+    <div className="reg-page tasks-page">
       <header className="reg-page-header">
         <div>
           <Link href={`/${today}`} className="reg-back" data-tip="Back to the day view">
@@ -41,6 +41,6 @@ export default async function TasksPage() {
       </header>
 
       <TaskBoard tasks={rows} />
-    </main>
+    </div>
   );
 }

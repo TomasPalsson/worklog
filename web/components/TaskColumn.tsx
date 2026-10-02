@@ -2,7 +2,7 @@
 
 import type { DragEvent, ReactNode } from "react";
 
-import { COLUMNS, type Column } from "@/lib/taskBoard";
+import { COLUMNS, transitionLabel, type Column } from "@/lib/taskBoard";
 import type { Transition } from "@/lib/types";
 
 export interface Chooser {
@@ -16,6 +16,7 @@ interface Props {
   count: number;
   over: boolean;
   note: string | null;
+  hint: boolean;
   chooser: Chooser | null;
   onPick: (t: Transition) => void;
   onCancel: () => void;
@@ -36,7 +37,7 @@ function ChooserBox({ chooser, title, onPick, onCancel }: {
       <p>{`Move ${chooser.key} to ${title}?`}</p>
       {chooser.transitions.map((t) => (
         <button key={t.id} type="button" onClick={() => onPick(t)}>
-          {`${t.name} → ${t.to_status}`}
+          {transitionLabel(t)}
         </button>
       ))}
       <button type="button" className="task-chooser-cancel" onClick={onCancel}>
@@ -67,6 +68,7 @@ export function TaskColumn(p: Props) {
       </h2>
       {p.chooser && <ChooserBox chooser={p.chooser} title={title} onPick={p.onPick} onCancel={p.onCancel} />}
       {p.note && <p className="task-col-note">{p.note}</p>}
+      {p.hint && <p className="task-col-hint">Drop a ticket here</p>}
       <ul className="task-list">{p.children}</ul>
     </section>
   );

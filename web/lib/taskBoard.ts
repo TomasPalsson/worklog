@@ -18,6 +18,12 @@ export const columnOf = (category: StatusCategory | null): Column => category ??
 export const movesInto = (transitions: Transition[], column: Column): Transition[] =>
   transitions.filter((t) => t.to_category === column);
 
+/** `{name} → {to_status}`, or just the name when both say the same thing. */
+export const transitionLabel = (t: Transition): string =>
+  t.name.toLowerCase() === t.to_status.toLowerCase() ? t.name : `${t.name} → ${t.to_status}`;
+
+export const ticketCount = (n: number): string => `${n} ${n === 1 ? "ticket" : "tickets"}`;
+
 export const weekTotal = (tasks: TaskRow[]): number =>
   tasks.reduce((sum, t) => sum + t.week_seconds, 0);
 
