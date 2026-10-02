@@ -278,3 +278,27 @@ pub struct TicketDetail {
     /// Oldest first.
     pub comments: Vec<TicketComment>,
 }
+
+/// One day of work on a ticket, newest day first in `TicketBlocks.days`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TicketDay {
+    /// YYYY-MM-DD (local day bucket).
+    pub day: String,
+    /// The day's ticket-line effective seconds (what Tempo gets; override-aware). 0 when there is no line.
+    pub line_seconds: i64,
+    /// The line text Tempo gets that day (stored text, else fallback); "" when none.
+    pub line_text: String,
+    /// The ticket's blocks that day, oldest first. Personal and ignored blocks are excluded.
+    pub blocks: Vec<crate::models::Block>,
+}
+
+/// `GET /tickets/:key/blocks` response.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TicketBlocks {
+    pub key: String,
+    /// First and last day of the window (YYYY-MM-DD).
+    pub from: String,
+    pub to: String,
+    /// Only days that have at least one block, newest first.
+    pub days: Vec<TicketDay>,
+}

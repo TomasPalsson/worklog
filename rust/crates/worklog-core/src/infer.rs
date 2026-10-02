@@ -546,6 +546,12 @@ fn iso_prefix(s: &str) -> String {
     s.trim_end_matches("+00:00").to_owned()
 }
 
+/// A block the owner logged by hand (`ticket_log::log_time`): manual with
+/// no events behind it. A rebuild has nothing to rebuild it from, so it
+/// is neither deleted nor offered as carry state to inferred blocks.
+const HAND_LOGGED: &str = "IFNULL(estimated_by, '') = 'manual'
+     AND NOT EXISTS (SELECT 1 FROM block_events WHERE block_id = blocks.id)";
+
 pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) -> Result<()> {
     let day_iso = day.to_string();
     if crate::block_digest::day_is_compressed(conn, &day_iso)? {
@@ -570,10 +576,10 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
         // carry state (tempo_worklog_id in particular). Stable order
         // ensures the earliest-starting new block claims the earliest
         // prior.
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(&format!(
             "SELECT started_at, ended_at, jira_issue, description, estimated_by, tempo_worklog_id, exported_at, described_seconds, ignored_at, ticket_origin
-               FROM blocks WHERE day = ?1 ORDER BY started_at",
-        )?;
+               FROM blocks WHERE day = ?1 AND NOT ({HAND_LOGGED}) ORDER BY started_at"
+        ))?;
         let iter = stmt.query_map(params![day_iso], |r| {
             Ok(CarryRow {
                 started_at: r.get(0)?,
@@ -619,8 +625,11 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
     let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     let tx = conn.unchecked_transaction()?;
-    tx.execute("DELETE FROM blocks WHERE day = ?1", params![day_iso])
-        .context("clearing stale blocks")?;
+    tx.execute(
+        &format!("DELETE FROM blocks WHERE day = ?1 AND NOT ({HAND_LOGGED})"),
+        params![day_iso],
+    )
+    .context("clearing stale blocks")?;
 
     let mut new_spans: Vec<(String, String)> = Vec::new();
     for b in &blocks {
