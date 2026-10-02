@@ -12,7 +12,7 @@ import { BlockMove } from "./TaskBlockMove";
 import { DayMenu } from "./TaskDayMenu";
 import { SyncBody, SyncTrigger, useSync } from "./TaskDaySync";
 import { DaySent, HoursEdit, TextEdit, hoursNote, useDayOps, useHoursWrite } from "./TaskDayTools";
-import { changedNote } from "./TaskSyncPreview";
+import { changedNote } from "./TaskSyncConfirm";
 import { useOverflow } from "./useOverflow";
 
 export { chipOf, type Chip };
@@ -112,7 +112,7 @@ export function DayGroup({ day, taskKey, actions, onSaved, onAnnounce, logged, e
   // The preview points at the day's text below it, so opening one opens the day.
   const trigger = { ...sync, dryRun: () => (onExpand(true), sync.dryRun()) };
   return (
-    <div className="task-day" data-state={CHIP_TONE[chip]} data-day={day.day}>
+    <div className="task-day" data-state={CHIP_TONE[chip]} data-day={day.day} data-confirm={sync.step.s === "preview" ? "" : undefined}>
       <div className="task-day-row">
         <h4 className="task-day-head">
           <button type="button" className="task-day-toggle" aria-expanded={expanded} onClick={() => onExpand(!expanded)}>

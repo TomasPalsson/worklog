@@ -5,7 +5,7 @@ import { UploadCloud } from "lucide-react";
 
 import { formatDuration } from "@/lib/format";
 import { DaySent, type Common } from "./TaskDayTools";
-import { SyncPreview } from "./TaskSyncPreview";
+import { SyncConfirm } from "./TaskSyncConfirm";
 
 type Step =
   | { s: "idle" }
@@ -99,7 +99,7 @@ export function SyncBody({ sync, label, day, changed }: Pick<SyncProps, "label" 
   return (
     <>
       {step.s === "preview" && (
-        <SyncPreview label={label} day={day} changed={changed} sending={sync.sending} onSend={sync.send} onCancel={sync.cancel} />
+        <SyncConfirm label={label} day={day} changed={changed} sending={sync.sending} onSend={sync.send} onCancel={sync.cancel} />
       )}
       {step.s === "sent" && <DaySent focus>{step.msg}</DaySent>}
       {step.s === "nothing" && (

@@ -6075,16 +6075,17 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 .task-day-sent:focus, .task-day-plain:focus { outline: none; }
 .task-day-sent:focus-visible, .task-day-plain:focus-visible { box-shadow: var(--ring); }
 .task-day-sent { margin: 8px 0 0; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--sage-bg); color: var(--sage-ink); font-size: 12px; }
-.task-day-preview {
-  display: grid; gap: 8px; justify-items: start; width: 100%; margin-top: 8px; padding: 12px 16px;
-  border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-sunk);
+.task-day-confirm {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 4px 0 8px; padding: 6px 8px 6px 12px;
+  border-radius: var(--radius-sm); background: var(--bg-sunk);
 }
-.task-day-preview h5 { margin: 0; font-family: var(--font-mono); font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg-muted); }
-.task-day-preview dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; }
-.task-day-preview dt { font-size: 12px; color: var(--fg-muted); }
-.task-day-preview dd { margin: 0; font-family: var(--font-mono); font-size: 13px; color: var(--fg); }
-.task-day-preview p { margin: 0; font-size: 12px; color: var(--fg-muted); }
-.task-day-preview .task-btn-primary, .task-day-preview .task-btn-secondary { flex: none; min-height: 36px; padding: 0 16px; font-size: 13px; }
+.task-day-confirm-q { margin: 0; flex: 1 1 auto; display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--fg); }
+.task-day-confirm-q svg { flex: none; color: var(--fg-muted); }
+.task-day-confirm-q strong { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+.task-day-confirm-q .task-nowrap { white-space: nowrap; }
+.task-day-confirm-act { display: inline-flex; gap: 8px; margin-left: auto; }
+.task-day-confirm .task-btn-primary, .task-day-confirm .task-btn-secondary { flex: none; min-height: 28px; padding: 0 12px; font-size: 12px; }
+.task-day[data-confirm] .task-day-text { border-left: 2px solid var(--border-strong); padding-left: 10px; color: var(--fg); }
 .task-block-list { list-style: none; margin: 12px 0 0; padding: 0; }
 .task-block-list li + li { border-top: 1px solid var(--border); }
 .task-block-row {
