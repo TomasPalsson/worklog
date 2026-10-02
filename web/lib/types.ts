@@ -469,6 +469,13 @@ export interface TaskRow {
   week_seconds: number;
   today_seconds: number;
   last_worked_day: string | null;
+  issue_type: string | null;
+  priority: string | null;
+  due_date: string | null;
+  labels: string[];
+  parent_summary: string | null;
+  updated: string | null;
+  day_seconds: number[];
 }
 
 export interface TasksResponse {

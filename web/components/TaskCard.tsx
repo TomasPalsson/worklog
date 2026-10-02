@@ -11,8 +11,9 @@ import type {
   draftTicketUpdate as draftTicketUpdateAction,
 } from "@/app/actions-hub";
 import { formatDuration } from "@/lib/format";
-import type { Column } from "@/lib/taskBoard";
+import { localToday, type Column } from "@/lib/taskBoard";
 import type { TaskRow, Transition } from "@/lib/types";
+import { DueChip, Labels, ParentRow, PriorityGlyph, TypeIcon, UpdatedAgo, WeekSpark } from "./TaskCardMeta";
 import { TaskMoveMenu } from "./TaskMoveMenu";
 
 export interface TaskActions {
@@ -26,6 +27,10 @@ export interface TaskActions {
 export interface TaskCardProps {
   task: TaskRow;
   column: Column;
+  /** Board's today (YYYY-MM-DD) for the due chip and spark; defaults to the local date. */
+  today?: string;
+  /** Busiest single day on the board (`weekMax`) so sparks share a scale; defaults to this card's own. */
+  maxSeconds?: number;
   selected: boolean;
   pending: boolean;
   dragging: boolean;
@@ -72,8 +77,24 @@ function useUndoHold(undo: TaskCardProps["undo"]) {
   };
 }
 
+function Footer(p: TaskCardProps & { today: string }) {
+  const { task } = p;
+  const undoing = !!p.undo && !p.pending;
+  const days = task.day_seconds;
+  return (
+    <span className="task-card-foot">
+      {!undoing && !p.pending && days.length === 7 && (
+        <WeekSpark daySeconds={days} max={p.maxSeconds ?? Math.max(1, ...days)} column={p.column} today={p.today} />
+      )}
+      <Hours task={task} pending={p.pending} undoing={undoing} />
+      {!undoing && !p.pending && task.updated && <UpdatedAgo iso={task.updated} />}
+    </span>
+  );
+}
+
 export function TaskCard(p: TaskCardProps) {
   const { task } = p;
+  const today = p.today ?? localToday();
   const holdProps = useUndoHold(p.undo);
   return (
     <li
@@ -92,15 +113,20 @@ export function TaskCard(p: TaskCardProps) {
     >
       <button type="button" className="task-card-btn" aria-expanded={p.selected} onClick={p.onOpen}>
         <span className="task-card-top">
+          {task.issue_type && <TypeIcon type={task.issue_type} />}
           <span className="task-key">{task.key}</span>
+          {task.priority && <PriorityGlyph priority={task.priority} />}
           {!task.assigned && p.column !== "done" && (
             <span className="task-tag" title="Not assigned to you — shown because you logged time on it this week">
               not assigned
             </span>
           )}
+          {task.due_date && <DueChip due={task.due_date} today={today} done={p.column === "done"} />}
         </span>
         <span className="task-summary">{task.summary}</span>
-        {!p.error && <Hours task={task} pending={p.pending} undoing={!!p.undo && !p.pending} />}
+        {task.parent_summary && <ParentRow text={task.parent_summary} />}
+        <Labels labels={task.labels} />
+        {!p.error && <Footer {...p} today={today} />}
       </button>
       <GripVertical className="task-grip" size={14} aria-hidden="true" />
       {!p.pending && <TaskMoveMenu taskKey={task.key} column={p.column} load={p.loadTransitions} onMove={p.onMove} />}

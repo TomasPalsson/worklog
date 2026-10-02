@@ -15,7 +15,7 @@ pub const SCHEMA_SQL: &str = include_str!("../sql/schema.sql");
 /// Monotonic integer version of the schema, bumped by future migrations.
 /// Stored in `PRAGMA user_version` so we can detect stale dbs without adding
 /// a dedicated table.
-pub const SCHEMA_VERSION: i32 = 18;
+pub const SCHEMA_VERSION: i32 = 19;
 
 /// Open a connection at `path`, enable WAL + FK, and run migrations.
 pub fn open(path: &Path) -> Result<Connection> {
@@ -81,6 +81,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     ensure_jira_tickets_issue_id(conn).context("ensuring jira_tickets.issue_id")?;
     ensure_jira_tickets_external(conn).context("ensuring jira_tickets.external")?;
     ensure_jira_tickets_status_category(conn).context("ensuring jira_tickets.status_category")?;
+    ensure_jira_tickets_details(conn).context("ensuring jira_tickets detail columns")?;
     ensure_events_routing_columns(conn).context("ensuring events routing columns")?;
     ensure_billing_folder_map_multi_tenant(conn)
         .context("ensuring billing_folder_map.multi_tenant")?;
@@ -249,6 +250,29 @@ fn ensure_jira_tickets_status_category(conn: &Connection) -> Result<()> {
             [],
         )
         .context("ALTER TABLE jira_tickets ADD status_category")?;
+    }
+    Ok(())
+}
+
+fn ensure_jira_tickets_details(conn: &Connection) -> Result<()> {
+    let cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(jira_tickets)")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<std::result::Result<_, _>>()?;
+    for name in [
+        "issue_type",
+        "priority",
+        "due_date",
+        "labels",
+        "parent_summary",
+    ] {
+        if !cols.iter().any(|c| c == name) {
+            conn.execute(
+                &format!("ALTER TABLE jira_tickets ADD COLUMN {name} TEXT"),
+                [],
+            )
+            .with_context(|| format!("ALTER TABLE jira_tickets ADD {name}"))?;
+        }
     }
     Ok(())
 }

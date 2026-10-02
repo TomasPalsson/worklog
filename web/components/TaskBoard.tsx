@@ -9,7 +9,7 @@ import {
   loadTransitions,
   transitionTicket,
 } from "@/app/actions-hub";
-import { COLUMNS, columnOf, columnTitle, movesInto, type Column } from "@/lib/taskBoard";
+import { COLUMNS, columnOf, columnTitle, localToday, movesInto, weekMax, type Column } from "@/lib/taskBoard";
 import type { TaskRow, Transition } from "@/lib/types";
 import { TaskCard, type TaskActions } from "./TaskCard";
 import type { Drafts } from "./TaskComposer";
@@ -269,6 +269,8 @@ export function TaskBoard({ tasks, actions = realActions, undoMs = 8000 }: {
   useChooserEscape(m.chooser !== null, m.cancel);
 
   if (rows.length === 0) return EMPTY;
+  const today = localToday();
+  const maxSeconds = weekMax(rows);
 
   const q = text.trim();
   const visible = rows.filter((r) => matches(r, text, onlyWorked));
@@ -307,6 +309,8 @@ export function TaskBoard({ tasks, actions = realActions, undoMs = 8000 }: {
                   key={r.key}
                   task={r}
                   column={id}
+                  today={today}
+                  maxSeconds={maxSeconds}
                   selected={openKey === r.key}
                   pending={m.pending.has(r.key)}
                   dragging={drag.dragKey === r.key}

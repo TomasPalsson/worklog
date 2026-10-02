@@ -13,6 +13,12 @@ struct CachedTicket {
     status: Option<String>,
     status_category: Option<StatusCategory>,
     assigned: bool,
+    issue_type: Option<String>,
+    priority: Option<String>,
+    due_date: Option<String>,
+    labels: Vec<String>,
+    parent_summary: Option<String>,
+    updated: Option<String>,
 }
 
 #[derive(Default)]
@@ -20,6 +26,8 @@ struct Worked {
     week_seconds: i64,
     today_seconds: i64,
 }
+
+const DAYS: usize = 7;
 
 pub fn tasks(
     conn: &Connection,
@@ -30,9 +38,12 @@ pub fn tasks(
     let cached = cached_tickets(conn)?;
     let last_worked = last_worked_days(conn)?;
     let mut worked: HashMap<String, Worked> = HashMap::new();
-    for offset in 0..7 {
-        let day = (monday + Duration::days(offset)).to_string();
+    let mut day_seconds: HashMap<String, [i64; DAYS]> = HashMap::new();
+    for offset in 0..DAYS {
+        let day = (monday + Duration::days(offset as i64)).to_string();
         for line in tempo_lines::lines_for_day(conn, &day)? {
+            day_seconds.entry(line.jira_issue.clone()).or_default()[offset] +=
+                line.effective_seconds;
             let entry = worked.entry(line.jira_issue).or_default();
             entry.week_seconds += line.effective_seconds;
             if day == today.to_string() {
@@ -63,6 +74,15 @@ pub fn tasks(
                 week_seconds: hours.map_or(0, |h| h.week_seconds),
                 today_seconds: hours.map_or(0, |h| h.today_seconds),
                 last_worked_day: last_worked.get(key).cloned(),
+                issue_type: ticket.and_then(|t| t.issue_type.clone()),
+                priority: ticket.and_then(|t| t.priority.clone()),
+                due_date: ticket.and_then(|t| t.due_date.clone()),
+                labels: ticket.map(|t| t.labels.clone()).unwrap_or_default(),
+                parent_summary: ticket.and_then(|t| t.parent_summary.clone()),
+                updated: ticket.and_then(|t| t.updated.clone()),
+                day_seconds: day_seconds
+                    .get(key)
+                    .map_or_else(|| vec![0; DAYS], |d| d.to_vec()),
             }
         })
         .collect();
@@ -87,7 +107,8 @@ pub fn tasks(
 fn cached_tickets(conn: &Connection) -> Result<HashMap<String, CachedTicket>> {
     let mut statement = conn.prepare(
         "SELECT key, summary, status, status_category,
-                external = 0 AND COALESCE(status_category, '') != 'done'
+                external = 0 AND COALESCE(status_category, '') != 'done',
+                issue_type, priority, due_date, labels, parent_summary, updated
            FROM jira_tickets",
     )?;
     let rows = statement.query_map([], |r| {
@@ -99,6 +120,15 @@ fn cached_tickets(conn: &Connection) -> Result<HashMap<String, CachedTicket>> {
                 status: r.get(2)?,
                 status_category: category.as_deref().and_then(StatusCategory::parse),
                 assigned: r.get(4)?,
+                issue_type: r.get(5)?,
+                priority: r.get(6)?,
+                due_date: r.get(7)?,
+                labels: r
+                    .get::<_, Option<String>>(8)?
+                    .and_then(|j| serde_json::from_str(&j).ok())
+                    .unwrap_or_default(),
+                parent_summary: r.get(9)?,
+                updated: r.get(10)?,
             },
         ))
     })?;

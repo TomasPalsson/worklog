@@ -18,6 +18,13 @@ const row = (over: Partial<TaskRow> = {}): TaskRow => ({
   week_seconds: 5400,
   today_seconds: 1800,
   last_worked_day: null,
+  issue_type: null,
+  priority: null,
+  due_date: null,
+  labels: [],
+  parent_summary: null,
+  updated: null,
+  day_seconds: [0, 0, 0, 0, 0, 0, 0],
   ...over,
 });
 

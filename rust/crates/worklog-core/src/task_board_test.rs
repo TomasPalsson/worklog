@@ -188,3 +188,51 @@ fn last_fetched_is_the_newest_cache_time_and_none_when_empty() {
         Some("2026-09-30T08:01:00Z")
     );
 }
+
+#[test]
+fn details_round_trip_and_uncached_defaults() {
+    let conn = db::open_memory().unwrap();
+    ticket(&conn, "APRO-1", "Fix login", Some("indeterminate"), 0);
+    conn.execute(
+        "UPDATE jira_tickets SET issue_type='Bug', priority='High', due_date='2026-10-04',
+            labels='[\"a\",\"b\"]', parent_summary='Epic', updated='2026-09-29T10:00:00.000+0000'
+          WHERE key='APRO-1'",
+        [],
+    )
+    .unwrap();
+    ticket(&conn, "APRO-2", "Bad labels", Some("new"), 0);
+    conn.execute(
+        "UPDATE jira_tickets SET labels='not json' WHERE key='APRO-2'",
+        [],
+    )
+    .unwrap();
+    worked(&conn, "NOCACHE-1", "2026-09-29");
+    let response = board(&conn);
+    let row = |k: &str| response.tasks.iter().find(|t| t.key == k).unwrap();
+    let one = row("APRO-1");
+    assert_eq!(one.issue_type.as_deref(), Some("Bug"));
+    assert_eq!(one.priority.as_deref(), Some("High"));
+    assert_eq!(one.due_date.as_deref(), Some("2026-10-04"));
+    assert_eq!(one.labels, vec!["a", "b"]);
+    assert_eq!(one.parent_summary.as_deref(), Some("Epic"));
+    assert_eq!(one.updated.as_deref(), Some("2026-09-29T10:00:00.000+0000"));
+    assert!(row("APRO-2").labels.is_empty());
+    let bare = row("NOCACHE-1");
+    assert_eq!(bare.issue_type, None);
+    assert!(bare.labels.is_empty());
+    assert_eq!(bare.updated, None);
+    assert_eq!(bare.day_seconds.len(), 7);
+}
+
+#[test]
+fn day_seconds_sums_each_day_monday_first() {
+    let conn = db::open_memory().unwrap();
+    ticket(&conn, "APRO-1", "Fix login", Some("indeterminate"), 0);
+    worked(&conn, "APRO-1", "2026-09-28");
+    worked(&conn, "APRO-1", "2026-09-30");
+    let response = board(&conn);
+    assert_eq!(
+        response.tasks[0].day_seconds,
+        vec![3600, 0, 3600, 0, 0, 0, 0]
+    );
+}
