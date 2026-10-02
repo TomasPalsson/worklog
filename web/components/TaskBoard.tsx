@@ -69,22 +69,16 @@ function useUndo(ms: number) {
   return { undoable, clearUndo: clear, offerUndo: offer, holdUndo: hold };
 }
 
-/** Optimistic move: placement, pending flags, per-card errors, chooser, spoken outcome, landing highlight. */
-function useMoves(patch: Patch, actions: TaskActions, undoMs: number) {
-  const { undoable, clearUndo, offerUndo, holdUndo } = useUndo(undoMs);
+/** Per-card move bookkeeping: optimistic placement, pending flags, error strips, focus return. */
+function useMoveState(setAnnounce: (s: string) => void) {
   const [placed, setPlaced] = useState<Record<string, Column>>({});
   const [pending, setPending] = useState<Set<string>>(new Set());
   const [errors, setErrors] = useState<Record<string, MoveError>>({});
   const [refocus, setRefocus] = useState<{ key: string } | null>(null);
   const wantFocus = useRef(new Set<string>());
-  const [chooser, setChooser] = useState<Chooser | null>(null);
-  const [announce, setAnnounce] = useState("");
-  const [landed, setLanded] = useState<string | null>(null);
 
   const dismiss = (key: string) => setErrors(({ [key]: _, ...rest }) => rest);
-  const begin = (key: string, target: Column) => {
-    setChooser(null);
-    clearUndo(key);
+  const place = (key: string, target: Column) => {
     setPlaced((p) => ({ ...p, [key]: target }));
     setPending((p) => new Set(p).add(key));
     dismiss(key);
@@ -101,6 +95,13 @@ function useMoves(patch: Patch, actions: TaskActions, undoMs: number) {
   useEffect(() => {
     if (refocus) focusCard(refocus.key);
   }, [refocus]);
+  return { placed, pending, errors, wantFocus, dismiss, place, settle };
+}
+
+/** Spoken outcome, landing highlight, and the patch + undo offer on a successful move. */
+function useOutcome(patch: Patch, offerUndo: (key: string, from: Column, to: Column) => void) {
+  const [announce, setAnnounce] = useState("");
+  const [landed, setLanded] = useState<string | null>(null);
   const succeed = (key: string, s: StatusPatch, from: Column) => {
     patch(key, s);
     const to = columnOf(s.status_category);
@@ -113,6 +114,21 @@ function useMoves(patch: Patch, actions: TaskActions, undoMs: number) {
     const t = setTimeout(() => setLanded(null), 1200);
     return () => clearTimeout(t);
   }, [landed]);
+  return { announce, setAnnounce, landed, succeed };
+}
+
+/** Optimistic move: composes undo, per-card state, outcome and the transition chooser. */
+function useMoves(patch: Patch, actions: TaskActions, undoMs: number) {
+  const { undoable, clearUndo, offerUndo, holdUndo } = useUndo(undoMs);
+  const { announce, setAnnounce, landed, succeed } = useOutcome(patch, offerUndo);
+  const { placed, pending, errors, wantFocus, dismiss, place, settle } = useMoveState(setAnnounce);
+  const [chooser, setChooser] = useState<Chooser | null>(null);
+
+  const begin = (key: string, target: Column) => {
+    setChooser(null);
+    clearUndo(key);
+    place(key, target);
+  };
 
   async function run(key: string, target: Column, t: Transition, from: Column, back = false, focus = true) {
     if (focus) wantFocus.current.add(key);
