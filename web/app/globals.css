@@ -5645,7 +5645,10 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
   font-size: 12px;
   white-space: nowrap;
 }
-.task-card-foot { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* Narrow columns (panel open) wrap "Updated …" onto its own line instead of
+   squeezing the hours text into a word-per-line stack. */
+.task-card-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
+.task-card-foot > :not(.task-spark):not(.task-updated) { white-space: nowrap; }
 .task-updated { margin-left: auto; font-family: var(--font-mono); font-size: 12px; color: var(--fg-subtle); white-space: nowrap; }
 .task-spark { display: inline-flex; align-items: flex-end; gap: 2px; height: 16px; flex: none; }
 .task-spark i { display: block; width: 4px; border-radius: 1px; background: var(--slate); opacity: 0.55; }
