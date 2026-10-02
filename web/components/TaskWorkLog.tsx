@@ -84,6 +84,7 @@ export function TaskWorkLog({
         <TaskLogTime
           taskKey={taskKey}
           actions={actions}
+          today={load.s === "ok" ? load.data.to : undefined}
           onClose={() => setLogging(false)}
           onLogged={(message) => {
             setLogging(false);

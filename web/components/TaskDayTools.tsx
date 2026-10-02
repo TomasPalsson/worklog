@@ -198,8 +198,17 @@ type Step =
   | { s: "done"; msg: string }
   | { s: "error"; msg: string };
 
+/** Why a sync sent nothing: the daemon reports only a count, so name the cause we can see. */
+function nothingSent(day: TicketDay, skipped: number): string {
+  const why =
+    day.line_seconds === 0
+      ? "this day has no hours to send (under 15 minutes rounds to zero)"
+      : "the daemon skipped it (already in Tempo, or no Tempo account or issue mapping)";
+  return `Nothing sent (${skipped} skipped): ${why}.`;
+}
+
 /** Two-step Tempo sync for one ticket-day: dry run, preview, then send on confirm. */
-export function SyncTool({ taskKey, actions, onSaved, label, day }: Common) {
+export function SyncTool({ taskKey, actions, onSaved, label, day, inTempo }: Common & { inTempo: boolean }) {
   const [step, setStep] = useState<Step>({ s: "idle" });
   const [sending, setSending] = useState(false);
 
@@ -208,6 +217,7 @@ export function SyncTool({ taskKey, actions, onSaved, label, day }: Common) {
     const res = await actions.runSync(day.day, true, taskKey);
     if (!res.ok) return setStep({ s: "error", msg: res.error });
     if (res.data.errors.length > 0) return setStep({ s: "error", msg: res.data.errors.join("; ") });
+    if (res.data.synced === 0) return setStep({ s: "done", msg: nothingSent(day, res.data.skipped) });
     setStep({ s: "preview" });
   }
 
@@ -219,7 +229,7 @@ export function SyncTool({ taskKey, actions, onSaved, label, day }: Common) {
     if (res.data.errors.length > 0) return setStep({ s: "error", msg: res.data.errors.join("; ") });
     setStep({
       s: "done",
-      msg: res.data.synced > 0 ? "Sent to Tempo." : `Nothing sent (${res.data.skipped} skipped).`,
+      msg: res.data.synced > 0 ? "Sent to Tempo." : nothingSent(day, res.data.skipped),
     });
     onSaved();
   }
@@ -227,7 +237,7 @@ export function SyncTool({ taskKey, actions, onSaved, label, day }: Common) {
   const busy = step.s === "running" || sending;
   return (
     <div className="task-day-sync">
-      {(step.s === "idle" || step.s === "running" || step.s === "error" || step.s === "done") && (
+      {!inTempo && (step.s === "idle" || step.s === "running" || step.s === "error" || step.s === "done") && (
         <button
           type="button"
           className="task-link-btn"

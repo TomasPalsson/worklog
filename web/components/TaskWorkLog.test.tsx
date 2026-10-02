@@ -169,11 +169,12 @@ describe("log time", () => {
   const fill = (text: string) =>
     fireEvent.change(screen.getByLabelText("What you did"), { target: { value: text } });
 
-  it("defaults: today, max today, a 15-minute start", async () => {
+  it("defaults: the daemon's today (not the browser's), max that day, a 15-minute start", async () => {
     await openForm();
     const d = screen.getByLabelText("Day") as HTMLInputElement;
-    expect(d.value).toBe(todayISO());
-    expect(d.max).toBe(todayISO());
+    // payload().to is the daemon's local date; it differs from the browser's on purpose.
+    expect(d.value).toBe("2026-10-02");
+    expect(d.max).toBe("2026-10-02");
     expect((screen.getByLabelText("Start") as HTMLInputElement).value).toMatch(/^\d\d:(00|15|30|45)$/);
   });
 
@@ -307,12 +308,43 @@ describe("sync to Tempo", () => {
   it("shows errors from the real run", async () => {
     const run = mock(async (_d: string, dry: boolean) => ({
       ok: true as const,
-      data: { day: "", dry_run: dry, synced: 0, skipped: 0, errors: dry ? [] : ["Tempo said 400"] },
+      data: { day: "", dry_run: dry, synced: dry ? 1 : 0, skipped: 0, errors: dry ? [] : ["Tempo said 400"] },
     }));
     await ready(actions({ runSync: run }));
     fireEvent.click(screen.getByRole("button", { name: "Sync Wed 30 Sep to Tempo" }));
     fireEvent.click(await screen.findByRole("button", { name: "Send to Tempo" }));
     expect(await screen.findByText("Tempo said 400")).toBeTruthy();
+  });
+
+  it("keeps 'Sent to Tempo.' visible after the refetch flips the day to In Tempo", async () => {
+    let sent = false;
+    const load = mock(async () => ({
+      ok: true as const,
+      data: payload([
+        day({ day: "2026-09-30", blocks: [block({ day: "2026-09-30", tempo_worklog_id: sent ? "w9" : null })] }),
+      ]),
+    }));
+    const run = mock(async (_d: string, dry: boolean) => {
+      if (!dry) sent = true;
+      return { ok: true as const, data: { day: "", dry_run: dry, synced: 1, skipped: 0, errors: [] as string[] } };
+    });
+    await ready(actions({ loadTicketBlocks: load, runSync: run }));
+    fireEvent.click(screen.getByRole("button", { name: /^Sync .* to Tempo$/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Tempo" }));
+    expect(await screen.findByText("In Tempo")).toBeTruthy();
+    expect(screen.getByText("Sent to Tempo.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Sync .* to Tempo$/ })).toBeNull();
+  });
+
+  it("a dry run with nothing sendable says why and offers no Send", async () => {
+    const run = mock(async () => ({
+      ok: true as const,
+      data: { day: "", dry_run: true, synced: 0, skipped: 1, errors: [] as string[] },
+    }));
+    await ready(actions({ loadTicketBlocks: loads([day({ day: "2026-09-30", line_seconds: 0 })]), runSync: run }));
+    fireEvent.click(screen.getByRole("button", { name: /^Sync .* to Tempo$/ }));
+    expect(await screen.findByText(/Nothing sent \(1 skipped\): this day has no hours/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Send to Tempo" })).toBeNull();
   });
 
   it("shows a failed dry run", async () => {

@@ -12,18 +12,15 @@ const CHIPS: [string, number][] = [
   ["2h", 120],
 ];
 
-function defaultStart(): string {
-  const d = new Date();
-  const m = Math.floor(d.getMinutes() / 15) * 15;
-  return `${String(d.getHours()).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-}
+// The browser clock may be in another zone than the daemon's WORKLOG_TZ, so no clock-derived default.
+const DEFAULT_START = "09:00";
 
 /** First problem with the form, or null. */
-function problem(f: { day: string; start: string; minutes: number; description: string }): string | null {
+function problem(f: { day: string; start: string; minutes: number; description: string }, today: string): string | null {
   if (!f.description) return "Say what you did.";
   if (f.description.length > 500) return "Keep it to 500 characters.";
   if (!Number.isInteger(f.minutes) || f.minutes < 1 || f.minutes > 720) return "Length must be 1 to 720 minutes.";
-  if (!f.day || f.day > todayISO()) return "Pick today or an earlier day.";
+  if (!f.day || f.day > today) return "Pick today or an earlier day.";
   if (!/^\d\d:\d\d$/.test(f.start)) return "Pick a start time.";
   return null;
 }
@@ -32,17 +29,21 @@ function problem(f: { day: string; start: string; minutes: number; description: 
 export function TaskLogTime({
   taskKey,
   actions,
+  today: serverToday,
   onLogged,
   onClose,
 }: {
   taskKey: string;
+  /** The daemon's local date (WORKLOG_TZ); the browser's until it is known. */
+  today?: string;
   actions: TaskActions;
   /** Called after the block is created, with the announcement text. */
   onLogged: (message: string) => void;
   onClose: () => void;
 }) {
-  const [day, setDay] = useState(todayISO);
-  const [start, setStart] = useState(defaultStart);
+  const today = serverToday ?? todayISO();
+  const [day, setDay] = useState(today);
+  const [start, setStart] = useState(DEFAULT_START);
   const [length, setLength] = useState("60");
   const [description, setDescription] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -52,7 +53,7 @@ export function TaskLogTime({
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     const form = { day, start, minutes, description: description.trim() };
-    const bad = problem(form);
+    const bad = problem(form, today);
     if (bad) return setError(bad);
     setBusy(true);
     setError(null);
@@ -67,7 +68,7 @@ export function TaskLogTime({
       <div className="task-log-row">
         <label>
           Day
-          <input type="date" value={day} max={todayISO()} disabled={busy} onChange={(e) => setDay(e.target.value)} />
+          <input type="date" value={day} max={today} disabled={busy} onChange={(e) => setDay(e.target.value)} />
         </label>
         <label>
           Start

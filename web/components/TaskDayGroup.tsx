@@ -85,7 +85,7 @@ export function DayGroup({
         <TextEdit {...tools} />
       </div>
       {day.line_text && <LineText text={day.line_text} />}
-      {chip !== "In Tempo" && <SyncTool {...tools} />}
+      <SyncTool {...tools} inTempo={chip === "In Tempo"} />
       <ul className="task-block-list">
         {day.blocks.map((b) => (
           <BlockRow key={b.id} block={b} />
