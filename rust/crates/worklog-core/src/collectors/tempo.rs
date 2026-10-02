@@ -32,6 +32,7 @@ use crate::models::TempoAccount;
 use crate::repo;
 use crate::tempo_hub_contract::{HubError, PulledWorklog, RequiredDay, TEMPO_PAGE_LIMIT};
 use crate::tempo_line_contract::TempoLineKey;
+use crate::tempo_line_writer;
 use crate::tempo_lines;
 use crate::tempo_remote;
 
@@ -488,17 +489,20 @@ fn sync_group_aggregated(
         Some(text) => cap_description(&text),
         None if dry_run => line.fallback_text,
         None => {
-            let (_, descriptions, source_hash) =
-                tempo_lines::pending_generation(conn, &day_str, Some(&key))?
-                    .into_iter()
-                    .next()
-                    .with_context(|| format!("no descriptions for {issue} on {day_str}"))?;
-            match tempo_lines::generate_text(invoker, &key, &descriptions, model) {
-                Some(text) => {
+            let (_, _, source_hash) = tempo_lines::pending_generation(conn, &day_str, Some(&key))?
+                .into_iter()
+                .next()
+                .with_context(|| format!("no descriptions for {issue} on {day_str}"))?;
+            let written = invoker.map(|inv| {
+                tempo_line_writer::prepare(conn, &key)
+                    .and_then(|msg| tempo_line_writer::write(&msg, inv, model))
+            });
+            match written {
+                Some(Ok(text)) => {
                     tempo_lines::commit_generated(conn, &key, &text, &source_hash, false)?;
                     text
                 }
-                None => line.fallback_text,
+                _ => line.fallback_text,
             }
         }
     };
@@ -1416,23 +1420,33 @@ mod tests {
         let post = server.mock(|when, then| {
             when.method(POST)
                 .path("/worklogs")
-                .json_body_partial(r#"{"timeSpentSeconds": 3600, "description": "wrote parser"}"#);
+                .json_body_partial(
+                    r#"{"timeSpentSeconds": 3600, "description": "Lagaði villu í uppsetningu. Prófaði breytinguna."}"#,
+                );
             then.status(200).json_body(json!({"tempoWorklogId": 9}));
         });
         let conn = open_memory().unwrap();
         seed_two_blocks(&conn);
+        let invoker = estimate::FixedInvoker(json!({
+            "text": "Lagaði villu í uppsetningu. Prófaði breytinguna."
+        }));
 
-        sync_day_with(
+        sync_day_with_invoker(
             &conn,
             &auth(server.base_url()),
             day(),
             false,
             &http::client().unwrap(),
+            Some(&invoker),
+            estimate::DEFAULT_MODEL,
         )
         .unwrap();
         post.assert_hits(1);
         let stored = tempo_lines::line_for(&conn, &line_key()).unwrap().unwrap();
-        assert_eq!(stored.text.as_deref(), Some("wrote parser"));
+        assert_eq!(
+            stored.text.as_deref(),
+            Some("Lagaði villu í uppsetningu. Prófaði breytinguna.")
+        );
     }
 
     #[test]
@@ -2299,14 +2313,13 @@ mod tests {
     }
 
     #[test]
-    fn single_description_skips_invoker() {
-        // When the group collapses to one distinct description after
-        // dedup, we don't need to ask Claude — pass it through verbatim.
+    fn single_description_also_uses_icelandic_writer() {
+        // One distinct description still goes through the Icelandic writer.
         let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(POST)
-                .path("/worklogs")
-                .json_body_partial(r#"{"description": "Implement OAuth refresh"}"#);
+        let post = server.mock(|when, then| {
+            when.method(POST).path("/worklogs").json_body_partial(
+                r#"{"description": "Lagaði innskráningu. Prófaði breytinguna."}"#,
+            );
             then.status(200).json_body(json!({"tempoWorklogId": 1}));
         });
         let conn = open_memory().unwrap();
@@ -2330,31 +2343,20 @@ mod tests {
             Some("Implement OAuth refresh"),
         );
 
-        // Use a panicking invoker to prove we don't call it.
-        struct PanicInvoker;
-        impl ModelInvoker for PanicInvoker {
-            fn invoke(
-                &self,
-                _: &str,
-                _: &str,
-                _: &serde_json::Value,
-                _: &str,
-            ) -> anyhow::Result<serde_json::Value> {
-                panic!("invoker must not be called for a single distinct description");
-            }
-        }
-
+        let invoker =
+            estimate::FixedInvoker(json!({ "text": "Lagaði innskráningu. Prófaði breytinguna." }));
         let (report, _) = sync_day_with_invoker(
             &conn,
             &auth(server.base_url()),
             day(),
             false,
             &http::client().unwrap(),
-            Some(&PanicInvoker),
+            Some(&invoker),
             estimate::DEFAULT_MODEL,
         )
         .unwrap();
         assert_eq!(report.synced, 1);
+        post.assert();
     }
 
     #[test]
@@ -2362,9 +2364,9 @@ mod tests {
         // Two distinct descriptions → invoker is called and its
         // `description` field ends up in the Tempo POST body.
         let server = MockServer::start();
-        server.mock(|when, then| {
+        let post_mock = server.mock(|when, then| {
             when.method(POST).path("/worklogs").json_body_partial(
-                r#"{"description": "Implement OAuth refresh and review API spec"}"#,
+                r#"{"description": "Lagaði innskráningu. Fór yfir API lýsinguna."}"#,
             );
             then.status(200).json_body(json!({"tempoWorklogId": 1}));
         });
@@ -2390,7 +2392,7 @@ mod tests {
         );
 
         let invoker = estimate::FixedInvoker(json!({
-            "description": "Implement OAuth refresh and review API spec"
+            "text": "Lagaði innskráningu. Fór yfir API lýsinguna."
         }));
         let (report, _) = sync_day_with_invoker(
             &conn,
@@ -2403,6 +2405,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.synced, 1);
+        post_mock.assert();
+        let key = TempoLineKey {
+            day: day_s.to_string(),
+            jira_issue: "PROJ-1".to_string(),
+        };
+        let line = tempo_lines::line_for(&conn, &key).unwrap().unwrap();
+        assert_eq!(
+            line.text.as_deref(),
+            Some("Lagaði innskráningu. Fór yfir API lýsinguna.")
+        );
     }
 
     #[test]

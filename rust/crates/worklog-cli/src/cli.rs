@@ -3312,7 +3312,7 @@ fn generate_line_texts<W: Write>(
         String,
     )>,
     invoker: Option<&dyn estimate::ModelInvoker>,
-    model: &str,
+    prepare: impl Fn(&worklog_core::tempo_line_contract::TempoLineKey) -> Result<String, String>,
     mut commit: impl FnMut(&worklog_core::tempo_line_contract::TempoLineKey, &str, &str) -> Result<()>,
     out: &mut W,
 ) -> Result<()> {
@@ -3320,14 +3320,23 @@ fn generate_line_texts<W: Write>(
         return Ok(());
     };
     let mut generated_count = 0;
-    for (key, descriptions, source_hash) in pending {
-        let Some(text) = tempo_lines::generate_text(Some(invoker), &key, &descriptions, model)
-        else {
-            style::warn(
-                out,
-                &format!("line text generation failed for {}", key.jira_issue),
-            )?;
-            continue;
+    for (key, _, source_hash) in pending {
+        let written = prepare(&key).and_then(|msg| {
+            worklog_core::tempo_line_writer::write(
+                &msg,
+                invoker,
+                worklog_core::line_text::LINE_TEXT_MODEL,
+            )
+        });
+        let text = match written {
+            Ok(text) => text,
+            Err(e) => {
+                style::warn(
+                    out,
+                    &format!("line text generation failed for {}: {e}", key.jira_issue),
+                )?;
+                continue;
+            }
         };
         if let Err(e) = commit(&key, &text, &source_hash) {
             style::warn(out, &format!("line text commit failed: {e}"))?;
@@ -3455,7 +3464,7 @@ fn cmd_day<W: Write>(
             generate_line_texts(
                 pending,
                 invoker.as_deref(),
-                model,
+                |key| worklog_core::tempo_line_writer::prepare(&conn, key),
                 |key, text, source_hash| {
                     tempo_lines::commit_generated(&conn, key, text, source_hash, false)
                 },
@@ -4438,7 +4447,7 @@ mod tests {
             _schema: &serde_json::Value,
             _model: &str,
         ) -> Result<serde_json::Value> {
-            Ok(serde_json::json!({ "description": "Summarised by model" }))
+            Ok(serde_json::json!({ "text": "Lagaði villu í uppsetningu. Prófaði breytinguna." }))
         }
     }
 
@@ -4489,7 +4498,7 @@ mod tests {
         generate_line_texts(
             pending,
             invoker,
-            "m",
+            |key| worklog_core::tempo_line_writer::prepare(&conn, key),
             |key, text, source_hash| {
                 tempo_lines::commit_generated(&conn, key, text, source_hash, false)
             },
@@ -4520,7 +4529,7 @@ mod tests {
         let text: String = conn
             .query_row("SELECT text FROM tempo_line_texts", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(text, "Summarised by model");
+        assert_eq!(text, "Lagaði villu í uppsetningu. Prófaði breytinguna.");
         assert!(out.contains("generated 1 line text"));
     }
 

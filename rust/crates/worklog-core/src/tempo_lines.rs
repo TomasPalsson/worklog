@@ -4,10 +4,7 @@
 
 use crate::billing::{block_interval, union_seconds};
 use crate::clues_contract::LineTextOrigin;
-use crate::collectors::tempo::{
-    round_to_half_hour, summarize_descriptions, try_summarize_descriptions,
-};
-use crate::estimate::ModelInvoker;
+use crate::collectors::tempo::{round_to_half_hour, summarize_descriptions};
 use crate::models::Block;
 use crate::repo;
 use crate::tempo_line_contract::{
@@ -270,17 +267,6 @@ pub fn pending_generation(
         }
     }
     Ok(pending)
-}
-
-/// The one-line worklog text for a line, via the model when several
-/// distinct descriptions need summarising.
-pub fn generate_text(
-    invoker: Option<&dyn ModelInvoker>,
-    key: &TempoLineKey,
-    descriptions: &[String],
-    model: &str,
-) -> Option<String> {
-    try_summarize_descriptions(invoker, &key.jira_issue, descriptions, model, false)
 }
 
 /// Stores generated text; a hand-written text is kept unless `force`.
