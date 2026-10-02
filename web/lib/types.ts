@@ -561,3 +561,46 @@ export interface WeekCloseout {
   days: CloseoutDay[];
   pulled_at: string | null;
 }
+
+/** Mirrors `models::Block` as serialized by `GET /tickets/:key/blocks` (no day-view summary fields). */
+export interface RawBlock {
+  id: number;
+  day: string;
+  jira_issue: string | null;
+  started_at: string; // ISO-8601 UTC
+  ended_at: string; // ISO-8601 UTC
+  duration_seconds: number;
+  description: string | null;
+  estimated_by: string | null;
+  flagged: boolean;
+  tempo_worklog_id: string | null;
+  is_personal: boolean;
+  dirty: boolean;
+  exported_at: string | null;
+  ignored_at: string | null;
+  ticket_origin: TicketOrigin | null;
+}
+
+/** Mirrors `tempo_hub_contract::TicketDay`. */
+export interface TicketDay {
+  day: string;
+  line_seconds: number;
+  line_text: string;
+  blocks: RawBlock[];
+}
+
+/** Mirrors `tempo_hub_contract::TicketBlocks`. */
+export interface TicketBlocks {
+  key: string;
+  from: string;
+  to: string;
+  days: TicketDay[];
+}
+
+/** Body of `POST /tickets/:key/log`. */
+export interface LogTimeBody {
+  day: string;
+  start: string; // HH:MM local
+  minutes: number;
+  description: string;
+}

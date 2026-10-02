@@ -6,8 +6,11 @@
 import { revalidatePath } from "next/cache";
 import * as hub from "@/lib/daemonHub";
 import type {
+  LogTimeBody,
   PullReport,
+  RawBlock,
   TasksResponse,
+  TicketBlocks,
   TicketDetail,
   TicketDraft,
   TicketStatus,
@@ -45,6 +48,17 @@ export async function loadTransitions(key: string): Promise<ActionResult<Transit
 
 export async function loadTicketDetail(key: string): Promise<ActionResult<TicketDetail>> {
   return run(() => hub.detail(key));
+}
+
+export async function loadTicketBlocks(key: string): Promise<ActionResult<TicketBlocks>> {
+  return run(() => hub.blocks(key));
+}
+
+export async function logTicketTime(
+  key: string,
+  body: LogTimeBody,
+): Promise<ActionResult<RawBlock>> {
+  return run(() => hub.logTime(key, body), `/${body.day}`);
 }
 
 export async function transitionTicket(

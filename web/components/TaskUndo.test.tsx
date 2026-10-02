@@ -38,6 +38,7 @@ function actions(perCall: Transition[][]): TaskActions {
   return {
     loadTransitions: mock(async () => ({ ok: true as const, data: perCall[Math.min(n++, perCall.length - 1)] })),
     loadTicketDetail: mock(async () => ({ ok: false as const, error: "unused" })),
+    loadTicketBlocks: mock(async () => ({ ok: false as const, error: "unused" })),
     transitionTicket: mock(async (key: string, id: string) => {
       const t = [start, back, back2].find((x) => x.id === id) as Transition;
       return { ok: true as const, data: { key, status: t.to_status, status_category: t.to_category } };

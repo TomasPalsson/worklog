@@ -4,8 +4,11 @@
 import { call } from "./daemon";
 import type {
   CommentBody,
+  LogTimeBody,
+  RawBlock,
   PullReport,
   TasksResponse,
+  TicketBlocks,
   TicketDetail,
   TicketDraft,
   TicketStatus,
@@ -51,4 +54,12 @@ export async function pullTempo(monday: string): Promise<PullReport> {
 
 export async function closeout(monday: string): Promise<WeekCloseout> {
   return call("GET", `/weeks/${encodeURIComponent(monday)}/closeout`);
+}
+
+export async function blocks(key: string): Promise<TicketBlocks> {
+  return call("GET", ticketPath(key, "blocks"));
+}
+
+export async function logTime(key: string, body: LogTimeBody): Promise<RawBlock> {
+  return call("POST", ticketPath(key, "log"), body);
 }
