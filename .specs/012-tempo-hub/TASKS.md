@@ -55,6 +55,6 @@ Independent test: `cd web && bun test && bun run typecheck` — green with the d
 - [x] T019 [P] Gap days in the week close-out carry a gap marker and a warning colour (B17) — files: web/components/WeekCloseout.tsx, web/components/WeekCloseout.test.tsx, web/app/globals.css — verify: `cd web && bun test components/WeekCloseout.test.tsx && bun run typecheck` — done: d5883f3
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `flow check --fix`
-- [ ] G002 branch review clean — files: . — verify: `flow pass`
-- [ ] G003 verification evidence exists — files: . — verify: `test -s verify/`
+- [x] G001 project gates clean — files: . — verify: `flow check --fix` — done: e087705
+- [x] G002 branch review clean — files: . — verify: `flow pass` — done: e087705
+- [x] G003 verification evidence exists — files: . — verify: `test -s verify/` — done: e087705
