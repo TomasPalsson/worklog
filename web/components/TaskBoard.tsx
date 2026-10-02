@@ -371,7 +371,8 @@ export function TaskBoard({ tasks, actions = realActions, undoMs = 8000 }: {
       </div>
       </div>
       {open && (
-        <TaskModal key={open.key} drafts={drafts} task={open} actions={actions} onClose={closePanel} onStatus={(s) => {
+        <TaskModal key={open.key} drafts={drafts} task={open} actions={actions} onClose={closePanel}
+          knownKeys={new Set(rows.map((r) => r.key))} onOpenTicket={openCard} onStatus={(s) => {
           m.offerUndo(open.key, colOf(open), columnOf(s.status_category));
           patch(open.key, s);
         }}

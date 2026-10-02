@@ -6267,6 +6267,17 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
   .task-rel-meta { display: none; }
 }
 
+/* ── ticket-full: work log ── */
+.task-block-item { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.task-block-item > .task-block-row { flex: 1 1 0; min-width: 0; }
+.task-block-move:focus-visible { outline: none; box-shadow: var(--ring); }
+.task-block-picker { flex: 1 0 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 4px 8px; }
+.task-block-picker .task-btn-secondary { flex: none; min-height: 36px; padding: 0 12px; font-size: 12px; }
+.task-menu-confirm { display: grid; gap: 2px; }
+@media (pointer: coarse) {
+  .task-block-picker .task-btn-secondary { min-height: 40px; }
+}
+
 /* ── ticket-full: W1 time card + details ── */
 .task-today, .task-estimate { display: grid; gap: 4px; min-width: 0; }
 .task-today-ticket { font-size: 12px; color: var(--fg-muted); }

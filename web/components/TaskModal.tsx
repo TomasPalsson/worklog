@@ -189,6 +189,7 @@ export function TaskModal(props: TaskModalProps) {
             load={work.load}
             onStatus={m.report}
             onTempo={m.jumpTo}
+            onPulled={work.refetch}
             wide={wide}
           />
         </div>
