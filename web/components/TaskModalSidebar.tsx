@@ -82,12 +82,12 @@ function TempoRow({ load, onTempo }: { load: BlocksLoad; onTempo: () => void }) 
         {tempo.text}
       </span>
       {tempo.review && (
-        <>
+        <span className="task-tempo-act">
           <span aria-hidden="true">{" · "}</span>
           <button type="button" className="task-review" aria-label="Show the first unsent day" onClick={onTempo}>
             Show day
           </button>
-        </>
+        </span>
       )}
     </span>
   );

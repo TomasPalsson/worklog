@@ -5875,7 +5875,9 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 .task-dl-row dt { color: var(--fg-muted); }
 .task-dl-row dd { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .task-none { color: var(--fg-subtle); }
-.task-tempo-line { white-space: nowrap; }
+/* The state text may wrap in the 320px sidebar; only "· Show day" stays together. */
+.task-tempo-line { overflow-wrap: anywhere; }
+.task-tempo-act { white-space: nowrap; }
 .task-tempo[data-tone="ok"] { color: var(--sage-ink); }
 .task-tempo[data-tone="changed"] { color: var(--amber-ink); }
 /* a control that reads as one: underlined and full-strength, unlike the muted text around it */

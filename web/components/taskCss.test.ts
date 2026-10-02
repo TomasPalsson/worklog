@@ -121,6 +121,7 @@ it("the phone Jira link is a 40px icon with a right-anchored tooltip", () => {
   expect(css).toContain(".task-modal-jira-icon[data-tip]::after {");
 });
 
-it("the Tempo value and its Review button never split across lines", () => {
-  expect(rule(".task-tempo-line")).toContain("white-space: nowrap");
+it("the Tempo state text may wrap in the sidebar, but '· Show day' never splits", () => {
+  expect(rule(".task-tempo-line")).not.toContain("white-space: nowrap");
+  expect(rule(".task-tempo-act")).toContain("white-space: nowrap");
 });
