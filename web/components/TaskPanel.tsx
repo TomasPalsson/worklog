@@ -145,9 +145,16 @@ function Meta({ task, detail, shown, actions, onStatus }: TaskPanelProps & { det
         {items.filter(Boolean).map((v) => (
           <span key={v}>{v}</span>
         ))}
-        {detail?.updated && <span>{`Updated ${formatStamp(detail.updated)}`}</span>}
       </div>
-      <p className="task-hours">{`${formatDuration(task.week_seconds)} this week · ${formatDuration(task.today_seconds)} today`}</p>
+      <p className="task-hours">
+        {[
+          `${formatDuration(task.week_seconds)} this week`,
+          task.today_seconds > 0 && `${formatDuration(task.today_seconds)} today`,
+          detail?.updated && `Updated ${formatStamp(detail.updated)}`,
+        ]
+          .filter(Boolean)
+          .join(" · ")}
+      </p>
     </>
   );
 }

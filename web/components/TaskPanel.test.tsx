@@ -125,6 +125,12 @@ describe("TaskPanel reading", () => {
     await screen.findByText(/Steps to reproduce/);
   });
 
+  it("hours line drops today at 0 and carries the Updated stamp once detail loads", async () => {
+    open(actions(), row({ today_seconds: 0 }));
+    expect(screen.getByText("1h 30m this week")).not.toBeNull();
+    expect(await screen.findByText(/^1h 30m this week · Updated /)).not.toBeNull();
+  });
+
   it("strips a trailing period from a load error reason", async () => {
     open(actions({ loadTicketDetail: mock(async () => ({ ok: false as const, error: "jira down." })) }));
     expect((await screen.findByText(/Couldn't load ABC-1/)).textContent).toBe("Couldn't load ABC-1 from Jira: jira down");
