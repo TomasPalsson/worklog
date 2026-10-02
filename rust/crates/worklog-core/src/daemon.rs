@@ -34,10 +34,12 @@
 //! * `POST /tickets/external`            — cache a manually-picked ticket
 //! * `POST /tickets/create`              — create a Jira issue (sets account)
 //! * `GET  /tickets/:key/detail`         — live Jira description + comments
-//! * `GET  /projects`                    — list Jira projects (create picker)
+//! * `GET  /tickets/:key/blocks`         — the ticket's blocks + Tempo line per day, last 14 days
+//! * `POST /tickets/:key/log`            — { day, start: "HH:MM", minutes, description } log time as a manual block
+//! * `GET  /projects`                  — list Jira projects (create picker)
 //! * `GET  /accounts`                    — list Tempo accounts (create picker)
 //! * `POST /estimate`                    — { "day": "YYYY-MM-DD", "model": "?" }
-//! * `POST /sync`                        — { "day": "YYYY-MM-DD", "dry_run": true }
+//! * `POST /sync`                        — { "day": "YYYY-MM-DD", "dry_run": true, "jira_issue"?: "KEY-1" (only that ticket's line) }
 //! * `GET  /export/:day`                 — billing rows + rendered text/csv/json for a day
 //! * `POST /export/:day/mark`            — mark a day's blocks as billed (idempotent)
 //! * `POST /billing/lines/text`          — { day, folder, customer, text } hand-edit a line's invoice text
@@ -208,6 +210,8 @@ pub fn router(state: Shared) -> Router {
             get(daemon_tasks::list_transitions),
         )
         .route("/tickets/:key/detail", get(daemon_tasks::detail))
+        .route("/tickets/:key/blocks", get(daemon_tasks::blocks))
+        .route("/tickets/:key/log", post(daemon_tasks::log))
         .route("/tickets/:key/transition", post(daemon_tasks::transition))
         .route("/tickets/:key/comment", post(daemon_tasks::comment))
         .route("/tickets/:key/draft", post(daemon_tasks::draft))
@@ -1873,6 +1877,9 @@ pub struct SyncBody {
     pub day: String,
     #[serde(default = "default_dry_run")]
     pub dry_run: bool,
+    /// Sync only this ticket's line for the day; `None` = the whole day.
+    #[serde(default)]
+    pub jira_issue: Option<String>,
 }
 
 fn default_dry_run() -> bool {
@@ -1890,6 +1897,7 @@ async fn run_sync(
         .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{}`: {e}", body.day)))?;
     let auth = tempo::TempoAuth::from_secrets().map_err(ApiError::from)?;
     let dry_run = body.dry_run;
+    let only_issue = body.jira_issue.clone();
     // Same invoker dance as the CLI: construct an LLM provider for
     // multi-block ticket-day description summaries. We do this inside
     // `with_conn` so the (non-Send) reqwest client lives on the
@@ -1901,27 +1909,22 @@ async fn run_sync(
             estimate::resolve_provider().ok()
         };
         let http_client = crate::http::client()?;
-        match provider.as_ref() {
-            Some(estimate::ProviderChoice::ClaudeSubprocess) => tempo::sync_day_with_invoker(
-                c,
-                &auth,
-                day,
-                dry_run,
-                &http_client,
-                Some(&estimate::ClaudeSubprocess::default()),
-                estimate::DEFAULT_MODEL,
-            ),
-            Some(estimate::ProviderChoice::LiteLLM(inv)) => tempo::sync_day_with_invoker(
-                c,
-                &auth,
-                day,
-                dry_run,
-                &http_client,
-                Some(inv),
-                estimate::DEFAULT_MODEL,
-            ),
-            None => tempo::sync_day_with(c, &auth, day, dry_run, &http_client),
-        }
+        let claude = estimate::ClaudeSubprocess::default();
+        let invoker: Option<&dyn estimate::ModelInvoker> = match provider.as_ref() {
+            Some(estimate::ProviderChoice::ClaudeSubprocess) => Some(&claude),
+            Some(estimate::ProviderChoice::LiteLLM(inv)) => Some(inv),
+            None => None,
+        };
+        tempo::sync_day_with_invoker_for(
+            c,
+            &auth,
+            day,
+            dry_run,
+            &http_client,
+            invoker,
+            estimate::DEFAULT_MODEL,
+            only_issue.as_deref(),
+        )
     })
     .await?;
     Ok(Json(json!({

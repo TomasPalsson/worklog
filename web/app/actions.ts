@@ -178,8 +178,8 @@ export async function runEstimate(day: string) {
   return runAction(() => daemonRunEstimate(day), `/${day}`);
 }
 
-export async function runSync(day: string, dryRun: boolean) {
-  return runAction(() => daemonRunSync(day, dryRun), `/${day}`);
+export async function runSync(day: string, dryRun: boolean, jiraIssue?: string) {
+  return runAction(() => daemonRunSync(day, dryRun, jiraIssue), `/${day}`);
 }
 
 export async function refreshJira(day: string) {

@@ -53,6 +53,7 @@ function actions(over: Partial<Record<keyof TaskActions, unknown>> = {}): TaskAc
   return {
     loadTransitions: mock(async () => ({ ok: true as const, data: [start, done] })),
     loadTicketDetail: mock(async () => ({ ok: true as const, data: detail() })),
+    loadTicketBlocks: mock(async () => ({ ok: true as const, data: { key: "ABC-1", from: "2026-09-19", to: "2026-10-02", days: [] } })),
     transitionTicket: mock(async (key: string) => ({
       ok: true as const,
       data: { key, status: "In Progress", status_category: "indeterminate" as const },
@@ -101,6 +102,15 @@ describe("TaskPanel reading", () => {
     expect(screen.getByRole("link", { name: /Open in Jira/ }).getAttribute("href")).toBe(
       "https://jira.example/browse/ABC-1",
     );
+  });
+
+  it("renders Work logged between Description and Comments and loads it for the key on open", async () => {
+    const a = actions();
+    open(a);
+    expect(await screen.findByText("No work logged on ABC-1 in the last 14 days.")).not.toBeNull();
+    expect(calls(a.loadTicketBlocks)[0]).toEqual(["ABC-1"]);
+    const heads = screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent);
+    expect(heads.slice(0, 3)).toEqual(["Description", "Work logged · last 14 days", "Comments · 2"]);
   });
 
   it("shows empty-description and empty-comments copy", async () => {

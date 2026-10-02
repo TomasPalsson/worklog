@@ -57,7 +57,7 @@ function timeoutMs(path: string): number {
   // Tempo hub: the AI draft shells out to `claude -p`; the pull pages Tempo.
   if (path.endsWith("/draft")) return 90_000;
   if (path.startsWith("/tempo/pull")) return 60_000;
-  if (/^\/tickets\/[^/]+\/(transitions?|comment|detail)$/.test(path)) return 20_000;
+  if (/^\/tickets\/[^/]+\/(transitions?|comment|detail|blocks|log)$/.test(path)) return 20_000;
   if (path.startsWith("/projects")) return 20_000;
   if (path.startsWith("/accounts")) return 20_000;
   return 10_000;
@@ -170,14 +170,16 @@ export async function runEstimate(day: string, model?: string) {
   }>("POST", "/estimate", model ? { day, model } : { day });
 }
 
-export async function runSync(day: string, dryRun = true) {
+export async function runSync(day: string, dryRun = true, jiraIssue?: string) {
   return call<{
     day: string;
     dry_run: boolean;
     synced: number;
     skipped: number;
     errors: string[];
-  }>("POST", "/sync", { day, dry_run: dryRun });
+    /** One row per block the sync looked at; `reason` explains a skip or error. */
+    results?: { block_id: number; status: string; reason: string | null; tempo_id?: string | null }[];
+  }>("POST", "/sync", jiraIssue ? { day, dry_run: dryRun, jira_issue: jiraIssue } : { day, dry_run: dryRun });
 }
 
 export async function refreshJira() {

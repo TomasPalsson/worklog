@@ -50,6 +50,7 @@ function actions(over: Partial<Record<keyof TaskActions, unknown>> = {}): TaskAc
   return {
     loadTransitions: mock(async () => ({ ok: true as const, data: [start, done] })),
     loadTicketDetail: mock(async () => ({ ok: true as const, data: detail })),
+    loadTicketBlocks: mock(async () => ({ ok: true as const, data: { key: "ABC-1", from: "2026-09-19", to: "2026-10-02", days: [] } })),
     transitionTicket: mock(async (key: string) => ({
       ok: true as const,
       data: { key, status: "In Progress", status_category: "indeterminate" as const },

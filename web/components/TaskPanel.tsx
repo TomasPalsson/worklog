@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type MutableRefObject, type RefObject } from "react";
+import { useEffect, useRef, useState, type MutableRefObject, type ReactNode, type RefObject } from "react";
 import { ChevronDown, ExternalLink, X } from "lucide-react";
 
 import { formatDuration } from "@/lib/format";
@@ -10,6 +10,7 @@ import type { TaskActions } from "./TaskCard";
 import { DueChip, Labels, ParentRow } from "./TaskCardMeta";
 import { TaskComposer, type Drafts } from "./TaskComposer";
 import { menuKeys } from "./menuKeys";
+import { TaskWorkLog } from "./TaskWorkLog";
 
 type Load = { s: "loading" } | { s: "error"; error: string } | { s: "ok"; detail: TicketDetail };
 
@@ -197,21 +198,25 @@ function Comments({ list }: { list: TicketComment[] }) {
   );
 }
 
-function Body({ load, retry, extra, taskKey }: { load: Load; retry: () => void; extra: TicketComment[]; taskKey: string }) {
+function Body({ load, retry, extra, taskKey, work }: { load: Load; retry: () => void; extra: TicketComment[]; taskKey: string; work: ReactNode }) {
   if (load.s === "error") {
     return (
-      <div className="task-load-error">
-        <p>{`Couldn't load ${taskKey} from Jira: ${load.error.replace(/\.$/, "")}`}</p>
-        <button type="button" className="task-btn-secondary" onClick={retry}>
-          Try again
-        </button>
-      </div>
+      <>
+        <div className="task-load-error">
+          <p>{`Couldn't load ${taskKey} from Jira: ${load.error.replace(/\.$/, "")}`}</p>
+          <button type="button" className="task-btn-secondary" onClick={retry}>
+            Try again
+          </button>
+        </div>
+        {work}
+      </>
     );
   }
   if (load.s === "loading") {
     return (
       <>
         <section className="task-section"><h3>Description</h3><Skeleton /></section>
+        {work}
         <section className="task-section"><h3>Comments</h3><Skeleton /></section>
       </>
     );
@@ -223,6 +228,7 @@ function Body({ load, retry, extra, taskKey }: { load: Load; retry: () => void; 
         <h3>Description</h3>
         {description ? <p className="task-prose">{description}</p> : <p className="task-empty">No description in Jira.</p>}
       </section>
+      {work}
       <Comments list={[...comments, ...extra]} />
     </>
   );
@@ -280,7 +286,7 @@ export function TaskPanel(props: TaskPanelProps) {
           {task.summary}
         </h2>
         <Meta {...props} onStatus={report} detail={detail} shown={shown} />
-        <Body load={load} retry={retry} extra={extra} taskKey={task.key} />
+        <Body load={load} retry={retry} extra={extra} taskKey={task.key} work={<TaskWorkLog taskKey={task.key} actions={actions} onAnnounce={setAnnounce} />} />
       </div>
       <p className="task-sr" role="status" aria-live="polite">
         {announce}

@@ -13,11 +13,12 @@ use serde_json::{json, Value};
 
 use crate::collectors::jira::{self, JiraAuth};
 use crate::estimate::{self, ModelInvoker};
+use crate::models::Block;
 use crate::tempo_hub_contract::{
-    CommentBody, HubError, TasksResponse, TicketDetail, TicketDraft, TicketStatus, Transition,
-    TransitionBody, COMMENT_MAX_CHARS,
+    CommentBody, HubError, TasksResponse, TicketBlocks, TicketDetail, TicketDraft, TicketStatus,
+    Transition, TransitionBody, COMMENT_MAX_CHARS,
 };
-use crate::{line_text, repo, secrets, task_board, task_draft, tz};
+use crate::{line_text, repo, secrets, task_board, task_draft, ticket_blocks, ticket_log, tz};
 
 use super::{with_conn, ApiError, Shared};
 
@@ -118,6 +119,32 @@ pub async fn detail(
     })
     .await?;
     Ok(Json(detail))
+}
+
+pub async fn blocks(
+    State(state): State<Shared>,
+    AxumPath(key): AxumPath<String>,
+) -> Result<Json<TicketBlocks>, ApiError> {
+    validated_key(&key)?;
+    let today = tz::local_date(Utc::now());
+    let out = with_conn(state, move |c| {
+        ticket_blocks::ticket_blocks(c, &key, today, 14)
+    })
+    .await?;
+    Ok(Json(out))
+}
+
+pub async fn log(
+    State(state): State<Shared>,
+    AxumPath(key): AxumPath<String>,
+    Json(body): Json<ticket_log::LogTimeBody>,
+) -> Result<Json<Block>, ApiError> {
+    validated_key(&key)?;
+    let today = tz::local_date(Utc::now());
+    let block = with_conn(state, move |c| ticket_log::log_time(c, &key, &body, today))
+        .await
+        .map_err(hub_error)?;
+    Ok(Json(block))
 }
 
 pub async fn list_transitions(

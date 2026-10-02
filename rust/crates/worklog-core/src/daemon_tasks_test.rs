@@ -167,6 +167,65 @@ async fn a_malformed_ticket_key_is_a_400_on_every_ticket_route() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _) = call(&state, get("/tickets/not-a-key/detail")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = call(&state, get("/tickets/not-a-key/blocks")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = call(
+        &state,
+        post(
+            "/tickets/not-a-key/log",
+            r#"{"day":"2026-04-18","start":"09:00","minutes":30,"description":"x"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn log_route_creates_a_block_that_the_blocks_route_returns() {
+    let state = state_with_ticket();
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let request = format!(
+        r#"{{"day":"{today}","start":"00:00","minutes":45,"description":"Pairing"}}"#
+    );
+    let (status, json) = call(&state, post("/tickets/APRO-1/log", &request)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["jira_issue"], "APRO-1");
+    assert_eq!(json["duration_seconds"], 2700);
+    assert_eq!(json["estimated_by"], "manual");
+    assert_eq!(json["ticket_origin"], "manual");
+    let (_, json) = call(&state, get("/tickets/APRO-1/blocks")).await;
+    assert_eq!(json["days"][0]["blocks"][0]["description"], "Pairing");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn log_route_rejects_bad_bodies_with_400_and_writes_nothing() {
+    let state = state_with_ticket();
+    for body in [
+        r#"{"day":"2999-01-01","start":"09:00","minutes":30,"description":"x"}"#,
+        r#"{"day":"2026-04-18","start":"09:00","minutes":0,"description":"x"}"#,
+        r#"{"day":"2026-04-18","start":"09:00","minutes":30,"description":" "}"#,
+    ] {
+        let (status, json) = call(&state, post("/tickets/APRO-1/log", body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(json["error"].as_str().is_some_and(|m| !m.is_empty()));
+    }
+    let count: i64 = state
+        .conn
+        .lock()
+        .await
+        .query_row("SELECT COUNT(*) FROM blocks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn blocks_route_returns_the_window_for_a_known_and_unknown_key() {
+    let state = state_with_ticket();
+    let (status, json) = call(&state, get("/tickets/APRO-1/blocks")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["key"], "APRO-1");
+    assert_eq!(json["days"], serde_json::json!([]));
+    assert!(json["from"].as_str().is_some() && json["to"].as_str().is_some());
 }
 
 #[tokio::test(flavor = "current_thread")]

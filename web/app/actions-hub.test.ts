@@ -4,6 +4,8 @@
 import { beforeAll, beforeEach, describe, expect, it, mock } from "bun:test";
 import type {
   PullReport,
+  RawBlock,
+  TicketBlocks,
   TasksResponse,
   TicketDetail,
   TicketDraft,
@@ -54,6 +56,26 @@ const report: PullReport = {
 };
 const closeoutBody: WeekCloseout = { monday: "2026-09-21", days: [], pulled_at: null };
 
+const ticketBlocks: TicketBlocks = { key: "ABC-1", from: "2026-09-11", to: "2026-09-24", days: [] };
+const rawBlock: RawBlock = {
+  id: 7,
+  day: "2026-09-24",
+  jira_issue: "ABC-1",
+  started_at: "2026-09-24T09:00:00Z",
+  ended_at: "2026-09-24T09:30:00Z",
+  duration_seconds: 1800,
+  description: "Did it",
+  estimated_by: "manual",
+  flagged: false,
+  tempo_worklog_id: null,
+  is_personal: false,
+  dirty: false,
+  exported_at: null,
+  ignored_at: null,
+  ticket_origin: "manual",
+};
+const blocksImpl = mock(async (_key: string) => ticketBlocks);
+const logImpl = mock(async (_key: string, _body: unknown) => rawBlock);
 const tasksImpl = mock(async (_monday?: string) => tasksBody);
 const transitionsImpl = mock(async (_key: string) => transitionList);
 const transitionImpl = mock(async (_key: string, _id: string) => status);
@@ -72,6 +94,8 @@ mock.module("@/lib/daemonHub", () => ({
   draft: (k: string) => draftImpl(k),
   pullTempo: (m: string) => pullImpl(m),
   closeout: (m: string) => closeoutImpl(m),
+  blocks: (k: string) => blocksImpl(k),
+  logTime: (k: string, b: unknown) => logImpl(k, b),
 }));
 
 let hub: typeof import("./actions-hub");
@@ -91,6 +115,8 @@ beforeEach(() => {
     detailImpl,
     pullImpl,
     closeoutImpl,
+    blocksImpl,
+    logImpl,
   ]) {
     m.mockClear();
   }
@@ -110,6 +136,12 @@ describe("reads", () => {
   it("loadTicketDetail returns the detail without revalidating", async () => {
     expect(await hub.loadTicketDetail("ABC-1")).toEqual({ ok: true, data: ticketDetail });
     expect(detailImpl).toHaveBeenCalledWith("ABC-1");
+    expect(revalidateImpl).not.toHaveBeenCalled();
+  });
+
+  it("loadTicketBlocks returns the blocks without revalidating", async () => {
+    expect(await hub.loadTicketBlocks("ABC-1")).toEqual({ ok: true, data: ticketBlocks });
+    expect(blocksImpl).toHaveBeenCalledWith("ABC-1");
     expect(revalidateImpl).not.toHaveBeenCalled();
   });
 
@@ -141,6 +173,13 @@ describe("writes", () => {
     expect(await hub.commentOnTicket("ABC-1", "hi")).toEqual({ ok: true, data: { ok: true } });
     expect(commentImpl).toHaveBeenCalledWith("ABC-1", "hi");
     expect(revalidateImpl).toHaveBeenCalledWith("/tasks");
+  });
+
+  it("logTicketTime posts the body and revalidates that day", async () => {
+    const body = { day: "2026-09-24", start: "09:00", minutes: 30, description: "Did it" };
+    expect(await hub.logTicketTime("ABC-1", body)).toEqual({ ok: true, data: rawBlock });
+    expect(logImpl).toHaveBeenCalledWith("ABC-1", body);
+    expect(revalidateImpl).toHaveBeenCalledWith("/2026-09-24");
   });
 
   it("pullTempoWeek revalidates that week's page", async () => {

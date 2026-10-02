@@ -148,6 +148,23 @@ pub fn sync_day_with_invoker(
     invoker: Option<&dyn ModelInvoker>,
     model: &str,
 ) -> Result<(CollectReport, Vec<SyncResult>)> {
+    sync_day_with_invoker_for(conn, auth, day, dry_run, client, invoker, model, None)
+}
+
+/// [`sync_day_with_invoker`] restricted to one ticket: with
+/// `only_issue = Some(key)` every other line of the day (including
+/// unassigned blocks) is neither synced nor reported. `None` = whole day.
+#[allow(clippy::too_many_arguments)]
+pub fn sync_day_with_invoker_for(
+    conn: &Connection,
+    auth: &TempoAuth,
+    day: NaiveDate,
+    dry_run: bool,
+    client: &Client,
+    invoker: Option<&dyn ModelInvoker>,
+    model: &str,
+    only_issue: Option<&str>,
+) -> Result<(CollectReport, Vec<SyncResult>)> {
     let mut report = CollectReport {
         source: "tempo",
         ..Default::default()
@@ -167,7 +184,10 @@ pub fn sync_day_with_invoker(
     // For aggregation we need the FULL ticket-day total later, but the
     // eligibility filter still gates whether a ticket-day group needs
     // network work this run.
-    let eligible = fetch_eligible_blocks(conn, day)?;
+    let mut eligible = fetch_eligible_blocks(conn, day)?;
+    if let Some(only) = only_issue {
+        eligible.retain(|b| b.jira_issue.as_deref() == Some(only));
+    }
 
     // Group eligible blocks by `jira_issue`. `BTreeMap` keeps a stable
     // order so the result table prints deterministically.
@@ -2584,6 +2604,146 @@ mod tests {
                 },
             ]
         );
+    }
+
+    fn seed_two_tickets_and_an_unassigned_block(conn: &Connection) -> (i64, i64, i64) {
+        let one = insert_block(
+            conn,
+            "2026-04-18",
+            "2026-04-18T09:00:00Z",
+            "2026-04-18T09:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("one work"),
+        );
+        let two = insert_block(
+            conn,
+            "2026-04-18",
+            "2026-04-18T10:00:00Z",
+            "2026-04-18T10:30:00Z",
+            1800,
+            Some("PROJ-2"),
+            Some("two work"),
+        );
+        let loose = insert_block(
+            conn,
+            "2026-04-18",
+            "2026-04-18T11:00:00Z",
+            "2026-04-18T11:30:00Z",
+            1800,
+            None,
+            Some("loose"),
+        );
+        (one, two, loose)
+    }
+
+    fn sync_for(
+        conn: &Connection,
+        server: &MockServer,
+        dry_run: bool,
+        only_issue: Option<&str>,
+    ) -> (CollectReport, Vec<SyncResult>) {
+        sync_day_with_invoker_for(
+            conn,
+            &auth(server.base_url()),
+            day(),
+            dry_run,
+            &http::client().unwrap(),
+            None,
+            estimate::DEFAULT_MODEL,
+            only_issue,
+        )
+        .unwrap()
+    }
+
+    fn post_mock<'a>(server: &'a MockServer, description: &str) -> httpmock::Mock<'a> {
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/worklogs")
+                .json_body_partial(json!({ "description": description }).to_string());
+            then.status(200).json_body(json!({"tempoWorklogId": 9}));
+        })
+    }
+
+    #[test]
+    fn sync_for_one_ticket_posts_only_that_ticket_and_reports_nothing_else() {
+        let server = MockServer::start();
+        let one = post_mock(&server, "one work");
+        let two = post_mock(&server, "two work");
+        let conn = open_memory().unwrap();
+        let (b1, b2, _) = seed_two_tickets_and_an_unassigned_block(&conn);
+
+        let (report, results) = sync_for(&conn, &server, false, Some("PROJ-2"));
+
+        two.assert_hits(1);
+        one.assert_hits(0);
+        assert_eq!((report.synced, report.skipped), (1, 0));
+        assert!(report.errors.is_empty());
+        assert_eq!(results.iter().map(|r| r.block_id).collect::<Vec<_>>(), [b2]);
+        let tempo_id = |id: i64| -> Option<String> {
+            conn.query_row(
+                "SELECT tempo_worklog_id FROM blocks WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(tempo_id(b2).as_deref(), Some("9"));
+        assert_eq!(tempo_id(b1), None, "other ticket's block stays unsynced");
+    }
+
+    #[test]
+    fn sync_for_one_ticket_dry_run_posts_nothing() {
+        let server = MockServer::start();
+        let any = server.mock(|when, then| {
+            when.method(POST).path("/worklogs");
+            then.status(200).json_body(json!({"tempoWorklogId": 9}));
+        });
+        let conn = open_memory().unwrap();
+        let (_, b2, _) = seed_two_tickets_and_an_unassigned_block(&conn);
+
+        let (_, results) = sync_for(&conn, &server, true, Some("PROJ-2"));
+
+        any.assert_hits(0);
+        assert_eq!(results.iter().map(|r| r.block_id).collect::<Vec<_>>(), [b2]);
+        assert_eq!(results[0].status, "dry-run");
+    }
+
+    #[test]
+    fn sync_without_a_ticket_still_covers_the_whole_day() {
+        let server = MockServer::start();
+        let one = post_mock(&server, "one work");
+        let two = post_mock(&server, "two work");
+        let conn = open_memory().unwrap();
+        seed_two_tickets_and_an_unassigned_block(&conn);
+
+        let (report, _) = sync_for(&conn, &server, false, None);
+
+        one.assert_hits(1);
+        two.assert_hits(1);
+        assert_eq!((report.synced, report.skipped), (2, 1));
+    }
+
+    #[test]
+    fn sync_for_a_synced_ticket_does_not_repost_it() {
+        let server = MockServer::start();
+        let any = server.mock(|when, then| {
+            when.method(POST).path("/worklogs");
+            then.status(200).json_body(json!({"tempoWorklogId": 9}));
+        });
+        let conn = open_memory().unwrap();
+        let (_, b2, _) = seed_two_tickets_and_an_unassigned_block(&conn);
+        conn.execute(
+            "UPDATE blocks SET tempo_worklog_id = '55' WHERE id = ?1",
+            [b2],
+        )
+        .unwrap();
+
+        let (report, results) = sync_for(&conn, &server, false, Some("PROJ-2"));
+
+        any.assert_hits(0);
+        assert!(results.is_empty());
+        assert_eq!(report.synced, 0);
     }
 
     #[test]

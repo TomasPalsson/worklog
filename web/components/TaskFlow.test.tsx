@@ -36,6 +36,7 @@ function actions(transitions: Transition[], over: Partial<Record<keyof TaskActio
   return {
     loadTransitions: mock(async () => ({ ok: true as const, data: transitions })),
     loadTicketDetail: mock(async () => ({ ok: false as const, error: "unused" })),
+    loadTicketBlocks: mock(async () => ({ ok: false as const, error: "unused" })),
     transitionTicket: mock(async (key: string, id: string) => {
       const t = [start, review, back].find((x) => x.id === id) as Transition;
       return { ok: true as const, data: { key, status: t.to_status, status_category: t.to_category } };

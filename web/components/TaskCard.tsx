@@ -6,10 +6,14 @@ import { GripVertical, X } from "lucide-react";
 import type {
   loadTransitions as loadTransitionsAction,
   loadTicketDetail as loadTicketDetailAction,
+  loadTicketBlocks as loadTicketBlocksAction,
+  logTicketTime as logTicketTimeAction,
   transitionTicket as transitionTicketAction,
   commentOnTicket as commentOnTicketAction,
   draftTicketUpdate as draftTicketUpdateAction,
 } from "@/app/actions-hub";
+import type { runSync as runSyncAction } from "@/app/actions";
+import type { saveTempoLineHours, saveTempoLineText } from "@/app/actions-tempo-lines";
 import { formatDuration } from "@/lib/format";
 import { localToday, type Column } from "@/lib/taskBoard";
 import type { TaskRow, Transition } from "@/lib/types";
@@ -19,6 +23,11 @@ import { TaskMoveMenu } from "./TaskMoveMenu";
 export interface TaskActions {
   loadTransitions: typeof loadTransitionsAction;
   loadTicketDetail: typeof loadTicketDetailAction;
+  loadTicketBlocks: typeof loadTicketBlocksAction;
+  logTicketTime: typeof logTicketTimeAction;
+  saveTempoLineHours: typeof saveTempoLineHours;
+  saveTempoLineText: typeof saveTempoLineText;
+  runSync: typeof runSyncAction;
   transitionTicket: typeof transitionTicketAction;
   commentOnTicket: typeof commentOnTicketAction;
   draftTicketUpdate: typeof draftTicketUpdateAction;

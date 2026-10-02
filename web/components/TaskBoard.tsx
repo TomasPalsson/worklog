@@ -5,10 +5,14 @@ import { useCallback, useEffect, useRef, useState, type DragEvent } from "react"
 import {
   commentOnTicket,
   draftTicketUpdate,
+  loadTicketBlocks,
   loadTicketDetail,
+  logTicketTime,
   loadTransitions,
   transitionTicket,
 } from "@/app/actions-hub";
+import { runSync } from "@/app/actions";
+import { saveTempoLineHours, saveTempoLineText } from "@/app/actions-tempo-lines";
 import { COLUMNS, columnOf, columnTitle, localToday, movesInto, weekMax, type Column } from "@/lib/taskBoard";
 import type { TaskRow, Transition } from "@/lib/types";
 import { TaskCard, type TaskActions } from "./TaskCard";
@@ -20,6 +24,11 @@ import { TaskToolbar } from "./TaskToolbar";
 const realActions: TaskActions = {
   loadTransitions,
   loadTicketDetail,
+  loadTicketBlocks,
+  logTicketTime,
+  saveTempoLineHours,
+  saveTempoLineText,
+  runSync,
   transitionTicket,
   commentOnTicket,
   draftTicketUpdate,
