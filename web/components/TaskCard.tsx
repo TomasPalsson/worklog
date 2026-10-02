@@ -1,171 +1,127 @@
 "use client";
 
-import { useState } from "react";
-import { Sparkles } from "lucide-react";
+import { useEffect, useRef, type FocusEvent } from "react";
+import { GripVertical, X } from "lucide-react";
 
 import type {
   loadTransitions as loadTransitionsAction,
+  loadTicketDetail as loadTicketDetailAction,
   transitionTicket as transitionTicketAction,
   commentOnTicket as commentOnTicketAction,
   draftTicketUpdate as draftTicketUpdateAction,
 } from "@/app/actions-hub";
 import { formatDuration } from "@/lib/format";
+import type { Column } from "@/lib/taskBoard";
 import type { TaskRow, Transition } from "@/lib/types";
+import { TaskMoveMenu } from "./TaskMoveMenu";
 
 export interface TaskActions {
   loadTransitions: typeof loadTransitionsAction;
+  loadTicketDetail: typeof loadTicketDetailAction;
   transitionTicket: typeof transitionTicketAction;
   commentOnTicket: typeof commentOnTicketAction;
   draftTicketUpdate: typeof draftTicketUpdateAction;
 }
 
-type Outcome<T> = { ok: true; data: T } | { ok: false; error: string };
+export interface TaskCardProps {
+  task: TaskRow;
+  column: Column;
+  selected: boolean;
+  pending: boolean;
+  dragging: boolean;
+  landed: boolean;
+  error: string | undefined;
+  undo?: { to: string; run: () => void; hold: (held: boolean) => void };
+  onRetry: () => void;
+  onOpen: () => void;
+  loadTransitions: () => ReturnType<TaskActions["loadTransitions"]>;
+  onMove: (to: Column, transitions?: Transition[]) => void;
+  onDismissError: () => void;
+  onDragStart: (dataTransfer: DataTransfer | null) => void;
+  onDragEnd: () => void;
+}
 
-function useTaskCard(task: TaskRow, actions: TaskActions) {
-  const [status, setStatus] = useState(task.status);
-  const [transitions, setTransitions] = useState<Transition[] | null>(null);
-  const [suggestedId, setSuggestedId] = useState<string | null>(null);
-  const [comment, setComment] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+function Hours({ task, pending, undoing }: Pick<TaskCardProps, "task" | "pending"> & { undoing: boolean }) {
+  // The Undo strip sits over this row; keep the row's height so showing it never reflows the card.
+  if (undoing) return <span className="task-card-hours" aria-hidden="true">{" "}</span>;
+  if (pending) return <span className="task-card-hours">Moving…</span>;
+  if (task.week_seconds === 0) return <span className="task-card-hours task-card-idle">Not worked this week</span>;
+  const today = task.today_seconds > 0 ? ` · ${formatDuration(task.today_seconds)} today` : "";
+  return <span className="task-card-hours">{`${formatDuration(task.week_seconds)} this week${today}`}</span>;
+}
 
-  async function attempt<T>(call: () => Promise<Outcome<T>>, onOk: (data: T) => void) {
-    setBusy(true);
-    setError(null);
-    const res = await call();
-    if (res.ok) onOk(res.data);
-    else setError(res.error);
-    setBusy(false);
-  }
-
-  function applyMove(next: { status: string | null }) {
-    setStatus(next.status);
-    setTransitions(null);
-    setSuggestedId(null);
-  }
-
+/** Hover or focus inside the card pauses the Undo countdown. */
+function useUndoHold(undo: TaskCardProps["undo"]) {
+  const flags = useRef({ hover: false, focus: false });
+  const hold = undo?.hold;
+  const set = (k: "hover" | "focus", v: boolean) => {
+    flags.current[k] = v;
+    hold?.(flags.current.hover || flags.current.focus);
+  };
+  const offered = hold !== undefined;
+  useEffect(() => {
+    if (offered && (flags.current.hover || flags.current.focus)) hold?.(true);
+  }, [offered]); // only when a fresh strip appears under an already-held card
   return {
-    status,
-    transitions,
-    suggestedId,
-    comment,
-    busy,
-    error,
-    setComment,
-    openStatusMenu: () => attempt(() => actions.loadTransitions(task.key), setTransitions),
-    move: (t: Transition) =>
-      attempt(
-        () => actions.transitionTicket(task.key, t.id),
-        applyMove,
-      ),
-    dropSuggestion: () => setSuggestedId(null),
-    post: () =>
-      attempt(
-        async () => {
-          if (suggestedId) {
-            const moved = await actions.transitionTicket(task.key, suggestedId);
-            if (!moved.ok) return moved;
-            applyMove(moved.data);
-          }
-          return actions.commentOnTicket(task.key, comment.trim());
-        },
-        () => setComment(""),
-      ),
-    draft: () =>
-      attempt(
-        () => actions.draftTicketUpdate(task.key),
-        (d) => {
-          setComment(d.comment);
-          setTransitions(d.transitions);
-          setSuggestedId(d.suggested_transition_id);
-        },
-      ),
+    onMouseEnter: () => set("hover", true),
+    onMouseLeave: () => set("hover", false),
+    onFocus: () => set("focus", true),
+    onBlur: (e: FocusEvent) => {
+      if (!e.currentTarget.contains(e.relatedTarget as Node | null)) set("focus", false);
+    },
   };
 }
 
-function TaskHead({ task, status }: { task: TaskRow; status: string | null }) {
+export function TaskCard(p: TaskCardProps) {
+  const { task } = p;
+  const holdProps = useUndoHold(p.undo);
   return (
-    <>
-      <div className="task-card-head">
-        {task.url ? (
-          <a href={task.url} className="task-key" target="_blank" rel="noreferrer">
-            {task.key}
-          </a>
-        ) : (
+    <li
+      className="task-card"
+      data-testid={`card-${task.key}`}
+      data-task-key={task.key}
+      data-column={p.column}
+      data-selected={p.selected || undefined}
+      data-pending={p.pending || undefined}
+      data-dragging={p.dragging || undefined}
+      data-landed={p.landed || undefined}
+      draggable={!p.pending}
+      onDragStart={(e) => p.onDragStart(e.dataTransfer ?? null)}
+      onDragEnd={p.onDragEnd}
+      {...holdProps}
+    >
+      <button type="button" className="task-card-btn" aria-expanded={p.selected} onClick={p.onOpen}>
+        <span className="task-card-top">
           <span className="task-key">{task.key}</span>
-        )}
-        <span className="task-summary">{task.summary}</span>
-        <span
-          className="task-status"
-          data-category={task.status_category ?? undefined}
-          data-testid={`status-${task.key}`}
-        >
-          {status}
-        </span>
-      </div>
-      <div className="task-hours">
-        <span>{formatDuration(task.week_seconds)} this week</span>
-        <span>{formatDuration(task.today_seconds)} today</span>
-      </div>
-    </>
-  );
-}
-
-export function TaskCard({ task, actions }: { task: TaskRow; actions: TaskActions }) {
-  const s = useTaskCard(task, actions);
-  return (
-    <li className="task-card">
-      <TaskHead task={task} status={s.status} />
-
-      {s.transitions && (
-        <div className="task-transitions">
-          {s.transitions.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              className="merge-btn"
-              disabled={s.busy}
-              onClick={() => s.move(t)}
-            >
-              {`${t.name} → ${t.to_status}${t.id === s.suggestedId ? " (suggested)" : ""}`}
-            </button>
-          ))}
-          {s.suggestedId && (
-            <button type="button" className="merge-btn" disabled={s.busy} onClick={s.dropSuggestion}>
-              Drop suggestion
-            </button>
+          {!task.assigned && p.column !== "done" && (
+            <span className="task-tag" title="Not assigned to you — shown because you logged time on it this week">
+              not assigned
+            </span>
           )}
+        </span>
+        <span className="task-summary">{task.summary}</span>
+        {!p.error && <Hours task={task} pending={p.pending} undoing={!!p.undo && !p.pending} />}
+      </button>
+      <GripVertical className="task-grip" size={14} aria-hidden="true" />
+      {!p.pending && <TaskMoveMenu taskKey={task.key} column={p.column} load={p.loadTransitions} onMove={p.onMove} />}
+      {p.undo && !p.pending && (
+        <div className="task-card-undo">
+          <span>{`Moved to ${p.undo.to}`}</span>
+          <button type="button" onClick={p.undo.run}>
+            Undo
+          </button>
         </div>
       )}
-
-      <textarea
-        className="task-comment"
-        aria-label={`Comment on ${task.key}`}
-        rows={2}
-        value={s.comment}
-        onChange={(e) => s.setComment(e.target.value)}
-      />
-      <div className="task-actions">
-        <button type="button" className="merge-btn" disabled={s.busy} onClick={s.openStatusMenu}>
-          Change status
-        </button>
-        <button type="button" className="merge-btn" disabled={s.busy} onClick={s.draft}>
-          <Sparkles size={12} aria-hidden="true" />
-          Draft with AI
-        </button>
-        <button
-          type="button"
-          className="merge-btn"
-          disabled={s.busy || s.comment.trim() === ""}
-          onClick={s.post}
-        >
-          Post comment
-        </button>
-      </div>
-      {s.error && (
-        <p role="alert" className="task-error">
-          {s.error}
-        </p>
+      {p.error && (
+        <div className="task-card-error">
+          <span>{p.error}</span>
+          <button type="button" className="task-card-retry" onClick={p.onRetry}>
+            Try again
+          </button>
+          <button type="button" aria-label="Dismiss error" onClick={p.onDismissError}>
+            <X size={12} aria-hidden="true" />
+          </button>
+        </div>
       )}
     </li>
   );

@@ -6,6 +6,7 @@ import type {
   CommentBody,
   PullReport,
   TasksResponse,
+  TicketDetail,
   TicketDraft,
   TicketStatus,
   Transition,
@@ -24,6 +25,10 @@ export async function tasks(monday?: string): Promise<TasksResponse> {
 
 export async function transitions(key: string): Promise<Transition[]> {
   return call("GET", ticketPath(key, "transitions"));
+}
+
+export async function detail(key: string): Promise<TicketDetail> {
+  return call("GET", ticketPath(key, "detail"));
 }
 
 export async function transition(key: string, transitionId: string): Promise<TicketStatus> {

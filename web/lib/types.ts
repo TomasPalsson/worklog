@@ -485,6 +485,29 @@ export interface Transition {
   to_category: StatusCategory | null;
 }
 
+/** One Jira comment, body flattened to plain text. */
+export interface TicketComment {
+  id: string;
+  author: string;
+  created: string;
+  body: string;
+}
+
+/** `GET /tickets/:key/detail` — read live from Jira. */
+export interface TicketDetail {
+  key: string;
+  summary: string;
+  status: string | null;
+  status_category: StatusCategory | null;
+  issue_type: string | null;
+  priority: string | null;
+  assignee: string | null;
+  updated: string | null;
+  url: string;
+  description: string;
+  comments: TicketComment[];
+}
+
 export interface TransitionBody {
   transition_id: string;
 }

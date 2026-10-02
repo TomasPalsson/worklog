@@ -235,3 +235,32 @@ impl std::fmt::Display for HubError {
 }
 
 impl std::error::Error for HubError {}
+
+/// One Jira comment, body flattened from ADF to plain text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TicketComment {
+    pub id: String,
+    pub author: String,
+    pub created: String,
+    pub body: String,
+}
+
+/// `GET /tickets/:key/detail` response — read live from Jira, not cached.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TicketDetail {
+    pub key: String,
+    pub summary: String,
+    pub status: Option<String>,
+    pub status_category: Option<StatusCategory>,
+    pub issue_type: Option<String>,
+    pub priority: Option<String>,
+    pub assignee: Option<String>,
+    /// Jira `fields.updated`, as Jira sent it (ISO-8601).
+    pub updated: Option<String>,
+    /// `{base_url}/browse/{key}`.
+    pub url: String,
+    /// Plain text; "" when Jira has no description.
+    pub description: String,
+    /// Oldest first.
+    pub comments: Vec<TicketComment>,
+}

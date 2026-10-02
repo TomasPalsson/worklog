@@ -16,7 +16,9 @@ use tracing::debug;
 use crate::http::{self, RequestBuilderExt};
 use crate::models::{JiraProject, JiraTicket};
 use crate::repo;
-use crate::tempo_hub_contract::{HubError, StatusCategory, Transition};
+use crate::tempo_hub_contract::{
+    HubError, StatusCategory, TicketComment, TicketDetail, Transition,
+};
 
 use super::CollectReport;
 
@@ -508,6 +510,115 @@ pub fn fetch_status_with(
         serde_json::from_str(&text).with_context(|| format!("decode status: {text}"))?;
     let category = body.fields.status.category();
     Ok((body.fields.status.name.unwrap_or_default(), category))
+}
+
+fn str_at(v: &serde_json::Value, path: &[&str]) -> Option<String> {
+    let mut cur = v;
+    for p in path {
+        cur = cur.get(p)?;
+    }
+    cur.as_str().map(str::to_owned)
+}
+
+fn attr(node: &serde_json::Value, name: &str) -> Option<String> {
+    str_at(node, &["attrs", name])
+}
+
+fn adf_children(node: &serde_json::Value, out: &mut String) {
+    for child in node["content"].as_array().into_iter().flatten() {
+        adf_write(child, out);
+    }
+}
+
+fn adf_list(node: &serde_json::Value, ordered: bool, out: &mut String) {
+    for (i, item) in node["content"].as_array().into_iter().flatten().enumerate() {
+        let mut text = String::new();
+        adf_children(item, &mut text);
+        let prefix = if ordered {
+            format!("{}. ", i + 1)
+        } else {
+            "• ".into()
+        };
+        out.push_str(&format!("{prefix}{}\n", text.trim()));
+    }
+    out.push_str("\n\n");
+}
+
+fn adf_write(node: &serde_json::Value, out: &mut String) {
+    match node["type"].as_str().unwrap_or_default() {
+        "text" => out.push_str(node["text"].as_str().unwrap_or_default()),
+        "hardBreak" => out.push('\n'),
+        "mention" => out.push_str(&attr(node, "text").unwrap_or_default()),
+        "emoji" => out.push_str(
+            &attr(node, "text")
+                .or_else(|| attr(node, "shortName"))
+                .unwrap_or_default(),
+        ),
+        "inlineCard" | "blockCard" => out.push_str(&attr(node, "url").unwrap_or_default()),
+        "rule" => out.push_str("———\n\n"),
+        "bulletList" => adf_list(node, false, out),
+        "orderedList" => adf_list(node, true, out),
+        "paragraph" | "heading" | "blockquote" | "codeBlock" | "panel" => {
+            adf_children(node, out);
+            out.push_str("\n\n");
+        }
+        _ => adf_children(node, out),
+    }
+}
+
+/// Flatten Atlassian Document Format (or a legacy plain string) to text.
+fn adf_to_text(node: &serde_json::Value) -> String {
+    if let Some(s) = node.as_str() {
+        return s.to_owned();
+    }
+    let mut out = String::new();
+    adf_write(node, &mut out);
+    while out.contains("\n\n\n") {
+        out = out.replace("\n\n\n", "\n\n");
+    }
+    out.trim().to_owned()
+}
+
+pub fn fetch_detail_with(auth: &JiraAuth, key: &str, client: &Client) -> Result<TicketDetail> {
+    let url = format!("{}/rest/api/3/issue/{key}", auth.base_url);
+    let text = send_expecting_success(
+        client
+            .get(&url)
+            .basic_auth(&auth.email, Some(&auth.token))
+            .query(&[(
+                "fields",
+                "summary,status,issuetype,priority,assignee,updated,description,comment",
+            )]),
+        "fetch detail",
+    )?;
+    let body: serde_json::Value =
+        serde_json::from_str(&text).with_context(|| format!("decode detail: {text}"))?;
+    let f = &body["fields"];
+    let comments = f["comment"]["comments"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|c| TicketComment {
+            id: str_at(c, &["id"]).unwrap_or_default(),
+            author: str_at(c, &["author", "displayName"]).unwrap_or_else(|| "Unknown".into()),
+            created: str_at(c, &["created"]).unwrap_or_default(),
+            body: adf_to_text(&c["body"]),
+        })
+        .collect();
+    Ok(TicketDetail {
+        key: key.to_owned(),
+        summary: str_at(f, &["summary"]).unwrap_or_default(),
+        status: str_at(f, &["status", "name"]),
+        status_category: str_at(f, &["status", "statusCategory", "key"])
+            .and_then(|k| StatusCategory::parse(&k)),
+        issue_type: str_at(f, &["issuetype", "name"]),
+        priority: str_at(f, &["priority", "name"]),
+        assignee: str_at(f, &["assignee", "displayName"]),
+        updated: str_at(f, &["updated"]),
+        url: format!("{}/browse/{key}", auth.base_url),
+        description: adf_to_text(&f["description"]),
+        comments,
+    })
 }
 
 /// Paragraphs split on blank lines; single newlines become `hardBreak`.
@@ -1060,6 +1171,140 @@ mod tests {
             got,
             ("In Review".to_string(), Some(StatusCategory::Indeterminate))
         );
+    }
+
+    fn detail_server() -> MockServer {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/rest/api/3/issue/A-1")
+                .query_param("fields", "summary,status,issuetype,priority,assignee,updated,description,comment");
+            then.status(200).json_body(json!({"key": "A-1", "fields": {
+                "summary": "Fix it",
+                "status": {"name": "In Review", "statusCategory": {"key": "indeterminate"}},
+                "issuetype": {"name": "Bug"},
+                "priority": {"name": "High"},
+                "assignee": {"displayName": "Tomas"},
+                "updated": "2026-10-01T10:00:00.000+0000",
+                "description": {"type": "doc", "content": [
+                    {"type": "paragraph", "content": [{"type": "text", "text": "Why"}]}]},
+                "comment": {"comments": [
+                    {"id": "1", "author": {"displayName": "Ann"}, "created": "2026-09-30T09:00:00.000+0000",
+                     "body": {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "first"}]}]}},
+                    {"id": "2", "created": "2026-10-01T09:00:00.000+0000",
+                     "body": "second"}]}}}));
+        });
+        server
+    }
+
+    #[test]
+    fn fetch_detail_maps_every_field_with_comments_oldest_first() {
+        let server = detail_server();
+        let got = fetch_detail_with(&test_auth(&server), "A-1", &http::client().unwrap()).unwrap();
+        assert_eq!(got.summary, "Fix it");
+        assert_eq!(got.status.as_deref(), Some("In Review"));
+        assert_eq!(got.status_category, Some(StatusCategory::Indeterminate));
+        assert_eq!(got.issue_type.as_deref(), Some("Bug"));
+        assert_eq!(got.priority.as_deref(), Some("High"));
+        assert_eq!(got.assignee.as_deref(), Some("Tomas"));
+        assert_eq!(got.updated.as_deref(), Some("2026-10-01T10:00:00.000+0000"));
+        assert_eq!(got.url, format!("{}/browse/A-1", server.base_url()));
+        assert_eq!(got.description, "Why");
+        let c: Vec<_> = got
+            .comments
+            .iter()
+            .map(|c| (c.id.as_str(), c.author.as_str(), c.body.as_str()))
+            .collect();
+        assert_eq!(c, vec![("1", "Ann", "first"), ("2", "Unknown", "second")]);
+    }
+
+    #[test]
+    fn fetch_detail_null_description_is_empty() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/rest/api/3/issue/A-1");
+            then.status(200)
+                .json_body(json!({"fields": {"summary": "s", "description": null}}));
+        });
+        let got = fetch_detail_with(&test_auth(&server), "A-1", &http::client().unwrap()).unwrap();
+        assert_eq!(got.description, "");
+        assert!(got.comments.is_empty());
+        assert_eq!(got.status, None);
+    }
+
+    #[test]
+    fn fetch_detail_non_2xx_is_upstream() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/rest/api/3/issue/A-1");
+            then.status(404).body("nope");
+        });
+        let err =
+            fetch_detail_with(&test_auth(&server), "A-1", &http::client().unwrap()).unwrap_err();
+        match err.downcast_ref::<HubError>() {
+            Some(HubError::Upstream { status, body, .. }) => {
+                assert_eq!((*status, body.as_str()), (404, "nope"));
+            }
+            other => panic!("expected Upstream, got {other:?}"),
+        }
+    }
+
+    fn doc(content: serde_json::Value) -> serde_json::Value {
+        json!({"type": "doc", "content": content})
+    }
+
+    fn p(text: &str) -> serde_json::Value {
+        json!({"type": "paragraph", "content": [{"type": "text", "text": text}]})
+    }
+
+    #[test]
+    fn adf_paragraphs_and_hard_breaks() {
+        let d = doc(json!([
+            {"type": "paragraph", "content": [
+                {"type": "text", "text": "a"}, {"type": "hardBreak"}, {"type": "text", "text": "b"}]},
+            p("c")
+        ]));
+        assert_eq!(adf_to_text(&d), "a\nb\n\nc");
+        assert_eq!(adf_to_text(&json!("legacy")), "legacy");
+        assert_eq!(adf_to_text(&json!(null)), "");
+    }
+
+    #[test]
+    fn adf_bullet_and_ordered_lists() {
+        let item = |t: &str| json!({"type": "listItem", "content": [p(t)]});
+        let d = doc(json!([
+            {"type": "bulletList", "content": [item("x"), item("y")]},
+            {"type": "orderedList", "content": [item("one"), item("two")]}
+        ]));
+        assert_eq!(adf_to_text(&d), "• x\n• y\n\n1. one\n2. two");
+    }
+
+    #[test]
+    fn adf_inline_nodes() {
+        let d = doc(json!([{"type": "paragraph", "content": [
+            {"type": "mention", "attrs": {"text": "@Ann"}},
+            {"type": "text", "text": " "},
+            {"type": "emoji", "attrs": {"shortName": ":tada:"}},
+            {"type": "text", "text": " "},
+            {"type": "inlineCard", "attrs": {"url": "https://x.test/1"}}]}]));
+        assert_eq!(adf_to_text(&d), "@Ann :tada: https://x.test/1");
+    }
+
+    #[test]
+    fn adf_nested_blockquote_and_rule() {
+        let d = doc(json!([
+            p("before"),
+            {"type": "blockquote", "content": [{"type": "blockquote", "content": [p("deep")]}]},
+            {"type": "rule"},
+            p("after")
+        ]));
+        assert_eq!(adf_to_text(&d), "before\n\ndeep\n\n———\n\nafter");
+    }
+
+    #[test]
+    fn adf_unknown_node_recurses_into_content() {
+        let d = doc(json!([{"type": "mystery", "content": [p("inside")]}]));
+        assert_eq!(adf_to_text(&d), "inside");
     }
 
     #[test]

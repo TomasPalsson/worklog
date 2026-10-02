@@ -33,6 +33,7 @@
 //! * `GET  /tickets/search?q=&limit=`    — live Jira search (no persistence)
 //! * `POST /tickets/external`            — cache a manually-picked ticket
 //! * `POST /tickets/create`              — create a Jira issue (sets account)
+//! * `GET  /tickets/:key/detail`         — live Jira description + comments
 //! * `GET  /projects`                    — list Jira projects (create picker)
 //! * `GET  /accounts`                    — list Tempo accounts (create picker)
 //! * `POST /estimate`                    — { "day": "YYYY-MM-DD", "model": "?" }
@@ -206,6 +207,7 @@ pub fn router(state: Shared) -> Router {
             "/tickets/:key/transitions",
             get(daemon_tasks::list_transitions),
         )
+        .route("/tickets/:key/detail", get(daemon_tasks::detail))
         .route("/tickets/:key/transition", post(daemon_tasks::transition))
         .route("/tickets/:key/comment", post(daemon_tasks::comment))
         .route("/tickets/:key/draft", post(daemon_tasks::draft))
