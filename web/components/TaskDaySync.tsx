@@ -17,6 +17,9 @@ type Step =
 
 type SyncData = { results?: { status: string; reason: string | null }[] };
 
+/** A dry run never counts as synced; the lines it would send come back as `dry-run*` rows. */
+const wouldSend = (data: SyncData) => data.results?.some((r) => r.status.startsWith("dry-run")) ?? false;
+
 /** Plain words for a sync that sent nothing: the first reason the daemon gave, else the likely causes. */
 function nothingSent(taskKey: string, label: string, data: SyncData): string {
   const reason = data.results?.find((r) => r.reason)?.reason?.trim().replace(/\.$/, "");
@@ -42,16 +45,16 @@ export function useSync({ taskKey, actions, onSaved, onAnnounce, label, day, cha
   };
 
   /** Shared tail of both runs: an error or an empty result becomes the step; null means it went through. */
-  function failed(res: Awaited<ReturnType<typeof actions.runSync>>): Step | null {
+  function failed(res: Awaited<ReturnType<typeof actions.runSync>>, dry = false): Step | null {
     if (!res.ok) return { s: "error", msg: res.error };
     if (res.data.errors.length > 0) return { s: "error", msg: res.data.errors.join("; ") };
-    if (res.data.synced === 0) return { s: "nothing", msg: nothingSent(taskKey, label, res.data) };
+    if (dry ? !wouldSend(res.data) : res.data.synced === 0) return { s: "nothing", msg: nothingSent(taskKey, label, res.data) };
     return null;
   }
 
   async function dryRun() {
     setStep({ s: "running" });
-    setStep(failed(await actions.runSync(day.day, true, taskKey)) ?? { s: "preview" });
+    setStep(failed(await actions.runSync(day.day, true, taskKey), true) ?? { s: "preview" });
   }
 
   async function send() {

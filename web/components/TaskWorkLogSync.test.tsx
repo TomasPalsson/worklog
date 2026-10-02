@@ -7,7 +7,9 @@ import { btn, calls, changedDay, day, open, settle, toggle } from "./workLogTest
 afterEach(cleanup);
 
 type Sync = { synced: number; results?: { block_id: number; status: string; reason: string | null }[] };
-const sync = (real: Sync, dry: Sync = { synced: 1 }) =>
+// The real daemon never counts a dry run as synced; what it would send comes back as `dry-run*` rows.
+const DRY = { synced: 0, errors: [] as string[], results: [{ block_id: 1, status: "dry-run", reason: null }] };
+const sync = (real: Sync, dry: Sync = DRY) =>
   mock(async (_d: string, isDry: boolean) => ({
     ok: true as const,
     data: { day: "", dry_run: isDry, skipped: 0, errors: [] as string[], ...(isDry ? dry : real) },
@@ -69,6 +71,16 @@ describe("preview", () => {
     const msg = await screen.findByText(/^Nothing was sent to Tempo for ABC-1 on Thu 1 Oct: already in Tempo/);
     expect(msg.textContent).toBe("Nothing was sent to Tempo for ABC-1 on Thu 1 Oct: already in Tempo — logged outside worklog.");
     expect(document.body.textContent).not.toMatch(/daemon|issue mapping/i);
+  });
+
+  it("a dry run with nothing to send says why and skips the preview", async () => {
+    const results = [{ block_id: 1, status: "skipped", reason: "already in Tempo — logged outside worklog" }];
+    const runSync = sync({ synced: 0 }, { synced: 0, results });
+    await open([day()], { runSync });
+    fireEvent.click(btn(PREVIEW));
+    expect(await screen.findByText(/^Nothing was sent to Tempo for ABC-1 on Thu 1 Oct: already in Tempo/)).toBeTruthy();
+    expect(screen.queryByText("Preview — nothing sent yet")).toBeNull();
+    expect(runSync.mock.calls).toHaveLength(1);
   });
 
   it("nothing sent without a reason: generic plain copy", async () => {
@@ -157,7 +169,7 @@ describe("focus after Send", () => {
   it("nothing sent focuses the message", async () => {
     const runSync = mock(async (_d: string, dry: boolean) => ({
       ok: true as const,
-      data: { synced: dry ? 1 : 0, errors: [], results: [] },
+      data: dry ? DRY : { synced: 0, errors: [], results: [] },
     }));
     await open([day()], { runSync });
     fireEvent.click(btn(PREVIEW));

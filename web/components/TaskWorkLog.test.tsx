@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { formatRange, todayISO } from "@/lib/format";
 import type { RawBlock, TicketBlocks, TicketDay } from "@/lib/types";
 import type { TaskActions } from "./TaskCard";
-import { Harness, more, toggle } from "./workLogTestKit";
+import { Harness, dryRunData, more, toggle } from "./workLogTestKit";
 
 afterEach(cleanup);
 
@@ -66,9 +66,9 @@ function actions(over: Partial<Record<keyof TaskActions, unknown>> = {}) {
     logTicketTime: mock(async () => ({ ok: true as const, data: block({ id: 9 }) })),
     saveTempoLineHours: mock(async () => ({ ok: true as const, data: {} })),
     saveTempoLineText: mock(async () => ({ ok: true as const, data: {} })),
-    runSync: mock(async () => ({
+    runSync: mock(async (_d: string, dry: boolean) => ({
       ok: true as const,
-      data: { day: "", dry_run: true, synced: 1, skipped: 0, errors: [] as string[] },
+      data: dry ? { day: "", dry_run: true, ...dryRunData } : { day: "", dry_run: false, synced: 1, skipped: 0, errors: [] as string[] },
     })),
     ...over,
   } as unknown as TaskActions;
@@ -334,7 +334,7 @@ describe("sync to Tempo", () => {
   it("shows errors from the real run", async () => {
     const run = mock(async (_d: string, dry: boolean) => ({
       ok: true as const,
-      data: { day: "", dry_run: dry, synced: dry ? 1 : 0, skipped: 0, errors: dry ? [] : ["Tempo said 400"] },
+      data: dry ? { day: "", dry_run: dry, ...dryRunData } : { day: "", dry_run: dry, synced: 0, skipped: 0, errors: ["Tempo said 400"] },
     }));
     await ready(actions({ runSync: run }));
     fireEvent.click(screen.getByRole("button", { name: "Send to Tempo, Wed 30 Sep" }));
@@ -352,7 +352,7 @@ describe("sync to Tempo", () => {
     }));
     const run = mock(async (_d: string, dry: boolean) => {
       if (!dry) sent = true;
-      return { ok: true as const, data: { day: "", dry_run: dry, synced: 1, skipped: 0, errors: [] as string[] } };
+      return { ok: true as const, data: dry ? { day: "", dry_run: dry, ...dryRunData } : { day: "", dry_run: dry, synced: 1, skipped: 0, errors: [] as string[] } };
     });
     await ready(actions({ loadTicketBlocks: load, runSync: run }));
     fireEvent.click(screen.getByRole("button", { name: /^Send to Tempo, / }));

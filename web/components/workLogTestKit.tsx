@@ -48,7 +48,10 @@ export const payload = (days: TicketDay[]): TicketBlocks => ({
 });
 
 const ok = { ok: true as const, data: {} };
-export const syncOk = () => mock(async () => ({ ok: true as const, data: { synced: 1, errors: [], results: [] as never[] } }));
+/** A real daemon dry run: never counted as synced, the line to send comes back as a `dry-run` row. */
+export const dryRunData = { synced: 0, skipped: 0, errors: [] as string[], results: [{ block_id: 1, status: "dry-run", reason: null }] };
+export const syncOk = () =>
+  mock(async (_d: string, dry: boolean) => ({ ok: true as const, data: dry ? dryRunData : { synced: 1, errors: [], results: [] as never[] } }));
 export const calls = (fn: unknown) => (fn as ReturnType<typeof mock>).mock.calls;
 
 /** What the modal does around the tab: owns the loaded days, so the tests exercise the tab on its own. */

@@ -212,7 +212,11 @@ export function summarise(r: unknown): string {
         lineTextsSuffix(o.line_texts)
       );
     if ("synced" in o) {
-      const synced = Number(o.synced) || 0;
+      // A dry run never counts as synced: it reports one `dry-run` / `dry-run-update` row per line it would send.
+      const lines = Array.isArray(o.results)
+        ? o.results.filter((r) => r?.status === "dry-run" || r?.status === "dry-run-update").length
+        : 0;
+      const synced = o.dry_run ? lines : Number(o.synced) || 0;
       const skipped = Number(o.skipped ?? 0);
       const errs = Array.isArray(o.errors) ? o.errors.length : 0;
       if (synced === 0 && skipped === 0 && errs === 0) {
@@ -221,7 +225,7 @@ export function summarise(r: unknown): string {
         // like silent failure even though it's the happy case.
         return o.dry_run ? "nothing to preview" : "already up to date — nothing to sync";
       }
-      return `${synced} synced · ${skipped} skipped · ${errs} error${errs === 1 ? "" : "s"}${o.dry_run ? " (dry-run)" : ""}`;
+      return `${synced} ${o.dry_run ? "to sync" : "synced"} · ${skipped} skipped · ${errs} error${errs === 1 ? "" : "s"}${o.dry_run ? " (dry-run)" : ""}`;
     }
     if ("blocks" in o) return `${o.blocks} blocks · ${o.minutes ?? 0} min`;
     if ("tickets_written" in o) return `${o.tickets_written} tickets`;
