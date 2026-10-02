@@ -1,5 +1,6 @@
 # Tasks — Tempo hub
 Approved: 2026-10-01 by user
+Verified: 2026-10-02 by user (pre-approved: /flow:next --finish)
 Spec: spec.md · Design: design.md · Base: 5b084dc · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && (cd web && bun test)`
 
 ## Behaviors
@@ -49,10 +50,12 @@ Independent test: `cd web && bun test && bun run typecheck` — green with the d
 - [x] T013 [P] Week close-out panel, gap flag and Sync week loop (B12, B15, B17) — files: web/components/WeekCloseout.tsx, web/components/WeekCloseout.test.tsx, web/lib/weekSync.ts, web/lib/weekSync.test.ts, web/app/week/[monday]/page.tsx — verify: `cd web && bun test lib/weekSync.test.ts components/WeekCloseout.test.tsx && bun run typecheck` — after: T012 — done: 3e8315d
 - [x] T014 [P] My Tasks links in day and week headers (B14) — files: web/components/DayHeader.tsx, web/components/WeekHeader.tsx, web/components/DayHeader.test.tsx — verify: `cd web && bun test components/DayHeader.test.tsx` — after: T012 — done: c08b297
 - [x] T015 Close-out panel styles — files: web/app/globals.css — verify: `cd web && bun run build` — after: T013 — done: e6860f2
-- [ ] CHK016 human-verify My Tasks and week close-out against real Jira and Tempo — files: web/app/tasks/page.tsx, web/components/WeekCloseout.tsx — verify: human: user moves one ticket's status and posts an AI-drafted comment (both show in Jira), and a second Sync week reports 0 synced — after: T013, T014, T015
+- [x] CHK016 human-verify My Tasks and week close-out against real Jira and Tempo — files: web/app/tasks/page.tsx, web/components/WeekCloseout.tsx — verify: human: user moves one ticket's status and posts an AI-drafted comment (both show in Jira), and a second Sync week reports 0 synced — after: T013, T014, T015 — done: d5883f3 by user
 - [x] T017 [P] Post applies the kept AI-suggested transition before the comment; Owner can drop the suggestion; a rejected transition shows Jira's error and keeps the draft text (Journey 1) — files: web/components/TaskCard.tsx, web/components/TaskBoard.test.tsx — verify: `cd web && bun test components/TaskBoard.test.tsx && bun run typecheck` — done: 44daa12
 - [x] T018 [P] daemon_week reuses daemon_tasks' Monday parser and HubError mapping instead of local copies — files: rust/crates/worklog-core/src/daemon_week.rs, rust/crates/worklog-core/src/daemon_tasks.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core daemon_` — done: 3f54633
 - [x] T019 [P] Gap days in the week close-out carry a gap marker and a warning colour (B17) — files: web/components/WeekCloseout.tsx, web/components/WeekCloseout.test.tsx, web/app/globals.css — verify: `cd web && bun test components/WeekCloseout.test.tsx && bun run typecheck` — done: d5883f3
+
+- [x] T020 Test that Post on a task card is disabled while a post is in flight (FR-13b coverage) — files: web/components/TaskBoard.test.tsx — verify: `cd web && bun test components/TaskBoard.test.tsx` — done: 3ae2914
 
 ## Gates
 - [x] G001 project gates clean — files: . — verify: `flow check --fix` — done: e087705

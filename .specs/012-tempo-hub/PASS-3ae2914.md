@@ -1,0 +1,16 @@
+# PASS — 3ae2914 (2026-10-02)
+
+| Gate | Command | Exit |
+|---|---|---|
+| G001 fmt | `cargo fmt --manifest-path rust/Cargo.toml --all -- --check` | 0 |
+| G001 clippy | `cargo clippy --manifest-path rust/Cargo.toml --all-targets --all-features -- -D warnings` | 0 |
+| G001 rust tests | `cargo test --manifest-path rust/Cargo.toml` (1347 passed, 0 failed) | 0 |
+| G001 web tests | `cd web && bun test` (414 pass, 0 fail) | 0 |
+| G001 typecheck | `cd web && bun run typecheck` | 0 |
+| G001 build | `cd web && bun run build` | 0 |
+| G002 branch review | `flow:review-diff` 5b084dc..3e6bc70 (15 dropped, 1 kept ≥80: Post did not apply the kept suggested transition; converge → T017, plus Discovered → T018, T019); dbed8f9..e087705 reviewed per task by build-slices adversary lenses (clean, 0 parked); e087705..3ae2914 adds one test (T020, FR-13b coverage), read by hand and mutation-checked | clean |
+| G003 evidence | `test -s .specs/012-tempo-hub/verify/` (phase1.md, phase2.md, phase3.md, CHK016.md, acceptance.md) | 0 |
+
+Note: `flow check --fix` refuses at the repo root (no top-level manifest), so G001 ran the CLAUDE.md commands directly.
+
+CHK016: ticked on the user's word ("checked … push through"), not witnessed by the model — see verify/CHK016.md.
