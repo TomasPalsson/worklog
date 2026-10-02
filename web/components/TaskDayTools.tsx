@@ -1,17 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Pencil, Type, UploadCloud } from "lucide-react";
+import { Pencil, Type } from "lucide-react";
 
 import { formatDuration } from "@/lib/format";
 import type { TicketDay } from "@/lib/types";
 import type { TaskActions } from "./TaskCard";
-import { SyncPreview } from "./TaskSyncPreview";
 
 const HALF_HOUR = 1800;
 const DAY_SECONDS = 24 * 3600;
 
-interface Common {
+export interface Common {
   taskKey: string;
   actions: TaskActions;
   /** Refetch the ticket's blocks after a write. */
@@ -39,7 +38,7 @@ function hoursProblem(seconds: number): string | null {
 export function hoursNote(day: TicketDay): string | null {
   const tracked = formatDuration(day.tracked_seconds);
   if (day.hours_set_by_hand) return `Set by hand · ${tracked} tracked`;
-  return day.line_seconds !== day.tracked_seconds ? `Rounded from ${tracked} tracked` : null;
+  return day.line_seconds !== day.tracked_seconds ? `Rounded to the nearest half hour from ${tracked} tracked` : null;
 }
 
 /** Focus returns to the opener when an editor closes: call `back()` right before closing it. */
@@ -53,14 +52,21 @@ function useReturnFocus(editing: boolean) {
   return { btn, back: () => void (want.current = true) };
 }
 
-/** Sage confirmation strip ("Sent to Tempo", "Logged 30m"); stays until the panel closes. */
-export function DaySent({ children }: { children: React.ReactNode }) {
+/** Sage confirmation strip ("Sent to Tempo", "Logged 30m"); stays until the panel closes. `focus` moves focus to it on mount. */
+export function DaySent({ children, focus, plain }: { children: React.ReactNode; focus?: boolean; plain?: boolean }) {
+  const el = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (focus) el.current?.focus();
+  }, [focus]);
   return (
-    <p role="status" className="task-day-sent">
+    <p ref={el} role="status" tabIndex={focus ? -1 : undefined} className={plain ? "task-day-plain" : "task-day-sent"}>
       {children}
     </p>
   );
 }
+
+/** Tracked time rounded the way the daemon rounds a line: nearest half hour, below 15m is nothing. */
+const roundedTracked = (day: TicketDay) => Math.round(day.tracked_seconds / HALF_HOUR) * HALF_HOUR;
 
 /** The day's billed hours: a button that turns into a small hours input. */
 export function HoursEdit({ taskKey, actions, onSaved, label, day }: Common) {
@@ -73,6 +79,11 @@ export function HoursEdit({ taskKey, actions, onSaved, label, day }: Common) {
     const seconds = parseHours(draft ?? "");
     const problem = hoursProblem(seconds);
     if (problem) return setError(problem);
+    await write(seconds);
+  }
+
+  /** `null` clears the override: the daemon goes back to the tracked, rounded hours. */
+  async function write(seconds: number | null) {
     setBusy(true);
     const res = await actions.saveTempoLineHours({ day: day.day, jira_issue: taskKey }, seconds);
     setBusy(false);
@@ -88,8 +99,7 @@ export function HoursEdit({ taskKey, actions, onSaved, label, day }: Common) {
         ref={btn}
         type="button"
         className="task-day-hours"
-        aria-label={`Edit hours for ${label}`}
-        title={hoursNote(day) ?? "Change the hours sent to Tempo"}
+        aria-label={`${formatDuration(day.line_seconds)} — edit hours for ${label}`}
         onClick={() => {
           setDraft(String(day.line_seconds / 3600));
           setError(null);
@@ -111,6 +121,8 @@ export function HoursEdit({ taskKey, actions, onSaved, label, day }: Common) {
         setError(null);
       }}
       onSave={save}
+      onUseTracked={day.hours_set_by_hand ? () => write(null) : undefined}
+      tracked={formatDuration(roundedTracked(day))}
       onCancel={() => {
         back();
         setDraft(null);
@@ -127,9 +139,12 @@ interface HoursInputProps {
   onChange: (v: string) => void;
   onSave: () => void;
   onCancel: () => void;
+  /** Present only while the hours are set by hand. */
+  onUseTracked?: () => void;
+  tracked: string;
 }
 
-function HoursInput({ label, draft, busy, error, onChange, onSave, onCancel }: HoursInputProps) {
+function HoursInput({ label, draft, busy, error, onChange, onSave, onCancel, onUseTracked, tracked }: HoursInputProps) {
   return (
     <span className="task-day-edit">
       <label>
@@ -155,6 +170,11 @@ function HoursInput({ label, draft, busy, error, onChange, onSave, onCancel }: H
       <button type="button" className="task-btn-secondary" disabled={busy} onClick={onSave}>
         Save hours
       </button>
+      {onUseTracked && (
+        <button type="button" className="task-btn-secondary" disabled={busy} onClick={onUseTracked}>
+          {`Use tracked time (${tracked})`}
+        </button>
+      )}
       <button type="button" className="task-btn-secondary" disabled={busy} onClick={onCancel}>
         Cancel
       </button>
@@ -197,22 +217,22 @@ export function TextEdit({ taskKey, actions, onSaved, label, day, children }: Co
 
   if (draft === null) {
     return (
-      <>
+      <div className="task-day-textrow">
         {children}
         <button
           ref={editBtn}
           type="button"
-          className="task-link-btn"
+          className="task-icon-btn"
           aria-label={`Edit Tempo text for ${label}`}
+          data-tip="Edit Tempo text"
           onClick={() => {
             setDraft(day.line_text);
             setError(null);
           }}
         >
-          <Type size={12} aria-hidden="true" />
-          Edit Tempo text
+          <Type size={14} aria-hidden="true" />
         </button>
-      </>
+      </div>
     );
   }
   return (
@@ -243,91 +263,5 @@ export function TextEdit({ taskKey, actions, onSaved, label, day, children }: Co
         )}
       </span>
     </span>
-  );
-}
-
-type Step =
-  | { s: "idle" }
-  | { s: "running" }
-  | { s: "preview" }
-  | { s: "sent"; hours: string }
-  | { s: "nothing"; msg: string }
-  | { s: "error"; msg: string };
-
-type SyncData = { results?: { status: string; reason: string | null }[] };
-
-/** Plain words for a sync that sent nothing: the first reason the daemon gave, else the likely causes. */
-function nothingSent(taskKey: string, label: string, data: SyncData): string {
-  const reason = data.results?.find((r) => r.reason)?.reason?.trim().replace(/\.$/, "");
-  const head = `Nothing was sent to Tempo for ${taskKey} on ${label}`;
-  return reason ? `${head}: ${reason}.` : `${head}. It may already be in Tempo, or have no hours.`;
-}
-
-/** Two-step Tempo sync for one ticket-day: dry run, preview, then send on confirm. */
-export function SyncTool({ taskKey, actions, onSaved, onAnnounce, label, day, inTempo, changed }: Common & { inTempo: boolean; changed: boolean }) {
-  const [step, setStep] = useState<Step>({ s: "idle" });
-  const [sending, setSending] = useState(false);
-  const trigger = useRef<HTMLButtonElement>(null);
-  const refocus = useRef(false);
-  useEffect(() => {
-    if (step.s === "idle" && refocus.current) trigger.current?.focus();
-    refocus.current = false;
-  }, [step.s]);
-  const cancel = () => {
-    refocus.current = true;
-    setStep({ s: "idle" });
-  };
-
-  async function dryRun() {
-    setStep({ s: "running" });
-    const res = await actions.runSync(day.day, true, taskKey);
-    if (!res.ok) return setStep({ s: "error", msg: res.error });
-    if (res.data.errors.length > 0) return setStep({ s: "error", msg: res.data.errors.join("; ") });
-    if (res.data.synced === 0) return setStep({ s: "nothing", msg: nothingSent(taskKey, label, res.data) });
-    setStep({ s: "preview" });
-  }
-
-  async function send() {
-    setSending(true);
-    const res = await actions.runSync(day.day, false, taskKey);
-    setSending(false);
-    if (!res.ok) return setStep({ s: "error", msg: res.error });
-    if (res.data.errors.length > 0) return setStep({ s: "error", msg: res.data.errors.join("; ") });
-    if (res.data.synced === 0) return setStep({ s: "nothing", msg: nothingSent(taskKey, label, res.data) });
-    const hours = formatDuration(day.line_seconds);
-    setStep({ s: "sent", hours });
-    onAnnounce?.(`Sent ${hours} to Tempo for ${taskKey} on ${label}.`);
-    onSaved();
-  }
-
-  const busy = step.s === "running" || sending;
-  return (
-    <div className="task-day-sync">
-      {!inTempo && step.s !== "sent" && step.s !== "preview" && (
-        <button
-          ref={trigger}
-          type="button"
-          className="task-link-btn"
-          aria-label={changed ? `Preview update ${label} in Tempo` : `Preview sync ${label} to Tempo`}
-          disabled={busy}
-          onClick={dryRun}
-        >
-          <UploadCloud size={12} aria-hidden="true" />
-          {step.s === "running" ? "Checking…" : changed ? "Preview update" : "Preview sync"}
-        </button>
-      )}
-      {step.s === "preview" && (
-        <SyncPreview taskKey={taskKey} label={label} day={day} changed={changed} sending={sending} onSend={send} onCancel={cancel} />
-      )}
-      {step.s === "sent" && (
-        <DaySent>{`Sent to Tempo · ${step.hours}`}</DaySent>
-      )}
-      {step.s === "nothing" && <p role="status">{step.msg}</p>}
-      {step.s === "error" && (
-        <p role="alert" className="task-error">
-          {step.msg}
-        </p>
-      )}
-    </div>
   );
 }

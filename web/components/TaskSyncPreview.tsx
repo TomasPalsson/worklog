@@ -13,7 +13,6 @@ export function changedNote(day: TicketDay): string {
 }
 
 export function SyncPreview(p: {
-  taskKey: string;
   label: string;
   day: TicketDay;
   changed: boolean;
@@ -51,8 +50,6 @@ export function SyncPreview(p: {
         )}
         <dt>Day</dt>
         <dd>{p.label}</dd>
-        <dt>Ticket</dt>
-        <dd>{p.taskKey}</dd>
         {day.line_text && (
           <>
             <dt>Text</dt>
@@ -63,7 +60,7 @@ export function SyncPreview(p: {
       <p>Sends only this ticket&apos;s line for this day to Tempo.</p>
       <span className="task-day-edit">
         <button ref={send} type="button" className="task-btn-primary" disabled={p.sending} onClick={p.onSend}>
-          {p.sending ? "Sending…" : "Send to Tempo"}
+          {p.sending ? "Sending…" : p.changed ? "Update Tempo" : "Send to Tempo"}
         </button>
         <button type="button" className="task-btn-secondary" disabled={p.sending} onClick={p.onCancel}>
           Cancel

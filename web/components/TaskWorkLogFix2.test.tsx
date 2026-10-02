@@ -93,17 +93,13 @@ describe("hours note", () => {
   it("hand-set hours", async () => {
     await open([day({ hours_set_by_hand: true, line_seconds: 5400, tracked_seconds: 2400 })]);
     expect(note("Set by hand · 40m tracked")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Edit hours for Thu 1 Oct" }).getAttribute("title")).toBe(
-      "Set by hand · 40m tracked",
-    );
+    expect(screen.getByRole("button", { name: "1h 30m — edit hours for Thu 1 Oct" }).hasAttribute("title")).toBe(false);
   });
 
   it("rounded hours", async () => {
     await open([day({ line_seconds: 1800, tracked_seconds: 2400 })]);
-    expect(note("Rounded from 40m tracked")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Edit hours for Thu 1 Oct" }).getAttribute("title")).toBe(
-      "Rounded from 40m tracked",
-    );
+    expect(note("Rounded to the nearest half hour from 40m tracked")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "30m — edit hours for Thu 1 Oct" }).hasAttribute("title")).toBe(false);
   });
 
   it("no note when hours equal the tracked time", async () => {

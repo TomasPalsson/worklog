@@ -64,16 +64,16 @@ describe("day head", () => {
       day({ day: "2026-10-01" }),
     ]);
     expect(screen.getByText("In Tempo").getAttribute("data-chip")).toBe("ok");
-    expect(screen.getByText("Changed since sync").getAttribute("data-chip")).toBe("changed");
-    expect(screen.getByText("Not synced").getAttribute("data-chip")).toBe("none");
+    expect(screen.getByText("Changed since sent").getAttribute("data-chip")).toBe("changed");
+    expect(screen.getByText("Not in Tempo").getAttribute("data-chip")).toBe("none");
   });
 
   it("hours read as editable: labelled button with a pencil", async () => {
     await open();
-    const b = screen.getByRole("button", { name: "Edit hours for Thu 1 Oct" });
+    const b = screen.getByRole("button", { name: "1h 30m — edit hours for Thu 1 Oct" });
     expect(b.textContent).toBe("1h 30m");
     expect(b.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
-    expect(screen.getByRole("button", { name: "Edit Tempo text for Thu 1 Oct" }).textContent).toBe("Edit Tempo text");
+    expect(screen.getByRole("button", { name: "Edit Tempo text for Thu 1 Oct" }).getAttribute("data-tip")).toBe("Edit Tempo text");
   });
 
   it("block rows end in a chevron", async () => {
@@ -85,7 +85,7 @@ describe("day head", () => {
 describe("preview", () => {
   const start = async (runSync = sync({ synced: 1 })) => {
     const r = await open([day()], runSync);
-    fireEvent.click(screen.getByRole("button", { name: "Preview sync Thu 1 Oct to Tempo" }));
+    fireEvent.click(screen.getByRole("button", { name: "Preview send Thu 1 Oct to Tempo" }));
     await screen.findByText("Preview — nothing sent yet");
     return r;
   };
@@ -95,7 +95,7 @@ describe("preview", () => {
     const box = document.querySelector(".task-day-preview") as HTMLElement;
     expect(box.textContent).toContain("Hours1h 30m");
     expect(box.textContent).toContain("DayThu 1 Oct");
-    expect(box.textContent).toContain("TicketABC-1");
+    expect(box.textContent).not.toContain("Ticket"); // the panel is the ticket
     expect(box.textContent).not.toContain("2026-10-01");
     expect(box.textContent).toContain("Textas shown above");
     expect(box.textContent).not.toContain("“");
@@ -108,7 +108,7 @@ describe("preview", () => {
     // fireEvent returns false when a handler called preventDefault.
     expect(fireEvent.keyDown(document.activeElement as Element, { key: "Escape" })).toBe(false);
     await waitFor(() => expect(screen.queryByText("Preview — nothing sent yet")).toBeNull());
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Preview sync Thu 1 Oct to Tempo" }));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Preview send Thu 1 Oct to Tempo" }));
     expect(runSync.mock.calls).toHaveLength(1);
   });
 

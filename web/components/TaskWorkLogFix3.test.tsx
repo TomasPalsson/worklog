@@ -1,4 +1,4 @@
-// Fix round 3 for the "Work logged" section: focus never drops to body, "Changed since sync" explained,
+// Fix round 3 for the "Work logged" section: focus never drops to body, "Changed since sent" explained,
 // summary in the head, chip pressed state, Cancel discard prompt, headings, scoped preview Esc, contrast.
 
 import { afterEach, describe, expect, it, mock, setDefaultTimeout } from "bun:test";
@@ -60,7 +60,7 @@ async function open(days: TicketDay[] = [day()]) {
 
 const btn = (name: string) => screen.getByRole("button", { name });
 const logTime = () => screen.getByRole("button", { name: "Log time" });
-const hoursBtn = () => btn("Edit hours for Thu 1 Oct");
+const hoursBtn = () => btn("1h 30m — edit hours for Thu 1 Oct");
 const textBtn = () => btn("Edit Tempo text for Thu 1 Oct");
 
 describe("focus never drops to body", () => {
@@ -123,11 +123,11 @@ describe("focus never drops to body", () => {
   });
 });
 
-describe("Changed since sync is explained", () => {
+describe("Changed since sent is explained", () => {
   it("chip title and a day note give In Tempo -> now", async () => {
     await open([changedDay()]);
     const note = "Edited after it was sent · In Tempo: 1h → now 1h 30m";
-    expect(screen.getByText("Changed since sync").getAttribute("title")).toBe(note);
+    expect(screen.getByText("Changed since sent").getAttribute("title")).toBe(note);
     expect(screen.getByText(note).tagName).toBe("P");
   });
 
@@ -151,7 +151,7 @@ describe("day head and text editing", () => {
   it("day label is an h4 and the preview heading an h5", async () => {
     await open();
     expect(screen.getByRole("heading", { level: 4, name: "Thu 1 Oct" })).toBeTruthy();
-    fireEvent.click(btn("Preview sync Thu 1 Oct to Tempo"));
+    fireEvent.click(btn("Preview send Thu 1 Oct to Tempo"));
     expect(await screen.findByRole("heading", { level: 5, name: "Preview — nothing sent yet" })).toBeTruthy();
   });
 
@@ -174,7 +174,7 @@ describe("day head and text editing", () => {
 
   it("Esc outside the preview does not cancel it", async () => {
     await open();
-    fireEvent.click(btn("Preview sync Thu 1 Oct to Tempo"));
+    fireEvent.click(btn("Preview send Thu 1 Oct to Tempo"));
     await screen.findByText("Preview — nothing sent yet");
     fireEvent.keyDown(document.body, { key: "Escape" });
     expect(screen.getByText("Preview — nothing sent yet")).toBeTruthy();

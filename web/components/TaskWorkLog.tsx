@@ -45,7 +45,7 @@ function useBlocks(key: string, actions: TaskActions) {
 
 function LogButton({ onClick, btn }: { onClick: () => void; btn?: React.Ref<HTMLButtonElement> }) {
   return (
-    <button ref={btn} type="button" className="task-link-btn" onClick={onClick}>
+    <button ref={btn} type="button" className="task-btn-secondary task-log-open" onClick={onClick}>
       <Plus size={12} aria-hidden="true" />
       Log time
     </button>
@@ -68,7 +68,10 @@ interface DaysProps {
   logged: Logged | null;
 }
 
+const RECENT_DAYS = 5;
+
 function Days({ data, taskKey, actions, onSaved, onAnnounce, onLog, logged }: DaysProps) {
+  const [all, setAll] = useState(false);
   const n = data.days.length;
   if (n === 0) {
     return (
@@ -78,11 +81,19 @@ function Days({ data, taskKey, actions, onSaved, onAnnounce, onLog, logged }: Da
       </div>
     );
   }
+  // A day the user just logged on is never hidden behind "Show older".
+  const hidden = data.days.slice(RECENT_DAYS);
+  const shown = all || hidden.some((d) => d.day === logged?.day) ? data.days : data.days.slice(0, RECENT_DAYS);
   return (
     <>
-      {data.days.map((d) => (
+      {shown.map((d) => (
         <DayGroup key={d.day} day={d} taskKey={taskKey} actions={actions} onSaved={onSaved} onAnnounce={onAnnounce} logged={logged} />
       ))}
+      {shown.length < n && (
+        <button type="button" className="task-btn-secondary task-day-older" onClick={() => setAll(true)}>
+          {`Show ${n - shown.length} older ${n - shown.length === 1 ? "day" : "days"}`}
+        </button>
+      )}
     </>
   );
 }
@@ -100,11 +111,15 @@ export function TaskWorkLog({
   const [logging, setLogging] = useState(false);
   const [logged, setLogged] = useState<Logged | null>(null);
   const logBtn = useRef<HTMLButtonElement>(null);
+  const head = useRef<HTMLDivElement>(null);
   const refocus = useRef(false);
   const close = () => {
     refocus.current = true;
     setLogging(false);
   };
+  useEffect(() => {
+    if (logging) head.current?.scrollIntoView?.({ block: "nearest" });
+  }, [logging]);
   useEffect(() => {
     if (!logging && refocus.current) logBtn.current?.focus();
     refocus.current = false;
@@ -112,7 +127,7 @@ export function TaskWorkLog({
 
   return (
     <section className="task-section task-work">
-      <div className="task-work-head">
+      <div ref={head} className="task-work-head">
         <div className="task-work-title">
           <h3>Work logged · last 14 days</h3>
           {load.s === "ok" && load.data.days.length > 0 && <span className="task-work-summary">{summary(load.data)}</span>}
