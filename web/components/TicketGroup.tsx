@@ -285,8 +285,8 @@ export function TicketGroup({
                 {formatTotalHours(group.totalSeconds)}
               </span>
             ) : (
-              // Assigned groups sync as one Tempo worklog, rounded to the
-              // nearest half hour — show what will actually be billed, with
+              // Assigned groups sync as one Tempo worklog, rounded up to the
+              // next half hour — show what will actually be billed, with
               // the raw tracked time in the tooltip. "0h" flags a group
               // under 15 min that won't sync.
               <span

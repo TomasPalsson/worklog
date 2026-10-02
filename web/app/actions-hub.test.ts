@@ -46,6 +46,19 @@ const ticketDetail: TicketDetail = {
   url: "https://x.atlassian.net/browse/ABC-1",
   description: "Steps",
   comments: [{ id: "1", author: "Tomas", created: "2026-09-20T10:00:00.000+0000", body: "hi" }],
+  reporter: null,
+  created: null,
+  labels: [],
+  due_date: null,
+  components: [],
+  fix_versions: [],
+  time_spent_seconds: null,
+  original_estimate_seconds: null,
+  remaining_estimate_seconds: null,
+  parent: null,
+  subtasks: [],
+  links: [],
+  attachments: [],
 };
 const report: PullReport = {
   monday: "2026-09-21",
@@ -56,7 +69,15 @@ const report: PullReport = {
 };
 const closeoutBody: WeekCloseout = { monday: "2026-09-21", days: [], pulled_at: null };
 
-const ticketBlocks: TicketBlocks = { key: "ABC-1", from: "2026-09-11", to: "2026-09-24", days: [] };
+const ticketBlocks: TicketBlocks = {
+  key: "ABC-1",
+  from: "2026-09-11",
+  to: "2026-09-24",
+  days: [],
+  in_tempo_total_seconds: null,
+  pulled_at: null,
+  today: { day: "2026-09-24", worked_seconds: 0, in_tempo_seconds: null, ticket_worked_seconds: 0, ticket_in_tempo_seconds: null },
+};
 const rawBlock: RawBlock = {
   id: 7,
   day: "2026-09-24",

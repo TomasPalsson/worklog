@@ -41,9 +41,9 @@ describe("day chip", () => {
     expect(phone).toContain(".task-day-body { padding-left: 24px; }");
   });
 
-  it("the Tempo state is not repeated as a note in the day body", async () => {
+  it("the changed-since-sent reason is a muted note in the opened day (the chip title keeps it too)", async () => {
     await openLog([changedDay()]);
-    expect(document.querySelector(".task-day-body")?.textContent ?? "").not.toContain("Edited after");
+    expect(document.querySelector(".task-day-body .task-day-note")?.textContent).toContain("Edited after it was sent");
   });
 });
 

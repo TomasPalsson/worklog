@@ -113,12 +113,11 @@ describe("strips stay visible when the day is folded", () => {
 });
 
 describe("Changed since sent is explained", () => {
-  it("the chip title gives In Tempo -> now, and the Tempo state is not repeated as a day note", async () => {
+  it("the chip title gives In Tempo -> now, and an opened day says the same reason as a muted line", async () => {
     await open([changedDay()]);
     const note = "Edited after it was sent · In Tempo: 1h → now 1h 30m";
     expect(screen.getByText("Changed since sent").closest(".task-day-chip")!.getAttribute("title")).toBe(note);
-    expect(screen.queryByText(note)).toBeNull();
-    expect(document.querySelector(".task-day-body")?.textContent ?? "").not.toContain("Edited after");
+    expect(document.querySelector(".task-day-body .task-day-note")?.textContent).toBe(note);
   });
 
   it("omits the arrow part when Tempo's hours are unknown", async () => {

@@ -3,13 +3,14 @@
 import { useEffect, useId, useRef, useState, type MutableRefObject, type ReactNode, type RefObject } from "react";
 import { ExternalLink, X } from "lucide-react";
 
-import type { StatusCategory, TaskRow, TicketComment, TicketDetail } from "@/lib/types";
+import type { JiraTicket, StatusCategory, TaskRow, TicketComment, TicketDetail } from "@/lib/types";
 import { TaskActivity, useActivityTab, type Tab } from "./TaskActivity";
 import type { TaskActions } from "./TaskCard";
 import { ParentRow, TypeIcon } from "./TaskCardMeta";
 import type { Drafts } from "./TaskComposer";
 import { TaskDescription } from "./TaskDescription";
 import { CopyKey } from "./TaskCopyKey";
+import { TaskRelated } from "./TaskRelated";
 import { TaskModalSidebar } from "./TaskModalSidebar";
 import { TaskModalSummary } from "./TaskModalSummary";
 import type { Shown } from "./TaskStatusButton";
@@ -26,6 +27,11 @@ export interface TaskModalProps {
   onClose: () => void;
   drafts?: MutableRefObject<Drafts>;
   onStatus: (next: { status: string | null; status_category: StatusCategory | null }) => void;
+  /** Board keys and how to open one; related issues not on the board open in Jira. */
+  knownKeys?: Set<string>;
+  onOpenTicket?: (key: string) => void;
+  /** The board's tickets, offered first in the work log's Move picker. */
+  tickets?: JiraTicket[];
 }
 
 interface HeadProps {
@@ -159,6 +165,7 @@ export function TaskModal(props: TaskModalProps) {
             <Title id={titleId} task={task} />
             {!wide && <TaskModalSummary task={task} actions={actions} shown={m.shown} load={work.load} onStatus={m.report} onTempo={m.jumpTo} />}
             <TaskDescription taskKey={task.key} load={load} retry={retry} />
+            <TaskRelated detail={detail} knownKeys={props.knownKeys} onOpen={props.onOpenTicket} />
             <TaskActivity
               tab={tab}
               onTab={(t) => choose(t, true)}
@@ -172,6 +179,7 @@ export function TaskModal(props: TaskModalProps) {
               onPosted={m.posted}
               onMoved={m.report}
               onEngage={engage}
+              tickets={props.tickets}
             />
           </div>
           <TaskModalSidebar
@@ -184,6 +192,9 @@ export function TaskModal(props: TaskModalProps) {
             load={work.load}
             onStatus={m.report}
             onTempo={m.jumpTo}
+            onPulled={work.refetch}
+            onRetry={work.retry}
+            onAnnounce={m.setAnnounce}
             wide={wide}
           />
         </div>

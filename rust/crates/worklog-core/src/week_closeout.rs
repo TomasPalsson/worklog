@@ -27,7 +27,7 @@ pub fn week_closeout(conn: &Connection, monday: NaiveDate) -> Result<WeekCloseou
     })
 }
 
-fn closeout_day(conn: &Connection, day: &str) -> Result<CloseoutDay> {
+pub(crate) fn closeout_day(conn: &Connection, day: &str) -> Result<CloseoutDay> {
     let mut logged_seconds = 0;
     let mut synced_seconds = 0;
     let mut pending_lines = 0;

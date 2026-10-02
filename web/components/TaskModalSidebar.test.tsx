@@ -114,7 +114,7 @@ describe("status button", () => {
 
 describe("Details", () => {
   it("lists assignee, priority, type, due, labels and updated from the live detail", async () => {
-    open(actions(), row({ due_date: "2026-10-30", labels: ["backend", "auth"] }));
+    open(actions({ loadTicketDetail: mock(async () => ({ ok: true as const, data: detail({ labels: ["backend", "auth"] }) })) }), row({ due_date: "2026-10-30" }));
     await screen.findByText(/Steps to reproduce/);
     const d = ".task-details";
     expect(value(d, "Assignee").textContent).toBe("Ada");
@@ -175,7 +175,7 @@ describe("Time card", () => {
     const t = ".task-time";
     expect(value(t, "This week").textContent).toBe("1h 30m");
     expect(value(t, "Today").textContent).toBe("30m");
-    expect(terms(t)).toEqual(["This week", "Today", "Tempo"]);
+    expect(terms(t)).toEqual(["Today", "This week", "Tempo"]);
     await waitFor(() => expect(value(t, "Tempo").textContent).toContain("not sent"));
     cleanup();
     open(actions(), row({ today_seconds: 0 }));
@@ -211,7 +211,7 @@ describe("Time card", () => {
     expect(value(".task-time", "Tempo").textContent).toBe("—");
   });
 
-  it("Show unsent day is a button labelled for the first unsent day, the state beside it is plain text", async () => {
+  it("Show unsent day is a button whose name is its visible text, the state beside it is plain text", async () => {
     open(withDays([changedDay()]));
     await waitFor(() => expect(value(".task-time", "Tempo").textContent).toBe("1 day changed since sent · Show unsent day"));
     const text = value(".task-time", "Tempo").querySelector("span.task-tempo") as HTMLElement;
@@ -219,7 +219,8 @@ describe("Time card", () => {
     expect(text.tagName).toBe("SPAN");
     const b = value(".task-time", "Tempo").querySelector("button") as HTMLElement;
     expect(b.className).toBe("task-review");
-    expect(b.getAttribute("aria-label")).toBe("Show the first unsent day");
+    expect(b.getAttribute("aria-label")).toBeNull();
+    expect(b.textContent).toBe("Show unsent day");
   });
 
   it("clicking Show unsent day switches to the Work log and scrolls to the first such day", async () => {

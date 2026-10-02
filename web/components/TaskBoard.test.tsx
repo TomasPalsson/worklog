@@ -44,6 +44,19 @@ const detail: TicketDetail = {
   url: "https://x.atlassian.net/browse/ABC-1",
   description: "Long description",
   comments: [],
+  reporter: null,
+  created: null,
+  labels: [],
+  due_date: null,
+  components: [],
+  fix_versions: [],
+  time_spent_seconds: null,
+  original_estimate_seconds: null,
+  remaining_estimate_seconds: null,
+  parent: null,
+  subtasks: [],
+  links: [],
+  attachments: [],
 };
 
 function actions(over: Partial<Record<keyof TaskActions, unknown>> = {}): TaskActions {

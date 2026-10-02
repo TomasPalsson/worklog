@@ -4,7 +4,7 @@ import { useRef, useState, type KeyboardEvent, type MutableRefObject } from "rea
 
 import { formatDuration } from "@/lib/format";
 import { formatStamp, initials, relativeWords } from "@/lib/taskBoard";
-import type { TicketComment, TicketStatus } from "@/lib/types";
+import type { JiraTicket, TicketComment, TicketStatus } from "@/lib/types";
 import type { TaskActions } from "./TaskCard";
 import { TaskComposer, type Drafts } from "./TaskComposer";
 import { Skeleton } from "./TaskSkeleton";
@@ -133,6 +133,8 @@ export interface ActivityProps {
   onMoved: (next: TicketStatus) => void;
   /** Called when focus enters Activity, so the default tab stops following the Work log load. */
   onEngage?: () => void;
+  /** The board's tickets for the Move picker. */
+  tickets?: JiraTicket[];
 }
 
 /** Work log and Comments behind one tablist, so only one of them is on screen at a time. */
@@ -148,7 +150,7 @@ export function TaskActivity(p: ActivityProps) {
       <Tabs tab={p.tab} onTab={p.onTab} counts={counts} />
       <div role="tabpanel" id={`task-panel-${p.tab}`} aria-labelledby={`task-tab-${p.tab}`} className="task-tabpanel">
         {p.tab === "work" ? (
-          <TaskWorkLog taskKey={p.taskKey} actions={p.actions} work={p.work} onAnnounce={p.onAnnounce} />
+          <TaskWorkLog taskKey={p.taskKey} actions={p.actions} work={p.work} onAnnounce={p.onAnnounce} tickets={p.tickets} />
         ) : (
           <>
             <TaskComposer

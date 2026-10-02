@@ -1,8 +1,9 @@
 "use client";
 
-import { useRef, useState, type Ref } from "react";
+import { useEffect, useRef, useState, type Ref } from "react";
 import { MoreHorizontal } from "lucide-react";
 
+import type { DayOps } from "./TaskDayTools";
 import { menuKeys } from "./menuKeys";
 import { useMenuDismiss } from "./useMenuDismiss";
 
@@ -15,16 +16,28 @@ export interface DayMenuProps {
   onEditHours: () => void;
   onUseTracked: () => void;
   onEditText: () => void;
+  ops: DayOps;
 }
 
 /** The "⋯" menu on a day row: the day-level tools that are not the next likely action. */
-export function DayMenu({ label, byHand, busy, btn, onEditHours, onUseTracked, onEditText }: DayMenuProps) {
+export function DayMenu({ label, byHand, busy, btn, onEditHours, onUseTracked, onEditText, ops }: DayMenuProps) {
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLSpanElement>(null);
-  useMenuDismiss(open, wrap, () => setOpen(false));
-  const items: [string, () => void][] = [["Edit hours", onEditHours]];
+  useMenuDismiss(open, wrap, () => (setOpen(false), setConfirm(false)));
+  const [confirm, setConfirm] = useState(false);
+  const mergeItem = useRef<HTMLButtonElement>(null);
+  const cancelled = useRef(false);
+  // Cancel unmounts the Cancel button: focus goes back to the Merge item it replaced (or the trigger if that is gone).
+  useEffect(() => {
+    if (confirm || !cancelled.current) return;
+    cancelled.current = false;
+    (mergeItem.current ?? wrap.current?.querySelector("button"))?.focus();
+  }, [confirm]);
+  const items: [string, () => void, string?][] = [["Edit hours", onEditHours]];
   if (byHand) items.push(["Use tracked time", onUseTracked]);
   items.push(["Edit Tempo text", onEditText]);
+  items.push(["Regenerate text with AI", ops.regenerate, ops.hasLine ? undefined : "There is no Tempo text for this day yet"]);
+  const canMerge = ops.blocks >= 2;
 
   return (
     <span ref={wrap} className="task-day-menu-wrap">
@@ -41,13 +54,14 @@ export function DayMenu({ label, byHand, busy, btn, onEditHours, onUseTracked, o
       </button>
       {open && (
         <span className="task-menu task-day-menu" role="menu" onKeyDown={menuKeys}>
-          {items.map(([text, run], i) => (
+          {items.map(([text, run, why], i) => (
             <button
               key={text}
               type="button"
               role="menuitem"
               autoFocus={i === 0}
-              disabled={busy}
+              disabled={busy || !!why}
+              title={why}
               onClick={() => {
                 // The item unmounts with the menu; keep focus on the trigger rather than letting it fall to <body>.
                 wrap.current?.querySelector("button")?.focus();
@@ -58,6 +72,40 @@ export function DayMenu({ label, byHand, busy, btn, onEditHours, onUseTracked, o
               {text}
             </button>
           ))}
+          {canMerge && !confirm && (
+            <button ref={mergeItem} type="button" role="menuitem" disabled={busy} onClick={() => setConfirm(true)}>
+              {`Merge ${ops.blocks} blocks into one`}
+            </button>
+          )}
+          {canMerge && confirm && (
+            <span className="task-menu-confirm" role="group" aria-label="Confirm merge">
+              <em>{`Merge ${ops.blocks} blocks?`}</em>
+              <button
+                type="button"
+                role="menuitem"
+                autoFocus
+                disabled={busy}
+                onClick={() => {
+                  wrap.current?.querySelector("button")?.focus();
+                  setOpen(false);
+                  setConfirm(false);
+                  ops.merge();
+                }}
+              >
+                Merge
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  cancelled.current = true;
+                  setConfirm(false);
+                }}
+              >
+                Cancel
+              </button>
+            </span>
+          )}
         </span>
       )}
     </span>

@@ -513,6 +513,44 @@ export interface TicketDetail {
   url: string;
   description: string;
   comments: TicketComment[];
+  reporter: string | null;
+  created: string | null;
+  labels: string[];
+  due_date: string | null;
+  components: string[];
+  fix_versions: string[];
+  /** Jira `timetracking.timeSpentSeconds` — everyone's Tempo worklogs. */
+  time_spent_seconds: number | null;
+  original_estimate_seconds: number | null;
+  remaining_estimate_seconds: number | null;
+  parent: IssueRef | null;
+  subtasks: IssueRef[];
+  links: IssueLink[];
+  attachments: Attachment[];
+}
+
+/** Mirrors `tempo_hub_contract::IssueRef`. */
+export interface IssueRef {
+  key: string;
+  summary: string;
+  status: string | null;
+  status_category: StatusCategory | null;
+  issue_type: string | null;
+}
+
+/** `relation` is Jira's link phrase from this issue's side ("blocks", "is blocked by"). */
+export interface IssueLink {
+  relation: string;
+  issue: IssueRef;
+}
+
+export interface Attachment {
+  filename: string;
+  size_bytes: number;
+  /** Jira `content` URL; open in a new tab. */
+  url: string;
+  created: string | null;
+  author: string | null;
 }
 
 export interface TransitionBody {
@@ -601,6 +639,22 @@ export interface TicketBlocks {
   from: string;
   to: string;
   days: TicketDay[];
+  /** Owner-pulled Tempo seconds on this issue over all pulled days; null = unknown. */
+  in_tempo_total_seconds: number | null;
+  /** Latest Tempo pull; null = never pulled. */
+  pulled_at: string | null;
+  today: TodayTotals;
+}
+
+/** Mirrors `tempo_hub_contract::TodayTotals`. */
+export interface TodayTotals {
+  day: string;
+  /** Estimated work today (blocks' union, all tickets). */
+  worked_seconds: number;
+  /** Tempo seconds today, any owner; null = day never pulled. */
+  in_tempo_seconds: number | null;
+  ticket_worked_seconds: number;
+  ticket_in_tempo_seconds: number | null;
 }
 
 /** Body of `POST /tickets/:key/log`. */

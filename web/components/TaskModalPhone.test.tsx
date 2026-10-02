@@ -40,13 +40,12 @@ describe("summary under the title", () => {
     expect(document.querySelector(".task-time")).toBeTruthy();
   });
 
-  it("moves the sidebar's status and Time card out on phones: one status button, Details only", () => {
+  it("moves the sidebar's status out on phones: one status button; Time card follows Details", () => {
     viewport(false);
     open(actions());
     expect(screen.getAllByTestId("status-ABC-1")).toHaveLength(1);
     expect(document.querySelector(".task-modal-side .task-status")).toBeNull();
-    expect(document.querySelector(".task-time")).toBeNull();
-    expect([...document.querySelectorAll(".task-modal-side .task-label")].map((n) => n.textContent)).toEqual(["Details"]);
+    expect([...document.querySelectorAll(".task-modal-side .task-label")].map((n) => n.textContent)).toEqual(["Details", "Time"]);
   });
 
   it("tab order matches the page: title, status, then the description and Activity", () => {

@@ -3,7 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 
 import { formatDuration } from "@/lib/format";
+import { mergeGroup } from "@/app/actions";
+import { regenerateTempoLineText } from "@/app/actions-tempo-lines";
 import type { TicketDay } from "@/lib/types";
+import { toast } from "@/lib/toast";
 import type { TaskActions } from "./TaskCard";
 
 const HALF_HOUR = 1800;
@@ -37,7 +40,7 @@ function hoursProblem(seconds: number): string | null {
 export function hoursNote(day: TicketDay): string | null {
   const tracked = formatDuration(day.tracked_seconds);
   if (day.hours_set_by_hand) return `Set by hand · ${tracked} tracked`;
-  return day.line_seconds !== day.tracked_seconds ? `Rounded to the nearest half hour from ${tracked} tracked` : null;
+  return day.line_seconds !== day.tracked_seconds ? `Rounded up to the next half hour from ${tracked} tracked` : null;
 }
 
 /** Sage confirmation strip ("Sent to Tempo", "Logged 30m"); stays until the dialog closes. `focus` moves focus to it on mount. */
@@ -183,3 +186,43 @@ export function TextEdit({ taskKey, actions, onSaved, label, day, onDone }: Comm
     </span>
   );
 }
+
+/** The day menu's two heavier tools: write the Tempo text again with AI, and merge the day's blocks into one. */
+export function useDayOps({ taskKey, onSaved, day }: Common) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const hasLine = day.line_seconds > 0 || day.line_text !== "";
+
+  /** Runs one busy op: a rejected call (daemon unreachable) toasts and never leaves the busy label stuck. */
+  async function run(label: string, op: () => Promise<void>) {
+    setBusy(label);
+    try {
+      await op();
+    } catch {
+      toast.error("Couldn't reach the worklog service");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const regenerate = () =>
+    run("Writing…", async () => {
+      const res = await regenerateTempoLineText({ day: day.day, jira_issue: taskKey });
+      if (!res.ok) return void toast.error(`Couldn't write new text — ${res.error}`);
+      toast.ok("New Tempo text written");
+      onSaved();
+    });
+
+  /** The earliest block keeps its place; the rest fold into it. */
+  const merge = () =>
+    run("Merging…", async () => {
+      const [primary, ...rest] = [...day.blocks].sort((a, b) => a.started_at.localeCompare(b.started_at));
+      const res = await mergeGroup(primary.id, rest.map((b) => b.id), day.day);
+      if (!res.ok) return void toast.error(`Merge failed — ${res.error}`);
+      toast.ok(`Merged ${day.blocks.length} blocks`);
+      onSaved();
+    });
+
+  return { busy, hasLine, regenerate, merge, blocks: day.blocks.length };
+}
+
+export type DayOps = ReturnType<typeof useDayOps>;

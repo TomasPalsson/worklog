@@ -3,7 +3,7 @@
 
 import { expect, mock } from "bun:test";
 import { act, fireEvent, render } from "@testing-library/react";
-import type { RawBlock, TicketBlocks, TicketDay } from "@/lib/types";
+import type { JiraTicket, RawBlock, TicketBlocks, TicketDay } from "@/lib/types";
 import type { TaskActions } from "./TaskCard";
 import { TaskWorkLog } from "./TaskWorkLog";
 import { useWorkLog } from "./useWorkLog";
@@ -37,19 +37,27 @@ export const day = (over: Partial<TicketDay> = {}): TicketDay => ({
 export const changedDay = (over: Partial<TicketDay> = {}) =>
   day({ in_tempo_seconds: 3600, blocks: [block({ tempo_worklog_id: "w1", dirty: true })], ...over });
 
-export const payload = (days: TicketDay[]): TicketBlocks => ({ key: "ABC-1", from: "2026-09-19", to: "2026-10-02", days });
+export const payload = (days: TicketDay[]): TicketBlocks => ({
+  key: "ABC-1",
+  from: "2026-09-19",
+  to: "2026-10-02",
+  days,
+  in_tempo_total_seconds: null,
+  pulled_at: null,
+  today: { day: "2026-10-02", worked_seconds: 0, in_tempo_seconds: null, ticket_worked_seconds: 0, ticket_in_tempo_seconds: null },
+});
 
 const ok = { ok: true as const, data: {} };
 export const syncOk = () => mock(async () => ({ ok: true as const, data: { synced: 1, errors: [], results: [] as never[] } }));
 export const calls = (fn: unknown) => (fn as ReturnType<typeof mock>).mock.calls;
 
 /** What the modal does around the tab: owns the loaded days, so the tests exercise the tab on its own. */
-export function Harness({ actions, onAnnounce }: { actions: TaskActions; onAnnounce: (m: string) => void }) {
+export function Harness({ actions, onAnnounce, tickets }: { actions: TaskActions; onAnnounce: (m: string) => void; tickets?: JiraTicket[] }) {
   const work = useWorkLog("ABC-1", actions);
-  return <TaskWorkLog taskKey="ABC-1" actions={actions} work={work} onAnnounce={onAnnounce} />;
+  return <TaskWorkLog taskKey="ABC-1" actions={actions} work={work} onAnnounce={onAnnounce} tickets={tickets} />;
 }
 
-export async function open(days: TicketDay[] = [day()], over: Record<string, unknown> = {}) {
+export async function open(days: TicketDay[] = [day()], over: Record<string, unknown> = {}, tickets?: JiraTicket[]) {
   const a = {
     loadTicketBlocks: mock(async () => ({ ok: true as const, data: payload(days) })),
     logTicketTime: mock(async () => ({ ok: true as const, data: block({ id: 9 }) })),
@@ -61,7 +69,7 @@ export async function open(days: TicketDay[] = [day()], over: Record<string, unk
   const onAnnounce = mock((_m: string) => {});
   // act flushes the resolved load directly; waitFor's polling cost a flat 1s per call here.
   await act(async () => {
-    render(<Harness actions={a} onAnnounce={onAnnounce} />);
+    render(<Harness actions={a} onAnnounce={onAnnounce} tickets={tickets} />);
   });
   expect(document.querySelector(".task-skel")).toBeNull();
   return { a, onAnnounce };

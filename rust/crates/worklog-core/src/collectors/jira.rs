@@ -17,7 +17,8 @@ use crate::http::{self, RequestBuilderExt};
 use crate::models::{JiraProject, JiraTicket};
 use crate::repo;
 use crate::tempo_hub_contract::{
-    HubError, StatusCategory, TicketComment, TicketDetail, Transition,
+    Attachment, HubError, IssueLink, IssueRef, StatusCategory, TicketComment, TicketDetail,
+    Transition,
 };
 
 use super::CollectReport;
@@ -623,7 +624,9 @@ pub fn fetch_detail_with(auth: &JiraAuth, key: &str, client: &Client) -> Result<
             .basic_auth(&auth.email, Some(&auth.token))
             .query(&[(
                 "fields",
-                "summary,status,issuetype,priority,assignee,updated,description,comment",
+                "summary,status,issuetype,priority,assignee,updated,description,comment,\
+                 timetracking,parent,subtasks,issuelinks,reporter,created,components,\
+                 fixVersions,attachment,labels,duedate",
             )]),
         "fetch detail",
     )?;
@@ -654,6 +657,81 @@ pub fn fetch_detail_with(auth: &JiraAuth, key: &str, client: &Client) -> Result<
         url: format!("{}/browse/{key}", auth.base_url),
         description: adf_to_text(&f["description"]),
         comments,
+        reporter: str_at(f, &["reporter", "displayName"]),
+        created: str_at(f, &["created"]),
+        labels: str_list(&f["labels"], None),
+        due_date: str_at(f, &["duedate"]),
+        components: str_list(&f["components"], Some("name")),
+        fix_versions: str_list(&f["fixVersions"], Some("name")),
+        time_spent_seconds: f["timetracking"]["timeSpentSeconds"].as_i64(),
+        original_estimate_seconds: f["timetracking"]["originalEstimateSeconds"].as_i64(),
+        remaining_estimate_seconds: f["timetracking"]["remainingEstimateSeconds"].as_i64(),
+        parent: issue_ref(&f["parent"]),
+        subtasks: f["subtasks"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(issue_ref)
+            .collect(),
+        links: f["issuelinks"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(issue_link)
+            .collect(),
+        attachments: f["attachment"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(attachment)
+            .collect(),
+    })
+}
+
+/// Strings of a JSON array, or of `field` on each element when given.
+fn str_list(v: &serde_json::Value, field: Option<&str>) -> Vec<String> {
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|x| match field {
+            Some(f) => x[f].as_str(),
+            None => x.as_str(),
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A nested issue (`parent`, `subtasks[]`, link target); None without a key.
+fn issue_ref(v: &serde_json::Value) -> Option<IssueRef> {
+    Some(IssueRef {
+        key: str_at(v, &["key"])?,
+        summary: str_at(v, &["fields", "summary"]).unwrap_or_default(),
+        status: str_at(v, &["fields", "status", "name"]),
+        status_category: str_at(v, &["fields", "status", "statusCategory", "key"])
+            .and_then(|k| StatusCategory::parse(&k)),
+        issue_type: str_at(v, &["fields", "issuetype", "name"]),
+    })
+}
+
+fn issue_link(v: &serde_json::Value) -> Option<IssueLink> {
+    let (side, phrase) = if v["outwardIssue"].is_object() {
+        ("outwardIssue", "outward")
+    } else {
+        ("inwardIssue", "inward")
+    };
+    Some(IssueLink {
+        relation: str_at(v, &["type", phrase])?,
+        issue: issue_ref(&v[side])?,
+    })
+}
+
+fn attachment(v: &serde_json::Value) -> Option<Attachment> {
+    Some(Attachment {
+        filename: str_at(v, &["filename"])?,
+        size_bytes: v["size"].as_i64().unwrap_or_default(),
+        url: str_at(v, &["content"])?,
+        created: str_at(v, &["created"]),
+        author: str_at(v, &["author", "displayName"]),
     })
 }
 
@@ -1250,12 +1328,17 @@ mod tests {
         );
     }
 
+    const DETAIL_FIELDS: &str =
+        "summary,status,issuetype,priority,assignee,updated,description,comment,\
+         timetracking,parent,subtasks,issuelinks,reporter,created,components,\
+         fixVersions,attachment,labels,duedate";
+
     fn detail_server() -> MockServer {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET)
                 .path("/rest/api/3/issue/A-1")
-                .query_param("fields", "summary,status,issuetype,priority,assignee,updated,description,comment");
+                .query_param("fields", DETAIL_FIELDS);
             then.status(200).json_body(json!({"key": "A-1", "fields": {
                 "summary": "Fix it",
                 "status": {"name": "In Review", "statusCategory": {"key": "indeterminate"}},
@@ -1269,7 +1352,30 @@ mod tests {
                     {"id": "1", "author": {"displayName": "Ann"}, "created": "2026-09-30T09:00:00.000+0000",
                      "body": {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "first"}]}]}},
                     {"id": "2", "created": "2026-10-01T09:00:00.000+0000",
-                     "body": "second"}]}}}));
+                     "body": "second"}]},
+                "reporter": {"displayName": "Rita"},
+                "created": "2026-09-01T08:00:00.000+0000",
+                "labels": ["backend", "urgent"],
+                "duedate": "2026-10-15",
+                "components": [{"name": "API"}, {"name": "UI"}],
+                "fixVersions": [{"name": "1.2"}],
+                "timetracking": {"timeSpentSeconds": 45000,
+                    "originalEstimateSeconds": 57600, "remainingEstimateSeconds": 12600},
+                "parent": {"key": "A-0", "fields": {"summary": "Epic",
+                    "status": {"name": "To Do", "statusCategory": {"key": "new"}},
+                    "issuetype": {"name": "Epic"}}},
+                "subtasks": [{"key": "A-2", "fields": {"summary": "Sub",
+                    "status": {"name": "Done", "statusCategory": {"key": "done"}},
+                    "issuetype": {"name": "Sub-task"}}}],
+                "issuelinks": [
+                    {"type": {"inward": "is blocked by", "outward": "blocks"},
+                     "outwardIssue": {"key": "A-3", "fields": {"summary": "Out"}}},
+                    {"type": {"inward": "is blocked by", "outward": "blocks"},
+                     "inwardIssue": {"key": "A-4", "fields": {"summary": "In",
+                        "status": {"name": "Done", "statusCategory": {"key": "done"}}}}}],
+                "attachment": [{"filename": "a.png", "size": 1234,
+                    "content": "https://j.example/att/1", "created": "2026-09-02T08:00:00.000+0000",
+                    "author": {"displayName": "Ann"}}]}}));
         });
         server
     }
@@ -1293,6 +1399,86 @@ mod tests {
             .map(|c| (c.id.as_str(), c.author.as_str(), c.body.as_str()))
             .collect();
         assert_eq!(c, vec![("1", "Ann", "first"), ("2", "Unknown", "second")]);
+    }
+
+    #[test]
+    fn fetch_detail_maps_time_tracking_and_related_issues() {
+        let server = detail_server();
+        let got = fetch_detail_with(&test_auth(&server), "A-1", &http::client().unwrap()).unwrap();
+        assert_eq!(got.reporter.as_deref(), Some("Rita"));
+        assert_eq!(got.created.as_deref(), Some("2026-09-01T08:00:00.000+0000"));
+        assert_eq!(got.labels, ["backend", "urgent"]);
+        assert_eq!(got.due_date.as_deref(), Some("2026-10-15"));
+        assert_eq!(got.components, ["API", "UI"]);
+        assert_eq!(got.fix_versions, ["1.2"]);
+        assert_eq!(
+            (
+                got.time_spent_seconds,
+                got.original_estimate_seconds,
+                got.remaining_estimate_seconds
+            ),
+            (Some(45000), Some(57600), Some(12600))
+        );
+        let parent = got.parent.unwrap();
+        assert_eq!(
+            (parent.key.as_str(), parent.summary.as_str()),
+            ("A-0", "Epic")
+        );
+        assert_eq!(parent.status.as_deref(), Some("To Do"));
+        assert_eq!(parent.status_category, Some(StatusCategory::New));
+        assert_eq!(parent.issue_type.as_deref(), Some("Epic"));
+        assert_eq!(got.subtasks.len(), 1);
+        assert_eq!(got.subtasks[0].key, "A-2");
+        assert_eq!(got.subtasks[0].status_category, Some(StatusCategory::Done));
+        let links: Vec<_> = got
+            .links
+            .iter()
+            .map(|l| {
+                (
+                    l.relation.as_str(),
+                    l.issue.key.as_str(),
+                    l.issue.status.is_some(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            links,
+            [("blocks", "A-3", false), ("is blocked by", "A-4", true)]
+        );
+        assert_eq!(got.attachments.len(), 1);
+        let a = &got.attachments[0];
+        assert_eq!((a.filename.as_str(), a.size_bytes), ("a.png", 1234));
+        assert_eq!(a.url, "https://j.example/att/1");
+        assert_eq!(a.created.as_deref(), Some("2026-09-02T08:00:00.000+0000"));
+        assert_eq!(a.author.as_deref(), Some("Ann"));
+    }
+
+    #[test]
+    fn fetch_detail_minimal_payload_defaults_new_fields() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/rest/api/3/issue/A-1");
+            then.status(200).json_body(json!({"fields": {
+                "summary": "s", "timetracking": {}, "parent": null, "labels": null,
+                "subtasks": [], "issuelinks": [{"type": {"outward": "blocks"}}]}}));
+        });
+        let got = fetch_detail_with(&test_auth(&server), "A-1", &http::client().unwrap()).unwrap();
+        assert_eq!(got.summary, "s");
+        assert_eq!(
+            (got.reporter, got.created, got.due_date),
+            (None, None, None)
+        );
+        assert!(got.labels.is_empty() && got.components.is_empty() && got.fix_versions.is_empty());
+        assert_eq!(
+            (
+                got.time_spent_seconds,
+                got.original_estimate_seconds,
+                got.remaining_estimate_seconds
+            ),
+            (None, None, None)
+        );
+        assert!(got.parent.is_none());
+        assert!(got.subtasks.is_empty() && got.links.is_empty() && got.attachments.is_empty());
     }
 
     #[test]

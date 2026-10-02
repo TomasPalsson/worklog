@@ -5887,7 +5887,7 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 }
 .task-review:hover { text-decoration-thickness: 2px; }
 .task-review:focus-visible { outline: none; border-radius: var(--radius-sm); box-shadow: var(--ring); }
-.task-side-foot { margin: 0; font-size: 12px; color: var(--fg-subtle); }
+.task-side-foot { margin: 0; font-size: 12px; color: var(--fg-muted); }
 .task-prose { max-width: 72ch; margin: 0; font-size: 14px; line-height: 1.6; white-space: pre-wrap; color: var(--fg); }
 .task-prose:not([data-open]) { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; }
 .task-more {
@@ -6208,3 +6208,108 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 .closeout td:last-child { text-align: center; color: var(--sage-ink); }
 .closeout tr.closeout-gap { background: var(--amber-bg); color: var(--amber-ink); }
 .closeout tr.closeout-gap td:last-child { color: var(--amber-ink); font-weight: 600; }
+
+/* ── ticket-full: related ── */
+.task-related { margin-top: 24px; }
+.task-rel-group { margin-top: 16px; }
+.task-rel-head { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--fg-muted); }
+.task-rel-list { margin: 0; padding: 0; list-style: none; }
+.task-rel-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
+.task-rel-row:focus-visible, .task-rel-more:focus-visible { outline: none; box-shadow: var(--ring); }
+.task-rel-row > svg { flex: none; color: var(--fg-subtle); }
+.task-rel-key { flex: none; font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); }
+.task-rel-summary, .task-rel-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-rel-summary { flex: 1 1 auto; }
+.task-rel-meta { flex: 0 1 auto; font-size: 12px; color: var(--fg-muted); }
+.task-rel-pill {
+  flex: none;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunk);
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 20px;
+}
+.task-rel-pill[data-category="indeterminate"] { background: var(--amber-bg); color: var(--amber-ink); }
+.task-rel-pill[data-category="done"] { background: var(--sage-bg); color: var(--sage-ink); }
+.task-rel-more {
+  min-height: 36px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 13px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+@media (pointer: coarse) {
+  .task-rel-row, .task-rel-more { min-height: 40px; }
+}
+@media (max-width: 759px) {
+  .task-rel-file { flex-wrap: wrap; }
+  .task-rel-file .task-rel-meta { flex: 1 0 100%; padding-left: 22px; white-space: normal; }
+}
+
+/* ── ticket-full: work log ── */
+.task-block-item { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.task-block-item > .task-block-row { flex: 1 1 0; min-width: 0; }
+.task-block-move:focus-visible { outline: none; box-shadow: var(--ring); }
+.task-block-picker { flex: 1 0 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 4px 8px; }
+.task-block-picker .task-btn-secondary { flex: none; min-height: 36px; padding: 0 12px; font-size: 12px; }
+.task-menu-confirm { display: grid; gap: 2px; }
+@media (pointer: coarse) {
+  .task-block-picker .task-btn-secondary { min-height: 40px; }
+}
+
+/* ── ticket-full: W1 time card + details ── */
+.task-today, .task-estimate { display: grid; gap: 4px; min-width: 0; }
+.task-today-ticket { font-size: 12px; color: var(--fg-muted); }
+.task-meter { display: block; height: 6px; border-radius: var(--radius-sm); background: var(--bg-sunk); overflow: hidden; }
+.task-meter > span { display: block; width: 100%; height: 100%; background: var(--sage-ink); transform-origin: left; transition: transform 150ms cubic-bezier(0.25, 1, 0.5, 1); }
+.task-meter[data-over] > span { background: var(--amber-ink); }
+.task-time-foot { margin: 12px 0 0; font-size: 12px; color: var(--fg-muted); }
+.task-time-foot .task-review { min-height: 36px; font-size: 12px; }
+.task-time-foot .task-review:disabled { color: var(--fg-subtle); cursor: progress; text-decoration: none; }
+.task-modal-side .task-time { min-width: 0; }
+@media (pointer: coarse) {
+  .task-time-foot .task-review { min-height: 40px; }
+}
+
+/* ── ticket-full: fix1 ── */
+.task-figs { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; min-width: 0; }
+.task-fig { display: grid; gap: 2px; min-width: 0; font-variant-numeric: tabular-nums; }
+.task-fig-value { font-size: 15px; font-weight: 600; color: var(--fg); }
+.task-fig-label { font-size: 12px; color: var(--fg-muted); }
+.task-summary-line .task-tempo { margin-left: 8px; }
+.task-rel-row, .task-rel-more { transition: background-color 150ms cubic-bezier(0.25, 1, 0.5, 1), transform 150ms cubic-bezier(0.25, 1, 0.5, 1); }
+.task-rel-row:active, .task-rel-more:active, .task-block-move:active, .task-time-foot .task-review:active:not(:disabled) { transform: translateY(1px); }
+.task-block-move { transition: background-color 150ms cubic-bezier(0.25, 1, 0.5, 1), transform 150ms cubic-bezier(0.25, 1, 0.5, 1); }
+.task-block-picker .combobox { position: relative; flex: 1 1 200px; min-width: 0; }
+.task-block-picker .combobox-popover { left: 0; right: 0; width: auto; max-width: 100%; }
+@media (prefers-reduced-motion: reduce) {
+  .task-rel-row, .task-rel-more, .task-block-move { transition: none; }
+  .task-meter > span { transition: none; }
+  .task-rel-row:active, .task-rel-more:active, .task-block-move:active, .task-time-foot .task-review:active:not(:disabled) { transform: none; }
+}
+
+/* ── ticket-full: fix2 — sidebar Tempo state stacks above its action (no orphan dot) ── */
+.task-time .task-tempo-line { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.task-time .task-tempo-act > [aria-hidden="true"] { display: none; }

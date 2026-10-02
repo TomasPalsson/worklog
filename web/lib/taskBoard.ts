@@ -1,6 +1,6 @@
 // Pure helpers for the My Tasks board.
 
-import type { StatusCategory, TaskRow, Transition } from "./types";
+import type { JiraTicket, StatusCategory, TaskRow, Transition } from "./types";
 
 export type Column = "new" | "indeterminate" | "done";
 
@@ -21,6 +21,9 @@ export const movesInto = (transitions: Transition[], column: Column): Transition
 /** `{name} → {to_status}`, or just the name when both say the same thing. */
 export const transitionLabel = (t: Transition): string =>
   t.name.toLowerCase() === t.to_status.toLowerCase() ? t.name : `${t.name} → ${t.to_status}`;
+
+/** A board row as a picker entry; the row knows only these four fields. */
+export const asTicket = (t: TaskRow): JiraTicket => ({ key: t.key, summary: t.summary, status: t.status, updated: t.updated });
 
 export const ticketCount = (n: number): string => `${n} ${n === 1 ? "ticket" : "tickets"}`;
 

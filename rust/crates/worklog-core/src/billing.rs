@@ -79,7 +79,7 @@ pub struct BillingRow {
     pub ticket: Option<String>,
     /// Overlap-safe union of the group's block intervals, unrounded.
     pub seconds: i64,
-    /// `Tímar` — `seconds` rounded to the nearest half hour.
+    /// `Tímar` — `seconds` rounded up to the next half hour.
     pub hours: f64,
     /// `Reikningshæfi` as a bool; `true` = Reikningshæft.
     pub billable: bool,
@@ -633,7 +633,7 @@ fn fallback_invoice_text(conn: &Connection, acc: &GroupAcc) -> Result<String> {
 /// folder)` (FR-06 — a Jira ticket never splits a line; a group's `ticket`
 /// is the shared one, or `None` when its blocks disagree). A group's
 /// `seconds` is the **union** of its slices' intervals (never a naive sum)
-/// and `hours` is that union rounded to the nearest half hour.
+/// and `hours` is that union rounded up to the next half hour.
 ///
 /// Rows sort with the lines still needing input first (so the user sees
 /// what to fill), then by customer, then by descending time.

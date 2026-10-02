@@ -14,17 +14,18 @@ describe("the day menu", () => {
     fireEvent.click(more());
     expect(more().getAttribute("aria-haspopup")).toBe("menu");
     expect(more().getAttribute("aria-expanded")).toBe("true");
-    expect(items()).toEqual(["Edit hours", "Edit Tempo text"]);
+    expect(items()).toEqual(["Edit hours", "Edit Tempo text", "Regenerate text with AI"]);
     cleanup();
     await open([day({ hours_set_by_hand: true, line_seconds: 7200, tracked_seconds: 6120 })]);
     fireEvent.click(more());
-    expect(items()).toEqual(["Edit hours", "Use tracked time", "Edit Tempo text"]);
+    expect(items()).toEqual(["Edit hours", "Use tracked time", "Edit Tempo text", "Regenerate text with AI"]);
   });
 
   it("focuses the first item, moves with the arrow keys, and Esc closes only the menu and refocuses the button", async () => {
     await open();
     fireEvent.click(more());
-    const [first, last] = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+    const all = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+    const [first, last] = [all[0], all[all.length - 1]];
     expect(document.activeElement).toBe(first);
     fireEvent.keyDown(first, { key: "ArrowUp" });
     expect(document.activeElement).toBe(last);
