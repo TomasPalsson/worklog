@@ -46,6 +46,7 @@ pub mod jira_assist_contract;
 pub mod line_text;
 mod line_text_jobs;
 pub mod local_clone;
+pub mod logged_contract;
 pub mod models;
 pub mod overlap_store;
 pub mod overlaps;
