@@ -9,6 +9,7 @@ import Link from "next/link";
 import { ChevronLeft } from "lucide-react";
 
 import { BillingRegistry } from "@/components/BillingRegistry";
+import { ExportPanel } from "@/components/ExportPanel";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { formatDayHeading, todayISO } from "@/lib/format";
 
@@ -41,6 +42,7 @@ export default async function BillingPage({ searchParams }: Props) {
           </p>
         </div>
         <ThemeToggle />
+        <ExportPanel day={back} />
       </header>
 
       <BillingRegistry />

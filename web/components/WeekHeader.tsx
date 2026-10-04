@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ChevronLeft, ChevronRight, ListChecks } from "lucide-react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import {
   formatTotalHours,
   formatWeekRange,
@@ -7,7 +7,6 @@ import {
   shiftWeek,
   todayISO,
 } from "@/lib/format";
-import { ThemeToggle } from "./ThemeToggle";
 import { DateJumper } from "./DateJumper";
 
 interface Props {
@@ -70,21 +69,6 @@ export function WeekHeader({
           <ChevronRight size={16} strokeWidth={1.75} />
         </Link>
         <DateJumper focusedDay={monday} view="week" />
-        <Link
-          href={`/${today}`}
-          className="day-nav-btn week-day-link"
-          aria-label="switch to day view"
-        >
-          Day
-        </Link>
-        <Link
-          href="/tasks"
-          className="theme-toggle"
-          aria-label="My Tasks"
-        >
-          <ListChecks size={15} strokeWidth={1.75} />
-        </Link>
-        <ThemeToggle />
       </nav>
     </header>
   );

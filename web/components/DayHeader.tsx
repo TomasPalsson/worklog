@@ -1,11 +1,6 @@
 import Link from "next/link";
-import { ChevronLeft, ChevronRight, ListChecks, Wallet } from "lucide-react";
-import { mondayOf, shiftDay, todayISO } from "@/lib/format";
-import type { ViewMode } from "@/lib/view-mode";
-import { ThemeToggle } from "./ThemeToggle";
-import { SettingsPanel } from "./SettingsPanel";
-import { ExportPanel } from "./ExportPanel";
-import { ViewToggle } from "./ViewToggle";
+import { ChevronLeft, ChevronRight } from "lucide-react";
+import { shiftDay, todayISO } from "@/lib/format";
 import { DateJumper } from "./DateJumper";
 
 interface Props {
@@ -17,8 +12,6 @@ interface Props {
   /** Optional personal-only summary suffix, e.g. "2.3h personal" — when
    * present, rendered muted after the work total. */
   personalSummary?: string;
-  /** Current day-view mode, resolved server-side from the cookie. */
-  view: ViewMode;
 }
 
 export function DayHeader({
@@ -28,7 +21,6 @@ export function DayHeader({
   blockCount,
   unassigned,
   personalSummary,
-  view,
 }: Props) {
   const today = todayISO();
   const prev = shiftDay(day, -1);
@@ -58,8 +50,6 @@ export function DayHeader({
         </div>
       </div>
       <nav className="day-nav" aria-label="day navigation">
-        {/* First in the nav because it changes what every row below means. */}
-        <ViewToggle view={view} />
         <Link
           href={`/${prev}`}
           className="day-nav-btn"
@@ -87,33 +77,6 @@ export function DayHeader({
           <ChevronRight size={16} strokeWidth={1.75} />
         </Link>
         <DateJumper focusedDay={day} view="day" />
-        <Link
-          href={`/week/${mondayOf(day)}`}
-          className="day-nav-btn week-day-link"
-          aria-label="switch to week view"
-          data-tip="Week view"
-        >
-          Week
-        </Link>
-        <ExportPanel day={day} />
-        <Link
-          href="/tasks"
-          className="theme-toggle"
-          aria-label="My Tasks"
-          data-tip="My Tasks — your Jira tickets"
-        >
-          <ListChecks size={15} strokeWidth={1.75} />
-        </Link>
-        <Link
-          href={`/billing?from=${day}`}
-          className="theme-toggle"
-          aria-label="Billing registry"
-          data-tip="Billing registry — customers &amp; folder mappings"
-        >
-          <Wallet size={15} strokeWidth={1.75} />
-        </Link>
-        <ThemeToggle />
-        <SettingsPanel day={day} />
       </nav>
     </header>
   );
