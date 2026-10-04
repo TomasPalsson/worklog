@@ -17,7 +17,7 @@ Spec: spec.md · Design: design.md · Base: 430299a · Route: dispatch · Test: 
 ## Phase 1 — hook-run reads the branch
 Goal: Claude Code events on a ticket branch carry that ticket, with or without the mod.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core hook_run` — green with no mod present.
-- [ ] T001 Branch as last ticket source in hook-run (FR-01, FR-02; B1, B2) — files: rust/crates/worklog-core/src/hook_run.rs, rust/crates/worklog-core/src/hook_run_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core hook_run`
+- [x] T001 Branch as last ticket source in hook-run (FR-01, FR-02; B1, B2) — files: rust/crates/worklog-core/src/hook_run.rs, rust/crates/worklog-core/src/hook_run_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core hook_run` — done: b8796a0
 
 ## Phase 2 — the mod
 Goal: inside a Claude Code terminal session the Owner sees hours, reminders and the ticket, and can review today with `/worklog`.

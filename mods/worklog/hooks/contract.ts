@@ -60,6 +60,22 @@ export type CloseoutDay = {
 /** GET /weeks/:monday/closeout, the fields the mod reads. */
 export type WeekCloseout = { days: CloseoutDay[] }
 
+/**
+ * The engine capabilities lib.ts needs. The validator only follows `$` into
+ * functions declared in the same file, so lib.ts never receives `$`: each hook
+ * file builds an `Io` from closures over its own `$` and passes that instead.
+ */
+export type Io = {
+  fetch: (
+    url: string,
+    init?: { method?: string; headers?: Record<string, string>; body?: string },
+  ) => Promise<{ status: number; ok: boolean; text: string }>
+  run: (argv: string[], cwd: string) => Promise<{ exitCode: number; stdout: string }>
+  after: (ms: number, fn: () => void) => { cancel(): void }
+  now: () => Promise<number>
+  home: string | undefined
+}
+
 /** Every daemon call resolves to this; never throws. */
 export type DaemonResult<T> = { ok: true; value: T } | { ok: false; error: string }
 

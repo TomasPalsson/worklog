@@ -21,7 +21,7 @@ Async: every `$` call is async. Daemon helpers never throw; they resolve `Daemon
 
 | boundary | untrusted input | parse fn | failure |
 |---|---|---|---|
-| daemon HTTP | JSON body, status | `daemonGet` / `daemonPost` in lib.ts | `{ok:false, error}`: body's `error` field if present, else `HTTP <status>`, else the fetch error message; a call not settled within 2000 ms (raced against `$.clock.after`) resolves `{ok:false, error:'timeout'}` |
+| daemon HTTP | JSON body, status | `daemonGet` / `daemonPost` in lib.ts | `{ok:false, error}`: body's `error` field if present, else `HTTP <status>`, else the fetch error message; a call not settled within 2000 ms (raced against `io.after`) resolves `{ok:false, error:'timeout'}` |
 | git subprocess | stdout | `workContext` | non-zero exit or throw → that field `undefined` / `isWork` from the path rule alone |
 | hook payload `cwd` (Rust) | string or absent | `hook_run::handle` | absent → no branch lookup |
 
@@ -46,6 +46,7 @@ Embedded file list (T002 embeds exactly these; mod tasks create no other runtime
 ## 5. Deliberately duplicated
 
 - Jira key regex: Rust keeps `hook_run::jira_re`; the mod keeps `JIRA_KEY_RE`. Do not share across languages.
+- `makeIo($): Io`: each of status.ts, ticket.ts and command.tsx declares its own local `function makeIo($: EngineInterface): Io` (closures: `fetch: (u, i) => $.http.fetch(u, i)`, `run: (argv, cwd) => $.process.run(argv, { cwd })`, `after: (ms, fn) => $.clock.after(ms, fn)`, `now: () => $.clock.now()`, `home: $.env.get('HOME')`). Never move it into lib.ts: the validator refuses `$` crossing an import (`$ is followed only into a function declared in this same file`).
 - Work-folder rule: the mod re-implements "under ~/Desktop/Work/" in lib.ts instead of calling the Rust `billing::work_prefix`.
 
 ## 6. Decisions
@@ -77,10 +78,10 @@ THE FIVE   (1) NEVER invent an error type, field name or result shape that alrea
 CONTRACT   mods/worklog/hooks/contract.ts — import from it.
 NAMES      §1 table, verbatim.
 MODULE     mods/worklog/hooks/lib.ts · exports exactly:
-CALLS      `daemonGet<T>($: EngineInterface, path: string): Promise<DaemonResult<T>>`
-           `daemonPost<T>($: EngineInterface, path: string, body: unknown): Promise<DaemonResult<T>>`
-           `daemonToday($: EngineInterface): Promise<DaemonResult<LocalDay>>`
-           `workContext($: EngineInterface, cwd: string): Promise<WorkContext>`
+CALLS      `daemonGet<T>(io: Io, path: string): Promise<DaemonResult<T>>`
+           `daemonPost<T>(io: Io, path: string, body: unknown): Promise<DaemonResult<T>>`
+           `daemonToday(io: Io): Promise<DaemonResult<LocalDay>>`
+           `workContext(io: Io, cwd: string): Promise<WorkContext>`
            `ticketFromBranch(branch: string | undefined): string | undefined`
            `lastWorkday(today: LocalDay): LocalDay` · `mondayOf(day: LocalDay): LocalDay`
            `workSeconds(blocks: readonly Block[]): number` · `formatHours(seconds: number): string` (`2h30`, `0h05`)
