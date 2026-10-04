@@ -33,7 +33,7 @@ Async: every `$` call is async. Daemon helpers never throw; they resolve `Daemon
 | once-a-day marker | `$.store` key `NUDGE_STORE_PREFIX + <LocalDay>` | — | T004 only |
 | embedded mod files | `include_str!` list in `claude_mod.rs` | — | T002; the list below is closed |
 
-Embedded file list (T002 embeds exactly these; mod tasks create no other runtime file): `.claude-plugin/plugin.json`, `hooks/hooks.json`, `hooks/register.tsx`, `hooks/contract.ts`, `hooks/lib.ts`, `hooks/status.ts`, `hooks/ticket.ts`, `hooks/command.tsx`. Test files (`*.test.ts(x)`) are not embedded.
+Embedded file list (T002 embeds exactly these; mod tasks create no other runtime file): `.claude-plugin/plugin.json`, `hooks/hooks.json`, `hooks/register.tsx`, `hooks/contract.ts`, `hooks/lib.ts`, `hooks/status.ts`, `hooks/ticket.ts`, `hooks/command.tsx`, `types/index.d.ts` (added by T006: plugin.json names it as the types contract). Test files (`*.test.ts(x)`) are not embedded.
 
 ## 4. Module boundaries
 
@@ -68,7 +68,7 @@ DUPLICATE  Jira key regex stays in Rust.
 THE FIVE   (1) NEVER invent an error type, field name or result shape that already exists in the contract — copy the literal declaration. (2) NEVER type a boundary function's parameter as the narrow type; the narrow type is only ever the RETURN of a fallible function. (3) NEVER add a mode, flag or extra required parameter to a shared abstraction the design handed you — duplicate it inside your task and say so. (4) NEVER refactor or rename outside the task's `files:` list — a change to an unlisted file is a defect. (5) NEVER abbreviate inside an identifier. Spell the word.
 
 ## Contract for T002 — embed and enable the mod
-CONTRACT   none (Rust only); the embedded file list in design §3 is closed
+CONTRACT   none (Rust only); embed exactly these 9 files from mods/worklog (closed list): .claude-plugin/plugin.json, hooks/hooks.json, hooks/register.tsx, hooks/contract.ts, hooks/lib.ts, hooks/status.ts, hooks/ticket.ts, hooks/command.tsx, types/index.d.ts — no *.test.ts(x)
 MODULE     rust/crates/worklog-core/src/claude_mod.rs · exports: `pub fn install(data_dir: &Path) -> Result<PathBuf>`, `pub fn uninstall(data_dir: &Path) -> Result<()>`, `pub fn is_installed(data_dir: &Path) -> bool`, `pub const PLUGIN_DIRS_KEY: &str = "CLAUDE_CODE_PLUGIN_DIRS"`
 CALLS      settings path + atomic write: reuse `crate::hook::settings_path()` and the same write pattern as `hook::write_settings` (make them `pub(crate)` if private); take `hook::CLAUDE_HOME_TEST_LOCK` in tests
 DUPLICATE  none

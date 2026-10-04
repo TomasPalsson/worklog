@@ -1,3 +1,8 @@
 # Notes — 015
 
 Ruling: lib.ts helpers take `io: Io` (contract.ts) instead of `$`, because `claude plugin validate` refuses `$` passed across an import ("$ is followed only into a function declared in this same file, never across an import"). Each hook file builds its own `makeIo($)`; a closure over `$` passed as an argument validates (probed 2026-10-04). T003 reworked to match before tick.
+Ruling: T006 also edits mods/worklog/.claude-plugin/plugin.json (`types` key) and adds mods/worklog/types/index.d.ts, outside its files: list — `claude plugin validate` refuses a state atom not declared in the manifest's types contract ("worklog.review is not declared: the manifest's types contract must name it in interface PluginState"). The FR-12 pane-state-in-atom contract cannot validate without them; reverting them was tried and failed validate (exit 1).
+Ruling: makeIo stays duplicated in status.ts, ticket.ts and command.tsx per design §5 (validator follows `$` only within a file); ticket.ts registers session.start with `{surface:'terminal'}` because the engine allows one unmatched session.start per mod (status.ts holds it).
+Ruling: T006 Input onCancel (Esc) stays untested — the plugin test harness's $.ui.input accepts only kind `submit|change` and the Input exposes no cancel handle; the cancel Button path is tested instead.
+Ruling: types/index.d.ts keeps WorklogReviewBlock as a hand copy of contract.ts Block — validate rejects any import in the types contract ("the contract must be self-contained").
+Ruling: design §3 embedded list gains `types/index.d.ts` — T006 made plugin.json reference it, so an install without it would fail to load.
