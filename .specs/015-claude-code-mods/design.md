@@ -138,3 +138,9 @@ MODULE     mods/worklog/hooks/status.ts · replace the `ui.render` `{ component:
            Engine doc (index.d.ts ~l.9675): PromptHint props `{ isDraft, isWorking, hint, tail? }`; the terminal keeps the engine's line and draws `tail` dim at its end.
 TESTS      status.test.ts: every SessionMode render becomes a PromptHint render with props `{ isDraft: false, isWorking: false, hint: '? for shortcuts' }`; assert `tail` is `worklog 1h30` (work blocks only), refreshes after the 60 s poll, is absent when the daemon is down, and that an existing tail `x` becomes `x · worklog 1h30`.
 THE FIVE   as above.
+
+## Contract for T011 — reminder hours per spec A3
+MODULE     mods/worklog/hooks/status.ts · in `remind()`, `const worked = Math.max(day.logged_seconds, day.tempo_seconds)`; the short-of-required check and the toast text (`${formatHours(worked)} logged of ${formatHours(required)}`) use `worked`. Nothing else changes.
+TESTS      status.test.ts: the closeout fixture currently has tempo 8h / logged 6h and expects a "short" toast — that encodes the bug. Make the short-hours toast test use tempo and logged both below required (e.g. logged 6h, tempo 5h → text says 6h00). Add: logged 6h, tempo 8h, required 8h, pending 0 → no toast. Add: logged 5h, tempo 6h, required 8h → text says `6h00 logged of 8h00`. RED first against current status.ts.
+DOC        CLAUDE.md: in the mod bullet, replace `(closed file list, no tests)` with `(closed list of 9 files, test files excluded)`. No other CLAUDE.md change.
+THE FIVE   as above.

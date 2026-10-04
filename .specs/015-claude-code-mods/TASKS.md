@@ -30,6 +30,7 @@ Independent test: `claude plugin validate mods/worklog && claude plugin test mod
 - [x] T008 [P] Rename the command to `/wl` (FR-12, FR-13; B7) — files: mods/worklog/hooks/command.tsx, mods/worklog/hooks/command.test.tsx — verify: `claude plugin validate mods/worklog && claude plugin test mods/worklog` — after: T006 — done: 29af7c3
 - [x] T009 Review pane layout: bordered, header with day and totals, aligned rows, plain hotkey buttons (FR-13) — files: mods/worklog/hooks/command.tsx, mods/worklog/hooks/command.test.tsx — verify: `claude plugin validate mods/worklog && claude plugin test mods/worklog` — after: T008 — done: 62328e4
 - [x] T010 Hours label on the PromptHint `tail`, not SessionMode (FR-03, FR-04; B4) — files: mods/worklog/hooks/status.ts, mods/worklog/hooks/status.test.ts — verify: `claude plugin validate mods/worklog && claude plugin test mods/worklog` — after: T009 — done: 782d67e
+- [x] T011 Reminder hours use max(logged, tempo) (FR-06, A3; converge from G002) — files: mods/worklog/hooks/status.ts, mods/worklog/hooks/status.test.ts — verify: `claude plugin validate mods/worklog && claude plugin test mods/worklog` — after: T010 — done: 9143b25
 
 ## Phase 3 — ship it with worklog
 Goal: `worklog hook install` puts the mod in place and Claude Code loads it in every session.

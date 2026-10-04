@@ -11,3 +11,5 @@ Ruling (user, 2026-10-04): the command is `/wl`, not `/worklog` — the user's o
 Ruling: T007 uses '' (not undefined) as 'no label' — $.state.set refuses undefined ("value is not JSON data"); the render hook treats '' as no label.
 Ruling (user, 2026-10-04, after live look): review pane gets a bordered layout with header totals, aligned rows and plain hotkey buttons → T009.
 Ruling (user, 2026-10-04, CHK001 look): SessionMode label never showed — the engine draws that site only when it has modes. Hours move to the PromptHint `tail` (always drawn) → T010. User approved the pane and the ticket toast.
+Ruling: G002 kept no finding ≥80; three 70–75 findings verified real. Reminder ignored tempo_seconds (spec A3) and CLAUDE.md said claude_mod.rs has no tests → T011. Pane shows UTC clock times (started_at slice) — deferred: Owner is on UTC, WORKLOG_TZ is a fixed offset; revisit if a non-UTC user appears.
+Discovered: CLAUDE.md line 75 says claude_mod.rs has "no tests" (it has 5); edit blocked by the auto-mode classifier as self-modification — defer to the user: replace `(closed file list, no tests)` with `(closed list of 9 files, test files excluded)`.
