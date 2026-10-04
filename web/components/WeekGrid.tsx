@@ -1,14 +1,9 @@
+import type { CSSProperties } from "react";
 import Link from "next/link";
-import { CheckCircle2, Circle, Flag, Pencil } from "lucide-react";
 import type { Block } from "@/lib/types";
-import {
-  formatDuration,
-  formatRange,
-  formatTotalHours,
-  shortMonthDay,
-  shortWeekday,
-  todayISO,
-} from "@/lib/format";
+import { formatDuration, formatRange, todayISO } from "@/lib/format";
+import { FlagIcon } from "./icons";
+import { assignLanes, blockSpan, hourHeight, timelineRange } from "@/lib/weekTimeline";
 
 interface DayColumn {
   day: string;
@@ -16,109 +11,127 @@ interface DayColumn {
   totalSeconds: number;
 }
 
-interface Props {
-  days: DayColumn[];
+const pad = (h: number) => `${String(h).padStart(2, "0")}:00`;
+
+function status(b: Block): "synced" | "dirty" | "ticket" | "none" {
+  if (b.tempo_worklog_id) return b.dirty ? "dirty" : "synced";
+  return b.jira_issue ? "ticket" : "none";
 }
 
-/**
- * Read-only 7-column grid. Clicking a column header or any block opens
- * the existing per-day edit page. Personal blocks live in a separate
- * dimmed list at the bottom of each column so the focus stays on work.
- */
-export function WeekGrid({ days }: Props) {
-  const today = todayISO();
-  return (
-    <div className="week-grid" role="list">
-      {days.map((col) => {
-        const isToday = col.day === today;
-        const work = col.blocks.filter((b) => !b.is_personal);
-        const personal = col.blocks.filter((b) => b.is_personal);
-        const personalSeconds = personal.reduce(
-          (acc, b) => acc + b.duration_seconds,
-          0,
-        );
-        const workSeconds = Math.max(0, col.totalSeconds - personalSeconds);
-        return (
-          <section
-            key={col.day}
-            role="listitem"
-            className={`week-day-col${isToday ? " is-today" : ""}`}
-            aria-label={`${shortWeekday(col.day)} ${col.day}`}
-          >
-            <Link href={`/${col.day}`} className="week-day-header">
-              <span className="week-day-weekday">{shortWeekday(col.day)}</span>
-              <span className="week-day-date">{shortMonthDay(col.day)}</span>
-              <span className="week-day-total" aria-label="day total">
-                {formatTotalHours(workSeconds)}
-              </span>
-            </Link>
+function label(b: Block) {
+  const ticket = b.jira_issue ?? "No ticket";
+  return `${formatRange(b.started_at, b.ended_at)} · ${ticket} · ${formatDuration(b.duration_seconds)}${b.description ? ` · ${b.description}` : ""}`;
+}
 
-            {work.length === 0 && personal.length === 0 ? (
-              <p className="week-day-empty">—</p>
-            ) : (
-              <ul className="week-day-blocks" role="list">
-                {work.map((b) => (
-                  <li key={b.id}>
-                    <BlockRow block={b} day={col.day} />
-                  </li>
-                ))}
-                {personal.length > 0 && (
-                  <li className="week-day-personal-group">
-                    <span className="week-day-personal-label">
-                      {personal.length} personal · {formatTotalHours(personalSeconds)}
-                    </span>
-                    <ul className="week-day-blocks personal" role="list">
-                      {personal.map((b) => (
-                        <li key={b.id}>
-                          <BlockRow block={b} day={col.day} />
-                        </li>
-                      ))}
-                    </ul>
-                  </li>
+type Range = ReturnType<typeof timelineRange>;
+
+function DayCol({ col, range, hh, today }: { col: DayColumn; range: Range; hh: number; today: string }) {
+  const placed = col.blocks.flatMap((b) => {
+    const s = b.is_personal ? null : blockSpan(b, range);
+    return s && s.length >= 1 ? [{ b, s }] : [];
+  });
+  const lanes = assignLanes(placed.map(({ s }) => ({ start: s.top, end: s.top + s.length })));
+  return (
+    <div className="week-col" data-today={col.day === today ? "" : undefined} role="list" aria-label={col.day}>
+      {col.blocks
+        .filter((b) => b.is_personal)
+        .map((b) => {
+          const s = blockSpan(b, range);
+          if (!s) return null;
+          return (
+            <Link
+              key={b.id}
+              href={`/${col.day}`}
+              className="week-block week-personal"
+              role="listitem"
+              title={label(b)}
+              aria-label={label(b)}
+              style={{ top: `calc(${s.top / 60} * var(--hour))`, height: `max(calc(${s.length / 60} * var(--hour)), 6px)` }}
+            />
+          );
+        })}
+      {placed.map(({ b, s }, i) => {
+        const { lane, lanes: n } = lanes[i];
+        const px = Math.max((s.length / 60) * hh, 10);
+        const m = Math.min(n, 2);
+        const stacked = lane >= 2;
+        const tiny = px < 18;
+        const left = stacked ? `calc(${(lane % 2) * 50}% + ${6 * (lane - 1)}px)` : `${(lane / m) * 100}%`;
+        const width = stacked ? "50%" : `${100 / m}%`;
+        return (
+          <Link
+            key={b.id}
+            href={`/${col.day}`}
+            className="week-block"
+            role="listitem"
+            data-status={status(b)}
+            data-lanes={m}
+            data-tiny={tiny ? "" : undefined}
+            title={label(b)}
+            aria-label={label(b)}
+            style={{
+              top: `calc(${s.top / 60} * var(--hour))`,
+              height: `max(calc(${s.length / 60} * var(--hour)), 10px)`,
+              left: tiny ? `calc(${left} + 2px)` : left,
+              width: tiny ? `calc(${width} - 4px)` : width,
+            }}
+          >
+            {px >= 18 && (
+              <span className="week-block-row">
+                {b.jira_issue ? (
+                  <span className="week-block-ticket">{b.jira_issue}</span>
+                ) : (
+                  <span className="week-block-flagged">
+                    <FlagIcon size={10} />
+                    <span>{b.description || "No ticket"}</span>
+                  </span>
                 )}
-              </ul>
+                <span className="week-block-dur">{formatDuration(b.duration_seconds)}</span>
+              </span>
             )}
-          </section>
+            {px >= 44 && b.jira_issue && b.description && <span className="week-block-desc">{b.description}</span>}
+          </Link>
         );
       })}
     </div>
   );
 }
 
-function BlockRow({ block, day }: { block: Block; day: string }) {
-  const synced =
-    block.tempo_worklog_id !== null && block.tempo_worklog_id !== "";
-  const StatusIcon = block.is_personal
-    ? Circle
-    : synced
-      ? block.dirty
-        ? Pencil
-        : CheckCircle2
-      : block.jira_issue
-        ? Circle
-        : Flag;
-  const statusClass = block.is_personal
-    ? "is-personal"
-    : synced
-      ? block.dirty
-        ? "is-dirty"
-        : "is-synced"
-      : block.jira_issue
-        ? ""
-        : "is-unassigned";
-  const ticket = block.jira_issue ?? (block.is_personal ? "personal" : "—");
-  const desc = block.description ?? "";
+/**
+ * Read-only week calendar: each block sits at its real start time with a
+ * height proportional to its length. Clicking a block opens that day.
+ * Personal blocks are a hatched backdrop; work blocks share lanes on overlap.
+ */
+export function WeekGrid({ days }: { days: DayColumn[] }) {
+  const today = todayISO();
+  const range = timelineRange(days.flatMap((d) => d.blocks));
+  const hours = range.endHour - range.startHour;
+  const hh = hourHeight(hours);
+  const empty = days.every((d) => d.blocks.length === 0);
+  const hourMarks = Array.from({ length: hours + 1 }, (_, i) => range.startHour + i);
+
   return (
-    <Link href={`/${day}`} className={`week-block ${statusClass}`}>
-      <StatusIcon size={12} strokeWidth={1.75} className="week-block-icon" />
-      <span className="week-block-time">
-        {formatRange(block.started_at, block.ended_at)}
-      </span>
-      <span className="week-block-ticket">{ticket}</span>
-      <span className="week-block-dur">
-        {formatDuration(block.duration_seconds)}
-      </span>
-      {desc && <span className="week-block-desc">{desc}</span>}
-    </Link>
+    <>
+      <ul className="week-legend" aria-label="legend">
+        <li data-k="synced">Synced</li>
+        <li data-k="ticket">Ticket, not synced</li>
+        <li data-k="none">No ticket</li>
+        <li data-k="dirty">Edited since sync</li>
+        <li data-k="personal">Personal</li>
+      </ul>
+      <div className="week-timeline" style={{ "--hour": `${hh}px`, "--hours": hours } as CSSProperties}>
+        <div className="week-gutter" aria-hidden="true">
+          {hourMarks.map((h) => (
+            <span key={h} style={{ top: `calc(${h - range.startHour} * var(--hour))` }}>
+              {pad(h)}
+            </span>
+          ))}
+        </div>
+        {days.map((col) => (
+          <DayCol key={col.day} col={col} range={range} hh={hh} today={today} />
+        ))}
+        {empty && <p className="week-empty">Nothing tracked this week.</p>}
+      </div>
+    </>
   );
 }

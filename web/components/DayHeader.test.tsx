@@ -115,11 +115,11 @@ describe("WeekHeader nav", () => {
     );
 
   it("keeps This week in its slot, disabled on the current week", () => {
-    render(<WeekHeader monday={mondayOf(todayISO())} workSeconds={0} workBlocks={0} />);
+    render(<WeekHeader monday={mondayOf(todayISO())} />);
     expect(screen.getByText("This week").tagName).toBe("SPAN");
     expect(labels().slice(0, 3)).toEqual(["previous week", "This week", "next week"]);
     cleanup();
-    render(<WeekHeader monday="2026-01-05" workSeconds={0} workBlocks={0} />);
+    render(<WeekHeader monday="2026-01-05" />);
     expect(screen.getByText("This week").tagName).toBe("A");
     expect(labels().slice(0, 3)).toEqual(["previous week", "This week", "next week"]);
   });
@@ -138,7 +138,7 @@ describe("headers carry only date controls (menu lives in AppNav)", () => {
 
   it("week header has no Tasks or Day link", () => {
     const { container } = render(
-      <WeekHeader monday="2026-01-05" workSeconds={0} workBlocks={0} />,
+      <WeekHeader monday="2026-01-05" />,
     );
     expect(container.querySelector("a[href='/tasks']")).toBeNull();
     expect(screen.queryByRole("link", { name: "switch to day view" })).toBeNull();

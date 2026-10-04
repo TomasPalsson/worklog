@@ -1,10 +1,6 @@
 import { notFound } from "next/navigation";
 import { DaemonError, loadDaySummary } from "@/lib/daemon";
-import {
-  formatTotalHours,
-  mondayOf,
-  weekDays,
-} from "@/lib/format";
+import { mondayOf, weekDays } from "@/lib/format";
 import { WeekHeader } from "@/components/WeekHeader";
 import { WeekGrid } from "@/components/WeekGrid";
 import { WeekCloseout } from "@/components/WeekCloseout";
@@ -69,6 +65,12 @@ export default async function WeekPage({
         .reduce((s, b) => s + b.duration_seconds, 0),
     0,
   );
+  const daySeconds = Object.fromEntries(
+    dayCols.map((c) => [
+      c.day,
+      c.blocks.filter((b) => !b.is_personal).reduce((s, b) => s + b.duration_seconds, 0),
+    ]),
+  );
   const personalSeconds = dayCols.reduce(
     (acc, c) =>
       acc +
@@ -77,24 +79,15 @@ export default async function WeekPage({
         .reduce((s, b) => s + b.duration_seconds, 0),
     0,
   );
-  const workBlocks = dayCols.reduce(
-    (acc, c) => acc + c.blocks.filter((b) => !b.is_personal).length,
-    0,
-  );
-  const personalSummary =
-    personalSeconds > 0
-      ? `${formatTotalHours(personalSeconds)} personal`
-      : undefined;
-
   return (
     <>
-      <WeekHeader
-        monday={monday}
+      <WeekHeader monday={monday} />
+      <WeekCloseout
+        closeout={weekCloseout}
         workSeconds={workSeconds}
-        workBlocks={workBlocks}
-        personalSummary={personalSummary}
+        personalSeconds={personalSeconds}
+        daySeconds={daySeconds}
       />
-      <WeekCloseout closeout={weekCloseout} />
       <WeekGrid days={dayCols} />
     </>
   );

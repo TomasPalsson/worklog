@@ -177,6 +177,16 @@ export function RefreshIcon(p: IconProps) {
   );
 }
 
+/** Flag: marks a block that still needs a ticket. */
+export function FlagIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M5 21V4" />
+      <path d="M5 4.5h12l-2.5 4 2.5 4H5" />
+    </Svg>
+  );
+}
+
 /** Theme: light. */
 export function SunIcon(p: IconProps) {
   return (
