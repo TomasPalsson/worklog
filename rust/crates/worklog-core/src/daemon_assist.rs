@@ -130,7 +130,17 @@ pub(super) async fn suggest_accounts(
     field_id: String,
     text: String,
 ) -> Result<Vec<AccountSuggestion>, ApiError> {
-    let allowed = allowed_list(auth, field_id).await?;
+    let allowed = allowed_list(auth.clone(), field_id.clone()).await?;
+    let empty = with_conn(state.clone(), |c| {
+        c.query_row("SELECT NOT EXISTS (SELECT 1 FROM account_clues)", [], |r| {
+            r.get::<_, bool>(0)
+        })
+        .map_err(Into::into)
+    })
+    .await?;
+    if empty {
+        relearn_accounts(state.clone(), auth, field_id).await?;
+    }
     Ok(with_conn(state, move |c| account_clues::suggest(c, &text, &allowed)).await?)
 }
 

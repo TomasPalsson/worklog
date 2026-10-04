@@ -231,6 +231,22 @@ async fn relearn_then_suggest_ranks_the_learned_account() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn suggest_on_an_empty_clue_log_relearns_first() {
+    let server = MockServer::start();
+    let search = server.mock(|when, then| {
+        when.method(GET).path("/rest/api/3/search/jql");
+        then.status(200).json_body(json!({ "issues": [
+            { "fields": { "summary": "Acme - invoice export", FIELD: { "id": 42, "name": "Acme" } } }
+        ]}));
+    });
+    mock_createmeta(&server, json!([{ "id": "42", "name": "Acme" }]));
+    let got = ok(suggest_accounts(state(), auth(&server), FIELD.into(), "Acme dashboard".into()).await);
+    search.assert_hits(1);
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].account.id, "42");
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn create_refuses_emoji_with_400_and_posts_nothing() {
     let server = MockServer::start();
     let any = server.mock(|when, then| {
