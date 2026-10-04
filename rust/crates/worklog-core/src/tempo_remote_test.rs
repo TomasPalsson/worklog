@@ -174,3 +174,37 @@ fn repull_is_idempotent_when_rows_move_weeks_or_fall_outside() {
     );
     assert_eq!(required_days(&conn), vec![("2026-10-06".to_string(), 100)]);
 }
+
+fn stored_ids(conn: &Connection) -> Vec<String> {
+    conn.prepare("SELECT tempo_worklog_id FROM tempo_remote_worklogs ORDER BY tempo_worklog_id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+#[test]
+fn store_range_replaces_the_range_and_drops_entries_no_longer_in_tempo() {
+    let conn = db::open_memory().unwrap();
+    let from = NaiveDate::from_ymd_opt(2026, 9, 1).unwrap();
+    let to = NaiveDate::from_ymd_opt(2026, 9, 30).unwrap();
+    let rows = [
+        pulled("1", "2026-09-02", 1, 3600),
+        pulled("2", "2026-09-20", 1, 1800),
+    ];
+    let report = store_range(&conn, from, to, &rows, &[], PULLED_AT).unwrap();
+    assert_eq!((report.monday.as_str(), report.worklogs), ("2026-09-01", 2));
+
+    store_range(&conn, from, to, &rows[..1], &[], PULLED_AT).unwrap();
+    assert_eq!(stored_ids(&conn), vec!["1".to_string()]);
+}
+
+#[test]
+fn stored_rows_survive_when_nothing_new_is_stored() {
+    // A failed Tempo fetch never reaches store_range, so nothing is deleted.
+    let conn = db::open_memory().unwrap();
+    let rows = [pulled("1", "2026-09-29", 1, 3600)];
+    store_week(&conn, monday(), &rows, &[], PULLED_AT).unwrap();
+    assert_eq!(stored_ids(&conn), vec!["1".to_string()]);
+}
