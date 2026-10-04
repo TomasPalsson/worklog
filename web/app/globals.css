@@ -4367,6 +4367,7 @@ body:has(.task-modal[role="dialog"][aria-modal="true"]) .chg-slip { display: non
 
 /* The day nav and the row action buttons sit against the right edge, so a
    centred tooltip would overflow the viewport. Anchor those to the right. */
+.app-nav [data-tip]::after,
 .day-nav [data-tip]::after,
 .reg-actions [data-tip]::after,
 .reg-page-header > [data-tip]::after,
@@ -4377,6 +4378,8 @@ body:has(.task-modal[role="dialog"][aria-modal="true"]) .chg-slip { display: non
   right: 0;
   translate: 0 -3px;
 }
+.app-nav [data-tip]:hover::after,
+.app-nav [data-tip]:focus-visible::after,
 .day-nav [data-tip]:hover::after,
 .day-nav [data-tip]:focus-visible::after,
 .reg-actions [data-tip]:hover::after,
@@ -6377,6 +6380,8 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
   border-radius: var(--radius-md);
   overflow: hidden;
 }
+.logged-cell, .logged-views a, .logged-week-head a { color: inherit; text-decoration: none; }
+.logged-week-head a:hover { text-decoration: underline; }
 .logged-views a {
   display: inline-flex; align-items: center;
   height: 36px; padding: 0 12px;
@@ -6408,7 +6413,7 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
 .link-btn:hover { color: var(--fg); text-decoration: underline; }
 
 .logged-short { margin-bottom: 16px; font-size: 13px; color: var(--amber-ink); }
-.logged-short a { text-decoration: underline; }
+.logged-short a { color: var(--amber-ink); text-decoration: underline; }
 .logged-muted { font-size: 13px; color: var(--fg-muted); }
 
 /* state rail: colour per DayState, shared by cell, week row and day summary */
@@ -6486,6 +6491,7 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
   display: grid; grid-template-columns: 7rem 4rem 1fr auto; gap: 12px;
   padding: 12px 0; border-bottom: 1px solid var(--border);
 }
+.logged-entries .source-badge { justify-self: start; align-self: center; }
 .logged-ticket, .logged-hours { font-family: var(--font-mono); }
 .logged-ticket.muted { color: var(--fg-muted); }
 .logged-desc.subtle { color: var(--fg-subtle); }

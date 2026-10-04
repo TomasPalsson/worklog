@@ -12,7 +12,8 @@ export function LoggedWeek({ range }: { range: LoggedRange }) {
             <Link href={`/logged/day/${d.day}`}>{dayLabel(d.day, "short")}</Link>
             {d.state !== "not_fetched" && (
               <span className="logged-week-hours">
-                {hours(d.logged_seconds)} of {hours(d.required_seconds ?? 0)}
+                {hours(d.logged_seconds)}
+                {(d.required_seconds ?? 0) > 0 && ` of ${hours(d.required_seconds ?? 0)}`}
               </span>
             )}
             <Flag d={d} today={range.today} />

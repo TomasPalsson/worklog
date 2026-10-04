@@ -202,6 +202,16 @@ describe("LoggedWeek and LoggedDay", () => {
     expect(wed.textContent).toContain("Is this day filled out?");
   });
 
+  it("omits 'of X' on a week row whose required time is 0", () => {
+    render(<LoggedWeek range={range([day("2026-10-03", { state: "off", logged_seconds: 0, required_seconds: 0 })])} />);
+    expect(document.querySelector(".logged-week-day")!.textContent).not.toContain("of 0h");
+  });
+
+  it("renders the entry badge with class source-badge", () => {
+    render(<LoggedDay range={range([day("2026-09-30", { entries: [entry()] })])} />);
+    expect(document.querySelector(".logged-entries li .source-badge")).not.toBeNull();
+  });
+
   it("shows ticket, hours, description and who sent the entry on the day view", () => {
     render(<LoggedDay range={range([day("2026-09-30", { state: "under", logged_seconds: 18000, entries: [entry(), e2] })])} />);
     const [a, b] = [...document.querySelectorAll(".logged-entries li")];
