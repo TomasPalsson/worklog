@@ -31,6 +31,8 @@ Independent test: `claude plugin validate mods/worklog && claude plugin test mod
 - [x] T009 Review pane layout: bordered, header with day and totals, aligned rows, plain hotkey buttons (FR-13) — files: mods/worklog/hooks/command.tsx, mods/worklog/hooks/command.test.tsx — verify: `claude plugin validate mods/worklog && claude plugin test mods/worklog` — after: T008 — done: 62328e4
 - [x] T010 Hours label on the PromptHint `tail`, not SessionMode (FR-03, FR-04; B4) — files: mods/worklog/hooks/status.ts, mods/worklog/hooks/status.test.ts — verify: `claude plugin validate mods/worklog && claude plugin test mods/worklog` — after: T009 — done: 782d67e
 - [x] T011 Reminder hours use max(logged, tempo) (FR-06, A3; converge from G002) — files: mods/worklog/hooks/status.ts, mods/worklog/hooks/status.test.ts — verify: `claude plugin validate mods/worklog && claude plugin test mods/worklog` — after: T010 — done: 9143b25
+- [x] T012 [P] Pane error/edge tests: empty day, refused `i` keeps the block (J3; converge from acceptance) — files: mods/worklog/hooks/command.test.tsx — verify: `claude plugin test mods/worklog` — after: T011 — done: f43655b
+- [x] T013 [P] Hours label shows outside a work folder (J2 edge; converge from acceptance) — files: mods/worklog/hooks/status.test.ts — verify: `claude plugin test mods/worklog` — after: T011 — done: fc8c5a1
 
 ## Phase 3 — ship it with worklog
 Goal: `worklog hook install` puts the mod in place and Claude Code loads it in every session.
@@ -39,6 +41,6 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core cl
 - [x] CHK001 human-verify the mod loads from install — files: rust/crates/worklog-core/src/claude_mod.rs — verify: human: after `worklog hook install`, a new `claude` session under ~/Desktop/Work/ on a `GENAI-…` branch shows `worklog <H>h<MM>` as a footer label and a ticket toast, and `/wl review` opens the pane — after: T002, T007, T008, T009, T010 — done: 3474d2d by user
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `flow check --fix`
-- [ ] G002 branch review clean — files: . — verify: `flow pass`
-- [ ] G003 verification evidence exists — files: . — verify: `test -s verify/`
+- [x] G001 project gates clean — files: . — verify: `flow check --fix` — done: 4a7909e
+- [x] G002 branch review clean — files: . — verify: `flow pass` — done: 4a7909e
+- [x] G003 verification evidence exists — files: . — verify: `test -s verify/` — done: 4a7909e

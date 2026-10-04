@@ -144,3 +144,12 @@ MODULE     mods/worklog/hooks/status.ts · in `remind()`, `const worked = Math.m
 TESTS      status.test.ts: the closeout fixture currently has tempo 8h / logged 6h and expects a "short" toast — that encodes the bug. Make the short-hours toast test use tempo and logged both below required (e.g. logged 6h, tempo 5h → text says 6h00). Add: logged 6h, tempo 8h, required 8h, pending 0 → no toast. Add: logged 5h, tempo 6h, required 8h → text says `6h00 logged of 8h00`. RED first against current status.ts.
 DOC        CLAUDE.md: in the mod bullet, replace `(closed file list, no tests)` with `(closed list of 9 files, test files excluded)`. No other CLAUDE.md change.
 THE FIVE   as above.
+
+## Contract for T012 — pane error/edge tests (tests only)
+TESTS      mods/worklog/hooks/command.test.tsx, using the file's existing `world`/render helpers:
+           (a) `/wl review` on a day with no blocks → the pane tree contains the text `Nothing to review today.` and no Select.
+           (b) a block selected, daemon refuses the ignore POST (`refusal` option) → press `i` → the pane shows the refusal text AND the block is unchanged (still listed, same label; no reload changed it).
+           Production code is not touched. Since the behaviour exists, prove each test bites: temporarily break command.tsx (e.g. change the empty text; drop the error display), see the test fail, restore with `git checkout -- mods/worklog/hooks/command.tsx`, confirm `git diff --exit-code mods/worklog/hooks/command.tsx`.
+
+## Contract for T013 — hours label outside a work folder (test only)
+TESTS      mods/worklog/hooks/status.test.ts, using the file's existing helpers: session start with a cwd NOT under ~/Desktop/Work (and not aproorg) and a working daemon → after the poll the PromptHint `tail` is `worklog <H>h<MM>`, and no reminder toast. Production code is not touched; prove it bites by temporarily gating showHours on isWork in status.ts, see it fail, restore with `git checkout -- mods/worklog/hooks/status.ts`, confirm `git diff --exit-code mods/worklog/hooks/status.ts`.
