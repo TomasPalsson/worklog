@@ -22,6 +22,13 @@ const block = (overrides: Partial<Block>) => ({
   ...overrides,
 })
 
+const MODE = {
+  component: 'SessionMode',
+  surface: 'terminal',
+  viewport: { columns: 120, rows: 40, isFullscreen: false },
+  props: { modes: ['focus'] },
+} as const
+
 const closeoutDay = (overrides: Partial<CloseoutDay>): CloseoutDay => ({
   day: LAST_WORKDAY,
   logged_seconds: 8 * 3600,
@@ -42,7 +49,6 @@ type Options = {
 function world(on: On, options: Options = {}) {
   const requested: string[] = []
   const toasts: string[] = []
-  const statuses: (string | undefined)[] = []
   const stored: { key: string; value: unknown }[] = []
   const answer = (body: unknown) => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } })
 
@@ -67,18 +73,18 @@ function world(on: On, options: Options = {}) {
     toasts.push(event.text)
     return { value: undefined }
   })
-  on('ui.status', ($, event) => {
-    statuses.push(event.text)
-    return { value: undefined }
-  })
-  return { requested, toasts, statuses, stored }
+  on('ui.render', { component: 'SessionMode' }, ($, event) => ({
+    type: 'Text',
+    children: [event.props.modes.join(' | ')],
+  }))
+  return { requested, toasts, stored }
 }
 
-test('session start shows worklog hours counting only non-personal, non-ignored blocks', async ($, on) => {
+test('session start labels the footer with worklog hours counting only non-personal, non-ignored blocks', async ($, on) => {
   const clock = mock.clock(on)
   const seen = world(on, {
     blocks: [
-      block({ duration_seconds: 7200 }),
+      block({ duration_seconds: 3600 }),
       block({ duration_seconds: 1800 }),
       block({ duration_seconds: 900, is_personal: true }),
       block({ duration_seconds: 600, ignored_at: '2026-10-05T10:00:00Z' }),
@@ -86,27 +92,29 @@ test('session start shows worklog hours counting only non-personal, non-ignored 
   })
   await $.session.start(SESSION)
   await clock.advance(1000)
-  expect(seen.statuses.at(-1)).toBe('worklog 2h30')
+  expect(JSON.stringify(await $.ui.render(MODE))).toContain('worklog 1h30')
   expect(seen.requested).toContain(`http://127.0.0.1:9323/days/${TODAY}`)
 })
 
-test('the status line refreshes every 60 seconds', async ($, on) => {
+test('the footer label refreshes every 60 seconds', async ($, on) => {
   const clock = mock.clock(on)
   const seen = world(on, { blocks: [block({ duration_seconds: 3600 })] })
   await $.session.start(SESSION)
   await clock.advance(1000)
-  const before = seen.statuses.length
+  const before = seen.requested.length
   await clock.advance(60_000)
-  expect(seen.statuses.length).toBe(before + 1)
-  expect(seen.statuses.at(-1)).toBe('worklog 1h00')
+  expect(seen.requested.length).toBeGreaterThan(before)
+  expect(JSON.stringify(await $.ui.render(MODE))).toContain('worklog 1h00')
 })
 
-test('a down daemon clears the status line and shows no error text', async ($, on) => {
+test('a down daemon leaves the footer modes unchanged and shows no error text', async ($, on) => {
   const clock = mock.clock(on)
   const seen = world(on, { isDown: true })
   await $.session.start(SESSION)
   await clock.advance(1000)
-  expect(seen.statuses).toEqual([undefined])
+  const footer = JSON.stringify(await $.ui.render(MODE))
+  expect(footer).toContain('focus')
+  expect(footer).not.toContain('worklog')
   expect(seen.toasts).toEqual([])
 })
 

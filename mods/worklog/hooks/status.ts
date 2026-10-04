@@ -1,3 +1,4 @@
+import { atom, read, update } from 'claude-code'
 import type { EngineInterface, On } from 'claude-code'
 import { DEFAULT_REQUIRED_SECONDS, NUDGE_STORE_PREFIX, POLL_MS } from './contract'
 import type { DaySummary, Io, WeekCloseout } from './contract'
@@ -10,6 +11,11 @@ import {
   workContext,
   workSeconds,
 } from './lib'
+
+const hours = atom(
+  { plugin: 'worklog', key: 'hours' } as const,
+  '',
+)
 
 async function makeIo($: EngineInterface): Promise<Io> {
   return {
@@ -28,9 +34,8 @@ export function registerStatus(on: On): void {
     async function showHours(): Promise<void> {
       const today = await daemonToday(io)
       const summary = today.ok ? await daemonGet<DaySummary>(io, `/days/${today.value}`) : today
-      await $.ui.status(
-        summary.ok ? `worklog ${formatHours(workSeconds(summary.value.blocks))}` : undefined,
-      )
+      const text = summary.ok ? `worklog ${formatHours(workSeconds(summary.value.blocks))}` : ''
+      await update($, hours, () => text)
     }
 
     async function remind(): Promise<void> {
@@ -61,5 +66,10 @@ export function registerStatus(on: On): void {
       void showHours()
     })
     return next(event)
+  })
+
+  on('ui.render', { component: 'SessionMode' }, async ($, event, next) => {
+    const text = await read($, hours)
+    return next(text ? { ...event, props: { ...event.props, modes: [...event.props.modes, text] } } : event)
   })
 }
