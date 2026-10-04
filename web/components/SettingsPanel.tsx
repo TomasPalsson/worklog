@@ -16,6 +16,8 @@ interface Props {
   /** The day page the panel was opened from — saving revalidates it so a
    * classification change is reflected without a manual reload. */
   day: string;
+  /** "menu" renders the trigger as a text link for the shared nav. */
+  variant?: "icon" | "menu";
 }
 
 const EMPTY_FORM: SettingsFormState = {
@@ -31,7 +33,7 @@ const EMPTY_FORM: SettingsFormState = {
   secretInputs: {},
 };
 
-export function SettingsPanel({ day }: Props) {
+export function SettingsPanel({ day, variant = "icon" }: Props) {
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<SettingsView | null>(null);
   const [loading, setLoading] = useState(false);
@@ -105,15 +107,26 @@ export function SettingsPanel({ day }: Props) {
 
   return (
     <>
-      <button
-        type="button"
-        className="theme-toggle"
-        onClick={() => setOpen(true)}
-        aria-label="Open settings"
-        data-tip="Settings"
-      >
-        <Settings size={15} strokeWidth={1.75} />
-      </button>
+      {variant === "menu" ? (
+        <button
+          type="button"
+          className="app-nav-link"
+          aria-haspopup="dialog"
+          onClick={() => setOpen(true)}
+        >
+          Settings
+        </button>
+      ) : (
+        <button
+          type="button"
+          className="theme-toggle"
+          onClick={() => setOpen(true)}
+          aria-label="Open settings"
+          data-tip="Settings"
+        >
+          <Settings size={15} strokeWidth={1.75} />
+        </button>
+      )}
 
       {open && (
         <div

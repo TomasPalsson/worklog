@@ -6524,3 +6524,30 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
   .logged-entries li { grid-template-columns: 1fr auto; }
   .logged-entries .logged-desc { grid-column: 1 / -1; }
 }
+
+/* app nav */
+.app-nav {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 24px; border-bottom: 1px solid var(--border);
+}
+.app-nav-mark {
+  font-family: var(--font-mono); font-size: 13px; font-weight: 500;
+  color: var(--fg-muted); margin-right: 8px;
+}
+.app-nav-links {
+  display: flex; gap: 2px; flex: 1; min-width: 0;
+  overflow-x: auto; scrollbar-width: none;
+}
+.app-nav-links::-webkit-scrollbar { display: none; }
+.app-nav-link {
+  font: inherit; font-size: 14px; font-weight: 500; color: var(--fg-muted);
+  background: none; border: 0; border-bottom: 2px solid transparent;
+  margin-bottom: -1px; padding: 12px 10px; white-space: nowrap;
+  text-decoration: none; cursor: pointer;
+}
+.app-nav-link:hover { color: var(--fg); }
+.app-nav-link[aria-current="page"] { color: var(--fg); border-bottom-color: var(--fg); }
+@media (max-width: 640px) {
+  .app-nav-mark { display: none; }
+  .app-nav-link { padding: 12px 8px; font-size: 13px; }
+}

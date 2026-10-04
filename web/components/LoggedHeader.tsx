@@ -2,7 +2,6 @@ import Link from "next/link";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { formatWeekRange, mondayOf, monthOf, shiftDay, shiftMonth, shiftWeek } from "@/lib/format";
 import type { LoggedRange } from "@/lib/logged_contract";
-import { ThemeToggle } from "./ThemeToggle";
 import { dayTitle, hours, monthTitle } from "./LoggedEntries";
 
 type Props = {
@@ -73,7 +72,6 @@ export function LoggedHeader({ view, id, range }: Props) {
         <Link href={href(shift(id, 1))} className="day-nav-btn" aria-label={`next ${noun}`}>
           <ChevronRight size={16} strokeWidth={1.75} />
         </Link>
-        <ThemeToggle />
       </nav>
     </header>
   );
