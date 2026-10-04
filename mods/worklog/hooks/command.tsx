@@ -21,7 +21,7 @@ type ReviewState = {
   error: string | undefined
 }
 
-const USAGE = 'usage: /worklog today|week|review'
+const USAGE = 'usage: /wl today|week|review'
 
 const review = atom(
   { plugin: 'worklog', key: 'review' } as const,
@@ -154,14 +154,14 @@ async function reviewPane($: EngineInterface, event: RenderInput<'Pane'>) {
 export function registerCommand(on: On): void {
   on('session.start', { isInteractive: true }, async ($, event, next) => {
     await $.command.register({
-      name: 'worklog',
+      name: 'wl',
       description: 'Show logged hours, or review today in a pane',
       argumentHint: 'today|week|review',
     })
     return next(event)
   })
 
-  on('command.run', { command: 'worklog' }, async ($, event) => {
+  on('command.run', { command: 'wl' }, async ($, event) => {
     const argument = event.args.trim()
     if (argument !== 'today' && argument !== 'week' && argument !== 'review') {
       return { text: USAGE }

@@ -20,7 +20,7 @@ const PANE = {
 } as const
 
 const command = (args: string) => ({
-  command: 'worklog',
+  command: 'wl',
   args,
   origin: { kind: 'composer' as const },
   presentation: { isFullscreen: true, columns: 120 },
@@ -122,14 +122,14 @@ const hours = [
   block({ id: 3, duration_seconds: 1800, ignored_at: '2026-10-07T10:00:00Z' }),
 ]
 
-test('session start registers /worklog with its argument hint', async ($, on) => {
+test('session start registers /wl with its argument hint', async ($, on) => {
   const seen = world(on)
   mock.clock(on)
   await $.session.start(SESSION)
-  expect(seen.registered).toEqual([{ name: 'worklog', argumentHint: 'today|week|review' }])
+  expect(seen.registered).toEqual([{ name: 'wl', argumentHint: 'today|week|review' }])
 })
 
-test('/worklog today prints the hours of the blocks that are neither personal nor ignored', async ($, on) => {
+test('/wl today prints the hours of the blocks that are neither personal nor ignored', async ($, on) => {
   const seen = world(on, { blocks: hours })
   mock.clock(on)
   await $.session.start(SESSION)
@@ -138,7 +138,7 @@ test('/worklog today prints the hours of the blocks that are neither personal no
   expect(seen.requested).toContain(`http://127.0.0.1:9323/days/${TODAY}`)
 })
 
-test('/worklog week prints the sum of the logged seconds of the week of today', async ($, on) => {
+test('/wl week prints the sum of the logged seconds of the week of today', async ($, on) => {
   const seen = world(on, {
     closeoutDays: [closeoutDay('2026-10-05', 8 * 3600), closeoutDay('2026-10-06', 1800)],
   })
@@ -153,11 +153,11 @@ test('any other argument, or none, prints the usage', async ($, on) => {
   world(on)
   mock.clock(on)
   await $.session.start(SESSION)
-  expect((await $.command.run(command('year'))).text).toBe('usage: /worklog today|week|review')
-  expect((await $.command.run(command(''))).text).toBe('usage: /worklog today|week|review')
+  expect((await $.command.run(command('year'))).text).toBe('usage: /wl today|week|review')
+  expect((await $.command.run(command(''))).text).toBe('usage: /wl today|week|review')
 })
 
-test('/worklog today says so when the daemon is down', async ($, on) => {
+test('/wl today says so when the daemon is down', async ($, on) => {
   world(on, { isDown: true })
   mock.clock(on)
   await $.session.start(SESSION)
@@ -166,7 +166,7 @@ test('/worklog today says so when the daemon is down', async ($, on) => {
   expect(result.text).toContain('connection refused')
 })
 
-test('/worklog review opens a focused pane that closes on Escape', async ($, on) => {
+test('/wl review opens a focused pane that closes on Escape', async ($, on) => {
   const seen = world(on, { blocks: hours })
   mock.clock(on)
   await $.session.start(SESSION)
