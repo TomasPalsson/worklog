@@ -105,6 +105,24 @@ export function shiftWeek(monday: string, deltaWeeks: number): string {
   return shiftDay(monday, deltaWeeks * 7);
 }
 
+export function monthOf(day: string): string {
+  return day.slice(0, 7);
+}
+
+export function shiftMonth(month: string, delta: number): string {
+  const [y, m] = month.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1 + delta, 1)).toISOString().slice(0, 7);
+}
+
+/** Whole Mon..Sun weeks covering `month` (28–42 days). */
+export function monthGrid(month: string): { from: string; to: string; days: string[] } {
+  const from = mondayOf(`${month}-01`);
+  const lastDay = shiftDay(`${shiftMonth(month, 1)}-01`, -1);
+  const to = shiftDay(mondayOf(lastDay), 6);
+  const count = (Date.parse(to) - Date.parse(from)) / 86_400_000 + 1;
+  return { from, to, days: Array.from({ length: count }, (_, i) => shiftDay(from, i)) };
+}
+
 /** The 7 ISO days starting at `monday`, in order Mon..Sun. */
 export function weekDays(monday: string): string[] {
   return Array.from({ length: 7 }, (_, i) => shiftDay(monday, i));
