@@ -94,8 +94,12 @@ function typedAction(editing: 'ticket' | 'description', value: string): ReviewAc
 }
 
 function blockLabel(block: ReviewBlock): string {
-  const personal = block.is_personal ? ' [personal]' : ''
-  return `${block.started_at.slice(11, 16)} ${formatHours(block.duration_seconds)} ${block.jira_issue ?? '-'}${personal} ${block.description ?? ''}`
+  const description = block.description ?? ''
+  const text = description.length > 40 ? `${description.slice(0, 39)}…` : description
+  const time = `${block.started_at.slice(11, 16)}–${block.ended_at.slice(11, 16)}`
+  const hours = formatHours(block.duration_seconds).padStart(5)
+  const ticket = (block.jira_issue ?? '—').padEnd(12)
+  return `${time}  ${hours}  ${ticket}  ${block.is_personal ? 'personal  ' : ''}${text}`.trimEnd()
 }
 
 async function reviewPane($: EngineInterface, event: RenderInput<'Pane'>) {
@@ -103,36 +107,50 @@ async function reviewPane($: EngineInterface, event: RenderInput<'Pane'>) {
   const io = await makeIo($)
   const { blocks, editing, error, selected } = await read($, review)
   const current = blocks.find(block => block.id === selected)
+  const personalSeconds = blocks
+    .filter(block => block.is_personal)
+    .reduce((total, block) => total + block.duration_seconds, 0)
 
   return (
-    <Box flexDirection="column">
-      {error !== undefined && <Text color="red">{error}</Text>}
+    <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
       {current === undefined ? (
-        <Text dimColor>No blocks today.</Text>
+        <>
+          {error !== undefined && <Text color="red">{error}</Text>}
+          <Text dimColor>Nothing to review today.</Text>
+        </>
       ) : (
-        <Box flexDirection="column">
-          <Select
-            key="block"
-            value={String(current.id)}
-            options={blocks.map(block => ({ value: String(block.id), label: blockLabel(block) }))}
-            onSelect={value => change($, { selected: Number(value) })}
-          />
-          <Box>
-            <Button key="personal" hotkey="p" onPress={() => sendReview($, io, block => ({ kind: 'personal', is_personal: !block.is_personal }))}>
-              personal
+        <>
+          <Box justifyContent="space-between">
+            <Text bold>{current.day}</Text>
+            <Text dimColor>
+              work {formatHours(workSeconds(blocks))} · personal {formatHours(personalSeconds)}
+            </Text>
+          </Box>
+          {error !== undefined && <Text color="red">{error}</Text>}
+          <Box marginY={1}>
+            <Select
+              key="block"
+              value={String(current.id)}
+              options={blocks.map(block => ({ value: String(block.id), label: blockLabel(block) }))}
+              onSelect={value => change($, { selected: Number(value) })}
+            />
+          </Box>
+          <Box gap={3}>
+            <Button plain key="personal" hotkey="p" onPress={() => sendReview($, io, block => ({ kind: 'personal', is_personal: !block.is_personal }))}>
+              {current.is_personal ? 'work' : 'personal'}
             </Button>
-            <Button key="ignore" hotkey="i" onPress={() => sendReview($, io, () => ({ kind: 'ignore', ignored: true }))}>
+            <Button plain key="ignore" hotkey="i" onPress={() => sendReview($, io, () => ({ kind: 'ignore', ignored: true }))}>
               ignore
             </Button>
-            <Button key="ticket" hotkey="t" onPress={() => change($, { editing: 'ticket' })}>
+            <Button plain key="ticket" hotkey="t" onPress={() => change($, { editing: 'ticket' })}>
               ticket
             </Button>
-            <Button key="description" hotkey="d" onPress={() => change($, { editing: 'description' })}>
+            <Button plain key="description" hotkey="d" onPress={() => change($, { editing: 'description' })}>
               description
             </Button>
           </Box>
           {editing !== undefined && (
-            <Box>
+            <Box marginTop={1} gap={2}>
               <Input
                 key="edit"
                 label={editing}
@@ -140,12 +158,12 @@ async function reviewPane($: EngineInterface, event: RenderInput<'Pane'>) {
                 onSubmit={value => sendReview($, io, () => typedAction(editing, value))}
                 onCancel={() => change($, { editing: undefined })}
               />
-              <Button key="cancel" onPress={() => change($, { editing: undefined })}>
+              <Button plain dimColor key="cancel" onPress={() => change($, { editing: undefined })}>
                 cancel
               </Button>
             </Box>
           )}
-        </Box>
+        </>
       )}
     </Box>
   )

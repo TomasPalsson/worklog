@@ -256,3 +256,37 @@ test('a refused action shows the daemon error text in the pane', async ($, on) =
   await $.ui.press({ plugin: 'worklog', key: 'personal' })
   expect(textOf((await $.ui.render(PANE)) as Node)).toContain('block already synced')
 })
+
+test('the Select labels are aligned columns: time range, hours, ticket, personal marker, description', async ($, on) => {
+  world(on, {
+    blocks: [
+      block({
+        id: 1,
+        started_at: '2026-10-07T11:44:00Z',
+        ended_at: '2026-10-07T12:19:00Z',
+        duration_seconds: 35 * 60,
+        is_personal: true,
+      }),
+      block({ id: 2, jira_issue: 'GOJ-1', description: 'x'.repeat(50) }),
+    ],
+  })
+  mock.clock(on)
+  await $.session.start(SESSION)
+  await $.command.run(command('review'))
+  const tree = (await $.ui.render(PANE)) as Node
+  const options = elementsOf(tree, 'Select').flatMap(select => select.props?.options as { label: string }[])
+  expect(options[0].label).toBe(`11:44–12:19   0h35  —${' '.repeat(13)}personal`)
+  expect(options[1].label).toBe(`08:00–09:00   1h00  GOJ-1${' '.repeat(9)}${'x'.repeat(39)}…`)
+})
+
+test('the personal button reads work for a personal block and personal otherwise', async ($, on) => {
+  world(on, { blocks: hours })
+  mock.clock(on)
+  await $.session.start(SESSION)
+  await $.command.run(command('review'))
+  const label = async () =>
+    elementsOf((await $.ui.render(PANE)) as Node, 'Button').find(b => b.props?.key === 'personal')?.props?.label
+  expect(await label()).toBe('personal')
+  await $.ui.select({ plugin: 'worklog', key: 'block', value: '2' })
+  expect(await label()).toBe('work')
+})
