@@ -3,6 +3,7 @@
 //! ticket with a ticket line this week, with that week's hours. Dead statuses
 //! (Backlog, Cancel, ..) are off the board even with hours this week.
 
+use crate::status_hints::done_hints;
 use crate::tempo_hub_contract::{StatusCategory, TaskRow, TasksResponse};
 use crate::tempo_lines;
 use crate::ticket_activity::{active_keys, is_dead_status};
@@ -55,6 +56,10 @@ pub fn tasks(
         }
     }
 
+    let mut hints: HashMap<String, _> = done_hints(conn)?
+        .into_iter()
+        .map(|h| (h.key.clone(), h))
+        .collect();
     let active = active_keys(conn, today)?;
     let keys: BTreeSet<&String> = cached
         .iter()
@@ -94,6 +99,7 @@ pub fn tasks(
                 day_seconds: day_seconds
                     .get(key)
                     .map_or_else(|| vec![0; DAYS], |d| d.to_vec()),
+                done_hint: hints.remove(key),
             }
         })
         .collect();

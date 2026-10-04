@@ -334,3 +334,49 @@ fn done_ticket_worked_this_week_lands_in_done() {
         Some(StatusCategory::Done)
     );
 }
+
+#[test]
+fn merged_pr_fills_done_hint_only_on_that_card() {
+    use crate::jira_assist_contract::HintReason;
+    use crate::models::Event;
+    use crate::repo;
+    let conn = db::open_memory().unwrap();
+    ticket(&conn, "GENAI-7", "Ship it", Some("indeterminate"), 0);
+    ticket(&conn, "GENAI-8", "Other", Some("indeterminate"), 0);
+    worked(&conn, "GENAI-7", "2026-09-29");
+    worked(&conn, "GENAI-8", "2026-09-29");
+    let raw = serde_json::json!({
+        "kind": "commit", "sha": "", "body": "", "local_folder": null,
+        "merged_at": "2026-09-30T11:00:00Z",
+    });
+    repo::upsert_event(
+        &conn,
+        &Event {
+            id: None,
+            source: "github_pr".into(),
+            source_id: "1".into(),
+            started_at: "2026-09-29T09:00:00Z".into(),
+            ended_at: None,
+            duration_seconds: None,
+            title: "PR #42: GENAI-7 change".into(),
+            details: None,
+            repo: Some("acme/app".into()),
+            project_path: None,
+            jira_issue: Some("GENAI-7".into()),
+            session_id: None,
+            tempo_worklog_id: None,
+            raw_json: Some(raw.to_string()),
+        },
+    )
+    .unwrap();
+    let response = board(&conn);
+    let hinted = response.tasks.iter().find(|t| t.key == "GENAI-7").unwrap();
+    let hint = hinted.done_hint.as_ref().unwrap();
+    assert_eq!(hint.key, "GENAI-7");
+    assert!(matches!(
+        hint.reason,
+        HintReason::PrMerged { number: 42, .. }
+    ));
+    let plain = response.tasks.iter().find(|t| t.key == "GENAI-8").unwrap();
+    assert!(plain.done_hint.is_none());
+}

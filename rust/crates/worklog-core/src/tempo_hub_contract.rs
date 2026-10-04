@@ -71,6 +71,9 @@ pub struct TaskRow {
     pub updated: Option<String>,
     /// Effective seconds per day of the requested week, Monday first, always 7 entries.
     pub day_seconds: Vec<i64>,
+    /// Suggested move to Done (merged PR); never applied without the Owner's yes.
+    #[serde(default)]
+    pub done_hint: Option<crate::jira_assist_contract::StatusHint>,
 }
 
 /// `GET /tasks?monday=` response.
