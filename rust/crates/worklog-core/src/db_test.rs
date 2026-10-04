@@ -1006,3 +1006,22 @@ fn account_clue_tables_exist_and_schema_version_is_20() {
     )
     .expect_err("account_id is the primary key");
 }
+
+#[test]
+fn tempo_day_dismissals_table_is_keyed_by_day_without_a_version_bump() {
+    let conn = open_memory().unwrap();
+    conn.execute(
+        "INSERT INTO tempo_day_dismissals (day, reason, dismissed_at)
+         VALUES ('2026-10-02', 'sick day', '2026-10-03T08:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO tempo_day_dismissals (day, reason, dismissed_at)
+         VALUES ('2026-10-02', 'again', '2026-10-03T09:00:00Z')",
+        [],
+    )
+    .expect_err("day is the primary key");
+    assert_eq!(SCHEMA_VERSION, 20);
+    assert_eq!(current_version(&conn).unwrap(), 20);
+}
