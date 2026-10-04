@@ -1,78 +1,117 @@
+import type { ReactNode } from "react";
 import Link from "next/link";
-import { ChevronLeft, ChevronRight } from "lucide-react";
-import { formatWeekRange, mondayOf, monthOf, shiftDay, shiftMonth, shiftWeek } from "@/lib/format";
-import type { LoggedRange } from "@/lib/logged_contract";
-import { dayTitle, hours, monthTitle } from "./LoggedEntries";
+import { mondayOf, monthOf, shiftDay, shiftMonth, shiftWeek } from "@/lib/format";
+import type { LoggedDay, LoggedRange } from "@/lib/logged_contract";
+import { DayViewIcon, MonthViewIcon, NextIcon, PrevIcon, WeekViewIcon } from "./icons";
+import { dayLabel, dayTitle, hours, monthTitle, weekTitle } from "./LoggedEntries";
 
+type View = "month" | "week" | "day";
 type Props = {
-  view: "month" | "week" | "day";
+  view: View;
   /** The month (YYYY-MM), Monday or day the page shows. */
   id: string;
   range: LoggedRange;
+  /** The LoggedFetch client component: sits at the right of the stats row. */
+  fetch?: ReactNode;
 };
 
 const NAMES = { month: ["This month", "month"], week: ["This week", "week"], day: ["Today", "day"] } as const;
+const TITLE = { month: monthTitle, week: weekTitle, day: dayTitle };
+const shiftBy = { month: shiftMonth, week: shiftWeek, day: shiftDay };
 
-const TITLE = {
-  month: monthTitle,
-  week: (monday: string) => `Week of ${formatWeekRange(monday)}`,
-  day: dayTitle,
-};
-
-export function LoggedHeader({ view, id, range }: Props) {
-  const today = range.today;
-  const shift = { month: shiftMonth, week: shiftWeek, day: shiftDay }[view];
+function Tools({ view, id, today }: { view: View; id: string; today: string }) {
   const href = (v: string) => `/logged/${view}/${v}`;
   const here = { month: monthOf(today), week: mondayOf(today), day: today }[view];
   const anchor = { month: here === id ? today : `${id}-01`, week: here === id ? today : id, day: id }[view];
   const [thisLabel, noun] = NAMES[view];
+  const shift = shiftBy[view];
+  const views = [
+    ["Month view", "month", `/logged/month/${monthOf(anchor)}`, MonthViewIcon],
+    ["Week view", "week", `/logged/week/${mondayOf(anchor)}`, WeekViewIcon],
+    ["Day view", "day", `/logged/day/${anchor}`, DayViewIcon],
+  ] as const;
+  return (
+    <nav className="logged-tools" aria-label={`${noun} navigation`}>
+      {views.map(([label, v, to, Icon]) => (
+        <Link
+          key={v}
+          href={to}
+          className="logged-tool"
+          aria-label={label}
+          data-tip={label}
+          aria-current={v === view ? "page" : undefined}
+        >
+          <Icon size={18} />
+        </Link>
+      ))}
+      <span className="logged-tools-gap" />
+      <Link href={href(shift(id, -1))} className="logged-tool" aria-label={`previous ${noun}`} data-tip={`Previous ${noun}`}>
+        <PrevIcon size={18} />
+      </Link>
+      {here === id ? (
+        <span className="logged-this" aria-disabled="true" aria-current="true">
+          {thisLabel}
+        </span>
+      ) : (
+        <Link href={href(here)} className="logged-this">
+          {thisLabel}
+        </Link>
+      )}
+      <Link href={href(shift(id, 1))} className="logged-tool" aria-label={`next ${noun}`} data-tip={`Next ${noun}`}>
+        <NextIcon size={18} />
+      </Link>
+    </nav>
+  );
+}
 
-  const shown = view === "month" ? range.days.filter((d) => monthOf(d.day) === id) : range.days;
+function Stat({ label, value, children, tone }: { label: string; value: string | number; children?: ReactNode; tone?: "amber" | "muted" }) {
+  return (
+    <div className="logged-stat" data-tone={tone}>
+      <dt>{label}</dt>
+      <dd>{value}</dd>
+      {children}
+    </div>
+  );
+}
+
+function Stats({ shown, showShort }: { shown: LoggedDay[]; showShort: boolean }) {
   const logged = shown.reduce((s, d) => s + d.logged_seconds, 0);
   const required = shown.reduce((s, d) => s + (d.required_seconds ?? 0), 0);
-  const short = shown.filter((d) => d.state === "under").length;
-
-  const views = [
-    ["Month", "month", `/logged/month/${monthOf(anchor)}`],
-    ["Week", "week", `/logged/week/${mondayOf(anchor)}`],
-    ["Day", "day", `/logged/day/${anchor}`],
-  ] as const;
-
+  const short = shown.filter((d) => d.state === "under");
   return (
-    <header className="day-header">
-      <div className="day-title">
+    <dl className="logged-stat-list">
+      <Stat label="Logged" value={hours(logged)} />
+      <Stat label="Target" value={hours(required)} />
+      {showShort && (
+        <Stat label="Short" value={short.length} tone={short.length > 0 ? "amber" : "muted"}>
+          {short.length > 0 && (
+            <dd className="logged-short-days">
+              {short.map((d, i) => (
+                <span key={d.day}>
+                  {i > 0 && ", "}
+                  <Link href={`/logged/day/${d.day}`}>{dayLabel(d.day, "short")}</Link>
+                </span>
+              ))}
+            </dd>
+          )}
+        </Stat>
+      )}
+    </dl>
+  );
+}
+
+export function LoggedHeader({ view, id, range, fetch }: Props) {
+  const shown = view === "month" ? range.days.filter((d) => monthOf(d.day) === id) : range.days;
+  return (
+    <header className="day-header logged-head">
+      <div className="logged-title-row">
         <h1>{TITLE[view](id)}</h1>
-        {view !== "day" && (
-          <div className="day-total">
-            {hours(logged)} logged · {hours(required)} required
-            {short > 0 && <span className="logged-short-count"> · {short} short</span>}
-          </div>
-        )}
+        <Tools view={view} id={id} today={range.today} />
       </div>
-      <nav className="day-nav" aria-label={`${noun} navigation`}>
-        <div className="logged-views">
-          {views.map(([label, v, to]) => (
-            <Link key={v} href={to} aria-current={v === view ? "page" : undefined}>
-              {label}
-            </Link>
-          ))}
-        </div>
-        <Link href={href(shift(id, -1))} className="day-nav-btn" aria-label={`previous ${noun}`}>
-          <ChevronLeft size={16} strokeWidth={1.75} />
-        </Link>
-        {here === id ? (
-          <span className="day-nav-btn today" aria-disabled="true" aria-current="true">
-            {thisLabel}
-          </span>
-        ) : (
-          <Link href={href(here)} className="day-nav-btn today">
-            {thisLabel}
-          </Link>
-        )}
-        <Link href={href(shift(id, 1))} className="day-nav-btn" aria-label={`next ${noun}`}>
-          <ChevronRight size={16} strokeWidth={1.75} />
-        </Link>
-      </nav>
+      <div className="logged-stats">
+        {view !== "day" ? <Stats shown={shown} showShort /> : <span />}
+        {fetch}
+      </div>
     </header>
   );
 }

@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { RefreshCw } from "lucide-react";
 import { refreshLogged } from "@/app/actions-logged";
+import { RefreshIcon } from "./icons";
 
 type Status = { s: "fetching" } | { s: "ok" } | { s: "failed"; error: string };
 
@@ -18,6 +18,27 @@ const clock = (iso: string) => (
     {new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
   </time>
 );
+
+function Message({ status, stored }: { status: Status; stored: string | null }) {
+  const failed = status.s === "failed";
+  return (
+    <p
+      aria-live="polite"
+      role={failed ? "alert" : undefined}
+      className={failed ? "logged-fetch-warn" : undefined}
+      title={failed ? status.error : undefined}
+    >
+      {status.s === "fetching" && <>Fetching from Tempo…{stored && <> Showing data from {clock(stored)}.</>}</>}
+      {status.s === "ok" && (stored ? <>From Tempo · updated {clock(stored)}</> : "From Tempo")}
+      {failed && (
+        <>
+          Couldn&apos;t reach Tempo — {stored ? <>showing data from {clock(stored)}.</> : "nothing stored yet."}{" "}
+          {reason(status.error)}
+        </>
+      )}
+    </p>
+  );
+}
 
 export function LoggedFetch({ from, to, pulledAt }: { from: string; to: string; pulledAt: string | null }) {
   const router = useRouter();
@@ -50,27 +71,19 @@ export function LoggedFetch({ from, to, pulledAt }: { from: string; to: string; 
 
   const failed = status.s === "failed";
   const fetching = status.s === "fetching";
+  const message = <Message status={status} stored={stored} />;
+  // The root is display: contents so the status + button stack at the right of the
+  // header's stats row while the error box spans the full width under it.
   return (
     <div className="logged-fetch">
-      <p
-        aria-live="polite"
-        role={failed ? "alert" : undefined}
-        className={failed ? "logged-fetch-warn" : undefined}
-        title={failed ? status.error : undefined}
-      >
-        {fetching && <>Fetching from Tempo…{stored && <> Showing data from {clock(stored)}.</>}</>}
-        {status.s === "ok" && (stored ? <>From Tempo · updated {clock(stored)}</> : "From Tempo")}
-        {failed && (
-          <>
-            Couldn&apos;t reach Tempo — {stored ? <>showing data from {clock(stored)}.</> : "nothing stored yet."}{" "}
-            {reason(status.error)}
-          </>
-        )}
-      </p>
-      <button type="button" className="action-btn" onClick={() => void run()} disabled={fetching} aria-busy={fetching}>
-        <RefreshCw size={14} className={fetching ? "logged-spin" : undefined} />
-        Refresh from Tempo
-      </button>
+      <div className="logged-fetch-stack">
+        {!failed && message}
+        <button type="button" className="action-btn" onClick={() => void run()} disabled={fetching} aria-busy={fetching}>
+          <RefreshIcon size={16} className={fetching ? "logged-spin" : undefined} />
+          Refresh from Tempo
+        </button>
+      </div>
+      {failed && message}
     </div>
   );
 }

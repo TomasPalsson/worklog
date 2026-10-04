@@ -11,8 +11,8 @@ describe("AppNav", () => {
   it("renders the items in order", () => {
     path = "/";
     const { container } = render(<AppNav />);
-    const items = [...container.querySelectorAll(".app-nav-links > *")].map((e) => e.textContent);
-    expect(items).toEqual(["Day", "Week", "Tasks", "Logged", "Settings", "Billing"]);
+    const items = [...container.querySelectorAll(".app-rail-item")].map((e) => e.textContent).filter(Boolean);
+    expect(items).toEqual(["Day", "Week", "Tasks", "Logged", "Billing", "Settings", "System"]);
   });
 
   it("links Billing to /billing and Settings is a button", () => {

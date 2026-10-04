@@ -30,10 +30,14 @@ export default async function LoggedWeekPage({ params }: { params: Promise<{ mon
   }
 
   return (
-    <div className="logged-page">
-      <LoggedHeader view="week" id={monday} range={range} />
-      <LoggedFetch from={monday} to={to} pulledAt={range.pulled_at} />
+    <>
+      <LoggedHeader
+        view="week"
+        id={monday}
+        range={range}
+        fetch={<LoggedFetch from={monday} to={to} pulledAt={range.pulled_at} />}
+      />
       <LoggedWeek range={range} />
-    </div>
+    </>
   );
 }

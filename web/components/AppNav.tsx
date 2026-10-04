@@ -1,21 +1,22 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { Fragment } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { todayISO } from "@/lib/format";
+import { BillingIcon, DayIcon, LoggedIcon, LogoMark, TasksIcon, WeekIcon } from "./icons";
 import { SettingsPanel } from "./SettingsPanel";
 import { ThemeToggle } from "./ThemeToggle";
 
 const DAY = /^\/(\d{4}-\d{2}-\d{2})$/;
 
 const LINKS = [
-  ["day", "Day", "/"],
-  ["week", "Week", "/week"],
-  ["tasks", "Tasks", "/tasks"],
-  ["logged", "Logged", "/logged"],
-  ["settings", "Settings", ""],
-  ["billing", "Billing", "/billing"],
+  ["day", "Day", "/", DayIcon],
+  ["week", "Week", "/week", WeekIcon],
+  ["tasks", "Tasks", "/tasks", TasksIcon],
+  ["logged", "Logged", "/logged", LoggedIcon],
+  ["billing", "Billing", "/billing", BillingIcon],
+  ["settings", "Settings", "", null],
 ] as const;
 
 function sectionOf(path: string): string {
@@ -26,33 +27,30 @@ function sectionOf(path: string): string {
 export function AppNav() {
   const path = usePathname() ?? "/";
   const current = sectionOf(path);
-  const row = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const el = row.current?.querySelector<HTMLElement>('[aria-current="page"]');
-    el?.scrollIntoView?.({ inline: "nearest", block: "nearest" });
-  }, []);
 
   return (
-    <nav className="app-nav" aria-label="Main">
-      <span className="app-nav-mark">worklog</span>
-      <div className="app-nav-links" ref={row}>
-        {LINKS.map(([key, label, href]) =>
-          key === "settings" ? (
-            <SettingsPanel key={key} day={DAY.exec(path)?.[1] ?? todayISO()} variant="menu" />
-          ) : (
+    <nav className="app-rail" aria-label="Main">
+      <Link href="/" className="app-rail-logo" aria-label="worklog home">
+        <LogoMark size={28} />
+      </Link>
+      {LINKS.map(([key, label, href, Icon]) =>
+        Icon ? (
+          <Fragment key={key}>
+            {key === "billing" && <span className="app-rail-spacer" aria-hidden="true" />}
             <Link
-              key={key}
               href={href}
-              className="app-nav-link"
+              className="app-rail-item"
               aria-current={key === current ? "page" : undefined}
             >
-              {label}
+              <Icon />
+              <span className="app-rail-label">{label}</span>
             </Link>
-          ),
-        )}
-      </div>
-      <ThemeToggle />
+          </Fragment>
+        ) : (
+          <SettingsPanel key={key} day={DAY.exec(path)?.[1] ?? todayISO()} variant="menu" />
+        ),
+      )}
+      <ThemeToggle className="app-rail-item" />
     </nav>
   );
 }

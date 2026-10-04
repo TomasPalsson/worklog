@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Loader2, Settings, X } from "lucide-react";
+import { SettingsIcon } from "./icons";
 import type { SettingsView } from "@/lib/types";
 import { fetchSettings, saveSettings } from "@/app/actions";
 import { toast } from "@/lib/toast";
@@ -16,7 +17,7 @@ interface Props {
   /** The day page the panel was opened from — saving revalidates it so a
    * classification change is reflected without a manual reload. */
   day: string;
-  /** "menu" renders the trigger as a text link for the shared nav. */
+  /** "menu" renders the trigger as a labelled rail item. */
   variant?: "icon" | "menu";
 }
 
@@ -110,11 +111,12 @@ export function SettingsPanel({ day, variant = "icon" }: Props) {
       {variant === "menu" ? (
         <button
           type="button"
-          className="app-nav-link"
+          className="app-rail-item"
           aria-haspopup="dialog"
           onClick={() => setOpen(true)}
         >
-          Settings
+          <SettingsIcon />
+          <span className="app-rail-label">Settings</span>
         </button>
       ) : (
         <button

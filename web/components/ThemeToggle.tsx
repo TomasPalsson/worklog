@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Monitor, Moon, Sun } from "lucide-react";
+import { MoonIcon, SunIcon, SystemThemeIcon } from "./icons";
 import {
   applyThemeAttr,
   readThemeCookie,
@@ -20,9 +20,13 @@ function nextState(current: ThemePreference): ThemePreference {
 }
 
 function iconFor(state: ThemePreference) {
-  if (state === "light") return <Sun size={15} strokeWidth={1.75} />;
-  if (state === "dark") return <Moon size={15} strokeWidth={1.75} />;
-  return <Monitor size={15} strokeWidth={1.75} />;
+  if (state === "light") return <SunIcon />;
+  if (state === "dark") return <MoonIcon />;
+  return <SystemThemeIcon />;
+}
+
+function shortFor(state: ThemePreference): string {
+  return state === "system" ? "System" : state === "light" ? "Light" : "Dark";
 }
 
 function labelFor(state: ThemePreference): string {
@@ -36,7 +40,7 @@ function labelFor(state: ThemePreference): string {
  * state comes from the cookie so SSR + client agree on first paint.
  * The inline no-flash script in layout.tsx handles the pre-React frame.
  */
-export function ThemeToggle() {
+export function ThemeToggle({ className = "theme-toggle" }: { className?: string }) {
   // Always start "system" on the server so hydration doesn't mismatch.
   // A useEffect below reconciles with the cookie as soon as we hit the
   // client.
@@ -62,12 +66,17 @@ export function ThemeToggle() {
   return (
     <button
       type="button"
-      className="theme-toggle"
+      className={className}
       onClick={toggle}
       aria-label={labelFor(state)}
-      data-tip={labelFor(state)}
+      data-tip={`Theme: ${shortFor(state).toLowerCase()}`}
     >
       {iconFor(state)}
+      {className !== "theme-toggle" && (
+        <span className="app-rail-label app-rail-label--phone" aria-hidden="true">
+          {shortFor(state)}
+        </span>
+      )}
     </button>
   );
 }
