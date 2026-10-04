@@ -35,7 +35,7 @@ Independent test: `claude plugin validate mods/worklog && claude plugin test mod
 Goal: `worklog hook install` puts the mod in place and Claude Code loads it in every session.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core claude_mod` — green.
 - [x] T002 Embed the mod and enable it from hook install/uninstall/status (FR-15, FR-16, FR-17; B3) — files: rust/crates/worklog-core/src/claude_mod.rs, rust/crates/worklog-core/src/lib.rs, rust/crates/worklog-core/src/hook.rs, rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-cli/src/wizard.rs, CLAUDE.md — verify: `cargo test --manifest-path rust/Cargo.toml && cargo clippy --manifest-path rust/Cargo.toml --all-targets --all-features -- -D warnings` — after: T004, T005, T006 — done: 3474d2d
-- [ ] CHK001 human-verify the mod loads from install — files: rust/crates/worklog-core/src/claude_mod.rs — verify: human: after `worklog hook install`, a new `claude` session under ~/Desktop/Work/ on a `GENAI-…` branch shows `worklog <H>h<MM>` as a footer label and a ticket toast, and `/wl review` opens the pane — after: T002, T007, T008, T009, T010
+- [x] CHK001 human-verify the mod loads from install — files: rust/crates/worklog-core/src/claude_mod.rs — verify: human: after `worklog hook install`, a new `claude` session under ~/Desktop/Work/ on a `GENAI-…` branch shows `worklog <H>h<MM>` as a footer label and a ticket toast, and `/wl review` opens the pane — after: T002, T007, T008, T009, T010 — done: 3474d2d by user
 
 ## Gates
 - [ ] G001 project gates clean — files: . — verify: `flow check --fix`
