@@ -71,6 +71,12 @@ bash tests/install/smoke.sh
 - The billing registry lives in SQLite and is edited **only** through
   the review UI (Settings-adjacent Billing panel → daemon
   `/billing/*`). Do not add a config-file path for it.
+- The Claude Code mod (`mods/worklog/`) is embedded by
+  `claude_mod.rs` (closed file list, no tests) and written to
+  `<data dir>/claude-mod` by `worklog hook install`, then registered by
+  appending that path to `env.CLAUDE_CODE_PLUGIN_DIRS` in
+  `~/.claude/settings.json`. Adding a mod file means adding it to the
+  `FILES` list.
 - The embedded Ed25519 release pubkey lives at
   `rust/crates/worklog-core/src/updater/pubkey.rs`. The matching
   private key lives only in the `WORKLOG_RELEASE_PRIVATE_KEY` GHA

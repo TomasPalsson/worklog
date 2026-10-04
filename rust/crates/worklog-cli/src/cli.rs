@@ -9,7 +9,7 @@ use std::io::{self, IsTerminal, Read, Write};
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 use worklog_core::{
-    billing, billing_registry, block_service,
+    billing, billing_registry, block_service, claude_mod,
     collectors::{
         claude_transcripts as claude_transcripts_col, fish as fish_col, gcal as gcal_col,
         github as gh, jira as jira_col, reflog as reflog_col, slack as slack_col,
@@ -1300,6 +1300,7 @@ fn cmd_secret_rm<W: Write>(key: &str, out: &mut W) -> Result<()> {
 fn cmd_hook_install<W: Write>(command: Option<String>, out: &mut W, json: bool) -> Result<()> {
     let cmd = command.unwrap_or_else(hook::default_command);
     let status = hook::install(&cmd)?;
+    let mod_dir = claude_mod::install(&Paths::resolve()?.data_dir)?;
     if json {
         writeln!(out, "{}", serde_json::to_string_pretty(&status)?)?;
     } else {
@@ -1310,12 +1311,18 @@ fn cmd_hook_install<W: Write>(command: Option<String>, out: &mut W, json: bool) 
             status.events.len()
         )?;
         writeln!(out, "  command: {cmd}")?;
+        writeln!(
+            out,
+            "  mod:     {}",
+            worklog_core::paths::short_display(&mod_dir)
+        )?;
     }
     Ok(())
 }
 
 fn cmd_hook_uninstall<W: Write>(out: &mut W, json: bool) -> Result<()> {
     let status = hook::uninstall()?;
+    claude_mod::uninstall(&Paths::resolve()?.data_dir)?;
     if json {
         writeln!(out, "{}", serde_json::to_string_pretty(&status)?)?;
     } else {
@@ -1330,8 +1337,11 @@ fn cmd_hook_uninstall<W: Write>(out: &mut W, json: bool) -> Result<()> {
 
 fn cmd_hook_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
     let status = hook::status()?;
+    let mod_installed = claude_mod::is_installed(&Paths::resolve()?.data_dir);
     if json {
-        writeln!(out, "{}", serde_json::to_string_pretty(&status)?)?;
+        let mut value = serde_json::to_value(&status)?;
+        value["mod_installed"] = mod_installed.into();
+        writeln!(out, "{}", serde_json::to_string_pretty(&value)?)?;
         return Ok(());
     }
     writeln!(
@@ -1348,6 +1358,11 @@ fn cmd_hook_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
     } else {
         writeln!(out, "installed: no")?;
     }
+    writeln!(
+        out,
+        "mod:       {}",
+        if mod_installed { "yes" } else { "no" }
+    )?;
     Ok(())
 }
 
