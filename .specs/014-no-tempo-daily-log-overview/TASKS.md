@@ -1,5 +1,6 @@
+Approved: 2026-10-04 by user
 # Tasks — Logged: see what's really in Tempo, one home for Jira/Tempo
-Spec: spec.md · Design: design.md · Base: 96ee55d · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && cd web && bun test`
+Spec: spec.md · Design: design.md · Base: 67fc0ec · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && cd web && bun test`
 
 ## Behaviors
 | ID | Given / When / Then | Task | Proven by |
