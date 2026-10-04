@@ -4,3 +4,4 @@
 2026-09-30 · 010-compress-blocks-after-90-days · PR #72 merged (c2446bb) · blocks kept forever; 90-day-old raw events compressed into per-block cards
 2026-10-01 · 011-tempo-ticket-auto-pick · PR #74 merged (00d6e27) · ticket origin (event/auto/manual) with a manual lock, stored ticket-line text + union hours + hours override synced to Tempo
 2026-10-02 · 012-tempo-hub · PR #76 merged (17857e1) · My Tasks (Jira status, comments, AI draft), Tempo read-back guard against double-sending, week close-out with gap flag and one-click Sync week
+2026-10-04 · 013-jira-assistant · PR #93 merged (7dee46f) · worklog ticket get/start/find/move/create/hints + account suggest/relearn with a learned clue log, GENAI-only writes, ADF ticket text, merged-PR Done hints at session start and on My Tasks
