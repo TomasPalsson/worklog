@@ -1,3 +1,4 @@
+import { atom, read, update } from 'claude-code'
 import type { EngineInterface, On, RenderInput } from 'claude-code'
 import { REVIEW_PANE_ID } from './contract'
 import type { DaySummary, Io, ReviewAction, WeekCloseout } from './contract'
@@ -22,11 +23,13 @@ type ReviewState = {
 
 const USAGE = 'usage: /worklog today|week|review'
 
-const review: ReviewState = { blocks: [], selected: undefined, editing: undefined, error: undefined }
+const review = atom(
+  { plugin: 'worklog', key: 'review' } as const,
+  { blocks: [], selected: undefined, editing: undefined, error: undefined } as ReviewState,
+)
 
 function change($: EngineInterface, patch: Partial<ReviewState>): Promise<unknown> {
-  Object.assign(review, patch)
-  return $.ui.invalidate('ui.render')
+  return update($, review, state => ({ ...state, ...patch }))
 }
 
 async function makeIo($: EngineInterface): Promise<Io> {
@@ -47,12 +50,12 @@ async function loadReview($: EngineInterface, io: Io): Promise<void> {
     return
   }
   const blocks = summary.value.blocks.filter(block => block.ignored_at === null)
-  await change($, {
+  await update($, review, state => ({
     blocks,
-    selected: blocks.some(block => block.id === review.selected) ? review.selected : blocks[0]?.id,
+    selected: blocks.some(block => block.id === state.selected) ? state.selected : blocks[0]?.id,
     editing: undefined,
     error: undefined,
-  })
+  }))
 }
 
 async function sendReview(
@@ -60,7 +63,8 @@ async function sendReview(
   io: Io,
   toAction: (block: ReviewBlock) => ReviewAction,
 ): Promise<void> {
-  const target = review.blocks.find(block => block.id === review.selected)
+  const { blocks, selected } = await read($, review)
+  const target = blocks.find(block => block.id === selected)
   if (target === undefined) return
   const request = reviewRequest(target.id, toAction(target))
   const result = await daemonPost<unknown>(io, request.path, request.body)
@@ -97,8 +101,8 @@ function blockLabel(block: ReviewBlock): string {
 async function reviewPane($: EngineInterface, event: RenderInput<'Pane'>) {
   const { Box, Text, Button, Input, Select } = $.ui.resolve(event)
   const io = await makeIo($)
-  const { blocks, editing, error } = review
-  const current = blocks.find(block => block.id === review.selected)
+  const { blocks, editing, error, selected } = await read($, review)
+  const current = blocks.find(block => block.id === selected)
 
   return (
     <Box flexDirection="column">
@@ -163,7 +167,7 @@ export function registerCommand(on: On): void {
     }
     const io = await makeIo($)
     if (argument !== 'review') return { text: await summarise($, io, argument) }
-    review.selected = undefined
+    await change($, { selected: undefined })
     await loadReview($, io)
     await $.ui.open({ id: REVIEW_PANE_ID, title: 'worklog review', focus: true, closeOnEscape: true })
     return { text: 'worklog review opened' }
