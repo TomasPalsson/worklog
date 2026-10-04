@@ -52,8 +52,9 @@ export function registerStatus(on: On): void {
       if (required === 0) return
       const problems: string[] = []
       if (day.pending_lines > 0) problems.push(`${day.pending_lines} unsynced lines`)
-      if (day.logged_seconds < required) {
-        problems.push(`${formatHours(day.logged_seconds)} logged of ${formatHours(required)}`)
+      const worked = Math.max(day.logged_seconds, day.tempo_seconds)
+      if (worked < required) {
+        problems.push(`${formatHours(worked)} logged of ${formatHours(required)}`)
       }
       if (problems.length === 0) return
       await $.ui.toast(`worklog: ${previous} has ${problems.join(' and ')}`)

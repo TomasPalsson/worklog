@@ -138,7 +138,7 @@ test('unsynced lines on the last workday toast once and store the marker', async
 
 test('a short day toasts the hours against the required hours', async ($, on) => {
   const clock = mock.clock(on)
-  const seen = world(on, { closeoutDays: [closeoutDay({ logged_seconds: 6 * 3600 })] })
+  const seen = world(on, { closeoutDays: [closeoutDay({ logged_seconds: 6 * 3600, tempo_seconds: 5 * 3600 })] })
   await $.session.start(SESSION)
   await clock.advance(1000)
   expect(seen.toasts).toHaveLength(1)
@@ -146,10 +146,27 @@ test('a short day toasts the hours against the required hours', async ($, on) =>
   expect(seen.toasts[0]).toContain('8h00')
 })
 
+test('logged short but tempo meets required means no reminder', async ($, on) => {
+  const clock = mock.clock(on)
+  const seen = world(on, { closeoutDays: [closeoutDay({ logged_seconds: 6 * 3600, tempo_seconds: 8 * 3600 })] })
+  await $.session.start(SESSION)
+  await clock.advance(1000)
+  expect(seen.toasts).toEqual([])
+})
+
+test('the toast reports the larger of logged and tempo hours', async ($, on) => {
+  const clock = mock.clock(on)
+  const seen = world(on, { closeoutDays: [closeoutDay({ logged_seconds: 5 * 3600, tempo_seconds: 6 * 3600 })] })
+  await $.session.start(SESSION)
+  await clock.advance(1000)
+  expect(seen.toasts).toHaveLength(1)
+  expect(seen.toasts[0]).toContain('6h00 logged of 8h00')
+})
+
 test('unsynced and short together make one toast naming both', async ($, on) => {
   const clock = mock.clock(on)
   const seen = world(on, {
-    closeoutDays: [closeoutDay({ logged_seconds: 6 * 3600, pending_lines: 2 })],
+    closeoutDays: [closeoutDay({ logged_seconds: 6 * 3600, tempo_seconds: 5 * 3600, pending_lines: 2 })],
   })
   await $.session.start(SESSION)
   await clock.advance(1000)
@@ -170,7 +187,7 @@ test('a complete synced day gets no reminder', async ($, on) => {
 test('required seconds null means 8h, so 7h logged is short', async ($, on) => {
   const clock = mock.clock(on)
   const seen = world(on, {
-    closeoutDays: [closeoutDay({ logged_seconds: 7 * 3600, required_seconds: null })],
+    closeoutDays: [closeoutDay({ logged_seconds: 7 * 3600, tempo_seconds: 7 * 3600, required_seconds: null })],
   })
   await $.session.start(SESSION)
   await clock.advance(1000)
