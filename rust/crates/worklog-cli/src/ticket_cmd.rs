@@ -43,9 +43,10 @@ pub enum TicketCmd {
         /// Account id (see `worklog account allowed`).
         #[arg(long)]
         account: String,
-        /// The account was worklog's first suggestion, not the Owner's pick.
+        /// worklog's first suggestion, when one was shown; differs from
+        /// `--account` when the Owner corrected it.
         #[arg(long)]
-        guess: bool,
+        guessed: Option<String>,
         /// Clue from the request text; repeatable.
         #[arg(long = "clue")]
         clues: Vec<String>,
@@ -105,16 +106,23 @@ pub fn run_ticket<W: Write>(sub: TicketCmd, out: &mut W, json: bool) -> Result<(
             if json {
                 return dump(out, &s);
             }
-            style::ok(out, &format!("{} is now {}", s.key, s.status))?;
-            Ok(())
+            Ok(style::ok(out, &format!("{} is now {}", s.key, s.status))?)
         }
         TicketCmd::Create {
             summary,
             description_file,
             account,
-            guess,
+            guessed,
             clues,
-        } => create(summary, &description_file, account, guess, clues, out, json),
+        } => create(
+            summary,
+            &description_file,
+            account,
+            guessed,
+            clues,
+            out,
+            json,
+        ),
         TicketCmd::Hints => {
             let h: Vec<StatusHint> = daemon::get("/hints")?;
             if json {
@@ -166,14 +174,14 @@ fn create<W: Write>(
     summary: String,
     description_file: &std::path::Path,
     account: String,
-    guess: bool,
+    guessed: Option<String>,
     clues: Vec<String>,
     out: &mut W,
     json: bool,
 ) -> Result<()> {
     let description = std::fs::read_to_string(description_file)
         .with_context(|| format!("reading {}", description_file.display()))?;
-    let body = create_body(summary, description, account, guess, clues);
+    let body = create_body(summary, description, account, guessed, clues);
     let c: AssistCreated = daemon::post("/tickets/assist-create", &serde_json::to_value(&body)?)?;
     if json {
         return dump(out, &c);
@@ -187,13 +195,13 @@ fn create_body(
     summary: String,
     description: String,
     account: String,
-    guess: bool,
+    guessed: Option<String>,
     clues: Vec<String>,
 ) -> AssistCreateBody {
     AssistCreateBody {
         summary,
         description,
-        guessed_account_id: guess.then(|| account.clone()),
+        guessed_account_id: guessed,
         account_id: account,
         clues,
         assignee_account_id: None,
@@ -275,168 +283,5 @@ fn render_hints<W: Write>(out: &mut W, hints: &[StatusHint]) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::cli::Cli;
-    use clap::Parser;
-    use worklog_core::jira_assist_contract::HintReason;
-    use worklog_core::tempo_hub_contract::{StatusCategory, TicketDetail};
-
-    fn detail(status: &str) -> TicketDetail {
-        serde_json::from_value(json!({
-            "key": "GENAI-7", "summary": "Do thing", "status": status,
-            "status_category": null, "issue_type": null, "priority": null,
-            "assignee": null, "updated": null, "url": "https://j/browse/GENAI-7",
-            "description": "body text", "comments": []
-        }))
-        .unwrap()
-    }
-
-    fn render<F: FnOnce(&mut Vec<u8>) -> Result<()>>(f: F) -> String {
-        let mut buf = Vec::new();
-        f(&mut buf).unwrap();
-        String::from_utf8(buf).unwrap()
-    }
-
-    #[test]
-    fn every_verb_parses() {
-        for args in [
-            "ticket get GENAI-1",
-            "ticket start GENAI-1",
-            "ticket find some words",
-            "ticket move GENAI-1 Done",
-            "ticket hints",
-            "account allowed",
-            "account suggest hello",
-            "account relearn",
-        ] {
-            let mut argv = vec!["worklog"];
-            argv.extend(args.split(' '));
-            // `find some words` takes one quoted arg in real use.
-            if args.starts_with("ticket find") {
-                argv = vec!["worklog", "ticket", "find", "some words"];
-            }
-            Cli::try_parse_from(&argv).unwrap_or_else(|e| panic!("{args}: {e}"));
-        }
-    }
-
-    #[test]
-    fn create_parses_repeated_clues_and_guess() {
-        let cli = Cli::try_parse_from([
-            "worklog",
-            "ticket",
-            "create",
-            "--summary",
-            "S",
-            "--description-file",
-            "d.md",
-            "--account",
-            "42",
-            "--guess",
-            "--clue",
-            "a",
-            "--clue",
-            "b",
-        ])
-        .unwrap();
-        let crate::cli::Cmd::Ticket {
-            sub:
-                TicketCmd::Create {
-                    guess,
-                    clues,
-                    account,
-                    ..
-                },
-        } = cli.command
-        else {
-            panic!("not ticket create");
-        };
-        assert!(guess);
-        assert_eq!(account, "42");
-        assert_eq!(clues, ["a", "b"]);
-    }
-
-    #[test]
-    fn guess_flag_sets_guessed_account() {
-        let b = create_body("S".into(), "D".into(), "42".into(), true, vec!["x".into()]);
-        assert_eq!(b.guessed_account_id.as_deref(), Some("42"));
-        assert_eq!(b.account_id, "42");
-        assert_eq!(b.clues, ["x"]);
-        let b = create_body("S".into(), "D".into(), "42".into(), false, vec![]);
-        assert_eq!(b.guessed_account_id, None);
-    }
-
-    #[test]
-    fn view_text_shows_key_status_account_description() {
-        let v = TicketView {
-            detail: detail("To Do"),
-            account_id: Some("9".into()),
-            account_name: Some("Acme".into()),
-        };
-        let s = render(|o| render_view(o, &v));
-        assert!(s.contains("GENAI-7  Do thing"), "{s}");
-        assert!(s.contains("status:  To Do"), "{s}");
-        assert!(s.contains("account: Acme"), "{s}");
-        assert!(s.contains("body text"), "{s}");
-    }
-
-    #[test]
-    fn start_text_names_each_outcome() {
-        let mk = |outcome| StartResult {
-            view: TicketView {
-                detail: detail("In Progress"),
-                account_id: None,
-                account_name: None,
-            },
-            outcome,
-        };
-        assert!(render(|o| render_start(o, &mk(StartOutcome::Moved))).contains("GENAI-7 started"));
-        assert!(
-            render(|o| render_start(o, &mk(StartOutcome::AlreadyStarted)))
-                .contains("already started")
-        );
-        assert!(render(|o| render_start(o, &mk(StartOutcome::NotWritable)))
-            .contains("not a GENAI ticket"));
-    }
-
-    #[test]
-    fn find_and_suggestions_and_hints_render_rows() {
-        let hit = JiraTicket {
-            key: "ABC-1".into(),
-            summary: "Found".into(),
-            status: Some("Done".into()),
-            project_key: None,
-            updated: None,
-            issue_id: None,
-        };
-        assert_eq!(
-            render(|o| render_find(o, &[hit])).trim(),
-            "ABC-1  [Done]  Found"
-        );
-        let sug = AccountSuggestion {
-            account: AllowedAccount {
-                id: "9".into(),
-                name: "Acme".into(),
-            },
-            matched_clues: vec!["x".into(), "y".into()],
-            past_tickets: 3,
-            score: 1.5,
-        };
-        assert_eq!(
-            render(|o| render_suggestions(o, &[sug])).trim(),
-            "9  Acme  score 1.50  (3 past tickets; clues: x, y)"
-        );
-        let hint = StatusHint {
-            key: "GENAI-7".into(),
-            summary: "Do thing".into(),
-            to_category: StatusCategory::Done,
-            reason: HintReason::PrMerged {
-                repo: "r".into(),
-                number: 1,
-                merged_at: "t".into(),
-            },
-        };
-        let s = render(|o| render_hints(o, &[hint]));
-        assert!(s.starts_with("GENAI-7  Do thing  -> "), "{s}");
-    }
-}
+#[path = "ticket_cmd_test.rs"]
+mod tests;

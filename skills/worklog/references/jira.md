@@ -19,8 +19,8 @@ Never post to Slack or any chat tool; the only outputs are Jira and the terminal
 1. `worklog account suggest "<request text>"` ranks accounts; `worklog account allowed` lists the valid ids.
 2. Draft the summary and description (text guide below) and write the description to a temp file.
 3. One confirm, showing the title and the account. Nothing else is asked.
-4. `worklog ticket create --summary "<title>" --description-file <file> --account <id>`. Add `--guess` if the account is the first suggestion rather than the user's pick, and `--clue "<phrase>"` (repeatable) for words from the request that point to the account.
-5. Report the new key, then `worklog ticket start KEY` if the user is starting now.
+4. `worklog ticket create --summary "<title>" --description-file <file> --account <id>`. When suggestions were shown, add `--guessed <first-suggestion-id>` (even if the user corrected it — that is how a wrong guess is learned), and `--clue "<phrase>"` (repeatable) for words from the request that point to the account.
+5. Report the new key and link. Create already moved it to In Progress; if that move failed, the error names the key — never create again.
 
 ## Text guide
 
