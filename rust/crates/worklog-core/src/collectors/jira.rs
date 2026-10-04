@@ -14,12 +14,15 @@ use serde::Deserialize;
 use tracing::debug;
 
 use crate::http::{self, RequestBuilderExt};
+use crate::jira_assist_contract::AllowedAccount;
 use crate::models::{JiraProject, JiraTicket};
 use crate::repo;
 use crate::tempo_hub_contract::{
     Attachment, HubError, IssueLink, IssueRef, StatusCategory, TicketComment, TicketDetail,
     Transition,
 };
+
+use crate::ticket_text::markdown_to_adf;
 
 use super::CollectReport;
 
@@ -351,19 +354,6 @@ struct CreatedIssue {
     key: String,
 }
 
-/// Build the Atlassian Document Format wrapper Jira Cloud v3 requires for
-/// the `description` field — a plain string is rejected with a 400.
-fn adf_doc(text: &str) -> serde_json::Value {
-    serde_json::json!({
-        "type": "doc",
-        "version": 1,
-        "content": [{
-            "type": "paragraph",
-            "content": [{ "type": "text", "text": text }],
-        }],
-    })
-}
-
 /// Tempo's account custom field is backed by the numeric account id, so a
 /// digits-only value is sent as a JSON number; anything else (a key, a
 /// pre-wrapped value) passes through as a string. If Jira rejects the
@@ -400,7 +390,7 @@ pub fn create_issue_with(auth: &JiraAuth, issue: &NewIssue, client: &Client) -> 
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        fields.insert("description".into(), adf_doc(desc));
+        fields.insert("description".into(), markdown_to_adf(desc));
     }
     if let (Some(field), Some(val)) = (
         issue
@@ -547,6 +537,126 @@ pub fn fetch_status_with(
         serde_json::from_str(&text).with_context(|| format!("decode status: {text}"))?;
     let category = body.fields.status.category();
     Ok((body.fields.status.name.unwrap_or_default(), category))
+}
+
+/// Jira renders the account as `{id, name|value}`; `id` is a number or string.
+fn account_from(v: &serde_json::Value) -> Option<AllowedAccount> {
+    let id = match v.get("id")? {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Number(n) => n.to_string(),
+        _ => return None,
+    };
+    let name = str_at(v, &["name"]).or_else(|| str_at(v, &["value"]))?;
+    Some(AllowedAccount { id, name })
+}
+
+fn get_json(
+    auth: &JiraAuth,
+    url: &str,
+    query: &[(&str, &str)],
+    what: &str,
+    client: &Client,
+) -> Result<serde_json::Value> {
+    let text = send_expecting_success(
+        client
+            .get(url)
+            .basic_auth(&auth.email, Some(&auth.token))
+            .query(query),
+        what,
+    )?;
+    serde_json::from_str(&text).with_context(|| format!("decode {what}: {text}"))
+}
+
+/// Accounts Jira will accept on create. An empty list is an error, never
+/// "everything allowed".
+pub fn allowed_accounts_with(
+    auth: &JiraAuth,
+    project: &str,
+    issue_type: &str,
+    field_id: &str,
+    client: &Client,
+) -> Result<Vec<AllowedAccount>> {
+    let base = format!(
+        "{}/rest/api/3/issue/createmeta/{project}/issuetypes",
+        auth.base_url
+    );
+    let types = get_json(auth, &base, &[], "createmeta issue types", client)?;
+    let type_id = types["issueTypes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|t| str_at(t, &["name"]).as_deref() == Some(issue_type))
+        .and_then(|t| str_at(t, &["id"]))
+        .with_context(|| format!("jira project {project} has no issue type {issue_type}"))?;
+    let meta = get_json(
+        auth,
+        &format!("{base}/{type_id}"),
+        &[],
+        "createmeta fields",
+        client,
+    )?;
+    let accounts: Vec<AllowedAccount> = meta["fields"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|f| str_at(f, &["fieldId"]).as_deref() == Some(field_id))
+        .and_then(|f| f["allowedValues"].as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(account_from)
+        .collect();
+    if accounts.is_empty() {
+        anyhow::bail!("jira createmeta lists no allowed values for {field_id}");
+    }
+    Ok(accounts)
+}
+
+/// Newest tickets in `GENAI` that carry an account, with their summaries.
+pub fn search_accounted_with(
+    auth: &JiraAuth,
+    field_id: &str,
+    limit: usize,
+    client: &Client,
+) -> Result<Vec<(String, AllowedAccount)>> {
+    let url = format!("{}/rest/api/3/search/jql", auth.base_url);
+    let fields = format!("summary,{field_id}");
+    let body = get_json(
+        auth,
+        &url,
+        &[
+            (
+                "jql",
+                r#"project = GENAI AND "Account" is not EMPTY ORDER BY created DESC"#,
+            ),
+            ("maxResults", &limit.min(MAX_RESULTS as usize).to_string()),
+            ("fields", &fields),
+        ],
+        "search accounted tickets",
+        client,
+    )?;
+    Ok(body["issues"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|i| {
+            let account = account_from(&i["fields"][field_id])?;
+            Some((
+                str_at(i, &["fields", "summary"]).unwrap_or_default(),
+                account,
+            ))
+        })
+        .collect())
+}
+
+pub fn fetch_account_with(
+    auth: &JiraAuth,
+    key: &str,
+    field_id: &str,
+    client: &Client,
+) -> Result<Option<AllowedAccount>> {
+    let url = format!("{}/rest/api/3/issue/{key}", auth.base_url);
+    let body = get_json(auth, &url, &[("fields", field_id)], "fetch account", client)?;
+    Ok(account_from(&body["fields"][field_id]))
 }
 
 fn str_at(v: &serde_json::Value, path: &[&str]) -> Option<String> {
@@ -1598,5 +1708,170 @@ mod tests {
     #[test]
     fn adf_comment_normalises_crlf() {
         assert_eq!(adf_comment("a\r\nb\r\n\r\nc"), adf_comment("a\nb\n\nc"));
+    }
+
+    #[test]
+    fn create_issue_description_goes_through_markdown_to_adf() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/rest/api/3/issue")
+                .json_body_partial(
+                    r#"{"fields": {"description": {"type": "doc", "content": [
+                    {"type": "heading", "attrs": {"level": 2}}
+                ]}}}"#,
+                );
+            then.status(201)
+                .json_body(json!({ "id": "1", "key": "GENAI-1" }));
+        });
+        let issue = NewIssue {
+            project_key: "GENAI".into(),
+            summary: "s".into(),
+            issue_type: "Story".into(),
+            description: Some("## Goal".into()),
+            account_field_id: None,
+            account_value: None,
+        };
+        create_issue_with(&test_auth(&server), &issue, &http::client().unwrap()).unwrap();
+        mock.assert();
+    }
+
+    #[test]
+    fn allowed_accounts_reads_createmeta_values_for_the_field() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/rest/api/3/issue/createmeta/GENAI/issuetypes");
+            then.status(200).json_body(json!({
+                "issueTypes": [{"id": "1", "name": "Bug"}, {"id": "7", "name": "Story"}]
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/rest/api/3/issue/createmeta/GENAI/issuetypes/7");
+            then.status(200).json_body(json!({ "fields": [
+                {"fieldId": "summary"},
+                {"fieldId": "customfield_10100", "allowedValues": [
+                    {"id": "42", "name": "Acme"},
+                    {"id": 7, "value": "Globex"}
+                ]}
+            ]}));
+        });
+        let got = allowed_accounts_with(
+            &test_auth(&server),
+            "GENAI",
+            "Story",
+            "customfield_10100",
+            &http::client().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            got,
+            vec![
+                AllowedAccount {
+                    id: "42".into(),
+                    name: "Acme".into()
+                },
+                AllowedAccount {
+                    id: "7".into(),
+                    name: "Globex".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn allowed_accounts_empty_list_is_an_error() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/rest/api/3/issue/createmeta/GENAI/issuetypes");
+            then.status(200)
+                .json_body(json!({ "issueTypes": [{"id": "7", "name": "Story"}] }));
+        });
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/rest/api/3/issue/createmeta/GENAI/issuetypes/7");
+            then.status(200).json_body(json!({ "fields": [
+                {"fieldId": "customfield_10100", "allowedValues": []}
+            ]}));
+        });
+        let err = allowed_accounts_with(
+            &test_auth(&server),
+            "GENAI",
+            "Story",
+            "customfield_10100",
+            &http::client().unwrap(),
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("customfield_10100"), "{err:#}");
+    }
+
+    #[test]
+    fn search_accounted_sends_jql_and_maps_summary_and_account() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(GET)
+                .path("/rest/api/3/search/jql")
+                .query_param(
+                    "jql",
+                    r#"project = GENAI AND "Account" is not EMPTY ORDER BY created DESC"#,
+                )
+                .query_param("maxResults", "200")
+                .query_param("fields", "summary,customfield_10100");
+            then.status(200).json_body(json!({ "issues": [
+                {"id": "1", "key": "GENAI-1", "fields": {
+                    "summary": "Acme - fix login",
+                    "customfield_10100": {"id": 42, "name": "Acme"}}},
+                {"id": "2", "key": "GENAI-2", "fields": {
+                    "summary": "no account", "customfield_10100": null}}
+            ]}));
+        });
+        let got = search_accounted_with(
+            &test_auth(&server),
+            "customfield_10100",
+            500,
+            &http::client().unwrap(),
+        )
+        .unwrap();
+        mock.assert();
+        assert_eq!(
+            got,
+            vec![(
+                "Acme - fix login".to_string(),
+                AllowedAccount {
+                    id: "42".into(),
+                    name: "Acme".into()
+                }
+            )]
+        );
+    }
+
+    #[test]
+    fn fetch_account_returns_some_or_none() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/rest/api/3/issue/GENAI-1");
+            then.status(200).json_body(json!({ "fields": {
+                "customfield_10100": {"id": "42", "value": "Acme"}}}));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/rest/api/3/issue/GENAI-2");
+            then.status(200)
+                .json_body(json!({ "fields": {"customfield_10100": null}}));
+        });
+        let client = http::client().unwrap();
+        let auth = test_auth(&server);
+        assert_eq!(
+            fetch_account_with(&auth, "GENAI-1", "customfield_10100", &client).unwrap(),
+            Some(AllowedAccount {
+                id: "42".into(),
+                name: "Acme".into()
+            })
+        );
+        assert_eq!(
+            fetch_account_with(&auth, "GENAI-2", "customfield_10100", &client).unwrap(),
+            None
+        );
     }
 }
