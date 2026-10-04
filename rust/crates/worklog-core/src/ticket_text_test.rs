@@ -110,3 +110,14 @@ fn has_emoji_ignores_joiners_and_plain_dingbats() {
     assert!(has_emoji("\u{1F600}"));
     assert!(has_emoji("\u{2705}"));
 }
+
+#[test]
+fn has_emoji_detects_emoji_dingbats_and_symbols() {
+    for c in [
+        '\u{2764}', '\u{2714}', '\u{2716}', '\u{2708}', '\u{2709}', '\u{2744}', '\u{2747}',
+        '\u{203C}', '\u{2B06}', '\u{2B07}', '\u{2934}',
+    ] {
+        assert!(has_emoji(&format!("{c} thanks")), "{:X}", c as u32);
+    }
+    assert!(has_emoji("\u{2714}\u{FE0F} done"));
+}
