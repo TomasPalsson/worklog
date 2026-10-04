@@ -6,7 +6,12 @@ import { shiftDay } from "@/lib/format";
 import type { LoggedDay as Day, LoggedEntry, LoggedRange } from "@/lib/logged_contract";
 
 const refresh = mock(() => {});
-mock.module("next/navigation", () => ({ useRouter: () => ({ push: () => {}, refresh }) }));
+// Spread the real module: bun's mock.module is process-wide.
+const realNavigation = { ...(await import("next/navigation")) };
+mock.module("next/navigation", () => ({
+  ...realNavigation,
+  useRouter: () => ({ push: () => {}, refresh }),
+}));
 mock.module("./ThemeToggle", () => ({ ThemeToggle: () => null }));
 
 type Res = { ok: true; data: LoggedRange } | { ok: false; error: string };

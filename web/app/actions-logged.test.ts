@@ -28,7 +28,11 @@ const day: LoggedDay = {
 const callImpl = mock(
   async (_method: string, _path: string, _body?: unknown): Promise<unknown> => range,
 );
+// Spread the real module: bun's mock.module is process-wide, so dropping
+// DaemonError & co. here would break every later test file.
+const realDaemon = { ...(await import("@/lib/daemon")) };
 mock.module("@/lib/daemon", () => ({
+  ...realDaemon,
   call: (method: string, path: string, body?: unknown) => callImpl(method, path, body),
 }));
 
