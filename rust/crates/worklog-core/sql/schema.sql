@@ -410,3 +410,28 @@ CREATE TABLE IF NOT EXISTS transcript_file_cache (
     extra_key TEXT NOT NULL DEFAULT '',
     PRIMARY KEY(path, since_ts, until_ts)
 );
+
+CREATE TABLE IF NOT EXISTS account_clues (
+    account_id TEXT NOT NULL,
+    account_name TEXT NOT NULL,
+    clue TEXT NOT NULL,
+    hits INTEGER NOT NULL DEFAULT 0,
+    wrong INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, clue)
+);
+
+CREATE TABLE IF NOT EXISTS account_decisions (
+    id INTEGER PRIMARY KEY,
+    decided_at TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    picked_id TEXT NOT NULL,
+    guessed_id TEXT,
+    correct INTEGER NOT NULL,
+    clues TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS account_ticket_counts (
+    account_id TEXT PRIMARY KEY,
+    account_name TEXT NOT NULL,
+    tickets INTEGER NOT NULL DEFAULT 0
+);
