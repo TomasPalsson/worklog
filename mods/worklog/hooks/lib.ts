@@ -1,8 +1,8 @@
-import type { EngineInterface } from 'claude-code'
 import { DAEMON_URL, JIRA_KEY_RE } from './contract'
 import type {
   Block,
   DaemonResult,
+  Io,
   LocalDay,
   ReviewAction,
   WorkContext,
@@ -64,13 +64,13 @@ export function reviewRequest(
 }
 
 async function daemonRequest<T>(
-  $: EngineInterface,
+  io: Io,
   path: string,
   init?: { method: string; headers: Record<string, string>; body: string },
 ): Promise<DaemonResult<T>> {
   const request = async (): Promise<DaemonResult<T>> => {
     try {
-      const response = await $.http.fetch(`${DAEMON_URL}${path}`, init)
+      const response = await io.fetch(`${DAEMON_URL}${path}`, init)
       let body: unknown
       try {
         body = JSON.parse(response.text)
@@ -86,7 +86,7 @@ async function daemonRequest<T>(
   }
   let timer: { cancel: () => void } | undefined
   const timeout = new Promise<DaemonResult<T>>(resolve => {
-    timer = $.clock.after(TIMEOUT_MS, () => resolve({ ok: false, error: 'timeout' }))
+    timer = io.after(TIMEOUT_MS, () => resolve({ ok: false, error: 'timeout' }))
   })
   try {
     return await Promise.race([request(), timeout])
@@ -95,48 +95,39 @@ async function daemonRequest<T>(
   }
 }
 
-export function daemonGet<T>($: EngineInterface, path: string): Promise<DaemonResult<T>> {
-  return daemonRequest<T>($, path)
+export function daemonGet<T>(io: Io, path: string): Promise<DaemonResult<T>> {
+  return daemonRequest<T>(io, path)
 }
 
-export function daemonPost<T>(
-  $: EngineInterface,
-  path: string,
-  body: unknown,
-): Promise<DaemonResult<T>> {
-  return daemonRequest<T>($, path, {
+export function daemonPost<T>(io: Io, path: string, body: unknown): Promise<DaemonResult<T>> {
+  return daemonRequest<T>(io, path, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   })
 }
 
-export async function daemonToday($: EngineInterface): Promise<DaemonResult<LocalDay>> {
-  const utcDay = new Date(await $.clock.now()).toISOString().slice(0, 10)
-  const result = await daemonGet<{ today: LocalDay }>($, `/logged?from=${utcDay}&to=${utcDay}`)
+export async function daemonToday(io: Io): Promise<DaemonResult<LocalDay>> {
+  const utcDay = new Date(await io.now()).toISOString().slice(0, 10)
+  const result = await daemonGet<{ today: LocalDay }>(io, `/logged?from=${utcDay}&to=${utcDay}`)
   return result.ok ? { ok: true, value: result.value.today } : result
 }
 
-async function gitOutput(
-  $: EngineInterface,
-  cwd: string,
-  argv: string[],
-): Promise<string | undefined> {
+async function gitOutput(io: Io, cwd: string, argv: string[]): Promise<string | undefined> {
   try {
-    const result = await $.process.run(['git', ...argv], { cwd })
+    const result = await io.run(['git', ...argv], cwd)
     return result.exitCode === 0 ? result.stdout.trim() : undefined
   } catch {
     return undefined
   }
 }
 
-export async function workContext($: EngineInterface, cwd: string): Promise<WorkContext> {
-  const home = await $.env.get('HOME')
-  const workFolder = home === undefined ? undefined : `${home}/Desktop/Work`
+export async function workContext(io: Io, cwd: string): Promise<WorkContext> {
+  const workFolder = io.home === undefined ? undefined : `${io.home}/Desktop/Work`
   const inWorkFolder =
     workFolder !== undefined && (cwd === workFolder || cwd.startsWith(`${workFolder}/`))
-  const branch = (await gitOutput($, cwd, ['branch', '--show-current'])) || undefined
-  const origin = inWorkFolder ? undefined : await gitOutput($, cwd, ['remote', 'get-url', 'origin'])
+  const branch = (await gitOutput(io, cwd, ['branch', '--show-current'])) || undefined
+  const origin = inWorkFolder ? undefined : await gitOutput(io, cwd, ['remote', 'get-url', 'origin'])
   return {
     cwd,
     isWork: inWorkFolder || WORK_ORIGIN_RE.test(origin ?? ''),

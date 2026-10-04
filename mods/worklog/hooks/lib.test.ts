@@ -1,5 +1,4 @@
 import { test, expect } from 'claude-code/testing'
-import type { EngineInterface } from 'claude-code'
 import {
   daemonGet,
   daemonPost,
@@ -12,7 +11,7 @@ import {
   workContext,
   workSeconds,
 } from './lib'
-import type { Block } from './contract'
+import type { Block, Io } from './contract'
 
 const block = (overrides: Partial<Block>): Block => ({
   id: 1,
@@ -31,44 +30,38 @@ const block = (overrides: Partial<Block>): Block => ({
 
 type Fetched = { url: string; init?: { method?: string; body?: string } }
 type Fake = {
-  engine: EngineInterface
+  io: Io
   fetched: Fetched[]
   fireTimeout: () => void
 }
 
-// A hand-built `$`: `$` cannot cross an import inside a plugin, so lib.ts is exercised directly.
-const fakeEngine = (options: {
-  fetch?: (url: string, init?: Fetched['init']) => Promise<unknown>
+const fakeIo = (options: {
+  fetch?: (url: string, init?: Fetched['init']) => Promise<{ status: number; ok: boolean; text: string }>
   git?: Record<string, string>
   home?: string
   now?: number
 }): Fake => {
   const fetched: Fetched[] = []
   let timeoutFunction: (() => void) | undefined
-  const engine = {
-    http: {
-      fetch: (url: string, init?: Fetched['init']) => {
-        fetched.push({ url, init })
-        return options.fetch?.(url, init)
-      },
+  const io: Io = {
+    fetch: (url, init) => {
+      fetched.push({ url, init })
+      return options.fetch?.(url, init) ?? new Promise(() => {})
     },
-    process: {
-      run: async (argv: string[]) => {
-        const stdout = options.git?.[argv.join(' ')]
-        return { exitCode: stdout === undefined ? 1 : 0, stdout: stdout ?? '', stderr: '' }
-      },
+    run: async argv => {
+      const stdout = options.git?.[argv.join(' ')]
+      return { exitCode: stdout === undefined ? 1 : 0, stdout: stdout ?? '' }
     },
-    env: { get: async () => options.home },
-    clock: {
-      now: async () => options.now ?? 0,
-      after: (_milliseconds: number, callback: () => void) => {
-        timeoutFunction = callback
-        return { cancel: () => (timeoutFunction = undefined) }
-      },
+    after: (_milliseconds, callback) => {
+      timeoutFunction = callback
+      return { cancel: () => (timeoutFunction = undefined) }
     },
-  } as unknown as EngineInterface
-  return { engine, fetched, fireTimeout: () => timeoutFunction?.() }
+    now: async () => options.now ?? 0,
+    home: options.home,
+  }
+  return { io, fetched, fireTimeout: () => timeoutFunction?.() }
 }
+
 
 const reply = (status: number, text: string) =>
   Promise.resolve({ status, ok: status >= 200 && status < 300, headers: {}, text })
@@ -135,8 +128,8 @@ test('reviewRequest maps each action to its daemon route and body', () => {
 })
 
 test('daemonGet resolves the parsed body from the base url plus the path', async () => {
-  const fake = fakeEngine({ fetch: () => reply(200, '{"total_seconds":5}') })
-  expect(await daemonGet(fake.engine, '/days/2026-10-05')).toEqual({
+  const fake = fakeIo({ fetch: () => reply(200, '{"total_seconds":5}') })
+  expect(await daemonGet(fake.io, '/days/2026-10-05')).toEqual({
     ok: true,
     value: { total_seconds: 5 },
   })
@@ -144,27 +137,27 @@ test('daemonGet resolves the parsed body from the base url plus the path', async
 })
 
 test('daemonGet uses the body error field, else the status', async () => {
-  const withError = fakeEngine({ fetch: () => reply(404, '{"error":"no such day"}') })
-  expect(await daemonGet(withError.engine, '/x')).toEqual({ ok: false, error: 'no such day' })
-  const withoutError = fakeEngine({ fetch: () => reply(404, 'not json') })
-  expect(await daemonGet(withoutError.engine, '/x')).toEqual({ ok: false, error: 'HTTP 404' })
+  const withError = fakeIo({ fetch: () => reply(404, '{"error":"no such day"}') })
+  expect(await daemonGet(withError.io, '/x')).toEqual({ ok: false, error: 'no such day' })
+  const withoutError = fakeIo({ fetch: () => reply(404, 'not json') })
+  expect(await daemonGet(withoutError.io, '/x')).toEqual({ ok: false, error: 'HTTP 404' })
 })
 
 test('daemonGet resolves the fetch error message when fetch rejects', async () => {
-  const fake = fakeEngine({ fetch: () => Promise.reject(new Error('connection refused')) })
-  expect(await daemonGet(fake.engine, '/x')).toEqual({ ok: false, error: 'connection refused' })
+  const fake = fakeIo({ fetch: () => Promise.reject(new Error('connection refused')) })
+  expect(await daemonGet(fake.io, '/x')).toEqual({ ok: false, error: 'connection refused' })
 })
 
 test('daemonGet resolves timeout when the daemon does not answer in time', async () => {
-  const fake = fakeEngine({ fetch: () => new Promise(() => {}) })
-  const pending = daemonGet(fake.engine, '/x')
+  const fake = fakeIo({ fetch: () => new Promise(() => {}) })
+  const pending = daemonGet(fake.io, '/x')
   fake.fireTimeout()
   expect(await pending).toEqual({ ok: false, error: 'timeout' })
 })
 
 test('daemonPost sends a JSON body with the POST method', async () => {
-  const fake = fakeEngine({ fetch: () => reply(200, '{"id":7}') })
-  expect(await daemonPost(fake.engine, '/blocks/7/ignore', { ignored: true })).toEqual({
+  const fake = fakeIo({ fetch: () => reply(200, '{"id":7}') })
+  expect(await daemonPost(fake.io, '/blocks/7/ignore', { ignored: true })).toEqual({
     ok: true,
     value: { id: 7 },
   })
@@ -173,20 +166,20 @@ test('daemonPost sends a JSON body with the POST method', async () => {
 })
 
 test('daemonToday reads today from /logged for the UTC day of the clock', async () => {
-  const fake = fakeEngine({
+  const fake = fakeIo({
     now: Date.parse('2026-10-05T23:30:00Z'),
     fetch: () => reply(200, '{"today":"2026-10-06"}'),
   })
-  expect(await daemonToday(fake.engine)).toEqual({ ok: true, value: '2026-10-06' })
+  expect(await daemonToday(fake.io)).toEqual({ ok: true, value: '2026-10-06' })
   expect(fake.fetched[0].url).toBe('http://127.0.0.1:9323/logged?from=2026-10-05&to=2026-10-05')
 })
 
 test('workContext: under ~/Desktop/Work is work and carries branch and ticket', async () => {
-  const fake = fakeEngine({
+  const fake = fakeIo({
     home: '/Users/me',
     git: { 'git branch --show-current': 'feature/GOJ-1310-x\n' },
   })
-  expect(await workContext(fake.engine, '/Users/me/Desktop/Work/app')).toEqual({
+  expect(await workContext(fake.io, '/Users/me/Desktop/Work/app')).toEqual({
     cwd: '/Users/me/Desktop/Work/app',
     isWork: true,
     branch: 'feature/GOJ-1310-x',
@@ -195,32 +188,32 @@ test('workContext: under ~/Desktop/Work is work and carries branch and ticket', 
 })
 
 test('workContext: an aproorg origin outside the work folder is work', async () => {
-  const fake = fakeEngine({
+  const fake = fakeIo({
     home: '/Users/me',
     git: {
       'git branch --show-current': 'main\n',
       'git remote get-url origin': 'git@github.com:aproorg/thing.git\n',
     },
   })
-  const context = await workContext(fake.engine, '/Users/me/code/thing')
+  const context = await workContext(fake.io, '/Users/me/code/thing')
   expect(context.isWork).toBe(true)
   expect(context.ticket).toBeUndefined()
 })
 
 test('workContext: another org origin outside the work folder is not work', async () => {
-  const fake = fakeEngine({
+  const fake = fakeIo({
     home: '/Users/me',
     git: {
       'git branch --show-current': 'main\n',
       'git remote get-url origin': 'https://github.com/someone/aproorg-fan.git\n',
     },
   })
-  expect((await workContext(fake.engine, '/Users/me/code/thing')).isWork).toBe(false)
+  expect((await workContext(fake.io, '/Users/me/code/thing')).isWork).toBe(false)
 })
 
 test('workContext: no repo and outside the work folder is not work, no branch', async () => {
-  const fake = fakeEngine({ home: '/Users/me' })
-  expect(await workContext(fake.engine, '/tmp/scratch')).toEqual({
+  const fake = fakeIo({ home: '/Users/me' })
+  expect(await workContext(fake.io, '/tmp/scratch')).toEqual({
     cwd: '/tmp/scratch',
     isWork: false,
     branch: undefined,
@@ -229,17 +222,17 @@ test('workContext: no repo and outside the work folder is not work, no branch', 
 })
 
 test('workContext: detached HEAD (empty branch) has no branch and no ticket', async () => {
-  const fake = fakeEngine({ home: '/Users/me', git: { 'git branch --show-current': '\n' } })
-  const context = await workContext(fake.engine, '/Users/me/Desktop/Work/app')
+  const fake = fakeIo({ home: '/Users/me', git: { 'git branch --show-current': '\n' } })
+  const context = await workContext(fake.io, '/Users/me/Desktop/Work/app')
   expect(context.isWork).toBe(true)
   expect(context.branch).toBeUndefined()
   expect(context.ticket).toBeUndefined()
 })
 
 test('workContext: a git spawn failure leaves the path rule alone', async () => {
-  const fake = fakeEngine({ home: '/Users/me' })
-  fake.engine.process.run = () => Promise.reject(new Error('spawn git ENOENT'))
-  const context = await workContext(fake.engine, '/Users/me/Desktop/Work/app')
+  const fake = fakeIo({ home: '/Users/me' })
+  fake.io.run = () => Promise.reject(new Error('spawn git ENOENT'))
+  const context = await workContext(fake.io, '/Users/me/Desktop/Work/app')
   expect(context.isWork).toBe(true)
   expect(context.branch).toBeUndefined()
 })
