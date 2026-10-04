@@ -4,6 +4,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod account_clues;
 pub mod billing;
 pub mod billing_deildir;
 pub mod billing_registry;
@@ -41,6 +42,7 @@ mod infer_evidence;
 mod infer_lane_tags;
 pub mod infer_lanes;
 mod infer_session_folder;
+pub mod jira_assist_contract;
 pub mod line_text;
 mod line_text_jobs;
 pub mod local_clone;
@@ -65,6 +67,7 @@ mod session_customers;
 pub mod session_pins;
 pub mod sessions;
 pub mod skill;
+pub mod status_hints;
 pub mod task_board;
 pub mod task_draft;
 pub mod tempo_hub_contract;
@@ -78,8 +81,10 @@ pub mod tenant_shares;
 pub mod tenant_split;
 pub mod tenants;
 pub mod ticket_activity;
+pub mod ticket_assist;
 pub mod ticket_blocks;
 pub mod ticket_log;
+pub mod ticket_text;
 pub mod timeline;
 pub mod tz;
 pub mod updater;
