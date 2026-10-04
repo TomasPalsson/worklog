@@ -127,6 +127,9 @@ mod daemon_tasks;
 #[path = "daemon_week.rs"]
 mod daemon_week;
 
+#[path = "daemon_logged.rs"]
+mod daemon_logged;
+
 #[path = "daemon_assist.rs"]
 mod daemon_assist;
 
@@ -227,6 +230,10 @@ pub fn router(state: Shared) -> Router {
         .route("/accounts/relearn", post(daemon_assist::relearn))
         .route("/hints", get(daemon_assist::hints))
         .route("/tempo/pull", post(daemon_week::pull))
+        .route("/logged", get(daemon_logged::get_range))
+        .route("/logged/pull", post(daemon_logged::pull_range))
+        .route("/logged/dismiss", post(daemon_logged::dismiss_day))
+        .route("/logged/undismiss", post(daemon_logged::undismiss_day))
         .route("/weeks/:monday/closeout", get(daemon_week::closeout))
         .route("/billing/tenants", get(daemon_tenants::list_tenants))
         .route("/billing/tenants/link", post(daemon_tenants::link_tenant))
@@ -2853,6 +2860,10 @@ mod tests {
 
     mod daemon_week {
         include!("daemon_week_test.rs");
+    }
+
+    mod daemon_logged {
+        include!("daemon_logged_test.rs");
     }
 
     mod daemon_assist {
