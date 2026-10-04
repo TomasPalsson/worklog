@@ -334,6 +334,7 @@ fn github_raw_commit_body_stored_and_scrubbed() {
             sha,
             body,
             local_folder,
+            ..
         } => {
             assert_eq!(sha, "abc123");
             assert_eq!(body, "uses token [secret] to auth");
@@ -396,6 +397,7 @@ fn github_raw_pr_body_stored_with_empty_sha() {
             sha,
             body,
             local_folder,
+            ..
         } => {
             assert_eq!(sha, "");
             assert_eq!(body, "fixes the thing");
@@ -403,4 +405,61 @@ fn github_raw_pr_body_stored_with_empty_sha() {
         }
         other => panic!("expected RawRecord::Commit, got {other:?}"),
     }
+}
+
+#[test]
+fn records_merged_at() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/search/commits");
+        then.status(200).json_body(json!({"items": []}));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/search/issues").query_param(
+            "q",
+            "author:TomasPalsson type:pr created:2026-04-18..2026-04-19",
+        );
+        then.status(200).json_body(json!({"items": [
+            {"id": 1001, "number": 12, "title": "Open PR GENAI-1", "body": null,
+             "created_at": "2026-04-18T10:00:00Z", "closed_at": null,
+             "repository_url": "https://api.github.com/repos/org/repo",
+             "pull_request": {"merged_at": null}}
+        ]}));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/search/issues").query_param(
+            "q",
+            "author:TomasPalsson type:pr merged:2026-04-18..2026-04-19",
+        );
+        then.status(200).json_body(json!({"items": [
+            {"id": 1001, "number": 12, "title": "Open PR GENAI-1", "body": null,
+             "created_at": "2026-04-18T10:00:00Z", "closed_at": null,
+             "repository_url": "https://api.github.com/repos/org/repo",
+             "pull_request": {"merged_at": null}},
+            {"id": 2002, "number": 7, "title": "Older PR GENAI-9129", "body": null,
+             "created_at": "2026-04-01T10:00:00Z", "closed_at": "2026-04-18T11:00:00Z",
+             "repository_url": "https://api.github.com/repos/org/repo",
+             "pull_request": {"merged_at": "2026-04-18T11:00:00Z"}}
+        ]}));
+    });
+
+    let (conn, report, _events) = run(server.base_url());
+    assert_eq!(report.events_written, 2);
+
+    let merged_at = |source_id: &str| {
+        let raw = conn
+            .query_row(
+                "SELECT raw_json FROM events WHERE source = 'github_pr' AND source_id = ?1",
+                [source_id],
+                |r| crate::raw_json::decode_raw_json(r, 0),
+            )
+            .unwrap()
+            .expect("raw_json set");
+        match serde_json::from_str::<RawRecord>(&raw).unwrap() {
+            RawRecord::Commit { merged_at, .. } => merged_at,
+            other => panic!("expected RawRecord::Commit, got {other:?}"),
+        }
+    };
+    assert_eq!(merged_at("1001"), None);
+    assert_eq!(merged_at("2002").as_deref(), Some("2026-04-18T11:00:00Z"));
 }

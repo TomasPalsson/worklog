@@ -127,6 +127,9 @@ mod daemon_tasks;
 #[path = "daemon_week.rs"]
 mod daemon_week;
 
+#[path = "daemon_assist.rs"]
+mod daemon_assist;
+
 pub struct AppState {
     /// Single shared connection — SQLite + rusqlite is !Send, so we keep
     /// exactly one and serialise access. Cheap compared to the code path
@@ -215,6 +218,14 @@ pub fn router(state: Shared) -> Router {
         .route("/tickets/:key/transition", post(daemon_tasks::transition))
         .route("/tickets/:key/comment", post(daemon_tasks::comment))
         .route("/tickets/:key/draft", post(daemon_tasks::draft))
+        .route("/tickets/:key/view", get(daemon_assist::view))
+        .route("/tickets/:key/start", post(daemon_assist::start_route))
+        .route("/tickets/:key/move", post(daemon_assist::move_route))
+        .route("/tickets/assist-create", post(daemon_assist::assist_create))
+        .route("/accounts/allowed", get(daemon_assist::allowed))
+        .route("/accounts/suggest", post(daemon_assist::suggest))
+        .route("/accounts/relearn", post(daemon_assist::relearn))
+        .route("/hints", get(daemon_assist::hints))
         .route("/tempo/pull", post(daemon_week::pull))
         .route("/weeks/:monday/closeout", get(daemon_week::closeout))
         .route("/billing/tenants", get(daemon_tenants::list_tenants))
@@ -2842,6 +2853,10 @@ mod tests {
 
     mod daemon_week {
         include!("daemon_week_test.rs");
+    }
+
+    mod daemon_assist {
+        include!("daemon_assist_test.rs");
     }
 
     fn state_with_block() -> Shared {

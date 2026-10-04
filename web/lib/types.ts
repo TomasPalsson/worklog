@@ -459,6 +459,13 @@ export function sourceKind(raw: string): SourceKind {
 
 export type StatusCategory = "new" | "indeterminate" | "done";
 
+export interface StatusHint {
+  key: string;
+  summary: string;
+  to_category: StatusCategory;
+  reason: { kind: "pr_merged"; repo: string; number: number; merged_at: string };
+}
+
 export interface TaskRow {
   key: string;
   summary: string;
@@ -476,6 +483,7 @@ export interface TaskRow {
   parent_summary: string | null;
   updated: string | null;
   day_seconds: number[];
+  done_hint?: StatusHint | null;
 }
 
 export interface TasksResponse {

@@ -7,6 +7,7 @@ pub mod cli;
 pub mod daemon_client;
 mod eval_cmd;
 pub mod style;
+mod ticket_cmd;
 pub mod wizard;
 
 pub use cli::run;

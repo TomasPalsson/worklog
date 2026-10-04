@@ -63,6 +63,9 @@ pub enum RawRecord {
         body: String,
         /// Local work folder whose clone holds `sha`; `None` = elsewhere.
         local_folder: Option<String>,
+        /// PR merge time (`github_pr` only); `None` = not merged.
+        #[serde(default)]
+        merged_at: Option<String>,
     },
     Hook {
         event: String,
