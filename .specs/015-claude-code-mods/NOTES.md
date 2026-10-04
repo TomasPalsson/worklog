@@ -1,0 +1,16 @@
+# Notes — 015
+
+Ruling: lib.ts helpers take `io: Io` (contract.ts) instead of `$`, because `claude plugin validate` refuses `$` passed across an import ("$ is followed only into a function declared in this same file, never across an import"). Each hook file builds its own `makeIo($)`; a closure over `$` passed as an argument validates (probed 2026-10-04). T003 reworked to match before tick.
+Ruling: T006 also edits mods/worklog/.claude-plugin/plugin.json (`types` key) and adds mods/worklog/types/index.d.ts, outside its files: list — `claude plugin validate` refuses a state atom not declared in the manifest's types contract ("worklog.review is not declared: the manifest's types contract must name it in interface PluginState"). The FR-12 pane-state-in-atom contract cannot validate without them; reverting them was tried and failed validate (exit 1).
+Ruling: makeIo stays duplicated in status.ts, ticket.ts and command.tsx per design §5 (validator follows `$` only within a file); ticket.ts registers session.start with `{surface:'terminal'}` because the engine allows one unmatched session.start per mod (status.ts holds it).
+Ruling: T006 Input onCancel (Esc) stays untested — the plugin test harness's $.ui.input accepts only kind `submit|change` and the Input exposes no cancel handle; the cancel Button path is tested instead.
+Ruling: types/index.d.ts keeps WorklogReviewBlock as a hand copy of contract.ts Block — validate rejects any import in the types contract ("the contract must be self-contained").
+Ruling: design §3 embedded list gains `types/index.d.ts` — T006 made plugin.json reference it, so an install without it would fail to load.
+Ruling (user, 2026-10-04, after live CHK001 look): hours move from `$.ui.status` (engine draws its own "⚠ worklog: …" row) to a dim label in the prompt footer's mode labels via `ui.render` on `SessionMode` → T007. A mod cannot draw into the user's `statusLine` command row.
+Ruling (user, 2026-10-04): the command is `/wl`, not `/worklog` — the user's own `worklog` skill owns `/worklog` and the engine refused the register ("it is the user's /worklog"), crashing session.start → T008.
+Ruling: T007 uses '' (not undefined) as 'no label' — $.state.set refuses undefined ("value is not JSON data"); the render hook treats '' as no label.
+Ruling (user, 2026-10-04, after live look): review pane gets a bordered layout with header totals, aligned rows and plain hotkey buttons → T009.
+Ruling (user, 2026-10-04, CHK001 look): SessionMode label never showed — the engine draws that site only when it has modes. Hours move to the PromptHint `tail` (always drawn) → T010. User approved the pane and the ticket toast.
+Ruling: G002 kept no finding ≥80; three 70–75 findings verified real. Reminder ignored tempo_seconds (spec A3) and CLAUDE.md said claude_mod.rs has no tests → T011. Pane shows UTC clock times (started_at slice) — deferred: Owner is on UTC, WORKLOG_TZ is a fixed offset; revisit if a non-UTC user appears.
+Discovered: CLAUDE.md line 75 says claude_mod.rs has "no tests" (it has 5); edit blocked by the auto-mode classifier as self-modification — defer to the user: replace `(closed file list, no tests)` with `(closed list of 9 files, test files excluded)`.
+Discovered: acceptance pass found §3 journey gaps (J3 empty day, J3 refused i keeps block, J2 hours outside work folder) — fold into T012, T013.

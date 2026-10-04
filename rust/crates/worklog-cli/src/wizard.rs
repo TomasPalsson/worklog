@@ -21,7 +21,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use console::{style, Style};
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Password, Select};
-use worklog_core::{daemon_service, db, hook, paths::Paths, schedule, secrets};
+use worklog_core::{claude_mod, daemon_service, db, hook, paths::Paths, schedule, secrets};
 
 /// Options controlling what the wizard actually runs. Defaults to a full
 /// interactive flow; tests swap these for hermetic behaviour.
@@ -169,6 +169,7 @@ fn configure_hook(theme: &ColorfulTheme, notes: &mut Vec<String>) -> Result<()> 
         }
     }
     let s = hook::install(&cmd)?;
+    claude_mod::install(&Paths::resolve()?.data_dir)?;
     println!(
         "  {} installed ({} events)",
         style("✓").green().bold(),

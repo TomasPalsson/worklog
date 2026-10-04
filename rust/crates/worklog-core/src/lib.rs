@@ -16,6 +16,7 @@ pub mod browser;
 pub mod browser_ingest;
 pub mod change_log;
 mod change_log_column;
+pub mod claude_mod;
 mod claude_subprocess;
 mod clues_collect;
 pub mod clues_contract;

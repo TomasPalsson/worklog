@@ -232,7 +232,7 @@ pub fn status() -> Result<HookStatus> {
 
 // ───────────────────────── private helpers ─────────────────────────
 
-fn read_settings(path: &Path) -> Result<Map<String, Value>> {
+pub(crate) fn read_settings(path: &Path) -> Result<Map<String, Value>> {
     if !path.exists() {
         return Ok(Map::new());
     }
@@ -248,7 +248,7 @@ fn read_settings(path: &Path) -> Result<Map<String, Value>> {
     }
 }
 
-fn write_settings(path: &Path, v: &Value) -> Result<()> {
+pub(crate) fn write_settings(path: &Path, v: &Value) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("mkdir {}", parent.display()))?;
     }

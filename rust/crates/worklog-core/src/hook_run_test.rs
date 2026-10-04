@@ -333,3 +333,59 @@ fn prompt_scrubbed_before_title_cut_never_leaks_a_partial_token() {
         "even a partial token prefix must never leak into the title: {title}"
     );
 }
+
+fn repo_on_branch(branch: &str) -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    let status = std::process::Command::new("git")
+        .args(["init", "-q", "-b", branch])
+        .arg(tmp.path())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    tmp
+}
+
+fn jira_issue_for(payload: &Value) -> Option<String> {
+    let conn = open_memory().unwrap();
+    handle(&conn, payload, now()).unwrap();
+    let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+    events[0].jira_issue.clone()
+}
+
+#[test]
+fn branch_key_is_used_when_prompt_and_path_have_none() {
+    let tmp = repo_on_branch("PROJ-7-x");
+    let payload = json!({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "b1",
+        "cwd": tmp.path().to_str().unwrap(),
+        "prompt": "fix the thing"
+    });
+    assert_eq!(jira_issue_for(&payload).as_deref(), Some("PROJ-7"));
+}
+
+#[test]
+fn prompt_key_beats_branch_key() {
+    let tmp = repo_on_branch("PROJ-7-x");
+    let payload = json!({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "b2",
+        "cwd": tmp.path().to_str().unwrap(),
+        "prompt": "look at PROJ-42"
+    });
+    assert_eq!(jira_issue_for(&payload).as_deref(), Some("PROJ-42"));
+}
+
+#[test]
+fn path_key_beats_branch_key() {
+    let tmp = repo_on_branch("PROJ-7-x");
+    let nested = tmp.path().join("PROJ-9");
+    std::fs::create_dir(&nested).unwrap();
+    let payload = json!({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "b3",
+        "cwd": nested.to_str().unwrap(),
+        "prompt": "fix the thing"
+    });
+    assert_eq!(jira_issue_for(&payload).as_deref(), Some("PROJ-9"));
+}
