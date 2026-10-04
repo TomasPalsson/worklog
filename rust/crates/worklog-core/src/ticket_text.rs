@@ -14,7 +14,7 @@ pub fn markdown_to_adf(md: &str) -> Value {
         if !continues {
             flush_list(&mut blocks, &mut list);
         }
-        if item.is_none() && !line.starts_with('#') && !line.trim().is_empty() {
+        if item.is_none() && heading(line).is_none() && !line.trim().is_empty() {
             paragraph.push(line.trim());
             continue;
         }
@@ -50,7 +50,7 @@ pub fn has_emoji(s: &str) -> bool {
     s.chars().any(|c| {
         matches!(
             c as u32,
-            0x1F000..=0x1FAFF | 0x2600..=0x27BF | 0x2B50 | 0x2B55 | 0x231A..=0x231B | 0x23E9..=0x23FA | 0xFE0F | 0x200D
+            0x1F000..=0x1FAFF | 0x2600..=0x26FF | 0x2705 | 0x2728 | 0x274C | 0x274E | 0x2753..=0x2755 | 0x2757 | 0x2795..=0x2797 | 0x27B0 | 0x27BF | 0x2B1B | 0x2B1C | 0x2B50 | 0x2B55 | 0x231A..=0x231B | 0x23E9..=0x23FA
         )
     })
 }
@@ -137,8 +137,8 @@ fn bold(text: &str) -> Option<(Value, &str)> {
 
 fn link(text: &str) -> Option<(Value, &str)> {
     let inner = text.strip_prefix('[')?;
-    let label_end = inner.find("](")?;
-    let after = &inner[label_end + 2..];
+    let label_end = inner.find(']')?;
+    let after = inner[label_end..].strip_prefix("](")?;
     let url_end = after.find(')')?;
     if label_end == 0 || url_end == 0 {
         return None;

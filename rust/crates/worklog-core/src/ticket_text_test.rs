@@ -91,3 +91,22 @@ fn emoji_detection() {
     assert!(has_emoji("warn \u{26A0}\u{FE0F}"));
     assert!(!has_emoji("plain text, Þórður — 100% (ok) → fine"));
 }
+
+#[test]
+fn hash_lines_that_are_not_headings_stay_as_paragraphs() {
+    for line in ["#123 fixes login", "#!/bin/sh", "####### x", "#"] {
+        assert_eq!(
+            markdown_to_adf(line),
+            doc(json!([{ "type": "paragraph", "content": [text(line)] }])),
+            "{line}"
+        );
+    }
+}
+
+#[test]
+fn has_emoji_ignores_joiners_and_plain_dingbats() {
+    assert!(!has_emoji("\u{200D}\u{FE0F}"));
+    assert!(!has_emoji("\u{2713} \u{2192} \u{2194}"));
+    assert!(has_emoji("\u{1F600}"));
+    assert!(has_emoji("\u{2705}"));
+}
