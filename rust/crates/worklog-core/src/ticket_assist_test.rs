@@ -360,3 +360,15 @@ fn failed_move_after_create_reports_the_key_and_never_retries_create() {
     assert!(err.contains("GENAI-900") && err.contains("nope"), "{err}");
     assert_eq!(decision_rows(&conn), 1);
 }
+
+#[test]
+fn failed_decision_log_after_create_still_reports_the_key() {
+    let server = MockServer::start();
+    mock_createmeta(&server, json!([{ "id": "42", "name": "Acme" }]));
+    let created = mock_create(&server);
+    let conn = db::open_memory().unwrap();
+    conn.execute("DROP TABLE account_decisions", []).unwrap();
+    let err = format!("{:#}", create(&server, &conn, &body()).unwrap_err());
+    created.assert_hits(1);
+    assert!(err.contains("GENAI-900"), "{err}");
+}

@@ -137,7 +137,13 @@ pub fn assist_create_with(
         &account,
         body.guessed_account_id.as_deref(),
         &body.clues,
-    )?;
+    )
+    .map_err(|e| {
+        e.context(format!(
+            "created {} but could not log the account decision",
+            created.key
+        ))
+    })?;
     // Never retry the create: the ticket exists, so a failed move reports its key.
     let key = created.key;
     let moved = move_by_name(auth, &key, IN_PROGRESS, client)
