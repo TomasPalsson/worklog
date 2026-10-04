@@ -10,7 +10,6 @@ import { ChevronLeft } from "lucide-react";
 
 import { BillingRegistry } from "@/components/BillingRegistry";
 import { ExportPanel } from "@/components/ExportPanel";
-import { ThemeToggle } from "@/components/ThemeToggle";
 import { formatDayHeading, todayISO } from "@/lib/format";
 
 export const metadata = {
@@ -41,7 +40,6 @@ export default async function BillingPage({ searchParams }: Props) {
             <strong>Verkefni (deild)</strong> for each line.
           </p>
         </div>
-        <ThemeToggle />
         <ExportPanel day={back} />
       </header>
 
