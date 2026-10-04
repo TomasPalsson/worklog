@@ -1,0 +1,4 @@
+Ruling: T002 has_emoji covers U+1F000–1FAFF plus the Emoji=Yes dingbats/symbols named in review; ©/®/™, plain arrows and keycaps stay allowed (common in ordinary text). Fix ladder capped at 5 rounds; the skill's "no emoji" text rule (T014) covers the rest.
+Discovered: T009 had to add `merged_at: None` to one RawRecord::Commit literal in clues_send_test.rs (outside files:) to keep the crate compiling — fold into T009 (committed in 3a9fd3a)
+Discovered: Phase Independent test lines pass two filters to cargo test (invalid) — run each filter separately — defer
+Ruling: CHK001 ticket text format = Sample 2 (lean opening paragraph, then only the sections that have content: Tasks as - [ ] checkboxes, Done when, optional Context/Links) — picked under --finish pre-approval per D-08; see verify/CHK001.md
