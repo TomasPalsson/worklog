@@ -26,22 +26,23 @@ function Tools({ view, id, today }: { view: View; id: string; today: string }) {
   const [thisLabel, noun] = NAMES[view];
   const shift = shiftBy[view];
   const views = [
-    ["Month view", "month", `/logged/month/${monthOf(anchor)}`, MonthViewIcon],
-    ["Week view", "week", `/logged/week/${mondayOf(anchor)}`, WeekViewIcon],
-    ["Day view", "day", `/logged/day/${anchor}`, DayViewIcon],
+    ["Month view", "month", `/logged/month/${monthOf(anchor)}`, MonthViewIcon, "Month"],
+    ["Week view", "week", `/logged/week/${mondayOf(anchor)}`, WeekViewIcon, "Week"],
+    ["Day view", "day", `/logged/day/${anchor}`, DayViewIcon, "Day"],
   ] as const;
   return (
     <nav className="logged-tools" aria-label={`${noun} navigation`}>
-      {views.map(([label, v, to, Icon]) => (
+      {views.map(([label, v, to, Icon, text]) => (
         <Link
           key={v}
           href={to}
           className="logged-tool"
           aria-label={label}
-          data-tip={label}
+          data-labelled=""
           aria-current={v === view ? "page" : undefined}
         >
           <Icon size={18} />
+          <span>{text}</span>
         </Link>
       ))}
       <span className="logged-tools-gap" />

@@ -18,6 +18,7 @@ export function LoggedMeter({ logged, required, state, orientation = "row" }: Pr
       className="logged-meter"
       data-state={state}
       data-orientation={orientation}
+      data-some={logged > 0 ? "" : undefined}
       role="meter"
       aria-valuemin={0}
       aria-valuemax={max}
