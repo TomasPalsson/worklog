@@ -76,3 +76,77 @@ export function assignLanes(items: { start: number; end: number }[]): { lane: nu
   close();
   return out;
 }
+
+export type RunStatus = "synced" | "dirty" | "ticket" | "none";
+
+interface RunBlock extends Span {
+  jira_issue: string | null;
+  tempo_worklog_id: string | null;
+  dirty: boolean;
+  duration_seconds: number;
+  description: string | null;
+}
+
+export interface Run<B extends RunBlock = RunBlock> extends Span {
+  jira_issue: string | null;
+  status: RunStatus;
+  workSeconds: number;
+  blocks: B[];
+  description: string | null;
+  count: number;
+}
+
+export function blockStatus(b: RunBlock): RunStatus {
+  if (b.tempo_worklog_id) return b.dirty ? "dirty" : "synced";
+  return b.jira_issue ? "ticket" : "none";
+}
+
+const mergeKey = (b: RunBlock) => (b.is_personal ? "personal" : `${blockStatus(b)}|${b.jira_issue ?? "none"}`);
+
+/**
+ * Collapse one day's blocks into runs: consecutive blocks with the same merge
+ * key whose start is within `gapMinutes` of the run's end (overlap counts).
+ * `workSeconds` sums member durations, not the span.
+ */
+export function mergeRuns<B extends RunBlock>(blocks: B[], gapMinutes = 10): Run<B>[] {
+  const sorted = [...blocks].sort((a, b) => Date.parse(a.started_at) - Date.parse(b.started_at));
+  const runs: Run<B>[] = [];
+  const keys: string[] = [];
+  for (const b of sorted) {
+    const k = mergeKey(b);
+    const r = runs[runs.length - 1];
+    if (r && keys[keys.length - 1] === k && Date.parse(b.started_at) <= Date.parse(r.ended_at) + gapMinutes * 60000) {
+      r.blocks.push(b);
+      if (Date.parse(b.ended_at) > Date.parse(r.ended_at)) r.ended_at = b.ended_at;
+      r.workSeconds += b.duration_seconds;
+      r.count++;
+      continue;
+    }
+    keys.push(k);
+    runs.push({
+      started_at: b.started_at,
+      ended_at: b.ended_at,
+      is_personal: b.is_personal,
+      jira_issue: b.jira_issue,
+      status: blockStatus(b),
+      workSeconds: b.duration_seconds,
+      blocks: [b],
+      description: null,
+      count: 1,
+    });
+  }
+  for (const r of runs) {
+    const longest = r.blocks.reduce((a, b) => (lengthMin(b) > lengthMin(a) ? b : a));
+    r.description = longest.description || null;
+  }
+  return runs;
+}
+
+/** Distinct non-empty member descriptions with summed seconds, longest first. */
+export function runActivities(run: Run): { description: string; seconds: number }[] {
+  const sums = new Map<string, number>();
+  for (const b of run.blocks) {
+    if (b.description) sums.set(b.description, (sums.get(b.description) ?? 0) + b.duration_seconds);
+  }
+  return [...sums].map(([description, seconds]) => ({ description, seconds })).sort((a, b) => b.seconds - a.seconds);
+}

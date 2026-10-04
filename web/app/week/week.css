@@ -124,16 +124,20 @@
 }
 .week-block-flagged svg { flex: none; color: var(--amber); }
 .week-block-flagged span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.week-block[data-lanes="2"] .week-block-dur { display: none; }
-.week-block-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
+.week-block-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; flex: none; }
 .week-block-ticket {
-  min-width: 0; overflow: hidden; text-overflow: clip; white-space: nowrap;
+  min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-family: var(--font-mono); font-size: 12px; font-weight: 600; line-height: 16px;
 }
-.week-block-dur { flex: none; font-family: var(--font-mono); font-size: 11px; line-height: 16px; color: var(--fg-muted); }
+.week-block-dur, .week-block-meta { font-family: var(--font-mono); font-size: 11px; line-height: 16px; color: var(--fg-muted); }
+.week-block-dur { flex: none; }
+.week-block-meta { flex: none; white-space: nowrap; }
+.week-block[data-lanes="2"] .week-block-dur { display: none; }
 .week-block-desc {
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 16px; color: var(--fg-muted);
+  display: flex; gap: 6px; min-width: 0; flex: none; font-size: 11px; line-height: 16px; color: var(--fg-muted);
 }
+.week-block-act-dur { flex: none; font-family: var(--font-mono); }
+.week-block-act-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .week-personal {
   z-index: 0; inset-inline: 0; padding: 0; border: 0; border-radius: 0;
   background: repeating-linear-gradient(135deg, color-mix(in oklch, var(--fg) 5%, transparent) 0 4px, transparent 4px 8px);

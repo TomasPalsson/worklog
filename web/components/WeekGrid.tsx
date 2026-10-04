@@ -3,7 +3,7 @@ import Link from "next/link";
 import type { Block } from "@/lib/types";
 import { formatDuration, formatRange, todayISO } from "@/lib/format";
 import { FlagIcon } from "./icons";
-import { assignLanes, blockSpan, hourHeight, timelineRange } from "@/lib/weekTimeline";
+import { assignLanes, blockSpan, hourHeight, mergeRuns, runActivities, timelineRange, type Run } from "@/lib/weekTimeline";
 
 interface DayColumn {
   day: string;
@@ -13,44 +13,48 @@ interface DayColumn {
 
 const pad = (h: number) => `${String(h).padStart(2, "0")}:00`;
 
-function status(b: Block): "synced" | "dirty" | "ticket" | "none" {
-  if (b.tempo_worklog_id) return b.dirty ? "dirty" : "synced";
-  return b.jira_issue ? "ticket" : "none";
+function label(r: Run<Block>) {
+  const ticket = r.jira_issue ?? "No ticket";
+  const head = `${formatRange(r.started_at, r.ended_at)} · ${ticket} · ${formatDuration(r.workSeconds)}`;
+  return r.count > 1 ? `${head} across ${r.count} blocks` : head;
 }
 
-function label(b: Block) {
-  const ticket = b.jira_issue ?? "No ticket";
-  return `${formatRange(b.started_at, b.ended_at)} · ${ticket} · ${formatDuration(b.duration_seconds)}${b.description ? ` · ${b.description}` : ""}`;
+const mergeKeyOf = (r: Run<Block>) => `${r.is_personal ? "p" : r.status}|${r.jira_issue ?? ""}`;
+
+function title(r: Run<Block>) {
+  const members = r.blocks.map((b) => `${formatRange(b.started_at, b.ended_at)}${b.description ? ` ${b.description}` : ""}`);
+  return [label(r), ...members].join("\n");
 }
 
 type Range = ReturnType<typeof timelineRange>;
 
 function DayCol({ col, range, hh, today }: { col: DayColumn; range: Range; hh: number; today: string }) {
-  const placed = col.blocks.flatMap((b) => {
-    const s = b.is_personal ? null : blockSpan(b, range);
-    return s && s.length >= 1 ? [{ b, s }] : [];
+  const runs = mergeRuns(col.blocks);
+  const placed = runs.flatMap((r) => {
+    const s = r.is_personal ? null : blockSpan(r, range);
+    return s && s.length >= 1 ? [{ r, s }] : [];
   });
   const lanes = assignLanes(placed.map(({ s }) => ({ start: s.top, end: s.top + s.length })));
   return (
     <div className="week-col" data-today={col.day === today ? "" : undefined} role="list" aria-label={col.day}>
-      {col.blocks
-        .filter((b) => b.is_personal)
-        .map((b) => {
-          const s = blockSpan(b, range);
+      {runs
+        .filter((r) => r.is_personal)
+        .map((r) => {
+          const s = blockSpan(r, range);
           if (!s) return null;
           return (
             <Link
-              key={b.id}
+              key={`${mergeKeyOf(r)}|${r.started_at}`}
               href={`/${col.day}`}
               className="week-block week-personal"
               role="listitem"
-              title={label(b)}
-              aria-label={label(b)}
+              title={title(r)}
+              aria-label={label(r)}
               style={{ top: `calc(${s.top / 60} * var(--hour))`, height: `max(calc(${s.length / 60} * var(--hour)), 6px)` }}
             />
           );
         })}
-      {placed.map(({ b, s }, i) => {
+      {placed.map(({ r, s }, i) => {
         const { lane, lanes: n } = lanes[i];
         const px = Math.max((s.length / 60) * hh, 10);
         const m = Math.min(n, 2);
@@ -60,15 +64,15 @@ function DayCol({ col, range, hh, today }: { col: DayColumn; range: Range; hh: n
         const width = stacked ? "50%" : `${100 / m}%`;
         return (
           <Link
-            key={b.id}
+            key={`${mergeKeyOf(r)}|${r.started_at}`}
             href={`/${col.day}`}
             className="week-block"
             role="listitem"
-            data-status={status(b)}
+            data-status={r.status}
             data-lanes={m}
             data-tiny={tiny ? "" : undefined}
-            title={label(b)}
-            aria-label={label(b)}
+            title={title(r)}
+            aria-label={label(r)}
             style={{
               top: `calc(${s.top / 60} * var(--hour))`,
               height: `max(calc(${s.length / 60} * var(--hour)), 10px)`,
@@ -78,18 +82,33 @@ function DayCol({ col, range, hh, today }: { col: DayColumn; range: Range; hh: n
           >
             {px >= 18 && (
               <span className="week-block-row">
-                {b.jira_issue ? (
-                  <span className="week-block-ticket">{b.jira_issue}</span>
+                {r.jira_issue ? (
+                  <span className="week-block-ticket">{r.jira_issue}</span>
                 ) : (
                   <span className="week-block-flagged">
                     <FlagIcon size={10} />
-                    <span>{b.description || "No ticket"}</span>
+                    <span>{r.description || "No ticket"}</span>
                   </span>
                 )}
-                <span className="week-block-dur">{formatDuration(b.duration_seconds)}</span>
+                {px < 40 && <span className="week-block-dur">{formatDuration(r.workSeconds)}</span>}
               </span>
             )}
-            {px >= 44 && b.jira_issue && b.description && <span className="week-block-desc">{b.description}</span>}
+            {px >= 40 && (
+              <>
+                <span className="week-block-meta">
+                  {formatDuration(r.workSeconds)}
+                  {r.count > 1 && ` · ${r.count} blocks`}
+                </span>
+                {runActivities(r)
+                  .filter((a) => a.description !== (r.jira_issue ?? (r.description || "No ticket")))
+                  .map((a) => (
+                    <span key={a.description} className="week-block-desc">
+                      <span className="week-block-act-dur">{formatDuration(a.seconds)}</span>
+                      <span className="week-block-act-text">{a.description}</span>
+                    </span>
+                  ))}
+              </>
+            )}
           </Link>
         );
       })}
@@ -98,9 +117,9 @@ function DayCol({ col, range, hh, today }: { col: DayColumn; range: Range; hh: n
 }
 
 /**
- * Read-only week calendar: each block sits at its real start time with a
- * height proportional to its length. Clicking a block opens that day.
- * Personal blocks are a hatched backdrop; work blocks share lanes on overlap.
+ * Read-only week calendar: each run of same-ticket blocks sits at its real
+ * start time with a height proportional to its span. Clicking a run opens that
+ * day. Personal runs are a hatched backdrop; work runs share lanes on overlap.
  */
 export function WeekGrid({ days }: { days: DayColumn[] }) {
   const today = todayISO();
