@@ -120,3 +120,15 @@ THE FIVE   as above.
 MODULE     mods/worklog/hooks/command.tsx · `$.command.register({ name: 'wl', … })`, `on('command.run', { command: 'wl' }, …)`, USAGE `usage: /wl today|week|review`. Output texts (`worklog today: …`, `worklog week: …`, pane title `worklog review`) unchanged.
 TESTS      command.test.tsx: every `command: 'worklog'` / registered-name assertion / test title naming `/worklog` → `wl` / `/wl`. Add nothing else.
 THE FIVE   as above.
+
+## Contract for T009 — review pane layout
+MODULE     mods/worklog/hooks/command.tsx · only `reviewPane` and `blockLabel` change. Keep every element `key`, `hotkey`, `onPress`/`onSelect`/`onSubmit`/`onCancel` behaviour, the Select (arrow-key navigation), and the request sent per action exactly as now.
+LAYOUT     Engine props: ~/.local/share/worklog/claude-mod/.claude-plugin/types/claude-code/index.d.ts (`BoxProps` ~l.841, `ButtonProps` ~l.1000 — `plain` draws `p: label`, `TextProps` ~l.12011).
+           Outer `<Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>`.
+           Header `<Box justifyContent="space-between">`: left `<Text bold>{day}</Text>` (the blocks' `day`, else omit), right `<Text dimColor>work {formatHours(workSeconds(blocks))} · personal {formatHours(sum of duration_seconds of is_personal blocks)}</Text>`. Reuse lib `formatHours`/`workSeconds`.
+           Rows: the Select, `marginY={1}` around it. `blockLabel(block)` = `${HH:MM start}–${HH:MM end}  ${formatHours(duration).padStart(5)}  ${(jira_issue ?? '—').padEnd(12)}  ${is_personal ? 'personal  ' : ''}${description truncated to 40 chars with '…'}` trimmed at the end. start/end from `started_at`/`ended_at` `.slice(11, 16)` as today.
+           Actions `<Box gap={3}>`: the four Buttons get `plain`; the personal Button's label reads `work` when the block is personal, else `personal` (key stays `personal`).
+           Editing row `marginTop={1}`, `gap={2}`; cancel Button `plain dimColor`.
+           Error: `<Text color="red">` directly under the header. Empty day: header-less bordered box with `<Text dimColor>Nothing to review today.</Text>`.
+TESTS      Update only assertions the layout breaks; add one test that the Select labels are aligned (e.g. label of a ticketless personal 35-min block equals `11:44–12:19   0h35  —             personal` per the formula) and one that the personal Button label reads `work` for a personal block. Existing behaviour tests (hotkeys, POST bodies) must stay and pass unchanged.
+THE FIVE   as above.
