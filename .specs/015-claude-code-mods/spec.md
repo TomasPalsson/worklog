@@ -8,7 +8,7 @@
 
 **Problem**: The Owner only sees worklog's numbers by opening the web UI, so missed Tempo days and wrong tickets are found late. Claude Code sessions on a ticket branch (`GENAI-9129-foo`) are not tagged with that ticket, because hook-run never reads the branch.
 
-**Solution**: A worklog mod that runs inside the Claude Code terminal. It shows today's hours, gives one reminder a day about the last workday, tells the Owner and Claude which ticket the branch is, puts a `Ticket:` trailer on commits and PRs, and adds a `/worklog` command with a small review pane. hook-run uses the branch as a last-resort ticket source.
+**Solution**: A worklog mod that runs inside the Claude Code terminal. It shows today's hours, gives one reminder a day about the last workday, tells the Owner and Claude which ticket the branch is, puts a `Ticket:` trailer on commits and PRs, and adds a `/wl` command with a small review pane. hook-run uses the branch as a last-resort ticket source.
 
 **Who it's for**: The Owner, a consultant who codes in Claude Code and logs time to Tempo.
 
@@ -43,7 +43,7 @@ The Owner works in Claude Code all day. worklog records those sessions through s
 - A once-a-day reminder about the last workday, in work folders only (D-06, D-07).
 - Ticket toast and context for Claude on a ticket branch, in work folders only.
 - A `Ticket: KEY` trailer on commits and PRs, never a block (D-08).
-- `/worklog today|week|review`, with a review pane of 4 actions (D-09).
+- `/wl today|week|review`, with a review pane of 4 actions (D-09).
 - `worklog hook install` writes the mod out and enables it. `uninstall` removes it (D-03).
 
 ### 2.2 Non-goals
@@ -80,9 +80,9 @@ The Owner works in Claude Code all day. worklog records those sessions through s
 
 | Path | Given | When | Then |
 |------|-------|------|------|
-| Happy | Today has 5 blocks | Owner runs `/worklog review`, picks a block, presses `t`, types `GENAI-1` | Pane opens at any width; the block's ticket is `GENAI-1` in the web UI |
+| Happy | Today has 5 blocks | Owner runs `/wl review`, picks a block, presses `t`, types `GENAI-1` | Pane opens at any width; the block's ticket is `GENAI-1` in the web UI |
 | Error | The block is already synced to Tempo | Owner presses `i` | The pane shows the daemon's refusal text; the block is unchanged |
-| Edge | Today has no blocks | Owner runs `/worklog review` | Pane says there is nothing to review today |
+| Edge | Today has no blocks | Owner runs `/wl review` | Pane says there is nothing to review today |
 
 ## 4. Requirements
 
@@ -92,9 +92,9 @@ The Owner works in Claude Code all day. worklog records those sessions through s
 |----|----------|-------------|------------|
 | FR-01 | MUST | hook-run MUST take the ticket from the git branch of the event's cwd when neither prompt nor cwd path names one | Rust test: temp repo on `PROJ-7-x`, no key in prompt or path, event has `PROJ-7` |
 | FR-02 | MUST | hook-run MUST prefer a prompt key, then a cwd-path key, over the branch key | Rust test: prompt `PROJ-42` on branch `PROJ-7-x` gives `PROJ-42` |
-| FR-03 | MUST | When a session starts and every 60 s after, the mod MUST show `worklog <H>h<MM>` (e.g. `worklog 2h30`) in the status line | Mod test with stubbed daemon and fake clock |
+| FR-03 | MUST | When a session starts and every 60 s after, the mod MUST show `worklog <H>h<MM>` (e.g. `worklog 2h30`) as a dim label in the prompt footer's mode labels (`ui.render` on `SessionMode`), not via `$.ui.status` (user ruling 2026-10-04) | Mod test with stubbed daemon and fake clock |
 | FR-03b | MUST | The hours in FR-03 MUST count only today's blocks that are not personal and not ignored | Unit test on `workSeconds` |
-| FR-04 | MUST | When a daemon call fails or takes over 2 s, the mod MUST clear the status line and show no error text | Mod test: fetch fails, status set to undefined |
+| FR-04 | MUST | When a daemon call fails or takes over 2 s, the mod MUST drop the footer label and show no error text | Mod test: fetch fails, no label drawn |
 | FR-05 | MUST | In a work folder, the mod MUST show one reminder toast when the last workday has unsynced lines or is short of required hours; if both apply, one toast names both | Mod test on each case and on both |
 | FR-06 | MUST | Required hours MUST be the day's Tempo required seconds, or 8h when never pulled; a day whose required seconds is 0 gets no reminder | Mod test on null, 0 and 28800 |
 | FR-06b | MUST | After a reminder toast is shown, the mod MUST store `nudge:<today>`, and MUST NOT toast again that day in any session | Mod test with `mock.store`: second session, no toast |
@@ -105,8 +105,8 @@ The Owner works in Claude Code all day. worklog records those sessions through s
 | FR-10 | MUST | In a work folder on a branch with a ticket, the mod MUST append `Ticket: KEY` to the commit and PR attribution text | Mod test on `attribution.text` |
 | FR-10b | MUST | The branch ticket MUST be the first match of `[A-Z][A-Z0-9]{1,9}-\d+` in `git branch --show-current`; detached HEAD, no repo or no match means no ticket and no toast, context or trailer | Unit test on `ticketFromBranch` |
 | FR-11 | MUST | The mod MUST never deny a tool call, permission or commit | `claude plugin validate` lists no `tool.call` or permission hook; attribution test asserts only `{text}` is returned |
-| FR-12 | MUST | `/worklog today` MUST print `worklog today: <H>h<MM>`; `/worklog week` MUST print `worklog week: <H>h<MM>` (sum of the week's logged seconds); any other argument prints the usage `today|week|review` | Mod test on each |
-| FR-13 | MUST | `/worklog review` MUST open a pane listing today's non-ignored blocks with exactly the 4 actions in §4.3 | Pane test: mount, press each hotkey, assert the request sent |
+| FR-12 | MUST | `/wl today` MUST print `worklog today: <H>h<MM>`; `/wl week` MUST print `worklog week: <H>h<MM>` (sum of the week's logged seconds); any other argument prints the usage `today|week|review` | Mod test on each |
+| FR-13 | MUST | `/wl review` MUST open a pane listing today's non-ignored blocks with exactly the 4 actions in §4.3 | Pane test: mount, press each hotkey, assert the request sent |
 | FR-14 | MUST | The pane MUST show the daemon's error text when an action is refused | Pane test with a stubbed 400 |
 | FR-15 | MUST | `worklog hook install` MUST write the mod files to `<data dir>/claude-mod` (data dir = `$WORKLOG_HOME` or `~/.local/share/worklog`) and add that path to `env.CLAUDE_CODE_PLUGIN_DIRS` in ~/.claude/settings.json, appending with `:` to any existing value; a second run changes nothing | Rust test: files written, key appended once, existing value kept |
 | FR-16 | MUST | `worklog hook uninstall` MUST remove only that path from the key (dropping the key when empty) and leave other plugin dirs intact | Rust test |
@@ -147,7 +147,7 @@ A list control picks the block. `t` and `d` open a text input prefilled with the
 
 - [ ] Every MUST in §4.1 has a passing test.
 - [ ] The error path of each journey is exercised.
-- [ ] Run `worklog hook install`, open Claude Code on a `GENAI-…` branch under ~/Desktop/Work/: the hours status line and a ticket toast appear; `/worklog review` opens the pane; `cargo test --manifest-path rust/Cargo.toml` and `claude plugin test mods/worklog` are green.
+- [ ] Run `worklog hook install`, open Claude Code on a `GENAI-…` branch under ~/Desktop/Work/: the hours status line and a ticket toast appear; `/wl review` opens the pane; `cargo test --manifest-path rust/Cargo.toml` and `claude plugin test mods/worklog` are green.
 
 ## 7. Assumptions
 

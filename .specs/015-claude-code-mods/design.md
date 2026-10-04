@@ -107,3 +107,16 @@ CONTRACT   mods/worklog/hooks/contract.ts — import from it.
 MODULE     mods/worklog/hooks/command.tsx · exports: `registerCommand(on: On): void`
 CALLS      `$.command.register({name:'worklog', description, argumentHint:'today|week|review'})` in `session.start`; `on('command.run', {command:'worklog'}, …)`; `$.ui.open({id: REVIEW_PANE_ID, title:'worklog review', focus:true, closeOnEscape:true})`; `on('ui.render', {component:'Pane', requestId: REVIEW_PANE_ID}, …)` with `Select` (block picker) + `Button` hotkeys `p` `i` `t` `d` + `Input` for ticket/description; lib.ts: `daemonToday`, `daemonGet`, `daemonPost`, `reviewRequest`, `mondayOf`, `workSeconds`, `formatHours`; pane state via `atom/read/update` from `claude-code`
 THE FIVE   (1) NEVER invent an error type, field name or result shape that already exists in the contract — copy the literal declaration. (2) NEVER type a boundary function's parameter as the narrow type; the narrow type is only ever the RETURN of a fallible function. (3) NEVER add a mode, flag or extra required parameter to a shared abstraction the design handed you — duplicate it inside your task and say so. (4) NEVER refactor or rename outside the task's `files:` list — a change to an unlisted file is a defect. (5) NEVER abbreviate inside an identifier. Spell the word.
+
+## Contract for T007 — hours as a footer mode label
+CONTRACT   mods/worklog/hooks/contract.ts — import from it. Engine API: ~/.local/share/worklog/claude-mod/.claude-plugin/types/claude-code/index.d.ts (grep `SessionMode: {`, `RenderInputOf`, `atom`).
+NAMES      state value `worklog.hours: string | undefined` (the label text, e.g. `worklog 2h30`; undefined = no label). Declare it in mods/worklog/types/index.d.ts `PluginState.worklog` beside `review` (the contract must stay self-contained: no imports).
+MODULE     mods/worklog/hooks/status.ts · still exports only `registerStatus(on: On): void`
+CALLS      `const hours = atom({ plugin: 'worklog', key: 'hours' } as const, undefined as string | undefined)` (same pattern as command.tsx's `review` atom). `showHours` does `update($, hours, () => text)` instead of `$.ui.status(text)`; failure → `undefined`. New hook: `on('ui.render', { component: 'SessionMode' }, async ($, e, next) => { const text = await read($, hours); return next(text ? { ...e, props: { ...e.props, modes: [...e.props.modes, text] } } : e) })`. Remove every `$.ui.status` call. Reminder toast, poll interval and the work-hours count are unchanged.
+TESTS      Replace status-line assertions with: render `SessionMode` (props `{ modes: ['focus'] }`) and assert modes end with `worklog 1h30` after the poll; personal blocks excluded; daemon failure → modes unchanged (no label). Find how command.test.tsx renders a component / reads state and mirror it.
+THE FIVE   as above.
+
+## Contract for T008 — rename the command to /wl
+MODULE     mods/worklog/hooks/command.tsx · `$.command.register({ name: 'wl', … })`, `on('command.run', { command: 'wl' }, …)`, USAGE `usage: /wl today|week|review`. Output texts (`worklog today: …`, `worklog week: …`, pane title `worklog review`) unchanged.
+TESTS      command.test.tsx: every `command: 'worklog'` / registered-name assertion / test title naming `/worklog` → `wl` / `/wl`. Add nothing else.
+THE FIVE   as above.

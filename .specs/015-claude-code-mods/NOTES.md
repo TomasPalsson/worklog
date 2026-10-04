@@ -6,3 +6,6 @@ Ruling: makeIo stays duplicated in status.ts, ticket.ts and command.tsx per desi
 Ruling: T006 Input onCancel (Esc) stays untested — the plugin test harness's $.ui.input accepts only kind `submit|change` and the Input exposes no cancel handle; the cancel Button path is tested instead.
 Ruling: types/index.d.ts keeps WorklogReviewBlock as a hand copy of contract.ts Block — validate rejects any import in the types contract ("the contract must be self-contained").
 Ruling: design §3 embedded list gains `types/index.d.ts` — T006 made plugin.json reference it, so an install without it would fail to load.
+Ruling (user, 2026-10-04, after live CHK001 look): hours move from `$.ui.status` (engine draws its own "⚠ worklog: …" row) to a dim label in the prompt footer's mode labels via `ui.render` on `SessionMode` → T007. A mod cannot draw into the user's `statusLine` command row.
+Ruling (user, 2026-10-04): the command is `/wl`, not `/worklog` — the user's own `worklog` skill owns `/worklog` and the engine refused the register ("it is the user's /worklog"), crashing session.start → T008.
+Ruling: T007 uses '' (not undefined) as 'no label' — $.state.set refuses undefined ("value is not JSON data"); the render hook treats '' as no label.
