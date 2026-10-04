@@ -641,15 +641,12 @@ pub fn search_accounted_with(
 ) -> Result<Vec<(String, AllowedAccount)>> {
     let url = format!("{}/rest/api/3/search/jql", auth.base_url);
     let fields = format!("summary,{field_id}");
-    let clause = field_id
-        .strip_prefix("customfield_")
-        .map_or_else(|| format!("\"{field_id}\""), |n| format!("cf[{n}]"));
-    let jql = format!("project = GENAI AND {clause} is not EMPTY ORDER BY created DESC");
+    let jql = "project = GENAI AND \"Account\" is not EMPTY ORDER BY created DESC";
     let body = get_json(
         auth,
         &url,
         &[
-            ("jql", &jql),
+            ("jql", jql),
             ("maxResults", &limit.min(MAX_RESULTS as usize).to_string()),
             ("fields", &fields),
         ],
@@ -1874,7 +1871,7 @@ mod tests {
                 .path("/rest/api/3/search/jql")
                 .query_param(
                     "jql",
-                    "project = GENAI AND cf[10100] is not EMPTY ORDER BY created DESC",
+                    "project = GENAI AND \"Account\" is not EMPTY ORDER BY created DESC",
                 )
                 .query_param("maxResults", "200")
                 .query_param("fields", "summary,customfield_10100");
