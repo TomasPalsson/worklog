@@ -567,6 +567,31 @@ fn get_json(
     serde_json::from_str(&text).with_context(|| format!("decode {what}: {text}"))
 }
 
+/// Collects every page of a `startAt`/`total` paginated Jira list under `key`.
+fn get_all_pages(
+    auth: &JiraAuth,
+    url: &str,
+    key: &str,
+    what: &str,
+    client: &Client,
+) -> Result<Vec<serde_json::Value>> {
+    let mut all = Vec::new();
+    loop {
+        let start = all.len().to_string();
+        let page = get_json(auth, url, &[("startAt", &start)], what, client)?;
+        let items = page[key].as_array().cloned().unwrap_or_default();
+        let got = items.len();
+        all.extend(items);
+        let more = page["total"]
+            .as_u64()
+            .is_some_and(|t| (all.len() as u64) < t)
+            && page["isLast"].as_bool() != Some(true);
+        if got == 0 || !more {
+            return Ok(all);
+        }
+    }
+}
+
 /// Accounts Jira will accept on create. An empty list is an error, never
 /// "everything allowed".
 pub fn allowed_accounts_with(
@@ -580,25 +605,21 @@ pub fn allowed_accounts_with(
         "{}/rest/api/3/issue/createmeta/{project}/issuetypes",
         auth.base_url
     );
-    let types = get_json(auth, &base, &[], "createmeta issue types", client)?;
-    let type_id = types["issueTypes"]
-        .as_array()
-        .into_iter()
-        .flatten()
+    let types = get_all_pages(auth, &base, "issueTypes", "createmeta issue types", client)?;
+    let type_id = types
+        .iter()
         .find(|t| str_at(t, &["name"]).as_deref() == Some(issue_type))
         .and_then(|t| str_at(t, &["id"]))
         .with_context(|| format!("jira project {project} has no issue type {issue_type}"))?;
-    let meta = get_json(
+    let fields = get_all_pages(
         auth,
         &format!("{base}/{type_id}"),
-        &[],
+        "fields",
         "createmeta fields",
         client,
     )?;
-    let accounts: Vec<AllowedAccount> = meta["fields"]
-        .as_array()
-        .into_iter()
-        .flatten()
+    let accounts: Vec<AllowedAccount> = fields
+        .iter()
         .find(|f| str_at(f, &["fieldId"]).as_deref() == Some(field_id))
         .and_then(|f| f["allowedValues"].as_array())
         .into_iter()
@@ -620,14 +641,15 @@ pub fn search_accounted_with(
 ) -> Result<Vec<(String, AllowedAccount)>> {
     let url = format!("{}/rest/api/3/search/jql", auth.base_url);
     let fields = format!("summary,{field_id}");
+    let clause = field_id
+        .strip_prefix("customfield_")
+        .map_or_else(|| format!("\"{field_id}\""), |n| format!("cf[{n}]"));
+    let jql = format!("project = GENAI AND {clause} is not EMPTY ORDER BY created DESC");
     let body = get_json(
         auth,
         &url,
         &[
-            (
-                "jql",
-                r#"project = GENAI AND "Account" is not EMPTY ORDER BY created DESC"#,
-            ),
+            ("jql", &jql),
             ("maxResults", &limit.min(MAX_RESULTS as usize).to_string()),
             ("fields", &fields),
         ],
@@ -1781,6 +1803,43 @@ mod tests {
     }
 
     #[test]
+    fn allowed_accounts_follows_field_pages() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/rest/api/3/issue/createmeta/GENAI/issuetypes");
+            then.status(200)
+                .json_body(json!({ "issueTypes": [{"id": "7", "name": "Story"}] }));
+        });
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/rest/api/3/issue/createmeta/GENAI/issuetypes/7")
+                .query_param("startAt", "0");
+            then.status(200).json_body(json!({
+                "startAt": 0, "total": 2, "fields": [{"fieldId": "summary"}]
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/rest/api/3/issue/createmeta/GENAI/issuetypes/7")
+                .query_param("startAt", "1");
+            then.status(200).json_body(json!({
+                "startAt": 1, "total": 2, "fields": [
+                {"fieldId": "customfield_10100", "allowedValues": [{"id": "42", "name": "Acme"}]}
+            ]}));
+        });
+        let got = allowed_accounts_with(
+            &test_auth(&server),
+            "GENAI",
+            "Story",
+            "customfield_10100",
+            &http::client().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(got.len(), 1);
+    }
+
+    #[test]
     fn allowed_accounts_empty_list_is_an_error() {
         let server = MockServer::start();
         server.mock(|when, then| {
@@ -1815,7 +1874,7 @@ mod tests {
                 .path("/rest/api/3/search/jql")
                 .query_param(
                     "jql",
-                    r#"project = GENAI AND "Account" is not EMPTY ORDER BY created DESC"#,
+                    "project = GENAI AND cf[10100] is not EMPTY ORDER BY created DESC",
                 )
                 .query_param("maxResults", "200")
                 .query_param("fields", "summary,customfield_10100");
