@@ -22,4 +22,4 @@ All commands run this session; `cargo test --manifest-path rust/Cargo.toml` exit
 | FR-19/20 skill routing + text rules | `cargo test -p worklog-core skill` (8); `worklog skill install` writes references/jira.md | 0 | met |
 | Launch: ticket text format picked | verify/CHK001.md (Sample 2) | — | met (pre-approved pick) |
 | Launch: clippy/tests/typecheck green | verify/gates.md | 0 | met (1 pre-existing web test fails on base too) |
-| Launch: live Claude Code chat (CHK002) | not run — needs the new binary installed, the daemon restarted, and real Jira writes | — | **unmet** |
+| Launch: live Claude Code chat (CHK002) | run by the Owner — verify/CHK002.md | — | met (Owner: "approved") |
