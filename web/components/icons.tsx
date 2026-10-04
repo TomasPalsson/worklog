@@ -108,14 +108,21 @@ export function BillingIcon(p: IconProps) {
   );
 }
 
-/** Month view: a calendar sheet with its days dotted in. */
+/** Month view: the month as a grid of day tiles, a few already filled. */
 export function MonthViewIcon(p: IconProps) {
   return (
     <Svg {...p}>
-      <rect x="3.5" y="4.5" width="17" height="16" rx="2.5" />
-      <path d="M3.5 9h17M8 3v3M16 3v3" />
-      <path d="M7.5 12.5h.01M12 12.5h.01M16.5 12.5h.01M7.5 16.5h.01M12 16.5h.01" strokeWidth={2.4} />
-      <rect x="14.6" y="14.6" width="3.8" height="3.8" rx="1" {...WASH} opacity={0.45} />
+      <rect x="3.5" y="3.5" width="4.6" height="4.6" rx="1.2" {...WASH} opacity={0.6} />
+      <rect x="9.7" y="3.5" width="4.6" height="4.6" rx="1.2" {...WASH} opacity={0.6} />
+      <rect x="3.5" y="3.5" width="4.6" height="4.6" rx="1.2" />
+      <rect x="9.7" y="3.5" width="4.6" height="4.6" rx="1.2" />
+      <rect x="15.9" y="3.5" width="4.6" height="4.6" rx="1.2" />
+      <rect x="3.5" y="9.7" width="4.6" height="4.6" rx="1.2" />
+      <rect x="9.7" y="9.7" width="4.6" height="4.6" rx="1.2" />
+      <rect x="15.9" y="9.7" width="4.6" height="4.6" rx="1.2" />
+      <rect x="3.5" y="15.9" width="4.6" height="4.6" rx="1.2" />
+      <rect x="9.7" y="15.9" width="4.6" height="4.6" rx="1.2" />
+      <rect x="15.9" y="15.9" width="4.6" height="4.6" rx="1.2" opacity={0.45} />
     </Svg>
   );
 }
@@ -131,12 +138,14 @@ export function WeekViewIcon(p: IconProps) {
   );
 }
 
-/** Day view: one column of logged entries. */
+/** Day view: one day tile on its own, filled to its hours. */
 export function DayViewIcon(p: IconProps) {
   return (
     <Svg {...p}>
-      <rect x="6" y="3.5" width="12" height="17" rx="2.5" />
-      <path d="M9 8.5h6M9 12h6M9 15.5h3.5" />
+      <rect x="4" y="4" width="16" height="16" rx="3.5" />
+      <path d="M8 16.5h8" opacity={0.25} strokeWidth={2.6} />
+      <path d="M8 16.5h5" strokeWidth={2.6} />
+      <path d="M8 8.2h3.5" strokeWidth={2.2} />
     </Svg>
   );
 }

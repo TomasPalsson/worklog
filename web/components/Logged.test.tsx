@@ -170,13 +170,18 @@ describe("LoggedMonth", () => {
     render(
       <LoggedMonth
         month="2026-10"
-        range={range(GRID.map((d) => day(d, d === "2026-10-02" ? { state: "under", logged_seconds: 0 } : d > TODAY ? { state: "pending", logged_seconds: 0 } : {})))}
+        range={range(GRID.map((d) => day(d, d === "2026-10-02" ? { state: "under", logged_seconds: 0 } : d === "2026-10-10" ? { state: "off", logged_seconds: 0, required_seconds: 0 } : d > TODAY ? { state: "pending", logged_seconds: 0 } : {})))}
       />,
     );
     expect(document.querySelector('a[href="/logged/day/2026-10-02"] .logged-cell-hours')!.textContent).toBe("0h");
     expect(document.querySelector('a[href="/logged/day/2026-10-20"] .logged-cell-hours')).toBeNull();
     expect(document.querySelector('a[href="/logged/day/2026-10-02"] [role="meter"]')!.getAttribute("aria-valuenow")).toBe("0");
-    expect(document.querySelector('a[href="/logged/day/2026-10-20"] [role="meter"]')).toBeNull();
+    // A future weekday gets an empty ghost meter, never hours.
+    const ghost = document.querySelector('a[href="/logged/day/2026-10-20"] [role="meter"]')!;
+    expect(ghost.getAttribute("aria-valuenow")).toBe("0");
+    expect(document.querySelector('a[href="/logged/day/2026-10-20"]')!.hasAttribute("data-future")).toBe(true);
+    // A future day with nothing required stays blank.
+    expect(document.querySelector('a[href="/logged/day/2026-10-10"] [role="meter"]')).toBeNull();
   });
 
   it("shows an em dash and 'not fetched' for a not_fetched day, never 0h", () => {

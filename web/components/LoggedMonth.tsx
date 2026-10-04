@@ -39,6 +39,7 @@ export function LoggedMonth({ range, month }: { range: LoggedRange; month: strin
               className="logged-cell"
               data-state={d.state}
               data-outside={outside}
+              data-future={d.state === "pending" && d.day > today ? "" : undefined}
               href={`/logged/day/${d.day}`}
               aria-label={`${dayLabel(d.day, "long")}: ${stateWord(d)}`}
             >
@@ -57,7 +58,7 @@ export function LoggedMonth({ range, month }: { range: LoggedRange; month: strin
               </span>
               {outside === undefined && d.state === "not_fetched" && <span className="logged-cell-hours">—</span>}
               {showHours && <span className="logged-cell-hours">{hours(d.logged_seconds)}</span>}
-              {d.state !== "not_fetched" && required > 0 && outside === undefined && !(d.state === "pending" && d.day > today) && (
+              {d.state !== "not_fetched" && required > 0 && outside === undefined && (
                 <LoggedMeter logged={d.logged_seconds} required={d.required_seconds} state={d.state} />
               )}
             </Link>

@@ -25,8 +25,8 @@
   transition: color 120ms cubic-bezier(0.25, 1, 0.5, 1), background 120ms cubic-bezier(0.25, 1, 0.5, 1);
 }
 .logged-tool:hover { color: var(--fg); }
-.logged-tool[data-labelled] { flex-direction: column; gap: 4px; width: 52px; height: 48px; }
-.logged-tool[data-labelled] span { font-size: 10px; font-weight: 500; line-height: 1; }
+.logged-tool[data-labelled] { flex-direction: column; gap: 4px; width: 52px; height: 52px; }
+.logged-tool[data-labelled] span { font-size: 12px; font-weight: 500; line-height: 1; }
 .logged-tools :is(a, button):focus-visible { border-radius: var(--radius-md); }
 .logged-tool[aria-current="page"] { color: var(--fg); background: var(--bg-raised); border-color: var(--border); }
 .logged-this { padding: 0 8px; font-size: 13px; color: var(--fg-muted); text-decoration: none; }
@@ -261,7 +261,7 @@ span.logged-this { color: var(--fg-subtle); }
 @media (max-width: 640px) {
   .logged-title-row h1 { font-size: 24px; }
   .logged-tool { width: 44px; height: 44px; }
-  .logged-tool[data-labelled] { width: 52px; height: 48px; }
+  .logged-tool[data-labelled] { width: 52px; height: 52px; }
   .logged-this { padding: 0 8px; min-height: 44px; display: inline-flex; align-items: center; }
   .logged-page .action-btn, .logged-page .link-btn { min-height: 44px; }
   .dismiss-day input { height: 44px; }
@@ -299,3 +299,4 @@ span.logged-this { color: var(--fg-subtle); }
   .logged-entries .logged-desc { grid-column: 1 / -1; }
   .logged-entries .source-badge { grid-column: 1 / -1; justify-self: start; }
 }
+.logged-cell[data-future] .logged-meter { opacity: .5; }
