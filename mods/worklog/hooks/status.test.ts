@@ -22,12 +22,12 @@ const block = (overrides: Partial<Block>) => ({
   ...overrides,
 })
 
-const MODE = {
-  component: 'SessionMode',
+const hint = (tail?: string) => ({
+  component: 'PromptHint',
   surface: 'terminal',
   viewport: { columns: 120, rows: 40, isFullscreen: false },
-  props: { modes: ['focus'] },
-} as const
+  props: { isDraft: false, isWorking: false, hint: '? for shortcuts', ...(tail === undefined ? {} : { tail }) },
+}) as const
 
 const closeoutDay = (overrides: Partial<CloseoutDay>): CloseoutDay => ({
   day: LAST_WORKDAY,
@@ -73,14 +73,14 @@ function world(on: On, options: Options = {}) {
     toasts.push(event.text)
     return { value: undefined }
   })
-  on('ui.render', { component: 'SessionMode' }, ($, event) => ({
+  on('ui.render', { component: 'PromptHint' }, ($, event) => ({
     type: 'Text',
-    children: [event.props.modes.join(' | ')],
+    children: [event.props.tail ?? ''],
   }))
   return { requested, toasts, stored }
 }
 
-test('session start labels the footer with worklog hours counting only non-personal, non-ignored blocks', async ($, on) => {
+test('session start puts on the prompt hint tail worklog hours counting only non-personal, non-ignored blocks', async ($, on) => {
   const clock = mock.clock(on)
   const seen = world(on, {
     blocks: [
@@ -92,11 +92,11 @@ test('session start labels the footer with worklog hours counting only non-perso
   })
   await $.session.start(SESSION)
   await clock.advance(1000)
-  expect(JSON.stringify(await $.ui.render(MODE))).toContain('worklog 1h30')
+  expect(JSON.stringify(await $.ui.render(hint()))).toContain('"worklog 1h30"')
   expect(seen.requested).toContain(`http://127.0.0.1:9323/days/${TODAY}`)
 })
 
-test('the footer label refreshes every 60 seconds', async ($, on) => {
+test('the prompt hint tail refreshes every 60 seconds', async ($, on) => {
   const clock = mock.clock(on)
   const seen = world(on, { blocks: [block({ duration_seconds: 3600 })] })
   await $.session.start(SESSION)
@@ -104,17 +104,24 @@ test('the footer label refreshes every 60 seconds', async ($, on) => {
   const before = seen.requested.length
   await clock.advance(60_000)
   expect(seen.requested.length).toBeGreaterThan(before)
-  expect(JSON.stringify(await $.ui.render(MODE))).toContain('worklog 1h00')
+  expect(JSON.stringify(await $.ui.render(hint()))).toContain('"worklog 1h00"')
 })
 
-test('a down daemon leaves the footer modes unchanged and shows no error text', async ($, on) => {
+test('an existing tail is kept and the hours are appended after a separator', async ($, on) => {
+  const clock = mock.clock(on)
+  world(on, { blocks: [block({ duration_seconds: 3600 }), block({ duration_seconds: 1800 })] })
+  await $.session.start(SESSION)
+  await clock.advance(1000)
+  expect(JSON.stringify(await $.ui.render(hint('x')))).toContain('"x · worklog 1h30"')
+})
+
+test('a down daemon leaves the prompt hint tail absent and shows no error text', async ($, on) => {
   const clock = mock.clock(on)
   const seen = world(on, { isDown: true })
   await $.session.start(SESSION)
   await clock.advance(1000)
-  const footer = JSON.stringify(await $.ui.render(MODE))
-  expect(footer).toContain('focus')
-  expect(footer).not.toContain('worklog')
+  expect(JSON.stringify(await $.ui.render(hint()))).toBe('{"type":"Text","children":[""]}')
+  expect(JSON.stringify(await $.ui.render(hint('x')))).toContain('"x"')
   expect(seen.toasts).toEqual([])
 })
 

@@ -68,8 +68,8 @@ export function registerStatus(on: On): void {
     return next(event)
   })
 
-  on('ui.render', { component: 'SessionMode' }, async ($, event, next) => {
+  on('ui.render', { component: 'PromptHint' }, async ($, event, next) => {
     const text = await read($, hours)
-    return next(text ? { ...event, props: { ...event.props, modes: [...event.props.modes, text] } } : event)
+    return next(text ? { ...event, props: { ...event.props, tail: event.props.tail ? `${event.props.tail} · ${text}` : text } } : event)
   })
 }
