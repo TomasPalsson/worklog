@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it, mock } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { formatRange, todayISO } from "@/lib/format";
+import { formatRange } from "@/lib/format";
 import type { RawBlock, TicketBlocks, TicketDay } from "@/lib/types";
 import type { TaskActions } from "./TaskCard";
 import { Harness, dryRunData, more, toggle } from "./workLogTestKit";
@@ -224,7 +224,8 @@ describe("log time", () => {
     await waitFor(() => expect(calls(a.logTicketTime)).toHaveLength(1));
     expect(calls(a.logTicketTime)[0]).toEqual([
       "ABC-1",
-      { day: todayISO(), start: "09:15", minutes: 30, description: "Did a thing" },
+      // The form defaults to the daemon's today from the fixture, not the browser clock.
+      { day: "2026-10-02", start: "09:15", minutes: 30, description: "Did a thing" },
     ]);
     await waitFor(() => expect(calls(a.loadTicketBlocks)).toHaveLength(2));
     await waitFor(() => expect(screen.queryByLabelText("What you did")).toBeNull());
