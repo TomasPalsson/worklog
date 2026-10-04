@@ -108,6 +108,7 @@ pub fn collect_with(
             sha: c.sha.clone(),
             body: scrub::scrub_secrets(commit_body(&c.commit.message)),
             local_folder: if is_local { folder.clone() } else { None },
+            merged_at: None,
         })
         .ok();
         let ev = Event {
@@ -132,17 +133,26 @@ pub fn collect_with(
     }
 
     // --- PRs ---------------------------------------------------------------
-    let pr_q = format!("author:{} type:pr created:{}..{}", auth.user, since, until);
-    let prs: IssueSearch = client
-        .get(format!("{}/search/issues", auth.base))
-        .bearer_auth(&auth.token)
-        .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28")
-        .query(&[("q", pr_q.as_str()), ("per_page", "100")])
-        .json_ok()
-        .context("github issue search")?;
-    debug!(total = prs.items.len(), "github prs");
-    for p in prs.items {
+    // The merged query catches PRs opened before the window but merged in it.
+    let mut prs = Vec::new();
+    for field in ["created", "merged"] {
+        let pr_q = format!("author:{} type:pr {field}:{}..{}", auth.user, since, until);
+        let found: IssueSearch = client
+            .get(format!("{}/search/issues", auth.base))
+            .bearer_auth(&auth.token)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .query(&[("q", pr_q.as_str()), ("per_page", "100")])
+            .json_ok()
+            .context("github issue search")?;
+        for item in found.items {
+            if !prs.iter().any(|p: &IssueItem| p.id == item.id) {
+                prs.push(item);
+            }
+        }
+    }
+    debug!(total = prs.len(), "github prs");
+    for p in prs {
         let repo_name = p
             .repository_url
             .rsplit('/')
@@ -164,6 +174,7 @@ pub fn collect_with(
             sha: String::new(),
             body: scrub::scrub_secrets(p.body.as_deref().unwrap_or("")),
             local_folder: if is_local { folder.clone() } else { None },
+            merged_at: p.pull_request.and_then(|r| r.merged_at),
         })
         .ok();
         let ev = Event {
@@ -266,6 +277,12 @@ struct IssueItem {
     created_at: String,
     closed_at: Option<String>,
     repository_url: String,
+    pull_request: Option<PullRequestRef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PullRequestRef {
+    merged_at: Option<String>,
 }
 
 // Tests live in github_test.rs (same module, split file for line budget).

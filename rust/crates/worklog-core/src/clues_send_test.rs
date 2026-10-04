@@ -218,6 +218,7 @@ fn clues_send_block_input_never_leaks_forbidden_fields() {
                     sha: "deadbeef".into(),
                     body: "COMMIT-BODY-TEXT".into(),
                     local_folder: None,
+                    merged_at: None,
                 })
                 .unwrap(),
             ),
