@@ -138,6 +138,7 @@ async function reviewPane($: EngineInterface, event: RenderInput<'Pane'>) {
                 label={editing}
                 value={(editing === 'ticket' ? current.jira_issue : current.description) ?? ''}
                 onSubmit={value => sendReview($, io, () => typedAction(editing, value))}
+                onCancel={() => change($, { editing: undefined })}
               />
               <Button key="cancel" onPress={() => change($, { editing: undefined })}>
                 cancel
