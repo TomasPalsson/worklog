@@ -2,8 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import Link from "next/link";
-// Deep path: other suites leave partial "next/navigation" mocks that drop this export.
-import { usePathname } from "next/dist/client/components/navigation";
+import { usePathname } from "next/navigation";
 import { todayISO } from "@/lib/format";
 import { SettingsPanel } from "./SettingsPanel";
 import { ThemeToggle } from "./ThemeToggle";

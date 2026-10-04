@@ -8,6 +8,7 @@ import { mondayOf, todayISO } from "@/lib/format";
 const push = mock((_href: string) => {});
 mock.module("next/navigation", () => ({
   useRouter: () => ({ push, refresh: mock(() => {}) }),
+  usePathname: () => "/",
 }));
 // Panels with their own server actions / cookies — not what this test is about.
 mock.module("./ThemeToggle", () => ({ ThemeToggle: () => null }));

@@ -2,9 +2,8 @@ import { afterEach, describe, expect, it, mock } from "bun:test";
 import { cleanup, render, screen } from "@testing-library/react";
 
 let path = "/";
-const navPath = "next/dist/client/components/navigation";
-const real = { ...(await import(navPath)) };
-mock.module(navPath, () => ({ ...real, usePathname: () => path }));
+const real = { ...(await import("next/navigation")) };
+mock.module("next/navigation", () => ({ ...real, usePathname: () => path }));
 const { AppNav } = await import("./AppNav");
 afterEach(cleanup);
 

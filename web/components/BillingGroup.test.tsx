@@ -37,6 +37,7 @@ const lineTextStatus = mock(async (_i: LineTextKey): Promise<{ ok: true; data: L
 }));
 mock.module("next/navigation", () => ({
   useRouter: () => ({ refresh: mock(() => {}) }),
+  usePathname: () => "/",
 }));
 // Process-wide like every mock.module: BlockCard.test mocks this specifier
 // too, so export the names its tree imports as well (order must not matter).

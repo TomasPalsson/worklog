@@ -13,6 +13,7 @@ import type { Overlap, ProjectActivity } from "@/lib/types";
 // mounts it.
 mock.module("next/navigation", () => ({
   useRouter: () => ({ refresh: mock(() => {}) }),
+  usePathname: () => "/",
 }));
 mock.module("@/app/actions-overlaps", () => ({
   allocateOverlap: mock(async () => ({ ok: true as const, data: undefined })),
