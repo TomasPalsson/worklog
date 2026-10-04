@@ -18,6 +18,7 @@ import { formatDuration } from "@/lib/format";
 import { localToday, shortDate, type Column } from "@/lib/taskBoard";
 import type { TaskRow, Transition } from "@/lib/types";
 import { DueChip, ParentRow, PriorityGlyph, TypeIcon, UpdatedAgo, WeekSpark } from "./TaskCardMeta";
+import { TaskDoneHint } from "./TaskDoneHint";
 import { TaskMoveMenu } from "./TaskMoveMenu";
 
 export interface TaskActions {
@@ -141,6 +142,7 @@ export function TaskCard(p: TaskCardProps) {
       </button>
       <GripVertical className="task-grip" size={14} aria-hidden="true" />
       {!p.pending && <TaskMoveMenu taskKey={task.key} column={p.column} load={p.loadTransitions} onMove={p.onMove} />}
+      {task.done_hint && p.column !== "done" && !p.pending && !p.undo && <TaskDoneHint hint={task.done_hint} onConfirm={() => p.onMove("done")} />}
       {p.undo && !p.pending && (
         <div className="task-card-undo">
           <span>{`Moved to ${p.undo.to}`}</span>
