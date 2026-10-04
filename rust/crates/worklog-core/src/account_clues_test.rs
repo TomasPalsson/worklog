@@ -169,3 +169,18 @@ fn decision_marks_correct_guess_and_counts_ticket() {
         .unwrap();
     assert_eq!(hits, 1);
 }
+
+#[test]
+fn mixed_case_clues_count_against_lowercase_rows() {
+    let c = conn();
+    seed(&c, "1", "innnes", 3, 0);
+    let (a, b) = (acct("1", "A"), acct("2", "B"));
+    let allowed = vec![a, b.clone()];
+    let clues = vec!["  Innnes ".to_string()];
+    record_decision(&c, "Innnes thing", &b, Some("1"), &clues).unwrap();
+    record_decision(&c, "Innnes again", &b, Some("1"), &clues).unwrap();
+    let got = suggest(&c, "innnes", &allowed).unwrap();
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].account.id, "2");
+    assert_eq!(got[0].matched_clues, vec!["innnes"]);
+}

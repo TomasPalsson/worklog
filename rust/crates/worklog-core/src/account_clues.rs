@@ -140,6 +140,10 @@ pub fn record_decision(
     )?;
     tx.execute(BUMP_TICKETS, params![picked.id, picked.name])?;
     for clue in clues {
+        let clue = clue.trim().to_lowercase();
+        if clue.is_empty() {
+            continue;
+        }
         tx.execute(BUMP_HITS, params![picked.id, picked.name, clue])?;
         if let Some(wrong_id) = guessed_id.filter(|_| !correct) {
             tx.execute(
