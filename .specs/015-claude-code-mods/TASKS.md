@@ -1,5 +1,7 @@
+Approved: 2026-10-04 by user
+Base: 430299a
 # Tasks — Claude Code terminal mod for worklog
-Spec: spec.md · Design: design.md · Base: b0e3696 · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && claude plugin test mods/worklog`
+Spec: spec.md · Design: design.md · Base: 430299a · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && claude plugin test mods/worklog`
 
 ## Behaviors
 | ID | Given / When / Then | Task | Proven by |
@@ -29,7 +31,7 @@ Independent test: `claude plugin validate mods/worklog && claude plugin test mod
 Goal: `worklog hook install` puts the mod in place and Claude Code loads it in every session.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core claude_mod` — green.
 - [ ] T002 Embed the mod and enable it from hook install/uninstall/status (FR-15, FR-16, FR-17; B3) — files: rust/crates/worklog-core/src/claude_mod.rs, rust/crates/worklog-core/src/lib.rs, rust/crates/worklog-core/src/hook.rs, rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-cli/src/wizard.rs, CLAUDE.md — verify: `cargo test --manifest-path rust/Cargo.toml && cargo clippy --manifest-path rust/Cargo.toml --all-targets --all-features -- -D warnings` — after: T004, T005, T006
-- [ ] CHK001 human-verify the mod loads from install — files: rust/crates/worklog-core/src/claude_mod.rs — verify: human: after `worklog hook install`, a new `claude` session under ~/Desktop/Work/ on a `GENAI-…` branch shows `worklog <H>h<MM>` and a ticket toast, and `/worklog review` opens the pane
+- [ ] CHK001 human-verify the mod loads from install — files: rust/crates/worklog-core/src/claude_mod.rs — verify: human: after `worklog hook install`, a new `claude` session under ~/Desktop/Work/ on a `GENAI-…` branch shows `worklog <H>h<MM>` and a ticket toast, and `/worklog review` opens the pane — after: T002
 
 ## Gates
 - [ ] G001 project gates clean — files: . — verify: `flow check --fix`
