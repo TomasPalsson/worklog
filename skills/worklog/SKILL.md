@@ -88,7 +88,14 @@ Match the user's phrasing left-to-right; first match wins.
 | "mark X as work/personal" / "reclassify" / "personal project" | `references/recipes.md` → Recipe 7 |
 | "set up worklog" / "first-time setup" / "configure worklog" | `references/recipes.md` → Recipe 8 |
 | "re-estimate" / "the AI estimates are wrong" | `references/recipes.md` → Recipe 10 |
+| "work on GENAI-123" / "start GENAI-123" (a ticket key) | **J — Jira assistant**: `worklog ticket start KEY` |
+| "work on [free text]" / "I'm going to build X" | **J**: `worklog ticket find "<text>"`, then pick a match or `ticket create` (`references/jira.md`) |
+| "waiting on X" / "blocked on X" | **J**: ask whether to move the ticket to Blocked, then `worklog ticket move KEY Blocked` |
+| "finished" / "done with KEY" / "PR merged" | **J**: ask whether to move the ticket to Done, then `worklog ticket move KEY Done` |
+| "what can I close?" / "anything to close?" | **J**: `worklog ticket hints` |
 | "show me unsynced" / "what's pending sync" / "any dirty blocks" | `references/recipes.md` → Recipe 11 |
+
+Recipe J lives in `references/jira.md`. Its rules: `ticket start` on a key needs no confirm. For free text, run `ticket find` first and offer matches; to create, run `worklog account suggest "<text>"` and ask ONE confirm showing the title and the account. Moves to Blocked or Done are asked, never assumed. Ticket text is English with no emoji, and the user's chat is never pasted into it. Never post to Slack.
 
 If the user names a date ambiguously ("yesterday", "Tuesday"), resolve to `YYYY-MM-DD` before invoking anything: `date +%Y-%m-%d`, `date -v-1d +%Y-%m-%d` (macOS), or `date -d yesterday +%Y-%m-%d` (Linux).
 
@@ -242,6 +249,7 @@ The body covers ~80% of operations. Load a reference proactively when:
 |-------------------|------|
 | Handle an intent not in the routing table (cross-day search, tagging, multi-day sync, retroactive edits, setup walkthrough) | `references/recipes.md` |
 | Hit an HTTP endpoint not shown above, or parse a JSON shape (full schemas for Block / Event / JiraTicket / DaySummary / SyncResponse) | `references/api-reference.md` |
+| Start, find, create or move a Jira ticket, or write ticket text | `references/jira.md` |
 | Diagnose a specific known failure (Tempo 400 "User is invalid" / 400 "Issue id cannot be null" / 401 / orphan Tempo / gcal OAuth / WORKLOG_TZ silent fallback / 8 more) | `references/troubleshooting.md` |
 | Reason about a block-state transition (especially: re-inference + dirty edits, merge + dirty, the carry mechanism that preserves `tempo_worklog_id` across re-infer) | `references/state-machine.md` |
 

@@ -35,6 +35,10 @@ const BUNDLED_FILES: &[(&str, &str)] = &[
         include_str!("../../../../skills/worklog/references/api-reference.md"),
     ),
     (
+        "references/jira.md",
+        include_str!("../../../../skills/worklog/references/jira.md"),
+    ),
+    (
         "references/recipes.md",
         include_str!("../../../../skills/worklog/references/recipes.md"),
     ),
@@ -191,6 +195,7 @@ mod tests {
         assert!(dir.join("references/api-reference.md").exists());
         assert!(dir.join("references/state-machine.md").exists());
         assert!(dir.join("references/troubleshooting.md").exists());
+        assert!(dir.join("references/jira.md").exists());
         assert_eq!(r.files.len(), BUNDLED_FILES.len());
     }
 
@@ -248,5 +253,41 @@ mod tests {
         );
         assert!(body.contains("name: worklog"), "missing name");
         assert!(body.contains("description:"), "missing description");
+    }
+
+    fn bundled(path: &str) -> &'static str {
+        BUNDLED_FILES
+            .iter()
+            .find(|(p, _)| *p == path)
+            .map(|(_, b)| *b)
+            .unwrap_or_else(|| panic!("{path} must be in BUNDLED_FILES"))
+    }
+
+    #[test]
+    fn skill_routes_jira_assistant_phrases() {
+        let skill = bundled("SKILL.md");
+        for phrase in [
+            "ticket start",
+            "ticket find",
+            "ticket create",
+            "ticket move",
+            "ticket hints",
+            "account suggest",
+            "Blocked",
+            "Done",
+            "what can I close",
+            "references/jira.md",
+            "Slack",
+        ] {
+            assert!(skill.contains(phrase), "SKILL.md missing {phrase:?}");
+        }
+    }
+
+    #[test]
+    fn jira_reference_has_text_guide_rules() {
+        let jira = bundled("references/jira.md");
+        for phrase in ["English", "no emoji", "## Tasks", "- [ ]", "## Done when"] {
+            assert!(jira.contains(phrase), "jira.md missing {phrase:?}");
+        }
     }
 }
