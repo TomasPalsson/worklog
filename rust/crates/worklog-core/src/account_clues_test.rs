@@ -184,3 +184,35 @@ fn mixed_case_clues_count_against_lowercase_rows() {
     assert_eq!(got[0].account.id, "2");
     assert_eq!(got[0].matched_clues, vec!["innnes"]);
 }
+
+#[test]
+fn picking_a_dropped_clue_revives_it() {
+    let c = conn();
+    seed(&c, "1", "acme", 3, 2);
+    let a = acct("1", "A");
+    record_decision(&c, "Acme job", &a, Some("1"), &["acme".to_string()]).unwrap();
+    let got = suggest(&c, "acme", &[a]).unwrap();
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].account.id, "1");
+}
+
+#[test]
+fn relearn_keeps_recorded_decisions() {
+    let c = conn();
+    let x = acct("7", "X");
+    seed_count(&c, "7", 1);
+    record_decision(&c, "Zebra rollout", &x, None, &["zebra".to_string()]).unwrap();
+    let report = relearn(&c, &[]).unwrap();
+    assert_eq!(report.accounts, 1);
+    let got = suggest(&c, "zebra", &[x]).unwrap();
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].past_tickets, 1);
+}
+
+#[test]
+fn suggest_surfaces_db_errors() {
+    let c = conn();
+    seed(&c, "1", "acme", 3, 0);
+    c.execute("DROP TABLE account_ticket_counts", []).unwrap();
+    assert!(suggest(&c, "acme", &[acct("1", "A")]).is_err());
+}

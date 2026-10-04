@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use chrono::{SecondsFormat, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::billing_registry::alias_matches;
 use crate::jira_assist_contract::{
@@ -52,12 +52,37 @@ const BUMP_TICKETS: &str = "INSERT INTO account_ticket_counts (account_id, accou
 
 pub fn relearn(conn: &Connection, tickets: &[(String, AllowedAccount)]) -> Result<RelearnReport> {
     let tx = conn.unchecked_transaction()?;
+    let decisions = {
+        let mut stmt = tx.prepare(
+            "SELECT d.picked_id, c.account_name, d.clues FROM account_decisions d
+             JOIN account_ticket_counts c ON c.account_id = d.picked_id",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
     tx.execute("UPDATE account_clues SET hits = 0", [])?;
     tx.execute("DELETE FROM account_ticket_counts", [])?;
     for (summary, account) in tickets {
         tx.execute(BUMP_TICKETS, params![account.id, account.name])?;
         for clue in extract_clues(summary) {
             tx.execute(BUMP_HITS, params![account.id, account.name, clue])?;
+        }
+    }
+    for (id, name, clues) in decisions {
+        tx.execute(BUMP_TICKETS, params![id, name])?;
+        for clue in serde_json::from_str::<Vec<String>>(&clues)? {
+            let clue = clue.trim().to_lowercase();
+            if !clue.is_empty() {
+                tx.execute(BUMP_HITS, params![id, name, clue])?;
+            }
         }
     }
     tx.execute("DELETE FROM account_clues WHERE hits = 0", [])?;
@@ -104,6 +129,7 @@ pub fn suggest(
                 [&account.id],
                 |r| r.get(0),
             )
+            .optional()?
             .unwrap_or(0);
         out.push(AccountSuggestion {
             account: account.clone(),
@@ -145,6 +171,10 @@ pub fn record_decision(
             continue;
         }
         tx.execute(BUMP_HITS, params![picked.id, picked.name, clue])?;
+        tx.execute(
+            "UPDATE account_clues SET wrong = 0 WHERE account_id = ?1 AND clue = ?2",
+            params![picked.id, clue],
+        )?;
         if let Some(wrong_id) = guessed_id.filter(|_| !correct) {
             tx.execute(
                 "UPDATE account_clues SET wrong = wrong + 1 WHERE account_id = ?1 AND clue = ?2",
