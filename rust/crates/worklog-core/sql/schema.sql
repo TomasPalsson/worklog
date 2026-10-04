@@ -435,3 +435,9 @@ CREATE TABLE IF NOT EXISTS account_ticket_counts (
     account_name TEXT NOT NULL,
     tickets INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS tempo_day_dismissals (
+    day TEXT PRIMARY KEY,
+    reason TEXT NOT NULL,
+    dismissed_at TEXT NOT NULL
+);

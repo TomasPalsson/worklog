@@ -8,12 +8,8 @@ import { mondayOf, todayISO } from "@/lib/format";
 const push = mock((_href: string) => {});
 mock.module("next/navigation", () => ({
   useRouter: () => ({ push, refresh: mock(() => {}) }),
+  usePathname: () => "/",
 }));
-// Panels with their own server actions / cookies — not what this test is about.
-mock.module("./ThemeToggle", () => ({ ThemeToggle: () => null }));
-mock.module("./SettingsPanel", () => ({ SettingsPanel: () => null }));
-mock.module("./ExportPanel", () => ({ ExportPanel: () => null }));
-mock.module("./ViewToggle", () => ({ ViewToggle: () => null }));
 
 let DayHeader: typeof import("./DayHeader").DayHeader;
 let DateJumper: typeof import("./DateJumper").DateJumper;
@@ -38,7 +34,6 @@ const header = (day: string) =>
       totalHours="0h"
       blockCount={0}
       unassigned={0}
-      view="tickets"
     />,
   );
 
@@ -130,16 +125,22 @@ describe("WeekHeader nav", () => {
   });
 });
 
-describe("My Tasks link (B14)", () => {
-  it("day header links to /tasks", () => {
-    header("2026-01-05");
-    const link = screen.getByRole("link", { name: "My Tasks" });
-    expect(link.getAttribute("href")).toBe("/tasks");
+describe("headers carry only date controls (menu lives in AppNav)", () => {
+  it("day header has no view toggle, export, Billing or Tasks link", () => {
+    const { container } = header("2026-01-05");
+    expect(container.querySelector("a[href^='/billing']")).toBeNull();
+    expect(container.querySelector("a[href='/tasks']")).toBeNull();
+    expect(screen.queryByRole("link", { name: /week/i })).toBeNull();
+    expect(container.querySelector("[aria-label='Day view']")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(navLabels().slice(0, 3)).toEqual(["previous day", "Today", "next day"]);
   });
 
-  it("week header links to /tasks", () => {
-    render(<WeekHeader monday="2026-01-05" workSeconds={0} workBlocks={0} />);
-    const link = screen.getByRole("link", { name: "My Tasks" });
-    expect(link.getAttribute("href")).toBe("/tasks");
+  it("week header has no Tasks or Day link", () => {
+    const { container } = render(
+      <WeekHeader monday="2026-01-05" workSeconds={0} workBlocks={0} />,
+    );
+    expect(container.querySelector("a[href='/tasks']")).toBeNull();
+    expect(screen.queryByRole("link", { name: "switch to day view" })).toBeNull();
   });
 });

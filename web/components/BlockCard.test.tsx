@@ -223,8 +223,8 @@ describe("BlockCard details link", () => {
   });
 });
 
-describe("BlockCard billing move alert", () => {
-  it("tells the owner and shows the card when a description edit moves it to another customer", async () => {
+describe("BlockCard billing move alert (removed, FR-15)", () => {
+  it("shows no customer-move toast when a description edit moves it to another customer", async () => {
     let toasts: ToastMsg[] = [];
     const unsub = subscribe((m) => (toasts = m));
     const before = makeBlock({ id: 7, description: "infra work" });
@@ -246,7 +246,8 @@ describe("BlockCard billing move alert", () => {
         billingCustomer="Sjúkra"
       />,
     );
-    await waitFor(() => expect(toasts.map((t) => t.text)).toContain("Moved from Apro to Sjúkra"));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(toasts.some((t) => t.text.includes("Moved from"))).toBe(false);
     unsub();
   });
 });

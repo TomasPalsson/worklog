@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import { ToastHost } from "@/components/ToastHost";
+import { AppNav } from "@/components/AppNav";
 import { ChangeNotices } from "@/components/ChangeNotices";
 import "./globals.css";
 
@@ -61,7 +62,10 @@ export default async function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: noFlashScript }} />
       </head>
       <body>
-        <main className="page">{children}</main>
+        <main className="page">
+          <AppNav />
+          {children}
+        </main>
         <ChangeNotices />
         <ToastHost />
       </body>

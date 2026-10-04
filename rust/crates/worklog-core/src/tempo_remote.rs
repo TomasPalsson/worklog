@@ -8,8 +8,6 @@ use crate::tempo_hub_contract::{
     PullReport, PulledWorklog, RemoteWorklog, RequiredDay, WorklogOwner,
 };
 
-/// Replaces the week's pulled rows in one transaction. A worklog is the
-/// tool's own iff a block carries its id in `tempo_worklog_id`.
 pub fn store_week(
     conn: &Connection,
     monday: NaiveDate,
@@ -17,7 +15,28 @@ pub fn store_week(
     schedule: &[RequiredDay],
     pulled_at: &str,
 ) -> Result<PullReport> {
-    let (from, to) = week_bounds(monday);
+    store_range(
+        conn,
+        monday,
+        monday + Duration::days(6),
+        worklogs,
+        schedule,
+        pulled_at,
+    )
+}
+
+/// Replaces the range's pulled rows in one transaction. A worklog is the
+/// tool's own iff a block carries its id in `tempo_worklog_id`. Call only
+/// after a successful Tempo fetch so a failed fetch leaves stored rows intact.
+pub fn store_range(
+    conn: &Connection,
+    from: NaiveDate,
+    to: NaiveDate,
+    worklogs: &[PulledWorklog],
+    schedule: &[RequiredDay],
+    pulled_at: &str,
+) -> Result<PullReport> {
+    let (from, to) = (from.to_string(), to.to_string());
     let tx = conn.unchecked_transaction()?;
     tx.execute(
         "DELETE FROM tempo_remote_worklogs WHERE day BETWEEN ?1 AND ?2",

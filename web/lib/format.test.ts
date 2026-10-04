@@ -8,8 +8,11 @@ import {
   formatTotalHours,
   formatWeekRange,
   mondayOf,
+  monthGrid,
+  monthOf,
   roundToHalfHour,
   shiftDay,
+  shiftMonth,
   shiftWeek,
   shortMonthDay,
   shortWeekday,
@@ -216,5 +219,36 @@ describe("shortWeekday / shortMonthDay", () => {
     expect(shortWeekday("2026-05-11")).toBe("Mon");
     expect(shortWeekday("2026-05-17")).toBe("Sun");
     expect(shortMonthDay("2026-05-11")).toBe("May 11");
+  });
+});
+
+describe("month helpers", () => {
+  it("monthOf truncates a day to its month", () => {
+    expect(monthOf("2026-10-04")).toBe("2026-10");
+  });
+
+  it("shiftMonth crosses year boundaries both ways", () => {
+    expect(shiftMonth("2026-12", 1)).toBe("2027-01");
+    expect(shiftMonth("2026-01", -1)).toBe("2025-12");
+    expect(shiftMonth("2026-10", 14)).toBe("2027-12");
+  });
+
+  it("monthGrid spans Mon..Sun weeks around the month", () => {
+    const feb = monthGrid("2026-02");
+    expect(feb.from).toBe("2026-01-26");
+    expect(feb.to).toBe("2026-03-01");
+    expect(feb.days).toHaveLength(35);
+    expect(feb.days[0]).toBe(feb.from);
+    expect(feb.days[34]).toBe(feb.to);
+  });
+
+  it("monthGrid is 28 days when the month fits exactly", () => {
+    const g = monthGrid("2027-02");
+    expect([g.from, g.to, g.days.length]).toEqual(["2027-02-01", "2027-02-28", 28]);
+  });
+
+  it("monthGrid is 42 days at most", () => {
+    const g = monthGrid("2026-08");
+    expect([g.from, g.to, g.days.length]).toEqual(["2026-07-27", "2026-09-06", 42]);
   });
 });

@@ -12,6 +12,7 @@ const okVoid = () => mock(async () => ({ ok: true as const, data: undefined }));
 const okList = () => mock(async () => ({ ok: true as const, data: [] }));
 mock.module("next/navigation", () => ({
   useRouter: () => ({ refresh: mock(() => {}) }),
+  usePathname: () => "/",
 }));
 // Process-wide like every mock.module: export the names every component tree
 // that shares this specifier imports, so test order must not matter.

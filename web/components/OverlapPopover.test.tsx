@@ -10,6 +10,7 @@ import type { Overlap } from "@/lib/types";
 const refreshImpl = mock(() => {});
 mock.module("next/navigation", () => ({
   useRouter: () => ({ refresh: refreshImpl }),
+  usePathname: () => "/",
 }));
 
 const allocateCalls: Array<[string, string, string, Record<string, number>]> = [];
