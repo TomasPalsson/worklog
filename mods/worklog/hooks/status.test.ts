@@ -238,3 +238,15 @@ test('outside a work folder there is no reminder', async ($, on) => {
   await clock.advance(1000)
   expect(seen.toasts).toEqual([])
 })
+
+test('outside a work folder the hours still show on the prompt hint tail', async ($, on) => {
+  const clock = mock.clock(on)
+  const seen = world(on, {
+    blocks: [block({ duration_seconds: 3600 }), block({ duration_seconds: 1800 })],
+    closeoutDays: [closeoutDay({ pending_lines: 3 })],
+  })
+  await $.session.start({ ...SESSION, cwd: '/Users/me/code/play' })
+  await clock.advance(1000)
+  expect(JSON.stringify(await $.ui.render(hint()))).toContain('"worklog 1h30"')
+  expect(seen.toasts).toEqual([])
+})
