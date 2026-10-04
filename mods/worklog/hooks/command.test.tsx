@@ -257,6 +257,34 @@ test('a refused action shows the daemon error text in the pane', async ($, on) =
   expect(textOf((await $.ui.render(PANE)) as Node)).toContain('block already synced')
 })
 
+test('an empty day shows the empty text and no Select', async ($, on) => {
+  world(on, { blocks: [] })
+  mock.clock(on)
+  await $.session.start(SESSION)
+  await $.command.run(command('review'))
+  const tree = (await $.ui.render(PANE)) as Node
+  expect(textOf(tree)).toContain('Nothing to review today.')
+  expect(elementsOf(tree, 'Select')).toEqual([])
+})
+
+test('a refused ignore shows the error and keeps the block listed unchanged', async ($, on) => {
+  world(on, { blocks: [block({ id: 1, jira_issue: 'GOJ-1', description: 'keep me' })], refusal: 'block already synced' })
+  mock.clock(on)
+  await $.session.start(SESSION)
+  await $.command.run(command('review'))
+  const render = async () => {
+    const tree = (await $.ui.render(PANE)) as Node
+    const options = elementsOf(tree, 'Select').flatMap(s => s.props?.options as { value: string; label: string }[])
+    return { tree, options }
+  }
+  const before = (await render()).options
+  await $.ui.press({ plugin: 'worklog', key: 'ignore' })
+  const after = await render()
+  expect(textOf(after.tree)).toContain('block already synced')
+  expect(before).toHaveLength(1)
+  expect(after.options).toEqual(before)
+})
+
 test('the Select labels are aligned columns: time range, hours, ticket, personal marker, description', async ($, on) => {
   world(on, {
     blocks: [
