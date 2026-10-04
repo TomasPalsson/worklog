@@ -29,10 +29,14 @@ export default async function LoggedMonthPage({ params }: { params: Promise<{ mo
   }
 
   return (
-    <div className="logged-page">
-      <LoggedHeader view="month" id={month} range={range} />
-      <LoggedFetch from={from} to={to} pulledAt={range.pulled_at} />
+    <>
+      <LoggedHeader
+        view="month"
+        id={month}
+        range={range}
+        fetch={<LoggedFetch from={from} to={to} pulledAt={range.pulled_at} />}
+      />
       <LoggedMonth range={range} month={month} />
-    </div>
+    </>
   );
 }

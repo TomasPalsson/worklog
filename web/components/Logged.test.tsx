@@ -140,31 +140,48 @@ describe("LoggedMonth", () => {
     const cells = [...document.querySelectorAll("a.logged-cell")];
     expect(cells.length).toBe(35);
     expect(cells.map((c) => c.getAttribute("href"))).toEqual(GRID.map((d) => `/logged/day/${d}`));
-    expect(cells[1].textContent).toContain("8h");
-    expect(cells[1].textContent).toContain("of 8h");
+    expect(cells[3].textContent).toContain("8h");
+    // The target is said once, in the header; the cell keeps it for screen readers only.
+    expect(cells[3].textContent).not.toContain("of 8h");
+    expect(cells[3].getAttribute("aria-label")).toContain("8h of 8h");
   });
 
-  it("flags an under day as Short with a rail state and lists it", () => {
-    renderMonth();
-    const cell = document.querySelector('a[href="/logged/day/2026-09-30"]')!;
-    expect(cell.getAttribute("data-state")).toBe("under");
-    expect(cell.textContent).toContain("Short");
-    expect(cell.textContent).toContain("5h");
-    expect(cell.getAttribute("aria-label")).toBe("Wednesday 30 September: 5h of 8h, short");
-    // Outside the month (30 Sep) so not in the Short list.
-    expect(document.querySelector(".logged-short")).toBeNull();
-  });
-
-  it("lists in-month short days under the header strip", () => {
+  it("flags an under day as Short with a rail state; outside-month days stay a quiet date", () => {
     render(
       <LoggedMonth
         month="2026-10"
-        range={range(GRID.map((d) => day(d, d === "2026-10-02" ? { state: "under", logged_seconds: 27000 } : {})))}
+        range={range(GRID.map((d) => day(d, { ...states[d], ...(d === "2026-10-01" ? { state: "under", logged_seconds: 18000 } : {}) })))}
       />,
     );
-    const list = document.querySelector(".logged-short")!;
-    expect(list.textContent).toBe("Short: Fri 2 Oct");
-    expect(list.querySelector("a")!.getAttribute("href")).toBe("/logged/day/2026-10-02");
+    const cell = document.querySelector('a[href="/logged/day/2026-10-01"]')!;
+    expect(cell.getAttribute("data-state")).toBe("under");
+    expect(cell.textContent).toContain("Short");
+    expect(cell.textContent).toContain("5h");
+    expect(cell.querySelector('[role="meter"]')).not.toBeNull();
+    // 30 Sep is outside October: aria-label keeps the facts, but no word, hours or meter.
+    const out = document.querySelector('a[href="/logged/day/2026-09-30"]')!;
+    expect(out.getAttribute("aria-label")).toBe("Wednesday 30 September: 5h of 8h, short");
+    expect(out.textContent).not.toContain("Short");
+    expect(out.textContent).not.toContain("5h");
+    expect(out.querySelector('[role="meter"]')).toBeNull();
+  });
+
+  it("shows 0h on a past short day and a meter, but no hours on a future day", () => {
+    render(
+      <LoggedMonth
+        month="2026-10"
+        range={range(GRID.map((d) => day(d, d === "2026-10-02" ? { state: "under", logged_seconds: 0 } : d === "2026-10-10" ? { state: "off", logged_seconds: 0, required_seconds: 0 } : d > TODAY ? { state: "pending", logged_seconds: 0 } : {})))}
+      />,
+    );
+    expect(document.querySelector('a[href="/logged/day/2026-10-02"] .logged-cell-hours')!.textContent).toBe("0h");
+    expect(document.querySelector('a[href="/logged/day/2026-10-20"] .logged-cell-hours')).toBeNull();
+    expect(document.querySelector('a[href="/logged/day/2026-10-02"] [role="meter"]')!.getAttribute("aria-valuenow")).toBe("0");
+    // A future weekday gets an empty ghost meter, never hours.
+    const ghost = document.querySelector('a[href="/logged/day/2026-10-20"] [role="meter"]')!;
+    expect(ghost.getAttribute("aria-valuenow")).toBe("0");
+    expect(document.querySelector('a[href="/logged/day/2026-10-20"]')!.hasAttribute("data-future")).toBe(true);
+    // A future day with nothing required stays blank.
+    expect(document.querySelector('a[href="/logged/day/2026-10-10"] [role="meter"]')).toBeNull();
   });
 
   it("shows an em dash and 'not fetched' for a not_fetched day, never 0h", () => {
@@ -196,15 +213,24 @@ describe("LoggedWeek and LoggedDay", () => {
     render(<LoggedWeek range={range(days)} />);
     expect(document.querySelectorAll(".logged-week-day").length).toBe(7);
     const wed = document.querySelector('.logged-week-day[data-state="under"]')!;
-    expect(wed.textContent).toContain("Wed 30 Sep");
-    expect(wed.textContent).toContain("5h of 8h");
+    expect(wed.textContent).toContain("Wednesday · 30 Sep");
+    expect(wed.textContent).toContain("5h / 8h");
     expect(wed.textContent).toContain("PROJ-12");
-    expect(wed.textContent).toContain("Is this day filled out?");
+    expect(wed.querySelector('[role="meter"]')).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Mark as fine…" })).toBeTruthy();
+    expect(document.querySelectorAll('.logged-week-strip a[href^="#d-"]').length).toBe(7);
+  });
+
+  it("collapses an empty off day to a slim row and says so for an empty short day", () => {
+    const days = WEEK.map((d) => day(d, d === "2026-10-03" ? { state: "off", logged_seconds: 0, required_seconds: 0 } : d === "2026-09-29" ? { state: "under", logged_seconds: 0 } : {}));
+    render(<LoggedWeek range={range(days)} />);
+    expect(document.querySelector("#d-2026-10-03")!.hasAttribute("data-collapsed")).toBe(true);
+    expect(document.querySelector("#d-2026-09-29")!.textContent).toContain("Nothing logged in Tempo.");
   });
 
   it("omits 'of X' on a week row whose required time is 0", () => {
     render(<LoggedWeek range={range([day("2026-10-03", { state: "off", logged_seconds: 0, required_seconds: 0 })])} />);
-    expect(document.querySelector(".logged-week-day")!.textContent).not.toContain("of 0h");
+    expect(document.querySelector(".logged-week-day")!.textContent).not.toContain("/ 0h");
   });
 
   it("renders the entry badge with class source-badge", () => {
@@ -262,16 +288,19 @@ describe("LoggedHeader", () => {
     expect(hrefs()).toContain("/logged/day/2026-09-21");
   });
 
-  it("day: prev/next by day, no summary line, and counts short days for a week", () => {
+  it("day: prev/next by day, no stats row, and Short days listed for a week", () => {
     render(<LoggedHeader view="day" id="2026-10-01" range={range([day("2026-10-01")])} />);
     expect(hrefs()).toContain("/logged/day/2026-09-30");
     expect(hrefs()).toContain("/logged/day/2026-10-02");
     expect(screen.getByRole("heading").textContent).toBe("Thursday, 1 October 2026");
     expect(document.querySelector(".day-total")).toBeNull();
+    expect(document.querySelector(".logged-stat")).toBeNull();
     cleanup();
     const days = Array.from({ length: 7 }, (_, i) => day(shiftDay("2026-09-28", i), i < 2 ? { state: "under", logged_seconds: 14400 } : {}));
     render(<LoggedHeader view="week" id="2026-09-28" range={range(days)} />);
-    expect(document.querySelector(".day-total")!.textContent).toBe("48h logged · 56h required · 2 short");
+    const stats = [...document.querySelectorAll(".logged-stat")].map((n) => n.textContent);
+    expect(stats).toEqual(["Logged48h", "Target56h", "Short2Mon 28 Sep, Tue 29 Sep"]);
+    expect(hrefs()).toContain("/logged/day/2026-09-28");
   });
 });
 

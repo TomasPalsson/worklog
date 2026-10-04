@@ -141,8 +141,8 @@ export default async function DayPage({
         activity={activity}
         allocations={allocations}
       />
-      <UnsortedList key={day} day={day} events={routedEvents} folderOptions={folderOptions} />
-      <ElsewhereList key={day} day={day} items={elsewhereItems} blocks={blocks} />
+      <UnsortedList key={`unsorted-${day}`} day={day} events={routedEvents} folderOptions={folderOptions} />
+      <ElsewhereList key={`elsewhere-${day}`} day={day} items={elsewhereItems} blocks={blocks} />
       {blocks.length === 0 ? (
         <EmptyState day={day} />
       ) : (

@@ -84,6 +84,33 @@ describe("WeekCloseout gap flag (B17)", () => {
   });
 });
 
+describe("WeekCloseout day card", () => {
+  it("a future day shows no Gap chip and no done mark", () => {
+    render(
+      <WeekCloseout closeout={week([day("2999-01-01", { tempo_seconds: 0, logged_seconds: 0 })])} actions={actions()} />,
+    );
+    expect(row("2999-01-01").textContent).not.toContain("Gap");
+    expect(row("2999-01-01").textContent).not.toContain("✓ done");
+  });
+
+  it("no done mark while unticketed time remains", () => {
+    render(<WeekCloseout closeout={week([day("2026-09-21", { unticketed_seconds: 1.9 * H })])} actions={actions()} />);
+    expect(row("2026-09-21").textContent).toContain("no ticket");
+    expect(row("2026-09-21").textContent).not.toContain("✓ done");
+  });
+
+  it("the big number uses the passed day work seconds", () => {
+    render(
+      <WeekCloseout
+        closeout={week([day("2026-09-21", { logged_seconds: 2 * H })])}
+        daySeconds={{ "2026-09-21": 6 * H }}
+        actions={actions()}
+      />,
+    );
+    expect(row("2026-09-21").querySelector(".week-day-hours")?.textContent).toBe("6h");
+  });
+});
+
 describe("WeekCloseout Sync week (B12, B15)", () => {
   const days = [
     day("2026-09-21", { pending_lines: 1 }),

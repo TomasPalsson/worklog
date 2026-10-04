@@ -6,6 +6,7 @@ import { ToastHost } from "@/components/ToastHost";
 import { AppNav } from "@/components/AppNav";
 import { ChangeNotices } from "@/components/ChangeNotices";
 import "./globals.css";
+import "./rail.css";
 
 export const metadata: Metadata = {
   title: "worklog",
@@ -62,10 +63,10 @@ export default async function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: noFlashScript }} />
       </head>
       <body>
-        <main className="page">
+        <div className="app-shell">
           <AppNav />
-          {children}
-        </main>
+          <main className="page">{children}</main>
+        </div>
         <ChangeNotices />
         <ToastHost />
       </body>

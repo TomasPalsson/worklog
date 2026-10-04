@@ -12,6 +12,8 @@ type Props = {
   reason: string | null;
   loggedSeconds: number;
   requiredSeconds: number | null;
+  /** Week cards: just the trigger, the sentence is already in the head. */
+  compact?: boolean;
 };
 
 /** Which control should take focus the next time it mounts. */
@@ -71,7 +73,7 @@ function FormTail({ n, saving, onClose }: { n: number; saving: boolean; onClose:
       <button type="submit" className="action-btn" disabled={saving}>
         {saving ? "Saving…" : "Save reason"}
       </button>
-      <button type="button" className="link-btn" onClick={onClose}>
+      <button type="button" className="link-btn" onClick={onClose} disabled={saving}>
         Cancel
       </button>
     </>
@@ -124,6 +126,7 @@ function DismissForm({ day, want, onClose }: { day: string; want: Want; onClose:
           setValue(e.target.value);
           setError(null);
         }}
+        disabled={saving}
         onBlur={() => setTouched(true)}
         aria-invalid={hint ? "true" : undefined}
         aria-describedby={message ? `${id}-hint` : undefined}
@@ -138,7 +141,7 @@ function DismissForm({ day, want, onClose }: { day: string; want: Want; onClose:
   );
 }
 
-function Short({ day, loggedSeconds, requiredSeconds, want }: Omit<Props, "state" | "reason"> & { want: Want }) {
+function Short({ day, loggedSeconds, requiredSeconds, compact, want }: Omit<Props, "state" | "reason"> & { want: Want }) {
   const [open, setOpen] = useState(false);
   const openRef = useRef<HTMLButtonElement>(null);
 
@@ -162,10 +165,12 @@ function Short({ day, loggedSeconds, requiredSeconds, want }: Omit<Props, "state
     );
   }
   return (
-    <div className="dismiss-day under">
-      <span>
-        <strong>Is this day filled out?</strong> {hours(loggedSeconds)} of {hours(requiredSeconds ?? 0)} logged.
-      </span>
+    <div className={compact ? "dismiss-day under compact" : "dismiss-day under"}>
+      {!compact && (
+        <span>
+          <strong>Is this day filled out?</strong> {hours(loggedSeconds)} of {hours(requiredSeconds ?? 0)} logged.
+        </span>
+      )}
       <button type="button" ref={openRef} className="action-btn" onClick={() => setOpen(true)}>
         Mark as fine…
       </button>

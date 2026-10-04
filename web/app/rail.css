@@ -1,0 +1,143 @@
+/* icon side rail + phone bottom bar (ui-v2.md "Navigation") */
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+}
+
+.app-rail {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 16px 8px;
+  border-right: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.app-rail-logo {
+  display: flex;
+  color: var(--fg);
+  margin-bottom: 24px;
+  text-decoration: none;
+}
+
+.app-rail-spacer {
+  margin-top: auto;
+}
+
+.app-rail-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 60px;
+  min-height: 56px;
+  border-radius: var(--radius-md);
+  color: var(--fg-muted);
+  text-decoration: none;
+  transition: color 120ms cubic-bezier(0.25, 1, 0.5, 1),
+              background 120ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.app-rail-item:hover,
+.app-rail-item[aria-current="page"] {
+  color: var(--fg);
+  background: var(--bg-raised);
+}
+
+.app-rail-item:focus-visible { border-radius: var(--radius-md); }
+
+.app-rail [data-tip]::after { white-space: nowrap; }
+
+.app-rail-label--phone { display: none; }
+
+.app-rail-label {
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.app-rail-item[aria-current="page"]::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: 50%;
+  translate: 0 -50%;
+  width: 3px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--fg);
+}
+
+/* tooltips open to the right of the rail */
+.app-rail [data-tip]::after {
+  top: 50%;
+  left: calc(100% + 10px);
+  right: auto;
+  margin-left: 0;
+  translate: 0 -50%;
+}
+
+.app-rail [data-tip]:hover::after,
+.app-rail [data-tip]:focus-visible::after {
+  translate: 0 -50%;
+}
+
+@media (max-width: 640px) {
+  .app-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell .page {
+    padding-bottom: 104px;
+  }
+
+  .app-rail {
+    position: fixed;
+    inset: auto 0 0 0;
+    z-index: 40;
+    height: calc(64px + env(safe-area-inset-bottom));
+    padding: 0 0 env(safe-area-inset-bottom);
+    flex-direction: row;
+    justify-content: space-around;
+    gap: 0;
+    border-right: 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .app-rail-logo,
+  .app-rail-spacer {
+    display: none;
+  }
+
+  .app-rail-item {
+    width: 44px;
+    min-height: 52px;
+  }
+
+  .app-rail-label {
+    font-size: 10px;
+  }
+
+  .app-rail-label--phone {
+    display: block;
+  }
+
+  .app-rail-item[aria-current="page"]::before {
+    left: 50%;
+    top: 0;
+    translate: -50% 0;
+    width: 20px;
+    height: 3px;
+  }
+
+  .app-rail [data-tip]::after {
+    display: none;
+  }
+}
