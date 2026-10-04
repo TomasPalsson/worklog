@@ -10,3 +10,4 @@ Ruling (user, 2026-10-04, after live CHK001 look): hours move from `$.ui.status`
 Ruling (user, 2026-10-04): the command is `/wl`, not `/worklog` — the user's own `worklog` skill owns `/worklog` and the engine refused the register ("it is the user's /worklog"), crashing session.start → T008.
 Ruling: T007 uses '' (not undefined) as 'no label' — $.state.set refuses undefined ("value is not JSON data"); the render hook treats '' as no label.
 Ruling (user, 2026-10-04, after live look): review pane gets a bordered layout with header totals, aligned rows and plain hotkey buttons → T009.
+Ruling (user, 2026-10-04, CHK001 look): SessionMode label never showed — the engine draws that site only when it has modes. Hours move to the PromptHint `tail` (always drawn) → T010. User approved the pane and the ticket toast.

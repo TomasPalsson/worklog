@@ -92,7 +92,7 @@ The Owner works in Claude Code all day. worklog records those sessions through s
 |----|----------|-------------|------------|
 | FR-01 | MUST | hook-run MUST take the ticket from the git branch of the event's cwd when neither prompt nor cwd path names one | Rust test: temp repo on `PROJ-7-x`, no key in prompt or path, event has `PROJ-7` |
 | FR-02 | MUST | hook-run MUST prefer a prompt key, then a cwd-path key, over the branch key | Rust test: prompt `PROJ-42` on branch `PROJ-7-x` gives `PROJ-42` |
-| FR-03 | MUST | When a session starts and every 60 s after, the mod MUST show `worklog <H>h<MM>` (e.g. `worklog 2h30`) as a dim label in the prompt footer's mode labels (`ui.render` on `SessionMode`), not via `$.ui.status` (user ruling 2026-10-04) | Mod test with stubbed daemon and fake clock |
+| FR-03 | MUST | When a session starts and every 60 s after, the mod MUST show `worklog <H>h<MM>` (e.g. `worklog 2h30`) as dim text at the end of the prompt hint row (`ui.render` on `PromptHint`, `props.tail`), not via `$.ui.status` or `SessionMode` (user rulings 2026-10-04) | Mod test with stubbed daemon and fake clock |
 | FR-03b | MUST | The hours in FR-03 MUST count only today's blocks that are not personal and not ignored | Unit test on `workSeconds` |
 | FR-04 | MUST | When a daemon call fails or takes over 2 s, the mod MUST drop the footer label and show no error text | Mod test: fetch fails, no label drawn |
 | FR-05 | MUST | In a work folder, the mod MUST show one reminder toast when the last workday has unsynced lines or is short of required hours; if both apply, one toast names both | Mod test on each case and on both |

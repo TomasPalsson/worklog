@@ -132,3 +132,9 @@ LAYOUT     Engine props: ~/.local/share/worklog/claude-mod/.claude-plugin/types/
            Error: `<Text color="red">` directly under the header. Empty day: header-less bordered box with `<Text dimColor>Nothing to review today.</Text>`.
 TESTS      Update only assertions the layout breaks; add one test that the Select labels are aligned (e.g. label of a ticketless personal 35-min block equals `11:44–12:19   0h35  —             personal` per the formula) and one that the personal Button label reads `work` for a personal block. Existing behaviour tests (hotkeys, POST bodies) must stay and pass unchanged.
 THE FIVE   as above.
+
+## Contract for T010 — hours on the PromptHint tail
+MODULE     mods/worklog/hooks/status.ts · replace the `ui.render` `{ component: 'SessionMode' }` hook with `{ component: 'PromptHint' }`: `const text = await read($, hours); return next(text ? { ...event, props: { ...event.props, tail: event.props.tail ? `${event.props.tail} · ${text}` : text } } : event)`. Nothing else in status.ts changes (atom, '' sentinel, poll, reminder).
+           Engine doc (index.d.ts ~l.9675): PromptHint props `{ isDraft, isWorking, hint, tail? }`; the terminal keeps the engine's line and draws `tail` dim at its end.
+TESTS      status.test.ts: every SessionMode render becomes a PromptHint render with props `{ isDraft: false, isWorking: false, hint: '? for shortcuts' }`; assert `tail` is `worklog 1h30` (work blocks only), refreshes after the 60 s poll, is absent when the daemon is down, and that an existing tail `x` becomes `x · worklog 1h30`.
+THE FIVE   as above.

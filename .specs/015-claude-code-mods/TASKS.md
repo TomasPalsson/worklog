@@ -29,12 +29,13 @@ Independent test: `claude plugin validate mods/worklog && claude plugin test mod
 - [x] T007 [P] Hours as a footer mode label, not `$.ui.status` (FR-03, FR-04; B4) — files: mods/worklog/hooks/status.ts, mods/worklog/hooks/status.test.ts, mods/worklog/types/index.d.ts — verify: `claude plugin validate mods/worklog && claude plugin test mods/worklog` — after: T006 — done: 5ac081b
 - [x] T008 [P] Rename the command to `/wl` (FR-12, FR-13; B7) — files: mods/worklog/hooks/command.tsx, mods/worklog/hooks/command.test.tsx — verify: `claude plugin validate mods/worklog && claude plugin test mods/worklog` — after: T006 — done: 29af7c3
 - [x] T009 Review pane layout: bordered, header with day and totals, aligned rows, plain hotkey buttons (FR-13) — files: mods/worklog/hooks/command.tsx, mods/worklog/hooks/command.test.tsx — verify: `claude plugin validate mods/worklog && claude plugin test mods/worklog` — after: T008 — done: 62328e4
+- [x] T010 Hours label on the PromptHint `tail`, not SessionMode (FR-03, FR-04; B4) — files: mods/worklog/hooks/status.ts, mods/worklog/hooks/status.test.ts — verify: `claude plugin validate mods/worklog && claude plugin test mods/worklog` — after: T009 — done: 782d67e
 
 ## Phase 3 — ship it with worklog
 Goal: `worklog hook install` puts the mod in place and Claude Code loads it in every session.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core claude_mod` — green.
 - [x] T002 Embed the mod and enable it from hook install/uninstall/status (FR-15, FR-16, FR-17; B3) — files: rust/crates/worklog-core/src/claude_mod.rs, rust/crates/worklog-core/src/lib.rs, rust/crates/worklog-core/src/hook.rs, rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-cli/src/wizard.rs, CLAUDE.md — verify: `cargo test --manifest-path rust/Cargo.toml && cargo clippy --manifest-path rust/Cargo.toml --all-targets --all-features -- -D warnings` — after: T004, T005, T006 — done: 3474d2d
-- [ ] CHK001 human-verify the mod loads from install — files: rust/crates/worklog-core/src/claude_mod.rs — verify: human: after `worklog hook install`, a new `claude` session under ~/Desktop/Work/ on a `GENAI-…` branch shows `worklog <H>h<MM>` as a footer label and a ticket toast, and `/wl review` opens the pane — after: T002, T007, T008, T009
+- [ ] CHK001 human-verify the mod loads from install — files: rust/crates/worklog-core/src/claude_mod.rs — verify: human: after `worklog hook install`, a new `claude` session under ~/Desktop/Work/ on a `GENAI-…` branch shows `worklog <H>h<MM>` as a footer label and a ticket toast, and `/wl review` opens the pane — after: T002, T007, T008, T009, T010
 
 ## Gates
 - [ ] G001 project gates clean — files: . — verify: `flow check --fix`
