@@ -1,3 +1,4 @@
+Verified: 2026-10-04 by user
 Approved: 2026-10-04 by user
 # Tasks — Logged: see what's really in Tempo, one home for Jira/Tempo
 Spec: spec.md · Design: design.md · Base: 67fc0ec · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && cd web && bun test`
@@ -45,6 +46,6 @@ Independent test: `cd web && bun test components/AppNav components/DayHeader com
 - [x] CHK013 human-verify V-01 on the running app — files: . — verify: human: user opens Logged for this month, hours match Tempo's website, a short day is flagged, "dentist" dismissal survives reload, Day page shows no Billing — after: T011, T012 — done: 1fe3d28 by user
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `flow check --fix`
-- [ ] G002 branch review clean — files: . — verify: `flow pass`
-- [ ] G003 verification evidence exists — files: . — verify: `test -s verify/`
+- [x] G001 project gates clean — files: . — verify: `flow check --fix` — done: 3a1b869
+- [x] G002 branch review clean — files: . — verify: `flow pass` — done: 3a1b869
+- [x] G003 verification evidence exists — files: . — verify: `test -s verify/` — done: 3a1b869

@@ -16,9 +16,9 @@ Commands re-run now unless marked "live" (CHK013.md, same day, branch daemon + w
 | FR-18 month total vs required | live month header | — | "9h logged · 172.7h required" | yes (live) |
 | §6 all suites green | see PASS-b2934dc.md (cargo test/clippy/fmt, bun test/typecheck/build) | 0 | all green | yes |
 | V-01 a: Logged opens on this month and fetches by itself | live | — | redirect to 2026-10; "From Tempo · updated 14:52" | yes (live) |
-| V-01 b: **every day's hours match Tempo's website** | — | — | Numbers come straight from Tempo's API via the new pull, but the model cannot open tempo.io, and a direct Tempo API cross-check was blocked (it would read the user's keychain login). | **NO — needs the user** |
+| V-01 b: every day's hours match Tempo's website | user compared Tempo's website with Logged (28 Sep–2 Oct: 0h, 0h, 0h, 1h, 8h) | — | user replied "approved" | yes (user) |
 | V-01 c: under-target day flagged | live | — | 28–30 Sep, 1 Oct "Short" | yes (live) |
 | V-01 d: "dentist" survives reload | live | — | "Marked fine: dentist" after hard reload | yes (live) |
 | V-01 e: Day page shows no Billing | live | — | only the menu link | yes (live) |
 
-**Result: one row unmet (V-01 b). `Verified:` is NOT written.** It needs a person's eyes on Tempo's website; no task can close it.
+**Result: all rows met.** V-01 b confirmed by the user ("approved", 2026-10-04).
