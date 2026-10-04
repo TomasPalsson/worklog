@@ -280,6 +280,20 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
         mark: bool,
     },
 
+    /// Jira assistant: get, start, find, move or create a ticket, and
+    /// list status hints. Talks to the daemon.
+    Ticket {
+        #[command(subcommand)]
+        sub: crate::ticket_cmd::TicketCmd,
+    },
+
+    /// Billing accounts for assisted ticket creation: allowed, suggest,
+    /// relearn. Talks to the daemon.
+    Account {
+        #[command(subcommand)]
+        sub: crate::ticket_cmd::AccountCmd,
+    },
+
     /// Inspect and edit individual time blocks — list, assign a ticket,
     /// fix a duration, set a description, delete, or merge. Talks to the
     /// daemon over HTTP, so no hand-written `curl` is ever needed.
@@ -834,6 +848,8 @@ pub fn run_with<W: Write>(
         Cmd::Week { day } => cmd_week(day, out, cli.json),
         Cmd::Eval { query, details } => crate::eval_cmd::cmd_eval(&query, out, cli.json, details),
         Cmd::Export { day, format, mark } => cmd_export(day, format, mark, out, cli.json),
+        Cmd::Ticket { sub } => crate::ticket_cmd::run_ticket(sub, out, cli.json),
+        Cmd::Account { sub } => crate::ticket_cmd::run_account(sub, out, cli.json),
         Cmd::Block { sub } => match sub {
             BlockCmd::List { day } => cmd_block_list(day, out, cli.json),
             BlockCmd::Assign { id, ticket, clear } => {
