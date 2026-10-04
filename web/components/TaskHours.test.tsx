@@ -34,12 +34,12 @@ describe("TaskHours", () => {
     expect(document.querySelector(".task-hours")).toBeNull();
   });
 
-  it("shows the total, span, last worked and the four figures", () => {
+  it("shows the total, span, last worked and the three figures", () => {
     show(ok([day({ day: "2026-10-01", line_seconds: 5400, blocks: [sent()] }), day({ day: "2026-09-20", line_seconds: 3600, blocks: [sent({ exported_at: null })] })]));
     expect(screen.getByRole("heading", { name: "Your time" })).toBeTruthy();
     expect(document.querySelector(".task-hours-total")?.textContent).toBe("2h 30m");
     expect(screen.getByText("2 days · 20 Sep – 1 Oct · Last worked yesterday · rounded up per day from 3h tracked")).toBeTruthy();
-    expect(figs()).toEqual(["1h 30mThis week", "1h 30mThis month", "All sentTo send to Tempo", "1hNot invoicedGo to billing"]);
+    expect(figs()).toEqual(["1h 30mThis week", "1h 30mThis month", "All sentTo send to Tempo"]);
   });
 
   it("shows the rounding only when tracked differs from billed", () => {
@@ -58,11 +58,11 @@ describe("TaskHours", () => {
     expect(screen.getByText("1 day · Last worked today")).toBeTruthy();
   });
 
-  it("links to billing in the neutral tone when hours are not invoiced", () => {
+  it("shows no invoicing figure and no billing link, even with uninvoiced hours", () => {
     show(ok([day({ blocks: [sent({ exported_at: null })] })]));
-    const fig = screen.getByText("Not invoiced").closest(".task-fig") as HTMLElement;
-    expect(fig.getAttribute("data-tone")).toBeNull();
-    expect(screen.getByRole("link", { name: "Go to billing" }).getAttribute("href")).toBe("/billing");
+    expect(screen.queryByText("Not invoiced")).toBeNull();
+    expect(screen.queryByText("All invoiced")).toBeNull();
+    expect(document.querySelector('a[href="/billing"]')).toBeNull();
   });
 
   it("offers Show unsent day when hours are not in Tempo", () => {
@@ -80,9 +80,7 @@ describe("TaskHours", () => {
 
   it("says All invoiced and All sent with nothing outstanding", () => {
     show(ok([day({ blocks: [sent()] })]));
-    expect(screen.getByText("All invoiced")).toBeTruthy();
     expect(screen.getByText("All sent")).toBeTruthy();
-    expect(screen.queryByRole("link", { name: "Go to billing" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Show unsent day" })).toBeNull();
   });
 });

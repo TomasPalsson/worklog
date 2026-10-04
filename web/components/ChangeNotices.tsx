@@ -47,6 +47,7 @@
 //                  and what it was. Refuses the notification-card stack.
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ListRestart, PenLine, Scale, Sparkles, Tag, X, type LucideIcon } from "lucide-react";
 import * as actions from "@/app/actions";
@@ -198,8 +199,13 @@ export function ChangeNotices({
   // covers.
   const cursorRef = useRef(0);
   const closeRef = useRef<HTMLButtonElement>(null);
-  const catchUpDays = useMemo(() => summariseChanges(catchUp ?? []), [catchUp]);
-  const listDays = useMemo(() => summariseChanges(listChanges ?? []), [listChanges]);
+  // Billing notices belong to /billing; everywhere else only description edits show.
+  const onBilling = usePathname().startsWith("/billing");
+  const onBillingRef = useRef(onBilling);
+  onBillingRef.current = onBilling;
+  const shown = (cs: BlockChange[]) => (onBilling ? cs : cs.filter((c) => c.field === "description"));
+  const catchUpDays = useMemo(() => summariseChanges(shown(catchUp ?? [])), [catchUp, onBilling]);
+  const listDays = useMemo(() => summariseChanges(shown(listChanges ?? [])), [listChanges, onBilling]);
 
   useEffect(() => {
     let cancelled = false;
@@ -245,7 +251,7 @@ export function ChangeNotices({
         const batches = r.data.batches.filter((b) => b.source !== "user");
         const ids = new Set(batches.map((b) => b.batch));
         const pollChanges = r.data.changes.filter((c) => ids.has(c.batch));
-        const blocks = countBlocks(summariseChanges(pollChanges));
+        const blocks = countBlocks(summariseChanges(onBillingRef.current ? pollChanges : pollChanges.filter((c) => c.field === "description")));
         if (blocks === 0) return;
         const who = [...new Set(batches.map((b) => CHANGE_SOURCE_LABELS[b.source]))].join(" + ");
         toast.notice(`${who} changed ${plural(blocks, "block")}`, {

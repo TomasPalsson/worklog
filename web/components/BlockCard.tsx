@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { Check, Coffee, EyeOff, FolderGit2, Sparkles } from "lucide-react";
 import { BlockDetailsLink } from "./BlockDetailsLink";
 import type { Block, JiraTicket, SourceCount } from "@/lib/types";
@@ -18,9 +18,7 @@ import { EstBadge } from "./EstBadge";
 import { TicketCombobox } from "./TicketCombobox";
 import { EventList } from "./EventList";
 import { CommitList } from "./CommitList";
-import { BlockCustomerSplit } from "./BlockCustomerSplit";
 import { isAutoTicket } from "@/lib/tempo_line_contract";
-import { scrollToBlock } from "@/lib/scrollToBlock";
 
 interface Props {
   block: Block;
@@ -51,18 +49,12 @@ interface Props {
   billingCustomer?: string | null;
 }
 
-/** Block id → billing customer it had when its description was saved. The
- * card remounts under its new group after revalidation, so this has to
- * outlive the component instance. */
-const customerBeforeEdit = new Map<number, string | null>();
-
 export function BlockCard({
   block,
   tickets,
   day,
   hideTicketing = false,
   isSoleInGroup = false,
-  billingCustomer,
 }: Props) {
   const [editingDur, setEditingDur] = useState(false);
   const [durVal, setDurVal] = useState(Math.round(block.duration_seconds / 60));
@@ -87,19 +79,6 @@ export function BlockCard({
   // Article label for screen readers — useful info, not "block 42".
   const ariaLabel = `${timeRangeLabel} · ${block.jira_issue ?? "unassigned"} · ${durationLabel}`;
 
-  // After a description save re-renders the day, say so if the block landed
-  // under another customer, and bring it into view (opening its group).
-  useEffect(() => {
-    if (!customerBeforeEdit.has(block.id)) return;
-    const from = customerBeforeEdit.get(block.id) ?? null;
-    customerBeforeEdit.delete(block.id);
-    if (from === (billingCustomer ?? null)) return;
-    toast.ok(`Moved from ${from ?? "Unresolved"} to ${billingCustomer ?? "Unresolved"}`);
-    const group = document.getElementById(`block-${block.id}`)?.closest("details");
-    if (group) group.open = true;
-    scrollToBlock(block.id);
-  }, [block.id, block.description, billingCustomer]);
-
   // Never save this as a description: it would mark the block manual and the estimator would skip it forever.
   const placeholder = block.estimated_by ? "Click to add a description…" : "Describing…";
   const clearPlaceholder = () => {
@@ -115,13 +94,9 @@ export function BlockCard({
       return;
     }
     if (next === previous) return;
-    // Recorded before the save: the revalidated render can land before
-    // the action's promise resolves.
-    if (billingCustomer !== undefined) customerBeforeEdit.set(block.id, billingCustomer);
     start(async () => {
       const r = await setDescription(block.id, next, day);
       if (!r.ok) {
-        customerBeforeEdit.delete(block.id);
         toast.error(`Save description failed — ${r.error}`);
         // Revert the visible text so the user sees the real DB state,
         // not their unsaved edit. Without this the UI silently disagrees
@@ -270,8 +245,6 @@ export function BlockCard({
         </div>
 
         {block.sources.length > 0 && <p className="block-clue-line">{clueLine(block.sources)}</p>}
-
-        <BlockCustomerSplit blockId={block.id} />
 
         <div className="block-title-row">
           {!hideTicketing && (

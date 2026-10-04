@@ -1,7 +1,6 @@
 "use client";
 
 import type { ReactNode } from "react";
-import Link from "next/link";
 
 import { formatDuration } from "@/lib/format";
 import { shortDate } from "@/lib/taskBoard";
@@ -41,13 +40,6 @@ function Ledger({ h, today, onTempo }: { h: TicketHours; today: string; onTempo:
             </button>
           )}
         </Figure>
-        <Figure value={h.uninvoiced > 0 ? formatDuration(h.uninvoiced) : "All invoiced"} label="Not invoiced" tone={h.uninvoiced > 0 ? undefined : "ok"}>
-          {h.uninvoiced > 0 && (
-            <Link href="/billing" className="task-review">
-              Go to billing
-            </Link>
-          )}
-        </Figure>
       </div>
     </>
   );
@@ -61,7 +53,7 @@ export interface TaskHoursProps {
   onRetry: () => void;
 }
 
-/** The time ledger: every hour on the ticket, this week and month, and what is still to send to Tempo or invoice. */
+/** The time ledger: every hour on the ticket, this week and month, and what is still to send to Tempo. */
 export function TaskHours({ taskKey, load, today, onTempo, onRetry }: TaskHoursProps) {
   let body: ReactNode;
   if (load.s === "loading") body = <Skeleton />;

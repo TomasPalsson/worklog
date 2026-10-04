@@ -15,6 +15,12 @@
 
 import { afterEach, describe, expect, it, mock } from "bun:test";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+
+// Spread the real module: mock.module is process-wide and a partial mock breaks other suites.
+const real = { ...(await import("next/navigation")) };
+let path = "/";
+mock.module("next/navigation", () => ({ ...real, usePathname: () => path }));
+
 import { ChangeNotices } from "./ChangeNotices";
 import { subscribe, type ToastMsg } from "@/lib/toast";
 import type { ActionResult } from "@/app/actions";
@@ -87,6 +93,7 @@ function captureToasts() {
 let restoreInterval: () => void;
 
 afterEach(() => {
+  path = "/";
   cleanup();
   restoreInterval?.();
 });
@@ -454,5 +461,41 @@ describe("ChangeNotices", () => {
     await tick();
     expect(toasts.added().map((t) => t.text)).toEqual(["Block rebuild + Claude changed 1 block"]);
     toasts.stop();
+  });
+
+  describe("billing notices", () => {
+    async function mountWith(at: string, field: BlockChange["field"]) {
+      path = at;
+      restoreInterval = installIntervalSpy();
+      const changes = [change({ id: 1, field, old: "Acme", new: "Beta", source: "verdict" })];
+      render(
+        <ChangeNotices
+          fetchChanges={mock(async (): Promise<ActionResult<ChangeFeed>> => ok({ changes: [], batches: [], cursor: 1 }))}
+          fetchUnseenChanges={mock(async (): Promise<ActionResult<ChangeFeed>> =>
+            ok({ changes, batches: [{ batch: "b1", source: "verdict", count: 1 }], cursor: 1 }),
+          )}
+          markChangesSeen={mock(async (): Promise<ActionResult<{ marked: number }>> => ok({ marked: 1 }))}
+        />,
+      );
+      await flush();
+    }
+    const chip = "1 block changed while you were away";
+
+    for (const at of ["/", "/tasks"]) {
+      it(`hides a billing notice on ${at}`, async () => {
+        await mountWith(at, "customer");
+        expect(screen.queryByText(chip)).toBeNull();
+      });
+    }
+
+    it("shows a billing notice on /billing", async () => {
+      await mountWith("/billing", "customer");
+      expect(screen.getByText(chip)).toBeTruthy();
+    });
+
+    it("shows a non-billing notice on /", async () => {
+      await mountWith("/", "description");
+      expect(screen.getByText(chip)).toBeTruthy();
+    });
   });
 });
