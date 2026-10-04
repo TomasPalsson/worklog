@@ -1,6 +1,8 @@
 //! Claude Code hook handler — reads stdin JSON, writes `events` + updates
 //! `sessions`, never prints to stdout so Claude never sees our output.
 
+use std::path::Path;
+
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use regex::Regex;
@@ -133,7 +135,10 @@ pub fn handle(conn: &Connection, payload: &Value, now: DateTime<Utc>) -> Result<
     // regexes miss (FR-11, D-03).
     let prompt = prompt_of(payload).map(crate::scrub::scrub_secrets);
 
-    let jira_issue = first_jira_key(&[prompt.as_deref(), cwd.as_deref()]);
+    let jira_issue = first_jira_key(&[prompt.as_deref(), cwd.as_deref()]).or_else(|| {
+        let branch = crate::git::current_branch(Path::new(cwd.as_deref()?));
+        first_jira_key(&[branch.as_deref()])
+    });
     let details = details_for(prompt.as_deref());
 
     let ev = Event {
