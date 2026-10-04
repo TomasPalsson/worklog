@@ -1,3 +1,4 @@
+Verified: 2026-10-04 by user (pre-approved: /flow:next --finish)
 Approved: 2026-10-04 by user
 Base: 430299a
 # Tasks — Claude Code terminal mod for worklog
