@@ -3595,34 +3595,46 @@ fn cmd_session_hint<W: Write>(out: &mut W) -> Result<()> {
     if io::stdin().read_to_string(&mut buf).is_err() {
         return Ok(());
     }
-    let Ok(payload) = serde_json::from_str::<serde_json::Value>(&buf) else {
-        return Ok(());
-    };
-    let Some(session_id) = payload.get("session_id").and_then(|v| v.as_str()) else {
-        return Ok(());
-    };
-    let Some(cwd) = payload.get("cwd").and_then(|v| v.as_str()) else {
-        return Ok(());
-    };
     let Ok(paths) = Paths::resolve() else {
         return Ok(());
     };
-    let Ok(conn) = db::open(&paths.db) else {
-        return Ok(());
-    };
-    let Ok(registry) = billing_registry::Registry::load(&conn) else {
-        return Ok(());
-    };
-    if let Ok(Some(text)) = session_pins::start_text(
-        &conn,
-        &registry,
-        session_id,
-        std::path::Path::new(cwd),
-        chrono::Utc::now(),
-    ) {
-        let _ = writeln!(out, "{text}");
-    }
+    write_session_hint(&paths.db, &buf, out);
     Ok(())
+}
+
+/// Pin text first, then pending Done hints. DB only; each part fails alone.
+fn write_session_hint<W: Write>(db_path: &std::path::Path, payload: &str, out: &mut W) {
+    let Ok(conn) = db::open(db_path) else {
+        return;
+    };
+    let conn = &conn;
+    let Ok(payload) = serde_json::from_str::<serde_json::Value>(payload) else {
+        return;
+    };
+    let session_id = payload.get("session_id").and_then(|v| v.as_str());
+    let cwd = payload.get("cwd").and_then(|v| v.as_str());
+    if let (Some(session_id), Some(cwd)) = (session_id, cwd) {
+        if let Ok(registry) = billing_registry::Registry::load(conn) {
+            if let Ok(Some(text)) = session_pins::start_text(
+                conn,
+                &registry,
+                session_id,
+                std::path::Path::new(cwd),
+                chrono::Utc::now(),
+            ) {
+                let _ = writeln!(out, "{text}");
+            }
+        }
+    }
+    if let Ok(hints) = worklog_core::status_hints::done_hints(conn) {
+        for h in hints {
+            let _ = writeln!(
+                out,
+                "{} may be done (merged PR): {}. Run `worklog ticket move {} Done`.",
+                h.key, h.summary, h.key
+            );
+        }
+    }
 }
 
 fn cmd_daemon_install<W: Write>(command: Option<String>, out: &mut W, json: bool) -> Result<()> {
@@ -4453,6 +4465,67 @@ fn cmd_dev_apply_patch<W: Write>(
 mod tests {
     use super::*;
     use worklog_core::models::Block;
+
+    fn seeded_db() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("w.db");
+        seed_merged_pr(&db::open(&path).unwrap());
+        (dir, path)
+    }
+
+    fn seed_merged_pr(conn: &rusqlite::Connection) {
+        conn.execute(
+            "INSERT INTO jira_tickets (key, summary, status, status_category, external, fetched_at, updated)
+             VALUES ('GENAI-7', 'Fix login', 'In Progress', 'indeterminate', 0, '2026-09-30T08:00:00Z', '2026-09-29T10:00:00.000+0000')",
+            [],
+        )
+        .unwrap();
+        let raw = serde_json::json!({
+            "kind": "commit", "sha": "", "body": "", "local_folder": null,
+            "merged_at": "2026-10-02T11:00:00Z",
+        });
+        worklog_core::repo::upsert_event(
+            conn,
+            &worklog_core::models::Event {
+                id: None,
+                source: "github_pr".into(),
+                source_id: "1".into(),
+                started_at: "2026-10-01T09:00:00Z".into(),
+                ended_at: None,
+                duration_seconds: None,
+                title: "PR #42: GENAI-7 change".into(),
+                details: None,
+                repo: Some("acme/app".into()),
+                project_path: None,
+                jira_issue: Some("GENAI-7".into()),
+                session_id: None,
+                tempo_worklog_id: None,
+                raw_json: Some(raw.to_string()),
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn session_hint_prints_pending_done_hint() {
+        let (_dir, path) = seeded_db();
+        let mut out = Vec::new();
+        write_session_hint(&path, r#"{"session_id":"s1","cwd":"/tmp/x"}"#, &mut out);
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "GENAI-7 may be done (merged PR): Fix login. Run `worklog ticket move GENAI-7 Done`.\n"
+        );
+    }
+
+    #[test]
+    fn session_hint_silent_without_hints_or_on_garbage() {
+        let (_dir, path) = seeded_db();
+        let mut out = Vec::new();
+        write_session_hint(&path, "not json", &mut out);
+        let empty = tempfile::TempDir::new().unwrap().path().join("w.db");
+        write_session_hint(&empty, r#"{"session_id":"s1","cwd":"/tmp/x"}"#, &mut out);
+        assert!(out.is_empty());
+    }
 
     struct CannedInvoker;
     impl estimate::ModelInvoker for CannedInvoker {
