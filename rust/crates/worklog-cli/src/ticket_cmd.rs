@@ -6,7 +6,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use clap::Subcommand;
+use clap::{Args, Subcommand};
 use serde::Serialize;
 use serde_json::json;
 use worklog_core::jira_assist_contract::{
@@ -33,24 +33,8 @@ pub enum TicketCmd {
         /// Target status name, e.g. "Done".
         to_status: String,
     },
-    /// Create a GENAI story with a billing account.
-    Create {
-        #[arg(long)]
-        summary: String,
-        /// File holding the markdown description.
-        #[arg(long)]
-        description_file: PathBuf,
-        /// Account id (see `worklog account allowed`).
-        #[arg(long)]
-        account: String,
-        /// worklog's first suggestion, when one was shown; differs from
-        /// `--account` when the Owner corrected it.
-        #[arg(long)]
-        guessed: Option<String>,
-        /// Clue from the request text; repeatable.
-        #[arg(long = "clue")]
-        clues: Vec<String>,
-    },
+    /// Create a GENAI story with a billing account, assigned to you.
+    Create(CreateArgs),
     /// Suggested status moves (merged PRs).
     Hints,
     /// Record the Jira ticket this Claude Code session is on.
@@ -59,6 +43,31 @@ pub enum TicketCmd {
         #[arg(long)]
         session: String,
     },
+}
+
+#[derive(Args, Debug)]
+pub struct CreateArgs {
+    #[arg(long)]
+    pub summary: String,
+    /// File holding the markdown description.
+    #[arg(long)]
+    pub description_file: PathBuf,
+    /// Account id (see `worklog account allowed`).
+    #[arg(long)]
+    pub account: String,
+    /// worklog's first suggestion, when one was shown; differs from
+    /// `--account` when the Owner corrected it.
+    #[arg(long)]
+    pub guessed: Option<String>,
+    /// Clue from the request text; repeatable.
+    #[arg(long = "clue")]
+    pub clues: Vec<String>,
+    /// Jira accountId to assign instead of you (the default).
+    #[arg(long, conflicts_with = "unassigned")]
+    pub assignee: Option<String>,
+    /// Leave the ticket unassigned instead of assigning it to you.
+    #[arg(long)]
+    pub unassigned: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -114,21 +123,7 @@ pub fn run_ticket<W: Write>(sub: TicketCmd, out: &mut W, json: bool) -> Result<(
             }
             Ok(style::ok(out, &format!("{} is now {}", s.key, s.status))?)
         }
-        TicketCmd::Create {
-            summary,
-            description_file,
-            account,
-            guessed,
-            clues,
-        } => create(
-            summary,
-            &description_file,
-            account,
-            guessed,
-            clues,
-            out,
-            json,
-        ),
+        TicketCmd::Create(args) => create(args, out, json),
         TicketCmd::Use { key, session } => {
             let paths = worklog_core::paths::Paths::resolve()?;
             let conn = worklog_core::db::open(&paths.db)?;
@@ -186,18 +181,14 @@ pub fn run_account<W: Write>(sub: AccountCmd, out: &mut W, json: bool) -> Result
     }
 }
 
-fn create<W: Write>(
-    summary: String,
-    description_file: &std::path::Path,
-    account: String,
-    guessed: Option<String>,
-    clues: Vec<String>,
-    out: &mut W,
-    json: bool,
-) -> Result<()> {
-    let description = std::fs::read_to_string(description_file)
-        .with_context(|| format!("reading {}", description_file.display()))?;
-    let body = create_body(summary, description, account, guessed, clues);
+fn create<W: Write>(a: CreateArgs, out: &mut W, json: bool) -> Result<()> {
+    let description = std::fs::read_to_string(&a.description_file)
+        .with_context(|| format!("reading {}", a.description_file.display()))?;
+    let body = AssistCreateBody {
+        assignee_account_id: a.assignee,
+        unassigned: a.unassigned,
+        ..create_body(a.summary, description, a.account, a.guessed, a.clues)
+    };
     let c: AssistCreated = daemon::post("/tickets/assist-create", &serde_json::to_value(&body)?)?;
     if json {
         return dump(out, &c);
@@ -221,6 +212,7 @@ fn create_body(
         account_id: account,
         clues,
         assignee_account_id: None,
+        unassigned: false,
     }
 }
 

@@ -109,9 +109,12 @@ pub struct AssistCreateBody {
     /// Clues from the request text, logged with the decision.
     #[serde(default)]
     pub clues: Vec<String>,
-    /// Jira accountId; `None` → unassigned.
+    /// Jira accountId; `None` → the Owner (Jira `/myself`), unless `unassigned`.
     #[serde(default)]
     pub assignee_account_id: Option<String>,
+    /// Leave the ticket unassigned; wins over the Owner default.
+    #[serde(default)]
+    pub unassigned: bool,
 }
 
 /// `POST /tickets/assist-create` response.

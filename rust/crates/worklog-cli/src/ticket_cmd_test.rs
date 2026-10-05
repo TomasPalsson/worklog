@@ -64,12 +64,14 @@ fn create_parses_repeated_clues_and_guessed() {
     .unwrap();
     let crate::cli::Cmd::Ticket {
         sub:
-            TicketCmd::Create {
+            TicketCmd::Create(CreateArgs {
                 guessed,
                 clues,
                 account,
+                assignee,
+                unassigned,
                 ..
-            },
+            }),
     } = cli.command
     else {
         panic!("not ticket create");
@@ -77,6 +79,26 @@ fn create_parses_repeated_clues_and_guessed() {
     assert_eq!(guessed.as_deref(), Some("7"));
     assert_eq!(account, "42");
     assert_eq!(clues, ["a", "b"]);
+    assert_eq!((assignee, unassigned), (None, false));
+}
+
+#[test]
+fn assignee_and_unassigned_cannot_be_combined() {
+    let base = [
+        "worklog",
+        "ticket",
+        "create",
+        "--summary",
+        "S",
+        "--description-file",
+        "d.md",
+        "--account",
+        "42",
+    ];
+    let parse = |extra: &[&str]| crate::cli::Cli::try_parse_from(base.iter().chain(extra));
+    assert!(parse(&["--assignee", "x:1"]).is_ok());
+    assert!(parse(&["--unassigned"]).is_ok());
+    assert!(parse(&["--assignee", "x:1", "--unassigned"]).is_err());
 }
 
 #[test]
