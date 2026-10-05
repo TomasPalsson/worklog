@@ -100,7 +100,7 @@ where
         let mut out = Vec::new();
         for (key, msg, hash) in prepared {
             let written = msg.and_then(|m| {
-                tempo_line_writer::write(&m, invoker.as_ref(), line_text::LINE_TEXT_MODEL)
+                tempo_line_writer::write(&m, &key, invoker.as_ref(), line_text::LINE_TEXT_MODEL)
             });
             match written {
                 Ok(text) => out.push((key, text, hash)),
