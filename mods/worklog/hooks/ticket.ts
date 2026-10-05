@@ -84,29 +84,28 @@ async function askTicket($: EngineInterface, cwd: string, state: TicketState): P
 }
 
 export function registerTicket(on: On): void {
-  const state: TicketState = {
-    cwd: undefined,
-    ticket: undefined,
-    askable: false,
-    recorded: undefined,
-    handoff: undefined,
-  }
+  const state: TicketState = { cwd: undefined, ticket: undefined, askable: false, recorded: undefined, handoff: undefined }
 
   on('session.start', { surface: 'terminal' }, async ($, event, next) => {
     state.cwd = event.cwd
     const isWork = await refresh($, state)
     if (state.ticket !== undefined) await $.ui.toast(`worklog: ${state.ticket}`)
     state.askable = isWork && event.isInteractive
-    if (state.askable) void askTicket($, event.cwd, state).catch(() => undefined)
+    if (state.askable) await askTicket($, event.cwd, state).catch(() => undefined)
     return next(event)
   })
 
   on('session.end', async ($, event, next) => {
-    if (event.reason === 'clear' && state.askable && state.cwd !== undefined) {
+    if (event.reason === 'clear') {
       state.recorded = undefined
       state.handoff = undefined
-      void askTicket($, state.cwd, state).catch(() => undefined)
     }
+    return next(event)
+  })
+
+  // After /clear the new session id only shows from the next prompt on; ask then, before it enters.
+  on('prompt.submit', async ($, event, next) => {
+    if (state.askable && state.cwd !== undefined) await askTicket($, state.cwd, state).catch(() => undefined)
     return next(event)
   })
 

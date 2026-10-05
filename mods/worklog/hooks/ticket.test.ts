@@ -53,6 +53,7 @@ const seat = (on: On, branch: { current: string | undefined }, world: World = {}
   })
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('prompt.context', (_$, e) => ({ blocks: e.blocks }))
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
   const clock = mock.clock(on)
   on('attribution.text', (_$, e) => ({ text: e.text }))
   on('turn.complete', (_$, e) => ({ text: e.answer }))
@@ -275,10 +276,11 @@ test('a daemon answer with no task list is treated as no recents', async ($, on)
 
 test('the tasks lookup is capped at 1500 ms: not asked at 1499, asked without recents at 1500', async ($, on) => {
   const { clock, seen } = seat(on, { current: 'GENAI-9-x' }, { slowTasks: true, tasks: TASKS })
-  await $.session.start(start(WORK_CWD))
+  const started = $.session.start(start(WORK_CWD))
   await clock.advance(1499)
   expect(seen.asks).toEqual([])
   await clock.advance(1)
+  await started
   expect(seen.asks[0].options).toEqual(NO_RECENTS)
 })
 
@@ -303,18 +305,21 @@ test('a cut label still records its key', async ($, on) => {
   expect(seen.runs.map(argv => argv[3])).toEqual(['GENAI-2'])
 })
 
-test('session start returns before the Owner answers', async ($, on) => {
+test('session start waits for the Owner answer, so a first prompt cannot run before it', async ($, on) => {
   let release = () => {}
   const gate = new Promise<void>(resolve => {
     release = resolve
   })
   const { clock, seen } = seat(on, { current: 'GENAI-9-x' }, { gate, answer: 'GENAI-9' })
-  await $.session.start(start(WORK_CWD))
+  let started = false
+  const starting = $.session.start(start(WORK_CWD)).then(() => {
+    started = true
+  })
   await clock.advance(10)
   expect(seen.asks.length).toBe(1)
-  expect(seen.runs).toEqual([])
+  expect(started).toBe(false)
   release()
-  await clock.advance(10)
+  await starting
   expect(seen.runs.length).toBe(1)
 })
 
@@ -323,6 +328,7 @@ const CREATE = (id: string) =>
 const FIND = (text: string, id: string) =>
   `Instruction "find the ticket for: ${text}": run worklog ticket find, confirm the match with the Owner, then run worklog ticket use <KEY> --session ${id}.`
 const BRANCH_BLOCK = { name: 'worklog', text: 'Current branch ticket: GENAI-9' }
+const PROMPT = { text: 'hi', wait: false, origin: { kind: 'composer' as const } }
 const blocksOf = async ($: Parameters<Parameters<typeof test>[1]>[0]) => (await $.prompt.context(OTHER)).blocks
 
 test('Create hands off on every prompt, not just the first (create a ticket)', async ($, on) => {
@@ -378,7 +384,9 @@ test('clear asks once for the new session id', async ($, on) => {
   await clock.advance(10)
   world.id = 'sess-2'
   await $.session.end({ reason: 'clear' })
-  await clock.advance(10)
+  expect(seen.asks.length).toBe(1)
+  await $.prompt.submit(PROMPT)
+  await $.prompt.submit(PROMPT)
   expect(seen.asks.length).toBe(2)
   expect(seen.stored['ticket-asked:sess-2']).toBeTruthy()
 })
@@ -391,7 +399,7 @@ test('clear drops the old recorded key and hand-off, and records the new answer 
   world.id = 'sess-2'
   world.answer = 'ABC-123'
   await $.session.end({ reason: 'clear' })
-  await clock.advance(10)
+  await $.prompt.submit(PROMPT)
   expect(seen.runs).toEqual([['worklog', 'ticket', 'use', 'ABC-123', '--session', 'sess-2']])
   expect(await blocksOf($)).toEqual([...OTHER.blocks, { name: 'worklog', text: 'Session ticket: ABC-123' }])
 })
