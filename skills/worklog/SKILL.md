@@ -92,7 +92,7 @@ Match the user's phrasing left-to-right; first match wins.
 | "work on [free text]" / "I'm going to build X" | **J**: `worklog ticket find "<text>"`, then pick a match or `ticket create` (`references/jira.md`) |
 | "waiting on X" / "blocked on X" | **J**: ask whether to move the ticket to Blocked, then `worklog ticket move KEY Blocked` |
 | "finished" / "done with KEY" / "PR merged" | **J**: ask whether to move the ticket to Done, then `worklog ticket move KEY Done` |
-| "what ticket is this session on" / "No Jira ticket found for this session" / "set this session's ticket" | **J**: `references/jira.md` "This session's ticket", then `worklog ticket use KEY --session <id>` |
+| "what ticket is this session on" / "No Jira ticket found for this session" / "set this session's ticket" | **J**: `references/jira.md` "This session's ticket". The mod asks at start; never ask the Owner again. On a "create" instruction create with one confirm, on a "find" instruction run `ticket find` and confirm, then `worklog ticket use KEY --session <id>` |
 | "what can I close?" / "anything to close?" | **J**: `worklog ticket hints` |
 | "show me unsynced" / "what's pending sync" / "any dirty blocks" | `references/recipes.md` → Recipe 11 |
 
