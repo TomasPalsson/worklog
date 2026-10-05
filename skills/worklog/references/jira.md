@@ -20,7 +20,8 @@ Never post to Slack or any chat tool; the only outputs are Jira and the terminal
 2. Draft the summary and description (text guide below) and write the description to a temp file.
 3. One confirm, showing the title and the account. Nothing else is asked.
 4. `worklog ticket create --summary "<title>" --description-file <file> --account <id>`. When suggestions were shown, add `--guessed <first-suggestion-id>` (even if the user corrected it — that is how a wrong guess is learned), and `--clue "<phrase>"` (repeatable) for words from the request that point to the account.
-5. Report the new key and link. Create already moved it to In Progress; if that move failed, the error names the key — never create again.
+   The ticket is assigned to the user by default; never ask who it is for. Only when the user says otherwise: `--assignee <jira-accountId>` for someone else (ask for the accountId if it is not known), or `--unassigned` to leave it empty.
+5. Report the new key, link and assignee. Create already moved it to In Progress; if that move failed, the error names the key — never create again.
 
 ## This session's ticket
 

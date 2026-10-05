@@ -204,10 +204,15 @@ fn body() -> AssistCreateBody {
         guessed_account_id: Some("7".into()),
         clues: vec!["innnes".into()],
         assignee_account_id: None,
+        unassigned: false,
     }
 }
 
 fn mock_createmeta(server: &MockServer, accounts: serde_json::Value) {
+    server.mock(|when, then| {
+        when.method(GET).path("/rest/api/3/myself");
+        then.status(200).json_body(json!({ "accountId": "me:1" }));
+    });
     server.mock(|when, then| {
         when.method(GET)
             .path("/rest/api/3/issue/createmeta/GENAI/issuetypes");
@@ -371,4 +376,54 @@ fn failed_decision_log_after_create_still_reports_the_key() {
     let err = format!("{:#}", create(&server, &conn, &body()).unwrap_err());
     created.assert_hits(1);
     assert!(err.contains("GENAI-900"), "{err}");
+}
+
+fn mock_started(server: &MockServer) {
+    mock_transitions(server, "GENAI-900");
+    mock_post_transition(server, "GENAI-900", "11");
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/rest/api/3/issue/GENAI-900")
+            .query_param("fields", "status");
+        then.status(200)
+            .json_body(issue_body("In Progress", "indeterminate"));
+    });
+}
+
+#[test]
+fn create_assigns_the_owner_unless_told_otherwise() {
+    for (assignee, want) in [(None, "me:1"), (Some("them:2"), "them:2")] {
+        let server = MockServer::start();
+        mock_createmeta(&server, json!([{ "id": "42", "name": "Acme" }]));
+        let created = server.mock(|when, then| {
+            when.method(POST)
+                .path("/rest/api/3/issue")
+                .json_body_partial(json!({ "fields": { "assignee": { "id": want } } }).to_string());
+            then.status(201)
+                .json_body(json!({ "id": "900", "key": "GENAI-900" }));
+        });
+        mock_started(&server);
+        let mut b = body();
+        b.assignee_account_id = assignee.map(Into::into);
+        create(&server, &db::open_memory().unwrap(), &b).unwrap();
+        created.assert_hits(1);
+    }
+}
+
+#[test]
+fn create_unassigned_sends_no_assignee() {
+    let server = MockServer::start();
+    mock_createmeta(&server, json!([{ "id": "42", "name": "Acme" }]));
+    let created = server.mock(|when, then| {
+        when.method(POST).path("/rest/api/3/issue").matches(|req| {
+            !String::from_utf8_lossy(req.body.as_deref().unwrap_or_default()).contains("assignee")
+        });
+        then.status(201)
+            .json_body(json!({ "id": "900", "key": "GENAI-900" }));
+    });
+    mock_started(&server);
+    let mut b = body();
+    b.unassigned = true;
+    create(&server, &db::open_memory().unwrap(), &b).unwrap();
+    created.assert_hits(1);
 }

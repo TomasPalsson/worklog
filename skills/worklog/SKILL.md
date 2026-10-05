@@ -96,7 +96,7 @@ Match the user's phrasing left-to-right; first match wins.
 | "what can I close?" / "anything to close?" | **J**: `worklog ticket hints` |
 | "show me unsynced" / "what's pending sync" / "any dirty blocks" | `references/recipes.md` → Recipe 11 |
 
-Recipe J lives in `references/jira.md`. Its rules: `ticket start` on a key needs no confirm; neither does `ticket use` (it only writes locally). For free text, run `ticket find` first and offer matches; to create, run `worklog account suggest "<text>"` and ask ONE confirm showing the title and the account. Moves to Blocked or Done are asked, never assumed. Ticket text is English with no emoji, and the user's chat is never pasted into it. Never post to Slack.
+Recipe J lives in `references/jira.md`. Its rules: `ticket start` on a key needs no confirm; neither does `ticket use` (it only writes locally). For free text, run `ticket find` first and offer matches; to create, run `worklog account suggest "<text>"` and ask ONE confirm showing the title and the account. New tickets are assigned to the user unless they say otherwise (`--assignee` / `--unassigned`). Moves to Blocked or Done are asked, never assumed. Ticket text is English with no emoji, and the user's chat is never pasted into it. Never post to Slack.
 
 If the user names a date ambiguously ("yesterday", "Tuesday"), resolve to `YYYY-MM-DD` before invoking anything: `date +%Y-%m-%d`, `date -v-1d +%Y-%m-%d` (macOS), or `date -d yesterday +%Y-%m-%d` (Linux).
 

@@ -1109,6 +1109,7 @@ async fn create_ticket(
         description: body.description,
         account_field_id,
         account_value,
+        assignee_account_id: None,
     };
     let ticket = tokio::task::spawn_blocking(move || -> Result<crate::models::JiraTicket> {
         let client = crate::http::client()?;

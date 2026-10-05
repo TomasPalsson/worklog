@@ -100,6 +100,20 @@ pub fn move_ticket_with(
     })
 }
 
+/// The Owner's Jira accountId: whoever the Jira token belongs to.
+fn my_account_id(auth: &JiraAuth, client: &Client) -> Result<String> {
+    let me: serde_json::Value = client
+        .get(format!("{}/rest/api/3/myself", auth.base_url))
+        .basic_auth(&auth.email, Some(&auth.token))
+        .send()?
+        .error_for_status()?
+        .json()?;
+    me["accountId"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("Jira /myself returned no accountId"))
+}
+
 pub fn assist_create_with(
     conn: &Connection,
     auth: &JiraAuth,
@@ -119,6 +133,11 @@ pub fn assist_create_with(
                 body.account_id
             ))
         })?;
+    let assignee = match (&body.assignee_account_id, body.unassigned) {
+        (_, true) => None,
+        (Some(id), false) => Some(id.clone()),
+        (None, false) => Some(my_account_id(auth, client)?),
+    };
     let created = create_issue_with(
         auth,
         &NewIssue {
@@ -128,6 +147,7 @@ pub fn assist_create_with(
             description: Some(body.description.clone()),
             account_field_id: Some(field_id.into()),
             account_value: Some(account.id.clone()),
+            assignee_account_id: assignee,
         },
         client,
     )?;

@@ -346,6 +346,8 @@ pub struct NewIssue {
     pub account_field_id: Option<String>,
     /// The account id/key to write to `account_field_id`.
     pub account_value: Option<String>,
+    /// Jira accountId to assign; `None` → unassigned.
+    pub assignee_account_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -373,7 +375,8 @@ pub fn create_issue(auth: &JiraAuth, issue: &NewIssue) -> Result<JiraTicket> {
     create_issue_with(auth, issue, &http::client()?)
 }
 
-pub fn create_issue_with(auth: &JiraAuth, issue: &NewIssue, client: &Client) -> Result<JiraTicket> {
+/// The `{"fields": ..}` body for `POST /issue`.
+fn issue_body(issue: &NewIssue) -> serde_json::Value {
     let mut fields = serde_json::Map::new();
     fields.insert(
         "project".into(),
@@ -406,8 +409,14 @@ pub fn create_issue_with(auth: &JiraAuth, issue: &NewIssue, client: &Client) -> 
     ) {
         fields.insert(field.to_owned(), account_field_value(val));
     }
-    let body = serde_json::json!({ "fields": serde_json::Value::Object(fields) });
+    if let Some(id) = &issue.assignee_account_id {
+        fields.insert("assignee".into(), serde_json::json!({ "id": id }));
+    }
+    serde_json::json!({ "fields": serde_json::Value::Object(fields) })
+}
 
+pub fn create_issue_with(auth: &JiraAuth, issue: &NewIssue, client: &Client) -> Result<JiraTicket> {
+    let body = issue_body(issue);
     let url = format!("{}/rest/api/3/issue", auth.base_url);
     // Manual send (not `json_ok`) so Jira's validation error body — which
     // names the offending field, crucial for the account custom field —
@@ -1183,6 +1192,7 @@ mod tests {
             description: Some("look into the variance".into()),
             account_field_id: Some("customfield_10100".into()),
             account_value: Some("42".into()),
+            assignee_account_id: None,
         };
         let ticket = create_issue_with(&auth, &issue, &http::client().unwrap()).unwrap();
         mock.assert();
@@ -1212,6 +1222,7 @@ mod tests {
             description: None,
             account_field_id: None,
             account_value: None,
+            assignee_account_id: None,
         };
         let err = format!(
             "{:#}",
@@ -1750,6 +1761,7 @@ mod tests {
             description: Some("## Goal".into()),
             account_field_id: None,
             account_value: None,
+            assignee_account_id: None,
         };
         create_issue_with(&test_auth(&server), &issue, &http::client().unwrap()).unwrap();
         mock.assert();
