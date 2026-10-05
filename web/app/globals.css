@@ -5132,7 +5132,7 @@ body:has(.task-modal[role="dialog"][aria-modal="true"]) .chg-slip { display: non
 /* ── My Tasks: broadsheet board + reading panel ─────────────────────── */
 /* the layout's main.page caps width at 980px; the board needs the full viewport */
 main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
-.tasks-page { max-width: 1320px; margin: 0 auto; padding: 28px 32px 64px; }
+.tasks-page { max-width: none; margin: 0 auto; padding: 28px 32px 64px; }
 .task-sr {
   position: absolute;
   width: 1px;
@@ -5189,10 +5189,11 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 .task-check { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
 .task-check input { width: 16px; height: 16px; accent-color: var(--fg); }
 
-/* columns never shrink below 260px; the wrapper scrolls instead */
+/* columns never shrink below 220px; the wrapper scrolls instead */
 .task-board-scroll { overflow-x: auto; }
 .task-board { display: grid; grid-template-columns: repeat(5, minmax(220px, 1fr)); align-items: stretch; }
 .task-col {
+  min-width: 0;
   min-height: 320px;
   padding: 0 16px 24px;
   border-top: 2px solid var(--slate);
