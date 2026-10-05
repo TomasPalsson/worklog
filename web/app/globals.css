@@ -239,6 +239,7 @@ button {
 
 .day-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   justify-content: space-between;
   gap: 16px;
@@ -265,6 +266,47 @@ button {
   font-size: 13px;
   color: var(--fg-muted);
   letter-spacing: 0.02em;
+}
+
+.day-billed {
+  margin-left: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.day-billed-figure {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.day-billed-value {
+  font-family: var(--font-mono);
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+
+.day-billed-unit {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+.day-billed-delta {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.day-billed-delta.up {
+  color: var(--amber-ink);
 }
 
 .day-nav {
