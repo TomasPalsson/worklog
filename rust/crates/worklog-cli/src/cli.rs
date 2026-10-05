@@ -3617,26 +3617,15 @@ fn cmd_session_hint<W: Write>(out: &mut W) -> Result<()> {
     Ok(())
 }
 
-/// Ticket line for the SessionStart hint: the known key, or (in a work
-/// folder) how to find, ask for and record one.
-fn ticket_hint(
-    session_id: &str,
-    is_work: bool,
-    key: Option<&str>,
-    branch: Option<&str>,
-) -> Option<String> {
-    if let Some(k) = key {
+/// Ticket line for the SessionStart hint: the recorded key, or in a work
+/// folder the one guessed from the path or branch.
+fn ticket_hint(is_work: bool, stored: Option<&str>, guess: Option<&str>) -> Option<String> {
+    if let Some(k) = stored {
         return Some(format!("This session's Jira ticket: {k}."));
     }
-    if !is_work {
-        return None;
-    }
-    let branch = match branch {
-        Some(b) if b != "main" && b != "master" => format!(" (branch {b})"),
-        _ => String::new(),
-    };
+    let k = guess.filter(|_| is_work)?;
     Some(format!(
-        "No Jira ticket found for this session{branch}. Once the task is clear, find its ticket: run `worklog ticket find \"<a few words>\"`. One clear match: use it. Otherwise ask the Owner once: give a ticket key, or create a new GENAI ticket (worklog skill, Jira recipe). Then record it: `worklog ticket use <KEY> --session {session_id}`. When nobody is present, record nothing."
+        "This session's Jira ticket (from the branch): {k}."
     ))
 }
 
@@ -3655,12 +3644,11 @@ fn write_session_hint<W: Write>(db_path: &std::path::Path, payload: &str, out: &
         // An explicit `ticket use` beats a path/branch guess; the guess
         // only counts in a work folder (`fix/UTF-8` is not a ticket).
         let is_work = billing::billable_work_folder(cwd).is_some();
-        let key = worklog_core::session_tickets::get(conn, session_id)
+        let stored = worklog_core::session_tickets::get(conn, session_id)
             .ok()
-            .flatten()
-            .or_else(|| is_work.then(|| hook_run::path_or_branch_key(cwd)).flatten());
-        let branch = git::current_branch(std::path::Path::new(cwd));
-        if let Some(t) = ticket_hint(session_id, is_work, key.as_deref(), branch.as_deref()) {
+            .flatten();
+        let guess = is_work.then(|| hook_run::path_or_branch_key(cwd)).flatten();
+        if let Some(t) = ticket_hint(is_work, stored.as_deref(), guess.as_deref()) {
             let _ = writeln!(out, "{t}");
         }
         if let Ok(registry) = billing_registry::Registry::load(conn) {
@@ -4567,35 +4555,46 @@ mod tests {
     }
 
     #[test]
-    fn ticket_hint_known_key_wins_even_outside_work() {
+    fn ticket_hint_stored_wins_even_outside_work_and_over_guess() {
+        // catches: guess preferred over stored; stored gated on is_work
         assert_eq!(
-            ticket_hint("s1", false, Some("GENAI-9"), None).as_deref(),
+            ticket_hint(false, Some("GENAI-9"), Some("GENAI-1")).as_deref(),
             Some("This session's Jira ticket: GENAI-9.")
         );
     }
 
     #[test]
-    fn ticket_hint_none_outside_work() {
-        assert_eq!(ticket_hint("s1", false, None, Some("feat")), None);
-    }
-
-    #[test]
-    fn ticket_hint_asks_in_work_folder_with_real_session_id() {
-        let t = ticket_hint("sess-123", true, None, Some("feat-x")).unwrap();
+    fn ticket_hint_work_folder_guess_names_the_branch() {
+        // catches: guess printed with the stored wording
         assert_eq!(
-            t,
-            "No Jira ticket found for this session (branch feat-x). Once the task is clear, find its ticket: run `worklog ticket find \"<a few words>\"`. One clear match: use it. Otherwise ask the Owner once: give a ticket key, or create a new GENAI ticket (worklog skill, Jira recipe). Then record it: `worklog ticket use <KEY> --session sess-123`. When nobody is present, record nothing."
+            ticket_hint(true, None, Some("GENAI-4")).as_deref(),
+            Some("This session's Jira ticket (from the branch): GENAI-4.")
         );
     }
 
     #[test]
-    fn ticket_hint_omits_main_master_and_missing_branch() {
-        for b in [Some("main"), Some("master"), None] {
-            let t = ticket_hint("s1", true, None, b).unwrap();
-            assert!(
-                t.starts_with("No Jira ticket found for this session. Once"),
-                "{t}"
-            );
+    fn ticket_hint_none_outside_work_even_with_guess() {
+        // catches: guess used without the is_work gate
+        assert_eq!(ticket_hint(false, None, Some("GENAI-4")), None);
+    }
+
+    #[test]
+    fn ticket_hint_none_in_work_without_guess() {
+        // catches: falling back to the old ask text
+        assert_eq!(ticket_hint(true, None, None), None);
+    }
+
+    #[test]
+    fn ticket_hint_never_asks() {
+        // catches: any surviving ask wording in any output
+        for (w, s, g) in [
+            (true, Some("A-1"), None),
+            (true, None, Some("A-1")),
+            (true, None, None),
+            (false, None, None),
+        ] {
+            let t = ticket_hint(w, s, g).unwrap_or_default().to_lowercase();
+            assert!(!t.contains("ask"), "{t}");
         }
     }
 
