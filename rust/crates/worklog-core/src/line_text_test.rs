@@ -101,7 +101,6 @@ fn line_text_system_prompt_describes_work_items_task_by_task() {
     );
     // Every pre-existing rule survives the rewrite.
     assert!(SYSTEM_PROMPT_IS.contains("{\"text\""));
-    assert!(SYSTEM_PROMPT_IS.contains("tölustafi"));
     assert!(SYSTEM_PROMPT_IS.contains("PR-"));
     assert!(SYSTEM_PROMPT_IS.contains("skráarnöfn"));
     assert!(SYSTEM_PROMPT_IS.contains("verkfærum"));
@@ -180,18 +179,13 @@ fn line_text_validate_accepts_long_text() {
 }
 
 #[test]
-fn line_text_validate_rejects_digits() {
-    assert!(validate("PR 12").is_err());
+fn line_text_validate_allows_numbers() {
+    assert!(validate("Uppfærði í útgáfu 3. Lagaði 2 villur.").is_ok());
 }
 
 #[test]
 fn line_text_validate_rejects_hash() {
     assert!(validate("#44").is_err());
-}
-
-#[test]
-fn line_text_validate_rejects_jira_key() {
-    assert!(validate("ABC-12").is_err());
 }
 
 #[test]

@@ -34,7 +34,7 @@ Almennt orðalag eins og \"lagaði vandamál í keyrsluumhverfi\" eða \
 \"Lagaði villu sem kom í veg fyrir að code interpreterinn gæti keyrt kóða \
 í production\" ef vísbendingarnar sýna það. \
 Endurtaktu aldrei orðrétt texta úr þessum reitum. \
-Notaðu aldrei tölustafi af neinu tagi, aldrei tímalengd eða fjölda \
+Nefndu aldrei tímalengd eða fjölda \
 klukkustunda, aldrei PR- eða málsnúmer, aldrei skráarnöfn eða slóðir, \
 aldrei nöfn á verkfærum sem voru notuð við sjálfa vinnuna (ritlar, \
 skipanalínutól). Nöfn á vörum, eiginleikum og kerfum sem unnið var í \

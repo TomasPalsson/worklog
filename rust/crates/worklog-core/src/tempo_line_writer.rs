@@ -33,7 +33,7 @@ pub fn write(user_msg: &str, invoker: &dyn ModelInvoker, model: &str) -> Result<
             Err(reason) => reason,
         };
         msg = format!(
-            "{user_msg}\n\nSíðasta svar var hafnað: {reason}. Skrifaðu það aftur og fylgdu öllum reglunum (engar tölur, engin skráarnöfn, engin verkfæranöfn, 1–3 setningar á íslensku)."
+            "{user_msg}\n\nSíðasta svar var hafnað: {reason}. Skrifaðu það aftur og fylgdu öllum reglunum (engin skráarnöfn, engin verkfæranöfn, 1–3 setningar á íslensku)."
         );
     }
     Err(format!("{reason} (reynt {MAX_ATTEMPTS} sinnum)"))
