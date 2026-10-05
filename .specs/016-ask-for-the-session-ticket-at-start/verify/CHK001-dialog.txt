@@ -1,0 +1,45 @@
+
+ ▐▛███▛█   Claude Code v2.1.289
+▝▜██████▀  Opus 5.5 (1M context) · Claude Team
+ ▝▝   ▝▝   ~/Desktop/Work/admin-panel
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Ticket
+
+Which Jira ticket is this session for?
+
+❯ 1. GENAI-1917 Sjúkra - Fix Claude Desktop 3P MCP Connection
+  2. GENAI-1920 RU: answer DocumentDB security questions and tur…
+  3. Create a new ticket
+  4. Skip
+  5. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  6. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── pasted image review ─
