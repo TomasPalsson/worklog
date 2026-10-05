@@ -318,14 +318,14 @@ async fn unforced_generation_never_copies_english_when_the_model_fails() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn digit_reply_is_retried_then_stored_and_the_prompt_carries_the_descriptions() {
+async fn path_reply_is_retried_then_stored_and_the_prompt_carries_the_descriptions() {
     let state = state_with_two_block_line();
     SEEN.lock().unwrap().clear();
     let forced = generate_tempo_lines(
         state.clone(),
         DAY.to_string(),
         Some(key()),
-        scripted_invoker(&["Lagaði 3 villur. Prófaði það.", "Lagaði villu. Prófaði það."]),
+        scripted_invoker(&["Lagaði src/main.rs. Prófaði það.", "Lagaði villu. Prófaði það."]),
     )
     .await
     .unwrap();

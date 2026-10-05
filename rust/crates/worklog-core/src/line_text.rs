@@ -45,11 +45,6 @@ pub fn validate(text: &str) -> std::result::Result<String, String> {
             "need {MIN_SENTENCES}-{MAX_SENTENCES} sentences, got {sentences}"
         ));
     }
-    if trimmed.chars().any(|c| c.is_ascii_digit()) {
-        // A Jira/PR key always carries a trailing digit, so this alone
-        // also catches every such token — no separate key regex needed.
-        return Err("contains a number".to_string());
-    }
     if trimmed.contains(['#', '{', '}']) {
         return Err("contains '#' or JSON braces".to_string());
     }

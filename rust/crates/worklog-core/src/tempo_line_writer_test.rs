@@ -35,7 +35,7 @@ fn valid_reply_is_returned_after_one_call() {
 fn rejected_reply_is_retried_with_the_reason() {
     let inv = Scripted(
         Mutex::new(vec![
-            "Lagaði 3 villur. Prófaði það.",
+            "Lagaði src/main.rs. Prófaði það.",
             "Lagaði villu. Prófaði það.",
         ]),
         Mutex::new(Vec::new()),
