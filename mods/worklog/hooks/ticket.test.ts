@@ -19,6 +19,7 @@ type World = {
   dismiss?: boolean
   recordFails?: boolean
   stored?: Record<string, unknown>
+  id?: string
 }
 
 const seat = (on: On, branch: { current: string | undefined }, world: World = {}) => {
@@ -39,7 +40,8 @@ const seat = (on: On, branch: { current: string | undefined }, world: World = {}
     seen.logs.push(e.text)
     return { value: undefined }
   })
-  on('session.id', () => ({ value: SESSION_ID }))
+  on('session.id', () => ({ value: world.id ?? SESSION_ID }))
+  on('session.end', () => ({ sessionId: world.id ?? SESSION_ID }))
   on('tool.call', async (_$, e) => {
     const q = e.questions[0]
     seen.asks.push({ question: q.question, header: q.header, options: q.options.map(o => o.label) })
@@ -312,4 +314,98 @@ test('session start returns before the Owner answers', async ($, on) => {
   release()
   await clock.advance(10)
   expect(seen.runs.length).toBe(1)
+})
+
+const CREATE = (id: string) =>
+  `Instruction "create a ticket": the Owner wants a new Jira ticket for this session. Once the first request makes the task clear, create it (worklog skill, Jira recipe, one confirm), then run worklog ticket use <KEY> --session ${id}.`
+const FIND = (text: string, id: string) =>
+  `Instruction "find the ticket for: ${text}": run worklog ticket find, confirm the match with the Owner, then run worklog ticket use <KEY> --session ${id}.`
+const BRANCH_BLOCK = { name: 'worklog', text: 'Current branch ticket: GENAI-9' }
+const blocksOf = async ($: Parameters<Parameters<typeof test>[1]>[0]) => (await $.prompt.context(OTHER)).blocks
+
+test('Create hands off on every prompt, not just the first (create a ticket)', async ($, on) => {
+  await asked({ answer: 'Create a new ticket' })($, on)
+  const expected = [...OTHER.blocks, { name: 'worklog', text: `${BRANCH_BLOCK.text}\n${CREATE(SESSION_ID)}` }]
+  expect(await blocksOf($)).toEqual(expected)
+  expect(await blocksOf($)).toEqual(expected)
+})
+
+test('Create hands off even with no branch ticket (hand-off hidden behind the branch guard)', async ($, on) => {
+  await asked({ answer: 'Create a new ticket' }, WORK_CWD, 'main')($, on)
+  expect(await blocksOf($)).toEqual([...OTHER.blocks, { name: 'worklog', text: CREATE(SESSION_ID) }])
+})
+
+test('Skip adds no hand-off', async ($, on) => {
+  await asked({ answer: 'Skip' })($, on)
+  expect(await blocksOf($)).toEqual([...OTHER.blocks, BRANCH_BLOCK])
+})
+
+test('non-key Other text hands off find with that text', async ($, on) => {
+  await asked({ answer: 'the login bug' })($, on)
+  expect(await blocksOf($)).toEqual([...OTHER.blocks, { name: 'worklog', text: `${BRANCH_BLOCK.text}\n${FIND('the login bug', SESSION_ID)}` }])
+})
+
+test('a key plus words under Other is find text, not a recorded key', async ($, on) => {
+  await asked({ answer: 'ABC-123 and more' })($, on)
+  expect((await blocksOf($)).at(-1)).toEqual({ name: 'worklog', text: `${BRANCH_BLOCK.text}\n${FIND('ABC-123 and more', SESSION_ID)}` })
+})
+
+test('a recorded key replaces the branch ticket in context and attribution, with no hand-off', async ($, on) => {
+  await asked({ answer: 'ABC-123' })($, on)
+  expect(await blocksOf($)).toEqual([...OTHER.blocks, { name: 'worklog', text: 'Session ticket: ABC-123' }])
+  expect(await $.attribution.text({ kind: 'commit', text: 'msg' })).toEqual({ text: 'msg\n\nTicket: ABC-123' })
+  expect(await $.attribution.text({ kind: 'pr', text: 'msg' })).toEqual({ text: 'msg\n\nTicket: ABC-123' })
+})
+
+test('the recorded key survives the post-turn branch refresh', async ($, on) => {
+  const { clock } = await asked({ answer: 'ABC-123' })($, on)
+  await $.turn.complete({ turnId: 't1', answer: 'done' })
+  await clock.advance(50)
+  expect(await $.attribution.text({ kind: 'commit', text: 'msg' })).toEqual({ text: 'msg\n\nTicket: ABC-123' })
+})
+
+test('a failed record leaves the branch ticket in force', async ($, on) => {
+  await asked({ answer: 'ABC-123', recordFails: true })($, on)
+  expect(await blocksOf($)).toEqual([...OTHER.blocks, BRANCH_BLOCK])
+})
+
+test('clear asks once for the new session id', async ($, on) => {
+  const world: World = { answer: 'Skip' }
+  const { clock, seen } = seat(on, { current: 'GENAI-9-x' }, world)
+  await $.session.start(start(WORK_CWD))
+  await clock.advance(10)
+  world.id = 'sess-2'
+  await $.session.end({ reason: 'clear' })
+  await clock.advance(10)
+  expect(seen.asks.length).toBe(2)
+  expect(seen.stored['ticket-asked:sess-2']).toBeTruthy()
+})
+
+test('clear drops the old recorded key and hand-off, and records the new answer under the new id', async ($, on) => {
+  const world: World = { answer: 'Create a new ticket' }
+  const { clock, seen } = seat(on, { current: 'GENAI-9-x' }, world)
+  await $.session.start(start(WORK_CWD))
+  await clock.advance(10)
+  world.id = 'sess-2'
+  world.answer = 'ABC-123'
+  await $.session.end({ reason: 'clear' })
+  await clock.advance(10)
+  expect(seen.runs).toEqual([['worklog', 'ticket', 'use', 'ABC-123', '--session', 'sess-2']])
+  expect(await blocksOf($)).toEqual([...OTHER.blocks, { name: 'worklog', text: 'Session ticket: ABC-123' }])
+})
+
+test('a session end for another reason asks nothing', async ($, on) => {
+  const { clock, seen } = seat(on, { current: 'GENAI-9-x' }, { stored: { [`ticket-asked:${SESSION_ID}`]: true } })
+  await $.session.start(start(WORK_CWD))
+  await $.session.end({ reason: 'logout' })
+  await clock.advance(10)
+  expect(seen.asks).toEqual([])
+})
+
+test('clear outside a work folder asks nothing', async ($, on) => {
+  const { clock, seen } = seat(on, { current: 'GENAI-9-x' })
+  await $.session.start(start('/tmp/play'))
+  await $.session.end({ reason: 'clear' })
+  await clock.advance(10)
+  expect(seen.asks).toEqual([])
 })
