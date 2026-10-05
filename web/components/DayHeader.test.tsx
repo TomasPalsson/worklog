@@ -144,3 +144,30 @@ describe("headers carry only date controls (menu lives in AppNav)", () => {
     expect(screen.queryByRole("link", { name: "switch to day view" })).toBeNull();
   });
 });
+
+describe("billed hours", () => {
+  const billed = (billedSeconds: number, trackedSeconds: number) =>
+    render(
+      <DayHeader
+        day="2026-10-05"
+        heading="Monday"
+        totalHours="4.5h"
+        blockCount={10}
+        unassigned={0}
+        billedSeconds={billedSeconds}
+        trackedSeconds={trackedSeconds}
+      />,
+    );
+
+  it("shows the billed total big, with how far rounding moved it", () => {
+    billed(6.5 * 3600, 4.5 * 3600);
+    const el = screen.getByLabelText("billed hours");
+    expect(el.textContent).toContain("6.5h");
+    expect(el.textContent).toContain("+2.0h vs tracked");
+  });
+
+  it("hides the delta when billed matches tracked", () => {
+    billed(7200, 7200);
+    expect(screen.getByLabelText("billed hours").textContent).not.toContain("vs tracked");
+  });
+});
