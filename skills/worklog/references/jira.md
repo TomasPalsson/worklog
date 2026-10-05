@@ -25,16 +25,15 @@ Never post to Slack or any chat tool; the only outputs are Jira and the terminal
 
 ## This session's ticket
 
-The SessionStart hint says which ticket this session is on.
+The worklog mod asks the Owner at session start. Claude never asks for the ticket again.
 
-1. Hint names a key: nothing to do.
-2. No key: once the task is clear, run `worklog ticket find` (try two phrasings).
-3. Evidence order: an exact key in the prompt, branch, folder or a PR beats any search result. Never replace a key the Owner named with a similar-looking result. Fuzzy matches are weak.
-4. One clear match: use it.
-5. Otherwise ask the Owner ONCE: their key, or create (steps above).
-6. Before creating, a same-problem hit is the ticket (duplicate check). Recurring or templated tickets are distinct per instance. A bug and a feature are never duplicates.
-7. After create, read back with `worklog ticket get KEY` and report key + URL.
-8. Then `worklog ticket use KEY --session <id>` (id from the hint). No confirm; it only writes locally.
+1. The hint or context names a key: nothing to do.
+2. Instruction "create a ticket": once the task is clear, run `worklog account suggest "<text>"`, then `worklog ticket create` after ONE confirm showing title and account. Duplicate check first: a same-problem hit is the ticket. Recurring or templated tickets are distinct per instance. A bug and a feature are never duplicates. Read back with `worklog ticket get KEY`, report key + URL, then `worklog ticket use KEY --session <id>`.
+3. Instruction "find the ticket for: <text>": run `worklog ticket find` (try two phrasings), confirm the match with the Owner, then `worklog ticket use KEY --session <id>`.
+4. Evidence order: an exact key in the prompt, branch, folder or a PR beats any search result. Never replace a key the Owner named with a similar-looking result. Fuzzy matches are weak.
+5. No instruction and no key: do not ask. Record nothing.
+
+`ticket use` needs no confirm; it only writes locally. The session id comes from the hint or instruction.
 
 Nobody present: record nothing, create nothing.
 

@@ -6,6 +6,7 @@ export const DAEMON_URL = 'http://127.0.0.1:9323'
 export const POLL_MS = 60_000
 export const DEFAULT_REQUIRED_SECONDS = 8 * 3600
 export const NUDGE_STORE_PREFIX = 'nudge:'
+export const TICKET_ASKED_STORE_PREFIX = 'ticket-asked:'
 export const REVIEW_PANE_ID = 'worklog-review'
 export const JIRA_KEY_RE = /\b([A-Z][A-Z0-9]{1,9}-\d+)\b/
 
@@ -46,6 +47,14 @@ export type DaySummary = {
 
 /** GET /logged?from&to — `LoggedRange`; the mod reads only `today`. */
 export type LoggedRange = { today: LocalDay }
+
+/** `GET /tasks` entry, the fields the mod reads. */
+export type RecentTask = {
+  key: string
+  summary: string
+  assigned: boolean
+  last_worked_day: string | null
+}
 
 /** One day of GET /weeks/:monday/closeout. */
 export type CloseoutDay = {

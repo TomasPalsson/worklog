@@ -8,10 +8,12 @@ import {
   mondayOf,
   reviewRequest,
   ticketFromBranch,
+  keyOfChoice,
+  ticketChoices,
   workContext,
   workSeconds,
 } from './lib'
-import type { Block, Io } from './contract'
+import type { Block, Io, RecentTask } from './contract'
 
 const block = (overrides: Partial<Block>): Block => ({
   id: 1,
@@ -235,4 +237,86 @@ test('workContext: a git spawn failure leaves the path rule alone', async () => 
   const context = await workContext(fake.io, '/Users/me/Desktop/Work/app')
   expect(context.isWork).toBe(true)
   expect(context.branch).toBeUndefined()
+})
+
+const task = (key: string, last: string | null, assigned = true): RecentTask => ({
+  key,
+  summary: `sum ${key}`,
+  assigned,
+  last_worked_day: last,
+})
+
+test('ticketChoices: no branch key takes the 2 newest, then Create and Skip', () => {
+  const tasks = [task('AB-1', '2026-10-01'), task('AB-3', '2026-10-03'), task('AB-2', '2026-10-02')]
+  // wrong version: unsorted slice would give AB-1, AB-3; taking 3 would exceed 4
+  expect(ticketChoices(undefined, tasks)).toEqual([
+    'AB-3 sum AB-3',
+    'AB-2 sum AB-2',
+    'Create a new ticket',
+    'Skip',
+  ])
+})
+
+test('ticketChoices: a branch key leads, with 1 recent task (4 total)', () => {
+  const tasks = [task('AB-3', '2026-10-03'), task('AB-2', '2026-10-02')]
+  // wrong version: still taking 2 recents gives 5 choices
+  expect(ticketChoices('GENAI-42', tasks)).toEqual([
+    'GENAI-42',
+    'AB-3 sum AB-3',
+    'Create a new ticket',
+    'Skip',
+  ])
+})
+
+test('ticketChoices: the branch key is deduped out of recents before slicing', () => {
+  const tasks = [task('GENAI-42', '2026-10-04'), task('AB-3', '2026-10-03')]
+  // wrong version: slice then filter drops the only recent
+  expect(ticketChoices('GENAI-42', tasks)).toEqual([
+    'GENAI-42',
+    'AB-3 sum AB-3',
+    'Create a new ticket',
+    'Skip',
+  ])
+})
+
+test('ticketChoices: null last_worked_day sorts last', () => {
+  const tasks = [task('AB-1', null), task('AB-2', '2026-10-02')]
+  // wrong version: null compared as smallest-first or string sort placing it first
+  expect(ticketChoices(undefined, tasks).slice(0, 2)).toEqual(['AB-2 sum AB-2', 'AB-1 sum AB-1'])
+})
+
+test('ticketChoices: unassigned tasks are excluded', () => {
+  // wrong version: no assigned filter
+  expect(ticketChoices(undefined, [task('AB-1', '2026-10-01', false)])).toEqual([
+    'Create a new ticket',
+    'Skip',
+  ])
+})
+
+test('ticketChoices: empty list and short list give fewer choices', () => {
+  expect(ticketChoices('GENAI-42', [])).toEqual(['GENAI-42', 'Create a new ticket', 'Skip'])
+  expect(ticketChoices(undefined, [task('AB-1', null)])).toEqual([
+    'AB-1 sum AB-1',
+    'Create a new ticket',
+    'Skip',
+  ])
+})
+
+test('ticketChoices: does not mutate the input list', () => {
+  const tasks = [task('AB-1', '2026-10-01'), task('AB-2', '2026-10-02')]
+  ticketChoices(undefined, tasks)
+  expect(tasks.map((t) => t.key)).toEqual(['AB-1', 'AB-2'])
+})
+
+test('keyOfChoice: leading key of a task label or bare key', () => {
+  expect(keyOfChoice('AB-3 sum AB-3')).toBe('AB-3')
+  expect(keyOfChoice('GENAI-42')).toBe('GENAI-42')
+})
+
+test('keyOfChoice: Create, Skip and free text are not keys', () => {
+  expect(keyOfChoice('Create a new ticket')).toBeUndefined()
+  expect(keyOfChoice('Skip')).toBeUndefined()
+  // wrong version: unanchored match finds a key mid-text
+  expect(keyOfChoice('see GENAI-42 please')).toBeUndefined()
+  expect(keyOfChoice('')).toBeUndefined()
 })

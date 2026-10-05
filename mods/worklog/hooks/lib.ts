@@ -4,6 +4,7 @@ import type {
   DaemonResult,
   Io,
   LocalDay,
+  RecentTask,
   ReviewAction,
   WorkContext,
 } from './contract'
@@ -44,6 +45,22 @@ export function formatHours(seconds: number): string {
 
 export function ticketFromBranch(branch: string | undefined): string | undefined {
   return branch?.match(JIRA_KEY_RE)?.[1]
+}
+
+export function ticketChoices(
+  branchTicket: string | undefined,
+  recentTasks: readonly RecentTask[],
+): string[] {
+  const recent = recentTasks
+    .filter((task) => task.assigned && task.key !== branchTicket)
+    .sort((a, b) => (b.last_worked_day ?? '').localeCompare(a.last_worked_day ?? ''))
+    .slice(0, branchTicket ? 1 : 2)
+    .map((task) => `${task.key} ${task.summary}`)
+  return [...(branchTicket ? [branchTicket] : []), ...recent, 'Create a new ticket', 'Skip']
+}
+
+export function keyOfChoice(label: string): string | undefined {
+  return label.match(new RegExp(`^${JIRA_KEY_RE.source}(?:\\s|$)`))?.[1]
 }
 
 export function reviewRequest(

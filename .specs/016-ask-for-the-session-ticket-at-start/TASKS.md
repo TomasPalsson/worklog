@@ -1,0 +1,40 @@
+Approved: 2026-10-05 by user
+Verified: 2026-10-05 by user (pre-approved: /flow:next --finish)
+Base: 6e3aab4
+# Tasks — Ask for the session ticket at start
+Spec: spec.md · Design: none · Base: 6e3aab4 · Route: dispatch · Test: `claude plugin test mods/worklog && cargo test --manifest-path rust/Cargo.toml`
+
+## Behaviors
+| ID | Given / When / Then | Task | Proven by |
+|----|---------------------|------|-----------|
+| B1 (P0) | Given a branch ticket and recent tasks, when choices are built, then ≤4 labels in order: branch, recent (2 without branch, 1 with), "Create a new ticket", "Skip" (FR-04) | T001 | lib.test.ts ticketChoices |
+| B2 (P0) | Given an interactive work-folder session with nothing stored, when it starts, then one dialog shows and the start hook does not wait for it (FR-01, NFR) | T002 | ticket.test.ts asks once at start |
+| B3 (P0) | Given a non-work cwd, a `-p` run, or a stored answer, when the session starts, then no dialog (FR-02) | T002 | ticket.test.ts never asks |
+| B4 (P0) | Given a ticket picked or a key typed, then `worklog ticket use KEY --session ID` runs and a toast names it (FR-05) | T002 | ticket.test.ts records choice |
+| B5 (P0) | Given Skip, Esc, a rejected dialog or non-key text, then nothing is recorded and no second dialog (FR-06) | T002 | ticket.test.ts skip sticks |
+| B9 (P0) | Given the daemon is down or slow (>1.5 s), then the dialog still shows without recent tickets (Journey 1 error) | T002 | ticket.test.ts daemon down |
+| B6 (P0) | Given "Create", then every prompt context tells Claude to create with one confirm and record with the session id (FR-07) | T005 | ticket.test.ts create hands off |
+| B7 (P0) | Given `/clear`, then the new session is asked once (FR-03) | T005 | ticket.test.ts asks after clear |
+| B8 (P0) | Given a chosen ticket, then context and commit/PR lines use it, not the branch guess (FR-08) | T005 | ticket.test.ts chosen beats branch |
+| B11 (P1) | Given non-key text under Other, then the context says "Find the Jira ticket for: <text>" (FR-10) | T005 | ticket.test.ts find hands off |
+| B10 (P0) | Given no stored ticket in a work folder, then the SessionStart hint never asks Claude to ask the Owner (FR-09) | T003 | cli.rs ticket_hint tests |
+
+## Phase 1 — The mod asks
+Goal: a fresh work-folder session opens with one ticket question, and the answer is recorded.
+Independent test: `claude plugin test mods/worklog` — green with the Rust side untouched.
+- [x] T001 Choice builder: `ticketChoices(branchTicket, recentTasks)` in lib.ts returning ≤4 labels — branch key first if any, then assigned tasks sorted by `last_worked_day` desc (null last), labelled `KEY summary`, deduped against the branch key, 2 without a branch key and 1 with, then "Create a new ticket", "Skip"; plus `keyOfChoice(label)` returning the leading key or undefined; `RecentTask` type (`key`, `summary`, `assigned`, `last_worked_day: string | null`) and `TICKET_ASKED_STORE_PREFIX = 'ticket-asked:'` in contract.ts (B1) — files: mods/worklog/hooks/lib.ts, mods/worklog/hooks/lib.test.ts, mods/worklog/hooks/contract.ts — verify: `claude plugin test mods/worklog` — done: c440751
+- [x] T002 Ask at start in ticket.ts: on `session.start` with `isInteractive`, a work folder and no `$.store` entry `ticket-asked:<$.session.id()>`, fetch `GET http://127.0.0.1:9323/tasks` (1.5 s cap via its own `io.after(1500)` race, since `daemonGet` itself waits 2000 ms; any failure → no recents), build choices with T001 and cut each label to at most 60 characters (ending in `…`), start `$.ui.ask("Which Jira ticket is this session for?", { options, header: "Ticket" })` without awaiting it in the hook, then store the answer under that key; a key (from `keyOfChoice`, or typed text that is exactly a Jira key) runs `worklog ticket use KEY --session ID` and toasts `worklog: KEY`; Skip, a rejection or other text records nothing; a rejection logs `worklog: no ticket question shown — run worklog ticket use KEY --session <id>`; a failed record logs `worklog: could not record KEY — <stderr>` (B2–B5, B9) — files: mods/worklog/hooks/ticket.ts, mods/worklog/hooks/ticket.test.ts, mods/worklog/types/index.d.ts — verify: `claude plugin test mods/worklog` — after: T001 — done: 6e906ea
+- [x] T005 Hand-off and reuse in ticket.ts: after "Create", every `prompt.context` adds `Instruction "create a ticket": the Owner wants a new Jira ticket for this session. Once the first request makes the task clear, create it (worklog skill, Jira recipe, one confirm), then run worklog ticket use <KEY> --session <ID>.` until a key is recorded; non-key Other text adds `Instruction "find the ticket for: <text>": run worklog ticket find, confirm the match with the Owner, then run worklog ticket use <KEY> --session <ID>.` (both phrases match skills/worklog/references/jira.md); a recorded key replaces the branch ticket in the context block and the commit/PR attribution lines; `session.end` with reason `clear` runs the T002 ask for the new session id (B6–B8, B11) — files: mods/worklog/hooks/ticket.ts, mods/worklog/hooks/ticket.test.ts — verify: `claude plugin test mods/worklog` — after: T002 — done: 7c387cb
+- [x] T006 Claude-recorded key ends the hand-off: in ticket.ts, a `tool.call` hook (await `next(e)` first) on tool `Bash` whose `command` contains `worklog ticket use <KEY> --session <this session id>` (KEY matching `JIRA_KEY_RE`) and whose result has no `deny` and `isError !== true` sets `state.recorded = KEY` and clears `state.handoff`; any other command, another session id, a denied or failed call changes nothing (B6, B8) — files: mods/worklog/hooks/ticket.ts, mods/worklog/hooks/ticket.test.ts — verify: `claude plugin test mods/worklog` — after: T005 — done: b383d00
+
+## Phase 2 — The hint stops asking
+Goal: the Owner is never asked twice; the hint and the skill describe the mod's flow.
+Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-cli ticket_hint` — green with the mod untouched.
+- [x] T003 [P] `ticket_hint` in cli.rs becomes `ticket_hint(is_work: bool, stored: Option<&str>, guess: Option<&str>) -> Option<String>`; `write_session_hint` passes the `session_tickets::get` result as `stored` and `hook_run::path_or_branch_key(cwd)` (work folders only) as `guess`, and no longer reads the current branch: stored → "This session's Jira ticket: K."; else a work folder with a guess → "This session's Jira ticket (from the branch): K."; else (outside work, or a branch with no key) → None. Replace the tests `ticket_hint_asks_in_work_folder_with_real_session_id` and `ticket_hint_omits_main_master_and_missing_branch` with one test per case plus one asserting no output contains "ask" (B10) — files: rust/crates/worklog-cli/src/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-cli ticket_hint` — done: 15c4188
+- [x] T004 [P] Skill text: jira.md "This session's ticket" says the mod asks at start and Claude never asks again; on a "create" instruction Claude creates with one confirm, then runs `ticket use`; on a "find" instruction it runs `ticket find`, confirms with the Owner, then `ticket use`; SKILL.md routing row matches — files: skills/worklog/references/jira.md, skills/worklog/SKILL.md — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core skill` — done: 7ec8c8b
+- [x] CHK001 human-verify in a real session — files: mods/worklog/hooks/ticket.ts — verify: human: Owner starts Claude Code in a ~/Desktop/Work repo, sees the ticket dialog, picks a ticket, and `worklog block list` later shows it on that session's blocks — after: T005, T003, T006 — done: b383d00 by user
+
+## Gates
+- [x] G001 project gates clean — files: . — verify: `flow check --fix --since 6e3aab4` — done: b383d00
+- [x] G002 branch review clean — files: . — verify: `flow pass` — done: b383d00
+- [x] G003 verification evidence exists — files: . — verify: `test -s verify/` — done: b383d00
