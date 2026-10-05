@@ -53,6 +53,12 @@ pub enum TicketCmd {
     },
     /// Suggested status moves (merged PRs).
     Hints,
+    /// Record the Jira ticket this Claude Code session is on.
+    Use {
+        key: String,
+        #[arg(long)]
+        session: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -123,6 +129,16 @@ pub fn run_ticket<W: Write>(sub: TicketCmd, out: &mut W, json: bool) -> Result<(
             out,
             json,
         ),
+        TicketCmd::Use { key, session } => {
+            let paths = worklog_core::paths::Paths::resolve()?;
+            let conn = worklog_core::db::open(&paths.db)?;
+            worklog_core::session_tickets::set(&conn, &session, &key)?;
+            if json {
+                return dump(out, &json!({ "session_id": session, "jira_issue": key }));
+            }
+            let short: String = session.chars().take(8).collect();
+            Ok(writeln!(out, "Session {short} is on {key}")?)
+        }
         TicketCmd::Hints => {
             let h: Vec<StatusHint> = daemon::get("/hints")?;
             if json {

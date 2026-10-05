@@ -389,6 +389,14 @@ CREATE TABLE IF NOT EXISTS session_pins (
 
 CREATE INDEX IF NOT EXISTS idx_session_pins_branch ON session_pins(folder, branch, from_at);
 
+-- ───────────────────────── session tickets ─────────────────────────
+-- "Session S is on Jira ticket K", set by `worklog ticket use`; see session_tickets.rs.
+CREATE TABLE IF NOT EXISTS session_tickets (
+    session_id TEXT PRIMARY KEY,
+    jira_issue TEXT NOT NULL,
+    set_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
 -- The card kept for a block after its raw events are deleted (spec 010).
 -- `json` is a digest_contract::BlockDigest. A card is written once and
 -- never replaced.

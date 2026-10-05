@@ -68,6 +68,7 @@ mod scrub_assignment;
 pub mod secrets;
 mod session_customers;
 pub mod session_pins;
+pub mod session_tickets;
 pub mod sessions;
 pub mod skill;
 pub mod status_hints;
