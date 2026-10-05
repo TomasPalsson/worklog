@@ -76,3 +76,31 @@ fn prepare_carries_the_ticket_block_descriptions_and_errors_without_blocks() {
     .unwrap();
     assert!(prepare(&conn, &key).unwrap().contains("Alpha work"));
 }
+
+#[test]
+fn ticket_title_and_description_are_added_to_the_input() {
+    let msg = add_ticket(
+        r#"{"day":"2026-10-05"}"#,
+        "Fix login",
+        "Users with jo@x.is can't log in.",
+    );
+    let v: serde_json::Value = serde_json::from_str(&msg).unwrap();
+    assert_eq!(v["day"], "2026-10-05");
+    assert_eq!(v["ticket_summary"], "Fix login");
+    let desc = v["ticket_description"].as_str().unwrap();
+    assert!(
+        desc.starts_with("Users with ") && !desc.contains("jo@x.is"),
+        "{desc}"
+    );
+}
+
+#[test]
+fn empty_ticket_fields_are_left_out_and_long_descriptions_capped() {
+    let msg = add_ticket("{}", "", &"a".repeat(5000));
+    let v: serde_json::Value = serde_json::from_str(&msg).unwrap();
+    assert!(v.get("ticket_summary").is_none());
+    assert_eq!(
+        v["ticket_description"].as_str().unwrap().len(),
+        MAX_TICKET_DESCRIPTION_CHARS
+    );
+}

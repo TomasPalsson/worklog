@@ -22,7 +22,11 @@ alveg ef setningafjöldinn leyfir ekki meira. Ef engin \"work_items\" \
 fylgja skaltu lýsa vinnunni út frá hinum vísbendingunum eins og áður. \
 \"prompts\" eru beiðnir notandans sjálfs og sýna best hvað var í raun \
 gert og fyrir hvern; \"helper_work\", \"tool_calls\", \"shell_commands\" \
-og \"commit_bodies\" sýna framkvæmdina. Lýstu raunverulegu eðli \
+og \"commit_bodies\" sýna framkvæmdina. \
+\"ticket_summary\" og \"ticket_description\" lýsa Jira-málinu sem unnið \
+var í og sýna tilgang vinnunnar; notaðu þau til að skilja samhengið og \
+nefna markmiðið, en lýstu aðeins því sem hinar vísbendingarnar sýna að \
+var gert í raun.Lýstu raunverulegu eðli \
 vinnunnar — til dæmis að skrifa eða endurskoða verklýsingu, tilboð eða \
 skjal — og segðu aldrei að kerfi hafi verið þróað ef vísbendingarnar \
 sýna skjalavinnu. Vertu nákvæmur: segðu í hverri setningu hvað var að \

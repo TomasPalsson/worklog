@@ -230,7 +230,7 @@ fn scrub_str(s: &str) -> String {
 
 /// `scrub::scrub_identifiers`, home dirs shortened to `~/` (no user
 /// names off-machine), then a hard cap at `chars`.
-fn scrub_capped(s: &str, chars: usize) -> String {
+pub(crate) fn scrub_capped(s: &str, chars: usize) -> String {
     let scrubbed = scrub::scrub_identifiers(s);
     home_dir_re()
         .replace_all(&scrubbed, "~/")
