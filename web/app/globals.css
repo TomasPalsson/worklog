@@ -3399,7 +3399,8 @@ body:has(.task-modal[role="dialog"][aria-modal="true"]) .chg-slip { display: non
 .settings-overlay {
   position: fixed;
   inset: 0;
-  z-index: 50;
+  /* Above the changes slip (55); below toasts (60) so its own toasts still show. */
+  z-index: 59;
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -4046,7 +4047,7 @@ body:has(.task-modal[role="dialog"][aria-modal="true"]) .chg-slip { display: non
 [data-tip]::after {
   content: attr(data-tip);
   position: absolute;
-  /* Above the settings overlay (z-index 50) so tips work inside dialogs. */
+  /* Above the settings overlay (z-index 59) so tips work inside dialogs. */
   z-index: 60;
   top: calc(100% + 7px);
   left: 50%;

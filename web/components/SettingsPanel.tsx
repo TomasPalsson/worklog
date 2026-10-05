@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Loader2, Settings, X } from "lucide-react";
 import { SettingsIcon } from "./icons";
 import type { SettingsView } from "@/lib/types";
@@ -130,7 +131,8 @@ export function SettingsPanel({ day, variant = "icon" }: Props) {
         </button>
       )}
 
-      {open && (
+      {/* Portalled to <body>: inside the sticky rail its z-index can't beat page content. */}
+      {open && createPortal(
         <div
           className="settings-overlay"
           onMouseDown={(e) => {
@@ -187,7 +189,8 @@ export function SettingsPanel({ day, variant = "icon" }: Props) {
               </button>
             </footer>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   );
