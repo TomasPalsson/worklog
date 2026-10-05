@@ -27,3 +27,8 @@ web/.bun/
 .qa-report/
 .claude/loop/*
 !.claude/loop/LEARNINGS.md
+
+# Local agent state (not source)
+.flow-swarm/
+.claude/review/
+/MEMORY.md

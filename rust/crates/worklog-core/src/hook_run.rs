@@ -16,7 +16,7 @@ use crate::sessions;
 
 /// Jira key regex — same as the collectors' regex so hook-produced events
 /// get the same treatment as GitHub-sourced ones.
-fn jira_re() -> Regex {
+pub fn jira_re() -> Regex {
     Regex::new(r"\b([A-Z][A-Z0-9]{1,9}-\d+)\b").unwrap()
 }
 
@@ -37,6 +37,14 @@ fn first_jira_key(parts: &[Option<&str>]) -> Option<String> {
         }
     }
     None
+}
+
+/// Jira key from the working directory path, else from its git branch.
+pub fn path_or_branch_key(cwd: &str) -> Option<String> {
+    first_jira_key(&[Some(cwd)]).or_else(|| {
+        let branch = crate::git::current_branch(Path::new(cwd));
+        first_jira_key(&[branch.as_deref()])
+    })
 }
 
 fn prompt_of(payload: &Value) -> Option<&str> {
@@ -135,10 +143,15 @@ pub fn handle(conn: &Connection, payload: &Value, now: DateTime<Utc>) -> Result<
     // regexes miss (FR-11, D-03).
     let prompt = prompt_of(payload).map(crate::scrub::scrub_secrets);
 
-    let jira_issue = first_jira_key(&[prompt.as_deref(), cwd.as_deref()]).or_else(|| {
-        let branch = crate::git::current_branch(Path::new(cwd.as_deref()?));
-        first_jira_key(&[branch.as_deref()])
-    });
+    // An explicit `worklog ticket use` beats a key guessed from the path
+    // or branch, so the Owner can correct a misleading branch name.
+    let jira_issue = first_jira_key(&[prompt.as_deref()])
+        .or_else(|| {
+            crate::session_tickets::get(conn, &session_id)
+                .ok()
+                .flatten()
+        })
+        .or_else(|| path_or_branch_key(cwd.as_deref()?));
     let details = details_for(prompt.as_deref());
 
     let ev = Event {
@@ -231,3 +244,54 @@ pub fn run_from_stdin() -> Result<()> {
 #[cfg(test)]
 #[path = "hook_run_test.rs"]
 mod tests;
+
+#[cfg(test)]
+mod stored_ticket_tests {
+    use super::*;
+    use crate::db::open_memory;
+    use serde_json::json;
+
+    fn issue(conn: &Connection, prompt: &str, cwd: &str) -> Option<String> {
+        let now = Utc::now();
+        let payload = json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "st1",
+            "cwd": cwd,
+            "prompt": prompt,
+        });
+        handle(conn, &payload, now).unwrap();
+        let day = now.format("%Y-%m-%d").to_string();
+        repo::load_day_events(conn, &day).unwrap()[0]
+            .jira_issue
+            .clone()
+    }
+
+    #[test]
+    fn stored_session_ticket_beats_path_key() {
+        let conn = open_memory().unwrap();
+        crate::session_tickets::set(&conn, "st1", "GENAI-9").unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("PROJ-42-x");
+        std::fs::create_dir(&dir).unwrap();
+        let cwd = dir.to_str().unwrap();
+        assert_eq!(issue(&conn, "fix it", cwd).as_deref(), Some("GENAI-9"));
+    }
+
+    #[test]
+    fn stored_session_ticket_without_other_keys() {
+        let conn = open_memory().unwrap();
+        crate::session_tickets::set(&conn, "st1", "GENAI-9").unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().to_str().unwrap();
+        assert_eq!(issue(&conn, "fix it", cwd).as_deref(), Some("GENAI-9"));
+    }
+
+    #[test]
+    fn prompt_key_beats_stored_session_ticket() {
+        let conn = open_memory().unwrap();
+        crate::session_tickets::set(&conn, "st1", "GENAI-9").unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().to_str().unwrap();
+        assert_eq!(issue(&conn, "see PROJ-42", cwd).as_deref(), Some("PROJ-42"));
+    }
+}

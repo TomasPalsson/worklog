@@ -328,8 +328,8 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
     HookRun,
 
     /// Claude Code session-start hook — reads SessionStart JSON from
-    /// stdin and prints the pin instruction for a shared /Work repo, if
-    /// any (spec 008). Never fails: any error prints nothing and exits 0.
+    /// stdin and prints the session's Jira ticket (or how to find one),
+    /// then the pin instruction for a shared /Work repo, if any (spec 008). Never fails: any error prints nothing and exits 0.
     #[command(name = "session-hint", hide = true)]
     SessionHint,
 
@@ -3617,7 +3617,30 @@ fn cmd_session_hint<W: Write>(out: &mut W) -> Result<()> {
     Ok(())
 }
 
-/// Pin text first, then pending Done hints. DB only; each part fails alone.
+/// Ticket line for the SessionStart hint: the known key, or (in a work
+/// folder) how to find, ask for and record one.
+fn ticket_hint(
+    session_id: &str,
+    is_work: bool,
+    key: Option<&str>,
+    branch: Option<&str>,
+) -> Option<String> {
+    if let Some(k) = key {
+        return Some(format!("This session's Jira ticket: {k}."));
+    }
+    if !is_work {
+        return None;
+    }
+    let branch = match branch {
+        Some(b) if b != "main" && b != "master" => format!(" (branch {b})"),
+        _ => String::new(),
+    };
+    Some(format!(
+        "No Jira ticket found for this session{branch}. Once the task is clear, find its ticket: run `worklog ticket find \"<a few words>\"`. One clear match: use it. Otherwise ask the Owner once: give a ticket key, or create a new GENAI ticket (worklog skill, Jira recipe). Then record it: `worklog ticket use <KEY> --session {session_id}`. When nobody is present, record nothing."
+    ))
+}
+
+/// Ticket line first, then pin text, then pending Done hints. DB only; each part fails alone.
 fn write_session_hint<W: Write>(db_path: &std::path::Path, payload: &str, out: &mut W) {
     let Ok(conn) = db::open(db_path) else {
         return;
@@ -3629,6 +3652,17 @@ fn write_session_hint<W: Write>(db_path: &std::path::Path, payload: &str, out: &
     let session_id = payload.get("session_id").and_then(|v| v.as_str());
     let cwd = payload.get("cwd").and_then(|v| v.as_str());
     if let (Some(session_id), Some(cwd)) = (session_id, cwd) {
+        // An explicit `ticket use` beats a path/branch guess; the guess
+        // only counts in a work folder (`fix/UTF-8` is not a ticket).
+        let is_work = billing::billable_work_folder(cwd).is_some();
+        let key = worklog_core::session_tickets::get(conn, session_id)
+            .ok()
+            .flatten()
+            .or_else(|| is_work.then(|| hook_run::path_or_branch_key(cwd)).flatten());
+        let branch = git::current_branch(std::path::Path::new(cwd));
+        if let Some(t) = ticket_hint(session_id, is_work, key.as_deref(), branch.as_deref()) {
+            let _ = writeln!(out, "{t}");
+        }
         if let Ok(registry) = billing_registry::Registry::load(conn) {
             if let Ok(Some(text)) = session_pins::start_text(
                 conn,
@@ -4530,6 +4564,53 @@ mod tests {
             String::from_utf8(out).unwrap(),
             "GENAI-7 may be done (merged PR): Fix login. Run `worklog ticket move GENAI-7 Done`.\n"
         );
+    }
+
+    #[test]
+    fn ticket_hint_known_key_wins_even_outside_work() {
+        assert_eq!(
+            ticket_hint("s1", false, Some("GENAI-9"), None).as_deref(),
+            Some("This session's Jira ticket: GENAI-9.")
+        );
+    }
+
+    #[test]
+    fn ticket_hint_none_outside_work() {
+        assert_eq!(ticket_hint("s1", false, None, Some("feat")), None);
+    }
+
+    #[test]
+    fn ticket_hint_asks_in_work_folder_with_real_session_id() {
+        let t = ticket_hint("sess-123", true, None, Some("feat-x")).unwrap();
+        assert_eq!(
+            t,
+            "No Jira ticket found for this session (branch feat-x). Once the task is clear, find its ticket: run `worklog ticket find \"<a few words>\"`. One clear match: use it. Otherwise ask the Owner once: give a ticket key, or create a new GENAI ticket (worklog skill, Jira recipe). Then record it: `worklog ticket use <KEY> --session sess-123`. When nobody is present, record nothing."
+        );
+    }
+
+    #[test]
+    fn ticket_hint_omits_main_master_and_missing_branch() {
+        for b in [Some("main"), Some("master"), None] {
+            let t = ticket_hint("s1", true, None, b).unwrap();
+            assert!(
+                t.starts_with("No Jira ticket found for this session. Once"),
+                "{t}"
+            );
+        }
+    }
+
+    #[test]
+    fn session_hint_prints_stored_ticket_first() {
+        let (_dir, path) = seeded_db();
+        worklog_core::session_tickets::set(&db::open(&path).unwrap(), "s1", "GENAI-9").unwrap();
+        let mut out = Vec::new();
+        write_session_hint(&path, r#"{"session_id":"s1","cwd":"/tmp/x"}"#, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(
+            text.lines().next(),
+            Some("This session's Jira ticket: GENAI-9.")
+        );
+        assert!(text.contains("GENAI-7 may be done"));
     }
 
     #[test]

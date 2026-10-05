@@ -1,6 +1,6 @@
 ---
 name: worklog
-description: Operate the user's worklog time-tracker — query blocks, assign Jira tickets, fix durations, delete blocks, sync to Tempo, run setup, troubleshoot failures. Invoke when the user mentions "worklog", "timesheet", "Tempo sync", "log my time", "fill out my timesheet", "what did I work on today/yesterday/this week", "when did I last work on TICKET-N", "fix the [time] block", "the [time] block isn't [duration]", "delete the [...] block", "sync to Tempo", "worklog isn't working / no data", "set up worklog / first-time setup", "reclassify personal/work", "worklog doctor", or names any worklog subcommand directly. Also invoke whenever the user asks a time-tracking question that mentions a date, a duration, a Jira ticket key, or a block — worklog is the canonical answer in this environment. The user's standing preference: full operator with confirm-before-writes (read-only commands run freely; writes always confirm; sync ALWAYS confirms).
+description: Operate the user's worklog time-tracker — query blocks, assign Jira tickets, fix durations, delete blocks, sync to Tempo, run setup, troubleshoot failures. Invoke when the user mentions "worklog", "timesheet", "Tempo sync", "log my time", "fill out my timesheet", "what did I work on today/yesterday/this week", "when did I last work on TICKET-N", "fix the [time] block", "the [time] block isn't [duration]", "delete the [...] block", "sync to Tempo", "worklog isn't working / no data", "set up worklog / first-time setup", "reclassify personal/work", "worklog doctor", "which ticket is this session on", or names any worklog subcommand directly. Also invoke whenever the user asks a time-tracking question that mentions a date, a duration, a Jira ticket key, or a block — worklog is the canonical answer in this environment. The user's standing preference: full operator with confirm-before-writes (read-only commands run freely; writes always confirm; sync ALWAYS confirms).
 ---
 
 # worklog — full operator
@@ -92,10 +92,11 @@ Match the user's phrasing left-to-right; first match wins.
 | "work on [free text]" / "I'm going to build X" | **J**: `worklog ticket find "<text>"`, then pick a match or `ticket create` (`references/jira.md`) |
 | "waiting on X" / "blocked on X" | **J**: ask whether to move the ticket to Blocked, then `worklog ticket move KEY Blocked` |
 | "finished" / "done with KEY" / "PR merged" | **J**: ask whether to move the ticket to Done, then `worklog ticket move KEY Done` |
+| "what ticket is this session on" / "No Jira ticket found for this session" / "set this session's ticket" | **J**: `references/jira.md` "This session's ticket", then `worklog ticket use KEY --session <id>` |
 | "what can I close?" / "anything to close?" | **J**: `worklog ticket hints` |
 | "show me unsynced" / "what's pending sync" / "any dirty blocks" | `references/recipes.md` → Recipe 11 |
 
-Recipe J lives in `references/jira.md`. Its rules: `ticket start` on a key needs no confirm. For free text, run `ticket find` first and offer matches; to create, run `worklog account suggest "<text>"` and ask ONE confirm showing the title and the account. Moves to Blocked or Done are asked, never assumed. Ticket text is English with no emoji, and the user's chat is never pasted into it. Never post to Slack.
+Recipe J lives in `references/jira.md`. Its rules: `ticket start` on a key needs no confirm; neither does `ticket use` (it only writes locally). For free text, run `ticket find` first and offer matches; to create, run `worklog account suggest "<text>"` and ask ONE confirm showing the title and the account. Moves to Blocked or Done are asked, never assumed. Ticket text is English with no emoji, and the user's chat is never pasted into it. Never post to Slack.
 
 If the user names a date ambiguously ("yesterday", "Tuesday"), resolve to `YYYY-MM-DD` before invoking anything: `date +%Y-%m-%d`, `date -v-1d +%Y-%m-%d` (macOS), or `date -d yesterday +%Y-%m-%d` (Linux).
 

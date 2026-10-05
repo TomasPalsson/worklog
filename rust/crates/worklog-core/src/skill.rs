@@ -268,6 +268,7 @@ mod tests {
         let skill = bundled("SKILL.md");
         for phrase in [
             "ticket start",
+            "ticket use",
             "ticket find",
             "ticket create",
             "ticket move",
@@ -286,7 +287,15 @@ mod tests {
     #[test]
     fn jira_reference_has_text_guide_rules() {
         let jira = bundled("references/jira.md");
-        for phrase in ["English", "no emoji", "## Tasks", "- [ ]", "## Done when"] {
+        for phrase in [
+            "English",
+            "no emoji",
+            "## Tasks",
+            "- [ ]",
+            "## Done when",
+            "This session's ticket",
+            "worklog add",
+        ] {
             assert!(jira.contains(phrase), "jira.md missing {phrase:?}");
         }
     }
