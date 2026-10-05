@@ -264,7 +264,7 @@ describe("TaskBoard Move menu", () => {
     fireEvent.click(btn);
     await screen.findByRole("menuitem", { name: "Move to Done" });
     const items = screen.getAllByRole("menuitem").map((n) => n.textContent);
-    expect(items).toEqual(["Move to In Progress", "Move to Done"]);
+    expect(items).toEqual(["Blocked — no Jira move", "Move to In Progress", "Verification — no Jira move", "Move to Done"]);
   });
 
   it("Esc closes the menu and returns focus to the Move button", async () => {

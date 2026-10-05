@@ -2,21 +2,30 @@
 
 import type { JiraTicket, StatusCategory, TaskRow, Transition } from "./types";
 
-export type Column = "new" | "indeterminate" | "done";
+export type Column = "new" | "blocked" | "indeterminate" | "verification" | "done";
 
 export const COLUMNS: { id: Column; title: string }[] = [
   { id: "new", title: "To Do" },
+  { id: "blocked", title: "Blocked" },
   { id: "indeterminate", title: "In Progress" },
+  { id: "verification", title: "Verification" },
   { id: "done", title: "Done" },
 ];
 
 export const columnTitle = (c: Column) => COLUMNS.find((x) => x.id === c)?.title ?? c;
 
-export const columnOf = (category: StatusCategory | null): Column => category ?? "new";
+/** Blocked and Verification are both "indeterminate" in Jira, so only the status name tells them apart. */
+const statusColumn = (status: string | null): Column | null => {
+  const s = status?.toLowerCase() ?? "";
+  return s.includes("block") ? "blocked" : s.includes("verif") ? "verification" : null;
+};
+
+export const columnOf = (status: string | null, category: StatusCategory | null): Column =>
+  statusColumn(status) ?? category ?? "new";
 
 /** Transitions that land in `column`; a null `to_category` never matches. */
 export const movesInto = (transitions: Transition[], column: Column): Transition[] =>
-  transitions.filter((t) => t.to_category === column);
+  transitions.filter((t) => t.to_category !== null && columnOf(t.to_status, t.to_category) === column);
 
 /** `{name} → {to_status}`, or just the name when both say the same thing. */
 export const transitionLabel = (t: Transition): string =>
