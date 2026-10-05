@@ -23,7 +23,7 @@ pub fn prepare(conn: &Connection, key: &TempoLineKey) -> Result<String, String> 
 /// Phase 2 (no connection): adds the Jira ticket's title and description to
 /// `user_msg` so the model knows what the ticket is for. Best-effort: when
 /// Jira can't be reached the message goes out as it was.
-pub fn with_ticket(user_msg: &str, key: &TempoLineKey) -> String {
+fn with_ticket(user_msg: &str, key: &TempoLineKey) -> String {
     let detail = JiraAuth::from_secrets()
         .and_then(|auth| jira::fetch_detail_with(&auth, &key.jira_issue, &http::client()?));
     match detail {
@@ -60,9 +60,15 @@ pub fn invoke(user_msg: &str, invoker: &dyn ModelInvoker, model: &str) -> Result
     reply_to_text(invoker.invoke(SYSTEM_PROMPT_IS, user_msg, &line_text_schema(), model))
 }
 
-/// Invokes and validates, re-asking with the rejection reason up to
-/// [`MAX_ATTEMPTS`] times in total.
-pub fn write(user_msg: &str, invoker: &dyn ModelInvoker, model: &str) -> Result<String, String> {
+/// Adds the ticket context ([`with_ticket`]), then invokes and validates,
+/// re-asking with the rejection reason up to [`MAX_ATTEMPTS`] times in total.
+pub fn write(
+    user_msg: &str,
+    key: &TempoLineKey,
+    invoker: &dyn ModelInvoker,
+    model: &str,
+) -> Result<String, String> {
+    let user_msg = &with_ticket(user_msg, key);
     let mut msg = user_msg.to_string();
     let mut reason = String::new();
     for _ in 0..MAX_ATTEMPTS {

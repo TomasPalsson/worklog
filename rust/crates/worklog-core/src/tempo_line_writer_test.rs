@@ -4,6 +4,13 @@ use crate::estimate::FixedInvoker;
 use rusqlite::params;
 use std::sync::Mutex;
 
+fn key() -> TempoLineKey {
+    TempoLineKey {
+        day: "2026-10-05".into(),
+        jira_issue: "APRO-1".into(),
+    }
+}
+
 struct Scripted(Mutex<Vec<&'static str>>, Mutex<Vec<String>>);
 
 impl ModelInvoker for Scripted {
@@ -26,7 +33,7 @@ fn valid_reply_is_returned_after_one_call() {
         serde_json::json!({"text": "Lagaði villu í uppsetningu. Prófaði breytinguna."}),
     );
     assert_eq!(
-        write("{}", &inv, "m").unwrap(),
+        write("{}", &key(), &inv, "m").unwrap(),
         "Lagaði villu í uppsetningu. Prófaði breytinguna."
     );
 }
@@ -41,7 +48,7 @@ fn rejected_reply_is_retried_with_the_reason() {
         Mutex::new(Vec::new()),
     );
     assert_eq!(
-        write("{}", &inv, "m").unwrap(),
+        write("{}", &key(), &inv, "m").unwrap(),
         "Lagaði villu. Prófaði það."
     );
     let seen = inv.1.lock().unwrap();
@@ -55,7 +62,7 @@ fn three_bad_replies_fail_with_the_attempt_count() {
         Mutex::new(vec!["a 1", "b 2", "c 3"]),
         Mutex::new(Vec::new()),
     );
-    let err = write("{}", &inv, "m").unwrap_err();
+    let err = write("{}", &key(), &inv, "m").unwrap_err();
     assert!(err.ends_with("(reynt 3 sinnum)"), "{err}");
     assert_eq!(inv.1.lock().unwrap().len(), 3);
 }
