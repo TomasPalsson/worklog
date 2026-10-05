@@ -126,6 +126,17 @@ export function registerTicket(on: On): void {
     })
   }
 
+  on('tool.call', { tool: 'Bash' }, async ($, event, next) => {
+    const result = await next(event)
+    if (result.deny !== undefined || result.isError === true) return result
+    const [, key, id] = /worklog ticket use (\S+) --session (\S+)/.exec(event.command) ?? []
+    if (key !== undefined && EXACT_KEY_RE.test(key) && id === (await $.session.id())) {
+      state.recorded = key
+      state.handoff = undefined
+    }
+    return result
+  })
+
   on('turn.complete', async ($, event, next) => {
     void refresh($, state)
     return next(event)

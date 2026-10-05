@@ -18,6 +18,7 @@ type World = {
   gate?: Promise<void>
   dismiss?: boolean
   recordFails?: boolean
+  bash?: Record<string, unknown>
   stored?: Record<string, unknown>
   id?: string
 }
@@ -43,6 +44,7 @@ const seat = (on: On, branch: { current: string | undefined }, world: World = {}
   on('session.id', () => ({ value: world.id ?? SESSION_ID }))
   on('session.end', () => ({ sessionId: world.id ?? SESSION_ID }))
   on('tool.call', async (_$, e) => {
+    if (e.tool !== 'AskUserQuestion') return world.bash ?? { result: { stdout: '', stderr: '' } }
     const q = e.questions[0]
     seen.asks.push({ question: q.question, header: q.header, options: q.options.map(o => o.label) })
     await world.gate
@@ -408,4 +410,57 @@ test('clear outside a work folder asks nothing', async ($, on) => {
   await $.session.end({ reason: 'clear' })
   await clock.advance(10)
   expect(seen.asks).toEqual([])
+})
+
+const claudeRuns = async (command: string, world: World = {}, id = SESSION_ID) => {
+  const bash = world.bash
+  return async ($: Parameters<Parameters<typeof test>[1]>[0], on: On) => {
+    await asked({ answer: 'Create a new ticket', bash })($, on)
+    await $.tool.call({ tool: 'Bash', command: command.replace('$ID', id) })
+    return blocksOf($)
+  }
+}
+const USE = (key: string, id: string) => `worklog ticket use ${key} --session ${id}`
+const STILL_CREATE = (id: string) => [...OTHER.blocks, { name: 'worklog', text: `${BRANCH_BLOCK.text}\n${CREATE(id)}` }]
+const RECORDED = [...OTHER.blocks, { name: 'worklog', text: 'Session ticket: ABC-123' }]
+
+test('Claude running ticket use for this session records the key and ends the hand-off', async ($, on) => {
+  expect(await (await claudeRuns(USE('ABC-123', SESSION_ID)))($, on)).toEqual(RECORDED)
+  expect(await $.attribution.text({ kind: 'commit', text: 'msg' })).toEqual({ text: 'msg\n\nTicket: ABC-123' })
+})
+
+test('the ticket use command inside a longer command line still counts', async ($, on) => {
+  expect(await (await claudeRuns(`cd api && ${USE('ABC-123', SESSION_ID)} && echo ok`))($, on)).toEqual(RECORDED)
+})
+
+test('another session id changes nothing', async ($, on) => {
+  expect(await (await claudeRuns(USE('ABC-123', 'sess-9')))($, on)).toEqual(STILL_CREATE(SESSION_ID))
+})
+
+test('a session id that only starts with this one changes nothing (prefix match)', async ($, on) => {
+  expect(await (await claudeRuns(USE('ABC-123', `${SESSION_ID}0`)))($, on)).toEqual(STILL_CREATE(SESSION_ID))
+})
+
+test('a different worklog command changes nothing', async ($, on) => {
+  expect(await (await claudeRuns(`worklog ticket find --session ${SESSION_ID}`))($, on)).toEqual(STILL_CREATE(SESSION_ID))
+})
+
+test('a lowercase or malformed key changes nothing', async ($, on) => {
+  expect(await (await claudeRuns(USE('abc-123', SESSION_ID)))($, on)).toEqual(STILL_CREATE(SESSION_ID))
+})
+
+test('a denied ticket use changes nothing', async ($, on) => {
+  const world = { bash: { deny: 'no' } }
+  expect(await (await claudeRuns(USE('ABC-123', SESSION_ID), world))($, on)).toEqual(STILL_CREATE(SESSION_ID))
+})
+
+test('a failed ticket use (isError) changes nothing', async ($, on) => {
+  const world = { bash: { result: { stdout: '', stderr: 'boom' }, isError: true } }
+  expect(await (await claudeRuns(USE('ABC-123', SESSION_ID), world))($, on)).toEqual(STILL_CREATE(SESSION_ID))
+})
+
+test('a ticket use under another tool name changes nothing', async ($, on) => {
+  await asked({ answer: 'Create a new ticket' })($, on)
+  await $.tool.call({ tool: 'Write', file_path: '/tmp/x', content: USE('ABC-123', SESSION_ID) })
+  expect(await blocksOf($)).toEqual(STILL_CREATE(SESSION_ID))
 })
