@@ -117,7 +117,7 @@ function useOutcome(patch: Patch, offerUndo: (key: string, from: Column, to: Col
   const [landed, setLanded] = useState<string | null>(null);
   const succeed = (key: string, s: StatusPatch, from: Column) => {
     patch(key, s);
-    const to = columnOf(s.status_category);
+    const to = columnOf(s.status, s.status_category);
     setAnnounce(`Moved ${key} to ${columnTitle(to)}.${from === to ? "" : " Undo available."}`);
     setLanded(key);
     offerUndo(key, from, to);
@@ -293,7 +293,7 @@ export function TaskBoard({ tasks, actions = realActions, undoMs = 8000 }: {
   rowsRef.current = rows;
   const { openKey, openCard, drafts, jiraOpen, closePanel } = usePanel((key) => rowsRef.current.some((r) => r.key === key));
   const m = useMoves(patch, actions, undoMs);
-  const colOf = (r: TaskRow) => m.placed[r.key] ?? columnOf(r.status_category);
+  const colOf = (r: TaskRow) => m.placed[r.key] ?? columnOf(r.status, r.status_category);
   // One flow for a drop and for the Move menu; dropping on the card's own column is a no-op.
   const moveTo = (key: string, target: Column, opts?: MoveOpts) => {
     const row = rows.find((r) => r.key === key);
@@ -374,7 +374,7 @@ export function TaskBoard({ tasks, actions = realActions, undoMs = 8000 }: {
       {open && (
         <TaskModal key={open.key} drafts={drafts} jiraOpen={jiraOpen} task={open} actions={actions} onClose={closePanel}
           knownKeys={new Set(rows.map((r) => r.key))} tickets={rows.map(asTicket)} onOpenTicket={openCard} onStatus={(s) => {
-          m.offerUndo(open.key, colOf(open), columnOf(s.status_category));
+          m.offerUndo(open.key, colOf(open), columnOf(s.status, s.status_category));
           patch(open.key, s);
         }}
         />

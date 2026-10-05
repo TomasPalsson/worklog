@@ -130,9 +130,12 @@ describe("TaskBoard card details", () => {
     expect(btn.getAttribute("data-tip")).toBe("Move");
     fireEvent.click(btn);
     await screen.findByRole("menuitem", { name: "Move to In Progress" });
-    const [first, last] = screen.getAllByRole("menuitem");
+    const items = screen.getAllByRole("menuitem");
+    const [first, last] = [items[0], items[items.length - 1]];
     expect(document.activeElement).toBe(first);
     fireEvent.keyDown(first, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(items[1]);
+    fireEvent.keyDown(items[1], { key: "End" });
     expect(document.activeElement).toBe(last);
     fireEvent.keyDown(last, { key: "ArrowDown" });
     expect(document.activeElement).toBe(first);

@@ -65,7 +65,7 @@ describe("Move menu transitions lookup", () => {
     render(<TaskBoard actions={a} tasks={tasks} />);
     fireEvent.click(screen.getByRole("button", { name: "Move ABC-1" }));
     const waiting = screen.getAllByRole("menuitem");
-    expect(waiting.map((n) => n.textContent)).toEqual(["In Progress — Checking Jira…", "Done — Checking Jira…"]);
+    expect(waiting.map((n) => n.textContent)).toEqual(["Blocked — Checking Jira…", "In Progress — Checking Jira…", "Verification — Checking Jira…", "Done — Checking Jira…"]);
     expect(waiting.every((n) => n.getAttribute("aria-disabled") === "true")).toBe(true);
     await act(async () => resolve({ ok: true, data: [start, done] }));
     await act(async () => {

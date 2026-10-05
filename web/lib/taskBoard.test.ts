@@ -26,18 +26,23 @@ const t = (id: string, to_category: Transition["to_category"]): Transition => ({
 });
 
 describe("taskBoard", () => {
-  it("columnOf maps a category to its column and null to To do", () => {
-    expect(columnOf("done")).toBe("done");
-    expect(columnOf("indeterminate")).toBe("indeterminate");
-    expect(columnOf("new")).toBe("new");
-    expect(columnOf(null)).toBe("new");
-    expect(COLUMNS.map((c) => c.title)).toEqual(["To Do", "In Progress", "Done"]);
+  it("columnOf maps a status to its column, else the category, else To do", () => {
+    expect(columnOf(null, "done")).toBe("done");
+    expect(columnOf("In Progress", "indeterminate")).toBe("indeterminate");
+    expect(columnOf("To Do", "new")).toBe("new");
+    expect(columnOf(null, null)).toBe("new");
+    expect(columnOf("Blocked", "indeterminate")).toBe("blocked");
+    expect(columnOf("Verification", "indeterminate")).toBe("verification");
+    expect(COLUMNS.map((c) => c.title)).toEqual(["To Do", "Blocked", "In Progress", "Verification", "Done"]);
   });
 
   it("movesInto keeps matching transitions and never matches a null category", () => {
     const all = [t("a", "done"), t("b", null), t("c", "done"), t("d", "new")];
     expect(movesInto(all, "done").map((x) => x.id)).toEqual(["a", "c"]);
     expect(movesInto([t("b", null)], "new")).toEqual([]);
+    const toBlocked: Transition = { id: "e", name: "Block", to_status: "Blocked", to_category: "indeterminate" };
+    expect(movesInto([toBlocked], "blocked")).toEqual([toBlocked]);
+    expect(movesInto([toBlocked], "indeterminate")).toEqual([]);
   });
 
   it("weekTotal sums week_seconds", () => {

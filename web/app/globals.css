@@ -5191,7 +5191,7 @@ main.page:has(.tasks-page) { max-width: none; margin: 0; padding: 0; }
 
 /* columns never shrink below 260px; the wrapper scrolls instead */
 .task-board-scroll { overflow-x: auto; }
-.task-board { display: grid; grid-template-columns: repeat(3, minmax(260px, 1fr)); align-items: stretch; }
+.task-board { display: grid; grid-template-columns: repeat(5, minmax(220px, 1fr)); align-items: stretch; }
 .task-col {
   min-height: 320px;
   padding: 0 16px 24px;
