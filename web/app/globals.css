@@ -1682,7 +1682,9 @@ button {
   font-size: 13px;
   line-height: 1.45;
   color: var(--fg);
-  -webkit-line-clamp: 2;
+  /* Show the whole worklog text — it's what gets billed, so no clamp. */
+  display: block;
+  overflow: visible;
 }
 /* The text's provenance is a quiet note beside its actions, not a badge. */
 .ticket-line-text .billing-text-controls {
