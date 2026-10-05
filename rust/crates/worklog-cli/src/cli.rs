@@ -3355,6 +3355,7 @@ fn generate_line_texts<W: Write>(
         let written = prepare(&key).and_then(|msg| {
             worklog_core::tempo_line_writer::write(
                 &msg,
+                &key,
                 invoker,
                 worklog_core::line_text::LINE_TEXT_MODEL,
             )

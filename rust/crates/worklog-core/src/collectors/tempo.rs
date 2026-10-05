@@ -479,7 +479,7 @@ fn sync_group_aggregated(
                 .with_context(|| format!("no descriptions for {issue} on {day_str}"))?;
             let written = invoker.map(|inv| {
                 tempo_line_writer::prepare(conn, &key)
-                    .and_then(|msg| tempo_line_writer::write(&msg, inv, model))
+                    .and_then(|msg| tempo_line_writer::write(&msg, &key, inv, model))
             });
             match written {
                 Some(Ok(text)) => {
