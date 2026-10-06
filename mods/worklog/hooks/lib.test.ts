@@ -320,3 +320,24 @@ test('keyOfChoice: Create, Skip and free text are not keys', () => {
   expect(keyOfChoice('see GENAI-42 please')).toBeUndefined()
   expect(keyOfChoice('')).toBeUndefined()
 })
+
+test('ticketChoices: a likely key leads, labelled when known, then the branch, then fills to 2', () => {
+  const tasks = [task('AB-3', '2026-10-03'), task('AB-2', '2026-10-02')]
+  expect(ticketChoices('GENAI-42', tasks, 'AB-2')).toEqual([
+    'AB-2 sum AB-2',
+    'GENAI-42',
+    'Create a new ticket',
+    'Skip',
+  ])
+  expect(ticketChoices(undefined, tasks, 'AB-2')).toEqual([
+    'AB-2 sum AB-2',
+    'AB-3 sum AB-3',
+    'Create a new ticket',
+    'Skip',
+  ])
+})
+
+test('ticketChoices: a likely key equal to the branch shows once; unknown likely is a bare key', () => {
+  expect(ticketChoices('GENAI-42', [], 'GENAI-42')).toEqual(['GENAI-42', 'Create a new ticket', 'Skip'])
+  expect(ticketChoices(undefined, [], 'ZZ-1')).toEqual(['ZZ-1', 'Create a new ticket', 'Skip'])
+})

@@ -39,6 +39,49 @@ impl VerdictClassifier {
     }
 }
 
+#[derive(Serialize)]
+struct PickOption<'a> {
+    id: &'a str,
+    description: &'a str,
+}
+
+#[derive(Serialize)]
+struct PickRequest<'a> {
+    text: &'a str,
+    options: Vec<PickOption<'a>>,
+}
+
+impl VerdictClassifier {
+    /// Which of `options` (`(key, summary)`) a session's request text is about; `Guess.folder` is the key.
+    /// Unreachable / non-2xx / bad JSON is `Ok(None)`, like `classify`.
+    pub fn pick_ticket(&self, text: &str, options: &[(String, String)]) -> Result<Option<Guess>> {
+        let body = PickRequest {
+            text,
+            options: options
+                .iter()
+                .map(|(id, description)| PickOption { id, description })
+                .collect(),
+        };
+        let Ok(resp) = self
+            .client
+            .post(format!("{}/pick", self.base_url))
+            .json(&body)
+            .send()
+        else {
+            return Ok(None);
+        };
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+        Ok(resp.json::<ClassifyResponse>().ok().map(|b| Guess {
+            folder: b.choice,
+            confidence: b.probability,
+            runner_up: b.runner_up,
+            abstain: b.abstain,
+        }))
+    }
+}
+
 impl Default for VerdictClassifier {
     fn default() -> Self {
         Self::new()
@@ -151,5 +194,47 @@ mod tests {
         let state = json!({"title": "aws console"});
         let options = vec!["aws-cert".to_string()];
         assert_eq!(classifier.classify(&state, &options).unwrap(), None);
+    }
+
+    #[test]
+    fn pick_ticket_returns_guess_on_success() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/pick").json_body(json!({
+                "text": "fix login",
+                "options": [
+                    {"id": "G-1", "description": "Login bug"},
+                    {"id": "G-2", "description": "Billing"}
+                ]
+            }));
+            then.status(200).json_body(json!({
+                "choice": "G-1", "probability": 0.8, "runner_up": 0.1, "abstain": 0.05
+            }));
+        });
+        let classifier =
+            VerdictClassifier::with_client(Client::builder().build().unwrap(), server.base_url());
+        let options = vec![
+            ("G-1".to_string(), "Login bug".to_string()),
+            ("G-2".to_string(), "Billing".to_string()),
+        ];
+        let guess = classifier
+            .pick_ticket("fix login", &options)
+            .unwrap()
+            .unwrap();
+        assert_eq!(guess.folder, "G-1");
+        assert_eq!(guess.confidence, 0.8);
+    }
+
+    #[test]
+    fn pick_ticket_returns_none_on_error_status() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/pick");
+            then.status(500);
+        });
+        let classifier =
+            VerdictClassifier::with_client(Client::builder().build().unwrap(), server.base_url());
+        let options = vec![("G-1".to_string(), "a".to_string())];
+        assert_eq!(classifier.pick_ticket("x", &options).unwrap(), None);
     }
 }

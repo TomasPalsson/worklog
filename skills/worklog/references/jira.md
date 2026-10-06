@@ -25,7 +25,7 @@ Never post to Slack or any chat tool; the only outputs are Jira and the terminal
 
 ## This session's ticket
 
-The worklog mod asks the Owner at session start. Claude never asks for the ticket again.
+On the first prompt the worklog mod lets Verdict pick the ticket from the request text and records it when sure; otherwise it asks the Owner (likeliest first). Claude never asks for the ticket again.
 
 1. The hint or context names a key: nothing to do.
 2. Instruction "create a ticket": once the task is clear, run `worklog account suggest "<text>"`, then `worklog ticket create` after ONE confirm showing title and account. Duplicate check first: a same-problem hit is the ticket. Recurring or templated tickets are distinct per instance. A bug and a feature are never duplicates. Read back with `worklog ticket get KEY`, report key + URL, then `worklog ticket use KEY --session <id>`.

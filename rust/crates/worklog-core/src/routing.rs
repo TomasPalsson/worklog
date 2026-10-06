@@ -179,6 +179,13 @@ pub fn load_pending(conn: &Connection, day: NaiveDate) -> Result<(RuleHits, Vec<
     Ok((rule_hits, pending))
 }
 
+/// Whether `guess` names one of `options` and clears both the abstain margin and the runner-up ratio.
+pub fn accepts(guess: &Guess, options: &[String], rule: RouteRule) -> bool {
+    options.contains(&guess.folder)
+        && guess.confidence >= guess.abstain * rule.abstain_margin
+        && guess.confidence >= guess.runner_up * rule.runner_up_ratio
+}
+
 /// Ask the classifier for each pending event; keep guesses that name one of the event's own
 /// options and clear both the abstain margin and the runner-up ratio (spec 004 FR-01/FR-02),
 /// never a single raw-confidence threshold. No connection arg — the slow model call must never hold the sqlite lock.
@@ -191,10 +198,7 @@ pub fn decide(
         .iter()
         .filter_map(|p| {
             let guess = classifier.classify(&p.state, &p.options).ok().flatten()?;
-            let accepted = p.options.contains(&guess.folder)
-                && guess.confidence >= guess.abstain * rule.abstain_margin
-                && guess.confidence >= guess.runner_up * rule.runner_up_ratio;
-            accepted.then_some((p.event.id, guess))
+            accepts(&guess, &p.options, rule).then_some((p.event.id, guess))
         })
         .collect()
 }

@@ -4,6 +4,7 @@ import type { Io, RecentTask } from './contract'
 import { daemonGet, keyOfChoice, ticketChoices, workContext } from './lib'
 
 const TASKS_CAP_MS = 1500
+const PICK_CAP_MS = 8000
 const LABEL_MAX = 60
 const EXACT_KEY_RE = new RegExp(`^${JIRA_KEY_RE.source}$`)
 
@@ -53,11 +54,42 @@ async function recentTasks(io: Io): Promise<RecentTask[]> {
 const cut = (label: string): string =>
   label.length > LABEL_MAX ? `${label.slice(0, LABEL_MAX - 1)}…` : label
 
-async function askTicket($: EngineInterface, cwd: string, state: TicketState): Promise<void> {
+type Pick = { picked: string | undefined; likely: string | undefined }
+
+// Verdict reads the first prompt; any failure means "no pick" and the Owner is asked.
+async function verdictPick($: EngineInterface, cwd: string, id: string, ticket: string | undefined, text: string): Promise<Pick> {
+  const none: Pick = { picked: undefined, likely: undefined }
+  let timer: { cancel: () => void } | undefined
+  const cap = new Promise<undefined>(resolve => {
+    timer = $.clock.after(PICK_CAP_MS, () => resolve(undefined))
+  })
+  try {
+    const argv = ['worklog', '--json', 'ticket', 'pick', '--session', id, ...(ticket ? ['--also', ticket] : []), '--', text]
+    const result = await Promise.race([$.process.run(argv, { cwd }), cap])
+    if (result === undefined || result.exitCode !== 0) return none
+    const body = JSON.parse(result.stdout.trim()) as { picked?: unknown; likely?: unknown }
+    const key = (value: unknown) => (typeof value === 'string' && EXACT_KEY_RE.test(value) ? value : undefined)
+    return { picked: key(body.picked), likely: key(body.likely) }
+  } catch {
+    return none
+  } finally {
+    timer?.cancel()
+  }
+}
+
+async function askTicket($: EngineInterface, cwd: string, state: TicketState, text: string): Promise<void> {
   const id = await $.session.id()
   const marker = `${TICKET_ASKED_STORE_PREFIX}${id}`
   if (await $.store.get(marker)) return
-  const options = ticketChoices(state.ticket, await recentTasks(await makeIo($))).map(cut)
+  const { picked, likely } = await verdictPick($, cwd, id, state.ticket, text)
+  if (picked !== undefined) {
+    state.recorded = picked
+    state.handoff = undefined
+    await $.store.set(marker, picked)
+    await $.ui.toast(`worklog: ${picked} (Verdict)`)
+    return
+  }
+  const options = ticketChoices(state.ticket, await recentTasks(await makeIo($)), likely).map(cut)
   let answer: string
   try {
     answer = await $.ui.ask('Which Jira ticket is this session for?', { options, header: 'Ticket' })
@@ -91,7 +123,6 @@ export function registerTicket(on: On): void {
     const isWork = await refresh($, state)
     if (state.ticket !== undefined) await $.ui.toast(`worklog: ${state.ticket}`)
     state.askable = isWork && event.isInteractive
-    if (state.askable) await askTicket($, event.cwd, state).catch(() => undefined)
     return next(event)
   })
 
@@ -103,9 +134,9 @@ export function registerTicket(on: On): void {
     return next(event)
   })
 
-  // After /clear the new session id only shows from the next prompt on; ask then, before it enters.
+  // The first prompt (and the first after /clear) picks or asks the ticket before it enters.
   on('prompt.submit', async ($, event, next) => {
-    if (state.askable && state.cwd !== undefined) await askTicket($, state.cwd, state).catch(() => undefined)
+    if (state.askable && state.cwd !== undefined) await askTicket($, state.cwd, state, event.text).catch(() => undefined)
     return next(event)
   })
 
