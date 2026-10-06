@@ -5,7 +5,7 @@ import { Check, GitMerge, Pencil, RefreshCw, Sparkles } from "lucide-react";
 import type { BlockGroup } from "@/app/[day]/page";
 import { formatTotalHours } from "@/lib/format";
 import { canMergeGroup } from "@/lib/group-actions";
-import { mergeGroup } from "@/app/actions";
+import { mergeGroup, undoLastChange } from "@/app/actions";
 import {
   regenerateTempoLineText,
   saveTempoLineHours,
@@ -141,7 +141,7 @@ export function TicketGroup({
       if (!r.ok) {
         toast.error(`Merge failed — ${r.error}`);
       } else {
-        toast.ok(`Merged ${absorb.length + 1} blocks on ${group.label}`);
+        toast.undoable(`Merged ${absorb.length + 1} blocks on ${group.label}`, () => undoLastChange(day));
         // After a successful merge the button itself unmounts (the
         // group now has 1 block, so canMergeGroup → false). Park focus
         // back on the group's summary row so keyboard users don't fall
