@@ -1,9 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { Loader2, Settings, X } from "lucide-react";
-import { SettingsIcon } from "./icons";
+import { useCallback, useEffect, useState } from "react";
+import { Loader2 } from "lucide-react";
 import type { SettingsView } from "@/lib/types";
 import { fetchSettings, saveSettings } from "@/app/actions";
 import { toast } from "@/lib/toast";
@@ -12,40 +10,22 @@ import {
   formStateFromView,
   type SettingsFormState,
 } from "@/lib/settingsForm";
-import { SettingsBody } from "./SettingsFormSections";
-import { VerdictControl } from "./VerdictControl";
+import { SettingsBody, SettingsIndex } from "./SettingsFormSections";
 
 interface Props {
-  /** The day page the panel was opened from — saving revalidates it so a
+  /** The day the user came from — saving revalidates it so a
    * classification change is reflected without a manual reload. */
   day: string;
-  /** "menu" renders the trigger as a labelled rail item. */
-  variant?: "icon" | "menu";
 }
 
-const EMPTY_FORM: SettingsFormState = {
-  work: "",
-  personal: "",
-  tz: "",
-  pruneEnabled: true,
-  cycleStartDay: "",
-  closeDay: "",
-  workHours: "",
-  abstainMargin: "",
-  runnerUpRatio: "",
-  autoSend: false,
-  secretInputs: {},
-};
-
-export function SettingsPanel({ day, variant = "icon" }: Props) {
-  const [open, setOpen] = useState(false);
+/** The /settings page body: loads once, edits in place, and saves every
+ * changed field together from the sticky bar. Verdict on/off is the one
+ * control that applies at once (it starts a process). */
+export function SettingsPanel({ day }: Props) {
   const [view, setView] = useState<SettingsView | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState<SettingsFormState>(EMPTY_FORM);
-
-  const titleId = useId();
-  const dialogRef = useRef<HTMLDivElement>(null);
+  const [form, setForm] = useState<SettingsFormState | null>(null);
 
   const hydrate = useCallback((v: SettingsView) => {
     setView(v);
@@ -53,156 +33,105 @@ export function SettingsPanel({ day, variant = "icon" }: Props) {
   }, []);
 
   const load = useCallback(async () => {
-    setLoading(true);
+    setError(null);
     const r = await fetchSettings();
-    setLoading(false);
-    if (!r.ok) {
-      toast.error(`Couldn't load settings — ${r.error}`);
-      setOpen(false);
-      return;
-    }
-    hydrate(r.data);
+    if (r.ok) hydrate(r.data);
+    else setError(r.error);
   }, [hydrate]);
 
-  // Load fresh settings each time the panel opens — cheap, and avoids
-  // showing stale credential-present state after an external change.
   useEffect(() => {
-    if (open) load();
-  }, [open, load]);
+    void load();
+  }, [load]);
 
-  // Escape closes. Bound only while open.
+  const update = view && form ? buildSettingsUpdate(view, form) : null;
+  const dirty = update !== null;
+
+  // Leaving with unsaved edits asks first.
   useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !saving) setOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, saving]);
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
 
   async function onSave() {
-    if (!view) return;
-    const update = buildSettingsUpdate(view, form);
-    if (!update) {
-      toast.ok("No changes to save.");
-      return;
-    }
+    if (!update) return;
     setSaving(true);
     const r = await saveSettings(update, day);
     setSaving(false);
     if (!r.ok) {
-      toast.error(`Save failed — ${r.error}`);
+      toast.error(`Couldn't save — ${r.error}. Your edits are still here; try again.`);
       return;
     }
     const rc = r.data.reclassified;
     if (rc && rc.changed_to_personal + rc.changed_to_work > 0) {
       toast.ok(
-        `Saved. Reclassified ${rc.changed_to_personal} → personal, ` +
-          `${rc.changed_to_work} → work.`,
+        `Saved. Moved ${rc.changed_to_personal} block(s) to personal and ` +
+          `${rc.changed_to_work} to work.`,
       );
     } else {
       toast.ok("Settings saved.");
     }
-    // Re-hydrate from the authoritative response so the next diff is
-    // computed against what's actually stored now.
+    // Re-hydrate from the stored values so the next diff is against them.
     hydrate(r.data);
-    setOpen(false);
+  }
+
+  if (error) {
+    return (
+      <div className="set-state" role="alert">
+        <p>
+          <strong>Couldn&rsquo;t load your settings.</strong> worklog said: {error}
+        </p>
+        <p>Check that the worklog daemon is running, then try again.</p>
+        <button type="button" className="action-btn" onClick={() => void load()}>
+          Try again
+        </button>
+      </div>
+    );
+  }
+
+  if (!view || !form) {
+    return (
+      <div className="set-state" role="status">
+        <Loader2 className="spin" size={18} />
+        <span>Loading your settings…</span>
+      </div>
+    );
   }
 
   return (
-    <>
-      {variant === "menu" ? (
-        <button
-          type="button"
-          className="app-rail-item"
-          aria-haspopup="dialog"
-          onClick={() => setOpen(true)}
-        >
-          <SettingsIcon />
-          <span className="app-rail-label">Settings</span>
-        </button>
-      ) : (
-        <button
-          type="button"
-          className="theme-toggle"
-          onClick={() => setOpen(true)}
-          aria-label="Open settings"
-          data-tip="Settings"
-        >
-          <Settings size={15} strokeWidth={1.75} />
-        </button>
-      )}
-
-      {/* Portalled to <body>: inside the sticky rail its z-index can't beat page content. */}
-      {open && createPortal(
-        <div
-          className="settings-overlay"
-          onMouseDown={(e) => {
-            // Close only when the backdrop itself is clicked, not the panel.
-            if (e.target === e.currentTarget && !saving) setOpen(false);
-          }}
-        >
-          <div
-            ref={dialogRef}
-            className="settings-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby={titleId}
+    <div className="set-layout">
+      <SettingsIndex view={view} />
+      <div className="set-main">
+        <SettingsBody
+          view={view}
+          form={form}
+          setForm={(fn) => setForm((f) => (f ? fn(f) : f))}
+          day={day}
+        />
+        <div className="set-savebar" data-dirty={dirty || undefined}>
+          <span className="set-savebar-note" role="status">
+            {dirty ? "You have unsaved changes." : "All changes saved."}
+          </span>
+          <button
+            type="button"
+            className="action-btn"
+            disabled={!dirty || saving}
+            onClick={() => hydrate(view)}
           >
-            <header className="settings-header">
-              <h2 id={titleId}>Settings</h2>
-              <button
-                type="button"
-                className="icon-btn"
-                aria-label="Close settings"
-                disabled={saving}
-                onClick={() => setOpen(false)}
-              >
-                <X size={16} />
-              </button>
-            </header>
-
-            {loading || !view ? (
-              <div className="settings-loading">
-                <Loader2 className="spin" size={20} />
-                <span>Loading…</span>
-              </div>
-            ) : (
-              <>
-                <div className="settings-body verdict-lead">
-                  <VerdictControl
-                    day={day}
-                    autoSend={form.autoSend}
-                    onAutoSend={(autoSend) => setForm((f) => ({ ...f, autoSend }))}
-                  />
-                </div>
-                <SettingsBody view={view} form={form} setForm={setForm} day={day} />
-              </>
-            )}
-
-            <footer className="settings-footer">
-              <button
-                type="button"
-                className="action-btn"
-                disabled={saving || loading}
-                onClick={() => setOpen(false)}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="action-btn primary"
-                disabled={saving || loading || !view}
-                onClick={onSave}
-              >
-                {saving ? <Loader2 className="spin" size={15} /> : null}
-                {saving ? "Saving…" : "Save changes"}
-              </button>
-            </footer>
-          </div>
-        </div>,
-        document.body,
-      )}
-    </>
+            Discard changes
+          </button>
+          <button
+            type="button"
+            className="action-btn primary"
+            disabled={!dirty || saving}
+            onClick={onSave}
+          >
+            {saving && <Loader2 className="spin" size={15} />}
+            {saving ? "Saving…" : "Save changes"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

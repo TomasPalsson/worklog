@@ -22,6 +22,10 @@ const GROUPS: { title: string; keys: string[] }[] = [
       "tempo_api_token",
     ],
   },
+  {
+    title: "Mirres",
+    keys: ["mirres_gateway_url", "mirres_token_url", "mirres_client_id", "mirres_client_secret"],
+  },
   { title: "GitHub", keys: ["github_user", "github_token"] },
   { title: "Slack", keys: ["slack_user_token"] },
   {
@@ -29,7 +33,7 @@ const GROUPS: { title: string; keys: string[] }[] = [
     keys: ["google_client_id", "google_client_secret", "google_refresh_token"],
   },
   {
-    title: "Estimator",
+    title: "AI summaries",
     keys: [
       "worklog_estimator_provider",
       "anthropic_api_key",
@@ -47,6 +51,10 @@ const LABELS: Record<string, string> = {
   jira_account_field_id: "Account field (customfield_…)",
   jira_api_token: "API token",
   tempo_api_token: "Tempo API token",
+  mirres_gateway_url: "Gateway URL",
+  mirres_token_url: "Token URL",
+  mirres_client_id: "Client ID",
+  mirres_client_secret: "Client secret",
   github_user: "Username",
   github_token: "Token",
   slack_user_token: "User token",
@@ -61,6 +69,11 @@ const LABELS: Record<string, string> = {
 };
 
 const PROVIDER_OPTIONS = ["", "claude_subprocess", "litellm"];
+const PROVIDER_LABELS: Record<string, string> = {
+  "": "Default (Claude Code)",
+  claude_subprocess: "Claude Code",
+  litellm: "LiteLLM",
+};
 
 function Field({
   field,
@@ -80,7 +93,7 @@ function Field({
         <select value={value} onChange={(e) => onChange(e.target.value)}>
           {PROVIDER_OPTIONS.map((o) => (
             <option key={o} value={o}>
-              {o === "" ? "default (claude -p)" : o}
+              {PROVIDER_LABELS[o] ?? o}
             </option>
           ))}
         </select>
@@ -105,9 +118,9 @@ function Field({
         autoComplete="off"
         placeholder={
           field.sensitive && field.present
-            ? "•••••••• (leave blank to keep)"
+            ? "Saved — type to replace"
             : field.sensitive
-              ? "not set"
+              ? "Not set"
               : ""
         }
         onChange={(e) => onChange(e.target.value)}
@@ -116,7 +129,60 @@ function Field({
   );
 }
 
-/** Every known secret key, grouped by provider, plus an "Other" catch-all
+/** Groups that count toward "connected" — the estimator's keys are
+ * alternatives (one provider or another), so it has no all-set state. */
+const STATUS_GROUPS = GROUPS.filter((g) => g.title !== "AI summaries");
+const STATUS_COPY = { on: "Connected", part: "Partly set up", off: "Not set up" };
+
+function groupFields(secrets: SettingField[], keys: string[]): SettingField[] {
+  return keys
+    .map((k) => secrets.find((f) => f.key === k))
+    .filter((f): f is SettingField => !!f);
+}
+
+function statusOf(fields: SettingField[]): keyof typeof STATUS_COPY {
+  const set = fields.filter((f) => f.present).length;
+  return set === 0 ? "off" : set === fields.length ? "on" : "part";
+}
+
+/** How many services have every key stored, for the section index. */
+export function connectedCount(secrets: SettingField[]): { done: number; total: number } {
+  const groups = STATUS_GROUPS.map((g) => groupFields(secrets, g.keys)).filter((f) => f.length);
+  return { done: groups.filter((f) => statusOf(f) === "on").length, total: groups.length };
+}
+
+function Group({
+  title,
+  fields,
+  values,
+  onChange,
+}: {
+  title: string;
+  fields: SettingField[];
+  values: Record<string, string>;
+  onChange: (key: string, value: string) => void;
+}) {
+  const status = STATUS_GROUPS.some((g) => g.title === title) ? statusOf(fields) : null;
+  return (
+    <fieldset className="set-service">
+      <legend>
+        {title}
+        {status && (
+          <span className="set-pill" data-status={status}>
+            {STATUS_COPY[status]}
+          </span>
+        )}
+      </legend>
+      <div className="settings-grid-2">
+        {fields.map((f) => (
+          <Field key={f.key} field={f} value={values[f.key] ?? ""} onChange={(v) => onChange(f.key, v)} />
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
+/** Every known secret key, grouped by service, plus an "Other" catch-all
  * for daemon keys our static GROUPS don't mention yet — nothing is ever
  * silently hidden. */
 export function CredentialGroups({
@@ -132,44 +198,20 @@ export function CredentialGroups({
   const otherKeys = secrets.filter((f) => !knownInGroups.has(f.key));
 
   return (
-    <>
+    <section id="connections" className="set-card" aria-labelledby="connections-title">
+      <h2 id="connections-title">Connections</h2>
+      <p className="settings-hint">
+        The keys worklog uses to read Jira, Tempo, GitHub, Slack and your calendar. A saved
+        key is never shown again; leave its field empty to keep it.
+      </p>
       {GROUPS.map((g) => {
-        const fields = g.keys
-          .map((k) => secrets.find((f) => f.key === k))
-          .filter((f): f is SettingField => !!f);
+        const fields = groupFields(secrets, g.keys);
         if (fields.length === 0) return null;
-        return (
-          <section key={g.title} className="settings-section">
-            <h3>{g.title}</h3>
-            <div className="settings-grid-2">
-              {fields.map((f) => (
-                <Field
-                  key={f.key}
-                  field={f}
-                  value={values[f.key] ?? ""}
-                  onChange={(v) => onChange(f.key, v)}
-                />
-              ))}
-            </div>
-          </section>
-        );
+        return <Group key={g.title} title={g.title} fields={fields} values={values} onChange={onChange} />;
       })}
-
       {otherKeys.length > 0 && (
-        <section className="settings-section">
-          <h3>Other</h3>
-          <div className="settings-grid-2">
-            {otherKeys.map((f) => (
-              <Field
-                key={f.key}
-                field={f}
-                value={values[f.key] ?? ""}
-                onChange={(v) => onChange(f.key, v)}
-              />
-            ))}
-          </div>
-        </section>
+        <Group title="Other" fields={otherKeys} values={values} onChange={onChange} />
       )}
-    </>
+    </section>
   );
 }

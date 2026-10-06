@@ -15,10 +15,11 @@ describe("AppNav", () => {
     expect(items).toEqual(["Day", "Week", "Tasks", "Logged", "Billing", "Settings", "System"]);
   });
 
-  it("links Billing to /billing and Settings is a button", () => {
+  it("links Billing to /billing and Settings to /settings with the day it came from", () => {
+    path = "/2026-10-01";
     render(<AppNav />);
     expect(screen.getByRole("link", { name: "Billing" }).getAttribute("href")).toBe("/billing");
-    expect(screen.getByRole("button", { name: "Settings" }).getAttribute("aria-haspopup")).toBe("dialog");
+    expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe("/settings?from=2026-10-01");
   });
 
   const cases: [string, string][] = [
@@ -28,6 +29,7 @@ describe("AppNav", () => {
     ["/tasks", "Tasks"],
     ["/logged/month/2026-10", "Logged"],
     ["/billing", "Billing"],
+    ["/settings", "Settings"],
   ];
   for (const [p, label] of cases) {
     it(`marks only ${label} current for ${p}`, () => {
