@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { daySummary, formatFetchedAt, projectsFrom, statusReason, stripCustomer, totals, warningHelp } from "./mirresOverview";
+import { barPercent, keyKinds, customerStatusSplit, ledgerSummary, shortDay, customersFrom, dateRangeLabel, goalGap, hrs, sharedHelp, daySummary, ledgerOrder, ledgerSegments, formatFetchedAt, projectsFrom, statusReason, stripCustomer, totals, warningHelp } from "./mirresOverview";
 import type { BillingClass, MirresDay, TempoLine } from "./tempo_line_contract";
 
 function line(
@@ -78,11 +78,11 @@ describe("daySummary / totals", () => {
   });
 
   it("totals over all lines", () => {
-    expect(totals(days)).toEqual({ projects: 1, tickets: 1, days: 1, attention: 0, seconds: 7200, billablePercent: 50 });
+    expect(totals(days)).toEqual({ projects: 1, tickets: 1, days: 1, attention: 0, seconds: 7200, billablePercent: 50, billedSeconds: 3600 });
   });
 
   it("handles empty input", () => {
-    expect(totals([])).toEqual({ projects: 0, tickets: 0, days: 0, attention: 0, seconds: 0, billablePercent: null });
+    expect(totals([])).toEqual({ projects: 0, tickets: 0, days: 0, attention: 0, seconds: 0, billablePercent: null, billedSeconds: 0 });
   });
 });
 
@@ -132,8 +132,100 @@ describe("warningHelp", () => {
 });
 
 describe("formatFetchedAt", () => {
-  it("is dd.mm.yyyy hh:mm in local time", () => {
-    expect(formatFetchedAt(new Date(2026, 9, 6, 15, 59).toISOString())).toBe("06.10.2026 15:59");
-    expect(formatFetchedAt(new Date(2026, 0, 2, 3, 4).toISOString())).toBe("02.01.2026 03:04");
+  it("says fetched hh:mm today, with the day otherwise", () => {
+    const now = new Date(2026, 9, 6, 20, 0);
+    expect(formatFetchedAt(new Date(2026, 9, 6, 15, 59).toISOString(), now)).toBe("fetched 15:59");
+    expect(formatFetchedAt(new Date(2026, 9, 5, 17, 13).toISOString(), now)).toBe("fetched 5 Oct 17:13");
+  });
+});
+
+describe("customersFrom / ledgerOrder", () => {
+  const withCustomer = (key: string, customer: string | null, seconds: number, cls: BillingClass = "billable") => {
+    const l = line("2026-10-06", `${key}-1`, seconds, { key, cls });
+    l.billing!.customer = customer;
+    return l;
+  };
+  const days = [
+    d("2026-10-06", [
+      withCustomer("A", null, 9000),
+      withCustomer("B", "Beta", 3600, "not_billable"),
+      withCustomer("C", "Beta", 1800),
+      withCustomer("D", "Delta", 1800, "included"),
+      withCustomer("E", "Echo", 7200),
+    ]),
+  ];
+
+  it("groups by customer, hours desc, unknown last", () => {
+    const c = customersFrom(days);
+    expect(c.map((g) => g.name)).toEqual(["Echo", "Beta", "Delta", "Unknown customer"]);
+    const beta = c.find((g) => g.name === "Beta")!;
+    expect(beta.projects.map((p) => p.account_key)).toEqual(["B", "C"]);
+    expect(beta.seconds).toBe(5400);
+    expect(beta.kind).toBe("not_billable"); // dominant project B
+  });
+
+  it("orders the bar billable, included, rest, and drops zero hours", () => {
+    const order = ledgerOrder(customersFrom(days)).map((g) => g.name);
+    expect(order).toEqual(["Unknown customer", "Echo", "Delta", "Beta"]);
+    expect(ledgerOrder(customersFrom([d("2026-10-06", [withCustomer("Z", "Zed", 0)])]))).toEqual([]);
+  });
+
+  it("splits a mixed customer into one bar segment per status", () => {
+    const segs = ledgerSegments(customersFrom(days)).map((s) => `${s.customer}:${s.kind}:${s.seconds}`);
+    // Beta's billable half sits with the billable group, its rest after.
+    expect(segs).toEqual([
+      "Unknown customer:billable:9000",
+      "Echo:billable:7200",
+      "Beta:billable:1800",
+      "Delta:included:1800",
+      "Beta:not_billable:3600",
+    ]);
+  });
+});
+
+describe("hrs / dateRangeLabel / goalGap / sharedHelp", () => {
+  it("formats compact hours", () => expect(hrs(12600)).toBe("3.5h"));
+  it("formats ranges", () => {
+    expect(dateRangeLabel(["2026-10-06"])).toBe("Tue 6 Oct");
+    expect(dateRangeLabel(["2026-10-06", "2026-10-05"])).toBe("5–6 Oct");
+    expect(dateRangeLabel(["2026-10-02", "2026-09-30"])).toBe("30 Sep – 2 Oct");
+    expect(shortDay("2026-10-06")).toBe("Tue 6 Oct");
+    expect(dateRangeLabel([])).toBe("");
+  });
+  it("computes the gap to goal", () => {
+    expect(goalGap(0, 36000, 70)).toBe(25200);
+    expect(goalGap(30000, 36000, 70)).toBe(0);
+  });
+  it("shares help only for identical warnings", () => {
+    const w = "Samning vantar í Mirres";
+    expect(sharedHelp([w, w], 2)).toContain("These 2 projects have no contract");
+    expect(sharedHelp([w, "x"], 2)).toBeNull();
+  });
+});
+
+describe("customerStatusSplit / ledgerSummary", () => {
+  const l = (k: string, cls: BillingClass, w?: string) => line("2026-10-06", `${k}-1`, 3600, { key: k, cls, warning: w });
+  const days = [d("2026-10-06", [l("A", "billable"), l("B", "not_billable"), l("C", "billable", "Samning vantar í Mirres")])];
+  it("splits a customer's hours by status, billable first", () => {
+    const c = customersFrom(days)[0];
+    expect(customerStatusSplit(c).map((s) => s.kind)).toEqual(["billable", "not_billable", "missing"]);
+    expect(customerStatusSplit(c).every((s) => s.seconds === 3600)).toBe(true);
+  });
+  it("summarises the bar", () => {
+    const segs = ledgerSegments(customersFrom(days));
+    expect(ledgerSummary(33, 10800, segs, 70)).toBe("33% billable of 3.0h: 1.0h billable, 1.0h other, 1.0h contract missing; goal 70%");
+  });
+});
+
+describe("barPercent / keyKinds", () => {
+  it("scales to the largest customer and guards zero", () => {
+    expect(barPercent(1800, 3600)).toBe(50);
+    expect(barPercent(3600, 3600)).toBe(100);
+    expect(barPercent(10, 0)).toBe(0);
+  });
+  it("lists only present key kinds, merging the rest into other", () => {
+    const seg = (kind: "billable" | "fixed" | "internal" | "missing") => ({ customer: "A", kind, seconds: 1 });
+    expect(keyKinds([seg("missing"), seg("fixed"), seg("internal")])).toEqual(["other", "missing"]);
+    expect(keyKinds([seg("billable")])).toEqual(["billable"]);
   });
 });

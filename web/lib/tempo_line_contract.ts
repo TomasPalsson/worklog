@@ -74,18 +74,6 @@ export interface MirresDay {
   lines: TempoLine[];
 }
 
-export const BILLING_LABEL: Record<BillingClass, string> = {
-  billable: "billable",
-  included: "included",
-  not_billable: "not billable",
-};
-
-export const BILLING_HINT: Record<BillingClass, string> = {
-  billable: "Mirres: billed to the customer",
-  included: "Mirres: covered by the contract's included hours — counts toward the 70% goal",
-  not_billable: "Mirres: not billed (internal, or contract missing / used up)",
-};
-
 /**
  * Share of the day's line hours that count as billed (billable or included),
  * 0-100. `null` when no line has Mirres data or there are no hours.

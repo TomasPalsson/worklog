@@ -1,7 +1,7 @@
 "use client";
 
 import { ReactNode, useEffect, useId, useRef, useState, useTransition } from "react";
-import { Check, Eye, GitMerge, Pencil, RefreshCw, Sparkles, TriangleAlert } from "lucide-react";
+import { Check, Eye, GitMerge, Pencil, RefreshCw, Sparkles } from "lucide-react";
 import type { BlockGroup } from "@/app/[day]/page";
 import { formatTotalHours } from "@/lib/format";
 import { canMergeGroup } from "@/lib/group-actions";
@@ -11,44 +11,12 @@ import {
   saveTempoLineHours,
   saveTempoLineText,
 } from "@/app/actions-tempo-lines";
-import { BILLING_HINT, BILLING_LABEL } from "@/lib/tempo_line_contract";
-import type { LineBilling, TempoLine } from "@/lib/tempo_line_contract";
+import type { TempoLine } from "@/lib/tempo_line_contract";
 import { toast } from "@/lib/toast";
 import type { LineCheck } from "@/lib/verdict_contract";
 import { OriginIcon, originLabel } from "./BillingGroup";
 import { LineHours } from "./LineHours";
-import { BillingDetails } from "./BillingDetails";
-import { stripCustomer, warningHelp } from "@/lib/mirresOverview";
-
-function BillingPill({ billing }: { billing: LineBilling }) {
-  const project = [stripCustomer(billing.project, billing.customer), billing.project_type].filter(
-    (p): p is string => Boolean(p),
-  );
-  const help = warningHelp(billing.warning);
-  return (
-    <span className="billing-pill">
-      {billing.customer && <span className="billing-customer">{billing.customer}</span>}
-      <span className={`billing-pill-tag ${billing.class}`} title={BILLING_HINT[billing.class]}>
-        {BILLING_LABEL[billing.class]}
-      </span>
-      {project.length > 0 && (
-        <span className="billing-pill-project">
-          {project.map((p, i) => (
-            <span key={i}>{i > 0 && " · "}{p}</span>
-          ))}
-        </span>
-      )}
-      {billing.warning && (
-        <span className="billing-pill-warning">
-          <TriangleAlert size={12} aria-hidden="true" />
-          {billing.warning}
-        </span>
-      )}
-      {help && <span className="billing-details">{help}</span>}
-      <BillingDetails details={billing.details} />
-    </span>
-  );
-}
+import { MirresLine } from "./MirresLine";
 
 interface Props {
   group: BlockGroup;
@@ -243,7 +211,7 @@ export function TicketGroup({
                 <SyncChip state={group.syncState} />
                 {mergeButton}
               </span>
-              {line.billing && <BillingPill billing={line.billing} />}
+              {line.billing && <MirresLine billing={line.billing} issue={line.jira_issue} />}
               {/* Clicks here must not toggle the <details>. */}
               <span className="billing-text-wrap ticket-line-text" onClick={(e) => e.stopPropagation()}>
                 {editing ? (
