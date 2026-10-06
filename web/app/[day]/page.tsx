@@ -12,7 +12,7 @@ import {
 } from "@/lib/daemon";
 import { elsewhereForDay, type ElsewhereItem } from "@/lib/daemonElsewhere";
 import { tempoLines } from "@/lib/daemonTempoLines";
-import type { TempoLine } from "@/lib/tempo_line_contract";
+import { billablePercent, type TempoLine } from "@/lib/tempo_line_contract";
 import { formatDayHeading, formatTotalHours, todayISO } from "@/lib/format";
 import { DayHeader } from "@/components/DayHeader";
 import { ActionBar } from "@/components/ActionBar";
@@ -169,6 +169,7 @@ export default async function DayPage({
         personalSummary={personalSummary}
         billedSeconds={billedSeconds}
         trackedSeconds={workSeconds}
+        billablePercent={billablePercent(lines)}
       />
       <ActionBar day={day} cacheCount={cache.count} cacheLast={cache.last_fetched} />
       <ReviewSection key={`review-${day}`} lines={reviewLines} />

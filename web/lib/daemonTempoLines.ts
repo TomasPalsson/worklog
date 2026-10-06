@@ -8,6 +8,10 @@ export async function tempoLines(day: string): Promise<TempoLine[]> {
   return call("GET", `/tempo/lines/${encodeURIComponent(day)}`);
 }
 
+export async function refreshMirres(day: string): Promise<TempoLine[]> {
+  return call("POST", `/mirres/refresh/${encodeURIComponent(day)}`);
+}
+
 /** A blank `text` clears the stored text back to generated-or-fallback. */
 export async function setTempoLineText(key: TempoLineKey, text: string): Promise<TempoLine> {
   return call("POST", "/tempo/lines/text", { ...key, text });

@@ -29,6 +29,7 @@ fn line(text: &str, seconds: i64) -> TempoLine {
         hours_override_seconds: None,
         effective_seconds: seconds,
         check_status: None,
+        billing: None,
     }
 }
 

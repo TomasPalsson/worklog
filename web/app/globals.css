@@ -349,7 +349,7 @@ button {
 
 .actions {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
   margin-bottom: 28px;
 }
@@ -6122,6 +6122,28 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
   .standup-actions .task-btn-primary, .standup-actions .task-btn-secondary { min-height: 40px; }
 }
 
+/* Mirres billable share: number + goal, and a slim meter with a goal tick. */
+.day-billable { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; margin-top: 6px; font-family: var(--font-mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+.day-billable-text { display: flex; align-items: baseline; gap: 6px; }
+.day-billable.ok .day-billable-value { color: var(--sage-ink); }
+.day-billable.low .day-billable-value { color: var(--amber-ink); }
+.day-billable-goal { color: var(--fg-muted); }
+.day-billable-meter { position: relative; width: 128px; height: 4px; border-radius: 999px; background: var(--bg-sunk); }
+.day-billable-fill { position: absolute; inset: 0 auto 0 0; border-radius: 999px; }
+.day-billable.ok .day-billable-fill { background: var(--sage-ink); }
+.day-billable.low .day-billable-fill { background: var(--amber-ink); }
+.day-billable-tick { position: absolute; top: -3px; width: 2px; height: 10px; margin-left: -1px; border-radius: 1px; background: var(--fg); }
+/* Outlined, so it never reads as the filled sync chip beside it. */
+/* Always its own row under the ticket head, so every line looks the same. */
+.billing-pill { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; flex-basis: 100%; min-width: 0; font-family: var(--font-mono); font-size: 12px; line-height: 1.4; }
+.billing-pill-tag { padding: 1px 8px; border: 1px solid var(--fg-muted); border-radius: 999px; font-family: var(--font-mono); font-size: 11px; font-weight: 500; letter-spacing: 0.02em; text-transform: lowercase; line-height: 1.4; white-space: nowrap; color: var(--fg-muted); }
+.billing-pill-tag.billable { border-color: var(--sage-ink); color: var(--sage-ink); }
+.billing-pill-tag.included { border-style: dashed; border-color: var(--sage-ink); color: var(--sage-ink); }
+.billing-pill-tag.not_billable { border-color: var(--fg); color: var(--fg); }
+.billing-pill-project { color: var(--fg-muted); }
+.billing-pill-project > span { white-space: nowrap; }
+.billing-pill-warning { display: inline-flex; align-items: center; gap: 6px; flex-basis: 100%; color: var(--amber-ink); }
+.billing-pill-warning svg { flex: none; }
 /* ── verdict: settings control (T010) ── */
 .settings-body.verdict-lead { flex-shrink: 0; overflow: visible; padding-bottom: 0; }
 .verdict-lead .settings-section { border-bottom: 1px solid var(--border); }

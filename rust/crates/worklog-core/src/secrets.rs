@@ -41,6 +41,12 @@ pub const KNOWN_KEYS: &[&str] = &[
     "litellm_model",
     // `claude_subprocess` | `litellm`. Env WORKLOG_ESTIMATOR_PROVIDER wins.
     "worklog_estimator_provider",
+    // Mirres (Apró project system) via the MCP gateway. OAuth client
+    // credentials against a Cognito token endpoint.
+    "mirres_gateway_url",
+    "mirres_token_url",
+    "mirres_client_id",
+    "mirres_client_secret",
 ];
 
 /// Map each known key to the Python-era `.env` variable name so Rust
@@ -65,6 +71,10 @@ fn env_var_for(key: &str) -> Option<&'static str> {
         "litellm_api_key" => "WORKLOG_LITELLM_API_KEY",
         "litellm_model" => "WORKLOG_LITELLM_MODEL",
         "worklog_estimator_provider" => "WORKLOG_ESTIMATOR_PROVIDER",
+        "mirres_gateway_url" => "WORKLOG_MIRRES_GATEWAY_URL",
+        "mirres_token_url" => "WORKLOG_MIRRES_TOKEN_URL",
+        "mirres_client_id" => "WORKLOG_MIRRES_CLIENT_ID",
+        "mirres_client_secret" => "WORKLOG_MIRRES_CLIENT_SECRET",
         _ => return None,
     })
 }

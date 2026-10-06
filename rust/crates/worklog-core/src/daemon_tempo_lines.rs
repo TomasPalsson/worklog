@@ -10,6 +10,7 @@ use rusqlite::OptionalExtension;
 use crate::estimate::{self, ModelInvoker};
 use crate::line_check;
 use crate::line_text;
+use crate::mirres;
 use crate::tempo_line_contract::{SetTempoLineHours, SetTempoLineText, TempoLine, TempoLineKey};
 use crate::tempo_line_writer;
 use crate::tempo_lines;
@@ -22,6 +23,34 @@ pub async fn list_lines(
     AxumPath(day): AxumPath<String>,
 ) -> Result<Json<Vec<TempoLine>>, ApiError> {
     let lines = with_conn(state, move |c| tempo_lines::lines_for_day(c, &day)).await?;
+    Ok(Json(lines))
+}
+
+/// Pulls Mirres facts for the day's tickets (network on a blocking thread,
+/// outside the sqlite lock), stores them, returns the day's lines.
+pub async fn refresh_mirres(
+    State(state): State<Shared>,
+    AxumPath(day): AxumPath<String>,
+) -> Result<Json<Vec<TempoLine>>, ApiError> {
+    let day_for_read = day.clone();
+    let issues = with_conn(state.clone(), move |c| {
+        Ok(tempo_lines::lines_for_day(c, &day_for_read)?
+            .into_iter()
+            .map(|l| l.jira_issue)
+            .collect::<Vec<_>>())
+    })
+    .await?;
+    let day_for_fetch = day.clone();
+    let rows =
+        tokio::task::spawn_blocking(move || mirres::fetch_day_billing(&day_for_fetch, &issues))
+            .await
+            .map_err(|e| ApiError::from(anyhow::Error::from(e)))?
+            .map_err(ApiError::bad_request)?;
+    let lines = with_conn(state, move |c| {
+        mirres::store_day(c, &day, &rows)?;
+        tempo_lines::lines_for_day(c, &day)
+    })
+    .await?;
     Ok(Json(lines))
 }
 

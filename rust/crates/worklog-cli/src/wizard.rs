@@ -760,6 +760,10 @@ fn human_label(key: &str) -> &'static str {
         "litellm_api_key" => "LiteLLM proxy API key (blank OK for local/unauthed)",
         "litellm_model" => "LiteLLM model id (e.g. anthropic/claude-haiku-4-5)",
         "worklog_estimator_provider" => "estimator provider (claude_subprocess | litellm)",
+        "mirres_gateway_url" => "Mirres MCP gateway URL (full endpoint)",
+        "mirres_token_url" => "Mirres Cognito token URL (.../oauth2/token)",
+        "mirres_client_id" => "Mirres OAuth client id",
+        "mirres_client_secret" => "Mirres OAuth client secret",
         _ => "",
     }
 }

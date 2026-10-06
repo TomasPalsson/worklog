@@ -54,6 +54,7 @@ function line(overrides: Partial<TempoLine> = {}): TempoLine {
     union_seconds: 5400,
     hours_override_seconds: null,
     effective_seconds: 5400,
+    billing: null,
     ...overrides,
   };
 }

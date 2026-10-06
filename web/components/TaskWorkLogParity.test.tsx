@@ -8,6 +8,7 @@ const regenerate = mock(async (_k: { day: string; jira_issue: string }) => ({ ok
 const merge = mock(async (_p: number, _a: number[], _d: string) => ({ ok: true as const, data: undefined }));
 const assign = mock(async (_id: number, _key: string | null, _day: string) => ({ ok: true as const, data: undefined }));
 mock.module("@/app/actions-tempo-lines", () => ({
+  refreshMirresAction: mock(async () => ({ ok: true as const, data: [] })),
   regenerateTempoLineText: regenerate,
   saveTempoLineHours: mock(async () => ({ ok: true as const, data: {} })),
   saveTempoLineText: mock(async () => ({ ok: true as const, data: {} })),

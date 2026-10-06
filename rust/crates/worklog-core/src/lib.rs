@@ -59,6 +59,7 @@ mod line_text_jobs;
 pub mod local_clone;
 pub mod logged;
 pub mod logged_contract;
+pub mod mirres;
 pub mod models;
 pub mod nudges;
 pub mod overlap_store;

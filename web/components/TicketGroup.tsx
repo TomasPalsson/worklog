@@ -1,7 +1,7 @@
 "use client";
 
 import { ReactNode, useEffect, useId, useRef, useState, useTransition } from "react";
-import { Check, Eye, GitMerge, Pencil, RefreshCw, Sparkles } from "lucide-react";
+import { Check, Eye, GitMerge, Pencil, RefreshCw, Sparkles, TriangleAlert } from "lucide-react";
 import type { BlockGroup } from "@/app/[day]/page";
 import { formatTotalHours } from "@/lib/format";
 import { canMergeGroup } from "@/lib/group-actions";
@@ -11,11 +11,42 @@ import {
   saveTempoLineHours,
   saveTempoLineText,
 } from "@/app/actions-tempo-lines";
-import type { TempoLine } from "@/lib/tempo_line_contract";
+import type { LineBilling, TempoLine } from "@/lib/tempo_line_contract";
 import { toast } from "@/lib/toast";
 import type { LineCheck } from "@/lib/verdict_contract";
 import { OriginIcon, originLabel } from "./BillingGroup";
 import { LineHours } from "./LineHours";
+
+const BILLING_LABEL = { billable: "billable", included: "included", not_billable: "not billable" };
+const BILLING_HINT = {
+  billable: "Mirres: billed to the customer",
+  included: "Mirres: covered by the contract's included hours — counts toward the 70% goal",
+  not_billable: "Mirres: not billed (internal, or contract missing / used up)",
+};
+
+function BillingPill({ billing }: { billing: LineBilling }) {
+  const project = [billing.project, billing.project_type].filter((p): p is string => Boolean(p));
+  return (
+    <span className="billing-pill">
+      <span className={`billing-pill-tag ${billing.class}`} title={BILLING_HINT[billing.class]}>
+        {BILLING_LABEL[billing.class]}
+      </span>
+      {project.length > 0 && (
+        <span className="billing-pill-project">
+          {project.map((p, i) => (
+            <span key={i}>{i > 0 && " · "}{p}</span>
+          ))}
+        </span>
+      )}
+      {billing.warning && (
+        <span className="billing-pill-warning">
+          <TriangleAlert size={12} aria-hidden="true" />
+          {billing.warning}
+        </span>
+      )}
+    </span>
+  );
+}
 
 interface Props {
   group: BlockGroup;
@@ -210,6 +241,7 @@ export function TicketGroup({
                 <SyncChip state={group.syncState} />
                 {mergeButton}
               </span>
+              {line.billing && <BillingPill billing={line.billing} />}
               {/* Clicks here must not toggle the <details>. */}
               <span className="billing-text-wrap ticket-line-text" onClick={(e) => e.stopPropagation()}>
                 {editing ? (

@@ -75,6 +75,8 @@ pub struct TempoLine {
     pub effective_seconds: i64,
     #[serde(default)]
     pub check_status: Option<LineCheck>,
+    #[serde(default)]
+    pub billing: Option<LineBilling>,
 }
 
 /// Body of `POST /tempo/lines/text`. Empty/blank `text` deletes the
@@ -92,4 +94,29 @@ pub struct SetTempoLineHours {
     pub day: String,
     pub jira_issue: String,
     pub seconds: Option<i64>,
+}
+
+/// How a ticket line counts toward the 70% billable goal (from Mirres).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BillingClass {
+    /// Mirres `billable` = true (Reikningshæft).
+    Billable,
+    /// Not billable, but `included_hours.counts_as_billed` = true.
+    Included,
+    NotBillable,
+}
+
+/// Mirres facts for one ticket line. `None` on `TempoLine` = not fetched,
+/// or the ticket has no Tempo Account.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LineBilling {
+    pub account_key: String,
+    /// "<customer.short_name> · <project_name>", or None if Mirres had no project.
+    pub project: Option<String>,
+    /// Mirres `project_type`, e.g. "Útseld vinna".
+    pub project_type: Option<String>,
+    pub class: BillingClass,
+    /// One short Icelandic warning, or None.
+    pub warning: Option<String>,
 }

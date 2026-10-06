@@ -4,6 +4,7 @@ import { useState } from "react";
 import {
   Braces,
   Check,
+  Receipt,
   ListRestart,
   RefreshCw,
   Send,
@@ -17,6 +18,7 @@ import {
   runSync,
 } from "@/app/actions";
 import type { ActionResult } from "@/app/actions";
+import { refreshMirresAction } from "@/app/actions-tempo-lines";
 import { toast } from "@/lib/toast";
 
 interface Props {
@@ -25,7 +27,7 @@ interface Props {
   cacheLast: string | null;
 }
 
-type ActionId = "infer" | "estimate" | "jira" | "dry-run" | "sync";
+type ActionId = "infer" | "estimate" | "jira" | "mirres" | "dry-run" | "sync";
 
 export function ActionBar({ day, cacheCount, cacheLast }: Props) {
   // Per-button pending set so one slow action doesn't freeze the rest.
@@ -102,6 +104,22 @@ export function ActionBar({ day, cacheCount, cacheLast }: Props) {
             : "Fetch open tickets from Jira"
         }
         onClick={() => run("jira", "Refreshed Jira", () => refreshJira(day))}
+      />
+      <ActionButton
+        pending={isPending("mirres")}
+        icon={<Receipt />}
+        label="Refresh Mirres"
+        pendingLabel="Refreshing…"
+        title="Fetch each line's billable status from Mirres"
+        onClick={() =>
+          run("mirres", "Mirres", async () => {
+            const r = await refreshMirresAction(day);
+            // Nothing matched is a problem to fix, not a success.
+            if (r.ok && r.data.length > 0 && !r.data.some((l) => l.billing))
+              return { ok: false as const, error: "no lines matched. Check that the tickets have an Account in Jira." };
+            return r;
+          })
+        }
       />
       <ActionButton
         pending={isPending("dry-run")}
@@ -204,6 +222,12 @@ function lineTextsSuffix(lineTexts: unknown): string {
 }
 
 export function summarise(r: unknown): string {
+  // Refresh Mirres returns the day's ticket lines.
+  if (Array.isArray(r)) {
+    const missing = r.filter((l) => !l?.billing).map((l) => l?.jira_issue);
+    const found = r.length - missing.length;
+    return `${found} of ${r.length} lines matched` + (missing.length ? ` · no match: ${missing.join(", ")}` : "");
+  }
   if (r && typeof r === "object") {
     const o = r as Record<string, unknown>;
     if ("estimated" in o)
