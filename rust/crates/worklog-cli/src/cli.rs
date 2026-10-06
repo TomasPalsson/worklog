@@ -3792,7 +3792,14 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
             }))
         };
 
-        let unix_res = daemon_mod::serve_at(&path, router).await;
+        // Without this, SIGTERM/SIGINT end the process before the cleanup
+        // below runs and the Verdict child is orphaned.
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        let unix_res = tokio::select! {
+            r = daemon_mod::serve_at(&path, router) => r,
+            _ = term.recv() => Ok(()),
+            _ = tokio::signal::ctrl_c() => Ok(()),
+        };
         if let Some(t) = tcp_task {
             t.abort();
         }
