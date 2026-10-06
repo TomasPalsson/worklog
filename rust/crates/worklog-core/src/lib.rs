@@ -94,6 +94,7 @@ pub mod tz;
 pub mod updater;
 pub mod upgrade_006;
 pub mod verdict;
+pub mod verdict_contract;
 pub mod web;
 pub mod week_closeout;
 
