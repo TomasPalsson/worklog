@@ -6,6 +6,15 @@ use crate::repo;
 use crate::routing::{fetch_event, label_event};
 use crate::routing_contract::{LabelRequest, RuleKind, SOURCE_FIREFOX, SOURCE_SLACK};
 
+/// Day bucketing reads the process-global WORKLOG_TZ, which purge tests set
+/// under `tz::test_env_lock`. Hold that lock with the var unset so a parallel
+/// purge test cannot shift these events onto another day.
+fn utc() -> std::sync::MutexGuard<'static, ()> {
+    let g = crate::tz::test_env_lock();
+    std::env::remove_var("WORKLOG_TZ");
+    g
+}
+
 fn pin(conn: &Connection, folder: &str) {
     upsert_folder(
         conn,
@@ -40,6 +49,7 @@ fn slack(conn: &Connection, id: &str, ts: &str) -> i64 {
 
 #[test]
 fn absorbs_inside_a_work_stretch_with_the_dominant_key() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "sjukra");
     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
@@ -57,6 +67,7 @@ fn absorbs_inside_a_work_stretch_with_the_dominant_key() {
 
 #[test]
 fn edge_activity_on_one_side_only_is_not_absorbed() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "sjukra");
     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
@@ -74,6 +85,7 @@ fn edge_activity_on_one_side_only_is_not_absorbed() {
 
 #[test]
 fn a_tie_between_two_keys_is_noise() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "sjukra");
     pin(&conn, "mms");
@@ -90,6 +102,7 @@ fn a_tie_between_two_keys_is_noise() {
 
 #[test]
 fn firefox_is_absorbed_only_inside_a_stretch() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "sjukra");
     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
@@ -109,6 +122,7 @@ fn firefox_is_absorbed_only_inside_a_stretch() {
 
 #[test]
 fn label_event_relabels_a_noise_event() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "sjukra");
     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
@@ -141,6 +155,7 @@ fn label_event_relabels_a_noise_event() {
 
 #[test]
 fn always_rule_retroactively_relabels_noise() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "sjukra");
     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
