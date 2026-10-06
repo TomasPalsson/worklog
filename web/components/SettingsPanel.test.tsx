@@ -19,6 +19,7 @@ const initialView: SettingsView = {
   work_hours: "Mon-Fri 09:00-17:00",
   abstain_margin: 1.2,
   runner_up_ratio: 1.1,
+  auto_send: false,
 };
 
 const initialRules: Rule[] = [];

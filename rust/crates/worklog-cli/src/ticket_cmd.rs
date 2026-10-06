@@ -43,6 +43,14 @@ pub enum TicketCmd {
         #[arg(long)]
         session: String,
     },
+    /// Let Verdict pick this session's ticket from the request text; records it when sure.
+    Pick {
+        text: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        also: Option<String>,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -134,6 +142,11 @@ pub fn run_ticket<W: Write>(sub: TicketCmd, out: &mut W, json: bool) -> Result<(
             let short: String = session.chars().take(8).collect();
             Ok(writeln!(out, "Session {short} is on {key}")?)
         }
+        TicketCmd::Pick {
+            text,
+            session,
+            also,
+        } => crate::ticket_pick::run(&text, &session, also.as_deref(), out, json),
         TicketCmd::Hints => {
             let h: Vec<StatusHint> = daemon::get("/hints")?;
             if json {

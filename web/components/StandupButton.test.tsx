@@ -136,6 +136,7 @@ const view = (daily_channel: string) =>
     abstain_margin: 1.5,
     runner_up_ratio: 1.5,
     daily_channel,
+    auto_send: false,
   }) as SettingsView;
 
 describe("Settings daily channel", () => {

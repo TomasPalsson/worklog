@@ -108,23 +108,28 @@ impl InferBlock {
     /// Events with `project_path = None` (gcal/github/jira) don't count —
     /// they ride with whichever cwd dominates from Claude hooks.
     pub fn dominant_project_path(&self) -> Option<String> {
-        let mut counts: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
-        for e in &self.events {
-            // A lifecycle rider (R3) never voted on which lane owns a
-            // minute; it must never vote on which project the block IS
-            // either, or a handful of unrelated SessionStart/SessionEnd
-            // pings can outnumber the block's real events.
-            if crate::infer_lanes::is_lifecycle(e) {
-                continue;
+        // A lifecycle rider (R3) never voted on which lane owns a minute;
+        // it must never vote on which project the block IS either, or a
+        // handful of unrelated SessionStart/SessionEnd pings can outnumber
+        // the block's real events. Only when nothing else carries a folder
+        // do the riders decide — otherwise a riders-only block from a
+        // personal repo comes out `None` and `classify(None)` calls it work.
+        let vote = |lifecycle: bool| {
+            let mut counts: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+            for e in &self.events {
+                if crate::infer_lanes::is_lifecycle(e) != lifecycle {
+                    continue;
+                }
+                if let Some(p) = &e.project_path {
+                    *counts.entry(p.as_str()).or_insert(0) += 1;
+                }
             }
-            if let Some(p) = &e.project_path {
-                *counts.entry(p.as_str()).or_insert(0) += 1;
-            }
-        }
-        counts
-            .into_iter()
-            .max_by_key(|(_, n)| *n)
-            .map(|(p, _)| p.to_owned())
+            counts
+                .into_iter()
+                .max_by_key(|(_, n)| *n)
+                .map(|(p, _)| p.to_owned())
+        };
+        vote(false).or_else(|| vote(true))
     }
 }
 
@@ -1258,6 +1263,25 @@ mod tests {
             block.dominant_project_path().as_deref(),
             Some("/Users/dev/Desktop/Work/apro-skills"),
             "lifecycle riders must never outvote the block's real project"
+        );
+    }
+
+    /// 2026-10-06 real data: a 3-minute block made only of `Stop` pings
+    /// from ~/Desktop/Projects/worklog had no voter left, came out `None`,
+    /// and `classify(None)` called it work. With nothing else to vote,
+    /// the riders' own folder must decide.
+    #[test]
+    fn dominant_project_path_falls_back_to_lifecycle_when_nothing_else_votes() {
+        let mut a = ev_project(9, 36, "claude", "/Users/dev/Desktop/Projects/worklog");
+        a.title = Some("Stop".into());
+        let mut block = new_block(&a);
+        let mut b = ev_project(9, 38, "claude", "/Users/dev/Desktop/Projects/worklog");
+        b.title = Some("Stop".into());
+        extend_block(&mut block, &b);
+
+        assert_eq!(
+            block.dominant_project_path().as_deref(),
+            Some("/Users/dev/Desktop/Projects/worklog")
         );
     }
 

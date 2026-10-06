@@ -3,21 +3,21 @@
 
 Binds 127.0.0.1 only. Endpoints:
   GET  /health    -> 200 (liveness probe used by `worklog verdict status`)
-  POST /classify  -> body {"state": <json>, "options": [<folder>, ...]}
-                     response {"choice": <one of options>, "probability": <0..1>,
-                                "runner_up": <0..1>, "abstain": <0..1>}
+  POST /classify  -> body {"state": <json>, "options": [<folder>, ...],
+                           "examples": {<folder>: [<text>, ...]}}  (examples optional)
+                     response {"ranking": [{"id", "probability"}, ...<=3],
+                               "abstain": <0..1>, "agreed": <bool>}
+                     agreed: the reversed-order answer has the same top choice.
                      empty options -> 400
   POST /match     -> body {"query": <text>, "states": [<json>, ...]}
                      response {"matches": [<bool>, ...]} (one per state; used by `worklog eval`)
                      empty query -> 400
+  POST /pick      -> body {"text": <str>, "options": [{"id": <ticket key>, "description": <summary>}, ...]}
+                     response same shape as /classify (choice is an option id)
+                     blank text or fewer than 2 options -> 400
 
-Verdict caps a single Choice query at 24 real options (plus its
-abstention option). `split_groups`/`merge_groups` below split larger
-option lists into groups and merge the per-group results back into one
-winner/runner-up/abstain triple, compared by raw probability across
-groups (no renormalisation). `--self-test` exercises those two pure
-functions on fakes, so it runs with the system python3 — it never
-imports rlcd.
+The callers send at most 6 options, so no grouping is needed. `--self-test`
+runs on fakes with the system python3 — it never imports rlcd.
 """
 import functools
 import json
@@ -27,35 +27,19 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 HOST = "127.0.0.1"
 PORT = 9324
-MAX_GROUP_SIZE = 24
+RANKING_MAX = 3
+SHORTLIST_MAX = 6
+MODEL_TOKENS = 512
+EXAMPLES_PER_OPTION = 5
+EXAMPLE_CHARS = 60
+EXAMPLE_CHARS_TOTAL = 300
 INSUFFICIENT_EVIDENCE_ID = "__insufficient_evidence__"
 # The wording the 4-right / 0-wrong measurement used; the default ratios are tuned to it.
 QUESTION = "Which project folder does this work activity belong to? Links, repo names and paths are the strongest evidence."
 
+PICK_QUESTION = "Which Jira ticket is this coding session working on? Ticket keys, branch names and the request's own words are the strongest evidence."
+
 ENGINE = None
-
-
-def split_groups(options):
-    groups = [options[i : i + MAX_GROUP_SIZE] for i in range(0, len(options), MAX_GROUP_SIZE)]
-    # A Choice needs at least 2 options: borrow one from the previous full group.
-    if len(groups) > 1 and len(groups[-1]) == 1:
-        groups[-1] = groups[-2][-1:] + groups[-1]
-        groups[-2] = groups[-2][:-1]
-    return groups
-
-
-def merge_groups(group_probabilities):
-    winner_id, winner_prob, runner_up, abstain = None, 0.0, 0.0, 0.0
-    for probabilities in group_probabilities:
-        abstain = max(abstain, probabilities.get(INSUFFICIENT_EVIDENCE_ID, 0.0))
-        for option_id, probability in probabilities.items():
-            if option_id == INSUFFICIENT_EVIDENCE_ID:
-                continue
-            if probability > winner_prob:
-                winner_id, winner_prob, runner_up = option_id, probability, winner_prob
-            elif probability > runner_up:
-                runner_up = probability
-    return winner_id, winner_prob, runner_up, abstain
 
 
 def _load_engine():
@@ -79,30 +63,116 @@ def _load_engine():
     return DecisionEngine(model_name_or_path=model_dir, device="cpu")
 
 
-def classify(state, options):
+def classify(state, options, examples=None):
     if len(options) == 1:
         # Verdict favours a lone named option whatever the text says (measured: a PR link
         # 0.63 vs "pool" 0.56), so one candidate is never guessed — a rule covers it.
-        return options[0], 0.0, 0.0, 1.0
-    return _evaluate(json.dumps(state), tuple(options))
+        return {"ranking": [{"id": options[0], "probability": 0.0}], "abstain": 1.0, "agreed": False}
+    context = json.dumps(state)
+    capped = _cap_examples(options, examples or {})
+    probabilities = _ask(context, options, capped)
+    flipped = _ask(context, options[::-1], capped)
+    ranked = sorted(
+        ((option, probability) for option, probability in probabilities.items() if option != INSUFFICIENT_EVIDENCE_ID),
+        key=lambda pair: -pair[1],
+    )
+    return {
+        "ranking": [{"id": option, "probability": probability} for option, probability in ranked[:RANKING_MAX]],
+        "abstain": probabilities.get(INSUFFICIENT_EVIDENCE_ID, 0.0),
+        "agreed": _top(probabilities) == _top(flipped),
+    }
+
+
+def _top(probabilities):
+    return max((item for item in probabilities.items() if item[0] != INSUFFICIENT_EVIDENCE_ID), key=lambda item: item[1])[0]
+
+
+def _ask(context, options, capped):
+    return _probabilities(context, tuple(options), tuple(capped.get(option, ()) for option in options))
+
+
+def _cap_examples(options, examples):
+    # Capped once on the original order so both passes show the model identical text.
+    capped, total = {}, 0
+    for option in options:
+        kept = []
+        for text in examples.get(option, [])[:EXAMPLES_PER_OPTION]:
+            text = text[:EXAMPLE_CHARS]
+            if total + len(text) > EXAMPLE_CHARS_TOTAL:
+                break
+            kept.append(text)
+            total += len(text)
+        capped[option] = tuple(kept)
+    return capped
+
+
+def _describe(option, texts):
+    description = f"work in the project folder ~/Desktop/Work/{option}"
+    if texts:
+        description += ". Past work here: " + "; ".join(texts)
+    return description
 
 
 # The model is deterministic (same input, same probabilities), and the 15-min tick asks
 # again about every event it left unsorted, so an answer is computed once per server.
 @functools.lru_cache(maxsize=4096)
-def _evaluate(context, options):
+def _probabilities(context, options, examples):
+    from rlcd import Choice, Option
+
+    query = Choice(
+        id="0",
+        question=QUESTION,
+        options=tuple(Option(id=option, description=_describe(option, texts)) for option, texts in zip(options, examples)),
+    )
+    return ENGINE.evaluate(context, [query]).results[0].probabilities
+
+
+# /pick only (session ticket, PR #110): Owner ticket lists can exceed one
+# Choice, so they are split into groups and merged; /classify never splits.
+PICK_GROUP_SIZE = 24
+
+
+def _pick_groups(options):
+    groups = [options[i : i + PICK_GROUP_SIZE] for i in range(0, len(options), PICK_GROUP_SIZE)]
+    # A Choice needs at least 2 options: borrow one from the previous full group.
+    if len(groups) > 1 and len(groups[-1]) == 1:
+        groups[-1] = groups[-2][-1:] + groups[-1]
+        groups[-2] = groups[-2][:-1]
+    return groups
+
+
+def _merge_pick(group_probabilities):
+    winner_id, winner_prob, runner_up, abstain = None, 0.0, 0.0, 0.0
+    for probabilities in group_probabilities:
+        abstain = max(abstain, probabilities.get(INSUFFICIENT_EVIDENCE_ID, 0.0))
+        for option_id, probability in probabilities.items():
+            if option_id == INSUFFICIENT_EVIDENCE_ID:
+                continue
+            if probability > winner_prob:
+                winner_id, winner_prob, runner_up = option_id, probability, winner_prob
+            elif probability > runner_up:
+                runner_up = probability
+    return winner_id, winner_prob, runner_up, abstain
+
+
+def pick(text, options):
+    return _pick(text, tuple((o["id"], o["description"]) for o in options))
+
+
+@functools.lru_cache(maxsize=4096)
+def _pick(text, options):
     from rlcd import Choice, Option
 
     queries = [
         Choice(
             id=str(index),
-            question=QUESTION,
-            options=tuple(Option(id=option, description=f"work in the project folder ~/Desktop/Work/{option}") for option in group),
+            question=PICK_QUESTION,
+            options=tuple(Option(id=key, description=f"{key}: {summary}") for key, summary in group),
         )
-        for index, group in enumerate(split_groups(options))
+        for index, group in enumerate(_pick_groups(options))
     ]
-    batch = ENGINE.evaluate(context, queries)
-    return merge_groups(result.probabilities for result in batch.results)
+    batch = ENGINE.evaluate(text, queries)
+    return _merge_pick(result.probabilities for result in batch.results)
 
 
 def match(query, states):
@@ -136,7 +206,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
-        if self.path not in ("/classify", "/match"):
+        if self.path not in ("/classify", "/match", "/pick"):
             self.send_response(404)
             self.end_headers()
             return
@@ -150,20 +220,22 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send_json({"matches": match(query, body.get("states", []))})
             return
+        if self.path == "/pick":
+            text = str(body.get("text", "")).strip()
+            options = body.get("options", [])
+            if not text or len(options) < 2:
+                self.send_response(400)
+                self.end_headers()
+                return
+            choice, probability, runner_up, abstain = pick(text, options)
+            self._send_json({"choice": choice, "probability": probability, "runner_up": runner_up, "abstain": abstain})
+            return
         options = body.get("options", [])
         if not options:
             self.send_response(400)
             self.end_headers()
             return
-        choice, probability, runner_up, abstain = classify(body.get("state", {}), options)
-        self._send_json(
-            {
-                "choice": choice,
-                "probability": probability,
-                "runner_up": runner_up,
-                "abstain": abstain,
-            }
-        )
+        self._send_json(classify(body.get("state", {}), options, body.get("examples")))
 
     def _send_json(self, body):
         payload = json.dumps(body).encode()
@@ -178,30 +250,130 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def self_test():
-    options = [f"project-{i}" for i in range(44)]
-    groups = split_groups(options)
-    assert [len(group) for group in groups] == [24, 20]
-    assert sorted(option for group in groups for option in group) == sorted(options)
-    assert [len(group) for group in split_groups(options[:25])] == [23, 2]
-    assert [len(group) for group in split_groups(options[:2])] == [2]
-    grouped = split_groups([f"project-{i}" for i in range(49)])
-    assert [len(group) for group in grouped] == [24, 23, 2]
-    assert [option for group in grouped for option in group] == [f"project-{i}" for i in range(49)]
+    assert not hasattr(sys.modules[__name__], "split_groups")
+    assert not hasattr(sys.modules[__name__], "merge_groups")
 
-    winner, probability, runner_up, abstain = merge_groups(
-        [
-            {"project-0": 0.9, "project-1": 0.05, INSUFFICIENT_EVIDENCE_ID: 0.05},
-            {"project-30": 0.6, "project-31": 0.1, INSUFFICIENT_EVIDENCE_ID: 0.3},
-        ]
-    )
-    assert winner == "project-0"
-    assert probability == 0.9
-    assert runner_up == 0.6
-    assert abstain == 0.3
+    calls = []
+    answers = {}
 
-    assert classify({}, ["only-one"]) == ("only-one", 0.0, 0.0, 1.0)
+    def fake(context, options, examples):
+        calls.append((options, examples))
+        return answers[options[0]]
 
+    global _probabilities
+    real, _probabilities = _probabilities, fake
+    try:
+        # Lone option: a rule, no model call; agreed stays false.
+        assert classify({}, ["only-one"]) == {
+            "ranking": [{"id": "only-one", "probability": 0.0}],
+            "abstain": 1.0,
+            "agreed": False,
+        }
+        assert calls == []
+
+        ev = INSUFFICIENT_EVIDENCE_ID
+        original = {"a": 0.1, "b": 0.5, "c": 0.2, "d": 0.15, ev: 0.05}
+        reversed_ = {"a": 0.1, "b": 0.4, "c": 0.2, "d": 0.2, ev: 0.1}
+        answers.update({"a": original, "d": reversed_})
+        out = classify({}, ["a", "b", "c", "d"])
+        # top 3 only, best first (catches no truncation / unsorted)
+        assert [r["id"] for r in out["ranking"]] == ["b", "c", "d"]
+        assert out["ranking"][0]["probability"] == 0.5
+        # abstain comes from the original order (catches reading the reversed answer)
+        assert out["abstain"] == 0.05
+        assert out["agreed"] is True
+        # second pass sees the options reversed (catches asking the same order twice)
+        assert [c[0] for c in calls] == [("a", "b", "c", "d"), ("d", "c", "b", "a")]
+
+        # exactly 3 and 2 options: no padding, no off-by-one on the cut
+        answers["x"] = {"x": 0.6, "y": 0.3, "z": 0.1, ev: 0.0}
+        answers["z"] = answers["x"]
+        assert len(classify({}, ["x", "y", "z"])["ranking"]) == 3
+        answers["q"] = {"p": 0.7, "q": 0.2, ev: 0.1}
+        answers["p"] = answers["q"]
+        assert [r["id"] for r in classify({}, ["p", "q"])["ranking"]] == ["p", "q"]
+
+        # reversed order picks a different top -> not agreed (catches agreed always true)
+        answers["m"] = {"m": 0.6, "n": 0.3, ev: 0.1}
+        answers["n"] = {"m": 0.3, "n": 0.6, ev: 0.1}
+        assert classify({}, ["m", "n"])["agreed"] is False
+
+        # examples: 60-char cut, 5 per option, 300 total, same text both passes
+        calls.clear()
+        answers["o0"] = answers["o10"] = {"o0": 0.5, "o10": 0.4, ev: 0.1}
+        names = [f"o{i}" for i in range(11)]
+        for name in names:
+            answers[name] = answers["o0"]
+        classify({}, names, {"o0": ["e" * 60, "f" * 61, "g", "h", "i", "j"], "o1": ["k" * 60] * 5, "o2": ["l" * 60] * 5, "o3": ["m" * 60] * 5})
+        first = dict(zip(calls[0][0], calls[0][1]))
+        second = dict(zip(calls[1][0], calls[1][1]))
+        assert first == second
+        assert first["o0"] == ("e" * 60, "f" * 60, "g", "h", "i")
+        assert sum(len(t) for texts in first.values() for t in texts) <= EXAMPLE_CHARS_TOTAL
+        assert sum(len(t) for texts in first.values() for t in texts) > EXAMPLE_CHARS_TOTAL - EXAMPLE_CHARS
+
+        # no examples key -> none shown
+        calls.clear()
+        classify({}, ["m", "n"])
+        assert calls[0][1] == ((), ())
+    finally:
+        _probabilities = real
+
+    # option text carries the examples, and still names the folder
+    description = _describe("vitinn", ("deploy notes",))
+    assert "~/Desktop/Work/vitinn" in description and "deploy notes" in description
+    assert _describe("vitinn", ()) == "work in the project folder ~/Desktop/Work/vitinn"
+
+    _event_text_room()
+    _http_round_trip()
     print("verdict_server self-test OK")
+
+
+def _event_text_room():
+    # Worst case: SHORTLIST_MAX options with 32-char folder ids, the question, and the full
+    # example budget as Slack/Jira-shaped titles. rlcd packs all of it plus the event into one
+    # MODEL_TOKENS sequence; the event needs 200. Real tokenizer when available, else 3 chars/token.
+    titles = ["PROJ-1234 Re: prod deploy failing on the staging pipeline"[:EXAMPLE_CHARS].ljust(EXAMPLE_CHARS, ".")] * (EXAMPLE_CHARS_TOTAL // EXAMPLE_CHARS)
+    options = ["customer-portal-frontend-app-0" + str(i) + "x" for i in range(SHORTLIST_MAX)]
+    assert all(len(option) == 32 for option in options)
+    block = QUESTION + "".join(_describe(option, tuple(titles) if i == 0 else ()) for i, option in enumerate(options))
+    tokenizer_file = os.path.join(os.environ.get("WORKLOG_VERDICT_MODEL_DIR") or os.path.expanduser("~/.local/share/worklog/verdict-model"), "tokenizer.json")
+    try:
+        from tokenizers import Tokenizer
+
+        used = len(Tokenizer.from_file(tokenizer_file).encode(block).ids) if os.path.exists(tokenizer_file) else -(-len(block) // 3)
+    except ImportError:
+        used = -(-len(block) // 3)
+    assert MODEL_TOKENS - used >= 200, "option block crowds out the event text"
+
+
+def _http_round_trip():
+    import threading
+    import urllib.error
+    import urllib.request
+
+    global _probabilities
+    real, _probabilities = _probabilities, lambda context, options, examples: {"a": 0.9, "b": 0.05, INSUFFICIENT_EVIDENCE_ID: 0.05}
+    server = HTTPServer((HOST, 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def post(body):
+        request = urllib.request.Request(f"http://{HOST}:{server.server_port}/classify", json.dumps(body).encode())
+        return urllib.request.urlopen(request)
+
+    try:
+        reply = json.load(post({"state": {}, "options": ["a", "b"]}))
+        assert reply["ranking"][0] == {"id": "a", "probability": 0.9}
+        assert reply["abstain"] == 0.05 and reply["agreed"] is True
+        assert set(reply) == {"ranking", "abstain", "agreed"}
+        try:
+            post({"state": {}, "options": []})
+            raise AssertionError("empty options must be rejected")
+        except urllib.error.HTTPError as error:
+            assert error.code == 400
+    finally:
+        server.shutdown()
+        _probabilities = real
 
 
 def main():

@@ -20,6 +20,7 @@ export interface SettingsFormState {
   runnerUpRatio: string;
   /** Optional so SettingsPanel's empty initial state needs no change. */
   dailyChannel?: string;
+  autoSend: boolean;
   secretInputs: Record<string, string>;
 }
 
@@ -52,6 +53,7 @@ export function formStateFromView(v: WithChannel<SettingsView>): SettingsFormSta
     abstainMargin: String(v.abstain_margin),
     runnerUpRatio: String(v.runner_up_ratio),
     dailyChannel: v.daily_channel ?? "",
+    autoSend: v.auto_send ?? false,
     secretInputs,
   };
 }
@@ -105,6 +107,7 @@ export function buildSettingsUpdate(
   if ((form.dailyChannel ?? "").trim() !== (view.daily_channel ?? "").trim()) {
     update.daily_channel = (form.dailyChannel ?? "").trim();
   }
+  if (form.autoSend !== (view.auto_send ?? false)) update.auto_send = form.autoSend;
 
   const secrets: Record<string, string> = {};
   for (const f of view.secrets) {
@@ -124,7 +127,8 @@ export function buildSettingsUpdate(
     update.work_hours === undefined &&
     update.abstain_margin === undefined &&
     update.runner_up_ratio === undefined &&
-    update.daily_channel === undefined;
+    update.daily_channel === undefined &&
+    update.auto_send === undefined;
 
   return nothingChanged ? null : update;
 }

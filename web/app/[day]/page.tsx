@@ -1,24 +1,28 @@
 import { notFound } from "next/navigation";
 import {
   DaemonError,
+  fetchReviewLines,
   listTickets,
   loadBillingRegistry,
   loadDaySummary,
   routedForDay,
+  verdictStatus,
 } from "@/lib/daemon";
 import { elsewhereForDay, type ElsewhereItem } from "@/lib/daemonElsewhere";
 import { tempoLines } from "@/lib/daemonTempoLines";
 import type { TempoLine } from "@/lib/tempo_line_contract";
-import { formatDayHeading, formatTotalHours } from "@/lib/format";
+import { formatDayHeading, formatTotalHours, todayISO } from "@/lib/format";
 import { DayHeader } from "@/components/DayHeader";
 import { ActionBar } from "@/components/ActionBar";
 import { BlockCard } from "@/components/BlockCard";
 import { DayStrip } from "@/components/DayStrip";
+import { ReviewSection } from "@/components/ReviewSection";
 import { ElsewhereList } from "@/components/ElsewhereList";
 import { EmptyState } from "@/components/EmptyState";
 import { TicketGroup } from "@/components/TicketGroup";
 import { IgnoredLine } from "@/components/IgnoredLine";
 import { UnsortedList } from "@/components/UnsortedList";
+import { VerdictBanner } from "@/components/VerdictBanner";
 import type { Block, BillingRegistry, RoutedEvent } from "@/lib/types";
 
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -88,6 +92,9 @@ export default async function DayPage({
     elsewhereItems = [];
     lines = [];
   }
+  const verdict = await verdictStatus(day).catch(() => null);
+  const reviewLines =
+    day === todayISO() ? await fetchReviewLines().catch(() => []) : [];
   const folderOptions = registry
     ? Array.from(
         new Set([
@@ -144,6 +151,7 @@ export default async function DayPage({
         trackedSeconds={workSeconds}
       />
       <ActionBar day={day} cacheCount={cache.count} cacheLast={cache.last_fetched} />
+      <ReviewSection key={`review-${day}`} lines={reviewLines} />
       <DayStrip
         day={day}
         blocks={blocks}
@@ -152,6 +160,7 @@ export default async function DayPage({
         activity={activity}
         allocations={allocations}
       />
+      {verdict && <VerdictBanner key={`verdict-${day}`} status={verdict} />}
       <UnsortedList key={`unsorted-${day}`} day={day} events={routedEvents} folderOptions={folderOptions} />
       <ElsewhereList key={`elsewhere-${day}`} day={day} items={elsewhereItems} blocks={blocks} />
       {blocks.length === 0 ? (

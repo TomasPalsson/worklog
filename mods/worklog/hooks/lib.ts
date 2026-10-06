@@ -50,13 +50,26 @@ export function ticketFromBranch(branch: string | undefined): string | undefined
 export function ticketChoices(
   branchTicket: string | undefined,
   recentTasks: readonly RecentTask[],
+  likely?: string,
 ): string[] {
+  const label = (key: string) => {
+    const task = recentTasks.find((t) => t.key === key)
+    return task ? `${key} ${task.summary}` : key
+  }
+  const lead = [likely, branchTicket !== likely ? branchTicket : undefined].filter(
+    (key): key is string => key !== undefined,
+  )
   const recent = recentTasks
-    .filter((task) => task.assigned && task.key !== branchTicket)
+    .filter((task) => task.assigned && !lead.includes(task.key))
     .sort((a, b) => (b.last_worked_day ?? '').localeCompare(a.last_worked_day ?? ''))
-    .slice(0, branchTicket ? 1 : 2)
+    .slice(0, Math.max(0, 2 - lead.length))
     .map((task) => `${task.key} ${task.summary}`)
-  return [...(branchTicket ? [branchTicket] : []), ...recent, 'Create a new ticket', 'Skip']
+  return [
+    ...lead.map((key) => (key === likely ? label(key) : key)),
+    ...recent,
+    'Create a new ticket',
+    'Skip',
+  ]
 }
 
 export function keyOfChoice(label: string): string | undefined {

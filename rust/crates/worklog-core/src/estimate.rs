@@ -187,11 +187,36 @@ pub fn resolve_provider() -> Result<ProviderChoice> {
 /// Invoke the estimator for every un-estimated block on `day`. Routes
 /// through whichever [`ProviderChoice`] is active.
 pub fn estimate_day(conn: &Connection, day: NaiveDate, model: &str) -> Result<EstimateStats> {
-    match resolve_provider()? {
-        ProviderChoice::ClaudeSubprocess => {
-            estimate_day_with(conn, day, model, &ClaudeSubprocess::default())
+    estimate_day_via(
+        conn,
+        day,
+        model,
+        resolve_provider()?,
+        crate::verdict::VerdictClassifier::new(),
+    )
+}
+
+/// [`estimate_day`] with the provider and Verdict client supplied.
+fn estimate_day_via(
+    conn: &Connection,
+    day: NaiveDate,
+    model: &str,
+    provider: ProviderChoice,
+    classifier: crate::verdict::VerdictClassifier,
+) -> Result<EstimateStats> {
+    let rule = crate::daemon::configured_route_rule();
+    match provider {
+        ProviderChoice::ClaudeSubprocess => estimate_day_with_verdict(
+            conn,
+            day,
+            model,
+            &ClaudeSubprocess::default(),
+            &classifier,
+            rule,
+        ),
+        ProviderChoice::LiteLLM(inv) => {
+            estimate_day_with_verdict(conn, day, model, &inv, &classifier, rule)
         }
-        ProviderChoice::LiteLLM(inv) => estimate_day_with(conn, day, model, &inv),
     }
 }
 
@@ -714,6 +739,25 @@ pub fn estimate_day_with<I: ModelInvoker>(
     Ok(stats)
 }
 
+/// [`estimate_day_with`], then Verdict's clear ticket picks over the day's
+/// automatic tickets; where Verdict is unsure the model's pick stands.
+pub fn estimate_day_with_verdict<I: ModelInvoker>(
+    conn: &Connection,
+    day: NaiveDate,
+    model: &str,
+    invoker: &I,
+    classifier: &dyn crate::routing_contract::Classifier,
+    rule: crate::routing_contract::RouteRule,
+) -> Result<EstimateStats> {
+    let stats = estimate_day_with(conn, day, model, invoker)?;
+    if crate::ticket_verdict::apply(conn, classifier, day, rule)? > 0 {
+        let day_iso = day.to_string();
+        merge_same_ticket_adjacent(conn, &day_iso)?;
+        change_log::refresh_day_logged(conn, &day_iso, ChangeSource::Verdict);
+    }
+    Ok(stats)
+}
+
 /// Result of a single-block estimate run. Carries the exact JSON the
 /// daemon hands back to the web UI on `POST /blocks/:id/estimate`.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1079,8 +1123,8 @@ fn duration_seconds_between(start_iso: &str, end_iso: &str) -> i64 {
 // ───────────────────────── helpers ─────────────────────────
 
 #[derive(Debug, Clone)]
-struct Candidate {
-    key: String,
+pub(crate) struct Candidate {
+    pub(crate) key: String,
     summary: String,
 }
 
@@ -1112,7 +1156,7 @@ struct PendingEstimate {
 }
 
 /// Live tickets only: no dead status (Backlog/Cancel/..) and active within `STALE_DAYS` of `day`.
-fn load_open_tickets(conn: &Connection, day: NaiveDate) -> Result<Vec<Candidate>> {
+pub(crate) fn load_open_tickets(conn: &Connection, day: NaiveDate) -> Result<Vec<Candidate>> {
     // `external = 0` filters out tickets the user picked manually via the
     // in-UI Jira search — those are intentionally hidden from the
     // estimator so Claude only ever auto-assigns from the user's actual
@@ -2426,6 +2470,175 @@ mod tests {
 
     fn pick_ticket_reply(key: Option<&str>) -> FixedInvoker {
         FixedInvoker(json!({"jira_issue": key, "minutes": 30, "description": "Work"}))
+    }
+
+    /// Verdict stand-in that always names `top` over a rival.
+    struct Names(&'static str, f64);
+
+    impl crate::routing_contract::Classifier for Names {
+        fn classify(
+            &self,
+            _s: &Value,
+            _o: &[String],
+            _e: &std::collections::BTreeMap<String, Vec<String>>,
+        ) -> Result<Option<crate::verdict_contract::Ranking>> {
+            use crate::verdict_contract::{RankedOption, Ranking};
+            Ok(Some(Ranking {
+                ranking: vec![
+                    RankedOption {
+                        id: self.0.into(),
+                        probability: self.1,
+                    },
+                    RankedOption {
+                        id: "PROJ-1".into(),
+                        probability: 0.1,
+                    },
+                ],
+                abstain: 0.1,
+                agreed: true,
+            }))
+        }
+    }
+
+    fn verdict_rule() -> crate::routing_contract::RouteRule {
+        crate::routing_contract::RouteRule {
+            abstain_margin: crate::routing_contract::DEFAULT_ABSTAIN_MARGIN,
+            runner_up_ratio: crate::routing_contract::DEFAULT_RUNNER_UP_RATIO,
+        }
+    }
+
+    /// A block whose event text names PROJ-1 and PROJ-2, both open.
+    fn block_naming_both(conn: &Connection, origin: &str) -> i64 {
+        upsert_open_ticket(conn, "PROJ-1");
+        upsert_open_ticket(conn, "PROJ-2");
+        let bid = insert_block_with_origin(conn, None, origin);
+        let eid = repo::upsert_event(
+            conn,
+            &Event::minimal("claude", "e1", "2026-04-18T10:00:00+00:00", "PROJ-1 PROJ-2"),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+            params![bid, eid],
+        )
+        .unwrap();
+        bid
+    }
+
+    #[test]
+    fn verdict_pick_replaces_the_models_auto_pick_and_stays_auto() {
+        let conn = open_memory().unwrap();
+        let bid = block_naming_both(&conn, "auto");
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let reply = pick_ticket_reply(Some("PROJ-1"));
+        estimate_day_with_verdict(
+            &conn,
+            day,
+            "m",
+            &reply,
+            &Names("PROJ-2", 0.6),
+            verdict_rule(),
+        )
+        .unwrap();
+        let block = repo::get_block(&conn, bid).unwrap().unwrap();
+        assert_eq!(block.jira_issue.as_deref(), Some("PROJ-2"));
+        assert_eq!(block.ticket_origin, Some(TicketOrigin::Auto));
+        assert_eq!(block.description.as_deref(), Some("Work"));
+    }
+
+    /// Runs the path `estimate_day` delegates to, with a mocked model that
+    /// picks PROJ-1 and a real `VerdictClassifier` at `verdict_url`.
+    fn via_provider_ticket(verdict_url: String) -> Option<String> {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/chat/completions");
+            then.status(200).json_body(openai_envelope(
+                r#"{"jira_issue":"PROJ-1","minutes":30,"description":"Work"}"#,
+            ));
+        });
+        let provider =
+            ProviderChoice::LiteLLM(LiteLLMInvoker::new(server.base_url(), "", "m").unwrap());
+        let classifier = crate::verdict::VerdictClassifier::with_client(
+            reqwest::blocking::Client::new(),
+            verdict_url,
+        );
+        let conn = open_memory().unwrap();
+        let bid = block_naming_both(&conn, "auto");
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        estimate_day_via(&conn, day, "m", provider, classifier).unwrap();
+        repo::get_block(&conn, bid).unwrap().unwrap().jira_issue
+    }
+
+    #[test]
+    fn estimate_day_via_applies_a_clear_verdict_pick() {
+        use httpmock::prelude::*;
+        let verdict = MockServer::start();
+        verdict.mock(|when, then| {
+            when.method(POST).path("/classify");
+            then.status(200).json_body(json!({
+                "ranking": [
+                    {"id": "PROJ-2", "probability": 0.6},
+                    {"id": "PROJ-1", "probability": 0.1}
+                ],
+                "abstain": 0.1,
+                "agreed": true
+            }));
+        });
+        let ticket = via_provider_ticket(verdict.base_url());
+        assert_eq!(ticket.as_deref(), Some("PROJ-2")); // catches a path that skips Verdict or a no-op classifier
+    }
+
+    #[test]
+    fn estimate_day_via_keeps_the_model_pick_when_verdict_is_unreachable() {
+        let ticket = via_provider_ticket("http://127.0.0.1:1".into());
+        assert_eq!(ticket.as_deref(), Some("PROJ-1")); // catches an unreachable Verdict failing estimation
+    }
+
+    #[test]
+    fn verdict_pick_never_replaces_an_owner_ticket() {
+        let conn = open_memory().unwrap();
+        let bid = block_naming_both(&conn, "manual");
+        conn.execute(
+            "UPDATE blocks SET jira_issue = 'PROJ-1' WHERE id = ?1",
+            [bid],
+        )
+        .unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let reply = pick_ticket_reply(Some("PROJ-1"));
+        estimate_day_with_verdict(
+            &conn,
+            day,
+            "m",
+            &reply,
+            &Names("PROJ-2", 0.6),
+            verdict_rule(),
+        )
+        .unwrap();
+        let block = repo::get_block(&conn, bid).unwrap().unwrap();
+        assert_eq!(block.jira_issue.as_deref(), Some("PROJ-1"));
+        assert_eq!(block.ticket_origin, Some(TicketOrigin::Manual));
+    }
+
+    #[test]
+    fn unsure_verdict_leaves_the_ticket_exactly_as_before() {
+        let conn = open_memory().unwrap();
+        let bid = block_naming_both(&conn, "auto");
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let reply = pick_ticket_reply(Some("PROJ-1"));
+        // 0.11 vs runner-up 0.1: below the runner-up ratio
+        estimate_day_with_verdict(
+            &conn,
+            day,
+            "m",
+            &reply,
+            &Names("PROJ-2", 0.11),
+            verdict_rule(),
+        )
+        .unwrap();
+        let block = repo::get_block(&conn, bid).unwrap().unwrap();
+        assert_eq!(block.jira_issue.as_deref(), Some("PROJ-1"));
+        assert_eq!(block.ticket_origin, Some(TicketOrigin::Auto));
     }
 
     #[test]
