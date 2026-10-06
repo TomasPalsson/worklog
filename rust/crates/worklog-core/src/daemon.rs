@@ -548,6 +548,36 @@ pub fn spawn_scorecard_loop(state: Shared) -> tokio::task::JoinHandle<()> {
     })
 }
 
+const ASK_FILL_PAUSE: std::time::Duration = std::time::Duration::from_millis(200);
+const ASK_FILL_RECHECK: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Fills the ask index one batch at a time so a request never waits on it:
+/// the conn lock is held per batch only, then re-checked every 10 minutes.
+pub fn spawn_ask_fill_loop(state: Shared) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let st = state.clone();
+            let left = tokio::task::spawn_blocking(move || {
+                let conn = st.conn.blocking_lock();
+                crate::ask::sync_batch(&conn, crate::daemon_ask::ASK_SYNC_BATCH)
+            })
+            .await;
+            match left {
+                Ok(Ok(0)) => tokio::time::sleep(ASK_FILL_RECHECK).await,
+                Ok(Ok(_)) => tokio::time::sleep(ASK_FILL_PAUSE).await,
+                Ok(Err(e)) => {
+                    warn!("ask index fill failed: {e:#}");
+                    tokio::time::sleep(ASK_FILL_RECHECK).await;
+                }
+                Err(e) => {
+                    warn!("ask index fill task panicked: {e}");
+                    tokio::time::sleep(ASK_FILL_RECHECK).await;
+                }
+            }
+        }
+    })
+}
+
 /// One tick of [`spawn_scorecard_loop`]; a failure is logged, never raised.
 pub async fn scorecard_due_once(
     state: &Shared,

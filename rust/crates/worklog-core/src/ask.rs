@@ -83,22 +83,44 @@ pub fn refresh(conn: &Connection, ids: &[i64]) {
     }
 }
 
-/// Indexes blocks that have no row yet and drops rows of blocks that are gone.
-pub fn sync(conn: &Connection) -> Result<()> {
+const MISSING: &str = "FROM blocks WHERE id NOT IN (SELECT block_id FROM ask_index)";
+
+fn drop_orphans(conn: &Connection) -> Result<()> {
     conn.execute(
         "DELETE FROM ask_index WHERE block_id NOT IN (SELECT id FROM blocks)",
         [],
     )?;
+    Ok(())
+}
+
+/// Indexes blocks that have no row yet and drops rows of blocks that are gone.
+pub fn sync(conn: &Connection) -> Result<()> {
+    drop_orphans(conn)?;
     let missing: Vec<i64> = conn
-        .prepare(
-            "SELECT id FROM blocks WHERE id NOT IN (SELECT block_id FROM ask_index) ORDER BY id",
-        )?
+        .prepare(&format!("SELECT id {MISSING} ORDER BY id"))?
         .query_map([], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     for id in missing {
         index_block(conn, id)?;
     }
     Ok(())
+}
+
+/// [`sync`] for at most `limit` blocks, newest first; returns how many are
+/// still unindexed.
+pub fn sync_batch(conn: &Connection, limit: usize) -> Result<usize> {
+    drop_orphans(conn)?;
+    let batch: Vec<i64> = conn
+        .prepare(&format!(
+            "SELECT id {MISSING} ORDER BY started_at DESC, id DESC LIMIT ?1"
+        ))?
+        .query_map([limit as i64], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for id in batch {
+        index_block(conn, id)?;
+    }
+    let left: i64 = conn.query_row(&format!("SELECT COUNT(*) {MISSING}"), [], |r| r.get(0))?;
+    Ok(left as usize)
 }
 
 /// Each word becomes a quoted FTS5 string, so quotes and operators are text.

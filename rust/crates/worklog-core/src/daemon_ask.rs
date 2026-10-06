@@ -9,6 +9,9 @@ use serde::Deserialize;
 use crate::ask::{self, Hit, Stopped};
 use crate::daemon::{ApiError, Shared};
 
+/// Blocks one request may index; the background fill does the rest.
+pub const ASK_SYNC_BATCH: usize = 20;
+
 #[derive(Deserialize)]
 pub struct AskQuery {
     pub q: String,
@@ -25,7 +28,7 @@ pub async fn get_ask(
 ) -> Result<Json<Vec<Hit>>, ApiError> {
     let hits = tokio::task::spawn_blocking(move || {
         let conn = state.conn.blocking_lock();
-        ask::sync(&conn)?;
+        ask::sync_batch(&conn, ASK_SYNC_BATCH)?;
         ask::search(&conn, &q.q)
     })
     .await
@@ -124,5 +127,21 @@ mod tests {
         // catches: unknown repo mapped to an error
         let Json(out) = get_stopped(State(state), q).await.ok().unwrap();
         assert_eq!(out, Stopped::default());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_ask_indexes_at_most_one_batch() {
+        let conn = open_memory().unwrap();
+        for i in 0..(ASK_SYNC_BATCH + 5) {
+            block(&conn, &format!("2026-04-18T09:{i:02}:00+00:00"), "kafka");
+        }
+        let state = state_from_conn(conn);
+        ask_for(&state, "kafka").await;
+        let conn = state.conn.try_lock().unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM ask_index", [], |r| r.get(0))
+            .unwrap();
+        // catches: a handler that still runs a full sync (25 rows)
+        assert_eq!(rows, ASK_SYNC_BATCH as i64);
     }
 }

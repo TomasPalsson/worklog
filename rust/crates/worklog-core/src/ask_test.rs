@@ -254,3 +254,51 @@ fn where_stopped_unknown_repo_is_empty() {
     let s = where_stopped(&conn, "nope").unwrap();
     assert!(s.prompts.is_empty() && s.files.is_empty());
 }
+
+fn indexed_ids(conn: &Connection) -> Vec<i64> {
+    conn.prepare("SELECT block_id FROM ask_index ORDER BY block_id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+#[test]
+fn sync_batch_caps_at_limit_newest_first_and_reports_remaining() {
+    let conn = open_memory().unwrap();
+    let oldest = block(&conn, "2026-04-01", 9, None, "a");
+    let mid = block(&conn, "2026-04-02", 9, None, "b");
+    let newest = block(&conn, "2026-04-03", 9, None, "c");
+    // catches: ORDER BY id ASC (oldest indexed first) and an ignored limit (all 3 indexed)
+    assert_eq!(sync_batch(&conn, 2).unwrap(), 1);
+    assert_eq!(indexed_ids(&conn), vec![mid, newest]);
+    // catches: remaining reported as the limit or left stale
+    assert_eq!(sync_batch(&conn, 2).unwrap(), 0);
+    assert_eq!(indexed_ids(&conn), vec![oldest, mid, newest]);
+    // catches: an exactly-at-limit batch miscounting remaining
+    assert_eq!(sync_batch(&conn, 3).unwrap(), 0);
+}
+
+#[test]
+fn sync_batch_orders_by_start_not_id() {
+    let conn = open_memory().unwrap();
+    let newest = block(&conn, "2026-04-09", 9, None, "a");
+    block(&conn, "2026-04-01", 9, None, "b");
+    // catches: ordering by id DESC instead of started_at DESC
+    assert_eq!(sync_batch(&conn, 1).unwrap(), 1);
+    assert_eq!(indexed_ids(&conn), vec![newest]);
+}
+
+#[test]
+fn sync_batch_drops_rows_of_deleted_blocks() {
+    let conn = open_memory().unwrap();
+    let gone = block(&conn, "2026-04-01", 9, None, "a");
+    block(&conn, "2026-04-02", 9, None, "b");
+    sync_batch(&conn, 10).unwrap();
+    conn.execute("DELETE FROM blocks WHERE id = ?1", [gone])
+        .unwrap();
+    sync_batch(&conn, 10).unwrap();
+    // catches: orphan rows kept when only a batch runs
+    assert!(!indexed_ids(&conn).contains(&gone));
+}

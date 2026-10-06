@@ -39,6 +39,10 @@ pub fn cmd_ask<W: Write>(
     match repo {
         Some(repo) => show_stopped(repo, &ask::where_stopped(&conn, repo)?, out, json),
         None => {
+            let pending = ask::sync_batch(&conn, 0)?;
+            if pending > 0 {
+                eprintln!("indexing {pending} blocks for ask…");
+            }
             ask::sync(&conn)?;
             show_hits(&ask::search(&conn, &query.join(" "))?, out, json)
         }
