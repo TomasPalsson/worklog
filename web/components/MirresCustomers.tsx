@@ -1,11 +1,10 @@
 import { BillingDetails } from "./BillingDetails";
 import { MirresStatusIcon } from "./MirresStatusIcon";
-import { customersFrom, stripCustomer } from "@/lib/mirresOverview";
+import { customersFrom, hrs, stripCustomer } from "@/lib/mirresOverview";
 import { statusMeta } from "@/lib/mirresStatus";
 import type { CustomerGroup, ProjectRow } from "@/lib/mirresOverview";
 import type { MirresDay } from "@/lib/tempo_line_contract";
 
-const hrs = (seconds: number) => `${(seconds / 3600).toFixed(1)} h`;
 const nameOf = (p: ProjectRow) => stripCustomer(p.project, p.customer) ?? p.account_key;
 
 function ProjectLine({ p }: { p: ProjectRow }) {
@@ -14,7 +13,7 @@ function ProjectLine({ p }: { p: ProjectRow }) {
     <li className="mirres-proj">
       <MirresStatusIcon kind={meta.kind} />
       <span className="mirres-proj-name">{nameOf(p)}</span>
-      <span className="mirres-proj-type">{p.project_type ?? meta.label}</span>
+      {!p.warning && <span className="mirres-proj-type">{p.project_type ?? meta.label}</span>}
       <span className="mirres-proj-hours">{hrs(p.seconds)}</span>
       <span className="mirres-sr">{meta.label}</span>
     </li>
@@ -22,22 +21,11 @@ function ProjectLine({ p }: { p: ProjectRow }) {
 }
 
 function CustomerCard({ c }: { c: CustomerGroup }) {
-  const total = c.seconds || 1;
   return (
     <li className="mirres-card">
       <div className="mirres-card-head">
         <h3>{c.name}</h3>
         <span className="mirres-proj-hours">{hrs(c.seconds)}</span>
-      </div>
-      <div className="mirres-bar mirres-bar-mini" aria-hidden="true">
-        {c.projects.map((p) => (
-          <span
-            key={p.account_key}
-            className="mirres-seg"
-            data-kind={statusMeta(p).kind}
-            style={{ flexGrow: p.seconds / total }}
-          />
-        ))}
       </div>
       <ul className="mirres-proj-list">
         {c.projects.map((p) => (

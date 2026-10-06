@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { customersFrom, daySummary, ledgerOrder, ledgerSegments, formatFetchedAt, projectsFrom, statusReason, stripCustomer, totals, warningHelp } from "./mirresOverview";
+import { customersFrom, dateRangeLabel, goalGap, hrs, sharedHelp, daySummary, ledgerOrder, ledgerSegments, formatFetchedAt, projectsFrom, statusReason, stripCustomer, totals, warningHelp } from "./mirresOverview";
 import type { BillingClass, MirresDay, TempoLine } from "./tempo_line_contract";
 
 function line(
@@ -78,11 +78,11 @@ describe("daySummary / totals", () => {
   });
 
   it("totals over all lines", () => {
-    expect(totals(days)).toEqual({ projects: 1, tickets: 1, days: 1, attention: 0, seconds: 7200, billablePercent: 50 });
+    expect(totals(days)).toEqual({ projects: 1, tickets: 1, days: 1, attention: 0, seconds: 7200, billablePercent: 50, billedSeconds: 3600 });
   });
 
   it("handles empty input", () => {
-    expect(totals([])).toEqual({ projects: 0, tickets: 0, days: 0, attention: 0, seconds: 0, billablePercent: null });
+    expect(totals([])).toEqual({ projects: 0, tickets: 0, days: 0, attention: 0, seconds: 0, billablePercent: null, billedSeconds: 0 });
   });
 });
 
@@ -179,5 +179,24 @@ describe("customersFrom / ledgerOrder", () => {
       "Delta:included:1800",
       "Beta:not_billable:3600",
     ]);
+  });
+});
+
+describe("hrs / dateRangeLabel / goalGap / sharedHelp", () => {
+  it("formats compact hours", () => expect(hrs(12600)).toBe("3.5h"));
+  it("formats ranges", () => {
+    expect(dateRangeLabel(["2026-10-06"])).toBe("Oct 6");
+    expect(dateRangeLabel(["2026-10-06", "2026-10-05"])).toBe("Oct 5–6");
+    expect(dateRangeLabel(["2026-11-02", "2026-10-05"])).toBe("Oct 5 – Nov 2");
+    expect(dateRangeLabel([])).toBe("");
+  });
+  it("computes the gap to goal", () => {
+    expect(goalGap(0, 36000, 70)).toBe(25200);
+    expect(goalGap(30000, 36000, 70)).toBe(0);
+  });
+  it("shares help only for identical warnings", () => {
+    const w = "Samning vantar í Mirres";
+    expect(sharedHelp([w, w], 2)).toContain("These 2 projects have no contract");
+    expect(sharedHelp([w, "x"], 2)).toBeNull();
   });
 });

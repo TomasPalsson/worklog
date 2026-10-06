@@ -81,7 +81,34 @@ export function totals(days: MirresDay[]) {
     attention: projects.filter((p) => p.warning).length,
     seconds: days.reduce((a, d) => a + d.lines.reduce((b, l) => b + l.effective_seconds, 0), 0),
     billablePercent: billablePercent(days.flatMap((d) => d.lines)),
+    billedSeconds: days.reduce(
+      (a, d) =>
+        a + d.lines.reduce((b, l) => (l.billing && l.billing.class !== "not_billable" ? b + l.effective_seconds : b), 0),
+      0,
+    ),
   };
+}
+
+/** Compact hours, the app's style: "3.5h". */
+export const hrs = (seconds: number) => `${(seconds / 3600).toFixed(1)}h`;
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "Oct 6", "Oct 5–6" or "Oct 5 – Nov 2" from YYYY-MM-DD days; "" when none. */
+export function dateRangeLabel(dayList: string[]): string {
+  if (dayList.length === 0) return "";
+  const sorted = [...dayList].sort();
+  const part = (d: string) => ({ m: Number(d.slice(5, 7)) - 1, d: Number(d.slice(8, 10)) });
+  const a = part(sorted[0]);
+  const b = part(sorted[sorted.length - 1]);
+  const from = `${MONTHS[a.m]} ${a.d}`;
+  if (a.m === b.m && a.d === b.d) return from;
+  return a.m === b.m ? `${from}–${b.d}` : `${from} – ${MONTHS[b.m]} ${b.d}`;
+}
+
+/** Seconds of extra billable time needed to reach `goal`% of logged; never negative. */
+export function goalGap(billedSeconds: number, totalSeconds: number, goal: number): number {
+  return Math.max(0, (goal / 100) * totalSeconds - billedSeconds);
 }
 
 /** Project text without its "<customer> · " prefix (the customer has its own column). */
@@ -105,6 +132,14 @@ export function statusReason(
 }
 
 /** One plain-English line under an Icelandic Mirres warning; null if unknown. */
+/** One instruction for a list of warnings when they are all the same kind; else null. */
+export function sharedHelp(warnings: (string | null)[], count: number): string | null {
+  if (warnings.length === 0 || new Set(warnings).size !== 1) return null;
+  if (warnings[0] === "Samning vantar í Mirres")
+    return `${count === 1 ? "This project has" : `These ${count} projects have`} no contract in Mirres, so their hours don't count as billable. Ask the owner to add one, then fetch again.`;
+  return warningHelp(warnings[0]);
+}
+
 export function warningHelp(warning: string | null): string | null {
   if (!warning) return null;
   if (warning === "Samning vantar í Mirres")

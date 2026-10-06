@@ -29,11 +29,16 @@ export function MirresPopover({
         <MirresStatusIcon kind={status.kind} size={16} />
         <strong>{billing.customer ?? "Unknown customer"}</strong>
         {project && <span className="mirres-pop-muted">{project}</span>}
+        {billing.warning && billing.project_type && (
+          <span className="mirres-pop-muted">· {billing.project_type}</span>
+        )}
       </span>
-      <span className="mirres-pop-status">
-        {status.label}
-        {billing.project_type && <span className="mirres-pop-muted"> · {billing.project_type}</span>}
-      </span>
+      {!billing.warning && (
+        <span className="mirres-pop-status">
+          {status.label}
+          {billing.project_type && <span className="mirres-pop-muted"> · {billing.project_type}</span>}
+        </span>
+      )}
       {billing.warning && (
         <span className="mirres-pop-warning">
           <ContractMissingIcon size={16} />

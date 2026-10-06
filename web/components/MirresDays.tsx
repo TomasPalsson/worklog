@@ -15,7 +15,7 @@ export function MirresDays({ days }: { days: MirresDay[] }) {
             <li key={d.day}>
               <Link href={`/${d.day}`}>{formatDayHeading(d.day)}</Link>
               <span>
-                {s.matched} of {s.total} matched
+                {s.matched === s.total ? `all ${s.total} lines found` : `${s.matched} of ${s.total} lines found`}
               </span>
               <span>{s.billablePercent === null ? "—" : `${s.billablePercent}% billable`}</span>
               <time dateTime={d.fetched_at}>{formatFetchedAt(d.fetched_at)}</time>

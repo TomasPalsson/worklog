@@ -1,10 +1,9 @@
 import { MirresStatusIcon } from "./MirresStatusIcon";
-import { customersFrom, ledgerOrder, ledgerSegments, totals } from "@/lib/mirresOverview";
+import { customersFrom, dateRangeLabel, goalGap, hrs, ledgerOrder, ledgerSegments, totals } from "@/lib/mirresOverview";
 import { STATUS_META, statusMeta } from "@/lib/mirresStatus";
 import type { MirresDay } from "@/lib/tempo_line_contract";
 
 const GOAL = 70;
-const hrs = (seconds: number) => `${(seconds / 3600).toFixed(1)} h`;
 
 /** The headline figure, the per-customer hours bar and its text legend. */
 export function MirresLedger({ days }: { days: MirresDay[] }) {
@@ -13,6 +12,7 @@ export function MirresLedger({ days }: { days: MirresDay[] }) {
   const order = ledgerOrder(customers).map((c) => ({ c, meta: statusMeta(c.projects[0]) }));
   const segments = ledgerSegments(customers);
   const pct = t.billablePercent;
+  const gap = goalGap(t.billedSeconds, t.seconds, GOAL);
   return (
     <section className="reg-section mirres-ledger" aria-label="Billable ledger">
       <div className="mirres-figure-block">
@@ -21,7 +21,10 @@ export function MirresLedger({ days }: { days: MirresDay[] }) {
         </span>
         <span className="mirres-big-label">billable</span>
         <span className="mirres-goal-line">
-          goal {GOAL}% · {hrs(t.seconds)} logged · {t.days} {t.days === 1 ? "day" : "days"}
+          goal {GOAL}% · {hrs(t.seconds)} logged · {dateRangeLabel(days.map((d) => d.day))}
+        </span>
+        <span className="mirres-goal-line">
+          {gap > 0 ? `${hrs(gap)} short of ${GOAL}%` : "on goal"}
         </span>
       </div>
       <div className="mirres-bar-wrap">
