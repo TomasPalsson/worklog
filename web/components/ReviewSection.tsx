@@ -22,7 +22,7 @@ interface Actions {
 
 type Wired = Required<Actions>;
 
-const hoursOf = (seconds: number) => seconds / 3600;
+const hoursOf = (seconds: number) => Number((seconds / 3600).toFixed(2));
 // The daemon answers 200 even when Tempo rejects or skips the line.
 function syncFailure(r: Result): Result {
   if (!r.ok) return r;

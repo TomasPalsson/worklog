@@ -126,6 +126,20 @@ describe("ReviewSection edit", () => {
   const open = () => fireEvent.click(screen.getByRole("button", { name: "Edit" }));
   const save = () => screen.getByRole("button", { name: "Save to Tempo" }) as HTMLButtonElement;
 
+  it("renders non-quarter-hour seconds at fixed precision, not raw floats", () => {
+    // catches seconds / 3600 unformatted (0.3333333333333333)
+    setup([line({ day: "2026-10-05", jira_issue: "AB-1", seconds: 1200 })]);
+    expect(screen.getByText("0.33 h")).toBeTruthy();
+    open();
+    expect((screen.getByLabelText("Hours") as HTMLInputElement).value).toBe("0.33");
+    expect(save().disabled).toBe(true);
+  });
+
+  it("renders 2700 s as 0.75 h", () => {
+    setup([line({ day: "2026-10-05", jira_issue: "AB-1", seconds: 2700 })]);
+    expect(screen.getByText("0.75 h")).toBeTruthy();
+  });
+
   it("opens labelled fields and disables Save until something changes", () => {
     setup([L1]);
     open();
