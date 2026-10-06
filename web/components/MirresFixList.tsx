@@ -21,7 +21,7 @@ function CopyMessage({ text }: { text: string }) {
   }
   return (
     <>
-      <button type="button" className="action-btn" onClick={copy}>
+      <button type="button" className="action-btn" title={text} onClick={copy}>
         Copy message
       </button>
       <span aria-live="polite">{done ? "Copied" : ""}</span>
@@ -36,7 +36,7 @@ function Action({ p, customer, project }: { p: ProjectRow; customer: string; pro
     const subject = encodeURIComponent(`Mirres: ${customer} · ${project}`);
     return (
       <a className="action-btn" href={`mailto:${owner.email}?subject=${subject}`}>
-        Ask {owner.name.split(" ")[0]}
+        Email {owner.name.split(" ")[0]}
       </a>
     );
   }

@@ -258,3 +258,18 @@ export function ledgerSummary(percent: number | null, totalSeconds: number, segm
   const head = percent === null ? `Billable share unknown of ${hrs(totalSeconds)}` : `${percent}% billable of ${hrs(totalSeconds)}`;
   return `${head}: ${parts.join(", ")}; goal ${goal}%`;
 }
+
+/** Row mini-bar width as a percent of the largest customer, so rows compare at one scale. */
+export function barPercent(seconds: number, maxSeconds: number): number {
+  return maxSeconds > 0 ? Math.min(100, (seconds / maxSeconds) * 100) : 0;
+}
+
+export type KeyKind = "billable" | "included" | "other" | "missing";
+
+/** Colour-key entries for the kinds present in the bar, in bar order. */
+export function keyKinds(segments: LedgerSegment[]): KeyKind[] {
+  const present = new Set<KeyKind>(
+    segments.map((s) => (s.kind === "billable" || s.kind === "included" || s.kind === "missing" ? s.kind : "other")),
+  );
+  return (["billable", "included", "other", "missing"] as const).filter((k) => present.has(k));
+}

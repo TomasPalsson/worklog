@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { customerStatusSplit, ledgerSummary, shortDay, customersFrom, dateRangeLabel, goalGap, hrs, sharedHelp, daySummary, ledgerOrder, ledgerSegments, formatFetchedAt, projectsFrom, statusReason, stripCustomer, totals, warningHelp } from "./mirresOverview";
+import { barPercent, keyKinds, customerStatusSplit, ledgerSummary, shortDay, customersFrom, dateRangeLabel, goalGap, hrs, sharedHelp, daySummary, ledgerOrder, ledgerSegments, formatFetchedAt, projectsFrom, statusReason, stripCustomer, totals, warningHelp } from "./mirresOverview";
 import type { BillingClass, MirresDay, TempoLine } from "./tempo_line_contract";
 
 function line(
@@ -214,5 +214,18 @@ describe("customerStatusSplit / ledgerSummary", () => {
   it("summarises the bar", () => {
     const segs = ledgerSegments(customersFrom(days));
     expect(ledgerSummary(33, 10800, segs, 70)).toBe("33% billable of 3.0h: 1.0h billable, 1.0h other, 1.0h contract missing; goal 70%");
+  });
+});
+
+describe("barPercent / keyKinds", () => {
+  it("scales to the largest customer and guards zero", () => {
+    expect(barPercent(1800, 3600)).toBe(50);
+    expect(barPercent(3600, 3600)).toBe(100);
+    expect(barPercent(10, 0)).toBe(0);
+  });
+  it("lists only present key kinds, merging the rest into other", () => {
+    const seg = (kind: "billable" | "fixed" | "internal" | "missing") => ({ customer: "A", kind, seconds: 1 });
+    expect(keyKinds([seg("missing"), seg("fixed"), seg("internal")])).toEqual(["other", "missing"]);
+    expect(keyKinds([seg("billable")])).toEqual(["billable"]);
   });
 });
