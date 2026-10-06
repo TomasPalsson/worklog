@@ -70,11 +70,6 @@ impl Scorecard {
         self.skipped > 0 && total(&self.project) + total(&self.ticket) == 0
     }
 
-    /// The summary line with the line-check fixture result appended.
-    pub fn summary_with(&self, fixture: &str) -> String {
-        format!("{}; {fixture}", self.summary())
-    }
-
     pub fn summary(&self) -> String {
         let t = |t: &Tally| format!("{} right, {} wrong, {} unsure", t.right, t.wrong, t.unsure);
         let thresholds = match self.tuned {
@@ -156,7 +151,7 @@ pub fn run(conn: &Connection, classifier: &dyn Classifier, apply: bool) -> Resul
     if !apply {
         return Ok(score(replayed, rule, false));
     }
-    finish(conn, replayed, rule, apply)
+    finish(conn, replayed, rule, apply, None)
 }
 
 pub fn finish(
@@ -164,10 +159,11 @@ pub fn finish(
     replayed: Replayed,
     rule: RouteRule,
     apply: bool,
+    fixture: Option<&str>,
 ) -> Result<Scorecard> {
     let card = score(replayed, rule, apply);
     if !card.nothing_answered() {
-        save(conn, &card)?;
+        save(conn, &card, fixture)?;
     }
     Ok(card)
 }
@@ -330,18 +326,18 @@ pub fn score(replayed: Replayed, rule: RouteRule, apply: bool) -> Scorecard {
     }
 }
 
-/// Writes the tuned thresholds when `card.applied`, and keeps the summary line.
-pub fn save(conn: &Connection, card: &Scorecard) -> Result<()> {
+/// Writes the tuned thresholds when `card.applied`, and keeps the summary line
+/// with the line-check fixture result appended when there is one.
+pub fn save(conn: &Connection, card: &Scorecard, fixture: Option<&str>) -> Result<()> {
     if let (true, Some((margin, ratio))) = (card.applied, card.tuned) {
         crate::envfile::upsert(ABSTAIN_MARGIN_KEY, &format!("{margin:.2}"))?;
         crate::envfile::upsert(RUNNER_UP_RATIO_KEY, &format!("{ratio:.2}"))?;
     }
-    meta_set(conn, LAST_KEY, &card.summary())
-}
-
-/// Re-keeps the saved summary line with the line-check fixture result appended.
-pub fn save_with_fixture(conn: &Connection, card: &Scorecard, fixture: &str) -> Result<()> {
-    meta_set(conn, LAST_KEY, &card.summary_with(fixture))
+    let line = match fixture {
+        Some(fixture) => format!("{}; {fixture}", card.summary()),
+        None => card.summary(),
+    };
+    meta_set(conn, LAST_KEY, &line)
 }
 
 #[cfg(test)]

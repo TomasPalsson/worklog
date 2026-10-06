@@ -120,7 +120,7 @@ fn owner(conn: &Connection, subject: &str, to: &str, at: &str) {
 
 fn card(conn: &Connection, stub: &Stub, apply: bool) -> Scorecard {
     let replayed = replay(load(conn, now()).unwrap(), stub);
-    finish(conn, replayed, rule(), apply).unwrap()
+    finish(conn, replayed, rule(), apply, None).unwrap()
 }
 
 fn tally(right: usize, wrong: usize, unsure: usize) -> Tally {
@@ -620,12 +620,20 @@ fn line_fixture_dropping_out_midway_is_skipped() {
 }
 
 #[test]
-fn summary_with_appends_the_fixture_after_the_scorecard() {
+fn finish_keeps_the_fixture_after_the_scorecard_in_one_write() {
     let conn = open_memory().unwrap();
-    let c = card(&conn, &Stub::new(&[]), false);
-    // catches: replacing the scorecard instead of appending
+    let replayed = replay(load(&conn, now()).unwrap(), &Stub::new(&[]));
+    let c = finish(
+        &conn,
+        replayed,
+        rule(),
+        false,
+        Some("line check fixture: 10/10 right"),
+    )
+    .unwrap();
+    // catches: replacing the scorecard instead of appending, or dropping the fixture
     assert_eq!(
-        c.summary_with("line check fixture: 10/10 right"),
+        last_summary(&conn).unwrap().unwrap(),
         format!("{}; line check fixture: 10/10 right", c.summary())
     );
 }

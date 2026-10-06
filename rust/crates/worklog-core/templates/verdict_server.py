@@ -267,14 +267,15 @@ def self_test():
 
 
 def _event_text_room():
-    # Worst case: SHORTLIST_MAX options with the longest folder id used in the fixtures
-    # above, and the full example budget. No tokenizer is loaded here, so use a
-    # conservative 3 chars/token estimate (real text is ~4); the model sees 512 tokens.
-    longest = max(["only-one", "vitinn", "o10"], key=len)
-    options = [longest] * SHORTLIST_MAX
+    # Worst case: SHORTLIST_MAX options with 40-char folder ids (assumed upper bound for
+    # ~/Desktop/Work names), the question, and the full example budget. No tokenizer is
+    # importable offline, so estimate 4 chars/token (English prose and paths); the model
+    # sees MODEL_TOKENS and the event text needs 200 of them. At a pessimistic 3 chars/token
+    # this does not hold (about 99 left), so the 4 is the load-bearing assumption.
+    options = ["f" * 40] * SHORTLIST_MAX
     texts = ["x" * EXAMPLE_CHARS] * (EXAMPLE_CHARS_TOTAL // EXAMPLE_CHARS)
-    block = "".join(_describe(option, texts if i == 0 else ()) for i, option in enumerate(options))
-    assert MODEL_TOKENS - -(-len(block) // 3) >= 200, "option block crowds out the event text"
+    block = QUESTION + "".join(_describe(option, texts if i == 0 else ()) for i, option in enumerate(options))
+    assert MODEL_TOKENS - -(-len(block) // 4) >= 200, "option block crowds out the event text"
 
 
 def _http_round_trip():

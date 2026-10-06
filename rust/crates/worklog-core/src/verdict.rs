@@ -128,6 +128,21 @@ mod tests {
     use httpmock::prelude::*;
     use serde_json::json;
 
+    #[test]
+    fn server_self_test_constants_match_the_contract() {
+        use crate::verdict_contract::*;
+        let server = include_str!("../templates/verdict_server.py");
+        // catches: the self-test's event-text-room bound drifting from the real caps
+        for line in [
+            format!("SHORTLIST_MAX = {SHORTLIST_MAX}\n"),
+            format!("EXAMPLES_PER_OPTION = {EXAMPLES_MAX}\n"),
+            format!("EXAMPLE_CHARS = {EXAMPLE_CHARS_EACH}\n"),
+            format!("EXAMPLE_CHARS_TOTAL = {EXAMPLE_CHARS_TOTAL}\n"),
+        ] {
+            assert!(server.contains(&line), "verdict_server.py lacks {line:?}");
+        }
+    }
+
     fn unreachable_classifier() -> VerdictClassifier {
         // Bind then drop to obtain a port nothing is listening on.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
