@@ -22,7 +22,7 @@ pub struct ReportLine {
 impl ReportLine {
     /// `None` when the previous month has no hours for this deild.
     pub fn change(&self) -> Option<f64> {
-        (self.previous_hours > 0.0).then(|| self.hours - self.previous_hours)
+        (self.previous_hours > 0.0).then_some(self.hours - self.previous_hours)
     }
 
     fn change_display(&self) -> String {

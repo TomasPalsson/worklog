@@ -33,7 +33,7 @@ fn block(conn: &Connection, day: &str, folder: &str, secs: i64, text: &str) {
         "{}/Desktop/Work/{folder}",
         dirs::home_dir().unwrap().to_string_lossy()
     );
-    let mut ev = Event::minimal("claude", &format!("{day}-{folder}-{secs}"), &start, "s");
+    let mut ev = Event::minimal("claude", format!("{day}-{folder}-{secs}"), &start, "s");
     ev.project_path = Some(path);
     let eid = repo::upsert_event(conn, &ev).unwrap();
     conn.execute(
