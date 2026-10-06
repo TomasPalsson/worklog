@@ -49,7 +49,7 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --
 - [x] T020 Standup button, editable preview, Post and Copy, Settings channel field (FR-17, FR-20, FR-22, FR-23, B4) — UI built with the /design:design skill — files: web/components/StandupButton.tsx, web/components/StandupButton.test.tsx, web/lib/daemonStandup.ts, web/components/DayHeader.tsx, web/components/SettingsFormSections.tsx, web/lib/settingsForm.ts — verify: `(cd web && bun test components/StandupButton && bun run typecheck)` — after: T019 — done: 6f4ed82
 - [x] T021 [P] `worklog standup` with confirm before post (FR-17, FR-22) — files: rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-cli/src/helpers_cmd.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-cli` — after: T011, T017 — done: e98bb7c
 - [x] T022 [P] Footer nudge, one line, rotates per prompt (FR-39, FR-41, FR-42) — files: mods/worklog/hooks/status.ts, mods/worklog/hooks/status.test.ts — verify: `claude plugin test mods/worklog` — after: T019 — done: bc8e6d9
-- [ ] CHK001 human-verify a real standup — files: web/components/StandupButton.tsx — verify: human: the Owner presses Standup, edits, presses Post, and the reply appears in today's Daily thread within 30 s of the click — after: T020
+- [x] CHK001 human-verify a real standup — files: web/components/StandupButton.tsx — verify: human: the Owner presses Standup, edits, presses Post, and the reply appears in today's Daily thread within 30 s of the click — after: T020 — done: cfab763 by user
 
 ## Phase 4 — Pre-send checklist
 Goal: a send the Owner starts by hand shows a checklist first and proves itself after.
