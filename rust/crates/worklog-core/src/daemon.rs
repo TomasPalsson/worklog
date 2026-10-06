@@ -274,6 +274,8 @@ pub fn router(state: Shared) -> Router {
         .route("/verdict/status", get(verdict_status))
         .route("/verdict/enabled", post(verdict_enabled))
         .route("/verdict/retry", post(verdict_retry))
+        .route("/review", get(review_list))
+        .route("/review/confirm", post(review_confirm))
         .route("/days/:day/elsewhere", get(list_elsewhere))
         .route("/events/:id/move", post(move_event_handler))
         .with_state(state)
@@ -2862,6 +2864,84 @@ async fn verdict_enabled(
 async fn verdict_retry() -> Result<Json<VerdictState>, ApiError> {
     let state = verdict_state_off_runtime(|| Ok(verdict_supervisor::retry())).await?;
     Ok(Json(state))
+}
+
+// ───────────────────────── auto-send review ─────────────────────────
+
+/// Owner-local today as `YYYY-MM-DD`.
+fn local_today() -> String {
+    Utc::now()
+        .with_timezone(&crate::tz::day_offset())
+        .date_naive()
+        .to_string()
+}
+
+async fn review_list(
+    State(state): State<Shared>,
+) -> Result<Json<Vec<crate::verdict_contract::ReviewLine>>, ApiError> {
+    let today = local_today();
+    let lines = with_conn(state, move |c| crate::auto_send::review_lines(c, &today)).await?;
+    Ok(Json(lines))
+}
+
+#[derive(Deserialize)]
+struct ReviewConfirmBody {
+    day: String,
+    jira_issue: Option<String>,
+}
+
+async fn review_confirm(
+    State(state): State<Shared>,
+    Json(body): Json<ReviewConfirmBody>,
+) -> Result<Json<Value>, ApiError> {
+    let confirmed = with_conn(state, move |c| {
+        crate::auto_send::confirm(c, &body.day, body.jira_issue.as_deref())
+    })
+    .await?;
+    Ok(Json(json!({ "confirmed": confirmed })))
+}
+
+/// How often the auto-send tick runs; a run starts within this of 17:00.
+const AUTO_SEND_TICK: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// Spawn the 15-minute auto-send tick (spec 017 FR-27).
+pub fn spawn_auto_send_loop(state: Shared) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let local = Utc::now().with_timezone(&crate::tz::day_offset());
+            if let Err(e) = auto_send_once(&state, local).await {
+                warn!("auto-send tick failed: {e:#}");
+            }
+            tokio::time::sleep(AUTO_SEND_TICK).await;
+        }
+    })
+}
+
+/// One tick: lines go through the same per-ticket Tempo sync as `POST /sync`.
+/// The sqlite lock is held across the Tempo calls, as `run_sync` does.
+async fn auto_send_once(
+    state: &Shared,
+    local: chrono::DateTime<chrono::FixedOffset>,
+) -> Result<()> {
+    let on = crate::auto_send::enabled();
+    with_conn(state.clone(), move |c| {
+        crate::auto_send::run_if_due(c, local, on, &mut |c, key| {
+            let day = NaiveDate::parse_from_str(&key.day, "%Y-%m-%d")?;
+            let auth = tempo::TempoAuth::from_secrets()?;
+            let (_, results) = tempo::sync_day_with_invoker_for(
+                c,
+                &auth,
+                day,
+                false,
+                &crate::http::client()?,
+                None,
+                estimate::DEFAULT_MODEL,
+                Some(&key.jira_issue),
+            )?;
+            Ok(results)
+        })
+    })
+    .await
 }
 
 // ───────────────────────── billing registry ─────────────────────────

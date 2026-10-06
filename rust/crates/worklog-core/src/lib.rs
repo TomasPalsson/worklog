@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 pub mod account_clues;
+pub mod auto_send;
 pub mod billing;
 pub mod billing_deildir;
 pub mod billing_registry;
