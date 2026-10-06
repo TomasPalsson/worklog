@@ -54,6 +54,7 @@ pub fn assign_ticket(conn: &Connection, block_id: i64, key: Option<&str>) -> Res
         )
         .context("assign_ticket")?;
     }
+    undo::seal(&tx, &[])?;
     tx.commit().context("assign_ticket: commit")?;
     let block = repo::get_block(conn, block_id)?
         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
@@ -89,6 +90,7 @@ pub fn set_duration(conn: &Connection, block_id: i64, minutes: u32) -> Result<Bl
         params![minutes as i64 * 60, new_end, block_id],
     )
     .context("set_duration")?;
+    undo::seal(&tx, &[])?;
     tx.commit().context("set_duration: commit")?;
     let block = repo::get_block(conn, block_id)?
         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
@@ -123,6 +125,7 @@ pub fn set_description(conn: &Connection, block_id: i64, description: &str) -> R
         params![description, block_id],
     )
     .context("set_description")?;
+    undo::seal(&tx, &[])?;
     tx.commit().context("set_description: commit")?;
     let block = repo::get_block(conn, block_id)?
         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
@@ -146,6 +149,7 @@ pub fn set_personal(conn: &Connection, block_id: i64, is_personal: bool) -> Resu
         params![is_personal as i64, block_id],
     )
     .context("set_personal")?;
+    undo::seal(&tx, &[])?;
     tx.commit().context("set_personal: commit")?;
     let block = repo::get_block(conn, block_id)?
         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
@@ -186,6 +190,7 @@ pub fn set_ignored(conn: &Connection, block_id: i64, ignored: bool) -> Result<Bl
         )
     }
     .context("set_ignored")?;
+    undo::seal(&tx, &[])?;
     tx.commit().context("set_ignored: commit")?;
     let block = repo::get_block(conn, block_id)?
         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
@@ -227,6 +232,7 @@ pub fn delete_block(conn: &Connection, block_id: i64) -> Result<()> {
     if n == 0 {
         anyhow::bail!("block {block_id} not found");
     }
+    undo::seal(&tx, &[])?;
     tx.commit().context("delete_block: commit")?;
     Ok(())
 }
@@ -349,6 +355,7 @@ pub fn merge_blocks(
         params![started_at, ended_at, total_seconds, primary_id],
     )
     .context("merge_blocks: updating primary")?;
+    undo::seal(&tx, &[])?;
     tx.commit().context("merge_blocks: commit")?;
 
     let merged = repo::get_block(conn, primary_id)?
@@ -441,6 +448,7 @@ pub fn split_block(conn: &Connection, block_id: i64, first_minutes: u32) -> Resu
         params![second_id, block_id, boundary],
     )
     .context("split_block: re-bucketing events")?;
+    undo::seal(&tx, &[second_id])?;
     tx.commit().context("split_block: commit")?;
 
     let outcome = SplitOutcome {

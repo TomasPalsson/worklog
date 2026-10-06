@@ -309,3 +309,58 @@ fn undo_never_touches_sent_or_exported_markers() {
     assert_eq!(b.exported_at.as_deref(), Some("2026-04-19T00:00:00Z"));
     assert!(b.tempo_worklog_id.is_none());
 }
+
+#[test]
+fn refuses_when_rebuild_replaced_the_block() {
+    // catches: re-inserting the stale row under its old id beside the rebuilt block
+    let mut conn = open_memory().unwrap();
+    let id = seed30(&conn);
+    bs::set_description(&conn, id, "edited").unwrap();
+    conn.execute("DELETE FROM blocks WHERE id = ?1", params![id])
+        .unwrap();
+    let new_id = seed30(&conn);
+    assert!(undo_last(&mut conn).is_err());
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM blocks", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(desc(&conn, new_id).as_deref(), Some("orig"));
+    // catches: keeping a stale entry that blocks the journal forever
+    assert_eq!(undo_last(&mut conn).unwrap(), UndoOutcome::NothingToUndo);
+}
+
+#[test]
+fn refuses_when_live_block_changed_since() {
+    // catches: overwriting a later non-journaled write with the before-image
+    let mut conn = open_memory().unwrap();
+    let id = seed30(&conn);
+    bs::set_description(&conn, id, "edited").unwrap();
+    conn.execute(
+        "UPDATE blocks SET description = 'estimator' WHERE id = ?1",
+        params![id],
+    )
+    .unwrap();
+    assert!(undo_last(&mut conn).is_err());
+    assert_eq!(desc(&conn, id).as_deref(), Some("estimator"));
+}
+
+#[test]
+fn undo_split_keeps_unrelated_block_inside_span() {
+    // catches: deleting every block above max_id inside the original span
+    let mut conn = open_memory().unwrap();
+    let a = seed30(&conn);
+    bs::split_block(&conn, a, 10).unwrap();
+    let other = seed(
+        &conn,
+        "2026-04-18T09:12:00+00:00",
+        "2026-04-18T09:15:00+00:00",
+        180,
+    );
+    undo_last(&mut conn).unwrap();
+    assert!(repo::get_block(&conn, other).unwrap().is_some());
+    assert_eq!(
+        repo::get_block(&conn, a).unwrap().unwrap().duration_seconds,
+        1800
+    );
+}

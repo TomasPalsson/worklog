@@ -25,9 +25,22 @@ struct Snapshot {
 
 #[derive(Serialize, Deserialize)]
 struct Entry {
-    // Highest block id before the change; anything above it was created by it.
-    max_id: i64,
     blocks: Vec<Snapshot>,
+    // Set by `seal` once the change is written: the journaled blocks' rows
+    // right after it (None = gone) and the ids it created. Undo only applies
+    // while the live rows still match.
+    #[serde(default)]
+    after: Vec<Option<Row>>,
+    #[serde(default)]
+    created: Vec<i64>,
+}
+
+fn comparable(row: &Row) -> Row {
+    let mut r = row.clone();
+    for k in ["tempo_worklog_id", "exported_at"] {
+        r.remove(k);
+    }
+    r
 }
 
 fn marker_set(v: Option<&str>) -> bool {
@@ -72,8 +85,11 @@ pub fn record(tx: &Transaction, change: BlockChange, before: &[i64]) -> Result<(
     if blocks.is_empty() {
         return Ok(());
     }
-    let max_id: i64 = tx.query_row("SELECT COALESCE(MAX(id), 0) FROM blocks", [], |r| r.get(0))?;
-    let payload = serde_json::to_string(&Entry { max_id, blocks })?;
+    let payload = serde_json::to_string(&Entry {
+        blocks,
+        after: vec![],
+        created: vec![],
+    })?;
     tx.execute(
         "INSERT INTO block_undo (change, payload_json) VALUES (?1, ?2)",
         params![serde_json::to_value(change)?.as_str(), payload],
@@ -86,6 +102,46 @@ pub fn record(tx: &Transaction, change: BlockChange, before: &[i64]) -> Result<(
     )
     .context("undo: trimming journal")?;
     Ok(())
+}
+
+/// Stamps the entry [`record`] just wrote with the state the change left
+/// behind (call it after the change, before commit). `created` lists the
+/// block ids the change inserted.
+pub fn seal(tx: &Transaction, created: &[i64]) -> Result<()> {
+    let newest: Option<(i64, String)> = tx
+        .query_row(
+            "SELECT id, payload_json FROM block_undo ORDER BY id DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((entry_id, payload)) = newest else {
+        return Ok(());
+    };
+    let mut entry: Entry = serde_json::from_str(&payload).context("undo: reading journal entry")?;
+    if !entry.after.is_empty() {
+        return Ok(());
+    }
+    for s in &entry.blocks {
+        entry.after.push(snapshot(tx, id_of(s))?.map(|s| s.row));
+    }
+    entry.created = created.to_vec();
+    tx.execute(
+        "UPDATE block_undo SET payload_json = ?1 WHERE id = ?2",
+        params![serde_json::to_string(&entry)?, entry_id],
+    )
+    .context("undo: sealing change")?;
+    Ok(())
+}
+
+fn is_stale(tx: &Transaction, e: &Entry) -> Result<bool> {
+    for (s, after) in e.blocks.iter().zip(&e.after) {
+        let live = snapshot(tx, id_of(s))?.map(|s| comparable(&s.row));
+        if live != after.as_ref().map(comparable) {
+            return Ok(true);
+        }
+    }
+    Ok(e.after.len() != e.blocks.len())
 }
 
 fn sql_value(v: &Json) -> Value {
@@ -155,27 +211,6 @@ fn write_block(tx: &Transaction, s: &Snapshot) -> Result<()> {
     Ok(())
 }
 
-/// Blocks a split created: new since the journal entry and inside the
-/// original block's span.
-fn split_tails(tx: &Transaction, e: &Entry) -> Result<Vec<i64>> {
-    let Some(first) = e.blocks.first() else {
-        return Ok(vec![]);
-    };
-    let (day, start, end) = (
-        str_of(&first.row, "day"),
-        str_of(&first.row, "started_at"),
-        str_of(&first.row, "ended_at"),
-    );
-    let mut st = tx.prepare(
-        "SELECT id FROM blocks
-          WHERE id > ?1 AND day = ?2 AND started_at >= ?3 AND ended_at <= ?4",
-    )?;
-    let ids = st
-        .query_map(params![e.max_id, day, start, end], |r| r.get(0))?
-        .collect::<rusqlite::Result<Vec<i64>>>()?;
-    Ok(ids)
-}
-
 fn synced_now(tx: &Transaction, id: i64) -> Result<bool> {
     let marker: Option<Option<String>> = tx
         .query_row(
@@ -203,11 +238,7 @@ pub fn undo_last(conn: &mut Connection) -> Result<UndoOutcome> {
     };
     let change: BlockChange = serde_json::from_value(Json::String(change))?;
     let entry: Entry = serde_json::from_str(&payload).context("undo: reading journal entry")?;
-    let tails = if change == BlockChange::Split {
-        split_tails(&tx, &entry)?
-    } else {
-        vec![]
-    };
+    let tails = &entry.created;
     let block_ids: Vec<i64> = entry.blocks.iter().map(id_of).collect();
 
     for s in &entry.blocks {
@@ -215,13 +246,18 @@ pub fn undo_last(conn: &mut Connection) -> Result<UndoOutcome> {
             return Ok(UndoOutcome::RefusedSynced { block_id: id_of(s) });
         }
     }
-    for &t in &tails {
+    for &t in tails {
         if synced_now(&tx, t)? {
             return Ok(UndoOutcome::RefusedSynced { block_id: t });
         }
     }
+    if is_stale(&tx, &entry)? {
+        tx.execute("DELETE FROM block_undo WHERE id = ?1", params![entry_id])?;
+        tx.commit()?;
+        anyhow::bail!("undo: blocks changed since that edit (rebuild or sync); entry discarded");
+    }
 
-    for &t in &tails {
+    for &t in tails {
         tx.execute("DELETE FROM blocks WHERE id = ?1", params![t])?;
     }
     for s in &entry.blocks {
