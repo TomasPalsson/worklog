@@ -352,3 +352,14 @@ fn real_proc_kill_takes_down_grandchildren() {
         .success();
     assert!(!alive, "grandchild {grandchild} survived kill");
 }
+
+#[test]
+fn retry_after_needs_uv_launches_once_uv_is_installed() {
+    let (mut s, w) = sup(false);
+    w.outcomes.borrow_mut().push_back(Err(LaunchError::NeedsUv));
+    s.set_enabled(true);
+    assert_eq!(s.state(), VerdictState::NeedsUv);
+    s.retry();
+    assert_eq!(w.launches.get(), 1);
+    assert_eq!(s.state(), VerdictState::Starting);
+}

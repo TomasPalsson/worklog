@@ -79,9 +79,14 @@ impl<H: Host> Supervisor<H> {
         }
     }
 
-    /// Relaunch after "stopped" with a fresh restart budget.
+    /// Relaunch after "stopped" or "needs uv" with a fresh restart budget.
     pub fn retry(&mut self) {
-        if self.enabled && matches!(self.failed, Some(VerdictState::Stopped { .. })) {
+        if self.enabled
+            && matches!(
+                self.failed,
+                Some(VerdictState::Stopped { .. } | VerdictState::NeedsUv)
+            )
+        {
             self.restarts.clear();
             self.launch();
         }
