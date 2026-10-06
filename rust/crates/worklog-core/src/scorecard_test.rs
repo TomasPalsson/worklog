@@ -555,3 +555,77 @@ async fn the_status_route_shows_the_latest_scorecard_line() {
     // catches: the status route still returning a null scorecard
     assert_eq!(body["scorecard"], "project 1 right, 0 wrong, 0 unsure");
 }
+
+fn fixture_is_good(text: &str) -> bool {
+    LINE_FIXTURE.iter().any(|(t, _, good)| *t == text && *good)
+}
+
+/// Answers both line checks the way the fixture expects.
+fn fixture_matcher(_query: &str, texts: &[String]) -> Result<Vec<bool>> {
+    Ok(texts.iter().map(|t| fixture_is_good(t)).collect())
+}
+
+#[test]
+fn line_fixture_has_five_good_and_five_vague_lines_with_summaries() {
+    // catches: a skewed fixture that makes N/10 meaningless
+    assert_eq!(LINE_FIXTURE.iter().filter(|f| f.2).count(), 5);
+    assert_eq!(LINE_FIXTURE.iter().filter(|f| !f.2).count(), 5);
+    assert!(LINE_FIXTURE.iter().all(|f| !f.1.trim().is_empty()));
+}
+
+#[test]
+fn line_fixture_all_correct_is_ten_of_ten() {
+    // catches: counting only passes, or only vague lines
+    assert_eq!(
+        line_fixture(fixture_matcher),
+        "line check fixture: 10/10 right"
+    );
+}
+
+#[test]
+fn line_fixture_counts_wrong_verdicts_out() {
+    // catches: scoring every answered line as right (yes to all: vague lines pass wrongly)
+    let yes = |_: &str, t: &[String]| Ok(vec![true; t.len()]);
+    assert_eq!(line_fixture(yes), "line check fixture: 5/10 right");
+    // catches: the reverse count (no to all: good lines flagged wrongly)
+    let no = |_: &str, t: &[String]| Ok(vec![false; t.len()]);
+    assert_eq!(line_fixture(no), "line check fixture: 5/10 right");
+}
+
+#[test]
+fn line_fixture_unreachable_is_skipped() {
+    // catches: reporting 0/10 for an unreachable helper
+    let down = |_: &str, _: &[String]| -> Result<Vec<bool>> { anyhow::bail!("down") };
+    assert_eq!(
+        line_fixture(down),
+        "line check fixture: skipped (Verdict not answering)"
+    );
+}
+
+#[test]
+fn line_fixture_dropping_out_midway_is_skipped() {
+    // catches: scoring the lines answered so far as N/10
+    let calls = std::cell::Cell::new(0);
+    let flaky = |q: &str, t: &[String]| {
+        calls.set(calls.get() + 1);
+        if calls.get() > 7 {
+            anyhow::bail!("down")
+        }
+        fixture_matcher(q, t)
+    };
+    assert_eq!(
+        line_fixture(flaky),
+        "line check fixture: skipped (Verdict not answering)"
+    );
+}
+
+#[test]
+fn summary_with_appends_the_fixture_after_the_scorecard() {
+    let conn = open_memory().unwrap();
+    let c = card(&conn, &Stub::new(&[]), false);
+    // catches: replacing the scorecard instead of appending
+    assert_eq!(
+        c.summary_with("line check fixture: 10/10 right"),
+        format!("{}; line check fixture: 10/10 right", c.summary())
+    );
+}

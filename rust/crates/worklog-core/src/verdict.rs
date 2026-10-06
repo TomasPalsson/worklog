@@ -18,6 +18,8 @@ use crate::verdict_contract::Ranking;
 /// Embedded helper script for `worklog verdict serve`.
 pub const SERVER_SCRIPT: &str = include_str!("../templates/verdict_server.py");
 
+pub(crate) const CLASSIFY_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// HTTP client for the Verdict helper. Production points at
 /// `CLASSIFIER_ADDR`; tests point `base_url` at an httpmock server via
 /// [`Self::with_client`].
@@ -30,7 +32,7 @@ impl VerdictClassifier {
     /// Production client: `http://CLASSIFIER_ADDR`, 10 s timeout.
     pub fn new() -> Self {
         let client = Client::builder()
-            .timeout(Duration::from_secs(10))
+            .timeout(CLASSIFY_TIMEOUT)
             .build()
             .unwrap_or_default();
         Self::with_client(client, format!("http://{CLASSIFIER_ADDR}"))
@@ -150,6 +152,41 @@ mod tests {
         let options = vec!["aws-cert".to_string()];
         let got = unreachable_classifier().classify(&state, &options, &BTreeMap::new());
         assert_eq!(got.unwrap(), None);
+    }
+
+    #[test]
+    fn production_classify_timeout_is_ten_seconds() {
+        // catches: 9 s / 11 s / 60 s, or a const the production client ignores
+        assert_eq!(CLASSIFY_TIMEOUT, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn classify_slower_than_the_client_timeout_is_no_answer() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/classify");
+            then.status(200)
+                .delay(Duration::from_millis(1500))
+                .json_body(json!({
+                    "ranking": [{"id": "a", "probability": 0.99}],
+                    "abstain": 0.0,
+                    "agreed": true
+                }));
+        });
+        let slow = VerdictClassifier::with_client(
+            Client::builder()
+                .timeout(Duration::from_millis(200))
+                .build()
+                .unwrap(),
+            server.base_url(),
+        );
+        let options = vec!["a".to_string()];
+        // catches: surfacing the timeout as Err, or waiting for the late ranking
+        assert_eq!(
+            slow.classify(&json!({}), &options, &BTreeMap::new())
+                .unwrap(),
+            None
+        );
     }
 
     #[test]

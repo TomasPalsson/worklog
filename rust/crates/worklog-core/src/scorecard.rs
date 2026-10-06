@@ -18,8 +18,11 @@ use crate::routing::{decide, Pending};
 use crate::routing_contract::{
     Classifier, RouteRule, RoutedEvent, ABSTAIN_MARGIN_KEY, RUNNER_UP_RATIO_KEY,
 };
-use crate::verdict_contract::{DecisionKind, DecisionRow, DecisionSource, Ranking, SCORECARD_DAYS};
+use crate::verdict_contract::{
+    DecisionKind, DecisionRow, DecisionSource, LineCheck, Ranking, SCORECARD_DAYS,
+};
 use crate::verdict_decisions;
+use crate::{line_check, verdict};
 
 /// `meta` key holding the summary line of the latest scorecard.
 const LAST_KEY: &str = "scorecard_last";
@@ -67,6 +70,11 @@ impl Scorecard {
         self.skipped > 0 && total(&self.project) + total(&self.ticket) == 0
     }
 
+    /// The summary line with the line-check fixture result appended.
+    pub fn summary_with(&self, fixture: &str) -> String {
+        format!("{}; {fixture}", self.summary())
+    }
+
     pub fn summary(&self) -> String {
         let t = |t: &Tally| format!("{} right, {} wrong, {} unsure", t.right, t.wrong, t.unsure);
         let thresholds = match self.tuned {
@@ -85,6 +93,61 @@ impl Scorecard {
             self.p95_ms
         )
     }
+}
+
+/// Tempo lines with their ticket summary and whether the line check should pass them.
+const LINE_FIXTURE: [(&str, &str, bool); 10] = [
+    (
+        "Fixed the redirect loop after login in auth middleware",
+        "Fix login redirect",
+        true,
+    ),
+    (
+        "Added retry with backoff to the Jira collector",
+        "Jira collector retries",
+        true,
+    ),
+    (
+        "Reviewed the invoice export PR and fixed the rounding bug",
+        "Invoice export rounding",
+        true,
+    ),
+    (
+        "Wrote migration for the verdict_decisions table",
+        "Verdict decision log",
+        true,
+    ),
+    (
+        "Sprint planning meeting: scoped the billing deild work",
+        "Billing deild split",
+        true,
+    ),
+    ("Worked on stuff", "Fix login redirect", false),
+    ("Various tasks", "Jira collector retries", false),
+    ("Development", "Invoice export rounding", false),
+    ("Meetings and other work", "Verdict decision log", false),
+    ("Misc", "Billing deild split", false),
+];
+
+/// FR-19: how many fixture lines `line_check` judges as expected. `matcher` is
+/// `verdict::match_texts` in production.
+pub fn line_fixture<F>(matcher: F) -> String
+where
+    F: Fn(&str, &[String]) -> Result<Vec<bool>>,
+{
+    let mut right = 0;
+    for (text, summary, good) in LINE_FIXTURE {
+        match line_check::check(&matcher, text, summary) {
+            Ok(Some(found)) => right += usize::from((found == LineCheck::Passed) == good),
+            _ => return "line check fixture: skipped (Verdict not answering)".to_owned(),
+        }
+    }
+    format!("line check fixture: {right}/{} right", LINE_FIXTURE.len())
+}
+
+/// [`line_fixture`] against the running Verdict helper.
+pub fn live_line_fixture() -> String {
+    line_fixture(verdict::match_texts)
 }
 
 pub fn run(conn: &Connection, classifier: &dyn Classifier, apply: bool) -> Result<Scorecard> {

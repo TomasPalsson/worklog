@@ -1301,6 +1301,71 @@ fn ranking_for(folder: &str, top: f64, abstain: f64) -> Ranking {
     }
 }
 
+/// An event whose title equals a stored example of `zq-a`, with the example in `pending`.
+fn event_matching_stored_example(conn: &Connection) -> i64 {
+    pin(conn, "zq-a", None);
+    let old = loose_event(conn, "old", "Standup notes");
+    fix(conn, old, "zq-a");
+    let new = loose_event(conn, "new", "Standup notes");
+    let (_, pending) = load_pending(conn, apr20()).unwrap();
+    assert_eq!(
+        pending[0].examples["zq-a"],
+        vec!["Standup notes".to_string()],
+        "the examples are offered to the classifier as option text"
+    );
+    new
+}
+
+fn label_of(conn: &Connection, id: i64) -> Option<String> {
+    fetch_event(conn, id).unwrap().unwrap().label_origin
+}
+
+#[test]
+fn matching_a_stored_example_alone_never_files_an_event() {
+    // catches: filing on example match without a clearing ranking
+    let conn = open_memory().unwrap();
+    let id = event_matching_stored_example(&conn);
+    // Verdict has no answer for the event's own text: abstain.
+    route_day(&conn, apr20(), &AlwaysNone, default_rule()).unwrap();
+    assert_eq!(label_of(&conn, id), None);
+}
+
+#[test]
+fn an_example_match_does_not_file_when_the_answer_abstains() {
+    // catches: ignoring the abstain margin when examples match
+    let conn = open_memory().unwrap();
+    let id = event_matching_stored_example(&conn);
+    let ranking = ranking_for("zq-a", 0.10, 0.50);
+    route_day(&conn, apr20(), &Fixed(ranking), default_rule()).unwrap();
+    assert_eq!(label_of(&conn, id), None);
+}
+
+#[test]
+fn an_example_match_does_not_file_when_the_order_check_disagrees() {
+    // catches: skipping the agreed check when examples match
+    let conn = open_memory().unwrap();
+    let id = event_matching_stored_example(&conn);
+    let mut ranking = ranking_for("zq-a", 0.95, 0.01);
+    ranking.agreed = false;
+    route_day(&conn, apr20(), &Fixed(ranking), default_rule()).unwrap();
+    assert_eq!(label_of(&conn, id), None);
+}
+
+#[test]
+fn an_example_match_files_only_with_a_clearing_answer() {
+    // catches: a vacuous suite where nothing ever files
+    let conn = open_memory().unwrap();
+    let id = event_matching_stored_example(&conn);
+    route_day(
+        &conn,
+        apr20(),
+        &Fixed(ranking_for("zq-a", 0.95, 0.01)),
+        default_rule(),
+    )
+    .unwrap();
+    assert_eq!(label_of(&conn, id).as_deref(), Some("guess"));
+}
+
 fn stored_ranking(conn: &Connection, id: i64) -> Option<String> {
     conn.query_row(
         "SELECT verdict_ranking FROM events WHERE id = ?1",

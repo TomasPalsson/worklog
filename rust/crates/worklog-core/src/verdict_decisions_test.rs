@@ -367,3 +367,47 @@ fn examples_for_lists_one_event_once_however_often_it_was_fixed() {
         ["same title", "other"]
     );
 }
+
+fn dump(conn: &Connection) -> Vec<(String, String, String, String)> {
+    let mut stmt = conn
+        .prepare("SELECT kind, source, subject, decided_at FROM verdict_decisions ORDER BY id")
+        .unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// FR-09: compression keeps every decision row, whatever its age, kind or source.
+#[test]
+fn compression_keeps_every_decision_row_older_than_the_horizon() {
+    let conn = open_memory().unwrap();
+    let id = event(&conn, "old", "2019-12-31T09:00:00+00:00", "old thing").to_string();
+    let verdict_row = row(
+        DecisionKind::Project,
+        DecisionSource::Verdict,
+        &id,
+        "2020-01-01T00:00:00Z",
+    );
+    record(&conn, &verdict_row).unwrap();
+    record(&conn, &owner_fix(&id, "proj", "2020-01-02T00:00:00Z")).unwrap();
+    let ticket_row = row(
+        DecisionKind::Ticket,
+        DecisionSource::Verdict,
+        "gone",
+        "2019-06-01T00:00:00Z",
+    );
+    record(&conn, &ticket_row).unwrap();
+    let before = dump(&conn);
+    assert_eq!(before.len(), 3);
+    let horizon = chrono::NaiveDate::from_ymd_opt(2026, 6, 20).unwrap();
+
+    // catches: the dry run (rolled back) or the real run touching the table
+    let dry = crate::purge::purge_rows(&conn, horizon, true).unwrap();
+    assert_eq!(dry.events_deleted, 1, "the dry run really compressed");
+    assert_eq!(dump(&conn), before);
+    let real = crate::purge::purge_rows(&conn, horizon, false).unwrap();
+    assert_eq!(real.events_deleted, 1, "the real run really compressed");
+    // catches: deleting decisions along with their event, or by decided_at age
+    assert_eq!(dump(&conn), before);
+}
