@@ -2,6 +2,8 @@
 // project account, and per-day match / billable summaries.
 
 import { billablePercent } from "./tempo_line_contract";
+import { statusKind } from "./mirresStatus";
+import type { StatusKind } from "./mirresStatus";
 import type { BillingClass, MirresDay, MirresDetails } from "./tempo_line_contract";
 
 export interface ProjectRow {
@@ -121,4 +123,70 @@ export function formatFetchedAt(iso: string): string {
   if (Number.isNaN(d.getTime())) return iso;
   const p = (n: number) => String(n).padStart(2, "0");
   return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+export interface CustomerGroup {
+  /** Display name; "Unknown customer" when Mirres named none. */
+  name: string;
+  known: boolean;
+  seconds: number;
+  /** Status of the project with the most hours. */
+  kind: StatusKind;
+  /** Hours desc. */
+  projects: ProjectRow[];
+}
+
+export const projectKind = (p: ProjectRow): StatusKind => statusKind(p);
+
+/** Projects grouped by customer, most hours first; the unknown customer last. */
+export function customersFrom(days: MirresDay[]): CustomerGroup[] {
+  const groups = new Map<string, CustomerGroup>();
+  for (const p of projectsFrom(days)) {
+    const key = p.customer ?? "";
+    let g = groups.get(key);
+    if (!g) {
+      g = { name: p.customer ?? "Unknown customer", known: p.customer !== null, seconds: 0, kind: "not_billable", projects: [] };
+      groups.set(key, g);
+    }
+    g.projects.push(p);
+    g.seconds += p.seconds;
+  }
+  const out = [...groups.values()];
+  for (const g of out) {
+    g.projects.sort((a, b) => b.seconds - a.seconds);
+    g.kind = projectKind(g.projects[0]);
+  }
+  return out.sort((a, b) => Number(b.known) - Number(a.known) || b.seconds - a.seconds || a.name.localeCompare(b.name));
+}
+
+const KIND_RANK: Record<StatusKind, number> = { billable: 0, included: 1, fixed: 2, internal: 2, not_billable: 2, missing: 3 };
+
+export interface LedgerSegment {
+  customer: string;
+  kind: StatusKind;
+  seconds: number;
+}
+
+/** Bar segments: one per customer and status, so the sage edge is the billable share. */
+export function ledgerSegments(customers: CustomerGroup[]): LedgerSegment[] {
+  const segs = new Map<string, LedgerSegment>();
+  for (const c of customers) {
+    for (const p of c.projects) {
+      const kind = projectKind(p);
+      const key = `${c.name}\u0000${kind}`;
+      const s = segs.get(key) ?? { customer: c.name, kind, seconds: 0 };
+      s.seconds += p.seconds;
+      segs.set(key, s);
+    }
+  }
+  return [...segs.values()]
+    .filter((s) => s.seconds > 0)
+    .sort((a, b) => KIND_RANK[a.kind] - KIND_RANK[b.kind] || b.seconds - a.seconds);
+}
+
+/** Ledger bar order: billable, included, the rest, missing; hours desc within a group. */
+export function ledgerOrder(customers: CustomerGroup[]): CustomerGroup[] {
+  return customers
+    .filter((c) => c.seconds > 0)
+    .sort((a, b) => KIND_RANK[a.kind] - KIND_RANK[b.kind] || b.seconds - a.seconds);
 }

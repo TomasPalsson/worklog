@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { daySummary, formatFetchedAt, projectsFrom, statusReason, stripCustomer, totals, warningHelp } from "./mirresOverview";
+import { customersFrom, daySummary, ledgerOrder, ledgerSegments, formatFetchedAt, projectsFrom, statusReason, stripCustomer, totals, warningHelp } from "./mirresOverview";
 import type { BillingClass, MirresDay, TempoLine } from "./tempo_line_contract";
 
 function line(
@@ -135,5 +135,49 @@ describe("formatFetchedAt", () => {
   it("is dd.mm.yyyy hh:mm in local time", () => {
     expect(formatFetchedAt(new Date(2026, 9, 6, 15, 59).toISOString())).toBe("06.10.2026 15:59");
     expect(formatFetchedAt(new Date(2026, 0, 2, 3, 4).toISOString())).toBe("02.01.2026 03:04");
+  });
+});
+
+describe("customersFrom / ledgerOrder", () => {
+  const withCustomer = (key: string, customer: string | null, seconds: number, cls: BillingClass = "billable") => {
+    const l = line("2026-10-06", `${key}-1`, seconds, { key, cls });
+    l.billing!.customer = customer;
+    return l;
+  };
+  const days = [
+    d("2026-10-06", [
+      withCustomer("A", null, 9000),
+      withCustomer("B", "Beta", 3600, "not_billable"),
+      withCustomer("C", "Beta", 1800),
+      withCustomer("D", "Delta", 1800, "included"),
+      withCustomer("E", "Echo", 7200),
+    ]),
+  ];
+
+  it("groups by customer, hours desc, unknown last", () => {
+    const c = customersFrom(days);
+    expect(c.map((g) => g.name)).toEqual(["Echo", "Beta", "Delta", "Unknown customer"]);
+    const beta = c.find((g) => g.name === "Beta")!;
+    expect(beta.projects.map((p) => p.account_key)).toEqual(["B", "C"]);
+    expect(beta.seconds).toBe(5400);
+    expect(beta.kind).toBe("not_billable"); // dominant project B
+  });
+
+  it("orders the bar billable, included, rest, and drops zero hours", () => {
+    const order = ledgerOrder(customersFrom(days)).map((g) => g.name);
+    expect(order).toEqual(["Unknown customer", "Echo", "Delta", "Beta"]);
+    expect(ledgerOrder(customersFrom([d("2026-10-06", [withCustomer("Z", "Zed", 0)])]))).toEqual([]);
+  });
+
+  it("splits a mixed customer into one bar segment per status", () => {
+    const segs = ledgerSegments(customersFrom(days)).map((s) => `${s.customer}:${s.kind}:${s.seconds}`);
+    // Beta's billable half sits with the billable group, its rest after.
+    expect(segs).toEqual([
+      "Unknown customer:billable:9000",
+      "Echo:billable:7200",
+      "Beta:billable:1800",
+      "Delta:included:1800",
+      "Beta:not_billable:3600",
+    ]);
   });
 });

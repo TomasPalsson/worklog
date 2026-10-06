@@ -6135,15 +6135,6 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
 .day-billable-tick { position: absolute; top: -3px; width: 2px; height: 10px; margin-left: -1px; border-radius: 1px; background: var(--fg); }
 /* Outlined, so it never reads as the filled sync chip beside it. */
 /* Always its own row under the ticket head, so every line looks the same. */
-.billing-pill { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; flex-basis: 100%; min-width: 0; font-family: var(--font-mono); font-size: 12px; line-height: 1.4; }
-.billing-pill-tag { padding: 1px 8px; border: 1px solid var(--fg-muted); border-radius: 999px; font-family: var(--font-mono); font-size: 11px; font-weight: 500; letter-spacing: 0.02em; text-transform: lowercase; line-height: 1.4; white-space: nowrap; color: var(--fg-muted); }
-.billing-pill-tag.billable { border-color: var(--sage-ink); color: var(--sage-ink); }
-.billing-pill-tag.included { border-style: dashed; border-color: var(--sage-ink); color: var(--sage-ink); }
-.billing-pill-tag.not_billable { border-color: var(--fg); color: var(--fg); }
-.billing-pill-project { color: var(--fg-muted); }
-.billing-pill-project > span { white-space: nowrap; }
-.billing-pill-warning { display: inline-flex; align-items: center; gap: 6px; flex-basis: 100%; color: var(--amber-ink); }
-.billing-pill-warning svg { flex: none; }
 /* ── verdict: settings control (T010) ── */
 .settings-body.verdict-lead { flex-shrink: 0; overflow: visible; padding-bottom: 0; }
 .verdict-lead .settings-section { border-bottom: 1px solid var(--border); }
@@ -6212,43 +6203,14 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
 .mirres-fetch-row input[type="date"]:focus-visible { outline: none; box-shadow: var(--ring); }
 .mirres-fetch-status, .mirres-fetch-error p { margin: 0; font-size: 12px; color: var(--fg-muted); }
 .mirres-fetch-error .export-error { color: var(--amber-ink); }
-.mirres-summary { margin: 16px 0 0; font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); overflow-wrap: anywhere; }
 /* Phone: header controls drop under the title. */
 .mirres-page .reg-page-header { flex-wrap: wrap; }
 @media (max-width: 640px) { .mirres-page .mirres-fetch { align-items: flex-start; } }
-.mirres-attention { display: inline-flex; align-items: center; gap: 4px; color: var(--amber-ink); }
-.mirres-table-wrap { overflow-x: auto; }
-.mirres-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.mirres-table th { padding: 8px 12px; text-align: left; font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg-muted); border-bottom: 1px solid var(--border); }
-.mirres-table td { padding: 10px 12px; vertical-align: top; border-bottom: 1px solid var(--border); }
-.mirres-table .num { text-align: right; font-variant-numeric: tabular-nums; }
-.mirres-table [data-attention] td:first-child { box-shadow: inset 2px 0 0 var(--amber-ink); }
-.mirres-key { font-family: var(--font-mono); font-size: 11px; color: var(--fg-muted); }
-.mirres-warning { display: flex; align-items: center; gap: 4px; margin-top: 4px; font-size: 12px; color: var(--amber-ink); }
-.mirres-tickets { font-family: var(--font-mono); font-size: 12px; overflow-wrap: anywhere; }
-.mirres-days { list-style: none; margin: 0; padding: 0; }
-.mirres-days li { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
-.mirres-days li:last-child { border-bottom: none; }
-.mirres-days li > a { min-width: 160px; color: var(--fg); }
-.mirres-days li > span, .mirres-days li > time { color: var(--fg-muted); font-family: var(--font-mono); font-size: 12px; }
-.mirres-days .mirres-fetch { margin-left: auto; align-items: flex-start; }
 @media (max-width: 640px) {
   .mirres-fetch { align-items: flex-start; }
-  .mirres-days .mirres-fetch { margin-left: 0; }
 }
 
 /* ── mirres customer + details ── */
-.billing-pill .billing-customer { font-family: var(--font-mono); font-size: 12px; font-weight: 600; letter-spacing: normal; color: var(--fg); }
-.billing-details { flex-basis: 100%; font-size: 12px; color: var(--fg-muted); overflow-wrap: anywhere; }
-.billing-details a, .mirres-details a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
-.billing-details a:focus-visible, .mirres-details a:focus-visible, .mirres-attention:focus-visible { outline: none; box-shadow: var(--ring); border-radius: var(--radius-sm); }
-.billing-pill-tag.not_billable { border-color: var(--fg-muted); color: var(--fg-muted); }
-.mirres-figure { color: var(--fg); font-weight: 600; }
-a.mirres-attention { text-decoration: none; }
-a.mirres-attention:hover, a.mirres-attention:focus-visible { text-decoration: underline; }
-.mirres-customer { font-weight: 600; }
-.mirres-details { display: block; margin-top: 2px; font-size: 11px; color: var(--fg-muted); }
-.mirres-help, .mirres-reason { margin-top: 2px; font-size: 11px; color: var(--fg-muted); }
 
 /* ── 17:00 recap (spec 018): Add time keeps the app's high-contrast primary; gap rows wrap on phones ── */
 .recap-gap .task-btn-primary { flex: none; min-height: 28px; padding: 0 12px; font-size: 12px; }
@@ -6258,3 +6220,104 @@ a.mirres-attention:hover, a.mirres-attention:focus-visible { text-decoration: un
   .recap-gap .review-sec-fields input { width: 100%; }
   .recap-gap .task-btn-primary { min-height: 40px; }
 }
+
+/* ── Mirres redesign: status icon, quiet ticket line, popover, ledger page ── */
+.mirres-status-icon { display: inline-flex; flex: none; color: var(--fg-muted); }
+.mirres-status-icon[data-tone="sage"] { color: var(--sage-ink); }
+.mirres-status-icon[data-tone="amber"] { color: var(--amber-ink); }
+
+.mirres-line { display: flex; align-items: center; gap: 6px; flex-basis: 100%; min-width: 0; font-size: 12.5px; line-height: 20px; }
+.mirres-line-customer { flex: none; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--fg); }
+.mirres-line-project { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-muted); }
+.mirres-line-flag { display: inline-flex; flex: none; color: var(--amber-ink); }
+.mirres-info { display: inline-flex; flex: none; margin-left: auto; }
+.mirres-info-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; min-height: 28px; margin: -4px; padding: 6px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--fg-muted); cursor: pointer; }
+.mirres-info-btn:hover { color: var(--fg); background: var(--bg-sunk); }
+.mirres-info-btn:focus-visible { outline: none; box-shadow: var(--ring); }
+
+.mirres-popover { width: 340px; max-width: calc(100vw - 24px); margin: auto; padding: 16px; flex-direction: column; gap: 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: var(--bg-raised); color: var(--fg); font-family: var(--font-sans); font-size: 13px; line-height: 1.5; font-weight: 400; text-align: left; white-space: normal; overflow: visible; }
+.mirres-popover:popover-open { display: flex; opacity: 1; transform: none; transition: opacity 160ms cubic-bezier(0.25, 1, 0.5, 1), transform 160ms cubic-bezier(0.25, 1, 0.5, 1), display 160ms allow-discrete, overlay 160ms allow-discrete; }
+@starting-style { .mirres-popover:popover-open { opacity: 0; transform: translateY(4px); } }
+@supports (anchor-name: --a) {
+  .mirres-popover { position: fixed; inset: auto; margin: 4px 0 0; top: anchor(bottom); right: anchor(right); }
+}
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) .mirres-popover { box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.08); } }
+:root[data-theme="light"] .mirres-popover { box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.08); }
+@media (prefers-reduced-motion: reduce) { .mirres-popover:popover-open { transition: none; } }
+.mirres-pop-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mirres-pop-head strong { font-weight: 600; }
+.mirres-pop-muted { color: var(--fg-muted); }
+.mirres-pop-status { display: block; }
+.mirres-pop-warning { display: flex; align-items: flex-start; gap: 8px; color: var(--amber-ink); }
+.mirres-pop-warning svg { flex: none; margin-top: 2px; }
+.mirres-pop-details { display: block; color: var(--fg-muted); overflow-wrap: anywhere; }
+.mirres-pop-details a, .mirres-details a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.mirres-pop-details a:focus-visible, .mirres-details a:focus-visible, .mirres-fix-actions a:focus-visible { outline: none; box-shadow: var(--ring); border-radius: var(--radius-sm); }
+.mirres-pop-key { font-family: var(--font-mono); font-size: 11px; color: var(--fg-muted); }
+
+.mirres-ledger { display: flex; flex-direction: column; gap: 16px; }
+.mirres-figure-block { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.mirres-big { font-family: var(--font-mono); font-size: 40px; font-weight: 600; letter-spacing: -0.03em; line-height: 1; color: var(--amber-ink); }
+.mirres-big[data-tone="sage"] { color: var(--sage-ink); }
+.mirres-big-label { font-size: 13px; color: var(--fg-muted); }
+.mirres-goal-line { flex-basis: 100%; font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); }
+.mirres-bar-wrap { position: relative; padding-top: 18px; }
+.mirres-bar { display: flex; gap: 2px; height: 20px; border-radius: 6px; overflow: hidden; }
+.mirres-seg { flex: 1 1 0; min-width: 2px; background: var(--fg-muted); opacity: 0.35; animation: mirres-seg-in 200ms ease-out both; }
+.mirres-seg[data-kind="billable"] { background: var(--sage-ink); opacity: 0.85; }
+.mirres-seg[data-kind="included"] { background: var(--sage-bg); opacity: 1; border: 1.5px dashed var(--sage-ink); box-sizing: border-box; }
+.mirres-seg[data-kind="missing"] { background: var(--amber-bg); opacity: 1; box-shadow: inset 0 0 0 1.5px var(--amber-ink); }
+@keyframes mirres-seg-in { from { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .mirres-seg { animation: none; } }
+.mirres-goal-tick { position: absolute; bottom: -4px; width: 2px; height: 28px; margin-left: -1px; background: var(--fg); }
+.mirres-goal-tick span { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); padding-bottom: 1px; font-family: var(--font-mono); font-size: 11px; line-height: 1; color: var(--fg-muted); }
+.mirres-legend { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 0; padding: 0; list-style: none; }
+.mirres-legend li { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.mirres-legend-hours, .mirres-proj-hours { font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); }
+
+.mirres-count { margin-left: 4px; color: var(--amber-ink); }
+.mirres-fix-grid, .mirres-card-grid { display: grid; grid-template-columns: 1fr; gap: 16px; margin: 12px 0 0; padding: 0; list-style: none; }
+@media (min-width: 720px) { .mirres-fix-grid { grid-template-columns: 1fr 1fr; } }
+.mirres-card-grid { grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); }
+.mirres-fix-card, .mirres-card { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-raised); }
+.mirres-fix-card { box-shadow: inset 3px 0 0 var(--amber-ink); }
+.mirres-fix-title { display: flex; align-items: center; gap: 8px; color: var(--amber-ink); }
+.mirres-fix-title > span { min-width: 0; overflow-wrap: anywhere; color: var(--fg); }
+.mirres-fix-card p { margin: 0; font-size: 13px; }
+.mirres-fix-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; font-size: 13px; }
+.mirres-fix-actions > a:not(.action-btn) { color: var(--fg-muted); text-decoration: underline; text-underline-offset: 2px; }
+.mirres-fix-meta { font-family: var(--font-mono); font-size: 11px; color: var(--fg-muted); overflow-wrap: anywhere; }
+.mirres-clear { display: flex; align-items: center; justify-content: center; gap: 16px; flex-wrap: wrap; padding: 8px 0; color: var(--fg-muted); font-size: 13px; text-align: center; }
+
+.mirres-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.mirres-card-head h3 { margin: 0; min-width: 0; font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
+.mirres-bar-mini { height: 4px; border-radius: 2px; }
+.mirres-proj-list { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 0; padding: 0; list-style: none; }
+.mirres-proj { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13px; }
+.mirres-proj-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mirres-proj-type { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--fg-muted); }
+.mirres-proj-hours { margin-left: auto; flex: none; }
+.mirres-card-more { margin-top: 4px; border-top: 1px solid var(--border); padding-top: 8px; }
+.mirres-card-more summary { cursor: pointer; font-size: 12px; color: var(--fg-muted); }
+.mirres-card-person { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; font-size: 12px; }
+.mirres-card-person-name { font-weight: 500; }
+.mirres-details { display: block; color: var(--fg-muted); overflow-wrap: anywhere; }
+
+.mirres-days { margin: 8px 0 0; padding: 0; list-style: none; }
+.mirres-days li { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 16px; min-height: 40px; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+.mirres-days li:last-child { border-bottom: none; }
+.mirres-days li > a { min-width: 160px; color: var(--fg); }
+.mirres-days li > span, .mirres-days li > time { font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); }
+.mirres-days .mirres-fetch { margin-left: auto; align-items: flex-start; }
+.mirres-days .action-btn { padding: 4px 10px; font-size: 12px; }
+
+.mirres-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 48px 0; color: var(--fg-muted); text-align: center; }
+.mirres-empty p { margin: 0; }
+.mirres-empty-title { font-size: 15px; font-weight: 600; color: var(--fg); }
+.mirres-empty-hint { max-width: 460px; font-size: 13px; }
+@media (max-width: 640px) {
+  .mirres-big { font-size: 32px; }
+  .mirres-days .mirres-fetch { margin-left: 0; }
+}
+.mirres-pop-warning-text, .mirres-pop-help { display: block; }
+.mirres-pop-help { margin-top: 2px; }
