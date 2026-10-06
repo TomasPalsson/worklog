@@ -48,7 +48,10 @@ pub async fn get_read_back(
     State(state): State<Shared>,
     Query(q): Query<DayQuery>,
 ) -> Result<Json<PreflightRow>, ApiError> {
-    read_back_with(state, TempoAuth::from_secrets()?, q.day).await
+    let auth = tokio::task::spawn_blocking(TempoAuth::from_secrets)
+        .await
+        .context("spawn_blocking")??;
+    read_back_with(state, auth, q.day).await
 }
 
 async fn read_back_with(

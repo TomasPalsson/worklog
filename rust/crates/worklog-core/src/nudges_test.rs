@@ -189,6 +189,35 @@ fn failed_fetch_leaves_no_review_nudges() {
 }
 
 #[test]
+fn refresh_once_stores_fetched_reviews() {
+    let conn = open_memory().unwrap();
+    refresh_once(now(), || Ok(SEARCH.to_string()), || &conn);
+    // catches: success path storing nothing / an empty cache
+    assert_eq!(kinds(&conn), vec![NudgeKind::ReviewRequested]);
+    assert!(!reviews_stale(&conn, now()).unwrap());
+}
+
+#[test]
+fn refresh_once_stores_empty_fresh_cache_on_fetch_error() {
+    let conn = open_memory().unwrap();
+    refresh_once(now(), || anyhow::bail!("keychain refused"), || &conn);
+    // catches: swallowing the error without stamping, so the next tick retries at once
+    assert!(!reviews_stale(&conn, now()).unwrap());
+    assert_eq!(kinds(&conn), vec![]);
+}
+
+#[test]
+fn refresh_once_error_replaces_a_previous_cache_with_empty() {
+    let conn = open_memory().unwrap();
+    refresh_once(now(), || Ok(SEARCH.to_string()), || &conn);
+    let later = now() + Duration::seconds(NUDGE_CACHE_SECONDS + 1);
+    refresh_once(later, || anyhow::bail!("http 500"), || &conn);
+    // catches: keeping the old (stale) items on error
+    assert!(!reviews_stale(&conn, later).unwrap());
+    assert_eq!(current(&conn, later).unwrap().len(), 0);
+}
+
+#[test]
 fn merged_pr_on_in_progress_ticket_is_a_nudge() {
     let conn = open_memory().unwrap();
     ticket(&conn, "GENAI-5", "In Progress");

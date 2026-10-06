@@ -88,6 +88,25 @@ pub fn refresh_reviews(conn: &Connection, now: DateTime<Utc>, client: &Client, a
     }
 }
 
+/// One refresh tick. `fetch` runs before `lock` is called, so the connection is
+/// never held across the network or a Keychain read. Any failure stores an empty
+/// cache stamped `now`, so nothing retries before the next tick.
+pub fn refresh_once<C: std::ops::Deref<Target = Connection>>(
+    now: DateTime<Utc>,
+    fetch: impl FnOnce() -> Result<String>,
+    lock: impl FnOnce() -> C,
+) {
+    let items = fetch()
+        .map(|body| parse_review_search(&body))
+        .unwrap_or_else(|e| {
+            tracing::warn!("review nudges not refreshed: {e:#}");
+            Vec::new()
+        });
+    if let Err(e) = store_reviews(&lock(), now, &items) {
+        tracing::warn!("review nudge cache not stored: {e:#}");
+    }
+}
+
 fn merged_not_done(conn: &Connection) -> Result<Vec<Nudge>> {
     let mut out = Vec::new();
     for hint in status_hints::done_hints(conn)? {
