@@ -27,7 +27,7 @@ use tracing::debug;
 
 use crate::billing_round::round_to_half_hour;
 use crate::collectors::jira::JiraAuth;
-use crate::daily_helpers_contract::MatchVerdict;
+use crate::daily_helpers_contract::{MatchVerdict, TEMPO_READ_TIMEOUT_SECONDS};
 use crate::estimate::{self, ModelInvoker};
 use crate::http::{self, RequestBuilderExt};
 use crate::models::TempoAccount;
@@ -485,7 +485,12 @@ fn sync_group_aggregated(
         let mut already = tempo_match::is_already(conn, &line);
         if !already && !dry_run {
             let day = NaiveDate::parse_from_str(&day_str, "%Y-%m-%d")?;
-            let verdict = match list_worklogs_with(auth, author, day, day, client) {
+            // §5: the read gets its own short budget; a slow Tempo falls through to a send (FR-09).
+            let read_client = http::client_with_timeout(std::time::Duration::from_secs(
+                TEMPO_READ_TIMEOUT_SECONDS,
+            ))
+            .unwrap_or_else(|_| client.clone());
+            let verdict = match list_worklogs_with(auth, author, day, day, &read_client) {
                 Ok(existing) => tempo_match::check_line(conn, &line, &existing, matcher),
                 Err(e) => MatchVerdict::Unchecked {
                     reason: format!("Tempo read failed: {e}"),
@@ -3096,6 +3101,31 @@ mod tests {
 
         post.assert_hits(1); // catches: propagating the read error and losing the send
         assert_eq!(report.synced, 1);
+    }
+
+    #[test]
+    fn a_slow_tempo_read_gives_up_after_the_read_budget_and_still_sends() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/worklogs/user/tomas@p5.is");
+            then.status(200)
+                .delay(std::time::Duration::from_secs(12))
+                .json_body(json!({"results": [], "metadata": {"count": 0}}));
+        });
+        let post = any_post(&server);
+        let conn = open_memory().unwrap();
+        seed_two_blocks(&conn);
+
+        let t0 = std::time::Instant::now();
+        sync_matching(&conn, &server, false, &|_, _| panic!("matcher asked"));
+
+        post.assert_hits(1); // catches: losing the send when the read is slow
+                             // catches: waiting out the shared 30 s client instead of the 10 s read budget (§5)
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(12),
+            "{:?}",
+            t0.elapsed()
+        );
     }
 
     #[test]
