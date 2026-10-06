@@ -168,6 +168,56 @@ fn undo_delete_brings_block_back_with_id_and_events() {
     assert_eq!(links(&conn, id), vec!["e1"]); // catches: dropping cascade-deleted event links
 }
 
+fn card(conn: &Connection, id: i64) -> Option<(i64, String, String)> {
+    conn.query_row(
+        "SELECT version, built_at, json FROM block_digest WHERE block_id = ?1",
+        params![id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .ok()
+}
+
+fn put_card(conn: &Connection, id: i64) {
+    conn.execute(
+        "INSERT INTO block_digest (block_id, version, built_at, json)
+         VALUES (?1, 1, '2026-07-01T00:00:00+00:00', '{\"k\":1}')",
+        params![id],
+    )
+    .unwrap();
+}
+
+#[test]
+fn undo_delete_restores_the_digest_card() {
+    // catches: snapshotting only blocks + block_events, so the cascade eats the card
+    let mut conn = open_memory().unwrap();
+    let id = seed30(&conn);
+    put_card(&conn, id);
+    let before = card(&conn, id);
+    assert!(before.is_some());
+    bs::delete_block(&conn, id).unwrap();
+    assert_eq!(card(&conn, id), None);
+    undo_last(&mut conn).unwrap();
+    assert_eq!(card(&conn, id), before);
+}
+
+#[test]
+fn undo_merge_restores_the_absorbed_blocks_digest_card() {
+    // catches: restoring cards only for deletes, not for merged-away blocks
+    let mut conn = open_memory().unwrap();
+    let a = seed30(&conn);
+    let b = seed(
+        &conn,
+        "2026-04-18T10:00:00+00:00",
+        "2026-04-18T10:20:00+00:00",
+        1200,
+    );
+    put_card(&conn, b);
+    let before = card(&conn, b);
+    bs::merge_blocks(&conn, a, &[b]).unwrap();
+    undo_last(&mut conn).unwrap();
+    assert_eq!(card(&conn, b), before);
+}
+
 #[test]
 fn undo_merge_restores_every_block_and_event_link() {
     let mut conn = open_memory().unwrap();

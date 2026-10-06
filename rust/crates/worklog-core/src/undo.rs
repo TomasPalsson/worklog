@@ -21,6 +21,10 @@ const SKIP_COLUMNS: [&str; 2] = ["id", "tempo_worklog_id"];
 struct Snapshot {
     row: Row,
     events: Vec<i64>,
+    // The block's digest card (version, built_at, json); the table cascades
+    // away with the block, and its raw events may already be purged.
+    #[serde(default)]
+    digest: Option<(i64, String, String)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -71,7 +75,18 @@ fn snapshot(tx: &Transaction, id: i64) -> Result<Option<Snapshot>> {
     let events = ev
         .query_map(params![id], |r| r.get(0))?
         .collect::<rusqlite::Result<Vec<i64>>>()?;
-    Ok(Some(Snapshot { row, events }))
+    let digest = tx
+        .query_row(
+            "SELECT version, built_at, json FROM block_digest WHERE block_id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    Ok(Some(Snapshot {
+        row,
+        events,
+        digest,
+    }))
 }
 
 /// Journals the current state of `before` (call it before the change is
@@ -222,6 +237,26 @@ fn synced_now(tx: &Transaction, id: i64) -> Result<bool> {
     Ok(marker_set(marker.flatten().as_deref()))
 }
 
+fn restore_satellites(tx: &Transaction, s: &Snapshot) -> Result<()> {
+    let id = id_of(s);
+    if let Some((version, built_at, json)) = &s.digest {
+        tx.execute(
+            "INSERT OR IGNORE INTO block_digest (block_id, version, built_at, json)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![id, version, built_at, json],
+        )?;
+    }
+    tx.execute("DELETE FROM block_events WHERE block_id = ?1", params![id])?;
+    for e in &s.events {
+        tx.execute(
+            "INSERT OR IGNORE INTO block_events (block_id, event_id)
+             SELECT ?1, id FROM events WHERE id = ?2",
+            params![id, e],
+        )?;
+    }
+    Ok(())
+}
+
 /// Reverses the newest journaled change. Refuses, changing nothing, when
 /// it would touch a block sent to Tempo.
 pub fn undo_last(conn: &mut Connection) -> Result<UndoOutcome> {
@@ -264,17 +299,7 @@ pub fn undo_last(conn: &mut Connection) -> Result<UndoOutcome> {
         write_block(&tx, s)?;
     }
     for s in &entry.blocks {
-        tx.execute(
-            "DELETE FROM block_events WHERE block_id = ?1",
-            params![id_of(s)],
-        )?;
-        for e in &s.events {
-            tx.execute(
-                "INSERT OR IGNORE INTO block_events (block_id, event_id)
-                 SELECT ?1, id FROM events WHERE id = ?2",
-                params![id_of(s), e],
-            )?;
-        }
+        restore_satellites(&tx, s)?;
     }
     tx.execute("DELETE FROM block_undo WHERE id = ?1", params![entry_id])?;
     tx.commit()?;
