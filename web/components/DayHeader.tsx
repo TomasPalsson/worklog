@@ -68,11 +68,17 @@ export function DayHeader({
             <span className="day-billed-value">{formatTotalHours(billedSeconds)}</span>
             <span className="day-billed-unit">billed</span>
           </div>
+          {Math.abs(billedDelta) >= 60 && (
+            <div className={`day-billed-delta${billedDelta > 0 ? " up" : ""}`}>
+              {billedDelta > 0 ? "+" : "−"}
+              {formatTotalHours(Math.abs(billedDelta))} vs tracked
+            </div>
+          )}
           {billablePercent != null && (
             <div className={`day-billable ${billablePercent >= BILLABLE_GOAL ? "ok" : "low"}`}>
               <span className="day-billable-text">
-                <span className="day-billable-value">{billablePercent}% of billed is billable</span>
-                <span className="day-billable-goal">goal {BILLABLE_GOAL}%</span>
+                <span className="day-billable-value">{billablePercent}% billable</span>
+                <span className="day-billable-goal">· goal {BILLABLE_GOAL}%</span>
               </span>
               <span
                 className="day-billable-meter"
@@ -87,12 +93,6 @@ export function DayHeader({
                 <span className="day-billable-fill" style={{ width: `${Math.min(billablePercent, 100)}%` }} />
                 <span className="day-billable-tick" style={{ left: `${BILLABLE_GOAL}%` }} />
               </span>
-            </div>
-          )}
-          {Math.abs(billedDelta) >= 60 && (
-            <div className={`day-billed-delta${billedDelta > 0 ? " up" : ""}`}>
-              {billedDelta > 0 ? "+" : "−"}
-              {formatTotalHours(Math.abs(billedDelta))} vs tracked
             </div>
           )}
         </div>

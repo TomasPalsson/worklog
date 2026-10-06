@@ -111,7 +111,15 @@ export function ActionBar({ day, cacheCount, cacheLast }: Props) {
         label="Refresh Mirres"
         pendingLabel="Refreshing…"
         title="Fetch each line's billable status from Mirres"
-        onClick={() => run("mirres", "Refreshed Mirres", () => refreshMirresAction(day))}
+        onClick={() =>
+          run("mirres", "Mirres", async () => {
+            const r = await refreshMirresAction(day);
+            // Nothing matched is a problem to fix, not a success.
+            if (r.ok && r.data.length > 0 && !r.data.some((l) => l.billing))
+              return { ok: false as const, error: "no line matched — do the tickets have an Account in Jira?" };
+            return r;
+          })
+        }
       />
       <ActionButton
         pending={isPending("dry-run")}
@@ -217,7 +225,7 @@ export function summarise(r: unknown): string {
   // Refresh Mirres returns the day's ticket lines.
   if (Array.isArray(r)) {
     const found = r.filter((l) => l && typeof l === "object" && "billing" in l && l.billing).length;
-    return `${found} of ${r.length} lines found in Mirres`;
+    return `${found} of ${r.length} lines matched`;
   }
   if (r && typeof r === "object") {
     const o = r as Record<string, unknown>;

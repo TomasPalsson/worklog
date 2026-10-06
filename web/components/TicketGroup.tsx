@@ -1,7 +1,7 @@
 "use client";
 
 import { ReactNode, useEffect, useRef, useState, useTransition } from "react";
-import { Check, GitMerge, Pencil, RefreshCw, Sparkles } from "lucide-react";
+import { Check, GitMerge, Pencil, RefreshCw, Sparkles, TriangleAlert } from "lucide-react";
 import type { BlockGroup } from "@/app/[day]/page";
 import { formatBilledHours, formatTotalHours } from "@/lib/format";
 import { canMergeGroup } from "@/lib/group-actions";
@@ -19,12 +19,23 @@ import { LineHours } from "./LineHours";
 const BILLING_LABEL = { billable: "Billable", included: "Included", not_billable: "Not billable" };
 
 function BillingPill({ billing }: { billing: LineBilling }) {
-  const project = [billing.project, billing.project_type].filter(Boolean).join(" · ");
+  const project = [billing.project, billing.project_type].filter((p): p is string => Boolean(p));
   return (
     <span className="billing-pill">
       <span className={`billing-pill-tag ${billing.class}`}>{BILLING_LABEL[billing.class]}</span>
-      {project && <span className="billing-pill-project">{project}</span>}
-      {billing.warning && <span className="billing-pill-warning">{billing.warning}</span>}
+      {project.length > 0 && (
+        <span className="billing-pill-project">
+          {project.map((p, i) => (
+            <span key={i}>{i > 0 && " · "}{p}</span>
+          ))}
+        </span>
+      )}
+      {billing.warning && (
+        <span className="billing-pill-warning">
+          <TriangleAlert size={12} aria-hidden="true" />
+          {billing.warning}
+        </span>
+      )}
     </span>
   );
 }

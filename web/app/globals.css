@@ -6086,7 +6086,7 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
 .ticket-line-error button:focus-visible { outline: none; box-shadow: var(--ring); border-radius: 2px; }
 
 /* Mirres billable share: number + goal, and a slim meter with a goal tick. */
-.day-billable { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font-family: var(--font-mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+.day-billable { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; margin-top: 6px; font-family: var(--font-mono); font-size: 12px; font-variant-numeric: tabular-nums; }
 .day-billable-text { display: flex; align-items: baseline; gap: 6px; }
 .day-billable.ok .day-billable-value { color: var(--sage-ink); }
 .day-billable.low .day-billable-value { color: var(--amber-ink); }
@@ -6100,7 +6100,11 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
 /* Always its own row under the ticket head, so every line looks the same. */
 .billing-pill { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; flex-basis: 100%; min-width: 0; font-family: var(--font-mono); font-size: 12px; line-height: 1.4; }
 .billing-pill-tag { padding: 1px 8px; border: 1px solid var(--fg-muted); border-radius: 999px; font-family: var(--font-mono); font-size: 11px; font-weight: 500; letter-spacing: 0.02em; text-transform: lowercase; line-height: 1.4; white-space: nowrap; color: var(--fg-muted); }
-.billing-pill-tag.billable, .billing-pill-tag.included { border-color: var(--sage-ink); color: var(--sage-ink); }
+.billing-pill-tag.billable { border-color: var(--sage-ink); color: var(--sage-ink); }
+.billing-pill-tag.included { border-style: dashed; border-color: var(--sage-ink); color: var(--sage-ink); }
+.billing-pill-tag.not_billable { border-color: var(--fg); color: var(--fg); }
 .billing-pill-project { color: var(--fg-muted); }
-.billing-pill-warning { color: var(--amber-ink); }
+.billing-pill-project > span { white-space: nowrap; }
+.billing-pill-warning { display: inline-flex; align-items: center; gap: 6px; flex-basis: 100%; color: var(--amber-ink); }
+.billing-pill-warning svg { flex: none; }
 .ticket-line-head:has(.billing-pill) { flex-wrap: wrap; row-gap: 4px; }
