@@ -94,6 +94,34 @@ describe("ReviewSection not sent", () => {
   });
 });
 
+describe("ReviewSection sync body errors", () => {
+  const ns = line({ day: "2026-10-05", jira_issue: "AB-9", status: "not_sent", error: "Tempo said no" });
+  const failed = { ok: true as const, data: { synced: 0, skipped: 0, errors: ["Tempo 400: bad hours"] } };
+
+  it("Send again with errors[] in an ok body shows the error and stays Not sent", async () => {
+    setup([ns], { sync: mock(async () => failed) });
+    fireEvent.click(screen.getByRole("button", { name: "Send again" }));
+    await waitFor(() => expect(screen.getByText("Tempo 400: bad hours")).toBeTruthy());
+    expect(screen.getByText("Not sent: Tempo said no")).toBeTruthy();
+  });
+
+  it("a successful Send again turns the row into a sent row", async () => {
+    setup([ns], { sync: mock(async () => ({ ok: true as const, data: { synced: 1, skipped: 0, errors: [] } })) });
+    fireEvent.click(screen.getByRole("button", { name: "Send again" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Looks right" })).toBeTruthy());
+    expect(screen.queryByText(/Not sent:/)).toBeNull();
+  });
+
+  it("Save with errors[] in an ok body stays in edit mode and never confirms", async () => {
+    const { confirm } = setup([L1], { sync: mock(async () => failed) });
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Text"), { target: { value: "Better" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save to Tempo" }));
+    await waitFor(() => expect(screen.getByText("Tempo 400: bad hours")).toBeTruthy());
+    expect(confirm).not.toHaveBeenCalled();
+  });
+});
+
 describe("ReviewSection edit", () => {
   const open = () => fireEvent.click(screen.getByRole("button", { name: "Edit" }));
   const save = () => screen.getByRole("button", { name: "Save to Tempo" }) as HTMLButtonElement;
