@@ -89,6 +89,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         .context("ensuring block_customer_shares.rows_json")?;
     ensure_events_elsewhere(conn).context("ensuring events.elsewhere")?;
     ensure_blocks_ticket_origin(conn).context("ensuring blocks.ticket_origin")?;
+    ensure_events_verdict_ranking(conn).context("ensuring events.verdict_ranking")?;
+    ensure_tempo_line_texts_verdict_columns(conn)
+        .context("ensuring tempo_line_texts verdict columns")?;
     if from_version < 14 {
         seed_deildir_from_folder_pins(conn).context("seeding billing_deildir from folder pins")?;
     }
@@ -370,6 +373,40 @@ fn ensure_blocks_ticket_origin(conn: &Connection) -> Result<()> {
         .context("ALTER TABLE blocks ADD ticket_origin")?;
     }
     Ok(())
+}
+
+fn add_columns_if_missing(conn: &Connection, table: &str, columns: &[(&str, &str)]) -> Result<()> {
+    let have: Vec<String> = conn
+        .prepare(&format!("PRAGMA table_info({table})"))?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for (name, ddl) in columns {
+        if !have.iter().any(|c| c == name) {
+            conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {name} {ddl}"), [])
+                .with_context(|| format!("ALTER TABLE {table} ADD {name}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_events_verdict_ranking(conn: &Connection) -> Result<()> {
+    add_columns_if_missing(conn, "events", &[("verdict_ranking", "TEXT")])
+}
+
+fn ensure_tempo_line_texts_verdict_columns(conn: &Connection) -> Result<()> {
+    add_columns_if_missing(
+        conn,
+        "tempo_line_texts",
+        &[
+            (
+                "check_status",
+                "TEXT CHECK(check_status IN ('passed', 'needs_look'))",
+            ),
+            ("auto_sent_at", "TEXT"),
+            ("confirmed_at", "TEXT"),
+            ("send_error", "TEXT"),
+        ],
+    )
 }
 
 fn ensure_events_elsewhere(conn: &Connection) -> Result<()> {

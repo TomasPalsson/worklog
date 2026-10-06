@@ -449,3 +449,22 @@ CREATE TABLE IF NOT EXISTS tempo_day_dismissals (
     reason TEXT NOT NULL,
     dismissed_at TEXT NOT NULL
 );
+
+-- ───────────────────── verdict decision log (spec 017) ─────────────────────
+-- Permanent: every Verdict guess and Owner correction; purge.rs never
+-- names it. `subject` is an event id, block id, or `<day>|<jira_issue>`;
+-- `ranking` is a JSON verdict_contract::Ranking.
+CREATE TABLE IF NOT EXISTS verdict_decisions (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL CHECK(kind IN ('project', 'ticket', 'line_text')),
+    source TEXT NOT NULL CHECK(source IN ('verdict', 'owner')),
+    subject TEXT NOT NULL,
+    state_json TEXT NOT NULL,
+    options TEXT NOT NULL,
+    ranking TEXT,
+    chosen TEXT,
+    previous TEXT,
+    decided_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_verdict_decisions_subject ON verdict_decisions(kind, subject);
+CREATE INDEX IF NOT EXISTS idx_verdict_decisions_at ON verdict_decisions(decided_at);
