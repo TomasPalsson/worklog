@@ -29,8 +29,8 @@ use rusqlite::{params_from_iter, Connection};
 
 use crate::billing_deildir;
 use crate::billing_registry::Registry;
+use crate::billing_round::{round_to_half_hour, HALF_HOUR_SECONDS};
 use crate::clues_contract::{BillingLineKey, LineTextOrigin};
-use crate::collectors::tempo::{round_to_half_hour, HALF_HOUR_SECONDS};
 use crate::models::Block;
 use crate::repo;
 

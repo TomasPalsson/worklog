@@ -25,6 +25,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::debug;
 
+use crate::billing_round::round_to_half_hour;
 use crate::collectors::jira::JiraAuth;
 use crate::estimate::{self, ModelInvoker};
 use crate::http::{self, RequestBuilderExt};
@@ -38,26 +39,6 @@ use crate::tempo_lines;
 use super::CollectReport;
 
 pub const DEFAULT_BASE: &str = "https://api.tempo.io/4";
-
-/// We bill in half-hour units only — a worklog is always a multiple of
-/// 0.5h. `1800` seconds = 30 minutes.
-pub const HALF_HOUR_SECONDS: i64 = 1800;
-
-/// Round a raw second count UP to the next half hour
-/// (15 min → 0.5h, 31 min → 1h, 1h 25m → 1.5h). A total under 15 minutes
-/// rounds to `0`, which the sync path treats as "below the 0.5h minimum,
-/// don't log". This is the single point where tracked seconds become
-/// billable half-hours, so both the aggregated and legacy sync paths run
-/// every duration through it before building the Tempo payload.
-pub fn round_to_half_hour(seconds: i64) -> i64 {
-    if seconds <= 0 {
-        return 0;
-    }
-    if seconds < HALF_HOUR_SECONDS / 2 {
-        return 0;
-    }
-    ((seconds + HALF_HOUR_SECONDS - 1) / HALF_HOUR_SECONDS) * HALF_HOUR_SECONDS
-}
 
 /// One row's outcome — useful for the CLI to print a table.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1463,28 +1444,6 @@ mod tests {
         );
         let stored = tempo_lines::line_for(&conn, &line_key()).unwrap().unwrap();
         assert_eq!(stored.text, None);
-    }
-
-    #[test]
-    fn round_to_half_hour_rounds_up_with_zero_floor() {
-        // Exact multiples are untouched.
-        assert_eq!(round_to_half_hour(0), 0);
-        assert_eq!(round_to_half_hour(1800), 1800);
-        assert_eq!(round_to_half_hour(5400), 5400);
-        // Under 15 min → 0 (below the half-hour minimum).
-        assert_eq!(round_to_half_hour(1), 0);
-        assert_eq!(round_to_half_hour(14 * 60), 0);
-        // From 15 min up, always round up to the next half hour.
-        assert_eq!(round_to_half_hour(15 * 60), 1800);
-        assert_eq!(round_to_half_hour(26 * 60 + 40), 1800);
-        assert_eq!(round_to_half_hour(31 * 60), 3600);
-        assert_eq!(round_to_half_hour(44 * 60), 3600);
-        assert_eq!(round_to_half_hour(61 * 60), 5400);
-        // 1h 25m → 1.5h (the user's example).
-        assert_eq!(round_to_half_hour(85 * 60), 5400);
-        assert_eq!(round_to_half_hour(5401), 7200);
-        // Negatives clamp to 0 rather than going negative.
-        assert_eq!(round_to_half_hour(-100), 0);
     }
 
     #[test]
