@@ -44,6 +44,16 @@ function stateCopy(s: VerdictState) {
   }
 }
 
+function RunLabel({ toggling, state }: { toggling: boolean; state?: VerdictState["state"] }) {
+  if (!toggling) return <span>Run Verdict</span>;
+  return (
+    <>
+      <Loader2 className="spin" size={13} />
+      <span>{state === "off" ? "Turning on…" : "Turning off…"}</span>
+    </>
+  );
+}
+
 export function VerdictControl({
   day,
   autoSend,
@@ -104,8 +114,7 @@ export function VerdictControl({
             });
           }}
         />
-        {toggling && <Loader2 className="spin" size={13} />}
-        <span>{toggling ? (state === "off" ? "Turning on…" : "Turning off…") : "Run Verdict"}</span>
+        <RunLabel toggling={toggling} state={state} />
       </label>
       <p className="settings-hint">Turns on or off at once.</p>
       {status ? (
