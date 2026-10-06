@@ -82,6 +82,6 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --
 - [x] CHK002 human-verify the 17:00 recap — files: web/components/RecapBanner.tsx — verify: human: after a real 17:00 run the Owner sees what was sent, what was held back, and 3 gaps with working Personal/Break/Pick a ticket buttons — after: T032 — done: 5061a8f by user
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `flow check --fix --since 6eb7a92`
-- [ ] G002 branch review clean — files: . — verify: `flow pass`
-- [ ] G003 verification evidence exists — files: . — verify: `test -s verify/`
+- [x] G001 project gates clean — files: . — verify: `flow check --fix --since 6eb7a92` — done: f7e1fb5
+- [x] G002 branch review clean — files: . — verify: `flow pass` — done: f7e1fb5
+- [x] G003 verification evidence exists — files: . — verify: `test -s verify/` — done: f7e1fb5
