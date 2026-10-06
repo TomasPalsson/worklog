@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { UploadCloud } from "lucide-react";
 
+import { loadPreflight } from "@/lib/daemonPreflight";
+import type { PreflightRow } from "@/lib/daily_helpers_contract";
 import { formatDuration } from "@/lib/format";
 import { DaySent, type Common } from "./TaskDayTools";
 import { SyncConfirm } from "./TaskSyncConfirm";
@@ -33,6 +35,7 @@ type SyncProps = Common & { inTempo: boolean; changed: boolean };
 export function useSync({ taskKey, actions, onSaved, onAnnounce, label, day, changed }: SyncProps) {
   const [step, setStep] = useState<Step>({ s: "idle" });
   const [sending, setSending] = useState(false);
+  const [rows, setRows] = useState<PreflightRow[]>();
   const trigger = useRef<HTMLButtonElement>(null);
   const refocus = useRef(false);
   useEffect(() => {
@@ -54,7 +57,9 @@ export function useSync({ taskKey, actions, onSaved, onAnnounce, label, day, cha
 
   async function dryRun() {
     setStep({ s: "running" });
-    setStep(failed(await actions.runSync(day.day, true, taskKey), true) ?? { s: "preview" });
+    const [res, checks] = await Promise.all([actions.runSync(day.day, true, taskKey), loadPreflight(day.day)]);
+    setRows(checks.ok ? checks.data : undefined);
+    setStep(failed(res, true) ?? { s: "preview" });
   }
 
   async function send() {
@@ -69,7 +74,7 @@ export function useSync({ taskKey, actions, onSaved, onAnnounce, label, day, cha
     onSaved();
   }
 
-  return { step, sending, trigger, dryRun, send, cancel };
+  return { step, sending, rows, trigger, dryRun, send, cancel };
 }
 
 export type Sync = ReturnType<typeof useSync>;
@@ -99,7 +104,7 @@ export function SyncBody({ sync, label, day, changed }: Pick<SyncProps, "label" 
   return (
     <>
       {step.s === "preview" && (
-        <SyncConfirm label={label} day={day} changed={changed} sending={sync.sending} onSend={sync.send} onCancel={sync.cancel} />
+        <SyncConfirm label={label} day={day} changed={changed} sending={sync.sending} rows={sync.rows} onSend={sync.send} onCancel={sync.cancel} />
       )}
       {step.s === "sent" && <DaySent focus>{step.msg}</DaySent>}
       {step.s === "nothing" && (

@@ -3,6 +3,7 @@
 import { UploadCloud } from "lucide-react";
 import { useEffect, useRef } from "react";
 
+import { hasRedRow, type PreflightRow } from "@/lib/daily_helpers_contract";
 import { formatDuration } from "@/lib/format";
 import type { TicketDay } from "@/lib/types";
 
@@ -18,6 +19,7 @@ export function SyncConfirm(p: {
   day: TicketDay;
   changed: boolean;
   sending: boolean;
+  rows?: PreflightRow[];
   onSend: () => void;
   onCancel: () => void;
 }) {
@@ -25,6 +27,7 @@ export function SyncConfirm(p: {
   useEffect(() => send.current?.focus(), []);
   const { day } = p;
   const hours = formatDuration(day.line_seconds);
+  const red = hasRedRow(p.rows ?? []);
   // Esc is scoped to this confirm (never document-wide) and keeps the dialog open.
   function onKeyDown(e: React.KeyboardEvent) {
     if (e.key !== "Escape" || p.sending) return;
@@ -46,10 +49,25 @@ export function SyncConfirm(p: {
           )}
         </span>
       </p>
+      {p.rows && p.rows.length > 0 && (
+        <ul className="task-day-checklist" aria-label="Pre-send checklist">
+          {p.rows.map((r, i) => (
+            <li key={i} className={r.ok ? "task-check-ok" : "task-check-red"}>
+              <span role="img" aria-label={r.ok ? "Passed" : "Failed"}>{r.ok ? "✓" : "✗"}</span>
+              <span>{r.detail}</span>
+            </li>
+          ))}
+        </ul>
+      )}
       <span className="task-day-confirm-act">
-        <button ref={send} type="button" className="task-btn-primary" disabled={p.sending} onClick={p.onSend}>
+        <button ref={send} type="button" className="task-btn-primary" disabled={p.sending || red} onClick={p.onSend}>
           {p.sending ? (p.changed ? "Updating…" : "Sending…") : p.changed ? "Update" : "Send"}
         </button>
+        {red && (
+          <button type="button" className="task-btn-secondary" disabled={p.sending} onClick={p.onSend}>
+            Send anyway
+          </button>
+        )}
         <button type="button" className="task-btn-secondary" disabled={p.sending} onClick={p.onCancel}>
           Cancel
         </button>
