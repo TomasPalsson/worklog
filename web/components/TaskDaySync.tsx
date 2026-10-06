@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import { UploadCloud } from "lucide-react";
 
-import { loadPreflight, loadReadBack } from "@/lib/daemonPreflight";
 import type { PreflightRow } from "@/lib/daily_helpers_contract";
 import { formatDuration } from "@/lib/format";
 import { ReadBackRow } from "./ReadBackRow";
@@ -59,7 +58,7 @@ export function useSync({ taskKey, actions, onSaved, onAnnounce, label, day, cha
 
   async function dryRun() {
     setStep({ s: "running" });
-    const [res, checks] = await Promise.all([actions.runSync(day.day, true, taskKey), loadPreflight(day.day)]);
+    const [res, checks] = await Promise.all([actions.runSync(day.day, true, taskKey), actions.loadPreflight(day.day)]);
     setRows(checks.ok ? checks.data : undefined);
     setStep(failed(res, true) ?? { s: "preview" });
   }
@@ -74,7 +73,7 @@ export function useSync({ taskKey, actions, onSaved, onAnnounce, label, day, cha
     setStep({ s: "sent", msg: `${changed ? "Tempo updated" : "Sent to Tempo"} · ${hours}` });
     onAnnounce?.(`${changed ? "Updated" : "Sent"} ${hours} ${changed ? "in" : "to"} Tempo for ${taskKey} on ${label}.`);
     onSaved();
-    const back = await loadReadBack(day.day);
+    const back = await actions.loadReadBack(day.day);
     setReadBack(back.ok ? back.data : { check: "read_back", ok: false, detail: `Could not read Tempo back: ${back.error}`, target: day.day });
   }
 
