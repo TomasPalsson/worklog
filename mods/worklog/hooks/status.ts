@@ -17,6 +17,11 @@ const hours = atom(
   '',
 )
 
+const nudgeLine = atom(
+  { plugin: 'worklog', key: 'nudge' } as const,
+  '',
+)
+
 async function makeIo($: EngineInterface): Promise<Io> {
   return {
     fetch: (url, init) => $.http.fetch(url, init),
@@ -69,8 +74,20 @@ export function registerStatus(on: On): void {
     return next(event)
   })
 
+  let prompts = 0
+  on('prompt.submit', { origin: { kind: 'composer' } }, async ($, event, next) => {
+    const turn = prompts++
+    const io = await makeIo($)
+    void (async () => {
+      const list = await daemonGet<{ text: string }[]>(io, '/nudges')
+      const shown = list.ok && list.value.length > 0 ? list.value[turn % list.value.length].text : ''
+      await update($, nudgeLine, () => shown)
+    })()
+    return next(event)
+  })
+
   on('ui.render', { component: 'PromptHint' }, async ($, event, next) => {
-    const text = await read($, hours)
-    return next(text ? { ...event, props: { ...event.props, tail: event.props.tail ? `${event.props.tail} · ${text}` : text } } : event)
+    const parts = [event.props.tail, await read($, hours), await read($, nudgeLine)].filter(Boolean)
+    return next(parts.length > 0 ? { ...event, props: { ...event.props, tail: parts.join(' · ') } } : event)
   })
 }
