@@ -16,14 +16,8 @@ type Result = { ok: true; data?: unknown } | { ok: false; error: string };
 interface Actions {
   confirm?: (day: string, jiraIssue?: string) => Promise<Result>;
   sync?: (day: string, dryRun: boolean, jiraIssue?: string) => Promise<Result>;
-  saveHours?: (
-    key: { day: string; jira_issue: string },
-    seconds: number | null,
-  ) => Promise<Result>;
-  saveText?: (
-    key: { day: string; jira_issue: string },
-    text: string,
-  ) => Promise<Result>;
+  saveHours?: (key: { day: string; jira_issue: string }, seconds: number | null) => Promise<Result>;
+  saveText?: (key: { day: string; jira_issue: string }, text: string) => Promise<Result>;
 }
 
 type Wired = Required<Actions>;
@@ -32,24 +26,14 @@ const hoursOf = (seconds: number) => Number((seconds / 3600).toFixed(2));
 // The daemon answers 200 even when Tempo rejects or skips the line.
 function syncFailure(r: Result): Result {
   if (!r.ok) return r;
-  const d = r.data as
-    | {
-        synced?: number;
-        errors?: string[];
-        results?: { reason: string | null }[];
-      }
-    | undefined;
+  const d = r.data as { synced?: number; errors?: string[]; results?: { reason: string | null }[] } | undefined;
   if (!d) return r;
-  const reasons = [
-    ...(d.errors ?? []),
-    ...(d.results ?? []).map((x) => x.reason).filter(Boolean),
-  ] as string[];
+  const reasons = [...(d.errors ?? []), ...(d.results ?? []).map((x) => x.reason).filter(Boolean)] as string[];
   if (reasons.length === 0 && d.synced !== 0) return r;
   return { ok: false, error: reasons[0] ?? "Tempo did not accept the line" };
 }
 
-const same = (a: ReviewLine, b: ReviewLine) =>
-  a.day === b.day && a.jira_issue === b.jira_issue;
+const same = (a: ReviewLine, b: ReviewLine) => a.day === b.day && a.jira_issue === b.jira_issue;
 
 function dayLabel(day: string) {
   const [month, date] = shortMonthDay(day).split(" ");
@@ -82,12 +66,9 @@ function EditRow({
     setError(null);
     start(async () => {
       const steps: (() => Promise<Result>)[] = [];
-      if (hoursChanged)
-        steps.push(() => act.saveHours(key, Math.round(Number(hours) * 3600)));
+      if (hoursChanged) steps.push(() => act.saveHours(key, Math.round(Number(hours) * 3600)));
       if (textChanged) steps.push(() => act.saveText(key, text));
-      steps.push(async () =>
-        syncFailure(await act.sync(line.day, false, line.jira_issue)),
-      );
+      steps.push(async () => syncFailure(await act.sync(line.day, false, line.jira_issue)));
       steps.push(() => act.confirm(line.day, line.jira_issue));
       for (const step of steps) {
         const r = await step();
@@ -114,15 +95,8 @@ function EditRow({
           onChange={(e) => setHours(e.target.value)}
         />
         <label htmlFor={`${id}-t`}>Text</label>
-        <textarea
-          id={`${id}-t`}
-          rows={3}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-        />
-        {!valid && (
-          <p className="review-sec-error">Hours must be at least 0.25.</p>
-        )}
+        <textarea id={`${id}-t`} rows={3} value={text} onChange={(e) => setText(e.target.value)} />
+        {!valid && <p className="review-sec-error">Hours must be at least 0.25.</p>}
       </div>
       <div className="review-sec-actions">
         <button
@@ -134,12 +108,7 @@ function EditRow({
           {pending && <Loader2 className="spin" size={13} />}
           {pending ? "Saving…" : "Save to Tempo"}
         </button>
-        <button
-          type="button"
-          className="action-btn"
-          disabled={pending}
-          onClick={onCancel}
-        >
+        <button type="button" className="action-btn" disabled={pending} onClick={onCancel}>
           Cancel
         </button>
         {error && <p className="review-sec-error">{error}</p>}
@@ -236,13 +205,7 @@ function Row({
             type="button"
             className="action-btn"
             disabled={pending}
-            onClick={() =>
-              run(
-                async () =>
-                  syncFailure(await act.sync(line.day, false, line.jira_issue)),
-                onSent,
-              )
-            }
+            onClick={() => run(async () => syncFailure(await act.sync(line.day, false, line.jira_issue)), onSent)}
           >
             {pending && <Loader2 className="spin" size={13} />}
             {pending ? "Sending…" : "Send again"}
@@ -289,12 +252,7 @@ function DayGroup({
           Open day
         </Link>
         {sent > 0 && (
-          <button
-            type="button"
-            className="review-toggle"
-            disabled={pending}
-            onClick={confirmAll}
-          >
+          <button type="button" className="review-toggle" disabled={pending} onClick={confirmAll}>
             {pending ? "Confirming…" : `Confirm all ${sent}`}
           </button>
         )}
@@ -302,13 +260,7 @@ function DayGroup({
       </div>
       <ul role="list">
         {lines.map((l) => (
-          <Row
-            key={l.jira_issue}
-            line={l}
-            act={act}
-            onGone={(msg) => onGone(l, msg)}
-            onSent={() => onSent(l)}
-          />
+          <Row key={l.jira_issue} line={l} act={act} onGone={(msg) => onGone(l, msg)} onSent={() => onSent(l)} />
         ))}
       </ul>
     </div>
@@ -359,11 +311,10 @@ export function ReviewSection({
                   }),
                 )
               }
-              onAllGone={(d) =>
-                setLines((cur) =>
-                  cur.filter((x) => x.day !== d || x.status !== "sent"),
-                )
-              }
+              onAllGone={(d) => {
+                setAnnouncement(`Confirmed all sent lines for ${d}`);
+                setLines((cur) => cur.filter((x) => x.day !== d || x.status !== "sent"));
+              }}
             />
           ))}
         </section>

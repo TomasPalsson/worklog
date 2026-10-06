@@ -271,6 +271,12 @@ describe("ReviewSection polish", () => {
     expect(live()).toBe(before); // catches a re-inserted (unannounced) live region
   });
 
+  it("announces Confirm all in the live region", async () => {
+    setup([L1, L2]);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm all 2" }));
+    await waitFor(() => expect(live().textContent).toBe("Confirmed all sent lines for 2026-10-05")); // catches onAllGone silently removing rows
+  });
+
   it("announces a saved row", async () => {
     setup([L1, L2]);
     fireEvent.click(rowOf("AB-1").getByRole("button", { name: "Edit" }));
