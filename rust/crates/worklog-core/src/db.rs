@@ -92,6 +92,8 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     ensure_events_verdict_ranking(conn).context("ensuring events.verdict_ranking")?;
     ensure_tempo_line_texts_verdict_columns(conn)
         .context("ensuring tempo_line_texts verdict columns")?;
+    ensure_tempo_line_texts_match_columns(conn)
+        .context("ensuring tempo_line_texts match columns")?;
     if from_version < 14 {
         seed_deildir_from_folder_pins(conn).context("seeding billing_deildir from folder pins")?;
     }
@@ -405,6 +407,21 @@ fn ensure_tempo_line_texts_verdict_columns(conn: &Connection) -> Result<()> {
             ("auto_sent_at", "TEXT"),
             ("confirmed_at", "TEXT"),
             ("send_error", "TEXT"),
+        ],
+    )
+}
+
+fn ensure_tempo_line_texts_match_columns(conn: &Connection) -> Result<()> {
+    add_columns_if_missing(
+        conn,
+        "tempo_line_texts",
+        &[
+            (
+                "match_status",
+                "TEXT CHECK(match_status IN ('already_in_tempo'))",
+            ),
+            ("match_tempo_id", "TEXT"),
+            ("match_basis", "TEXT"),
         ],
     )
 }
