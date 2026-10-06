@@ -3787,6 +3787,7 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
         let prune_paths = Paths::resolve()?;
         let verdict_task = worklog_core::verdict_supervisor::spawn()?;
         let scorecard_task = daemon_mod::spawn_scorecard_loop(state.clone());
+        let auto_send_task = daemon_mod::spawn_auto_send_loop(state.clone());
         let prune_task = daemon_mod::spawn_prune_loop(
             state.clone(),
             prune_paths.data_dir.join("worklog.db.preprune"),
@@ -3815,6 +3816,7 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
         }
         prune_task.abort();
         scorecard_task.abort();
+        auto_send_task.abort();
         verdict_task.abort();
         worklog_core::verdict_supervisor::shutdown();
         unix_res
