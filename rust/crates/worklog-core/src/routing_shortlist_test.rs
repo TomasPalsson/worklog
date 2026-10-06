@@ -261,3 +261,53 @@ fn examples_are_cut_to_sixty_chars_and_capped_at_three_hundred_total() {
     assert_eq!(got["zq-e0"].len(), 5);
     assert!(!got.contains_key("zq-e1"));
 }
+
+/// Four 60-char examples on `zq-f0`, then `tail` lengths on `zq-f1`; returns
+/// how many `zq-f1` examples survive the total cap.
+fn tail_examples_kept(tail: &[usize]) -> usize {
+    let conn = open_memory().unwrap();
+    let folders = vec!["zq-f0".to_string(), "zq-f1".to_string()];
+    for f in &folders {
+        pin(&conn, f, None);
+    }
+    let lens: Vec<(&str, usize)> = (0..4)
+        .map(|_| ("zq-f0", 60))
+        .chain(tail.iter().map(|&l| ("zq-f1", l)))
+        .collect();
+    for (n, (f, len)) in lens.into_iter().enumerate() {
+        let title = "y".repeat(len);
+        let id = repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                "slack",
+                format!("{f}{n}"),
+                "2026-04-19T10:00:00+00:00",
+                title,
+            ),
+        )
+        .unwrap();
+        crate::routing::label_event(
+            &conn,
+            id,
+            &crate::routing_contract::LabelRequest {
+                folder: f.to_string(),
+                always: None,
+            },
+        )
+        .unwrap();
+    }
+    let got = examples_for_options(&conn, &folders).unwrap();
+    got.get("zq-f1").map_or(0, Vec::len)
+}
+
+#[test]
+fn example_cap_keeps_a_total_of_exactly_three_hundred() {
+    // 240 + 59 + 1 = 300 lands on the cap mid-option: catches `<` for `<=`.
+    assert_eq!(tail_examples_kept(&[59, 1]), 2);
+}
+
+#[test]
+fn example_cap_drops_the_example_that_makes_it_three_hundred_and_one() {
+    // 240 + 59 + 2 = 301: catches a cap of 301 or more (`> cap + 1` slack).
+    assert_eq!(tail_examples_kept(&[59, 2]), 1);
+}
