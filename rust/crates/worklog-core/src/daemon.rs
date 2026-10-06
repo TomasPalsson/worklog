@@ -285,6 +285,8 @@ pub fn router(state: Shared) -> Router {
         .route("/verdict/retry", post(verdict_retry))
         .route("/review", get(review_list))
         .route("/review/confirm", post(review_confirm))
+        .route("/recap", get(recap_today))
+        .route("/recap/gap", post(recap_gap))
         .route("/days/:day/elsewhere", get(list_elsewhere))
         .route("/events/:id/move", post(move_event_handler))
         .route("/undo", post(crate::daemon_undo::post_undo))
@@ -2953,6 +2955,37 @@ async fn review_confirm(
     Ok(Json(json!({ "confirmed": confirmed })))
 }
 
+async fn recap_today(
+    State(state): State<Shared>,
+) -> Result<Json<Option<crate::daily_helpers_contract::Recap>>, ApiError> {
+    let today = local_today();
+    let recap = with_conn(state, crate::recap::latest).await?;
+    Ok(Json(recap.filter(|r| r.day == today)))
+}
+
+#[derive(Deserialize)]
+struct RecapGapBody {
+    day: String,
+    started_at: String,
+    #[serde(flatten)]
+    action: crate::daily_helpers_contract::GapAction,
+}
+
+async fn recap_gap(
+    State(state): State<Shared>,
+    Json(body): Json<RecapGapBody>,
+) -> Result<Json<Option<crate::daily_helpers_contract::Recap>>, ApiError> {
+    let applied = with_conn(state, move |c| {
+        match crate::recap::apply_gap(c, &body.day, &body.started_at, body.action) {
+            Ok(()) => Ok(Ok(crate::recap::latest(c)?)),
+            Err(e) => Ok(Err(e)),
+        }
+    })
+    .await?;
+    let recap = applied.map_err(ApiError::bad_request)?;
+    Ok(Json(recap))
+}
+
 /// How often the auto-send tick runs; a run starts within this of 17:00.
 const AUTO_SEND_TICK: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
@@ -3187,6 +3220,84 @@ mod tests {
     async fn read_json(resp: Response) -> Value {
         let bytes = body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn store_recap(state: &Shared, day: &str) {
+        let recap = crate::daily_helpers_contract::Recap {
+            day: day.to_owned(),
+            sent: vec![],
+            held_back: vec![],
+            coverage_percent: 50,
+            gaps: vec![crate::daily_helpers_contract::RecapGap {
+                started_at: format!("{day}T10:00:00Z"),
+                ended_at: format!("{day}T11:00:00Z"),
+                minutes: 60,
+            }],
+        };
+        state
+            .conn
+            .try_lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO recaps (day, json, built_at) VALUES (?1, ?2, '')",
+                params![day, serde_json::to_string(&recap).unwrap()],
+            )
+            .unwrap();
+    }
+
+    async fn recap_call(state: &Shared, req: Request<Body>) -> (StatusCode, Value) {
+        let resp = router(state.clone()).oneshot(req).await.unwrap();
+        (resp.status(), read_json(resp).await)
+    }
+
+    fn gap_post(day: &str, started_at: &str) -> Request<Body> {
+        Request::post("/recap/gap")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({"day": day, "started_at": started_at, "action": "break"}).to_string(),
+            ))
+            .unwrap()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn recap_route_serves_only_todays_recap() {
+        let state = state_with_block();
+        let get = || Request::get("/recap").body(Body::empty()).unwrap();
+        let (status, v) = recap_call(&state, get()).await;
+        assert_eq!((status, v), (StatusCode::OK, Value::Null)); // catches a 404/500 on no recap
+        store_recap(&state, "2020-01-01");
+        let (_, v) = recap_call(&state, get()).await;
+        assert_eq!(v, Value::Null, "an old recap is not today's"); // catches serving latest regardless of day
+        let today = local_today();
+        store_recap(&state, &today);
+        let (_, v) = recap_call(&state, get()).await;
+        assert_eq!(v["day"], today.as_str());
+        assert_eq!(v["gaps"][0]["minutes"], 60);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn recap_gap_route_resolves_a_gap_and_refuses_an_unknown_one() {
+        let state = state_with_block();
+        let today = local_today();
+        let (status, _) = recap_call(&state, gap_post(&today, &format!("{today}T10:00:00Z"))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "no recap yet"); // catches a 200 or 500
+        store_recap(&state, &today);
+        let (status, _) = recap_call(&state, gap_post(&today, &format!("{today}T10:05:00Z"))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "gap not in the recap");
+        let (status, v) = recap_call(&state, gap_post(&today, &format!("{today}T10:00:00Z"))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(v["day"], today.as_str());
+        let breaks: i64 = state
+            .conn
+            .try_lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM recap_breaks WHERE day = ?1",
+                [&today],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(breaks, 1); // catches a route that returns the recap without applying the action
     }
 
     #[tokio::test(flavor = "current_thread")]
