@@ -502,6 +502,80 @@ async fn prune_due_check_once(state: Shared, snapshot_to: &Path, db_path: &Path)
     }
 }
 
+/// Owner-local hour from which the nightly scorecard may run.
+const SCORECARD_HOUR: u32 = 3;
+const SCORECARD_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+/// `meta` key holding the local day the scorecard last ran on.
+const SCORECARD_LATCH_KEY: &str = "scorecard_ran_on";
+
+/// Builds the classifier on the blocking thread that uses it: a blocking
+/// `reqwest` client must not be created or dropped on an async worker.
+pub type ClassifierFactory = Arc<dyn Fn() -> Box<dyn routing_contract::Classifier> + Send + Sync>;
+
+/// Spawn the nightly scorecard: checks hourly, runs at most once per local day.
+pub fn spawn_scorecard_loop(state: Shared) -> tokio::task::JoinHandle<()> {
+    let make: ClassifierFactory = Arc::new(|| Box::new(VerdictClassifier::new()));
+    tokio::spawn(async move {
+        loop {
+            let local = chrono::Utc::now().with_timezone(&crate::tz::day_offset());
+            scorecard_due_once(&state, make.clone(), local).await;
+            tokio::time::sleep(SCORECARD_CHECK_INTERVAL).await;
+        }
+    })
+}
+
+/// One tick of [`spawn_scorecard_loop`]; a failure is logged, never raised.
+pub async fn scorecard_due_once(
+    state: &Shared,
+    make: ClassifierFactory,
+    local: chrono::DateTime<chrono::FixedOffset>,
+) {
+    if let Err(e) = scorecard_nightly(state, make, local).await {
+        warn!("nightly scorecard failed: {e:#}");
+    }
+}
+
+/// The model calls and the threshold search run off the connection lock. A run
+/// that could not ask Verdict is not saved and does not use up the day.
+async fn scorecard_nightly(
+    state: &Shared,
+    make: ClassifierFactory,
+    local: chrono::DateTime<chrono::FixedOffset>,
+) -> Result<()> {
+    use chrono::Timelike;
+    if local.hour() < SCORECARD_HOUR {
+        return Ok(());
+    }
+    let today = local.date_naive().to_string();
+    let ran = today.clone();
+    let due = with_conn(state.clone(), move |c| {
+        Ok(crate::purge::meta_get(c, SCORECARD_LATCH_KEY)?.as_deref() != Some(ran.as_str()))
+    })
+    .await?;
+    if !due {
+        return Ok(());
+    }
+    let now = local.with_timezone(&chrono::Utc);
+    let cases = with_conn(state.clone(), move |c| crate::scorecard::load(c, now)).await?;
+    let rule = configured_route_rule();
+    let card = tokio::task::spawn_blocking(move || {
+        let classifier = make();
+        crate::scorecard::score(crate::scorecard::replay(cases, &*classifier), rule, true)
+    })
+    .await
+    .context("spawn_blocking")?;
+    if card.skipped > 0 {
+        tracing::debug!("nightly scorecard: Verdict not answering, will retry");
+        return Ok(());
+    }
+    info!("nightly scorecard: {}", card.summary());
+    with_conn(state.clone(), move |c| {
+        crate::scorecard::save(c, &card)?;
+        crate::purge::meta_set(c, SCORECARD_LATCH_KEY, &today)
+    })
+    .await
+}
+
 // ───────────────────────── handlers ─────────────────────────
 
 /// Sentinel type so handlers stay concise. Variants map to HTTP status
@@ -2759,12 +2833,18 @@ async fn verdict_status(
     NaiveDate::parse_from_str(&q.day, "%Y-%m-%d")
         .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{}`: {e}", q.day)))?;
     let day = q.day;
-    let unchecked = with_conn(state, move |c| verdict_decisions::unchecked_count(c, &day)).await?;
+    let (unchecked, scorecard) = with_conn(state, move |c| {
+        Ok((
+            verdict_decisions::unchecked_count(c, &day)?,
+            crate::scorecard::last_summary(c)?,
+        ))
+    })
+    .await?;
     let state = verdict_state_off_runtime(|| Ok(verdict_supervisor::status())).await?;
     Ok(Json(VerdictStatus {
         state,
         unchecked,
-        scorecard: None,
+        scorecard,
     }))
 }
 

@@ -65,6 +65,7 @@ pub mod routing_contract;
 pub mod routing_dismiss;
 mod routing_shortlist;
 pub mod schedule;
+pub mod scorecard;
 pub mod scrub;
 mod scrub_assignment;
 pub mod secrets;

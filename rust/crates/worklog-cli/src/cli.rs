@@ -252,10 +252,16 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
 
     /// Ask Verdict which work blocks are about QUERY and total their
     /// time, e.g. `worklog eval "code interpreter"`. Needs
-    /// `worklog verdict serve` running.
+    /// `worklog verdict serve` running. With `--replay`, instead replay the
+    /// last 30 days of Verdict's project and ticket decisions and print how
+    /// many it got right, wrong or was unsure of.
     Eval {
         /// What the work was about, in plain words.
-        query: String,
+        #[arg(required_unless_present = "replay", conflicts_with = "replay")]
+        query: Option<String>,
+        /// Print the scorecard instead of searching for a query.
+        #[arg(long)]
+        replay: bool,
         /// After the table, print each matched block's card: titles,
         /// prompts, branches, active minutes and folder.
         #[arg(long)]
@@ -846,7 +852,11 @@ pub fn run_with<W: Write>(
         } => cmd_day(day, serve, no_serve, &model, out, cli.json),
         Cmd::Summary { day } => cmd_summary(day, out, cli.json),
         Cmd::Week { day } => cmd_week(day, out, cli.json),
-        Cmd::Eval { query, details } => crate::eval_cmd::cmd_eval(&query, out, cli.json, details),
+        Cmd::Eval {
+            query,
+            replay: _,
+            details,
+        } => crate::eval_cmd::cmd_eval(query.as_deref(), out, cli.json, details),
         Cmd::Export { day, format, mark } => cmd_export(day, format, mark, out, cli.json),
         Cmd::Ticket { sub } => crate::ticket_cmd::run_ticket(sub, out, cli.json),
         Cmd::Account { sub } => crate::ticket_cmd::run_account(sub, out, cli.json),
@@ -3776,6 +3786,7 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
         // test point a prune at the real data directory.
         let prune_paths = Paths::resolve()?;
         let verdict_task = worklog_core::verdict_supervisor::spawn()?;
+        let scorecard_task = daemon_mod::spawn_scorecard_loop(state.clone());
         let prune_task = daemon_mod::spawn_prune_loop(
             state.clone(),
             prune_paths.data_dir.join("worklog.db.preprune"),
@@ -3803,6 +3814,7 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
             t.abort();
         }
         prune_task.abort();
+        scorecard_task.abort();
         verdict_task.abort();
         worklog_core::verdict_supervisor::shutdown();
         unix_res
