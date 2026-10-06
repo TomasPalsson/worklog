@@ -169,6 +169,9 @@ pub enum Cmd {
         /// Preview the payload without calling Tempo.
         #[arg(long)]
         dry_run: bool,
+        /// Send even when the pre-send checklist has red rows, without asking.
+        #[arg(short, long)]
+        yes: bool,
     },
 
     /// Cluster a day's events into blocks (gap-timeout algorithm).
@@ -870,7 +873,7 @@ pub fn run_with<W: Write>(
             SkillCmd::Status => cmd_skill_status(out, cli.json),
         },
         Cmd::Collect { target, days } => cmd_collect(target, days, out, cli.json),
-        Cmd::Sync { day, dry_run } => cmd_sync(day, dry_run, out, cli.json),
+        Cmd::Sync { day, dry_run, yes } => cmd_sync(day, dry_run, yes, out, cli.json),
         Cmd::Infer { day } => cmd_infer(day, out, cli.json),
         Cmd::Estimate { day, model } => cmd_estimate(day, &model, out, cli.json),
         Cmd::Day {
@@ -1789,13 +1792,36 @@ fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bo
     Ok(())
 }
 
-fn cmd_sync<W: Write>(day: Option<String>, dry_run: bool, out: &mut W, json: bool) -> Result<()> {
+fn cmd_sync<W: Write>(
+    day: Option<String>,
+    dry_run: bool,
+    yes: bool,
+    out: &mut W,
+    json: bool,
+) -> Result<()> {
     let paths = Paths::resolve()?;
     if !paths.db_exists() {
         anyhow::bail!("db not initialized. Run `worklog db migrate` first.");
     }
     let conn = db::open(&paths.db)?;
     let day = parse_day(day.as_deref())?;
+    if !dry_run {
+        let rows = worklog_core::preflight::check(&conn, day, day)?;
+        // stdout stays pure JSON under --json
+        let proceed = if json {
+            crate::helpers_cmd::preflight_gate(
+                &rows,
+                yes,
+                || confirm("Send anyway?"),
+                &mut io::stderr(),
+            )?
+        } else {
+            crate::helpers_cmd::preflight_gate(&rows, yes, || confirm("Send anyway?"), out)?
+        };
+        if !proceed {
+            return Ok(());
+        }
+    }
     let auth = if dry_run {
         // Dry-run only prints payloads — placeholders are fine.
         tempo_col::TempoAuth::from_secrets().unwrap_or(tempo_col::TempoAuth {

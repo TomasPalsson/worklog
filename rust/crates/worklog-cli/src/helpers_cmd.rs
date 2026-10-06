@@ -6,7 +6,9 @@ use anyhow::{bail, Result};
 use worklog_core::{
     ask::{self, Hit, Stopped},
     collectors::slack::SLACK_API,
-    daily_helpers_contract::{PostOutcome, StandupDraft, UndoOutcome, SLACK_DAILY_CHANNEL_KEY},
+    daily_helpers_contract::{
+        PostOutcome, PreflightRow, StandupDraft, UndoOutcome, SLACK_DAILY_CHANNEL_KEY,
+    },
     db, envfile, estimate, http,
     paths::Paths,
     report::{monthly_report, MonthlyReport},
@@ -105,6 +107,27 @@ fn show_standup<W: Write>(
     Ok(())
 }
 
+/// Prints the checklist; true when the send may go ahead, i.e. nothing is
+/// red or the Owner passed `yes` or confirms.
+pub(crate) fn preflight_gate<W: Write>(
+    rows: &[PreflightRow],
+    yes: bool,
+    confirm: impl FnOnce() -> Result<bool>,
+    out: &mut W,
+) -> Result<bool> {
+    for r in rows {
+        writeln!(out, "{} {}", if r.ok { "✓" } else { "✗" }, r.detail)?;
+    }
+    if yes || rows.iter().all(|r| r.ok) {
+        return Ok(true);
+    }
+    if confirm()? {
+        return Ok(true);
+    }
+    writeln!(out, "not sent")?;
+    Ok(false)
+}
+
 fn show_undo<W: Write>(outcome: UndoOutcome, out: &mut W, json: bool) -> Result<()> {
     if json {
         writeln!(out, "{}", serde_json::to_string_pretty(&outcome)?)?;
@@ -194,7 +217,7 @@ fn show_report<W: Write>(report: &MonthlyReport, csv: bool, out: &mut W) -> Resu
 mod tests {
     use super::*;
     use clap::Parser;
-    use worklog_core::daily_helpers_contract::BlockChange;
+    use worklog_core::daily_helpers_contract::{BlockChange, PreflightCheck};
     use worklog_core::report::ReportLine;
 
     fn run<F: FnOnce(&mut Vec<u8>) -> Result<()>>(f: F) -> (Result<()>, String) {
@@ -479,5 +502,90 @@ mod tests {
         assert!(parse(&["ask", "--repo", "worklog", "kafka"]).is_err());
         assert!(parse(&["report", "APRÓ", "2026-07", "--csv"]).is_ok());
         assert!(parse(&["report", "APRÓ"]).is_err(), "month is required");
+        assert!(parse(&["sync", "--yes"]).is_ok(), "sync takes --yes");
+    }
+
+    fn row(ok: bool, detail: &str) -> PreflightRow {
+        PreflightRow {
+            check: PreflightCheck::Ticketed,
+            ok,
+            detail: detail.into(),
+            target: (!ok).then(|| "7".into()),
+        }
+    }
+
+    fn gate_run(
+        rows: &[PreflightRow],
+        yes: bool,
+        answer: Result<bool>,
+    ) -> (Result<bool>, String, usize) {
+        let asked = std::cell::Cell::new(0);
+        let mut buf = Vec::new();
+        let res = preflight_gate(
+            rows,
+            yes,
+            || {
+                asked.set(asked.get() + 1);
+                answer
+            },
+            &mut buf,
+        );
+        (res, String::from_utf8(buf).unwrap(), asked.get())
+    }
+
+    #[test]
+    fn checklist_lists_every_row_with_its_mark() {
+        // catches printing only the red rows, or no mark telling red from green
+        let rows = [
+            row(true, "all ticketed"),
+            row(false, "Block 7 has no ticket"),
+        ];
+        let (res, text, _) = gate_run(&rows, true, Ok(false));
+        res.unwrap();
+        assert_eq!(text, "✓ all ticketed\n✗ Block 7 has no ticket\n");
+    }
+
+    #[test]
+    fn all_green_proceeds_without_asking() {
+        // catches prompting when nothing is red
+        let (res, _, asked) = gate_run(&[row(true, "ok")], false, Ok(false));
+        assert!(res.unwrap());
+        assert_eq!(asked, 0);
+    }
+
+    #[test]
+    fn red_declined_stops_the_send() {
+        // catches sending on red without the Owner's confirm (FR-15)
+        let (res, text, asked) = gate_run(&[row(false, "bad")], false, Ok(false));
+        assert!(!res.unwrap());
+        assert_eq!(asked, 1);
+        assert!(text.ends_with("not sent\n"), "{text}");
+    }
+
+    #[test]
+    fn red_confirmed_proceeds() {
+        // catches ignoring the confirm answer and always stopping
+        let (res, _, asked) = gate_run(&[row(false, "bad")], false, Ok(true));
+        assert!(res.unwrap());
+        assert_eq!(asked, 1);
+    }
+
+    #[test]
+    fn red_with_yes_proceeds_without_asking() {
+        // catches --yes still prompting (hangs scripts)
+        let (res, _, asked) = gate_run(&[row(false, "bad")], true, Ok(false));
+        assert!(res.unwrap());
+        assert_eq!(asked, 0);
+    }
+
+    #[test]
+    fn red_with_failed_confirm_stops_with_an_error() {
+        // catches treating a non-interactive refusal as yes, or swallowing it
+        let (res, _, _) = gate_run(
+            &[row(false, "bad")],
+            false,
+            Err(anyhow::anyhow!("non-interactive")),
+        );
+        assert_eq!(res.unwrap_err().to_string(), "non-interactive");
     }
 }
