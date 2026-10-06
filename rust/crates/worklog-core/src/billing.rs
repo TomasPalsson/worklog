@@ -133,12 +133,12 @@ impl BillingRow {
     }
 
     /// Earliest start, or [`FILL_IN`] when the line has no blocks.
-    pub fn start_display(&self) -> &str {
+    pub fn start_display(&self) -> String {
         time_or_fill_in(&self.started_at)
     }
 
     /// Latest end, or [`FILL_IN`] when the line has no blocks.
-    pub fn end_display(&self) -> &str {
+    pub fn end_display(&self) -> String {
         time_or_fill_in(&self.ended_at)
     }
 
@@ -797,11 +797,17 @@ fn format_hours(seconds: i64) -> String {
     }
 }
 
-fn time_or_fill_in(t: &str) -> &str {
+/// `HH:MM` in the `$WORKLOG_TZ` offset, [`FILL_IN`] when empty, verbatim when unparseable.
+fn time_or_fill_in(t: &str) -> String {
     if t.is_empty() {
-        FILL_IN
-    } else {
-        t
+        return FILL_IN.to_owned();
+    }
+    match chrono::DateTime::parse_from_rfc3339(t) {
+        Ok(d) => d
+            .with_timezone(&crate::tz::day_offset())
+            .format("%H:%M")
+            .to_string(),
+        Err(_) => t.to_owned(),
     }
 }
 
@@ -1827,13 +1833,15 @@ mod tests {
 
     #[test]
     fn each_missing_time_says_fill_in_independently() {
+        let _g = crate::tz::test_env_lock();
+        std::env::remove_var("WORKLOG_TZ");
         let mut r = sample_rows().remove(0);
         r.started_at = String::new();
         assert_eq!(r.start_display(), "fill in");
-        assert_eq!(r.end_display(), "2026-07-23T14:30:00Z"); // catches filling both when one is missing
+        assert_eq!(r.end_display(), "14:30"); // catches filling both when one is missing
         r.started_at = "2026-07-23T09:00:00Z".into();
         r.ended_at = String::new();
-        assert_eq!(r.start_display(), "2026-07-23T09:00:00Z");
+        assert_eq!(r.start_display(), "09:00");
         assert_eq!(r.end_display(), "fill in");
     }
 
@@ -1862,17 +1870,15 @@ mod tests {
 
     #[test]
     fn text_line_with_no_blocks_shows_fill_in_for_both_times() {
+        let _g = crate::tz::test_env_lock();
+        std::env::remove_var("WORKLOG_TZ");
         let mut rows = sample_rows();
         rows[0].started_at = String::new();
         rows[0].ended_at = String::new();
         let out = render(&rows, Format::Text);
         let lines: Vec<&str> = out.lines().collect();
         assert!(lines[0].contains("fill in–fill in"), "{}", lines[0]);
-        assert!(
-            lines[1].contains("2026-07-23T15:00:00Z–2026-07-23T19:00:00Z"),
-            "{}",
-            lines[1]
-        );
+        assert!(lines[1].contains("  15:00–19:00  "), "{}", lines[1]);
     }
 
     #[test]
