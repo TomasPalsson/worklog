@@ -10,7 +10,7 @@ use crate::ask::{self, Hit, Stopped};
 use crate::daemon::{ApiError, Shared};
 
 /// Blocks one request may index; the background fill does the rest.
-pub const ASK_SYNC_BATCH: usize = 20;
+pub const ASK_SYNC_BATCH: usize = 5;
 
 #[derive(Deserialize)]
 pub struct AskQuery {
