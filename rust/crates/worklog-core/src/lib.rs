@@ -44,6 +44,7 @@ mod infer_lane_tags;
 pub mod infer_lanes;
 mod infer_session_folder;
 pub mod jira_assist_contract;
+pub mod line_check;
 pub mod line_text;
 mod line_text_jobs;
 pub mod local_clone;

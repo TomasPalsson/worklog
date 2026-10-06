@@ -11,6 +11,7 @@ use crate::tempo_line_contract::{
     SetTempoLineHours, SetTempoLineText, TempoLine, TempoLineKey, HALF_HOUR_SECONDS,
 };
 use crate::updater::crypto::sha256_hex;
+use crate::verdict_contract::LineCheck;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -184,7 +185,8 @@ pub fn set_text(conn: &Connection, body: &SetTempoLineText) -> Result<Option<Tem
     };
     conn.execute(
         "UPDATE tempo_line_texts
-            SET text = ?3, text_origin = ?4, source_hash = NULL, updated_at = ?5
+            SET text = ?3, text_origin = ?4, source_hash = NULL, check_status = NULL,
+                updated_at = ?5
           WHERE day = ?1 AND jira_issue = ?2",
         params![
             key.day,
@@ -285,7 +287,8 @@ pub fn commit_generated(
     ensure_row(conn, key)?;
     conn.execute(
         "UPDATE tempo_line_texts
-            SET text = ?3, text_origin = 'generated', source_hash = ?4, updated_at = ?5
+            SET text = ?3, text_origin = 'generated', source_hash = ?4,
+                check_status = NULL, updated_at = ?5
           WHERE day = ?1 AND jira_issue = ?2",
         params![
             key.day,
@@ -297,6 +300,23 @@ pub fn commit_generated(
     )
     .context("commit_generated")?;
     finish_write(conn, key)
+}
+
+/// Records a generated line's text check (FR-19); a hand-written line is
+/// never checked (FR-21) and a missing line is left missing.
+pub fn set_check(conn: &Connection, key: &TempoLineKey, status: Option<LineCheck>) -> Result<()> {
+    let value = status.map(|s| match s {
+        LineCheck::Passed => "passed",
+        LineCheck::NeedsLook => "needs_look",
+    });
+    conn.execute(
+        "UPDATE tempo_line_texts SET check_status = ?3
+          WHERE day = ?1 AND jira_issue = ?2
+            AND text IS NOT NULL AND text_origin = 'generated'",
+        params![key.day, key.jira_issue, value],
+    )
+    .context("set_check")?;
+    Ok(())
 }
 
 #[path = "tempo_lines_test.rs"]
