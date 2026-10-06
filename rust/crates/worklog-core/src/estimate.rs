@@ -187,47 +187,38 @@ pub fn resolve_provider() -> Result<ProviderChoice> {
 /// Invoke the estimator for every un-estimated block on `day`. Routes
 /// through whichever [`ProviderChoice`] is active.
 pub fn estimate_day(conn: &Connection, day: NaiveDate, model: &str) -> Result<EstimateStats> {
-    let classifier = production_classifier();
-    let rule = crate::daemon::configured_route_rule();
-    match resolve_provider()? {
-        ProviderChoice::ClaudeSubprocess => estimate_day_for(
+    estimate_day_via(
+        conn,
+        day,
+        model,
+        resolve_provider()?,
+        &crate::verdict::VerdictClassifier::new(),
+        crate::daemon::configured_route_rule(),
+    )
+}
+
+/// [`estimate_day`] with the provider, classifier and rule supplied.
+fn estimate_day_via(
+    conn: &Connection,
+    day: NaiveDate,
+    model: &str,
+    provider: ProviderChoice,
+    classifier: &dyn crate::routing_contract::Classifier,
+    rule: crate::routing_contract::RouteRule,
+) -> Result<EstimateStats> {
+    match provider {
+        ProviderChoice::ClaudeSubprocess => estimate_day_with_verdict(
             conn,
             day,
             model,
             &ClaudeSubprocess::default(),
-            &classifier,
+            classifier,
             rule,
         ),
-        ProviderChoice::LiteLLM(inv) => estimate_day_for(conn, day, model, &inv, &classifier, rule),
+        ProviderChoice::LiteLLM(inv) => {
+            estimate_day_with_verdict(conn, day, model, &inv, classifier, rule)
+        }
     }
-}
-
-#[cfg(test)]
-thread_local! {
-    static CLASSIFIER_URL: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
-}
-
-fn production_classifier() -> crate::verdict::VerdictClassifier {
-    #[cfg(test)]
-    if let Some(url) = CLASSIFIER_URL.with(|u| u.borrow().clone()) {
-        return crate::verdict::VerdictClassifier::with_client(
-            reqwest::blocking::Client::new(),
-            url,
-        );
-    }
-    crate::verdict::VerdictClassifier::new()
-}
-
-/// [`estimate_day`] with the invoker, classifier and rule supplied.
-fn estimate_day_for<I: ModelInvoker>(
-    conn: &Connection,
-    day: NaiveDate,
-    model: &str,
-    invoker: &I,
-    classifier: &dyn crate::routing_contract::Classifier,
-    rule: crate::routing_contract::RouteRule,
-) -> Result<EstimateStats> {
-    estimate_day_with_verdict(conn, day, model, invoker, classifier, rule)
 }
 
 /// [`resolve_provider`], boxed as a single trait object. Any caller that
@@ -2556,72 +2547,10 @@ mod tests {
         assert_eq!(block.description.as_deref(), Some("Work"));
     }
 
-    #[test]
-    fn estimate_day_for_applies_a_clear_verdict_pick() {
-        let conn = open_memory().unwrap();
-        let bid = block_naming_both(&conn, "auto");
-        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
-        let reply = pick_ticket_reply(Some("PROJ-1"));
-        estimate_day_for(
-            &conn,
-            day,
-            "m",
-            &reply,
-            &Names("PROJ-2", 0.6),
-            verdict_rule(),
-        )
-        .unwrap();
-        let block = repo::get_block(&conn, bid).unwrap().unwrap();
-        assert_eq!(block.jira_issue.as_deref(), Some("PROJ-2"));
-    }
-
-    #[test]
-    fn estimate_day_for_keeps_the_model_pick_when_verdict_is_unreachable() {
-        let conn = open_memory().unwrap();
-        let bid = block_naming_both(&conn, "auto");
-        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
-        let reply = pick_ticket_reply(Some("PROJ-1"));
-        let down = crate::verdict::VerdictClassifier::with_client(
-            reqwest::blocking::Client::new(),
-            "http://127.0.0.1:1".into(),
-        );
-        estimate_day_for(&conn, day, "m", &reply, &down, verdict_rule()).unwrap();
-        let block = repo::get_block(&conn, bid).unwrap().unwrap();
-        assert_eq!(block.jira_issue.as_deref(), Some("PROJ-1"));
-    }
-
-    /// Runs the public `estimate_day` against a mocked model that picks
-    /// PROJ-1, so only the Verdict wiring inside `estimate_day` can change
-    /// the outcome.
-    fn public_estimate_day_ticket(verdict_up: bool) -> Option<String> {
+    /// Runs the provider-resolving path `estimate_day` delegates to, with a
+    /// mocked model that picks PROJ-1.
+    fn via_provider_ticket(classifier: &dyn crate::routing_contract::Classifier) -> Option<String> {
         use httpmock::prelude::*;
-        let verdict = MockServer::start();
-        verdict.mock(|when, then| {
-            when.method(POST).path("/classify");
-            then.status(200).json_body(json!({
-                "ranking": [
-                    {"id": "PROJ-2", "probability": 0.6},
-                    {"id": "PROJ-1", "probability": 0.1}
-                ],
-                "abstain": 0.1,
-                "agreed": true
-            }));
-        });
-        let url = if verdict_up {
-            verdict.base_url()
-        } else {
-            "http://127.0.0.1:1".to_string()
-        };
-        CLASSIFIER_URL.with(|u| *u.borrow_mut() = Some(url));
-        let ticket = public_estimate_day_picks();
-        CLASSIFIER_URL.with(|u| *u.borrow_mut() = None);
-        ticket
-    }
-
-    fn public_estimate_day_picks() -> Option<String> {
-        use httpmock::prelude::*;
-        let _g = PROVIDER_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        clear_provider_state();
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(POST).path("/v1/chat/completions");
@@ -2629,25 +2558,29 @@ mod tests {
                 r#"{"jira_issue":"PROJ-1","minutes":30,"description":"Work"}"#,
             ));
         });
-        std::env::set_var("WORKLOG_ESTIMATOR_PROVIDER", "litellm");
-        crate::secrets::set("litellm_base_url", &server.base_url()).unwrap();
+        let provider =
+            ProviderChoice::LiteLLM(LiteLLMInvoker::new(server.base_url(), "", "m").unwrap());
         let conn = open_memory().unwrap();
         let bid = block_naming_both(&conn, "auto");
         let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
-        let result = estimate_day(&conn, day, "m");
-        clear_provider_state();
-        result.unwrap();
+        estimate_day_via(&conn, day, "m", provider, classifier, verdict_rule()).unwrap();
         repo::get_block(&conn, bid).unwrap().unwrap().jira_issue
     }
 
     #[test]
-    fn public_estimate_day_applies_a_clear_verdict_pick() {
-        assert_eq!(public_estimate_day_ticket(true).as_deref(), Some("PROJ-2"));
+    fn estimate_day_via_applies_a_clear_verdict_pick() {
+        let ticket = via_provider_ticket(&Names("PROJ-2", 0.6));
+        assert_eq!(ticket.as_deref(), Some("PROJ-2")); // catches a path that skips Verdict
     }
 
     #[test]
-    fn public_estimate_day_keeps_the_model_pick_when_verdict_is_down() {
-        assert_eq!(public_estimate_day_ticket(false).as_deref(), Some("PROJ-1"));
+    fn estimate_day_via_keeps_the_model_pick_when_verdict_is_unreachable() {
+        let down = crate::verdict::VerdictClassifier::with_client(
+            reqwest::blocking::Client::new(),
+            "http://127.0.0.1:1".into(),
+        );
+        let ticket = via_provider_ticket(&down);
+        assert_eq!(ticket.as_deref(), Some("PROJ-1")); // catches an unreachable Verdict failing estimation
     }
 
     #[test]
