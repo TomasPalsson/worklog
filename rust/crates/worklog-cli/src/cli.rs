@@ -262,6 +262,33 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
         details: bool,
     },
 
+    /// Reverse your newest block change (the last 20 are remembered).
+    /// Refused when the block was already sent to Tempo.
+    Undo,
+
+    /// Search saved blocks and your Claude prompts, newest first, e.g.
+    /// `worklog ask kafka lag`; `--repo` shows where you stopped there.
+    Ask {
+        /// Words to look for.
+        #[arg(required_unless_present = "repo")]
+        query: Vec<String>,
+        /// Show the last 3 prompts and the files touched in this repo.
+        #[arg(long, conflicts_with = "query")]
+        repo: Option<String>,
+    },
+
+    /// Print one customer's hours for a month, grouped by deild, with
+    /// the change from the month before.
+    Report {
+        /// Customer name as in the billing registry.
+        customer: String,
+        /// Month, YYYY-MM.
+        month: String,
+        /// Print CSV instead of text.
+        #[arg(long)]
+        csv: bool,
+    },
+
     /// Export a day's blocks as billing line items grouped by
     /// (dominant repo, task) — copy-pasteable text (or CSV/JSON) for
     /// an external invoicing system. Reads the db directly (no daemon
@@ -847,6 +874,15 @@ pub fn run_with<W: Write>(
         Cmd::Summary { day } => cmd_summary(day, out, cli.json),
         Cmd::Week { day } => cmd_week(day, out, cli.json),
         Cmd::Eval { query, details } => crate::eval_cmd::cmd_eval(&query, out, cli.json, details),
+        Cmd::Undo => crate::helpers_cmd::cmd_undo(out, cli.json),
+        Cmd::Ask { query, repo } => {
+            crate::helpers_cmd::cmd_ask(&query, repo.as_deref(), out, cli.json)
+        }
+        Cmd::Report {
+            customer,
+            month,
+            csv,
+        } => crate::helpers_cmd::cmd_report(&customer, &month, csv, out),
         Cmd::Export { day, format, mark } => cmd_export(day, format, mark, out, cli.json),
         Cmd::Ticket { sub } => crate::ticket_cmd::run_ticket(sub, out, cli.json),
         Cmd::Account { sub } => crate::ticket_cmd::run_account(sub, out, cli.json),
