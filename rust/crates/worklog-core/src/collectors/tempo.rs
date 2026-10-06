@@ -18,7 +18,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Utc};
 use reqwest::blocking::Client;
 use rusqlite::{params, Connection};
 use serde::Deserialize;
@@ -601,6 +601,13 @@ fn sync_group_aggregated(
             stmt.execute(params![tempo_id, b.id])?;
         }
     }
+    // A line that failed an auto-send and now went through is sent, awaiting review.
+    conn.execute(
+        "UPDATE tempo_line_texts
+            SET send_error = NULL, auto_sent_at = COALESCE(auto_sent_at, ?3)
+          WHERE day = ?1 AND jira_issue = ?2 AND send_error IS NOT NULL",
+        params![key.day, key.jira_issue, Utc::now().to_rfc3339()],
+    )?;
     report.synced += 1;
     let head_status = if method == "PUT" { "updated" } else { "synced" };
     let tail_status = if method == "PUT" {
@@ -2726,6 +2733,59 @@ mod tests {
         any.assert_hits(0);
         assert!(results.is_empty());
         assert_eq!(report.synced, 0);
+    }
+
+    fn seed_failed_line(conn: &Connection) {
+        seed_two_tickets_and_an_unassigned_block(conn);
+        conn.execute(
+            "INSERT INTO tempo_line_texts (day, jira_issue, text, text_origin, send_error, updated_at)
+             VALUES ('2026-04-18', 'PROJ-2', 'two work', 'manual', 'Tempo could not be reached', 'x')",
+            [],
+        )
+        .unwrap();
+    }
+
+    fn line_state(conn: &Connection) -> (Option<String>, bool) {
+        conn.query_row(
+            "SELECT send_error, auto_sent_at IS NOT NULL FROM tempo_line_texts
+              WHERE day = '2026-04-18' AND jira_issue = 'PROJ-2'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_successful_resend_clears_the_failure_and_marks_the_line_sent() {
+        let server = MockServer::start();
+        post_mock(&server, "two work");
+        let conn = open_memory().unwrap();
+        seed_failed_line(&conn);
+
+        sync_for(&conn, &server, false, Some("PROJ-2"));
+
+        // catches: leaving Not sent on a resend that went through, or clearing it without
+        // marking the line sent (it would vanish from Review)
+        assert_eq!(line_state(&conn), (None, true));
+    }
+
+    #[test]
+    fn a_failed_resend_keeps_the_failure() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/worklogs");
+            then.status(500).body("boom");
+        });
+        let conn = open_memory().unwrap();
+        seed_failed_line(&conn);
+
+        sync_for(&conn, &server, false, Some("PROJ-2"));
+
+        // catches: clearing the failure before the HTTP result is known
+        assert_eq!(
+            line_state(&conn),
+            (Some("Tempo could not be reached".to_string()), false)
+        );
     }
 
     #[test]

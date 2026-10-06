@@ -5,13 +5,16 @@
 use anyhow::Result;
 use axum::extract::{Path as AxumPath, State};
 use axum::Json;
+use rusqlite::OptionalExtension;
 
 use crate::estimate::{self, ModelInvoker};
+use crate::line_check;
 use crate::line_text;
 use crate::mirres;
 use crate::tempo_line_contract::{SetTempoLineHours, SetTempoLineText, TempoLine, TempoLineKey};
 use crate::tempo_line_writer;
 use crate::tempo_lines;
+use crate::verdict;
 
 use super::{with_conn, ApiError, Shared};
 
@@ -105,6 +108,22 @@ pub(crate) async fn generate_tempo_lines<F>(
 where
     F: FnOnce() -> Result<Box<dyn ModelInvoker>> + Send + 'static,
 {
+    generate_tempo_lines_with(state, day, force, make_invoker, verdict::match_texts).await
+}
+
+/// [`generate_tempo_lines`] with the Verdict `matcher` injected: each new
+/// text gets the line check and at most one regenerate (spec 017 FR-19/20).
+pub(crate) async fn generate_tempo_lines_with<F, M>(
+    state: Shared,
+    day: String,
+    force: Option<TempoLineKey>,
+    make_invoker: F,
+    matcher: M,
+) -> Result<Vec<TempoLineKey>>
+where
+    F: FnOnce() -> Result<Box<dyn ModelInvoker>> + Send + 'static,
+    M: Fn(&str, &[String]) -> Result<Vec<bool>> + Send + 'static,
+{
     let forced = force.is_some();
     let pending = with_conn(state.clone(), move |c| {
         tempo_lines::pending_generation(c, &day, force.as_ref())
@@ -115,24 +134,38 @@ where
     }
     // Prepare under the lock, then drop it for every model call.
     let prepared = with_conn(state.clone(), move |c| {
-        Ok(pending
+        pending
             .into_iter()
             .map(|(key, _, hash)| {
                 let msg = tempo_line_writer::prepare(c, &key);
-                (key, msg, hash)
+                let summary: Option<String> = c
+                    .query_row(
+                        "SELECT summary FROM jira_tickets WHERE key = ?1",
+                        [&key.jira_issue],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                Ok((key, msg, summary.unwrap_or_default(), hash))
             })
-            .collect::<Vec<_>>())
+            .collect::<Result<Vec<_>>>()
     })
     .await?;
     let texts = tokio::task::spawn_blocking(move || -> Result<Vec<_>> {
         let invoker = make_invoker()?;
         let mut out = Vec::new();
-        for (key, msg, hash) in prepared {
+        for (key, msg, summary, hash) in prepared {
             let written = msg.and_then(|m| {
-                tempo_line_writer::write(&m, &key, invoker.as_ref(), line_text::LINE_TEXT_MODEL)
+                let write = || {
+                    tempo_line_writer::write(&m, &key, invoker.as_ref(), line_text::LINE_TEXT_MODEL)
+                };
+                let text = write()?;
+                line_check::check_with_regenerate(&matcher, text, &summary, || {
+                    write().map_err(anyhow::Error::msg)
+                })
+                .map_err(|e| e.to_string())
             });
             match written {
-                Ok(text) => out.push((key, text, hash)),
+                Ok((text, check)) => out.push((key, text, check, hash)),
                 // An explicit Generate/Regenerate fails loudly; the automatic
                 // pass leaves the line without text (never English fallback).
                 Err(reason) if forced => anyhow::bail!(reason),
@@ -144,8 +177,9 @@ where
     .await??;
     with_conn(state, move |c| {
         let mut committed = Vec::new();
-        for (key, text, hash) in texts {
+        for (key, text, check, hash) in texts {
             tempo_lines::commit_generated(c, &key, &text, &hash, forced)?;
+            tempo_lines::set_check(c, &key, check)?;
             committed.push(key);
         }
         Ok(committed)

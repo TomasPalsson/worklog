@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::clues_contract::LineTextOrigin;
+use crate::verdict_contract::LineCheck;
 
 /// Tempo granularity; an hours override is a positive multiple of this.
 pub const HALF_HOUR_SECONDS: i64 = 1800;
@@ -72,6 +73,8 @@ pub struct TempoLine {
     pub union_seconds: i64,
     pub hours_override_seconds: Option<i64>,
     pub effective_seconds: i64,
+    #[serde(default)]
+    pub check_status: Option<LineCheck>,
     #[serde(default)]
     pub billing: Option<LineBilling>,
 }

@@ -13,6 +13,7 @@ import {
   type SettingsFormState,
 } from "@/lib/settingsForm";
 import { SettingsBody } from "./SettingsFormSections";
+import { VerdictControl } from "./VerdictControl";
 
 interface Props {
   /** The day page the panel was opened from — saving revalidates it so a
@@ -32,6 +33,7 @@ const EMPTY_FORM: SettingsFormState = {
   workHours: "",
   abstainMargin: "",
   runnerUpRatio: "",
+  autoSend: false,
   secretInputs: {},
 };
 
@@ -166,7 +168,16 @@ export function SettingsPanel({ day, variant = "icon" }: Props) {
                 <span>Loading…</span>
               </div>
             ) : (
-              <SettingsBody view={view} form={form} setForm={setForm} day={day} />
+              <>
+                <div className="settings-body verdict-lead">
+                  <VerdictControl
+                    day={day}
+                    autoSend={form.autoSend}
+                    onAutoSend={(autoSend) => setForm((f) => ({ ...f, autoSend }))}
+                  />
+                </div>
+                <SettingsBody view={view} form={form} setForm={setForm} day={day} />
+              </>
             )}
 
             <footer className="settings-footer">

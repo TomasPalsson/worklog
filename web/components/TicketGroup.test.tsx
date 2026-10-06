@@ -366,3 +366,49 @@ describe("TicketGroup without a line", () => {
     expect(screen.queryByRole("button", { name: /Regenerate/ })).toBeNull();
   });
 });
+
+describe("needs-a-look badge", () => {
+  const flagged = (
+    origin: TempoLine["text_origin"],
+    check: "passed" | "needs_look" | null | undefined,
+  ) => ({ ...line({ text_origin: origin }), check_status: check }) as TempoLine;
+
+  it("shows for needs_look on generated text", () => {
+    renderGroup(group(), flagged("generated", "needs_look")); // catches: badge condition dropped
+    expect(screen.getByText("needs a look")).toBeTruthy();
+  });
+
+  it("is hidden for passed", () => {
+    renderGroup(group(), flagged("generated", "passed")); // catches: showing on any check_status
+    expect(screen.queryByText("needs a look")).toBeNull();
+  });
+
+  it("is hidden for null and missing check_status", () => {
+    renderGroup(group(), flagged("generated", null)); // catches: inverted condition
+    expect(screen.queryByText("needs a look")).toBeNull();
+    cleanup();
+    renderGroup(group(), flagged("generated", undefined));
+    expect(screen.queryByText("needs a look")).toBeNull();
+  });
+
+  it("is hidden when the text is the Owner's own", () => {
+    renderGroup(group(), flagged("manual", "needs_look")); // catches: generated guard removed
+    expect(screen.queryByText("needs a look")).toBeNull();
+  });
+});
+
+describe("needs-a-look reason", () => {
+  it("shows the reason as visible text the badge is described by", () => {
+    renderGroup(group(), { ...line({ text_origin: "generated" }), check_status: "needs_look" } as TempoLine);
+    const hint = screen.getByText("Vague after one rewrite — edit before it is sent");
+    expect(hint.className).toContain("billing-text-hint"); // catches title-only
+    const badge = screen.getByText("needs a look");
+    expect(badge.getAttribute("aria-describedby")).toBe(hint.id);
+    expect(hint.id).not.toBe(""); // catches describedby pointing at nothing
+  });
+
+  it("shows no reason when the badge is hidden", () => {
+    renderGroup(group(), { ...line({ text_origin: "generated" }), check_status: "passed" } as TempoLine);
+    expect(screen.queryByText("Vague after one rewrite — edit before it is sent")).toBeNull();
+  });
+});

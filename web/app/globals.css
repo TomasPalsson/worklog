@@ -6107,3 +6107,62 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
 .billing-pill-project > span { white-space: nowrap; }
 .billing-pill-warning { display: inline-flex; align-items: center; gap: 6px; flex-basis: 100%; color: var(--amber-ink); }
 .billing-pill-warning svg { flex: none; }
+/* ── verdict: settings control (T010) ── */
+.settings-body.verdict-lead { flex-shrink: 0; overflow: visible; padding-bottom: 0; }
+.verdict-lead .settings-section { border-bottom: 1px solid var(--border); }
+.verdict-state-row { display: flex; align-items: center; gap: 12px; margin: 0 0 12px; }
+.verdict-state { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 12px; line-height: 1.5; color: var(--fg-muted); }
+.verdict-state::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--fg-subtle); }
+.verdict-state[data-state="starting"]::before { background: var(--slate); }
+.verdict-state[data-state="running"]::before { background: var(--sage); }
+.verdict-state[data-state="not_answering"]::before, .verdict-state[data-state="needs_uv"]::before { background: var(--amber); }
+.verdict-state[data-state="stopped"]::before { background: var(--terracotta); }
+.verdict-state[data-state="running"] { color: var(--sage-ink); }
+.verdict-state[data-state="not_answering"], .verdict-state[data-state="needs_uv"] { color: var(--amber-ink); }
+.verdict-state[data-state="stopped"] { color: var(--terracotta-ink); }
+.verdict-state code { font-family: var(--font-mono); font-size: 11px; background: var(--bg-sunk); padding: 1px 4px; border-radius: var(--radius-sm); }
+.verdict-unknown { color: var(--amber-ink); }
+
+/* ── verdict: day page line, one-tap picks, needs-a-look (T011) ── */
+.verdict-line { padding-left: 10px; border-left: 3px solid var(--border-strong); }
+.verdict-line[data-tone="warn"] { border-left-color: var(--amber); }
+.verdict-line .review-toggle { background: none; border: 0; padding: 0; font-family: inherit; cursor: pointer; }
+.verdict-line .review-toggle:disabled { cursor: default; opacity: 0.7; }
+.verdict-line-error { font-size: 13px; color: var(--terracotta-ink); }
+.verdict-picks-label { font-size: 12px; color: var(--fg-muted); }
+.est-badge[data-kind="look"] { color: var(--amber-ink); border-color: var(--amber-bg); }
+
+/* ── verdict: Review section on today's page (T012) ── */
+.review-sec { margin-bottom: 20px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-raised); }
+.review-sec-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; padding: 14px 16px; }
+.review-sec-head h2 { margin: 0; font-size: 14px; font-weight: 600; color: var(--fg); }
+.review-sec-count { font-size: 12px; color: var(--fg-subtle); font-variant-numeric: tabular-nums; }
+.review-sec-hint { flex-basis: 100%; margin: 0; font-size: 12px; color: var(--fg-muted); }
+.review-sec-group { border-top: 1px solid var(--border); padding: 10px 16px 6px; }
+.review-sec-day { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 14px; margin-bottom: 6px; }
+.review-sec-day h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--fg); }
+.review-sec-group ul { margin: 0; padding: 0; list-style: none; }
+.review-sec-line { display: grid; grid-template-columns: 84px 52px minmax(0, 1fr) auto; gap: 4px 12px; align-items: start; padding: 8px 0 8px 10px; border-left: 3px solid transparent; font-size: 13px; line-height: 1.45; }
+.review-sec-line[data-status="not_sent"] { border-left-color: var(--terracotta); }
+.review-sec-ticket { font-family: var(--font-mono); font-size: 13px; color: var(--fg); }
+.review-sec-hours { font-variant-numeric: tabular-nums; color: var(--fg-muted); }
+.review-sec-text { color: var(--fg); overflow-wrap: anywhere; }
+.review-sec-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.review-sec-day .review-toggle, .review-sec-actions .review-toggle { background: none; border: 0; padding: 0; font-family: inherit; cursor: pointer; }
+.review-sec-day .review-toggle:disabled, .review-sec-actions .review-toggle:disabled { cursor: default; opacity: 0.7; }
+.review-sec-error { margin: 4px 0 0; font-size: 12px; color: var(--terracotta-ink); overflow-wrap: anywhere; }
+.review-sec-edit { grid-template-columns: 84px minmax(0, 1fr) auto; }
+.review-sec-fields { display: grid; gap: 4px; }
+.review-sec-fields label { font-size: 12px; color: var(--fg-muted); }
+.review-sec-fields input { width: 96px; }
+.review-sec-fields textarea { width: 100%; font: inherit; resize: vertical; }
+
+/* ── verdict: design-evaluator fixes (T014) ── */
+.verdict-line[data-tone="quiet"] { border-left-color: var(--fg-subtle); }
+.verdict-check { flex-direction: row; align-items: center; gap: 8px; }
+.verdict-check input { width: auto; padding: 0; background: none; border: 0; margin: 0; flex: none; }
+.verdict-check > span { color: var(--fg); font-weight: 400; font-size: 13px; }
+.review-sec-live { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.review-sec-rejected-hint { margin: 4px 0 0; font-size: 12px; color: var(--fg-muted); }
+.verdict-line .review-toggle, .review-sec .review-toggle { min-height: 24px; display: inline-flex; align-items: center; }
+.est-badge[data-kind="look"] { border-color: var(--amber); }

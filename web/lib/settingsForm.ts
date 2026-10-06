@@ -14,6 +14,7 @@ export interface SettingsFormState {
   workHours: string;
   abstainMargin: string;
   runnerUpRatio: string;
+  autoSend: boolean;
   secretInputs: Record<string, string>;
 }
 
@@ -45,6 +46,7 @@ export function formStateFromView(v: SettingsView): SettingsFormState {
     workHours: v.work_hours,
     abstainMargin: String(v.abstain_margin),
     runnerUpRatio: String(v.runner_up_ratio),
+    autoSend: v.auto_send ?? false,
     secretInputs,
   };
 }
@@ -95,6 +97,8 @@ export function buildSettingsUpdate(
     }
   }
 
+  if (form.autoSend !== (view.auto_send ?? false)) update.auto_send = form.autoSend;
+
   const secrets: Record<string, string> = {};
   for (const f of view.secrets) {
     const initial = initialSecretInput(f.sensitive, f.value);
@@ -112,7 +116,8 @@ export function buildSettingsUpdate(
     update.close_day === undefined &&
     update.work_hours === undefined &&
     update.abstain_margin === undefined &&
-    update.runner_up_ratio === undefined;
+    update.runner_up_ratio === undefined &&
+    update.auto_send === undefined;
 
   return nothingChanged ? null : update;
 }

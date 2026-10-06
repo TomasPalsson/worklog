@@ -101,11 +101,13 @@ use crate::routing_contract::RouteRule;
 use crate::routing_dismiss;
 use crate::secrets;
 use crate::verdict::VerdictClassifier;
+use crate::verdict_contract::{VerdictState, VerdictStatus};
 use crate::{
     block_service, db, estimate, infer, infer_allocations,
     models::{Block, Event},
     overlaps, repo,
 };
+use crate::{verdict_decisions, verdict_supervisor};
 
 #[path = "daemon_tenants.rs"]
 mod daemon_tenants;
@@ -274,6 +276,11 @@ pub fn router(state: Shared) -> Router {
         .route("/routing/rules", get(routing_rules_list))
         .route("/routing/rules/:id/delete", post(routing_rule_delete))
         .route("/routing/status", get(routing_status))
+        .route("/verdict/status", get(verdict_status))
+        .route("/verdict/enabled", post(verdict_enabled))
+        .route("/verdict/retry", post(verdict_retry))
+        .route("/review", get(review_list))
+        .route("/review/confirm", post(review_confirm))
         .route("/days/:day/elsewhere", get(list_elsewhere))
         .route("/events/:id/move", post(move_event_handler))
         .with_state(state)
@@ -500,6 +507,87 @@ async fn prune_due_check_once(state: Shared, snapshot_to: &Path, db_path: &Path)
         Ok(Err(e)) => warn!("compression due-check failed: {e:#}"),
         Err(e) => warn!("compression due-check task panicked: {e}"),
     }
+}
+
+/// Owner-local hour from which the nightly scorecard may run.
+const SCORECARD_HOUR: u32 = 3;
+const SCORECARD_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+/// `meta` key holding the local day the scorecard last ran on.
+const SCORECARD_LATCH_KEY: &str = "scorecard_ran_on";
+
+/// Builds the classifier on the blocking thread that uses it: a blocking
+/// `reqwest` client must not be created or dropped on an async worker.
+pub type ClassifierFactory = Arc<dyn Fn() -> Box<dyn routing_contract::Classifier> + Send + Sync>;
+
+/// Spawn the nightly scorecard: checks hourly, runs at most once per local day.
+pub fn spawn_scorecard_loop(state: Shared) -> tokio::task::JoinHandle<()> {
+    let make: ClassifierFactory = Arc::new(|| Box::new(VerdictClassifier::new()));
+    tokio::spawn(async move {
+        loop {
+            let local = chrono::Utc::now().with_timezone(&crate::tz::day_offset());
+            scorecard_due_once(&state, make.clone(), local).await;
+            tokio::time::sleep(SCORECARD_CHECK_INTERVAL).await;
+        }
+    })
+}
+
+/// One tick of [`spawn_scorecard_loop`]; a failure is logged, never raised.
+pub async fn scorecard_due_once(
+    state: &Shared,
+    make: ClassifierFactory,
+    local: chrono::DateTime<chrono::FixedOffset>,
+) {
+    if let Err(e) = scorecard_nightly(state, make, local).await {
+        warn!("nightly scorecard failed: {e:#}");
+    }
+}
+
+/// The model calls and the threshold search run off the connection lock. A run
+/// that could not ask Verdict is not saved and does not use up the day.
+async fn scorecard_nightly(
+    state: &Shared,
+    make: ClassifierFactory,
+    local: chrono::DateTime<chrono::FixedOffset>,
+) -> Result<()> {
+    use chrono::Timelike;
+    if local.hour() < SCORECARD_HOUR {
+        return Ok(());
+    }
+    let today = local.date_naive().to_string();
+    let ran = today.clone();
+    let due = with_conn(state.clone(), move |c| {
+        Ok(crate::purge::meta_get(c, SCORECARD_LATCH_KEY)?.as_deref() != Some(ran.as_str()))
+    })
+    .await?;
+    if !due {
+        return Ok(());
+    }
+    let now = local.with_timezone(&chrono::Utc);
+    let cases = with_conn(state.clone(), move |c| crate::scorecard::load(c, now)).await?;
+    let rule = configured_route_rule();
+    let replayed = tokio::task::spawn_blocking(move || {
+        let classifier = make();
+        crate::scorecard::replay(cases, &*classifier)
+    })
+    .await
+    .context("spawn_blocking")?;
+    let fixture = tokio::task::spawn_blocking(crate::scorecard::live_line_fixture)
+        .await
+        .context("spawn_blocking")?;
+    let card = with_conn(state.clone(), move |c| {
+        let card = crate::scorecard::finish(c, replayed, rule, true, Some(&fixture))?;
+        if !card.nothing_answered() {
+            crate::purge::meta_set(c, SCORECARD_LATCH_KEY, &today)?;
+        }
+        Ok(card)
+    })
+    .await?;
+    if card.nothing_answered() {
+        tracing::debug!("nightly scorecard: Verdict not answering, will retry");
+    } else {
+        info!("nightly scorecard: {}", card.summary());
+    }
+    Ok(())
 }
 
 // ───────────────────────── handlers ─────────────────────────
@@ -2013,6 +2101,8 @@ pub struct SettingsView {
     /// Mirrors `RUNNER_UP_RATIO_KEY` via envfile; defaults to
     /// `DEFAULT_RUNNER_UP_RATIO`.
     pub runner_up_ratio: f64,
+    /// The 17:00 Tempo auto-send switch. Mirrors `auto_send::enabled`.
+    pub auto_send: bool,
 }
 
 /// Token-like keys whose value must never be serialised to the browser.
@@ -2068,6 +2158,7 @@ fn current_settings() -> Result<SettingsView> {
         work_hours: configured_work_hours_raw(),
         abstain_margin: rule.abstain_margin,
         runner_up_ratio: rule.runner_up_ratio,
+        auto_send: crate::auto_send::enabled(),
     })
 }
 
@@ -2178,6 +2269,8 @@ pub struct SettingsUpdate {
     /// Replace how many times higher than the runner-up the winner must
     /// be (`RATIO_RANGE`). `None` leaves it untouched.
     pub runner_up_ratio: Option<f64>,
+    /// Turn the 17:00 Tempo auto-send on or off. `None` leaves it untouched.
+    pub auto_send: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -2333,6 +2426,12 @@ async fn post_settings(
     }
     if let Some(v) = body.runner_up_ratio {
         crate::envfile::upsert(routing_contract::RUNNER_UP_RATIO_KEY, &v.to_string())?;
+    }
+    if let Some(on) = body.auto_send {
+        crate::envfile::upsert(
+            crate::verdict_contract::AUTO_SEND_KEY,
+            if on { "on" } else { "off" },
+        )?;
     }
 
     info!("settings updated");
@@ -2730,6 +2829,139 @@ async fn routing_status(State(state): State<Shared>) -> Result<Json<RoutingStatu
         last_slack,
         classifier_reachable,
     }))
+}
+
+#[derive(Deserialize)]
+struct VerdictStatusQuery {
+    day: String,
+}
+
+#[derive(Deserialize)]
+struct VerdictEnabledBody {
+    on: bool,
+}
+
+/// The status probe can take 2 s and `set_enabled` writes a file; keep both
+/// off the async workers.
+async fn verdict_state_off_runtime(
+    f: impl FnOnce() -> Result<VerdictState> + Send + 'static,
+) -> Result<VerdictState, ApiError> {
+    let state = tokio::task::spawn_blocking(f)
+        .await
+        .context("spawn_blocking")??;
+    Ok(state)
+}
+
+async fn verdict_status(
+    State(state): State<Shared>,
+    axum::extract::Query(q): axum::extract::Query<VerdictStatusQuery>,
+) -> Result<Json<VerdictStatus>, ApiError> {
+    NaiveDate::parse_from_str(&q.day, "%Y-%m-%d")
+        .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{}`: {e}", q.day)))?;
+    let day = q.day;
+    let (unchecked, scorecard) = with_conn(state, move |c| {
+        Ok((
+            verdict_decisions::unchecked_count(c, &day)?,
+            crate::scorecard::last_summary(c)?,
+        ))
+    })
+    .await?;
+    let state = verdict_state_off_runtime(|| Ok(verdict_supervisor::status())).await?;
+    Ok(Json(VerdictStatus {
+        state,
+        unchecked,
+        scorecard,
+    }))
+}
+
+async fn verdict_enabled(
+    Json(body): Json<VerdictEnabledBody>,
+) -> Result<Json<VerdictState>, ApiError> {
+    let state = verdict_state_off_runtime(move || verdict_supervisor::set_enabled(body.on)).await?;
+    Ok(Json(state))
+}
+
+async fn verdict_retry() -> Result<Json<VerdictState>, ApiError> {
+    let state = verdict_state_off_runtime(|| Ok(verdict_supervisor::retry())).await?;
+    Ok(Json(state))
+}
+
+// ───────────────────────── auto-send review ─────────────────────────
+
+/// Owner-local today as `YYYY-MM-DD`.
+fn local_today() -> String {
+    Utc::now()
+        .with_timezone(&crate::tz::day_offset())
+        .date_naive()
+        .to_string()
+}
+
+async fn review_list(
+    State(state): State<Shared>,
+) -> Result<Json<Vec<crate::verdict_contract::ReviewLine>>, ApiError> {
+    let today = local_today();
+    let lines = with_conn(state, move |c| crate::auto_send::review_lines(c, &today)).await?;
+    Ok(Json(lines))
+}
+
+#[derive(Deserialize)]
+struct ReviewConfirmBody {
+    day: String,
+    jira_issue: Option<String>,
+}
+
+async fn review_confirm(
+    State(state): State<Shared>,
+    Json(body): Json<ReviewConfirmBody>,
+) -> Result<Json<Value>, ApiError> {
+    let confirmed = with_conn(state, move |c| {
+        crate::auto_send::confirm(c, &body.day, body.jira_issue.as_deref())
+    })
+    .await?;
+    Ok(Json(json!({ "confirmed": confirmed })))
+}
+
+/// How often the auto-send tick runs; a run starts within this of 17:00.
+const AUTO_SEND_TICK: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// Spawn the 15-minute auto-send tick (spec 017 FR-27).
+pub fn spawn_auto_send_loop(state: Shared) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let local = Utc::now().with_timezone(&crate::tz::day_offset());
+            if let Err(e) = auto_send_once(&state, local).await {
+                warn!("auto-send tick failed: {e:#}");
+            }
+            tokio::time::sleep(AUTO_SEND_TICK).await;
+        }
+    })
+}
+
+/// One tick: lines go through the same per-ticket Tempo sync as `POST /sync`.
+/// The sqlite lock is held across the Tempo calls, as `run_sync` does.
+async fn auto_send_once(
+    state: &Shared,
+    local: chrono::DateTime<chrono::FixedOffset>,
+) -> Result<()> {
+    let on = crate::auto_send::enabled();
+    with_conn(state.clone(), move |c| {
+        crate::auto_send::run_if_due(c, local, on, &mut |c, key| {
+            let day = NaiveDate::parse_from_str(&key.day, "%Y-%m-%d")?;
+            let auth = tempo::TempoAuth::from_secrets()?;
+            let (_, results) = tempo::sync_day_with_invoker_for(
+                c,
+                &auth,
+                day,
+                false,
+                &crate::http::client()?,
+                None,
+                estimate::DEFAULT_MODEL,
+                Some(&key.jira_issue),
+            )?;
+            Ok(results)
+        })
+    })
+    .await
 }
 
 // ───────────────────────── billing registry ─────────────────────────
@@ -3543,6 +3775,36 @@ mod tests {
             !env_file.exists(),
             "no field should have been written to the env file"
         );
+
+        std::env::remove_var("WORKLOG_ENV_FILE");
+    }
+
+    /// The auto-send switch round-trips through `/settings` as the exact
+    /// string `on` the 17:00 loop reads, and an absent field leaves it alone.
+    #[tokio::test(flavor = "current_thread")]
+    async fn auto_send_persists_through_settings_and_shows_in_the_view() {
+        let _g = prune_env_lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("WORKLOG_ENV_FILE", tmp.path().join(".env"));
+        std::env::remove_var(crate::verdict_contract::AUTO_SEND_KEY);
+
+        let post = |body: &'static str| {
+            router(state_with_block()).oneshot(
+                Request::post("/settings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+        };
+        assert!(!current_settings().unwrap().auto_send);
+        let v = read_json(post(r#"{"auto_send":true}"#).await.unwrap()).await;
+        assert_eq!(v["auto_send"], true);
+        assert!(crate::auto_send::enabled());
+        post(r#"{"timezone":"UTC"}"#).await.unwrap();
+        assert!(current_settings().unwrap().auto_send, "absent leaves it on");
+        let v = read_json(post(r#"{"auto_send":false}"#).await.unwrap()).await;
+        assert_eq!(v["auto_send"], false);
+        assert!(!crate::auto_send::enabled());
 
         std::env::remove_var("WORKLOG_ENV_FILE");
     }
@@ -6696,6 +6958,97 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(v["classifier_reachable"], live);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn verdict_supervisor_status_route_reports_state_and_unchecked_count() {
+        let conn = open_memory().unwrap();
+        repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                routing_contract::SOURCE_FIREFOX,
+                "e1",
+                "2026-04-14T10:30:00+00:00",
+                "x",
+            ),
+        )
+        .unwrap();
+        let app = router(state_from_conn(conn));
+        let get = |uri: &str| Request::get(uri.to_owned()).body(Body::empty()).unwrap();
+
+        let resp = app
+            .clone()
+            .oneshot(get("/verdict/status?day=2026-04-14"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        // No supervisor is running under test, so Verdict reads as off.
+        assert_eq!(
+            read_json(resp).await,
+            json!({"state": "off", "unchecked": 1, "scorecard": null})
+        );
+
+        // A different day has nothing unchecked.
+        let resp = app
+            .clone()
+            .oneshot(get("/verdict/status?day=2026-04-15"))
+            .await
+            .unwrap();
+        assert_eq!(read_json(resp).await["unchecked"], 0);
+
+        for bad in ["/verdict/status?day=not-a-day", "/verdict/status"] {
+            let resp = app.clone().oneshot(get(bad)).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{bad}");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn verdict_supervisor_enabled_route_persists_the_switch() {
+        let _g = prune_env_lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let env_file = tmp.path().join(".env");
+        std::env::set_var("WORKLOG_ENV_FILE", &env_file);
+        let app = router(state_from_conn(open_memory().unwrap()));
+        let post = |uri: &str, body: &str| {
+            Request::post(uri.to_owned())
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_owned()))
+                .unwrap()
+        };
+
+        let resp = app
+            .clone()
+            .oneshot(post("/verdict/enabled", r#"{"on":false}"#))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(read_json(resp).await, json!({"state": "off"}));
+        assert!(std::fs::read_to_string(&env_file)
+            .unwrap()
+            .contains("WORKLOG_VERDICT_ENABLED=off"));
+
+        let resp = app
+            .clone()
+            .oneshot(post("/verdict/enabled", r#"{"on":true}"#))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(std::fs::read_to_string(&env_file)
+            .unwrap()
+            .contains("WORKLOG_VERDICT_ENABLED=on"));
+
+        let resp = app
+            .clone()
+            .oneshot(post("/verdict/enabled", r#"{"on":"yes"}"#))
+            .await
+            .unwrap();
+        assert!(resp.status().is_client_error());
+
+        let resp = app.oneshot(post("/verdict/retry", "")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(read_json(resp).await, json!({"state": "off"}));
+
+        std::env::remove_var("WORKLOG_ENV_FILE");
     }
 
     #[tokio::test(flavor = "current_thread")]

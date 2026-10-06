@@ -11,6 +11,7 @@ use crate::tempo_line_contract::{
     SetTempoLineHours, SetTempoLineText, TempoLine, TempoLineKey, HALF_HOUR_SECONDS,
 };
 use crate::updater::crypto::sha256_hex;
+use crate::verdict_contract::LineCheck;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -27,11 +28,12 @@ struct StoredRow {
     text_origin: Option<LineTextOrigin>,
     source_hash: Option<String>,
     hours_override_seconds: Option<i64>,
+    check_status: Option<LineCheck>,
 }
 
 fn stored_row(conn: &Connection, key: &TempoLineKey) -> Result<Option<StoredRow>> {
     conn.query_row(
-        "SELECT text, text_origin, source_hash, hours_override_seconds
+        "SELECT text, text_origin, source_hash, hours_override_seconds, check_status
            FROM tempo_line_texts WHERE day = ?1 AND jira_issue = ?2",
         params![key.day, key.jira_issue],
         |r| {
@@ -47,6 +49,13 @@ fn stored_row(conn: &Connection, key: &TempoLineKey) -> Result<Option<StoredRow>
                 }),
                 source_hash: r.get(2)?,
                 hours_override_seconds: r.get(3)?,
+                check_status: r
+                    .get::<_, Option<String>>(4)?
+                    .and_then(|s| match s.as_str() {
+                        "passed" => Some(LineCheck::Passed),
+                        "needs_look" => Some(LineCheck::NeedsLook),
+                        _ => None,
+                    }),
             })
         },
     )
@@ -110,6 +119,7 @@ fn build_line(conn: &Connection, key: &TempoLineKey, blocks: &[Block]) -> Result
         union_seconds: union,
         hours_override_seconds: override_seconds,
         effective_seconds: override_seconds.unwrap_or(union),
+        check_status: stored.and_then(|row| row.check_status),
         billing: crate::mirres::stored_billing(conn, key)?,
     })
 }
@@ -185,7 +195,8 @@ pub fn set_text(conn: &Connection, body: &SetTempoLineText) -> Result<Option<Tem
     };
     conn.execute(
         "UPDATE tempo_line_texts
-            SET text = ?3, text_origin = ?4, source_hash = NULL, updated_at = ?5
+            SET text = ?3, text_origin = ?4, source_hash = NULL, check_status = NULL,
+                updated_at = ?5
           WHERE day = ?1 AND jira_issue = ?2",
         params![
             key.day,
@@ -286,7 +297,8 @@ pub fn commit_generated(
     ensure_row(conn, key)?;
     conn.execute(
         "UPDATE tempo_line_texts
-            SET text = ?3, text_origin = 'generated', source_hash = ?4, updated_at = ?5
+            SET text = ?3, text_origin = 'generated', source_hash = ?4,
+                check_status = NULL, updated_at = ?5
           WHERE day = ?1 AND jira_issue = ?2",
         params![
             key.day,
@@ -298,6 +310,23 @@ pub fn commit_generated(
     )
     .context("commit_generated")?;
     finish_write(conn, key)
+}
+
+/// Records a generated line's text check (FR-19); a hand-written line is
+/// never checked (FR-21) and a missing line is left missing.
+pub fn set_check(conn: &Connection, key: &TempoLineKey, status: Option<LineCheck>) -> Result<()> {
+    let value = status.map(|s| match s {
+        LineCheck::Passed => "passed",
+        LineCheck::NeedsLook => "needs_look",
+    });
+    conn.execute(
+        "UPDATE tempo_line_texts SET check_status = ?3
+          WHERE day = ?1 AND jira_issue = ?2
+            AND text IS NOT NULL AND text_origin = 'generated'",
+        params![key.day, key.jira_issue, value],
+    )
+    .context("set_check")?;
+    Ok(())
 }
 
 #[path = "tempo_lines_test.rs"]
