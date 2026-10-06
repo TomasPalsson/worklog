@@ -263,6 +263,14 @@ describe("ReviewSection polish", () => {
     expect(live().textContent).toBe("Confirmed AB-1");
   });
 
+  it("keeps the same live node when the section empties", async () => {
+    setup([L1]);
+    const before = live();
+    fireEvent.click(rowOf("AB-1").getByRole("button", { name: "Looks right" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Looks right" })).toBeNull());
+    expect(live()).toBe(before); // catches a re-inserted (unannounced) live region
+  });
+
   it("announces a saved row", async () => {
     setup([L1, L2]);
     fireEvent.click(rowOf("AB-1").getByRole("button", { name: "Edit" }));
