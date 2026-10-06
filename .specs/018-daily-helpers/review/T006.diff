@@ -1,0 +1,2483 @@
+9ed78e4 fix(018): undo applies only while journaled blocks are still live; split records its tails (T006)
+aae0339 feat(018): undo journal and undo_last for Owner block changes (T006)
+2f9239b fix(018): text export shows HH:MM in WORKLOG_TZ, not raw ISO (T003)
+3b3a14e fix(018): render fill in for missing billing times (T003)
+90f85e5 feat(018): billing lines say fill in for missing times (T003)
+3c7c134 feat(018): Tempo write failures name status and body, never empty (T002)
+80c5227 feat(018): declare daily-helpers module stubs
+8086453 spec(018): plan approved
+bc281a9 spec(018): daily helpers — spec, design, tasks, shared contract
+
+ .specs/.current                                    |   2 +-
+ .specs/018-daily-helpers/TASKS.md                  |  76 +++++
+ .specs/018-daily-helpers/design.md                 |  99 ++++++
+ .specs/018-daily-helpers/spec.md                   | 191 +++++++++++
+ rust/crates/worklog-cli/src/helpers_cmd.rs         |   1 +
+ rust/crates/worklog-cli/src/lib.rs                 |   1 +
+ rust/crates/worklog-core/sql/schema.sql            |  10 +
+ rust/crates/worklog-core/src/ask.rs                |   1 +
+ rust/crates/worklog-core/src/billing.rs            |  66 +++-
+ rust/crates/worklog-core/src/billing_round.rs      |   1 +
+ rust/crates/worklog-core/src/block_service.rs      |  49 ++-
+ rust/crates/worklog-core/src/collectors/tempo.rs   | 130 +++++++-
+ rust/crates/worklog-core/src/daemon_ask.rs         |   1 +
+ rust/crates/worklog-core/src/daemon_nudges.rs      |   1 +
+ rust/crates/worklog-core/src/daemon_preflight.rs   |   1 +
+ rust/crates/worklog-core/src/daemon_standup.rs     |   1 +
+ rust/crates/worklog-core/src/daemon_undo.rs        |   1 +
+ .../worklog-core/src/daily_helpers_contract.rs     | 153 +++++++++
+ rust/crates/worklog-core/src/lib.rs                |  14 +
+ rust/crates/worklog-core/src/nudges.rs             |   1 +
+ rust/crates/worklog-core/src/preflight.rs          |   1 +
+ rust/crates/worklog-core/src/report.rs             |   1 +
+ rust/crates/worklog-core/src/slack_post.rs         |   1 +
+ rust/crates/worklog-core/src/standup.rs            |   1 +
+ rust/crates/worklog-core/src/undo.rs               | 286 ++++++++++++++++
+ rust/crates/worklog-core/src/undo_test.rs          | 366 +++++++++++++++++++++
+ web/components/ExportPanel.tsx                     |   4 +-
+ web/lib/daily_helpers_contract.ts                  |  62 ++++
+ web/lib/export.test.ts                             |  16 +
+ web/lib/export.ts                                  |   9 +
+ 30 files changed, 1532 insertions(+), 15 deletions(-)
+
+diff --git a/.specs/.current b/.specs/.current
+index 4ded3f1..a0732f0 100644
+--- a/.specs/.current
++++ b/.specs/.current
+@@ -1 +1 @@
+-016-ask-for-the-session-ticket-at-start
++018-daily-helpers
+diff --git a/.specs/018-daily-helpers/TASKS.md b/.specs/018-daily-helpers/TASKS.md
+new file mode 100644
+index 0000000..c7ae9d6
+--- /dev/null
++++ b/.specs/018-daily-helpers/TASKS.md
+@@ -0,0 +1,76 @@
++Approved: 2026-10-06 by user
++# Tasks — Daily helpers
++Spec: spec.md · Design: design.md · Base: 6eb7a92 · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && (cd web && bun test)`
++
++UI rule: every task that changes a screen is built with the `/design:design` skill (Owner's rule, 2026-10-06).
++
++## Behaviors
++| ID | Given / When / Then | Task | Proven by |
++|----|---------------------|------|-----------|
++| B1 (P0) | Given Tempo returns 400 "Issue is closed", when sync runs, then the report shows status and body | T002 | tempo error_body tests |
++| B2 (P0) | Given a line of 5100 s, when the day page renders, then it shows the same billed hours Tempo receives | T005 | LineHours/format tests |
++| B3 (P0) | Given a mistaken merge, when the Owner undoes, then both blocks return; given a synced block, undo refuses | T006 | undo_test |
++| B4 (P0) | Given a draft, when nothing is clicked, then nothing is posted; when Post is clicked, the reply lands in today's Daily thread | T016, T020 | slack_post_test, StandupButton.test |
++| B5 (P0) | Given a block with no ticket, when the Owner opens Send, then a red row names it and Send is disabled | T023, T026 | preflight_test, TaskSyncConfirm.test |
++| B6 (P1) | Given a same-work hand entry within 30 min, when sync runs, then no worklog is created | T029, T030 | tempo_match_test |
++| B7 (P1) | Given 17:00 run finished, then a recap with 3 gaps shows on Day page and footer | T031–T033 | recap_test, RecapBanner.test |
++
++## Phase 1 — Honest numbers
++Goal: Tempo failures name their cause, and the billed hours on screen are the ones Tempo gets.
++Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib && (cd web && bun test lib/format components/LineHours)` — green with no new UI.
++- [ ] T001 Module stubs declared once — files: rust/crates/worklog-core/src/lib.rs, rust/crates/worklog-core/src/billing_round.rs, rust/crates/worklog-core/src/undo.rs, rust/crates/worklog-core/src/ask.rs, rust/crates/worklog-core/src/report.rs, rust/crates/worklog-core/src/standup.rs, rust/crates/worklog-core/src/slack_post.rs, rust/crates/worklog-core/src/nudges.rs, rust/crates/worklog-core/src/preflight.rs, rust/crates/worklog-core/src/daemon_undo.rs, rust/crates/worklog-core/src/daemon_ask.rs, rust/crates/worklog-core/src/daemon_standup.rs, rust/crates/worklog-core/src/daemon_nudges.rs, rust/crates/worklog-core/src/daemon_preflight.rs, rust/crates/worklog-cli/src/lib.rs, rust/crates/worklog-cli/src/helpers_cmd.rs — verify: `cargo build --manifest-path rust/Cargo.toml`
++- [ ] T002 [P] Tempo errors say why (FR-01, FR-02, B1) — files: rust/crates/worklog-core/src/collectors/tempo.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib collectors::tempo` — after: T001
++- [ ] T003 [P] Billing lines say "fill in" for missing times (FR-03) — files: rust/crates/worklog-core/src/billing.rs, web/lib/export.ts, web/lib/export.test.ts — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib billing && (cd web && bun test lib/export)` — after: T001
++- [ ] T004 Half-hour rounding lives in billing_round only (FR-05) — files: rust/crates/worklog-core/src/billing_round.rs, rust/crates/worklog-core/src/collectors/tempo.rs, rust/crates/worklog-core/src/billing.rs, rust/crates/worklog-core/src/tempo_lines.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib` — after: T002, T003
++- [ ] T005 Web shows the server's billed hours; mirror deleted (FR-04, FR-05, B2) — files: web/app/[day]/page.tsx, web/components/TicketGroup.tsx, web/components/LineHours.tsx, web/lib/format.ts, web/lib/format.test.ts — verify: `(cd web && bun test lib/format components/LineHours && bun run typecheck) && ! grep -rn "Math.ceil(seconds / 1800)" web/lib web/components web/app` — after: T004
++
++## Phase 2 — Undo, ask, report
++Goal: a wrong block edit is one undo away, "when did I last touch X" answers in a second, and a customer month prints.
++Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib undo ask report && cargo test --manifest-path rust/Cargo.toml -p worklog-cli` — green with Phase 3 untouched.
++- [ ] T006 Undo journal and undo_last (FR-25, FR-26, FR-27, FR-28, B3) — files: rust/crates/worklog-core/sql/schema.sql, rust/crates/worklog-core/src/db.rs, rust/crates/worklog-core/src/undo.rs, rust/crates/worklog-core/src/undo_test.rs, rust/crates/worklog-core/src/block_service.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib undo` — after: T001
++- [ ] T007 [P] Undo daemon handler — files: rust/crates/worklog-core/src/daemon_undo.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib daemon_undo` — after: T006
++- [ ] T008 Ask search and index (FR-31, FR-32, FR-33) — files: rust/crates/worklog-core/sql/schema.sql, rust/crates/worklog-core/src/db.rs, rust/crates/worklog-core/src/ask.rs, rust/crates/worklog-core/src/ask_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib ask` — after: T006
++- [ ] T009 [P] Ask daemon handler — files: rust/crates/worklog-core/src/daemon_ask.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib daemon_ask` — after: T008
++- [ ] T010 [P] Monthly customer report (FR-34, FR-35, FR-36, FR-37, FR-38) — files: rust/crates/worklog-core/src/report.rs, rust/crates/worklog-core/src/report_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib report` — after: T001
++- [ ] T011 CLI wiring: undo, ask, report (FR-30) — files: rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-cli/src/helpers_cmd.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-cli` — after: T006, T008, T010
++- [ ] T012 Register undo and ask routes — files: rust/crates/worklog-core/src/daemon.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib daemon` — after: T007, T009
++- [ ] T013 [P] Web Undo on the block-change toast (FR-29) — UI built with the /design:design skill — files: web/lib/daemonUndo.ts, web/components/ToastHost.tsx, web/lib/toast.ts, web/lib/toast.test.ts, web/app/actions.ts — verify: `(cd web && bun test lib/toast && bun run typecheck)` — after: T012
++- [ ] T014 [P] /wl ask in Claude Code (FR-30) — files: mods/worklog/hooks/command.tsx, mods/worklog/hooks/command.test.tsx — verify: `(cd mods/worklog/hooks && bun test command)` — after: T012
++
++## Phase 3 — Standup and nudges
++Goal: one click drafts the standup in the team's format and posts it to today's Daily thread; the footer shows one nudge.
++Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib standup slack_post nudges && (cd web && bun test components/StandupButton) && (cd mods/worklog/hooks && bun test status)`.
++- [ ] T015 [P] Standup draft from blocks, tickets, PRs and prompts (FR-18, FR-19, FR-24) — files: rust/crates/worklog-core/src/standup.rs, rust/crates/worklog-core/src/standup_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib standup` — after: T001
++- [ ] T016 [P] Find today's Daily thread and reply (FR-21, FR-22, FR-23, B4) — files: rust/crates/worklog-core/src/slack_post.rs, rust/crates/worklog-core/src/slack_post_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib slack_post` — after: T001
++- [ ] T017 Standup daemon handlers (draft, post) — files: rust/crates/worklog-core/src/daemon_standup.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib daemon_standup` — after: T015, T016
++- [ ] T018 [P] Nudges: review-requested query, merged-not-done, stale (FR-40, §5 cache) — files: rust/crates/worklog-core/src/collectors/github.rs, rust/crates/worklog-core/src/nudges.rs, rust/crates/worklog-core/src/nudges_test.rs, rust/crates/worklog-core/src/daemon_nudges.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib nudges` — after: T001
++- [ ] T019 Register standup and nudge routes, Daily channel setting — files: rust/crates/worklog-core/src/daemon.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib daemon` — after: T012, T017, T018
++- [ ] T020 Standup button, editable preview, Post and Copy, Settings channel field (FR-17, FR-20, FR-22, FR-23, B4) — UI built with the /design:design skill — files: web/components/StandupButton.tsx, web/components/StandupButton.test.tsx, web/lib/daemonStandup.ts, web/components/DayHeader.tsx, web/components/SettingsFormSections.tsx, web/lib/settingsForm.ts — verify: `(cd web && bun test components/StandupButton && bun run typecheck)` — after: T019
++- [ ] T021 [P] `worklog standup` with confirm before post (FR-17, FR-22) — files: rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-cli/src/helpers_cmd.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-cli` — after: T011, T017
++- [ ] T022 [P] Footer nudge, one line, rotates per prompt (FR-39, FR-41, FR-42) — files: mods/worklog/hooks/status.ts, mods/worklog/hooks/status.test.ts — verify: `(cd mods/worklog/hooks && bun test status)` — after: T019
++- [ ] CHK001 human-verify a real standup — files: web/components/StandupButton.tsx — verify: human: the Owner presses Standup, edits, presses Post, and the reply appears in today's Daily thread within 30 s of the click — after: T020
++
++## Phase 4 — Pre-send checklist
++Goal: a send the Owner starts by hand shows a checklist first and proves itself after.
++Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib preflight && (cd web && bun test components/TaskSyncConfirm)`.
++- [ ] T023 Preflight checks and read-back (FR-11, FR-12, FR-14, B5) — files: rust/crates/worklog-core/src/preflight.rs, rust/crates/worklog-core/src/preflight_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib preflight` — after: T004
++- [ ] T024 Preflight handler and route — files: rust/crates/worklog-core/src/daemon_preflight.rs, rust/crates/worklog-core/src/daemon.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib daemon_preflight` — after: T019, T023
++- [ ] T025 [P] Terminal sync prints the checklist and stops on red (FR-15) — files: rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-cli/src/helpers_cmd.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-cli` — after: T021, T023
++- [ ] T026 [P] Checklist in the Send to Tempo confirm, Send anyway (FR-13, B5) — UI built with the /design:design skill — files: web/components/TaskSyncConfirm.tsx, web/components/TaskSyncConfirm.test.tsx, web/components/TaskDaySync.tsx, web/lib/daemonPreflight.ts — verify: `(cd web && bun test components/TaskSyncConfirm && bun run typecheck)` — after: T024
++
++## Phase 5 — After spec 017: already-in-Tempo and the 17:00 recap
++Goal: a line equal to a hand entry is not sent twice, and the 17:00 run ends with a recap.
++Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib tempo_match recap && (cd web && bun test components/RecapBanner)`.
++- [ ] T027 Rebase onto main that contains spec 017 — files: . — verify: `test -f rust/crates/worklog-core/src/auto_send.rs` — after: T026
++- [ ] T028 Extend the contract for match status and recap (orchestrator) — files: rust/crates/worklog-core/src/daily_helpers_contract.rs, web/lib/daily_helpers_contract.ts — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib daily_helpers_contract && (cd web && bun run typecheck)` — after: T027
++- [ ] T029 Already-in-Tempo check with Verdict (FR-06, FR-07, FR-08, FR-09, FR-10, B6) — files: rust/crates/worklog-core/src/tempo_match.rs, rust/crates/worklog-core/src/tempo_match_test.rs, rust/crates/worklog-core/sql/schema.sql, rust/crates/worklog-core/src/db.rs, rust/crates/worklog-core/src/lib.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib tempo_match` — after: T028
++- [ ] T030 Send path asks tempo_match first; auto-send skips the checklist (FR-06, FR-16) — files: rust/crates/worklog-core/src/collectors/tempo.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib collectors::tempo` — after: T029
++- [ ] T031 Recap built inside the 17:00 run (FR-43, FR-45, B7) — files: rust/crates/worklog-core/src/recap.rs, rust/crates/worklog-core/src/recap_test.rs, rust/crates/worklog-core/src/auto_send.rs, rust/crates/worklog-core/src/lib.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib recap` — after: T029
++- [ ] T032 Recap route and Day banner with gap actions (FR-44, FR-46) — UI built with the /design:design skill — files: rust/crates/worklog-core/src/daemon.rs, web/components/RecapBanner.tsx, web/components/RecapBanner.test.tsx, web/app/[day]/page.tsx — verify: `(cd web && bun test components/RecapBanner && bun run typecheck)` — after: T031
++- [ ] T033 [P] Recap in the Claude Code footer (FR-46) — files: mods/worklog/hooks/status.ts, mods/worklog/hooks/status.test.ts — verify: `(cd mods/worklog/hooks && bun test status)` — after: T032
++- [ ] CHK002 human-verify the 17:00 recap — files: web/components/RecapBanner.tsx — verify: human: after a real 17:00 run the Owner sees what was sent, what was held back, and 3 gaps with working Personal/Break/Pick a ticket buttons — after: T032
++
++## Gates
++- [ ] G001 project gates clean — files: . — verify: `flow check --fix --since 6eb7a92`
++- [ ] G002 branch review clean — files: . — verify: `flow pass`
++- [ ] G003 verification evidence exists — files: . — verify: `test -s verify/`
+diff --git a/.specs/018-daily-helpers/design.md b/.specs/018-daily-helpers/design.md
+new file mode 100644
+index 0000000..bf07ddc
+--- /dev/null
++++ b/.specs/018-daily-helpers/design.md
+@@ -0,0 +1,99 @@
++# Design — Daily helpers (018)
++
++Only what two task agents must agree on. Spec says WHAT; this says the seams.
++
++## 1. Contract file + language
++
++- Rust: `rust/crates/worklog-core/src/daily_helpers_contract.rs` (declared in `lib.rs`, unit-tested).
++- TS mirror: `web/lib/daily_helpers_contract.ts` (hand mirror, the repo's `*_contract.ts` pattern).
++- Orchestrator owns both. Phase 6 (after spec 017) extends them; no task adds a shape.
++
++| canonical | identifier | defined in | banned synonyms |
++|---|---|---|---|
++| block change | `BlockChange` | contract | action, edit_kind, op |
++| undo result | `UndoOutcome` | contract | UndoResult, UndoStatus |
++| checklist row | `PreflightRow` / `PreflightCheck` | contract | CheckRow, Gate, Check |
++| standup draft | `StandupDraft` (`to_text()`) | contract | Standup, Report, Summary |
++| post result | `PostOutcome` | contract | PostResult, SlackResult |
++| nudge | `Nudge` / `NudgeKind` | contract | Hint, Notice, Reminder |
++| billed hours | `effective_seconds` on `TempoLine` (already half-hour rounded server-side) | `tempo_line_contract.rs` | billed_seconds, rounded_seconds, billable |
++| channel setting | `SLACK_DAILY_CHANNEL_KEY` | contract | DAILY_CHANNEL, slack_channel |
++
++Times are UTC ISO-8601 in the DB; day bucketing uses `$WORKLOG_TZ` (existing rule). Durations are `i64` seconds.
++
++## 2. Trust boundaries
++
++| boundary | untrusted input | parse fn | failure granularity |
++|---|---|---|---|
++| Tempo error body | bytes, may be unreadable | `tempo::error_body(resp) -> String` | per request; never empty |
++| Slack search/post response | JSON with `ok:false` + `error` | `slack_post::parse_ok` | per call → `PostOutcome::SlackRefused` |
++| GitHub review search | JSON | `nudges::parse_review_search` | per call → zero review nudges, logged to stderr |
++| Model output (standup) | text | `standup::parse_draft` | whole draft → error shown with Retry |
++| Daemon request bodies | JSON | serde on handler args | 400 via existing `ApiError` |
++| Ask query text | free text | `ask::to_match_query` (escapes quotes/operators) | per query |
++
++## 3. Error taxonomy
++
++Outcomes (`UndoOutcome`, `PostOutcome`, `PreflightRow.ok=false`) are **data, HTTP 200**. Only internal failures use the existing `ApiError` (500 + `{error}`). CLI: outcome → exit 0 with message; `RefusedSynced`/`NothingToUndo` exit 1; internal error → miette error, exit 1.
++
++## 4. Module boundaries
++
++- New core modules (one file each, created as stubs by T001, declared in `lib.rs` once): `billing_round`, `undo`, `ask`, `report`, `standup`, `slack_post`, `nudges`, `preflight`, `daemon_undo`, `daemon_ask`, `daemon_standup`, `daemon_nudges`, `daemon_preflight`.
++- `daemon_*` modules export `pub async fn` handlers only; **routes are registered in `daemon.rs` only by T012, T019, T024 and T032**.
++- Feature modules may import `db`, `block_service`, `billing`, `block_digest`, `status_hints`, `ticket_activity`, `scrub`, `estimate::ModelInvoker`, `secrets`, `daily_helpers_contract`. Feature modules never import each other, except `preflight` → `billing_round`.
++- CLI: subcommand bodies live in `worklog-cli/src/helpers_cmd.rs`; `cli.rs` only gets `Cmd` variants + dispatch lines, in the `CLI wiring` tasks.
++- Web: one client file per feature (`web/lib/daemonUndo.ts`, `daemonStandup.ts`, `daemonPreflight.ts`); never grow `web/lib/daemon.ts` or `types.ts` (400-line guard).
++
++## 5. Shared resources
++
++| resource | constructed by | passed how | received by |
++|---|---|---|---|
++| SQLite conn | `db::open` (daemon state / CLI) | `&Connection` param | every core fn |
++| HTTP client | caller (`reqwest::blocking::Client`) | param, so tests inject httpmock base URLs | slack_post, nudges, tempo |
++| Slack token | `secrets::get("slack_user_token")` | param (`&str`) | slack_post |
++| Daily channel | envfile `SLACK_DAILY_CHANNEL_KEY` | param (`Option<&str>`) | slack_post |
++| Model | `estimate::ModelInvoker` impl | `&dyn ModelInvoker` | standup |
++| Clock | caller passes `today: NaiveDate` / `now` | param | standup, nudges, undo |
++| Schema | `sql/schema.sql` + `SCHEMA_VERSION` in `db.rs` | — | **only T006, T008 and T029 bump it, in that order** |
++
++## 6. Deliberately duplicated
++
++- The TS contract mirrors the Rust one by hand (repo pattern). Do not add codegen here.
++- Overlap/percent helpers in `web/lib/dayStripOverlaps.ts` are UI slider maths: leave them.
++
++## 7. Decisions
++
++- In the context of undo, facing block writes spread over 9 `block_service` fns, we chose a before-image journal table `block_undo(id, change, payload_json, at)` written inside each fn's transaction, and rejected event-sourcing blocks, to keep one table and one restore fn, accepting that non-`block_service` writers (estimate, sync) are not undoable. Makes hard: `block_service.rs`, `undo.rs`.
++- In the context of billed hours, facing `TempoLine.effective_seconds` already rounded server-side, we chose to delete the web's `roundToHalfHour` and render the server value, and rejected a new `billed_seconds` field, to avoid a second name for one number. Makes hard: `web/lib/format.ts`, `LineHours.tsx`, `TicketGroup.tsx`, `app/[day]/page.tsx`.
++- In the context of ask, facing ≤1 s over 12 months, we chose an SQLite FTS5 table over digest clues + scrubbed prompts filled on write and backfilled once, rejecting LIKE scans, accepting extra DB size. Makes hard: `ask.rs`, `schema.sql`.
++
++## Contract for T005 — Web reads billed hours
++CONTRACT   web/lib/tempo_line_contract.ts — import `TempoLine`.
++NAMES      billed hours = `effective_seconds` (banned: billed_seconds, rounded_seconds)
++CALLS      formatBilledHours(seconds) becomes display-only: no rounding inside.
++THE FIVE   (1) NEVER invent a field name that exists in the contract. (2) NEVER type a boundary parameter as the narrow type. (3) NEVER add a flag to a shared helper — duplicate locally. (4) NEVER edit outside `files:`. (5) NEVER abbreviate identifiers.
++
++## Contract for T006 — Undo journal
++CONTRACT   rust/crates/worklog-core/src/daily_helpers_contract.rs — `BlockChange`, `UndoOutcome`, `UNDO_DEPTH`.
++CALLS      `pub fn undo::record(tx: &Transaction, change: BlockChange, before: &[i64]) -> Result<()>`; `pub fn undo::undo_last(conn: &mut Connection) -> Result<UndoOutcome>`
++THE FIVE   as T005.
++
++## Contract for T015 — Standup draft
++CONTRACT   daily_helpers_contract.rs — `StandupDraft`, `STANDUP_QUESTIONS`.
++CALLS      `pub fn standup::draft(conn: &Connection, today: NaiveDate, model: &dyn ModelInvoker) -> Result<StandupDraft>`; text comes only from `StandupDraft::to_text()`.
++THE FIVE   as T005.
++
++## Contract for T016 — Slack post
++CONTRACT   daily_helpers_contract.rs — `PostOutcome`, `DAILY_THREAD_PREFIX`.
++CALLS      `pub fn slack_post::post_to_daily(client: &Client, base_url: &str, token: &str, channel: Option<&str>, today: NaiveDate, text: &str) -> Result<PostOutcome>`
++THE FIVE   as T005.
++
++## Contract for T018 — Nudges
++CONTRACT   daily_helpers_contract.rs — `Nudge`, `NudgeKind`, `STALE_TICKET_DAYS`, `NUDGE_CACHE_SECONDS`.
++CALLS      `pub fn nudges::current(conn: &Connection, now: DateTime<Utc>) -> Result<Vec<Nudge>>`
++THE FIVE   as T005.
++
++## Contract for T023 — Preflight
++CONTRACT   daily_helpers_contract.rs — `PreflightRow`, `PreflightCheck`.
++CALLS      `pub fn preflight::check(conn: &Connection, from: NaiveDate, to: NaiveDate) -> Result<Vec<PreflightRow>>`; `pub fn preflight::read_back(conn: &Connection, day: NaiveDate) -> Result<PreflightRow>`
++THE FIVE   as T005.
+diff --git a/.specs/018-daily-helpers/spec.md b/.specs/018-daily-helpers/spec.md
+new file mode 100644
+index 0000000..1203f28
+--- /dev/null
++++ b/.specs/018-daily-helpers/spec.md
+@@ -0,0 +1,191 @@
++# Spec: Daily helpers
++
++**Created**: 2026-10-06 · **Route**: dispatch
++
++## TL;DR
++
++> Read this block. If it answers your question, stop here.
++
++**Problem**: Worklog collects almost everything about the Owner's day, but the Owner still double-checks Tempo by hand, rebuilds the morning standup from memory, cannot reverse a mistaken block edit, and has no quick way to ask "when did I last touch X". Some Tempo failures arrive with no reason at all.
++
++**Solution**: Ten small helpers on top of the data worklog already has: Tempo errors that name their cause, one source for billed hours, an "already in Tempo?" check, a pre-send checklist, a one-click standup posted to the team's Daily thread, undo, ask, a monthly customer report, a footer nudge, and a 17:00 recap.
++
++**Who it's for**: the Owner (single user, Icelandic IT consultant logging to Tempo and billing customers).
++
++**MVP cut line**: everything tagged `MUST` in §4.1 ships. `SHOULD` is v1.1. `MAY` is backlog.
++
++**Key decision**: anything that touches Verdict or the 17:00 run (§4.1 groups C and J) is built only after spec 017 "Verdict does more" is merged, on top of its code. Nothing here changes 017's auto-send, readiness rules or Review section.
++
++## 1. Context
++
++### 1.1 Problem statement
++
++The Owner's daily log is mostly automatic (spec 017 adds a 17:00 auto-send). What is left is checking: a hand sync can fail with "HTTP 400 —" and nothing after the dash; the screen and Tempo compute billed hours in two separate places; a line can be sent while an equivalent hand-logged entry already sits on the same ticket. The morning standup ("Daily:thread") is typed from memory, and a fat-fingered block delete can only be repaired by re-inferring the day.
++
++**Current workaround**: open Tempo's website to compare; type the standup by hand; re-run inference after a bad edit; search the database by hand.
++
++### 1.2 Roles
++
++| Role | What they do | Key characteristic |
++|------|--------------|--------------------|
++| Owner | Reviews the day, sends to Tempo, posts the standup, bills customers | Sole user; wants the day "look-only" |
++| Teammates | Read the Owner's reply in the Slack Daily thread | Never touch worklog |
++| Verdict | Local classifier that picks one option from a list or abstains | Can be off or unreachable |
++
++**Primary actor**: Owner.
++**Hidden stakeholders**: the spec 017 session, which edits the same Tempo-send and 17:00 code; customers, who receive the hours the report summarises.
++
++## 2. Scope
++
++### 2.1 In scope
++
++- A. Tempo errors carry the reason Tempo gave; billing lines with no start/end say "fill in".
++- B. Billed hours come from one place; the web stops computing them itself.
++- C. Before sending a line, worklog checks that ticket's existing Tempo entries for that day and skips the line when Verdict says it is the same work.
++- D. A pre-send checklist for sends the Owner starts by hand.
++- E. A one-click standup in the team's three-question format, posted as a reply in the Slack Daily thread after the Owner confirms.
++- F. Undo for the Owner's last 20 block changes.
++- G. Ask: a read-only search over saved blocks and the Owner's Claude prompts.
++- H. A monthly per-customer report from the terminal.
++- I. One nudge line in the Claude Code footer.
++- J. A recap shown right after spec 017's 17:00 run.
++
++### 2.2 Non-goals
++
++- No automatic Slack posting: the standup is posted only by the Owner's click or confirm.
++- No change to spec 017's auto-send, readiness rules, line checks or Review section.
++- Nothing is ever deleted from Tempo.
++- No web page for the report or for ask; both are terminal and Claude Code only.
++- No change to which folders count as work (the "work outside ~/Desktop/Work" idea is dropped).
++- No calendar-based features.
++
++## 3. Journeys
++
++### Journey 1 — Hand send to Tempo (Owner)
++
++| Path | Given | When | Then |
++|------|-------|------|------|
++| Happy | A day with 5 lines, all checks green | Owner presses Send to Tempo | Checklist shows 5 green rows; send runs; read-back row turns green |
++| Error | One work block has no ticket | Owner opens Send | That row is red, names the block and links to it; Send is disabled; "Send anyway" link remains |
++| Edge | GENAI-12 already has a 2.0 h hand entry describing the same work; worklog's line is 2.0 h | Send runs (after 017) | The line is skipped and shows "already in Tempo"; no second worklog is created |
++
++### Journey 2 — Morning standup (Owner)
++
++| Path | Given | When | Then |
++|------|-------|------|------|
++| Happy | Today's "Daily:thread" message exists in the configured channel | Owner presses Standup on the Day page | Within 30 s an editable preview of the three answers appears; Post replies in the thread |
++| Error | No Daily thread found today, or Slack refuses the post | Owner presses Post | Message names the cause ("no Daily thread today in #channel" / Slack's error); Copy button offered; nothing was posted |
++| Edge | Yesterday had no blocks | Owner presses Standup | Answers come from open tickets only; question 1 says so plainly |
++
++### Journey 3 — Undo (Owner)
++
++| Path | Given | When | Then |
++|------|-------|------|------|
++| Happy | Owner merged two blocks by mistake | Owner runs `undo` or clicks Undo | Both original blocks return with their tickets, hours and text |
++| Error | The newest change touched a block already sent to Tempo | Owner runs undo | Refused with "block N was sent to Tempo; undo would desync it"; nothing changes |
++| Edge | 21 changes made | Owner undoes 21 times | 20 succeed; the 21st says "nothing left to undo" |
++
++## 4. Requirements
++
++### 4.1 Functional requirements
++
++**Groups** (from §2.1): A = FR-01..03 · B = FR-04..05 · C = FR-06..10 · D = FR-11..16 · E = FR-17..24 · F = FR-25..29 · G = FR-30..33 · H = FR-34..38 · I = FR-39..42 · J = FR-43..46. Groups C and J wait for spec 017.
++
++| ID | Priority | Requirement | Acceptance |
++|----|----------|-------------|------------|
++| FR-01 | MUST | When Tempo answers a write with a failure, the Owner MUST see Tempo's status and the body Tempo sent | Test: a 400 with body "Issue is closed" surfaces both in the sync report |
++| FR-02 | MUST | When the failure body cannot be read, the Owner MUST see that reading failed and why, never an empty reason | Test: unreadable body yields a non-empty reason |
++| FR-03 | MUST | A billing line with no start or end time MUST show "fill in" for that field instead of an empty value | Test: a line with no blocks renders "fill in" |
++| FR-04 | MUST | Every billed-hours number the Owner sees on the day page MUST equal the number worklog sends to Tempo for the same line | Test: for 0, 899, 900, 1801 and 5100 s the screen value equals the sent value |
++| FR-05 | MUST | The half-hour rounding rule MUST exist in exactly one place | Test/grep: the web has no rounding implementation |
++| FR-06 | MUST | Before sending a line, worklog MUST read the Tempo entries on that line's ticket for that day | Test with a fake Tempo: the read happens before the write |
++| FR-07 | MUST | When Verdict says an existing entry is the same work and its hours differ from the line's by at most 30 min (30 counts as same), worklog MUST NOT send the line and MUST mark it "already in Tempo" | Test: same-work fake at 30 and 31 min → no write at 30, write at 31; status shown |
++| FR-08 | MUST | When Verdict says different work, worklog MUST send the full line as today | Test: different → one write |
++| FR-09 | MUST | When Verdict is off, unreachable or abstains, worklog MUST send the line as today | Test: each of the three → one write |
++| FR-10 | MUST | A line marked "already in Tempo" MUST NOT be re-checked or sent by later syncs unless the Owner edits it | Test: second sync makes no read or write for it |
++| FR-11 | MUST | Before a send the Owner starts by hand, the Owner MUST see a checklist with one row per check: every work block has a ticket; no time counted twice; each day's hours vs Tempo's required hours; every line has text | Test: fixture with one failure per check shows four red rows |
++| FR-12 | MUST | Each red row MUST name the block, line or day at fault | Test: row text contains the id/day |
++| FR-13 | MUST | Send MUST be disabled while any row is red, with a separate "Send anyway" action | Test: button disabled; "Send anyway" sends |
++| FR-14 | MUST | After a send, the Owner MUST see whether Tempo's read-back totals match what was sent, per day | Test: mismatch fixture shows a red read-back row |
++| FR-15 | MUST | The terminal sync MUST print the same checklist and stop on red unless the Owner confirms | Test: CLI output lists rows; red without confirm sends nothing |
++| FR-16 | MUST | The 17:00 auto-send MUST NOT run the checklist | Test: auto-send path does not call it |
++| FR-17 | MUST | The Owner MUST be able to start a standup from the Day page and from the terminal | Test: both entry points return a draft |
++| FR-18 | MUST | The draft MUST answer, in order: "What are you working on today?", "What is next/coming up?", "Are there any blockers we need to clear?" | Test: three numbered answers, in that order |
++| FR-19 | MUST | The draft MUST be built from yesterday's and today's blocks, their tickets, merged PRs, open tickets and the first prompt of each Claude session (cut to 300 characters); every text passes through the same secret-removal step used for invoice text before it reaches the model, and that redacted text is the only model input | Test: a planted API key and bearer token never appear in the model input |
++| FR-20 | MUST | The Owner MUST be able to edit the draft before posting | Test: edited text is what gets posted |
++| FR-21 | MUST | Posting MUST reply in today's message beginning "Daily:thread" in the channel set in Settings, as the Owner; while no channel is set, Post is disabled and Copy is offered | Test with a fake Slack: reply goes to that message's thread; unset channel → Post disabled |
++| FR-22 | MUST | Nothing MUST be posted without the Owner's explicit Post click or terminal confirm | Test: draft alone makes no post call |
++| FR-23 | MUST | When the thread is missing, the channel is unset, or Slack refuses, the Owner MUST see the cause and a Copy action, and nothing is posted | Test: each case |
++| FR-24 | SHOULD | The Owner SHOULD be able to regenerate the draft for a different wording | Test: the second request's model input contains the previous draft and a different-wording instruction |
++| FR-25 | MUST | Every Owner block change (delete, merge, split, ticket, hours, text, personal, ignored) MUST be undoable, newest first | Test per change type |
++| FR-26 | MUST | Worklog MUST keep the last 20 changes; older ones are forgotten | Test: 21st oldest is gone |
++| FR-27 | MUST | Undo MUST refuse when it would touch a block already sent to Tempo, and change nothing | Test: synced block → refusal, DB unchanged |
++| FR-28 | MUST | Undo MUST never clear or restore a Tempo sent-marker | Test: marker unchanged across undo |
++| FR-29 | MUST | The web MUST offer Undo on the confirmation shown after a block change | Test: Undo appears and works |
++| FR-30 | MUST | The Owner MUST be able to ask a free-text question from the terminal and from Claude Code | Test: both return results |
++| FR-31 | MUST | Ask MUST return up to 5 matches, newest first, each with date, block time and ticket | Test: fixture query returns ≤5 ordered hits |
++| FR-32 | MUST | "Where did I stop" for a repo MUST show the last 3 prompts and files touched in that repo | Test: fixture repo |
++| FR-33 | MUST | Ask MUST NOT change any data | Test: DB byte-identical after ask |
++| FR-34 | MUST | The Owner MUST be able to print a report for one customer and one month | Test: fixture month prints |
++| FR-35 | MUST | The report MUST group hours by deild, with each line's Icelandic text | Test: grouping and text present |
++| FR-36 | MUST | The report MUST show each deild's change from the previous month, or "n/a" when the previous month has no hours | Test: +/- hours shown; empty previous month → n/a |
++| FR-37 | MUST | Unresolved customer or deild fields MUST stay empty, never guessed | Test: unresolved line has empty field |
++| FR-38 | SHOULD | The report SHOULD export as a spreadsheet file | Test: CSV parses |
++| FR-39 | MUST | The Claude Code footer MUST show at most one nudge line at a time | Test: never two lines |
++| FR-40 | MUST | Nudges MUST cover: open GitHub PRs where the Owner is a requested reviewer; Jira tickets in status In Progress that have a merged PR mentioning their key; In Progress tickets whose latest event or block is older than 14 days ("activity" = newest event or block on that ticket) | Test: one fixture per kind |
++| FR-41 | MUST | The shown nudge MUST change on each new prompt | Test: rotation |
++| FR-42 | MUST | When nothing needs the Owner, no nudge line appears | Test: empty → no line |
++| FR-43 | MUST | Right after spec 017's 17:00 run, the Owner MUST see a recap: what was sent, what was held back and why, coverage %, and the 3 largest unexplained gaps. Coverage % = seconds covered by blocks inside the day's work-hours window ÷ that window's seconds. A gap = a continuous stretch of at least 15 min inside the window with no block, ranked longest first | Test: fixture run produces all four parts with the stated maths |
++| FR-44 | MUST | Each gap MUST offer Personal (creates a personal block over the gap: never billed, never sent), Break (records the gap as a break: never billed, never sent, removed from the gap list) and Pick a ticket (creates a work block over the gap with that ticket) | Test: each action resolves the gap and only Pick a ticket adds billable time |
++| FR-45 | MUST | The recap MUST run inside 017's 17:00 run, never on its own timer | Test: no separate schedule entry |
++| FR-46 | MUST | The recap MUST appear in the Claude Code footer and on the Day page | Test: both surfaces |
++
++## 5. Non-functional requirements
++
++| Dimension | Number | How it is measured |
++|-----------|--------|--------------------|
++| Standup draft time | ≤ 30 s from click to preview | Timed in the CHK on a real day |
++| Footer cost | ≤ 50 ms added per prompt | Timing in the mod test with a warm cache |
++| Nudge freshness | data ≤ 10 min old | Cache age asserted in test |
++| Ask latency | ≤ 1 s over 12 months of data | Bench on the Owner's real database |
++| Undo depth | 20 changes | Test FR-26 |
++| "Same hours" tolerance | ≤ 30 min difference (30 counts) | Test FR-07 at 30 and 31 min |
++| Tempo read before send | ≤ 10 s, then send as today (FR-09 path) | Test with a slow fake Tempo |
++| Secrets in model input | 0 planted secrets reach it | Test FR-19 |
++| Stale ticket | 14 days without activity | Test FR-40 |
++
++## 6. Launch criteria
++
++- [ ] Every MUST in §4.1 has a passing test
++- [ ] The error path of each journey is exercised by a test
++- [ ] §5 latencies measured on the Owner's machine, numbers written in verify/
++- [ ] One real standup posted to the real Daily thread by the Owner (CHK)
++- [ ] Groups C and J built on a base that contains spec 017
++
++## 7. Assumptions
++
++| # | Assumption | Confidence | Blast radius if wrong |
++|---|------------|-----------|-----------------------|
++| A1 | Spec 017 merges before groups C and J start | Med | C and J wait; A–I ship without them |
++| A2 | The Slack user token can get the post-message permission by re-authorising once | High | Standup falls back to Copy only |
++| A3 | Today's Daily message is findable by searching the channel for "Daily:thread" posted today | Med | Owner pastes the thread link instead |
++| A4 | The standup is written in English, short bullets, like the team template | High | Wording only |
++| A5 | Every ticket group on the day page has a Tempo line, so billed hours can come from the line | Med | Groups without a line need a billed value added server-side |
++| A6 | The web's overlap helpers are slider/band maths for the UI, not billing maths, so they stay | Med | Scope of group B grows |
++| A7 | Ask needs no AI; plain text search is good enough | Med | Add an optional summary later |
++| A8 | "Same work" is judged by Verdict on the two texts; hours are compared by code | Med | More or fewer skips than wanted |
++
++## 8. Open questions
++
++None open. The Daily-thread channel is resolved as a Settings field the Owner fills in (FR-21); until then Post is disabled.
++
++## Appendix A — Glossary
++
++| Term | Means |
++|------|-------|
++| Line | One Tempo worklog worklog would send: one ticket, one day, union of its blocks' time |
++| Billed hours | A line's time rounded up to the next half hour, 0 under 15 min |
++| Daily thread | The day's Slack message starting "Daily:thread" where the team replies |
++| Verdict | The local classifier; picks one option or abstains |
++| Deild | A department/project of a customer on the invoice form (Verkefni) |
++| Sent marker | The stored Tempo worklog id that means "already sent" |
+diff --git a/rust/crates/worklog-cli/src/helpers_cmd.rs b/rust/crates/worklog-cli/src/helpers_cmd.rs
+new file mode 100644
+index 0000000..a529332
+--- /dev/null
++++ b/rust/crates/worklog-cli/src/helpers_cmd.rs
+@@ -0,0 +1 @@
++//! Stub; filled in by a later task.
+diff --git a/rust/crates/worklog-cli/src/lib.rs b/rust/crates/worklog-cli/src/lib.rs
+index 2e04e50..2352c30 100644
+--- a/rust/crates/worklog-cli/src/lib.rs
++++ b/rust/crates/worklog-cli/src/lib.rs
+@@ -1,13 +1,14 @@
+ //! worklog-cli — shared entrypoint so `main.rs` stays trivial and tests can
+ //! drive the CLI via `cargo test`.
+ 
+ #![forbid(unsafe_code)]
+ 
+ pub mod cli;
+ pub mod daemon_client;
+ mod eval_cmd;
++mod helpers_cmd;
+ pub mod style;
+ mod ticket_cmd;
+ pub mod wizard;
+ 
+ pub use cli::run;
+diff --git a/rust/crates/worklog-core/sql/schema.sql b/rust/crates/worklog-core/sql/schema.sql
+index 6c94db8..64880af 100644
+--- a/rust/crates/worklog-core/sql/schema.sql
++++ b/rust/crates/worklog-core/sql/schema.sql
+@@ -442,10 +442,20 @@ CREATE TABLE IF NOT EXISTS account_ticket_counts (
+     account_id TEXT PRIMARY KEY,
+     account_name TEXT NOT NULL,
+     tickets INTEGER NOT NULL DEFAULT 0
+ );
+ 
+ CREATE TABLE IF NOT EXISTS tempo_day_dismissals (
+     day TEXT PRIMARY KEY,
+     reason TEXT NOT NULL,
+     dismissed_at TEXT NOT NULL
+ );
++
++-- Before-images of the Owner's last block changes (undo). Written by
++-- undo::record inside each block_service transaction; trimmed to the
++-- newest UNDO_DEPTH rows.
++CREATE TABLE IF NOT EXISTS block_undo (
++    id INTEGER PRIMARY KEY AUTOINCREMENT,
++    change TEXT NOT NULL,
++    payload_json TEXT NOT NULL,
++    at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
++);
+diff --git a/rust/crates/worklog-core/src/ask.rs b/rust/crates/worklog-core/src/ask.rs
+new file mode 100644
+index 0000000..a529332
+--- /dev/null
++++ b/rust/crates/worklog-core/src/ask.rs
+@@ -0,0 +1 @@
++//! Stub; filled in by a later task.
+diff --git a/rust/crates/worklog-core/src/billing.rs b/rust/crates/worklog-core/src/billing.rs
+index debd2a8..2475326 100644
+--- a/rust/crates/worklog-core/src/billing.rs
++++ b/rust/crates/worklog-core/src/billing.rs
+@@ -34,20 +34,22 @@ use crate::collectors::tempo::{round_to_half_hour, HALF_HOUR_SECONDS};
+ use crate::models::Block;
+ use crate::repo;
+ 
+ #[path = "billing_deild.rs"]
+ mod billing_deild;
+ pub use billing_deild::resolve_block_slices;
+ 
+ /// Shown wherever a field could not be resolved and the user must pick
+ /// it in the form.
+ pub const BLANK: &str = "—";
++/// Shown where a line has no start or end time to read off.
++pub const FILL_IN: &str = "fill in";
+ 
+ /// `Tegund skráningar` — always a plain registration; the driving and
+ /// on-call variants are never billed by this user.
+ pub const TEGUND_SKRANINGAR: &str = "Almenn skráning";
+ 
+ /// `Taxti` — always day rate.
+ pub const TAXTI: &str = "Dagvinna";
+ 
+ /// The two `Reikningshæfi` values.
+ pub const REIKNINGSHAEFT: &str = "Reikningshæft";
+@@ -123,20 +125,30 @@ impl BillingRow {
+             // Unparseable day: show it verbatim rather than inventing one.
+             Err(_) => self.day.clone(),
+         }
+     }
+ 
+     /// `Tímar` as the form wants it: comma decimal, no trailing `,0`.
+     pub fn hours_display(&self) -> String {
+         format_hours(self.seconds)
+     }
+ 
++    /// Earliest start, or [`FILL_IN`] when the line has no blocks.
++    pub fn start_display(&self) -> String {
++        time_or_fill_in(&self.started_at)
++    }
++
++    /// Latest end, or [`FILL_IN`] when the line has no blocks.
++    pub fn end_display(&self) -> String {
++        time_or_fill_in(&self.ended_at)
++    }
++
+     /// True when the user still has to pick something for this line.
+     pub fn needs_input(&self) -> bool {
+         self.customer.is_none() || self.verkefni.is_none()
+     }
+ }
+ 
+ /// Output format for [`render`]. Adding a format is a new variant plus a
+ /// matching `render` arm — row computation never changes.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub enum Format {
+@@ -778,20 +790,34 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
+ fn format_hours(seconds: i64) -> String {
+     let halves = round_to_half_hour(seconds) / HALF_HOUR_SECONDS;
+     let whole = halves / 2;
+     if halves % 2 == 1 {
+         format!("{whole},5")
+     } else {
+         format!("{whole}")
+     }
+ }
+ 
++/// `HH:MM` in the `$WORKLOG_TZ` offset, [`FILL_IN`] when empty, verbatim when unparseable.
++fn time_or_fill_in(t: &str) -> String {
++    if t.is_empty() {
++        return FILL_IN.to_owned();
++    }
++    match chrono::DateTime::parse_from_rfc3339(t) {
++        Ok(d) => d
++            .with_timezone(&crate::tz::day_offset())
++            .format("%H:%M")
++            .to_string(),
++        Err(_) => t.to_owned(),
++    }
++}
++
+ fn or_blank(v: &Option<String>) -> &str {
+     v.as_deref().unwrap_or(BLANK)
+ }
+ 
+ /// Text: one aligned line per row, in form order, for scanning in a
+ /// terminal. Unresolved fields show [`BLANK`].
+ fn render_text(rows: &[BillingRow]) -> String {
+     let col_width = |f: &dyn Fn(&BillingRow) -> String| {
+         rows.iter().map(|r| f(r).chars().count()).max().unwrap_or(0)
+     };
+@@ -800,22 +826,24 @@ fn render_text(rows: &[BillingRow]) -> String {
+     let hw = col_width(&|r: &BillingRow| r.hours_display());
+ 
+     let pad = |s: &str, w: usize| {
+         let n = s.chars().count();
+         format!("{s}{}", " ".repeat(w.saturating_sub(n)))
+     };
+ 
+     rows.iter()
+         .map(|r| {
+             format!(
+-                "{}  {}  {}  {} hrs  {}  {}",
++                "{}  {}–{}  {}  {}  {} hrs  {}  {}",
+                 r.date_display(),
++                r.start_display(),
++                r.end_display(),
+                 pad(or_blank(&r.customer), cw),
+                 pad(or_blank(&r.verkefni), vw),
+                 pad(&r.hours_display(), hw),
+                 reikningshaefi(r.billable),
+                 r.invoice_text,
+             )
+         })
+         .collect::<Vec<_>>()
+         .join("\n")
+ }
+@@ -1787,20 +1815,43 @@ mod tests {
+                 block_count: 1,
+                 started_at: "2026-07-23T15:00:00Z".into(),
+                 ended_at: "2026-07-23T19:00:00Z".into(),
+                 paths: vec!["/Users/x/Desktop/Work/genai-infra".into()],
+                 block_ids: vec![4],
+                 text_origin: None,
+             },
+         ]
+     }
+ 
++    #[test]
++    fn a_line_with_no_blocks_says_fill_in_for_both_times() {
++        let mut r = sample_rows().remove(0);
++        r.started_at = String::new();
++        r.ended_at = String::new();
++        assert_eq!(r.start_display(), "fill in"); // catches an empty-string passthrough
++        assert_eq!(r.end_display(), "fill in");
++    }
++
++    #[test]
++    fn each_missing_time_says_fill_in_independently() {
++        let _g = crate::tz::test_env_lock();
++        std::env::remove_var("WORKLOG_TZ");
++        let mut r = sample_rows().remove(0);
++        r.started_at = String::new();
++        assert_eq!(r.start_display(), "fill in");
++        assert_eq!(r.end_display(), "14:30"); // catches filling both when one is missing
++        r.started_at = "2026-07-23T09:00:00Z".into();
++        r.ended_at = String::new();
++        assert_eq!(r.start_display(), "09:00");
++        assert_eq!(r.end_display(), "fill in");
++    }
++
+     #[test]
+     fn date_renders_in_the_forms_dd_mm_yyyy() {
+         assert_eq!(sample_rows()[0].date_display(), "23.07.2026");
+     }
+ 
+     #[test]
+     fn hours_render_with_a_comma_decimal() {
+         assert_eq!(sample_rows()[0].hours_display(), "5,5");
+         assert_eq!(sample_rows()[1].hours_display(), "4");
+     }
+@@ -1810,20 +1861,33 @@ mod tests {
+         let out = render(&sample_rows(), Format::Text);
+         let lines: Vec<&str> = out.lines().collect();
+         assert_eq!(lines.len(), 2);
+         assert!(lines[0].contains("23.07.2026"));
+         assert!(lines[0].contains("Sjúkra"));
+         assert!(lines[0].contains("5,5 hrs"));
+         assert!(lines[0].contains(REIKNINGSHAEFT));
+         assert!(lines[1].contains(BLANK), "unresolved fields show a dash");
+     }
+ 
++    #[test]
++    fn text_line_with_no_blocks_shows_fill_in_for_both_times() {
++        let _g = crate::tz::test_env_lock();
++        std::env::remove_var("WORKLOG_TZ");
++        let mut rows = sample_rows();
++        rows[0].started_at = String::new();
++        rows[0].ended_at = String::new();
++        let out = render(&rows, Format::Text);
++        let lines: Vec<&str> = out.lines().collect();
++        assert!(lines[0].contains("fill in–fill in"), "{}", lines[0]);
++        assert!(lines[1].contains("  15:00–19:00  "), "{}", lines[1]);
++    }
++
+     #[test]
+     fn csv_uses_the_form_field_order_and_empty_cells_for_blanks() {
+         let out = render(&sample_rows(), Format::Csv);
+         let lines: Vec<&str> = out.lines().collect();
+         assert_eq!(
+             lines[0],
+             "dagsetning,vidskiptamadur,verkefni,tegund_skraningar,taxti,timar,reikningshaefi,texti_a_reikning"
+         );
+         assert!(lines[1].contains("Almenn skráning"));
+         assert!(lines[1].contains("Dagvinna"));
+diff --git a/rust/crates/worklog-core/src/billing_round.rs b/rust/crates/worklog-core/src/billing_round.rs
+new file mode 100644
+index 0000000..a529332
+--- /dev/null
++++ b/rust/crates/worklog-core/src/billing_round.rs
+@@ -0,0 +1 @@
++//! Stub; filled in by a later task.
+diff --git a/rust/crates/worklog-core/src/block_service.rs b/rust/crates/worklog-core/src/block_service.rs
+index 90f4a06..b8f3729 100644
+--- a/rust/crates/worklog-core/src/block_service.rs
++++ b/rust/crates/worklog-core/src/block_service.rs
+@@ -3,180 +3,202 @@
+ //!
+ //! Every mutation takes a `&Connection` so the caller owns transactions
+ //! across multiple operations. Returns the fresh block row so clients
+ //! don't need a second round-trip.
+ 
+ use anyhow::{Context, Result};
+ use chrono::{DateTime, Duration, Utc};
+ use rusqlite::{params, Connection};
+ 
+ use crate::change_log;
++use crate::daily_helpers_contract::BlockChange;
+ use crate::deild_contract::ChangeSource;
+ use crate::models::Block;
+ use crate::repo;
++use crate::undo;
+ 
+ /// `dirty = CASE WHEN tempo_worklog_id IS ... THEN 1 ELSE dirty END` — set
+ /// the dirty flag only when the block has already been synced. Unsynced
+ /// blocks don't need the marker because the next sync picks them up via
+ /// `tempo_worklog_id IS NULL` anyway, and we don't want every estimator
+ /// pass to leave the day with a row of false-positive dirty pills.
+ const MARK_DIRTY_IF_SYNCED: &str =
+     "CASE WHEN tempo_worklog_id IS NOT NULL AND tempo_worklog_id != '' THEN 1 ELSE dirty END";
+ 
+ pub fn assign_ticket(conn: &Connection, block_id: i64, key: Option<&str>) -> Result<Block> {
+     // A block that's been assigned a real ticket is, by definition,
+     // work — flip is_personal off so it leaves the dimmed "personal"
+     // footer in the UI and starts going through estimate + tempo sync.
+     // Clearing the ticket leaves is_personal alone; the user might still
+     // want the personal flag managed by the path classifier on the next
+     // `worklog tag reclassify`.
++    let tx = conn.unchecked_transaction()?;
++    undo::record(&tx, BlockChange::Ticket, &[block_id])?;
+     if key.is_some() {
+-        conn.execute(
++        tx.execute(
+             &format!(
+                 "UPDATE blocks
+                     SET jira_issue = ?1, ticket_origin = 'manual', is_personal = 0, dirty = {MARK_DIRTY_IF_SYNCED}
+                   WHERE id = ?2"
+             ),
+             params![key, block_id],
+         )
+         .context("assign_ticket")?;
+     } else {
+-        conn.execute(
++        tx.execute(
+             &format!(
+                 "UPDATE blocks
+                     SET jira_issue = NULL, ticket_origin = 'manual', dirty = {MARK_DIRTY_IF_SYNCED}
+                   WHERE id = ?1"
+             ),
+             params![block_id],
+         )
+         .context("assign_ticket")?;
+     }
++    undo::seal(&tx, &[])?;
++    tx.commit().context("assign_ticket: commit")?;
+     let block = repo::get_block(conn, block_id)?
+         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
+     change_log::refresh_day_logged(conn, &block.day, ChangeSource::User);
+     Ok(block)
+ }
+ 
+ pub fn set_duration(conn: &Connection, block_id: i64, minutes: u32) -> Result<Block> {
+     // Read started_at so we can derive the matching ended_at. Leaving
+     // ended_at stale makes it disagree with duration_seconds, which
+     // confuses both the UI and anyone who inspects the raw DB.
+     let started_at: String = conn
+         .query_row(
+             "SELECT started_at FROM blocks WHERE id = ?1",
+             params![block_id],
+             |r| r.get(0),
+         )
+         .with_context(|| format!("block {block_id} not found"))?;
+     let new_end = derive_ended_at(&started_at, minutes as i64 * 60)?;
+ 
+     // Mark as manual so re-estimation doesn't clobber it.
+-    conn.execute(
++    let tx = conn.unchecked_transaction()?;
++    undo::record(&tx, BlockChange::Hours, &[block_id])?;
++    tx.execute(
+         &format!(
+             "UPDATE blocks
+                 SET duration_seconds = ?1,
+                     ended_at = ?2,
+                     estimated_by = 'manual',
+                     dirty = {MARK_DIRTY_IF_SYNCED}
+               WHERE id = ?3"
+         ),
+         params![minutes as i64 * 60, new_end, block_id],
+     )
+     .context("set_duration")?;
++    undo::seal(&tx, &[])?;
++    tx.commit().context("set_duration: commit")?;
+     let block = repo::get_block(conn, block_id)?
+         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
+     change_log::refresh_day_logged(conn, &block.day, ChangeSource::User);
+     Ok(block)
+ }
+ 
+ /// Compute the canonical ended_at string from started_at (ISO-8601) and
+ /// duration. Output format mirrors how the infer+repo layers emit
+ /// timestamps so round-trips stay byte-stable.
+ fn derive_ended_at(started_at: &str, duration_seconds: i64) -> Result<String> {
+     let start: DateTime<Utc> = DateTime::parse_from_rfc3339(started_at)
+         .with_context(|| format!("parsing started_at `{started_at}` as RFC3339"))?
+         .with_timezone(&Utc);
+     let end = start + Duration::seconds(duration_seconds);
+     // Match the repo's emission: `2026-04-18T09:00:00+00:00` (no fractional
+     // seconds when whole seconds). chrono's `%:z` yields `+00:00`.
+     Ok(end.format("%Y-%m-%dT%H:%M:%S%:z").to_string())
+ }
+ 
+ pub fn set_description(conn: &Connection, block_id: i64, description: &str) -> Result<Block> {
+-    conn.execute(
++    let tx = conn.unchecked_transaction()?;
++    undo::record(&tx, BlockChange::Text, &[block_id])?;
++    tx.execute(
+         &format!(
+             "UPDATE blocks
+                 SET description = ?1,
+                     estimated_by = 'manual',
+                     dirty = {MARK_DIRTY_IF_SYNCED}
+               WHERE id = ?2"
+         ),
+         params![description, block_id],
+     )
+     .context("set_description")?;
++    undo::seal(&tx, &[])?;
++    tx.commit().context("set_description: commit")?;
+     let block = repo::get_block(conn, block_id)?
+         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
+     change_log::refresh_day_logged(conn, &block.day, ChangeSource::User);
+     Ok(block)
+ }
+ 
+ /// Manually set a block's work/personal classification.
+ ///
+ /// The path classifier infers `is_personal` from a block's dominant
+ /// project path; this is the explicit user override — flagging a meeting
+ /// or an off-the-clock spike as personal (or pulling a mis-classified
+ /// block back into work) straight from the review UI. Personal blocks are
+ /// dimmed in the UI, skipped by the estimator, and excluded from Tempo
+ /// sync. Only the flag changes — the ticket, if any, is left untouched.
+ pub fn set_personal(conn: &Connection, block_id: i64, is_personal: bool) -> Result<Block> {
+-    conn.execute(
++    let tx = conn.unchecked_transaction()?;
++    undo::record(&tx, BlockChange::Personal, &[block_id])?;
++    tx.execute(
+         "UPDATE blocks SET is_personal = ?1 WHERE id = ?2",
+         params![is_personal as i64, block_id],
+     )
+     .context("set_personal")?;
++    undo::seal(&tx, &[])?;
++    tx.commit().context("set_personal: commit")?;
+     let block = repo::get_block(conn, block_id)?
+         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
+     change_log::refresh_day_logged(conn, &block.day, ChangeSource::User);
+     Ok(block)
+ }
+ 
+ /// Ignore (or restore) a block: hide it from the day, billing, Tempo sync
+ /// and estimation, and keep it hidden across "Rebuild blocks" (see the
+ /// carry rule in `infer::persist_blocks`). Implemented as `is_personal = 1`
+ /// plus an `ignored_at` marker so every existing personal exclusion applies.
+ /// Refuses blocks already synced to Tempo or exported for billing; never
+ /// clears `tempo_worklog_id` / `exported_at`.
+ pub fn set_ignored(conn: &Connection, block_id: i64, ignored: bool) -> Result<Block> {
+     let block = repo::get_block(conn, block_id)?
+         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
++    let tx = conn.unchecked_transaction()?;
++    undo::record(&tx, BlockChange::Ignored, &[block_id])?;
+     if ignored {
+         let set = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.is_empty());
+         if set(&block.tempo_worklog_id) {
+             anyhow::bail!("already synced to Tempo — remove the worklog there first");
+         }
+         if set(&block.exported_at) {
+             anyhow::bail!("already exported for billing");
+         }
+-        conn.execute(
++        tx.execute(
+             "UPDATE blocks SET ignored_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                     is_personal = 1 WHERE id = ?1",
+             params![block_id],
+         )
+     } else {
+         // ponytail: restore assumes the block was work before; store prior
+         // is_personal if that ever matters.
+-        conn.execute(
++        tx.execute(
+             "UPDATE blocks SET ignored_at = NULL, is_personal = 0 WHERE id = ?1",
+             params![block_id],
+         )
+     }
+     .context("set_ignored")?;
++    undo::seal(&tx, &[])?;
++    tx.commit().context("set_ignored: commit")?;
+     let block = repo::get_block(conn, block_id)?
+         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
+     change_log::refresh_day_logged(conn, &block.day, ChangeSource::User);
+     Ok(block)
+ }
+ 
+ /// Mark every one of `day`'s blocks as exported for billing — the
+ /// `exported_at` canary. Idempotent (AC-022): only blocks that haven't
+ /// been marked yet (`exported_at` NULL or empty) are touched, so
+ /// re-running `--mark` on an already-exported day leaves existing
+@@ -195,26 +217,30 @@ pub fn mark_exported(conn: &Connection, day: &str) -> Result<usize> {
+                 SET exported_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+               WHERE day = ?1
+                 AND (exported_at IS NULL OR exported_at = '')",
+             params![day],
+         )
+         .context("mark_exported")?;
+     Ok(n)
+ }
+ 
+ pub fn delete_block(conn: &Connection, block_id: i64) -> Result<()> {
+-    let n = conn
++    let tx = conn.unchecked_transaction()?;
++    undo::record(&tx, BlockChange::Delete, &[block_id])?;
++    let n = tx
+         .execute("DELETE FROM blocks WHERE id = ?1", params![block_id])
+         .context("delete_block")?;
+     if n == 0 {
+         anyhow::bail!("block {block_id} not found");
+     }
++    undo::seal(&tx, &[])?;
++    tx.commit().context("delete_block: commit")?;
+     Ok(())
+ }
+ 
+ /// True when a block carries a real Tempo worklog id — i.e. it has been
+ /// synced. Both `NULL` and `""` count as unsynced (see CLAUDE.md invariant
+ /// on the `tempo_worklog_id` canary).
+ fn is_synced(b: &Block) -> bool {
+     b.tempo_worklog_id
+         .as_deref()
+         .map(str::trim)
+@@ -293,20 +319,24 @@ pub fn merge_blocks(
+         .map(|b| b.started_at.clone())
+         .min()
+         .expect("primary is always present");
+     let total_seconds: i64 = std::iter::once(&primary)
+         .chain(others.iter())
+         .map(|b| b.duration_seconds)
+         .sum();
+     let ended_at = derive_ended_at(&started_at, total_seconds)?;
+ 
+     let tx = conn.unchecked_transaction()?;
++    let touched: Vec<i64> = std::iter::once(primary_id)
++        .chain(others.iter().map(|b| b.id))
++        .collect();
++    undo::record(&tx, BlockChange::Merge, &touched)?;
+     for o in &others {
+         // Re-point this block's events at the primary. `OR IGNORE` drops
+         // the row when the event is already linked to the primary
+         // (block_events PK is `(block_id, event_id)`); the leftover row
+         // is then swept by `ON DELETE CASCADE` when the block row goes.
+         tx.execute(
+             "UPDATE OR IGNORE block_events SET block_id = ?1 WHERE block_id = ?2",
+             params![primary_id, o.id],
+         )
+         .context("merge_blocks: re-linking events")?;
+@@ -318,20 +348,21 @@ pub fn merge_blocks(
+             "UPDATE blocks
+                 SET started_at = ?1,
+                     ended_at = ?2,
+                     duration_seconds = ?3,
+                     dirty = {MARK_DIRTY_IF_SYNCED}
+               WHERE id = ?4"
+         ),
+         params![started_at, ended_at, total_seconds, primary_id],
+     )
+     .context("merge_blocks: updating primary")?;
++    undo::seal(&tx, &[])?;
+     tx.commit().context("merge_blocks: commit")?;
+ 
+     let merged = repo::get_block(conn, primary_id)?
+         .ok_or_else(|| anyhow::anyhow!("block {primary_id} not found"))?;
+     change_log::refresh_day_logged(conn, &merged.day, ChangeSource::User);
+     Ok(MergeOutcome {
+         merged,
+         absorbed: others.iter().map(|b| b.id).collect(),
+     })
+ }
+@@ -364,20 +395,21 @@ pub fn split_block(conn: &Connection, block_id: i64, first_minutes: u32) -> Resu
+     if first_secs <= 0 || first_secs >= block.duration_seconds {
+         anyhow::bail!(
+             "split point {first_minutes}m must be between 0 and the block's {}m duration",
+             block.duration_seconds / 60
+         );
+     }
+     let boundary = derive_ended_at(&block.started_at, first_secs)?;
+     let second_secs = block.duration_seconds - first_secs;
+ 
+     let tx = conn.unchecked_transaction()?;
++    undo::record(&tx, BlockChange::Split, &[block_id])?;
+     // The original block keeps its id; shrink it to the first slice.
+     tx.execute(
+         &format!(
+             "UPDATE blocks
+                 SET duration_seconds = ?1,
+                     ended_at = ?2,
+                     estimated_by = 'manual',
+                     dirty = {MARK_DIRTY_IF_SYNCED}
+               WHERE id = ?3"
+         ),
+@@ -409,20 +441,21 @@ pub fn split_block(conn: &Connection, block_id: i64, first_minutes: u32) -> Resu
+     // Re-bucket events: anything starting at/after the boundary moves to
+     // the tail. (block_events PK won't collide — `second_id` is new.)
+     tx.execute(
+         "UPDATE block_events
+             SET block_id = ?1
+           WHERE block_id = ?2
+             AND event_id IN (SELECT id FROM events WHERE started_at >= ?3)",
+         params![second_id, block_id, boundary],
+     )
+     .context("split_block: re-bucketing events")?;
++    undo::seal(&tx, &[second_id])?;
+     tx.commit().context("split_block: commit")?;
+ 
+     let outcome = SplitOutcome {
+         first: repo::get_block(conn, block_id)?
+             .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?,
+         second: repo::get_block(conn, second_id)?
+             .ok_or_else(|| anyhow::anyhow!("block {second_id} not found"))?,
+     };
+     change_log::refresh_day_logged(conn, &outcome.first.day, ChangeSource::User);
+     Ok(outcome)
+diff --git a/rust/crates/worklog-core/src/collectors/tempo.rs b/rust/crates/worklog-core/src/collectors/tempo.rs
+index 734c5fc..f6fd54e 100644
+--- a/rust/crates/worklog-core/src/collectors/tempo.rs
++++ b/rust/crates/worklog-core/src/collectors/tempo.rs
+@@ -538,21 +538,21 @@ fn sync_group_aggregated(
+         client.post(&url)
+     };
+     let resp = req
+         .bearer_auth(&auth.token)
+         .header("Content-Type", "application/json")
+         .json(&payload)
+         .send()
+         .with_context(|| format!("tempo {method}"))?;
+     let http_status = resp.status().as_u16();
+     if !resp.status().is_success() {
+-        let body = resp.text().unwrap_or_default();
++        let body = error_body(resp);
+         let head_id = eligible_in_group.first().map(|b| b.id).unwrap_or(-1);
+         report
+             .errors
+             .push(format!("group {issue}: HTTP {http_status} — {body}"));
+         for b in eligible_in_group {
+             results.push(SyncResult {
+                 block_id: b.id,
+                 status: "error",
+                 reason: Some(body.clone()),
+                 tempo_id: None,
+@@ -708,21 +708,21 @@ fn sync_block_legacy(
+         client.post(&url)
+     };
+     let resp = req
+         .bearer_auth(&auth.token)
+         .header("Content-Type", "application/json")
+         .json(&payload)
+         .send()
+         .with_context(|| format!("tempo {method}"))?;
+     let http_status = resp.status().as_u16();
+     if !resp.status().is_success() {
+-        let body = resp.text().unwrap_or_default();
++        let body = error_body(resp);
+         report
+             .errors
+             .push(format!("block {}: HTTP {http_status} — {body}", b.id));
+         results.push(SyncResult {
+             block_id: b.id,
+             status: "error",
+             reason: Some(body),
+             tempo_id: None,
+             payload: Some(payload),
+             http_status: Some(http_status),
+@@ -921,27 +921,37 @@ pub fn delete_worklog_with(
+     let url = format!("{}/worklogs/{}", auth.base_url, id);
+     let resp = client
+         .delete(&url)
+         .bearer_auth(&auth.token)
+         .send()
+         .with_context(|| format!("tempo DELETE {url}"))?;
+     let status = resp.status();
+     if status.is_success() || status.as_u16() == 404 {
+         return Ok(());
+     }
+-    let body = resp.text().unwrap_or_default();
++    let body = error_body(resp);
+     anyhow::bail!(
+         "tempo DELETE /worklogs/{id} returned HTTP {} — {body}",
+         status.as_u16()
+     )
+ }
+ 
++/// The body of a failed Tempo response, never empty: an unreadable or
++/// blank body is named as such so a report line always carries a reason.
++pub(crate) fn error_body(resp: reqwest::blocking::Response) -> String {
++    match resp.text() {
++        Ok(t) if t.trim().is_empty() => "(empty response body)".to_string(),
++        Ok(t) => t,
++        Err(e) => format!("could not read response body: {e}"),
++    }
++}
++
+ /// Resolve a Jira key (`PROJ-123`) to its numeric Atlassian issue id.
+ ///
+ /// Walks the cache first; on miss, calls Jira's REST `/issue/{key}`
+ /// endpoint with basic auth read from the secrets layer, and writes
+ /// the id back to `jira_tickets` so the next sync is local-only.
+ ///
+ /// Returns `None` only when Jira itself can't find the key (404) or
+ /// the credentials are missing — both bubble up as a sync error per
+ /// block, not a hard fatal.
+ fn resolve_issue_id(conn: &Connection, key: &str, client: &Client) -> Result<Option<String>> {
+@@ -2746,11 +2756,125 @@ mod tests {
+         .unwrap_err();
+         assert!(matches!(
+             err.downcast_ref::<HubError>(),
+             Some(HubError::Upstream {
+                 service: "Tempo",
+                 status: 500,
+                 ..
+             })
+         ));
+     }
++
++    fn response_with_raw(raw: &'static str) -> reqwest::blocking::Response {
++        use std::io::{Read, Write};
++        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
++        let addr = listener.local_addr().unwrap();
++        std::thread::spawn(move || {
++            let (mut sock, _) = listener.accept().unwrap();
++            let mut buf = [0u8; 1024];
++            let _ = sock.read(&mut buf);
++            sock.write_all(raw.as_bytes()).unwrap();
++        });
++        http::client()
++            .unwrap()
++            .get(format!("http://{addr}/"))
++            .send()
++            .unwrap()
++    }
++
++    fn sync_one_rejected_write(server: &MockServer) -> CollectReport {
++        let conn = open_memory().unwrap();
++        insert_block(
++            &conn,
++            "2026-04-18",
++            "2026-04-18T09:00:00Z",
++            "2026-04-18T09:30:00Z",
++            1800,
++            Some("PROJ-1"),
++            Some("x"),
++        );
++        sync_day_with(
++            &conn,
++            &auth(server.base_url()),
++            day(),
++            false,
++            &http::client().unwrap(),
++        )
++        .unwrap()
++        .0
++    }
++
++    #[test]
++    fn error_body_returns_the_text_tempo_sent() {
++        let resp = response_with_raw(
++            "HTTP/1.1 400 Bad Request\r\nContent-Length: 15\r\n\r\nIssue is closed",
++        );
++        assert_eq!(error_body(resp), "Issue is closed");
++    }
++
++    #[test]
++    fn error_body_says_reading_failed_and_why_when_the_body_is_cut_short() {
++        // catches unwrap_or_default: a cut-off body must not become ""
++        let resp =
++            response_with_raw("HTTP/1.1 400 Bad Request\r\nContent-Length: 100\r\n\r\nshort");
++        let body = error_body(resp);
++        let prefix = "could not read response body: ";
++        assert!(body.starts_with(prefix), "{body}");
++        assert!(body.len() > prefix.len(), "{body}");
++    }
++
++    #[test]
++    fn error_body_is_never_empty_for_an_empty_body() {
++        // catches returning the raw text unchanged
++        let resp = response_with_raw("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
++        assert_eq!(error_body(resp), "(empty response body)");
++    }
++
++    #[test]
++    fn sync_report_names_tempos_status_and_body_for_a_rejected_write() {
++        // catches dropping the status or the body from the report line
++        let server = MockServer::start();
++        server.mock(|when, then| {
++            when.method(POST).path("/worklogs");
++            then.status(400).body("Issue is closed");
++        });
++        let report = sync_one_rejected_write(&server);
++        assert_eq!(report.errors.len(), 1);
++        assert!(report.errors[0].contains("HTTP 400"), "{:?}", report.errors);
++        assert!(
++            report.errors[0].contains("Issue is closed"),
++            "{:?}",
++            report.errors
++        );
++    }
++
++    #[test]
++    fn sync_report_never_has_an_empty_reason_for_an_empty_error_body() {
++        // catches the sync call sites still using resp.text().unwrap_or_default()
++        let server = MockServer::start();
++        server.mock(|when, then| {
++            when.method(POST).path("/worklogs");
++            then.status(502);
++        });
++        let report = sync_one_rejected_write(&server);
++        assert!(
++            report.errors[0].ends_with("HTTP 502 — (empty response body)"),
++            "{:?}",
++            report.errors
++        );
++    }
++
++    #[test]
++    fn delete_failure_names_tempos_status_and_body() {
++        // catches the delete call site still swallowing the body
++        let server = MockServer::start();
++        server.mock(|when, then| {
++            when.method(DELETE).path("/worklogs/7");
++            then.status(409).body("Period is locked");
++        });
++        let err = delete_worklog_with(&auth(server.base_url()), "7", &http::client().unwrap())
++            .unwrap_err()
++            .to_string();
++        assert!(err.contains("HTTP 409"), "{err}");
++        assert!(err.contains("Period is locked"), "{err}");
++    }
+ }
+diff --git a/rust/crates/worklog-core/src/daemon_ask.rs b/rust/crates/worklog-core/src/daemon_ask.rs
+new file mode 100644
+index 0000000..a529332
+--- /dev/null
++++ b/rust/crates/worklog-core/src/daemon_ask.rs
+@@ -0,0 +1 @@
++//! Stub; filled in by a later task.
+diff --git a/rust/crates/worklog-core/src/daemon_nudges.rs b/rust/crates/worklog-core/src/daemon_nudges.rs
+new file mode 100644
+index 0000000..a529332
+--- /dev/null
++++ b/rust/crates/worklog-core/src/daemon_nudges.rs
+@@ -0,0 +1 @@
++//! Stub; filled in by a later task.
+diff --git a/rust/crates/worklog-core/src/daemon_preflight.rs b/rust/crates/worklog-core/src/daemon_preflight.rs
+new file mode 100644
+index 0000000..a529332
+--- /dev/null
++++ b/rust/crates/worklog-core/src/daemon_preflight.rs
+@@ -0,0 +1 @@
++//! Stub; filled in by a later task.
+diff --git a/rust/crates/worklog-core/src/daemon_standup.rs b/rust/crates/worklog-core/src/daemon_standup.rs
+new file mode 100644
+index 0000000..a529332
+--- /dev/null
++++ b/rust/crates/worklog-core/src/daemon_standup.rs
+@@ -0,0 +1 @@
++//! Stub; filled in by a later task.
+diff --git a/rust/crates/worklog-core/src/daemon_undo.rs b/rust/crates/worklog-core/src/daemon_undo.rs
+new file mode 100644
+index 0000000..a529332
+--- /dev/null
++++ b/rust/crates/worklog-core/src/daemon_undo.rs
+@@ -0,0 +1 @@
++//! Stub; filled in by a later task.
+diff --git a/rust/crates/worklog-core/src/daily_helpers_contract.rs b/rust/crates/worklog-core/src/daily_helpers_contract.rs
+new file mode 100644
+index 0000000..593cdf9
+--- /dev/null
++++ b/rust/crates/worklog-core/src/daily_helpers_contract.rs
+@@ -0,0 +1,153 @@
++//! Spec 018 shared shapes. Mirrored by `web/lib/daily_helpers_contract.ts`.
++//! Owned by the orchestrator: a task that needs a new shape escalates.
++
++use serde::{Deserialize, Serialize};
++
++/// FR-26: how many Owner block changes undo remembers.
++pub const UNDO_DEPTH: usize = 20;
++/// FR-07: an existing Tempo entry counts as the same hours within this.
++pub const SAME_HOURS_TOLERANCE_SECONDS: i64 = 1800;
++/// FR-40: an In Progress ticket with no activity this long is stale.
++pub const STALE_TICKET_DAYS: i64 = 14;
++/// §5: nudge data is at most this old.
++pub const NUDGE_CACHE_SECONDS: i64 = 600;
++/// FR-21: today's team message starts with this.
++pub const DAILY_THREAD_PREFIX: &str = "Daily:thread";
++/// FR-21: envfile key holding the Slack channel name of the Daily thread.
++pub const SLACK_DAILY_CHANNEL_KEY: &str = "WORKLOG_SLACK_DAILY_CHANNEL";
++/// FR-18: the team's three questions, in order.
++pub const STANDUP_QUESTIONS: [&str; 3] = [
++    "What are you working on today?",
++    "What is next/coming up?",
++    "Are there any blockers we need to clear?",
++];
++
++/// FR-25: every Owner block change undo can reverse.
++#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
++#[serde(rename_all = "snake_case")]
++pub enum BlockChange {
++    Delete,
++    Merge,
++    Split,
++    Ticket,
++    Hours,
++    Text,
++    Personal,
++    Ignored,
++}
++
++/// FR-25..28: result of one undo.
++#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
++#[serde(tag = "outcome", rename_all = "snake_case")]
++pub enum UndoOutcome {
++    Restored {
++        change: BlockChange,
++        block_ids: Vec<i64>,
++    },
++    NothingToUndo,
++    RefusedSynced {
++        block_id: i64,
++    },
++}
++
++/// FR-11, FR-14: one checklist row kind.
++#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
++#[serde(rename_all = "snake_case")]
++pub enum PreflightCheck {
++    Ticketed,
++    NoDoubleCount,
++    DayHours,
++    LineText,
++    ReadBack,
++}
++
++/// FR-11..14: one checklist row. `target` names the block id, line
++/// (`DAY ISSUE`) or day at fault (FR-12); `None` when `ok`.
++#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
++pub struct PreflightRow {
++    pub check: PreflightCheck,
++    pub ok: bool,
++    pub detail: String,
++    pub target: Option<String>,
++}
++
++/// FR-18: the three answers, one bullet per string.
++#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
++pub struct StandupDraft {
++    pub today: Vec<String>,
++    pub next: Vec<String>,
++    pub blockers: Vec<String>,
++}
++
++impl StandupDraft {
++    /// The text the Owner edits and posts: each question numbered, its
++    /// bullets under it, "None" when a list is empty.
++    pub fn to_text(&self) -> String {
++        let answers = [&self.today, &self.next, &self.blockers];
++        let mut out = String::new();
++        for (n, (question, bullets)) in STANDUP_QUESTIONS.iter().zip(answers).enumerate() {
++            out.push_str(&format!("{}. {}\n", n + 1, question));
++            if bullets.is_empty() {
++                out.push_str("• None\n");
++            }
++            for b in bullets {
++                out.push_str(&format!("• {b}\n"));
++            }
++            if n < 2 {
++                out.push('\n');
++            }
++        }
++        out
++    }
++}
++
++/// FR-21..23: result of posting the standup.
++#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
++#[serde(tag = "outcome", rename_all = "snake_case")]
++pub enum PostOutcome {
++    Posted { permalink: String },
++    NoChannel,
++    NoThread { channel: String },
++    SlackRefused { error: String },
++}
++
++/// FR-40: the three nudge kinds.
++#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
++#[serde(rename_all = "snake_case")]
++pub enum NudgeKind {
++    ReviewRequested,
++    MergedNotDone,
++    Stale,
++}
++
++/// FR-39..42: one footer line.
++#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
++pub struct Nudge {
++    pub kind: NudgeKind,
++    pub text: String,
++    pub url: Option<String>,
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn standup_text_numbers_questions_and_fills_empty() {
++        let d = StandupDraft {
++            today: vec!["GENAI-12 tenant stack".into()],
++            next: vec![],
++            blockers: vec![],
++        };
++        let t = d.to_text();
++        assert!(t.starts_with("1. What are you working on today?\n• GENAI-12 tenant stack\n"));
++        assert!(t.contains("2. What is next/coming up?\n• None\n"));
++        assert!(t.ends_with("3. Are there any blockers we need to clear?\n• None\n"));
++    }
++
++    #[test]
++    fn undo_outcome_wire_shape() {
++        let v = serde_json::to_value(UndoOutcome::RefusedSynced { block_id: 7 }).unwrap();
++        assert_eq!(v, serde_json::json!({"outcome": "refused_synced", "block_id": 7}));
++    }
++}
+diff --git a/rust/crates/worklog-core/src/lib.rs b/rust/crates/worklog-core/src/lib.rs
+index 4a20cea..e98eac6 100644
+--- a/rust/crates/worklog-core/src/lib.rs
++++ b/rust/crates/worklog-core/src/lib.rs
+@@ -1,37 +1,45 @@
+ //! worklog-core — shared data layer for the Rust rewrite.
+ //!
+ //! Stage 1 skeleton: paths, db, models, repository, secrets.
+ 
+ #![forbid(unsafe_code)]
+ 
+ pub mod account_clues;
++pub mod ask;
+ pub mod billing;
+ pub mod billing_deildir;
+ pub mod billing_registry;
++pub mod billing_round;
+ pub mod block_details;
+ pub mod block_digest;
+ pub mod block_eval;
+ pub mod block_service;
+ pub mod browser;
+ pub mod browser_ingest;
+ pub mod change_log;
+ mod change_log_column;
+ pub mod claude_mod;
+ mod claude_subprocess;
+ mod clues_collect;
+ pub mod clues_contract;
+ pub mod clues_send;
+ pub mod clues_work_items;
+ pub mod collectors;
+ pub mod daemon;
++mod daemon_ask;
++mod daemon_nudges;
++mod daemon_preflight;
+ pub mod daemon_service;
++mod daemon_standup;
++mod daemon_undo;
++pub mod daily_helpers_contract;
+ pub mod db;
+ pub mod deild_contract;
+ pub mod digest_contract;
+ pub mod elsewhere;
+ pub mod envfile;
+ pub mod estimate;
+ pub mod git;
+ pub mod hook;
+ pub mod hook_run;
+ pub mod http;
+@@ -43,61 +51,67 @@ mod infer_evidence;
+ mod infer_lane_tags;
+ pub mod infer_lanes;
+ mod infer_session_folder;
+ pub mod jira_assist_contract;
+ pub mod line_text;
+ mod line_text_jobs;
+ pub mod local_clone;
+ pub mod logged;
+ pub mod logged_contract;
+ pub mod models;
++pub mod nudges;
+ pub mod overlap_store;
+ pub mod overlaps;
+ pub mod paths;
+ pub mod personal;
++pub mod preflight;
+ pub mod prompt_snippets;
+ pub mod purge;
+ pub mod raw_json;
+ pub mod repo;
++pub mod report;
+ pub mod routing;
+ pub mod routing_absorb;
+ pub mod routing_contract;
+ pub mod routing_dismiss;
+ pub mod schedule;
+ pub mod scrub;
+ mod scrub_assignment;
+ pub mod secrets;
+ mod session_customers;
+ pub mod session_pins;
+ pub mod session_tickets;
+ pub mod sessions;
+ pub mod skill;
++pub mod slack_post;
++pub mod standup;
+ pub mod status_hints;
+ pub mod task_board;
+ pub mod task_draft;
+ pub mod tempo_hub_contract;
+ pub mod tempo_line_contract;
+ pub mod tempo_line_writer;
+ pub mod tempo_lines;
+ pub mod tempo_remote;
+ pub mod tenant_clues;
+ pub mod tenant_contract;
+ pub mod tenant_shares;
+ pub mod tenant_split;
+ pub mod tenants;
+ pub mod ticket_activity;
+ pub mod ticket_assist;
+ pub mod ticket_blocks;
+ pub mod ticket_log;
+ pub mod ticket_text;
+ pub mod timeline;
+ pub mod tz;
++pub mod undo;
+ pub mod updater;
+ pub mod upgrade_006;
+ pub mod verdict;
+ pub mod web;
+ pub mod week_closeout;
+ 
+ pub use crate::paths::Paths;
+ 
+ /// Crate version, pinned to the workspace version.
+ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+diff --git a/rust/crates/worklog-core/src/nudges.rs b/rust/crates/worklog-core/src/nudges.rs
+new file mode 100644
+index 0000000..a529332
+--- /dev/null
++++ b/rust/crates/worklog-core/src/nudges.rs
+@@ -0,0 +1 @@
++//! Stub; filled in by a later task.
+diff --git a/rust/crates/worklog-core/src/preflight.rs b/rust/crates/worklog-core/src/preflight.rs
+new file mode 100644
+index 0000000..a529332
+--- /dev/null
++++ b/rust/crates/worklog-core/src/preflight.rs
+@@ -0,0 +1 @@
++//! Stub; filled in by a later task.
+diff --git a/rust/crates/worklog-core/src/report.rs b/rust/crates/worklog-core/src/report.rs
+new file mode 100644
+index 0000000..a529332
+--- /dev/null
++++ b/rust/crates/worklog-core/src/report.rs
+@@ -0,0 +1 @@
++//! Stub; filled in by a later task.
+diff --git a/rust/crates/worklog-core/src/slack_post.rs b/rust/crates/worklog-core/src/slack_post.rs
+new file mode 100644
+index 0000000..a529332
+--- /dev/null
++++ b/rust/crates/worklog-core/src/slack_post.rs
+@@ -0,0 +1 @@
++//! Stub; filled in by a later task.
+diff --git a/rust/crates/worklog-core/src/standup.rs b/rust/crates/worklog-core/src/standup.rs
+new file mode 100644
+index 0000000..a529332
+--- /dev/null
++++ b/rust/crates/worklog-core/src/standup.rs
+@@ -0,0 +1 @@
++//! Stub; filled in by a later task.
+diff --git a/rust/crates/worklog-core/src/undo.rs b/rust/crates/worklog-core/src/undo.rs
+new file mode 100644
+index 0000000..2ba9c45
+--- /dev/null
++++ b/rust/crates/worklog-core/src/undo.rs
+@@ -0,0 +1,286 @@
++//! Before-image journal for the Owner's block changes (spec 018, FR-25..28).
++//! `block_service` calls [`record`] inside each change's transaction;
++//! [`undo_last`] puts the newest entry back.
++
++use anyhow::{Context, Result};
++use rusqlite::types::{Value, ValueRef};
++use rusqlite::{params, Connection, OptionalExtension, Transaction};
++use serde::{Deserialize, Serialize};
++use serde_json::{Map, Number, Value as Json};
++
++use crate::daily_helpers_contract::{BlockChange, UndoOutcome, UNDO_DEPTH};
++
++type Row = Map<String, Json>;
++
++/// Columns undo never writes back: the id is the key, and the sent-marker
++/// must survive an undo untouched (FR-28). A live block also keeps its
++/// `exported_at`; only a re-inserted block gets its own back.
++const SKIP_COLUMNS: [&str; 2] = ["id", "tempo_worklog_id"];
++
++#[derive(Serialize, Deserialize)]
++struct Snapshot {
++    row: Row,
++    events: Vec<i64>,
++}
++
++#[derive(Serialize, Deserialize)]
++struct Entry {
++    blocks: Vec<Snapshot>,
++    // Set by `seal` once the change is written: the journaled blocks' rows
++    // right after it (None = gone) and the ids it created. Undo only applies
++    // while the live rows still match.
++    #[serde(default)]
++    after: Vec<Option<Row>>,
++    #[serde(default)]
++    created: Vec<i64>,
++}
++
++fn comparable(row: &Row) -> Row {
++    let mut r = row.clone();
++    for k in ["tempo_worklog_id", "exported_at"] {
++        r.remove(k);
++    }
++    r
++}
++
++fn marker_set(v: Option<&str>) -> bool {
++    v.is_some_and(|s| !s.trim().is_empty())
++}
++
++fn snapshot(tx: &Transaction, id: i64) -> Result<Option<Snapshot>> {
++    let mut st = tx.prepare("SELECT * FROM blocks WHERE id = ?1")?;
++    let names: Vec<String> = st.column_names().iter().map(|n| n.to_string()).collect();
++    let row = st
++        .query_row(params![id], |r| {
++            let mut m = Row::new();
++            for (i, name) in names.iter().enumerate() {
++                let v = match r.get_ref(i)? {
++                    ValueRef::Integer(n) => Json::from(n),
++                    ValueRef::Real(f) => Number::from_f64(f).map_or(Json::Null, Json::Number),
++                    ValueRef::Text(t) => Json::from(String::from_utf8_lossy(t).into_owned()),
++                    ValueRef::Null | ValueRef::Blob(_) => Json::Null,
++                };
++                m.insert(name.clone(), v);
++            }
++            Ok(m)
++        })
++        .optional()
++        .context("undo: reading block")?;
++    let Some(row) = row else { return Ok(None) };
++    let mut ev = tx.prepare("SELECT event_id FROM block_events WHERE block_id = ?1")?;
++    let events = ev
++        .query_map(params![id], |r| r.get(0))?
++        .collect::<rusqlite::Result<Vec<i64>>>()?;
++    Ok(Some(Snapshot { row, events }))
++}
++
++/// Journals the current state of `before` (call it before the change is
++/// written, in the change's transaction). A change that touches no
++/// existing block leaves no entry.
++pub fn record(tx: &Transaction, change: BlockChange, before: &[i64]) -> Result<()> {
++    let mut blocks = Vec::new();
++    for &id in before {
++        blocks.extend(snapshot(tx, id)?);
++    }
++    if blocks.is_empty() {
++        return Ok(());
++    }
++    let payload = serde_json::to_string(&Entry {
++        blocks,
++        after: vec![],
++        created: vec![],
++    })?;
++    tx.execute(
++        "INSERT INTO block_undo (change, payload_json) VALUES (?1, ?2)",
++        params![serde_json::to_value(change)?.as_str(), payload],
++    )
++    .context("undo: journaling change")?;
++    tx.execute(
++        "DELETE FROM block_undo WHERE id <=
++            (SELECT id FROM block_undo ORDER BY id DESC LIMIT 1 OFFSET ?1)",
++        params![UNDO_DEPTH as i64],
++    )
++    .context("undo: trimming journal")?;
++    Ok(())
++}
++
++/// Stamps the entry [`record`] just wrote with the state the change left
++/// behind (call it after the change, before commit). `created` lists the
++/// block ids the change inserted.
++pub fn seal(tx: &Transaction, created: &[i64]) -> Result<()> {
++    let newest: Option<(i64, String)> = tx
++        .query_row(
++            "SELECT id, payload_json FROM block_undo ORDER BY id DESC LIMIT 1",
++            [],
++            |r| Ok((r.get(0)?, r.get(1)?)),
++        )
++        .optional()?;
++    let Some((entry_id, payload)) = newest else {
++        return Ok(());
++    };
++    let mut entry: Entry = serde_json::from_str(&payload).context("undo: reading journal entry")?;
++    if !entry.after.is_empty() {
++        return Ok(());
++    }
++    for s in &entry.blocks {
++        entry.after.push(snapshot(tx, id_of(s))?.map(|s| s.row));
++    }
++    entry.created = created.to_vec();
++    tx.execute(
++        "UPDATE block_undo SET payload_json = ?1 WHERE id = ?2",
++        params![serde_json::to_string(&entry)?, entry_id],
++    )
++    .context("undo: sealing change")?;
++    Ok(())
++}
++
++fn is_stale(tx: &Transaction, e: &Entry) -> Result<bool> {
++    for (s, after) in e.blocks.iter().zip(&e.after) {
++        let live = snapshot(tx, id_of(s))?.map(|s| comparable(&s.row));
++        if live != after.as_ref().map(comparable) {
++            return Ok(true);
++        }
++    }
++    Ok(e.after.len() != e.blocks.len())
++}
++
++fn sql_value(v: &Json) -> Value {
++    match v {
++        Json::Number(n) => n.as_i64().map_or_else(
++            || Value::Real(n.as_f64().unwrap_or_default()),
++            Value::Integer,
++        ),
++        Json::String(s) => Value::Text(s.clone()),
++        _ => Value::Null,
++    }
++}
++
++fn str_of<'a>(row: &'a Row, key: &str) -> Option<&'a str> {
++    row.get(key).and_then(Json::as_str)
++}
++
++fn id_of(s: &Snapshot) -> i64 {
++    s.row.get("id").and_then(Json::as_i64).unwrap_or_default()
++}
++
++fn write_block(tx: &Transaction, s: &Snapshot) -> Result<()> {
++    let id = id_of(s);
++    let exists = tx
++        .query_row(
++            "SELECT 1 FROM blocks WHERE id = ?1",
++            params![id],
++            |_| Ok(()),
++        )
++        .optional()?
++        .is_some();
++    let cols: Vec<(&String, Value)> = s
++        .row
++        .iter()
++        .filter(|(k, _)| {
++            let kept_live = exists && k.as_str() == "exported_at";
++            !(SKIP_COLUMNS.contains(&k.as_str()) || kept_live)
++        })
++        .map(|(k, v)| (k, sql_value(v)))
++        .collect();
++    let mut args: Vec<Value> = cols.iter().map(|(_, v)| v.clone()).collect();
++    args.push(Value::Integer(id));
++    let n = args.len();
++    if exists {
++        let set: Vec<String> = cols
++            .iter()
++            .enumerate()
++            .map(|(i, (k, _))| format!("\"{k}\" = ?{}", i + 1))
++            .collect();
++        tx.execute(
++            &format!("UPDATE blocks SET {} WHERE id = ?{n}", set.join(", ")),
++            rusqlite::params_from_iter(args),
++        )
++    } else {
++        let names: Vec<String> = cols.iter().map(|(k, _)| format!("\"{k}\"")).collect();
++        let marks: Vec<String> = (1..n).map(|i| format!("?{i}")).collect();
++        tx.execute(
++            &format!(
++                "INSERT INTO blocks (id, {}) VALUES (?{n}, {})",
++                names.join(", "),
++                marks.join(", ")
++            ),
++            rusqlite::params_from_iter(args),
++        )
++    }
++    .with_context(|| format!("undo: restoring block {id}"))?;
++    Ok(())
++}
++
++fn synced_now(tx: &Transaction, id: i64) -> Result<bool> {
++    let marker: Option<Option<String>> = tx
++        .query_row(
++            "SELECT tempo_worklog_id FROM blocks WHERE id = ?1",
++            params![id],
++            |r| r.get(0),
++        )
++        .optional()?;
++    Ok(marker_set(marker.flatten().as_deref()))
++}
++
++/// Reverses the newest journaled change. Refuses, changing nothing, when
++/// it would touch a block sent to Tempo.
++pub fn undo_last(conn: &mut Connection) -> Result<UndoOutcome> {
++    let tx = conn.transaction()?;
++    let newest: Option<(i64, String, String)> = tx
++        .query_row(
++            "SELECT id, change, payload_json FROM block_undo ORDER BY id DESC LIMIT 1",
++            [],
++            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
++        )
++        .optional()?;
++    let Some((entry_id, change, payload)) = newest else {
++        return Ok(UndoOutcome::NothingToUndo);
++    };
++    let change: BlockChange = serde_json::from_value(Json::String(change))?;
++    let entry: Entry = serde_json::from_str(&payload).context("undo: reading journal entry")?;
++    let tails = &entry.created;
++    let block_ids: Vec<i64> = entry.blocks.iter().map(id_of).collect();
++
++    for s in &entry.blocks {
++        if marker_set(str_of(&s.row, "tempo_worklog_id")) || synced_now(&tx, id_of(s))? {
++            return Ok(UndoOutcome::RefusedSynced { block_id: id_of(s) });
++        }
++    }
++    for &t in tails {
++        if synced_now(&tx, t)? {
++            return Ok(UndoOutcome::RefusedSynced { block_id: t });
++        }
++    }
++    if is_stale(&tx, &entry)? {
++        tx.execute("DELETE FROM block_undo WHERE id = ?1", params![entry_id])?;
++        tx.commit()?;
++        anyhow::bail!("undo: blocks changed since that edit (rebuild or sync); entry discarded");
++    }
++
++    for &t in tails {
++        tx.execute("DELETE FROM blocks WHERE id = ?1", params![t])?;
++    }
++    for s in &entry.blocks {
++        write_block(&tx, s)?;
++    }
++    for s in &entry.blocks {
++        tx.execute(
++            "DELETE FROM block_events WHERE block_id = ?1",
++            params![id_of(s)],
++        )?;
++        for e in &s.events {
++            tx.execute(
++                "INSERT OR IGNORE INTO block_events (block_id, event_id)
++                 SELECT ?1, id FROM events WHERE id = ?2",
++                params![id_of(s), e],
++            )?;
++        }
++    }
++    tx.execute("DELETE FROM block_undo WHERE id = ?1", params![entry_id])?;
++    tx.commit()?;
++    Ok(UndoOutcome::Restored { change, block_ids })
++}
++
++#[cfg(test)]
++#[path = "undo_test.rs"]
++mod tests;
+diff --git a/rust/crates/worklog-core/src/undo_test.rs b/rust/crates/worklog-core/src/undo_test.rs
+new file mode 100644
+index 0000000..38e5d42
+--- /dev/null
++++ b/rust/crates/worklog-core/src/undo_test.rs
+@@ -0,0 +1,366 @@
++use super::*;
++use crate::block_service as bs;
++use crate::daily_helpers_contract::{BlockChange, UndoOutcome, UNDO_DEPTH};
++use crate::db::open_memory;
++use crate::models::Event;
++use crate::repo;
++use rusqlite::{params, Connection};
++
++fn seed(conn: &Connection, start: &str, end: &str, secs: i64) -> i64 {
++    conn.execute(
++        "INSERT INTO blocks (day, started_at, ended_at, duration_seconds, description, jira_issue)
++         VALUES ('2026-04-18', ?1, ?2, ?3, 'orig', 'AAA-1')",
++        params![start, end, secs],
++    )
++    .unwrap();
++    conn.last_insert_rowid()
++}
++
++fn seed30(conn: &Connection) -> i64 {
++    seed(
++        conn,
++        "2026-04-18T09:00:00+00:00",
++        "2026-04-18T09:30:00+00:00",
++        1800,
++    )
++}
++
++fn link(conn: &Connection, block: i64, source_id: &str, at: &str) {
++    let eid = repo::upsert_event(conn, &Event::minimal("claude", source_id, at, "x")).unwrap();
++    conn.execute(
++        "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
++        params![block, eid],
++    )
++    .unwrap();
++}
++
++fn links(conn: &Connection, block: i64) -> Vec<String> {
++    let mut st = conn
++        .prepare(
++            "SELECT e.source_id FROM block_events be JOIN events e ON e.id = be.event_id
++              WHERE be.block_id = ?1 ORDER BY e.source_id",
++        )
++        .unwrap();
++    st.query_map(params![block], |r| r.get(0))
++        .unwrap()
++        .map(Result::unwrap)
++        .collect()
++}
++
++fn dump(conn: &Connection) -> String {
++    let mut st = conn.prepare("SELECT * FROM blocks ORDER BY id").unwrap();
++    let n = st.column_count();
++    let rows: Vec<String> = st
++        .query_map([], |r| {
++            Ok((0..n)
++                .map(|i| format!("{:?}", r.get_ref(i).unwrap()))
++                .collect::<Vec<_>>()
++                .join("|"))
++        })
++        .unwrap()
++        .map(Result::unwrap)
++        .collect();
++    rows.join("\n")
++}
++
++fn restored(change: BlockChange, ids: &[i64]) -> UndoOutcome {
++    UndoOutcome::Restored {
++        change,
++        block_ids: ids.to_vec(),
++    }
++}
++
++fn desc(conn: &Connection, id: i64) -> Option<String> {
++    repo::get_block(conn, id).unwrap().unwrap().description
++}
++
++#[test]
++fn empty_journal_has_nothing_to_undo() {
++    let mut conn = open_memory().unwrap();
++    assert_eq!(undo_last(&mut conn).unwrap(), UndoOutcome::NothingToUndo);
++}
++
++#[test]
++fn failed_change_leaves_no_journal_entry() {
++    // catches: recording before validating, so a no-op delete becomes "undoable"
++    let mut conn = open_memory().unwrap();
++    assert!(bs::delete_block(&conn, 999).is_err());
++    assert_eq!(undo_last(&mut conn).unwrap(), UndoOutcome::NothingToUndo);
++}
++
++#[test]
++fn undo_ticket_restores_key_and_origin() {
++    let mut conn = open_memory().unwrap();
++    let id = seed30(&conn);
++    let before = dump(&conn);
++    bs::assign_ticket(&conn, id, Some("BBB-2")).unwrap();
++    assert_eq!(
++        undo_last(&mut conn).unwrap(),
++        restored(BlockChange::Ticket, &[id])
++    );
++    assert_eq!(dump(&conn), before); // catches: restoring jira_issue but not ticket_origin
++}
++
++#[test]
++fn undo_hours_restores_duration_and_end() {
++    let mut conn = open_memory().unwrap();
++    let id = seed30(&conn);
++    let before = dump(&conn);
++    bs::set_duration(&conn, id, 90).unwrap();
++    assert_eq!(
++        undo_last(&mut conn).unwrap(),
++        restored(BlockChange::Hours, &[id])
++    );
++    assert_eq!(dump(&conn), before); // catches: forgetting ended_at / estimated_by
++}
++
++#[test]
++fn undo_text_restores_description() {
++    let mut conn = open_memory().unwrap();
++    let id = seed30(&conn);
++    let before = dump(&conn);
++    bs::set_description(&conn, id, "changed").unwrap();
++    assert_eq!(
++        undo_last(&mut conn).unwrap(),
++        restored(BlockChange::Text, &[id])
++    );
++    assert_eq!(dump(&conn), before);
++}
++
++#[test]
++fn undo_personal_restores_flag() {
++    let mut conn = open_memory().unwrap();
++    let id = seed30(&conn);
++    let before = dump(&conn);
++    bs::set_personal(&conn, id, true).unwrap();
++    assert_eq!(
++        undo_last(&mut conn).unwrap(),
++        restored(BlockChange::Personal, &[id])
++    );
++    assert_eq!(dump(&conn), before);
++}
++
++#[test]
++fn undo_ignored_restores_both_flags() {
++    let mut conn = open_memory().unwrap();
++    let id = seed30(&conn);
++    let before = dump(&conn);
++    bs::set_ignored(&conn, id, true).unwrap();
++    assert_eq!(
++        undo_last(&mut conn).unwrap(),
++        restored(BlockChange::Ignored, &[id])
++    );
++    assert_eq!(dump(&conn), before); // catches: clearing ignored_at but leaving is_personal = 1
++}
++
++#[test]
++fn undo_delete_brings_block_back_with_id_and_events() {
++    let mut conn = open_memory().unwrap();
++    let id = seed30(&conn);
++    link(&conn, id, "e1", "2026-04-18T09:00:00+00:00");
++    let before = dump(&conn);
++    bs::delete_block(&conn, id).unwrap();
++    assert_eq!(
++        undo_last(&mut conn).unwrap(),
++        restored(BlockChange::Delete, &[id])
++    );
++    assert_eq!(dump(&conn), before); // catches: re-insert under a new id
++    assert_eq!(links(&conn, id), vec!["e1"]); // catches: dropping cascade-deleted event links
++}
++
++#[test]
++fn undo_merge_restores_every_block_and_event_link() {
++    let mut conn = open_memory().unwrap();
++    let a = seed30(&conn);
++    let b = seed(
++        &conn,
++        "2026-04-18T10:00:00+00:00",
++        "2026-04-18T10:20:00+00:00",
++        1200,
++    );
++    link(&conn, a, "ea", "2026-04-18T09:00:00+00:00");
++    link(&conn, b, "eb", "2026-04-18T10:00:00+00:00");
++    let before = dump(&conn);
++    bs::merge_blocks(&conn, a, &[b]).unwrap();
++    assert_eq!(
++        undo_last(&mut conn).unwrap(),
++        restored(BlockChange::Merge, &[a, b])
++    );
++    assert_eq!(dump(&conn), before); // catches: restoring only the absorbed row, not the primary total
++    assert_eq!(links(&conn, a), vec!["ea"]); // catches: absorbed event left on the primary
++    assert_eq!(links(&conn, b), vec!["eb"]);
++}
++
++#[test]
++fn undo_split_removes_tail_and_restores_events() {
++    let mut conn = open_memory().unwrap();
++    let a = seed30(&conn);
++    link(&conn, a, "e1", "2026-04-18T09:00:00+00:00");
++    link(&conn, a, "e2", "2026-04-18T09:20:00+00:00");
++    let before = dump(&conn);
++    bs::split_block(&conn, a, 10).unwrap();
++    assert_eq!(
++        undo_last(&mut conn).unwrap(),
++        restored(BlockChange::Split, &[a])
++    );
++    assert_eq!(dump(&conn), before); // catches: tail block left behind
++    assert_eq!(links(&conn, a), vec!["e1", "e2"]); // catches: events stay on the deleted tail
++}
++
++#[test]
++fn undo_is_newest_first() {
++    let mut conn = open_memory().unwrap();
++    let id = seed30(&conn);
++    bs::set_description(&conn, id, "one").unwrap();
++    bs::set_description(&conn, id, "two").unwrap();
++    undo_last(&mut conn).unwrap();
++    assert_eq!(desc(&conn, id).as_deref(), Some("one")); // catches: oldest-first
++    undo_last(&mut conn).unwrap();
++    assert_eq!(desc(&conn, id).as_deref(), Some("orig"));
++    assert_eq!(undo_last(&mut conn).unwrap(), UndoOutcome::NothingToUndo);
++}
++
++#[test]
++fn keeps_exactly_the_last_twenty_changes() {
++    let mut conn = open_memory().unwrap();
++    let id = seed30(&conn);
++    for i in 0..=UNDO_DEPTH {
++        bs::set_description(&conn, id, &format!("v{i}")).unwrap();
++    }
++    for _ in 0..UNDO_DEPTH {
++        // catches: depth 19
++        assert!(matches!(
++            undo_last(&mut conn).unwrap(),
++            UndoOutcome::Restored { .. }
++        ));
++    }
++    // catches: depth 21
++    assert_eq!(undo_last(&mut conn).unwrap(), UndoOutcome::NothingToUndo);
++    // the oldest change (orig -> v0) is forgotten, so v0 stays
++    assert_eq!(desc(&conn, id).as_deref(), Some("v0"));
++}
++
++#[test]
++fn refuses_synced_block_and_changes_nothing() {
++    let mut conn = open_memory().unwrap();
++    let id = seed30(&conn);
++    conn.execute(
++        "UPDATE blocks SET tempo_worklog_id = 'TW-1' WHERE id = ?1",
++        params![id],
++    )
++    .unwrap();
++    bs::set_description(&conn, id, "after sync").unwrap();
++    let before = dump(&conn);
++    let refused = UndoOutcome::RefusedSynced { block_id: id };
++    assert_eq!(undo_last(&mut conn).unwrap(), refused);
++    assert_eq!(dump(&conn), before);
++    // catches: dropping the entry on refusal
++    assert_eq!(undo_last(&mut conn).unwrap(), refused);
++}
++
++#[test]
++fn refuses_when_a_deleted_block_was_synced() {
++    // catches: re-inserting a deleted synced block (would restore the sent-marker)
++    let mut conn = open_memory().unwrap();
++    let id = seed30(&conn);
++    conn.execute(
++        "UPDATE blocks SET tempo_worklog_id = 'TW-1' WHERE id = ?1",
++        params![id],
++    )
++    .unwrap();
++    bs::delete_block(&conn, id).unwrap();
++    assert_eq!(
++        undo_last(&mut conn).unwrap(),
++        UndoOutcome::RefusedSynced { block_id: id }
++    );
++    assert_eq!(dump(&conn), "");
++}
++
++#[test]
++fn blank_tempo_id_is_not_synced() {
++    // catches: treating "" as a sent-marker
++    let mut conn = open_memory().unwrap();
++    let id = seed30(&conn);
++    bs::set_description(&conn, id, "x").unwrap();
++    conn.execute(
++        "UPDATE blocks SET tempo_worklog_id = '' WHERE id = ?1",
++        params![id],
++    )
++    .unwrap();
++    assert_eq!(
++        undo_last(&mut conn).unwrap(),
++        restored(BlockChange::Text, &[id])
++    );
++}
++
++#[test]
++fn undo_never_touches_sent_or_exported_markers() {
++    // catches: restoring the whole before-row, nulling a marker set since
++    let mut conn = open_memory().unwrap();
++    let id = seed30(&conn);
++    bs::set_description(&conn, id, "x").unwrap();
++    conn.execute(
++        "UPDATE blocks SET exported_at = '2026-04-19T00:00:00Z' WHERE id = ?1",
++        params![id],
++    )
++    .unwrap();
++    undo_last(&mut conn).unwrap();
++    let b = repo::get_block(&conn, id).unwrap().unwrap();
++    assert_eq!(b.exported_at.as_deref(), Some("2026-04-19T00:00:00Z"));
++    assert!(b.tempo_worklog_id.is_none());
++}
++
++#[test]
++fn refuses_when_rebuild_replaced_the_block() {
++    // catches: re-inserting the stale row under its old id beside the rebuilt block
++    let mut conn = open_memory().unwrap();
++    let id = seed30(&conn);
++    bs::set_description(&conn, id, "edited").unwrap();
++    conn.execute("DELETE FROM blocks WHERE id = ?1", params![id])
++        .unwrap();
++    let new_id = seed30(&conn);
++    assert!(undo_last(&mut conn).is_err());
++    assert_eq!(
++        conn.query_row("SELECT COUNT(*) FROM blocks", [], |r| r.get::<_, i64>(0))
++            .unwrap(),
++        1
++    );
++    assert_eq!(desc(&conn, new_id).as_deref(), Some("orig"));
++    // catches: keeping a stale entry that blocks the journal forever
++    assert_eq!(undo_last(&mut conn).unwrap(), UndoOutcome::NothingToUndo);
++}
++
++#[test]
++fn refuses_when_live_block_changed_since() {
++    // catches: overwriting a later non-journaled write with the before-image
++    let mut conn = open_memory().unwrap();
++    let id = seed30(&conn);
++    bs::set_description(&conn, id, "edited").unwrap();
++    conn.execute(
++        "UPDATE blocks SET description = 'estimator' WHERE id = ?1",
++        params![id],
++    )
++    .unwrap();
++    assert!(undo_last(&mut conn).is_err());
++    assert_eq!(desc(&conn, id).as_deref(), Some("estimator"));
++}
++
++#[test]
++fn undo_split_keeps_unrelated_block_inside_span() {
++    // catches: deleting every block above max_id inside the original span
++    let mut conn = open_memory().unwrap();
++    let a = seed30(&conn);
++    bs::split_block(&conn, a, 10).unwrap();
++    let other = seed(
++        &conn,
++        "2026-04-18T09:12:00+00:00",
++        "2026-04-18T09:15:00+00:00",
++        180,
++    );
++    undo_last(&mut conn).unwrap();
++    assert!(repo::get_block(&conn, other).unwrap().is_some());
++    assert_eq!(
++        repo::get_block(&conn, a).unwrap().unwrap().duration_seconds,
++        1800
++    );
++}
+diff --git a/web/components/ExportPanel.tsx b/web/components/ExportPanel.tsx
+index 194dcb3..b2f9a02 100644
+--- a/web/components/ExportPanel.tsx
++++ b/web/components/ExportPanel.tsx
+@@ -27,24 +27,24 @@ import {
+   TriangleAlert,
+   X,
+ } from "lucide-react";
+ 
+ import { exportBilling, markExported } from "@/app/actions";
+ import {
+   downloadText,
+   exportFilename,
+   exportMime,
+   formatExportHours,
++  formatLineTime,
+   formFields,
+   totalBilledHours,
+ } from "@/lib/export";
+-import { formatRange } from "@/lib/format";
+ import { toast } from "@/lib/toast";
+ import type { ExportResponse } from "@/lib/types";
+ 
+ interface Props {
+   day: string;
+ }
+ 
+ /**
+  * Longest `/Users/<name>` prefix we can infer client-side, so directories
+  * render as `~/Desktop/Work/...` instead of eating the whole line. Derived
+@@ -291,21 +291,21 @@ export function ExportPanel({ day }: Props) {
+                 </dl>
+ 
+                 {current && (
+                   /* Enough to recognise the work when Viðskiptamaður is
+                      blank: when it happened, how many blocks, which folder,
+                      and the actual directories the events came from. */
+                   <dl className="export-ctx">
+                     <div>
+                       <dt>When</dt>
+                       <dd>
+-                        {formatRange(current.started_at, current.ended_at)} ·{" "}
++                        {formatLineTime(current.started_at)}–{formatLineTime(current.ended_at)} ·{" "}
+                         {current.block_count} block
+                         {current.block_count === 1 ? "" : "s"}
+                       </dd>
+                     </div>
+                     <div>
+                       <dt>Folder</dt>
+                       <dd className="export-ctx-mono">{current.folder}</dd>
+                     </div>
+                     {current.ticket && (
+                       <div>
+diff --git a/web/lib/daily_helpers_contract.ts b/web/lib/daily_helpers_contract.ts
+new file mode 100644
+index 0000000..08e10dd
+--- /dev/null
++++ b/web/lib/daily_helpers_contract.ts
+@@ -0,0 +1,62 @@
++// Mirrors rust/crates/worklog-core/src/daily_helpers_contract.rs (spec 018).
++// Owned by the orchestrator: a task that needs a new shape escalates.
++
++/** Mirrors `UNDO_DEPTH`. */
++export const UNDO_DEPTH = 20;
++
++/** Mirrors `BlockChange`. */
++export type BlockChange =
++  | "delete"
++  | "merge"
++  | "split"
++  | "ticket"
++  | "hours"
++  | "text"
++  | "personal"
++  | "ignored";
++
++/** Mirrors `UndoOutcome`. */
++export type UndoOutcome =
++  | { outcome: "restored"; change: BlockChange; block_ids: number[] }
++  | { outcome: "nothing_to_undo" }
++  | { outcome: "refused_synced"; block_id: number };
++
++/** Mirrors `PreflightCheck`. */
++export type PreflightCheck = "ticketed" | "no_double_count" | "day_hours" | "line_text" | "read_back";
++
++/** Mirrors `PreflightRow`. */
++export interface PreflightRow {
++  check: PreflightCheck;
++  ok: boolean;
++  detail: string;
++  target: string | null;
++}
++
++/** Mirrors `StandupDraft`. */
++export interface StandupDraft {
++  today: string[];
++  next: string[];
++  blockers: string[];
++}
++
++/** Mirrors `PostOutcome`. */
++export type PostOutcome =
++  | { outcome: "posted"; permalink: string }
++  | { outcome: "no_channel" }
++  | { outcome: "no_thread"; channel: string }
++  | { outcome: "slack_refused"; error: string };
++
++/** Mirrors `NudgeKind`. */
++export type NudgeKind = "review_requested" | "merged_not_done" | "stale";
++
++/** Mirrors `Nudge`. */
++export interface Nudge {
++  kind: NudgeKind;
++  text: string;
++  url: string | null;
++}
++
++/** True when a checklist should block the plain Send button (FR-13). */
++export function hasRedRow(rows: PreflightRow[]): boolean {
++  return rows.some((r) => !r.ok);
++}
+diff --git a/web/lib/export.test.ts b/web/lib/export.test.ts
+index 78f2bce..6a57ef7 100644
+--- a/web/lib/export.test.ts
++++ b/web/lib/export.test.ts
+@@ -1,18 +1,20 @@
+ import { describe, expect, it } from "bun:test";
+ 
+ import {
+   BLANK,
+   exportFilename,
+   exportMime,
+   formatExportHours,
+   formatFormDate,
++  FILL_IN,
++  formatLineTime,
+   formFields,
+   OREIKNINGSHAEFT,
+   TAXTI,
+   TEGUND_SKRANINGAR,
+   totalBilledHours,
+ } from "./export";
+ import type { BillingRow } from "./types";
+ 
+ const row = (over: Partial<BillingRow> = {}): BillingRow => ({
+   day: "2026-07-23",
+@@ -143,10 +145,24 @@ describe("formFields", () => {
+     expect(fields.find((f) => f.label === "Reikningshæfi")!.value).toBe(
+       OREIKNINGSHAEFT,
+     );
+   });
+ 
+   it("renders Tímar with a comma decimal", () => {
+     const fields = formFields(row({ hours: 5.5 }));
+     expect(fields.find((f) => f.label === "Tímar")!.value).toBe("5,5");
+   });
+ });
++
++describe("formatLineTime", () => {
++  it("says fill in for an empty time (a line with no blocks)", () => {
++    expect(formatLineTime("")).toBe("fill in"); // catches rendering "00:00" or "NaN:NaN"
++    expect(FILL_IN).toBe("fill in");
++  });
++
++  it("renders a real time as a local clock, not fill in", () => {
++    const iso = "2026-07-23T09:00:00Z";
++    const d = new Date(iso);
++    const want = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
++    expect(formatLineTime(iso)).toBe(want); // catches always returning fill in
++  });
++});
+diff --git a/web/lib/export.ts b/web/lib/export.ts
+index bfd4f6a..9723f3b 100644
+--- a/web/lib/export.ts
++++ b/web/lib/export.ts
+@@ -1,19 +1,20 @@
+ // Pure helpers for the billing-export panel.
+ //
+ // The daemon owns ALL rendering (text/csv/json come pre-rendered from
+ // `GET /export/:day` so the Rust renderers stay the single source of
+ // truth). What lives here is only what the browser needs on top: the
+ // day total, download filenames/mime types, and the blob-download
+ // mechanic. Keeping it dependency-free means it unit-tests without a
+ // DOM or a Next runtime.
+ 
++import { formatClock } from "./format";
+ import type { BillingRow } from "./types";
+ 
+ /**
+  * Sum of a day's billed hours. Each row's `hours` is already
+  * half-hour-rounded daemon-side, so this is a plain sum — deliberately
+  * NOT a re-round of the summed seconds, which would disagree with the
+  * per-row figures the user is reading (and billing from).
+  */
+ export function totalBilledHours(rows: BillingRow[]): number {
+   return rows.reduce((acc, r) => acc + r.hours, 0);
+@@ -32,20 +33,28 @@ export function formatExportHours(hours: number): string {
+ }
+ 
+ /** Constants the invoicing form always gets, mirroring `billing.rs`. */
+ export const TEGUND_SKRANINGAR = "Almenn skráning";
+ export const TAXTI = "Dagvinna";
+ export const REIKNINGSHAEFT = "Reikningshæft";
+ export const OREIKNINGSHAEFT = "Óreikningshæft";
+ /** Shown where a value could not be resolved and the user must pick it. */
+ export const BLANK = "—";
+ 
++/** Shown where a line has no start or end time to read off. */
++export const FILL_IN = "fill in";
++
++/** A line's start or end as a local clock, or "fill in" when it has none. */
++export function formatLineTime(iso: string): string {
++  return iso === "" ? FILL_IN : formatClock(iso);
++}
++
+ export function reikningshaefi(billable: boolean): string {
+   return billable ? REIKNINGSHAEFT : OREIKNINGSHAEFT;
+ }
+ 
+ /** `Dagsetning` as the form wants it: dd.mm.yyyy from an ISO day. */
+ export function formatFormDate(day: string): string {
+   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
+   // Parsed by regex rather than `new Date` so a UTC-vs-local shift can
+   // never move the billed date by a day.
+   return m ? `${m[3]}.${m[2]}.${m[1]}` : day;
