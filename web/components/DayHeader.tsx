@@ -62,6 +62,8 @@ export function DayHeader({
             </>
           )}
         </div>
+        {/* Today's standup sits with the day it summarises, not on its own row. */}
+        {isToday && <StandupButton />}
       </div>
       {billedSeconds !== undefined && (
         <div className="day-billed" aria-label="billed hours">
@@ -127,7 +129,6 @@ export function DayHeader({
         </Link>
         <DateJumper focusedDay={day} view="day" />
       </nav>
-      {isToday && <StandupButton />}
     </header>
   );
 }

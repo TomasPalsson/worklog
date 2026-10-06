@@ -145,7 +145,7 @@ export function StandupButton() {
         title={text !== null ? "Discard the open draft to start a new one" : undefined}
         onClick={() => void start()}
       >
-        Standup
+        Draft standup
       </button>
       {busy && (
         <p role="status" className="standup-note">
