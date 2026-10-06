@@ -583,6 +583,34 @@ pub fn spawn_ask_fill_loop(state: Shared) -> tokio::task::JoinHandle<()> {
     })
 }
 
+/// Keeps the review-nudge cache warm so `/nudges` never touches the Keychain or
+/// the network. The credentials read and the fetch run off the conn lock.
+pub fn spawn_nudge_refresh_loop(state: Shared) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let st = state.clone();
+            let done = tokio::task::spawn_blocking(move || {
+                crate::nudges::refresh_once(
+                    chrono::Utc::now(),
+                    || {
+                        let auth = crate::collectors::github::GitHubAuth::from_secrets()?;
+                        crate::collectors::github::review_requests(&crate::http::client()?, &auth)
+                    },
+                    || st.conn.blocking_lock(),
+                )
+            })
+            .await;
+            if let Err(e) = done {
+                warn!("nudge refresh task panicked: {e}");
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(
+                crate::daily_helpers_contract::NUDGE_CACHE_SECONDS as u64,
+            ))
+            .await;
+        }
+    })
+}
+
 /// One tick of [`spawn_scorecard_loop`]; a failure is logged, never raised.
 pub async fn scorecard_due_once(
     state: &Shared,

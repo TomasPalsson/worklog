@@ -38,7 +38,9 @@ pub async fn draft(
 
 pub async fn post(Json(body): Json<PostBody>) -> Result<Json<PostOutcome>, ApiError> {
     let today = tz::local_date(Utc::now());
-    let token = secrets::get(SLACK_TOKEN_KEY).ok().flatten();
+    let token = tokio::task::spawn_blocking(|| secrets::get(SLACK_TOKEN_KEY).ok().flatten())
+        .await
+        .context("spawn_blocking")?;
     let channel = envfile::read(SLACK_DAILY_CHANNEL_KEY);
     Ok(Json(
         post_with(SLACK_API, token, channel, today, body.text).await?,
