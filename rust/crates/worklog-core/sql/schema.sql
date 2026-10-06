@@ -369,6 +369,8 @@ CREATE TABLE IF NOT EXISTS mirres_line_billing (
     class TEXT NOT NULL,
     warning TEXT,
     pulled_at TEXT NOT NULL,
+    customer TEXT,
+    details_json TEXT,
     PRIMARY KEY(day, jira_issue)
 );
 

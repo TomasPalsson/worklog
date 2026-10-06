@@ -62,7 +62,7 @@ pub struct TempoLineKey {
 /// `None` = not generated yet, and the UI shows `fallback_text` (the
 /// no-LLM summary of the block descriptions). Sync sends `text`; when it
 /// is `None`, sync generates, stores, then sends it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TempoLine {
     pub day: String,
     pub jira_issue: String,
@@ -109,7 +109,7 @@ pub enum BillingClass {
 
 /// Mirres facts for one ticket line. `None` on `TempoLine` = not fetched,
 /// or the ticket has no Tempo Account.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LineBilling {
     pub account_key: String,
     /// "<customer.short_name> · <project_name>", or None if Mirres had no project.
@@ -119,4 +119,45 @@ pub struct LineBilling {
     pub class: BillingClass,
     /// One short Icelandic warning, or None.
     pub warning: Option<String>,
+    /// `customer.short_name`, else `customer.name`.
+    #[serde(default)]
+    pub customer: Option<String>,
+    #[serde(default)]
+    pub details: Option<MirresDetails>,
+}
+
+/// A Mirres person (only kept when it has a name). Never a phone number.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MirresPerson {
+    pub name: String,
+    pub email: Option<String>,
+}
+
+/// Who is responsible and the contract hours. Never prices.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MirresDetails {
+    /// `customer.name` (full).
+    pub customer_name: Option<String>,
+    pub owner: Option<MirresPerson>,
+    pub responsible: Option<MirresPerson>,
+    pub team_lead: Option<MirresPerson>,
+    /// `MONTHLY` | `YEARLY` | `ONE_OFF`.
+    pub period: Option<String>,
+    pub allowance_hours: Option<f64>,
+    /// None when Mirres hides it (fewer than 3 people).
+    pub used_hours: Option<f64>,
+    pub remaining_hours: Option<f64>,
+    pub usage_status: Option<String>,
+    pub due_date: Option<String>,
+    pub contract_url: Option<String>,
+}
+
+/// One day of stored Mirres facts (`GET /mirres/overview`): every ticket
+/// line of the day, `billing: None` where Mirres had no stored row.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MirresDay {
+    pub day: String,
+    /// Latest `pulled_at` among the day's stored rows.
+    pub fetched_at: String,
+    pub lines: Vec<TempoLine>,
 }

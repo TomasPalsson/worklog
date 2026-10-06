@@ -4,7 +4,6 @@ import { useState } from "react";
 import {
   Braces,
   Check,
-  Receipt,
   ListRestart,
   RefreshCw,
   Send,
@@ -20,6 +19,7 @@ import {
 import type { ActionResult } from "@/app/actions";
 import { refreshMirresAction } from "@/app/actions-tempo-lines";
 import { toast } from "@/lib/toast";
+import { MirresIcon } from "./icons";
 
 interface Props {
   day: string;
@@ -107,7 +107,7 @@ export function ActionBar({ day, cacheCount, cacheLast }: Props) {
       />
       <ActionButton
         pending={isPending("mirres")}
-        icon={<Receipt />}
+        icon={<MirresIcon />}
         label="Refresh Mirres"
         pendingLabel="Refreshing…"
         title="Fetch each line's billable status from Mirres"

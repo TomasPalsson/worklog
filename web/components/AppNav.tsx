@@ -4,7 +4,7 @@ import { Fragment } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { todayISO } from "@/lib/format";
-import { BillingIcon, DayIcon, LoggedIcon, LogoMark, TasksIcon, WeekIcon } from "./icons";
+import { BillingIcon, DayIcon, LoggedIcon, LogoMark, MirresIcon, TasksIcon, WeekIcon } from "./icons";
 import { SettingsPanel } from "./SettingsPanel";
 import { ThemeToggle } from "./ThemeToggle";
 
@@ -16,12 +16,13 @@ const LINKS = [
   ["tasks", "Tasks", "/tasks", TasksIcon],
   ["logged", "Logged", "/logged", LoggedIcon],
   ["billing", "Billing", "/billing", BillingIcon],
+  ["mirres", "Mirres", "/mirres", MirresIcon],
   ["settings", "Settings", "", null],
 ] as const;
 
 function sectionOf(path: string): string {
   if (path === "/" || DAY.test(path)) return "day";
-  return ["week", "tasks", "logged", "billing"].find((s) => path === `/${s}` || path.startsWith(`/${s}/`)) ?? "";
+  return ["week", "tasks", "logged", "billing", "mirres"].find((s) => path === `/${s}` || path.startsWith(`/${s}/`)) ?? "";
 }
 
 export function AppNav() {
