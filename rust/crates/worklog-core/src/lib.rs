@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 pub mod account_clues;
+pub mod auto_send;
 pub mod billing;
 pub mod billing_deildir;
 pub mod billing_registry;
@@ -44,6 +45,7 @@ mod infer_lane_tags;
 pub mod infer_lanes;
 mod infer_session_folder;
 pub mod jira_assist_contract;
+pub mod line_check;
 pub mod line_text;
 mod line_text_jobs;
 pub mod local_clone;
@@ -62,7 +64,9 @@ pub mod routing;
 pub mod routing_absorb;
 pub mod routing_contract;
 pub mod routing_dismiss;
+mod routing_shortlist;
 pub mod schedule;
+pub mod scorecard;
 pub mod scrub;
 mod scrub_assignment;
 pub mod secrets;
@@ -89,11 +93,15 @@ pub mod ticket_assist;
 pub mod ticket_blocks;
 pub mod ticket_log;
 pub mod ticket_text;
+pub mod ticket_verdict;
 pub mod timeline;
 pub mod tz;
 pub mod updater;
 pub mod upgrade_006;
 pub mod verdict;
+pub mod verdict_contract;
+pub mod verdict_decisions;
+pub mod verdict_supervisor;
 pub mod web;
 pub mod week_closeout;
 

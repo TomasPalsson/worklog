@@ -284,12 +284,13 @@ async fn forced_regenerate_fails_loudly_when_the_model_fails() {
     assert_eq!(lines[0]["text"], serde_json::Value::Null);
 }
 
-static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+type Seen = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
 
 fn scripted_invoker(
     replies: &'static [&'static str],
+    seen: Seen,
 ) -> impl FnOnce() -> anyhow::Result<Box<dyn ModelInvoker>> {
-    struct Scripted(std::sync::Mutex<std::collections::VecDeque<&'static str>>);
+    struct Scripted(std::sync::Mutex<std::collections::VecDeque<&'static str>>, Seen);
     impl ModelInvoker for Scripted {
         fn invoke(
             &self,
@@ -298,12 +299,12 @@ fn scripted_invoker(
             _schema: &serde_json::Value,
             _model: &str,
         ) -> anyhow::Result<serde_json::Value> {
-            SEEN.lock().unwrap().push(user.to_string());
+            self.1.lock().unwrap().push(user.to_string());
             let text = self.0.lock().unwrap().pop_front().unwrap_or("x 1");
             Ok(serde_json::json!({ "text": text }))
         }
     }
-    move || Ok(Box::new(Scripted(std::sync::Mutex::new(replies.iter().copied().collect()))) as Box<dyn ModelInvoker>)
+    move || Ok(Box::new(Scripted(std::sync::Mutex::new(replies.iter().copied().collect()), seen)) as Box<dyn ModelInvoker>)
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -320,19 +321,19 @@ async fn unforced_generation_never_copies_english_when_the_model_fails() {
 #[tokio::test(flavor = "current_thread")]
 async fn path_reply_is_retried_then_stored_and_the_prompt_carries_the_descriptions() {
     let state = state_with_two_block_line();
-    SEEN.lock().unwrap().clear();
+    let seen_log = Seen::default();
     let forced = generate_tempo_lines(
         state.clone(),
         DAY.to_string(),
         Some(key()),
-        scripted_invoker(&["Lagaði src/main.rs. Prófaði það.", "Lagaði villu. Prófaði það."]),
+        scripted_invoker(&["Lagaði src/main.rs. Prófaði það.", "Lagaði villu. Prófaði það."], seen_log.clone()),
     )
     .await
     .unwrap();
     assert_eq!(forced, vec![key()]);
     let (_, lines) = call(&state, get_day()).await;
     assert_eq!(lines[0]["text"], "Lagaði villu. Prófaði það.");
-    let seen = SEEN.lock().unwrap().clone();
+    let seen = seen_log.lock().unwrap().clone();
     assert_eq!(seen.len(), 2);
     assert!(seen[0].contains("Alpha") && seen[0].contains("Beta"), "{}", seen[0]);
     assert!(seen[1].contains("Síðasta svar var hafnað"), "{}", seen[1]);
@@ -342,14 +343,147 @@ async fn path_reply_is_retried_then_stored_and_the_prompt_carries_the_descriptio
 async fn three_bad_replies_fail_forced_loudly_and_store_nothing_unforced() {
     let state = state_with_two_block_line();
     let bad: &'static [&'static str] = &["a 1", "b 2", "c 3"];
-    let forced = generate_tempo_lines(state.clone(), DAY.to_string(), Some(key()), scripted_invoker(bad)).await;
+    let forced = generate_tempo_lines(state.clone(), DAY.to_string(), Some(key()), scripted_invoker(bad, Seen::default())).await;
     let err = forced.unwrap_err();
     assert!(err.to_string().contains("(reynt 3 sinnum)"), "{err}");
-    let unforced = generate_tempo_lines(state.clone(), DAY.to_string(), None, scripted_invoker(bad))
+    let unforced = generate_tempo_lines(state.clone(), DAY.to_string(), None, scripted_invoker(bad, Seen::default()))
         .await
         .unwrap();
     assert!(unforced.is_empty());
     let (_, lines) = call(&state, get_day()).await;
     assert_eq!(lines[0]["text"], serde_json::Value::Null);
+}
+
+// --- Verdict text check on generated lines (spec 017 FR-19..FR-21, B6) ------
+
+const SUMMARY: &str = "Fix login redirect";
+const GOOD: &str = "Lagaði villu í innskráningu. Prófaði breytinguna.";
+const VAGUE: &str = "Vann í ýmsum verkefnum. Sinnti ýmsu.";
+
+fn with_summary(state: &Shared) -> &Shared {
+    state
+        .conn
+        .try_lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO jira_tickets (key, summary) VALUES ('APRO-1', ?1)",
+            [SUMMARY],
+        )
+        .unwrap();
+    state
+}
+
+/// Verdict stand-in: only `GOOD` is about the ticket and specific.
+fn verdict(seen: Seen) -> impl Fn(&str, &[String]) -> anyhow::Result<Vec<bool>> + Send + 'static {
+    move |query, texts| {
+        seen.lock().unwrap().push(query.to_string());
+        Ok(texts.iter().map(|t| t == GOOD).collect())
+    }
+}
+
+async fn checked(state: &Shared, replies: &'static [&'static str]) -> (Vec<String>, Vec<String>) {
+    let (model, asked) = (Seen::default(), Seen::default());
+    crate::daemon::daemon_tempo_lines::generate_tempo_lines_with(
+        state.clone(),
+        DAY.to_string(),
+        None,
+        scripted_invoker(replies, model.clone()),
+        verdict(asked.clone()),
+    )
+    .await
+    .unwrap();
+    let model = model.lock().unwrap().clone();
+    let asked = asked.lock().unwrap().clone();
+    (model, asked)
+}
+
+async fn stored(state: &Shared) -> (Option<String>, Option<String>) {
+    state
+        .conn
+        .lock()
+        .await
+        .query_row(
+            "SELECT text, check_status FROM tempo_line_texts WHERE jira_issue = 'APRO-1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn generated_vague_line_is_regenerated_once_then_flagged() {
+    // catches: generation never running the check or never storing it (B6)
+    let state = state_with_two_block_line();
+    let (model, _) = checked(with_summary(&state), &[VAGUE, VAGUE]).await;
+    assert_eq!(model.len(), 2);
+    assert_eq!(stored(&state).await, (Some(VAGUE.to_string()), Some("needs_look".to_string())));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn generated_good_line_is_stored_passed_without_a_regenerate() {
+    // catches: flagging unconditionally, regenerating a passing line, or asking about the wrong ticket
+    let state = state_with_two_block_line();
+    let (model, asked) = checked(with_summary(&state), &[GOOD]).await;
+    assert_eq!(model.len(), 1);
+    assert_eq!(asked[0], SUMMARY);
+    assert_eq!(stored(&state).await, (Some(GOOD.to_string()), Some("passed".to_string())));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn generated_vague_line_is_replaced_by_a_passing_regenerate() {
+    // catches: storing the first text after the regenerate passed
+    let state = state_with_two_block_line();
+    checked(with_summary(&state), &[VAGUE, GOOD]).await;
+    assert_eq!(stored(&state).await, (Some(GOOD.to_string()), Some("passed".to_string())));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn generated_line_without_a_cached_ticket_summary_is_not_checked() {
+    // catches: checking against an empty summary and flagging every uncached ticket
+    let state = state_with_two_block_line();
+    let (model, asked) = checked(&state, &[VAGUE]).await;
+    assert_eq!(model.len(), 1);
+    assert!(asked.is_empty());
+    assert_eq!(stored(&state).await, (Some(VAGUE.to_string()), None));
+}
+
+async fn set_check_status(state: &Shared, value: &str) {
+    state
+        .conn
+        .lock()
+        .await
+        .execute(
+            "INSERT INTO tempo_line_texts (day, jira_issue, updated_at, check_status)
+             VALUES (?1, 'APRO-1', '2026-09-30T12:00:00+00:00', ?2)",
+            params![DAY, value],
+        )
+        .unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn get_carries_check_status_needs_look_for_a_flagged_line() {
+    let state = state_with_two_block_line();
+    set_check_status(&state, "needs_look").await;
+    let (_, lines) = call(&state, get_day()).await;
+    // Catches never selecting the column (field stays null).
+    assert_eq!(lines[0]["check_status"], "needs_look");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn get_carries_check_status_passed_for_a_passed_line() {
+    let state = state_with_two_block_line();
+    set_check_status(&state, "passed").await;
+    let (_, lines) = call(&state, get_day()).await;
+    // Catches mapping every non-null value to needs_look.
+    assert_eq!(lines[0]["check_status"], "passed");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn get_carries_null_check_status_for_an_unchecked_line() {
+    let state = state_with_two_block_line();
+    let (_, lines) = call(&state, get_day()).await;
+    // Catches omitting the key (web reads null) or defaulting to passed.
+    assert!(lines[0].as_object().unwrap().contains_key("check_status"));
+    assert_eq!(lines[0]["check_status"], serde_json::Value::Null);
 }
 

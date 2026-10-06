@@ -4,6 +4,7 @@
 import type { Deild } from "./deildir";
 import type { LineTextOrigin } from "./clues_contract";
 import type { TicketOrigin } from "./tempo_line_contract";
+import type { RankedOption } from "./verdict_contract";
 
 /** A row from the `events` table as the daemon returns it. */
 export interface Event {
@@ -244,6 +245,8 @@ export interface SettingsView {
   abstain_margin: number;
   /** Minimum ratio the winner must beat the runner-up by (RATIO_RANGE 1.0-5.0). */
   runner_up_ratio: number;
+  /** The 17:00 Tempo auto-send switch (WORKLOG_TEMPO_AUTO_SEND). */
+  auto_send: boolean;
 }
 
 /** Partial update sent to `POST /settings`. Omitted groups are left
@@ -265,6 +268,8 @@ export interface SettingsUpdate {
   abstain_margin?: number;
   /** Omitted leaves the runner-up ratio untouched. */
   runner_up_ratio?: number;
+  /** Omitted leaves the 17:00 auto-send switch untouched. */
+  auto_send?: boolean;
 }
 
 export interface ReclassifyStats {
@@ -434,6 +439,8 @@ export interface RoutedEvent {
   folder: string | null;
   label_origin: LabelOrigin | null;
   label_confidence: number | null;
+  /** Verdict's stored top choices, best first; absent when it never ranked this event. */
+  ranking?: RankedOption[];
 }
 
 /** `GET /routing/status`. */

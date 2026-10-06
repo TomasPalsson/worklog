@@ -41,7 +41,12 @@ import {
   routingRules as daemonRoutingRules,
   deleteRule as daemonDeleteRule,
   routingStatus as daemonRoutingStatus,
+  verdictStatus as daemonVerdictStatus,
+  setVerdictEnabled as daemonSetVerdictEnabled,
+  confirmReview as daemonConfirmReview,
+  retryVerdict as daemonRetryVerdict,
 } from "@/lib/daemon";
+import type { VerdictState, VerdictStatus } from "@/lib/verdict_contract";
 import type { ChangeFeed, Deild } from "@/lib/deildir";
 import type {
   BillingCustomer,
@@ -375,6 +380,27 @@ export async function saveSettings(
   day: string,
 ): Promise<ActionResult<SettingsSaveResponse>> {
   return runAction(() => daemonSaveSettings(update), `/${day}`);
+}
+
+// ───────────────────────── Verdict ─────────────────────────
+
+export async function fetchVerdictStatus(day: string): Promise<ActionResult<VerdictStatus>> {
+  return runAction(() => daemonVerdictStatus(day));
+}
+
+export async function setVerdictEnabled(on: boolean): Promise<ActionResult<VerdictState>> {
+  return runAction(() => daemonSetVerdictEnabled(on));
+}
+
+export async function retryVerdict(): Promise<ActionResult<VerdictState>> {
+  return runAction(() => daemonRetryVerdict());
+}
+
+export async function confirmReview(
+  day: string,
+  jiraIssue?: string,
+): Promise<ActionResult<{ confirmed: number }>> {
+  return runAction(() => daemonConfirmReview(day, jiraIssue));
 }
 
 // ───────────────────── group merge + describe (#23) ─────────────────────

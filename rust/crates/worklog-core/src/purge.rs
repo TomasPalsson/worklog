@@ -1395,6 +1395,24 @@ mod tests {
         assert_eq!(count(&conn, "billing_folder_map"), before_folder_map);
     }
 
+    /// FR-09: the decision log outlives the events it is about.
+    #[test]
+    fn verdict_decisions_survive_a_prune_that_deletes_their_event() {
+        let conn = open_memory().unwrap();
+        let id = insert_event(&conn, "2020-01-01T00:00:00Z", "old");
+        conn.execute(
+            "INSERT INTO verdict_decisions (kind, source, subject, state_json, options, decided_at)
+             VALUES ('project', 'owner', ?1, '{}', '[]', '2020-01-01T00:00:00Z')",
+            params![id.to_string()],
+        )
+        .unwrap();
+
+        let report = purge_rows(&conn, date("2026-06-20"), false).unwrap();
+
+        assert_eq!(report.events_deleted, 1, "the prune really ran");
+        assert_eq!(count(&conn, "verdict_decisions"), 1);
+    }
+
     /// Plus: a dry run reports the sessions and tickets counts without
     /// changing either table.
     #[test]

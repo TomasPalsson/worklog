@@ -252,10 +252,16 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
 
     /// Ask Verdict which work blocks are about QUERY and total their
     /// time, e.g. `worklog eval "code interpreter"`. Needs
-    /// `worklog verdict serve` running.
+    /// `worklog verdict serve` running. With `--replay`, instead replay the
+    /// last 30 days of Verdict's project and ticket decisions and print how
+    /// many it got right, wrong or was unsure of.
     Eval {
         /// What the work was about, in plain words.
-        query: String,
+        #[arg(required_unless_present = "replay", conflicts_with = "replay")]
+        query: Option<String>,
+        /// Print the scorecard instead of searching for a query.
+        #[arg(long)]
+        replay: bool,
         /// After the table, print each matched block's card: titles,
         /// prompts, branches, active minutes and folder.
         #[arg(long)]
@@ -846,7 +852,11 @@ pub fn run_with<W: Write>(
         } => cmd_day(day, serve, no_serve, &model, out, cli.json),
         Cmd::Summary { day } => cmd_summary(day, out, cli.json),
         Cmd::Week { day } => cmd_week(day, out, cli.json),
-        Cmd::Eval { query, details } => crate::eval_cmd::cmd_eval(&query, out, cli.json, details),
+        Cmd::Eval {
+            query,
+            replay: _,
+            details,
+        } => crate::eval_cmd::cmd_eval(query.as_deref(), out, cli.json, details),
         Cmd::Export { day, format, mark } => cmd_export(day, format, mark, out, cli.json),
         Cmd::Ticket { sub } => crate::ticket_cmd::run_ticket(sub, out, cli.json),
         Cmd::Account { sub } => crate::ticket_cmd::run_account(sub, out, cli.json),
@@ -3758,6 +3768,14 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
         };
         eprintln!("→ socket {}", worklog_core::paths::short_display(&path));
 
+        // Fallible setup precedes Verdict's `spawn()`: an early return after
+        // it, or SIGTERM/SIGINT unhandled, skips the cleanup and orphans it.
+        let addr = (!tcp.is_empty())
+            .then(|| tcp.parse::<std::net::SocketAddr>())
+            .transpose()
+            .with_context(|| format!("invalid --tcp address: {tcp}"))?;
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+
         // Billing-cycle prune due-check: one timer per process, spawned
         // here (not inside `router()`/`serve_at`/`serve_tcp`) precisely
         // because the daemon binds both a unix socket and a TCP port —
@@ -3767,6 +3785,9 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
         // `$WORKLOG_HOME`, and depending on it at tick time is what let a
         // test point a prune at the real data directory.
         let prune_paths = Paths::resolve()?;
+        let verdict_task = worklog_core::verdict_supervisor::spawn()?;
+        let scorecard_task = daemon_mod::spawn_scorecard_loop(state.clone());
+        let auto_send_task = daemon_mod::spawn_auto_send_loop(state.clone());
         let prune_task = daemon_mod::spawn_prune_loop(
             state.clone(),
             prune_paths.data_dir.join("worklog.db.preprune"),
@@ -3775,47 +3796,31 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
 
         // Clone the router for the TCP task so the unix+TCP listeners
         // share the same Arc<AppState> — both mutate the same DB.
-        let tcp_task = if tcp.is_empty() {
-            None
-        } else {
-            let addr: std::net::SocketAddr = tcp
-                .parse()
-                .with_context(|| format!("invalid --tcp address: {tcp}"))?;
+        let tcp_task = addr.map(|addr| {
             eprintln!("→ tcp    http://{addr}");
             let tcp_router = daemon_mod::router(state);
-            Some(tokio::spawn(async move {
+            tokio::spawn(async move {
                 if let Err(e) = daemon_mod::serve_tcp(addr, tcp_router).await {
                     tracing::error!("tcp listener died: {e:#}");
                 }
-            }))
-        };
+            })
+        });
 
-        let unix_res = daemon_mod::serve_at(&path, router).await;
+        let unix_res = tokio::select! {
+            r = daemon_mod::serve_at(&path, router) => r,
+            _ = term.recv() => Ok(()),
+            _ = tokio::signal::ctrl_c() => Ok(()),
+        };
         if let Some(t) = tcp_task {
             t.abort();
         }
         prune_task.abort();
+        scorecard_task.abort();
+        auto_send_task.abort();
+        verdict_task.abort();
+        worklog_core::verdict_supervisor::shutdown();
         unix_res
     })
-}
-
-/// `uv run` args to launch the helper script pinned to the Verdict git
-/// revision + huggingface_hub, so a test can assert the pins never
-/// drift to a loose package name.
-fn verdict_uv_args(script_path: &std::path::Path) -> Vec<String> {
-    vec![
-        "run".to_string(),
-        "--with".to_string(),
-        format!(
-            "{}@{}",
-            worklog_core::routing_contract::VERDICT_GIT_URL,
-            worklog_core::routing_contract::VERDICT_GIT_REV
-        ),
-        "--with".to_string(),
-        "huggingface_hub".to_string(),
-        "python".to_string(),
-        script_path.display().to_string(),
-    ]
 }
 
 /// Write the embedded helper script to `<data>/verdict_server.py` and run
@@ -3832,20 +3837,9 @@ fn cmd_verdict_serve() -> Result<()> {
         "→ verdict http://{}",
         worklog_core::routing_contract::CLASSIFIER_ADDR
     );
-    let status = std::process::Command::new("uv")
-        .args(verdict_uv_args(&script_path))
-        .env(
-            "WORKLOG_VERDICT_MODEL_DIR",
-            paths.data_dir.join("verdict-model"),
-        )
-        .env(
-            "WORKLOG_VERDICT_MODEL_REPO",
-            worklog_core::routing_contract::VERDICT_MODEL_REPO,
-        )
-        .env(
-            "WORKLOG_VERDICT_MODEL_REVISION",
-            worklog_core::routing_contract::VERDICT_MODEL_REVISION,
-        )
+    let uv = worklog_core::verdict_supervisor::find_uv()
+        .context("`uv` not found — install it with `brew install uv`")?;
+    let status = worklog_core::verdict_supervisor::command(&uv, &script_path, &paths.data_dir)
         .status()
         .context("spawning `uv run` — is uv installed?")?;
     if !status.success() {
@@ -5084,7 +5078,9 @@ mod tests {
     /// revision and huggingface_hub dependency, not a loose package name.
     #[test]
     fn verdict_serve_args_pin_revisions() {
-        let args = verdict_uv_args(std::path::Path::new("/tmp/verdict_server.py"));
+        let args = worklog_core::verdict_supervisor::uv_args(std::path::Path::new(
+            "/tmp/verdict_server.py",
+        ));
         assert_eq!(
             args,
             vec![

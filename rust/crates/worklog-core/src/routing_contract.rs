@@ -4,10 +4,14 @@
 //! a task needs that is missing here is an escalation to the orchestrator,
 //! never a local re-declaration.
 
+use std::collections::BTreeMap;
+
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::verdict_contract::{RankedOption, Ranking};
 
 /// `events.source` for one Firefox add-on heartbeat (one row per minute).
 pub const SOURCE_FIREFOX: &str = "firefox";
@@ -191,9 +195,12 @@ pub struct RoutedEvent {
     pub folder: Option<String>,
     pub label_origin: Option<LabelOrigin>,
     pub label_confidence: Option<f64>,
+    /// Verdict's stored top options, best first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ranking: Option<Vec<RankedOption>>,
 }
 
-/// The model's pick among `options`.
+/// The filed pick: the winner of an accepted [`Ranking`] with its scores.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Guess {
     pub folder: String,
@@ -213,5 +220,10 @@ pub struct RouteRule {
 /// Test seam for the model. Production: the Verdict helper over HTTP.
 /// `Ok(None)` = helper unreachable; the caller leaves the event unsorted.
 pub trait Classifier {
-    fn classify(&self, state: &Value, options: &[String]) -> Result<Option<Guess>>;
+    fn classify(
+        &self,
+        state: &Value,
+        options: &[String],
+        examples: &BTreeMap<String, Vec<String>>,
+    ) -> Result<Option<Ranking>>;
 }

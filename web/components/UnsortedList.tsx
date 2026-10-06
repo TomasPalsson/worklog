@@ -265,6 +265,10 @@ function GroupRowControls({
   onPick,
   onDismiss,
 }: GroupRowControlsProps) {
+  const picks = (group.events[0].ranking ?? [])
+    .map((o) => o.id)
+    .filter((id) => folderOptions.includes(id))
+    .slice(0, 3);
   return (
     <div className="sort-row-controls">
       <label className="sort-row-always">
@@ -287,6 +291,23 @@ function GroupRowControls({
         <Ban width={13} height={13} strokeWidth={1.75} />
         Not work
       </button>
+      {picks.length > 0 && (
+        <>
+          <span className="verdict-picks-label">Verdict suggests</span>
+          {picks.map((folder) => (
+            <button
+              key={folder}
+              type="button"
+              className="bd-chip"
+              aria-label={`File under ${folder}`}
+              disabled={pending}
+              onClick={() => onPick(folder)}
+            >
+              {folder}
+            </button>
+          ))}
+        </>
+      )}
       <PalettePicker
         value={null}
         options={folderOptions}

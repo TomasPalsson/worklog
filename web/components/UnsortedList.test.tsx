@@ -402,3 +402,73 @@ describe("drops previous day's rows on navigation", () => {
     expect(screen.getByText("day-b-channel")).toBeTruthy();
   });
 });
+
+describe("Verdict one-tap choices", () => {
+  const ranked = (ids: string[]): RoutedEvent => ({
+    ...slack1,
+    ranking: ids.map((id, i) => ({ id, probability: 0.9 - i * 0.1 })),
+  });
+  const folders = ["alpha", "beta", "gamma", "delta"];
+
+  it("renders at most 3 chips, in ranking order, labelled with the folder only", () => {
+    render(
+      <UnsortedList
+        day="2026-07-25"
+        events={[ranked(["gamma", "alpha", "delta", "beta"])]}
+        folderOptions={folders}
+      />,
+    );
+    const row = rowFor("sjukra");
+    expect(within(row).getByText("Verdict suggests")).toBeTruthy();
+    const chips = Array.from(row.querySelectorAll("button.bd-chip"));
+    expect(chips.map((c) => c.textContent)).toEqual(["gamma", "alpha", "delta"]);
+    expect(chips[0].getAttribute("aria-label")).toBe("File under gamma");
+  });
+
+  it("skips ranked options that are not folder options", () => {
+    render(
+      <UnsortedList day="2026-07-25" events={[ranked(["ghost", "beta"])]} folderOptions={folders} />,
+    );
+    const chips = Array.from(rowFor("sjukra").querySelectorAll("button.bd-chip"));
+    expect(chips.map((c) => c.textContent)).toEqual(["beta"]);
+  });
+
+  it("no chips when no ranking or none is a folder option", () => {
+    render(
+      <UnsortedList
+        day="2026-07-25"
+        events={[slack1, { ...firefox1, ranking: [{ id: "ghost", probability: 0.9 }] }]}
+        folderOptions={folders}
+      />,
+    );
+    expect(document.querySelector(".bd-chip")).toBeNull();
+    expect(screen.queryByText("Verdict suggests")).toBeNull();
+  });
+
+  it("tapping a chip files every event in the group, honouring always", async () => {
+    render(
+      <UnsortedList
+        day="2026-07-25"
+        events={[{ ...slack1, ranking: [{ id: "alpha", probability: 0.9 }] }, slack2]}
+        folderOptions={folders}
+      />,
+    );
+    const row = rowFor("sjukra");
+    fireEvent.click(within(row).getByRole("checkbox"));
+    fireEvent.click(within(row).getByRole("button", { name: "File under alpha" }));
+    await waitFor(() => expect(labelEventCalls.length).toBe(2));
+    expect(labelEventCalls).toEqual([
+      [1, "alpha", "slack_channel", "2026-07-25"],
+      [2, "alpha", null, "2026-07-25"],
+    ]);
+  });
+
+  it("keeps the PalettePicker beside the chips", () => {
+    render(
+      <UnsortedList day="2026-07-25" events={[ranked(["alpha"])]} folderOptions={folders} />,
+    );
+    expect(
+      within(rowFor("sjukra")).getByRole("button", { name: /project for sjukra/i }),
+    ).toBeTruthy();
+  });
+});
