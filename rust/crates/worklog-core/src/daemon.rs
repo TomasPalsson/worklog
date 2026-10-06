@@ -558,22 +558,26 @@ async fn scorecard_nightly(
     let now = local.with_timezone(&chrono::Utc);
     let cases = with_conn(state.clone(), move |c| crate::scorecard::load(c, now)).await?;
     let rule = configured_route_rule();
-    let card = tokio::task::spawn_blocking(move || {
+    let replayed = tokio::task::spawn_blocking(move || {
         let classifier = make();
-        crate::scorecard::score(crate::scorecard::replay(cases, &*classifier), rule, true)
+        crate::scorecard::replay(cases, &*classifier)
     })
     .await
     .context("spawn_blocking")?;
+    let card = with_conn(state.clone(), move |c| {
+        let card = crate::scorecard::finish(c, replayed, rule, true)?;
+        if !card.nothing_answered() {
+            crate::purge::meta_set(c, SCORECARD_LATCH_KEY, &today)?;
+        }
+        Ok(card)
+    })
+    .await?;
     if card.nothing_answered() {
         tracing::debug!("nightly scorecard: Verdict not answering, will retry");
-        return Ok(());
+    } else {
+        info!("nightly scorecard: {}", card.summary());
     }
-    info!("nightly scorecard: {}", card.summary());
-    with_conn(state.clone(), move |c| {
-        crate::scorecard::save(c, &card)?;
-        crate::purge::meta_set(c, SCORECARD_LATCH_KEY, &today)
-    })
-    .await
+    Ok(())
 }
 
 // ───────────────────────── handlers ─────────────────────────
