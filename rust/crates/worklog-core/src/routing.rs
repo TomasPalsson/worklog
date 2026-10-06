@@ -3,7 +3,7 @@
 //! event unsorted (spec 003 T005). The label lives on the event itself:
 //! `project_path`/`label_origin`/`label_confidence` — keeps `infer`/`personal`/`billing` unchanged.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
@@ -179,7 +179,7 @@ pub fn load_pending(conn: &Connection, day: NaiveDate) -> Result<(RuleHits, Vec<
     Ok((rule_hits, pending))
 }
 
-/// Ask the classifier for each pending event; keep guesses that name one of the event's own
+/// Ask the classifier for each pending event; keep answers whose order check agreed, whose top names one of the event's own
 /// options and clear both the abstain margin and the runner-up ratio (spec 004 FR-01/FR-02),
 /// never a single raw-confidence threshold. No connection arg — the slow model call must never hold the sqlite lock.
 pub fn decide(
@@ -190,11 +190,25 @@ pub fn decide(
     pending
         .iter()
         .filter_map(|p| {
-            let guess = classifier.classify(&p.state, &p.options).ok().flatten()?;
-            let accepted = p.options.contains(&guess.folder)
-                && guess.confidence >= guess.abstain * rule.abstain_margin
-                && guess.confidence >= guess.runner_up * rule.runner_up_ratio;
-            accepted.then_some((p.event.id, guess))
+            let ranking = classifier
+                .classify(&p.state, &p.options, &BTreeMap::new())
+                .ok()
+                .flatten()?;
+            let top = ranking.ranking.first()?;
+            let runner_up = ranking.ranking.get(1).map_or(0.0, |o| o.probability);
+            let accepted = ranking.agreed
+                && p.options.contains(&top.id)
+                && top.probability >= ranking.abstain * rule.abstain_margin
+                && top.probability >= runner_up * rule.runner_up_ratio;
+            accepted.then(|| {
+                let guess = Guess {
+                    folder: top.id.clone(),
+                    confidence: top.probability,
+                    runner_up,
+                    abstain: ranking.abstain,
+                };
+                (p.event.id, guess)
+            })
         })
         .collect()
 }

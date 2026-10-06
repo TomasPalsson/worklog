@@ -4,6 +4,7 @@ use crate::db::open_memory;
 use crate::deild_contract::ChangeField;
 use crate::models::Event;
 use crate::repo;
+use crate::verdict_contract::{RankedOption, Ranking};
 
 fn pin(conn: &Connection, folder: &str, customer: Option<&str>) {
     upsert_folder(
@@ -51,7 +52,12 @@ fn fix(conn: &Connection, id: i64, folder: &str) -> RoutedEvent {
 struct PanicsIfCalled;
 
 impl Classifier for PanicsIfCalled {
-    fn classify(&self, _state: &Value, _options: &[String]) -> Result<Option<Guess>> {
+    fn classify(
+        &self,
+        _state: &Value,
+        _options: &[String],
+        _examples: &BTreeMap<String, Vec<String>>,
+    ) -> Result<Option<Ranking>> {
         panic!("classifier must not be called for an event named by rule (FR-10)");
     }
 }
@@ -64,13 +70,58 @@ struct FixedGuess {
 }
 
 impl Classifier for FixedGuess {
-    fn classify(&self, _state: &Value, _options: &[String]) -> Result<Option<Guess>> {
-        Ok(Some(Guess {
-            folder: self.folder.clone(),
-            confidence: self.confidence,
-            runner_up: self.runner_up,
+    fn classify(
+        &self,
+        _state: &Value,
+        _options: &[String],
+        _examples: &BTreeMap<String, Vec<String>>,
+    ) -> Result<Option<Ranking>> {
+        Ok(Some(self.ranking(true)))
+    }
+}
+
+impl FixedGuess {
+    fn ranking(&self, agreed: bool) -> Ranking {
+        let opt = |id: &str, probability| RankedOption {
+            id: id.into(),
+            probability,
+        };
+        Ranking {
+            ranking: vec![
+                opt(&self.folder, self.confidence),
+                opt("runner-up", self.runner_up),
+            ],
             abstain: self.abstain,
-        }))
+            agreed,
+        }
+    }
+}
+
+/// Same scores as the wrapped guess, but the reversed-order pass disagreed.
+struct Disagrees(FixedGuess);
+
+impl Classifier for Disagrees {
+    fn classify(
+        &self,
+        _state: &Value,
+        _options: &[String],
+        _examples: &BTreeMap<String, Vec<String>>,
+    ) -> Result<Option<Ranking>> {
+        Ok(Some(self.0.ranking(false)))
+    }
+}
+
+/// A fixed answer, whatever its shape.
+struct Fixed(Ranking);
+
+impl Classifier for Fixed {
+    fn classify(
+        &self,
+        _state: &Value,
+        _options: &[String],
+        _examples: &BTreeMap<String, Vec<String>>,
+    ) -> Result<Option<Ranking>> {
+        Ok(Some(self.0.clone()))
     }
 }
 
@@ -366,7 +417,12 @@ fn unknown_repo_is_no_match() {
 struct AlwaysNone;
 
 impl Classifier for AlwaysNone {
-    fn classify(&self, _state: &Value, _options: &[String]) -> Result<Option<Guess>> {
+    fn classify(
+        &self,
+        _state: &Value,
+        _options: &[String],
+        _examples: &BTreeMap<String, Vec<String>>,
+    ) -> Result<Option<Ranking>> {
         Ok(None)
     }
 }
@@ -406,6 +462,123 @@ fn title_only_mention_is_not_a_match() {
 // gated the pre-fix body too), so both bodies always agree here — this
 // can never be red-first against the pre-fix code. It's kept as a direct
 // `decide()`-level regression alongside `decide_drops_guess_outside_narrowed_options`.
+fn ranked(top: f64, second: Option<f64>, abstain: f64, agreed: bool) -> Ranking {
+    let mut ranking = vec![RankedOption {
+        id: "aws-cert".into(),
+        probability: top,
+    }];
+    ranking.extend(second.map(|probability| RankedOption {
+        id: "other".into(),
+        probability,
+    }));
+    Ranking {
+        ranking,
+        abstain,
+        agreed,
+    }
+}
+
+fn filed(ranking: Ranking, rule: RouteRule) -> Vec<(i64, Guess)> {
+    decide(
+        &[pending_with_options(vec!["aws-cert"])],
+        &Fixed(ranking),
+        rule,
+    )
+}
+
+fn rule_of(abstain_margin: f64, runner_up_ratio: f64) -> RouteRule {
+    RouteRule {
+        abstain_margin,
+        runner_up_ratio,
+    }
+}
+
+// Order check (spec 017 FR-07): scores that would file are still dropped when
+// the reversed-order pass disagreed. Catches a filter that ignores `agreed`.
+#[test]
+fn unsorted_when_order_check_disagrees() {
+    let items = vec![pending_with_options(vec!["aws-cert"])];
+    let model = Disagrees(FixedGuess {
+        folder: "aws-cert".into(),
+        confidence: 0.9,
+        runner_up: 0.1,
+        abstain: 0.05,
+    });
+    assert!(decide(&items, &model, default_rule()).is_empty());
+}
+
+// Exactly at the abstain margin files (0.5 >= 0.25 x 2.0); catches `>`.
+#[test]
+fn files_exactly_at_abstain_margin() {
+    let got = filed(ranked(0.5, Some(0.1), 0.25, true), rule_of(2.0, 1.0));
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].1.folder, "aws-cert");
+    assert_eq!(got[0].1.confidence, 0.5);
+}
+
+// Just under the abstain margin drops; catches a margin that is not applied.
+#[test]
+fn unsorted_just_under_abstain_margin() {
+    assert!(filed(ranked(0.49, Some(0.1), 0.25, true), rule_of(2.0, 1.0)).is_empty());
+}
+
+// Exactly at the runner-up ratio files (0.5 >= 0.25 x 2.0); catches `>`.
+#[test]
+fn files_exactly_at_runner_up_ratio() {
+    assert_eq!(
+        filed(ranked(0.5, Some(0.25), 0.1, true), rule_of(1.0, 2.0)).len(),
+        1
+    );
+}
+
+// Just under the runner-up ratio drops; catches a ratio taken against abstain only.
+#[test]
+fn unsorted_just_under_runner_up_ratio() {
+    assert!(filed(ranked(0.49, Some(0.25), 0.1, true), rule_of(1.0, 2.0)).is_empty());
+}
+
+// A one-entry ranking has no runner-up to beat; catches indexing [1] or
+// treating a missing second as a failure.
+#[test]
+fn files_when_ranking_has_no_second() {
+    assert_eq!(
+        filed(ranked(0.5, None, 0.1, true), rule_of(1.0, 2.0)).len(),
+        1
+    );
+}
+
+// An empty ranking has no top; catches indexing [0] (panic) or filing "".
+#[test]
+fn unsorted_when_ranking_is_empty() {
+    let empty = Ranking {
+        ranking: vec![],
+        abstain: 0.0,
+        agreed: true,
+    };
+    assert!(filed(empty, default_rule()).is_empty());
+}
+
+// The top must be one of the event's own options even when the second
+// entry is; catches checking any ranked id instead of the top.
+#[test]
+fn unsorted_when_only_runner_up_is_an_option() {
+    let r = Ranking {
+        ranking: vec![
+            RankedOption {
+                id: "not-an-option".into(),
+                probability: 0.9,
+            },
+            RankedOption {
+                id: "aws-cert".into(),
+                probability: 0.1,
+            },
+        ],
+        abstain: 0.01,
+        agreed: true,
+    };
+    assert!(filed(r, default_rule()).is_empty());
+}
+
 #[test]
 fn unsorted_when_choice_not_an_option() {
     let items = vec![pending_with_options(vec!["aws-cert"])];
