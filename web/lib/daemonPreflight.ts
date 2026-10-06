@@ -13,3 +13,11 @@ export async function loadPreflight(day: string): Promise<ActionResult<Preflight
     return { ok: false, error: (e as Error).message || "unknown error" };
   }
 }
+
+export async function loadReadBack(day: string): Promise<ActionResult<PreflightRow>> {
+  try {
+    return { ok: true, data: await call("GET", `/preflight/read-back?day=${day}`) };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message || "unknown error" };
+  }
+}

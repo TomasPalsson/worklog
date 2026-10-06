@@ -3,9 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 import { UploadCloud } from "lucide-react";
 
-import { loadPreflight } from "@/lib/daemonPreflight";
+import { loadPreflight, loadReadBack } from "@/lib/daemonPreflight";
 import type { PreflightRow } from "@/lib/daily_helpers_contract";
 import { formatDuration } from "@/lib/format";
+import { ReadBackRow } from "./ReadBackRow";
 import { DaySent, type Common } from "./TaskDayTools";
 import { SyncConfirm } from "./TaskSyncConfirm";
 
@@ -36,6 +37,7 @@ export function useSync({ taskKey, actions, onSaved, onAnnounce, label, day, cha
   const [step, setStep] = useState<Step>({ s: "idle" });
   const [sending, setSending] = useState(false);
   const [rows, setRows] = useState<PreflightRow[]>();
+  const [readBack, setReadBack] = useState<PreflightRow>();
   const trigger = useRef<HTMLButtonElement>(null);
   const refocus = useRef(false);
   useEffect(() => {
@@ -72,9 +74,11 @@ export function useSync({ taskKey, actions, onSaved, onAnnounce, label, day, cha
     setStep({ s: "sent", msg: `${changed ? "Tempo updated" : "Sent to Tempo"} · ${hours}` });
     onAnnounce?.(`${changed ? "Updated" : "Sent"} ${hours} ${changed ? "in" : "to"} Tempo for ${taskKey} on ${label}.`);
     onSaved();
+    const back = await loadReadBack(day.day);
+    setReadBack(back.ok ? back.data : { check: "read_back", ok: false, detail: `Could not read Tempo back: ${back.error}`, target: day.day });
   }
 
-  return { step, sending, rows, trigger, dryRun, send, cancel };
+  return { step, sending, rows, readBack, trigger, dryRun, send, cancel };
 }
 
 export type Sync = ReturnType<typeof useSync>;
@@ -107,6 +111,7 @@ export function SyncBody({ sync, label, day, changed }: Pick<SyncProps, "label" 
         <SyncConfirm label={label} day={day} changed={changed} sending={sync.sending} rows={sync.rows} onSend={sync.send} onCancel={sync.cancel} />
       )}
       {step.s === "sent" && <DaySent focus>{step.msg}</DaySent>}
+      {step.s === "sent" && sync.readBack && <ReadBackRow row={sync.readBack} />}
       {step.s === "nothing" && (
         <DaySent focus plain>
           {step.msg}
