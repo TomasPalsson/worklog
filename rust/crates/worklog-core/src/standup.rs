@@ -117,7 +117,10 @@ fn merged_prs(conn: &Connection, yesterday: NaiveDate, today: NaiveDate) -> Resu
     )?;
     let rows = stmt
         .query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+            Ok((
+                r.get::<_, String>(0)?,
+                crate::raw_json::decode_raw_json(r, 1)?,
+            ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows

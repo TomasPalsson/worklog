@@ -270,6 +270,30 @@ fn only_prs_merged_yesterday_or_today_are_used() {
 }
 
 #[test]
+fn a_pr_stored_compressed_is_read_not_an_error() {
+    let conn = db::open_memory().unwrap();
+    // upsert_event stores raw_json as a deflate BLOB, as on a real db (the pr() helper rewrites it as TEXT).
+    let mut e = Event::minimal(
+        "github_pr",
+        "PR #9: packed",
+        format!("{YESTERDAY}T10:00:00+00:00"),
+        "PR #9: packed",
+    );
+    e.raw_json = Some(
+        serde_json::to_string(&RawRecord::Commit {
+            sha: String::new(),
+            body: String::new(),
+            local_folder: None,
+            merged_at: Some("2026-10-05T12:00:00Z".into()),
+        })
+        .unwrap(),
+    );
+    repo::upsert_event(&conn, &e).unwrap();
+    // catches: reading raw_json with row.get::<String>, which fails "Invalid column type Blob"
+    assert!(run(&conn).contains("PR #9: packed"));
+}
+
+#[test]
 fn open_tickets_exclude_done_and_dead_statuses() {
     let conn = db::open_memory().unwrap();
     ticket(
