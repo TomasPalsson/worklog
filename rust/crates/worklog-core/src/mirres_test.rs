@@ -4,6 +4,7 @@ use super::*;
 use crate::db;
 use crate::tempo_lines;
 use httpmock::prelude::*;
+use rusqlite::{params, Connection};
 
 const DAY: &str = "2026-10-05";
 
@@ -131,7 +132,7 @@ fn classify_covers_classes_and_warnings() {
         "included_hours": {"contract_status": "NO_CONTRACT", "counts_as_billed": false}}));
     assert_eq!(
         classify(&no_contract).1.as_deref(),
-        Some("Samning vantar í Mirres (NO_CONTRACT)")
+        Some("Samning vantar í Mirres")
     );
 
     let used_up = project(json!({"tempo_account_key": "A", "billable": false,

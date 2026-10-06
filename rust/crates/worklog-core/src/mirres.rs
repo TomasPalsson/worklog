@@ -6,9 +6,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use anyhow::{Context, Result};
-use chrono::Utc;
 use reqwest::blocking::Client;
-use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -16,7 +14,7 @@ use crate::collectors::jira::{self, JiraAuth};
 use crate::collectors::tempo::{self, TempoAuth};
 use crate::http;
 use crate::secrets;
-use crate::tempo_line_contract::{BillingClass, LineBilling, TempoLineKey};
+use crate::tempo_line_contract::{BillingClass, LineBilling};
 
 const KEYS: [&str; 4] = [
     "mirres_gateway_url",
@@ -197,6 +195,16 @@ fn fmt_hours(h: f64) -> String {
     format!("{h:.1}").trim_end_matches(".0").replace('.', ",")
 }
 
+/// Plain-Icelandic text for a Mirres `contract_status` other than OK.
+fn contract_warning(status: &str) -> &'static str {
+    match status {
+        "NO_HOURS" => "Tímafjölda vantar á samning í Mirres",
+        "MIXED_PERIODS" => "Fleiri en ein tegund samnings í Mirres",
+        "UNKNOWN_CONTRACT_TYPE" => "Óþekkt samningstegund í Mirres",
+        _ => "Samning vantar í Mirres",
+    }
+}
+
 pub fn classify(p: &Project) -> (BillingClass, Option<String>) {
     let inc = p.included_hours.as_ref();
     let class = if p.billable {
@@ -209,7 +217,7 @@ pub fn classify(p: &Project) -> (BillingClass, Option<String>) {
     let warning = inc.and_then(|i| {
         match i.contract_status.as_deref() {
             Some("OK") | None => {}
-            Some(s) => return Some(format!("Samning vantar í Mirres ({s})")),
+            Some(s) => return Some(contract_warning(s).to_owned()),
         }
         match i.usage_status.as_deref() {
             Some("USED_UP") => Some("Innifaldir tímar uppurnir".to_owned()),
@@ -334,63 +342,10 @@ pub fn fetch_day_billing_with(
         .collect())
 }
 
-fn class_str(c: BillingClass) -> &'static str {
-    match c {
-        BillingClass::Billable => "billable",
-        BillingClass::Included => "included",
-        BillingClass::NotBillable => "not_billable",
-    }
-}
-
-/// Replaces the day's rows in one transaction.
-pub fn store_day(conn: &Connection, day: &str, rows: &[(String, LineBilling)]) -> Result<()> {
-    let tx = conn.unchecked_transaction()?;
-    tx.execute("DELETE FROM mirres_line_billing WHERE day = ?1", [day])?;
-    let pulled_at = Utc::now().to_rfc3339();
-    for (issue, b) in rows {
-        tx.execute(
-            "INSERT OR REPLACE INTO mirres_line_billing
-               (day, jira_issue, account_key, project, project_type, class, warning, pulled_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                day,
-                issue,
-                b.account_key,
-                b.project,
-                b.project_type,
-                class_str(b.class),
-                b.warning,
-                pulled_at
-            ],
-        )?;
-    }
-    tx.commit()?;
-    Ok(())
-}
-
-pub(crate) fn stored_billing(conn: &Connection, key: &TempoLineKey) -> Result<Option<LineBilling>> {
-    conn.query_row(
-        "SELECT account_key, project, project_type, class, warning
-           FROM mirres_line_billing WHERE day = ?1 AND jira_issue = ?2",
-        params![key.day, key.jira_issue],
-        |r| {
-            let class: String = r.get(3)?;
-            Ok(LineBilling {
-                account_key: r.get(0)?,
-                project: r.get(1)?,
-                project_type: r.get(2)?,
-                class: match class.as_str() {
-                    "billable" => BillingClass::Billable,
-                    "included" => BillingClass::Included,
-                    _ => BillingClass::NotBillable,
-                },
-                warning: r.get(4)?,
-            })
-        },
-    )
-    .optional()
-    .context("stored_billing")
-}
+#[path = "mirres_store.rs"]
+mod store;
+pub use store::store_day;
+pub(crate) use store::stored_billing;
 
 #[path = "mirres_test.rs"]
 #[cfg(test)]

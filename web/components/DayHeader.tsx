@@ -2,7 +2,9 @@ import Link from "next/link";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { formatTotalHours, shiftDay, todayISO } from "@/lib/format";
 import { DateJumper } from "./DateJumper";
-import { MirresRefresh } from "./MirresRefresh";
+
+/** Apró's billable-hours target (reikningshæfi), in percent. */
+const BILLABLE_GOAL = 70;
 
 interface Props {
   day: string;
@@ -67,14 +69,26 @@ export function DayHeader({
             <span className="day-billed-unit">billed</span>
           </div>
           {billablePercent != null && (
-            <div className="day-billable" aria-label="billable share">
-              <span className={`day-billable-value ${billablePercent >= 70 ? "ok" : "low"}`}>
-                Billable {billablePercent}%
+            <div className={`day-billable ${billablePercent >= BILLABLE_GOAL ? "ok" : "low"}`}>
+              <span className="day-billable-text">
+                <span className="day-billable-value">{billablePercent}% of billed is billable</span>
+                <span className="day-billable-goal">goal {BILLABLE_GOAL}%</span>
               </span>
-              <span className="day-billable-goal">goal 70%</span>
+              <span
+                className="day-billable-meter"
+                role="meter"
+                aria-label="Billable share of billed hours"
+                title={`${billablePercent}% billable · goal ${BILLABLE_GOAL}% (Mirres)`}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={billablePercent}
+                aria-valuetext={`${billablePercent}% of billed hours billable, goal ${BILLABLE_GOAL}%`}
+              >
+                <span className="day-billable-fill" style={{ width: `${Math.min(billablePercent, 100)}%` }} />
+                <span className="day-billable-tick" style={{ left: `${BILLABLE_GOAL}%` }} />
+              </span>
             </div>
           )}
-          <MirresRefresh day={day} />
           {Math.abs(billedDelta) >= 60 && (
             <div className={`day-billed-delta${billedDelta > 0 ? " up" : ""}`}>
               {billedDelta > 0 ? "+" : "−"}

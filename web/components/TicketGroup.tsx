@@ -19,12 +19,11 @@ import { LineHours } from "./LineHours";
 const BILLING_LABEL = { billable: "Billable", included: "Included", not_billable: "Not billable" };
 
 function BillingPill({ billing }: { billing: LineBilling }) {
-  const title = [billing.project, billing.project_type].filter(Boolean).join(" · ");
+  const project = [billing.project, billing.project_type].filter(Boolean).join(" · ");
   return (
     <span className="billing-pill">
-      <span className={`billing-pill-tag ${billing.class}`} title={title || undefined}>
-        {BILLING_LABEL[billing.class]}
-      </span>
+      <span className={`billing-pill-tag ${billing.class}`}>{BILLING_LABEL[billing.class]}</span>
+      {project && <span className="billing-pill-project">{project}</span>}
       {billing.warning && <span className="billing-pill-warning">{billing.warning}</span>}
     </span>
   );
@@ -221,6 +220,7 @@ export function TicketGroup({
                 </span>
                 <SyncChip state={group.syncState} />
                 {mergeButton}
+                {line.billing && <BillingPill billing={line.billing} />}
               </span>
               {/* Clicks here must not toggle the <details>. */}
               <span className="billing-text-wrap ticket-line-text" onClick={(e) => e.stopPropagation()}>
@@ -301,7 +301,6 @@ export function TicketGroup({
               </span>
             </span>
             <LineHours label={group.label} line={line} lineKey={lineKey} saveHours={saveHours} />
-            {line.billing && <BillingPill billing={line.billing} />}
           </>
         ) : (
           <>
