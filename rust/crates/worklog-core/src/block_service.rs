@@ -29,6 +29,7 @@ pub fn assign_ticket(conn: &Connection, block_id: i64, key: Option<&str>) -> Res
     // Clearing the ticket leaves is_personal alone; the user might still
     // want the personal flag managed by the path classifier on the next
     // `worklog tag reclassify`.
+    let previous = repo::get_block(conn, block_id)?.and_then(|b| b.jira_issue);
     if key.is_some() {
         conn.execute(
             &format!(
@@ -52,6 +53,7 @@ pub fn assign_ticket(conn: &Connection, block_id: i64, key: Option<&str>) -> Res
     }
     let block = repo::get_block(conn, block_id)?
         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
+    crate::ticket_verdict::record_swap(conn, block_id, previous, key)?;
     change_log::refresh_day_logged(conn, &block.day, ChangeSource::User);
     Ok(block)
 }
@@ -214,7 +216,7 @@ pub fn delete_block(conn: &Connection, block_id: i64) -> Result<()> {
 /// True when a block carries a real Tempo worklog id — i.e. it has been
 /// synced. Both `NULL` and `""` count as unsynced (see CLAUDE.md invariant
 /// on the `tempo_worklog_id` canary).
-fn is_synced(b: &Block) -> bool {
+pub(crate) fn is_synced(b: &Block) -> bool {
     b.tempo_worklog_id
         .as_deref()
         .map(str::trim)
@@ -500,6 +502,50 @@ mod tests {
         assert_eq!(got.jira_issue.as_deref(), Some("PROJ-1"));
         let got = assign_ticket(&conn, id, None).unwrap();
         assert!(got.jira_issue.is_none());
+    }
+
+    fn ticket_fixes(conn: &Connection) -> Vec<crate::verdict_contract::DecisionRow> {
+        crate::verdict_decisions::list_since(
+            conn,
+            crate::verdict_contract::DecisionKind::Ticket,
+            "",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn assign_ticket_logs_each_swap_with_the_ticket_it_replaced() {
+        let conn = open_memory().unwrap();
+        let id = seed(&conn);
+        assign_ticket(&conn, id, Some("PROJ-1")).unwrap(); // from nothing
+        assign_ticket(&conn, id, Some("PROJ-1")).unwrap(); // same again: no change
+        assign_ticket(&conn, id, Some("PROJ-2")).unwrap(); // swap
+        assign_ticket(&conn, id, None).unwrap(); // clear
+        let rows = ticket_fixes(&conn);
+        // catches logging the new value only, and logging a no-op re-save
+        let seen: Vec<_> = rows
+            .iter()
+            .map(|r| (r.previous.as_deref(), r.chosen.as_deref()))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (None, Some("PROJ-1")),
+                (Some("PROJ-1"), Some("PROJ-2")),
+                (Some("PROJ-2"), None)
+            ]
+        );
+        assert!(rows.iter().all(|r| {
+            r.source == crate::verdict_contract::DecisionSource::Owner
+                && r.subject == id.to_string()
+        }));
+    }
+
+    #[test]
+    fn assign_ticket_on_a_missing_block_still_errors_and_logs_nothing() {
+        let conn = open_memory().unwrap();
+        assert!(assign_ticket(&conn, 9999, Some("PROJ-1")).is_err());
+        assert!(ticket_fixes(&conn).is_empty());
     }
 
     #[test]

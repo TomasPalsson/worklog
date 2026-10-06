@@ -90,6 +90,7 @@ pub mod ticket_assist;
 pub mod ticket_blocks;
 pub mod ticket_log;
 pub mod ticket_text;
+pub mod ticket_verdict;
 pub mod timeline;
 pub mod tz;
 pub mod updater;
