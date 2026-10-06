@@ -6360,3 +6360,8 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
   .mirres-days .mirres-fetch { margin-left: 0; }
 }
 .mirres-line-chip { flex: none; padding: 0 6px; border: 1px solid var(--amber-ink); border-radius: 999px; font-size: 12px; line-height: 18px; color: var(--amber-ink); }
+/* Standup trigger lives under the day title (fills the space beside the billed figures). */
+.day-title .standup { flex-basis: auto; margin-top: 12px; }
+.day-title .standup > .action-btn { min-height: 32px; padding: 0 12px; font-size: 13px; }
+.day-title:has(.standup) { flex: 1 1 0; min-width: min(280px, 100%); }
+.day-title .standup-preview { width: 100%; max-width: 640px; }

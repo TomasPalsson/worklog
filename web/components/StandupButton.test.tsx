@@ -34,7 +34,7 @@ afterEach(() => {
 
 const open = async () => {
   render(<StandupButton />);
-  fireEvent.click(screen.getByRole("button", { name: "Standup" }));
+  fireEvent.click(screen.getByRole("button", { name: "Draft standup" }));
   return (await screen.findByRole("textbox", { name: "Standup draft" })) as HTMLTextAreaElement;
 };
 const post = () => screen.getByRole("button", { name: "Post" }) as HTMLButtonElement;
@@ -116,7 +116,7 @@ describe("StandupButton", () => {
   it("shows the error and no editor when drafting fails", async () => {
     draftStandup.mockResolvedValueOnce({ ok: false, error: "model unavailable" });
     render(<StandupButton />);
-    fireEvent.click(screen.getByRole("button", { name: "Standup" }));
+    fireEvent.click(screen.getByRole("button", { name: "Draft standup" }));
     // catches: an empty editor that could post blank text
     expect((await screen.findByRole("alert")).textContent).toContain("model unavailable");
     expect(screen.queryByRole("textbox", { name: "Standup draft" })).toBeNull();
