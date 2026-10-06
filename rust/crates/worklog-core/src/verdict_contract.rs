@@ -35,7 +35,11 @@ pub const HEALTH_INTERVAL_SECS: u64 = 60;
 pub const RESTART_LIMIT: u32 = 3;
 pub const RESTART_WINDOW_SECS: u64 = 600;
 /// Places `uv` is looked for, in order, before `PATH` (A1). `~` is `$HOME`.
-pub const UV_CANDIDATES: [&str; 3] = ["~/.local/bin/uv", "/opt/homebrew/bin/uv", "/usr/local/bin/uv"];
+pub const UV_CANDIDATES: [&str; 3] = [
+    "~/.local/bin/uv",
+    "/opt/homebrew/bin/uv",
+    "/usr/local/bin/uv",
+];
 
 /// What a decision-log row is about. Stored as the snake_case string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
