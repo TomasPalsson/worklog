@@ -212,6 +212,18 @@ describe("SettingsPanel browser/Slack routing controls (T012)", () => {
     expect(await screen.findByText("Model helper: reachable")).toBeTruthy();
   });
 
+  it("says the rules and status couldn't load instead of claiming there are none", async () => {
+    fetchRoutingRulesImpl.mockImplementationOnce(async () => ({ ok: false as const, error: "fetch failed" }) as never);
+    fetchRoutingStatusImpl.mockImplementationOnce(async () => ({ ok: false as const, error: "fetch failed" }) as never);
+
+    await openPanel();
+
+    expect(await screen.findByText(/couldn.t load your rules/i)).toBeTruthy();
+    expect(screen.getByText(/couldn.t check/i)).toBeTruthy();
+    expect(screen.queryByText(/no rules yet/i)).toBeNull();
+    expect(screen.queryByText("Model helper: unreachable")).toBeNull();
+  });
+
   it("lists hard rules and deletes one", async () => {
     fetchRoutingRulesImpl.mockImplementationOnce(async () => ({
       ok: true as const,

@@ -134,6 +134,9 @@ export function RoutingStatusAndRules({ day }: { day: string }) {
   const [rules, setRules] = useState<Rule[]>([]);
   const [status, setStatus] = useState<RoutingStatus | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
+  // A failed load must not read as "no rules" / "never" — say it failed.
+  const [rulesFailed, setRulesFailed] = useState(false);
+  const [statusFailed, setStatusFailed] = useState(false);
 
   useEffect(() => {
     void (async () => {
@@ -142,7 +145,9 @@ export function RoutingStatusAndRules({ day }: { day: string }) {
         fetchRoutingStatus(),
       ]);
       if (rulesResult.ok) setRules(rulesResult.data);
+      else setRulesFailed(true);
       if (statusResult.ok) setStatus(statusResult.data);
+      else setStatusFailed(true);
     })();
   }, []);
 
@@ -161,21 +166,50 @@ export function RoutingStatusAndRules({ day }: { day: string }) {
   return (
     <>
       <h3>Is it working?</h3>
-      <StatusList status={status} />
-
-      <h3>Your rules</h3>
-      {rules.length === 0 ? (
-        <p className="settings-hint">
-          No rules yet. Pick a project for an item in a day&rsquo;s Unsorted list and tick
-          &ldquo;always&rdquo; to add one.
+      {statusFailed ? (
+        <p className="settings-hint verdict-unknown">
+          Couldn&rsquo;t check right now. Reload the page to try again.
         </p>
       ) : (
-        <ul className="set-rules">
-          {rules.map((r) => (
-            <RuleRow key={r.id} rule={r} busy={busyId === r.id} onDelete={onDelete} />
-          ))}
-        </ul>
+        <StatusList status={status} />
       )}
+
+      <h3>Your rules</h3>
+      <RuleList rules={rulesFailed ? null : rules} busyId={busyId} onDelete={onDelete} />
     </>
+  );
+}
+
+/** `rules === null` means the load failed — never shown as "no rules". */
+function RuleList({
+  rules,
+  busyId,
+  onDelete,
+}: {
+  rules: Rule[] | null;
+  busyId: number | null;
+  onDelete: (id: number) => void;
+}) {
+  if (rules === null) {
+    return (
+      <p className="settings-hint verdict-unknown">
+        Couldn&rsquo;t load your rules. They are still saved; reload the page to try again.
+      </p>
+    );
+  }
+  if (rules.length === 0) {
+    return (
+      <p className="settings-hint">
+        No rules yet. Pick a project for an item in a day&rsquo;s Unsorted list and tick
+        &ldquo;always&rdquo; to add one.
+      </p>
+    );
+  }
+  return (
+    <ul className="set-rules">
+      {rules.map((r) => (
+        <RuleRow key={r.id} rule={r} busy={busyId === r.id} onDelete={onDelete} />
+      ))}
+    </ul>
   );
 }
