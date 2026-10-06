@@ -100,11 +100,13 @@ use crate::routing_contract::RouteRule;
 use crate::routing_dismiss;
 use crate::secrets;
 use crate::verdict::VerdictClassifier;
+use crate::verdict_contract::{VerdictState, VerdictStatus};
 use crate::{
     block_service, db, estimate, infer, infer_allocations,
     models::{Block, Event},
     overlaps, repo,
 };
+use crate::{verdict_decisions, verdict_supervisor};
 
 #[path = "daemon_tenants.rs"]
 mod daemon_tenants;
@@ -269,6 +271,9 @@ pub fn router(state: Shared) -> Router {
         .route("/routing/rules", get(routing_rules_list))
         .route("/routing/rules/:id/delete", post(routing_rule_delete))
         .route("/routing/status", get(routing_status))
+        .route("/verdict/status", get(verdict_status))
+        .route("/verdict/enabled", post(verdict_enabled))
+        .route("/verdict/retry", post(verdict_retry))
         .route("/days/:day/elsewhere", get(list_elsewhere))
         .route("/events/:id/move", post(move_event_handler))
         .with_state(state)
@@ -2724,6 +2729,55 @@ async fn routing_status(State(state): State<Shared>) -> Result<Json<RoutingStatu
         last_slack,
         classifier_reachable,
     }))
+}
+
+#[derive(Deserialize)]
+struct VerdictStatusQuery {
+    day: String,
+}
+
+#[derive(Deserialize)]
+struct VerdictEnabledBody {
+    on: bool,
+}
+
+/// The status probe can take 2 s and `set_enabled` writes a file; keep both
+/// off the async workers.
+async fn verdict_state_off_runtime(
+    f: impl FnOnce() -> Result<VerdictState> + Send + 'static,
+) -> Result<VerdictState, ApiError> {
+    let state = tokio::task::spawn_blocking(f)
+        .await
+        .context("spawn_blocking")??;
+    Ok(state)
+}
+
+async fn verdict_status(
+    State(state): State<Shared>,
+    axum::extract::Query(q): axum::extract::Query<VerdictStatusQuery>,
+) -> Result<Json<VerdictStatus>, ApiError> {
+    NaiveDate::parse_from_str(&q.day, "%Y-%m-%d")
+        .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{}`: {e}", q.day)))?;
+    let day = q.day;
+    let unchecked = with_conn(state, move |c| verdict_decisions::unchecked_count(c, &day)).await?;
+    let state = verdict_state_off_runtime(|| Ok(verdict_supervisor::status())).await?;
+    Ok(Json(VerdictStatus {
+        state,
+        unchecked,
+        scorecard: None,
+    }))
+}
+
+async fn verdict_enabled(
+    Json(body): Json<VerdictEnabledBody>,
+) -> Result<Json<VerdictState>, ApiError> {
+    let state = verdict_state_off_runtime(move || verdict_supervisor::set_enabled(body.on)).await?;
+    Ok(Json(state))
+}
+
+async fn verdict_retry() -> Result<Json<VerdictState>, ApiError> {
+    let state = verdict_state_off_runtime(|| Ok(verdict_supervisor::retry())).await?;
+    Ok(Json(state))
 }
 
 // ───────────────────────── billing registry ─────────────────────────
@@ -6690,6 +6744,97 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(v["classifier_reachable"], live);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn verdict_supervisor_status_route_reports_state_and_unchecked_count() {
+        let conn = open_memory().unwrap();
+        repo::upsert_event(
+            &conn,
+            &Event::minimal(
+                routing_contract::SOURCE_FIREFOX,
+                "e1",
+                "2026-04-14T10:30:00+00:00",
+                "x",
+            ),
+        )
+        .unwrap();
+        let app = router(state_from_conn(conn));
+        let get = |uri: &str| Request::get(uri.to_owned()).body(Body::empty()).unwrap();
+
+        let resp = app
+            .clone()
+            .oneshot(get("/verdict/status?day=2026-04-14"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        // No supervisor is running under test, so Verdict reads as off.
+        assert_eq!(
+            read_json(resp).await,
+            json!({"state": "off", "unchecked": 1, "scorecard": null})
+        );
+
+        // A different day has nothing unchecked.
+        let resp = app
+            .clone()
+            .oneshot(get("/verdict/status?day=2026-04-15"))
+            .await
+            .unwrap();
+        assert_eq!(read_json(resp).await["unchecked"], 0);
+
+        for bad in ["/verdict/status?day=not-a-day", "/verdict/status"] {
+            let resp = app.clone().oneshot(get(bad)).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{bad}");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn verdict_supervisor_enabled_route_persists_the_switch() {
+        let _g = prune_env_lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let env_file = tmp.path().join(".env");
+        std::env::set_var("WORKLOG_ENV_FILE", &env_file);
+        let app = router(state_from_conn(open_memory().unwrap()));
+        let post = |uri: &str, body: &str| {
+            Request::post(uri.to_owned())
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_owned()))
+                .unwrap()
+        };
+
+        let resp = app
+            .clone()
+            .oneshot(post("/verdict/enabled", r#"{"on":false}"#))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(read_json(resp).await, json!({"state": "off"}));
+        assert!(std::fs::read_to_string(&env_file)
+            .unwrap()
+            .contains("WORKLOG_VERDICT_ENABLED=off"));
+
+        let resp = app
+            .clone()
+            .oneshot(post("/verdict/enabled", r#"{"on":true}"#))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(std::fs::read_to_string(&env_file)
+            .unwrap()
+            .contains("WORKLOG_VERDICT_ENABLED=on"));
+
+        let resp = app
+            .clone()
+            .oneshot(post("/verdict/enabled", r#"{"on":"yes"}"#))
+            .await
+            .unwrap();
+        assert!(resp.status().is_client_error());
+
+        let resp = app.oneshot(post("/verdict/retry", "")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(read_json(resp).await, json!({"state": "off"}));
+
+        std::env::remove_var("WORKLOG_ENV_FILE");
     }
 
     #[tokio::test(flavor = "current_thread")]

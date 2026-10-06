@@ -96,6 +96,7 @@ pub mod upgrade_006;
 pub mod verdict;
 pub mod verdict_contract;
 pub mod verdict_decisions;
+pub mod verdict_supervisor;
 pub mod web;
 pub mod week_closeout;
 

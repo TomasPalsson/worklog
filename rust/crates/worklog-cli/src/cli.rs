@@ -3758,6 +3758,8 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
         };
         eprintln!("→ socket {}", worklog_core::paths::short_display(&path));
 
+        let verdict_task = worklog_core::verdict_supervisor::spawn()?;
+
         // Billing-cycle prune due-check: one timer per process, spawned
         // here (not inside `router()`/`serve_at`/`serve_tcp`) precisely
         // because the daemon binds both a unix socket and a TCP port —
@@ -3795,27 +3797,10 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
             t.abort();
         }
         prune_task.abort();
+        verdict_task.abort();
+        worklog_core::verdict_supervisor::shutdown();
         unix_res
     })
-}
-
-/// `uv run` args to launch the helper script pinned to the Verdict git
-/// revision + huggingface_hub, so a test can assert the pins never
-/// drift to a loose package name.
-fn verdict_uv_args(script_path: &std::path::Path) -> Vec<String> {
-    vec![
-        "run".to_string(),
-        "--with".to_string(),
-        format!(
-            "{}@{}",
-            worklog_core::routing_contract::VERDICT_GIT_URL,
-            worklog_core::routing_contract::VERDICT_GIT_REV
-        ),
-        "--with".to_string(),
-        "huggingface_hub".to_string(),
-        "python".to_string(),
-        script_path.display().to_string(),
-    ]
 }
 
 /// Write the embedded helper script to `<data>/verdict_server.py` and run
@@ -3832,20 +3817,9 @@ fn cmd_verdict_serve() -> Result<()> {
         "→ verdict http://{}",
         worklog_core::routing_contract::CLASSIFIER_ADDR
     );
-    let status = std::process::Command::new("uv")
-        .args(verdict_uv_args(&script_path))
-        .env(
-            "WORKLOG_VERDICT_MODEL_DIR",
-            paths.data_dir.join("verdict-model"),
-        )
-        .env(
-            "WORKLOG_VERDICT_MODEL_REPO",
-            worklog_core::routing_contract::VERDICT_MODEL_REPO,
-        )
-        .env(
-            "WORKLOG_VERDICT_MODEL_REVISION",
-            worklog_core::routing_contract::VERDICT_MODEL_REVISION,
-        )
+    let uv = worklog_core::verdict_supervisor::find_uv()
+        .context("`uv` not found — install it with `brew install uv`")?;
+    let status = worklog_core::verdict_supervisor::command(&uv, &script_path, &paths.data_dir)
         .status()
         .context("spawning `uv run` — is uv installed?")?;
     if !status.success() {
@@ -5084,7 +5058,9 @@ mod tests {
     /// revision and huggingface_hub dependency, not a loose package name.
     #[test]
     fn verdict_serve_args_pin_revisions() {
-        let args = verdict_uv_args(std::path::Path::new("/tmp/verdict_server.py"));
+        let args = worklog_core::verdict_supervisor::uv_args(std::path::Path::new(
+            "/tmp/verdict_server.py",
+        ));
         assert_eq!(
             args,
             vec![
