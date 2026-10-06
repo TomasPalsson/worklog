@@ -15,7 +15,7 @@ pub const SCHEMA_SQL: &str = include_str!("../sql/schema.sql");
 /// Monotonic integer version of the schema, bumped by future migrations.
 /// Stored in `PRAGMA user_version` so we can detect stale dbs without adding
 /// a dedicated table.
-pub const SCHEMA_VERSION: i32 = 21;
+pub const SCHEMA_VERSION: i32 = 20;
 
 /// Open a connection at `path`, enable WAL + FK, and run migrations.
 pub fn open(path: &Path) -> Result<Connection> {
@@ -94,9 +94,6 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     }
     if from_version < 15 {
         run_upgrade_006(conn).context("running spec 006 upgrade")?;
-    }
-    if from_version < 21 {
-        crate::ask::sync(conn).context("backfilling ask index")?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)
         .context("stamping user_version")?;
