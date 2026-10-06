@@ -5,14 +5,21 @@
 // size gate — purely presentational; `secretInputs` state stays with the
 // parent settings form.
 
+import type { ComponentType } from "react";
+import { CalendarDays, ChevronDown, KeyRound, Ticket, Timer } from "lucide-react";
 import type { SettingField } from "@/lib/types";
+import { CardHead } from "./SettingsNav";
+import { ClaudeMark, GitHubMark, SlackMark } from "./SourceIcon";
+
+type Mark = ComponentType<{ size?: number }>;
 
 /** Logical grouping + human labels for the flat KNOWN_KEYS list the
  * daemon returns. Keys not listed here still render under "Other" so a
  * newly-added daemon key is never silently dropped. */
-const GROUPS: { title: string; keys: string[] }[] = [
+const GROUPS: { title: string; icon: Mark; keys: string[] }[] = [
   {
     title: "Jira / Tempo",
+    icon: Ticket,
     keys: [
       "jira_base_url",
       "jira_email",
@@ -24,16 +31,19 @@ const GROUPS: { title: string; keys: string[] }[] = [
   },
   {
     title: "Mirres",
+    icon: Timer,
     keys: ["mirres_gateway_url", "mirres_token_url", "mirres_client_id", "mirres_client_secret"],
   },
-  { title: "GitHub", keys: ["github_user", "github_token"] },
-  { title: "Slack", keys: ["slack_user_token"] },
+  { title: "GitHub", icon: GitHubMark, keys: ["github_user", "github_token"] },
+  { title: "Slack", icon: SlackMark, keys: ["slack_user_token"] },
   {
     title: "Google Calendar",
+    icon: CalendarDays,
     keys: ["google_client_id", "google_client_secret", "google_refresh_token"],
   },
   {
     title: "AI summaries",
+    icon: ClaudeMark,
     keys: [
       "worklog_estimator_provider",
       "anthropic_api_key",
@@ -151,34 +161,47 @@ export function connectedCount(secrets: SettingField[]): { done: number; total: 
   return { done: groups.filter((f) => statusOf(f) === "on").length, total: groups.length };
 }
 
+/** One service. Fully connected ones start folded to a single line —
+ * there is usually nothing to do there — and open with a click. */
 function Group({
   title,
+  icon: Icon = KeyRound,
   fields,
   values,
   onChange,
 }: {
   title: string;
+  icon?: Mark;
   fields: SettingField[];
   values: Record<string, string>;
   onChange: (key: string, value: string) => void;
 }) {
   const status = STATUS_GROUPS.some((g) => g.title === title) ? statusOf(fields) : null;
   return (
-    <fieldset className="set-service">
-      <legend>
-        {title}
+    // No-status groups (AI summaries, Other) fold once anything in them is set.
+    <details className="set-service" open={status ? status !== "on" : !fields.some((f) => f.present)}>
+      <summary>
+        <span className="set-service-icon" aria-hidden="true">
+          <Icon size={18} />
+        </span>
+        <span className="set-service-name">{title}</span>
         {status && (
           <span className="set-pill" data-status={status}>
             {STATUS_COPY[status]}
           </span>
         )}
-      </legend>
+        <span className="set-service-toggle" aria-hidden="true">
+          <span className="set-when-closed">Edit</span>
+          <span className="set-when-open">Hide</span>
+          <ChevronDown size={16} />
+        </span>
+      </summary>
       <div className="settings-grid-2">
         {fields.map((f) => (
           <Field key={f.key} field={f} value={values[f.key] ?? ""} onChange={(v) => onChange(f.key, v)} />
         ))}
       </div>
-    </fieldset>
+    </details>
   );
 }
 
@@ -199,7 +222,7 @@ export function CredentialGroups({
 
   return (
     <section id="connections" className="set-card" aria-labelledby="connections-title">
-      <h2 id="connections-title">Connections</h2>
+      <CardHead id="connections" title="Connections" />
       <p className="settings-hint">
         The keys worklog uses to read Jira, Tempo, GitHub, Slack and your calendar. A saved
         key is never shown again; leave its field empty to keep it.
@@ -207,7 +230,9 @@ export function CredentialGroups({
       {GROUPS.map((g) => {
         const fields = groupFields(secrets, g.keys);
         if (fields.length === 0) return null;
-        return <Group key={g.title} title={g.title} fields={fields} values={values} onChange={onChange} />;
+        return (
+          <Group key={g.title} title={g.title} icon={g.icon} fields={fields} values={values} onChange={onChange} />
+        );
       })}
       {otherKeys.length > 0 && (
         <Group title="Other" fields={otherKeys} values={values} onChange={onChange} />

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
-import type { SettingsView } from "@/lib/types";
+import type { SettingsUpdate, SettingsView } from "@/lib/types";
 import { fetchSettings, saveSettings } from "@/app/actions";
 import { toast } from "@/lib/toast";
 import {
@@ -10,7 +10,9 @@ import {
   formStateFromView,
   type SettingsFormState,
 } from "@/lib/settingsForm";
-import { SettingsBody, SettingsIndex } from "./SettingsFormSections";
+import { connectedCount } from "./CredentialFields";
+import { SettingsBody } from "./SettingsFormSections";
+import { SettingsIndex } from "./SettingsNav";
 
 interface Props {
   /** The day the user came from — saving revalidates it so a
@@ -53,6 +55,18 @@ export function SettingsPanel({ day }: Props) {
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
+
+  // ⌘S / Ctrl+S saves from anywhere on the page.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        if (dirty && !saving) void onSave();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   async function onSave() {
     if (!update) return;
@@ -101,7 +115,7 @@ export function SettingsPanel({ day }: Props) {
 
   return (
     <div className="set-layout">
-      <SettingsIndex view={view} />
+      <SettingsIndex connections={connectedCount(view.secrets)} />
       <div className="set-main">
         <SettingsBody
           view={view}
@@ -109,29 +123,48 @@ export function SettingsPanel({ day }: Props) {
           setForm={(fn) => setForm((f) => (f ? fn(f) : f))}
           day={day}
         />
-        <div className="set-savebar" data-dirty={dirty || undefined}>
-          <span className="set-savebar-note" role="status">
-            {dirty ? "You have unsaved changes." : "All changes saved."}
-          </span>
-          <button
-            type="button"
-            className="action-btn"
-            disabled={!dirty || saving}
-            onClick={() => hydrate(view)}
-          >
-            Discard changes
-          </button>
-          <button
-            type="button"
-            className="action-btn primary"
-            disabled={!dirty || saving}
-            onClick={onSave}
-          >
-            {saving && <Loader2 className="spin" size={15} />}
-            {saving ? "Saving…" : "Save changes"}
-          </button>
-        </div>
+        <SaveBar
+          changes={update ? changeCount(update) : 0}
+          saving={saving}
+          onDiscard={() => hydrate(view)}
+          onSave={onSave}
+        />
       </div>
+    </div>
+  );
+}
+
+/** Each changed setting counts once; each changed key counts once. */
+function changeCount(update: SettingsUpdate): number {
+  const { secrets, ...rest } = update;
+  return Object.keys(rest).length + Object.keys(secrets ?? {}).length;
+}
+
+function SaveBar({
+  changes,
+  saving,
+  onDiscard,
+  onSave,
+}: {
+  changes: number;
+  saving: boolean;
+  onDiscard: () => void;
+  onSave: () => void;
+}) {
+  const dirty = changes > 0;
+  return (
+    <div className="set-savebar" data-dirty={dirty || undefined}>
+      <span className="set-savebar-note" role="status">
+        {dirty ? `${changes} unsaved ${changes === 1 ? "change" : "changes"}` : "All changes saved."}
+      </span>
+      <button type="button" className="action-btn" disabled={!dirty || saving} onClick={onDiscard}>
+        Discard changes
+      </button>
+      <button type="button" className="action-btn primary" disabled={!dirty || saving} onClick={onSave}>
+        {saving && <Loader2 className="spin" size={15} />}
+        {saving ? "Saving…" : "Save changes"}
+        {!saving && <kbd className="set-kbd" aria-hidden="true">⌘S</kbd>}
+      </button>
     </div>
   );
 }
