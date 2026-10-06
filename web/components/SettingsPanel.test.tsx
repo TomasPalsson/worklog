@@ -76,8 +76,7 @@ afterEach(() => {
 
 async function openPanel() {
   render(<SettingsPanel day="2026-07-25" />);
-  fireEvent.click(screen.getByRole("button", { name: /open settings/i }));
-  // The panel loads settings asynchronously on open — wait for a field
+  // The page loads settings asynchronously on mount — wait for a field
   // that only exists once `view` is hydrated.
   await screen.findByLabelText(/cycle start day/i);
 }

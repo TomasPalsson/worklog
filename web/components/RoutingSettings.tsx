@@ -33,7 +33,7 @@ export function RoutingFields({
   onRunnerUpRatioChange,
 }: FieldsProps) {
   return (
-    <div className="settings-grid-2">
+    <>
       <label className="settings-field settings-field-narrow">
         <span>Work hours</span>
         <input
@@ -43,32 +43,44 @@ export function RoutingFields({
           autoComplete="off"
           onChange={(e) => onWorkHoursChange(e.target.value)}
         />
+        <small>Browser tabs outside these hours are ignored.</small>
       </label>
-      <label className="settings-field settings-field-narrow">
-        <span>Abstain margin</span>
-        <input
-          type="number"
-          min={1}
-          max={5}
-          step={0.01}
-          value={abstainMargin}
-          autoComplete="off"
-          onChange={(e) => onAbstainMarginChange(e.target.value)}
-        />
-      </label>
-      <label className="settings-field settings-field-narrow">
-        <span>Runner-up ratio</span>
-        <input
-          type="number"
-          min={1}
-          max={5}
-          step={0.01}
-          value={runnerUpRatio}
-          autoComplete="off"
-          onChange={(e) => onRunnerUpRatioChange(e.target.value)}
-        />
-      </label>
-    </div>
+      <details className="set-advanced">
+        <summary>Advanced: how sure the model must be</summary>
+        <p className="settings-hint">
+          Higher numbers mean fewer guesses and more items left in Unsorted. Both go from
+          1 to 5.
+        </p>
+        <div className="settings-grid-2">
+          <label className="settings-field settings-field-narrow">
+            <span>Lead over &ldquo;not sure&rdquo; (abstain margin)</span>
+            <input
+              type="number"
+              min={1}
+              max={5}
+              step={0.01}
+              value={abstainMargin}
+              autoComplete="off"
+              onChange={(e) => onAbstainMarginChange(e.target.value)}
+            />
+            <small>1.2 means the best project must be 20% more likely than &ldquo;not sure&rdquo;.</small>
+          </label>
+          <label className="settings-field settings-field-narrow">
+            <span>Lead over second best (runner-up ratio)</span>
+            <input
+              type="number"
+              min={1}
+              max={5}
+              step={0.01}
+              value={runnerUpRatio}
+              autoComplete="off"
+              onChange={(e) => onRunnerUpRatioChange(e.target.value)}
+            />
+            <small>1.1 means it must be 10% more likely than the next project.</small>
+          </label>
+        </div>
+      </details>
+    </>
   );
 }
 
@@ -77,11 +89,12 @@ function formatStatusTime(iso: string | null): string {
 }
 
 function StatusList({ status }: { status: RoutingStatus | null }) {
+  const up = status?.classifier_reachable;
   return (
-    <ul className="settings-hint">
-      <li>Last heartbeat: {formatStatusTime(status?.last_heartbeat ?? null)}</li>
-      <li>Last Slack collect: {formatStatusTime(status?.last_slack ?? null)}</li>
-      <li>Model helper: {status?.classifier_reachable ? "reachable" : "unreachable"}</li>
+    <ul className="set-status">
+      <li data-ok={!!status?.last_heartbeat}>Last heartbeat: {formatStatusTime(status?.last_heartbeat ?? null)}</li>
+      <li data-ok={!!status?.last_slack}>Last Slack collect: {formatStatusTime(status?.last_slack ?? null)}</li>
+      <li data-ok={!!up}>Model helper: {up ? "reachable" : "unreachable"}</li>
     </ul>
   );
 }
@@ -97,9 +110,10 @@ function RuleRow({
 }) {
   return (
     <li>
-      <span>
-        {rule.kind}: {rule.pattern} → {rule.folder}
-      </span>{" "}
+      <span className="set-rule-kind">{rule.kind}</span>
+      <code>{rule.pattern}</code>
+      <span aria-hidden="true">→</span>
+      <span className="set-rule-folder">{rule.folder === "__ignore__" ? "Ignored" : rule.folder}</span>
       <button
         type="button"
         className="icon-btn"
@@ -146,14 +160,17 @@ export function RoutingStatusAndRules({ day }: { day: string }) {
 
   return (
     <>
-      <h4>Source status</h4>
+      <h3>Is it working?</h3>
       <StatusList status={status} />
 
-      <h4>Hard rules</h4>
+      <h3>Your rules</h3>
       {rules.length === 0 ? (
-        <p className="settings-hint">No rules yet.</p>
+        <p className="settings-hint">
+          No rules yet. Pick a project for an item in a day&rsquo;s Unsorted list and tick
+          &ldquo;always&rdquo; to add one.
+        </p>
       ) : (
-        <ul className="settings-hint">
+        <ul className="set-rules">
           {rules.map((r) => (
             <RuleRow key={r.id} rule={r} busy={busyId === r.id} onDelete={onDelete} />
           ))}
