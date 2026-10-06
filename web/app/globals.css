@@ -6084,3 +6084,16 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
 .ticket-line-error { font-size: 12px; line-height: 1.4; color: var(--terracotta-ink); overflow-wrap: anywhere; }
 .ticket-line-error button { padding: 0; border: 0; background: none; color: inherit; font: inherit; text-decoration: underline; cursor: pointer; }
 .ticket-line-error button:focus-visible { outline: none; box-shadow: var(--ring); border-radius: 2px; }
+
+.day-billable { display: flex; align-items: baseline; gap: 6px; font-family: var(--font-mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+.day-billable-value.ok { color: var(--sage-ink); }
+.day-billable-value.low { color: var(--amber-ink); }
+.day-billable-goal { color: var(--fg-muted); }
+.mirres-refresh { display: flex; align-items: baseline; gap: 8px; }
+.mirres-refresh-btn { padding: 0; border: 0; background: none; font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); cursor: pointer; }
+.mirres-refresh-btn:hover:not(:disabled) { color: var(--fg); }
+.mirres-refresh-error { font-size: 12px; color: var(--amber-ink); }
+.billing-pill { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 11px; }
+.billing-pill-tag { padding: 0 6px; border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--fg-muted); }
+.billing-pill-tag.billable, .billing-pill-tag.included { color: var(--sage-ink); }
+.billing-pill-warning { color: var(--amber-ink); }

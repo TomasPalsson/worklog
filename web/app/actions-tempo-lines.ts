@@ -5,6 +5,7 @@
 
 import { revalidatePath } from "next/cache";
 import {
+  refreshMirres,
   regenerateTempoLine,
   setTempoLineHours,
   setTempoLineText,
@@ -47,4 +48,8 @@ export async function regenerateTempoLineText(
   key: TempoLineKey,
 ): Promise<ActionResult<TempoLine>> {
   return run(() => regenerateTempoLine(key), key.day);
+}
+
+export async function refreshMirresAction(day: string): Promise<ActionResult<TempoLine[]>> {
+  return run(() => refreshMirres(day), day);
 }

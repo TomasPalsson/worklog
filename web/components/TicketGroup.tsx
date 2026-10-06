@@ -11,10 +11,24 @@ import {
   saveTempoLineHours,
   saveTempoLineText,
 } from "@/app/actions-tempo-lines";
-import type { TempoLine } from "@/lib/tempo_line_contract";
+import type { LineBilling, TempoLine } from "@/lib/tempo_line_contract";
 import { toast } from "@/lib/toast";
 import { OriginIcon, originLabel } from "./BillingGroup";
 import { LineHours } from "./LineHours";
+
+const BILLING_LABEL = { billable: "Billable", included: "Included", not_billable: "Not billable" };
+
+function BillingPill({ billing }: { billing: LineBilling }) {
+  const title = [billing.project, billing.project_type].filter(Boolean).join(" · ");
+  return (
+    <span className="billing-pill">
+      <span className={`billing-pill-tag ${billing.class}`} title={title || undefined}>
+        {BILLING_LABEL[billing.class]}
+      </span>
+      {billing.warning && <span className="billing-pill-warning">{billing.warning}</span>}
+    </span>
+  );
+}
 
 interface Props {
   group: BlockGroup;
@@ -287,6 +301,7 @@ export function TicketGroup({
               </span>
             </span>
             <LineHours label={group.label} line={line} lineKey={lineKey} saveHours={saveHours} />
+            {line.billing && <BillingPill billing={line.billing} />}
           </>
         ) : (
           <>

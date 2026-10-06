@@ -26,6 +26,35 @@ export interface TempoLine {
   union_seconds: number;
   hours_override_seconds: number | null;
   effective_seconds: number;
+  billing: LineBilling | null;
+}
+
+/** Mirrors `tempo_line_contract::BillingClass`. */
+export type BillingClass = "billable" | "included" | "not_billable";
+
+/** Mirrors `tempo_line_contract::LineBilling` (Mirres facts for one line). */
+export interface LineBilling {
+  account_key: string;
+  project: string | null;
+  project_type: string | null;
+  class: BillingClass;
+  warning: string | null;
+}
+
+/**
+ * Share of the day's line hours that count as billed (billable or included),
+ * 0-100. `null` when no line has Mirres data or there are no hours.
+ */
+export function billablePercent(lines: TempoLine[]): number | null {
+  if (!lines.some((l) => l.billing)) return null;
+  const total = lines.reduce((a, l) => a + l.effective_seconds, 0);
+  if (total <= 0) return null;
+  const billed = lines.reduce(
+    (a, l) =>
+      l.billing && l.billing.class !== "not_billable" ? a + l.effective_seconds : a,
+    0,
+  );
+  return Math.round((100 * billed) / total);
 }
 
 /** True when the UI shows the "auto" tag: a ticket the Owner didn't set. */

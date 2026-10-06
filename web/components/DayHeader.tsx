@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { formatTotalHours, shiftDay, todayISO } from "@/lib/format";
 import { DateJumper } from "./DateJumper";
+import { MirresRefresh } from "./MirresRefresh";
 
 interface Props {
   day: string;
@@ -16,6 +17,8 @@ interface Props {
   billedSeconds?: number;
   /** Work-only tracked time, to show how far rounding moved the bill. */
   trackedSeconds?: number;
+  /** Share of line hours billable per Mirres; null when unknown. */
+  billablePercent?: number | null;
 }
 
 export function DayHeader({
@@ -27,6 +30,7 @@ export function DayHeader({
   personalSummary,
   billedSeconds,
   trackedSeconds = 0,
+  billablePercent = null,
 }: Props) {
   const today = todayISO();
   const prev = shiftDay(day, -1);
@@ -62,6 +66,15 @@ export function DayHeader({
             <span className="day-billed-value">{formatTotalHours(billedSeconds)}</span>
             <span className="day-billed-unit">billed</span>
           </div>
+          {billablePercent != null && (
+            <div className="day-billable" aria-label="billable share">
+              <span className={`day-billable-value ${billablePercent >= 70 ? "ok" : "low"}`}>
+                Billable {billablePercent}%
+              </span>
+              <span className="day-billable-goal">goal 70%</span>
+            </div>
+          )}
+          <MirresRefresh day={day} />
           {Math.abs(billedDelta) >= 60 && (
             <div className={`day-billed-delta${billedDelta > 0 ? " up" : ""}`}>
               {billedDelta > 0 ? "+" : "−"}

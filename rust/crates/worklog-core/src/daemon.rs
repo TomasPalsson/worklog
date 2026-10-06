@@ -37,7 +37,8 @@
 //! * `GET  /tickets/:key/blocks`         — the ticket's blocks + Tempo line per day, last 14 days
 //! * `POST /tickets/:key/log`            — { day, start: "HH:MM", minutes, description } log time as a manual block
 //! * `GET  /projects`                  — list Jira projects (create picker)
-//! * `GET  /accounts`                    — list Tempo accounts (create picker)
+//! * `POST /mirres/refresh/:day`         — no body, pulls Mirres billable status for the day's ticket lines, returns the day's lines
+//! * `GET  /accounts`                  — list Tempo accounts (create picker)
 //! * `POST /estimate`                    — { "day": "YYYY-MM-DD", "model": "?" }
 //! * `POST /sync`                        — { "day": "YYYY-MM-DD", "dry_run": true, "jira_issue"?: "KEY-1" (only that ticket's line) }
 //! * `GET  /export/:day`                 — billing rows + rendered text/csv/json for a day
@@ -204,6 +205,10 @@ pub fn router(state: Shared) -> Router {
         )
         .route("/billing/lines/status", get(daemon_line_text::status))
         .route("/tempo/lines/:day", get(daemon_tempo_lines::list_lines))
+        .route(
+            "/mirres/refresh/:day",
+            post(daemon_tempo_lines::refresh_mirres),
+        )
         .route("/tempo/lines/text", post(daemon_tempo_lines::set_text))
         .route("/tempo/lines/hours", post(daemon_tempo_lines::set_hours))
         .route(
@@ -2025,6 +2030,7 @@ fn is_sensitive_secret(key: &str) -> bool {
             | "anthropic_api_key"
             | "litellm_api_key"
             | "slack_user_token"
+            | "mirres_client_secret"
     )
 }
 
