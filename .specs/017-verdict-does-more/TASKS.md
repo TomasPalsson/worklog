@@ -1,3 +1,5 @@
+Approved: 2026-10-06 by user
+Base: 6eb7a92
 # Tasks — Verdict does more
 Spec: spec.md · Design: design.md · Base: 6eb7a92 · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && (cd web && bun test)`
 
@@ -17,7 +19,7 @@ Spec: spec.md · Design: design.md · Base: 6eb7a92 · Route: dispatch · Test: 
 ## Phase 1 — The decision log and Verdict's new answer
 Goal: every Verdict answer carries its top 3 and the order check, and a permanent log exists.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core verdict` — green with routing untouched.
-- [ ] T001 Decision log table, new columns and log functions — files: rust/crates/worklog-core/sql/schema.sql, rust/crates/worklog-core/src/db.rs, rust/crates/worklog-core/src/verdict_decisions.rs, rust/crates/worklog-core/src/verdict_decisions_test.rs, rust/crates/worklog-core/src/lib.rs, rust/crates/worklog-core/src/purge.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core verdict_decisions`
+- [ ] T001 [P] Decision log table, new columns and log functions — files: rust/crates/worklog-core/sql/schema.sql, rust/crates/worklog-core/src/db.rs, rust/crates/worklog-core/src/verdict_decisions.rs, rust/crates/worklog-core/src/verdict_decisions_test.rs, rust/crates/worklog-core/src/lib.rs, rust/crates/worklog-core/src/purge.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core verdict_decisions`
 - [ ] T002 [P] Verdict server: top-3 ranking, order check, examples in option text, delete group split/merge — files: rust/crates/worklog-core/templates/verdict_server.py — verify: `python3 rust/crates/worklog-core/templates/verdict_server.py --self-test`
 - [ ] T003 [P] Verdict client returns Ranking; filing rule needs the order check; text-match client — files: rust/crates/worklog-core/src/verdict.rs, rust/crates/worklog-core/src/routing_contract.rs, rust/crates/worklog-core/src/routing.rs, rust/crates/worklog-core/src/routing_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core verdict routing`
 
@@ -37,8 +39,8 @@ Independent test: `cd web && bun test && bun run typecheck` — green.
 - [ ] T010 Settings: Verdict switch with state and scorecard line; auto-send switch — files: web/components/VerdictControl.tsx, web/components/VerdictControl.test.tsx, web/components/SettingsPanel.tsx, web/lib/settingsForm.ts, web/lib/daemon.ts, web/app/actions.ts — verify: `cd web && bun test components/VerdictControl.test.tsx && bun run typecheck` — after: T004, T009
 - [ ] T011 Day page: Verdict-off line, one-tap project buttons, needs-a-look flag — files: web/components/VerdictBanner.tsx, web/components/VerdictBanner.test.tsx, web/components/UnsortedList.tsx, web/components/UnsortedList.test.tsx, web/components/TicketGroup.tsx, web/lib/types.ts, web/lib/daemon.ts, web/app/[day]/page.tsx — verify: `cd web && bun test components/VerdictBanner.test.tsx components/UnsortedList.test.tsx && bun run typecheck` — after: T005, T007, T010
 - [ ] T012 Review section on today's page: confirm, confirm day, edit, send again — files: web/components/ReviewSection.tsx, web/components/ReviewSection.test.tsx, web/lib/daemon.ts, web/app/actions.ts, web/app/[day]/page.tsx — verify: `cd web && bun test components/ReviewSection.test.tsx && bun run typecheck && bun run build` — after: T009, T011
-- [ ] CHK001 human-verify Verdict control — files: web/components/VerdictControl.tsx — verify: human: Owner switches Verdict on in Settings and sees "running", kills the helper and sees it come back, switches it off and sees the grey line on the day page
-- [ ] CHK002 human-verify the Review section on a real day — files: web/components/ReviewSection.tsx — verify: human: Owner sees yesterday's auto-sent lines, confirms one, edits the hours of another, and Tempo shows the same worklog with the new hours
+- [ ] CHK001 human-verify Verdict control — files: web/components/VerdictControl.tsx — verify: human: Owner switches Verdict on in Settings and sees "running", kills the helper and sees it come back, switches it off and sees the grey line on the day page — after: T010, T011
+- [ ] CHK002 human-verify the Review section on a real day — files: web/components/ReviewSection.tsx — verify: human: Owner sees yesterday's auto-sent lines, confirms one, edits the hours of another, and Tempo shows the same worklog with the new hours — after: T012
 
 ## Gates
 - [ ] G001 project gates clean — files: . — verify: `flow check --fix --since 6eb7a92`
