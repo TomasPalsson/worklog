@@ -10,9 +10,11 @@ use chrono::{DateTime, Duration, Utc};
 use rusqlite::{params, Connection};
 
 use crate::change_log;
+use crate::daily_helpers_contract::BlockChange;
 use crate::deild_contract::ChangeSource;
 use crate::models::Block;
 use crate::repo;
+use crate::undo;
 
 /// `dirty = CASE WHEN tempo_worklog_id IS ... THEN 1 ELSE dirty END` — set
 /// the dirty flag only when the block has already been synced. Unsynced
@@ -29,8 +31,10 @@ pub fn assign_ticket(conn: &Connection, block_id: i64, key: Option<&str>) -> Res
     // Clearing the ticket leaves is_personal alone; the user might still
     // want the personal flag managed by the path classifier on the next
     // `worklog tag reclassify`.
+    let tx = conn.unchecked_transaction()?;
+    undo::record(&tx, BlockChange::Ticket, &[block_id])?;
     if key.is_some() {
-        conn.execute(
+        tx.execute(
             &format!(
                 "UPDATE blocks
                     SET jira_issue = ?1, ticket_origin = 'manual', is_personal = 0, dirty = {MARK_DIRTY_IF_SYNCED}
@@ -40,7 +44,7 @@ pub fn assign_ticket(conn: &Connection, block_id: i64, key: Option<&str>) -> Res
         )
         .context("assign_ticket")?;
     } else {
-        conn.execute(
+        tx.execute(
             &format!(
                 "UPDATE blocks
                     SET jira_issue = NULL, ticket_origin = 'manual', dirty = {MARK_DIRTY_IF_SYNCED}
@@ -50,6 +54,7 @@ pub fn assign_ticket(conn: &Connection, block_id: i64, key: Option<&str>) -> Res
         )
         .context("assign_ticket")?;
     }
+    tx.commit().context("assign_ticket: commit")?;
     let block = repo::get_block(conn, block_id)?
         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
     change_log::refresh_day_logged(conn, &block.day, ChangeSource::User);
@@ -70,7 +75,9 @@ pub fn set_duration(conn: &Connection, block_id: i64, minutes: u32) -> Result<Bl
     let new_end = derive_ended_at(&started_at, minutes as i64 * 60)?;
 
     // Mark as manual so re-estimation doesn't clobber it.
-    conn.execute(
+    let tx = conn.unchecked_transaction()?;
+    undo::record(&tx, BlockChange::Hours, &[block_id])?;
+    tx.execute(
         &format!(
             "UPDATE blocks
                 SET duration_seconds = ?1,
@@ -82,6 +89,7 @@ pub fn set_duration(conn: &Connection, block_id: i64, minutes: u32) -> Result<Bl
         params![minutes as i64 * 60, new_end, block_id],
     )
     .context("set_duration")?;
+    tx.commit().context("set_duration: commit")?;
     let block = repo::get_block(conn, block_id)?
         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
     change_log::refresh_day_logged(conn, &block.day, ChangeSource::User);
@@ -102,7 +110,9 @@ fn derive_ended_at(started_at: &str, duration_seconds: i64) -> Result<String> {
 }
 
 pub fn set_description(conn: &Connection, block_id: i64, description: &str) -> Result<Block> {
-    conn.execute(
+    let tx = conn.unchecked_transaction()?;
+    undo::record(&tx, BlockChange::Text, &[block_id])?;
+    tx.execute(
         &format!(
             "UPDATE blocks
                 SET description = ?1,
@@ -113,6 +123,7 @@ pub fn set_description(conn: &Connection, block_id: i64, description: &str) -> R
         params![description, block_id],
     )
     .context("set_description")?;
+    tx.commit().context("set_description: commit")?;
     let block = repo::get_block(conn, block_id)?
         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
     change_log::refresh_day_logged(conn, &block.day, ChangeSource::User);
@@ -128,11 +139,14 @@ pub fn set_description(conn: &Connection, block_id: i64, description: &str) -> R
 /// dimmed in the UI, skipped by the estimator, and excluded from Tempo
 /// sync. Only the flag changes — the ticket, if any, is left untouched.
 pub fn set_personal(conn: &Connection, block_id: i64, is_personal: bool) -> Result<Block> {
-    conn.execute(
+    let tx = conn.unchecked_transaction()?;
+    undo::record(&tx, BlockChange::Personal, &[block_id])?;
+    tx.execute(
         "UPDATE blocks SET is_personal = ?1 WHERE id = ?2",
         params![is_personal as i64, block_id],
     )
     .context("set_personal")?;
+    tx.commit().context("set_personal: commit")?;
     let block = repo::get_block(conn, block_id)?
         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
     change_log::refresh_day_logged(conn, &block.day, ChangeSource::User);
@@ -148,6 +162,8 @@ pub fn set_personal(conn: &Connection, block_id: i64, is_personal: bool) -> Resu
 pub fn set_ignored(conn: &Connection, block_id: i64, ignored: bool) -> Result<Block> {
     let block = repo::get_block(conn, block_id)?
         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
+    let tx = conn.unchecked_transaction()?;
+    undo::record(&tx, BlockChange::Ignored, &[block_id])?;
     if ignored {
         let set = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.is_empty());
         if set(&block.tempo_worklog_id) {
@@ -156,7 +172,7 @@ pub fn set_ignored(conn: &Connection, block_id: i64, ignored: bool) -> Result<Bl
         if set(&block.exported_at) {
             anyhow::bail!("already exported for billing");
         }
-        conn.execute(
+        tx.execute(
             "UPDATE blocks SET ignored_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
                     is_personal = 1 WHERE id = ?1",
             params![block_id],
@@ -164,12 +180,13 @@ pub fn set_ignored(conn: &Connection, block_id: i64, ignored: bool) -> Result<Bl
     } else {
         // ponytail: restore assumes the block was work before; store prior
         // is_personal if that ever matters.
-        conn.execute(
+        tx.execute(
             "UPDATE blocks SET ignored_at = NULL, is_personal = 0 WHERE id = ?1",
             params![block_id],
         )
     }
     .context("set_ignored")?;
+    tx.commit().context("set_ignored: commit")?;
     let block = repo::get_block(conn, block_id)?
         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
     change_log::refresh_day_logged(conn, &block.day, ChangeSource::User);
@@ -202,12 +219,15 @@ pub fn mark_exported(conn: &Connection, day: &str) -> Result<usize> {
 }
 
 pub fn delete_block(conn: &Connection, block_id: i64) -> Result<()> {
-    let n = conn
+    let tx = conn.unchecked_transaction()?;
+    undo::record(&tx, BlockChange::Delete, &[block_id])?;
+    let n = tx
         .execute("DELETE FROM blocks WHERE id = ?1", params![block_id])
         .context("delete_block")?;
     if n == 0 {
         anyhow::bail!("block {block_id} not found");
     }
+    tx.commit().context("delete_block: commit")?;
     Ok(())
 }
 
@@ -300,6 +320,10 @@ pub fn merge_blocks(
     let ended_at = derive_ended_at(&started_at, total_seconds)?;
 
     let tx = conn.unchecked_transaction()?;
+    let touched: Vec<i64> = std::iter::once(primary_id)
+        .chain(others.iter().map(|b| b.id))
+        .collect();
+    undo::record(&tx, BlockChange::Merge, &touched)?;
     for o in &others {
         // Re-point this block's events at the primary. `OR IGNORE` drops
         // the row when the event is already linked to the primary
@@ -371,6 +395,7 @@ pub fn split_block(conn: &Connection, block_id: i64, first_minutes: u32) -> Resu
     let second_secs = block.duration_seconds - first_secs;
 
     let tx = conn.unchecked_transaction()?;
+    undo::record(&tx, BlockChange::Split, &[block_id])?;
     // The original block keeps its id; shrink it to the first slice.
     tx.execute(
         &format!(

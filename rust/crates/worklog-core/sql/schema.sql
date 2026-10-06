@@ -449,3 +449,13 @@ CREATE TABLE IF NOT EXISTS tempo_day_dismissals (
     reason TEXT NOT NULL,
     dismissed_at TEXT NOT NULL
 );
+
+-- Before-images of the Owner's last block changes (undo). Written by
+-- undo::record inside each block_service transaction; trimmed to the
+-- newest UNDO_DEPTH rows.
+CREATE TABLE IF NOT EXISTS block_undo (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    change TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
