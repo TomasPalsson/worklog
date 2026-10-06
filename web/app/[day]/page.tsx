@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import {
   DaemonError,
+  fetchReviewLines,
   listTickets,
   loadBillingRegistry,
   loadDaySummary,
@@ -10,11 +11,12 @@ import {
 import { elsewhereForDay, type ElsewhereItem } from "@/lib/daemonElsewhere";
 import { tempoLines } from "@/lib/daemonTempoLines";
 import type { TempoLine } from "@/lib/tempo_line_contract";
-import { formatDayHeading, formatTotalHours, roundToHalfHour } from "@/lib/format";
+import { formatDayHeading, formatTotalHours, roundToHalfHour, todayISO } from "@/lib/format";
 import { DayHeader } from "@/components/DayHeader";
 import { ActionBar } from "@/components/ActionBar";
 import { BlockCard } from "@/components/BlockCard";
 import { DayStrip } from "@/components/DayStrip";
+import { ReviewSection } from "@/components/ReviewSection";
 import { ElsewhereList } from "@/components/ElsewhereList";
 import { EmptyState } from "@/components/EmptyState";
 import { TicketGroup } from "@/components/TicketGroup";
@@ -91,6 +93,8 @@ export default async function DayPage({
     lines = [];
   }
   const verdict = await verdictStatus(day).catch(() => null);
+  const reviewLines =
+    day === todayISO() ? await fetchReviewLines().catch(() => []) : [];
   const folderOptions = registry
     ? Array.from(
         new Set([
@@ -148,6 +152,7 @@ export default async function DayPage({
         trackedSeconds={workSeconds}
       />
       <ActionBar day={day} cacheCount={cache.count} cacheLast={cache.last_fetched} />
+      <ReviewSection key={`review-${day}`} lines={reviewLines} />
       <DayStrip
         day={day}
         blocks={blocks}

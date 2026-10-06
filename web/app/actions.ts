@@ -43,6 +43,7 @@ import {
   routingStatus as daemonRoutingStatus,
   verdictStatus as daemonVerdictStatus,
   setVerdictEnabled as daemonSetVerdictEnabled,
+  confirmReview as daemonConfirmReview,
   retryVerdict as daemonRetryVerdict,
 } from "@/lib/daemon";
 import type { VerdictState, VerdictStatus } from "@/lib/verdict_contract";
@@ -393,6 +394,13 @@ export async function setVerdictEnabled(on: boolean): Promise<ActionResult<Verdi
 
 export async function retryVerdict(): Promise<ActionResult<VerdictState>> {
   return runAction(() => daemonRetryVerdict());
+}
+
+export async function confirmReview(
+  day: string,
+  jiraIssue?: string,
+): Promise<ActionResult<{ confirmed: number }>> {
+  return runAction(() => daemonConfirmReview(day, jiraIssue));
 }
 
 // ───────────────────── group merge + describe (#23) ─────────────────────
