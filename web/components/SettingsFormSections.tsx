@@ -1,39 +1,88 @@
 "use client";
 
-// The settings-dialog body: classification, timezone, pruner and routing
-// sections, plus the grouped credential fields. Split out of
-// SettingsPanel.tsx to keep that component under the size gate — every
-// piece here is a plain controlled view over the form state the parent
-// owns.
+// The /settings page body: one card per topic, plus the section index
+// beside it. Every piece is a plain controlled view over the form state
+// SettingsPanel owns.
 
+import type { ReactNode } from "react";
 import type { SettingsView } from "@/lib/types";
 import type { SettingsFormState } from "@/lib/settingsForm";
-import { CredentialGroups } from "./CredentialFields";
+import { CredentialGroups, connectedCount } from "./CredentialFields";
 import { RoutingFields, RoutingStatusAndRules } from "./RoutingSettings";
+import { VerdictControl } from "./VerdictControl";
 
-function ClassificationSection({
-  form,
-  patch,
-  configPath,
+type Patch = (p: Partial<SettingsFormState>) => void;
+
+const SECTIONS = [
+  ["verdict", "Verdict"],
+  ["folders", "Work or personal"],
+  ["time", "Time zone"],
+  ["cleanup", "Old data cleanup"],
+  ["sorting", "Browser & Slack"],
+  ["connections", "Connections"],
+] as const;
+
+export function SettingsIndex({ view }: { view: SettingsView }) {
+  const { done, total } = connectedCount(view.secrets);
+  return (
+    <nav className="set-index" aria-label="Settings sections">
+      <ol>
+        {SECTIONS.map(([id, label]) => (
+          <li key={id}>
+            <a href={`#${id}`}>
+              {label}
+              {id === "connections" && total > 0 && (
+                <span className="set-index-count">
+                  {done} of {total}
+                </span>
+              )}
+            </a>
+          </li>
+        ))}
+      </ol>
+    </nav>
+  );
+}
+
+function Card({
+  id,
+  title,
+  lede,
+  children,
 }: {
-  form: SettingsFormState;
-  patch: (p: Partial<SettingsFormState>) => void;
-  configPath: string | null;
+  id: string;
+  title: string;
+  lede?: ReactNode;
+  children: ReactNode;
 }) {
   return (
-    <section className="settings-section">
-      <h3>Classification</h3>
-      <p className="settings-hint">
-        One path glob per line. <code>~</code> expands to home; suffix{" "}
-        <code>{"/**"}</code> matches any depth. Work patterns win over
-        personal; anything unmatched defaults to{" "}
-        <code>{"~/Desktop/Work/**"}</code> = work, else personal.
-      </p>
+    <section id={id} className="set-card" aria-labelledby={`${id}-title`}>
+      <h2 id={`${id}-title`}>{title}</h2>
+      {lede && <p className="settings-hint">{lede}</p>}
+      {children}
+    </section>
+  );
+}
+
+function FoldersCard({ form, patch, configPath }: { form: SettingsFormState; patch: Patch; configPath: string | null }) {
+  return (
+    <Card
+      id="folders"
+      title="Work or personal"
+      lede={
+        <>
+          Which folders count as work. One folder pattern per line; <code>~</code> is your
+          home folder and <code>{"/**"}</code> means &ldquo;and everything inside&rdquo;. If
+          a folder matches both lists, work wins. Anything not listed counts as work
+          when it is under <code>{"~/Desktop/Work"}</code>, otherwise personal.
+        </>
+      }
+    >
       <div className="settings-grid-2">
         <label className="settings-field">
-          <span>Work paths</span>
+          <span>Work folders</span>
           <textarea
-            rows={4}
+            rows={5}
             value={form.work}
             spellCheck={false}
             placeholder="~/Desktop/Work/**"
@@ -41,9 +90,9 @@ function ClassificationSection({
           />
         </label>
         <label className="settings-field">
-          <span>Personal paths</span>
+          <span>Personal folders</span>
           <textarea
-            rows={4}
+            rows={5}
             value={form.personal}
             spellCheck={false}
             placeholder="~/Desktop/Projects/**"
@@ -51,65 +100,57 @@ function ClassificationSection({
           />
         </label>
       </div>
-      {configPath && <p className="settings-path">{configPath}</p>}
-    </section>
+      {configPath && <p className="settings-path">Stored in {configPath}</p>}
+    </Card>
   );
 }
 
-function TimezoneSection({
-  form,
-  patch,
-}: {
-  form: SettingsFormState;
-  patch: (p: Partial<SettingsFormState>) => void;
-}) {
+function TimeCard({ form, patch }: { form: SettingsFormState; patch: Patch }) {
   return (
-    <section className="settings-section">
-      <h3>Timezone</h3>
-      <p className="settings-hint">
-        Fixed offset for day bucketing — e.g. <code>+01:00</code>,{" "}
-        <code>-05:00</code>, or <code>UTC</code>. Named zones aren&rsquo;t
-        supported.
-      </p>
+    <Card
+      id="time"
+      title="Time zone"
+      lede={
+        <>
+          Decides where one day ends and the next begins. Use an offset from UTC, like{" "}
+          <code>+01:00</code> or <code>-05:00</code>, or just <code>UTC</code>. City names
+          don&rsquo;t work, so change it by hand when summer time starts or ends.
+        </>
+      }
+    >
       <label className="settings-field settings-field-narrow">
-        <span>WORKLOG_TZ</span>
+        <span>Offset from UTC</span>
         <input
           type="text"
           value={form.tz}
           placeholder="UTC"
           autoComplete="off"
+          spellCheck={false}
+          pattern="UTC|[+\-]\d{2}:\d{2}"
           onChange={(e) => patch({ tz: e.target.value })}
         />
+        <small className="set-invalid">Use UTC or an offset like +01:00.</small>
       </label>
-    </section>
+    </Card>
   );
 }
 
-function PrunerSection({
-  form,
-  patch,
-}: {
-  form: SettingsFormState;
-  patch: (p: Partial<SettingsFormState>) => void;
-}) {
+function CleanupCard({ form, patch }: { form: SettingsFormState; patch: Patch }) {
   return (
-    <section className="settings-section">
-      <h3>Billing cycle pruner</h3>
-      <p className="settings-hint">
-        Automatically deletes work data once its billing cycle has closed.
-        Cycles run from the start day through the day before the next
-        month&rsquo;s start day; the close day is the last day hours can
-        still be added to the cycle that just ended.
-      </p>
-      <label className="settings-field">
-        <span>Enable automatic pruning</span>
+    <Card
+      id="cleanup"
+      title="Old data cleanup"
+      lede="Deletes work data on its own once a billing month has closed. A billing month runs from the start day to the day before the next month's start day. The close day is the last day you can still add hours to the month that just ended."
+    >
+      <label className="settings-field set-check">
         <input
           type="checkbox"
           checked={form.pruneEnabled}
           onChange={(e) => patch({ pruneEnabled: e.target.checked })}
         />
+        <span>Enable automatic pruning</span>
       </label>
-      <div className="settings-grid-2">
+      <div className="settings-grid-2" data-off={!form.pruneEnabled || undefined}>
         <label className="settings-field settings-field-narrow">
           <span>Cycle start day</span>
           <input
@@ -121,6 +162,7 @@ function PrunerSection({
             autoComplete="off"
             onChange={(e) => patch({ cycleStartDay: e.target.value })}
           />
+          <small>Day of the month, 1–31</small>
         </label>
         <label className="settings-field settings-field-narrow">
           <span>Close day</span>
@@ -133,57 +175,39 @@ function PrunerSection({
             autoComplete="off"
             onChange={(e) => patch({ closeDay: e.target.value })}
           />
+          <small>Day of the month, 1–31</small>
         </label>
       </div>
-    </section>
+    </Card>
   );
 }
 
-function DailySection({
-  form,
-  patch,
-}: {
-  form: SettingsFormState;
-  patch: (p: Partial<SettingsFormState>) => void;
-}) {
+function DailyChannelField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
-    <section className="settings-section">
-      <h3>Daily standup</h3>
-      <p className="settings-hint">
-        Slack channel whose &ldquo;Daily:thread&rdquo; message the standup is
-        posted under. Leave empty to copy the standup instead of posting it.
-      </p>
-      <label className="settings-field settings-field-narrow">
-        <span>Daily channel</span>
-        <input
-          type="text"
-          value={form.dailyChannel}
-          placeholder="daily"
-          autoComplete="off"
-          onChange={(e) => patch({ dailyChannel: e.target.value })}
-        />
-      </label>
-    </section>
+    <label className="settings-field settings-field-narrow">
+      <span>Daily standup channel</span>
+      <input
+        type="text"
+        value={value}
+        placeholder="daily"
+        autoComplete="off"
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <small>
+        Slack channel whose &ldquo;Daily:thread&rdquo; message the standup replies under. Empty: Post is off and
+        you copy the standup instead.
+      </small>
+    </label>
   );
 }
 
-function RoutingSection({
-  form,
-  patch,
-  day,
-}: {
-  form: SettingsFormState;
-  patch: (p: Partial<SettingsFormState>) => void;
-  day: string;
-}) {
+function SortingCard({ form, patch, day }: { form: SettingsFormState; patch: Patch; day: string }) {
   return (
-    <section className="settings-section">
-      <h3>Browser + Slack routing</h3>
-      <p className="settings-hint">
-        Heartbeats and Slack messages are labelled by the first match of a
-        hard rule, then a model guess at or above the threshold, else left
-        unsorted for the day&rsquo;s Unsorted list.
-      </p>
+    <Card
+      id="sorting"
+      title="Browser & Slack"
+      lede="Browser tabs and Slack messages go to a project by your own rules first, then by a model guess when it is sure enough. Anything else waits in the day's Unsorted list."
+    >
       <RoutingFields
         workHours={form.workHours}
         onWorkHoursChange={(v) => patch({ workHours: v })}
@@ -193,7 +217,8 @@ function RoutingSection({
         onRunnerUpRatioChange={(v) => patch({ runnerUpRatio: v })}
       />
       <RoutingStatusAndRules day={day} />
-    </section>
+      <DailyChannelField value={form.dailyChannel ?? ""} onChange={(v) => patch({ dailyChannel: v })} />
+    </Card>
   );
 }
 
@@ -208,25 +233,19 @@ export function SettingsBody({
   setForm: (updater: (f: SettingsFormState) => SettingsFormState) => void;
   day: string;
 }) {
-  const patch = (p: Partial<SettingsFormState>) => setForm((f) => ({ ...f, ...p }));
+  const patch: Patch = (p) => setForm((f) => ({ ...f, ...p }));
 
   return (
-    <div className="settings-body">
-      <ClassificationSection
-        form={form}
-        patch={patch}
-        configPath={view.personal_config_path}
-      />
-      <TimezoneSection form={form} patch={patch} />
-      <PrunerSection form={form} patch={patch} />
-      <RoutingSection form={form} patch={patch} day={day} />
-      <DailySection form={form} patch={patch} />
+    <div className="set-cards">
+      <VerdictControl day={day} autoSend={form.autoSend} onAutoSend={(autoSend) => patch({ autoSend })} />
+      <FoldersCard form={form} patch={patch} configPath={view.personal_config_path} />
+      <TimeCard form={form} patch={patch} />
+      <CleanupCard form={form} patch={patch} />
+      <SortingCard form={form} patch={patch} day={day} />
       <CredentialGroups
         secrets={view.secrets}
         values={form.secretInputs}
-        onChange={(key, value) =>
-          patch({ secretInputs: { ...form.secretInputs, [key]: value } })
-        }
+        onChange={(key, value) => patch({ secretInputs: { ...form.secretInputs, [key]: value } })}
       />
     </div>
   );

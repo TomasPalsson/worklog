@@ -76,8 +76,7 @@ afterEach(() => {
 
 async function openPanel() {
   render(<SettingsPanel day="2026-07-25" />);
-  fireEvent.click(screen.getByRole("button", { name: /open settings/i }));
-  // The panel loads settings asynchronously on open — wait for a field
+  // The page loads settings asynchronously on mount — wait for a field
   // that only exists once `view` is hydrated.
   await screen.findByLabelText(/cycle start day/i);
 }
@@ -211,6 +210,18 @@ describe("SettingsPanel browser/Slack routing controls (T012)", () => {
     // Exact text, not /reachable/i — that regex also matches "unreachable"
     // and could never fail if classifier_reachable were false.
     expect(await screen.findByText("Model helper: reachable")).toBeTruthy();
+  });
+
+  it("says the rules and status couldn't load instead of claiming there are none", async () => {
+    fetchRoutingRulesImpl.mockImplementationOnce(async () => ({ ok: false as const, error: "fetch failed" }) as never);
+    fetchRoutingStatusImpl.mockImplementationOnce(async () => ({ ok: false as const, error: "fetch failed" }) as never);
+
+    await openPanel();
+
+    expect(await screen.findByText(/couldn.t load your rules/i)).toBeTruthy();
+    expect(screen.getByText(/couldn.t check/i)).toBeTruthy();
+    expect(screen.queryByText(/no rules yet/i)).toBeNull();
+    expect(screen.queryByText("Model helper: unreachable")).toBeNull();
   });
 
   it("lists hard rules and deletes one", async () => {
