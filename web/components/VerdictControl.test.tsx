@@ -175,7 +175,7 @@ describe("auto-send", () => {
     expect(onAutoSend).toHaveBeenCalledWith(true);
   });
 
-  const view = (auto_send?: boolean): SettingsView & { auto_send?: boolean } => ({
+  const view = (auto_send: boolean): SettingsView => ({
     personal: { work: [], personal: [] },
     secrets: [],
     timezone: "",
@@ -193,7 +193,7 @@ describe("auto-send", () => {
     expect(formStateFromView(view(true)).autoSend).toBe(true);
     expect(formStateFromView(view(false)).autoSend).toBe(false);
     // catches: a missing field hydrating as truthy
-    expect(formStateFromView(view()).autoSend).toBe(false);
+    expect(formStateFromView(view(undefined as unknown as boolean)).autoSend).toBe(false);
     expect(buildSettingsUpdate(view(true), formStateFromView(view(true)))).toBeNull();
   });
 

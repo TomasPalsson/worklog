@@ -244,6 +244,8 @@ export interface SettingsView {
   abstain_margin: number;
   /** Minimum ratio the winner must beat the runner-up by (RATIO_RANGE 1.0-5.0). */
   runner_up_ratio: number;
+  /** The 17:00 Tempo auto-send switch (WORKLOG_TEMPO_AUTO_SEND). */
+  auto_send: boolean;
 }
 
 /** Partial update sent to `POST /settings`. Omitted groups are left
@@ -265,6 +267,8 @@ export interface SettingsUpdate {
   abstain_margin?: number;
   /** Omitted leaves the runner-up ratio untouched. */
   runner_up_ratio?: number;
+  /** Omitted leaves the 17:00 auto-send switch untouched. */
+  auto_send?: boolean;
 }
 
 export interface ReclassifyStats {

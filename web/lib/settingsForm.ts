@@ -4,11 +4,6 @@
 
 import type { SettingsUpdate, SettingsView } from "./types";
 
-/** `auto_send` rides alongside the shared settings types: the daemon's
- * snapshot/update carry it (WORKLOG_TEMPO_AUTO_SEND); absent reads as off. */
-type AutoSendView = SettingsView & { auto_send?: boolean };
-type AutoSendUpdate = SettingsUpdate & { auto_send?: boolean };
-
 export interface SettingsFormState {
   work: string;
   personal: string;
@@ -38,7 +33,7 @@ export function initialSecretInput(sensitive: boolean, value: string | null): st
 }
 
 /** Hydrate editable form state from a freshly (re)loaded settings snapshot. */
-export function formStateFromView(v: AutoSendView): SettingsFormState {
+export function formStateFromView(v: SettingsView): SettingsFormState {
   const secretInputs: Record<string, string> = {};
   for (const f of v.secrets) secretInputs[f.key] = initialSecretInput(f.sensitive, f.value);
   return {
@@ -58,10 +53,10 @@ export function formStateFromView(v: AutoSendView): SettingsFormState {
 
 /** Diff the live form against the last-loaded view. `null` when nothing changed. */
 export function buildSettingsUpdate(
-  view: AutoSendView,
+  view: SettingsView,
   form: SettingsFormState,
-): AutoSendUpdate | null {
-  const update: AutoSendUpdate = {};
+): SettingsUpdate | null {
+  const update: SettingsUpdate = {};
 
   const workArr = splitLines(form.work);
   const personalArr = splitLines(form.personal);

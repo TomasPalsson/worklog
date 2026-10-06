@@ -2093,6 +2093,8 @@ pub struct SettingsView {
     /// Mirrors `RUNNER_UP_RATIO_KEY` via envfile; defaults to
     /// `DEFAULT_RUNNER_UP_RATIO`.
     pub runner_up_ratio: f64,
+    /// The 17:00 Tempo auto-send switch. Mirrors `auto_send::enabled`.
+    pub auto_send: bool,
 }
 
 /// Token-like keys whose value must never be serialised to the browser.
@@ -2147,6 +2149,7 @@ fn current_settings() -> Result<SettingsView> {
         work_hours: configured_work_hours_raw(),
         abstain_margin: rule.abstain_margin,
         runner_up_ratio: rule.runner_up_ratio,
+        auto_send: crate::auto_send::enabled(),
     })
 }
 
@@ -2257,6 +2260,8 @@ pub struct SettingsUpdate {
     /// Replace how many times higher than the runner-up the winner must
     /// be (`RATIO_RANGE`). `None` leaves it untouched.
     pub runner_up_ratio: Option<f64>,
+    /// Turn the 17:00 Tempo auto-send on or off. `None` leaves it untouched.
+    pub auto_send: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -2412,6 +2417,12 @@ async fn post_settings(
     }
     if let Some(v) = body.runner_up_ratio {
         crate::envfile::upsert(routing_contract::RUNNER_UP_RATIO_KEY, &v.to_string())?;
+    }
+    if let Some(on) = body.auto_send {
+        crate::envfile::upsert(
+            crate::verdict_contract::AUTO_SEND_KEY,
+            if on { "on" } else { "off" },
+        )?;
     }
 
     info!("settings updated");
@@ -3755,6 +3766,36 @@ mod tests {
             !env_file.exists(),
             "no field should have been written to the env file"
         );
+
+        std::env::remove_var("WORKLOG_ENV_FILE");
+    }
+
+    /// The auto-send switch round-trips through `/settings` as the exact
+    /// string `on` the 17:00 loop reads, and an absent field leaves it alone.
+    #[tokio::test(flavor = "current_thread")]
+    async fn auto_send_persists_through_settings_and_shows_in_the_view() {
+        let _g = prune_env_lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("WORKLOG_ENV_FILE", tmp.path().join(".env"));
+        std::env::remove_var(crate::verdict_contract::AUTO_SEND_KEY);
+
+        let post = |body: &'static str| {
+            router(state_with_block()).oneshot(
+                Request::post("/settings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+        };
+        assert!(!current_settings().unwrap().auto_send);
+        let v = read_json(post(r#"{"auto_send":true}"#).await.unwrap()).await;
+        assert_eq!(v["auto_send"], true);
+        assert!(crate::auto_send::enabled());
+        post(r#"{"timezone":"UTC"}"#).await.unwrap();
+        assert!(current_settings().unwrap().auto_send, "absent leaves it on");
+        let v = read_json(post(r#"{"auto_send":false}"#).await.unwrap()).await;
+        assert_eq!(v["auto_send"], false);
+        assert!(!crate::auto_send::enabled());
 
         std::env::remove_var("WORKLOG_ENV_FILE");
     }
