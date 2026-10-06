@@ -48,29 +48,10 @@ export function formatTotalHours(seconds: number): string {
   return `${hours.toFixed(1)}h`;
 }
 
-/**
- * Round seconds UP to the next half hour (1h 25m → 1.5h), with a zero
- * floor — the mirror of the Rust `round_to_half_hour` used at Tempo sync.
- * Under 15 min rounds to 0 (below the 0.5h minimum). Keep the two in
- * step: this is what the UI shows as "billable", and the daemon logs the
- * same number. 1800s = 30 min.
- */
-export function roundToHalfHour(seconds: number): number {
-  if (seconds <= 0) return 0;
-  if (seconds < 900) return 0;
-  return Math.ceil(seconds / 1800) * 1800;
-}
-
-/**
- * The half-hour-rounded hours that will actually be logged to Tempo for
- * a given tracked duration — what the customer is billed. Always a
- * multiple of 0.5 (e.g. "0.5h", "2.0h"). 0 tracked or under 15 min shows
- * "0h" since nothing syncs.
- */
+/** Billed hours as the server computed them (`TempoLine.effective_seconds`); no rounding here. */
 export function formatBilledHours(seconds: number): string {
-  const rounded = roundToHalfHour(seconds);
-  if (rounded === 0) return "0h";
-  return `${(rounded / 3600).toFixed(1)}h`;
+  if (seconds === 0) return "0h";
+  return `${(seconds / 3600).toFixed(1)}h`;
 }
 
 export function todayISO(): string {

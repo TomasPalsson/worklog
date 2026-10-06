@@ -9,7 +9,7 @@ import {
 import { elsewhereForDay, type ElsewhereItem } from "@/lib/daemonElsewhere";
 import { tempoLines } from "@/lib/daemonTempoLines";
 import type { TempoLine } from "@/lib/tempo_line_contract";
-import { formatDayHeading, formatTotalHours, roundToHalfHour } from "@/lib/format";
+import { formatDayHeading, formatTotalHours } from "@/lib/format";
 import { DayHeader } from "@/components/DayHeader";
 import { ActionBar } from "@/components/ActionBar";
 import { BlockCard } from "@/components/BlockCard";
@@ -122,14 +122,13 @@ export default async function DayPage({
   // defaults to open so the user is nudged to assign them.
   const workGroups = groupBlocksByTicket(workBlocks);
 
-  // The day's billed total is the sum of what each ticket card shows:
-  // the line's (possibly hand-set) hours, else the group's tracked time,
-  // each rounded up to the half hour. Unassigned groups don't bill.
+  // The day's billed total is the sum of the server's billed hours for
+  // each ticket card. Unassigned groups, and groups with no line, don't bill.
   const billedSeconds = workGroups
     .filter((g) => !g.unassigned)
     .reduce((acc, g) => {
       const line = lines.find((l) => l.jira_issue === g.key);
-      return acc + roundToHalfHour(line ? line.effective_seconds : g.totalSeconds);
+      return acc + (line?.effective_seconds ?? 0);
     }, 0);
 
   return (

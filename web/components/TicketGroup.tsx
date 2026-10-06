@@ -3,7 +3,7 @@
 import { ReactNode, useEffect, useRef, useState, useTransition } from "react";
 import { Check, GitMerge, Pencil, RefreshCw, Sparkles } from "lucide-react";
 import type { BlockGroup } from "@/app/[day]/page";
-import { formatBilledHours, formatTotalHours } from "@/lib/format";
+import { formatTotalHours } from "@/lib/format";
 import { canMergeGroup } from "@/lib/group-actions";
 import { mergeGroup } from "@/app/actions";
 import {
@@ -299,15 +299,9 @@ export function TicketGroup({
                 {formatTotalHours(group.totalSeconds)}
               </span>
             ) : (
-              // Assigned groups sync as one Tempo worklog, rounded up to the
-              // next half hour — show what will actually be billed, with
-              // the raw tracked time in the tooltip. "0h" flags a group
-              // under 15 min that won't sync.
-              <span
-                className="ticket-group-meta"
-                title={`${formatTotalHours(group.totalSeconds)} tracked`}
-              >
-                {formatBilledHours(group.totalSeconds)} billed
+              // No Tempo line yet, so there are no billed hours to show.
+              <span className="ticket-group-meta">
+                {formatTotalHours(group.totalSeconds)} tracked
               </span>
             )}
             <SyncChip state={group.syncState} />
