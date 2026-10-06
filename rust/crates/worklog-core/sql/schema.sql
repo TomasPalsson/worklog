@@ -459,3 +459,10 @@ CREATE TABLE IF NOT EXISTS block_undo (
     payload_json TEXT NOT NULL,
     at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+
+-- Full-text index behind `ask`: one row per block holding its description,
+-- ticket and digest clues. Filled by ask::sync (backfilled once by migrate).
+CREATE VIRTUAL TABLE IF NOT EXISTS ask_index USING fts5(
+    text,
+    block_id UNINDEXED
+);
