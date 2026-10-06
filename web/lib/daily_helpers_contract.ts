@@ -56,6 +56,52 @@ export interface Nudge {
   url: string | null;
 }
 
+/** Mirrors `RECAP_TOP_GAPS`. */
+export const RECAP_TOP_GAPS = 3;
+
+/** Mirrors `ALREADY_IN_TEMPO`: a line's match status when Tempo already holds it. */
+export const ALREADY_IN_TEMPO = "already_in_tempo";
+
+/** Mirrors `MatchVerdict`. */
+export type MatchVerdict =
+  | { verdict: "already_in_tempo"; tempo_worklog_id: string }
+  | { verdict: "different" }
+  | { verdict: "unchecked"; reason: string };
+
+/** Mirrors `RecapLine`. */
+export interface RecapLine {
+  jira_issue: string;
+  seconds: number;
+}
+
+/** Mirrors `HeldBackLine`. */
+export interface HeldBackLine {
+  jira_issue: string;
+  reason: string;
+}
+
+/** Mirrors `RecapGap` (RFC3339 UTC). */
+export interface RecapGap {
+  started_at: string;
+  ended_at: string;
+  minutes: number;
+}
+
+/** Mirrors `Recap`. */
+export interface Recap {
+  day: string;
+  sent: RecapLine[];
+  held_back: HeldBackLine[];
+  coverage_percent: number;
+  gaps: RecapGap[];
+}
+
+/** Mirrors `GapAction`. */
+export type GapAction =
+  | { action: "personal" }
+  | { action: "break" }
+  | { action: "pick_ticket"; jira_issue: string };
+
 /** True when a checklist should block the plain Send button (FR-13). */
 export function hasRedRow(rows: PreflightRow[]): boolean {
   return rows.some((r) => !r.ok);

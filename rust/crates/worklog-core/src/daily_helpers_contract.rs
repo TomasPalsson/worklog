@@ -15,6 +15,15 @@ pub const NUDGE_CACHE_SECONDS: i64 = 600;
 pub const DAILY_THREAD_PREFIX: &str = "Daily:thread";
 /// FR-21: envfile key holding the Slack channel name of the Daily thread.
 pub const SLACK_DAILY_CHANNEL_KEY: &str = "WORKLOG_SLACK_DAILY_CHANNEL";
+/// FR-43: a stretch with no block counts as a gap from this long.
+pub const RECAP_MIN_GAP_SECONDS: i64 = 900;
+/// FR-43: how many gaps the recap lists, longest first.
+pub const RECAP_TOP_GAPS: usize = 3;
+/// §5: the Tempo read before a send gives up after this and sends as today (FR-09).
+pub const TEMPO_READ_TIMEOUT_SECONDS: u64 = 10;
+/// FR-07, FR-10: `tempo_line_texts.match_status` for a line Tempo already holds.
+pub const ALREADY_IN_TEMPO: &str = "already_in_tempo";
+
 /// FR-18: the team's three questions, in order.
 pub const STANDUP_QUESTIONS: [&str; 3] = [
     "What are you working on today?",
@@ -128,6 +137,64 @@ pub struct Nudge {
     pub url: Option<String>,
 }
 
+/// FR-06..09: what the pre-send check decided for one line.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(tag = "verdict", rename_all = "snake_case")]
+pub enum MatchVerdict {
+    /// Same work within [`SAME_HOURS_TOLERANCE_SECONDS`]: not sent (FR-07).
+    AlreadyInTempo { tempo_worklog_id: String },
+    /// Different work, or no entry on the ticket that day: sent as today (FR-08).
+    Different,
+    /// Verdict off, unreachable or abstaining, or the Tempo read failed: sent as today (FR-09).
+    Unchecked { reason: String },
+}
+
+/// FR-43: a line the 17:00 run sent.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct RecapLine {
+    pub jira_issue: String,
+    pub seconds: i64,
+}
+
+/// FR-43: a line the 17:00 run did not send, and why.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct HeldBackLine {
+    pub jira_issue: String,
+    pub reason: String,
+}
+
+/// FR-43: a stretch inside the work-hours window with no block (RFC3339 UTC).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct RecapGap {
+    pub started_at: String,
+    pub ended_at: String,
+    pub minutes: i64,
+}
+
+/// FR-43: what the Owner sees right after the 17:00 run.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct Recap {
+    pub day: String,
+    pub sent: Vec<RecapLine>,
+    pub held_back: Vec<HeldBackLine>,
+    /// Block seconds inside the work-hours window / the window's seconds, 0..=100, rounded.
+    pub coverage_percent: u32,
+    /// At most [`RECAP_TOP_GAPS`], longest first.
+    pub gaps: Vec<RecapGap>,
+}
+
+/// FR-44: how the Owner resolves one gap.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum GapAction {
+    /// A personal block over the gap: never billed, never sent.
+    Personal,
+    /// Recorded as a break: never billed, never sent, gone from the gap list.
+    Break,
+    /// A work block over the gap on this ticket.
+    PickTicket { jira_issue: String },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,6 +218,30 @@ mod tests {
         assert_eq!(
             v,
             serde_json::json!({"outcome": "refused_synced", "block_id": 7})
+        );
+    }
+
+    #[test]
+    fn match_verdict_and_gap_action_wire_shapes() {
+        let v = serde_json::to_value(MatchVerdict::AlreadyInTempo {
+            tempo_worklog_id: "77".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({"verdict": "already_in_tempo", "tempo_worklog_id": "77"})
+        );
+        let a = serde_json::to_value(GapAction::PickTicket {
+            jira_issue: "GENAI-12".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            a,
+            serde_json::json!({"action": "pick_ticket", "jira_issue": "GENAI-12"})
+        );
+        assert_eq!(
+            serde_json::to_value(GapAction::Break).unwrap(),
+            serde_json::json!({"action": "break"})
         );
     }
 }
