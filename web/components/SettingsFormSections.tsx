@@ -182,6 +182,25 @@ function CleanupCard({ form, patch }: { form: SettingsFormState; patch: Patch })
   );
 }
 
+function DailyChannelField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <label className="settings-field settings-field-narrow">
+      <span>Daily standup channel</span>
+      <input
+        type="text"
+        value={value}
+        placeholder="daily"
+        autoComplete="off"
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <small>
+        Slack channel whose &ldquo;Daily:thread&rdquo; message the standup replies under. Empty: Post is off and
+        you copy the standup instead.
+      </small>
+    </label>
+  );
+}
+
 function SortingCard({ form, patch, day }: { form: SettingsFormState; patch: Patch; day: string }) {
   return (
     <Card
@@ -198,6 +217,7 @@ function SortingCard({ form, patch, day }: { form: SettingsFormState; patch: Pat
         onRunnerUpRatioChange={(v) => patch({ runnerUpRatio: v })}
       />
       <RoutingStatusAndRules day={day} />
+      <DailyChannelField value={form.dailyChannel ?? ""} onChange={(v) => patch({ dailyChannel: v })} />
     </Card>
   );
 }

@@ -8,6 +8,15 @@ use crate::routing_contract::Guess;
 use crate::verdict_contract::{DecisionKind, DecisionSource, RankedOption, Ranking};
 use crate::verdict_decisions;
 
+/// Day bucketing reads the process-global WORKLOG_TZ, which purge tests set
+/// under `tz::test_env_lock`. Hold that lock with the var unset so a parallel
+/// purge test cannot shift these events onto another day.
+fn utc() -> std::sync::MutexGuard<'static, ()> {
+    let g = crate::tz::test_env_lock();
+    std::env::remove_var("WORKLOG_TZ");
+    g
+}
+
 fn pin(conn: &Connection, folder: &str, customer: Option<&str>) {
     upsert_folder(
         conn,
@@ -177,6 +186,7 @@ fn filed_by(
 
 #[test]
 fn rule_beats_model() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "aws-cert", None);
     conn.execute(
@@ -223,6 +233,7 @@ fn rule_beats_model() {
 
 #[test]
 fn files_when_winner_beats_abstain_and_runner_up() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "aws-cert", None);
     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
@@ -263,6 +274,7 @@ fn files_when_winner_beats_abstain_and_runner_up() {
 // (below) can be, because the pre-fix code never reads `runner_up_ratio` at all.
 #[test]
 fn unsorted_when_winner_ties_abstain() {
+    let _tz = utc();
     let items = vec![pending_with_options(vec!["aws-cert"])];
     let model = FixedGuess {
         folder: "aws-cert".into(),
@@ -279,6 +291,7 @@ fn unsorted_when_winner_ties_abstain() {
 
 #[test]
 fn unsorted_when_runner_up_too_close() {
+    let _tz = utc();
     let items = vec![pending_with_options(vec!["aws-cert"])];
     // abstain_margin is deliberately far below the default (1.05) so the
     // pre-fix body (`confidence >= rule.abstain_margin`, blind to
@@ -309,6 +322,7 @@ fn unsorted_when_runner_up_too_close() {
 
 #[test]
 fn exact_repo_mention_files_by_link() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "vitinn-infra", None);
     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
@@ -337,6 +351,7 @@ fn exact_repo_mention_files_by_link() {
 
 #[test]
 fn path_mention_files_by_link() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "vitinn-infra", None);
     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
@@ -363,6 +378,7 @@ fn path_mention_files_by_link() {
 
 #[test]
 fn two_named_projects_is_no_match() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "vitinn-infra", None);
     pin(&conn, "other-repo", None);
@@ -388,6 +404,7 @@ fn two_named_projects_is_no_match() {
 
 #[test]
 fn prefix_is_not_a_match() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "vitinn-infra", None);
     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
@@ -408,6 +425,7 @@ fn prefix_is_not_a_match() {
 
 #[test]
 fn unknown_repo_is_no_match() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "vitinn-infra", None);
     recent_work(&conn, "vitinn-infra");
@@ -446,6 +464,7 @@ impl Classifier for AlwaysNone {
 
 #[test]
 fn title_only_mention_is_not_a_match() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "vitinn-infra", None);
     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
@@ -514,6 +533,7 @@ fn rule_of(abstain_margin: f64, runner_up_ratio: f64) -> RouteRule {
 // the reversed-order pass disagreed. Catches a filter that ignores `agreed`.
 #[test]
 fn unsorted_when_order_check_disagrees() {
+    let _tz = utc();
     let items = vec![pending_with_options(vec!["aws-cert"])];
     let model = Disagrees(FixedGuess {
         folder: "aws-cert".into(),
@@ -527,6 +547,7 @@ fn unsorted_when_order_check_disagrees() {
 // Exactly at the abstain margin files (0.5 >= 0.25 x 2.0); catches `>`.
 #[test]
 fn files_exactly_at_abstain_margin() {
+    let _tz = utc();
     let got = filed(ranked(0.5, Some(0.1), 0.25, true), rule_of(2.0, 1.0));
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].1.folder, "aws-cert");
@@ -536,12 +557,14 @@ fn files_exactly_at_abstain_margin() {
 // Just under the abstain margin drops; catches a margin that is not applied.
 #[test]
 fn unsorted_just_under_abstain_margin() {
+    let _tz = utc();
     assert!(filed(ranked(0.49, Some(0.1), 0.25, true), rule_of(2.0, 1.0)).is_empty());
 }
 
 // Exactly at the runner-up ratio files (0.5 >= 0.25 x 2.0); catches `>`.
 #[test]
 fn files_exactly_at_runner_up_ratio() {
+    let _tz = utc();
     assert_eq!(
         filed(ranked(0.5, Some(0.25), 0.1, true), rule_of(1.0, 2.0)).len(),
         1
@@ -551,6 +574,7 @@ fn files_exactly_at_runner_up_ratio() {
 // Just under the runner-up ratio drops; catches a ratio taken against abstain only.
 #[test]
 fn unsorted_just_under_runner_up_ratio() {
+    let _tz = utc();
     assert!(filed(ranked(0.49, Some(0.25), 0.1, true), rule_of(1.0, 2.0)).is_empty());
 }
 
@@ -558,6 +582,7 @@ fn unsorted_just_under_runner_up_ratio() {
 // treating a missing second as a failure.
 #[test]
 fn files_when_ranking_has_no_second() {
+    let _tz = utc();
     assert_eq!(
         filed(ranked(0.5, None, 0.1, true), rule_of(1.0, 2.0)).len(),
         1
@@ -567,6 +592,7 @@ fn files_when_ranking_has_no_second() {
 // An empty ranking has no top; catches indexing [0] (panic) or filing "".
 #[test]
 fn unsorted_when_ranking_is_empty() {
+    let _tz = utc();
     let empty = Ranking {
         ranking: vec![],
         abstain: 0.0,
@@ -579,6 +605,7 @@ fn unsorted_when_ranking_is_empty() {
 // entry is; catches checking any ranked id instead of the top.
 #[test]
 fn unsorted_when_only_runner_up_is_an_option() {
+    let _tz = utc();
     let r = Ranking {
         ranking: vec![
             RankedOption {
@@ -598,6 +625,7 @@ fn unsorted_when_only_runner_up_is_an_option() {
 
 #[test]
 fn unsorted_when_choice_not_an_option() {
+    let _tz = utc();
     let items = vec![pending_with_options(vec!["aws-cert"])];
     let model = FixedGuess {
         folder: "not-a-project".into(),
@@ -614,6 +642,7 @@ fn unsorted_when_choice_not_an_option() {
 
 #[test]
 fn unsorted_excluded_labelled_joins_block() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "aws-cert", None);
     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
@@ -649,6 +678,7 @@ fn unsorted_excluded_labelled_joins_block() {
 
 #[test]
 fn always_creates_rule_and_applies() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "lighthouse", None);
     pin(&conn, "other", None);
@@ -709,6 +739,7 @@ fn always_creates_rule_and_applies() {
 
 #[test]
 fn always_rule_relabels_previously_guessed_events() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "lighthouse", None);
     pin(&conn, "other", None);
@@ -766,6 +797,7 @@ fn always_rule_relabels_previously_guessed_events() {
 
 #[test]
 fn decide_drops_guess_outside_narrowed_options() {
+    let _tz = utc();
     let event = RoutedEvent {
         id: 1,
         source: SOURCE_FIREFOX.into(),
@@ -802,6 +834,7 @@ fn decide_drops_guess_outside_narrowed_options() {
 
 #[test]
 fn label_event_does_not_partial_commit_when_always_rule_fails() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "somefolder", None);
     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
@@ -835,6 +868,7 @@ fn label_event_does_not_partial_commit_when_always_rule_fails() {
 
 #[test]
 fn label_event_rejects_domain_rule_on_non_firefox_event() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "somefolder", None);
     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
@@ -875,6 +909,7 @@ fn label_event_rejects_domain_rule_on_non_firefox_event() {
 
 #[test]
 fn label_event_rejects_slack_channel_rule_on_non_slack_event() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "somefolder", None);
     let eid = repo::upsert_event(
@@ -904,6 +939,7 @@ fn label_event_rejects_slack_channel_rule_on_non_slack_event() {
 
 #[test]
 fn container_narrows_options() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     upsert_customer(
         &conn,
@@ -952,6 +988,7 @@ fn claude_at(conn: &Connection, id: &str, ts: &str, project_path: &str) {
 
 #[test]
 fn slack_context_files_from_dominant_recent_activity() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "sjukra", None);
     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
@@ -983,6 +1020,7 @@ fn slack_context_files_from_dominant_recent_activity() {
 
 #[test]
 fn firefox_events_never_get_context_origin() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "sjukra", None);
     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
@@ -1013,6 +1051,7 @@ fn firefox_events_never_get_context_origin() {
 
 #[test]
 fn project_keys_include_billing_folder_pins() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "sjukra", None);
     let keys = project_keys(&conn).unwrap();
@@ -1021,6 +1060,7 @@ fn project_keys_include_billing_folder_pins() {
 
 #[test]
 fn label_event_rejects_an_unknown_folder() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     let eid = repo::upsert_event(
         &conn,
@@ -1041,6 +1081,7 @@ fn label_event_rejects_an_unknown_folder() {
 
 #[test]
 fn editing_rule_folder_relabels_rule_labelled_events() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "folder1", None);
     pin(&conn, "folder2", None);
@@ -1089,6 +1130,7 @@ fn editing_rule_folder_relabels_rule_labelled_events() {
 
 #[test]
 fn ignore_rule_dismisses_matching_event_on_route_day() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     conn.execute(
         "INSERT INTO routing_rules (kind, pattern, folder) VALUES ('slack_channel', '#random', '__ignore__')",
@@ -1114,6 +1156,7 @@ fn ignore_rule_dismisses_matching_event_on_route_day() {
 
 #[test]
 fn routed_for_day_excludes_dismissed_events() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
     let id = repo::upsert_event(
@@ -1132,6 +1175,7 @@ fn routed_for_day_excludes_dismissed_events() {
 
 #[test]
 fn routed_for_day_include_hidden_returns_dismissed_and_noise() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
     let dismissed_id = repo::upsert_event(
@@ -1167,6 +1211,7 @@ fn routed_for_day_include_hidden_returns_dismissed_and_noise() {
 /// change with source Verdict.
 #[test]
 fn route_day_moving_a_block_customer_is_logged_as_verdict() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "aws-cert", Some("APRÓ"));
     conn.execute(
@@ -1229,6 +1274,7 @@ fn apr20() -> NaiveDate {
 
 #[test]
 fn load_pending_offers_the_shortlist_not_every_project() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     for i in 0..30 {
         pin(&conn, &format!("zq-x{i:02}"), None);
@@ -1241,6 +1287,7 @@ fn load_pending_offers_the_shortlist_not_every_project() {
 
 #[test]
 fn load_pending_attaches_past_fixes_as_examples() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "zq-a", None);
     let old = loose_event(&conn, "old", "Standup notes");
@@ -1270,6 +1317,7 @@ impl Classifier for Records {
 
 #[test]
 fn decide_hands_the_events_examples_to_the_classifier() {
+    let _tz = utc();
     let mut p = pending_with_options(vec!["aws-cert"]);
     p.examples
         .insert("aws-cert".into(), vec!["a past fix".into()]);
@@ -1322,6 +1370,7 @@ fn label_of(conn: &Connection, id: i64) -> Option<String> {
 
 #[test]
 fn matching_a_stored_example_alone_never_files_an_event() {
+    let _tz = utc();
     // catches: filing on example match without a clearing ranking
     let conn = open_memory().unwrap();
     let id = event_matching_stored_example(&conn);
@@ -1332,6 +1381,7 @@ fn matching_a_stored_example_alone_never_files_an_event() {
 
 #[test]
 fn an_example_match_does_not_file_when_the_answer_abstains() {
+    let _tz = utc();
     // catches: ignoring the abstain margin when examples match
     let conn = open_memory().unwrap();
     let id = event_matching_stored_example(&conn);
@@ -1342,6 +1392,7 @@ fn an_example_match_does_not_file_when_the_answer_abstains() {
 
 #[test]
 fn an_example_match_does_not_file_when_the_order_check_disagrees() {
+    let _tz = utc();
     // catches: skipping the agreed check when examples match
     let conn = open_memory().unwrap();
     let id = event_matching_stored_example(&conn);
@@ -1353,6 +1404,7 @@ fn an_example_match_does_not_file_when_the_order_check_disagrees() {
 
 #[test]
 fn an_example_match_files_only_with_a_clearing_answer() {
+    let _tz = utc();
     // catches: a vacuous suite where nothing ever files
     let conn = open_memory().unwrap();
     let id = event_matching_stored_example(&conn);
@@ -1377,6 +1429,7 @@ fn stored_ranking(conn: &Connection, id: i64) -> Option<String> {
 
 #[test]
 fn an_unfiled_guess_is_still_stored_and_logged() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "zq-b", None);
     let id = loose_event(&conn, "e1", "zq-b thing");
@@ -1400,6 +1453,7 @@ fn an_unfiled_guess_is_still_stored_and_logged() {
 
 #[test]
 fn a_filed_guess_logs_what_was_applied() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "zq-c", None);
     let id = loose_event(&conn, "e1", "zq-c thing");
@@ -1418,6 +1472,7 @@ fn a_filed_guess_logs_what_was_applied() {
 
 #[test]
 fn an_owner_fix_is_logged_with_the_value_it_replaced() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "zq-d", None);
     pin(&conn, "zq-e", None);
@@ -1482,6 +1537,7 @@ fn project_rows(conn: &Connection, id: i64) -> usize {
 
 #[test]
 fn empty_shortlist_is_neither_classified_nor_logged() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     let id = slack_event(&conn, "empty");
     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
@@ -1493,6 +1549,7 @@ fn empty_shortlist_is_neither_classified_nor_logged() {
 
 #[test]
 fn rerouting_an_unfiled_event_keeps_one_decision_row() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "alpha", None);
     recent_work(&conn, "alpha");
@@ -1512,6 +1569,7 @@ fn rerouting_an_unfiled_event_keeps_one_decision_row() {
 
 #[test]
 fn relabelling_to_the_same_folder_logs_no_second_fix() {
+    let _tz = utc();
     let conn = open_memory().unwrap();
     pin(&conn, "zq-f", None);
     let id = loose_event(&conn, "e2", "something");
@@ -1589,6 +1647,7 @@ async fn routed_json_omits_ranking_for_unparseable_stored_json() {
 
 #[test]
 fn accepts_applies_options_abstain_margin_and_runner_up_ratio() {
+    let _tz = utc();
     let guess = |confidence, runner_up, abstain| Guess {
         folder: "a".into(),
         confidence,

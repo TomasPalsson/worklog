@@ -3,9 +3,9 @@
 import { ReactNode, useEffect, useId, useRef, useState, useTransition } from "react";
 import { Check, Eye, GitMerge, Pencil, RefreshCw, Sparkles, TriangleAlert } from "lucide-react";
 import type { BlockGroup } from "@/app/[day]/page";
-import { formatBilledHours, formatTotalHours } from "@/lib/format";
+import { formatTotalHours } from "@/lib/format";
 import { canMergeGroup } from "@/lib/group-actions";
-import { mergeGroup } from "@/app/actions";
+import { mergeGroup, undoLastChange } from "@/app/actions";
 import {
   regenerateTempoLineText,
   saveTempoLineHours,
@@ -174,7 +174,7 @@ export function TicketGroup({
       if (!r.ok) {
         toast.error(`Merge failed — ${r.error}`);
       } else {
-        toast.ok(`Merged ${absorb.length + 1} blocks on ${group.label}`);
+        toast.undoable(`Merged ${absorb.length + 1} blocks on ${group.label}`, () => undoLastChange(day));
         // After a successful merge the button itself unmounts (the
         // group now has 1 block, so canMergeGroup → false). Park focus
         // back on the group's summary row so keyboard users don't fall
@@ -349,15 +349,9 @@ export function TicketGroup({
                 {formatTotalHours(group.totalSeconds)}
               </span>
             ) : (
-              // Assigned groups sync as one Tempo worklog, rounded up to the
-              // next half hour — show what will actually be billed, with
-              // the raw tracked time in the tooltip. "0h" flags a group
-              // under 15 min that won't sync.
-              <span
-                className="ticket-group-meta"
-                title={`${formatTotalHours(group.totalSeconds)} tracked`}
-              >
-                {formatBilledHours(group.totalSeconds)} billed
+              // No Tempo line yet, so there are no billed hours to show.
+              <span className="ticket-group-meta">
+                {formatTotalHours(group.totalSeconds)} tracked
               </span>
             )}
             <SyncChip state={group.syncState} />

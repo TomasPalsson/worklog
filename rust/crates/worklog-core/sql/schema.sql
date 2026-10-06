@@ -464,6 +464,23 @@ CREATE TABLE IF NOT EXISTS tempo_day_dismissals (
     dismissed_at TEXT NOT NULL
 );
 
+-- Before-images of the Owner's last block changes (undo). Written by
+-- undo::record inside each block_service transaction; trimmed to the
+-- newest UNDO_DEPTH rows.
+CREATE TABLE IF NOT EXISTS block_undo (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    change TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+-- Full-text index behind `ask`: one row per block holding its description,
+-- ticket and digest clues. Fills on demand via ask::sync; block edits refresh their rows.
+CREATE VIRTUAL TABLE IF NOT EXISTS ask_index USING fts5(
+    text,
+    block_id UNINDEXED
+);
+
 -- ───────────────────── verdict decision log (spec 017) ─────────────────────
 -- Permanent: every Verdict guess and Owner correction; purge.rs never
 -- names it. `subject` is an event id, block id, or `<day>|<jira_issue>`;
@@ -482,3 +499,19 @@ CREATE TABLE IF NOT EXISTS verdict_decisions (
 );
 CREATE INDEX IF NOT EXISTS idx_verdict_decisions_subject ON verdict_decisions(kind, subject);
 CREATE INDEX IF NOT EXISTS idx_verdict_decisions_at ON verdict_decisions(decided_at);
+
+-- ───────────────────────── 17:00 recap (spec 018) ─────────────────────────
+-- The recap built at the end of the 17:00 auto-send run (recap.rs), as JSON.
+CREATE TABLE IF NOT EXISTS recaps (
+    day TEXT PRIMARY KEY,
+    json TEXT NOT NULL,
+    built_at TEXT NOT NULL
+);
+
+-- Gaps the Owner recorded as a break: not time worked, not a gap any more.
+CREATE TABLE IF NOT EXISTS recap_breaks (
+    day TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT NOT NULL,
+    PRIMARY KEY(day, started_at)
+);

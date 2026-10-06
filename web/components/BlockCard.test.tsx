@@ -3,18 +3,29 @@
 
 import { afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { subscribe, type ToastMsg } from "@/lib/toast";
+import { dismiss, subscribe, type ToastMsg } from "@/lib/toast";
 import type { Block, JiraTicket } from "@/lib/types";
 
 const setDescription = mock(async (_id: number, _text: string, _day: string) => ({
   ok: true as const,
   data: undefined,
 }));
+type Res = { ok: true; data: undefined } | { ok: false; error: string };
+const okRes = async (): Promise<Res> => ({ ok: true, data: undefined });
+const setDuration = mock(okRes);
+const setPersonal = mock(okRes);
+const setIgnored = mock(okRes);
+const assignTicket = mock(okRes);
+const undoLastChange = mock(async () => ({
+  ok: true as const,
+  data: { outcome: "restored" as const, change: "ignored" as const, block_ids: [1] },
+}));
 mock.module("@/app/actions", () => ({
-  setDuration: mock(async () => ({ ok: true as const, data: undefined })),
+  setDuration,
   setDescription,
-  setPersonal: mock(async () => ({ ok: true as const, data: undefined })),
-  setIgnored: mock(async () => ({ ok: true as const, data: undefined })),
+  setPersonal,
+  setIgnored,
+  undoLastChange,
   deleteBlock: mock(async () => ({ ok: true as const, data: undefined })),
   describeBlock: mock(async () => ({
     ok: true as const,
@@ -22,7 +33,7 @@ mock.module("@/app/actions", () => ({
   })),
   fetchBlockEvents: mock(async () => ({ ok: true as const, data: [] })),
   fetchBlockCommits: mock(async () => ({ ok: true as const, data: [] })),
-  assignTicket: mock(async () => ({ ok: true as const, data: undefined })),
+  assignTicket,
   assignExternalTicket: mock(async () => ({ ok: true as const, data: undefined })),
   searchJiraTickets: mock(async () => ({ ok: true as const, data: [] })),
   createTicket: mock(async () => ({ ok: true as const, data: undefined })),
@@ -49,6 +60,12 @@ beforeAll(async () => {
 
 afterEach(() => {
   cleanup();
+  subscribe((queued) => queued.forEach((msg) => dismiss(msg.id)))();
+  for (const m of [setDuration, setPersonal, setIgnored, assignTicket, undoLastChange]) m.mockClear();
+  setDuration.mockImplementation(okRes);
+  setPersonal.mockImplementation(okRes);
+  setIgnored.mockImplementation(okRes);
+  assignTicket.mockImplementation(okRes);
 });
 
 function makeBlock(overrides: Partial<Block>): Block {
@@ -322,5 +339,87 @@ describe("auto ticket tag", () => {
       />,
     );
     expect(screen.queryByText("auto")).toBeNull();
+  });
+});
+
+describe("BlockCard change confirmations offer Undo (FR-29)", () => {
+  const DAY = "2026-07-25";
+  const queued = () => {
+    let q: ToastMsg[] = [];
+    subscribe((m) => (q = m))();
+    return q;
+  };
+  const undoToast = () => queued().find((t) => t.action?.label === "Undo");
+  const expectUndoRuns = async () => {
+    undoToast()!.action!.onClick();
+    await waitFor(() => expect(undoLastChange).toHaveBeenCalledWith(DAY));
+  };
+  const tickets = [{ key: "PROJ-1", summary: "Importer", status: null, updated: null }];
+
+  it("assign ticket: Undo calls undoLastChange(day)", async () => {
+    render(<BlockCard block={makeBlock({})} tickets={tickets} day={DAY} />);
+    fireEvent.click(screen.getByRole("button", { name: /pick a ticket/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /PROJ-1/ }));
+    await waitFor(() => expect(undoToast()).toBeDefined());
+    await expectUndoRuns();
+  });
+
+  it("assign ticket failure: error toast, no Undo (catches an unconditional undoable)", async () => {
+    assignTicket.mockImplementation(async () => ({ ok: false, error: "nope" }));
+    render(<BlockCard block={makeBlock({})} tickets={tickets} day={DAY} />);
+    fireEvent.click(screen.getByRole("button", { name: /pick a ticket/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /PROJ-1/ }));
+    await waitFor(() => expect(queued().some((t) => t.tone === "error")).toBe(true));
+    expect(undoToast()).toBeUndefined();
+  });
+
+  it("hours: Undo calls undoLastChange(day)", async () => {
+    render(<BlockCard block={makeBlock({})} tickets={[]} day={DAY} hideTicketing />);
+    fireEvent.click(screen.getByRole("button", { name: /duration .* click to edit/ }));
+    const input = screen.getByLabelText("duration in minutes");
+    fireEvent.change(input, { target: { value: "45" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(undoToast()).toBeDefined());
+    await expectUndoRuns();
+  });
+
+  it("hours failure: no Undo", async () => {
+    setDuration.mockImplementation(async () => ({ ok: false, error: "bad" }));
+    render(<BlockCard block={makeBlock({})} tickets={[]} day={DAY} hideTicketing />);
+    fireEvent.click(screen.getByRole("button", { name: /duration .* click to edit/ }));
+    const input = screen.getByLabelText("duration in minutes");
+    fireEvent.change(input, { target: { value: "45" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(queued().some((t) => t.tone === "error")).toBe(true));
+    expect(undoToast()).toBeUndefined();
+  });
+
+  it("personal: Undo calls undoLastChange(day)", async () => {
+    render(<BlockCard block={makeBlock({})} tickets={[]} day={DAY} hideTicketing />);
+    fireEvent.click(screen.getByRole("button", { name: /as personal$/ }));
+    await waitFor(() => expect(undoToast()).toBeDefined());
+    await expectUndoRuns();
+  });
+
+  it("work again (personal off): also offers Undo", async () => {
+    render(<BlockCard block={makeBlock({ is_personal: true })} tickets={[]} day={DAY} hideTicketing />);
+    fireEvent.click(screen.getByRole("button", { name: /as work$/ }));
+    await waitFor(() => expect(undoToast()).toBeDefined());
+  });
+
+  it("ignore: Undo goes through the journal, not a bare setIgnored(false)", async () => {
+    render(<BlockCard block={makeBlock({})} tickets={[]} day={DAY} hideTicketing />);
+    fireEvent.click(screen.getByRole("button", { name: /^ignore .* block$/ }));
+    await waitFor(() => expect(undoToast()).toBeDefined());
+    await expectUndoRuns();
+    expect(setIgnored).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignore failure: no Undo", async () => {
+    setIgnored.mockImplementation(async () => ({ ok: false, error: "locked" }));
+    render(<BlockCard block={makeBlock({})} tickets={[]} day={DAY} hideTicketing />);
+    fireEvent.click(screen.getByRole("button", { name: /^ignore .* block$/ }));
+    await waitFor(() => expect(queued().some((t) => t.tone === "error")).toBe(true));
+    expect(undoToast()).toBeUndefined();
   });
 });

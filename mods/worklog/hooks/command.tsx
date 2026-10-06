@@ -14,6 +14,8 @@ import {
 
 type ReviewBlock = DaySummary['blocks'][number]
 
+type AskHit = { day: string; started_at: string; ended_at: string; jira_issue: string | null }
+
 type ReviewState = {
   blocks: ReviewBlock[]
   selected: number | undefined
@@ -21,7 +23,7 @@ type ReviewState = {
   error: string | undefined
 }
 
-const USAGE = 'usage: /wl today|week|review'
+const USAGE = 'usage: /wl today|week|review|ask <question>'
 
 const review = atom(
   { plugin: 'worklog', key: 'review' } as const,
@@ -85,6 +87,15 @@ async function summarise($: EngineInterface, io: Io, period: 'today' | 'week'): 
   if (!week.ok) return `worklog: ${week.error}`
   const seconds = week.value.days.reduce((total, day) => total + day.logged_seconds, 0)
   return `worklog week: ${formatHours(seconds)}`
+}
+
+async function ask(io: Io, question: string): Promise<string> {
+  const hits = await daemonGet<AskHit[]>(io, `/ask?q=${encodeURIComponent(question)}`)
+  if (!hits.ok) return `worklog: ${hits.error}`
+  if (hits.value.length === 0) return 'worklog ask: no matches'
+  return hits.value
+    .map(hit => `${hit.day}  ${hit.started_at.slice(11, 16)}–${hit.ended_at.slice(11, 16)}  ${hit.jira_issue ?? '—'}`)
+    .join('\n')
 }
 
 function typedAction(editing: 'ticket' | 'description', value: string): ReviewAction {
@@ -174,13 +185,15 @@ export function registerCommand(on: On): void {
     await $.command.register({
       name: 'wl',
       description: 'Show logged hours, or review today in a pane',
-      argumentHint: 'today|week|review',
+      argumentHint: 'today|week|review|ask',
     })
     return next(event)
   })
 
   on('command.run', { command: 'wl' }, async ($, event) => {
     const argument = event.args.trim()
+    const question = /^ask\s+(\S[\s\S]*)$/.exec(argument)?.[1]
+    if (question !== undefined) return { text: await ask(await makeIo($), question) }
     if (argument !== 'today' && argument !== 'week' && argument !== 'review') {
       return { text: USAGE }
     }

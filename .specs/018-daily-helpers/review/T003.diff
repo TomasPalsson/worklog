@@ -1,0 +1,581 @@
+2f9239b fix(018): text export shows HH:MM in WORKLOG_TZ, not raw ISO (T003)
+3b3a14e fix(018): render fill in for missing billing times (T003)
+90f85e5 feat(018): billing lines say fill in for missing times (T003)
+3c7c134 feat(018): Tempo write failures name status and body, never empty (T002)
+
+ rust/crates/worklog-core/src/billing.rs          |  66 +++++++++++-
+ rust/crates/worklog-core/src/collectors/tempo.rs | 130 ++++++++++++++++++++++-
+ web/components/ExportPanel.tsx                   |   4 +-
+ web/lib/export.test.ts                           |  16 +++
+ web/lib/export.ts                                |   9 ++
+ 5 files changed, 219 insertions(+), 6 deletions(-)
+
+diff --git a/rust/crates/worklog-core/src/billing.rs b/rust/crates/worklog-core/src/billing.rs
+index debd2a8..2475326 100644
+--- a/rust/crates/worklog-core/src/billing.rs
++++ b/rust/crates/worklog-core/src/billing.rs
+@@ -34,20 +34,22 @@ use crate::collectors::tempo::{round_to_half_hour, HALF_HOUR_SECONDS};
+ use crate::models::Block;
+ use crate::repo;
+ 
+ #[path = "billing_deild.rs"]
+ mod billing_deild;
+ pub use billing_deild::resolve_block_slices;
+ 
+ /// Shown wherever a field could not be resolved and the user must pick
+ /// it in the form.
+ pub const BLANK: &str = "—";
++/// Shown where a line has no start or end time to read off.
++pub const FILL_IN: &str = "fill in";
+ 
+ /// `Tegund skráningar` — always a plain registration; the driving and
+ /// on-call variants are never billed by this user.
+ pub const TEGUND_SKRANINGAR: &str = "Almenn skráning";
+ 
+ /// `Taxti` — always day rate.
+ pub const TAXTI: &str = "Dagvinna";
+ 
+ /// The two `Reikningshæfi` values.
+ pub const REIKNINGSHAEFT: &str = "Reikningshæft";
+@@ -123,20 +125,30 @@ impl BillingRow {
+             // Unparseable day: show it verbatim rather than inventing one.
+             Err(_) => self.day.clone(),
+         }
+     }
+ 
+     /// `Tímar` as the form wants it: comma decimal, no trailing `,0`.
+     pub fn hours_display(&self) -> String {
+         format_hours(self.seconds)
+     }
+ 
++    /// Earliest start, or [`FILL_IN`] when the line has no blocks.
++    pub fn start_display(&self) -> String {
++        time_or_fill_in(&self.started_at)
++    }
++
++    /// Latest end, or [`FILL_IN`] when the line has no blocks.
++    pub fn end_display(&self) -> String {
++        time_or_fill_in(&self.ended_at)
++    }
++
+     /// True when the user still has to pick something for this line.
+     pub fn needs_input(&self) -> bool {
+         self.customer.is_none() || self.verkefni.is_none()
+     }
+ }
+ 
+ /// Output format for [`render`]. Adding a format is a new variant plus a
+ /// matching `render` arm — row computation never changes.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub enum Format {
+@@ -778,20 +790,34 @@ pub fn rows_for_day(conn: &Connection, day: &str) -> Result<Vec<BillingRow>> {
+ fn format_hours(seconds: i64) -> String {
+     let halves = round_to_half_hour(seconds) / HALF_HOUR_SECONDS;
+     let whole = halves / 2;
+     if halves % 2 == 1 {
+         format!("{whole},5")
+     } else {
+         format!("{whole}")
+     }
+ }
+ 
++/// `HH:MM` in the `$WORKLOG_TZ` offset, [`FILL_IN`] when empty, verbatim when unparseable.
++fn time_or_fill_in(t: &str) -> String {
++    if t.is_empty() {
++        return FILL_IN.to_owned();
++    }
++    match chrono::DateTime::parse_from_rfc3339(t) {
++        Ok(d) => d
++            .with_timezone(&crate::tz::day_offset())
++            .format("%H:%M")
++            .to_string(),
++        Err(_) => t.to_owned(),
++    }
++}
++
+ fn or_blank(v: &Option<String>) -> &str {
+     v.as_deref().unwrap_or(BLANK)
+ }
+ 
+ /// Text: one aligned line per row, in form order, for scanning in a
+ /// terminal. Unresolved fields show [`BLANK`].
+ fn render_text(rows: &[BillingRow]) -> String {
+     let col_width = |f: &dyn Fn(&BillingRow) -> String| {
+         rows.iter().map(|r| f(r).chars().count()).max().unwrap_or(0)
+     };
+@@ -800,22 +826,24 @@ fn render_text(rows: &[BillingRow]) -> String {
+     let hw = col_width(&|r: &BillingRow| r.hours_display());
+ 
+     let pad = |s: &str, w: usize| {
+         let n = s.chars().count();
+         format!("{s}{}", " ".repeat(w.saturating_sub(n)))
+     };
+ 
+     rows.iter()
+         .map(|r| {
+             format!(
+-                "{}  {}  {}  {} hrs  {}  {}",
++                "{}  {}–{}  {}  {}  {} hrs  {}  {}",
+                 r.date_display(),
++                r.start_display(),
++                r.end_display(),
+                 pad(or_blank(&r.customer), cw),
+                 pad(or_blank(&r.verkefni), vw),
+                 pad(&r.hours_display(), hw),
+                 reikningshaefi(r.billable),
+                 r.invoice_text,
+             )
+         })
+         .collect::<Vec<_>>()
+         .join("\n")
+ }
+@@ -1787,20 +1815,43 @@ mod tests {
+                 block_count: 1,
+                 started_at: "2026-07-23T15:00:00Z".into(),
+                 ended_at: "2026-07-23T19:00:00Z".into(),
+                 paths: vec!["/Users/x/Desktop/Work/genai-infra".into()],
+                 block_ids: vec![4],
+                 text_origin: None,
+             },
+         ]
+     }
+ 
++    #[test]
++    fn a_line_with_no_blocks_says_fill_in_for_both_times() {
++        let mut r = sample_rows().remove(0);
++        r.started_at = String::new();
++        r.ended_at = String::new();
++        assert_eq!(r.start_display(), "fill in"); // catches an empty-string passthrough
++        assert_eq!(r.end_display(), "fill in");
++    }
++
++    #[test]
++    fn each_missing_time_says_fill_in_independently() {
++        let _g = crate::tz::test_env_lock();
++        std::env::remove_var("WORKLOG_TZ");
++        let mut r = sample_rows().remove(0);
++        r.started_at = String::new();
++        assert_eq!(r.start_display(), "fill in");
++        assert_eq!(r.end_display(), "14:30"); // catches filling both when one is missing
++        r.started_at = "2026-07-23T09:00:00Z".into();
++        r.ended_at = String::new();
++        assert_eq!(r.start_display(), "09:00");
++        assert_eq!(r.end_display(), "fill in");
++    }
++
+     #[test]
+     fn date_renders_in_the_forms_dd_mm_yyyy() {
+         assert_eq!(sample_rows()[0].date_display(), "23.07.2026");
+     }
+ 
+     #[test]
+     fn hours_render_with_a_comma_decimal() {
+         assert_eq!(sample_rows()[0].hours_display(), "5,5");
+         assert_eq!(sample_rows()[1].hours_display(), "4");
+     }
+@@ -1810,20 +1861,33 @@ mod tests {
+         let out = render(&sample_rows(), Format::Text);
+         let lines: Vec<&str> = out.lines().collect();
+         assert_eq!(lines.len(), 2);
+         assert!(lines[0].contains("23.07.2026"));
+         assert!(lines[0].contains("Sjúkra"));
+         assert!(lines[0].contains("5,5 hrs"));
+         assert!(lines[0].contains(REIKNINGSHAEFT));
+         assert!(lines[1].contains(BLANK), "unresolved fields show a dash");
+     }
+ 
++    #[test]
++    fn text_line_with_no_blocks_shows_fill_in_for_both_times() {
++        let _g = crate::tz::test_env_lock();
++        std::env::remove_var("WORKLOG_TZ");
++        let mut rows = sample_rows();
++        rows[0].started_at = String::new();
++        rows[0].ended_at = String::new();
++        let out = render(&rows, Format::Text);
++        let lines: Vec<&str> = out.lines().collect();
++        assert!(lines[0].contains("fill in–fill in"), "{}", lines[0]);
++        assert!(lines[1].contains("  15:00–19:00  "), "{}", lines[1]);
++    }
++
+     #[test]
+     fn csv_uses_the_form_field_order_and_empty_cells_for_blanks() {
+         let out = render(&sample_rows(), Format::Csv);
+         let lines: Vec<&str> = out.lines().collect();
+         assert_eq!(
+             lines[0],
+             "dagsetning,vidskiptamadur,verkefni,tegund_skraningar,taxti,timar,reikningshaefi,texti_a_reikning"
+         );
+         assert!(lines[1].contains("Almenn skráning"));
+         assert!(lines[1].contains("Dagvinna"));
+diff --git a/rust/crates/worklog-core/src/collectors/tempo.rs b/rust/crates/worklog-core/src/collectors/tempo.rs
+index 734c5fc..f6fd54e 100644
+--- a/rust/crates/worklog-core/src/collectors/tempo.rs
++++ b/rust/crates/worklog-core/src/collectors/tempo.rs
+@@ -538,21 +538,21 @@ fn sync_group_aggregated(
+         client.post(&url)
+     };
+     let resp = req
+         .bearer_auth(&auth.token)
+         .header("Content-Type", "application/json")
+         .json(&payload)
+         .send()
+         .with_context(|| format!("tempo {method}"))?;
+     let http_status = resp.status().as_u16();
+     if !resp.status().is_success() {
+-        let body = resp.text().unwrap_or_default();
++        let body = error_body(resp);
+         let head_id = eligible_in_group.first().map(|b| b.id).unwrap_or(-1);
+         report
+             .errors
+             .push(format!("group {issue}: HTTP {http_status} — {body}"));
+         for b in eligible_in_group {
+             results.push(SyncResult {
+                 block_id: b.id,
+                 status: "error",
+                 reason: Some(body.clone()),
+                 tempo_id: None,
+@@ -708,21 +708,21 @@ fn sync_block_legacy(
+         client.post(&url)
+     };
+     let resp = req
+         .bearer_auth(&auth.token)
+         .header("Content-Type", "application/json")
+         .json(&payload)
+         .send()
+         .with_context(|| format!("tempo {method}"))?;
+     let http_status = resp.status().as_u16();
+     if !resp.status().is_success() {
+-        let body = resp.text().unwrap_or_default();
++        let body = error_body(resp);
+         report
+             .errors
+             .push(format!("block {}: HTTP {http_status} — {body}", b.id));
+         results.push(SyncResult {
+             block_id: b.id,
+             status: "error",
+             reason: Some(body),
+             tempo_id: None,
+             payload: Some(payload),
+             http_status: Some(http_status),
+@@ -921,27 +921,37 @@ pub fn delete_worklog_with(
+     let url = format!("{}/worklogs/{}", auth.base_url, id);
+     let resp = client
+         .delete(&url)
+         .bearer_auth(&auth.token)
+         .send()
+         .with_context(|| format!("tempo DELETE {url}"))?;
+     let status = resp.status();
+     if status.is_success() || status.as_u16() == 404 {
+         return Ok(());
+     }
+-    let body = resp.text().unwrap_or_default();
++    let body = error_body(resp);
+     anyhow::bail!(
+         "tempo DELETE /worklogs/{id} returned HTTP {} — {body}",
+         status.as_u16()
+     )
+ }
+ 
++/// The body of a failed Tempo response, never empty: an unreadable or
++/// blank body is named as such so a report line always carries a reason.
++pub(crate) fn error_body(resp: reqwest::blocking::Response) -> String {
++    match resp.text() {
++        Ok(t) if t.trim().is_empty() => "(empty response body)".to_string(),
++        Ok(t) => t,
++        Err(e) => format!("could not read response body: {e}"),
++    }
++}
++
+ /// Resolve a Jira key (`PROJ-123`) to its numeric Atlassian issue id.
+ ///
+ /// Walks the cache first; on miss, calls Jira's REST `/issue/{key}`
+ /// endpoint with basic auth read from the secrets layer, and writes
+ /// the id back to `jira_tickets` so the next sync is local-only.
+ ///
+ /// Returns `None` only when Jira itself can't find the key (404) or
+ /// the credentials are missing — both bubble up as a sync error per
+ /// block, not a hard fatal.
+ fn resolve_issue_id(conn: &Connection, key: &str, client: &Client) -> Result<Option<String>> {
+@@ -2746,11 +2756,125 @@ mod tests {
+         .unwrap_err();
+         assert!(matches!(
+             err.downcast_ref::<HubError>(),
+             Some(HubError::Upstream {
+                 service: "Tempo",
+                 status: 500,
+                 ..
+             })
+         ));
+     }
++
++    fn response_with_raw(raw: &'static str) -> reqwest::blocking::Response {
++        use std::io::{Read, Write};
++        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
++        let addr = listener.local_addr().unwrap();
++        std::thread::spawn(move || {
++            let (mut sock, _) = listener.accept().unwrap();
++            let mut buf = [0u8; 1024];
++            let _ = sock.read(&mut buf);
++            sock.write_all(raw.as_bytes()).unwrap();
++        });
++        http::client()
++            .unwrap()
++            .get(format!("http://{addr}/"))
++            .send()
++            .unwrap()
++    }
++
++    fn sync_one_rejected_write(server: &MockServer) -> CollectReport {
++        let conn = open_memory().unwrap();
++        insert_block(
++            &conn,
++            "2026-04-18",
++            "2026-04-18T09:00:00Z",
++            "2026-04-18T09:30:00Z",
++            1800,
++            Some("PROJ-1"),
++            Some("x"),
++        );
++        sync_day_with(
++            &conn,
++            &auth(server.base_url()),
++            day(),
++            false,
++            &http::client().unwrap(),
++        )
++        .unwrap()
++        .0
++    }
++
++    #[test]
++    fn error_body_returns_the_text_tempo_sent() {
++        let resp = response_with_raw(
++            "HTTP/1.1 400 Bad Request\r\nContent-Length: 15\r\n\r\nIssue is closed",
++        );
++        assert_eq!(error_body(resp), "Issue is closed");
++    }
++
++    #[test]
++    fn error_body_says_reading_failed_and_why_when_the_body_is_cut_short() {
++        // catches unwrap_or_default: a cut-off body must not become ""
++        let resp =
++            response_with_raw("HTTP/1.1 400 Bad Request\r\nContent-Length: 100\r\n\r\nshort");
++        let body = error_body(resp);
++        let prefix = "could not read response body: ";
++        assert!(body.starts_with(prefix), "{body}");
++        assert!(body.len() > prefix.len(), "{body}");
++    }
++
++    #[test]
++    fn error_body_is_never_empty_for_an_empty_body() {
++        // catches returning the raw text unchanged
++        let resp = response_with_raw("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
++        assert_eq!(error_body(resp), "(empty response body)");
++    }
++
++    #[test]
++    fn sync_report_names_tempos_status_and_body_for_a_rejected_write() {
++        // catches dropping the status or the body from the report line
++        let server = MockServer::start();
++        server.mock(|when, then| {
++            when.method(POST).path("/worklogs");
++            then.status(400).body("Issue is closed");
++        });
++        let report = sync_one_rejected_write(&server);
++        assert_eq!(report.errors.len(), 1);
++        assert!(report.errors[0].contains("HTTP 400"), "{:?}", report.errors);
++        assert!(
++            report.errors[0].contains("Issue is closed"),
++            "{:?}",
++            report.errors
++        );
++    }
++
++    #[test]
++    fn sync_report_never_has_an_empty_reason_for_an_empty_error_body() {
++        // catches the sync call sites still using resp.text().unwrap_or_default()
++        let server = MockServer::start();
++        server.mock(|when, then| {
++            when.method(POST).path("/worklogs");
++            then.status(502);
++        });
++        let report = sync_one_rejected_write(&server);
++        assert!(
++            report.errors[0].ends_with("HTTP 502 — (empty response body)"),
++            "{:?}",
++            report.errors
++        );
++    }
++
++    #[test]
++    fn delete_failure_names_tempos_status_and_body() {
++        // catches the delete call site still swallowing the body
++        let server = MockServer::start();
++        server.mock(|when, then| {
++            when.method(DELETE).path("/worklogs/7");
++            then.status(409).body("Period is locked");
++        });
++        let err = delete_worklog_with(&auth(server.base_url()), "7", &http::client().unwrap())
++            .unwrap_err()
++            .to_string();
++        assert!(err.contains("HTTP 409"), "{err}");
++        assert!(err.contains("Period is locked"), "{err}");
++    }
+ }
+diff --git a/web/components/ExportPanel.tsx b/web/components/ExportPanel.tsx
+index 194dcb3..b2f9a02 100644
+--- a/web/components/ExportPanel.tsx
++++ b/web/components/ExportPanel.tsx
+@@ -27,24 +27,24 @@ import {
+   TriangleAlert,
+   X,
+ } from "lucide-react";
+ 
+ import { exportBilling, markExported } from "@/app/actions";
+ import {
+   downloadText,
+   exportFilename,
+   exportMime,
+   formatExportHours,
++  formatLineTime,
+   formFields,
+   totalBilledHours,
+ } from "@/lib/export";
+-import { formatRange } from "@/lib/format";
+ import { toast } from "@/lib/toast";
+ import type { ExportResponse } from "@/lib/types";
+ 
+ interface Props {
+   day: string;
+ }
+ 
+ /**
+  * Longest `/Users/<name>` prefix we can infer client-side, so directories
+  * render as `~/Desktop/Work/...` instead of eating the whole line. Derived
+@@ -291,21 +291,21 @@ export function ExportPanel({ day }: Props) {
+                 </dl>
+ 
+                 {current && (
+                   /* Enough to recognise the work when Viðskiptamaður is
+                      blank: when it happened, how many blocks, which folder,
+                      and the actual directories the events came from. */
+                   <dl className="export-ctx">
+                     <div>
+                       <dt>When</dt>
+                       <dd>
+-                        {formatRange(current.started_at, current.ended_at)} ·{" "}
++                        {formatLineTime(current.started_at)}–{formatLineTime(current.ended_at)} ·{" "}
+                         {current.block_count} block
+                         {current.block_count === 1 ? "" : "s"}
+                       </dd>
+                     </div>
+                     <div>
+                       <dt>Folder</dt>
+                       <dd className="export-ctx-mono">{current.folder}</dd>
+                     </div>
+                     {current.ticket && (
+                       <div>
+diff --git a/web/lib/export.test.ts b/web/lib/export.test.ts
+index 78f2bce..6a57ef7 100644
+--- a/web/lib/export.test.ts
++++ b/web/lib/export.test.ts
+@@ -1,18 +1,20 @@
+ import { describe, expect, it } from "bun:test";
+ 
+ import {
+   BLANK,
+   exportFilename,
+   exportMime,
+   formatExportHours,
+   formatFormDate,
++  FILL_IN,
++  formatLineTime,
+   formFields,
+   OREIKNINGSHAEFT,
+   TAXTI,
+   TEGUND_SKRANINGAR,
+   totalBilledHours,
+ } from "./export";
+ import type { BillingRow } from "./types";
+ 
+ const row = (over: Partial<BillingRow> = {}): BillingRow => ({
+   day: "2026-07-23",
+@@ -143,10 +145,24 @@ describe("formFields", () => {
+     expect(fields.find((f) => f.label === "Reikningshæfi")!.value).toBe(
+       OREIKNINGSHAEFT,
+     );
+   });
+ 
+   it("renders Tímar with a comma decimal", () => {
+     const fields = formFields(row({ hours: 5.5 }));
+     expect(fields.find((f) => f.label === "Tímar")!.value).toBe("5,5");
+   });
+ });
++
++describe("formatLineTime", () => {
++  it("says fill in for an empty time (a line with no blocks)", () => {
++    expect(formatLineTime("")).toBe("fill in"); // catches rendering "00:00" or "NaN:NaN"
++    expect(FILL_IN).toBe("fill in");
++  });
++
++  it("renders a real time as a local clock, not fill in", () => {
++    const iso = "2026-07-23T09:00:00Z";
++    const d = new Date(iso);
++    const want = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
++    expect(formatLineTime(iso)).toBe(want); // catches always returning fill in
++  });
++});
+diff --git a/web/lib/export.ts b/web/lib/export.ts
+index bfd4f6a..9723f3b 100644
+--- a/web/lib/export.ts
++++ b/web/lib/export.ts
+@@ -1,19 +1,20 @@
+ // Pure helpers for the billing-export panel.
+ //
+ // The daemon owns ALL rendering (text/csv/json come pre-rendered from
+ // `GET /export/:day` so the Rust renderers stay the single source of
+ // truth). What lives here is only what the browser needs on top: the
+ // day total, download filenames/mime types, and the blob-download
+ // mechanic. Keeping it dependency-free means it unit-tests without a
+ // DOM or a Next runtime.
+ 
++import { formatClock } from "./format";
+ import type { BillingRow } from "./types";
+ 
+ /**
+  * Sum of a day's billed hours. Each row's `hours` is already
+  * half-hour-rounded daemon-side, so this is a plain sum — deliberately
+  * NOT a re-round of the summed seconds, which would disagree with the
+  * per-row figures the user is reading (and billing from).
+  */
+ export function totalBilledHours(rows: BillingRow[]): number {
+   return rows.reduce((acc, r) => acc + r.hours, 0);
+@@ -32,20 +33,28 @@ export function formatExportHours(hours: number): string {
+ }
+ 
+ /** Constants the invoicing form always gets, mirroring `billing.rs`. */
+ export const TEGUND_SKRANINGAR = "Almenn skráning";
+ export const TAXTI = "Dagvinna";
+ export const REIKNINGSHAEFT = "Reikningshæft";
+ export const OREIKNINGSHAEFT = "Óreikningshæft";
+ /** Shown where a value could not be resolved and the user must pick it. */
+ export const BLANK = "—";
+ 
++/** Shown where a line has no start or end time to read off. */
++export const FILL_IN = "fill in";
++
++/** A line's start or end as a local clock, or "fill in" when it has none. */
++export function formatLineTime(iso: string): string {
++  return iso === "" ? FILL_IN : formatClock(iso);
++}
++
+ export function reikningshaefi(billable: boolean): string {
+   return billable ? REIKNINGSHAEFT : OREIKNINGSHAEFT;
+ }
+ 
+ /** `Dagsetning` as the form wants it: dd.mm.yyyy from an ISO day. */
+ export function formatFormDate(day: string): string {
+   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
+   // Parsed by regex rather than `new Date` so a UTC-vs-local shift can
+   // never move the billed date by a day.
+   return m ? `${m[3]}.${m[2]}.${m[1]}` : day;

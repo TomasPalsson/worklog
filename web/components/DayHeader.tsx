@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { formatTotalHours, shiftDay, todayISO } from "@/lib/format";
 import { DateJumper } from "./DateJumper";
+import { StandupButton } from "./StandupButton";
 
 /** Apró's billable-hours target (reikningshæfi), in percent. */
 const BILLABLE_GOAL = 70;
@@ -126,6 +127,7 @@ export function DayHeader({
         </Link>
         <DateJumper focusedDay={day} view="day" />
       </nav>
+      {isToday && <StandupButton />}
     </header>
   );
 }

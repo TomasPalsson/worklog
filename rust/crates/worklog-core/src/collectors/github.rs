@@ -207,6 +207,20 @@ pub fn collect_with(
     Ok(report)
 }
 
+/// Raw search body of open PRs where the user is a requested reviewer.
+pub fn review_requests(client: &Client, auth: &GitHubAuth) -> Result<String> {
+    let q = format!("is:pr is:open review-requested:{}", auth.user);
+    client
+        .get(format!("{}/search/issues", auth.base))
+        .bearer_auth(&auth.token)
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .query(&[("q", q.as_str()), ("per_page", "20")])
+        .send_ok()?
+        .text()
+        .context("reading github review search")
+}
+
 /// The commit message with its title line (and the blank line after it)
 /// removed, trimmed - the body stored in `RawRecord::Commit` (D-03).
 fn commit_body(message: &str) -> &str {

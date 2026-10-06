@@ -17,6 +17,25 @@ const hours = atom(
   '',
 )
 
+const nudgeLine = atom(
+  { plugin: 'worklog', key: 'nudge' } as const,
+  '',
+)
+
+/** GET /recap, the fields the mod reads. */
+type Recap = {
+  day: string
+  sent: unknown[]
+  held_back: unknown[]
+  coverage_percent: number
+  gaps: unknown[]
+}
+
+const recapState = atom(
+  { plugin: 'worklog', key: 'recap' } as const,
+  { line: '', gaps: 0 },
+)
+
 async function makeIo($: EngineInterface): Promise<Io> {
   return {
     fetch: (url, init) => $.http.fetch(url, init),
@@ -33,9 +52,24 @@ export function registerStatus(on: On): void {
 
     async function showHours(): Promise<void> {
       const today = await daemonToday(io)
-      const summary = today.ok ? await daemonGet<DaySummary>(io, `/days/${today.value}`) : today
+      const [summary, recap] = today.ok
+        ? await Promise.all([daemonGet<DaySummary>(io, `/days/${today.value}`), daemonGet<Recap | null>(io, '/recap')])
+        : [today, today]
       const text = summary.ok ? `worklog ${formatHours(workSeconds(summary.value.blocks))}` : ''
       await update($, hours, () => text)
+      const current = recap.ok && recap.value?.day === (today.ok ? today.value : '') ? recap.value : null
+      const shown = current
+        ? {
+            line: [
+              `recap: ${current.sent.length} sent`,
+              `${current.held_back.length} held`,
+              `${current.coverage_percent}%`,
+              ...(current.gaps.length > 0 ? [`${current.gaps.length} gaps`] : []),
+            ].join(' · '),
+            gaps: current.gaps.length,
+          }
+        : { line: '', gaps: 0 }
+      await update($, recapState, () => shown)
     }
 
     async function remind(): Promise<void> {
@@ -69,8 +103,22 @@ export function registerStatus(on: On): void {
     return next(event)
   })
 
+  let prompts = 0
+  on('prompt.submit', { origin: { kind: 'composer' } }, async ($, event, next) => {
+    const turn = prompts++
+    const io = await makeIo($)
+    void (async () => {
+      const list = await daemonGet<{ text: string }[]>(io, '/nudges')
+      const shown = list.ok && list.value.length > 0 ? list.value[turn % list.value.length].text : ''
+      await update($, nudgeLine, () => shown)
+    })()
+    return next(event)
+  })
+
   on('ui.render', { component: 'PromptHint' }, async ($, event, next) => {
-    const text = await read($, hours)
-    return next(text ? { ...event, props: { ...event.props, tail: event.props.tail ? `${event.props.tail} · ${text}` : text } } : event)
+    const recap = await read($, recapState)
+    const nudgeText = recap.gaps > 0 ? '' : await read($, nudgeLine)
+    const parts = [event.props.tail, await read($, hours), recap.line, nudgeText].filter(Boolean)
+    return next(parts.length > 0 ? { ...event, props: { ...event.props, tail: parts.join(' · ') } } : event)
   })
 }

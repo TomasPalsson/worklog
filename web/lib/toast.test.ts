@@ -54,3 +54,58 @@ describe("toast bus", () => {
     unB();
   });
 });
+
+describe("toast.undoable", () => {
+  const latest = () => {
+    let all: any[] = [];
+    subscribe((m) => {
+      all = m;
+    })();
+    return all[all.length - 1];
+  };
+  const click = async (undo: () => Promise<any>) => {
+    toast.undoable("Merged 2 blocks", undo);
+    latest().action.onClick();
+    await new Promise((r) => setTimeout(r, 0));
+  };
+
+  it("shows an Undo action on the confirmation", () => {
+    toast.undoable("Merged 2 blocks", async () => ({ ok: true, data: { outcome: "nothing_to_undo" } }));
+    const m = latest();
+    // catches: confirmation toast with no action attached
+    expect(m.text).toBe("Merged 2 blocks");
+    expect(m.action.label).toBe("Undo");
+  });
+
+  it("runs the undo and confirms a restore", async () => {
+    const undo = mock(async () => ({
+      ok: true,
+      data: { outcome: "restored", change: "merge", block_ids: [1, 2] },
+    }));
+    await click(undo);
+    // catches: button that never calls the server action
+    expect(undo).toHaveBeenCalledTimes(1);
+    expect(latest()).toMatchObject({ tone: "ok", text: "Undid merge" });
+  });
+
+  it("says plainly when nothing is left to undo", async () => {
+    await click(async () => ({ ok: true, data: { outcome: "nothing_to_undo" } }));
+    // catches: wrong message for the 21st undo
+    expect(latest()).toMatchObject({ tone: "ok", text: "Nothing left to undo" });
+  });
+
+  it("surfaces the Tempo refusal as an error", async () => {
+    await click(async () => ({ ok: true, data: { outcome: "refused_synced", block_id: 7 } }));
+    // catches: refusal swallowed or shown with ok tone
+    expect(latest()).toMatchObject({
+      tone: "error",
+      text: "Block 7 was sent to Tempo; undo would desync it",
+    });
+  });
+
+  it("surfaces a failed action as an error", async () => {
+    await click(async () => ({ ok: false, error: "daemon down" }));
+    // catches: swallowing the error result
+    expect(latest()).toMatchObject({ tone: "error", text: "Undo failed — daemon down" });
+  });
+});

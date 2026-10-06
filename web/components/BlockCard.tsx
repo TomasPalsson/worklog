@@ -11,6 +11,7 @@ import {
   setDuration,
   setIgnored,
   setPersonal,
+  undoLastChange,
 } from "@/app/actions";
 import { shouldShowSparkles } from "@/lib/group-actions";
 import { toast } from "@/lib/toast";
@@ -124,9 +125,12 @@ export function BlockCard({
         // Revert local state so the next edit starts from the canonical
         // value, not the rejected one.
         setDurVal(previousMinutes);
-      } else if (synced) {
-        toast.ok(
-          "Duration saved. Note: this block was already synced — re-sync to update Tempo.",
+      } else {
+        toast.undoable(
+          synced
+            ? "Duration saved. Note: this block was already synced — re-sync to update Tempo."
+            : "Duration saved",
+          () => undoLastChange(day),
         );
       }
     });
@@ -140,11 +144,16 @@ export function BlockCard({
         toast.error(
           `${next ? "Mark personal" : "Mark as work"} failed — ${r.error}`,
         );
-      } else if (next && synced) {
+      } else {
         // A synced block keeps its Tempo entry — flipping it personal
         // here only stops *future* syncs, it doesn't retract the past one.
-        toast.ok(
-          "Marked personal. Note: this block is already synced — its Tempo entry stays; delete the block to remove it.",
+        toast.undoable(
+          next
+            ? synced
+              ? "Marked personal. Note: this block is already synced — its Tempo entry stays; delete the block to remove it."
+              : "Marked personal"
+            : "Marked as work",
+          () => undoLastChange(day),
         );
       }
     });
@@ -160,10 +169,7 @@ export function BlockCard({
         toast.error(`Ignore failed — ${r.error}`);
         return;
       }
-      toast.ok(`Ignored ${timeRangeLabel}`, {
-        label: "Undo",
-        onClick: () => void setIgnored(block.id, false, day),
-      });
+      toast.undoable(`Ignored ${timeRangeLabel}`, () => undoLastChange(day));
     });
   };
 

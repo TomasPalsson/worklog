@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { formatDuration } from "@/lib/format";
-import { mergeGroup } from "@/app/actions";
+import { mergeGroup, undoLastChange } from "@/app/actions";
 import { regenerateTempoLineText } from "@/app/actions-tempo-lines";
 import type { TicketDay } from "@/lib/types";
 import { toast } from "@/lib/toast";
@@ -218,7 +218,7 @@ export function useDayOps({ taskKey, onSaved, day }: Common) {
       const [primary, ...rest] = [...day.blocks].sort((a, b) => a.started_at.localeCompare(b.started_at));
       const res = await mergeGroup(primary.id, rest.map((b) => b.id), day.day);
       if (!res.ok) return void toast.error(`Merge failed — ${res.error}`);
-      toast.ok(`Merged ${day.blocks.length} blocks`);
+      toast.undoable(`Merged ${day.blocks.length} blocks`, () => undoLastChange(day.day));
       onSaved();
     });
 

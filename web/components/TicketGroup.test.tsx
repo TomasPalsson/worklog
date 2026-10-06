@@ -9,6 +9,14 @@ import { dismiss, subscribe } from "@/lib/toast";
 import { ToastHost } from "./ToastHost";
 
 const okVoid = () => mock(async () => ({ ok: true as const, data: undefined }));
+const mergeGroup = mock(async (..._a: unknown[]): Promise<{ ok: true; data: undefined } | { ok: false; error: string }> => ({
+  ok: true,
+  data: undefined,
+}));
+const undoLastChange = mock(async (_day: string) => ({
+  ok: true as const,
+  data: { outcome: "restored" as const, change: "merge" as const, block_ids: [1] },
+}));
 const okList = () => mock(async () => ({ ok: true as const, data: [] }));
 mock.module("next/navigation", () => ({
   useRouter: () => ({ refresh: mock(() => {}) }),
@@ -17,7 +25,8 @@ mock.module("next/navigation", () => ({
 // Process-wide like every mock.module: export the names every component tree
 // that shares this specifier imports, so test order must not matter.
 mock.module("@/app/actions", () => ({
-  mergeGroup: okVoid(),
+  mergeGroup,
+  undoLastChange,
   saveBillingFolder: okVoid(),
   setDuration: okVoid(),
   setDescription: okVoid(),
@@ -93,6 +102,8 @@ afterEach(() => {
   saveText.mockClear();
   saveHours.mockClear();
   regenerate.mockClear();
+  mergeGroup.mockClear();
+  undoLastChange.mockClear();
 });
 
 function renderGroup(blockGroup: BlockGroup, tempoLine?: TempoLine) {
@@ -364,6 +375,37 @@ describe("TicketGroup without a line", () => {
     renderGroup(group());
     expect(screen.getByText("joined preview")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Regenerate/ })).toBeNull();
+  });
+});
+
+describe("TicketGroup merge confirmation offers Undo (FR-29)", () => {
+  const twoBlocks = () =>
+    group({
+      blocks: [
+        { id: 2, started_at: "2026-09-25T10:00:00Z" },
+        { id: 1, started_at: "2026-09-25T09:00:00Z" },
+      ] as BlockGroup["blocks"],
+    });
+  const queued = () => {
+    let q: import("@/lib/toast").ToastMsg[] = [];
+    subscribe((m) => (q = m))();
+    return q;
+  };
+
+  it("Merged toast carries Undo, which calls undoLastChange(day)", async () => {
+    renderGroup(twoBlocks(), line());
+    fireEvent.click(screen.getByRole("button", { name: "merge all blocks on PROJ-1" }));
+    await waitFor(() => expect(queued().some((t) => t.action?.label === "Undo")).toBe(true));
+    queued().find((t) => t.action?.label === "Undo")!.action!.onClick();
+    await waitFor(() => expect(undoLastChange).toHaveBeenCalledWith("2026-09-25"));
+  });
+
+  it("a failed merge shows an error and no Undo", async () => {
+    mergeGroup.mockImplementationOnce(async () => ({ ok: false, error: "refused" }));
+    renderGroup(twoBlocks(), line());
+    fireEvent.click(screen.getByRole("button", { name: "merge all blocks on PROJ-1" }));
+    await waitFor(() => expect(queued().some((t) => t.tone === "error")).toBe(true));
+    expect(queued().some((t) => t.action?.label === "Undo")).toBe(false);
   });
 });
 

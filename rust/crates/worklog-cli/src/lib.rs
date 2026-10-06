@@ -6,6 +6,7 @@
 pub mod cli;
 pub mod daemon_client;
 mod eval_cmd;
+mod helpers_cmd;
 pub mod style;
 mod ticket_cmd;
 mod ticket_pick;

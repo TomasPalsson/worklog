@@ -6,6 +6,7 @@ import type { JiraTicket } from "@/lib/types";
 import {
   assignTicket,
   assignExternalTicket,
+  undoLastChange,
   searchJiraTickets,
 } from "@/app/actions";
 import { CreateTicketDialog } from "@/components/CreateTicketDialog";
@@ -176,6 +177,7 @@ export function TicketCombobox({ blockId, current, tickets, day, onAssigned, def
     startTransition(async () => {
       const res = await assignTicket(blockId, key, day);
       if (!res.ok) toast.error(`Assign ticket failed — ${res.error}`);
+      else toast.undoable(key ? `Assigned ${key}` : "Ticket cleared", () => undoLastChange(day));
       onAssigned?.(res.ok, key);
     });
   };
@@ -185,6 +187,7 @@ export function TicketCombobox({ blockId, current, tickets, day, onAssigned, def
     startTransition(async () => {
       const res = await assignExternalTicket(blockId, ticket, day);
       if (!res.ok) toast.error(`Assign ticket failed — ${res.error}`);
+      else toast.undoable(`Assigned ${ticket.key}`, () => undoLastChange(day));
       onAssigned?.(res.ok, ticket.key);
     });
   };

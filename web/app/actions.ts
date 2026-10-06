@@ -46,6 +46,8 @@ import {
   confirmReview as daemonConfirmReview,
   retryVerdict as daemonRetryVerdict,
 } from "@/lib/daemon";
+import { undoLast as daemonUndoLast } from "@/lib/daemonUndo";
+import type { UndoOutcome } from "@/lib/daily_helpers_contract";
 import type { VerdictState, VerdictStatus } from "@/lib/verdict_contract";
 import type { ChangeFeed, Deild } from "@/lib/deildir";
 import type {
@@ -171,6 +173,10 @@ export async function deleteBlock(
 ): Promise<ActionResult> {
   const r = await runAction(() => daemonDeleteBlock(blockId), `/${day}`);
   return r.ok ? { ok: true, data: undefined } : r;
+}
+
+export async function undoLastChange(day: string): Promise<ActionResult<UndoOutcome>> {
+  return runAction(() => daemonUndoLast(), `/${day}`);
 }
 
 // Query-style actions — `data` carries the daemon's response payload.
