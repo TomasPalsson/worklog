@@ -3,6 +3,8 @@
 // `toast.ok(...)` to show a message. Used so Server Action errors that
 // useTransition would otherwise swallow reach the user.
 
+import type { UndoOutcome } from "./daily_helpers_contract";
+
 export type Tone = "ok" | "error";
 
 /** A clickable button rendered alongside the toast text. */
@@ -39,11 +41,29 @@ function push(tone: Tone, text: string, ttlMs = 3500, action?: ToastAction) {
   }, ttlMs);
 }
 
+type UndoResult = { ok: true; data: UndoOutcome } | { ok: false; error: string };
+
+async function runUndo(undo: () => Promise<UndoResult>) {
+  const r = await undo();
+  if (!r.ok) return toast.error(`Undo failed — ${r.error}`);
+  switch (r.data.outcome) {
+    case "restored":
+      return toast.ok(`Undid ${r.data.change}`);
+    case "nothing_to_undo":
+      return toast.ok("Nothing left to undo");
+    case "refused_synced":
+      return toast.error(`Block ${r.data.block_id} was sent to Tempo; undo would desync it`);
+  }
+}
+
 export const toast = {
   ok: (text: string, action?: ToastAction) => push("ok", text, 3500, action),
   error: (text: string, action?: ToastAction) => push("error", text, 6000, action),
   // Change-batch pop-ups (FR-10): longer-lived than a plain ok toast so
   // there's time to click "Show" before it auto-dismisses.
+  // Confirmation after a block change, with Undo wired to the daemon's journal.
+  undoable: (text: string, undo: () => Promise<UndoResult>) =>
+    push("ok", text, 10000, { label: "Undo", onClick: () => void runUndo(undo) }),
   notice: (text: string, action?: ToastAction) => push("ok", text, 10000, action),
 };
 
