@@ -1,7 +1,7 @@
 "use client";
 
 import { ReactNode, useEffect, useRef, useState, useTransition } from "react";
-import { Check, GitMerge, Pencil, RefreshCw, Sparkles } from "lucide-react";
+import { Check, Eye, GitMerge, Pencil, RefreshCw, Sparkles } from "lucide-react";
 import type { BlockGroup } from "@/app/[day]/page";
 import { formatBilledHours, formatTotalHours } from "@/lib/format";
 import { canMergeGroup } from "@/lib/group-actions";
@@ -13,6 +13,7 @@ import {
 } from "@/app/actions-tempo-lines";
 import type { TempoLine } from "@/lib/tempo_line_contract";
 import { toast } from "@/lib/toast";
+import type { LineCheck } from "@/lib/verdict_contract";
 import { OriginIcon, originLabel } from "./BillingGroup";
 import { LineHours } from "./LineHours";
 
@@ -20,7 +21,7 @@ interface Props {
   group: BlockGroup;
   day: string;
   /** The day's Tempo line for this ticket; absent for the unassigned group. */
-  line?: TempoLine;
+  line?: TempoLine & { check_status?: LineCheck | null };
   /** Test-only overrides for the Tempo line server actions, as BillingGroup does. */
   saveText?: typeof saveTempoLineText;
   saveHours?: typeof saveTempoLineHours;
@@ -242,6 +243,16 @@ export function TicketGroup({
                     <OriginIcon origin={line.text_origin} />
                     {originLabel(line.text_origin)}
                   </span>
+                  {line.check_status === "needs_look" && line.text_origin === "generated" && (
+                    <span
+                      className="est-badge"
+                      data-kind="look"
+                      title="Verdict found this text vague after one rewrite — edit it before it is sent"
+                    >
+                      <Eye aria-hidden="true" />
+                      needs a look
+                    </span>
+                  )}
                   <button type="button" ref={editButtonRef} onClick={beginEdit} disabled={pending}>
                     <Pencil width={12} height={12} aria-hidden="true" />
                     Edit text

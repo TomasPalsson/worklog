@@ -4,6 +4,7 @@
 import type { Deild } from "./deildir";
 import type { LineTextOrigin } from "./clues_contract";
 import type { TicketOrigin } from "./tempo_line_contract";
+import type { RankedOption } from "./verdict_contract";
 
 /** A row from the `events` table as the daemon returns it. */
 export interface Event {
@@ -438,6 +439,8 @@ export interface RoutedEvent {
   folder: string | null;
   label_origin: LabelOrigin | null;
   label_confidence: number | null;
+  /** Verdict's stored top choices, best first; absent when it never ranked this event. */
+  ranking?: RankedOption[];
 }
 
 /** `GET /routing/status`. */

@@ -6100,3 +6100,12 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
 .verdict-state[data-state="stopped"] { color: var(--terracotta-ink); }
 .verdict-state code { font-family: var(--font-mono); font-size: 11px; background: var(--bg-sunk); padding: 1px 4px; border-radius: var(--radius-sm); }
 .verdict-unknown { color: var(--amber-ink); }
+
+/* ── verdict: day page line, one-tap picks, needs-a-look (T011) ── */
+.verdict-line { padding-left: 10px; border-left: 3px solid var(--border-strong); }
+.verdict-line[data-tone="warn"] { border-left-color: var(--amber); }
+.verdict-line .review-toggle { background: none; border: 0; padding: 0; font-family: inherit; cursor: pointer; }
+.verdict-line .review-toggle:disabled { cursor: default; opacity: 0.7; }
+.verdict-line-error { font-size: 13px; color: var(--terracotta-ink); }
+.verdict-picks-label { font-size: 12px; color: var(--fg-muted); }
+.est-badge[data-kind="look"] { color: var(--amber-ink); border-color: var(--amber-bg); }
