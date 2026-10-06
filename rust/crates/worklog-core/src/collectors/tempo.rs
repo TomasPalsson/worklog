@@ -545,7 +545,7 @@ fn sync_group_aggregated(
         .with_context(|| format!("tempo {method}"))?;
     let http_status = resp.status().as_u16();
     if !resp.status().is_success() {
-        let body = resp.text().unwrap_or_default();
+        let body = error_body(resp);
         let head_id = eligible_in_group.first().map(|b| b.id).unwrap_or(-1);
         report
             .errors
@@ -715,7 +715,7 @@ fn sync_block_legacy(
         .with_context(|| format!("tempo {method}"))?;
     let http_status = resp.status().as_u16();
     if !resp.status().is_success() {
-        let body = resp.text().unwrap_or_default();
+        let body = error_body(resp);
         report
             .errors
             .push(format!("block {}: HTTP {http_status} — {body}", b.id));
@@ -928,11 +928,21 @@ pub fn delete_worklog_with(
     if status.is_success() || status.as_u16() == 404 {
         return Ok(());
     }
-    let body = resp.text().unwrap_or_default();
+    let body = error_body(resp);
     anyhow::bail!(
         "tempo DELETE /worklogs/{id} returned HTTP {} — {body}",
         status.as_u16()
     )
+}
+
+/// The body of a failed Tempo response, never empty: an unreadable or
+/// blank body is named as such so a report line always carries a reason.
+pub(crate) fn error_body(resp: reqwest::blocking::Response) -> String {
+    match resp.text() {
+        Ok(t) if t.trim().is_empty() => "(empty response body)".to_string(),
+        Ok(t) => t,
+        Err(e) => format!("could not read response body: {e}"),
+    }
 }
 
 /// Resolve a Jira key (`PROJ-123`) to its numeric Atlassian issue id.
@@ -2752,5 +2762,119 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    fn response_with_raw(raw: &'static str) -> reqwest::blocking::Response {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf);
+            sock.write_all(raw.as_bytes()).unwrap();
+        });
+        http::client()
+            .unwrap()
+            .get(format!("http://{addr}/"))
+            .send()
+            .unwrap()
+    }
+
+    fn sync_one_rejected_write(server: &MockServer) -> CollectReport {
+        let conn = open_memory().unwrap();
+        insert_block(
+            &conn,
+            "2026-04-18",
+            "2026-04-18T09:00:00Z",
+            "2026-04-18T09:30:00Z",
+            1800,
+            Some("PROJ-1"),
+            Some("x"),
+        );
+        sync_day_with(
+            &conn,
+            &auth(server.base_url()),
+            day(),
+            false,
+            &http::client().unwrap(),
+        )
+        .unwrap()
+        .0
+    }
+
+    #[test]
+    fn error_body_returns_the_text_tempo_sent() {
+        let resp = response_with_raw(
+            "HTTP/1.1 400 Bad Request\r\nContent-Length: 15\r\n\r\nIssue is closed",
+        );
+        assert_eq!(error_body(resp), "Issue is closed");
+    }
+
+    #[test]
+    fn error_body_says_reading_failed_and_why_when_the_body_is_cut_short() {
+        // catches unwrap_or_default: a cut-off body must not become ""
+        let resp =
+            response_with_raw("HTTP/1.1 400 Bad Request\r\nContent-Length: 100\r\n\r\nshort");
+        let body = error_body(resp);
+        let prefix = "could not read response body: ";
+        assert!(body.starts_with(prefix), "{body}");
+        assert!(body.len() > prefix.len(), "{body}");
+    }
+
+    #[test]
+    fn error_body_is_never_empty_for_an_empty_body() {
+        // catches returning the raw text unchanged
+        let resp = response_with_raw("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
+        assert_eq!(error_body(resp), "(empty response body)");
+    }
+
+    #[test]
+    fn sync_report_names_tempos_status_and_body_for_a_rejected_write() {
+        // catches dropping the status or the body from the report line
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/worklogs");
+            then.status(400).body("Issue is closed");
+        });
+        let report = sync_one_rejected_write(&server);
+        assert_eq!(report.errors.len(), 1);
+        assert!(report.errors[0].contains("HTTP 400"), "{:?}", report.errors);
+        assert!(
+            report.errors[0].contains("Issue is closed"),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn sync_report_never_has_an_empty_reason_for_an_empty_error_body() {
+        // catches the sync call sites still using resp.text().unwrap_or_default()
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/worklogs");
+            then.status(502);
+        });
+        let report = sync_one_rejected_write(&server);
+        assert!(
+            report.errors[0].ends_with("HTTP 502 — (empty response body)"),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn delete_failure_names_tempos_status_and_body() {
+        // catches the delete call site still swallowing the body
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(DELETE).path("/worklogs/7");
+            then.status(409).body("Period is locked");
+        });
+        let err = delete_worklog_with(&auth(server.base_url()), "7", &http::client().unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("HTTP 409"), "{err}");
+        assert!(err.contains("Period is locked"), "{err}");
     }
 }
