@@ -346,6 +346,35 @@ fn apply_writes_both_settings_and_a_plain_run_writes_neither() {
 }
 
 #[test]
+fn a_pair_that_files_nothing_right_is_never_tuned_to() {
+    let conn = open_memory().unwrap();
+    guess(&conn, "1", None);
+    // catches: accepting the first zero-wrong pair even when it earns no right answers
+    // 0.15 is unsure at ratio > 1.5 and filed (wrong) below it, so (2.0, 2.0) has zero wrong, zero right.
+    let stub = Stub::new(&[("1", rank("A", 0.15, 0.1, 0.0))]);
+    assert_eq!(card(&conn, &stub, false).tuned, None);
+}
+
+#[test]
+fn a_run_that_could_not_ask_verdict_keeps_the_saved_summary() {
+    let conn = open_memory().unwrap();
+    let stub = tuning_log(&conn);
+    let good = card(&conn, &stub, false).summary();
+    card(&conn, &Stub::new(&[]), false);
+    // catches: finish saving an all-skipped line over the last real one
+    assert_eq!(last_summary(&conn).unwrap(), Some(good));
+}
+
+#[test]
+fn a_plain_run_is_read_only() {
+    let conn = open_memory().unwrap();
+    let stub = tuning_log(&conn);
+    run(&conn, &stub, false).unwrap();
+    // catches: run saving the summary line when it is not applying
+    assert_eq!(last_summary(&conn).unwrap(), None);
+}
+
+#[test]
 fn p95_is_the_nearest_rank() {
     let ms = |n: u64| (1..=n).collect::<Vec<u64>>();
     // catches: max instead of p95, floor instead of ceil, and a panic on empty
@@ -471,6 +500,22 @@ async fn an_unreachable_verdict_does_not_use_up_the_day() {
     std::env::remove_var("WORKLOG_ENV_FILE");
     // catches: latching (or overwriting the last summary) on a run that replayed nothing
     assert_eq!((after_down, asked.load(Ordering::SeqCst)), (None, 1));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn one_decision_verdict_never_answers_does_not_block_the_night() {
+    let (state, _g, _tmp) = nightly_state().await;
+    {
+        let conn = state.conn.lock().await;
+        guess(&conn, "2", Some("A"));
+    }
+    let (c, asked) = counting(Stub::new(&[("1", clear("A"))]));
+    scorecard_due_once(&state, c.clone(), local(6, 3, 0)).await;
+    scorecard_due_once(&state, c, local(6, 4, 0)).await;
+    let line = saved(&state).await;
+    std::env::remove_var("WORKLOG_ENV_FILE");
+    // catches: aborting on any skipped case (never saves, replays every hour)
+    assert_eq!((line.is_some(), asked.load(Ordering::SeqCst)), (true, 2));
 }
 
 #[tokio::test(flavor = "current_thread")]

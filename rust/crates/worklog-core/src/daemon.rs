@@ -564,7 +564,7 @@ async fn scorecard_nightly(
     })
     .await
     .context("spawn_blocking")?;
-    if card.skipped > 0 {
+    if card.nothing_answered() {
         tracing::debug!("nightly scorecard: Verdict not answering, will retry");
         return Ok(());
     }

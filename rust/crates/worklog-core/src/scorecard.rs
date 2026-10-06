@@ -61,6 +61,12 @@ pub struct Scorecard {
 }
 
 impl Scorecard {
+    /// Verdict could not be asked about anything; there is nothing to keep.
+    pub fn nothing_answered(&self) -> bool {
+        let total = |t: &Tally| t.right + t.wrong + t.unsure;
+        self.skipped > 0 && total(&self.project) + total(&self.ticket) == 0
+    }
+
     pub fn summary(&self) -> String {
         let t = |t: &Tally| format!("{} right, {} wrong, {} unsure", t.right, t.wrong, t.unsure);
         let thresholds = match self.tuned {
@@ -84,6 +90,9 @@ impl Scorecard {
 pub fn run(conn: &Connection, classifier: &dyn Classifier, apply: bool) -> Result<Scorecard> {
     let rule = crate::daemon::configured_route_rule();
     let replayed = replay(load(conn, Utc::now())?, classifier);
+    if !apply {
+        return Ok(score(replayed, rule, false));
+    }
     finish(conn, replayed, rule, apply)
 }
 
@@ -94,7 +103,9 @@ pub fn finish(
     apply: bool,
 ) -> Result<Scorecard> {
     let card = score(replayed, rule, apply);
-    save(conn, &card)?;
+    if !card.nothing_answered() {
+        save(conn, &card)?;
+    }
     Ok(card)
 }
 
@@ -220,7 +231,7 @@ fn tune(answered: &[(Case, Ranking)]) -> Option<(f64, f64)> {
                 runner_up_ratio: pair.1,
             };
             let t = tally(answered.iter(), rule);
-            if t.wrong == 0 && best.is_none_or(|(right, _)| t.right > right) {
+            if t.wrong == 0 && t.right > 0 && best.is_none_or(|(right, _)| t.right > right) {
                 best = Some((t.right, pair));
             }
         }
