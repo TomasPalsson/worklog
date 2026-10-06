@@ -6,6 +6,8 @@ import {
   exportMime,
   formatExportHours,
   formatFormDate,
+  FILL_IN,
+  formatLineTime,
   formFields,
   OREIKNINGSHAEFT,
   TAXTI,
@@ -148,5 +150,19 @@ describe("formFields", () => {
   it("renders Tímar with a comma decimal", () => {
     const fields = formFields(row({ hours: 5.5 }));
     expect(fields.find((f) => f.label === "Tímar")!.value).toBe("5,5");
+  });
+});
+
+describe("formatLineTime", () => {
+  it("says fill in for an empty time (a line with no blocks)", () => {
+    expect(formatLineTime("")).toBe("fill in"); // catches rendering "00:00" or "NaN:NaN"
+    expect(FILL_IN).toBe("fill in");
+  });
+
+  it("renders a real time as a local clock, not fill in", () => {
+    const iso = "2026-07-23T09:00:00Z";
+    const d = new Date(iso);
+    const want = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    expect(formatLineTime(iso)).toBe(want); // catches always returning fill in
   });
 });

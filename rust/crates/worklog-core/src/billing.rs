@@ -41,6 +41,8 @@ pub use billing_deild::resolve_block_slices;
 /// Shown wherever a field could not be resolved and the user must pick
 /// it in the form.
 pub const BLANK: &str = "—";
+/// Shown where a line has no start or end time to read off.
+pub const FILL_IN: &str = "fill in";
 
 /// `Tegund skráningar` — always a plain registration; the driving and
 /// on-call variants are never billed by this user.
@@ -128,6 +130,16 @@ impl BillingRow {
     /// `Tímar` as the form wants it: comma decimal, no trailing `,0`.
     pub fn hours_display(&self) -> String {
         format_hours(self.seconds)
+    }
+
+    /// Earliest start, or [`FILL_IN`] when the line has no blocks.
+    pub fn start_display(&self) -> &str {
+        time_or_fill_in(&self.started_at)
+    }
+
+    /// Latest end, or [`FILL_IN`] when the line has no blocks.
+    pub fn end_display(&self) -> &str {
+        time_or_fill_in(&self.ended_at)
     }
 
     /// True when the user still has to pick something for this line.
@@ -782,6 +794,14 @@ fn format_hours(seconds: i64) -> String {
         format!("{whole},5")
     } else {
         format!("{whole}")
+    }
+}
+
+fn time_or_fill_in(t: &str) -> &str {
+    if t.is_empty() {
+        FILL_IN
+    } else {
+        t
     }
 }
 
@@ -1792,6 +1812,27 @@ mod tests {
                 text_origin: None,
             },
         ]
+    }
+
+    #[test]
+    fn a_line_with_no_blocks_says_fill_in_for_both_times() {
+        let mut r = sample_rows().remove(0);
+        r.started_at = String::new();
+        r.ended_at = String::new();
+        assert_eq!(r.start_display(), "fill in"); // catches an empty-string passthrough
+        assert_eq!(r.end_display(), "fill in");
+    }
+
+    #[test]
+    fn each_missing_time_says_fill_in_independently() {
+        let mut r = sample_rows().remove(0);
+        r.started_at = String::new();
+        assert_eq!(r.start_display(), "fill in");
+        assert_eq!(r.end_display(), "2026-07-23T14:30:00Z"); // catches filling both when one is missing
+        r.started_at = "2026-07-23T09:00:00Z".into();
+        r.ended_at = String::new();
+        assert_eq!(r.start_display(), "2026-07-23T09:00:00Z");
+        assert_eq!(r.end_display(), "fill in");
     }
 
     #[test]

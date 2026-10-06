@@ -7,6 +7,7 @@
 // mechanic. Keeping it dependency-free means it unit-tests without a
 // DOM or a Next runtime.
 
+import { formatClock } from "./format";
 import type { BillingRow } from "./types";
 
 /**
@@ -38,6 +39,14 @@ export const REIKNINGSHAEFT = "Reikningshæft";
 export const OREIKNINGSHAEFT = "Óreikningshæft";
 /** Shown where a value could not be resolved and the user must pick it. */
 export const BLANK = "—";
+
+/** Shown where a line has no start or end time to read off. */
+export const FILL_IN = "fill in";
+
+/** A line's start or end as a local clock, or "fill in" when it has none. */
+export function formatLineTime(iso: string): string {
+  return iso === "" ? FILL_IN : formatClock(iso);
+}
 
 export function reikningshaefi(billable: boolean): string {
   return billable ? REIKNINGSHAEFT : OREIKNINGSHAEFT;
