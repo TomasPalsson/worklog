@@ -345,12 +345,30 @@ fn real_proc_kill_takes_down_grandchildren() {
         log: "/nonexistent".into(),
     };
     p.kill();
-    let alive = Command::new("kill")
-        .args(["-0", &grandchild])
-        .status()
-        .unwrap()
-        .success();
-    assert!(!alive, "grandchild {grandchild} survived kill");
+    // On Linux the SIGKILLed grandchild can linger as an unreaped zombie (kill -0 still succeeds), so poll and treat 'Z' as dead.
+    let gone = || {
+        let alive = Command::new("kill")
+            .args(["-0", &grandchild])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        if !alive {
+            return true;
+        }
+        let ps = Command::new("ps")
+            .args(["-o", "stat=", "-p", &grandchild])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&ps.stdout)
+            .trim_start()
+            .starts_with('Z')
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !gone() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(gone(), "grandchild {grandchild} survived kill");
 }
 
 #[test]
