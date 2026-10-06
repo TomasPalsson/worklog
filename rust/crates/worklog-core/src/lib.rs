@@ -69,6 +69,7 @@ pub mod preflight;
 pub mod prompt_snippets;
 pub mod purge;
 pub mod raw_json;
+pub mod recap;
 pub mod repo;
 pub mod report;
 pub mod routing;

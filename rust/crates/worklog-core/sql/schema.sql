@@ -485,3 +485,19 @@ CREATE TABLE IF NOT EXISTS verdict_decisions (
 );
 CREATE INDEX IF NOT EXISTS idx_verdict_decisions_subject ON verdict_decisions(kind, subject);
 CREATE INDEX IF NOT EXISTS idx_verdict_decisions_at ON verdict_decisions(decided_at);
+
+-- ───────────────────────── 17:00 recap (spec 018) ─────────────────────────
+-- The recap built at the end of the 17:00 auto-send run (recap.rs), as JSON.
+CREATE TABLE IF NOT EXISTS recaps (
+    day TEXT PRIMARY KEY,
+    json TEXT NOT NULL,
+    built_at TEXT NOT NULL
+);
+
+-- Gaps the Owner recorded as a break: not time worked, not a gap any more.
+CREATE TABLE IF NOT EXISTS recap_breaks (
+    day TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT NOT NULL,
+    PRIMARY KEY(day, started_at)
+);
