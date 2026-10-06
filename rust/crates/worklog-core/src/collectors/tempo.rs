@@ -27,6 +27,7 @@ use tracing::debug;
 
 use crate::billing_round::round_to_half_hour;
 use crate::collectors::jira::JiraAuth;
+use crate::daily_helpers_contract::MatchVerdict;
 use crate::estimate::{self, ModelInvoker};
 use crate::http::{self, RequestBuilderExt};
 use crate::models::TempoAccount;
@@ -35,6 +36,8 @@ use crate::tempo_hub_contract::{HubError, PulledWorklog, RequiredDay, TEMPO_PAGE
 use crate::tempo_line_contract::TempoLineKey;
 use crate::tempo_line_writer;
 use crate::tempo_lines;
+use crate::tempo_match;
+use crate::verdict;
 
 use super::CollectReport;
 
@@ -149,6 +152,36 @@ pub fn sync_day_with_invoker_for(
     model: &str,
     only_issue: Option<&str>,
 ) -> Result<(CollectReport, Vec<SyncResult>)> {
+    sync_day_with_matcher(
+        conn,
+        auth,
+        day,
+        dry_run,
+        client,
+        invoker,
+        model,
+        only_issue,
+        &verdict::match_texts,
+    )
+}
+
+/// Decides, per candidate hand entry, whether it is the same work as the line
+/// (`verdict::match_texts` in production).
+pub type Matcher<'a> = &'a dyn Fn(&str, &[String]) -> Result<Vec<bool>>;
+
+/// [`sync_day_with_invoker_for`] with the already-in-Tempo matcher injected.
+#[allow(clippy::too_many_arguments)]
+pub fn sync_day_with_matcher(
+    conn: &Connection,
+    auth: &TempoAuth,
+    day: NaiveDate,
+    dry_run: bool,
+    client: &Client,
+    invoker: Option<&dyn ModelInvoker>,
+    model: &str,
+    only_issue: Option<&str>,
+    matcher: Matcher,
+) -> Result<(CollectReport, Vec<SyncResult>)> {
     let mut report = CollectReport {
         source: "tempo",
         ..Default::default()
@@ -229,8 +262,8 @@ pub fn sync_day_with_invoker_for(
         };
 
         match classification {
-            // Hand-logged Tempo entries on the same ticket-day are extra work worklog can't see
-            // (meetings etc.), not a copy of this line, so they never block it.
+            // A hand entry blocks the send only when it is the same work as this line
+            // (`tempo_match`); other hand entries on the ticket-day are extra work.
             GroupClassification::AllUnsynced => {
                 sync_group_aggregated(
                     conn,
@@ -245,6 +278,7 @@ pub fn sync_day_with_invoker_for(
                     dry_run,
                     invoker,
                     model,
+                    matcher,
                     &mut report,
                     &mut results,
                 )?;
@@ -263,6 +297,7 @@ pub fn sync_day_with_invoker_for(
                     dry_run,
                     invoker,
                     model,
+                    matcher,
                     &mut report,
                     &mut results,
                 )?;
@@ -411,6 +446,7 @@ fn sync_group_aggregated(
     dry_run: bool,
     invoker: Option<&dyn ModelInvoker>,
     model: &str,
+    matcher: Matcher,
     report: &mut CollectReport,
     results: &mut Vec<SyncResult>,
 ) -> Result<()> {
@@ -444,6 +480,42 @@ fn sync_group_aggregated(
             });
         }
         return Ok(());
+    }
+    if existing_id.is_none() {
+        let mut already = tempo_match::is_already(conn, &line);
+        if !already && !dry_run {
+            let day = NaiveDate::parse_from_str(&day_str, "%Y-%m-%d")?;
+            let verdict = match list_worklogs_with(auth, author, day, day, client) {
+                Ok(existing) => tempo_match::check_line(conn, &line, &existing, matcher),
+                Err(e) => MatchVerdict::Unchecked {
+                    reason: format!("Tempo read failed: {e}"),
+                },
+            };
+            match verdict {
+                MatchVerdict::AlreadyInTempo { tempo_worklog_id } => {
+                    tempo_match::mark_already(conn, &line, &tempo_worklog_id)?;
+                    already = true;
+                }
+                MatchVerdict::Different => {}
+                MatchVerdict::Unchecked { reason } => {
+                    debug!(issue, reason, "already-in-Tempo check unavailable; sending");
+                }
+            }
+        }
+        if already {
+            for b in eligible_in_group {
+                report.skipped += 1;
+                results.push(SyncResult {
+                    block_id: b.id,
+                    status: "skipped",
+                    reason: Some("already in Tempo".into()),
+                    tempo_id: None,
+                    payload: None,
+                    http_status: None,
+                });
+            }
+            return Ok(());
+        }
     }
     let earliest_started = all_in_group
         .iter()
@@ -2895,5 +2967,181 @@ mod tests {
             .to_string();
         assert!(err.contains("HTTP 409"), "{err}");
         assert!(err.contains("Period is locked"), "{err}");
+    }
+
+    fn sync_matching(
+        conn: &Connection,
+        server: &MockServer,
+        dry_run: bool,
+        matcher: Matcher,
+    ) -> (CollectReport, Vec<SyncResult>) {
+        sync_day_with_matcher(
+            conn,
+            &auth(server.base_url()),
+            day(),
+            dry_run,
+            &http::client().unwrap(),
+            None,
+            estimate::DEFAULT_MODEL,
+            None,
+            matcher,
+        )
+        .unwrap()
+    }
+
+    fn hand_entry(server: &MockServer, seconds: i64) -> httpmock::Mock<'_> {
+        server.mock(|when, then| {
+            when.method(GET).path("/worklogs/user/tomas@p5.is");
+            then.status(200).json_body(json!({"results": [{
+                "tempoWorklogId": 555,
+                "startDate": "2026-04-18",
+                "issue": {"id": 10000},
+                "timeSpentSeconds": seconds,
+                "description": "hand entry"
+            }]}));
+        })
+    }
+
+    fn any_post(server: &MockServer) -> httpmock::Mock<'_> {
+        server.mock(|when, then| {
+            when.method(POST).path("/worklogs");
+            then.status(200).json_body(json!({"tempoWorklogId": 9}));
+        })
+    }
+
+    fn all_skipped_already(results: &[SyncResult]) -> bool {
+        results.len() == 2
+            && results
+                .iter()
+                .all(|r| r.status == "skipped" && r.reason.as_deref() == Some("already in Tempo"))
+    }
+
+    #[test]
+    fn matching_hand_entry_is_not_sent_and_the_line_is_marked() {
+        let server = MockServer::start();
+        let read = hand_entry(&server, 3600);
+        let post = any_post(&server);
+        let conn = open_memory().unwrap();
+        seed_two_blocks(&conn);
+
+        let (report, results) =
+            sync_matching(&conn, &server, false, &|_, t| Ok(vec![true; t.len()]));
+
+        read.assert_hits(1);
+        post.assert_hits(0); // catches: sending anyway after an AlreadyInTempo verdict
+        assert!(all_skipped_already(&results), "{results:?}");
+        assert_eq!((report.synced, report.skipped), (0, 2));
+        let line = tempo_lines::line_for(&conn, &line_key()).unwrap().unwrap();
+        assert!(crate::tempo_match::is_already(&conn, &line)); // catches: not recording the match
+    }
+
+    #[test]
+    fn a_line_already_marked_is_skipped_without_reading_tempo() {
+        let server = MockServer::start();
+        let read = hand_entry(&server, 3600);
+        let post = any_post(&server);
+        let conn = open_memory().unwrap();
+        seed_two_blocks(&conn);
+        let line = tempo_lines::line_for(&conn, &line_key()).unwrap().unwrap();
+        crate::tempo_match::mark_already(&conn, &line, "555").unwrap();
+
+        let (_, results) = sync_matching(&conn, &server, false, &|_, _| panic!("matcher asked"));
+
+        read.assert_hits(0); // catches: re-reading Tempo for a line already marked (FR-10)
+        post.assert_hits(0);
+        assert!(all_skipped_already(&results), "{results:?}");
+    }
+
+    #[test]
+    fn different_work_is_sent_as_today() {
+        let server = MockServer::start();
+        hand_entry(&server, 3600);
+        let post = any_post(&server);
+        let conn = open_memory().unwrap();
+        seed_two_blocks(&conn);
+
+        let (report, _) = sync_matching(&conn, &server, false, &|_, t| Ok(vec![false; t.len()]));
+
+        post.assert_hits(1); // catches: skipping on any hand entry (the old FR-07 conflation)
+        assert_eq!(report.synced, 1);
+    }
+
+    #[test]
+    fn an_unavailable_matcher_still_sends() {
+        let server = MockServer::start();
+        hand_entry(&server, 3600);
+        let post = any_post(&server);
+        let conn = open_memory().unwrap();
+        seed_two_blocks(&conn);
+
+        let (report, _) =
+            sync_matching(&conn, &server, false, &|_, _| Err(anyhow::anyhow!("down")));
+
+        post.assert_hits(1); // catches: treating a failed check as "already in Tempo"
+        assert_eq!(report.synced, 1);
+    }
+
+    #[test]
+    fn a_failed_tempo_read_still_sends_without_asking_the_matcher() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/worklogs/user/tomas@p5.is");
+            then.status(500).body("boom");
+        });
+        let post = any_post(&server);
+        let conn = open_memory().unwrap();
+        seed_two_blocks(&conn);
+
+        let (report, _) = sync_matching(&conn, &server, false, &|_, _| panic!("matcher asked"));
+
+        post.assert_hits(1); // catches: propagating the read error and losing the send
+        assert_eq!(report.synced, 1);
+    }
+
+    #[test]
+    fn hours_beyond_tolerance_never_reach_the_matcher() {
+        let server = MockServer::start();
+        hand_entry(&server, 3600 + 1801);
+        let post = any_post(&server);
+        let conn = open_memory().unwrap();
+        seed_two_blocks(&conn);
+
+        sync_matching(&conn, &server, false, &|_, _| panic!("matcher asked"));
+
+        post.assert_hits(1); // catches: passing every same-day entry to the matcher
+    }
+
+    #[test]
+    fn an_already_sent_line_is_updated_without_the_check() {
+        let server = MockServer::start();
+        let read = hand_entry(&server, 3600);
+        let conn = open_memory().unwrap();
+        seed_two_blocks(&conn);
+        conn.execute("UPDATE blocks SET tempo_worklog_id = '42', dirty = 1", [])
+            .unwrap();
+        let put = server.mock(|when, then| {
+            when.method(PUT).path("/worklogs/42");
+            then.status(200).json_body(json!({"tempoWorklogId": 42}));
+        });
+
+        sync_matching(&conn, &server, false, &|_, _| panic!("matcher asked"));
+
+        read.assert_hits(0); // catches: checking a line worklog already sent
+        put.assert_hits(1);
+    }
+
+    #[test]
+    fn dry_run_reads_nothing_and_writes_nothing() {
+        let server = MockServer::start();
+        let read = hand_entry(&server, 3600);
+        let post = any_post(&server);
+        let conn = open_memory().unwrap();
+        seed_two_blocks(&conn);
+
+        let (_, results) = sync_matching(&conn, &server, true, &|_, _| panic!("matcher asked"));
+
+        read.assert_hits(0); // catches: a dry run hitting Tempo
+        post.assert_hits(0);
+        assert_eq!(results[0].status, "dry-run");
     }
 }
