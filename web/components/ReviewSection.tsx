@@ -165,11 +165,14 @@ function Row({
   return (
     <li className="review-sec-line" data-status={line.status}>
       <span className="review-sec-ticket">{line.jira_issue}</span>
-      <span className="review-sec-hours">{hoursOf(line.seconds)} h</span>
+      <span className="review-sec-hours">{hoursOf(line.seconds)}h</span>
       <div className="review-sec-text">
         {line.text}
         {line.status === "not_sent" && (
-          <p className="review-sec-error">Not sent: {line.error}</p>
+          <>
+            <p className="review-sec-error">Not sent: {line.error}</p>
+            <p className="review-sec-rejected-hint">Change the ticket or text from Open day, then Send again.</p>
+          </>
         )}
         {error && <p className="review-sec-error">{error}</p>}
       </div>
@@ -234,6 +237,7 @@ function DayGroup({
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const sent = lines.filter((l) => l.status === "sent").length;
+  const allSent = sent === lines.length;
 
   const confirmAll = () => {
     setError(null);
@@ -251,9 +255,9 @@ function DayGroup({
         <Link href={`/${day}`} className="review-toggle">
           Open day
         </Link>
-        {sent > 0 && (
+        {sent > 0 && !(allSent && sent === 1) && (
           <button type="button" className="review-toggle" disabled={pending} onClick={confirmAll}>
-            {pending ? "Confirming…" : `Confirm all ${sent}`}
+            {pending ? "Confirming…" : allSent ? `Confirm all ${sent}` : `Confirm ${sent} sent`}
           </button>
         )}
         {error && <span className="review-sec-error">{error}</span>}
@@ -285,8 +289,8 @@ export function ReviewSection({
       {lines.length > 0 && (
         <section className="review-sec" aria-labelledby="review-sec-title">
           <header className="review-sec-head">
-            <h2 id="review-sec-title">Sent to Tempo — check these</h2>
-            <span className="review-sec-count">{lines.length} lines</span>
+            <h2 id="review-sec-title">Tempo lines — check these</h2>
+            <span className="review-sec-count">{lines.length} {lines.length === 1 ? "line" : "lines"}</span>
             <p className="review-sec-hint">
               Confirm each line, or fix it; a fix updates the same Tempo
               worklog.

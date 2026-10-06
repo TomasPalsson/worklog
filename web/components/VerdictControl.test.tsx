@@ -78,6 +78,39 @@ describe("VerdictControl state line", () => {
     expect(screen.getByText("Checking Verdict…")).toBeTruthy();
   });
 
+  // catches: leaving the box live before the state is known
+  it("disables the box until the first status fetch resolves", async () => {
+    let resolve: (v: Ok<VerdictStatus>) => void = () => {};
+    render(
+      <VerdictControl
+        day="d"
+        autoSend={false}
+        onAutoSend={() => {}}
+        fetchStatus={() => new Promise((r) => (resolve = r))}
+      />,
+    );
+    expect(box().disabled).toBe(true);
+    resolve({ ok: true, data: status({ state: "off" }) });
+    await stateLine();
+    expect(box().disabled).toBe(false);
+  });
+
+  // catches: only enabling on success, not on a thrown fetch
+  it("enables the box again when the fetch throws", async () => {
+    render(
+      <VerdictControl
+        day="d"
+        autoSend={false}
+        onAutoSend={() => {}}
+        fetchStatus={async () => {
+          throw new Error("down");
+        }}
+      />,
+    );
+    await screen.findByText("Couldn't reach worklog — Verdict's state is unknown.");
+    expect(box().disabled).toBe(false);
+  });
+
   // catches: swallowing the error, or disabling the box on failure
   it("shows the unknown-state message on fetch error and keeps the box enabled", async () => {
     setup({ ok: false, error: "boom" });

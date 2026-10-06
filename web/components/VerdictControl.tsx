@@ -94,7 +94,7 @@ export function VerdictControl({
           type="checkbox"
           aria-label="Run Verdict"
           checked={state !== undefined && state !== "off"}
-          disabled={toggling}
+          disabled={toggling || (status === null && !unknown)}
           onChange={(e) => {
             const on = e.target.checked;
             startToggle(async () => {

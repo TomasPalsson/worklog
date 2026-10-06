@@ -33,9 +33,29 @@ describe("ReviewSection list", () => {
 
   it("shows count, hint and decimal hours", () => {
     setup([L1, L2, L3]);
-    expect(screen.getByText("Sent to Tempo — check these")).toBeTruthy();
+    expect(screen.getByText("Tempo lines — check these")).toBeTruthy();
     expect(screen.getByText("3 lines")).toBeTruthy();
-    expect(screen.getAllByText("1.5 h").length).toBe(3);
+    expect(screen.getAllByText("1.5h").length).toBe(3); // catches the hand-rolled "1.5 h" with a space
+  });
+
+  it("counts one line in the singular", () => {
+    setup([L1]);
+    expect(screen.getByText("1 line")).toBeTruthy(); // catches always-plural "1 lines"
+  });
+
+  it("shows no day action for a day with a single sent row", () => {
+    setup([L1]);
+    expect(screen.queryByRole("button", { name: /^Confirm/ })).toBeNull(); // catches "Confirm all 1"
+  });
+
+  it("shows no day action for a day with only not-sent rows", () => {
+    setup([line({ day: "2026-10-05", jira_issue: "AB-9", status: "not_sent", error: "x" })]);
+    expect(screen.queryByRole("button", { name: /^Confirm/ })).toBeNull(); // catches rendering at 0 sent
+  });
+
+  it("labels a mixed day with one sent row 'Confirm 1 sent'", () => {
+    setup([L1, line({ day: "2026-10-05", jira_issue: "AB-9", status: "not_sent", error: "x" })]);
+    expect(screen.getByRole("button", { name: "Confirm 1 sent" })).toBeTruthy(); // catches hiding at n = 1 when not-sent rows exist
   });
 
   it("groups by day, newest first, even when given oldest first", () => {
@@ -70,7 +90,7 @@ describe("ReviewSection list", () => {
   it("Confirm all calls with the day only and counts sent lines only", async () => {
     const ns = line({ day: "2026-10-05", jira_issue: "AB-9", status: "not_sent", error: "boom" });
     const { confirm } = setup([L1, L2, ns]);
-    fireEvent.click(screen.getByRole("button", { name: "Confirm all 2" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 2 sent" })); // mixed day: not "Confirm all"
     await waitFor(() => expect(confirm).toHaveBeenCalledWith("2026-10-05"));
     expect(confirm.mock.calls[0].length).toBe(1); // catches passing an undefined issue
     await waitFor(() => expect(screen.queryByText("AB-1")).toBeNull());
@@ -84,6 +104,7 @@ describe("ReviewSection not sent", () => {
   it("shows the message and Send again, never Looks right", () => {
     setup([ns]);
     expect(screen.getByText("Not sent: Tempo said no")).toBeTruthy();
+    expect(screen.getByText("Change the ticket or text from Open day, then Send again.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Send again" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Looks right" })).toBeNull();
   });
@@ -111,6 +132,7 @@ describe("ReviewSection sync body errors", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send again" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Looks right" })).toBeTruthy());
     expect(screen.queryByText(/Not sent:/)).toBeNull();
+    expect(screen.queryByText(/Change the ticket or text/)).toBeNull(); // hint leaves with the rejection
   });
 
   it("Save with errors[] in an ok body stays in edit mode and never confirms", async () => {
@@ -130,7 +152,7 @@ describe("ReviewSection edit", () => {
   it("renders non-quarter-hour seconds at fixed precision, not raw floats", () => {
     // catches seconds / 3600 unformatted (0.3333333333333333)
     setup([line({ day: "2026-10-05", jira_issue: "AB-1", seconds: 1200 })]);
-    expect(screen.getByText("0.33 h")).toBeTruthy();
+    expect(screen.getByText("0.33h")).toBeTruthy();
     open();
     expect((screen.getByLabelText("Hours") as HTMLInputElement).value).toBe("0.33");
     expect(save().disabled).toBe(true);
@@ -138,7 +160,7 @@ describe("ReviewSection edit", () => {
 
   it("renders 2700 s as 0.75 h", () => {
     setup([line({ day: "2026-10-05", jira_issue: "AB-1", seconds: 2700 })]);
-    expect(screen.getByText("0.75 h")).toBeTruthy();
+    expect(screen.getByText("0.75h")).toBeTruthy();
   });
 
   it("opens labelled fields and disables Save until something changes", () => {
