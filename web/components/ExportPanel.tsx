@@ -34,10 +34,10 @@ import {
   exportFilename,
   exportMime,
   formatExportHours,
+  formatLineTime,
   formFields,
   totalBilledHours,
 } from "@/lib/export";
-import { formatRange } from "@/lib/format";
 import { toast } from "@/lib/toast";
 import type { ExportResponse } from "@/lib/types";
 
@@ -298,7 +298,7 @@ export function ExportPanel({ day }: Props) {
                     <div>
                       <dt>When</dt>
                       <dd>
-                        {formatRange(current.started_at, current.ended_at)} ·{" "}
+                        {formatLineTime(current.started_at)}–{formatLineTime(current.ended_at)} ·{" "}
                         {current.block_count} block
                         {current.block_count === 1 ? "" : "s"}
                       </dd>

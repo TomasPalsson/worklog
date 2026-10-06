@@ -827,8 +827,10 @@ fn render_text(rows: &[BillingRow]) -> String {
     rows.iter()
         .map(|r| {
             format!(
-                "{}  {}  {}  {} hrs  {}  {}",
+                "{}  {}–{}  {}  {}  {} hrs  {}  {}",
                 r.date_display(),
+                r.start_display(),
+                r.end_display(),
                 pad(or_blank(&r.customer), cw),
                 pad(or_blank(&r.verkefni), vw),
                 pad(&r.hours_display(), hw),
@@ -1856,6 +1858,21 @@ mod tests {
         assert!(lines[0].contains("5,5 hrs"));
         assert!(lines[0].contains(REIKNINGSHAEFT));
         assert!(lines[1].contains(BLANK), "unresolved fields show a dash");
+    }
+
+    #[test]
+    fn text_line_with_no_blocks_shows_fill_in_for_both_times() {
+        let mut rows = sample_rows();
+        rows[0].started_at = String::new();
+        rows[0].ended_at = String::new();
+        let out = render(&rows, Format::Text);
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines[0].contains("fill in–fill in"), "{}", lines[0]);
+        assert!(
+            lines[1].contains("2026-07-23T15:00:00Z–2026-07-23T19:00:00Z"),
+            "{}",
+            lines[1]
+        );
     }
 
     #[test]
