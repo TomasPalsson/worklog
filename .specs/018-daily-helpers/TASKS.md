@@ -1,3 +1,4 @@
+Approved: 2026-10-06 by user
 # Tasks — Daily helpers
 Spec: spec.md · Design: design.md · Base: 6eb7a92 · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && (cd web && bun test)`
 
