@@ -354,3 +354,96 @@ async fn three_bad_replies_fail_forced_loudly_and_store_nothing_unforced() {
     assert_eq!(lines[0]["text"], serde_json::Value::Null);
 }
 
+// --- Verdict text check on generated lines (spec 017 FR-19..FR-21, B6) ------
+
+const SUMMARY: &str = "Fix login redirect";
+const GOOD: &str = "Lagaði villu í innskráningu. Prófaði breytinguna.";
+const VAGUE: &str = "Vann í ýmsum verkefnum. Sinnti ýmsu.";
+
+fn with_summary(state: &Shared) -> &Shared {
+    state
+        .conn
+        .try_lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO jira_tickets (key, summary) VALUES ('APRO-1', ?1)",
+            [SUMMARY],
+        )
+        .unwrap();
+    state
+}
+
+/// Verdict stand-in: only `GOOD` is about the ticket and specific.
+fn verdict(seen: Seen) -> impl Fn(&str, &[String]) -> anyhow::Result<Vec<bool>> + Send + 'static {
+    move |query, texts| {
+        seen.lock().unwrap().push(query.to_string());
+        Ok(texts.iter().map(|t| t == GOOD).collect())
+    }
+}
+
+async fn checked(state: &Shared, replies: &'static [&'static str]) -> (Vec<String>, Vec<String>) {
+    let (model, asked) = (Seen::default(), Seen::default());
+    crate::daemon::daemon_tempo_lines::generate_tempo_lines_with(
+        state.clone(),
+        DAY.to_string(),
+        None,
+        scripted_invoker(replies, model.clone()),
+        verdict(asked.clone()),
+    )
+    .await
+    .unwrap();
+    let model = model.lock().unwrap().clone();
+    let asked = asked.lock().unwrap().clone();
+    (model, asked)
+}
+
+async fn stored(state: &Shared) -> (Option<String>, Option<String>) {
+    state
+        .conn
+        .lock()
+        .await
+        .query_row(
+            "SELECT text, check_status FROM tempo_line_texts WHERE jira_issue = 'APRO-1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn generated_vague_line_is_regenerated_once_then_flagged() {
+    // catches: generation never running the check or never storing it (B6)
+    let state = state_with_two_block_line();
+    let (model, _) = checked(with_summary(&state), &[VAGUE, VAGUE]).await;
+    assert_eq!(model.len(), 2);
+    assert_eq!(stored(&state).await, (Some(VAGUE.to_string()), Some("needs_look".to_string())));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn generated_good_line_is_stored_passed_without_a_regenerate() {
+    // catches: flagging unconditionally, regenerating a passing line, or asking about the wrong ticket
+    let state = state_with_two_block_line();
+    let (model, asked) = checked(with_summary(&state), &[GOOD]).await;
+    assert_eq!(model.len(), 1);
+    assert_eq!(asked[0], SUMMARY);
+    assert_eq!(stored(&state).await, (Some(GOOD.to_string()), Some("passed".to_string())));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn generated_vague_line_is_replaced_by_a_passing_regenerate() {
+    // catches: storing the first text after the regenerate passed
+    let state = state_with_two_block_line();
+    checked(with_summary(&state), &[VAGUE, GOOD]).await;
+    assert_eq!(stored(&state).await, (Some(GOOD.to_string()), Some("passed".to_string())));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn generated_line_without_a_cached_ticket_summary_is_not_checked() {
+    // catches: checking against an empty summary and flagging every uncached ticket
+    let state = state_with_two_block_line();
+    let (model, asked) = checked(&state, &[VAGUE]).await;
+    assert_eq!(model.len(), 1);
+    assert!(asked.is_empty());
+    assert_eq!(stored(&state).await, (Some(VAGUE.to_string()), None));
+}
+
