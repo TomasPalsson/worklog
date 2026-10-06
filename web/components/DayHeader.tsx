@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { formatTotalHours, shiftDay, todayISO } from "@/lib/format";
 import { DateJumper } from "./DateJumper";
+import { StandupButton } from "./StandupButton";
 
 interface Props {
   day: string;
@@ -99,6 +100,7 @@ export function DayHeader({
         </Link>
         <DateJumper focusedDay={day} view="day" />
       </nav>
+      {isToday && <StandupButton />}
     </header>
   );
 }

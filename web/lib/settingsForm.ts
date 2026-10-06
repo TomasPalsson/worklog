@@ -4,6 +4,10 @@
 
 import type { SettingsUpdate, SettingsView } from "./types";
 
+/** The daemon already sends and accepts `daily_channel`; `SettingsView` and
+ * `SettingsUpdate` in types.ts do not declare it yet. */
+type WithChannel<T> = T & { daily_channel?: string };
+
 export interface SettingsFormState {
   work: string;
   personal: string;
@@ -14,6 +18,8 @@ export interface SettingsFormState {
   workHours: string;
   abstainMargin: string;
   runnerUpRatio: string;
+  /** Optional so SettingsPanel's empty initial state needs no change. */
+  dailyChannel?: string;
   secretInputs: Record<string, string>;
 }
 
@@ -32,7 +38,7 @@ export function initialSecretInput(sensitive: boolean, value: string | null): st
 }
 
 /** Hydrate editable form state from a freshly (re)loaded settings snapshot. */
-export function formStateFromView(v: SettingsView): SettingsFormState {
+export function formStateFromView(v: WithChannel<SettingsView>): SettingsFormState {
   const secretInputs: Record<string, string> = {};
   for (const f of v.secrets) secretInputs[f.key] = initialSecretInput(f.sensitive, f.value);
   return {
@@ -45,16 +51,17 @@ export function formStateFromView(v: SettingsView): SettingsFormState {
     workHours: v.work_hours,
     abstainMargin: String(v.abstain_margin),
     runnerUpRatio: String(v.runner_up_ratio),
+    dailyChannel: v.daily_channel ?? "",
     secretInputs,
   };
 }
 
 /** Diff the live form against the last-loaded view. `null` when nothing changed. */
 export function buildSettingsUpdate(
-  view: SettingsView,
+  view: WithChannel<SettingsView>,
   form: SettingsFormState,
 ): SettingsUpdate | null {
-  const update: SettingsUpdate = {};
+  const update: WithChannel<SettingsUpdate> = {};
 
   const workArr = splitLines(form.work);
   const personalArr = splitLines(form.personal);
@@ -95,6 +102,10 @@ export function buildSettingsUpdate(
     }
   }
 
+  if ((form.dailyChannel ?? "").trim() !== (view.daily_channel ?? "").trim()) {
+    update.daily_channel = (form.dailyChannel ?? "").trim();
+  }
+
   const secrets: Record<string, string> = {};
   for (const f of view.secrets) {
     const initial = initialSecretInput(f.sensitive, f.value);
@@ -112,7 +123,8 @@ export function buildSettingsUpdate(
     update.close_day === undefined &&
     update.work_hours === undefined &&
     update.abstain_margin === undefined &&
-    update.runner_up_ratio === undefined;
+    update.runner_up_ratio === undefined &&
+    update.daily_channel === undefined;
 
   return nothingChanged ? null : update;
 }

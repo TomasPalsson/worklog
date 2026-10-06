@@ -139,6 +139,34 @@ function PrunerSection({
   );
 }
 
+function DailySection({
+  form,
+  patch,
+}: {
+  form: SettingsFormState;
+  patch: (p: Partial<SettingsFormState>) => void;
+}) {
+  return (
+    <section className="settings-section">
+      <h3>Daily standup</h3>
+      <p className="settings-hint">
+        Slack channel whose &ldquo;Daily:thread&rdquo; message the standup is
+        posted under. Leave empty to copy the standup instead of posting it.
+      </p>
+      <label className="settings-field settings-field-narrow">
+        <span>Daily channel</span>
+        <input
+          type="text"
+          value={form.dailyChannel}
+          placeholder="daily"
+          autoComplete="off"
+          onChange={(e) => patch({ dailyChannel: e.target.value })}
+        />
+      </label>
+    </section>
+  );
+}
+
 function RoutingSection({
   form,
   patch,
@@ -192,6 +220,7 @@ export function SettingsBody({
       <TimezoneSection form={form} patch={patch} />
       <PrunerSection form={form} patch={patch} />
       <RoutingSection form={form} patch={patch} day={day} />
+      <DailySection form={form} patch={patch} />
       <CredentialGroups
         secrets={view.secrets}
         values={form.secretInputs}
