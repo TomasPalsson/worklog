@@ -56,7 +56,8 @@ describe("ReviewSection list", () => {
   it("section disappears when the last line is confirmed", async () => {
     const { container } = setup([L1]);
     fireEvent.click(screen.getByRole("button", { name: "Looks right" }));
-    await waitFor(() => expect(container.innerHTML).toBe(""));
+    await waitFor(() => expect(container.querySelector("section")).toBeNull());
+    expect(container.textContent).toBe("Confirmed AB-1"); // only the live region remains
   });
 
   it("a failed confirm keeps the row and shows the message", async () => {
@@ -253,6 +254,13 @@ describe("ReviewSection polish", () => {
     expect(live().textContent).toBe("");
     fireEvent.click(rowOf("AB-1").getByRole("button", { name: "Looks right" }));
     await waitFor(() => expect(live().textContent).toBe("Confirmed AB-1"));
+  });
+
+  it("announces the last confirmed row after the section empties", async () => {
+    setup([L1]);
+    fireEvent.click(rowOf("AB-1").getByRole("button", { name: "Looks right" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Looks right" })).toBeNull());
+    expect(live().textContent).toBe("Confirmed AB-1");
   });
 
   it("announces a saved row", async () => {

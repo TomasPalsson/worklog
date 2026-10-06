@@ -265,7 +265,15 @@ export function ReviewSection({
 }: { lines: ReviewLine[] } & Actions) {
   const [lines, setLines] = useState(initial);
   const [announcement, setAnnouncement] = useState("");
-  if (lines.length === 0) return null;
+  // Keep the live region mounted after the last row leaves so its message is read.
+  if (lines.length === 0) {
+    if (!announcement) return null;
+    return (
+      <div className="review-sec-live" aria-live="polite">
+        {announcement}
+      </div>
+    );
+  }
 
   const act = { confirm, sync, saveHours, saveText };
   const days = [...new Set(lines.map((l) => l.day))].sort().reverse();
