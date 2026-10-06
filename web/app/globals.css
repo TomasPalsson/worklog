@@ -6181,3 +6181,12 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
 .review-sec-rejected-hint { margin: 4px 0 0; font-size: 12px; color: var(--fg-muted); }
 .verdict-line .review-toggle, .review-sec .review-toggle { min-height: 24px; display: inline-flex; align-items: center; }
 .est-badge[data-kind="look"] { border-color: var(--amber); }
+
+/* ── 17:00 recap (spec 018): Add time keeps the app's high-contrast primary; gap rows wrap on phones ── */
+.recap-gap .task-btn-primary { flex: none; min-height: 28px; padding: 0 12px; font-size: 12px; }
+@media (max-width: 640px) {
+  .review-sec-line.recap-gap { grid-template-columns: 84px minmax(0, 1fr); }
+  .recap-gap .review-sec-text, .recap-gap .review-sec-actions { grid-column: 1 / -1; }
+  .recap-gap .review-sec-fields input { width: 100%; }
+  .recap-gap .task-btn-primary { min-height: 40px; }
+}
