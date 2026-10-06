@@ -277,6 +277,14 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
         repo: Option<String>,
     },
 
+    /// Draft today's standup (three questions) and, once you confirm,
+    /// reply with it in today's "Daily:thread" Slack message.
+    Standup {
+        /// Post without asking.
+        #[arg(short, long)]
+        yes: bool,
+    },
+
     /// Print one customer's hours for a month, grouped by deild, with
     /// the change from the month before.
     Report {
@@ -878,6 +886,7 @@ pub fn run_with<W: Write>(
         Cmd::Ask { query, repo } => {
             crate::helpers_cmd::cmd_ask(&query, repo.as_deref(), out, cli.json)
         }
+        Cmd::Standup { yes } => crate::helpers_cmd::cmd_standup(yes, out, cli.json),
         Cmd::Report {
             customer,
             month,
@@ -2058,7 +2067,7 @@ fn block_state(b: &serde_json::Value) -> &'static str {
 /// Yes/no prompt on stderr. In a non-interactive shell it refuses rather
 /// than silently assuming "yes" — destructive `worklog block` commands
 /// take an explicit `--yes` for scripts.
-fn confirm(prompt: &str) -> Result<bool> {
+pub(crate) fn confirm(prompt: &str) -> Result<bool> {
     if !io::stdin().is_terminal() {
         anyhow::bail!("{prompt}\n  refusing in a non-interactive shell — pass --yes to proceed");
     }

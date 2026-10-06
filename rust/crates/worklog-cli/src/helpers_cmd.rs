@@ -5,11 +5,13 @@ use std::io::Write;
 use anyhow::{bail, Result};
 use worklog_core::{
     ask::{self, Hit, Stopped},
-    daily_helpers_contract::UndoOutcome,
-    db,
+    collectors::slack::SLACK_API,
+    daily_helpers_contract::{PostOutcome, StandupDraft, UndoOutcome, SLACK_DAILY_CHANNEL_KEY},
+    db, envfile, estimate, http,
     paths::Paths,
     report::{monthly_report, MonthlyReport},
-    tz, undo,
+    routing_contract::SLACK_TOKEN_KEY,
+    secrets, slack_post, standup, tz, undo,
 };
 
 fn db_path() -> Result<std::path::PathBuf> {
@@ -44,6 +46,63 @@ pub fn cmd_ask<W: Write>(
 pub fn cmd_report<W: Write>(customer: &str, month: &str, csv: bool, out: &mut W) -> Result<()> {
     let conn = db::open(&db_path()?)?;
     show_report(&monthly_report(&conn, customer, month)?, csv, out)
+}
+
+pub fn cmd_standup<W: Write>(yes: bool, out: &mut W, json: bool) -> Result<()> {
+    let conn = db::open(&db_path()?)?;
+    let today = tz::local_date(chrono::Utc::now());
+    let draft = standup::draft(&conn, today, estimate::build_invoker()?.as_ref())?;
+    show_standup(
+        &draft,
+        yes,
+        || crate::cli::confirm("Post this to today's Daily thread?"),
+        |text| {
+            let token = secrets::get(SLACK_TOKEN_KEY)?.unwrap_or_default();
+            if token.is_empty() {
+                bail!("{SLACK_TOKEN_KEY} is not set");
+            }
+            slack_post::post_to_daily(
+                &http::client()?,
+                SLACK_API,
+                &token,
+                envfile::read(SLACK_DAILY_CHANNEL_KEY).as_deref(),
+                today,
+                text,
+            )
+        },
+        out,
+        json,
+    )
+}
+
+/// Prints the draft; posts only after `yes` or an explicit confirm.
+fn show_standup<W: Write>(
+    draft: &StandupDraft,
+    yes: bool,
+    confirm: impl FnOnce() -> Result<bool>,
+    post: impl FnOnce(&str) -> Result<PostOutcome>,
+    out: &mut W,
+    json: bool,
+) -> Result<()> {
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(draft)?)?;
+        return Ok(());
+    }
+    let text = draft.to_text();
+    write!(out, "{text}")?;
+    if !yes && !confirm()? {
+        writeln!(out, "not posted")?;
+        return Ok(());
+    }
+    match post(&text)? {
+        PostOutcome::Posted { permalink } => writeln!(out, "✓ posted: {permalink}")?,
+        PostOutcome::NoChannel => bail!("not posted: no Daily channel is set in Settings"),
+        PostOutcome::NoThread { channel } => {
+            bail!("not posted: no \"Daily:thread\" message today in {channel}")
+        }
+        PostOutcome::SlackRefused { error } => bail!("not posted: Slack refused ({error})"),
+    }
+    Ok(())
 }
 
 fn show_undo<W: Write>(outcome: UndoOutcome, out: &mut W, json: bool) -> Result<()> {
@@ -254,6 +313,125 @@ mod tests {
         );
     }
 
+    fn draft() -> StandupDraft {
+        StandupDraft {
+            today: vec!["GENAI-12 tenant stack".into()],
+            ..Default::default()
+        }
+    }
+
+    fn standup_run(
+        yes: bool,
+        answer: Result<bool>,
+        outcome: PostOutcome,
+        json: bool,
+    ) -> (Result<()>, String, Vec<String>, usize) {
+        let posted = std::cell::RefCell::new(Vec::new());
+        let asked = std::cell::Cell::new(0);
+        let (res, text) = run(|w| {
+            show_standup(
+                &draft(),
+                yes,
+                || {
+                    asked.set(asked.get() + 1);
+                    answer
+                },
+                |t| {
+                    posted.borrow_mut().push(t.to_owned());
+                    Ok(outcome)
+                },
+                w,
+                json,
+            )
+        });
+        (res, text, posted.into_inner(), asked.get())
+    }
+
+    fn posted() -> PostOutcome {
+        PostOutcome::Posted {
+            permalink: "https://x/p".into(),
+        }
+    }
+
+    #[test]
+    fn declining_prints_the_draft_and_posts_nothing() {
+        // catches posting before/without the confirm (FR-22)
+        let (res, text, sent, _) = standup_run(false, Ok(false), posted(), false);
+        res.unwrap();
+        assert!(sent.is_empty());
+        assert_eq!(text, format!("{}not posted\n", draft().to_text()));
+    }
+
+    #[test]
+    fn confirming_posts_exactly_the_draft_text() {
+        // catches posting a reformatted text, or ignoring the answer
+        let (res, text, sent, asked) = standup_run(false, Ok(true), posted(), false);
+        res.unwrap();
+        assert_eq!(sent, [draft().to_text()]);
+        assert_eq!(asked, 1);
+        assert!(text.ends_with("✓ posted: https://x/p\n"), "{text}");
+    }
+
+    #[test]
+    fn yes_posts_without_asking() {
+        // catches --yes still prompting (hangs scripts)
+        let (res, _, sent, asked) = standup_run(true, Ok(false), posted(), false);
+        res.unwrap();
+        assert_eq!((sent.len(), asked), (1, 0));
+    }
+
+    #[test]
+    fn a_failed_confirm_posts_nothing_and_fails() {
+        // catches treating a non-interactive refusal as yes, or swallowing it
+        let (res, _, sent, _) = standup_run(
+            false,
+            Err(anyhow::anyhow!("non-interactive")),
+            posted(),
+            false,
+        );
+        assert_eq!(res.unwrap_err().to_string(), "non-interactive");
+        assert!(sent.is_empty());
+    }
+
+    #[test]
+    fn each_refusal_is_an_error_naming_its_cause() {
+        // catches swallowing a refusal as success (FR-23); the draft is already printed for copying
+        let cases = [
+            (PostOutcome::NoChannel, "no Daily channel is set"),
+            (
+                PostOutcome::NoThread {
+                    channel: "daily".into(),
+                },
+                "no \"Daily:thread\" message today in daily",
+            ),
+            (
+                PostOutcome::SlackRefused {
+                    error: "missing_scope".into(),
+                },
+                "Slack refused (missing_scope)",
+            ),
+        ];
+        for (outcome, cause) in cases {
+            let (res, text, _, _) = standup_run(true, Ok(true), outcome, false);
+            let err = res.unwrap_err().to_string();
+            assert!(
+                err.starts_with("not posted") && err.contains(cause),
+                "{err}"
+            );
+            assert!(text.starts_with("1. "), "draft stays visible: {text}");
+        }
+    }
+
+    #[test]
+    fn json_prints_the_draft_and_never_posts() {
+        // catches --json --yes posting, or printing text instead of JSON
+        let (res, text, sent, asked) = standup_run(true, Ok(true), posted(), true);
+        res.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["today"][0], "GENAI-12 tenant stack");
+        assert_eq!((sent.len(), asked), (0, 0));
+    }
+
     fn report() -> MonthlyReport {
         MonthlyReport {
             customer: "APRÓ".into(),
@@ -293,6 +471,8 @@ mod tests {
             crate::cli::Cli::try_parse_from(argv)
         };
         assert!(parse(&["undo"]).is_ok());
+        assert!(parse(&["standup"]).is_ok());
+        assert!(parse(&["standup", "--yes"]).is_ok());
         assert!(parse(&["ask", "kafka", "lag"]).is_ok());
         assert!(parse(&["ask", "--repo", "worklog"]).is_ok());
         assert!(parse(&["ask"]).is_err(), "needs words or --repo");
