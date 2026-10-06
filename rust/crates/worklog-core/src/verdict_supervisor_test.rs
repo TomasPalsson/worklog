@@ -178,6 +178,19 @@ fn a_crash_just_inside_the_window_of_three_restarts_stops() {
 }
 
 #[test]
+fn a_crash_exactly_at_the_window_edge_restarts_again() {
+    let (mut s, w) = sup(true);
+    for t in [0u64, 100, 200] {
+        crash(&mut s, &w, t, "x");
+    }
+    // 600 s: the restart at 0 is exactly one window old and has aged out
+    // (catches `<=` where `<` is meant).
+    crash(&mut s, &w, 600, "edge");
+    assert_eq!(w.launches.get(), 5);
+    assert!(!matches!(s.state(), VerdictState::Stopped { .. }));
+}
+
+#[test]
 fn a_crash_just_past_the_window_restarts_again() {
     let (mut s, w) = sup(true);
     for t in [0u64, 100, 200] {
@@ -308,4 +321,34 @@ fn uv_args_pin_the_verdict_revision() {
 fn last_log_line_skips_trailing_blank_lines() {
     assert_eq!(last_line("a\nlast error\n\n  \n"), "last error");
     assert_eq!(last_line(""), "");
+}
+
+#[test]
+fn real_proc_kill_takes_down_grandchildren() {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("sh")
+        .args(["-c", "sleep 300 & echo $!; wait"])
+        .stdout(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    std::io::BufRead::read_line(
+        &mut std::io::BufReader::new(child.stdout.take().unwrap()),
+        &mut line,
+    )
+    .unwrap();
+    let grandchild = line.trim().to_string();
+    let mut p = RealProc {
+        child,
+        log: "/nonexistent".into(),
+    };
+    p.kill();
+    let alive = Command::new("kill")
+        .args(["-0", &grandchild])
+        .status()
+        .unwrap()
+        .success();
+    assert!(!alive, "grandchild {grandchild} survived kill");
 }

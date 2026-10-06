@@ -5,6 +5,7 @@
 //! `uv run`. A process-wide instance serves the daemon routes.
 
 use std::ffi::OsString;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
@@ -221,6 +222,11 @@ impl Proc for RealProc {
     }
 
     fn kill(&mut self) {
+        // The child leads its own process group; killing the group takes
+        // the python grandchild down too when `uv run` does not exec.
+        let _ = Command::new("kill")
+            .args(["-KILL", "--", &format!("-{}", self.child.id())])
+            .status();
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -252,6 +258,7 @@ impl Host for RealHost {
             command(&uv, &script, data_dir)
                 .stdout(Stdio::null())
                 .stderr(stderr)
+                .process_group(0)
                 .spawn()
                 .context("spawning `uv run`")
         };
