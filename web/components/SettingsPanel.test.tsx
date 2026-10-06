@@ -253,3 +253,59 @@ describe("SettingsPanel browser/Slack routing controls (T012)", () => {
     );
   });
 });
+
+describe("SettingsPanel page helpers", () => {
+  it("counts unsaved changes and saves on ⌘S", async () => {
+    await openPanel();
+    expect(screen.getByText("All changes saved.")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText(/cycle start day/i), { target: { value: "15" } });
+    fireEvent.change(screen.getByLabelText(/close day/i), { target: { value: "18" } });
+    expect(screen.getByText("2 unsaved changes")).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: "s", metaKey: true });
+    await waitFor(() => expect(saveSettingsCalls.length).toBe(1));
+    expect(saveSettingsCalls[0]).toMatchObject({ cycle_start_day: 15, close_day: 18 });
+  });
+
+  it("does nothing on ⌘S when nothing changed", async () => {
+    await openPanel();
+    fireEvent.keyDown(window, { key: "s", metaKey: true });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(saveSettingsCalls.length).toBe(0);
+  });
+
+  it("folds fully connected services and leaves the rest open", async () => {
+    fetchSettingsImpl.mockImplementationOnce(async () => ({
+      ok: true as const,
+      data: {
+        ...initialView,
+        secrets: [
+          { key: "github_user", present: true, sensitive: false, value: "me" },
+          { key: "github_token", present: true, sensitive: true, value: null },
+          { key: "slack_user_token", present: false, sensitive: true, value: null },
+        ],
+      },
+    }));
+    await openPanel();
+
+    const github = screen.getByLabelText(/username/i).closest("details") as HTMLDetailsElement;
+    const slack = screen.getByLabelText(/user token/i).closest("details") as HTMLDetailsElement;
+    expect(github.open).toBe(false);
+    expect(slack.open).toBe(true);
+    expect(screen.getByText("Connected")).toBeTruthy();
+    expect(screen.getByText("Not set up")).toBeTruthy();
+  });
+
+  it("fills the time zone from this computer in one click", async () => {
+    await openPanel();
+    const tz = screen.getByLabelText(/offset from utc/i) as HTMLInputElement;
+    fireEvent.change(tz, { target: { value: "+09:30" } });
+
+    const btn = screen.getByRole("button", { name: /use this computer/i });
+    const offset = /\(([^)]+)\)/.exec(btn.textContent ?? "")?.[1] ?? "no offset in label";
+    fireEvent.click(btn);
+    expect(tz.value).toBe(offset);
+    expect(screen.getByText(/matches this computer/i)).toBeTruthy();
+  });
+});
