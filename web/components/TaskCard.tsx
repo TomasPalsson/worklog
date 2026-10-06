@@ -13,6 +13,7 @@ import type {
   draftTicketUpdate as draftTicketUpdateAction,
 } from "@/app/actions-hub";
 import type { runSync as runSyncAction } from "@/app/actions";
+import type { loadPreflight as loadPreflightAction, loadReadBack as loadReadBackAction } from "@/lib/daemonPreflight";
 import type { saveTempoLineHours, saveTempoLineText } from "@/app/actions-tempo-lines";
 import { formatDuration } from "@/lib/format";
 import { localToday, shortDate, type Column } from "@/lib/taskBoard";
@@ -29,6 +30,8 @@ export interface TaskActions {
   saveTempoLineHours: typeof saveTempoLineHours;
   saveTempoLineText: typeof saveTempoLineText;
   runSync: typeof runSyncAction;
+  loadPreflight: typeof loadPreflightAction;
+  loadReadBack: typeof loadReadBackAction;
   transitionTicket: typeof transitionTicketAction;
   commentOnTicket: typeof commentOnTicketAction;
   draftTicketUpdate: typeof draftTicketUpdateAction;

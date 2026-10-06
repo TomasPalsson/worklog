@@ -10,17 +10,21 @@ use rusqlite::{params, Connection, OptionalExtension};
 use crate::clues_contract::LineTextOrigin;
 use crate::collectors::tempo::SyncResult;
 use crate::purge::{meta_get, meta_set};
+use crate::routing_contract::{DEFAULT_WORK_HOURS, WORK_HOURS_KEY};
 use crate::tempo_line_contract::{TempoLine, TempoLineKey, TicketOrigin};
 use crate::tempo_lines;
 use crate::verdict_contract::{
     DecisionKind, DecisionSource, ReviewLine, ReviewStatus, AUTO_SEND_HOUR, AUTO_SEND_KEY,
 };
 use crate::verdict_decisions::latest_for;
+use crate::{envfile, recap};
 
 /// `meta` key holding `<day>|<issue>,<issue>`: the lines the day's 17:00 run
 /// committed to. Retries use it, so a line that turns ready later is not sent.
 const PLAN_KEY: &str = "auto_send_plan";
 const UNREACHABLE: &str = "Tempo could not be reached";
+/// `meta` key holding the day the recap was last built for, so later ticks keep it.
+const RECAP_KEY: &str = "recap_built_for";
 
 /// Sends one line to Tempo; `Err` means Tempo could not be reached.
 pub type SendLine<'a> = dyn FnMut(&Connection, &TempoLineKey) -> Result<Vec<SyncResult>> + 'a;
@@ -30,7 +34,11 @@ pub fn enabled() -> bool {
     crate::envfile::read(AUTO_SEND_KEY).as_deref() == Some("on")
 }
 
-fn block_ready(conn: &Connection, block: &crate::models::Block, issue: &str) -> Result<bool> {
+pub(crate) fn block_ready(
+    conn: &Connection,
+    block: &crate::models::Block,
+    issue: &str,
+) -> Result<bool> {
     Ok(match block.ticket_origin {
         Some(TicketOrigin::Manual | TicketOrigin::Event) => true,
         Some(TicketOrigin::Auto) => latest_for(conn, DecisionKind::Ticket, &block.id.to_string())?
@@ -171,6 +179,11 @@ pub fn run_if_due(
         let rejected = results.iter().find(|r| r.status == "error");
         let reason = rejected.map(|r| r.reason.as_deref().unwrap_or("Tempo rejected the line"));
         set_outcome(conn, &key, reason)?;
+    }
+    if meta_get(conn, RECAP_KEY)?.as_deref() != Some(today.as_str()) {
+        let hours = envfile::read(WORK_HOURS_KEY).unwrap_or_else(|| DEFAULT_WORK_HOURS.to_owned());
+        recap::build_and_store(conn, &today, &hours)?;
+        meta_set(conn, RECAP_KEY, &today)?;
     }
     Ok(())
 }

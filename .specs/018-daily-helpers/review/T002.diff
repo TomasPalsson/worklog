@@ -1,0 +1,220 @@
+3c7c134 feat(018): Tempo write failures name status and body, never empty (T002)
+
+ rust/crates/worklog-core/src/collectors/tempo.rs | 130 ++++++++++++++++++++++-
+ 1 file changed, 127 insertions(+), 3 deletions(-)
+
+diff --git a/rust/crates/worklog-core/src/collectors/tempo.rs b/rust/crates/worklog-core/src/collectors/tempo.rs
+index 734c5fc..f6fd54e 100644
+--- a/rust/crates/worklog-core/src/collectors/tempo.rs
++++ b/rust/crates/worklog-core/src/collectors/tempo.rs
+@@ -538,21 +538,21 @@ fn sync_group_aggregated(
+         client.post(&url)
+     };
+     let resp = req
+         .bearer_auth(&auth.token)
+         .header("Content-Type", "application/json")
+         .json(&payload)
+         .send()
+         .with_context(|| format!("tempo {method}"))?;
+     let http_status = resp.status().as_u16();
+     if !resp.status().is_success() {
+-        let body = resp.text().unwrap_or_default();
++        let body = error_body(resp);
+         let head_id = eligible_in_group.first().map(|b| b.id).unwrap_or(-1);
+         report
+             .errors
+             .push(format!("group {issue}: HTTP {http_status} — {body}"));
+         for b in eligible_in_group {
+             results.push(SyncResult {
+                 block_id: b.id,
+                 status: "error",
+                 reason: Some(body.clone()),
+                 tempo_id: None,
+@@ -708,21 +708,21 @@ fn sync_block_legacy(
+         client.post(&url)
+     };
+     let resp = req
+         .bearer_auth(&auth.token)
+         .header("Content-Type", "application/json")
+         .json(&payload)
+         .send()
+         .with_context(|| format!("tempo {method}"))?;
+     let http_status = resp.status().as_u16();
+     if !resp.status().is_success() {
+-        let body = resp.text().unwrap_or_default();
++        let body = error_body(resp);
+         report
+             .errors
+             .push(format!("block {}: HTTP {http_status} — {body}", b.id));
+         results.push(SyncResult {
+             block_id: b.id,
+             status: "error",
+             reason: Some(body),
+             tempo_id: None,
+             payload: Some(payload),
+             http_status: Some(http_status),
+@@ -921,27 +921,37 @@ pub fn delete_worklog_with(
+     let url = format!("{}/worklogs/{}", auth.base_url, id);
+     let resp = client
+         .delete(&url)
+         .bearer_auth(&auth.token)
+         .send()
+         .with_context(|| format!("tempo DELETE {url}"))?;
+     let status = resp.status();
+     if status.is_success() || status.as_u16() == 404 {
+         return Ok(());
+     }
+-    let body = resp.text().unwrap_or_default();
++    let body = error_body(resp);
+     anyhow::bail!(
+         "tempo DELETE /worklogs/{id} returned HTTP {} — {body}",
+         status.as_u16()
+     )
+ }
+ 
++/// The body of a failed Tempo response, never empty: an unreadable or
++/// blank body is named as such so a report line always carries a reason.
++pub(crate) fn error_body(resp: reqwest::blocking::Response) -> String {
++    match resp.text() {
++        Ok(t) if t.trim().is_empty() => "(empty response body)".to_string(),
++        Ok(t) => t,
++        Err(e) => format!("could not read response body: {e}"),
++    }
++}
++
+ /// Resolve a Jira key (`PROJ-123`) to its numeric Atlassian issue id.
+ ///
+ /// Walks the cache first; on miss, calls Jira's REST `/issue/{key}`
+ /// endpoint with basic auth read from the secrets layer, and writes
+ /// the id back to `jira_tickets` so the next sync is local-only.
+ ///
+ /// Returns `None` only when Jira itself can't find the key (404) or
+ /// the credentials are missing — both bubble up as a sync error per
+ /// block, not a hard fatal.
+ fn resolve_issue_id(conn: &Connection, key: &str, client: &Client) -> Result<Option<String>> {
+@@ -2746,11 +2756,125 @@ mod tests {
+         .unwrap_err();
+         assert!(matches!(
+             err.downcast_ref::<HubError>(),
+             Some(HubError::Upstream {
+                 service: "Tempo",
+                 status: 500,
+                 ..
+             })
+         ));
+     }
++
++    fn response_with_raw(raw: &'static str) -> reqwest::blocking::Response {
++        use std::io::{Read, Write};
++        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
++        let addr = listener.local_addr().unwrap();
++        std::thread::spawn(move || {
++            let (mut sock, _) = listener.accept().unwrap();
++            let mut buf = [0u8; 1024];
++            let _ = sock.read(&mut buf);
++            sock.write_all(raw.as_bytes()).unwrap();
++        });
++        http::client()
++            .unwrap()
++            .get(format!("http://{addr}/"))
++            .send()
++            .unwrap()
++    }
++
++    fn sync_one_rejected_write(server: &MockServer) -> CollectReport {
++        let conn = open_memory().unwrap();
++        insert_block(
++            &conn,
++            "2026-04-18",
++            "2026-04-18T09:00:00Z",
++            "2026-04-18T09:30:00Z",
++            1800,
++            Some("PROJ-1"),
++            Some("x"),
++        );
++        sync_day_with(
++            &conn,
++            &auth(server.base_url()),
++            day(),
++            false,
++            &http::client().unwrap(),
++        )
++        .unwrap()
++        .0
++    }
++
++    #[test]
++    fn error_body_returns_the_text_tempo_sent() {
++        let resp = response_with_raw(
++            "HTTP/1.1 400 Bad Request\r\nContent-Length: 15\r\n\r\nIssue is closed",
++        );
++        assert_eq!(error_body(resp), "Issue is closed");
++    }
++
++    #[test]
++    fn error_body_says_reading_failed_and_why_when_the_body_is_cut_short() {
++        // catches unwrap_or_default: a cut-off body must not become ""
++        let resp =
++            response_with_raw("HTTP/1.1 400 Bad Request\r\nContent-Length: 100\r\n\r\nshort");
++        let body = error_body(resp);
++        let prefix = "could not read response body: ";
++        assert!(body.starts_with(prefix), "{body}");
++        assert!(body.len() > prefix.len(), "{body}");
++    }
++
++    #[test]
++    fn error_body_is_never_empty_for_an_empty_body() {
++        // catches returning the raw text unchanged
++        let resp = response_with_raw("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
++        assert_eq!(error_body(resp), "(empty response body)");
++    }
++
++    #[test]
++    fn sync_report_names_tempos_status_and_body_for_a_rejected_write() {
++        // catches dropping the status or the body from the report line
++        let server = MockServer::start();
++        server.mock(|when, then| {
++            when.method(POST).path("/worklogs");
++            then.status(400).body("Issue is closed");
++        });
++        let report = sync_one_rejected_write(&server);
++        assert_eq!(report.errors.len(), 1);
++        assert!(report.errors[0].contains("HTTP 400"), "{:?}", report.errors);
++        assert!(
++            report.errors[0].contains("Issue is closed"),
++            "{:?}",
++            report.errors
++        );
++    }
++
++    #[test]
++    fn sync_report_never_has_an_empty_reason_for_an_empty_error_body() {
++        // catches the sync call sites still using resp.text().unwrap_or_default()
++        let server = MockServer::start();
++        server.mock(|when, then| {
++            when.method(POST).path("/worklogs");
++            then.status(502);
++        });
++        let report = sync_one_rejected_write(&server);
++        assert!(
++            report.errors[0].ends_with("HTTP 502 — (empty response body)"),
++            "{:?}",
++            report.errors
++        );
++    }
++
++    #[test]
++    fn delete_failure_names_tempos_status_and_body() {
++        // catches the delete call site still swallowing the body
++        let server = MockServer::start();
++        server.mock(|when, then| {
++            when.method(DELETE).path("/worklogs/7");
++            then.status(409).body("Period is locked");
++        });
++        let err = delete_worklog_with(&auth(server.base_url()), "7", &http::client().unwrap())
++            .unwrap_err()
++            .to_string();
++        assert!(err.contains("HTTP 409"), "{err}");
++        assert!(err.contains("Period is locked"), "{err}");
++    }
+ }

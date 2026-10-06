@@ -288,6 +288,27 @@ fn nothing_is_sent_before_17_00_and_the_first_line_goes_at_exactly_17_00() {
 }
 
 #[test]
+fn the_17_00_run_sends_a_ready_line_beside_a_red_checklist() {
+    let conn = open_memory().unwrap();
+    ready_line(&conn, DAY, "A-1");
+    conn.execute(
+        "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+         VALUES (?1, ?2, ?2, 1800)",
+        params![DAY, format!("{DAY}T11:00:00Z")],
+    )
+    .unwrap();
+    let day = DAY.parse().unwrap();
+    let rows = crate::preflight::check(&conn, day, day).unwrap();
+    assert!(rows.iter().any(|r| !r.ok), "precondition: checklist is red");
+    // catches: gating the auto-send on the pre-send checklist
+    assert_eq!(
+        tick(&conn, local(6, 17, 0), true, accepts),
+        vec![format!("{DAY}/A-1")]
+    );
+    assert!(column(&conn, DAY, "A-1", "auto_sent_at").is_some());
+}
+
+#[test]
 fn a_switched_off_auto_send_sends_nothing() {
     let conn = open_memory().unwrap();
     ready_line(&conn, DAY, "A-1");

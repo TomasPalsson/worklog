@@ -32,7 +32,7 @@ export function IgnoredLine({ blocks, day, restore = actions.setIgnored }: Props
     const range = formatRange(b.started_at, b.ended_at);
     start(async () => {
       const r = await restore(b.id, false, day);
-      if (r.ok) toast.ok(`Restored ${range}`);
+      if (r.ok) toast.undoable(`Restored ${range}`, () => actions.undoLastChange(day));
       else toast.error(`Restore failed — ${r.error}`);
     });
   };

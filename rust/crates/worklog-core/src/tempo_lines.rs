@@ -3,8 +3,9 @@
 //! `line_text.rs`, deliberately not generalised with it.
 
 use crate::billing::{block_interval, union_seconds};
+use crate::billing_round::round_to_half_hour;
 use crate::clues_contract::LineTextOrigin;
-use crate::collectors::tempo::{round_to_half_hour, summarize_descriptions};
+use crate::collectors::tempo::summarize_descriptions;
 use crate::models::Block;
 use crate::repo;
 use crate::tempo_line_contract::{

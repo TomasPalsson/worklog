@@ -94,3 +94,22 @@ pub fn overview(conn: &Connection) -> Result<Vec<MirresDay>> {
         })
         .collect()
 }
+
+/// Adds the `customer` and `details_json` columns to an older
+/// `mirres_line_billing` table. Idempotent; called from `db::migrate`.
+pub(crate) fn ensure_details_columns(conn: &Connection) -> Result<()> {
+    let cols = conn
+        .prepare("PRAGMA table_info(mirres_line_billing)")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for col in ["customer", "details_json"] {
+        if !cols.iter().any(|c| c == col) {
+            conn.execute(
+                &format!("ALTER TABLE mirres_line_billing ADD COLUMN {col} TEXT"),
+                [],
+            )
+            .with_context(|| format!("ALTER TABLE mirres_line_billing ADD {col}"))?;
+        }
+    }
+    Ok(())
+}

@@ -92,7 +92,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     ensure_events_verdict_ranking(conn).context("ensuring events.verdict_ranking")?;
     ensure_tempo_line_texts_verdict_columns(conn)
         .context("ensuring tempo_line_texts verdict columns")?;
-    ensure_mirres_line_billing_details(conn).context("ensuring mirres_line_billing details")?;
+    crate::mirres::ensure_details_columns(conn).context("ensuring mirres_line_billing details")?;
+    ensure_tempo_line_texts_match_columns(conn)
+        .context("ensuring tempo_line_texts match columns")?;
     if from_version < 14 {
         seed_deildir_from_folder_pins(conn).context("seeding billing_deildir from folder pins")?;
     }
@@ -129,23 +131,6 @@ fn run_upgrade_006(conn: &Connection) -> Result<()> {
         None
     };
     crate::upgrade_006::run(conn, personal_user.as_deref())
-}
-
-pub(crate) fn ensure_mirres_line_billing_details(conn: &Connection) -> Result<()> {
-    let cols = conn
-        .prepare("PRAGMA table_info(mirres_line_billing)")?
-        .query_map([], |r| r.get::<_, String>(1))?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    for col in ["customer", "details_json"] {
-        if !cols.iter().any(|c| c == col) {
-            conn.execute(
-                &format!("ALTER TABLE mirres_line_billing ADD COLUMN {col} TEXT"),
-                [],
-            )
-            .with_context(|| format!("ALTER TABLE mirres_line_billing ADD {col}"))?;
-        }
-    }
-    Ok(())
 }
 
 fn ensure_blocks_is_personal(conn: &Connection) -> Result<()> {
@@ -423,6 +408,21 @@ fn ensure_tempo_line_texts_verdict_columns(conn: &Connection) -> Result<()> {
             ("auto_sent_at", "TEXT"),
             ("confirmed_at", "TEXT"),
             ("send_error", "TEXT"),
+        ],
+    )
+}
+
+fn ensure_tempo_line_texts_match_columns(conn: &Connection) -> Result<()> {
+    add_columns_if_missing(
+        conn,
+        "tempo_line_texts",
+        &[
+            (
+                "match_status",
+                "TEXT CHECK(match_status IN ('already_in_tempo'))",
+            ),
+            ("match_tempo_id", "TEXT"),
+            ("match_basis", "TEXT"),
         ],
     )
 }

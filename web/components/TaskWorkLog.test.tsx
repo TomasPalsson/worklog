@@ -70,6 +70,8 @@ function actions(over: Partial<Record<keyof TaskActions, unknown>> = {}) {
       ok: true as const,
       data: dry ? { day: "", dry_run: true, ...dryRunData } : { day: "", dry_run: false, synced: 1, skipped: 0, errors: [] as string[] },
     })),
+    loadPreflight: mock(async () => ({ ok: true as const, data: [] })),
+    loadReadBack: mock(async () => ({ ok: true as const, data: { check: "read_back", ok: true, target: null, detail: "Tempo matches" } })),
     ...over,
   } as unknown as TaskActions;
 }

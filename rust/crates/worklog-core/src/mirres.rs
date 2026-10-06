@@ -383,7 +383,7 @@ mod details;
 
 #[path = "mirres_store.rs"]
 mod store;
-pub(crate) use store::stored_billing;
+pub(crate) use store::{ensure_details_columns, stored_billing};
 pub use store::{overview, store_day};
 
 #[path = "mirres_test.rs"]

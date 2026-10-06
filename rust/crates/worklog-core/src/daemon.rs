@@ -54,6 +54,14 @@
 //! * `GET  /routing/rules`                — hard rules list
 //! * `POST /routing/rules/:id/delete`    — no body
 //! * `GET  /routing/status`               — last heartbeat/Slack timestamps + Verdict reachability
+//! * `POST /undo`                        — undo the last block change → `UndoOutcome`
+//! * `GET  /ask?q=`                      — newest blocks matching a query (max 5)
+//! * `GET  /ask/stopped?repo=`           — recent prompts and files for a repo
+//! * `POST /standup/draft`               — { "previous"?: StandupDraft } draft (or reword) today's standup → `StandupDraft`
+//! * `POST /standup/post`                — { "text" } reply in today's Daily thread → `PostOutcome`
+//! * `GET  /nudges`                      — footer nudges → `Vec<Nudge>`
+//! * `GET  /preflight?from=&to=`         — pre-send checklist rows for the day range → `Vec<PreflightRow>`
+//! * `GET  /preflight/read-back?day=`    — Tempo read-back row for one day → `PreflightRow`
 //!
 //! Unix-socket file perms default to `0666` so the containerised UI can
 //! connect across Docker Desktop's VM (same user, same host — the data
@@ -89,6 +97,7 @@ use crate::block_digest;
 use crate::browser_ingest;
 use crate::change_log;
 use crate::collectors::{jira, tempo};
+use crate::daily_helpers_contract::SLACK_DAILY_CHANNEL_KEY;
 use crate::deild_contract;
 use crate::digest_contract::{BlockDigest, DAY_COMPRESSED};
 use crate::elsewhere;
@@ -132,7 +141,7 @@ mod daemon_tasks;
 mod daemon_week;
 
 #[path = "daemon_logged.rs"]
-mod daemon_logged;
+pub(crate) mod daemon_logged;
 
 #[path = "daemon_assist.rs"]
 mod daemon_assist;
@@ -283,8 +292,21 @@ pub fn router(state: Shared) -> Router {
         .route("/verdict/retry", post(verdict_retry))
         .route("/review", get(review_list))
         .route("/review/confirm", post(review_confirm))
+        .route("/recap", get(recap_today))
+        .route("/recap/gap", post(recap_gap))
         .route("/days/:day/elsewhere", get(list_elsewhere))
         .route("/events/:id/move", post(move_event_handler))
+        .route("/undo", post(crate::daemon_undo::post_undo))
+        .route("/ask", get(crate::daemon_ask::get_ask))
+        .route("/ask/stopped", get(crate::daemon_ask::get_stopped))
+        .route("/standup/draft", post(crate::daemon_standup::draft))
+        .route("/standup/post", post(crate::daemon_standup::post))
+        .route("/nudges", get(crate::daemon_nudges::get_nudges))
+        .route("/preflight", get(crate::daemon_preflight::get_preflight))
+        .route(
+            "/preflight/read-back",
+            get(crate::daemon_preflight::get_read_back),
+        )
         .with_state(state)
 }
 
@@ -529,6 +551,64 @@ pub fn spawn_scorecard_loop(state: Shared) -> tokio::task::JoinHandle<()> {
             let local = chrono::Utc::now().with_timezone(&crate::tz::day_offset());
             scorecard_due_once(&state, make.clone(), local).await;
             tokio::time::sleep(SCORECARD_CHECK_INTERVAL).await;
+        }
+    })
+}
+
+const ASK_FILL_PAUSE: std::time::Duration = std::time::Duration::from_millis(200);
+const ASK_FILL_RECHECK: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Fills the ask index one batch at a time so a request never waits on it:
+/// the conn lock is held per batch only, then re-checked every 10 minutes.
+pub fn spawn_ask_fill_loop(state: Shared) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let st = state.clone();
+            let left = tokio::task::spawn_blocking(move || {
+                let conn = st.conn.blocking_lock();
+                crate::ask::sync_batch(&conn, crate::daemon_ask::ASK_SYNC_BATCH)
+            })
+            .await;
+            match left {
+                Ok(Ok(0)) => tokio::time::sleep(ASK_FILL_RECHECK).await,
+                Ok(Ok(_)) => tokio::time::sleep(ASK_FILL_PAUSE).await,
+                Ok(Err(e)) => {
+                    warn!("ask index fill failed: {e:#}");
+                    tokio::time::sleep(ASK_FILL_RECHECK).await;
+                }
+                Err(e) => {
+                    warn!("ask index fill task panicked: {e}");
+                    tokio::time::sleep(ASK_FILL_RECHECK).await;
+                }
+            }
+        }
+    })
+}
+
+/// Keeps the review-nudge cache warm so `/nudges` never touches the Keychain or
+/// the network. The credentials read and the fetch run off the conn lock.
+pub fn spawn_nudge_refresh_loop(state: Shared) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let st = state.clone();
+            let done = tokio::task::spawn_blocking(move || {
+                crate::nudges::refresh_once(
+                    chrono::Utc::now(),
+                    || {
+                        let auth = crate::collectors::github::GitHubAuth::from_secrets()?;
+                        crate::collectors::github::review_requests(&crate::http::client()?, &auth)
+                    },
+                    || st.conn.blocking_lock(),
+                )
+            })
+            .await;
+            if let Err(e) = done {
+                warn!("nudge refresh task panicked: {e}");
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(
+                crate::daily_helpers_contract::NUDGE_CACHE_SECONDS as u64,
+            ))
+            .await;
         }
     })
 }
@@ -2103,6 +2183,9 @@ pub struct SettingsView {
     /// Mirrors `RUNNER_UP_RATIO_KEY` via envfile; defaults to
     /// `DEFAULT_RUNNER_UP_RATIO`.
     pub runner_up_ratio: f64,
+    /// Slack channel the standup is posted to. Mirrors
+    /// `SLACK_DAILY_CHANNEL_KEY` via envfile; empty when unset.
+    pub daily_channel: String,
     /// The 17:00 Tempo auto-send switch. Mirrors `auto_send::enabled`.
     pub auto_send: bool,
 }
@@ -2160,6 +2243,7 @@ fn current_settings() -> Result<SettingsView> {
         work_hours: configured_work_hours_raw(),
         abstain_margin: rule.abstain_margin,
         runner_up_ratio: rule.runner_up_ratio,
+        daily_channel: crate::envfile::read(SLACK_DAILY_CHANNEL_KEY).unwrap_or_default(),
         auto_send: crate::auto_send::enabled(),
     })
 }
@@ -2271,6 +2355,9 @@ pub struct SettingsUpdate {
     /// Replace how many times higher than the runner-up the winner must
     /// be (`RATIO_RANGE`). `None` leaves it untouched.
     pub runner_up_ratio: Option<f64>,
+    /// Slack channel for the standup post. An empty string clears it.
+    /// `None` leaves it untouched.
+    pub daily_channel: Option<String>,
     /// Turn the 17:00 Tempo auto-send on or off. `None` leaves it untouched.
     pub auto_send: Option<bool>,
 }
@@ -2357,6 +2444,14 @@ async fn post_settings(
         })?;
     }
 
+    // A control character (a newline) would add a line to the env file.
+    let daily_channel = body.daily_channel.as_deref().map(str::trim);
+    if daily_channel.is_some_and(|c| c.chars().any(char::is_control)) {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "`daily_channel` must not contain control characters"
+        )));
+    }
+
     // Route ratios: each must lie in RATIO_RANGE.
     let (ratio_lo, ratio_hi) = routing_contract::RATIO_RANGE;
     for (field, v) in [
@@ -2428,6 +2523,9 @@ async fn post_settings(
     }
     if let Some(v) = body.runner_up_ratio {
         crate::envfile::upsert(routing_contract::RUNNER_UP_RATIO_KEY, &v.to_string())?;
+    }
+    if let Some(channel) = daily_channel {
+        crate::envfile::upsert(SLACK_DAILY_CHANNEL_KEY, channel)?;
     }
     if let Some(on) = body.auto_send {
         crate::envfile::upsert(
@@ -2923,6 +3021,37 @@ async fn review_confirm(
     Ok(Json(json!({ "confirmed": confirmed })))
 }
 
+async fn recap_today(
+    State(state): State<Shared>,
+) -> Result<Json<Option<crate::daily_helpers_contract::Recap>>, ApiError> {
+    let today = local_today();
+    let recap = with_conn(state, crate::recap::latest).await?;
+    Ok(Json(recap.filter(|r| r.day == today)))
+}
+
+#[derive(Deserialize)]
+struct RecapGapBody {
+    day: String,
+    started_at: String,
+    #[serde(flatten)]
+    action: crate::daily_helpers_contract::GapAction,
+}
+
+async fn recap_gap(
+    State(state): State<Shared>,
+    Json(body): Json<RecapGapBody>,
+) -> Result<Json<Option<crate::daily_helpers_contract::Recap>>, ApiError> {
+    let applied = with_conn(state, move |c| {
+        match crate::recap::apply_gap(c, &body.day, &body.started_at, body.action) {
+            Ok(()) => Ok(Ok(crate::recap::latest(c)?)),
+            Err(e) => Ok(Err(e)),
+        }
+    })
+    .await?;
+    let recap = applied.map_err(ApiError::bad_request)?;
+    Ok(Json(recap))
+}
+
 /// How often the auto-send tick runs; a run starts within this of 17:00.
 const AUTO_SEND_TICK: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
@@ -3159,6 +3288,84 @@ mod tests {
         serde_json::from_slice(&bytes).unwrap()
     }
 
+    fn store_recap(state: &Shared, day: &str) {
+        let recap = crate::daily_helpers_contract::Recap {
+            day: day.to_owned(),
+            sent: vec![],
+            held_back: vec![],
+            coverage_percent: 50,
+            gaps: vec![crate::daily_helpers_contract::RecapGap {
+                started_at: format!("{day}T10:00:00Z"),
+                ended_at: format!("{day}T11:00:00Z"),
+                minutes: 60,
+            }],
+        };
+        state
+            .conn
+            .try_lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO recaps (day, json, built_at) VALUES (?1, ?2, '')",
+                params![day, serde_json::to_string(&recap).unwrap()],
+            )
+            .unwrap();
+    }
+
+    async fn recap_call(state: &Shared, req: Request<Body>) -> (StatusCode, Value) {
+        let resp = router(state.clone()).oneshot(req).await.unwrap();
+        (resp.status(), read_json(resp).await)
+    }
+
+    fn gap_post(day: &str, started_at: &str) -> Request<Body> {
+        Request::post("/recap/gap")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({"day": day, "started_at": started_at, "action": "break"}).to_string(),
+            ))
+            .unwrap()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn recap_route_serves_only_todays_recap() {
+        let state = state_with_block();
+        let get = || Request::get("/recap").body(Body::empty()).unwrap();
+        let (status, v) = recap_call(&state, get()).await;
+        assert_eq!((status, v), (StatusCode::OK, Value::Null)); // catches a 404/500 on no recap
+        store_recap(&state, "2020-01-01");
+        let (_, v) = recap_call(&state, get()).await;
+        assert_eq!(v, Value::Null, "an old recap is not today's"); // catches serving latest regardless of day
+        let today = local_today();
+        store_recap(&state, &today);
+        let (_, v) = recap_call(&state, get()).await;
+        assert_eq!(v["day"], today.as_str());
+        assert_eq!(v["gaps"][0]["minutes"], 60);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn recap_gap_route_resolves_a_gap_and_refuses_an_unknown_one() {
+        let state = state_with_block();
+        let today = local_today();
+        let (status, _) = recap_call(&state, gap_post(&today, &format!("{today}T10:00:00Z"))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "no recap yet"); // catches a 200 or 500
+        store_recap(&state, &today);
+        let (status, _) = recap_call(&state, gap_post(&today, &format!("{today}T10:05:00Z"))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "gap not in the recap");
+        let (status, v) = recap_call(&state, gap_post(&today, &format!("{today}T10:00:00Z"))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(v["day"], today.as_str());
+        let breaks: i64 = state
+            .conn
+            .try_lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM recap_breaks WHERE day = ?1",
+                [&today],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(breaks, 1); // catches a route that returns the recap without applying the action
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn health_returns_ok() {
         let app = router(state_with_block());
@@ -3204,6 +3411,196 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ─────────────────── spec 018 undo / ask routes ───────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn undo_route_is_post_and_reports_nothing_to_undo() {
+        let post = router(state_with_block())
+            .oneshot(Request::post("/undo").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        // catches: route not registered (404)
+        assert_eq!(post.status(), StatusCode::OK);
+        // catches: wrong handler or outcome encoded as an error
+        assert_eq!(read_json(post).await["outcome"], "nothing_to_undo");
+        let get = router(state_with_block())
+            .oneshot(Request::get("/undo").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        // catches: a state-changing route registered as GET
+        assert_eq!(get.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ask_route_returns_hits_and_requires_q() {
+        let state = state_with_block();
+        state
+            .conn
+            .try_lock()
+            .unwrap()
+            .execute("UPDATE blocks SET description = 'migrate kafka topics'", [])
+            .unwrap();
+        let resp = router(state.clone())
+            .oneshot(Request::get("/ask?q=kafka").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        // catches: /ask wired to the stopped handler or a different query param
+        assert_eq!(v.as_array().unwrap().len(), 1);
+        assert_eq!(v[0]["day"], "2026-04-18");
+        let missing = router(state)
+            .oneshot(Request::get("/ask").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        // catches: a missing q defaulting silently instead of being rejected
+        assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ask_stopped_route_is_not_shadowed_by_ask() {
+        let resp = router(state_with_block())
+            .oneshot(
+                Request::get("/ask/stopped?repo=nope")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // catches: missing registration (404)
+        assert_eq!(resp.status(), StatusCode::OK);
+        // catches: the search handler answering the stopped path
+        let v = read_json(resp).await;
+        assert_eq!(v, serde_json::json!({"prompts": [], "files": []}));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn standup_and_nudge_routes_are_registered_with_the_right_methods() {
+        let blank = router(state_with_block())
+            .oneshot(
+                Request::post("/standup/post")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"text":"  "}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // catches: route not registered (404) or wired to the draft handler
+        assert_eq!(blank.status(), StatusCode::BAD_REQUEST);
+        let bad_draft = router(state_with_block())
+            .oneshot(
+                Request::post("/standup/draft")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"previous":5}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // catches: draft route missing (404) or wired to a handler without the body
+        assert_eq!(bad_draft.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        for path in ["/standup/post", "/standup/draft"] {
+            let get = router(state_with_block())
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            // catches: a posting route registered as GET
+            assert_eq!(get.status(), StatusCode::METHOD_NOT_ALLOWED, "{path}");
+        }
+        let post = router(state_with_block())
+            .oneshot(Request::post("/nudges").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        // catches: /nudges missing (404) or registered as POST
+        assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn preflight_routes_are_registered_get_only_and_reject_bad_dates() {
+        for (uri, want) in [
+            // catches: route missing (404) or red rows turned into an error status
+            ("/preflight?from=2026-04-18&to=2026-04-18", StatusCode::OK),
+            // catches: read-back unregistered (404), served by the checklist handler (400 on missing
+            // from/to), or answering a stale green without Tempo credentials to pull with (200)
+            (
+                "/preflight/read-back?day=2026-04-18",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            // catches: unparsed dates reaching the check
+            (
+                "/preflight?from=nope&to=2026-04-18",
+                StatusCode::BAD_REQUEST,
+            ),
+            // catches: reversed range answering all-green
+            (
+                "/preflight?from=2026-04-19&to=2026-04-18",
+                StatusCode::BAD_REQUEST,
+            ),
+        ] {
+            let resp = router(state_with_block())
+                .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), want, "{uri}");
+        }
+        let post = router(state_with_block())
+            .oneshot(Request::post("/preflight").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        // catches: a read-only route registered as POST
+        assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn settings_daily_channel_is_reported_trimmed_persisted_and_clearable() {
+        let _g = prune_env_lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("WORKLOG_ENV_FILE", tmp.path().join(".env"));
+        // catches: field missing or default not empty
+        assert_eq!(current_settings().unwrap().daily_channel, "");
+        for (body, want) in [
+            // catches: untrimmed value stored
+            (r#"{"daily_channel":"  daily  "}"#, Some("daily")),
+            // catches: an absent field clearing the channel
+            (r#"{"timezone":"UTC"}"#, Some("daily")),
+            // catches: empty string stored instead of clearing
+            (r#"{"daily_channel":""}"#, None),
+        ] {
+            let resp = router(state_with_block())
+                .oneshot(
+                    Request::post("/settings")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "{body}");
+            assert_eq!(
+                crate::envfile::read(SLACK_DAILY_CHANNEL_KEY).as_deref(),
+                want,
+                "{body}"
+            );
+            assert_eq!(
+                current_settings().unwrap().daily_channel,
+                want.unwrap_or_default()
+            );
+        }
+        // catches: a newline reaching the env file (a second line), or a write before the 400
+        let resp = router(state_with_block())
+            .oneshot(
+                Request::post("/settings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r##"{"daily_channel":"#daily\nX=1"}"##))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(crate::envfile::read("X"), None);
+        assert_eq!(current_settings().unwrap().daily_channel, "");
+        std::env::remove_var("WORKLOG_ENV_FILE");
     }
 
     // ─────────────────── v0.6 read endpoints ───────────────────

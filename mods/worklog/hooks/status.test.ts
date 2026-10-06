@@ -44,6 +44,8 @@ type Options = {
   closeoutDays?: CloseoutDay[]
   isDown?: boolean
   marker?: boolean
+  nudges?: { kind: string; text: string; url: string | null }[]
+  recap?: unknown
 }
 
 function world(on: On, options: Options = {}) {
@@ -53,11 +55,14 @@ function world(on: On, options: Options = {}) {
   const answer = (body: unknown) => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } })
 
   on('session.start', ($, event) => ({ cwd: event.cwd }))
+  on('prompt.submit', ($, event) => ({ text: event.text }))
   on('env.get', () => ({ value: '/Users/me' }))
   on('process.run', () => ({ value: { exitCode: 1, stdout: '' } }))
   on('http.fetch', ($, event) => {
     requested.push(event.url)
     if (options.isDown) return { deny: 'connection refused' }
+    if (event.url.endsWith('/recap')) return answer(options.recap ?? null)
+    if (event.url.endsWith('/nudges')) return answer(options.nudges ?? [])
     if (event.url.includes('/logged')) return answer({ today: TODAY })
     if (event.url.includes('/days/')) return answer({ day: TODAY, total_seconds: 0, blocks: options.blocks ?? [] })
     return answer({ days: options.closeoutDays ?? [closeoutDay({})] })
@@ -249,4 +254,128 @@ test('outside a work folder the hours still show on the prompt hint tail', async
   await clock.advance(1000)
   expect(JSON.stringify(await $.ui.render(hint()))).toContain('"worklog 1h30"')
   expect(seen.toasts).toEqual([])
+})
+
+const nudge = (text: string) => ({ kind: 'stale', text, url: null })
+const PROMPT = { text: 'hi', wait: false, origin: { kind: 'composer' as const } }
+const NUDGES = [nudge('Review PR #1'), nudge('GENAI-2 idle 20 days')]
+
+const submit = async ($: Parameters<Parameters<typeof test>[1]>[0], clock: ReturnType<typeof mock.clock>) => {
+  await $.prompt.submit(PROMPT)
+  await clock.advance(1000)
+  return JSON.stringify(await $.ui.render(hint()))
+}
+
+test('the nudge changes on each prompt, wraps around, and never shows two at once', async ($, on) => {
+  const clock = mock.clock(on)
+  world(on, { nudges: NUDGES, blocks: [block({})] })
+  await $.session.start(SESSION)
+  await clock.advance(1000)
+  // catches: nudge shown before any prompt
+  expect(JSON.stringify(await $.ui.render(hint()))).not.toContain('Review PR')
+  const first = await submit($, clock)
+  // catches: always showing the first nudge, or joining all nudges
+  expect(first).toContain('"worklog 1h00 · Review PR #1"')
+  expect(first).not.toContain('GENAI-2')
+  const second = await submit($, clock)
+  expect(second).toContain('"worklog 1h00 · GENAI-2 idle 20 days"')
+  expect(second).not.toContain('Review PR')
+  // catches: index running past the end instead of wrapping
+  expect(await submit($, clock)).toContain('Review PR #1')
+})
+
+test('a single nudge stays on every prompt', async ($, on) => {
+  const clock = mock.clock(on)
+  world(on, { nudges: [nudge('Only one')] })
+  await $.session.start(SESSION)
+  await clock.advance(1000)
+  expect(await submit($, clock)).toContain(' · Only one"')
+  // catches: modulo by the wrong length blanking the line
+  expect(await submit($, clock)).toContain(' · Only one"')
+})
+
+test('no nudges means no nudge line', async ($, on) => {
+  const clock = mock.clock(on)
+  world(on, { nudges: [], blocks: [block({})] })
+  await $.session.start(SESSION)
+  await clock.advance(1000)
+  // catches: a placeholder or dangling separator when the list is empty
+  expect(await submit($, clock)).toBe('{"type":"Text","children":["worklog 1h00"]}')
+})
+
+test('a down daemon shows no nudge line and no toast', async ($, on) => {
+  const clock = mock.clock(on)
+  const seen = world(on, { isDown: true, nudges: NUDGES })
+  await $.session.start(SESSION)
+  await clock.advance(1000)
+  // catches: error text leaking into the footer
+  expect(await submit($, clock)).toBe('{"type":"Text","children":[""]}')
+  expect(seen.toasts).toEqual([])
+})
+
+test('an existing tail is kept before the nudge', async ($, on) => {
+  const clock = mock.clock(on)
+  world(on, { nudges: [nudge('Only one')] })
+  await $.session.start(SESSION)
+  await clock.advance(1000)
+  await $.prompt.submit(PROMPT)
+  await clock.advance(1000)
+  // catches: nudge replacing the existing tail
+  expect(JSON.stringify(await $.ui.render(hint('x')))).toContain('"x · worklog 0h00 · Only one"')
+})
+
+const gap = (minutes: number) => ({ started_at: '2026-10-05T10:00:00Z', ended_at: '2026-10-05T11:00:00Z', minutes })
+const recapOf = (overrides: object) => ({
+  day: TODAY,
+  sent: [{ jira_issue: 'A-1', seconds: 3600 }, { jira_issue: 'A-2', seconds: 1800 }],
+  held_back: [{ jira_issue: 'A-3', reason: 'no text' }],
+  coverage_percent: 82,
+  gaps: [gap(60), gap(30), gap(20)],
+  ...overrides,
+})
+
+test("today's recap shows sent, held, coverage and gaps in the footer tail", async ($, on) => {
+  const clock = mock.clock(on)
+  world(on, { recap: recapOf({}), blocks: [block({})] })
+  await $.session.start(SESSION)
+  await clock.advance(1000)
+  // catches: counts swapped, or recap not shown
+  expect(JSON.stringify(await $.ui.render(hint()))).toContain('"worklog 1h00 · recap: 2 sent · 1 held · 82% · 3 gaps"')
+})
+
+test('a recap with unresolved gaps replaces the nudge', async ($, on) => {
+  const clock = mock.clock(on)
+  world(on, { recap: recapOf({}), nudges: NUDGES, blocks: [block({})] })
+  await $.session.start(SESSION)
+  await clock.advance(1000)
+  // catches: nudge shown next to the recap while gaps remain
+  expect(await submit($, clock)).not.toContain('Review PR')
+})
+
+test('a recap with no gaps leaves the nudge alone', async ($, on) => {
+  const clock = mock.clock(on)
+  world(on, { recap: recapOf({ gaps: [] }), nudges: NUDGES, blocks: [block({})] })
+  await $.session.start(SESSION)
+  await clock.advance(1000)
+  // catches: suppressing the nudge for any recap, or printing "0 gaps"
+  const shown = await submit($, clock)
+  expect(shown).toContain('"worklog 1h00 · recap: 2 sent · 1 held · 82% · Review PR #1"')
+})
+
+test("yesterday's recap is not shown", async ($, on) => {
+  const clock = mock.clock(on)
+  world(on, { recap: recapOf({ day: LAST_WORKDAY }), blocks: [block({})] })
+  await $.session.start(SESSION)
+  await clock.advance(1000)
+  // catches: not comparing the recap day with today
+  expect(JSON.stringify(await $.ui.render(hint()))).not.toContain('recap:')
+})
+
+test('no recap yet means no recap text', async ($, on) => {
+  const clock = mock.clock(on)
+  world(on, { blocks: [block({})] })
+  await $.session.start(SESSION)
+  await clock.advance(1000)
+  // catches: printing an empty recap for a null response
+  expect(JSON.stringify(await $.ui.render(hint()))).not.toContain('recap:')
 })

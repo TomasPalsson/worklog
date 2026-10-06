@@ -56,6 +56,7 @@ type Options = {
   closeoutDays?: CloseoutDay[]
   refusal?: string
   isDown?: boolean
+  hits?: unknown[]
 }
 
 type Posted = { url: string; body: unknown }
@@ -93,6 +94,7 @@ function world(on: On, options: Options = {}) {
         : answer(400, { error: options.refusal })
     }
     requested.push(event.url)
+    if (event.url.includes('/ask?')) return answer(200, options.hits ?? [])
     if (event.url.includes('/logged')) return answer(200, { today: TODAY })
     if (event.url.includes('/days/')) {
       return answer(200, { day: TODAY, total_seconds: 0, blocks: options.blocks ?? [] })
@@ -126,7 +128,7 @@ test('session start registers /wl with its argument hint', async ($, on) => {
   const seen = world(on)
   mock.clock(on)
   await $.session.start(SESSION)
-  expect(seen.registered).toEqual([{ name: 'wl', argumentHint: 'today|week|review' }])
+  expect(seen.registered).toEqual([{ name: 'wl', argumentHint: 'today|week|review|ask' }])
 })
 
 test('/wl today prints the hours of the blocks that are neither personal nor ignored', async ($, on) => {
@@ -153,8 +155,8 @@ test('any other argument, or none, prints the usage', async ($, on) => {
   world(on)
   mock.clock(on)
   await $.session.start(SESSION)
-  expect((await $.command.run(command('year'))).text).toBe('usage: /wl today|week|review')
-  expect((await $.command.run(command(''))).text).toBe('usage: /wl today|week|review')
+  expect((await $.command.run(command('year'))).text).toBe('usage: /wl today|week|review|ask <question>')
+  expect((await $.command.run(command(''))).text).toBe('usage: /wl today|week|review|ask <question>')
 })
 
 test('/wl today says so when the daemon is down', async ($, on) => {
@@ -317,4 +319,74 @@ test('the personal button reads work for a personal block and personal otherwise
   expect(await label()).toBe('personal')
   await $.ui.select({ plugin: 'worklog', key: 'block', value: '2' })
   expect(await label()).toBe('work')
+})
+
+const hit = (id: number, day: string, start: string, end: string, ticket: string | null) => ({
+  block_id: id,
+  day,
+  started_at: `${day}T${start}:00Z`,
+  ended_at: `${day}T${end}:00Z`,
+  jira_issue: ticket,
+})
+
+test('/wl ask prints one line per hit with date, block time and ticket, in the order the daemon returns', async ($, on) => {
+  world(on, {
+    hits: [
+      hit(2, '2026-10-06', '13:15', '14:00', 'GOJ-7'),
+      hit(1, '2026-09-30', '08:00', '09:30', null),
+    ],
+  })
+  mock.clock(on)
+  await $.session.start(SESSION)
+  const result = await $.command.run(command('ask kafka lag'))
+  // catches: re-sorting, dropping the ticket, or a missing placeholder for a null ticket
+  expect(result.text).toBe('2026-10-06  13:15–14:00  GOJ-7\n2026-09-30  08:00–09:30  —')
+})
+
+test('/wl ask sends the whole question url-encoded in q', async ($, on) => {
+  const seen = world(on, { hits: [] })
+  mock.clock(on)
+  await $.session.start(SESSION)
+  await $.command.run(command('ask  kafka & "lag"  '))
+  // catches: sending only the first word, or no encoding of & and quotes
+  expect(seen.requested.filter(url => url.includes('/ask'))).toEqual([
+    'http://127.0.0.1:9323/ask?q=kafka%20%26%20%22lag%22',
+  ])
+})
+
+test('/wl ask with no hits says so', async ($, on) => {
+  world(on, { hits: [] })
+  mock.clock(on)
+  await $.session.start(SESSION)
+  // catches: printing an empty string
+  expect((await $.command.run(command('ask nothing'))).text).toBe('worklog ask: no matches')
+})
+
+test('/wl ask with no question prints the usage and asks the daemon nothing', async ($, on) => {
+  const seen = world(on)
+  mock.clock(on)
+  await $.session.start(SESSION)
+  // catches: querying with an empty q
+  expect((await $.command.run(command('ask'))).text).toBe('usage: /wl today|week|review|ask <question>')
+  expect((await $.command.run(command('ask   '))).text).toBe('usage: /wl today|week|review|ask <question>')
+  expect(seen.requested.filter(url => url.includes('/ask'))).toEqual([])
+})
+
+test('an argument that only starts with ask is not ask', async ($, on) => {
+  const seen = world(on)
+  mock.clock(on)
+  await $.session.start(SESSION)
+  // catches: startswith('ask') with no word boundary
+  expect((await $.command.run(command('asking kafka'))).text).toBe('usage: /wl today|week|review|ask <question>')
+  expect(seen.requested.filter(url => url.includes('/ask'))).toEqual([])
+})
+
+test('/wl ask says so when the daemon is down', async ($, on) => {
+  world(on, { isDown: true })
+  mock.clock(on)
+  await $.session.start(SESSION)
+  const result = await $.command.run(command('ask kafka'))
+  // catches: swallowing the error into "no matches"
+  expect(result.text).toContain('worklog:')
+  expect(result.text).toContain('connection refused')
 })

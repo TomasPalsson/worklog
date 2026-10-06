@@ -93,8 +93,8 @@ export function VerdictControl({
   const canRetry = state === "stopped" || state === "needs_uv";
 
   return (
-    <section className="settings-section">
-      <h3>Verdict</h3>
+    <section id="verdict" className="set-card" aria-labelledby="verdict-title">
+      <h2 id="verdict-title">Verdict</h2>
       <p className="settings-hint">
         Files Slack messages and browser tabs into projects, picks clear tickets and
         checks Tempo text before it is sent.

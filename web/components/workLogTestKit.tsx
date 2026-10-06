@@ -67,6 +67,8 @@ export async function open(days: TicketDay[] = [day()], over: Record<string, unk
     saveTempoLineHours: mock(async () => ok),
     saveTempoLineText: mock(async () => ok),
     runSync: syncOk(),
+    loadPreflight: mock(async () => ({ ok: true as const, data: [] })),
+    loadReadBack: mock(async () => ({ ok: true as const, data: { check: "read_back", ok: true, target: null, detail: "Tempo matches" } })),
     ...over,
   } as unknown as TaskActions;
   const onAnnounce = mock((_m: string) => {});

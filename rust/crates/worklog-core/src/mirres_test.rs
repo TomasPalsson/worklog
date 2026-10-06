@@ -369,8 +369,8 @@ fn migration_adds_columns_to_old_table() {
         [],
     )
     .unwrap();
-    db::ensure_mirres_line_billing_details(&conn).unwrap();
-    db::ensure_mirres_line_billing_details(&conn).unwrap();
+    ensure_details_columns(&conn).unwrap();
+    ensure_details_columns(&conn).unwrap();
     conn.prepare("SELECT customer, details_json FROM mirres_line_billing")
         .unwrap();
 }

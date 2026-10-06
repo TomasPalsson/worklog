@@ -12,6 +12,7 @@ import {
   transitionTicket,
 } from "@/app/actions-hub";
 import { runSync } from "@/app/actions";
+import { loadPreflight, loadReadBack } from "@/lib/daemonPreflight";
 import { saveTempoLineHours, saveTempoLineText } from "@/app/actions-tempo-lines";
 import { COLUMNS, asTicket, columnOf, columnTitle, localToday, movesInto, weekMax, type Column } from "@/lib/taskBoard";
 import type { TaskRow, Transition } from "@/lib/types";
@@ -30,6 +31,8 @@ const realActions: TaskActions = {
   saveTempoLineHours,
   saveTempoLineText,
   runSync,
+  loadPreflight,
+  loadReadBack,
   transitionTicket,
   commentOnTicket,
   draftTicketUpdate,

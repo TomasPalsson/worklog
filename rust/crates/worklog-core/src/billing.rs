@@ -29,8 +29,8 @@ use rusqlite::{params_from_iter, Connection};
 
 use crate::billing_deildir;
 use crate::billing_registry::Registry;
+use crate::billing_round::{round_to_half_hour, HALF_HOUR_SECONDS};
 use crate::clues_contract::{BillingLineKey, LineTextOrigin};
-use crate::collectors::tempo::{round_to_half_hour, HALF_HOUR_SECONDS};
 use crate::models::Block;
 use crate::repo;
 
@@ -41,6 +41,8 @@ pub use billing_deild::resolve_block_slices;
 /// Shown wherever a field could not be resolved and the user must pick
 /// it in the form.
 pub const BLANK: &str = "—";
+/// Shown where a line has no start or end time to read off.
+pub const FILL_IN: &str = "fill in";
 
 /// `Tegund skráningar` — always a plain registration; the driving and
 /// on-call variants are never billed by this user.
@@ -128,6 +130,16 @@ impl BillingRow {
     /// `Tímar` as the form wants it: comma decimal, no trailing `,0`.
     pub fn hours_display(&self) -> String {
         format_hours(self.seconds)
+    }
+
+    /// Earliest start, or [`FILL_IN`] when the line has no blocks.
+    pub fn start_display(&self) -> String {
+        time_or_fill_in(&self.started_at)
+    }
+
+    /// Latest end, or [`FILL_IN`] when the line has no blocks.
+    pub fn end_display(&self) -> String {
+        time_or_fill_in(&self.ended_at)
     }
 
     /// True when the user still has to pick something for this line.
@@ -785,6 +797,20 @@ fn format_hours(seconds: i64) -> String {
     }
 }
 
+/// `HH:MM` in the `$WORKLOG_TZ` offset, [`FILL_IN`] when empty, verbatim when unparseable.
+fn time_or_fill_in(t: &str) -> String {
+    if t.is_empty() {
+        return FILL_IN.to_owned();
+    }
+    match chrono::DateTime::parse_from_rfc3339(t) {
+        Ok(d) => d
+            .with_timezone(&crate::tz::day_offset())
+            .format("%H:%M")
+            .to_string(),
+        Err(_) => t.to_owned(),
+    }
+}
+
 fn or_blank(v: &Option<String>) -> &str {
     v.as_deref().unwrap_or(BLANK)
 }
@@ -807,8 +833,10 @@ fn render_text(rows: &[BillingRow]) -> String {
     rows.iter()
         .map(|r| {
             format!(
-                "{}  {}  {}  {} hrs  {}  {}",
+                "{}  {}–{}  {}  {}  {} hrs  {}  {}",
                 r.date_display(),
+                r.start_display(),
+                r.end_display(),
                 pad(or_blank(&r.customer), cw),
                 pad(or_blank(&r.verkefni), vw),
                 pad(&r.hours_display(), hw),
@@ -1795,6 +1823,29 @@ mod tests {
     }
 
     #[test]
+    fn a_line_with_no_blocks_says_fill_in_for_both_times() {
+        let mut r = sample_rows().remove(0);
+        r.started_at = String::new();
+        r.ended_at = String::new();
+        assert_eq!(r.start_display(), "fill in"); // catches an empty-string passthrough
+        assert_eq!(r.end_display(), "fill in");
+    }
+
+    #[test]
+    fn each_missing_time_says_fill_in_independently() {
+        let _g = crate::tz::test_env_lock();
+        std::env::remove_var("WORKLOG_TZ");
+        let mut r = sample_rows().remove(0);
+        r.started_at = String::new();
+        assert_eq!(r.start_display(), "fill in");
+        assert_eq!(r.end_display(), "14:30"); // catches filling both when one is missing
+        r.started_at = "2026-07-23T09:00:00Z".into();
+        r.ended_at = String::new();
+        assert_eq!(r.start_display(), "09:00");
+        assert_eq!(r.end_display(), "fill in");
+    }
+
+    #[test]
     fn date_renders_in_the_forms_dd_mm_yyyy() {
         assert_eq!(sample_rows()[0].date_display(), "23.07.2026");
     }
@@ -1815,6 +1866,19 @@ mod tests {
         assert!(lines[0].contains("5,5 hrs"));
         assert!(lines[0].contains(REIKNINGSHAEFT));
         assert!(lines[1].contains(BLANK), "unresolved fields show a dash");
+    }
+
+    #[test]
+    fn text_line_with_no_blocks_shows_fill_in_for_both_times() {
+        let _g = crate::tz::test_env_lock();
+        std::env::remove_var("WORKLOG_TZ");
+        let mut rows = sample_rows();
+        rows[0].started_at = String::new();
+        rows[0].ended_at = String::new();
+        let out = render(&rows, Format::Text);
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines[0].contains("fill in–fill in"), "{}", lines[0]);
+        assert!(lines[1].contains("  15:00–19:00  "), "{}", lines[1]);
     }
 
     #[test]

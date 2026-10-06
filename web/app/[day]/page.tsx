@@ -1,5 +1,7 @@
 import { notFound } from "next/navigation";
+import { revalidatePath } from "next/cache";
 import {
+  call,
   DaemonError,
   fetchReviewLines,
   listTickets,
@@ -11,12 +13,13 @@ import {
 import { elsewhereForDay, type ElsewhereItem } from "@/lib/daemonElsewhere";
 import { tempoLines } from "@/lib/daemonTempoLines";
 import { billablePercent, type TempoLine } from "@/lib/tempo_line_contract";
-import { formatDayHeading, formatTotalHours, roundToHalfHour, todayISO } from "@/lib/format";
+import { formatDayHeading, formatTotalHours, todayISO } from "@/lib/format";
 import { DayHeader } from "@/components/DayHeader";
 import { ActionBar } from "@/components/ActionBar";
 import { MirresAutoFetch } from "@/components/MirresAutoFetch";
 import { BlockCard } from "@/components/BlockCard";
 import { DayStrip } from "@/components/DayStrip";
+import { RecapBanner } from "@/components/RecapBanner";
 import { ReviewSection } from "@/components/ReviewSection";
 import { ElsewhereList } from "@/components/ElsewhereList";
 import { EmptyState } from "@/components/EmptyState";
@@ -25,6 +28,7 @@ import { IgnoredLine } from "@/components/IgnoredLine";
 import { UnsortedList } from "@/components/UnsortedList";
 import { VerdictBanner } from "@/components/VerdictBanner";
 import type { Block, BillingRegistry, RoutedEvent } from "@/lib/types";
+import type { GapAction, Recap } from "@/lib/daily_helpers_contract";
 
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -96,6 +100,22 @@ export default async function DayPage({
   const verdict = await verdictStatus(day).catch(() => null);
   const reviewLines =
     day === todayISO() ? await fetchReviewLines().catch(() => []) : [];
+  const recap =
+    day === todayISO() ? await call<Recap | null>("GET", "/recap").catch(() => null) : null;
+  async function resolveGap(recapDay: string, startedAt: string, action: GapAction) {
+    "use server";
+    try {
+      const data = await call<Recap | null>("POST", "/recap/gap", {
+        day: recapDay,
+        started_at: startedAt,
+        ...action,
+      });
+      revalidatePath(`/${recapDay}`);
+      return { ok: true as const, data };
+    } catch (e) {
+      return { ok: false as const, error: (e as Error).message };
+    }
+  }
   const folderOptions = registry
     ? Array.from(
         new Set([
@@ -130,14 +150,13 @@ export default async function DayPage({
   // defaults to open so the user is nudged to assign them.
   const workGroups = groupBlocksByTicket(workBlocks);
 
-  // The day's billed total is the sum of what each ticket card shows:
-  // the line's (possibly hand-set) hours, else the group's tracked time,
-  // each rounded up to the half hour. Unassigned groups don't bill.
+  // The day's billed total is the sum of the server's billed hours for
+  // each ticket card. Unassigned groups, and groups with no line, don't bill.
   const billedSeconds = workGroups
     .filter((g) => !g.unassigned)
     .reduce((acc, g) => {
       const line = lines.find((l) => l.jira_issue === g.key);
-      return acc + roundToHalfHour(line ? line.effective_seconds : g.totalSeconds);
+      return acc + (line?.effective_seconds ?? 0);
     }, 0);
 
   return (
@@ -156,6 +175,7 @@ export default async function DayPage({
       <MirresAutoFetch day={day} needsFetch={lines.length > 0 && lines.every((l) => !l.billing)} />
       <ActionBar day={day} cacheCount={cache.count} cacheLast={cache.last_fetched} />
       <ReviewSection key={`review-${day}`} lines={reviewLines} />
+      <RecapBanner key={`recap-${day}`} recap={recap} resolve={resolveGap} />
       <DayStrip
         day={day}
         blocks={blocks}

@@ -169,6 +169,9 @@ pub enum Cmd {
         /// Preview the payload without calling Tempo.
         #[arg(long)]
         dry_run: bool,
+        /// Send even when the pre-send checklist has red rows, without asking.
+        #[arg(short, long)]
+        yes: bool,
     },
 
     /// Cluster a day's events into blocks (gap-timeout algorithm).
@@ -266,6 +269,41 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
         /// prompts, branches, active minutes and folder.
         #[arg(long)]
         details: bool,
+    },
+
+    /// Reverse your newest block change (the last 20 are remembered).
+    /// Refused when the block was already sent to Tempo.
+    Undo,
+
+    /// Search saved blocks and your Claude prompts, newest first, e.g.
+    /// `worklog ask kafka lag`; `--repo` shows where you stopped there.
+    Ask {
+        /// Words to look for.
+        #[arg(required_unless_present = "repo")]
+        query: Vec<String>,
+        /// Show the last 3 prompts and the files touched in this repo.
+        #[arg(long, conflicts_with = "query")]
+        repo: Option<String>,
+    },
+
+    /// Draft today's standup (three questions) and, once you confirm,
+    /// reply with it in today's "Daily:thread" Slack message.
+    Standup {
+        /// Post without asking.
+        #[arg(short, long)]
+        yes: bool,
+    },
+
+    /// Print one customer's hours for a month, grouped by deild, with
+    /// the change from the month before.
+    Report {
+        /// Customer name as in the billing registry.
+        customer: String,
+        /// Month, YYYY-MM.
+        month: String,
+        /// Print CSV instead of text.
+        #[arg(long)]
+        csv: bool,
     },
 
     /// Export a day's blocks as billing line items grouped by
@@ -841,7 +879,7 @@ pub fn run_with<W: Write>(
             SkillCmd::Status => cmd_skill_status(out, cli.json),
         },
         Cmd::Collect { target, days } => cmd_collect(target, days, out, cli.json),
-        Cmd::Sync { day, dry_run } => cmd_sync(day, dry_run, out, cli.json),
+        Cmd::Sync { day, dry_run, yes } => cmd_sync(day, dry_run, yes, out, cli.json),
         Cmd::Infer { day } => cmd_infer(day, out, cli.json),
         Cmd::Estimate { day, model } => cmd_estimate(day, &model, out, cli.json),
         Cmd::Day {
@@ -857,6 +895,16 @@ pub fn run_with<W: Write>(
             replay: _,
             details,
         } => crate::eval_cmd::cmd_eval(query.as_deref(), out, cli.json, details),
+        Cmd::Undo => crate::helpers_cmd::cmd_undo(out, cli.json),
+        Cmd::Ask { query, repo } => {
+            crate::helpers_cmd::cmd_ask(&query, repo.as_deref(), out, cli.json)
+        }
+        Cmd::Standup { yes } => crate::helpers_cmd::cmd_standup(yes, out, cli.json),
+        Cmd::Report {
+            customer,
+            month,
+            csv,
+        } => crate::helpers_cmd::cmd_report(&customer, &month, csv, out),
         Cmd::Export { day, format, mark } => cmd_export(day, format, mark, out, cli.json),
         Cmd::Ticket { sub } => crate::ticket_cmd::run_ticket(sub, out, cli.json),
         Cmd::Account { sub } => crate::ticket_cmd::run_account(sub, out, cli.json),
@@ -1754,13 +1802,36 @@ fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bo
     Ok(())
 }
 
-fn cmd_sync<W: Write>(day: Option<String>, dry_run: bool, out: &mut W, json: bool) -> Result<()> {
+fn cmd_sync<W: Write>(
+    day: Option<String>,
+    dry_run: bool,
+    yes: bool,
+    out: &mut W,
+    json: bool,
+) -> Result<()> {
     let paths = Paths::resolve()?;
     if !paths.db_exists() {
         anyhow::bail!("db not initialized. Run `worklog db migrate` first.");
     }
     let conn = db::open(&paths.db)?;
     let day = parse_day(day.as_deref())?;
+    if !dry_run {
+        let rows = worklog_core::preflight::check(&conn, day, day)?;
+        // stdout stays pure JSON under --json
+        let proceed = if json {
+            crate::helpers_cmd::preflight_gate(
+                &rows,
+                yes,
+                || confirm("Send anyway?"),
+                &mut io::stderr(),
+            )?
+        } else {
+            crate::helpers_cmd::preflight_gate(&rows, yes, || confirm("Send anyway?"), out)?
+        };
+        if !proceed {
+            return Ok(());
+        }
+    }
     let auth = if dry_run {
         // Dry-run only prints payloads — placeholders are fine.
         tempo_col::TempoAuth::from_secrets().unwrap_or(tempo_col::TempoAuth {
@@ -2032,7 +2103,7 @@ fn block_state(b: &serde_json::Value) -> &'static str {
 /// Yes/no prompt on stderr. In a non-interactive shell it refuses rather
 /// than silently assuming "yes" — destructive `worklog block` commands
 /// take an explicit `--yes` for scripts.
-fn confirm(prompt: &str) -> Result<bool> {
+pub(crate) fn confirm(prompt: &str) -> Result<bool> {
     if !io::stdin().is_terminal() {
         anyhow::bail!("{prompt}\n  refusing in a non-interactive shell — pass --yes to proceed");
     }
@@ -3788,6 +3859,8 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
         let verdict_task = worklog_core::verdict_supervisor::spawn()?;
         let scorecard_task = daemon_mod::spawn_scorecard_loop(state.clone());
         let auto_send_task = daemon_mod::spawn_auto_send_loop(state.clone());
+        let ask_fill_task = daemon_mod::spawn_ask_fill_loop(state.clone());
+        let nudge_task = daemon_mod::spawn_nudge_refresh_loop(state.clone());
         let prune_task = daemon_mod::spawn_prune_loop(
             state.clone(),
             prune_paths.data_dir.join("worklog.db.preprune"),
@@ -3817,6 +3890,8 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
         prune_task.abort();
         scorecard_task.abort();
         auto_send_task.abort();
+        ask_fill_task.abort();
+        nudge_task.abort();
         verdict_task.abort();
         worklog_core::verdict_supervisor::shutdown();
         unix_res
