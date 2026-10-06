@@ -140,6 +140,7 @@ pub fn pick(
             folder: None,
             label_origin: None,
             label_confidence: None,
+            ranking: None,
         },
         options,
         state: json!({ "events": titles }),

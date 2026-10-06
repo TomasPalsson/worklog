@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::verdict_contract::Ranking;
+use crate::verdict_contract::{RankedOption, Ranking};
 
 /// `events.source` for one Firefox add-on heartbeat (one row per minute).
 pub const SOURCE_FIREFOX: &str = "firefox";
@@ -195,6 +195,9 @@ pub struct RoutedEvent {
     pub folder: Option<String>,
     pub label_origin: Option<LabelOrigin>,
     pub label_confidence: Option<f64>,
+    /// Verdict's stored top options, best first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ranking: Option<Vec<RankedOption>>,
 }
 
 /// The filed pick: the winner of an accepted [`Ranking`] with its scores.

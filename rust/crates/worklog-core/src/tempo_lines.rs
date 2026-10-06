@@ -28,11 +28,12 @@ struct StoredRow {
     text_origin: Option<LineTextOrigin>,
     source_hash: Option<String>,
     hours_override_seconds: Option<i64>,
+    check_status: Option<LineCheck>,
 }
 
 fn stored_row(conn: &Connection, key: &TempoLineKey) -> Result<Option<StoredRow>> {
     conn.query_row(
-        "SELECT text, text_origin, source_hash, hours_override_seconds
+        "SELECT text, text_origin, source_hash, hours_override_seconds, check_status
            FROM tempo_line_texts WHERE day = ?1 AND jira_issue = ?2",
         params![key.day, key.jira_issue],
         |r| {
@@ -48,6 +49,13 @@ fn stored_row(conn: &Connection, key: &TempoLineKey) -> Result<Option<StoredRow>
                 }),
                 source_hash: r.get(2)?,
                 hours_override_seconds: r.get(3)?,
+                check_status: r
+                    .get::<_, Option<String>>(4)?
+                    .and_then(|s| match s.as_str() {
+                        "passed" => Some(LineCheck::Passed),
+                        "needs_look" => Some(LineCheck::NeedsLook),
+                        _ => None,
+                    }),
             })
         },
     )
@@ -111,6 +119,7 @@ fn build_line(conn: &Connection, key: &TempoLineKey, blocks: &[Block]) -> Result
         union_seconds: union,
         hours_override_seconds: override_seconds,
         effective_seconds: override_seconds.unwrap_or(union),
+        check_status: stored.and_then(|row| row.check_status),
     })
 }
 

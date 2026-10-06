@@ -153,6 +153,7 @@ fn pending_for(row: DecisionRow) -> Result<Pending> {
             folder: None,
             label_origin: None,
             label_confidence: None,
+            ranking: None,
         },
         options: row.options,
         state: serde_json::from_str::<Value>(&row.state_json).context("logged state")?,

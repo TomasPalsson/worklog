@@ -155,6 +155,7 @@ fn pending_with_options(options: Vec<&str>) -> Pending {
             folder: None,
             label_origin: None,
             label_confidence: None,
+            ranking: None,
         },
         options: options.into_iter().map(str::to_owned).collect(),
         state: serde_json::json!({}),
@@ -775,6 +776,7 @@ fn decide_drops_guess_outside_narrowed_options() {
         folder: None,
         label_origin: None,
         label_confidence: None,
+        ranking: None,
     };
     let pending = vec![Pending {
         event,
@@ -1457,4 +1459,65 @@ fn relabelling_to_the_same_folder_logs_no_second_fix() {
         .filter(|r| r.source == DecisionSource::Owner && r.subject == id.to_string())
         .count();
     assert_eq!(owner_rows, 1);
+}
+
+async fn routed_json(conn: Connection) -> serde_json::Value {
+    use axum::body::{to_bytes, Body};
+    use axum::http::Request;
+    use tower::ServiceExt;
+    let app = crate::daemon::router(crate::daemon::state_from_conn(conn));
+    let resp = app
+        .oneshot(
+            Request::get("/days/2026-04-20/routed")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    serde_json::from_slice(&to_bytes(resp.into_body(), 1 << 20).await.unwrap()).unwrap()
+}
+
+fn store_ranking_json(conn: &Connection, id: i64, json: &str) {
+    conn.execute(
+        "UPDATE events SET verdict_ranking = ?1 WHERE id = ?2",
+        params![json, id],
+    )
+    .unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn routed_json_carries_the_stored_ranking_list() {
+    let conn = open_memory().unwrap();
+    let id = loose_event(&conn, "e1", "thing");
+    let stored = ranking_for("zq-b", 0.5, 0.1);
+    store_ranking_json(&conn, id, &serde_json::to_string(&stored).unwrap());
+    let v = routed_json(conn).await;
+    // Catches serialising the whole Ranking object, or dropping the field.
+    assert_eq!(
+        v[0]["ranking"],
+        serde_json::json!([
+            {"id": "zq-b", "probability": 0.5},
+            {"id": "other", "probability": 0.01}
+        ])
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn routed_json_omits_ranking_when_none_stored() {
+    let conn = open_memory().unwrap();
+    loose_event(&conn, "e1", "thing");
+    let v = routed_json(conn).await;
+    // Catches serialising `"ranking": null` instead of omitting it.
+    assert!(v[0].as_object().unwrap().get("ranking").is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn routed_json_omits_ranking_for_unparseable_stored_json() {
+    let conn = open_memory().unwrap();
+    let id = loose_event(&conn, "e1", "thing");
+    store_ranking_json(&conn, id, "{not json");
+    let v = routed_json(conn).await;
+    // Catches unwrap/expect on parse (panic) or surfacing an error response.
+    assert_eq!(v[0]["id"], id);
+    assert!(v[0].as_object().unwrap().get("ranking").is_none());
 }

@@ -15,7 +15,7 @@ use crate::verdict_contract::{DecisionKind, DecisionRow, DecisionSource, Ranking
 use crate::verdict_decisions;
 
 pub(crate) const EVENT_COLUMNS: &str =
-    "id, source, started_at, title, details, container, project_path, label_origin, label_confidence";
+    "id, source, started_at, title, details, container, project_path, label_origin, label_confidence, verdict_ranking";
 
 /// A raw `events` row, as read for routing purposes.
 pub(crate) struct EventRow {
@@ -28,6 +28,7 @@ pub(crate) struct EventRow {
     pub(crate) project_path: Option<String>,
     pub(crate) label_origin: Option<String>,
     pub(crate) label_confidence: Option<f64>,
+    pub(crate) verdict_ranking: Option<String>,
 }
 
 pub(crate) fn row_from(r: &rusqlite::Row) -> rusqlite::Result<EventRow> {
@@ -41,6 +42,7 @@ pub(crate) fn row_from(r: &rusqlite::Row) -> rusqlite::Result<EventRow> {
         project_path: r.get(6)?,
         label_origin: r.get(7)?,
         label_confidence: r.get(8)?,
+        verdict_ranking: r.get(9)?,
     })
 }
 
@@ -58,6 +60,10 @@ pub(crate) fn to_routed(row: EventRow) -> RoutedEvent {
             .and_then(crate::billing::work_folder_for_path),
         label_origin: row.label_origin.as_deref().and_then(LabelOrigin::parse),
         label_confidence: row.label_confidence,
+        ranking: row
+            .verdict_ranking
+            .and_then(|json| serde_json::from_str::<Ranking>(&json).ok())
+            .map(|r| r.ranking),
     }
 }
 

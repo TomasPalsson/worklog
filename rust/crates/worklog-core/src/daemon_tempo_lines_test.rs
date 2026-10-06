@@ -447,3 +447,43 @@ async fn generated_line_without_a_cached_ticket_summary_is_not_checked() {
     assert_eq!(stored(&state).await, (Some(VAGUE.to_string()), None));
 }
 
+async fn set_check_status(state: &Shared, value: &str) {
+    state
+        .conn
+        .lock()
+        .await
+        .execute(
+            "INSERT INTO tempo_line_texts (day, jira_issue, updated_at, check_status)
+             VALUES (?1, 'APRO-1', '2026-09-30T12:00:00+00:00', ?2)",
+            params![DAY, value],
+        )
+        .unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn get_carries_check_status_needs_look_for_a_flagged_line() {
+    let state = state_with_two_block_line();
+    set_check_status(&state, "needs_look").await;
+    let (_, lines) = call(&state, get_day()).await;
+    // Catches never selecting the column (field stays null).
+    assert_eq!(lines[0]["check_status"], "needs_look");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn get_carries_check_status_passed_for_a_passed_line() {
+    let state = state_with_two_block_line();
+    set_check_status(&state, "passed").await;
+    let (_, lines) = call(&state, get_day()).await;
+    // Catches mapping every non-null value to needs_look.
+    assert_eq!(lines[0]["check_status"], "passed");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn get_carries_null_check_status_for_an_unchecked_line() {
+    let state = state_with_two_block_line();
+    let (_, lines) = call(&state, get_day()).await;
+    // Catches omitting the key (web reads null) or defaulting to passed.
+    assert!(lines[0].as_object().unwrap().contains_key("check_status"));
+    assert_eq!(lines[0]["check_status"], serde_json::Value::Null);
+}
+
