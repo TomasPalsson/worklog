@@ -131,17 +131,23 @@ pub fn latest_for(
     .context("reading latest verdict decision")
 }
 
-/// Unlabelled events of the local `day` with no Verdict project decision.
+/// Unlabelled browser/Slack events of the local `day` with no Verdict project decision.
 pub fn unchecked_count(conn: &Connection, day: &str) -> Result<u32> {
     let day = NaiveDate::parse_from_str(day, "%Y-%m-%d").context("parsing day")?;
     let (start, end) = utc_window_for_local_day(day);
     conn.query_row(
         "SELECT COUNT(*) FROM events e
-          WHERE e.label_origin IS NULL AND e.started_at >= ?1 AND e.started_at < ?2
+          WHERE e.source IN (?3, ?4) AND e.label_origin IS NULL
+            AND e.started_at >= ?1 AND e.started_at < ?2
             AND NOT EXISTS (SELECT 1 FROM verdict_decisions d
                              WHERE d.kind = 'project' AND d.source = 'verdict'
                                AND d.subject = CAST(e.id AS TEXT))",
-        params![start.to_rfc3339(), end.to_rfc3339()],
+        params![
+            start.to_rfc3339(),
+            end.to_rfc3339(),
+            crate::routing_contract::SOURCE_FIREFOX,
+            crate::routing_contract::SOURCE_SLACK
+        ],
         |r| r.get(0),
     )
     .context("counting unchecked events")

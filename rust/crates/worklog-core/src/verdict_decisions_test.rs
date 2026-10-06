@@ -272,6 +272,20 @@ fn unchecked_count_day_window_is_start_inclusive_end_exclusive() {
 }
 
 #[test]
+fn unchecked_count_ignores_non_routable_sources() {
+    let conn = open_memory().unwrap();
+    for src in ["git", "claude", "jira"] {
+        repo::upsert_event(
+            &conn,
+            &Event::minimal(src, "x", "2026-10-05T08:00:00+00:00", "x"),
+        )
+        .unwrap();
+    }
+    // catches: counting events routing can never label
+    assert_eq!(unchecked_count(&conn, "2026-10-05").unwrap(), 0);
+}
+
+#[test]
 fn unchecked_count_rejects_a_malformed_day() {
     let conn = open_memory().unwrap();
     // catches: swallowing the parse error into 0
