@@ -175,6 +175,9 @@ pub fn load_pending(conn: &Connection, day: NaiveDate) -> Result<(RuleHits, Vec<
             "container": row.container,
         });
         let options = shortlist(conn, &row, day)?;
+        if options.is_empty() {
+            continue;
+        }
         let examples = examples_for_options(conn, &options)?;
         pending.push(Pending {
             event: to_routed(row),

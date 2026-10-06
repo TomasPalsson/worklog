@@ -409,6 +409,7 @@ fn prefix_is_not_a_match() {
 fn unknown_repo_is_no_match() {
     let conn = open_memory().unwrap();
     pin(&conn, "vitinn-infra", None);
+    recent_work(&conn, "vitinn-infra");
     let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
     let eid = repo::upsert_event(
         &conn,
@@ -1374,4 +1375,70 @@ fn an_owner_fix_is_logged_with_the_value_it_replaced() {
     assert_eq!(second.previous.as_deref(), Some("zq-d"));
     assert_eq!(second.chosen.as_deref(), Some("zq-e"));
     assert_eq!(second.ranking, None);
+}
+
+/// One claude event in `folder` the same day, so the shortlist offers it as recent work.
+fn recent_work(conn: &Connection, folder: &str) {
+    let prefix = crate::billing::work_prefix().unwrap();
+    let id = repo::upsert_event(
+        conn,
+        &Event::minimal("claude", "w1", "2026-04-20T08:00:00+00:00", "t"),
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE events SET project_path = ?1 WHERE id = ?2",
+        params![format!("{prefix}/{folder}"), id],
+    )
+    .unwrap();
+}
+
+fn slack_event(conn: &Connection, source_id: &str) -> i64 {
+    repo::upsert_event(
+        conn,
+        &Event::minimal(
+            "slack",
+            source_id,
+            "2026-04-20T10:00:00+00:00",
+            "nothing known",
+        ),
+    )
+    .unwrap()
+}
+
+fn project_rows(conn: &Connection, id: i64) -> usize {
+    verdict_decisions::list_since(conn, DecisionKind::Project, "")
+        .unwrap()
+        .iter()
+        .filter(|r| r.subject == id.to_string())
+        .count()
+}
+
+#[test]
+fn empty_shortlist_is_neither_classified_nor_logged() {
+    let conn = open_memory().unwrap();
+    let id = slack_event(&conn, "empty");
+    let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+    // PanicsIfCalled catches sending an empty option set to the classifier.
+    route_day(&conn, day, &PanicsIfCalled, default_rule()).unwrap();
+    // Catches logging a decision (and storing a ranking) for an event with no options.
+    assert_eq!(project_rows(&conn, id), 0);
+}
+
+#[test]
+fn rerouting_an_unfiled_event_keeps_one_decision_row() {
+    let conn = open_memory().unwrap();
+    pin(&conn, "alpha", None);
+    recent_work(&conn, "alpha");
+    let id = slack_event(&conn, "abstain");
+    let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+    let abstains = Fixed(Ranking {
+        ranking: vec![],
+        abstain: 1.0,
+        agreed: true,
+    });
+    route_day(&conn, day, &abstains, default_rule()).unwrap();
+    assert_eq!(project_rows(&conn, id), 1, "first run logs the answer");
+    route_day(&conn, day, &abstains, default_rule()).unwrap();
+    // Catches a plain INSERT per run.
+    assert_eq!(project_rows(&conn, id), 1);
 }

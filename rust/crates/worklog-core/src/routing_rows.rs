@@ -98,6 +98,13 @@ pub(crate) fn record_answer(conn: &Connection, answer: &Answer) -> Result<()> {
         params![serde_json::to_string(&answer.ranking)?, answer.id],
     )
     .context("storing event ranking")?;
+    // A re-run re-asks an event Verdict left unfiled; keep one row for it, not one per run.
+    conn.execute(
+        "DELETE FROM verdict_decisions
+          WHERE kind = 'project' AND source = 'verdict' AND subject = ?1 AND chosen IS NULL",
+        params![answer.id.to_string()],
+    )
+    .context("replacing earlier unfiled decision")?;
     log_decision(
         conn,
         DecisionRow {
