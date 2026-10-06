@@ -284,12 +284,13 @@ async fn forced_regenerate_fails_loudly_when_the_model_fails() {
     assert_eq!(lines[0]["text"], serde_json::Value::Null);
 }
 
-static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+type Seen = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
 
 fn scripted_invoker(
     replies: &'static [&'static str],
+    seen: Seen,
 ) -> impl FnOnce() -> anyhow::Result<Box<dyn ModelInvoker>> {
-    struct Scripted(std::sync::Mutex<std::collections::VecDeque<&'static str>>);
+    struct Scripted(std::sync::Mutex<std::collections::VecDeque<&'static str>>, Seen);
     impl ModelInvoker for Scripted {
         fn invoke(
             &self,
@@ -298,12 +299,12 @@ fn scripted_invoker(
             _schema: &serde_json::Value,
             _model: &str,
         ) -> anyhow::Result<serde_json::Value> {
-            SEEN.lock().unwrap().push(user.to_string());
+            self.1.lock().unwrap().push(user.to_string());
             let text = self.0.lock().unwrap().pop_front().unwrap_or("x 1");
             Ok(serde_json::json!({ "text": text }))
         }
     }
-    move || Ok(Box::new(Scripted(std::sync::Mutex::new(replies.iter().copied().collect()))) as Box<dyn ModelInvoker>)
+    move || Ok(Box::new(Scripted(std::sync::Mutex::new(replies.iter().copied().collect()), seen)) as Box<dyn ModelInvoker>)
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -320,19 +321,19 @@ async fn unforced_generation_never_copies_english_when_the_model_fails() {
 #[tokio::test(flavor = "current_thread")]
 async fn path_reply_is_retried_then_stored_and_the_prompt_carries_the_descriptions() {
     let state = state_with_two_block_line();
-    SEEN.lock().unwrap().clear();
+    let seen_log = Seen::default();
     let forced = generate_tempo_lines(
         state.clone(),
         DAY.to_string(),
         Some(key()),
-        scripted_invoker(&["Lagaði src/main.rs. Prófaði það.", "Lagaði villu. Prófaði það."]),
+        scripted_invoker(&["Lagaði src/main.rs. Prófaði það.", "Lagaði villu. Prófaði það."], seen_log.clone()),
     )
     .await
     .unwrap();
     assert_eq!(forced, vec![key()]);
     let (_, lines) = call(&state, get_day()).await;
     assert_eq!(lines[0]["text"], "Lagaði villu. Prófaði það.");
-    let seen = SEEN.lock().unwrap().clone();
+    let seen = seen_log.lock().unwrap().clone();
     assert_eq!(seen.len(), 2);
     assert!(seen[0].contains("Alpha") && seen[0].contains("Beta"), "{}", seen[0]);
     assert!(seen[1].contains("Síðasta svar var hafnað"), "{}", seen[1]);
@@ -342,10 +343,10 @@ async fn path_reply_is_retried_then_stored_and_the_prompt_carries_the_descriptio
 async fn three_bad_replies_fail_forced_loudly_and_store_nothing_unforced() {
     let state = state_with_two_block_line();
     let bad: &'static [&'static str] = &["a 1", "b 2", "c 3"];
-    let forced = generate_tempo_lines(state.clone(), DAY.to_string(), Some(key()), scripted_invoker(bad)).await;
+    let forced = generate_tempo_lines(state.clone(), DAY.to_string(), Some(key()), scripted_invoker(bad, Seen::default())).await;
     let err = forced.unwrap_err();
     assert!(err.to_string().contains("(reynt 3 sinnum)"), "{err}");
-    let unforced = generate_tempo_lines(state.clone(), DAY.to_string(), None, scripted_invoker(bad))
+    let unforced = generate_tempo_lines(state.clone(), DAY.to_string(), None, scripted_invoker(bad, Seen::default()))
         .await
         .unwrap();
     assert!(unforced.is_empty());
