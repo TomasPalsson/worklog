@@ -58,6 +58,8 @@
 //! * `POST /standup/draft`               — { "previous"?: StandupDraft } draft (or reword) today's standup → `StandupDraft`
 //! * `POST /standup/post`                — { "text" } reply in today's Daily thread → `PostOutcome`
 //! * `GET  /nudges`                      — footer nudges → `Vec<Nudge>`
+//! * `GET  /preflight?from=&to=`         — pre-send checklist rows for the day range → `Vec<PreflightRow>`
+//! * `GET  /preflight/read-back?day=`    — Tempo read-back row for one day → `PreflightRow`
 //!
 //! Unix-socket file perms default to `0666` so the containerised UI can
 //! connect across Docker Desktop's VM (same user, same host — the data
@@ -284,6 +286,11 @@ pub fn router(state: Shared) -> Router {
         .route("/standup/draft", post(crate::daemon_standup::draft))
         .route("/standup/post", post(crate::daemon_standup::post))
         .route("/nudges", get(crate::daemon_nudges::get_nudges))
+        .route("/preflight", get(crate::daemon_preflight::get_preflight))
+        .route(
+            "/preflight/read-back",
+            get(crate::daemon_preflight::get_read_back),
+        )
         .with_state(state)
 }
 
@@ -3089,6 +3096,38 @@ mod tests {
             .await
             .unwrap();
         // catches: /nudges missing (404) or registered as POST
+        assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn preflight_routes_are_registered_get_only_and_reject_bad_dates() {
+        for (uri, want) in [
+            // catches: route missing (404) or red rows turned into an error status
+            ("/preflight?from=2026-04-18&to=2026-04-18", StatusCode::OK),
+            // catches: read-back unregistered, or served by the checklist handler (400 on missing from/to)
+            ("/preflight/read-back?day=2026-04-18", StatusCode::OK),
+            // catches: unparsed dates reaching the check
+            (
+                "/preflight?from=nope&to=2026-04-18",
+                StatusCode::BAD_REQUEST,
+            ),
+            // catches: reversed range answering all-green
+            (
+                "/preflight?from=2026-04-19&to=2026-04-18",
+                StatusCode::BAD_REQUEST,
+            ),
+        ] {
+            let resp = router(state_with_block())
+                .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), want, "{uri}");
+        }
+        let post = router(state_with_block())
+            .oneshot(Request::post("/preflight").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        // catches: a read-only route registered as POST
         assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 
