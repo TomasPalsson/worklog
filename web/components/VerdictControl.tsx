@@ -10,6 +10,7 @@ import { useEffect, useState, useTransition } from "react";
 import { Loader2 } from "lucide-react";
 import * as actions from "@/app/actions";
 import { toast } from "@/lib/toast";
+import { CardHead } from "./SettingsNav";
 import type { VerdictState, VerdictStatus } from "@/lib/verdict_contract";
 
 type Result<T> = { ok: true; data: T } | { ok: false; error: string };
@@ -94,7 +95,7 @@ export function VerdictControl({
 
   return (
     <section id="verdict" className="set-card" aria-labelledby="verdict-title">
-      <h2 id="verdict-title">Verdict</h2>
+      <CardHead id="verdict" title="Verdict" />
       <p className="settings-hint">
         Files Slack messages and browser tabs into projects, picks clear tickets and
         checks Tempo text before it is sent.
@@ -148,9 +149,10 @@ export function VerdictControl({
         <p className="settings-hint">Checking Verdict…</p>
       )}
       {status?.scorecard != null && (
-        <p className="settings-hint verdict-scorecard">
-          {`Last night's check: ${status.scorecard}`}
-        </p>
+        <details className="verdict-scorecard">
+          <summary>How Verdict did last night</summary>
+          <p className="settings-hint">{`Last night's check: ${status.scorecard}`}</p>
+        </details>
       )}
       <label className="settings-field verdict-check">
         <input

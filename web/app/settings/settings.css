@@ -37,34 +37,47 @@
 .set-index ol {
   list-style: none;
   margin: 0;
-  padding: 0 0 0 1px;
-  border-left: 1px solid var(--border);
+  padding: 0;
+  display: grid;
+  gap: 2px;
 }
 .set-index a {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  min-height: 36px;
+  gap: 10px;
+  min-height: 40px;
   padding: 0 12px;
-  margin-left: -2px;
-  border-left: 2px solid transparent;
+  border-radius: var(--radius-md);
   font-size: 14px;
   font-weight: 500;
   color: var(--fg-muted);
   text-decoration: none;
   transition: color 120ms cubic-bezier(0.25, 1, 0.5, 1),
-              border-color 120ms cubic-bezier(0.25, 1, 0.5, 1);
+              background-color 120ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+.set-index a svg {
+  flex: none;
+}
+.set-index-label {
+  flex: 1;
 }
 .set-index a:hover {
   color: var(--fg);
-  border-left-color: var(--border-strong);
+  background: var(--bg-sunk);
+}
+.set-index a[aria-current] {
+  color: var(--fg);
+  background: var(--bg-raised);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.set-index a[aria-current] svg {
+  color: var(--sage-ink);
 }
 .set-index-count {
   font-family: var(--font-mono);
   font-size: 13px;
   font-weight: 400;
-  color: var(--fg-subtle);
+  color: var(--fg-muted);
 }
 
 /* cards */
@@ -82,11 +95,27 @@
   box-shadow: var(--elevation-1);
 }
 .set-card h2 {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   font-size: 19px;
   font-weight: 600;
   line-height: 1.2;
   letter-spacing: -0.01em;
   margin: 0 0 6px;
+}
+.set-card-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-md);
+  background: var(--sage-bg);
+  color: var(--sage-ink);
+}
+.set-card h2 + .settings-hint {
+  margin-top: 10px;
 }
 .set-card h3 {
   font-size: 13px;
@@ -169,7 +198,7 @@
 }
 
 /* checkbox rows (pruner + Verdict) */
-.set-check,
+.set-page .set-check,
 .set-page .verdict-check {
   flex-direction: row;
   align-items: center;
@@ -177,36 +206,74 @@
   min-height: 44px;
   margin-bottom: 4px;
 }
-.set-check input,
+/* checkboxes drawn as switches: off = grey knob left, on = green track, knob right */
+.set-page .set-check input,
 .set-page .verdict-check input {
-  width: 18px;
-  height: 18px;
+  appearance: none;
+  width: 40px;
+  height: 24px;
   min-height: 0;
   margin: 0;
   padding: 0;
   flex: none;
-  accent-color: var(--sage-ink);
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+  background: radial-gradient(circle, var(--fg-muted) 7px, transparent 7.5px) 0 0 / 24px 24px
+    no-repeat var(--bg-sunk);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  transition: background-position 150ms cubic-bezier(0.25, 1, 0.5, 1),
+              background-color 150ms cubic-bezier(0.25, 1, 0.5, 1);
 }
-.set-check > span,
+.set-page .set-check input:checked,
+.set-page .verdict-check input:checked {
+  background-image: radial-gradient(circle, var(--bg-raised) 8px, transparent 8.5px);
+  background-position: 16px 0;
+  background-color: var(--sage-ink);
+  box-shadow: none;
+}
+.set-page .set-check input:disabled,
+.set-page .verdict-check input:disabled {
+  cursor: progress;
+  opacity: 0.5;
+}
+.set-page .set-check input:focus-visible,
+.set-page .verdict-check input:focus-visible {
+  box-shadow: var(--ring);
+}
+.set-page .set-check > span,
 .set-page .verdict-check > span {
   font-size: 15px;
   font-weight: 500;
   color: var(--fg);
 }
 .set-page .verdict-check + .settings-hint {
-  margin: -4px 0 12px 28px;
+  margin: -4px 0 12px 50px;
 }
 .set-page .verdict-state-row {
-  margin-left: 28px;
+  margin-left: 50px;
 }
 .set-page .verdict-scorecard,
-.set-page .verdict-unknown {
-  margin-left: 28px;
+.set-page #verdict .verdict-unknown {
+  margin-left: 50px;
 }
 
 /* the pruner's day fields fade when pruning is off */
 .settings-grid-2[data-off] {
   opacity: 0.55;
+}
+
+.set-page .verdict-scorecard summary {
+  min-height: 32px;
+  font-size: 14px;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.set-page .verdict-scorecard summary:hover {
+  color: var(--fg);
+}
+.set-page .verdict-scorecard p {
+  margin: 4px 0 12px;
 }
 
 /* advanced disclosure */
@@ -293,30 +360,62 @@
   font-weight: 500;
 }
 
-/* connections: one block per service */
+/* connections: one row per service; connected ones start folded */
 .set-service {
-  margin: 0;
-  padding: 20px 0 0;
-  border: 0;
   border-top: 1px solid var(--border);
-  min-width: 0;
 }
-.set-service + .set-service {
-  margin-top: 20px;
-}
-.set-service legend {
-  float: left;
-  width: 100%;
+.set-service summary {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0;
-  margin-bottom: 14px;
+  gap: 12px;
+  min-height: 56px;
+  cursor: pointer;
+  list-style: none;
+}
+.set-service summary::-webkit-details-marker {
+  display: none;
+}
+.set-service summary:hover .set-service-toggle {
+  color: var(--fg);
+}
+.set-service-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  background: var(--bg-sunk);
+  color: var(--fg);
+}
+.set-service-name {
   font-size: 15px;
   font-weight: 600;
 }
-.set-service legend + * {
-  clear: both;
+.set-service-toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--fg-muted);
+}
+.set-service-toggle svg {
+  transition: transform 150ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+.set-service[open] .set-service-toggle svg {
+  transform: rotate(180deg);
+}
+.set-service .set-when-open,
+.set-service[open] .set-when-closed {
+  display: none;
+}
+.set-service[open] .set-when-open {
+  display: inline;
+}
+.set-service > .settings-grid-2 {
+  padding: 4px 0 24px;
 }
 
 .set-pill {
@@ -346,9 +445,18 @@
   color: var(--amber-ink);
 }
 
+/* one-click time zone */
+.set-shortcut {
+  margin: 12px 0 0;
+  font-size: 14px;
+  color: var(--fg-muted);
+}
+
 /* sticky save bar */
+/* sits at the end of the page while clean; floats over content only once
+   there is something to save */
 .set-savebar {
-  position: sticky;
+  position: static;
   bottom: 16px;
   z-index: 5;
   display: flex;
@@ -363,6 +471,7 @@
   transition: border-color 150ms cubic-bezier(0.25, 1, 0.5, 1);
 }
 .set-savebar[data-dirty] {
+  position: sticky;
   border-color: var(--amber);
   box-shadow: var(--elevation-modal);
 }
@@ -391,6 +500,12 @@ body:has(.chg-slip) .set-savebar {
 }
 .set-page .action-btn {
   min-height: 40px;
+}
+.set-kbd {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 400;
+  opacity: 0.75;
 }
 
 /* loading / error */
@@ -423,8 +538,17 @@ body:has(.chg-slip) .set-savebar {
     grid-template-columns: minmax(0, 1fr);
     gap: 16px;
   }
+  /* the chip row stays reachable while scrolling */
   .set-index {
-    position: static;
+    top: 0;
+    z-index: 4;
+    margin: 0 -16px;
+    padding: 8px 16px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+  }
+  .set-card {
+    scroll-margin-top: 72px;
   }
   .set-index ol {
     display: flex;
@@ -435,8 +559,7 @@ body:has(.chg-slip) .set-savebar {
     scrollbar-width: none;
   }
   .set-index a {
-    margin: 0;
-    padding: 0 12px;
+    padding: 0 14px;
     border: 1px solid var(--border);
     border-radius: 999px;
     white-space: nowrap;
@@ -459,12 +582,11 @@ body:has(.chg-slip) .set-savebar {
     flex-wrap: wrap;
     padding: 12px;
   }
-  /* screen space is short: the bar only shows once there is something to save */
-  .set-savebar:not([data-dirty]) {
-    display: none;
-  }
   .set-savebar-note {
     flex-basis: 100%;
+  }
+  .set-kbd {
+    display: none;
   }
   .set-savebar .action-btn {
     flex: 1;

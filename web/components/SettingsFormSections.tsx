@@ -1,47 +1,26 @@
 "use client";
 
-// The /settings page body: one card per topic, plus the section index
-// beside it. Every piece is a plain controlled view over the form state
-// SettingsPanel owns.
+// The /settings page body: one card per topic. Every piece is a plain
+// controlled view over the form state SettingsPanel owns.
 
 import type { ReactNode } from "react";
 import type { SettingsView } from "@/lib/types";
 import type { SettingsFormState } from "@/lib/settingsForm";
-import { CredentialGroups, connectedCount } from "./CredentialFields";
+import { CredentialGroups } from "./CredentialFields";
 import { RoutingFields, RoutingStatusAndRules } from "./RoutingSettings";
+import { CardHead } from "./SettingsNav";
 import { VerdictControl } from "./VerdictControl";
 
 type Patch = (p: Partial<SettingsFormState>) => void;
 
-const SECTIONS = [
-  ["verdict", "Verdict"],
-  ["folders", "Work or personal"],
-  ["time", "Time zone"],
-  ["cleanup", "Old data cleanup"],
-  ["sorting", "Browser & Slack"],
-  ["connections", "Connections"],
-] as const;
-
-export function SettingsIndex({ view }: { view: SettingsView }) {
-  const { done, total } = connectedCount(view.secrets);
-  return (
-    <nav className="set-index" aria-label="Settings sections">
-      <ol>
-        {SECTIONS.map(([id, label]) => (
-          <li key={id}>
-            <a href={`#${id}`}>
-              {label}
-              {id === "connections" && total > 0 && (
-                <span className="set-index-count">
-                  {done} of {total}
-                </span>
-              )}
-            </a>
-          </li>
-        ))}
-      </ol>
-    </nav>
-  );
+/** This computer's current UTC offset in the form WORKLOG_TZ takes. */
+function localOffset(): string {
+  const m = -new Date().getTimezoneOffset();
+  if (m === 0) return "UTC";
+  const abs = Math.abs(m);
+  const hh = String(Math.floor(abs / 60)).padStart(2, "0");
+  const mm = String(abs % 60).padStart(2, "0");
+  return `${m > 0 ? "+" : "-"}${hh}:${mm}`;
 }
 
 function Card({
@@ -57,7 +36,7 @@ function Card({
 }) {
   return (
     <section id={id} className="set-card" aria-labelledby={`${id}-title`}>
-      <h2 id={`${id}-title`}>{title}</h2>
+      <CardHead id={id} title={title} />
       {lede && <p className="settings-hint">{lede}</p>}
       {children}
     </section>
@@ -131,7 +110,25 @@ function TimeCard({ form, patch }: { form: SettingsFormState; patch: Patch }) {
         />
         <small className="set-invalid">Use UTC or an offset like +01:00.</small>
       </label>
+      <TzShortcut current={form.tz} onPick={(tz) => patch({ tz })} />
     </Card>
+  );
+}
+
+/** One click to the offset this computer is on right now. */
+function TzShortcut({ current, onPick }: { current: string; onPick: (tz: string) => void }) {
+  const here = localOffset();
+  const same = current.trim() === here || (here === "UTC" && current.trim() === "");
+  return (
+    <p className="set-shortcut">
+      {same ? (
+        <span>Matches this computer ({here}).</span>
+      ) : (
+        <button type="button" className="action-btn" onClick={() => onPick(here)}>
+          Use this computer&rsquo;s offset ({here})
+        </button>
+      )}
+    </p>
   );
 }
 
