@@ -190,3 +190,18 @@ fn find_and_suggestions_and_hints_render_rows() {
     let s = render(|o| render_hints(o, &[hint]));
     assert!(s.starts_with("GENAI-7  Do thing  -> "), "{s}");
 }
+
+#[test]
+fn pick_verb_parses() {
+    let cli = Cli::try_parse_from([
+        "worklog",
+        "ticket",
+        "pick",
+        "--session",
+        "s",
+        "--also",
+        "A-1",
+        "hi",
+    ]);
+    assert!(cli.is_ok());
+}

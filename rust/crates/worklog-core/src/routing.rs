@@ -16,8 +16,8 @@ use crate::billing_registry::Registry;
 use crate::change_log;
 use crate::deild_contract::ChangeSource;
 use crate::routing_contract::{
-    Classifier, LabelOrigin, LabelRequest, RouteRule, RoutedEvent, Rule, RuleKind, IGNORE_FOLDER,
-    SOURCE_FIREFOX, SOURCE_SLACK,
+    Classifier, Guess, LabelOrigin, LabelRequest, RouteRule, RoutedEvent, Rule, RuleKind,
+    IGNORE_FOLDER, SOURCE_FIREFOX, SOURCE_SLACK,
 };
 #[path = "routing_context.rs"]
 pub(crate) mod context;
@@ -187,6 +187,13 @@ pub fn load_pending(conn: &Connection, day: NaiveDate) -> Result<(RuleHits, Vec<
         });
     }
     Ok((rule_hits, pending))
+}
+
+/// Whether `guess` names one of `options` and clears both the abstain margin and the runner-up ratio.
+pub fn accepts(guess: &Guess, options: &[String], rule: RouteRule) -> bool {
+    options.contains(&guess.folder)
+        && guess.confidence >= guess.abstain * rule.abstain_margin
+        && guess.confidence >= guess.runner_up * rule.runner_up_ratio
 }
 
 /// Ask the classifier for each pending event; keep answers whose order check agreed, whose top names one of the event's own

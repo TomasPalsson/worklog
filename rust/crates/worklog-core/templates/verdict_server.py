@@ -12,6 +12,9 @@ Binds 127.0.0.1 only. Endpoints:
   POST /match     -> body {"query": <text>, "states": [<json>, ...]}
                      response {"matches": [<bool>, ...]} (one per state; used by `worklog eval`)
                      empty query -> 400
+  POST /pick      -> body {"text": <str>, "options": [{"id": <ticket key>, "description": <summary>}, ...]}
+                     response same shape as /classify (choice is an option id)
+                     blank text or fewer than 2 options -> 400
 
 The callers send at most 6 options, so no grouping is needed. `--self-test`
 runs on fakes with the system python3 — it never imports rlcd.
@@ -33,6 +36,8 @@ EXAMPLE_CHARS_TOTAL = 300
 INSUFFICIENT_EVIDENCE_ID = "__insufficient_evidence__"
 # The wording the 4-right / 0-wrong measurement used; the default ratios are tuned to it.
 QUESTION = "Which project folder does this work activity belong to? Links, repo names and paths are the strongest evidence."
+
+PICK_QUESTION = "Which Jira ticket is this coding session working on? Ticket keys, branch names and the request's own words are the strongest evidence."
 
 ENGINE = None
 
@@ -122,6 +127,54 @@ def _probabilities(context, options, examples):
     return ENGINE.evaluate(context, [query]).results[0].probabilities
 
 
+# /pick only (session ticket, PR #110): Owner ticket lists can exceed one
+# Choice, so they are split into groups and merged; /classify never splits.
+PICK_GROUP_SIZE = 24
+
+
+def _pick_groups(options):
+    groups = [options[i : i + PICK_GROUP_SIZE] for i in range(0, len(options), PICK_GROUP_SIZE)]
+    # A Choice needs at least 2 options: borrow one from the previous full group.
+    if len(groups) > 1 and len(groups[-1]) == 1:
+        groups[-1] = groups[-2][-1:] + groups[-1]
+        groups[-2] = groups[-2][:-1]
+    return groups
+
+
+def _merge_pick(group_probabilities):
+    winner_id, winner_prob, runner_up, abstain = None, 0.0, 0.0, 0.0
+    for probabilities in group_probabilities:
+        abstain = max(abstain, probabilities.get(INSUFFICIENT_EVIDENCE_ID, 0.0))
+        for option_id, probability in probabilities.items():
+            if option_id == INSUFFICIENT_EVIDENCE_ID:
+                continue
+            if probability > winner_prob:
+                winner_id, winner_prob, runner_up = option_id, probability, winner_prob
+            elif probability > runner_up:
+                runner_up = probability
+    return winner_id, winner_prob, runner_up, abstain
+
+
+def pick(text, options):
+    return _pick(text, tuple((o["id"], o["description"]) for o in options))
+
+
+@functools.lru_cache(maxsize=4096)
+def _pick(text, options):
+    from rlcd import Choice, Option
+
+    queries = [
+        Choice(
+            id=str(index),
+            question=PICK_QUESTION,
+            options=tuple(Option(id=key, description=f"{key}: {summary}") for key, summary in group),
+        )
+        for index, group in enumerate(_pick_groups(options))
+    ]
+    batch = ENGINE.evaluate(text, queries)
+    return _merge_pick(result.probabilities for result in batch.results)
+
+
 def match(query, states):
     return [_match_one(json.dumps(state), query) for state in states]
 
@@ -153,7 +206,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
-        if self.path not in ("/classify", "/match"):
+        if self.path not in ("/classify", "/match", "/pick"):
             self.send_response(404)
             self.end_headers()
             return
@@ -166,6 +219,16 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
             self._send_json({"matches": match(query, body.get("states", []))})
+            return
+        if self.path == "/pick":
+            text = str(body.get("text", "")).strip()
+            options = body.get("options", [])
+            if not text or len(options) < 2:
+                self.send_response(400)
+                self.end_headers()
+                return
+            choice, probability, runner_up, abstain = pick(text, options)
+            self._send_json({"choice": choice, "probability": probability, "runner_up": runner_up, "abstain": abstain})
             return
         options = body.get("options", [])
         if not options:
