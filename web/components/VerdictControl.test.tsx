@@ -259,3 +259,27 @@ describe("settings checkboxes", () => {
     expect(screen.getByText(/Saved with Save changes\.$/)).toBeTruthy();
   });
 });
+
+describe("Run Verdict pending", () => {
+  it("shows a spinner and Turning on… while enabling, keeping the accessible name", async () => {
+    let release: (v: Ok<VerdictState>) => void = () => {};
+    setup(status({ state: "off" }), { setEnabled: () => new Promise((r) => (release = r)) });
+    await waitFor(() => expect(box().disabled).toBe(false));
+    fireEvent.click(box());
+    await waitFor(() => expect(screen.getByText("Turning on…")).toBeTruthy());
+    expect(screen.getByText("Turning on…").parentElement!.querySelector(".spin")).toBeTruthy(); // catches text-only pending
+    expect(screen.queryByText("Run Verdict")).toBeNull();
+    expect(screen.getByLabelText("Run Verdict")).toBeTruthy(); // aria-label stays
+    release({ ok: true, data: { state: "running" } as VerdictState });
+    await waitFor(() => expect(screen.getByText("Run Verdict")).toBeTruthy());
+  });
+
+  it("says Turning off… when disabling", async () => {
+    let release: (v: Ok<VerdictState>) => void = () => {};
+    setup(status({ state: "running" }), { setEnabled: () => new Promise((r) => (release = r)) });
+    await waitFor(() => expect(box().disabled).toBe(false));
+    fireEvent.click(box());
+    await waitFor(() => expect(screen.getByText("Turning off…")).toBeTruthy()); // catches a fixed "Turning on…"
+    release({ ok: true, data: { state: "off" } as VerdictState });
+  });
+});

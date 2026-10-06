@@ -1,6 +1,6 @@
 "use client";
 
-import { ReactNode, useEffect, useRef, useState, useTransition } from "react";
+import { ReactNode, useEffect, useId, useRef, useState, useTransition } from "react";
 import { Check, Eye, GitMerge, Pencil, RefreshCw, Sparkles } from "lucide-react";
 import type { BlockGroup } from "@/app/[day]/page";
 import { formatBilledHours, formatTotalHours } from "@/lib/format";
@@ -53,6 +53,7 @@ export function TicketGroup({
   const showMerge = canMergeGroup(group);
   // Separate transitions so a merge never shows "Writing…" on the text controls.
   const [pending, startTransition] = useTransition();
+  const lookHintId = useId();
   const [merging, startMerge] = useTransition();
   const summaryRef = useRef<HTMLElement>(null);
   const editButtonRef = useRef<HTMLButtonElement>(null);
@@ -244,14 +245,20 @@ export function TicketGroup({
                     {originLabel(line.text_origin)}
                   </span>
                   {line.check_status === "needs_look" && line.text_origin === "generated" && (
-                    <span
-                      className="est-badge"
-                      data-kind="look"
-                      title="Verdict found this text vague after one rewrite — edit it before it is sent"
-                    >
-                      <Eye aria-hidden="true" />
-                      needs a look
-                    </span>
+                    <>
+                      <span
+                        className="est-badge"
+                        data-kind="look"
+                        aria-describedby={lookHintId}
+                        title="Verdict found this text vague after one rewrite — edit it before it is sent"
+                      >
+                        <Eye aria-hidden="true" />
+                        needs a look
+                      </span>
+                      <span className="billing-text-hint" id={lookHintId}>
+                        Vague after one rewrite — edit before it is sent
+                      </span>
+                    </>
                   )}
                   <button type="button" ref={editButtonRef} onClick={beginEdit} disabled={pending}>
                     <Pencil width={12} height={12} aria-hidden="true" />

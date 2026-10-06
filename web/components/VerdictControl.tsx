@@ -104,7 +104,8 @@ export function VerdictControl({
             });
           }}
         />
-        <span>Run Verdict</span>
+        {toggling && <Loader2 className="spin" size={13} />}
+        <span>{toggling ? (state === "off" ? "Turning on…" : "Turning off…") : "Run Verdict"}</span>
       </label>
       <p className="settings-hint">Turns on or off at once.</p>
       {status ? (

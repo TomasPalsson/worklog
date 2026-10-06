@@ -321,3 +321,64 @@ describe("ReviewSection polish", () => {
     expect(h.getAttribute("aria-invalid")).not.toBe("true");
   });
 });
+
+describe("ReviewSection focus after a row leaves", () => {
+  // getByRole is seconds-slow here; plain DOM lookups keep these inside the test timeout.
+  const rowOf = (t: string) => ({
+    getByRole: (_r: string, o: { name: string }) =>
+      [...screen.getByText(t).closest("li")!.querySelectorAll("button")].find((b) => b.textContent === o.name)!,
+  });
+  const clickByText = (name: string) =>
+    fireEvent.click([...document.querySelectorAll("button")].find((b) => b.textContent === name)!);
+  const NS = line({ day: "2026-10-05", jira_issue: "AB-9", status: "not_sent", error: "x" });
+
+  it("Looks right moves focus to the next row's first action", async () => {
+    setup([L1, L2]);
+    fireEvent.click(rowOf("AB-1").getByRole("button", { name: "Looks right" }));
+    await waitFor(() => expect(screen.queryByText("AB-1")).toBeNull());
+    expect(document.activeElement).toBe(rowOf("AB-2").getByRole("button", { name: "Looks right" })); // catches no focus management (body)
+  }, 15000);
+
+  it("the last row leaving moves focus to the previous row", async () => {
+    setup([NS, L1]);
+    fireEvent.click(rowOf("AB-1").getByRole("button", { name: "Looks right" }));
+    await waitFor(() => expect(screen.queryByText("AB-1")).toBeNull());
+    expect(document.activeElement).toBe(rowOf("AB-9").getByRole("button", { name: "Send again" })); // catches next-only focus
+  }, 15000);
+
+  it("Confirm all moves focus to the first row after the day", async () => {
+    setup([L1, L2, L3]);
+    clickByText("Confirm all 2");
+    await waitFor(() => expect(screen.queryByText("AB-1")).toBeNull());
+    expect(document.activeElement).toBe(rowOf("CD-3").getByRole("button", { name: "Looks right" })); // catches focusing a row of the confirmed day
+  }, 15000);
+
+  it("Save moves focus to the next row", async () => {
+    setup([L1, L2]);
+    fireEvent.click(rowOf("AB-1").getByRole("button", { name: "Edit" }));
+    fireEvent.change(document.querySelector("textarea")!, { target: { value: "Better" } });
+    clickByText("Save to Tempo");
+    await waitFor(() => expect(screen.queryByText("AB-1")).toBeNull());
+    expect(document.activeElement).toBe(rowOf("AB-2").getByRole("button", { name: "Looks right" }));
+  }, 15000);
+
+  it("the last row confirmed leaves focus alone without throwing", async () => {
+    const { container } = setup([L1]);
+    clickByText("Looks right");
+    await waitFor(() => expect(container.querySelector("section")).toBeNull());
+    expect(document.activeElement).toBe(document.body);
+  }, 15000);
+
+  it("the heading can take focus but is not a tab stop", () => {
+    setup([L1]);
+    expect(screen.getByText("Tempo lines — check these").getAttribute("tabindex")).toBe("-1");
+  });
+
+  it("Confirm all shows a spinner while pending", async () => {
+    let release: (v: typeof ok) => void = () => {};
+    setup([L1, L2], { confirm: mock(() => new Promise<typeof ok>((r) => (release = r))) });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm all 2" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Confirming…" }).querySelector(".spin")).toBeTruthy()); // catches text-only pending
+    release(ok);
+  });
+});

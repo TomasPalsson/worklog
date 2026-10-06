@@ -34,6 +34,7 @@ function syncFailure(r: Result): Result {
 }
 
 const same = (a: ReviewLine, b: ReviewLine) => a.day === b.day && a.jira_issue === b.jira_issue;
+const rowKey = (l: ReviewLine) => `${l.day}|${l.jira_issue}`;
 
 function dayLabel(day: string) {
   const [month, date] = shortMonthDay(day).split(" ");
@@ -163,7 +164,7 @@ function Row({
 
   const sent = line.status === "sent";
   return (
-    <li className="review-sec-line" data-status={line.status}>
+    <li className="review-sec-line" data-status={line.status} data-row={rowKey(line)}>
       <span className="review-sec-ticket">{line.jira_issue}</span>
       <span className="review-sec-hours">{hoursOf(line.seconds)}h</span>
       <div className="review-sec-text">
@@ -257,6 +258,7 @@ function DayGroup({
         </Link>
         {sent > 0 && !(allSent && sent === 1) && (
           <button type="button" className="review-toggle" disabled={pending} onClick={confirmAll}>
+            {pending && <Loader2 className="spin" size={13} />}
             {pending ? "Confirming…" : allSent ? `Confirm all ${sent}` : `Confirm ${sent} sent`}
           </button>
         )}
@@ -280,16 +282,37 @@ export function ReviewSection({
 }: { lines: ReviewLine[] } & Actions) {
   const [lines, setLines] = useState(initial);
   const [announcement, setAnnouncement] = useState("");
+  const sectionRef = useRef<HTMLElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const focusRow = useRef<string | null>(null);
+  useEffect(() => {
+    const key = focusRow.current;
+    focusRow.current = null;
+    if (!key) return;
+    const li = [...(sectionRef.current?.querySelectorAll<HTMLElement>("li[data-row]") ?? [])].find(
+      (el) => el.dataset.row === key,
+    );
+    (li?.querySelector("button") ?? headingRef.current)?.focus();
+  }, [lines]);
   if (initial.length === 0) return null; // nothing to review, so no announcement can follow
   const act = { confirm, sync, saveHours, saveText };
   const days = [...new Set(lines.map((l) => l.day))].sort().reverse();
+  // Next row after the first leaver, else the last one before it.
+  const leave = (gone: (l: ReviewLine) => boolean) => {
+    const ordered = days.flatMap((d) => lines.filter((l) => l.day === d));
+    const first = ordered.findIndex(gone);
+    const kept = ordered.filter((l) => !gone(l));
+    const target = ordered.slice(first).find((l) => !gone(l)) ?? kept[kept.length - 1];
+    focusRow.current = target ? rowKey(target) : null;
+    setLines((cur) => cur.filter((l) => !gone(l)));
+  };
   // One live node in the same slot whether or not rows remain, so it is updated, not re-inserted.
   return (
     <>
       {lines.length > 0 && (
-        <section className="review-sec" aria-labelledby="review-sec-title">
+        <section ref={sectionRef} className="review-sec" aria-labelledby="review-sec-title">
           <header className="review-sec-head">
-            <h2 id="review-sec-title">Tempo lines — check these</h2>
+            <h2 id="review-sec-title" ref={headingRef} tabIndex={-1}>Tempo lines — check these</h2>
             <span className="review-sec-count">{lines.length} {lines.length === 1 ? "line" : "lines"}</span>
             <p className="review-sec-hint">
               Confirm each line, or fix it; a fix updates the same Tempo
@@ -304,7 +327,7 @@ export function ReviewSection({
               act={act}
               onGone={(l, msg) => {
                 setAnnouncement(msg);
-                setLines((cur) => cur.filter((x) => !same(x, l)));
+                leave((x) => same(x, l));
               }}
               onSent={(l) =>
                 setLines((cur) =>
@@ -317,7 +340,7 @@ export function ReviewSection({
               }
               onAllGone={(d) => {
                 setAnnouncement(`Confirmed all sent lines for ${d}`);
-                setLines((cur) => cur.filter((x) => x.day !== d || x.status !== "sent"));
+                leave((x) => x.day === d && x.status === "sent");
               }}
             />
           ))}

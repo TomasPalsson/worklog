@@ -395,3 +395,19 @@ describe("needs-a-look badge", () => {
     expect(screen.queryByText("needs a look")).toBeNull();
   });
 });
+
+describe("needs-a-look reason", () => {
+  it("shows the reason as visible text the badge is described by", () => {
+    renderGroup(group(), { ...line({ text_origin: "generated" }), check_status: "needs_look" } as TempoLine);
+    const hint = screen.getByText("Vague after one rewrite — edit before it is sent");
+    expect(hint.className).toContain("billing-text-hint"); // catches title-only
+    const badge = screen.getByText("needs a look");
+    expect(badge.getAttribute("aria-describedby")).toBe(hint.id);
+    expect(hint.id).not.toBe(""); // catches describedby pointing at nothing
+  });
+
+  it("shows no reason when the badge is hidden", () => {
+    renderGroup(group(), { ...line({ text_origin: "generated" }), check_status: "passed" } as TempoLine);
+    expect(screen.queryByText("Vague after one rewrite — edit before it is sent")).toBeNull();
+  });
+});
