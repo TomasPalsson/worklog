@@ -213,8 +213,8 @@ function SortingCard({ form, patch, day }: { form: SettingsFormState; patch: Pat
         runnerUpRatio={form.runnerUpRatio}
         onRunnerUpRatioChange={(v) => patch({ runnerUpRatio: v })}
       />
-      <RoutingStatusAndRules day={day} />
       <DailyChannelField value={form.dailyChannel ?? ""} onChange={(v) => patch({ dailyChannel: v })} />
+      <RoutingStatusAndRules day={day} />
     </Card>
   );
 }

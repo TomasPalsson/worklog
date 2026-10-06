@@ -276,6 +276,10 @@
   margin: 4px 0 12px;
 }
 
+.set-advanced + .settings-field {
+  margin-top: 16px;
+}
+
 /* advanced disclosure */
 .set-advanced {
   margin-top: 16px;
