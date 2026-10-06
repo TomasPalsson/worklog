@@ -137,7 +137,7 @@ mod daemon_tasks;
 mod daemon_week;
 
 #[path = "daemon_logged.rs"]
-mod daemon_logged;
+pub(crate) mod daemon_logged;
 
 #[path = "daemon_assist.rs"]
 mod daemon_assist;
