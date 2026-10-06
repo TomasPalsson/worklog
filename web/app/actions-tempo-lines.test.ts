@@ -18,27 +18,32 @@ const line: TempoLine = {
   union_seconds: 3600,
   hours_override_seconds: 5400,
   effective_seconds: 5400,
+  billing: null,
 };
 
 const setTextImpl = mock(async (_key: TempoLineKey, _text: string) => line);
 const setHoursImpl = mock(async (_key: TempoLineKey, _seconds: number | null) => line);
 const regenerateImpl = mock(async (_key: TempoLineKey) => line);
+const refreshImpl = mock(async (_day: string) => [line]);
 
 mock.module("@/lib/daemonTempoLines", () => ({
   setTempoLineText: (k: TempoLineKey, t: string) => setTextImpl(k, t),
   setTempoLineHours: (k: TempoLineKey, s: number | null) => setHoursImpl(k, s),
   regenerateTempoLine: (k: TempoLineKey) => regenerateImpl(k),
+  refreshMirres: (d: string) => refreshImpl(d),
 }));
 
 let saveTempoLineText: typeof import("./actions-tempo-lines").saveTempoLineText;
 let saveTempoLineHours: typeof import("./actions-tempo-lines").saveTempoLineHours;
 let regenerateTempoLineText: typeof import("./actions-tempo-lines").regenerateTempoLineText;
+let refreshMirresAction: typeof import("./actions-tempo-lines").refreshMirresAction;
 
 beforeAll(async () => {
   const mod = await import("./actions-tempo-lines");
   saveTempoLineText = mod.saveTempoLineText;
   saveTempoLineHours = mod.saveTempoLineHours;
   regenerateTempoLineText = mod.regenerateTempoLineText;
+  refreshMirresAction = mod.refreshMirresAction;
 });
 
 beforeEach(() => {
@@ -46,6 +51,7 @@ beforeEach(() => {
   setTextImpl.mockClear();
   setHoursImpl.mockClear();
   regenerateImpl.mockClear();
+  refreshImpl.mockClear();
 });
 
 describe("saveTempoLineText", () => {
@@ -109,5 +115,24 @@ describe("regenerateTempoLineText", () => {
     expect(result).toEqual({ ok: true, data: line });
     expect(regenerateImpl).toHaveBeenCalledWith(key);
     expect(revalidateImpl).toHaveBeenCalledWith("/2026-09-24");
+  });
+});
+
+describe("refreshMirresAction", () => {
+  it("refreshes the day and revalidates", async () => {
+    const result = await refreshMirresAction("2026-09-24");
+    expect(result.ok).toBe(true);
+    expect(refreshImpl).toHaveBeenCalledWith("2026-09-24");
+    expect(revalidateImpl).toHaveBeenCalledWith("/2026-09-24");
+  });
+
+  it("surfaces a daemon error", async () => {
+    refreshImpl.mockImplementationOnce(async () => {
+      throw new Error("Mirres not configured");
+    });
+    expect(await refreshMirresAction("2026-09-24")).toEqual({
+      ok: false,
+      error: "Mirres not configured",
+    });
   });
 });

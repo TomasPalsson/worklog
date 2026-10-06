@@ -3,6 +3,9 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { formatTotalHours, shiftDay, todayISO } from "@/lib/format";
 import { DateJumper } from "./DateJumper";
 
+/** Apró's billable-hours target (reikningshæfi), in percent. */
+const BILLABLE_GOAL = 70;
+
 interface Props {
   day: string;
   heading: string;
@@ -16,6 +19,8 @@ interface Props {
   billedSeconds?: number;
   /** Work-only tracked time, to show how far rounding moved the bill. */
   trackedSeconds?: number;
+  /** Share of line hours billable per Mirres; null when unknown. */
+  billablePercent?: number | null;
 }
 
 export function DayHeader({
@@ -27,6 +32,7 @@ export function DayHeader({
   personalSummary,
   billedSeconds,
   trackedSeconds = 0,
+  billablePercent = null,
 }: Props) {
   const today = todayISO();
   const prev = shiftDay(day, -1);
@@ -66,6 +72,27 @@ export function DayHeader({
             <div className={`day-billed-delta${billedDelta > 0 ? " up" : ""}`}>
               {billedDelta > 0 ? "+" : "−"}
               {formatTotalHours(Math.abs(billedDelta))} vs tracked
+            </div>
+          )}
+          {billablePercent != null && (
+            <div className={`day-billable ${billablePercent >= BILLABLE_GOAL ? "ok" : "low"}`}>
+              <span className="day-billable-text">
+                <span className="day-billable-value">{billablePercent}% billable</span>
+                <span className="day-billable-goal">· goal {BILLABLE_GOAL}%</span>
+              </span>
+              <span
+                className="day-billable-meter"
+                role="meter"
+                aria-label="Billable share of billed hours"
+                title={`${billablePercent}% billable · goal ${BILLABLE_GOAL}% (Mirres)`}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={billablePercent}
+                aria-valuetext={`${billablePercent}% of billed hours billable, goal ${BILLABLE_GOAL}%`}
+              >
+                <span className="day-billable-fill" style={{ width: `${Math.min(billablePercent, 100)}%` }} />
+                <span className="day-billable-tick" style={{ left: `${BILLABLE_GOAL}%` }} />
+              </span>
             </div>
           )}
         </div>

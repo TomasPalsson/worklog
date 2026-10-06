@@ -120,6 +120,7 @@ fn build_line(conn: &Connection, key: &TempoLineKey, blocks: &[Block]) -> Result
         hours_override_seconds: override_seconds,
         effective_seconds: override_seconds.unwrap_or(union),
         check_status: stored.and_then(|row| row.check_status),
+        billing: crate::mirres::stored_billing(conn, key)?,
     })
 }
 

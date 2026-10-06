@@ -358,6 +358,20 @@ CREATE TABLE IF NOT EXISTS tempo_line_texts (
     PRIMARY KEY(day, jira_issue)
 );
 
+-- Mirres billable facts per ticket line (see mirres.rs). Replaced per day
+-- by `POST /mirres/refresh/:day`; absent row = not fetched.
+CREATE TABLE IF NOT EXISTS mirres_line_billing (
+    day TEXT NOT NULL,
+    jira_issue TEXT NOT NULL,
+    account_key TEXT NOT NULL,
+    project TEXT,
+    project_type TEXT,
+    class TEXT NOT NULL,
+    warning TEXT,
+    pulled_at TEXT NOT NULL,
+    PRIMARY KEY(day, jira_issue)
+);
+
 -- ───────────────────── transcript file cache (perf T2) ─────────────────────
 -- Per-file fingerprint for the Claude transcript collector's tick skip
 -- (collectors/claude_transcripts.rs, claude_helpers.rs): a `.jsonl` whose
