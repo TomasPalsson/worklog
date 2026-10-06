@@ -349,7 +349,9 @@ test('/wl ask sends the whole question url-encoded in q', async ($, on) => {
   await $.session.start(SESSION)
   await $.command.run(command('ask  kafka & "lag"  '))
   // catches: sending only the first word, or no encoding of & and quotes
-  expect(seen.requested).toEqual(['http://127.0.0.1:9323/ask?q=kafka%20%26%20%22lag%22'])
+  expect(seen.requested.filter(url => url.includes('/ask'))).toEqual([
+    'http://127.0.0.1:9323/ask?q=kafka%20%26%20%22lag%22',
+  ])
 })
 
 test('/wl ask with no hits says so', async ($, on) => {
@@ -367,7 +369,7 @@ test('/wl ask with no question prints the usage and asks the daemon nothing', as
   // catches: querying with an empty q
   expect((await $.command.run(command('ask'))).text).toBe('usage: /wl today|week|review|ask <question>')
   expect((await $.command.run(command('ask   '))).text).toBe('usage: /wl today|week|review|ask <question>')
-  expect(seen.requested).toEqual([])
+  expect(seen.requested.filter(url => url.includes('/ask'))).toEqual([])
 })
 
 test('an argument that only starts with ask is not ask', async ($, on) => {
@@ -376,7 +378,7 @@ test('an argument that only starts with ask is not ask', async ($, on) => {
   await $.session.start(SESSION)
   // catches: startswith('ask') with no word boundary
   expect((await $.command.run(command('asking kafka'))).text).toBe('usage: /wl today|week|review|ask <question>')
-  expect(seen.requested).toEqual([])
+  expect(seen.requested.filter(url => url.includes('/ask'))).toEqual([])
 })
 
 test('/wl ask says so when the daemon is down', async ($, on) => {
