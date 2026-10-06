@@ -2,7 +2,7 @@
 // lib/daemon.ts's `call` transport.
 
 import { call } from "./daemon";
-import type { TempoLine, TempoLineKey } from "./tempo_line_contract";
+import type { MirresDay, TempoLine, TempoLineKey } from "./tempo_line_contract";
 
 export async function tempoLines(day: string): Promise<TempoLine[]> {
   return call("GET", `/tempo/lines/${encodeURIComponent(day)}`);
@@ -10,6 +10,11 @@ export async function tempoLines(day: string): Promise<TempoLine[]> {
 
 export async function refreshMirres(day: string): Promise<TempoLine[]> {
   return call("POST", `/mirres/refresh/${encodeURIComponent(day)}`);
+}
+
+/** Every day with stored Mirres facts, newest first. */
+export async function mirresOverview(): Promise<MirresDay[]> {
+  return call("GET", "/mirres/overview");
 }
 
 /** A blank `text` clears the stored text back to generated-or-fallback. */

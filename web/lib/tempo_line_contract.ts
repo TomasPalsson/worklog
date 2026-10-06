@@ -39,7 +39,52 @@ export interface LineBilling {
   project_type: string | null;
   class: BillingClass;
   warning: string | null;
+  /** `customer.short_name`, else `customer.name`. */
+  customer: string | null;
+  details: MirresDetails | null;
 }
+
+/** Mirrors `tempo_line_contract::MirresPerson`. */
+export interface MirresPerson {
+  name: string;
+  email: string | null;
+}
+
+/** Mirrors `tempo_line_contract::MirresDetails`. Never prices. */
+export interface MirresDetails {
+  customer_name: string | null;
+  owner: MirresPerson | null;
+  responsible: MirresPerson | null;
+  team_lead: MirresPerson | null;
+  period: string | null;
+  allowance_hours: number | null;
+  /** Null when Mirres hides it (fewer than 3 people). */
+  used_hours: number | null;
+  remaining_hours: number | null;
+  usage_status: string | null;
+  due_date: string | null;
+  contract_url: string | null;
+}
+
+/** Mirrors `tempo_line_contract::MirresDay` (`GET /mirres/overview`). */
+export interface MirresDay {
+  day: string;
+  fetched_at: string;
+  /** ALL of the day's lines; `billing` is null where Mirres had no row. */
+  lines: TempoLine[];
+}
+
+export const BILLING_LABEL: Record<BillingClass, string> = {
+  billable: "billable",
+  included: "included",
+  not_billable: "not billable",
+};
+
+export const BILLING_HINT: Record<BillingClass, string> = {
+  billable: "Mirres: billed to the customer",
+  included: "Mirres: covered by the contract's included hours — counts toward the 70% goal",
+  not_billable: "Mirres: not billed (internal, or contract missing / used up)",
+};
 
 /**
  * Share of the day's line hours that count as billed (billable or included),

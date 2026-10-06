@@ -108,6 +108,18 @@ export function BillingIcon(p: IconProps) {
   );
 }
 
+/** Mirres: a luggage tag (pointed end, hole) with a check mark. */
+export function MirresIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M3.5 12 9 5.5h11v13H9z" {...WASH} />
+      <path d="M3.5 12 9 5.5h11v13H9z" />
+      <circle cx="7" cy="12" r="0.9" />
+      <path d="m11.8 12.2 2 2 3.6-4" />
+    </Svg>
+  );
+}
+
 /** Month view: the month as a grid of day tiles, a few already filled. */
 export function MonthViewIcon(p: IconProps) {
   return (

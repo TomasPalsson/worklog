@@ -11,23 +11,23 @@ import {
   saveTempoLineHours,
   saveTempoLineText,
 } from "@/app/actions-tempo-lines";
+import { BILLING_HINT, BILLING_LABEL } from "@/lib/tempo_line_contract";
 import type { LineBilling, TempoLine } from "@/lib/tempo_line_contract";
 import { toast } from "@/lib/toast";
 import type { LineCheck } from "@/lib/verdict_contract";
 import { OriginIcon, originLabel } from "./BillingGroup";
 import { LineHours } from "./LineHours";
-
-const BILLING_LABEL = { billable: "billable", included: "included", not_billable: "not billable" };
-const BILLING_HINT = {
-  billable: "Mirres: billed to the customer",
-  included: "Mirres: covered by the contract's included hours — counts toward the 70% goal",
-  not_billable: "Mirres: not billed (internal, or contract missing / used up)",
-};
+import { BillingDetails } from "./BillingDetails";
+import { stripCustomer, warningHelp } from "@/lib/mirresOverview";
 
 function BillingPill({ billing }: { billing: LineBilling }) {
-  const project = [billing.project, billing.project_type].filter((p): p is string => Boolean(p));
+  const project = [stripCustomer(billing.project, billing.customer), billing.project_type].filter(
+    (p): p is string => Boolean(p),
+  );
+  const help = warningHelp(billing.warning);
   return (
     <span className="billing-pill">
+      {billing.customer && <span className="billing-customer">{billing.customer}</span>}
       <span className={`billing-pill-tag ${billing.class}`} title={BILLING_HINT[billing.class]}>
         {BILLING_LABEL[billing.class]}
       </span>
@@ -44,6 +44,8 @@ function BillingPill({ billing }: { billing: LineBilling }) {
           {billing.warning}
         </span>
       )}
+      {help && <span className="billing-details">{help}</span>}
+      <BillingDetails details={billing.details} />
     </span>
   );
 }

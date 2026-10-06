@@ -12,7 +12,7 @@ function l(seconds: number, cls?: BillingClass): TempoLine {
     hours_override_seconds: null,
     effective_seconds: seconds,
     billing: cls
-      ? { account_key: "A", project: null, project_type: null, class: cls, warning: null }
+      ? { account_key: "A", project: null, project_type: null, class: cls, warning: null, customer: null, details: null }
       : null,
   };
 }

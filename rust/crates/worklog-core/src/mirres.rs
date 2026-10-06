@@ -67,6 +67,24 @@ impl MirresAuth {
 pub struct Customer {
     pub short_name: Option<String>,
     pub name: Option<String>,
+    #[serde(default)]
+    pub responsible: Option<Person>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Person {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub active: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Team {
+    #[serde(default)]
+    pub lead: Option<Person>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -79,6 +97,12 @@ pub struct IncludedHours {
     pub remaining_hours: Option<f64>,
     #[serde(default)]
     pub counts_as_billed: bool,
+    #[serde(default)]
+    pub period: Option<String>,
+    #[serde(default)]
+    pub allowance_hours: Option<f64>,
+    #[serde(default)]
+    pub used_hours: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,6 +118,14 @@ pub struct Project {
     pub customer: Option<Customer>,
     #[serde(default)]
     pub included_hours: Option<IncludedHours>,
+    #[serde(default)]
+    pub owner: Option<Person>,
+    #[serde(default)]
+    pub team: Option<Team>,
+    #[serde(default)]
+    pub due_date: Option<String>,
+    #[serde(default)]
+    pub contract_url: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -237,7 +269,7 @@ fn line_billing(p: &Project) -> LineBilling {
         .customer
         .as_ref()
         .and_then(|c| c.short_name.clone().or_else(|| c.name.clone()));
-    let project = match (customer, p.project_name.clone()) {
+    let project = match (customer.clone(), p.project_name.clone()) {
         (Some(c), Some(n)) => Some(format!("{c} · {n}")),
         (None, Some(n)) => Some(n),
         (Some(c), None) => Some(c),
@@ -249,6 +281,8 @@ fn line_billing(p: &Project) -> LineBilling {
         project_type: p.project_type.clone(),
         class,
         warning,
+        customer,
+        details: details::details(p),
     }
 }
 
@@ -259,6 +293,8 @@ fn not_found_billing(key: &str) -> LineBilling {
         project_type: None,
         class: BillingClass::NotBillable,
         warning: Some("Ekki virkt Mirres-verkefni".to_owned()),
+        customer: None,
+        details: None,
     }
 }
 
@@ -342,10 +378,13 @@ pub fn fetch_day_billing_with(
         .collect())
 }
 
+#[path = "mirres_details.rs"]
+mod details;
+
 #[path = "mirres_store.rs"]
 mod store;
-pub use store::store_day;
-pub(crate) use store::stored_billing;
+pub(crate) use store::{ensure_details_columns, stored_billing};
+pub use store::{overview, store_day};
 
 #[path = "mirres_test.rs"]
 #[cfg(test)]

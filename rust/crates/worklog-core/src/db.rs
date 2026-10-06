@@ -92,6 +92,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     ensure_events_verdict_ranking(conn).context("ensuring events.verdict_ranking")?;
     ensure_tempo_line_texts_verdict_columns(conn)
         .context("ensuring tempo_line_texts verdict columns")?;
+    crate::mirres::ensure_details_columns(conn).context("ensuring mirres_line_billing details")?;
     ensure_tempo_line_texts_match_columns(conn)
         .context("ensuring tempo_line_texts match columns")?;
     if from_version < 14 {

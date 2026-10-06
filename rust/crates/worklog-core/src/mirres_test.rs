@@ -232,6 +232,8 @@ fn billing(project: &str, class: BillingClass) -> LineBilling {
         project_type: None,
         class,
         warning: None,
+        customer: None,
+        details: None,
     }
 }
 
@@ -264,4 +266,111 @@ fn store_day_replaces_rows_and_lines_carry_billing() {
         .query_row("SELECT COUNT(*) FROM mirres_line_billing", [], |r| r.get(0))
         .unwrap();
     assert_eq!(n, 1);
+}
+
+#[test]
+fn overview_lists_days_newest_first_with_unmatched_lines() {
+    let conn = db::open_memory().unwrap();
+    seed_block(&conn, "APRO-1");
+    seed_block(&conn, "APRO-2");
+    conn.execute(
+        "INSERT INTO blocks (day, jira_issue, started_at, ended_at, duration_seconds)
+         VALUES ('2026-10-06', 'APRO-1', '2026-10-06T09:00:00Z', '2026-10-06T10:00:00Z', 3600)",
+        [],
+    )
+    .unwrap();
+    let row = |i: &str| {
+        (
+            i.to_string(),
+            billing("Acme · Vefur", BillingClass::Billable),
+        )
+    };
+    store_day(&conn, DAY, &[row("APRO-1")]).unwrap();
+    store_day(&conn, "2026-10-06", &[row("APRO-1")]).unwrap();
+    let days = store::overview(&conn).unwrap();
+    let order: Vec<_> = days.iter().map(|d| d.day.as_str()).collect();
+    assert_eq!(order, ["2026-10-06", DAY]);
+    let pulled: String = conn
+        .query_row(
+            "SELECT MAX(pulled_at) FROM mirres_line_billing WHERE day = ?1",
+            [DAY],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(days[1].fetched_at, pulled);
+    assert_eq!(days[1].lines.len(), 2);
+    assert!(days[1].lines[0].billing.is_some());
+    assert_eq!(days[1].lines[1].billing, None);
+}
+
+fn rich_project() -> Project {
+    project(json!({
+        "tempo_account_key": "COR", "project_name": "Þjónusta", "billable": false,
+        "fixed_price": 123456, "rate_table": [{"rate": 99}],
+        "owner": {"name": "Anna", "email": "anna@apro.is", "phone": "555-1234"},
+        "team": {"lead": {"name": "Gone", "active": false}},
+        "customer": {"short_name": "Coripharma", "name": "Coripharma ehf.",
+            "responsible": {"name": "Jón", "email": "jon@cori.is", "active": true}},
+        "due_date": "2026-12-31", "contract_url": "https://m/c/1",
+        "included_hours": {"contract_status": "OK", "counts_as_billed": true,
+            "period": "MONTHLY", "allowance_hours": 10.0, "used_hours": null,
+            "remaining_hours": 1.5, "usage_status": "NEAR_LIMIT"}
+    }))
+}
+
+#[test]
+fn line_billing_carries_customer_and_details_without_prices() {
+    let b = line_billing(&rich_project());
+    assert_eq!(b.customer.as_deref(), Some("Coripharma"));
+    assert_eq!(b.project.as_deref(), Some("Coripharma · Þjónusta"));
+    let d = b.details.as_ref().unwrap();
+    assert_eq!(d.customer_name.as_deref(), Some("Coripharma ehf."));
+    assert_eq!(d.owner.as_ref().unwrap().name, "Anna");
+    assert_eq!(
+        d.responsible.as_ref().unwrap().email.as_deref(),
+        Some("jon@cori.is")
+    );
+    assert_eq!(d.team_lead, None, "inactive lead dropped");
+    assert_eq!(d.period.as_deref(), Some("MONTHLY"));
+    assert_eq!(d.allowance_hours, Some(10.0));
+    assert_eq!(d.used_hours, None);
+    assert_eq!(d.remaining_hours, Some(1.5));
+    assert_eq!(d.due_date.as_deref(), Some("2026-12-31"));
+    let json = serde_json::to_string(&b).unwrap();
+    for banned in ["fixed_price", "rate_table", "phone", "555-1234", "123456"] {
+        assert!(!json.contains(banned), "{banned} leaked: {json}");
+    }
+}
+
+#[test]
+fn details_round_trip_through_storage_and_bad_json_reads_none() {
+    let conn = db::open_memory().unwrap();
+    seed_block(&conn, "APRO-1");
+    let b = line_billing(&rich_project());
+    store_day(&conn, DAY, &[("APRO-1".into(), b.clone())]).unwrap();
+    let key = crate::tempo_line_contract::TempoLineKey {
+        day: DAY.into(),
+        jira_issue: "APRO-1".into(),
+    };
+    assert_eq!(stored_billing(&conn, &key).unwrap(), Some(b));
+    conn.execute("UPDATE mirres_line_billing SET details_json = '{nope'", [])
+        .unwrap();
+    let got = stored_billing(&conn, &key).unwrap().unwrap();
+    assert_eq!(got.details, None);
+    assert_eq!(got.customer.as_deref(), Some("Coripharma"));
+}
+
+#[test]
+fn migration_adds_columns_to_old_table() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute(
+        "CREATE TABLE mirres_line_billing (day TEXT, jira_issue TEXT, account_key TEXT,
+         project TEXT, project_type TEXT, class TEXT, warning TEXT, pulled_at TEXT)",
+        [],
+    )
+    .unwrap();
+    ensure_details_columns(&conn).unwrap();
+    ensure_details_columns(&conn).unwrap();
+    conn.prepare("SELECT customer, details_json FROM mirres_line_billing")
+        .unwrap();
 }

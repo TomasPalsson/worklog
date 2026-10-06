@@ -37,6 +37,7 @@
 //! * `GET  /tickets/:key/blocks`         — the ticket's blocks + Tempo line per day, last 14 days
 //! * `POST /tickets/:key/log`            — { day, start: "HH:MM", minutes, description } log time as a manual block
 //! * `GET  /projects`                  — list Jira projects (create picker)
+//! * `GET  /mirres/overview`            — every day with stored Mirres facts (newest first), each with all its ticket lines
 //! * `POST /mirres/refresh/:day`         — no body, pulls Mirres billable status for the day's ticket lines, returns the day's lines
 //! * `GET  /accounts`                  — list Tempo accounts (create picker)
 //! * `POST /estimate`                    — { "day": "YYYY-MM-DD", "model": "?" }
@@ -216,6 +217,7 @@ pub fn router(state: Shared) -> Router {
         )
         .route("/billing/lines/status", get(daemon_line_text::status))
         .route("/tempo/lines/:day", get(daemon_tempo_lines::list_lines))
+        .route("/mirres/overview", get(daemon_tempo_lines::mirres_overview))
         .route(
             "/mirres/refresh/:day",
             post(daemon_tempo_lines::refresh_mirres),

@@ -16,6 +16,7 @@ import { billablePercent, type TempoLine } from "@/lib/tempo_line_contract";
 import { formatDayHeading, formatTotalHours, todayISO } from "@/lib/format";
 import { DayHeader } from "@/components/DayHeader";
 import { ActionBar } from "@/components/ActionBar";
+import { MirresAutoFetch } from "@/components/MirresAutoFetch";
 import { BlockCard } from "@/components/BlockCard";
 import { DayStrip } from "@/components/DayStrip";
 import { RecapBanner } from "@/components/RecapBanner";
@@ -171,6 +172,7 @@ export default async function DayPage({
         trackedSeconds={workSeconds}
         billablePercent={billablePercent(lines)}
       />
+      <MirresAutoFetch day={day} needsFetch={lines.length > 0 && lines.every((l) => !l.billing)} />
       <ActionBar day={day} cacheCount={cache.count} cacheLast={cache.last_fetched} />
       <ReviewSection key={`review-${day}`} lines={reviewLines} />
       <RecapBanner key={`recap-${day}`} recap={recap} resolve={resolveGap} />

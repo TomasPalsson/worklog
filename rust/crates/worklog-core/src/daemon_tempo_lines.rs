@@ -11,7 +11,9 @@ use crate::estimate::{self, ModelInvoker};
 use crate::line_check;
 use crate::line_text;
 use crate::mirres;
-use crate::tempo_line_contract::{SetTempoLineHours, SetTempoLineText, TempoLine, TempoLineKey};
+use crate::tempo_line_contract::{
+    MirresDay, SetTempoLineHours, SetTempoLineText, TempoLine, TempoLineKey,
+};
 use crate::tempo_line_writer;
 use crate::tempo_lines;
 use crate::verdict;
@@ -52,6 +54,13 @@ pub async fn refresh_mirres(
     })
     .await?;
     Ok(Json(lines))
+}
+
+/// Every day with stored Mirres facts, newest first.
+pub async fn mirres_overview(
+    State(state): State<Shared>,
+) -> Result<Json<Vec<MirresDay>>, ApiError> {
+    Ok(Json(with_conn(state, mirres::overview).await?))
 }
 
 fn line_or_not_found(line: Option<TempoLine>) -> Result<Json<TempoLine>, ApiError> {
