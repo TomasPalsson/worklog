@@ -116,7 +116,7 @@ export function ActionBar({ day, cacheCount, cacheLast }: Props) {
             const r = await refreshMirresAction(day);
             // Nothing matched is a problem to fix, not a success.
             if (r.ok && r.data.length > 0 && !r.data.some((l) => l.billing))
-              return { ok: false as const, error: "no line matched — do the tickets have an Account in Jira?" };
+              return { ok: false as const, error: "no lines matched. Check that the tickets have an Account in Jira." };
             return r;
           })
         }
@@ -224,8 +224,9 @@ function lineTextsSuffix(lineTexts: unknown): string {
 export function summarise(r: unknown): string {
   // Refresh Mirres returns the day's ticket lines.
   if (Array.isArray(r)) {
-    const found = r.filter((l) => l && typeof l === "object" && "billing" in l && l.billing).length;
-    return `${found} of ${r.length} lines matched`;
+    const missing = r.filter((l) => !l?.billing).map((l) => l?.jira_issue);
+    const found = r.length - missing.length;
+    return `${found} of ${r.length} lines matched` + (missing.length ? ` · no match: ${missing.join(", ")}` : "");
   }
   if (r && typeof r === "object") {
     const o = r as Record<string, unknown>;

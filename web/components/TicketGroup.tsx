@@ -16,13 +16,20 @@ import { toast } from "@/lib/toast";
 import { OriginIcon, originLabel } from "./BillingGroup";
 import { LineHours } from "./LineHours";
 
-const BILLING_LABEL = { billable: "Billable", included: "Included", not_billable: "Not billable" };
+const BILLING_LABEL = { billable: "billable", included: "included", not_billable: "not billable" };
+const BILLING_HINT = {
+  billable: "Mirres: billed to the customer",
+  included: "Mirres: covered by the contract's included hours — counts toward the 70% goal",
+  not_billable: "Mirres: not billed (internal, or contract missing / used up)",
+};
 
 function BillingPill({ billing }: { billing: LineBilling }) {
   const project = [billing.project, billing.project_type].filter((p): p is string => Boolean(p));
   return (
     <span className="billing-pill">
-      <span className={`billing-pill-tag ${billing.class}`}>{BILLING_LABEL[billing.class]}</span>
+      <span className={`billing-pill-tag ${billing.class}`} title={BILLING_HINT[billing.class]}>
+        {BILLING_LABEL[billing.class]}
+      </span>
       {project.length > 0 && (
         <span className="billing-pill-project">
           {project.map((p, i) => (
@@ -231,8 +238,8 @@ export function TicketGroup({
                 </span>
                 <SyncChip state={group.syncState} />
                 {mergeButton}
-                {line.billing && <BillingPill billing={line.billing} />}
               </span>
+              {line.billing && <BillingPill billing={line.billing} />}
               {/* Clicks here must not toggle the <details>. */}
               <span className="billing-text-wrap ticket-line-text" onClick={(e) => e.stopPropagation()}>
                 {editing ? (

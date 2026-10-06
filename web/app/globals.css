@@ -6107,4 +6107,3 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
 .billing-pill-project > span { white-space: nowrap; }
 .billing-pill-warning { display: inline-flex; align-items: center; gap: 6px; flex-basis: 100%; color: var(--amber-ink); }
 .billing-pill-warning svg { flex: none; }
-.ticket-line-head:has(.billing-pill) { flex-wrap: wrap; row-gap: 4px; }
