@@ -237,6 +237,16 @@ impl Proc for RealProc {
     }
 }
 
+/// Kill any helper still running this script — one orphaned by a daemon
+/// that was SIGKILLed or crashed would otherwise hold the Verdict port.
+// ponytail: regex match on the path, so a manual `worklog verdict serve`
+// for the same data dir is killed too; it would hold the port anyway.
+fn kill_stale_helper(script: &Path) {
+    let _ = Command::new("pkill")
+        .args(["-KILL", "-f", &script.display().to_string()])
+        .status();
+}
+
 struct RealHost {
     paths: Paths,
 }
@@ -256,6 +266,7 @@ impl Host for RealHost {
         let log = data_dir.join("verdict.log");
         let spawn = || -> Result<Child> {
             self.paths.ensure()?;
+            kill_stale_helper(&script);
             std::fs::write(&script, SERVER_SCRIPT)
                 .with_context(|| format!("writing {}", script.display()))?;
             let stderr = std::fs::File::create(&log)

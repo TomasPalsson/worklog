@@ -3758,7 +3758,13 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
         };
         eprintln!("→ socket {}", worklog_core::paths::short_display(&path));
 
-        let verdict_task = worklog_core::verdict_supervisor::spawn()?;
+        // Fallible setup precedes Verdict's `spawn()`: an early return after
+        // it, or SIGTERM/SIGINT unhandled, skips the cleanup and orphans it.
+        let addr = (!tcp.is_empty())
+            .then(|| tcp.parse::<std::net::SocketAddr>())
+            .transpose()
+            .with_context(|| format!("invalid --tcp address: {tcp}"))?;
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
         // Billing-cycle prune due-check: one timer per process, spawned
         // here (not inside `router()`/`serve_at`/`serve_tcp`) precisely
@@ -3769,6 +3775,7 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
         // `$WORKLOG_HOME`, and depending on it at tick time is what let a
         // test point a prune at the real data directory.
         let prune_paths = Paths::resolve()?;
+        let verdict_task = worklog_core::verdict_supervisor::spawn()?;
         let prune_task = daemon_mod::spawn_prune_loop(
             state.clone(),
             prune_paths.data_dir.join("worklog.db.preprune"),
@@ -3777,24 +3784,16 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: String) -> Result<()> {
 
         // Clone the router for the TCP task so the unix+TCP listeners
         // share the same Arc<AppState> — both mutate the same DB.
-        let tcp_task = if tcp.is_empty() {
-            None
-        } else {
-            let addr: std::net::SocketAddr = tcp
-                .parse()
-                .with_context(|| format!("invalid --tcp address: {tcp}"))?;
+        let tcp_task = addr.map(|addr| {
             eprintln!("→ tcp    http://{addr}");
             let tcp_router = daemon_mod::router(state);
-            Some(tokio::spawn(async move {
+            tokio::spawn(async move {
                 if let Err(e) = daemon_mod::serve_tcp(addr, tcp_router).await {
                     tracing::error!("tcp listener died: {e:#}");
                 }
-            }))
-        };
+            })
+        });
 
-        // Without this, SIGTERM/SIGINT end the process before the cleanup
-        // below runs and the Verdict child is orphaned.
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let unix_res = tokio::select! {
             r = daemon_mod::serve_at(&path, router) => r,
             _ = term.recv() => Ok(()),

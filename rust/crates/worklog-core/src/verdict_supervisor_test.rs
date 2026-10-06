@@ -363,3 +363,31 @@ fn retry_after_needs_uv_launches_once_uv_is_installed() {
     assert_eq!(w.launches.get(), 1);
     assert_eq!(s.state(), VerdictState::Starting);
 }
+
+#[test]
+fn kill_stale_helper_kills_one_left_by_a_dead_daemon_and_spares_others() {
+    use std::process::{Child, Command};
+    let base = std::env::temp_dir().join(format!("wl-reap-{}", std::process::id()));
+    let ours = base.join("a").join("verdict_server.py");
+    let other = base.join("b").join("verdict_server.py");
+    let fake = |script: &Path| -> Child {
+        Command::new("sh")
+            // `; true` stops sh exec-ing sleep, which would drop the path
+            // from the command line.
+            .args(["-c", "sleep 30; true", &script.display().to_string()])
+            .spawn()
+            .unwrap()
+    };
+    let mut stale = fake(&ours);
+    let mut unrelated = fake(&other);
+    kill_stale_helper(&ours);
+    // Catches: no kill at all (sleep exits 0 after 30 s).
+    assert!(!stale.wait().unwrap().success(), "stale helper survived");
+    // Catches: a pattern looser than the full script path.
+    assert!(
+        unrelated.try_wait().unwrap().is_none(),
+        "a helper for another data dir was killed"
+    );
+    let _ = unrelated.kill();
+    let _ = unrelated.wait();
+}
