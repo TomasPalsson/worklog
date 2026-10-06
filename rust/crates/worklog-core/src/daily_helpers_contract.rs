@@ -148,6 +148,9 @@ mod tests {
     #[test]
     fn undo_outcome_wire_shape() {
         let v = serde_json::to_value(UndoOutcome::RefusedSynced { block_id: 7 }).unwrap();
-        assert_eq!(v, serde_json::json!({"outcome": "refused_synced", "block_id": 7}));
+        assert_eq!(
+            v,
+            serde_json::json!({"outcome": "refused_synced", "block_id": 7})
+        );
     }
 }
