@@ -339,6 +339,11 @@ pub fn save(conn: &Connection, card: &Scorecard) -> Result<()> {
     meta_set(conn, LAST_KEY, &card.summary())
 }
 
+/// Re-keeps the saved summary line with the line-check fixture result appended.
+pub fn save_with_fixture(conn: &Connection, card: &Scorecard, fixture: &str) -> Result<()> {
+    meta_set(conn, LAST_KEY, &card.summary_with(fixture))
+}
+
 #[cfg(test)]
 #[path = "scorecard_test.rs"]
 mod tests;

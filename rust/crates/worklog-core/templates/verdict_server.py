@@ -25,6 +25,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 HOST = "127.0.0.1"
 PORT = 9324
 RANKING_MAX = 3
+SHORTLIST_MAX = 6
+MODEL_TOKENS = 512
 EXAMPLES_PER_OPTION = 5
 EXAMPLE_CHARS = 60
 EXAMPLE_CHARS_TOTAL = 600
@@ -259,8 +261,20 @@ def self_test():
     assert "~/Desktop/Work/vitinn" in description and "deploy notes" in description
     assert _describe("vitinn", ()) == "work in the project folder ~/Desktop/Work/vitinn"
 
+    _event_text_room()
     _http_round_trip()
     print("verdict_server self-test OK")
+
+
+def _event_text_room():
+    # Worst case: SHORTLIST_MAX options with the longest folder id used in the fixtures
+    # above, and the full example budget. No tokenizer is loaded here, so use a
+    # conservative 3 chars/token estimate (real text is ~4); the model sees 512 tokens.
+    longest = max(["only-one", "vitinn", "o10"], key=len)
+    options = [longest] * SHORTLIST_MAX
+    texts = ["x" * EXAMPLE_CHARS] * (EXAMPLE_CHARS_TOTAL // EXAMPLE_CHARS)
+    block = "".join(_describe(option, texts if i == 0 else ()) for i, option in enumerate(options))
+    assert MODEL_TOKENS - -(-len(block) // 3) >= 200, "option block crowds out the event text"
 
 
 def _http_round_trip():

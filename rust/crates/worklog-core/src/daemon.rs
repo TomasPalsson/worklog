@@ -566,9 +566,13 @@ async fn scorecard_nightly(
     })
     .await
     .context("spawn_blocking")?;
+    let fixture = tokio::task::spawn_blocking(crate::scorecard::live_line_fixture)
+        .await
+        .context("spawn_blocking")?;
     let card = with_conn(state.clone(), move |c| {
         let card = crate::scorecard::finish(c, replayed, rule, true)?;
         if !card.nothing_answered() {
+            crate::scorecard::save_with_fixture(c, &card, &fixture)?;
             crate::purge::meta_set(c, SCORECARD_LATCH_KEY, &today)?;
         }
         Ok(card)
