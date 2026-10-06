@@ -24,6 +24,7 @@ pub mod clues_send;
 pub mod clues_work_items;
 pub mod collectors;
 pub mod daemon;
+pub mod daily_helpers_contract;
 pub mod daemon_service;
 pub mod db;
 pub mod deild_contract;
