@@ -22,6 +22,20 @@ const nudgeLine = atom(
   '',
 )
 
+/** GET /recap, the fields the mod reads. */
+type Recap = {
+  day: string
+  sent: unknown[]
+  held_back: unknown[]
+  coverage_percent: number
+  gaps: unknown[]
+}
+
+const recapState = atom(
+  { plugin: 'worklog', key: 'recap' } as const,
+  { line: '', gaps: 0 },
+)
+
 async function makeIo($: EngineInterface): Promise<Io> {
   return {
     fetch: (url, init) => $.http.fetch(url, init),
@@ -38,9 +52,24 @@ export function registerStatus(on: On): void {
 
     async function showHours(): Promise<void> {
       const today = await daemonToday(io)
-      const summary = today.ok ? await daemonGet<DaySummary>(io, `/days/${today.value}`) : today
+      const [summary, recap] = today.ok
+        ? await Promise.all([daemonGet<DaySummary>(io, `/days/${today.value}`), daemonGet<Recap | null>(io, '/recap')])
+        : [today, today]
       const text = summary.ok ? `worklog ${formatHours(workSeconds(summary.value.blocks))}` : ''
       await update($, hours, () => text)
+      const current = recap.ok && recap.value?.day === (today.ok ? today.value : '') ? recap.value : null
+      const shown = current
+        ? {
+            line: [
+              `recap: ${current.sent.length} sent`,
+              `${current.held_back.length} held`,
+              `${current.coverage_percent}%`,
+              ...(current.gaps.length > 0 ? [`${current.gaps.length} gaps`] : []),
+            ].join(' · '),
+            gaps: current.gaps.length,
+          }
+        : { line: '', gaps: 0 }
+      await update($, recapState, () => shown)
     }
 
     async function remind(): Promise<void> {
@@ -87,7 +116,9 @@ export function registerStatus(on: On): void {
   })
 
   on('ui.render', { component: 'PromptHint' }, async ($, event, next) => {
-    const parts = [event.props.tail, await read($, hours), await read($, nudgeLine)].filter(Boolean)
+    const recap = await read($, recapState)
+    const nudgeText = recap.gaps > 0 ? '' : await read($, nudgeLine)
+    const parts = [event.props.tail, await read($, hours), recap.line, nudgeText].filter(Boolean)
     return next(parts.length > 0 ? { ...event, props: { ...event.props, tail: parts.join(' · ') } } : event)
   })
 }
