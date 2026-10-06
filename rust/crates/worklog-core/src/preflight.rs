@@ -12,6 +12,7 @@ use crate::models::Block;
 use crate::repo;
 use crate::tempo_line_contract::TempoLine;
 use crate::tempo_lines;
+use crate::tempo_match;
 
 fn green(check: PreflightCheck, detail: String) -> PreflightRow {
     PreflightRow {
@@ -130,6 +131,15 @@ fn textless_lines(day: &str, blocks: &[Block], lines: &[TempoLine]) -> Vec<Prefl
         .collect()
 }
 
+/// Already-in-Tempo lines are held there as outside entries, so they are not ours to count.
+fn to_send_seconds(conn: &Connection, lines: &[TempoLine]) -> i64 {
+    lines
+        .iter()
+        .filter(|l| !tempo_match::is_already(conn, l))
+        .map(|l| l.effective_seconds)
+        .sum()
+}
+
 fn day_hours(conn: &Connection, day: &str, lines: &[TempoLine]) -> Result<Option<PreflightRow>> {
     let required: Option<i64> = conn
         .query_row(
@@ -147,7 +157,7 @@ fn day_hours(conn: &Connection, day: &str, lines: &[TempoLine]) -> Result<Option
             |r| r.get(0),
         )
         .context("outside seconds")?;
-    let logged = outside + lines.iter().map(|l| l.effective_seconds).sum::<i64>();
+    let logged = outside + to_send_seconds(conn, lines);
     Ok(required.filter(|r| logged < *r).map(|required| {
         red(
             PreflightCheck::DayHours,
@@ -159,10 +169,7 @@ fn day_hours(conn: &Connection, day: &str, lines: &[TempoLine]) -> Result<Option
 
 pub fn read_back(conn: &Connection, day: NaiveDate) -> Result<PreflightRow> {
     let day_text = day.to_string();
-    let sent: i64 = tempo_lines::lines_for_day(conn, &day_text)?
-        .iter()
-        .map(|l| l.effective_seconds)
-        .sum();
+    let sent = to_send_seconds(conn, &tempo_lines::lines_for_day(conn, &day_text)?);
     let in_tempo: i64 = conn
         .query_row(
             "SELECT COALESCE(SUM(seconds), 0) FROM tempo_remote_worklogs

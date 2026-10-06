@@ -294,3 +294,33 @@ fn read_back_ignores_outside_entries() {
     remote(&conn, "o1", 7200, "outside");
     assert!(read_back(&conn, date(DAY)).unwrap().ok); // summing every owner mismatches
 }
+
+fn mark_first_line_already(conn: &Connection) {
+    let line = &tempo_lines::lines_for_day(conn, DAY).unwrap()[0];
+    crate::tempo_match::mark_already(conn, line, "o1").unwrap();
+}
+
+#[test]
+fn an_already_in_tempo_line_is_not_counted_on_top_of_its_outside_entry() {
+    let conn = db::open_memory().unwrap();
+    block(&conn, Some("GEN-1"), 9, 0, 3600, "a");
+    block(&conn, Some("GEN-2"), 10, 0, 3600, "b");
+    required(&conn, 7200);
+    remote(&conn, "o1", 3600, "outside");
+    mark_first_line_already(&conn);
+    assert!(red(&rows(&conn)).is_empty());
+    // counting the marked line too would hide this shortfall (10800 >= 9000)
+    conn.execute("UPDATE tempo_required_days SET required_seconds = 9000", [])
+        .unwrap();
+    assert_eq!(red(&rows(&conn)).len(), 1);
+}
+
+#[test]
+fn read_back_leaves_out_an_already_in_tempo_line() {
+    let conn = db::open_memory().unwrap();
+    block(&conn, Some("GEN-1"), 9, 0, 3600, "a");
+    remote(&conn, "o1", 3600, "outside");
+    mark_first_line_already(&conn);
+    // sent 3600 against 0 worklog-owned seconds would be a false red
+    assert!(read_back(&conn, date(DAY)).unwrap().ok);
+}
