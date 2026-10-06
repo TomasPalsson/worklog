@@ -3104,8 +3104,12 @@ mod tests {
         for (uri, want) in [
             // catches: route missing (404) or red rows turned into an error status
             ("/preflight?from=2026-04-18&to=2026-04-18", StatusCode::OK),
-            // catches: read-back unregistered, or served by the checklist handler (400 on missing from/to)
-            ("/preflight/read-back?day=2026-04-18", StatusCode::OK),
+            // catches: read-back unregistered (404), served by the checklist handler (400 on missing
+            // from/to), or answering a stale green without Tempo credentials to pull with (200)
+            (
+                "/preflight/read-back?day=2026-04-18",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
             // catches: unparsed dates reaching the check
             (
                 "/preflight?from=nope&to=2026-04-18",
