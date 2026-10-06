@@ -347,3 +347,23 @@ fn migrate_adds_the_new_columns_to_an_older_database() {
     )
     .unwrap();
 }
+
+#[test]
+fn examples_for_lists_one_event_once_however_often_it_was_fixed() {
+    let conn = open_memory().unwrap();
+    let a = event(&conn, "a", "2026-10-05T08:00:00Z", "same title");
+    let b = event(&conn, "b", "2026-10-05T08:00:00Z", "other");
+    for at in ["2026-10-05T10:00:00Z", "2026-10-05T11:00:00Z"] {
+        record(&conn, &owner_fix(&a.to_string(), "proj", at)).unwrap();
+    }
+    record(
+        &conn,
+        &owner_fix(&b.to_string(), "proj", "2026-10-05T09:00:00Z"),
+    )
+    .unwrap();
+    // catches: no per-event dedupe
+    assert_eq!(
+        examples_for(&conn, "proj", 5).unwrap(),
+        ["same title", "other"]
+    );
+}

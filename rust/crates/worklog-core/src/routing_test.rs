@@ -1442,3 +1442,19 @@ fn rerouting_an_unfiled_event_keeps_one_decision_row() {
     // Catches a plain INSERT per run.
     assert_eq!(project_rows(&conn, id), 1);
 }
+
+#[test]
+fn relabelling_to_the_same_folder_logs_no_second_fix() {
+    let conn = open_memory().unwrap();
+    pin(&conn, "zq-f", None);
+    let id = loose_event(&conn, "e2", "something");
+    fix(&conn, id, "zq-f");
+    fix(&conn, id, "zq-f");
+    // Catches record_fix logging when previous == chosen.
+    let owner_rows = verdict_decisions::list_since(&conn, DecisionKind::Project, "")
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.source == DecisionSource::Owner && r.subject == id.to_string())
+        .count();
+    assert_eq!(owner_rows, 1);
+}

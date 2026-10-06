@@ -128,6 +128,9 @@ pub(crate) fn record_fix(
     previous: Option<String>,
     folder: &str,
 ) -> Result<()> {
+    if previous.as_deref() == Some(folder) {
+        return Ok(()); // re-confirming the same label is not a correction
+    }
     log_decision(
         conn,
         DecisionRow {

@@ -107,6 +107,9 @@ pub fn examples_for(conn: &Connection, folder: &str, limit: usize) -> Result<Vec
         "SELECT e.title FROM verdict_decisions d
            JOIN events e ON e.id = CAST(d.subject AS INTEGER)
           WHERE d.kind = 'project' AND d.source = 'owner' AND d.chosen = ?1
+            AND d.id = (SELECT MAX(x.id) FROM verdict_decisions x
+                         WHERE x.kind = d.kind AND x.source = d.source
+                           AND x.chosen = d.chosen AND x.subject = d.subject)
           ORDER BY d.decided_at DESC, d.id DESC LIMIT ?2",
     )?;
     let rows = stmt.query_map(params![folder, limit as i64], |r| r.get(0))?;
