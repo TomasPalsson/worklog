@@ -17,8 +17,12 @@ export function MirresLine({ billing, issue }: { billing: LineBilling; issue: st
     <span className="mirres-line" data-tone={status.tone} title={status.hint}>
       <MirresStatusIcon kind={status.kind} />
       <span className="mirres-line-customer">{billing.customer ?? "Unknown customer"}</span>
+      {status.kind === "missing" ? (
+        <span className="mirres-line-chip">{status.label}</span>
+      ) : (
+        <span className="mirres-sr">{status.label}</span>
+      )}
       {project && <span className="mirres-line-project">· {project}</span>}
-      <span className="mirres-sr">{status.label}</span>
       {/* Clicks and keys here must not toggle the parent <details>. */}
       <span
         className="mirres-info"

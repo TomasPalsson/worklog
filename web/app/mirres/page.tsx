@@ -5,7 +5,6 @@
 import Link from "next/link";
 import { ChevronLeft } from "lucide-react";
 
-import { MirresCustomers } from "@/components/MirresCustomers";
 import { MirresDays } from "@/components/MirresDays";
 import { MirresFetch } from "@/components/MirresFetch";
 import { MirresFixList } from "@/components/MirresFixList";
@@ -64,7 +63,6 @@ export default async function MirresPage({ searchParams }: Props) {
         <>
           <MirresLedger days={days} />
           <MirresFixList days={days} />
-          <MirresCustomers days={days} />
           <MirresDays days={days} />
         </>
       )}

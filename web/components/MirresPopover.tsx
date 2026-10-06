@@ -28,16 +28,14 @@ export function MirresPopover({
       <span className="mirres-pop-head">
         <MirresStatusIcon kind={status.kind} size={16} />
         <strong>{billing.customer ?? "Unknown customer"}</strong>
-        {project && <span className="mirres-pop-muted">{project}</span>}
-        {billing.warning && billing.project_type && (
-          <span className="mirres-pop-muted">· {billing.project_type}</span>
-        )}
       </span>
-      {!billing.warning && (
-        <span className="mirres-pop-status">
-          {status.label}
-          {billing.project_type && <span className="mirres-pop-muted"> · {billing.project_type}</span>}
+      {(project || billing.project_type) && (
+        <span className="mirres-pop-muted">
+          {[project, billing.project_type].filter(Boolean).join(" · ")}
         </span>
+      )}
+      {!billing.warning && (
+        <span className="mirres-pop-status">{status.label}</span>
       )}
       {billing.warning && (
         <span className="mirres-pop-warning">
@@ -49,7 +47,9 @@ export function MirresPopover({
         </span>
       )}
       <BillingDetails details={billing.details} className="mirres-pop-details" />
-      <span className="mirres-pop-key">{billing.account_key}</span>
+      <span className="mirres-pop-muted">
+        Tempo account <code className="mirres-pop-key">{billing.account_key}</code>
+      </span>
     </span>
   );
 }

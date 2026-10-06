@@ -94,16 +94,23 @@ export const hrs = (seconds: number) => `${(seconds / 3600).toFixed(1)}h`;
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-/** "Oct 6", "Oct 5–6" or "Oct 5 – Nov 2" from YYYY-MM-DD days; "" when none. */
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const dayParts = (d: string) => ({ y: Number(d.slice(0, 4)), m: Number(d.slice(5, 7)) - 1, d: Number(d.slice(8, 10)) });
+
+/** "Tue 6 Oct" from YYYY-MM-DD. */
+export function shortDay(day: string): string {
+  const { y, m, d } = dayParts(day);
+  return `${WEEKDAYS[new Date(Date.UTC(y, m, d)).getUTCDay()]} ${d} ${MONTHS[m]}`;
+}
+
+/** "Tue 6 Oct", "5–6 Oct" or "30 Sep – 2 Oct" from YYYY-MM-DD days; "" when none. */
 export function dateRangeLabel(dayList: string[]): string {
   if (dayList.length === 0) return "";
   const sorted = [...dayList].sort();
-  const part = (d: string) => ({ m: Number(d.slice(5, 7)) - 1, d: Number(d.slice(8, 10)) });
-  const a = part(sorted[0]);
-  const b = part(sorted[sorted.length - 1]);
-  const from = `${MONTHS[a.m]} ${a.d}`;
-  if (a.m === b.m && a.d === b.d) return from;
-  return a.m === b.m ? `${from}–${b.d}` : `${from} – ${MONTHS[b.m]} ${b.d}`;
+  const a = dayParts(sorted[0]);
+  const b = dayParts(sorted[sorted.length - 1]);
+  if (a.m === b.m && a.d === b.d) return shortDay(sorted[0]);
+  return a.m === b.m ? `${a.d}–${b.d} ${MONTHS[b.m]}` : `${a.d} ${MONTHS[a.m]} – ${b.d} ${MONTHS[b.m]}`;
 }
 
 /** Seconds of extra billable time needed to reach `goal`% of logged; never negative. */
@@ -152,12 +159,14 @@ export function warningHelp(warning: string | null): string | null {
   return null;
 }
 
-/** "06.10.2026 15:59": 24h, local time, fixed shape (not locale-dependent). */
-export function formatFetchedAt(iso: string): string {
+/** "fetched 17:13" for today, else "fetched 5 Oct 17:13": 24h local time. */
+export function formatFetchedAt(iso: string, now: Date = new Date()): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   const p = (n: number) => String(n).padStart(2, "0");
-  return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  const time = `${p(d.getHours())}:${p(d.getMinutes())}`;
+  const today = d.toDateString() === now.toDateString();
+  return `fetched ${today ? "" : `${d.getDate()} ${MONTHS[d.getMonth()]} `}${time}`;
 }
 
 export interface CustomerGroup {
@@ -224,4 +233,28 @@ export function ledgerOrder(customers: CustomerGroup[]): CustomerGroup[] {
   return customers
     .filter((c) => c.seconds > 0)
     .sort((a, b) => KIND_RANK[a.kind] - KIND_RANK[b.kind] || b.seconds - a.seconds);
+}
+
+/** Hours per status for one customer, in ledger kind order (billable first, missing last). */
+export function customerStatusSplit(c: CustomerGroup): { kind: StatusKind; seconds: number }[] {
+  const by = new Map<StatusKind, number>();
+  for (const p of c.projects) by.set(projectKind(p), (by.get(projectKind(p)) ?? 0) + p.seconds);
+  return [...by]
+    .map(([kind, seconds]) => ({ kind, seconds }))
+    .filter((s) => s.seconds > 0)
+    .sort((a, b) => KIND_RANK[a.kind] - KIND_RANK[b.kind] || b.seconds - a.seconds);
+}
+
+/** Screen-reader summary of the ledger bar. */
+export function ledgerSummary(percent: number | null, totalSeconds: number, segments: LedgerSegment[], goal: number): string {
+  const by = new Map<StatusKind, number>();
+  for (const s of segments) by.set(s.kind, (by.get(s.kind) ?? 0) + s.seconds);
+  const other = [...by].filter(([k]) => k !== "billable" && k !== "missing").reduce((a, [, v]) => a + v, 0);
+  const parts = [
+    ["billable", by.get("billable") ?? 0],
+    ["other", other],
+    ["contract missing", by.get("missing") ?? 0],
+  ].filter(([, v]) => (v as number) > 0).map(([l, v]) => `${hrs(v as number)} ${l}`);
+  const head = percent === null ? `Billable share unknown of ${hrs(totalSeconds)}` : `${percent}% billable of ${hrs(totalSeconds)}`;
+  return `${head}: ${parts.join(", ")}; goal ${goal}%`;
 }

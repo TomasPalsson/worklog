@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { MirresFetch } from "./MirresFetch";
-import { formatDayHeading } from "@/lib/format";
-import { daySummary, formatFetchedAt } from "@/lib/mirresOverview";
+import { daySummary, formatFetchedAt, shortDay } from "@/lib/mirresOverview";
 import type { MirresDay } from "@/lib/tempo_line_contract";
 
 export function MirresDays({ days }: { days: MirresDay[] }) {
@@ -13,9 +12,9 @@ export function MirresDays({ days }: { days: MirresDay[] }) {
           const s = daySummary(d);
           return (
             <li key={d.day}>
-              <Link href={`/${d.day}`}>{formatDayHeading(d.day)}</Link>
+              <Link href={`/${d.day}`}>{shortDay(d.day)}</Link>
               <span>
-                {s.matched === s.total ? `all ${s.total} lines found` : `${s.matched} of ${s.total} lines found`}
+                {s.matched === s.total ? `all ${s.total} tickets matched` : `${s.matched} of ${s.total} tickets matched`}
               </span>
               <span>{s.billablePercent === null ? "—" : `${s.billablePercent}% billable`}</span>
               <time dateTime={d.fetched_at}>{formatFetchedAt(d.fetched_at)}</time>

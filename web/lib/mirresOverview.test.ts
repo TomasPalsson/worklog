@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { customersFrom, dateRangeLabel, goalGap, hrs, sharedHelp, daySummary, ledgerOrder, ledgerSegments, formatFetchedAt, projectsFrom, statusReason, stripCustomer, totals, warningHelp } from "./mirresOverview";
+import { customerStatusSplit, ledgerSummary, shortDay, customersFrom, dateRangeLabel, goalGap, hrs, sharedHelp, daySummary, ledgerOrder, ledgerSegments, formatFetchedAt, projectsFrom, statusReason, stripCustomer, totals, warningHelp } from "./mirresOverview";
 import type { BillingClass, MirresDay, TempoLine } from "./tempo_line_contract";
 
 function line(
@@ -132,9 +132,10 @@ describe("warningHelp", () => {
 });
 
 describe("formatFetchedAt", () => {
-  it("is dd.mm.yyyy hh:mm in local time", () => {
-    expect(formatFetchedAt(new Date(2026, 9, 6, 15, 59).toISOString())).toBe("06.10.2026 15:59");
-    expect(formatFetchedAt(new Date(2026, 0, 2, 3, 4).toISOString())).toBe("02.01.2026 03:04");
+  it("says fetched hh:mm today, with the day otherwise", () => {
+    const now = new Date(2026, 9, 6, 20, 0);
+    expect(formatFetchedAt(new Date(2026, 9, 6, 15, 59).toISOString(), now)).toBe("fetched 15:59");
+    expect(formatFetchedAt(new Date(2026, 9, 5, 17, 13).toISOString(), now)).toBe("fetched 5 Oct 17:13");
   });
 });
 
@@ -185,9 +186,10 @@ describe("customersFrom / ledgerOrder", () => {
 describe("hrs / dateRangeLabel / goalGap / sharedHelp", () => {
   it("formats compact hours", () => expect(hrs(12600)).toBe("3.5h"));
   it("formats ranges", () => {
-    expect(dateRangeLabel(["2026-10-06"])).toBe("Oct 6");
-    expect(dateRangeLabel(["2026-10-06", "2026-10-05"])).toBe("Oct 5–6");
-    expect(dateRangeLabel(["2026-11-02", "2026-10-05"])).toBe("Oct 5 – Nov 2");
+    expect(dateRangeLabel(["2026-10-06"])).toBe("Tue 6 Oct");
+    expect(dateRangeLabel(["2026-10-06", "2026-10-05"])).toBe("5–6 Oct");
+    expect(dateRangeLabel(["2026-10-02", "2026-09-30"])).toBe("30 Sep – 2 Oct");
+    expect(shortDay("2026-10-06")).toBe("Tue 6 Oct");
     expect(dateRangeLabel([])).toBe("");
   });
   it("computes the gap to goal", () => {
@@ -198,5 +200,19 @@ describe("hrs / dateRangeLabel / goalGap / sharedHelp", () => {
     const w = "Samning vantar í Mirres";
     expect(sharedHelp([w, w], 2)).toContain("These 2 projects have no contract");
     expect(sharedHelp([w, "x"], 2)).toBeNull();
+  });
+});
+
+describe("customerStatusSplit / ledgerSummary", () => {
+  const l = (k: string, cls: BillingClass, w?: string) => line("2026-10-06", `${k}-1`, 3600, { key: k, cls, warning: w });
+  const days = [d("2026-10-06", [l("A", "billable"), l("B", "not_billable"), l("C", "billable", "Samning vantar í Mirres")])];
+  it("splits a customer's hours by status, billable first", () => {
+    const c = customersFrom(days)[0];
+    expect(customerStatusSplit(c).map((s) => s.kind)).toEqual(["billable", "not_billable", "missing"]);
+    expect(customerStatusSplit(c).every((s) => s.seconds === 3600)).toBe(true);
+  });
+  it("summarises the bar", () => {
+    const segs = ledgerSegments(customersFrom(days));
+    expect(ledgerSummary(33, 10800, segs, 70)).toBe("33% billable of 3.0h: 1.0h billable, 1.0h other, 1.0h contract missing; goal 70%");
   });
 });
