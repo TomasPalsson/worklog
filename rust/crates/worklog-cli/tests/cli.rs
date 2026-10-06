@@ -893,3 +893,27 @@ fn db_purge_help_says_blocks_are_never_deleted() {
         .stdout(predicate::str::contains("never deleted"))
         .stdout(predicate::str::contains("billing cycle").not());
 }
+
+#[test]
+fn ticket_pick_without_verdict_prints_all_null() {
+    let home = TempDir::new().unwrap();
+    // Bind then drop to get a port nothing listens on.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    cmd(&home)
+        .env("WORKLOG_VERDICT_URL", format!("http://127.0.0.1:{port}"))
+        .args([
+            "--json",
+            "ticket",
+            "pick",
+            "--session",
+            "s1",
+            "fix the login bug",
+        ])
+        .assert()
+        .success()
+        .stdout("{\"picked\":null,\"likely\":null,\"confidence\":null}\n");
+}

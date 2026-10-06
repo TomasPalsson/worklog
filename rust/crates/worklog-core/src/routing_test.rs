@@ -1019,3 +1019,31 @@ fn route_day_moving_a_block_customer_is_logged_as_verdict() {
     assert_eq!(changes[0].source, ChangeSource::Verdict);
     assert_eq!(changes[0].new.as_deref(), Some("APRÓ 100%"));
 }
+
+#[test]
+fn accepts_applies_options_abstain_margin_and_runner_up_ratio() {
+    let guess = |confidence, runner_up, abstain| Guess {
+        folder: "a".into(),
+        confidence,
+        runner_up,
+        abstain,
+    };
+    let options = vec!["a".to_string(), "b".to_string()];
+    let rule = RouteRule {
+        abstain_margin: 2.0,
+        runner_up_ratio: 2.0,
+    };
+    assert!(accepts(&guess(0.9, 0.2, 0.3), &options, rule));
+    assert!(
+        !accepts(&guess(0.5, 0.1, 0.3), &options, rule),
+        "below abstain margin"
+    );
+    assert!(
+        !accepts(&guess(0.5, 0.3, 0.1), &options, rule),
+        "below runner-up ratio"
+    );
+    assert!(
+        !accepts(&guess(0.9, 0.0, 0.0), &["b".to_string()], rule),
+        "not in options"
+    );
+}

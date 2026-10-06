@@ -6,6 +6,7 @@ const WORK_CWD = '/home/owner/Desktop/Work/api'
 type Seen = {
   asks: { question: string; header: string; options: string[] }[]
   runs: string[][]
+  picks: string[][]
   logs: string[]
   stored: Record<string, unknown>
 }
@@ -18,6 +19,7 @@ type World = {
   gate?: Promise<void>
   dismiss?: boolean
   recordFails?: boolean
+  pick?: { exitCode: number; stdout: string }
   bash?: Record<string, unknown>
   stored?: Record<string, unknown>
   id?: string
@@ -25,7 +27,7 @@ type World = {
 
 const seat = (on: On, branch: { current: string | undefined }, world: World = {}) => {
   const toasts: string[] = []
-  const seen: Seen = { asks: [], runs: [], logs: [], stored: { ...world.stored } }
+  const seen: Seen = { asks: [], runs: [], picks: [], logs: [], stored: { ...world.stored } }
   on('http.fetch', async (_$, e) => {
     if (world.isDown || !e.url.endsWith('/tasks')) return { deny: 'connection refused' }
     if (world.slowTasks) await new Promise(() => {})
@@ -63,6 +65,10 @@ const seat = (on: On, branch: { current: string | undefined }, world: World = {}
     return { value: undefined }
   })
   on('process.run', (_$, e) => {
+    if (e.argv[0] === 'worklog' && e.argv.includes('pick')) {
+      seen.picks.push(e.argv)
+      return { value: { stderr: '', ...(world.pick ?? { exitCode: 1, stdout: '' }) } }
+    }
     if (e.argv[0] === 'worklog') {
       seen.runs.push(e.argv)
       return world.recordFails
@@ -152,6 +158,7 @@ const asked = (world: World, cwd = WORK_CWD, branch: string | undefined = 'GENAI
   async ($: Parameters<Parameters<typeof test>[1]>[0], on: On) => {
     const { clock, seen, toasts } = seat(on, { current: branch }, world)
     await $.session.start(start(cwd))
+    await $.prompt.submit(PROMPT)
     await clock.advance(10)
     return { seen, toasts, clock }
   }
@@ -175,6 +182,7 @@ test('no branch ticket offers two recent tickets, newest day first', async ($, o
 test('a non-interactive start asks nothing', async ($, on) => {
   const { clock, seen } = seat(on, { current: 'GENAI-9-x' })
   await $.session.start({ surface: 'terminal', isInteractive: false, cwd: WORK_CWD })
+  await $.prompt.submit(PROMPT)
   await clock.advance(10)
   expect(seen.asks).toEqual([])
 })
@@ -190,13 +198,14 @@ test('a stored answer for the session id asks nothing', async ($, on) => {
   expect(seen.asks).toEqual([])
 })
 
-test('the answer is stored under the session key so a second start asks nothing', async ($, on) => {
+test('the answer is stored under the session key so a second prompt asks nothing', async ($, on) => {
   const { clock, seen } = seat(on, { current: 'GENAI-9-x' })
   await $.session.start(start(WORK_CWD))
+  await $.prompt.submit(PROMPT)
   await clock.advance(10)
   const id = SESSION_ID
   expect(seen.stored[`ticket-asked:${id}`]).toBeTruthy()
-  await $.session.start(start(WORK_CWD))
+  await $.prompt.submit(PROMPT)
   await clock.advance(10)
   expect(seen.asks.length).toBe(1)
 })
@@ -276,7 +285,8 @@ test('a daemon answer with no task list is treated as no recents', async ($, on)
 
 test('the tasks lookup is capped at 1500 ms: not asked at 1499, asked without recents at 1500', async ($, on) => {
   const { clock, seen } = seat(on, { current: 'GENAI-9-x' }, { slowTasks: true, tasks: TASKS })
-  const started = $.session.start(start(WORK_CWD))
+  await $.session.start(start(WORK_CWD))
+  const started = $.prompt.submit(PROMPT)
   await clock.advance(1499)
   expect(seen.asks).toEqual([])
   await clock.advance(1)
@@ -305,14 +315,15 @@ test('a cut label still records its key', async ($, on) => {
   expect(seen.runs.map(argv => argv[3])).toEqual(['GENAI-2'])
 })
 
-test('session start waits for the Owner answer, so a first prompt cannot run before it', async ($, on) => {
+test('the first prompt waits for the Owner answer, so it cannot run before it', async ($, on) => {
   let release = () => {}
   const gate = new Promise<void>(resolve => {
     release = resolve
   })
   const { clock, seen } = seat(on, { current: 'GENAI-9-x' }, { gate, answer: 'GENAI-9' })
   let started = false
-  const starting = $.session.start(start(WORK_CWD)).then(() => {
+  await $.session.start(start(WORK_CWD))
+  const starting = $.prompt.submit(PROMPT).then(() => {
     started = true
   })
   await clock.advance(10)
@@ -381,6 +392,7 @@ test('clear asks once for the new session id', async ($, on) => {
   const world: World = { answer: 'Skip' }
   const { clock, seen } = seat(on, { current: 'GENAI-9-x' }, world)
   await $.session.start(start(WORK_CWD))
+  await $.prompt.submit(PROMPT)
   await clock.advance(10)
   world.id = 'sess-2'
   await $.session.end({ reason: 'clear' })
@@ -395,6 +407,7 @@ test('clear drops the old recorded key and hand-off, and records the new answer 
   const world: World = { answer: 'Create a new ticket' }
   const { clock, seen } = seat(on, { current: 'GENAI-9-x' }, world)
   await $.session.start(start(WORK_CWD))
+  await $.prompt.submit(PROMPT)
   await clock.advance(10)
   world.id = 'sess-2'
   world.answer = 'ABC-123'
@@ -471,4 +484,72 @@ test('a ticket use under another tool name changes nothing', async ($, on) => {
   await asked({ answer: 'Create a new ticket' })($, on)
   await $.tool.call({ tool: 'Write', file_path: '/tmp/x', content: USE('ABC-123', SESSION_ID) })
   expect(await blocksOf($)).toEqual(STILL_CREATE(SESSION_ID))
+})
+
+const SURE = { exitCode: 0, stdout: '{"picked":"GENAI-2","likely":"GENAI-2","confidence":0.9}\n' }
+const UNSURE = { exitCode: 0, stdout: '{"picked":null,"likely":"GENAI-2","confidence":0.4}\n' }
+
+test('session start alone asks and picks nothing', async ($, on) => {
+  const { seen } = seat(on, { current: 'GENAI-9-x' }, { tasks: TASKS })
+  await $.session.start(start(WORK_CWD))
+  expect(seen.asks).toEqual([])
+  expect(seen.picks).toEqual([])
+})
+
+test('a sure Verdict pick records the key without asking', async ($, on) => {
+  const { seen, toasts } = seat(on, { current: 'GENAI-9-fix' }, { tasks: TASKS, pick: SURE })
+  await $.session.start(start(WORK_CWD))
+  await $.prompt.submit({ ...PROMPT, text: 'fix the newer thing' })
+  expect(seen.asks).toEqual([])
+  expect(seen.runs).toEqual([])
+  expect(seen.picks).toEqual([
+    ['worklog', '--json', 'ticket', 'pick', '--session', SESSION_ID, '--also', 'GENAI-9', '--', 'fix the newer thing'],
+  ])
+  expect(toasts).toEqual(['worklog: GENAI-9', 'worklog: GENAI-2 (Verdict)'])
+  expect(await blocksOf($)).toEqual([...OTHER.blocks, { name: 'worklog', text: 'Session ticket: GENAI-2' }])
+  expect(seen.stored[`ticket-asked:${SESSION_ID}`]).toBeTruthy()
+})
+
+test('no branch ticket means no --also', async ($, on) => {
+  const { seen } = seat(on, { current: 'main' }, { pick: SURE })
+  await $.session.start(start(WORK_CWD))
+  await $.prompt.submit(PROMPT)
+  expect(seen.picks[0].includes('--also')).toBe(false)
+})
+
+test('an unsure Verdict asks with its likeliest ticket first', async ($, on) => {
+  const { seen } = seat(on, { current: 'GENAI-9-fix' }, { tasks: TASKS, pick: UNSURE })
+  await $.session.start(start(WORK_CWD))
+  await $.prompt.submit(PROMPT)
+  expect(seen.asks[0].options).toEqual(['GENAI-2 Newer', 'GENAI-9', 'Create a new ticket', 'Skip'])
+})
+
+const FAILED_PICKS: [string, { exitCode: number; stdout: string }][] = [
+  ['a non-zero exit', { exitCode: 1, stdout: '' }],
+  ['bad JSON', { exitCode: 0, stdout: 'not json' }],
+  ['a null pick', { exitCode: 0, stdout: '{"picked":null,"likely":null,"confidence":null}' }],
+]
+for (const [name, pick] of FAILED_PICKS) {
+  test(`${name} asks as before`, async ($, on) => {
+    const { seen } = seat(on, { current: 'GENAI-9-fix' }, { tasks: TASKS, pick })
+    await $.session.start(start(WORK_CWD))
+    await $.prompt.submit(PROMPT)
+    expect(seen.asks[0].options).toEqual(['GENAI-9', 'GENAI-2 Newer', 'Create a new ticket', 'Skip'])
+  })
+}
+
+test('a second prompt neither picks nor asks again', async ($, on) => {
+  const { seen } = seat(on, { current: 'GENAI-9-fix' }, { tasks: TASKS, pick: UNSURE })
+  await $.session.start(start(WORK_CWD))
+  await $.prompt.submit(PROMPT)
+  await $.prompt.submit(PROMPT)
+  expect(seen.picks.length).toBe(1)
+  expect(seen.asks.length).toBe(1)
+})
+
+test('outside a work folder no pick runs', async ($, on) => {
+  const { seen } = seat(on, { current: 'GENAI-9-fix' }, { pick: SURE })
+  await $.session.start(start('/tmp/play'))
+  await $.prompt.submit(PROMPT)
+  expect(seen.picks).toEqual([])
 })

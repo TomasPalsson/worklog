@@ -10,6 +10,9 @@ Binds 127.0.0.1 only. Endpoints:
   POST /match     -> body {"query": <text>, "states": [<json>, ...]}
                      response {"matches": [<bool>, ...]} (one per state; used by `worklog eval`)
                      empty query -> 400
+  POST /pick      -> body {"text": <str>, "options": [{"id": <ticket key>, "description": <summary>}, ...]}
+                     response same shape as /classify (choice is an option id)
+                     blank text or fewer than 2 options -> 400
 
 Verdict caps a single Choice query at 24 real options (plus its
 abstention option). `split_groups`/`merge_groups` below split larger
@@ -31,6 +34,8 @@ MAX_GROUP_SIZE = 24
 INSUFFICIENT_EVIDENCE_ID = "__insufficient_evidence__"
 # The wording the 4-right / 0-wrong measurement used; the default ratios are tuned to it.
 QUESTION = "Which project folder does this work activity belong to? Links, repo names and paths are the strongest evidence."
+
+PICK_QUESTION = "Which Jira ticket is this coding session working on? Ticket keys, branch names and the request's own words are the strongest evidence."
 
 ENGINE = None
 
@@ -105,6 +110,26 @@ def _evaluate(context, options):
     return merge_groups(result.probabilities for result in batch.results)
 
 
+def pick(text, options):
+    return _pick(text, tuple((o["id"], o["description"]) for o in options))
+
+
+@functools.lru_cache(maxsize=4096)
+def _pick(text, options):
+    from rlcd import Choice, Option
+
+    queries = [
+        Choice(
+            id=str(index),
+            question=PICK_QUESTION,
+            options=tuple(Option(id=key, description=f"{key}: {summary}") for key, summary in group),
+        )
+        for index, group in enumerate(split_groups(options))
+    ]
+    batch = ENGINE.evaluate(text, queries)
+    return merge_groups(result.probabilities for result in batch.results)
+
+
 def match(query, states):
     return [_match_one(json.dumps(state), query) for state in states]
 
@@ -136,7 +161,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
-        if self.path not in ("/classify", "/match"):
+        if self.path not in ("/classify", "/match", "/pick"):
             self.send_response(404)
             self.end_headers()
             return
@@ -149,6 +174,16 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
             self._send_json({"matches": match(query, body.get("states", []))})
+            return
+        if self.path == "/pick":
+            text = str(body.get("text", "")).strip()
+            options = body.get("options", [])
+            if not text or len(options) < 2:
+                self.send_response(400)
+                self.end_headers()
+                return
+            choice, probability, runner_up, abstain = pick(text, options)
+            self._send_json({"choice": choice, "probability": probability, "runner_up": runner_up, "abstain": abstain})
             return
         options = body.get("options", [])
         if not options:
