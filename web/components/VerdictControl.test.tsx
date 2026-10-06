@@ -205,3 +205,24 @@ describe("auto-send", () => {
     expect(buildSettingsUpdate(view(true), off)).toEqual({ auto_send: false });
   });
 });
+
+describe("settings checkboxes", () => {
+  it("both resolve by accessible name, checkbox before its text", async () => {
+    setup(status({ state: "off" }));
+    await stateLine();
+    for (const name of ["Run Verdict", "Send ready lines to Tempo at 17:00"]) {
+      const cb = screen.getByRole("checkbox", { name });
+      const label = cb.closest("label")!;
+      expect(label.className).toBe("settings-field verdict-check");
+      expect(cb.getAttribute("aria-label")).toBe(name);
+      expect(label.firstElementChild).toBe(cb); // catches the text span coming first
+    }
+  });
+
+  it("says Run Verdict applies at once and auto-send needs Save", async () => {
+    setup(status({ state: "off" }));
+    await stateLine();
+    expect(screen.getByText("Turns on or off at once.")).toBeTruthy();
+    expect(screen.getByText(/Saved with Save changes\.$/)).toBeTruthy();
+  });
+});

@@ -6134,3 +6134,10 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
 .review-sec-fields label { font-size: 12px; color: var(--fg-muted); }
 .review-sec-fields input { width: 96px; }
 .review-sec-fields textarea { width: 100%; font: inherit; resize: vertical; }
+
+/* ── verdict: design-evaluator fixes (T014) ── */
+.verdict-line[data-tone="quiet"] { border-left-color: var(--fg-subtle); }
+.verdict-check { flex-direction: row; align-items: center; gap: 8px; }
+.verdict-check input { width: auto; padding: 0; background: none; border: 0; margin: 0; flex: none; }
+.verdict-check > span { color: var(--fg); font-weight: 400; font-size: 13px; }
+.review-sec-live { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }

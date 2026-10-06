@@ -68,6 +68,11 @@ export function VerdictBanner({
       break;
     case "needs_uv":
       text = `Verdict needs uv${count}`;
+      action = {
+        label: "Retry",
+        busy: "Retrying…",
+        run: () => run(retry, "Couldn't retry Verdict"),
+      };
       break;
     case "stopped":
       text = `Verdict stopped: ${status.error}`;

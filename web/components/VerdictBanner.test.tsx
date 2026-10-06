@@ -40,12 +40,12 @@ describe("VerdictBanner copy", () => {
     expect(screen.getByRole("button", { name: "Turn on" })).toBeTruthy();
   });
 
-  it("needs_uv: warn, no action", () => {
+  it("needs_uv: warn with Retry", () => {
     render(<VerdictBanner status={st({ state: "needs_uv" })} />);
     const line = screen.getByRole("status");
     expect(line.getAttribute("data-tone")).toBe("warn");
-    expect(line.textContent).toBe("Verdict needs uv · 3 events not checked");
-    expect(screen.queryByRole("button")).toBeNull();
+    expect(line.textContent).toContain("Verdict needs uv · 3 events not checked");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
 
   it("stopped: shows the error and Retry, no count", () => {
@@ -96,6 +96,15 @@ describe("VerdictBanner actions", () => {
     render(<VerdictBanner status={st({ state: "stopped", error: "x" })} retry={retry} />);
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(retry).toHaveBeenCalledTimes(1));
+  });
+
+  it("needs_uv Retry calls retry, not setEnabled", async () => {
+    const setEnabled = mock(async (_on: boolean) => ok);
+    const retry = mock(async () => ok);
+    render(<VerdictBanner status={st({ state: "needs_uv" })} setEnabled={setEnabled} retry={retry} />);
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(retry).toHaveBeenCalledTimes(1));
+    expect(setEnabled).not.toHaveBeenCalled(); // catches wiring Retry to setEnabled(true)
   });
 
   it("a failed Turn on shows the message inline", async () => {

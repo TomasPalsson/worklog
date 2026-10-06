@@ -3,7 +3,7 @@
 // Today's page: auto-sent Tempo lines the Owner hasn't confirmed yet. Actions
 // are injectable because @/app/actions is mock.module'd process-wide in tests.
 
-import { useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { Loader2 } from "lucide-react";
 import * as actions from "@/app/actions";
@@ -55,6 +55,8 @@ function EditRow({
   const [text, setText] = useState(line.text);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
+  const hoursRef = useRef<HTMLInputElement>(null);
+  useEffect(() => hoursRef.current?.focus(), []);
   const key = { day: line.day, jira_issue: line.jira_issue };
   const hoursChanged = Number(hours) !== hoursOf(line.seconds);
   const textChanged = text !== line.text;
@@ -84,6 +86,8 @@ function EditRow({
         <label htmlFor={`${id}-h`}>Hours</label>
         <input
           id={`${id}-h`}
+          ref={hoursRef}
+          aria-invalid={!valid}
           type="number"
           step="0.25"
           min="0.25"
@@ -92,6 +96,7 @@ function EditRow({
         />
         <label htmlFor={`${id}-t`}>Text</label>
         <textarea id={`${id}-t`} rows={3} value={text} onChange={(e) => setText(e.target.value)} />
+        {!valid && <p className="review-sec-error">Hours must be at least 0.25.</p>}
       </div>
       <div className="review-sec-actions">
         <button
@@ -120,15 +125,31 @@ function Row({
 }: {
   line: ReviewLine;
   act: Wired;
-  onGone: () => void;
+  onGone: (announcement: string) => void;
   onSent: () => void;
 }) {
   const [editing, setEditing] = useState(false);
+  const editRef = useRef<HTMLButtonElement>(null);
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (!editing && refocus.current) editRef.current?.focus();
+    refocus.current = false;
+  }, [editing]);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
 
   if (editing) {
-    return <EditRow line={line} act={act} onDone={onGone} onCancel={() => setEditing(false)} />;
+    return (
+      <EditRow
+        line={line}
+        act={act}
+        onDone={() => onGone(`Saved ${line.jira_issue} to Tempo`)}
+        onCancel={() => {
+          refocus.current = true;
+          setEditing(false);
+        }}
+      />
+    );
   }
 
   const run = (call: () => Promise<Result>, done: () => void) => {
@@ -159,11 +180,12 @@ function Row({
               type="button"
               className="review-toggle"
               disabled={pending}
-              onClick={() => run(() => act.confirm(line.day, line.jira_issue), onGone)}
+              onClick={() => run(() => act.confirm(line.day, line.jira_issue), () => onGone(`Confirmed ${line.jira_issue}`))}
             >
-              Looks right
+              {pending && <Loader2 className="spin" size={13} />}
+              {pending ? "Confirming…" : "Looks right"}
             </button>
-            <button type="button" className="review-toggle" disabled={pending} onClick={() => setEditing(true)}>
+            <button ref={editRef} type="button" className="review-toggle" disabled={pending} onClick={() => setEditing(true)}>
               Edit
             </button>
           </>
@@ -194,7 +216,7 @@ function DayGroup({
   day: string;
   lines: ReviewLine[];
   act: Wired;
-  onGone: (l: ReviewLine) => void;
+  onGone: (l: ReviewLine, announcement: string) => void;
   onSent: (l: ReviewLine) => void;
   onAllGone: (day: string) => void;
 }) {
@@ -227,7 +249,7 @@ function DayGroup({
       </div>
       <ul role="list">
         {lines.map((l) => (
-          <Row key={l.jira_issue} line={l} act={act} onGone={() => onGone(l)} onSent={() => onSent(l)} />
+          <Row key={l.jira_issue} line={l} act={act} onGone={(msg) => onGone(l, msg)} onSent={() => onSent(l)} />
         ))}
       </ul>
     </div>
@@ -242,6 +264,7 @@ export function ReviewSection({
   saveText = lineActions.saveTempoLineText,
 }: { lines: ReviewLine[] } & Actions) {
   const [lines, setLines] = useState(initial);
+  const [announcement, setAnnouncement] = useState("");
   if (lines.length === 0) return null;
 
   const act = { confirm, sync, saveHours, saveText };
@@ -261,7 +284,10 @@ export function ReviewSection({
           day={day}
           lines={lines.filter((l) => l.day === day)}
           act={act}
-          onGone={(l) => setLines((cur) => cur.filter((x) => !same(x, l)))}
+          onGone={(l, msg) => {
+            setAnnouncement(msg);
+            setLines((cur) => cur.filter((x) => !same(x, l)));
+          }}
           onSent={(l) =>
             setLines((cur) =>
               cur.map((x) => {
@@ -274,6 +300,9 @@ export function ReviewSection({
           onAllGone={(d) => setLines((cur) => cur.filter((x) => x.day !== d || x.status !== "sent"))}
         />
       ))}
+      <div className="review-sec-live" aria-live="polite">
+        {announcement}
+      </div>
     </section>
   );
 }

@@ -219,3 +219,61 @@ describe("ReviewSection edit", () => {
     expect(sync).not.toHaveBeenCalled();
   });
 });
+
+describe("ReviewSection polish", () => {
+  const rowOf = (t: string) => within(screen.getByText(t).closest("li")!);
+  const open = () => fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+  const live = () => document.querySelector('[aria-live="polite"]')!;
+
+  it("Looks right shows Confirming… while pending", async () => {
+    let release: (v: typeof ok) => void = () => {};
+    setup([L1, L2], { confirm: mock(() => new Promise<typeof ok>((r) => (release = r))) });
+    fireEvent.click(rowOf("AB-1").getByRole("button", { name: "Looks right" }));
+    await waitFor(() => expect(rowOf("AB-1").getByRole("button", { name: "Confirming…" })).toBeTruthy());
+    expect(rowOf("AB-1").getByRole("button", { name: "Confirming…" }).querySelector(".spin")).toBeTruthy();
+    expect(rowOf("AB-2").getByRole("button", { name: "Looks right" })).toBeTruthy(); // not every row
+    release(ok);
+  });
+
+  it("Edit focuses the Hours input", () => {
+    setup([L1]);
+    open();
+    expect(document.activeElement).toBe(screen.getByLabelText("Hours")); // catches no focus move
+  });
+
+  it("Cancel returns focus to that row's Edit button", () => {
+    setup([L1, L2]);
+    fireEvent.click(rowOf("AB-2").getByRole("button", { name: "Edit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(document.activeElement).toBe(rowOf("AB-2").getByRole("button", { name: "Edit" }));
+  });
+
+  it("announces a confirmed row in a polite live region", async () => {
+    setup([L1, L2]);
+    expect(live().textContent).toBe("");
+    fireEvent.click(rowOf("AB-1").getByRole("button", { name: "Looks right" }));
+    await waitFor(() => expect(live().textContent).toBe("Confirmed AB-1"));
+  });
+
+  it("announces a saved row", async () => {
+    setup([L1, L2]);
+    fireEvent.click(rowOf("AB-1").getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Text"), { target: { value: "Better" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save to Tempo" }));
+    await waitFor(() => expect(live().textContent).toBe("Saved AB-1 to Tempo"));
+  });
+
+  it("hours below 0.25 show a message and aria-invalid; 0.25 and unchanged do not", () => {
+    setup([L1]);
+    open();
+    const h = screen.getByLabelText("Hours");
+    expect(screen.queryByText("Hours must be at least 0.25.")).toBeNull(); // unchanged: silent
+    expect(h.getAttribute("aria-invalid")).not.toBe("true");
+    fireEvent.change(h, { target: { value: "0.2" } });
+    expect(screen.getByText("Hours must be at least 0.25.")).toBeTruthy();
+    expect(h.getAttribute("aria-invalid")).toBe("true");
+    fireEvent.change(h, { target: { value: "0.25" } }); // catches > instead of >=
+    expect(screen.queryByText("Hours must be at least 0.25.")).toBeNull();
+    expect(h.getAttribute("aria-invalid")).not.toBe("true");
+  });
+});

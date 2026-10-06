@@ -89,10 +89,10 @@ export function VerdictControl({
         Files Slack messages and browser tabs into projects, picks clear tickets and
         checks Tempo text before it is sent.
       </p>
-      <label className="settings-field">
-        <span>Run Verdict</span>
+      <label className="settings-field verdict-check">
         <input
           type="checkbox"
+          aria-label="Run Verdict"
           checked={state !== undefined && state !== "off"}
           disabled={toggling}
           onChange={(e) => {
@@ -104,7 +104,9 @@ export function VerdictControl({
             });
           }}
         />
+        <span>Run Verdict</span>
       </label>
+      <p className="settings-hint">Turns on or off at once.</p>
       {status ? (
         <div className="verdict-state-row">
           <p className="verdict-state" data-state={status.state} role="status">
@@ -140,17 +142,18 @@ export function VerdictControl({
           {`Last night's check: ${status.scorecard}`}
         </p>
       )}
-      <label className="settings-field">
-        <span>Send ready lines to Tempo at 17:00</span>
+      <label className="settings-field verdict-check">
         <input
           type="checkbox"
+          aria-label="Send ready lines to Tempo at 17:00"
           checked={autoSend}
           onChange={(e) => onAutoSend(e.target.checked)}
         />
+        <span>Send ready lines to Tempo at 17:00</span>
       </label>
       <p className="settings-hint">
         Only lines with a clear ticket and checked text are sent. The rest wait on
-        their day.
+        their day. Saved with Save changes.
       </p>
     </section>
   );
