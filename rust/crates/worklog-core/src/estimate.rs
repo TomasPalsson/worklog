@@ -192,31 +192,30 @@ pub fn estimate_day(conn: &Connection, day: NaiveDate, model: &str) -> Result<Es
         day,
         model,
         resolve_provider()?,
-        &crate::verdict::VerdictClassifier::new(),
-        crate::daemon::configured_route_rule(),
+        crate::verdict::VerdictClassifier::new(),
     )
 }
 
-/// [`estimate_day`] with the provider, classifier and rule supplied.
+/// [`estimate_day`] with the provider and Verdict client supplied.
 fn estimate_day_via(
     conn: &Connection,
     day: NaiveDate,
     model: &str,
     provider: ProviderChoice,
-    classifier: &dyn crate::routing_contract::Classifier,
-    rule: crate::routing_contract::RouteRule,
+    classifier: crate::verdict::VerdictClassifier,
 ) -> Result<EstimateStats> {
+    let rule = crate::daemon::configured_route_rule();
     match provider {
         ProviderChoice::ClaudeSubprocess => estimate_day_with_verdict(
             conn,
             day,
             model,
             &ClaudeSubprocess::default(),
-            classifier,
+            &classifier,
             rule,
         ),
         ProviderChoice::LiteLLM(inv) => {
-            estimate_day_with_verdict(conn, day, model, &inv, classifier, rule)
+            estimate_day_with_verdict(conn, day, model, &inv, &classifier, rule)
         }
     }
 }
@@ -2547,9 +2546,9 @@ mod tests {
         assert_eq!(block.description.as_deref(), Some("Work"));
     }
 
-    /// Runs the provider-resolving path `estimate_day` delegates to, with a
-    /// mocked model that picks PROJ-1.
-    fn via_provider_ticket(classifier: &dyn crate::routing_contract::Classifier) -> Option<String> {
+    /// Runs the path `estimate_day` delegates to, with a mocked model that
+    /// picks PROJ-1 and a real `VerdictClassifier` at `verdict_url`.
+    fn via_provider_ticket(verdict_url: String) -> Option<String> {
         use httpmock::prelude::*;
         let server = MockServer::start();
         server.mock(|when, then| {
@@ -2560,26 +2559,39 @@ mod tests {
         });
         let provider =
             ProviderChoice::LiteLLM(LiteLLMInvoker::new(server.base_url(), "", "m").unwrap());
+        let classifier = crate::verdict::VerdictClassifier::with_client(
+            reqwest::blocking::Client::new(),
+            verdict_url,
+        );
         let conn = open_memory().unwrap();
         let bid = block_naming_both(&conn, "auto");
         let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
-        estimate_day_via(&conn, day, "m", provider, classifier, verdict_rule()).unwrap();
+        estimate_day_via(&conn, day, "m", provider, classifier).unwrap();
         repo::get_block(&conn, bid).unwrap().unwrap().jira_issue
     }
 
     #[test]
     fn estimate_day_via_applies_a_clear_verdict_pick() {
-        let ticket = via_provider_ticket(&Names("PROJ-2", 0.6));
-        assert_eq!(ticket.as_deref(), Some("PROJ-2")); // catches a path that skips Verdict
+        use httpmock::prelude::*;
+        let verdict = MockServer::start();
+        verdict.mock(|when, then| {
+            when.method(POST).path("/classify");
+            then.status(200).json_body(json!({
+                "ranking": [
+                    {"id": "PROJ-2", "probability": 0.6},
+                    {"id": "PROJ-1", "probability": 0.1}
+                ],
+                "abstain": 0.1,
+                "agreed": true
+            }));
+        });
+        let ticket = via_provider_ticket(verdict.base_url());
+        assert_eq!(ticket.as_deref(), Some("PROJ-2")); // catches a path that skips Verdict or a no-op classifier
     }
 
     #[test]
     fn estimate_day_via_keeps_the_model_pick_when_verdict_is_unreachable() {
-        let down = crate::verdict::VerdictClassifier::with_client(
-            reqwest::blocking::Client::new(),
-            "http://127.0.0.1:1".into(),
-        );
-        let ticket = via_provider_ticket(&down);
+        let ticket = via_provider_ticket("http://127.0.0.1:1".into());
         assert_eq!(ticket.as_deref(), Some("PROJ-1")); // catches an unreachable Verdict failing estimation
     }
 
