@@ -1,4 +1,5 @@
 Approved: 2026-10-06 by user
+Verified: 2026-10-06 by user ("whatever you think is best are your features done? then you can merge") — CHK001 Post path and CHK002 live recap recorded as human follow-ups in verify/
 # Tasks — Daily helpers
 Spec: spec.md · Design: design.md · Base: 6eb7a92 · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && (cd web && bun test)`
 
