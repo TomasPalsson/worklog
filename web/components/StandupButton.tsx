@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { X } from "lucide-react";
 import { draftStandup, postStandup, standupChannelSet } from "@/lib/daemonStandup";
 import type { PostOutcome, StandupDraft } from "@/lib/daily_helpers_contract";
 
@@ -104,9 +105,13 @@ function useStandup() {
     setCopied(false);
     const [d, c] = await Promise.all([draftStandup(), standupChannelSet()]);
     setBusy(null);
-    if (!d.ok) return setError(d.error);
+    if (!d.ok) {
+      setError(d.error);
+      return false;
+    }
     setChannelSet(c.ok ? c.data : true);
     setText(draftText(d.data));
+    return true;
   };
 
   const post = async () => {
@@ -133,50 +138,106 @@ function useStandup() {
   return { busy, copied, text, setText, setCopied, setPermalink, channelSet, error, permalink, start, post, copy };
 }
 
-export function StandupButton() {
-  const { busy, copied, text, setText, setCopied, setPermalink, channelSet, error, permalink, start, post, copy } =
-    useStandup();
+/** Opens the native modal when `open`, closes it otherwise. Falls back to the
+ *  `open` attribute where `showModal` is missing (tests). */
+function useModal(open: boolean) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const d = ref.current;
+    if (!d) return;
+    if (open && !d.open) {
+      if (typeof d.showModal === "function") d.showModal();
+      else d.setAttribute("open", "");
+    } else if (!open && d.open) {
+      if (typeof d.close === "function") d.close();
+      else d.removeAttribute("open");
+    }
+  }, [open]);
+  return ref;
+}
+
+type Standup = ReturnType<typeof useStandup>;
+
+/** The open draft, in a modal so the page header never grows. */
+function StandupDialog(p: {
+  s: Standup;
+  dialogRef: React.RefObject<HTMLDialogElement | null>;
+  onClose: () => void;
+  onDiscard: () => void;
+}) {
+  const { s } = p;
   return (
-    <div className="standup" aria-busy={busy !== null}>
+    <dialog ref={p.dialogRef} className="settings-dialog standup-dialog" aria-labelledby="standup-title" onClose={p.onClose}>
+      <div className="settings-header">
+        <h2 id="standup-title">Standup draft</h2>
+        <button type="button" className="standup-close" aria-label="Close (keeps the draft)" onClick={p.onClose}>
+          <X size={16} aria-hidden="true" />
+        </button>
+      </div>
+      <div className="settings-body standup-body">
+        {s.busy === "posting" && (
+          <p role="status" className="standup-note">
+            Posting to the Daily thread…
+          </p>
+        )}
+        {s.error && (
+          <p role="alert" className="standup-error">
+            {s.error}
+          </p>
+        )}
+        <Preview
+          text={s.text ?? ""}
+          onText={(t) => {
+            s.setText(t);
+            s.setCopied(false);
+            s.setPermalink(null);
+          }}
+          canPost={s.channelSet && s.busy === null && s.permalink === null && (s.text ?? "").trim() !== ""}
+          channelSet={s.channelSet}
+          copied={s.copied}
+          permalink={s.permalink}
+          onPost={() => void s.post()}
+          onCopy={() => void s.copy()}
+          onDiscard={p.onDiscard}
+        />
+      </div>
+    </dialog>
+  );
+}
+
+export function StandupButton() {
+  const s = useStandup();
+  const [open, setOpen] = useState(false);
+  const ref = useModal(open && s.text !== null);
+  const hasDraft = s.text !== null;
+  const discard = () => {
+    s.setText(null);
+    s.setCopied(false);
+    s.setPermalink(null);
+    setOpen(false);
+  };
+  return (
+    <div className="standup" aria-busy={s.busy !== null}>
       <button
         type="button"
         className="action-btn"
-        disabled={busy !== null || text !== null}
-        title={text !== null ? "Discard the open draft to start a new one" : undefined}
-        onClick={() => void start()}
+        disabled={s.busy === "drafting"}
+        onClick={() => (hasDraft ? setOpen(true) : void s.start().then((ok) => setOpen(ok)))}
       >
-        Draft standup
+        {hasDraft ? "Open standup draft" : "Draft standup"}
       </button>
-      {busy && (
+      {s.busy === "drafting" && (
         <p role="status" className="standup-note">
-          {busy === "drafting" ? "Drafting from yesterday and today…" : "Posting to the Daily thread…"}
+          Drafting from yesterday and today…
         </p>
       )}
-      {error && (
+      {s.error && !open && (
         <p role="alert" className="standup-error">
-          {error}
+          {s.error}
         </p>
       )}
-      {text !== null && (
-        <Preview
-          text={text}
-          onText={(t) => {
-            setText(t);
-            setCopied(false);
-            setPermalink(null);
-          }}
-          canPost={channelSet && busy === null && permalink === null && text.trim() !== ""}
-          channelSet={channelSet}
-          copied={copied}
-          permalink={permalink}
-          onPost={() => void post()}
-          onCopy={() => void copy()}
-          onDiscard={() => {
-            setText(null);
-            setCopied(false);
-            setPermalink(null);
-          }}
-        />
+      {hasDraft && (
+        <StandupDialog s={s} dialogRef={ref} onClose={() => setOpen(false)} onDiscard={discard} />
       )}
     </div>
   );
