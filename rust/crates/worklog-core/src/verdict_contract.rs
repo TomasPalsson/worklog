@@ -22,7 +22,7 @@ pub const EXAMPLES_MAX: usize = 5;
 /// tokens (spec §5): each example cut to this many chars...
 pub const EXAMPLE_CHARS_EACH: usize = 60;
 /// ...and all examples of one request together capped at this many chars.
-pub const EXAMPLE_CHARS_TOTAL: usize = 600;
+pub const EXAMPLE_CHARS_TOTAL: usize = 300;
 /// Window for "worked in recently" project options.
 pub const RECENT_PROJECT_DAYS: i64 = 14;
 /// Window for "logged in this folder recently" ticket options.

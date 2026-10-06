@@ -220,7 +220,7 @@ fn customer_container_keeps_other_customers_out() {
 }
 
 #[test]
-fn examples_are_cut_to_sixty_chars_and_capped_at_six_hundred_total() {
+fn examples_are_cut_to_sixty_chars_and_capped_at_three_hundred_total() {
     let conn = open_memory().unwrap();
     let folders: Vec<String> = (0..6).map(|i| format!("zq-e{i}")).collect();
     for f in &folders {
@@ -254,10 +254,10 @@ fn examples_are_cut_to_sixty_chars_and_capped_at_six_hundred_total() {
     let all: Vec<&String> = got.values().flatten().collect();
     // Each cut to 60: catches no cut (70) and a 61 cut.
     assert!(all.iter().all(|t| t.chars().count() == 60));
-    // Together exactly 600: catches < for <= (9 examples) and no cap (30).
-    assert_eq!(all.len(), 10);
+    // Together exactly 300 (5 x 60 fills it, the next 60 is one over): catches
+    // < for <= (4 examples), > for >= on the room check (6) and no cap (30).
+    assert_eq!(all.len(), 5);
     // At most 5 per project: catches a missing per-project limit.
     assert_eq!(got["zq-e0"].len(), 5);
-    assert_eq!(got["zq-e1"].len(), 5);
-    assert!(!got.contains_key("zq-e2"));
+    assert!(!got.contains_key("zq-e1"));
 }

@@ -29,7 +29,7 @@ SHORTLIST_MAX = 6
 MODEL_TOKENS = 512
 EXAMPLES_PER_OPTION = 5
 EXAMPLE_CHARS = 60
-EXAMPLE_CHARS_TOTAL = 600
+EXAMPLE_CHARS_TOTAL = 300
 INSUFFICIENT_EVIDENCE_ID = "__insufficient_evidence__"
 # The wording the 4-right / 0-wrong measurement used; the default ratios are tuned to it.
 QUESTION = "Which project folder does this work activity belong to? Links, repo names and paths are the strongest evidence."
@@ -235,7 +235,7 @@ def self_test():
         answers["n"] = {"m": 0.3, "n": 0.6, ev: 0.1}
         assert classify({}, ["m", "n"])["agreed"] is False
 
-        # examples: 60-char cut, 5 per option, 600 total, same text both passes
+        # examples: 60-char cut, 5 per option, 300 total, same text both passes
         calls.clear()
         answers["o0"] = answers["o10"] = {"o0": 0.5, "o10": 0.4, ev: 0.1}
         names = [f"o{i}" for i in range(11)]
@@ -246,8 +246,8 @@ def self_test():
         second = dict(zip(calls[1][0], calls[1][1]))
         assert first == second
         assert first["o0"] == ("e" * 60, "f" * 60, "g", "h", "i")
-        assert sum(len(t) for texts in first.values() for t in texts) <= 600
-        assert sum(len(t) for texts in first.values() for t in texts) > 540
+        assert sum(len(t) for texts in first.values() for t in texts) <= EXAMPLE_CHARS_TOTAL
+        assert sum(len(t) for texts in first.values() for t in texts) > EXAMPLE_CHARS_TOTAL - EXAMPLE_CHARS
 
         # no examples key -> none shown
         calls.clear()
@@ -267,15 +267,21 @@ def self_test():
 
 
 def _event_text_room():
-    # Worst case: SHORTLIST_MAX options with 40-char folder ids (assumed upper bound for
-    # ~/Desktop/Work names), the question, and the full example budget. No tokenizer is
-    # importable offline, so estimate 4 chars/token (English prose and paths); the model
-    # sees MODEL_TOKENS and the event text needs 200 of them. At a pessimistic 3 chars/token
-    # this does not hold (about 99 left), so the 4 is the load-bearing assumption.
-    options = ["f" * 40] * SHORTLIST_MAX
-    texts = ["x" * EXAMPLE_CHARS] * (EXAMPLE_CHARS_TOTAL // EXAMPLE_CHARS)
-    block = QUESTION + "".join(_describe(option, texts if i == 0 else ()) for i, option in enumerate(options))
-    assert MODEL_TOKENS - -(-len(block) // 4) >= 200, "option block crowds out the event text"
+    # Worst case: SHORTLIST_MAX options with 32-char folder ids, the question, and the full
+    # example budget as Slack/Jira-shaped titles. rlcd packs all of it plus the event into one
+    # MODEL_TOKENS sequence; the event needs 200. Real tokenizer when available, else 3 chars/token.
+    titles = ["PROJ-1234 Re: prod deploy failing on the staging pipeline"[:EXAMPLE_CHARS].ljust(EXAMPLE_CHARS, ".")] * (EXAMPLE_CHARS_TOTAL // EXAMPLE_CHARS)
+    options = ["customer-portal-frontend-app-0" + str(i) + "x" for i in range(SHORTLIST_MAX)]
+    assert all(len(option) == 32 for option in options)
+    block = QUESTION + "".join(_describe(option, tuple(titles) if i == 0 else ()) for i, option in enumerate(options))
+    tokenizer_file = os.path.join(os.environ.get("WORKLOG_VERDICT_MODEL_DIR") or os.path.expanduser("~/.local/share/worklog/verdict-model"), "tokenizer.json")
+    try:
+        from tokenizers import Tokenizer
+
+        used = len(Tokenizer.from_file(tokenizer_file).encode(block).ids) if os.path.exists(tokenizer_file) else -(-len(block) // 3)
+    except ImportError:
+        used = -(-len(block) // 3)
+    assert MODEL_TOKENS - used >= 200, "option block crowds out the event text"
 
 
 def _http_round_trip():
