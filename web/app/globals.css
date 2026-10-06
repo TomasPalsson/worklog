@@ -6244,7 +6244,9 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
 @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) .mirres-popover { box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.08); } }
 :root[data-theme="light"] .mirres-popover { box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.08); }
 @media (prefers-reduced-motion: reduce) { .mirres-popover:popover-open { transition: none; } }
-.mirres-pop-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mirres-pop-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; }
+.mirres-pop-head > * { flex: 0 0 auto; max-width: 100%; }
+.mirres-pop-head > svg { align-self: center; }
 .mirres-pop-head strong { font-weight: 600; }
 .mirres-pop-muted { color: var(--fg-muted); }
 .mirres-pop-status { display: block; }
