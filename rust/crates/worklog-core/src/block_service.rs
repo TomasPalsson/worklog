@@ -53,7 +53,10 @@ pub fn assign_ticket(conn: &Connection, block_id: i64, key: Option<&str>) -> Res
     }
     let block = repo::get_block(conn, block_id)?
         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
-    crate::ticket_verdict::record_swap(conn, block_id, previous, key)?;
+    // The ticket is already saved; a failed audit row must not fail the save.
+    if let Err(e) = crate::ticket_verdict::record_swap(conn, block_id, previous, key) {
+        eprintln!("worklog: ticket swap not logged for block {block_id}: {e:#}");
+    }
     change_log::refresh_day_logged(conn, &block.day, ChangeSource::User);
     Ok(block)
 }
@@ -539,6 +542,16 @@ mod tests {
             r.source == crate::verdict_contract::DecisionSource::Owner
                 && r.subject == id.to_string()
         }));
+    }
+
+    #[test]
+    fn assign_ticket_succeeds_when_the_swap_log_cannot_be_written() {
+        let conn = open_memory().unwrap();
+        let id = seed(&conn);
+        conn.execute("DROP TABLE verdict_decisions", []).unwrap();
+        // catches: `?` on record_swap, which reports a failed save for a saved ticket
+        let got = assign_ticket(&conn, id, Some("PROJ-1")).unwrap();
+        assert_eq!(got.jira_issue.as_deref(), Some("PROJ-1"));
     }
 
     #[test]
