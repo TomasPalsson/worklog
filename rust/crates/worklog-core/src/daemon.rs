@@ -52,6 +52,9 @@
 //! * `GET  /routing/rules`                — hard rules list
 //! * `POST /routing/rules/:id/delete`    — no body
 //! * `GET  /routing/status`               — last heartbeat/Slack timestamps + Verdict reachability
+//! * `POST /undo`                        — undo the last block change → `UndoOutcome`
+//! * `GET  /ask?q=`                      — newest blocks matching a query (max 5)
+//! * `GET  /ask/stopped?repo=`           — recent prompts and files for a repo
 //!
 //! Unix-socket file perms default to `0666` so the containerised UI can
 //! connect across Docker Desktop's VM (same user, same host — the data
@@ -271,6 +274,9 @@ pub fn router(state: Shared) -> Router {
         .route("/routing/status", get(routing_status))
         .route("/days/:day/elsewhere", get(list_elsewhere))
         .route("/events/:id/move", post(move_event_handler))
+        .route("/undo", post(crate::daemon_undo::post_undo))
+        .route("/ask", get(crate::daemon_ask::get_ask))
+        .route("/ask/stopped", get(crate::daemon_ask::get_stopped))
         .with_state(state)
 }
 
@@ -2964,6 +2970,69 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ─────────────────── spec 018 undo / ask routes ───────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn undo_route_is_post_and_reports_nothing_to_undo() {
+        let post = router(state_with_block())
+            .oneshot(Request::post("/undo").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        // catches: route not registered (404)
+        assert_eq!(post.status(), StatusCode::OK);
+        // catches: wrong handler or outcome encoded as an error
+        assert_eq!(read_json(post).await["outcome"], "nothing_to_undo");
+        let get = router(state_with_block())
+            .oneshot(Request::get("/undo").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        // catches: a state-changing route registered as GET
+        assert_eq!(get.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ask_route_returns_hits_and_requires_q() {
+        let state = state_with_block();
+        state
+            .conn
+            .try_lock()
+            .unwrap()
+            .execute("UPDATE blocks SET description = 'migrate kafka topics'", [])
+            .unwrap();
+        let resp = router(state.clone())
+            .oneshot(Request::get("/ask?q=kafka").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        // catches: /ask wired to the stopped handler or a different query param
+        assert_eq!(v.as_array().unwrap().len(), 1);
+        assert_eq!(v[0]["day"], "2026-04-18");
+        let missing = router(state)
+            .oneshot(Request::get("/ask").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        // catches: a missing q defaulting silently instead of being rejected
+        assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ask_stopped_route_is_not_shadowed_by_ask() {
+        let resp = router(state_with_block())
+            .oneshot(
+                Request::get("/ask/stopped?repo=nope")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // catches: missing registration (404)
+        assert_eq!(resp.status(), StatusCode::OK);
+        // catches: the search handler answering the stopped path
+        let v = read_json(resp).await;
+        assert_eq!(v, serde_json::json!({"prompts": [], "files": []}));
     }
 
     // ─────────────────── v0.6 read endpoints ───────────────────
