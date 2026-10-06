@@ -2283,6 +2283,14 @@ async fn post_settings(
         })?;
     }
 
+    // A control character (a newline) would add a line to the env file.
+    let daily_channel = body.daily_channel.as_deref().map(str::trim);
+    if daily_channel.is_some_and(|c| c.chars().any(char::is_control)) {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "`daily_channel` must not contain control characters"
+        )));
+    }
+
     // Route ratios: each must lie in RATIO_RANGE.
     let (ratio_lo, ratio_hi) = routing_contract::RATIO_RANGE;
     for (field, v) in [
@@ -2355,8 +2363,8 @@ async fn post_settings(
     if let Some(v) = body.runner_up_ratio {
         crate::envfile::upsert(routing_contract::RUNNER_UP_RATIO_KEY, &v.to_string())?;
     }
-    if let Some(channel) = &body.daily_channel {
-        crate::envfile::upsert(SLACK_DAILY_CHANNEL_KEY, channel.trim())?;
+    if let Some(channel) = daily_channel {
+        crate::envfile::upsert(SLACK_DAILY_CHANNEL_KEY, channel)?;
     }
 
     info!("settings updated");
@@ -3170,6 +3178,19 @@ mod tests {
                 want.unwrap_or_default()
             );
         }
+        // catches: a newline reaching the env file (a second line), or a write before the 400
+        let resp = router(state_with_block())
+            .oneshot(
+                Request::post("/settings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r##"{"daily_channel":"#daily\nX=1"}"##))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(crate::envfile::read("X"), None);
+        assert_eq!(current_settings().unwrap().daily_channel, "");
         std::env::remove_var("WORKLOG_ENV_FILE");
     }
 

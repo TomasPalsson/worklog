@@ -8,7 +8,9 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Number, Value as Json};
 
+use crate::change_log;
 use crate::daily_helpers_contract::{BlockChange, UndoOutcome, UNDO_DEPTH};
+use crate::deild_contract::ChangeSource;
 
 type Row = Map<String, Json>;
 
@@ -303,6 +305,18 @@ pub fn undo_last(conn: &mut Connection) -> Result<UndoOutcome> {
     }
     tx.execute("DELETE FROM block_undo WHERE id = ?1", params![entry_id])?;
     tx.commit()?;
+    let reindexed: Vec<i64> = block_ids.iter().chain(tails).copied().collect();
+    crate::ask::refresh(conn, &reindexed);
+    let mut days: Vec<&str> = entry
+        .blocks
+        .iter()
+        .filter_map(|s| str_of(&s.row, "day"))
+        .collect();
+    days.sort_unstable();
+    days.dedup();
+    for day in days {
+        change_log::refresh_day_logged(conn, day, ChangeSource::User);
+    }
     Ok(UndoOutcome::Restored { change, block_ids })
 }
 

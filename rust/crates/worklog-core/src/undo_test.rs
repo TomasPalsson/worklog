@@ -396,6 +396,38 @@ fn refuses_when_live_block_changed_since() {
 }
 
 #[test]
+fn undo_refreshes_the_days_logged_state() {
+    // catches: undo restoring the row but leaving the day's snapshot stale
+    let mut conn = open_memory().unwrap();
+    let id = seed30(&conn);
+    crate::change_log::refresh_day(
+        &conn,
+        "2026-04-18",
+        crate::deild_contract::ChangeSource::Rebuild,
+        "seed",
+    )
+    .unwrap();
+    bs::set_description(&conn, id, "edited").unwrap();
+    undo_last(&mut conn).unwrap();
+    let changes = crate::change_log::feed(&conn, 0).unwrap().changes;
+    assert_eq!(changes.len(), 2);
+    let last = changes.last().unwrap();
+    assert_eq!(last.old.as_deref(), Some("edited"));
+    assert_eq!(last.new.as_deref(), Some("orig"));
+}
+
+#[test]
+fn undo_reindexes_the_restored_block_for_ask() {
+    // catches: ask still finding the text an undone edit wrote
+    let mut conn = open_memory().unwrap();
+    let id = seed30(&conn);
+    bs::set_description(&conn, id, "zebra").unwrap();
+    undo_last(&mut conn).unwrap();
+    assert!(crate::ask::search(&conn, "zebra").unwrap().is_empty());
+    assert_eq!(crate::ask::search(&conn, "orig").unwrap().len(), 1);
+}
+
+#[test]
 fn undo_split_keeps_unrelated_block_inside_span() {
     // catches: deleting every block above max_id inside the original span
     let mut conn = open_memory().unwrap();

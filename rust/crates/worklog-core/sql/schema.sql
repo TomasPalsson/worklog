@@ -461,7 +461,7 @@ CREATE TABLE IF NOT EXISTS block_undo (
 );
 
 -- Full-text index behind `ask`: one row per block holding its description,
--- ticket and digest clues. Filled by ask::sync (backfilled once by migrate).
+-- ticket and digest clues. Fills on demand via ask::sync; block edits refresh their rows.
 CREATE VIRTUAL TABLE IF NOT EXISTS ask_index USING fts5(
     text,
     block_id UNINDEXED

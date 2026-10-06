@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{params, Connection};
 
+use crate::ask;
 use crate::change_log;
 use crate::daily_helpers_contract::BlockChange;
 use crate::deild_contract::ChangeSource;
@@ -58,6 +59,7 @@ pub fn assign_ticket(conn: &Connection, block_id: i64, key: Option<&str>) -> Res
     tx.commit().context("assign_ticket: commit")?;
     let block = repo::get_block(conn, block_id)?
         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
+    ask::refresh(conn, &[block_id]);
     change_log::refresh_day_logged(conn, &block.day, ChangeSource::User);
     Ok(block)
 }
@@ -94,6 +96,7 @@ pub fn set_duration(conn: &Connection, block_id: i64, minutes: u32) -> Result<Bl
     tx.commit().context("set_duration: commit")?;
     let block = repo::get_block(conn, block_id)?
         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
+    ask::refresh(conn, &[block_id]);
     change_log::refresh_day_logged(conn, &block.day, ChangeSource::User);
     Ok(block)
 }
@@ -129,6 +132,7 @@ pub fn set_description(conn: &Connection, block_id: i64, description: &str) -> R
     tx.commit().context("set_description: commit")?;
     let block = repo::get_block(conn, block_id)?
         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
+    ask::refresh(conn, &[block_id]);
     change_log::refresh_day_logged(conn, &block.day, ChangeSource::User);
     Ok(block)
 }
@@ -153,6 +157,7 @@ pub fn set_personal(conn: &Connection, block_id: i64, is_personal: bool) -> Resu
     tx.commit().context("set_personal: commit")?;
     let block = repo::get_block(conn, block_id)?
         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
+    ask::refresh(conn, &[block_id]);
     change_log::refresh_day_logged(conn, &block.day, ChangeSource::User);
     Ok(block)
 }
@@ -194,6 +199,7 @@ pub fn set_ignored(conn: &Connection, block_id: i64, ignored: bool) -> Result<Bl
     tx.commit().context("set_ignored: commit")?;
     let block = repo::get_block(conn, block_id)?
         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
+    ask::refresh(conn, &[block_id]);
     change_log::refresh_day_logged(conn, &block.day, ChangeSource::User);
     Ok(block)
 }
@@ -234,6 +240,7 @@ pub fn delete_block(conn: &Connection, block_id: i64) -> Result<()> {
     }
     undo::seal(&tx, &[])?;
     tx.commit().context("delete_block: commit")?;
+    ask::refresh(conn, &[block_id]);
     Ok(())
 }
 
@@ -360,6 +367,7 @@ pub fn merge_blocks(
 
     let merged = repo::get_block(conn, primary_id)?
         .ok_or_else(|| anyhow::anyhow!("block {primary_id} not found"))?;
+    ask::refresh(conn, &touched);
     change_log::refresh_day_logged(conn, &merged.day, ChangeSource::User);
     Ok(MergeOutcome {
         merged,
@@ -457,6 +465,7 @@ pub fn split_block(conn: &Connection, block_id: i64, first_minutes: u32) -> Resu
         second: repo::get_block(conn, second_id)?
             .ok_or_else(|| anyhow::anyhow!("block {second_id} not found"))?,
     };
+    ask::refresh(conn, &[block_id, second_id]);
     change_log::refresh_day_logged(conn, &outcome.first.day, ChangeSource::User);
     Ok(outcome)
 }

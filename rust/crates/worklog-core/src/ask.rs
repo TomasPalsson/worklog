@@ -63,6 +63,26 @@ pub fn index_block(conn: &Connection, block_id: i64) -> Result<()> {
     Ok(())
 }
 
+/// Re-indexes each id that is still a block and drops the row of one that
+/// is gone. Warns, never fails: a stale search row must not undo a saved edit.
+pub fn refresh(conn: &Connection, ids: &[i64]) {
+    for &id in ids {
+        let alive = conn
+            .query_row("SELECT 1 FROM blocks WHERE id = ?1", [id], |_| Ok(()))
+            .is_ok();
+        let done = if alive {
+            index_block(conn, id)
+        } else {
+            conn.execute("DELETE FROM ask_index WHERE block_id = ?1", [id])
+                .map(drop)
+                .map_err(Into::into)
+        };
+        if let Err(err) = done {
+            tracing::warn!(block_id = id, error = %err, "ask: index refresh failed");
+        }
+    }
+}
+
 /// Indexes blocks that have no row yet and drops rows of blocks that are gone.
 pub fn sync(conn: &Connection) -> Result<()> {
     conn.execute(

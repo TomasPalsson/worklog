@@ -57,6 +57,45 @@ fn index_dump(conn: &Connection) -> Vec<(i64, String)> {
 }
 
 #[test]
+fn edits_reindex_so_search_never_returns_old_text() {
+    let conn = open_memory().unwrap();
+    let id = block(&conn, "2026-04-18", 9, None, "alpha work");
+    sync(&conn).unwrap();
+    // catches: description edit leaving the old text indexed
+    crate::block_service::set_description(&conn, id, "bravo work").unwrap();
+    assert!(ask(&conn, "alpha").is_empty());
+    assert_eq!(ask(&conn, "bravo").len(), 1);
+    // catches: ticket edit not re-indexed
+    crate::block_service::assign_ticket(&conn, id, Some("ZED-9")).unwrap();
+    assert_eq!(ask(&conn, "ZED-9").len(), 1);
+}
+
+#[test]
+fn delete_and_merge_drop_stale_index_rows() {
+    let conn = open_memory().unwrap();
+    let a = block(&conn, "2026-04-18", 9, None, "keeper");
+    let b = block(&conn, "2026-04-18", 10, None, "absorbed words");
+    let c = block(&conn, "2026-04-18", 12, None, "deleted words");
+    sync(&conn).unwrap();
+    // catches: merge leaving the absorbed block's row behind
+    crate::block_service::merge_blocks(&conn, a, &[b]).unwrap();
+    assert!(ask(&conn, "absorbed").is_empty());
+    // catches: delete leaving the row behind
+    crate::block_service::delete_block(&conn, c).unwrap();
+    assert!(index_dump(&conn).iter().all(|(id, _)| *id != c && *id != b));
+}
+
+#[test]
+fn split_indexes_the_new_tail() {
+    let conn = open_memory().unwrap();
+    let id = block(&conn, "2026-04-18", 9, None, "tailword");
+    sync(&conn).unwrap();
+    // catches: split not indexing the tail block
+    crate::block_service::split_block(&conn, id, 20).unwrap();
+    assert_eq!(ask(&conn, "tailword").len(), 2);
+}
+
+#[test]
 fn returns_five_newest_first_with_date_time_and_ticket() {
     let conn = open_memory().unwrap();
     // Six matches on six days: a missing LIMIT returns 6; ordering by id or
