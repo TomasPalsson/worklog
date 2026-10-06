@@ -55,6 +55,9 @@
 //! * `POST /undo`                        — undo the last block change → `UndoOutcome`
 //! * `GET  /ask?q=`                      — newest blocks matching a query (max 5)
 //! * `GET  /ask/stopped?repo=`           — recent prompts and files for a repo
+//! * `POST /standup/draft`               — { "previous"?: StandupDraft } draft (or reword) today's standup → `StandupDraft`
+//! * `POST /standup/post`                — { "text" } reply in today's Daily thread → `PostOutcome`
+//! * `GET  /nudges`                      — footer nudges → `Vec<Nudge>`
 //!
 //! Unix-socket file perms default to `0666` so the containerised UI can
 //! connect across Docker Desktop's VM (same user, same host — the data
@@ -90,6 +93,7 @@ use crate::block_digest;
 use crate::browser_ingest;
 use crate::change_log;
 use crate::collectors::{jira, tempo};
+use crate::daily_helpers_contract::SLACK_DAILY_CHANNEL_KEY;
 use crate::deild_contract;
 use crate::digest_contract::{BlockDigest, DAY_COMPRESSED};
 use crate::elsewhere;
@@ -277,6 +281,9 @@ pub fn router(state: Shared) -> Router {
         .route("/undo", post(crate::daemon_undo::post_undo))
         .route("/ask", get(crate::daemon_ask::get_ask))
         .route("/ask/stopped", get(crate::daemon_ask::get_stopped))
+        .route("/standup/draft", post(crate::daemon_standup::draft))
+        .route("/standup/post", post(crate::daemon_standup::post))
+        .route("/nudges", get(crate::daemon_nudges::get_nudges))
         .with_state(state)
 }
 
@@ -2014,6 +2021,9 @@ pub struct SettingsView {
     /// Mirrors `RUNNER_UP_RATIO_KEY` via envfile; defaults to
     /// `DEFAULT_RUNNER_UP_RATIO`.
     pub runner_up_ratio: f64,
+    /// Slack channel the standup is posted to. Mirrors
+    /// `SLACK_DAILY_CHANNEL_KEY` via envfile; empty when unset.
+    pub daily_channel: String,
 }
 
 /// Token-like keys whose value must never be serialised to the browser.
@@ -2068,6 +2078,7 @@ fn current_settings() -> Result<SettingsView> {
         work_hours: configured_work_hours_raw(),
         abstain_margin: rule.abstain_margin,
         runner_up_ratio: rule.runner_up_ratio,
+        daily_channel: crate::envfile::read(SLACK_DAILY_CHANNEL_KEY).unwrap_or_default(),
     })
 }
 
@@ -2178,6 +2189,9 @@ pub struct SettingsUpdate {
     /// Replace how many times higher than the runner-up the winner must
     /// be (`RATIO_RANGE`). `None` leaves it untouched.
     pub runner_up_ratio: Option<f64>,
+    /// Slack channel for the standup post. An empty string clears it.
+    /// `None` leaves it untouched.
+    pub daily_channel: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -2333,6 +2347,9 @@ async fn post_settings(
     }
     if let Some(v) = body.runner_up_ratio {
         crate::envfile::upsert(routing_contract::RUNNER_UP_RATIO_KEY, &v.to_string())?;
+    }
+    if let Some(channel) = &body.daily_channel {
+        crate::envfile::upsert(SLACK_DAILY_CHANNEL_KEY, channel.trim())?;
     }
 
     info!("settings updated");
@@ -3033,6 +3050,84 @@ mod tests {
         // catches: the search handler answering the stopped path
         let v = read_json(resp).await;
         assert_eq!(v, serde_json::json!({"prompts": [], "files": []}));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn standup_and_nudge_routes_are_registered_with_the_right_methods() {
+        let blank = router(state_with_block())
+            .oneshot(
+                Request::post("/standup/post")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"text":"  "}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // catches: route not registered (404) or wired to the draft handler
+        assert_eq!(blank.status(), StatusCode::BAD_REQUEST);
+        let bad_draft = router(state_with_block())
+            .oneshot(
+                Request::post("/standup/draft")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"previous":5}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // catches: draft route missing (404) or wired to a handler without the body
+        assert_eq!(bad_draft.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        for path in ["/standup/post", "/standup/draft"] {
+            let get = router(state_with_block())
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            // catches: a posting route registered as GET
+            assert_eq!(get.status(), StatusCode::METHOD_NOT_ALLOWED, "{path}");
+        }
+        let post = router(state_with_block())
+            .oneshot(Request::post("/nudges").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        // catches: /nudges missing (404) or registered as POST
+        assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn settings_daily_channel_is_reported_trimmed_persisted_and_clearable() {
+        let _g = prune_env_lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("WORKLOG_ENV_FILE", tmp.path().join(".env"));
+        // catches: field missing or default not empty
+        assert_eq!(current_settings().unwrap().daily_channel, "");
+        for (body, want) in [
+            // catches: untrimmed value stored
+            (r#"{"daily_channel":"  daily  "}"#, Some("daily")),
+            // catches: an absent field clearing the channel
+            (r#"{"timezone":"UTC"}"#, Some("daily")),
+            // catches: empty string stored instead of clearing
+            (r#"{"daily_channel":""}"#, None),
+        ] {
+            let resp = router(state_with_block())
+                .oneshot(
+                    Request::post("/settings")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "{body}");
+            assert_eq!(
+                crate::envfile::read(SLACK_DAILY_CHANNEL_KEY).as_deref(),
+                want,
+                "{body}"
+            );
+            assert_eq!(
+                current_settings().unwrap().daily_channel,
+                want.unwrap_or_default()
+            );
+        }
+        std::env::remove_var("WORKLOG_ENV_FILE");
     }
 
     // ─────────────────── v0.6 read endpoints ───────────────────
