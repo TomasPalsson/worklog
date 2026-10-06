@@ -6084,3 +6084,19 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
 .ticket-line-error { font-size: 12px; line-height: 1.4; color: var(--terracotta-ink); overflow-wrap: anywhere; }
 .ticket-line-error button { padding: 0; border: 0; background: none; color: inherit; font: inherit; text-decoration: underline; cursor: pointer; }
 .ticket-line-error button:focus-visible { outline: none; box-shadow: var(--ring); border-radius: 2px; }
+
+/* ── verdict: settings control (T010) ── */
+.settings-body.verdict-lead { flex-shrink: 0; overflow: visible; padding-bottom: 0; }
+.verdict-lead .settings-section { border-bottom: 1px solid var(--border); }
+.verdict-state-row { display: flex; align-items: center; gap: 12px; margin: 0 0 12px; }
+.verdict-state { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 12px; line-height: 1.5; color: var(--fg-muted); }
+.verdict-state::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--fg-subtle); }
+.verdict-state[data-state="starting"]::before { background: var(--slate); }
+.verdict-state[data-state="running"]::before { background: var(--sage); }
+.verdict-state[data-state="not_answering"]::before, .verdict-state[data-state="needs_uv"]::before { background: var(--amber); }
+.verdict-state[data-state="stopped"]::before { background: var(--terracotta); }
+.verdict-state[data-state="running"] { color: var(--sage-ink); }
+.verdict-state[data-state="not_answering"], .verdict-state[data-state="needs_uv"] { color: var(--amber-ink); }
+.verdict-state[data-state="stopped"] { color: var(--terracotta-ink); }
+.verdict-state code { font-family: var(--font-mono); font-size: 11px; background: var(--bg-sunk); padding: 1px 4px; border-radius: var(--radius-sm); }
+.verdict-unknown { color: var(--amber-ink); }

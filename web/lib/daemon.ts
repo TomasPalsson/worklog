@@ -184,6 +184,7 @@ export async function estimateBlock(blockId: number): Promise<{
 // ───────────────────── reads (v0.6) ─────────────────────
 
 import type { ChangeFeed, Deild } from "./deildir";
+import type { VerdictState, VerdictStatus } from "./verdict_contract";
 import type {
   BillingCustomer,
   BillingFolderMap,
@@ -399,6 +400,21 @@ export async function saveSettings(
   update: SettingsUpdate,
 ): Promise<SettingsSaveResponse> {
   return call<SettingsSaveResponse>("POST", "/settings", update);
+}
+
+// ───────────────────────── Verdict ─────────────────────────
+
+/** Supervisor state plus the day's unchecked count and last scorecard line. */
+export async function verdictStatus(day: string): Promise<VerdictStatus> {
+  return call<VerdictStatus>("GET", `/verdict/status?day=${encodeURIComponent(day)}`);
+}
+
+export async function setVerdictEnabled(on: boolean): Promise<VerdictState> {
+  return call<VerdictState>("POST", "/verdict/enabled", { on });
+}
+
+export async function retryVerdict(): Promise<VerdictState> {
+  return call<VerdictState>("POST", "/verdict/retry");
 }
 
 // ───────────────────── browser + Slack routing ─────────────────────
