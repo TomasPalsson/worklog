@@ -16,15 +16,18 @@ use crate::billing_registry::Registry;
 use crate::change_log;
 use crate::deild_contract::ChangeSource;
 use crate::routing_contract::{
-    Classifier, Guess, LabelOrigin, LabelRequest, RouteRule, RoutedEvent, Rule, RuleKind,
-    IGNORE_FOLDER, SOURCE_FIREFOX, SOURCE_SLACK,
+    Classifier, LabelOrigin, LabelRequest, RouteRule, RoutedEvent, Rule, RuleKind, IGNORE_FOLDER,
+    SOURCE_FIREFOX, SOURCE_SLACK,
 };
 #[path = "routing_context.rs"]
 pub(crate) mod context;
 #[path = "routing_rows.rs"]
 mod rows;
+use crate::routing_shortlist::{examples_for_options, shortlist};
+pub use rows::Answer;
+pub(crate) use rows::EventRow;
 pub(crate) use rows::{events_in_window, fetch_event, is_hidden, narrowed_options, to_routed};
-use rows::{row_from, EventRow, EVENT_COLUMNS}; // shared with routing_dismiss.rs / routing_absorb.rs
+use rows::{record_answer, record_fix, row_from, EVENT_COLUMNS}; // shared with routing_dismiss.rs / routing_absorb.rs
 
 /// Automatically-resolved events: `(id, folder, origin)`, origin `Rule`/`Link`/`Context`.
 type RuleHits = Vec<(i64, String, LabelOrigin)>;
@@ -35,6 +38,8 @@ pub struct Pending {
     pub event: RoutedEvent,
     pub options: Vec<String>,
     pub state: Value,
+    /// Past Owner fixes shown to the model per option; never decides on their own.
+    pub examples: BTreeMap<String, Vec<String>>,
 }
 
 /// Counts from one `route_day` pass.
@@ -156,9 +161,9 @@ pub fn load_pending(conn: &Connection, day: NaiveDate) -> Result<(RuleHits, Vec<
             rule_hits.push((row.id, folder, LabelOrigin::Link));
             continue;
         }
-        let options = narrowed_options(&registry, &row, &all_options);
         if row.source == SOURCE_SLACK {
-            if let Some(folder) = context::context_hit(&row.started_at, &options, &ctx_events) {
+            let narrowed = narrowed_options(&registry, &row, &all_options);
+            if let Some(folder) = context::context_hit(&row.started_at, &narrowed, &ctx_events) {
                 rule_hits.push((row.id, folder, LabelOrigin::Context));
                 continue;
             }
@@ -169,11 +174,13 @@ pub fn load_pending(conn: &Connection, day: NaiveDate) -> Result<(RuleHits, Vec<
             "details": row.details,
             "container": row.container,
         });
-        let event = to_routed(row);
+        let options = shortlist(conn, &row, day)?;
+        let examples = examples_for_options(conn, &options)?;
         pending.push(Pending {
-            event,
+            event: to_routed(row),
             options,
             state,
+            examples,
         });
     }
     Ok((rule_hits, pending))
@@ -182,42 +189,30 @@ pub fn load_pending(conn: &Connection, day: NaiveDate) -> Result<(RuleHits, Vec<
 /// Ask the classifier for each pending event; keep answers whose order check agreed, whose top names one of the event's own
 /// options and clear both the abstain margin and the runner-up ratio (spec 004 FR-01/FR-02),
 /// never a single raw-confidence threshold. No connection arg — the slow model call must never hold the sqlite lock.
-pub fn decide(
-    pending: &[Pending],
-    classifier: &dyn Classifier,
-    rule: RouteRule,
-) -> Vec<(i64, Guess)> {
+pub fn decide(pending: &[Pending], classifier: &dyn Classifier, rule: RouteRule) -> Vec<Answer> {
     pending
         .iter()
         .filter_map(|p| {
             let ranking = classifier
-                .classify(&p.state, &p.options, &BTreeMap::new())
+                .classify(&p.state, &p.options, &p.examples)
                 .ok()
                 .flatten()?;
-            let top = ranking.ranking.first()?;
-            let runner_up = ranking.ranking.get(1).map_or(0.0, |o| o.probability);
-            let accepted = ranking.agreed
-                && p.options.contains(&top.id)
-                && top.probability >= ranking.abstain * rule.abstain_margin
-                && top.probability >= runner_up * rule.runner_up_ratio;
-            accepted.then(|| {
-                let guess = Guess {
-                    folder: top.id.clone(),
-                    confidence: top.probability,
-                    runner_up,
-                    abstain: ranking.abstain,
-                };
-                (p.event.id, guess)
+            Some(Answer {
+                id: p.event.id,
+                state: p.state.clone(),
+                options: p.options.clone(),
+                guess: rows::accept(&ranking, &p.options, rule),
+                ranking,
             })
         })
         .collect()
 }
 
-/// Persist rule hits (each with its own origin) and accepted guesses.
+/// Persist rule hits (each with its own origin), every answer's ranking and decision-log row, and the accepted guesses.
 pub fn commit_labels(
     conn: &Connection,
     rule_hits: &[(i64, String, LabelOrigin)],
-    guesses: &[(i64, Guess)],
+    answers: &[Answer],
 ) -> Result<RouteStats> {
     for (id, folder, origin) in rule_hits {
         if folder == IGNORE_FOLDER {
@@ -226,18 +221,23 @@ pub fn commit_labels(
             set_label(conn, *id, folder, *origin, None)?;
         }
     }
-    for (id, guess) in guesses {
-        set_label(
-            conn,
-            *id,
-            &guess.folder,
-            LabelOrigin::Guess,
-            Some(guess.confidence),
-        )?;
+    let mut guesses_applied = 0;
+    for answer in answers {
+        record_answer(conn, answer)?;
+        if let Some(guess) = &answer.guess {
+            set_label(
+                conn,
+                answer.id,
+                &guess.folder,
+                LabelOrigin::Guess,
+                Some(guess.confidence),
+            )?;
+            guesses_applied += 1;
+        }
     }
     Ok(RouteStats {
         rules_applied: rule_hits.len(),
-        guesses_applied: guesses.len(),
+        guesses_applied,
     })
 }
 
@@ -249,8 +249,8 @@ pub fn route_day(
     rule: RouteRule,
 ) -> Result<RouteStats> {
     let (rule_hits, pending) = load_pending(conn, day)?;
-    let guesses = decide(&pending, classifier, rule);
-    let stats = commit_labels(conn, &rule_hits, &guesses)?;
+    let answers = decide(&pending, classifier, rule);
+    let stats = commit_labels(conn, &rule_hits, &answers)?;
     // One batch per run (D-07); a refresh failure must not fail the route.
     let day_iso = day.to_string();
     change_log::refresh_day_logged(conn, &day_iso, ChangeSource::Verdict);
@@ -349,6 +349,14 @@ pub fn label_event(conn: &Connection, id: i64, req: &LabelRequest) -> Result<Rou
         .transpose()?;
 
     set_label(conn, id, folder, LabelOrigin::Fix, None)?;
+    record_fix(
+        conn,
+        id,
+        row.project_path
+            .as_deref()
+            .and_then(crate::billing::work_folder_for_path),
+        folder,
+    )?;
 
     if let Some((kind, pattern)) = rule {
         upsert_rule(conn, kind, &pattern, folder)?;

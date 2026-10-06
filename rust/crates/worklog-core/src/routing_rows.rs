@@ -3,11 +3,16 @@
 //! routing.rs so that file stays at the contract-facing layer.
 
 use anyhow::{Context, Result};
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
+use serde_json::Value;
 
 use crate::billing_registry::Registry;
-use crate::routing_contract::{LabelOrigin, RoutedEvent, SOURCE_FIREFOX, SOURCE_SLACK};
+use crate::routing_contract::{
+    Guess, LabelOrigin, RouteRule, RoutedEvent, SOURCE_FIREFOX, SOURCE_SLACK,
+};
+use crate::verdict_contract::{DecisionKind, DecisionRow, DecisionSource, Ranking};
+use crate::verdict_decisions;
 
 pub(crate) const EVENT_COLUMNS: &str =
     "id, source, started_at, title, details, container, project_path, label_origin, label_confidence";
@@ -54,6 +59,82 @@ pub(crate) fn to_routed(row: EventRow) -> RoutedEvent {
         label_origin: row.label_origin.as_deref().and_then(LabelOrigin::parse),
         label_confidence: row.label_confidence,
     }
+}
+
+/// Verdict's answer for one pending event; `guess` is set only when it cleared the filing rule.
+#[derive(Debug, Clone)]
+pub struct Answer {
+    pub id: i64,
+    pub state: Value,
+    pub options: Vec<String>,
+    pub ranking: Ranking,
+    pub guess: Option<Guess>,
+}
+
+/// FR-09a: the top choice is an offered option, the order check agreed, and the top score clears both ratios.
+pub(crate) fn accept(ranking: &Ranking, options: &[String], rule: RouteRule) -> Option<Guess> {
+    let top = ranking.ranking.first()?;
+    let runner_up = ranking.ranking.get(1).map_or(0.0, |o| o.probability);
+    let accepted = ranking.agreed
+        && options.contains(&top.id)
+        && top.probability >= ranking.abstain * rule.abstain_margin
+        && top.probability >= runner_up * rule.runner_up_ratio;
+    accepted.then(|| Guess {
+        folder: top.id.clone(),
+        confidence: top.probability,
+        runner_up,
+        abstain: ranking.abstain,
+    })
+}
+
+fn log_decision(conn: &Connection, row: DecisionRow) -> Result<()> {
+    verdict_decisions::record(conn, &row).map(|_| ())
+}
+
+/// Keep the ranking on the event and in the decision log, filed or not (FR-07).
+pub(crate) fn record_answer(conn: &Connection, answer: &Answer) -> Result<()> {
+    conn.execute(
+        "UPDATE events SET verdict_ranking = ?1 WHERE id = ?2",
+        params![serde_json::to_string(&answer.ranking)?, answer.id],
+    )
+    .context("storing event ranking")?;
+    log_decision(
+        conn,
+        DecisionRow {
+            kind: DecisionKind::Project,
+            source: DecisionSource::Verdict,
+            subject: answer.id.to_string(),
+            state_json: answer.state.to_string(),
+            options: answer.options.clone(),
+            ranking: Some(answer.ranking.clone()),
+            chosen: answer.guess.as_ref().map(|g| g.folder.clone()),
+            previous: None,
+            decided_at: Utc::now().to_rfc3339(),
+        },
+    )
+}
+
+/// Log an Owner correction next to the folder it replaced (FR-08).
+pub(crate) fn record_fix(
+    conn: &Connection,
+    id: i64,
+    previous: Option<String>,
+    folder: &str,
+) -> Result<()> {
+    log_decision(
+        conn,
+        DecisionRow {
+            kind: DecisionKind::Project,
+            source: DecisionSource::Owner,
+            subject: id.to_string(),
+            state_json: "{}".into(),
+            options: Vec::new(),
+            ranking: None,
+            chosen: Some(folder.to_owned()),
+            previous,
+            decided_at: Utc::now().to_rfc3339(),
+        },
+    )
 }
 
 /// Whether `origin` marks an event hidden from the default routed/inferred

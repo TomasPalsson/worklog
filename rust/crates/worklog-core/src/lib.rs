@@ -62,6 +62,7 @@ pub mod routing;
 pub mod routing_absorb;
 pub mod routing_contract;
 pub mod routing_dismiss;
+mod routing_shortlist;
 pub mod schedule;
 pub mod scrub;
 mod scrub_assignment;

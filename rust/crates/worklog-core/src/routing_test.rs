@@ -4,7 +4,9 @@ use crate::db::open_memory;
 use crate::deild_contract::ChangeField;
 use crate::models::Event;
 use crate::repo;
-use crate::verdict_contract::{RankedOption, Ranking};
+use crate::routing_contract::Guess;
+use crate::verdict_contract::{DecisionKind, DecisionSource, RankedOption, Ranking};
+use crate::verdict_decisions;
 
 fn pin(conn: &Connection, folder: &str, customer: Option<&str>) {
     upsert_folder(
@@ -156,7 +158,20 @@ fn pending_with_options(options: Vec<&str>) -> Pending {
         },
         options: options.into_iter().map(str::to_owned).collect(),
         state: serde_json::json!({}),
+        examples: BTreeMap::new(),
     }
+}
+
+/// The accepted guesses of a `decide` pass.
+fn filed_by(
+    pending: &[Pending],
+    classifier: &dyn Classifier,
+    rule: RouteRule,
+) -> Vec<(i64, Guess)> {
+    decide(pending, classifier, rule)
+        .into_iter()
+        .filter_map(|a| a.guess.map(|g| (a.id, g)))
+        .collect()
 }
 
 #[test]
@@ -216,7 +231,7 @@ fn files_when_winner_beats_abstain_and_runner_up() {
             SOURCE_FIREFOX,
             "e1",
             "2026-04-20T09:00:00+00:00",
-            "New site",
+            "aws-cert New site",
         ),
     )
     .unwrap();
@@ -254,7 +269,7 @@ fn unsorted_when_winner_ties_abstain() {
         runner_up: 0.054,
         abstain: 0.070,
     };
-    let guesses = decide(&items, &model, default_rule());
+    let guesses = filed_by(&items, &model, default_rule());
     assert!(
         guesses.is_empty(),
         "winner must clear the abstain score by the margin, not just tie it"
@@ -279,7 +294,7 @@ fn unsorted_when_runner_up_too_close() {
         runner_up: 0.19,
         abstain: 0.01,
     };
-    let guesses = decide(&items, &model, rule);
+    let guesses = filed_by(&items, &model, rule);
     assert!(
         guesses.is_empty(),
         "winner clears the abstain score but not the runner-up ratio"
@@ -479,7 +494,7 @@ fn ranked(top: f64, second: Option<f64>, abstain: f64, agreed: bool) -> Ranking 
 }
 
 fn filed(ranking: Ranking, rule: RouteRule) -> Vec<(i64, Guess)> {
-    decide(
+    filed_by(
         &[pending_with_options(vec!["aws-cert"])],
         &Fixed(ranking),
         rule,
@@ -504,7 +519,7 @@ fn unsorted_when_order_check_disagrees() {
         runner_up: 0.1,
         abstain: 0.05,
     });
-    assert!(decide(&items, &model, default_rule()).is_empty());
+    assert!(filed_by(&items, &model, default_rule()).is_empty());
 }
 
 // Exactly at the abstain margin files (0.5 >= 0.25 x 2.0); catches `>`.
@@ -588,7 +603,7 @@ fn unsorted_when_choice_not_an_option() {
         runner_up: 0.01,
         abstain: 0.01,
     };
-    let guesses = decide(&items, &model, default_rule());
+    let guesses = filed_by(&items, &model, default_rule());
     assert!(
         guesses.is_empty(),
         "a folder the helper names outside the options list must never be filed"
@@ -716,15 +731,18 @@ fn always_rule_relabels_previously_guessed_events() {
     commit_labels(
         &conn,
         &[],
-        &[(
-            e2,
-            Guess {
+        &[Answer {
+            id: e2,
+            state: serde_json::json!({}),
+            options: vec!["other".into()],
+            ranking: ranking_for("other", 0.95, 0.0),
+            guess: Some(Guess {
                 folder: "other".into(),
                 confidence: 0.95,
                 runner_up: 0.0,
                 abstain: 0.0,
-            },
-        )],
+            }),
+        }],
     )
     .unwrap();
 
@@ -761,6 +779,7 @@ fn decide_drops_guess_outside_narrowed_options() {
         event,
         options: vec!["sjukra-portal".into()],
         state: serde_json::json!({}),
+        examples: BTreeMap::new(),
     }];
     // Confidence clears the threshold, but the folder isn't one of this
     // event's narrowed options — B10 requires the guess be dropped, not
@@ -771,7 +790,7 @@ fn decide_drops_guess_outside_narrowed_options() {
         runner_up: 0.0,
         abstain: 0.0,
     };
-    let guesses = decide(&pending, &model, rule(0.9));
+    let guesses = filed_by(&pending, &model, rule(0.9));
     assert!(
         guesses.is_empty(),
         "a guess naming a folder outside the narrowed options must be dropped"
@@ -1191,4 +1210,168 @@ fn route_day_moving_a_block_customer_is_logged_as_verdict() {
     assert_eq!(changes[0].field, ChangeField::Customer);
     assert_eq!(changes[0].source, ChangeSource::Verdict);
     assert_eq!(changes[0].new.as_deref(), Some("APRÓ 100%"));
+}
+
+fn loose_event(conn: &Connection, sid: &str, title: &str) -> i64 {
+    repo::upsert_event(
+        conn,
+        &Event::minimal(SOURCE_SLACK, sid, "2026-04-20T09:00:00+00:00", title),
+    )
+    .unwrap()
+}
+
+fn apr20() -> NaiveDate {
+    NaiveDate::from_ymd_opt(2026, 4, 20).unwrap()
+}
+
+#[test]
+fn load_pending_offers_the_shortlist_not_every_project() {
+    let conn = open_memory().unwrap();
+    for i in 0..30 {
+        pin(&conn, &format!("zq-x{i:02}"), None);
+    }
+    loose_event(&conn, "e1", "zq-x07 deploy");
+    let (_, pending) = load_pending(&conn, apr20()).unwrap();
+    // Catches options = every project key (30).
+    assert_eq!(pending[0].options, vec!["zq-x07".to_string()]);
+}
+
+#[test]
+fn load_pending_attaches_past_fixes_as_examples() {
+    let conn = open_memory().unwrap();
+    pin(&conn, "zq-a", None);
+    let old = loose_event(&conn, "old", "Standup notes");
+    fix(&conn, old, "zq-a");
+    loose_event(&conn, "new", "zq-a again");
+    let (_, pending) = load_pending(&conn, apr20()).unwrap();
+    // Catches an empty examples map.
+    assert_eq!(
+        pending[0].examples["zq-a"],
+        vec!["Standup notes".to_string()]
+    );
+}
+
+struct Records(std::cell::RefCell<Vec<BTreeMap<String, Vec<String>>>>);
+
+impl Classifier for Records {
+    fn classify(
+        &self,
+        _state: &Value,
+        _options: &[String],
+        examples: &BTreeMap<String, Vec<String>>,
+    ) -> Result<Option<Ranking>> {
+        self.0.borrow_mut().push(examples.clone());
+        Ok(None)
+    }
+}
+
+#[test]
+fn decide_hands_the_events_examples_to_the_classifier() {
+    let mut p = pending_with_options(vec!["aws-cert"]);
+    p.examples
+        .insert("aws-cert".into(), vec!["a past fix".into()]);
+    let model = Records(Default::default());
+    let answers = decide(&[p], &model, default_rule());
+    // Catches passing BTreeMap::new().
+    assert_eq!(
+        model.0.borrow()[0]["aws-cert"],
+        vec!["a past fix".to_string()]
+    );
+    // No answer from the helper: nothing to log or store.
+    assert!(answers.is_empty());
+}
+
+fn ranking_for(folder: &str, top: f64, abstain: f64) -> Ranking {
+    Ranking {
+        ranking: vec![
+            RankedOption {
+                id: folder.into(),
+                probability: top,
+            },
+            RankedOption {
+                id: "other".into(),
+                probability: 0.01,
+            },
+        ],
+        abstain,
+        agreed: true,
+    }
+}
+
+fn stored_ranking(conn: &Connection, id: i64) -> Option<String> {
+    conn.query_row(
+        "SELECT verdict_ranking FROM events WHERE id = ?1",
+        params![id],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+#[test]
+fn an_unfiled_guess_is_still_stored_and_logged() {
+    let conn = open_memory().unwrap();
+    pin(&conn, "zq-b", None);
+    let id = loose_event(&conn, "e1", "zq-b thing");
+    let ranking = ranking_for("zq-b", 0.10, 0.50); // far below abstain: not filed
+    route_day(&conn, apr20(), &Fixed(ranking.clone()), default_rule()).unwrap();
+
+    assert_eq!(fetch_event(&conn, id).unwrap().unwrap().label_origin, None);
+    let stored: Ranking = serde_json::from_str(&stored_ranking(&conn, id).unwrap()).unwrap();
+    // Catches storing the ranking only for filed events.
+    assert_eq!(stored, ranking);
+    let row = verdict_decisions::latest_for(&conn, DecisionKind::Project, &id.to_string())
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.source, DecisionSource::Verdict);
+    assert_eq!(row.chosen, None);
+    assert_eq!(row.options, vec!["zq-b".to_string()]);
+    assert_eq!(row.ranking, Some(ranking));
+    assert!(chrono::DateTime::parse_from_rfc3339(&row.decided_at).is_ok());
+    assert!(row.state_json.contains("zq-b thing"));
+}
+
+#[test]
+fn a_filed_guess_logs_what_was_applied() {
+    let conn = open_memory().unwrap();
+    pin(&conn, "zq-c", None);
+    let id = loose_event(&conn, "e1", "zq-c thing");
+    let ranking = ranking_for("zq-c", 0.90, 0.10);
+    let stats = route_day(&conn, apr20(), &Fixed(ranking), default_rule()).unwrap();
+    assert_eq!(stats.guesses_applied, 1);
+    let ev = fetch_event(&conn, id).unwrap().unwrap();
+    assert_eq!(ev.label_origin.as_deref(), Some("guess"));
+    assert!(stored_ranking(&conn, id).is_some());
+    let row = verdict_decisions::latest_for(&conn, DecisionKind::Project, &id.to_string())
+        .unwrap()
+        .unwrap();
+    // Catches logging chosen = None for every row.
+    assert_eq!(row.chosen.as_deref(), Some("zq-c"));
+}
+
+#[test]
+fn an_owner_fix_is_logged_with_the_value_it_replaced() {
+    let conn = open_memory().unwrap();
+    pin(&conn, "zq-d", None);
+    pin(&conn, "zq-e", None);
+    let id = loose_event(&conn, "e1", "something");
+    let subject = id.to_string();
+    let latest = || {
+        verdict_decisions::latest_for(&conn, DecisionKind::Project, &subject)
+            .unwrap()
+            .unwrap()
+    };
+
+    fix(&conn, id, "zq-d");
+    let first = latest();
+    assert_eq!(first.source, DecisionSource::Owner);
+    assert_eq!(first.chosen.as_deref(), Some("zq-d"));
+    // From unsorted there is nothing before.
+    assert_eq!(first.previous, None);
+
+    fix(&conn, id, "zq-e");
+    let second = latest();
+    // Catches previous = the new folder, or never read.
+    assert_eq!(second.previous.as_deref(), Some("zq-d"));
+    assert_eq!(second.chosen.as_deref(), Some("zq-e"));
+    assert_eq!(second.ranking, None);
 }
