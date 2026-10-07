@@ -54,6 +54,8 @@ struct Fields {
     duedate: Option<String>,
     labels: Option<Vec<String>>,
     parent: Option<Parent>,
+    #[serde(default)]
+    description: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -143,7 +145,8 @@ pub fn fetch_open_tickets_with(
             ("maxResults", MAX_RESULTS.to_string()),
             (
                 "fields",
-                "summary,status,updated,project,issuetype,priority,duedate,labels,parent"
+                "summary,status,updated,project,issuetype,priority,duedate,labels,parent,\
+                 description"
                     .to_owned(),
             ),
         ];
@@ -172,6 +175,7 @@ pub fn fetch_open_tickets_with(
                     .parent
                     .and_then(|p| p.fields)
                     .and_then(|f| f.summary),
+                description: Some(adf_to_text(&issue.fields.description)).filter(|d| !d.is_empty()),
             };
             let ticket = JiraTicket {
                 key: issue.key,
@@ -1311,23 +1315,35 @@ mod tests {
             "status": {"name": "St", "statusCategory": {"key": "new"}},
             "issuetype": {"name": "Bug"}, "priority": {"name": "High"},
             "duedate": "2026-10-04", "labels": ["x", "y"],
-            "parent": {"key": "A-0", "fields": {"summary": "Epic one"}}}});
+            "parent": {"key": "A-0", "fields": {"summary": "Epic one"}},
+            "description": {"type": "doc", "content": [{"type": "paragraph",
+                "content": [{"type": "text", "text": "Why it matters"}]}]}}});
         server.mock(|when, then| {
             when.method(GET).path("/rest/api/3/search/jql").query_param(
                 "fields",
-                "summary,status,updated,project,issuetype,priority,duedate,labels,parent",
+                "summary,status,updated,project,issuetype,priority,duedate,labels,parent,\
+                 description",
             );
             then.status(200)
                 .json_body(json!({"issues": [rich, issue("A-2", "new")]}));
         });
         let conn = open_memory().unwrap();
         fetch_open_tickets_with(&conn, &test_auth(&server), &http::client().unwrap()).unwrap();
-        let row = |key: &str| -> [Option<String>; 5] {
+        let row = |key: &str| -> [Option<String>; 6] {
             conn.query_row(
-                "SELECT issue_type, priority, due_date, labels, parent_summary
+                "SELECT issue_type, priority, due_date, labels, parent_summary, description
                    FROM jira_tickets WHERE key = ?1",
                 [key],
-                |r| Ok([r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?]),
+                |r| {
+                    Ok([
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ])
+                },
             )
             .unwrap()
         };
@@ -1339,10 +1355,11 @@ mod tests {
                 s("High"),
                 s("2026-10-04"),
                 s(r#"["x","y"]"#),
-                s("Epic one")
+                s("Epic one"),
+                s("Why it matters")
             ]
         );
-        assert_eq!(row("A-2"), [None, None, None, None, None]);
+        assert_eq!(row("A-2"), [None, None, None, None, None, None]);
     }
 
     #[test]

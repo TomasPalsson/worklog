@@ -271,6 +271,7 @@ fn ensure_jira_tickets_details(conn: &Connection) -> Result<()> {
         "due_date",
         "labels",
         "parent_summary",
+        "description",
     ] {
         if !cols.iter().any(|c| c == name) {
             conn.execute(

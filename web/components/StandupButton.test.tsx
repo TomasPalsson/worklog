@@ -45,10 +45,8 @@ describe("StandupButton", () => {
     expect(draftStandup).toHaveBeenCalledTimes(1);
     // catches: auto-posting the draft
     expect(postStandup).toHaveBeenCalledTimes(0);
-    // catches: preview not numbered per the team's three questions
-    expect(box.value.startsWith("1. What are you working on today?\n• GENAI-12 tenant stack\n")).toBe(true);
-    expect(box.value).toContain("2. What is next/coming up?\n• None\n");
-    expect(box.value.endsWith("3. Are there any blockers we need to clear?\n• None\n")).toBe(true);
+    // catches: repeating the questions, or dropping an empty answer's line
+    expect(box.value).toBe("1. GENAI-12 tenant stack\n2. Nothing.\n3. Nothing.\n");
   });
 
   it("posts the edited text, not the original draft", async () => {

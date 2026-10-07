@@ -314,6 +314,33 @@ fn open_tickets_exclude_done_and_dead_statuses() {
 }
 
 #[test]
+fn ticket_description_reaches_the_model_on_one_line_scrubbed_and_cut() {
+    let conn = db::open_memory().unwrap();
+    ticket(&conn, "T-1", "errors", "To Do", StatusCategory::New);
+    let description = format!(
+        "Users see\n\ntimeouts. key {} {}END",
+        api_key(),
+        "d".repeat(DESCRIPTION_CHARS)
+    );
+    repo::set_ticket_details(
+        &conn,
+        "T-1",
+        &repo::TicketDetails {
+            description: Some(description),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let input = run(&conn);
+    // catches: description dropped, or its newlines breaking the bullet list
+    assert!(input.contains("T-1 errors [To Do]: Users see timeouts. key"));
+    // catches: a secret in the description reaching the model
+    assert!(!input.contains(&api_key()));
+    // catches: no cut on a long description
+    assert!(!input.contains("END"));
+}
+
+#[test]
 fn regenerate_sends_previous_draft_and_a_rewording_instruction() {
     let conn = db::open_memory().unwrap();
     let previous = StandupDraft {
