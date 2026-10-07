@@ -22,6 +22,12 @@ dies with `Cannot find module './vendor-chunks/*.js'`. Stop the dev
 server before a build, or recover with
 `pkill -f "next dev"; rm -rf web/.next` and restart it.
 
+"Merge and install" = `scripts/install-local.sh <PR>` (or no arg to
+install current `origin/main`). It does the whole local install —
+build, binary swap, daemon restart, hook/skill, web deploy, health
+check. Run it as-is; don't add backups, version checks or re-runs of
+the test suite.
+
 Release smoke (no network, no tag push):
 
 ```bash
