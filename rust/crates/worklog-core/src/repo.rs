@@ -302,9 +302,10 @@ pub struct TicketDetails {
     pub due_date: Option<String>,
     pub labels: Vec<String>,
     pub parent_summary: Option<String>,
+    pub description: Option<String>,
 }
 
-/// Overwrites all five detail columns; `labels` is a JSON array, NULL when empty.
+/// Overwrites all six detail columns; `labels` is a JSON array, NULL when empty.
 pub fn set_ticket_details(conn: &Connection, key: &str, d: &TicketDetails) -> Result<()> {
     let labels = if d.labels.is_empty() {
         None
@@ -313,7 +314,8 @@ pub fn set_ticket_details(conn: &Connection, key: &str, d: &TicketDetails) -> Re
     };
     conn.execute(
         "UPDATE jira_tickets
-            SET issue_type = ?2, priority = ?3, due_date = ?4, labels = ?5, parent_summary = ?6
+            SET issue_type = ?2, priority = ?3, due_date = ?4, labels = ?5, parent_summary = ?6,
+                description = ?7
           WHERE key = ?1",
         params![
             key,
@@ -321,7 +323,8 @@ pub fn set_ticket_details(conn: &Connection, key: &str, d: &TicketDetails) -> Re
             d.priority,
             d.due_date,
             labels,
-            d.parent_summary
+            d.parent_summary,
+            d.description
         ],
     )
     .context("set jira ticket details")?;

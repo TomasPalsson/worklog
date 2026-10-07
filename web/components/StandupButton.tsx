@@ -5,20 +5,11 @@ import { X } from "lucide-react";
 import { draftStandup, postStandup, standupChannelSet } from "@/lib/daemonStandup";
 import type { PostOutcome, StandupDraft } from "@/lib/daily_helpers_contract";
 
-const QUESTIONS = [
-  "What are you working on today?",
-  "What is next/coming up?",
-  "Are there any blockers we need to clear?",
-];
-
 /** Mirrors `StandupDraft::to_text` in the Rust contract. */
 function draftText(d: StandupDraft): string {
   return [d.today, d.next, d.blockers]
-    .map((bullets, i) => {
-      const lines = bullets.length ? bullets : ["None"];
-      return `${i + 1}. ${QUESTIONS[i]}\n${lines.map((b) => `• ${b}\n`).join("")}`;
-    })
-    .join("\n");
+    .map((answers, i) => `${i + 1}. ${answers.length ? answers.join(" ") : "Nothing."}\n`)
+    .join("");
 }
 
 function failure(o: PostOutcome): string | null {

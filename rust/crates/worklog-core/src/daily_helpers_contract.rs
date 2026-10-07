@@ -24,13 +24,6 @@ pub const TEMPO_READ_TIMEOUT_SECONDS: u64 = 10;
 /// FR-07, FR-10: `tempo_line_texts.match_status` for a line Tempo already holds.
 pub const ALREADY_IN_TEMPO: &str = "already_in_tempo";
 
-/// FR-18: the team's three questions, in order.
-pub const STANDUP_QUESTIONS: [&str; 3] = [
-    "What are you working on today?",
-    "What is next/coming up?",
-    "Are there any blockers we need to clear?",
-];
-
 /// FR-25: every Owner block change undo can reverse.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -89,24 +82,22 @@ pub struct StandupDraft {
 }
 
 impl StandupDraft {
-    /// The text the Owner edits and posts: each question numbered, its
-    /// bullets under it, "None" when a list is empty.
+    /// The text the Owner edits and posts: one numbered line per answer,
+    /// no question text (the team knows the questions), "Nothing." when
+    /// a list is empty.
     pub fn to_text(&self) -> String {
-        let answers = [&self.today, &self.next, &self.blockers];
-        let mut out = String::new();
-        for (n, (question, bullets)) in STANDUP_QUESTIONS.iter().zip(answers).enumerate() {
-            out.push_str(&format!("{}. {}\n", n + 1, question));
-            if bullets.is_empty() {
-                out.push_str("• None\n");
-            }
-            for b in bullets {
-                out.push_str(&format!("• {b}\n"));
-            }
-            if n < 2 {
-                out.push('\n');
-            }
-        }
-        out
+        [&self.today, &self.next, &self.blockers]
+            .iter()
+            .enumerate()
+            .map(|(n, answers)| {
+                let answer = if answers.is_empty() {
+                    "Nothing.".to_owned()
+                } else {
+                    answers.join(" ")
+                };
+                format!("{}. {answer}\n", n + 1)
+            })
+            .collect()
     }
 }
 
@@ -200,16 +191,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn standup_text_numbers_questions_and_fills_empty() {
+    fn standup_text_numbers_answers_without_questions() {
         let d = StandupDraft {
-            today: vec!["GENAI-12 tenant stack".into()],
+            today: vec![
+                "Digging into the tenant stack.".into(),
+                "Then a review.".into(),
+            ],
             next: vec![],
             blockers: vec![],
         };
-        let t = d.to_text();
-        assert!(t.starts_with("1. What are you working on today?\n• GENAI-12 tenant stack\n"));
-        assert!(t.contains("2. What is next/coming up?\n• None\n"));
-        assert!(t.ends_with("3. Are there any blockers we need to clear?\n• None\n"));
+        // catches: repeating the questions, or dropping an empty answer's line
+        assert_eq!(
+            d.to_text(),
+            "1. Digging into the tenant stack. Then a review.\n2. Nothing.\n3. Nothing.\n"
+        );
     }
 
     #[test]

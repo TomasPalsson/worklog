@@ -16,11 +16,22 @@ use crate::line_text::LINE_TEXT_MODEL;
 use crate::{repo, scrub, ticket_activity};
 
 const PROMPT_CHARS: usize = 300;
+const DESCRIPTION_CHARS: usize = 400;
 
-const SYSTEM_PROMPT: &str = "You write a developer's morning standup in English: short bullets, \
-no code, no secrets. Answer three questions: what they are working on today, what is next, and \
-any blockers. If yesterday had no recorded work, say so plainly in the first answer and draw it \
-from the open tickets only. Reply with JSON {\"today\": [..], \"next\": [..], \"blockers\": [..]}.";
+const SYSTEM_PROMPT: &str = "You write a developer's morning standup for the team's Slack thread, \
+in English. Sound like a person talking: casual, plain words, short. Never write ticket keys or \
+numbers (like ABC-123); say what the work is about instead, using the ticket summary and \
+description. No code, no secrets.\n\
+Answer three questions, each as one or two short sentences:\n\
+- today: what they are working on today.\n\
+- next: real upcoming work only, meaning open tickets in a to-do or in-progress status that \
+today's answer does not already cover. A ticket in Verification, review, QA or testing is \
+waiting on someone else: it is not upcoming work, so leave it out. If nothing is lined up, say \
+so plainly with a shrug emoji (for example \"Nothing lined up yet 🤷\"). That is a good answer; \
+never pad it.\n\
+- blockers: anything stopping them; if none, \"No blockers.\"\n\
+If yesterday had no recorded work, say so plainly in the first answer and draw it from the open \
+tickets only. Reply with JSON {\"today\": [..], \"next\": [..], \"blockers\": [..]}.";
 
 const REWORD_INSTRUCTION: &str =
     "Rewrite the previous draft below with different wording. Keep the facts.";
@@ -137,7 +148,7 @@ fn merged_prs(conn: &Connection, yesterday: NaiveDate, today: NaiveDate) -> Resu
 
 fn open_tickets(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
-        "SELECT key, summary, status FROM jira_tickets
+        "SELECT key, summary, status, description FROM jira_tickets
           WHERE external = 0 AND COALESCE(status_category, '') != 'done'
           ORDER BY updated DESC NULLS LAST, key",
     )?;
@@ -147,14 +158,25 @@ fn open_tickets(conn: &Connection) -> Result<Vec<String>> {
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows
         .into_iter()
-        .filter(|(_, _, status)| !ticket_activity::is_dead_status(status.as_deref()))
-        .map(|(key, summary, status)| {
-            scrub::scrub_secrets(&format!("{key} {summary} [{}]", status.unwrap_or_default()))
+        .filter(|(_, _, status, _)| !ticket_activity::is_dead_status(status.as_deref()))
+        .map(|(key, summary, status, description)| {
+            let line = format!("{key} {summary} [{}]", status.unwrap_or_default());
+            let Some(description) = description else {
+                return scrub::scrub_secrets(&line);
+            };
+            // One line so it stays inside its bullet; scrub before the cut, as for prompts.
+            let flat = description.split_whitespace().collect::<Vec<_>>().join(" ");
+            let about: String = scrub::scrub_secrets(&flat)
+                .chars()
+                .take(DESCRIPTION_CHARS)
+                .collect();
+            format!("{}: {about}", scrub::scrub_secrets(&line))
         })
         .collect())
 }
