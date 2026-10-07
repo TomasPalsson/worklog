@@ -38,6 +38,9 @@ bash tests/install/smoke.sh
   as a fixed offset (e.g. `-05:00`, `+01:00`, `UTC`). Default is UTC.
   Named zones (`America/New_York`) are not supported; DST observers
   update the env var when DST flips.
+- Folders on `personal.toml`'s `ignore` list are never stored —
+  `repo::upsert_event` drops events whose `project_path` matches
+  (`worklog tag ignore <glob>`).
 - Collectors MUST be idempotent: dedupe on `(source, source_id)` via
   `repo::upsert_event`.
 - Never print to stdout from `worklog hook-run` — it's wired to Claude

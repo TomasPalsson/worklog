@@ -2497,6 +2497,8 @@ async fn post_settings(
         let file = personal::ConfigFile {
             work: clean_globs(p.work),
             personal: clean_globs(p.personal),
+            // Settings doesn't edit the ignore list; keep it.
+            ignore: personal::read_file(&path).ignore,
         };
         personal::write_file(&path, &file)?;
         let stats = with_conn(state, move |c| personal::reclassify_blocks(c, None)).await?;

@@ -686,6 +686,9 @@ pub enum TagCmd {
     /// Add a path glob to the explicit work list — wins over the
     /// default rule and any matching personal pattern.
     Work { glob: String },
+    /// Add a path glob to the ignore list — events from matching folders
+    /// are never recorded. Existing events are not touched.
+    Ignore { glob: String },
     /// Re-evaluate the `is_personal` column on existing blocks against
     /// the current ruleset. Doesn't re-cluster.
     Reclassify {
@@ -933,6 +936,7 @@ pub fn run_with<W: Write>(
             TagCmd::List => cmd_tag_list(out, cli.json),
             TagCmd::Personal { glob } => cmd_tag_personal(glob, out, cli.json),
             TagCmd::Work { glob } => cmd_tag_work(glob, out, cli.json),
+            TagCmd::Ignore { glob } => append_pattern("ignore", glob, out, cli.json),
             TagCmd::Reclassify { day } => cmd_tag_reclassify(day, out, cli.json),
         },
         Cmd::Pin {
@@ -3208,6 +3212,7 @@ fn cmd_tag_list<W: Write>(out: &mut W, json: bool) -> Result<()> {
             "config_path": path,
             "work": file.work,
             "personal": file.personal,
+            "ignore": file.ignore,
             "default_rule": "any project_path under ~/Desktop/Work/** is work; everything else is personal",
         });
         writeln!(out, "{}", serde_json::to_string_pretty(&payload)?)?;
@@ -3218,7 +3223,7 @@ fn cmd_tag_list<W: Write>(out: &mut W, json: bool) -> Result<()> {
         out,
         "default: ~/Desktop/Work/** → work; everything else → personal"
     )?;
-    if file.work.is_empty() && file.personal.is_empty() {
+    if file.work.is_empty() && file.personal.is_empty() && file.ignore.is_empty() {
         writeln!(out, "(no custom patterns — using default rule only)")?;
         return Ok(());
     }
@@ -3231,6 +3236,12 @@ fn cmd_tag_list<W: Write>(out: &mut W, json: bool) -> Result<()> {
     if !file.personal.is_empty() {
         writeln!(out, "personal overrides:")?;
         for p in &file.personal {
+            writeln!(out, "  {p}")?;
+        }
+    }
+    if !file.ignore.is_empty() {
+        writeln!(out, "ignored (never recorded):")?;
+        for p in &file.ignore {
             writeln!(out, "  {p}")?;
         }
     }
@@ -3252,6 +3263,7 @@ fn append_pattern<W: Write>(kind: &str, glob: String, out: &mut W, json: bool) -
     let list = match kind {
         "personal" => &mut file.personal,
         "work" => &mut file.work,
+        "ignore" => &mut file.ignore,
         _ => unreachable!(),
     };
     if list.iter().any(|p| p == &glob) {

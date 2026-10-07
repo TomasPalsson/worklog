@@ -63,7 +63,8 @@ const UPSERT_EVENT_SQL: &str = "INSERT INTO events
                IS NOT COALESCE(events.tempo_worklog_id, excluded.tempo_worklog_id)
         OR events.raw_json IS NOT excluded.raw_json";
 
-/// Insert or update an event. Returns the event id.
+/// Insert or update an event. Returns the event id, or `0` when skipped
+/// because its `project_path` is on the personal.toml ignore list.
 ///
 /// Dedupe is enforced by the `UNIQUE(source, source_id)` constraint in
 /// `schema.sql`; on conflict we update the mutable columns in place.
@@ -73,6 +74,12 @@ const UPSERT_EVENT_SQL: &str = "INSERT INTO events
 /// before building the `RawRecord`, and re-running a text-level regex
 /// over serialized JSON risks corrupting its syntax.
 pub fn upsert_event(conn: &Connection, e: &Event) -> Result<i64> {
+    if e.project_path
+        .as_deref()
+        .is_some_and(crate::personal::is_ignored_path)
+    {
+        return Ok(0);
+    }
     let title = scrub::scrub_secrets(&e.title);
     let details = e.details.as_deref().map(scrub::scrub_secrets);
     conn.execute(

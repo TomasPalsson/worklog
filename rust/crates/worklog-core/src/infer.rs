@@ -176,12 +176,20 @@ pub(crate) fn attach_riding_event(block: &mut InferBlock, e: InferEvent) {
     block.jira_issue = unique_jira_issue(&block.events);
 }
 
-/// The one `jira_issue` shared by every event that carries one; `None`
-/// if there isn't exactly one. Shared by `finalize`, `build_sub_block`
-/// and `attach_riding_event` so a block's ticket is always computed the
-/// same way regardless of which pass last touched its events.
+/// The one `jira_issue` shared by every non-lifecycle event that carries
+/// one; `None` if there isn't exactly one. A lifecycle rider (R3) rides in
+/// from whatever repo was active, so it never votes on the ticket while
+/// the block has real events (mirrors `dominant_project_path`); a
+/// riders-only block still takes its riders' ticket. Shared by `finalize`,
+/// `build_sub_block` and `attach_riding_event` so a block's ticket is
+/// always computed the same way regardless of which pass last touched it.
 fn unique_jira_issue(events: &[InferEvent]) -> Option<String> {
-    let issues: HashSet<String> = events.iter().filter_map(|e| e.jira_issue.clone()).collect();
+    let all_riders = events.iter().all(crate::infer_lanes::is_lifecycle);
+    let issues: HashSet<String> = events
+        .iter()
+        .filter(|e| all_riders || !crate::infer_lanes::is_lifecycle(e))
+        .filter_map(|e| e.jira_issue.clone())
+        .collect();
     if issues.len() == 1 {
         issues.into_iter().next()
     } else {
@@ -1137,6 +1145,37 @@ mod tests {
         let blocks = build_blocks(vec![a, b]);
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].jira_issue.as_deref(), Some("PROJ-1"));
+    }
+
+    #[test]
+    fn lifecycle_rider_ticket_does_not_tag_a_ticketless_block() {
+        let mut events: Vec<InferEvent> = (0..6)
+            .map(|i| ev_project(10, i * 5, "claude", "/personal/repo"))
+            .collect();
+        let mut rider = ev_project(10, 12, "claude", "/work/other");
+        rider.title = Some("SessionEnd".into());
+        rider.jira_issue = Some("PROJ-1".into());
+        events.push(rider);
+        let blocks = build_blocks(events);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].jira_issue, None);
+    }
+
+    #[test]
+    fn riders_only_block_keeps_the_riders_ticket() {
+        let events: Vec<InferEvent> = ["SessionStart", "SessionEnd", "SessionEnd"]
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let mut e = ev_project(10, i as u32 * 5, "claude", "/work/x");
+                e.title = Some((*t).into());
+                e.jira_issue = Some("PROJ-1".into());
+                e
+            })
+            .collect();
+        // Riders-only runs don't form blocks via build_blocks (no lane
+        // votes), so exercise the shared ticket rule directly.
+        assert_eq!(unique_jira_issue(&events).as_deref(), Some("PROJ-1"));
     }
 
     #[test]
