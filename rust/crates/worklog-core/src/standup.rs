@@ -22,7 +22,9 @@ const SYSTEM_PROMPT: &str = "You write a developer's morning standup for the tea
 in English. Sound like a person talking: casual, plain words, short. Never write ticket keys or \
 numbers (like ABC-123); say what the work is about instead, using the ticket summary and \
 description. No code, no secrets.\n\
-Answer three questions, each as one or two short sentences:\n\
+Answer three questions, each as one or two short sentences. Start each answer with the verb, \
+like notes: \"Investigating the Code Interpreter errors.\", \"Working on the Vitinn infra.\" \
+Never open with \"Today I'm\", \"I'm\", \"Next up is\" or similar lead-ins.\n\
 - today: what they are working on today.\n\
 - next: real upcoming work only, meaning open tickets in a to-do or in-progress status that \
 today's answer does not already cover. A ticket in Verification, review, QA or testing is \
