@@ -10,7 +10,11 @@
 //! ```toml
 //! work     = ["~/Desktop/Work/**"]      # explicit work paths
 //! personal = ["~/Desktop/Work/sandbox"] # explicit personal paths (override default)
+//! ignore   = ["~/Desktop/Projects/worklog/**"] # never recorded
 //! ```
+//!
+//! `ignore` — events from these folders are never stored (checked in
+//! `repo::upsert_event`).
 //!
 //! Resolution order, first match wins:
 //!
@@ -40,6 +44,8 @@ pub struct ConfigFile {
     pub work: Vec<String>,
     #[serde(default)]
     pub personal: Vec<String>,
+    #[serde(default)]
+    pub ignore: Vec<String>,
 }
 
 /// Loaded classification rules. Cheap to clone; load once per infer pass.
@@ -168,6 +174,21 @@ fn path_starts_with(path: &str, prefix: &str) -> bool {
     }
     let prefix = prefix.trim_end_matches('/');
     path.starts_with(prefix) && path.as_bytes().get(prefix.len()).copied() == Some(b'/')
+}
+
+/// True when `path` matches an `ignore` pattern in the standard config.
+// ponytail: re-reads personal.toml per event; cache on mtime if collectors get slow.
+pub fn is_ignored_path(path: &str) -> bool {
+    match config_path() {
+        Some(cfg) => ignored_by(&read_file(&cfg).ignore, path),
+        None => false,
+    }
+}
+
+/// Pure seam for [`is_ignored_path`].
+pub fn ignored_by(patterns: &[String], path: &str) -> bool {
+    let path = expand_home(path);
+    patterns.iter().any(|pat| matches(pat, &path))
 }
 
 /// Standard config location: `<config_dir>/personal.toml`. Returns
@@ -408,5 +429,35 @@ mod tests {
         assert!(path_starts_with("/foo/bar", "/foo"));
         assert!(path_starts_with("/foo", "/foo"));
         assert!(!path_starts_with("/foobar", "/foo"));
+    }
+}
+
+#[cfg(test)]
+mod ignore_tests {
+    use super::ignored_by;
+
+    fn home() -> String {
+        dirs::home_dir().unwrap().to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn ignore_globs() {
+        let pats = vec!["~/Desktop/Projects/worklog/**".to_string()];
+        let h = home();
+        assert!(ignored_by(&pats, &format!("{h}/Desktop/Projects/worklog")));
+        assert!(ignored_by(
+            &pats,
+            &format!("{h}/Desktop/Projects/worklog/rust")
+        ));
+        assert!(ignored_by(
+            &pats,
+            &format!("{h}/Desktop/Projects/worklog/.claude/worktrees/x")
+        ));
+        assert!(ignored_by(&pats, "~/Desktop/Projects/worklog/rust"));
+        assert!(!ignored_by(
+            &pats,
+            &format!("{h}/Desktop/Projects/worklog-other")
+        ));
+        assert!(!ignored_by(&[], &format!("{h}/Desktop/Projects/worklog")));
     }
 }

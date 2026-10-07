@@ -170,7 +170,9 @@ pub fn handle(conn: &Connection, payload: &Value, now: DateTime<Utc>) -> Result<
         tempo_worklog_id: None,
         raw_json: raw_record(&event, payload),
     };
-    repo::upsert_event(conn, &ev)?;
+    if repo::upsert_event(conn, &ev)? == 0 {
+        return Ok(());
+    }
 
     sessions::open_session(conn, &session_id, now, cwd.as_deref())?;
     if let Some(reason) = close_reason(&event) {
