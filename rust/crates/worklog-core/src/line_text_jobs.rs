@@ -6,6 +6,7 @@
 
 use crate::clues_contract::BillingLineKey;
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::sync::Mutex;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,15 +19,20 @@ pub enum JobState {
 /// ponytail: a single mutex over one `HashMap` — fine at this daemon's
 /// single-user, handful-of-regenerates-a-day scale; shard by key if
 /// contention ever shows up.
-#[derive(Default)]
-pub struct JobTracker(Mutex<HashMap<BillingLineKey, JobState>>);
+pub struct JobTracker<K = BillingLineKey>(Mutex<HashMap<K, JobState>>);
 
-impl JobTracker {
+impl<K> Default for JobTracker<K> {
+    fn default() -> Self {
+        Self(Mutex::default())
+    }
+}
+
+impl<K: Eq + Hash + Clone> JobTracker<K> {
     /// Marks `key` as `Running` and returns `true`, unless a job for it
     /// is already running — then returns `false` without changing
     /// anything. The check-and-set happens under one lock so two
     /// concurrent regenerate calls for the same key can't both start.
-    pub fn try_start(&self, key: BillingLineKey) -> bool {
+    pub fn try_start(&self, key: K) -> bool {
         let mut map = self.0.lock().unwrap();
         if matches!(map.get(&key), Some(JobState::Running)) {
             return false;
@@ -37,7 +43,7 @@ impl JobTracker {
 
     /// Records a finished job's outcome — called once the background
     /// task's prepare/invoke/commit pass returns.
-    pub fn finish(&self, key: BillingLineKey, result: std::result::Result<(), String>) {
+    pub fn finish(&self, key: K, result: std::result::Result<(), String>) {
         let mut map = self.0.lock().unwrap();
         let state = match result {
             Ok(()) => JobState::Done,
@@ -48,7 +54,7 @@ impl JobTracker {
 
     /// `None` when nothing has ever been tracked for `key` (the poll
     /// route reports this as `"idle"`).
-    pub fn state(&self, key: &BillingLineKey) -> Option<JobState> {
+    pub fn state(&self, key: &K) -> Option<JobState> {
         self.0.lock().unwrap().get(key).cloned()
     }
 }

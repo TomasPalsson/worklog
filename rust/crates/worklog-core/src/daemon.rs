@@ -125,6 +125,9 @@ mod daemon_tenants;
 #[path = "daemon_line_text.rs"]
 mod daemon_line_text;
 
+#[path = "daemon_note_block.rs"]
+mod daemon_note_block;
+
 #[path = "daemon_deildir.rs"]
 mod daemon_deildir;
 
@@ -154,6 +157,8 @@ pub struct AppState {
     /// In-flight billing-line regenerate jobs (spec change set:
     /// background regenerate) — never touches sqlite itself.
     pub line_text_jobs: line_text_jobs::JobTracker,
+    /// In-flight note-block AI writes, keyed by block id (spec 019).
+    pub note_jobs: line_text_jobs::JobTracker<i64>,
 }
 
 pub type Shared = Arc<AppState>;
@@ -216,6 +221,12 @@ pub fn router(state: Shared) -> Router {
             post(daemon_line_text::regenerate),
         )
         .route("/billing/lines/status", get(daemon_line_text::status))
+        .route("/blocks/note", post(daemon_note_block::log_note))
+        .route(
+            "/blocks/:id/note/regenerate",
+            post(daemon_note_block::regenerate),
+        )
+        .route("/blocks/:id/note/status", get(daemon_note_block::status))
         .route("/tempo/lines/:day", get(daemon_tempo_lines::list_lines))
         .route("/mirres/overview", get(daemon_tempo_lines::mirres_overview))
         .route(
@@ -426,6 +437,7 @@ pub fn new_state() -> Result<Shared> {
     Ok(Arc::new(AppState {
         conn: Mutex::new(conn),
         line_text_jobs: Default::default(),
+        note_jobs: Default::default(),
     }))
 }
 
@@ -478,6 +490,7 @@ pub fn state_from_conn(conn: Connection) -> Shared {
     Arc::new(AppState {
         conn: Mutex::new(conn),
         line_text_jobs: Default::default(),
+        note_jobs: Default::default(),
     })
 }
 
@@ -3238,6 +3251,10 @@ mod tests {
         include!("daemon_logged_test.rs");
     }
 
+    mod daemon_note_block {
+        include!("daemon_note_block_test.rs");
+    }
+
     mod daemon_assist {
         include!("daemon_assist_test.rs");
     }
@@ -3282,6 +3299,7 @@ mod tests {
         Arc::new(AppState {
             conn: Mutex::new(conn),
             line_text_jobs: Default::default(),
+            note_jobs: Default::default(),
         })
     }
 
@@ -3694,6 +3712,7 @@ mod tests {
         let app = router(Arc::new(AppState {
             conn: Mutex::new(conn),
             line_text_jobs: Default::default(),
+            note_jobs: Default::default(),
         }));
         let resp = app
             .oneshot(
@@ -4921,6 +4940,7 @@ mod tests {
         Arc::new(AppState {
             conn: Mutex::new(conn),
             line_text_jobs: Default::default(),
+            note_jobs: Default::default(),
         })
     }
 
@@ -5281,6 +5301,7 @@ mod tests {
         Arc::new(AppState {
             conn: Mutex::new(conn),
             line_text_jobs: Default::default(),
+            note_jobs: Default::default(),
         })
     }
 
@@ -6083,6 +6104,7 @@ mod tests {
             Arc::new(AppState {
                 conn: Mutex::new(conn),
                 line_text_jobs: Default::default(),
+                note_jobs: Default::default(),
             }),
             a,
             b,
@@ -6231,6 +6253,7 @@ mod tests {
         let state = Arc::new(AppState {
             conn: Mutex::new(conn),
             line_text_jobs: Default::default(),
+            note_jobs: Default::default(),
         });
         let resp = router(state)
             .oneshot(
@@ -6331,6 +6354,7 @@ mod tests {
         let state = Arc::new(AppState {
             conn: Mutex::new(conn),
             line_text_jobs: Default::default(),
+            note_jobs: Default::default(),
         });
         let resp = router(state)
             .oneshot(
