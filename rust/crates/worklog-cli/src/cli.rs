@@ -12,7 +12,7 @@ use worklog_core::{
     billing, billing_registry, block_service, claude_mod,
     collectors::{
         claude_transcripts as claude_transcripts_col, fish as fish_col, gcal as gcal_col,
-        github as gh, jira as jira_col, reflog as reflog_col, slack as slack_col,
+        gcal_auth, github as gh, jira as jira_col, reflog as reflog_col, slack as slack_col,
         tempo as tempo_col,
     },
     daemon as daemon_mod, db, estimate, git, hook, hook_run, http, infer,
@@ -159,6 +159,9 @@ pub enum Cmd {
         /// Days of history to pull for time-range sources (github). Default 7.
         #[arg(long, default_value_t = 7)]
         days: u32,
+        /// Log in to Google Calendar in the browser (only with `gcal`).
+        #[arg(long)]
+        auth: bool,
     },
 
     /// Sync reviewed blocks for a given day to Tempo Cloud.
@@ -881,7 +884,12 @@ pub fn run_with<W: Write>(
             SkillCmd::Uninstall => cmd_skill_uninstall(out, cli.json),
             SkillCmd::Status => cmd_skill_status(out, cli.json),
         },
-        Cmd::Collect { target, days } => cmd_collect(target, days, out, cli.json),
+        Cmd::Collect { target, days, auth } => {
+            if auth {
+                return cmd_collect_auth(target);
+            }
+            cmd_collect(target, days, out, cli.json)
+        }
         Cmd::Sync { day, dry_run, yes } => cmd_sync(day, dry_run, yes, out, cli.json),
         Cmd::Infer { day } => cmd_infer(day, out, cli.json),
         Cmd::Estimate { day, model } => cmd_estimate(day, &model, out, cli.json),
@@ -1740,6 +1748,15 @@ fn collect_targets(
     }
 
     Ok(outcomes)
+}
+
+fn cmd_collect_auth(target: CollectTarget) -> Result<()> {
+    if target != CollectTarget::Gcal {
+        anyhow::bail!("--auth only applies to `worklog collect gcal --auth`");
+    }
+    let auth = gcal_col::GcalAuth::from_paths()?;
+    gcal_auth::authorize(&auth, &http::client()?)?;
+    Ok(())
 }
 
 fn cmd_collect<W: Write>(target: CollectTarget, days: u32, out: &mut W, json: bool) -> Result<()> {
