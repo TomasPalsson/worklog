@@ -211,9 +211,18 @@ async fn regenerate_route_on_plain_block_fails_not_a_note_block() {
         .unwrap();
         conn.last_insert_rowid()
     };
+    // The route now rejects it up front (R1); the job-level guard in
+    // prepare_note is still exercised by starting the job directly.
     let req = post(&format!("/blocks/{id}/note/regenerate"), json!({}));
     let (s, v) = call(&state, req).await;
-    assert_eq!((s, v), (StatusCode::OK, json!({"started": true})));
+    assert_eq!(
+        (s, v),
+        (
+            StatusCode::OK,
+            json!({"started": false, "reason": REASON_NOT_A_NOTE_BLOCK})
+        )
+    );
+    assert!(start_job(&state, id, false, failing("unused")));
     assert_eq!(
         settle(&state, id).await,
         JobState::Failed(REASON_NOT_A_NOTE_BLOCK.into())
@@ -260,6 +269,33 @@ async fn connection_is_free_during_the_model_call() {
     assert!(start_job(&state, id, false, make));
     assert_eq!(settle(&state, id).await, JobState::Done);
     assert!(was_free.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+// catches: regenerate on a missing / plain block leaking a tracker entry
+#[tokio::test(flavor = "current_thread")]
+async fn regenerate_rejects_missing_and_plain_blocks_without_tracking() {
+    let (state, _) = state_with_note_block().await;
+    let plain = {
+        let conn = state.conn.lock().await;
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+             VALUES ('2026-04-18', '2026-04-18T12:00:00+00:00', '2026-04-18T12:30:00+00:00', 1800)",
+            [],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    };
+    for id in [9999, plain] {
+        let uri = format!("/blocks/{id}/note/regenerate");
+        let (s, v) = call(&state, post(&uri, json!({}))).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(
+            v,
+            json!({"started": false, "reason": REASON_NOT_A_NOTE_BLOCK})
+        );
+        let (_, st) = call(&state, status_req(id)).await;
+        assert_eq!(st, json!({"state": "idle"}));
+    }
 }
 
 // catches: log_time errors mapped to 500 instead of 400 (no hub_error)

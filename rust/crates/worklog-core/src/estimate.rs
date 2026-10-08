@@ -863,6 +863,17 @@ pub fn prepare_block_estimate(
         );
     }
 
+    // Note blocks hold the user's own text; this path overwrites manual
+    // blocks, so refuse them before paying for an LLM call.
+    let is_note: bool = conn.query_row(
+        "SELECT rough_note IS NOT NULL FROM blocks WHERE id = ?1",
+        params![block_id],
+        |r| r.get(0),
+    )?;
+    if is_note {
+        anyhow::bail!("block {block_id} is a note block — its text is not re-estimated");
+    }
+
     let block_day: NaiveDate = block
         .day
         .parse()
@@ -2261,6 +2272,31 @@ mod tests {
         let block = repo::get_block(&conn, bid).unwrap().unwrap();
         assert_eq!(block.jira_issue.as_deref(), Some("PROJ-7"));
         assert_eq!(block.description.as_deref(), Some("user typed this"));
+        assert_eq!(block.estimated_by.as_deref(), Some("manual"));
+        assert_eq!(block.duration_seconds, 1800);
+    }
+
+    #[test]
+    fn block_estimate_refuses_note_blocks() {
+        // Note blocks (rough_note set) carry the user's own text and are
+        // estimated_by = 'manual'; the per-block Sparkles path overwrites
+        // manual blocks, so it must refuse these outright.
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO blocks (day, jira_issue, started_at, ended_at, duration_seconds, description, estimated_by, rough_note)
+             VALUES ('2026-04-18', 'PROJ-7', '2026-04-18T10:00:00+00:00', '2026-04-18T10:30:00+00:00', 1800, 'my words', 'manual', 'rough')",
+            [],
+        ).unwrap();
+        let bid = conn.last_insert_rowid();
+        let invoker = FixedInvoker(json!({
+            "jira_issue": "PROJ-9",
+            "minutes": 90,
+            "description": "AI-rewritten description"
+        }));
+        assert!(estimate_block_with(&conn, bid, &invoker, "m").is_err());
+        let block = repo::get_block(&conn, bid).unwrap().unwrap();
+        assert_eq!(block.description.as_deref(), Some("my words"));
+        assert_eq!(block.jira_issue.as_deref(), Some("PROJ-7"));
         assert_eq!(block.estimated_by.as_deref(), Some("manual"));
         assert_eq!(block.duration_seconds, 1800);
     }

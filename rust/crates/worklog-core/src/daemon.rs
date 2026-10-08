@@ -25,6 +25,9 @@
 //! * `POST /blocks/merge`                — { "primary": 1, "absorb": [2,3] }
 //! * `POST /blocks/auto-merge`           — { "day": "YYYY-MM-DD" }
 //! * `POST /blocks/:id/estimate`         — no body, re-runs Claude on one block
+//! * `POST /blocks/note`                 — { jira_issue, day, start: "HH:MM", minutes, note } save a note block → `Block`, AI description written in the background
+//! * `POST /blocks/:id/note/regenerate`  — { "force"?: true } re-run the note's AI write → { started, reason? }
+//! * `GET  /blocks/:id/note/status`      — poll the note job → { state: idle|running|done|failed, reason? }
 //! * `GET  /blocks/:id/commits`          — commits in the window (work only)
 //! * `POST /infer`                       — { "day": "YYYY-MM-DD" }
 //! * `POST /days/:day/allocations`       — { started_at, ended_at, shares: {project: fraction} } — re-runs infer

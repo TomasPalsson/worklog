@@ -43,12 +43,22 @@ pub async fn regenerate(
     State(state): State<Shared>,
     AxumPath(id): AxumPath<i64>,
     Json(body): Json<RegenerateNoteBody>,
-) -> Json<Value> {
-    if start_job(&state, id, body.force, real_invoker) {
+) -> Result<Json<Value>, ApiError> {
+    // Check before try_start so a bad id never leaves a tracker entry.
+    let is_note = with_conn(state.clone(), move |c| {
+        Ok(crate::repo::get_block(c, id)?.is_some_and(|b| b.rough_note.is_some()))
+    })
+    .await?;
+    if !is_note {
+        return Ok(Json(
+            json!({ "started": false, "reason": REASON_NOT_A_NOTE_BLOCK }),
+        ));
+    }
+    Ok(if start_job(&state, id, body.force, real_invoker) {
         Json(json!({ "started": true }))
     } else {
         Json(json!({ "started": false, "reason": "already running" }))
-    }
+    })
 }
 
 pub async fn status(State(state): State<Shared>, AxumPath(id): AxumPath<i64>) -> Json<Value> {
