@@ -414,7 +414,10 @@ fn commit_note_keeps_the_tempo_worklog_id() {
     let block = saved(&conn);
     mark_synced(&conn, block.id);
     commit_note(&conn, block.id, "AI text", false).unwrap();
-    assert_eq!(fetch(&conn, block.id).tempo_worklog_id.as_deref(), Some("77"));
+    assert_eq!(
+        fetch(&conn, block.id).tempo_worklog_id.as_deref(),
+        Some("77")
+    );
 }
 
 #[test]
@@ -424,7 +427,10 @@ fn forced_commit_note_keeps_the_tempo_worklog_id() {
     mark_synced(&conn, block.id);
     set_description(&conn, block.id, "my own words").unwrap();
     commit_note(&conn, block.id, "AI text", true).unwrap();
-    assert_eq!(fetch(&conn, block.id).tempo_worklog_id.as_deref(), Some("77"));
+    assert_eq!(
+        fetch(&conn, block.id).tempo_worklog_id.as_deref(),
+        Some("77")
+    );
 }
 
 #[test]
@@ -433,5 +439,8 @@ fn set_description_on_a_synced_note_block_keeps_the_tempo_worklog_id() {
     let block = saved(&conn);
     mark_synced(&conn, block.id);
     set_description(&conn, block.id, "mine").unwrap();
-    assert_eq!(fetch(&conn, block.id).tempo_worklog_id.as_deref(), Some("77"));
+    assert_eq!(
+        fetch(&conn, block.id).tempo_worklog_id.as_deref(),
+        Some("77")
+    );
 }
