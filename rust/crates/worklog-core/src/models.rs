@@ -4,6 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::note_block_contract::DescriptionOrigin;
 use crate::tempo_line_contract::TicketOrigin;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -87,6 +88,10 @@ pub struct Block {
     pub ignored_at: Option<String>,
     #[serde(default)]
     pub ticket_origin: Option<TicketOrigin>,
+    #[serde(default)]
+    pub rough_note: Option<String>,
+    #[serde(default)]
+    pub description_origin: Option<DescriptionOrigin>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

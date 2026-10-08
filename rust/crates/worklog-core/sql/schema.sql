@@ -112,6 +112,11 @@ CREATE TABLE IF NOT EXISTS blocks (
     -- 'auto' (estimator pick) or 'manual' (Owner). NULL = pre-v17 row,
     -- behaves like 'auto'.
     ticket_origin TEXT CHECK(ticket_origin IN ('event', 'auto', 'manual')),
+    -- Note blocks (spec 019): the Owner's raw note, and who wrote the
+    -- current description ('note' raw, 'ai' rewritten, 'hand' edited).
+    -- NULL for blocks not added from the day page's "+".
+    rough_note TEXT,
+    description_origin TEXT CHECK (description_origin IN ('note', 'ai', 'hand')),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
