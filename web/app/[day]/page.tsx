@@ -27,6 +27,7 @@ import { TicketGroup } from "@/components/TicketGroup";
 import { IgnoredLine } from "@/components/IgnoredLine";
 import { UnsortedList } from "@/components/UnsortedList";
 import { VerdictBanner } from "@/components/VerdictBanner";
+import { lastBlockEnd } from "@/lib/lastBlockEnd";
 import type { Block, BillingRegistry, RoutedEvent } from "@/lib/types";
 import type { GapAction, Recap } from "@/lib/daily_helpers_contract";
 
@@ -74,6 +75,7 @@ export default async function DayPage({
   const total =
     summary.total_seconds - ignoredBlocks.reduce((acc, b) => acc + b.duration_seconds, 0);
   const { tickets, meta: cache } = ticketsResp;
+  const lastEnd = lastBlockEnd(blocks);
 
   // Browser/Slack events for the day (B12) — degrades to an empty feed on
   // a daemon hiccup rather than failing the whole page. The registry also
@@ -173,7 +175,13 @@ export default async function DayPage({
         billablePercent={billablePercent(lines)}
       />
       <MirresAutoFetch day={day} needsFetch={lines.length > 0 && lines.every((l) => !l.billing)} />
-      <ActionBar day={day} cacheCount={cache.count} cacheLast={cache.last_fetched} />
+      <ActionBar
+        day={day}
+        cacheCount={cache.count}
+        cacheLast={cache.last_fetched}
+        tickets={tickets}
+        lastEnd={lastEnd}
+      />
       <ReviewSection key={`review-${day}`} lines={reviewLines} />
       <RecapBanner key={`recap-${day}`} recap={recap} resolve={resolveGap} />
       <DayStrip

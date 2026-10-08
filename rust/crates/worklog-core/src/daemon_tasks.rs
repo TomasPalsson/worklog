@@ -40,7 +40,7 @@ fn invalid_input(message: impl Into<String>) -> ApiError {
     hub_error(HubError::InvalidInput(message.into()).into())
 }
 
-fn validated_key(key: &str) -> Result<(), ApiError> {
+pub(super) fn validated_key(key: &str) -> Result<(), ApiError> {
     let valid = key.split_once('-').is_some_and(|(project, number)| {
         project.starts_with(|c: char| c.is_ascii_uppercase())
             && project

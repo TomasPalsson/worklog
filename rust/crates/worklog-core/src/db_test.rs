@@ -869,7 +869,7 @@ fn tempo_line_texts_enforces_origin_and_half_hour_override_and_keys_by_day_and_i
 
 #[test]
 fn schema_v18_adds_status_category_and_tempo_readback_tables() {
-    assert_eq!(SCHEMA_VERSION, 20);
+    assert_eq!(SCHEMA_VERSION, 21);
     let conn = open_memory().unwrap();
     conn.execute(
         "INSERT INTO jira_tickets (key, summary) VALUES ('APRO-1', 's')",
@@ -932,7 +932,7 @@ fn migrate_from_v17_adds_status_category_to_existing_jira_tickets() {
         )
         .unwrap();
     assert_eq!(category, None);
-    assert_eq!(current_version(&conn).unwrap(), 20);
+    assert_eq!(current_version(&conn).unwrap(), 21);
     assert_eq!(
         detail_columns(&conn),
         DETAIL_COLUMNS,
@@ -971,8 +971,8 @@ fn schema_v19_fresh_db_has_jira_ticket_detail_columns() {
 #[test]
 fn account_clue_tables_exist_and_schema_version_is_20() {
     let conn = open_memory().unwrap();
-    assert_eq!(SCHEMA_VERSION, 20);
-    assert_eq!(current_version(&conn).unwrap(), 20);
+    assert_eq!(SCHEMA_VERSION, 21);
+    assert_eq!(current_version(&conn).unwrap(), 21);
     conn.execute(
         "INSERT INTO account_clues (account_id, account_name, clue, hits, wrong)
          VALUES ('a1', 'Acme', 'invoice', 2, 1)",
@@ -1022,6 +1022,81 @@ fn tempo_day_dismissals_table_is_keyed_by_day_without_a_version_bump() {
         [],
     )
     .expect_err("day is the primary key");
-    assert_eq!(SCHEMA_VERSION, 20);
-    assert_eq!(current_version(&conn).unwrap(), 20);
+    assert_eq!(SCHEMA_VERSION, 21);
+    assert_eq!(current_version(&conn).unwrap(), 21);
+}
+
+#[test]
+fn migrate_adds_note_columns_to_legacy_blocks_table_and_keeps_existing_rows_null() {
+    let conn = Connection::open_in_memory().unwrap();
+    configure(&conn).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE blocks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            day TEXT NOT NULL,
+            jira_issue TEXT,
+            started_at TEXT NOT NULL,
+            ended_at TEXT NOT NULL,
+            duration_seconds INTEGER NOT NULL,
+            description TEXT,
+            estimated_by TEXT,
+            flagged INTEGER NOT NULL DEFAULT 0,
+            tempo_worklog_id TEXT,
+            is_personal INTEGER NOT NULL DEFAULT 0,
+            dirty INTEGER NOT NULL DEFAULT 0,
+            exported_at TEXT,
+            ignored_at TEXT,
+            described_seconds INTEGER,
+            ticket_origin TEXT,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+        INSERT INTO blocks (day, started_at, ended_at, duration_seconds)
+        VALUES ('2026-10-08', '2026-10-08T09:00:00Z', '2026-10-08T10:00:00Z', 3600);",
+    )
+    .unwrap();
+    conn.pragma_update(None, "user_version", 20).unwrap();
+
+    migrate(&conn).unwrap();
+    migrate(&conn).unwrap();
+
+    let block = crate::repo::get_block(&conn, 1).unwrap().unwrap();
+    assert_eq!(block.rough_note, None);
+    assert_eq!(block.description_origin, None);
+}
+
+#[test]
+fn note_columns_round_trip_and_origin_check_rejects_unknown_value() {
+    use crate::note_block_contract::DescriptionOrigin;
+    let conn = open_memory().unwrap();
+    for origin in ["note", "ai", "hand"] {
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds, rough_note, description_origin)
+             VALUES ('2026-10-08', '2026-10-08T09:00:00Z', '2026-10-08T10:00:00Z', 3600, 'fixed login', ?1)",
+            [origin],
+        )
+        .unwrap();
+    }
+    let blocks = crate::repo::list_blocks_for_day(&conn, "2026-10-08").unwrap();
+    let origins: Vec<_> = blocks.iter().map(|b| b.description_origin).collect();
+    assert_eq!(
+        origins,
+        vec![
+            Some(DescriptionOrigin::Note),
+            Some(DescriptionOrigin::Ai),
+            Some(DescriptionOrigin::Hand)
+        ]
+    );
+    assert_eq!(blocks[0].rough_note.as_deref(), Some("fixed login"));
+    let by_id = crate::repo::get_block(&conn, blocks[1].id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(by_id.description_origin, Some(DescriptionOrigin::Ai));
+    assert_eq!(by_id.rough_note.as_deref(), Some("fixed login"));
+
+    conn.execute(
+        "INSERT INTO blocks (day, started_at, ended_at, duration_seconds, description_origin)
+         VALUES ('2026-10-08', '2026-10-08T09:00:00Z', '2026-10-08T10:00:00Z', 3600, 'robot')",
+        [],
+    )
+    .expect_err("description_origin outside ('note','ai','hand') must be rejected");
 }
