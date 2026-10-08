@@ -44,6 +44,10 @@ mock.module("@/app/actions", () => ({
   saveBillingFolder: mock(async () => ({ ok: true as const, data: undefined })),
   mergeGroup: mock(async () => ({ ok: true as const, data: undefined })),
 }));
+mock.module("next/navigation", () => ({
+  useRouter: () => ({ refresh: mock(() => {}) }),
+  usePathname: () => "/",
+}));
 
 let BlockCard: (props: {
   block: Block;
