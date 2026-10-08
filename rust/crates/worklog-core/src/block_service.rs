@@ -22,7 +22,7 @@ use crate::undo;
 /// blocks don't need the marker because the next sync picks them up via
 /// `tempo_worklog_id IS NULL` anyway, and we don't want every estimator
 /// pass to leave the day with a row of false-positive dirty pills.
-const MARK_DIRTY_IF_SYNCED: &str =
+pub(crate) const MARK_DIRTY_IF_SYNCED: &str =
     "CASE WHEN tempo_worklog_id IS NOT NULL AND tempo_worklog_id != '' THEN 1 ELSE dirty END";
 
 pub fn assign_ticket(conn: &Connection, block_id: i64, key: Option<&str>) -> Result<Block> {
@@ -127,6 +127,7 @@ pub fn set_description(conn: &Connection, block_id: i64, description: &str) -> R
             "UPDATE blocks
                 SET description = ?1,
                     estimated_by = 'manual',
+                    description_origin = CASE WHEN rough_note IS NOT NULL THEN 'hand' ELSE description_origin END,
                     dirty = {MARK_DIRTY_IF_SYNCED}
               WHERE id = ?2"
         ),

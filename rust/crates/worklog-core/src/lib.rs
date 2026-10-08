@@ -62,6 +62,7 @@ pub mod logged_contract;
 pub mod mirres;
 pub mod models;
 pub mod note_block_contract;
+pub mod note_writer;
 pub mod nudges;
 pub mod overlap_store;
 pub mod overlaps;
