@@ -9,6 +9,9 @@ import type { NoteBlockBody, NoteJobStatus, RegenerateNoteResult } from "@/lib/n
 import type { RawBlock } from "@/lib/types";
 import type { ActionResult } from "./actions";
 
+const validId = (id: unknown) => Number.isInteger(id) && (id as number) > 0;
+const BAD_ID = { ok: false as const, error: "invalid block id" };
+
 async function run<T>(fn: () => Promise<T>, day: string): Promise<ActionResult<T>> {
   try {
     const data = await fn();
@@ -35,11 +38,13 @@ export async function regenerateNoteAction(
   day: string,
   force: boolean,
 ): Promise<ActionResult<RegenerateNoteResult>> {
+  if (!validId(id)) return BAD_ID;
   return run(() => regenerateNote(id, force), day);
 }
 
 /** Pure poll — no `revalidatePath`; the caller refreshes once the job settles. */
 export async function noteStatusAction(id: number): Promise<ActionResult<NoteJobStatus>> {
+  if (!validId(id)) return BAD_ID;
   try {
     return { ok: true, data: await noteStatus(id) };
   } catch (e) {

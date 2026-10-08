@@ -85,9 +85,9 @@ describe("useNoteJob", () => {
 
   it("failed: error toast carries the reason, no refresh, id dropped", async () => {
     const { result } = start();
-    next = { ok: true, data: { state: "failed", reason: "hand-edited" } };
+    next = { ok: true, data: { state: "failed", reason: "model unavailable" } };
     await tick(handles[0]);
-    expect(toasts.filter((t) => t.tone === "error" && t.text.includes("hand-edited"))).toHaveLength(1);
+    expect(toasts.filter((t) => t.tone === "error" && t.text.includes("model unavailable"))).toHaveLength(1);
     expect(refresh).not.toHaveBeenCalled();
     expect(handles[0].cleared).toBe(true);
     expect(result.current.running.size).toBe(0);
@@ -111,6 +111,34 @@ describe("useNoteJob", () => {
     expect(handles[0].cleared).toBe(true); // catches no cap / > off by one late
     expect(result.current.running.size).toBe(0);
     expect(noteStatusAction).toHaveBeenCalledTimes(polls);
+  });
+
+  it("at the cap: one neutral 'still writing' toast; none when the job settles first", async () => {
+    start();
+    const polls = NOTE_POLL_MAX_MS / NOTE_POLL_MS;
+    for (let i = 1; i < polls; i++) await tick(handles[0]);
+    expect(toasts.filter((t) => t.text.includes("still writing"))).toHaveLength(0);
+    await tick(handles[0]);
+    const still = toasts.filter((t) => t.text.includes("still writing"));
+    expect(still).toHaveLength(1);
+    expect(still[0].text).toBe("still writing — check back");
+    expect(still[0].tone).toBe("ok");
+    cleanup();
+    for (const t of toasts) dismiss(t.id);
+    handles = [];
+    start();
+    next = { ok: true, data: { state: "done" } };
+    await tick(handles[0]);
+    expect(toasts.filter((t) => t.text.includes("still writing"))).toHaveLength(0);
+  });
+
+  it("failed with reason hand-edited is quiet: no toast, id dropped", async () => {
+    const { result } = start();
+    next = { ok: true, data: { state: "failed", reason: "hand-edited" } };
+    await tick(handles[0]);
+    expect(toasts).toHaveLength(0);
+    expect(handles[0].cleared).toBe(true);
+    expect(result.current.running.size).toBe(0);
   });
 
   it("tracks two ids independently", async () => {

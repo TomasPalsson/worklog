@@ -45,9 +45,12 @@ export function useNoteJob(day: string): { track: (blockId: number) => void; run
           router.refresh();
         } else if (res.ok && res.data.state === "failed") {
           settle();
-          toast.error(`The AI could not write the description${res.data.reason ? ` — ${res.data.reason}` : ""}`);
+          // The Owner's hand edit stays and the AI write is dropped: not an error.
+          if (res.data.reason !== "hand-edited")
+            toast.error(`The AI could not write the description${res.data.reason ? ` — ${res.data.reason}` : ""}`);
         } else if (polls * NOTE_POLL_MS >= NOTE_POLL_MAX_MS) {
           settle();
+          toast.notice("still writing — check back");
         }
       }, NOTE_POLL_MS);
       cancels.current.add(settle);

@@ -128,3 +128,15 @@ describe("noteStatusAction", () => {
     expect(await noteStatusAction(12)).toEqual({ ok: false, error: "down" });
   });
 });
+
+describe("id validation (client-supplied at runtime)", () => {
+  const bad = ["1/../x", 1.5, 0, -3, NaN] as unknown as number[];
+  for (const id of bad) {
+    it(`rejects ${String(id)} without calling the daemon`, async () => {
+      expect(await regenerateNoteAction(id, "2026-09-24", false)).toEqual({ ok: false, error: "invalid block id" });
+      expect(await noteStatusAction(id)).toEqual({ ok: false, error: "invalid block id" });
+      expect(callImpl).not.toHaveBeenCalled();
+      expect(revalidateImpl).not.toHaveBeenCalled();
+    });
+  }
+});
