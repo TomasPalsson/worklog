@@ -120,10 +120,8 @@ where
     W: Write,
 {
     let credentials = read_credentials(&auth.credentials_path)?;
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .context("opening the local listener for the Google redirect")?;
-    listener.set_nonblocking(true)?;
-    let redirect_uri = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
+    let listener = bind_loopback()?;
+    let redirect_uri = format!("http://{}", listener.local_addr()?);
 
     let verifier = random_token();
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
@@ -152,6 +150,13 @@ where
         Err(_) => respond(&mut stream, "Login failed. See the terminal for details."),
     }
     exchanged.map(|()| auth.token_path.clone())
+}
+
+fn bind_loopback() -> Result<TcpListener> {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .context("opening the local listener for the Google redirect")?;
+    listener.set_nonblocking(true)?;
+    Ok(listener)
 }
 
 fn read_credentials(path: &Path) -> Result<InstalledClient> {
@@ -353,19 +358,18 @@ fn write_token(path: &Path, token: &StoredToken) -> Result<()> {
     let mut temp_name = path.as_os_str().to_owned();
     temp_name.push(".tmp");
     let temp_path = PathBuf::from(temp_name);
-    std::fs::write(
-        &temp_path,
-        serde_json::to_string_pretty(token).context("serialising token")?,
-    )
-    .with_context(|| format!("writing {}", temp_path.display()))?;
-    // Tighten perms to 0600 — the file carries refresh_token + client_secret.
+    let json = serde_json::to_string_pretty(token).context("serialising token")?;
+    // 0600 from creation — the file carries refresh_token + client_secret. A stale
+    // temp keeps its old mode, so drop it first.
+    let _ = std::fs::remove_file(&temp_path);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&temp_path)?.permissions();
-        perms.set_mode(0o600);
-        std::fs::set_permissions(&temp_path, perms)?;
-    }
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options
+        .open(&temp_path)
+        .and_then(|mut file| file.write_all(json.as_bytes()))
+        .with_context(|| format!("writing {}", temp_path.display()))?;
     std::fs::rename(&temp_path, path).with_context(|| format!("replacing {}", path.display()))
 }
 
@@ -697,6 +701,13 @@ mod tests {
         let err = format!("{:#}", run.result.unwrap_err());
         assert!(err.contains("timed out"), "{err}");
         assert_eq!(std::fs::read(&auth.token_path).unwrap(), before);
+    }
+
+    #[test]
+    fn listener_binds_loopback_only() {
+        // Catches: binding 0.0.0.0 while the redirect URI still says 127.0.0.1.
+        let listener = bind_loopback().unwrap();
+        assert!(listener.local_addr().unwrap().ip().is_loopback());
     }
 
     #[test]
