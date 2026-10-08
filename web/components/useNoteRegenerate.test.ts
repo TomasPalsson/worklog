@@ -22,17 +22,20 @@ mock.module("@/app/actions-note-block", () => ({
 const { useNoteRegenerate } = await import("./useNoteRegenerate");
 
 let polls = 0;
+let pollFns: Array<() => Promise<void>> = [];
 const realSet = globalThis.setInterval;
 let toasts: ToastMsg[] = [];
 let unsubscribe = () => {};
 
 beforeEach(() => {
   polls = 0;
+  pollFns = [];
   next = { ok: true, data: { started: true } };
   regenerateNoteAction.mockClear();
   spyOn(globalThis, "setInterval").mockImplementation(((fn: () => void, ms: number, ...rest: unknown[]) => {
     if (ms !== NOTE_POLL_MS) return (realSet as Function)(fn, ms, ...rest);
     polls += 1;
+    pollFns.push(fn as () => Promise<void>);
     return 0 as unknown as number;
   }) as unknown as typeof setInterval);
   unsubscribe = subscribe((m) => (toasts = m));
@@ -49,8 +52,9 @@ const block = (origin: DescriptionOrigin | null) =>
   ({ id: 7, description_origin: origin, rough_note: "fixed it" }) as unknown as Block & NoteFields;
 
 const click = async (origin: DescriptionOrigin | null) => {
-  const { result } = renderHook(() => useNoteRegenerate(block(origin), "2026-10-08"));
-  await act(async () => void result.current());
+  const view = renderHook(() => useNoteRegenerate(block(origin), "2026-10-08"));
+  await act(async () => void view.result.current.regenerate());
+  return view;
 };
 
 describe("useNoteRegenerate", () => {
@@ -95,4 +99,28 @@ describe("useNoteRegenerate", () => {
     expect(toasts.some((t) => t.tone === "error" && t.text.includes("already running"))).toBe(true);
     expect(polls).toBe(0);
   });
+
+  it("writing is false before a click and true while the job runs", async () => {
+    const view = renderHook(() => useNoteRegenerate(block("ai"), "2026-10-08"));
+    // catches writing keyed on rough_note instead of a running job
+    expect(view.result.current.writing).toBe(false);
+    await act(async () => void view.result.current.regenerate());
+    expect(view.result.current.writing).toBe(true);
+  });
+
+  it("writing stays false when the job did not start (catches setting it before the result)", async () => {
+    next = { ok: true, data: { started: false, reason: "already running" } };
+    const view = await click("ai");
+    expect(view.result.current.writing).toBe(false);
+  });
+
+  for (const state of ["done", "failed"] as const) {
+    it(`writing is false again after the job is ${state} (catches a flag that never clears)`, async () => {
+      const view = await click("ai");
+      expect(view.result.current.writing).toBe(true);
+      noteStatusAction.mockImplementationOnce((async () => ({ ok: true as const, data: { state } })) as never);
+      await act(async () => void (await pollFns[0]()));
+      expect(view.result.current.writing).toBe(false);
+    });
+  }
 });

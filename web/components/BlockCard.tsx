@@ -82,9 +82,9 @@ export function BlockCard({
   // Article label for screen readers — useful info, not "block 42".
   const ariaLabel = `${timeRangeLabel} · ${block.jira_issue ?? "unassigned"} · ${durationLabel}`;
 
-  const regenerate = useNoteRegenerate(block, day);
+  const { regenerate, writing } = useNoteRegenerate(block, day);
   // Never save this as a description: it would mark the block manual and the estimator would skip it forever.
-  const placeholder = block.rough_note ? "Writing…" : block.estimated_by ? "Click to add a description…" : "Describing…";
+  const placeholder = writing ? "Writing…" : block.estimated_by ? "Click to add a description…" : "Describing…";
   const clearPlaceholder = () => {
     if (!block.description && descRef.current) descRef.current.textContent = "";
   };

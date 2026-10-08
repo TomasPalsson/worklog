@@ -6,9 +6,9 @@ import { toast } from "@/lib/toast";
 import type { Block } from "@/lib/types";
 import { useNoteJob } from "./useNoteJob";
 
-/** Regenerate click for a note block; a hand-edited description needs a confirm first. */
-export function useNoteRegenerate(block: Block & NoteFields, day: string): () => void {
-  const { track } = useNoteJob(day);
+/** Regenerate click plus a `writing` flag for a note block; a hand-edited description needs a confirm first. */
+export function useNoteRegenerate(block: Block & NoteFields, day: string): { regenerate: () => void; writing: boolean } {
+  const { track, running } = useNoteJob(day);
 
   const run = async (force: boolean) => {
     const r = await regenerateNoteAction(block.id, day, force);
@@ -17,11 +17,13 @@ export function useNoteRegenerate(block: Block & NoteFields, day: string): () =>
     track(block.id);
   };
 
-  return () => {
+  const regenerate = () => {
     if (block.description_origin === "hand") {
       toast.notice("Replace your edit?", { label: "Replace", onClick: () => void run(true) });
     } else {
       void run(false);
     }
   };
+
+  return { regenerate, writing: running.has(block.id) };
 }

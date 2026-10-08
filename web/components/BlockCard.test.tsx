@@ -44,6 +44,15 @@ mock.module("@/app/actions", () => ({
   saveBillingFolder: mock(async () => ({ ok: true as const, data: undefined })),
   mergeGroup: mock(async () => ({ ok: true as const, data: undefined })),
 }));
+const regenerateNoteAction = mock(async (_id: number, _day: string, _force: boolean) => ({
+  ok: true as const,
+  data: { started: true },
+}));
+mock.module("@/app/actions-note-block", () => ({
+  regenerateNoteAction,
+  noteStatusAction: mock(async () => ({ ok: true as const, data: { state: "running" as const } })),
+  addNoteBlock: mock(async () => ({ ok: false as const, error: "unused" })),
+}));
 mock.module("next/navigation", () => ({
   useRouter: () => ({ refresh: mock(() => {}) }),
   usePathname: () => "/",
@@ -425,5 +434,39 @@ describe("BlockCard change confirmations offer Undo (FR-29)", () => {
     fireEvent.click(screen.getByRole("button", { name: /^ignore .* block$/ }));
     await waitFor(() => expect(queued().some((t) => t.tone === "error")).toBe(true));
     expect(undoToast()).toBeUndefined();
+  });
+});
+
+describe("BlockCard note-block Regenerate", () => {
+  const DAY = "2026-07-25";
+  const sparkles = () => screen.getByRole("button", { name: /^describe .* block with claude$/ });
+  const noteBlock = (o: Partial<Block> = {}) =>
+    makeBlock({ id: 9, jira_issue: "PROJ-1", description: "old text", rough_note: "fixed it", ...o } as Partial<Block>);
+
+  it("note block: Sparkles regenerates and does not call describeBlock", async () => {
+    const { describeBlock } = await import("@/app/actions");
+    (describeBlock as unknown as ReturnType<typeof mock>).mockClear();
+    regenerateNoteAction.mockClear();
+    render(<BlockCard block={noteBlock()} tickets={[]} day={DAY} hideTicketing />);
+    fireEvent.click(sparkles());
+    await waitFor(() => expect(regenerateNoteAction).toHaveBeenCalledWith(9, DAY, false));
+    expect(describeBlock).not.toHaveBeenCalled();
+  });
+
+  it("non-note block: Sparkles still calls describeBlock, not regenerate", async () => {
+    const { describeBlock } = await import("@/app/actions");
+    (describeBlock as unknown as ReturnType<typeof mock>).mockClear();
+    regenerateNoteAction.mockClear();
+    render(<BlockCard block={makeBlock({ id: 3 })} tickets={[]} day={DAY} hideTicketing />);
+    fireEvent.click(sparkles());
+    await waitFor(() => expect(describeBlock).toHaveBeenCalledWith(3, DAY));
+    expect(regenerateNoteAction).not.toHaveBeenCalled();
+  });
+
+  it('shows "Writing…" only while the job runs, not for a note block at rest', async () => {
+    render(<BlockCard block={noteBlock({ description: null, estimated_by: "manual" })} tickets={[]} day={DAY} hideTicketing />);
+    expect(screen.queryByText("Writing…")).toBeNull();
+    fireEvent.click(sparkles());
+    await waitFor(() => expect(screen.getByText("Writing…")).toBeTruthy());
   });
 });
