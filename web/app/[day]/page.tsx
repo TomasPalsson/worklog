@@ -27,6 +27,7 @@ import { TicketGroup } from "@/components/TicketGroup";
 import { IgnoredLine } from "@/components/IgnoredLine";
 import { UnsortedList } from "@/components/UnsortedList";
 import { VerdictBanner } from "@/components/VerdictBanner";
+import { lastBlockEnd } from "@/lib/lastBlockEnd";
 import type { Block, BillingRegistry, RoutedEvent } from "@/lib/types";
 import type { GapAction, Recap } from "@/lib/daily_helpers_contract";
 
@@ -74,10 +75,7 @@ export default async function DayPage({
   const total =
     summary.total_seconds - ignoredBlocks.reduce((acc, b) => acc + b.duration_seconds, 0);
   const { tickets, meta: cache } = ticketsResp;
-  const lastEnd = blocks.reduce<string | null>(
-    (latest, b) => (latest === null || b.ended_at > latest ? b.ended_at : latest),
-    null,
-  );
+  const lastEnd = lastBlockEnd(blocks);
 
   // Browser/Slack events for the day (B12) — degrades to an empty feed on
   // a daemon hiccup rather than failing the whole page. The registry also

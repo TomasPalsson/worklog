@@ -469,4 +469,11 @@ describe("BlockCard note-block Regenerate", () => {
     fireEvent.click(sparkles());
     await waitFor(() => expect(screen.getByText("Writing…")).toBeTruthy());
   });
+
+  it("a note block whose job failed (no text, rough note kept) still offers Regenerate", async () => {
+    regenerateNoteAction.mockClear();
+    render(<BlockCard block={noteBlock({ description: null, estimated_by: "manual" })} tickets={[]} day={DAY} hideTicketing />);
+    fireEvent.click(sparkles());
+    await waitFor(() => expect(regenerateNoteAction).toHaveBeenCalledWith(9, DAY, false));
+  });
 });
