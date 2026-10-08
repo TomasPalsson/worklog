@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 use crate::block_service::set_description;
-use crate::daemon::daemon_note_block::start_job;
+use crate::daemon::daemon_note_block::{start_job, TEST_REPLY};
 use crate::daemon::{router, state_from_conn, Shared};
 use crate::db::open_memory;
 use crate::estimate::{FixedInvoker, ModelInvoker};
@@ -305,4 +305,62 @@ async fn log_note_maps_invalid_input_to_400() {
     let body = json!({"jira_issue": "APRO-1", "day": "not-a-day", "start": "10:00", "minutes": 30, "note": "x"});
     let (s, _) = call(&state, post("/blocks/note", body)).await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
+}
+
+fn list_req(day: &str) -> Request<Body> {
+    Request::get(format!("/blocks/{day}"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+// catches: regenerate route not wired to the job, or the job result never reaching status
+#[tokio::test(flavor = "current_thread")]
+async fn regenerate_route_runs_the_job_to_done() {
+    let (state, id) = state_with_note_block().await;
+    *TEST_REPLY.lock().unwrap() = Some(json!({"description": "Route written."}));
+    let uri = format!("/blocks/{id}/note/regenerate");
+    let (s, v) = call(&state, post(&uri, json!({}))).await;
+    assert_eq!((s, v), (StatusCode::OK, json!({"started": true})));
+    assert_eq!(settle(&state, id).await, JobState::Done);
+    *TEST_REPLY.lock().unwrap() = None;
+    assert_eq!(
+        call(&state, status_req(id)).await.1,
+        json!({"state": "done"})
+    );
+    assert_eq!(
+        block(&state, id).await.description.as_deref(),
+        Some("Route written.")
+    );
+}
+
+// catches: an empty reply committed; `>=` for `>` at the 500 limit; 501 committed
+#[tokio::test(flavor = "current_thread")]
+async fn bad_model_replies_fail_and_leave_the_description() {
+    for text in ["".to_string(), "a".repeat(501)] {
+        let (state, id) = state_with_note_block().await;
+        let before = block(&state, id).await.description;
+        assert!(start_job(&state, id, false, fixed(json!({ "description": text }))));
+        assert!(matches!(settle(&state, id).await, JobState::Failed(_)));
+        assert_eq!(block(&state, id).await.description, before);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reply_of_exactly_500_chars_is_committed() {
+    let (state, id) = state_with_note_block().await;
+    let text = "a".repeat(500);
+    assert!(start_job(&state, id, false, fixed(json!({ "description": text }))));
+    assert_eq!(settle(&state, id).await, JobState::Done);
+    assert_eq!(block(&state, id).await.description, Some(text));
+}
+
+// catches: block saved before the key is validated
+#[tokio::test(flavor = "current_thread")]
+async fn bad_ticket_key_saves_no_block() {
+    let state = state_from_conn(open_memory().unwrap());
+    let body = json!({"jira_issue": "apro-1", "day": "2026-04-18", "start": "10:00", "minutes": 30, "note": "x"});
+    let (s, _) = call(&state, post("/blocks/note", body)).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (_, v) = call(&state, list_req("2026-04-18")).await;
+    assert_eq!(v, json!([]));
 }

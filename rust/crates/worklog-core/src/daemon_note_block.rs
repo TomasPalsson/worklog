@@ -19,7 +19,15 @@ use super::{with_conn, ApiError, Shared};
 
 type MakeInvoker = Box<dyn FnOnce() -> anyhow::Result<Box<dyn ModelInvoker>> + Send>;
 
+/// Lets route-level tests answer the model call without a provider.
+#[cfg(test)]
+pub(crate) static TEST_REPLY: std::sync::Mutex<Option<Value>> = std::sync::Mutex::new(None);
+
 fn real_invoker() -> anyhow::Result<Box<dyn ModelInvoker>> {
+    #[cfg(test)]
+    if let Some(reply) = TEST_REPLY.lock().unwrap().clone() {
+        return Ok(Box::new(estimate::FixedInvoker(reply)));
+    }
     estimate::build_regenerate_invoker(NOTE_THINKING_TOKENS)
 }
 
