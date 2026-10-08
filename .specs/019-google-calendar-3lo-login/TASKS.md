@@ -1,3 +1,5 @@
+Approved: 2026-10-08 by user
+Base: 2777b1b
 # Tasks — Google Calendar 3LO login
 Spec: spec.md · Design: design.md · Base: 7b9cbb7 · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml`
 
