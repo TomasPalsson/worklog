@@ -38,4 +38,5 @@ export const NOTE_MAX_CHARS = 500;
 export const NOTE_MAX_MINUTES = 720;
 export const NOTE_POLL_MS = 1000;
 export const NOTE_POLL_MAX_MS = 30_000;
-export const TICKET_KEY_RE = /^[A-Z][A-Z0-9]+-\d+$/;
+/** Same rule as the daemon's `validated_key` (daemon_tasks.rs). */
+export const TICKET_KEY_RE = /^[A-Z][A-Z0-9_]*-\d+$/;

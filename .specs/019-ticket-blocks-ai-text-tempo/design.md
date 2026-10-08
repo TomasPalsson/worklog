@@ -96,7 +96,7 @@ THE FIVE   (1) NEVER invent an error type, field name or result shape that alrea
 CONTRACT   rust/crates/worklog-core/src/note_block_contract.rs — import from it.
 NAMES      rough_note · description_origin · note writer · NotePrep
 MODULE     src/note_writer.rs (+ note_writer_test.rs via `#[path]`) · core · may import: note_block_contract, ticket_log, estimate::ModelInvoker, block_service::MARK_DIRTY_IF_SYNCED, change_log, repo, models
-CALLS      the five signatures in §4 verbatim. `log_note_block` = `ticket_log::log_time(conn, &body.jira_issue, &LogTimeBody{day,start,minutes,description: note}, today)` then `UPDATE blocks SET rough_note=?, description_origin='note' WHERE id=?`. Prompt: one sentence-to-three-sentence past-tense work description for a timesheet, from the note, ticket key + summary (from `jira_tickets` if cached) and minutes; no invented facts; reply schema `{description: string}`. Plus the `set_description` CASE fragment in block_service.rs (§4).
+CALLS      the five signatures in §4 verbatim. `log_note_block` = `ticket_log::log_time(conn, &body.jira_issue, &LogTimeBody{day,start,minutes,description: note}, today)` after refusing (InvalidInput "ends after midnight") when local start + minutes passes 24:00, then `UPDATE blocks SET rough_note=?, description_origin='note' WHERE id=?`. `invoke_note` rejects an empty or >500-char reply (FR-14). Prompt: one sentence-to-three-sentence past-tense work description for a timesheet, from the note, ticket key + summary (from `jira_tickets` if cached) and minutes; no invented facts; reply schema `{description: string}`. Plus the `set_description` CASE fragment in block_service.rs (§4).
 DUPLICATE  the note prompt is its own const — do not touch estimate::SYSTEM_PROMPT
 THE FIVE   (1)–(5) as in T001.
 
@@ -104,7 +104,7 @@ THE FIVE   (1)–(5) as in T001.
 CONTRACT   rust/crates/worklog-core/src/note_block_contract.rs — import from it.
 NAMES      note job · note_jobs · REASON_HAND_EDITED · REASON_NOT_A_NOTE_BLOCK
 MODULE     src/daemon_note_block.rs (+ daemon_note_block_test.rs) · daemon child via `#[path]` like daemon_line_text.rs · may import: note_writer, note_block_contract, estimate::build_regenerate_invoker, super::{with_conn, ApiError, Shared}
-CALLS      the three routes in §4; `run_note_job(state, block_id, force) -> Result<(), String>` mirrors `daemon_line_text::run_line_text_job` (prepare in with_conn → spawn_blocking invoke → commit in with_conn). `log_note` returns the Block and always tries to start a job (force=false). Status JSON exactly §3. `JobTracker<K = BillingLineKey>` generic in line_text_jobs.rs; `AppState.note_jobs: JobTracker<i64>`.
+CALLS      the three routes in §4; `run_note_job(state, block_id, force) -> Result<(), String>` mirrors `daemon_line_text::run_line_text_job` (prepare in with_conn → spawn_blocking invoke → commit in with_conn). `log_note` runs `validated_key(&body.jira_issue)` first, returns the Block and always tries to start a job (force=false). Status JSON exactly §3. `JobTracker<K = BillingLineKey>` generic in line_text_jobs.rs; `AppState.note_jobs: JobTracker<i64>`.
 DUPLICATE  none
 THE FIVE   (1)–(5) as in T001.
 
