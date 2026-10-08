@@ -237,12 +237,20 @@ fn contract_warning(status: &str) -> &'static str {
     }
 }
 
+/// A contract problem (missing, no hours, …) or no Mirres project counts as
+/// billable: in practice that work is billed once Mirres is fixed. The
+/// warning stays, so the line still lands on "Fix in Mirres".
 pub fn classify(p: &Project) -> (BillingClass, Option<String>) {
     let inc = p.included_hours.as_ref();
+    let contract_problem = inc
+        .and_then(|i| i.contract_status.as_deref())
+        .is_some_and(|s| s != "OK");
     let class = if p.billable {
         BillingClass::Billable
     } else if inc.is_some_and(|i| i.counts_as_billed) {
         BillingClass::Included
+    } else if contract_problem {
+        BillingClass::Billable
     } else {
         BillingClass::NotBillable
     };
@@ -291,7 +299,7 @@ fn not_found_billing(key: &str) -> LineBilling {
         account_key: key.to_owned(),
         project: None,
         project_type: None,
-        class: BillingClass::NotBillable,
+        class: BillingClass::Billable,
         warning: Some("Ekki virkt Mirres-verkefni".to_owned()),
         customer: None,
         details: None,

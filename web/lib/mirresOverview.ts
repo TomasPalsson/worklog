@@ -143,14 +143,14 @@ export function statusReason(
 export function sharedHelp(warnings: (string | null)[], count: number): string | null {
   if (warnings.length === 0 || new Set(warnings).size !== 1) return null;
   if (warnings[0] === "Samning vantar í Mirres")
-    return `${count === 1 ? "This project has" : `These ${count} projects have`} no contract in Mirres, so their hours don't count as billable. Ask the owner to add one, then fetch again.`;
+    return `${count === 1 ? "This project has" : `These ${count} projects have`} no contract in Mirres. Their hours count as billable here, but won't be invoiced until the owner adds one.`;
   return warningHelp(warnings[0]);
 }
 
 export function warningHelp(warning: string | null): string | null {
   if (!warning) return null;
   if (warning === "Samning vantar í Mirres")
-    return "No contract in Mirres, so these hours can't count as billable. Ask the owner to add it, then fetch again.";
+    return "No contract in Mirres. These hours count as billable here, but won't be invoiced until the owner adds it.";
   if (warning.startsWith("Tímafjölda vantar")) return "The contract has no hours set in Mirres.";
   if (warning === "Innifaldir tímar uppurnir") return "Included hours are used up for this period.";
   if (warning.startsWith("Innifaldir tímar að klárast")) return "Included hours are almost used up.";
