@@ -9,3 +9,4 @@
 - Discovered: rust/crates/worklog-cli/src/cli.rs:153 — Collect help line lists "(jira, github, tempo, all)", stale — defer
 - Discovered: rust/crates/worklog-core/src/collectors/gcal_auth.rs:105 + rust/crates/worklog-cli/src/main.rs:21 — a login failure prints twice on stderr ("login failed: …" then miette "Error: …"); spec silent (review minor) — defer
 - Discovered: rust/crates/worklog-cli/tests/cli.rs collect_gcal_auth_* — tests don't prove gcal_auth::authorize is reached (a CLI that reads the file itself would pass) (review minor) — defer
+- Discovered: `flow check` exits 1 "No supported project file found" (Cargo.toml lives in rust/); preview gates run by hand 2026-10-08: cargo fmt --check exit 0, cargo clippy -D warnings exit 0, cargo test exit 0 — G001 should use these — defer
