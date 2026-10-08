@@ -41,5 +41,9 @@ export function statusMeta(b: StatusInput) {
 /** The visible amber tag on a ticket row, or null when the row needs no attention. */
 export function rowChip(b: StatusInput): string | null {
   const meta = statusMeta(b);
-  return meta.kind === "missing" ? meta.label : null;
+  if (meta.kind === "missing") return meta.label;
+  const w = b.warning ?? "";
+  if (w.startsWith("Innifaldir tímar uppurnir")) return "hours used up";
+  if (w.startsWith("Innifaldir tímar að klárast")) return "hours running low";
+  return null;
 }
