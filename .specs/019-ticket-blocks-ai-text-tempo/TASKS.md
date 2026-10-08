@@ -1,3 +1,4 @@
+Approved: 2026-10-08 by user
 # Tasks — Add a ticket block from the day page, AI writes its description
 Spec: spec.md · Design: design.md · Base: 6ada5b4 · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && cd web && bun test`
 
