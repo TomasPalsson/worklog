@@ -13,6 +13,7 @@ describe("statusKind", () => {
     expect(statusKind(b("included", null, "Tímafjölda vantar á samning"))).toBe("missing");
     expect(statusKind(b("billable", null, "Fleiri en ein samningur"))).toBe("missing");
     expect(statusKind(b("billable", null, "Óþekkt verkefni"))).toBe("missing");
+    expect(statusKind(b("billable", null, "Ekki virkt Mirres-verkefni"))).toBe("missing");
   });
   it("other warnings keep the class", () => {
     expect(statusKind(b("included", null, "Innifaldir tímar uppurnir"))).toBe("included");

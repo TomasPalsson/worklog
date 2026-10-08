@@ -130,9 +130,13 @@ fn classify_covers_classes_and_warnings() {
 
     let no_contract = project(json!({"tempo_account_key": "A", "billable": false,
         "included_hours": {"contract_status": "NO_CONTRACT", "counts_as_billed": false}}));
+    // Missing contract: counted billable, warning kept so it stays on "Fix in Mirres".
     assert_eq!(
-        classify(&no_contract).1.as_deref(),
-        Some("Samning vantar í Mirres")
+        classify(&no_contract),
+        (
+            BillingClass::Billable,
+            Some("Samning vantar í Mirres".to_owned())
+        )
     );
 
     let used_up = project(json!({"tempo_account_key": "A", "billable": false,
@@ -213,6 +217,7 @@ fn fetch_day_billing_maps_ticket_to_account_to_mirres() {
         rows[1].1.warning.as_deref(),
         Some("Ekki virkt Mirres-verkefni")
     );
+    assert_eq!(rows[1].1.class, BillingClass::Billable);
     assert_eq!(rows[1].1.project, None);
 }
 

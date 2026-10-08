@@ -11,11 +11,11 @@ export const STATUS_META: Record<StatusKind, { label: string; hint: string; tone
   included: { label: "covered by contract", hint: "Covered by the contract's included hours; counts toward the 70% goal", tone: "sage" },
   fixed: { label: "fixed price", hint: "Not billed by the hour", tone: "muted" },
   internal: { label: "internal", hint: "Internal work, not billed", tone: "muted" },
-  missing: { label: "contract missing", hint: "Mirres has no usable contract for this project", tone: "amber" },
+  missing: { label: "contract missing", hint: "Mirres has no usable contract for this project; counted as billable until it's fixed", tone: "amber" },
   not_billable: { label: "not billable", hint: "Not billed", tone: "muted" },
 };
 
-const MISSING = ["Samning vantar", "Tímafjölda vantar", "Fleiri en ein", "Óþekkt"];
+const MISSING = ["Samning vantar", "Tímafjölda vantar", "Fleiri en ein", "Óþekkt", "Ekki virkt"];
 
 type StatusInput = Pick<LineBilling, "class" | "project_type" | "warning">;
 
