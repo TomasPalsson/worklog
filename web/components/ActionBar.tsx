@@ -19,17 +19,21 @@ import {
 import type { ActionResult } from "@/app/actions";
 import { refreshMirresAction } from "@/app/actions-tempo-lines";
 import { toast } from "@/lib/toast";
+import type { JiraTicket } from "@/lib/types";
+import { AddNoteBlock } from "./AddNoteBlock";
 import { MirresIcon } from "./icons";
 
 interface Props {
   day: string;
   cacheCount: number;
   cacheLast: string | null;
+  tickets: JiraTicket[];
+  lastEnd: string | null;
 }
 
 type ActionId = "infer" | "estimate" | "jira" | "mirres" | "dry-run" | "sync";
 
-export function ActionBar({ day, cacheCount, cacheLast }: Props) {
+export function ActionBar({ day, cacheCount, cacheLast, tickets, lastEnd }: Props) {
   // Per-button pending set so one slow action doesn't freeze the rest.
   const [pending, setPending] = useState<Set<ActionId>>(new Set());
   const [confirmSync, setConfirmSync] = useState(false);
@@ -77,6 +81,7 @@ export function ActionBar({ day, cacheCount, cacheLast }: Props) {
 
   return (
     <div className="actions">
+      <AddNoteBlock day={day} tickets={tickets} lastEnd={lastEnd} />
       <ActionButton
         pending={isPending("infer")}
         icon={<ListRestart />}
