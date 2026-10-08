@@ -37,3 +37,9 @@ export function statusMeta(b: StatusInput) {
   const subscription = kind === "fixed" && !(b.project_type ?? "").includes("Fast verð");
   return { kind, ...meta, label: subscription ? "subscription" : meta.label };
 }
+
+/** The visible amber tag on a ticket row, or null when the row needs no attention. */
+export function rowChip(b: StatusInput): string | null {
+  const meta = statusMeta(b);
+  return meta.kind === "missing" ? meta.label : null;
+}
