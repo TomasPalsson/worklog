@@ -52,4 +52,16 @@ describe("shouldShowSparkles", () => {
       shouldShowSparkles({ jira_issue: "PROJ-1", is_personal: true }, true),
     ).toBe(false);
   });
+
+  // Note blocks (spec 019): a rough note makes Regenerate available even in a multi-block group.
+  it("shows on a note block that is assigned and not sole in its group", () => {
+    expect(
+      shouldShowSparkles({ jira_issue: "PROJ-1", is_personal: false, rough_note: "fixed it" }, false),
+    ).toBe(true);
+  });
+
+  it("stays hidden on an assigned non-sole block with null or empty rough_note", () => {
+    expect(shouldShowSparkles({ jira_issue: "PROJ-1", is_personal: false, rough_note: null }, false)).toBe(false);
+    expect(shouldShowSparkles({ jira_issue: "PROJ-1", is_personal: false, rough_note: "" }, false)).toBe(false);
+  });
 });

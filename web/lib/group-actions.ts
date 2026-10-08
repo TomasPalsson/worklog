@@ -23,6 +23,7 @@ export interface GroupShape {
 export interface BlockShape {
   jira_issue: string | null;
   is_personal: boolean;
+  rough_note?: string | null;
 }
 
 export function canMergeGroup(group: GroupShape): boolean {
@@ -34,6 +35,7 @@ export function shouldShowSparkles(
   block: BlockShape,
   isSoleInGroup: boolean,
 ): boolean {
+  if (block.rough_note) return true;
   if (block.is_personal) return false;
   if (!block.jira_issue) return true;
   return isSoleInGroup;
