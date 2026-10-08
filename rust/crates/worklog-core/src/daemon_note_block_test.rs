@@ -175,7 +175,10 @@ async fn status_is_per_block_id() {
         json!({"state": "idle"})
     );
     state.note_jobs.finish(2, Ok(()));
-    assert_eq!(call(&state, status_req(2)).await.1, json!({"state": "done"}));
+    assert_eq!(
+        call(&state, status_req(2)).await.1,
+        json!({"state": "done"})
+    );
     state.note_jobs.finish(3, Err("boom".into()));
     assert_eq!(
         call(&state, status_req(3)).await.1,
@@ -227,6 +230,36 @@ async fn log_note_rejects_a_bad_ticket_key() {
     body["jira_issue"] = json!("APRO-");
     let (s, _) = call(&state, post("/blocks/note", body)).await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
+}
+
+struct LockProbe {
+    state: Shared,
+    was_free: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ModelInvoker for LockProbe {
+    fn invoke(&self, _s: &str, _u: &str, _sc: &Value, _m: &str) -> anyhow::Result<Value> {
+        self.was_free.store(
+            self.state.conn.try_lock().is_ok(),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        Ok(json!({"description": "Probed."}))
+    }
+}
+
+// catches: holding the sqlite connection across the model call
+#[tokio::test(flavor = "current_thread")]
+async fn connection_is_free_during_the_model_call() {
+    let (state, id) = state_with_note_block().await;
+    let was_free = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let probe = LockProbe {
+        state: state.clone(),
+        was_free: was_free.clone(),
+    };
+    let make = move || Ok(Box::new(probe) as Box<dyn ModelInvoker>);
+    assert!(start_job(&state, id, false, make));
+    assert_eq!(settle(&state, id).await, JobState::Done);
+    assert!(was_free.load(std::sync::atomic::Ordering::SeqCst));
 }
 
 // catches: log_time errors mapped to 500 instead of 400 (no hub_error)

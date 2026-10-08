@@ -12,29 +12,10 @@ use crate::line_text_jobs::JobState;
 use crate::models::Block;
 use crate::note_block_contract::*;
 use crate::note_writer;
-use crate::tempo_hub_contract::HubError;
 use crate::tz;
 
-use super::daemon_tasks::hub_error;
+use super::daemon_tasks::{hub_error, validated_key};
 use super::{with_conn, ApiError, Shared};
-
-fn validated_key(key: &str) -> Result<(), ApiError> {
-    let valid = key.split_once('-').is_some_and(|(project, number)| {
-        project.starts_with(|c: char| c.is_ascii_uppercase())
-            && project
-                .chars()
-                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-            && !number.is_empty()
-            && number.chars().all(|c| c.is_ascii_digit())
-    });
-    if valid {
-        Ok(())
-    } else {
-        Err(hub_error(
-            HubError::InvalidInput(format!("`{key}` is not a Jira ticket key")).into(),
-        ))
-    }
-}
 
 type MakeInvoker = Box<dyn FnOnce() -> anyhow::Result<Box<dyn ModelInvoker>> + Send>;
 
