@@ -3,13 +3,14 @@ import { InfoIcon } from "./mirres-art";
 import { MirresPopover } from "./MirresPopover";
 import { MirresStatusIcon } from "./MirresStatusIcon";
 import { stripCustomer } from "@/lib/mirresOverview";
-import { statusMeta } from "@/lib/mirresStatus";
+import { rowChip, statusMeta } from "@/lib/mirresStatus";
 import type { LineBilling } from "@/lib/tempo_line_contract";
 
 /** The quiet one-line Mirres status under a ticket line, with a details popover. */
 export function MirresLine({ billing, issue }: { billing: LineBilling; issue: string }) {
   const id = useId();
   const status = statusMeta(billing);
+  const chip = rowChip(billing);
   const project = stripCustomer(billing.project, billing.customer);
   const anchor = `--a${id.replace(/:/g, "")}`;
   const label = `Mirres details for ${issue}`;
@@ -17,8 +18,8 @@ export function MirresLine({ billing, issue }: { billing: LineBilling; issue: st
     <span className="mirres-line" data-tone={status.tone} title={status.hint}>
       <MirresStatusIcon kind={status.kind} />
       <span className="mirres-line-customer">{billing.customer ?? "Unknown customer"}</span>
-      {status.kind === "missing" ? (
-        <span className="mirres-line-chip">{status.label}</span>
+      {chip ? (
+        <span className="mirres-line-chip">{chip}</span>
       ) : (
         <span className="mirres-sr">{status.label}</span>
       )}
