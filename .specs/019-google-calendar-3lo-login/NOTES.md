@@ -1,0 +1,11 @@
+- Discovered: rust/crates/worklog-core/src/collectors/gcal.rs:210 — refresh_access_token writes the token in place with fs::write; a crash mid-write can truncate it — defer
+- Discovered: rust/crates/worklog-core/src/collectors/gcal.rs:71 — StoredToken doc comment mentions Python round-tripping, stale — defer
+- Discovered: rust/crates/worklog-core/src/collectors/gcal_auth.rs:356 — temp token file is created with default perms before the 0600 chmod, a brief window where the secret is world-readable (same pattern as gcal.rs) — defer
+- Discovered: rust/crates/worklog-core/src/collectors/gcal_auth.rs — ~776 lines vs the 400-line size guard; inline tests dominate, files: allowed no split — defer
+- Discovered: rust/crates/worklog-core/src/collectors/gcal_auth.rs:348 — atomic temp+rename write has no test that fails if it writes in place (review minor) — defer
+- Discovered: rust/crates/worklog-core/src/collectors/gcal_auth.rs:210 — deadline only checked on WouldBlock; idle browser sockets can each add up to 5 s (review minor) — defer
+- Discovered: .specs/019-google-calendar-3lo-login/TASKS.md Behaviors "Proven by" test names differ from the real test names in gcal_auth.rs — defer
+- Discovered: rust/crates/worklog-cli/src/cli.rs:155 — Collect doc comment says "Gcal is deferred until Stage 2.1" / "all = jira + github", stale — defer
+- Discovered: rust/crates/worklog-cli/src/cli.rs:153 — Collect help line lists "(jira, github, tempo, all)", stale — defer
+- Discovered: rust/crates/worklog-core/src/collectors/gcal_auth.rs:105 + rust/crates/worklog-cli/src/main.rs:21 — a login failure prints twice on stderr ("login failed: …" then miette "Error: …"); spec silent (review minor) — defer
+- Discovered: rust/crates/worklog-cli/tests/cli.rs collect_gcal_auth_* — tests don't prove gcal_auth::authorize is reached (a CLI that reads the file itself would pass) (review minor) — defer

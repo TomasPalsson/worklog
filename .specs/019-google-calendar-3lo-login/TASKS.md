@@ -14,13 +14,13 @@ Spec: spec.md · Design: design.md · Base: 7b9cbb7 · Route: dispatch · Test: 
 ## Phase 1 — Login routine
 Goal: worklog can get a Google token on its own, tested against a fake Google.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core gcal_auth` — green with the CLI untouched.
-- [ ] T001 Loopback + PKCE login routine per design §1 (B1, B2, B3) — files: rust/crates/worklog-core/src/collectors/gcal_auth.rs, rust/crates/worklog-core/src/collectors/mod.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core gcal_auth`
-- [ ] T003 [P] README: Google Cloud Console Desktop-app credential steps + `worklog collect gcal --auth` — files: README.md — verify: `grep -q "collect gcal --auth" README.md`
+- [x] T001 Loopback + PKCE login routine per design §1 (B1, B2, B3) — files: rust/crates/worklog-core/src/collectors/gcal_auth.rs, rust/crates/worklog-core/src/collectors/mod.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core gcal_auth` — done: 42adf48
+- [x] T003 [P] README: Google Cloud Console Desktop-app credential steps + `worklog collect gcal --auth` — files: README.md — verify: `grep -q "collect gcal --auth" README.md` — done: b2fe5c1
 
 ## Phase 2 — Command wiring
 Goal: the command every error message already names actually works.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-cli collect_gcal_auth` — green.
-- [ ] T002 `--auth` flag on `worklog collect` calling `gcal_auth::authorize` (B4) — files: rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-cli/tests/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-cli collect_gcal_auth` — after: T001
+- [x] T002 `--auth` flag on `worklog collect` calling `gcal_auth::authorize` (B4) — files: rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-cli/tests/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-cli collect_gcal_auth` — after: T001 — done: ea6ce0d
 - [ ] CHK001 human-verify a real Google login — files: rust/crates/worklog-cli/src/cli.rs — verify: human: Owner runs `worklog collect gcal --auth`, clicks Allow, then `worklog collect gcal` shows today's meetings — after: T002
 
 ## Gates
