@@ -137,4 +137,13 @@ describe("AddNoteBlock", () => {
     expect(field("Ticket").value).toBe("ABC-1");
     expect(screen.queryByText("Writing…")).toBeNull();
   });
+
+  it("is usable again after a daemon error (busy is cleared)", async () => {
+    addNoteBlock.mockImplementationOnce(async () => ({ ok: false, error: "daemon down" }));
+    mount();
+    open();
+    await fill();
+    expect(field("Note").disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Add" }) as HTMLButtonElement).disabled).toBe(false);
+  });
 });

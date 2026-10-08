@@ -128,4 +128,15 @@ describe("useNoteJob", () => {
     view.unmount();
     expect(handles[0].cleared).toBe(true);
   });
+
+  it("a poll still in flight at unmount does nothing when it lands", async () => {
+    let land: (r: Res) => void = () => {};
+    noteStatusAction.mockImplementationOnce(() => new Promise<Res>((r) => (land = r)));
+    const view = start();
+    const pending = handles[0].fn();
+    view.unmount();
+    land({ ok: true, data: { state: "done" } });
+    await pending;
+    expect(refresh).not.toHaveBeenCalled();
+  });
 });

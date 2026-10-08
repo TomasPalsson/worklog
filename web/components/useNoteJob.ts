@@ -10,12 +10,12 @@ import { toast } from "@/lib/toast";
 export function useNoteJob(day: string): { track: (blockId: number) => void; running: Set<number> } {
   const router = useRouter();
   const [running, setRunning] = useState<Set<number>>(new Set());
-  const timers = useRef(new Set<ReturnType<typeof setInterval>>());
+  const cancels = useRef(new Set<() => void>());
 
   useEffect(() => {
-    const live = timers.current;
+    const live = cancels.current;
     return () => {
-      for (const t of live) clearInterval(t);
+      for (const cancel of live) cancel();
       live.clear();
       setRunning(new Set());
     };
@@ -29,7 +29,7 @@ export function useNoteJob(day: string): { track: (blockId: number) => void; run
       const settle = () => {
         settled = true;
         clearInterval(timer);
-        timers.current.delete(timer);
+        cancels.current.delete(settle);
         setRunning((r) => {
           const n = new Set(r);
           n.delete(blockId);
@@ -50,7 +50,7 @@ export function useNoteJob(day: string): { track: (blockId: number) => void; run
           settle();
         }
       }, NOTE_POLL_MS);
-      timers.current.add(timer);
+      cancels.current.add(settle);
     },
     [router],
   );
