@@ -11,7 +11,10 @@ mock.module("next/cache", () => ({
 }));
 
 const callImpl = mock(async (_m: string, _p: string, _b?: unknown): Promise<unknown> => ({}));
+// mock.module is process-wide: keep the real exports so other test files survive.
+const realDaemon = { ...(await import("@/lib/daemon")) };
 mock.module("@/lib/daemon", () => ({
+  ...realDaemon,
   call: (m: string, p: string, b?: unknown) => callImpl(m, p, b),
 }));
 
