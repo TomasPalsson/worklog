@@ -50,14 +50,14 @@ export function DayProgressProvider({ day, children }: { day: string; children: 
   return <Ctx.Provider value={{ ...state, retry }}>{children}</Ctx.Provider>;
 }
 
-/** The block's ticket bar; nothing for personal/unassigned blocks, outside a provider, or once loaded without that ticket. */
-export function BlockEstimate({ block }: { block: Block }) {
+/** The ticket group's bar; nothing outside a provider or once loaded without that ticket. */
+export function TicketEstimate({ ticketKey, blocks }: { ticketKey: string; blocks: Block[] }) {
   const ctx = useContext(Ctx);
-  const ticketKey = block.jira_issue;
-  if (!ctx || !ticketKey || block.is_personal) return null;
+  if (!ctx) return null;
   const ticket: TicketProgress | undefined = ctx.failed
     ? { key: ticketKey, estimate_seconds: null, people: [], logged_seconds: 0, pulled_at: null, error: "jira_unavailable" }
     : ctx.tickets?.get(ticketKey);
   if (ctx.tickets && !ticket) return null;
-  return <EstimateBar ticket={ticket} pending={pendingSeconds(block)} onRetry={() => ctx.retry(ticketKey)} />;
+  const pending = blocks.reduce((n, b) => (b.is_personal ? n : n + pendingSeconds(b)), 0);
+  return <EstimateBar ticket={ticket} pending={pending} onRetry={() => ctx.retry(ticketKey)} />;
 }

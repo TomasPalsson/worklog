@@ -7,7 +7,7 @@ import { EstimateFlagIcon, PendingIcon, ToneIcon } from "./progressIcons";
 interface Props {
   /** undefined while the numbers load. */
   ticket: TicketProgress | undefined;
-  /** This block's not-yet-synced seconds. */
+  /** Not-yet-synced seconds across the ticket's blocks. */
   pending: number;
   onRetry: () => void;
 }
@@ -64,7 +64,7 @@ function Legend({ m, pending }: { m: BarModel; pending: number }) {
       {pending > 0 && (
         <li>
           <PendingIcon />
-          This block, not in Tempo yet <b>+{formatDuration(pending)}</b>
+          Not in Tempo yet <b>+{formatDuration(pending)}</b>
         </li>
       )}
     </ul>
@@ -82,7 +82,7 @@ function Meter({ ticket, m, pending, verdict }: { ticket: TicketProgress; m: Bar
       aria-valuemin={0}
       aria-valuemax={scale}
       aria-valuenow={m.used}
-      aria-valuetext={`${formatDuration(m.used)} of ${formatDuration(m.estimate)} estimate${pending > 0 ? " including this block" : ""}, ${verdict}`}
+      aria-valuetext={`${formatDuration(m.used)} of ${formatDuration(m.estimate)} estimate${pending > 0 ? " including unsynced time" : ""}, ${verdict}`}
     >
       {m.over > 0 && <span className="ep-overzone" style={{ left: flagAt }} />}
       <span className="ep-fill">

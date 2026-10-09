@@ -88,10 +88,32 @@ const saveHours = mock(
 );
 const regenerate = mock(async (_key: TempoLineKey) => ({ ok: true as const, data: line() }));
 
+type Progress = import("@/lib/types").DayProgress;
+type ProgressRes = { ok: true; data: Progress } | { ok: false; error: string };
+const loadDayProgress = mock(async (_day: string, _refresh?: string): Promise<ProgressRes> => ({
+  ok: false,
+  error: "unset",
+}));
+// Mock only the daemon boundary: bun's mock.module is process-wide, so
+// replacing @/app/actions-progress would leak into every later test file.
+const realDaemon = { ...(await import("@/lib/daemon")) };
+mock.module("@/lib/daemon", () => ({
+  ...realDaemon,
+  call: async (_method: string, path: string) => {
+    const m = path.match(/^\/progress\/([^?]+)(?:\?refresh=(.*))?$/);
+    if (!m) throw new Error(`unexpected daemon call ${path}`);
+    const r = await loadDayProgress(m[1], m[2] === undefined ? undefined : decodeURIComponent(m[2]));
+    if (!r.ok) throw new Error(r.error);
+    return r.data;
+  },
+}));
+
+let DayProgressProvider: (props: { day: string; children: React.ReactNode }) => React.JSX.Element;
 let TicketGroup: typeof import("./TicketGroup").TicketGroup;
 
 beforeAll(async () => {
   TicketGroup = (await import("./TicketGroup")).TicketGroup;
+  DayProgressProvider = (await import("./DayProgressProvider")).DayProgressProvider;
 });
 
 afterEach(() => {
@@ -452,5 +474,142 @@ describe("needs-a-look reason", () => {
   it("shows no reason when the badge is hidden", () => {
     renderGroup(group(), { ...line({ text_origin: "generated" }), check_status: "passed" } as TempoLine);
     expect(screen.queryByText("Vague after one rewrite — edit before it is sent")).toBeNull();
+  });
+});
+
+describe("TicketGroup estimate bar wiring", () => {
+  const DAY = "2026-09-25";
+  const H = 3600;
+  type B = import("@/lib/types").Block;
+  const ticket = (o: Partial<import("@/lib/types").TicketProgress> = {}) => ({
+    key: "PROJ-1",
+    estimate_seconds: 4 * H,
+    people: [{ account_id: "me", name: "Tomas P", is_you: true, seconds: 2 * H, by_day: [[DAY, 2 * H]] as Array<[string, number]> }],
+    logged_seconds: 2 * H,
+    pulled_at: "2026-07-25T09:42:00Z",
+    error: null,
+    ...o,
+  });
+  const loaded = (...tickets: ReturnType<typeof ticket>[]) =>
+    loadDayProgress.mockImplementation(async () => ({ ok: true, data: { day: DAY, tickets } }));
+  const blk = (o: Partial<B> = {}) =>
+    ({ id: 1, duration_seconds: 1800, tempo_worklog_id: null, is_personal: false, jira_issue: "PROJ-1", ...o }) as B;
+  const withBar = (blocks: B[], g: Partial<BlockGroup> = {}) =>
+    render(
+      <DayProgressProvider day={DAY}>
+        <TicketGroup group={group({ blocks, ...g })} day={DAY}>
+          {null}
+        </TicketGroup>
+      </DayProgressProvider>,
+    );
+
+  afterEach(() => loadDayProgress.mockClear());
+
+  it("B8: shows 'Loading hours from Jira…' while the call is unresolved (catches awaiting before render)", () => {
+    loadDayProgress.mockImplementation(() => new Promise(() => {}));
+    withBar([blk()]);
+    expect(screen.getByText("Loading hours from Jira…")).toBeTruthy();
+  });
+
+  it("asks the daemon for the day with no forced refresh, once (catches a fetch per group)", async () => {
+    loaded(ticket());
+    withBar([blk()]);
+    await waitFor(() => expect(screen.getByRole("meter")).toBeTruthy());
+    expect(loadDayProgress).toHaveBeenCalledTimes(1);
+    expect(loadDayProgress).toHaveBeenCalledWith(DAY, undefined);
+  });
+
+  it("an unsynced block adds its seconds on top of the logged ones (catches pending = 0)", async () => {
+    loaded(ticket());
+    withBar([blk()]);
+    await waitFor(() => expect(screen.getByText("once synced")).toBeTruthy());
+    expect(screen.getByRole("meter").getAttribute("aria-valuenow")).toBe(String(2.5 * H));
+  });
+
+  it("a synced block adds nothing: its time is already in Tempo (catches pending = duration always)", async () => {
+    loaded(ticket());
+    withBar([blk({ tempo_worklog_id: "77" })]);
+    await waitFor(() => expect(screen.getByRole("meter")).toBeTruthy());
+    expect(screen.getByRole("meter").getAttribute("aria-valuenow")).toBe(String(2 * H));
+    expect(screen.queryByText("once synced")).toBeNull();
+  });
+
+  it("FR-15a: a 1970-01-01 pulled_at reads as unknown, never as a clock time", async () => {
+    loaded(ticket({ pulled_at: "1970-01-01T00:00:00+00:00" }));
+    withBar([blk()]);
+    await waitFor(() => expect(screen.getByRole("meter")).toBeTruthy());
+    expect(screen.queryByText(/Jira numbers from/)).toBeNull();
+  });
+
+  it("a real pulled_at still shows its time (catches hiding the line for every ticket)", async () => {
+    loaded(ticket());
+    withBar([blk()]);
+    await waitFor(() => expect(screen.getByText(/Jira numbers from \d\d:\d\d/)).toBeTruthy());
+  });
+
+  it("a failed call shows the error with Try again, and Try again asks again for the whole day (catches swallowing the error)", async () => {
+    loadDayProgress.mockImplementation(async () => ({ ok: false, error: "boom" }));
+    withBar([blk()]);
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+    expect(screen.getByRole("alert").textContent).toContain("PROJ-1");
+    loaded(ticket());
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(screen.getByRole("meter")).toBeTruthy());
+    expect(loadDayProgress).toHaveBeenLastCalledWith(DAY, undefined);
+  });
+
+  it("a per-ticket retry forces that ticket and keeps the others", async () => {
+    loaded(ticket({ error: "jira_unavailable" }), ticket({ key: "PROJ-2" }));
+    withBar([blk()]);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy());
+    loaded(ticket());
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(loadDayProgress).toHaveBeenLastCalledWith(DAY, "PROJ-1"));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Try again" })).toBeNull());
+  });
+
+  it("renders no bar for the unassigned group (catches showing it for every group)", () => {
+    loadDayProgress.mockImplementation(() => new Promise(() => {}));
+    withBar([blk({ jira_issue: null })], { key: "__unassigned__", label: "Unassigned", unassigned: true });
+    expect(screen.queryByText("Loading hours from Jira…")).toBeNull();
+  });
+
+  it("renders no bar outside the day provider (catches a hard dependency on the context)", () => {
+    render(
+      <TicketGroup group={group({ blocks: [blk()] })} day={DAY}>
+        {null}
+      </TicketGroup>,
+    );
+    expect(screen.queryByText("Loading hours from Jira…")).toBeNull();
+  });
+
+  it("renders nothing once loaded when the ticket is not in the answer", async () => {
+    loaded(ticket({ key: "OTHER-9" }));
+    withBar([blk()]);
+    await waitFor(() => expect(loadDayProgress).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText("Loading hours from Jira…")).toBeNull());
+    expect(screen.queryByRole("meter")).toBeNull();
+  });
+
+  it("sums unsynced blocks: 30m + 45m shows +1h 15m once and adds 4500s (catches counting only the first block)", async () => {
+    loaded(ticket());
+    withBar([blk({ id: 1, duration_seconds: 1800 }), blk({ id: 2, duration_seconds: 2700 })]);
+    await waitFor(() => expect(screen.getByRole("meter")).toBeTruthy());
+    expect(screen.getAllByText("+1h 15m")).toHaveLength(1);
+    expect(screen.getByRole("meter").getAttribute("aria-valuenow")).toBe(String(2 * H + 4500));
+  });
+
+  it("three blocks render exactly one meter (catches a bar per block)", async () => {
+    loaded(ticket());
+    withBar([blk({ id: 1 }), blk({ id: 2 }), blk({ id: 3 })]);
+    await waitFor(() => expect(screen.getByRole("meter")).toBeTruthy());
+    expect(screen.getAllByRole("meter")).toHaveLength(1);
+  });
+
+  it("personal blocks add no pending time (catches summing every block)", async () => {
+    loaded(ticket());
+    withBar([blk({ id: 1 }), blk({ id: 2, duration_seconds: 2700, is_personal: true })]);
+    await waitFor(() => expect(screen.getByRole("meter")).toBeTruthy());
+    expect(screen.getByRole("meter").getAttribute("aria-valuenow")).toBe(String(2.5 * H));
   });
 });

@@ -141,7 +141,7 @@ function Tip({ m, i, x, pending }: { m: ChartModel; i: number; x: number; pendin
       ))}
       {pending > 0 && (
         <p>
-          <span>This block</span>
+          <span>Not in Tempo yet</span>
           <span>+{formatDuration(pending)}</span>
         </p>
       )}
