@@ -95,6 +95,10 @@
   }
 
   .app-shell .page {
+    /* margin:auto on a grid item disables stretch -> fit-content, so a wide
+       child would grow main past the viewport. Pin it to the track. */
+    width: 100%;
+    min-width: 0;
     padding-bottom: 104px;
   }
 

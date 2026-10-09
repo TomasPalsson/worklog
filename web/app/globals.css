@@ -1270,6 +1270,8 @@ button {
   font-family: var(--font-mono);
   flex-shrink: 0;
 }
+/* Event previews are often long URLs with no spaces: let them break instead of spilling out of the card. */
+.sort-row-event-preview { min-width: 0; overflow-wrap: anywhere; }
 
 .sort-row-controls {
   display: flex;
@@ -3059,7 +3061,7 @@ body:has(.task-modal[role="dialog"][aria-modal="true"]) .chg-slip { display: non
     /* Two-row grid: time + delete on top, body below. Keeps the delete
        button anchored to the time range it refers to instead of
        floating under the description text. */
-    grid-template-columns: 1fr auto;
+    grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas:
       "time   actions"
       "body   body";
@@ -3075,6 +3077,7 @@ body:has(.task-modal[role="dialog"][aria-modal="true"]) .chg-slip { display: non
   }
   .block-body {
     grid-area: body;
+    overflow-wrap: anywhere;
   }
   .block-actions {
     grid-area: actions;
@@ -6400,6 +6403,8 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
 .note-form-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
 .note-form-head h2 { margin: 0; }
 .note-form-hint { font-size: 12px; color: var(--fg-subtle); }
+.note-form-end { font: 12px var(--font-mono, ui-monospace, monospace); font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--fg-muted); }
+.note-form-end.warn { color: var(--amber-ink); }
 .note-form-fields {
   display: grid;
   grid-template-columns: 7.5rem 5.5rem minmax(8rem, 11rem) minmax(12rem, 1fr);
