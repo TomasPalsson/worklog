@@ -47,6 +47,27 @@ pub(crate) fn describe(
     Ok(())
 }
 
+/// The Tempo text for a ticket line made only of meeting blocks: the
+/// meeting names, joined with ", ". A model asked to describe a bare
+/// meeting pads it out of the ticket summary instead. `None` when any
+/// block on the line is not a meeting.
+pub(crate) fn line_text(
+    conn: &Connection,
+    key: &crate::tempo_line_contract::TempoLineKey,
+) -> Result<Option<String>> {
+    let blocks = crate::tempo_lines::blocks_for_ticket(conn, key)?;
+    let mut titles: Vec<String> = Vec::new();
+    for b in &blocks {
+        let Some(t) = calendar_title(conn, b.id)? else {
+            return Ok(None);
+        };
+        if !titles.contains(&t) {
+            titles.push(t);
+        }
+    }
+    Ok((!titles.is_empty()).then(|| titles.join(", ")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +130,37 @@ mod tests {
         let empty = block_with(&conn, &[]);
         assert_eq!(calendar_title(&conn, mixed).unwrap(), None);
         assert_eq!(calendar_title(&conn, empty).unwrap(), None);
+    }
+
+    #[test]
+    fn meeting_only_line_text_is_the_meeting_names() {
+        // Regression (2026-10-09): the APRO-7 line for one meeting came out
+        // as two sentences padded from the ticket summary.
+        use crate::tempo_line_contract::TempoLineKey;
+        let conn = open_memory().unwrap();
+        let a = block_with(&conn, &[("gcal", "Öryggishugvekja")]);
+        let b = block_with(&conn, &[("gcal", "Argus daily")]);
+        let c = block_with(&conn, &[("claude", "PreToolUse")]);
+        conn.execute(
+            "UPDATE blocks SET jira_issue = 'APRO-7' WHERE id IN (?1, ?2)",
+            params![a, b],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE blocks SET jira_issue = 'X-1' WHERE id = ?1",
+            params![c],
+        )
+        .unwrap();
+        let key = |t: &str| TempoLineKey {
+            day: "2026-10-09".into(),
+            jira_issue: t.into(),
+        };
+        assert_eq!(
+            line_text(&conn, &key("APRO-7")).unwrap().as_deref(),
+            Some("Öryggishugvekja, Argus daily")
+        );
+        assert_eq!(line_text(&conn, &key("X-1")).unwrap(), None);
+        assert_eq!(line_text(&conn, &key("NONE-1")).unwrap(), None);
     }
 
     #[test]

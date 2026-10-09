@@ -1,9 +1,15 @@
-//! Internal-meeting ticket: calendar events whose guests are all from the
-//! owner's company land on a configured Jira ticket. Off unless both
+//! Internal-meeting ticket: a calendar event organised by someone at the
+//! owner's company whose title names none of the owner's billing
+//! customers lands on a configured Jira ticket. Off unless both
 //! `meeting_ticket` and `company_domain` are set in `personal.toml`.
+//!
+//! Guests don't decide it: an internal talk with one outside speaker is
+//! still internal, and a customer sync often has no guests on the
+//! owner's calendar at all — the customer's name in the title does.
 
 use serde::Deserialize;
 
+use crate::billing_registry::{alias_matches, Customer};
 use crate::personal::ConfigFile;
 
 #[derive(Debug, Clone, Default)]
@@ -12,12 +18,10 @@ pub struct MeetingConfig {
     pub domain: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct Attendee {
+#[derive(Debug, Default, Deserialize)]
+pub struct Organizer {
     #[serde(default)]
     pub email: String,
-    #[serde(default)]
-    pub resource: bool,
 }
 
 impl MeetingConfig {
@@ -41,79 +45,90 @@ impl MeetingConfig {
         }
     }
 
-    /// The meeting ticket for an event with these attendees, if on and internal.
-    pub fn ticket_for(&self, attendees: &[Attendee]) -> Option<String> {
+    /// The meeting ticket for this event, if the feature is on and the
+    /// event is internal (see the module doc).
+    pub fn ticket_for(
+        &self,
+        organizer: &str,
+        title: &str,
+        customers: &[Customer],
+    ) -> Option<String> {
         let (t, d) = (self.ticket.as_ref()?, self.domain.as_ref()?);
-        is_internal(attendees, d).then(|| t.clone())
+        is_internal(organizer, title, d, customers).then(|| t.clone())
     }
 }
 
-/// True when every real attendee email ends with `@<domain>`. Rooms and
-/// groups are ignored; no attendees counts as internal.
-pub fn is_internal(attendees: &[Attendee], domain: &str) -> bool {
-    let suffix = format!("@{}", domain.to_lowercase());
-    attendees
-        .iter()
-        .filter(|a| {
-            let e = a.email.to_lowercase();
-            !a.resource
-                && !e.ends_with("@resource.calendar.google.com")
-                && !e.ends_with("@group.calendar.google.com")
-        })
-        .all(|a| a.email.to_lowercase().ends_with(&suffix))
+/// Organised from `@<domain>` and no customer named in the title. The
+/// owner's own company (a customer whose name or alias is the domain's
+/// first label, e.g. "Apro" for apro.is) doesn't count as a customer.
+pub fn is_internal(organizer: &str, title: &str, domain: &str, customers: &[Customer]) -> bool {
+    let domain = domain.to_lowercase();
+    if !organizer.to_lowercase().ends_with(&format!("@{domain}")) {
+        return false;
+    }
+    let own = domain.split('.').next().unwrap_or_default();
+    !customers.iter().any(|c| {
+        let mut names = std::iter::once(&c.name).chain(&c.aliases);
+        let is_own = names.clone().any(|n| n.trim().to_lowercase() == own);
+        !is_own && names.any(|n| alias_matches(title, n))
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn a(email: &str, resource: bool) -> Attendee {
-        Attendee {
-            email: email.into(),
-            resource,
+    fn cust(name: &str, aliases: &[&str]) -> Customer {
+        Customer {
+            id: None,
+            name: name.into(),
+            aliases: aliases.iter().map(|a| a.to_string()).collect(),
         }
     }
 
+    fn customers() -> Vec<Customer> {
+        vec![
+            cust("APRÓ", &["Apro", "APRO"]),
+            cust("RL", &[]),
+            cust("Coripharma", &[]),
+        ]
+    }
+
+    fn internal(organizer: &str, title: &str) -> bool {
+        is_internal(organizer, title, "apro.is", &customers())
+    }
+
     #[test]
-    fn all_internal() {
-        assert!(is_internal(
-            &[a("x@apro.is", false), a("y@apro.is", false)],
-            "apro.is"
+    fn this_weeks_calendar() {
+        // Regression (2026-10-09): Öryggishugvekja had an outside speaker
+        // and was skipped; RL sync named a customer and was not.
+        assert!(internal("erlasylvia@apro.is", "Öryggishugvekja"));
+        assert!(internal("erlasylvia@apro.is", "APRÓfest"));
+        assert!(internal("levy@apro.is", "Argus daily"));
+        assert!(!internal("elin@apro.is", "RL sync"));
+        assert!(!internal(
+            "tomas@apro.is",
+            "Coripharma - Sync regarding code interpreter"
         ));
     }
 
     #[test]
-    fn one_external_guest() {
-        assert!(!is_internal(
-            &[a("x@apro.is", false), a("z@other.com", false)],
-            "apro.is"
-        ));
+    fn outside_organizer_is_not_internal() {
+        assert!(!internal("someone@client.com", "Weekly"));
+        assert!(!internal("x@notapro.is", "Weekly"));
+        assert!(!internal("", "Weekly"));
     }
 
     #[test]
-    fn lookalike_domain_is_external() {
-        assert!(!is_internal(&[a("x@notapro.is", false)], "apro.is"));
-    }
-
-    #[test]
-    fn rooms_and_groups_ignored() {
-        let at = [
-            a("x@apro.is", false),
-            a("room@weird.com", true),
-            a("c_1@resource.calendar.google.com", false),
-            a("g@group.calendar.google.com", false),
-        ];
-        assert!(is_internal(&at, "apro.is"));
-    }
-
-    #[test]
-    fn no_attendees_is_internal() {
-        assert!(is_internal(&[], "apro.is"));
+    fn customer_name_only_matches_whole_words() {
+        // "RL" must not fire inside "URL" or "Herlev".
+        assert!(internal("a@apro.is", "URL cleanup"));
     }
 
     #[test]
     fn case_insensitive() {
-        assert!(is_internal(&[a("Tomas@APRO.is", false)], "Apro.IS"));
+        assert!(internal("Tomas@APRO.IS", "Team lunch"));
+        assert!(!internal("a@apro.is", "coripharma demo"));
     }
 
     #[test]
@@ -122,7 +137,7 @@ mod tests {
             ticket: Some("APRO-7".into()),
             domain: None,
         };
-        assert_eq!(only_ticket.ticket_for(&[]), None);
+        assert_eq!(only_ticket.ticket_for("a@apro.is", "x", &[]), None);
     }
 
     #[test]
@@ -136,6 +151,9 @@ mod tests {
         )
         .unwrap();
         let c = MeetingConfig::load_from(&p);
-        assert_eq!(c.ticket_for(&[]).as_deref(), Some("APRO-7"));
+        assert_eq!(
+            c.ticket_for("a@apro.is", "Standup", &[]).as_deref(),
+            Some("APRO-7")
+        );
     }
 }

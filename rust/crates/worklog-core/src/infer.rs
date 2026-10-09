@@ -485,7 +485,8 @@ pub fn load_day_events(conn: &Connection, day: NaiveDate) -> Result<Vec<InferEve
     // window or show up as that project's activity either.
     let mut stmt = conn.prepare(
         "SELECT id, source, started_at, duration_seconds, jira_issue, project_path,
-                session_id, title, raw_json
+                session_id, title,
+                CASE WHEN source = 'claude_turn' THEN raw_json END
            FROM events
           WHERE started_at >= ?1 AND started_at < ?2
             AND NOT (source IN (?3, ?4) AND (label_origin IS NULL OR label_origin IN (?5, ?6)))

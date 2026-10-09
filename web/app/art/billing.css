@@ -1,0 +1,34 @@
+/* art: billing (shared hand in app/art.css) */
+.art-billing-gauge { display: flex; align-items: flex-start; gap: 6px; margin-top: 4px; max-width: 200px; color: var(--fg-muted); }
+.art-billing-glass { flex: none; margin-top: -3px; }
+.art-billing-col { position: relative; flex: 1 1 0; max-width: 180px; display: flex; flex-direction: column; gap: 2px; }
+.art-billing-track { position: relative; display: block; height: 6px; border-radius: 3px; background: var(--bg-sunk); }
+.art-billing-track[data-unknown] { background: var(--art-hatch-muted); }
+.art-billing-fill { display: block; height: 100%; border-radius: 3px; background: var(--sage); }
+.art-billing-fill[data-tone="warn"] { background: var(--amber); }
+.art-billing-fill[data-tone="over"] { background: var(--terracotta); }
+.art-billing-notch { position: absolute; right: -5px; top: -2px; width: 0; height: 0; border-top: 5px solid transparent; border-bottom: 5px solid transparent; border-left: 6px solid var(--terracotta); }
+.art-billing-ticks { position: relative; display: block; height: 4px; }
+.art-billing-ticks i { position: absolute; top: 0; width: 1px; height: 4px; background: var(--border-strong); }
+.art-billing-ticks i:last-child { margin-left: -1px; }
+
+.art-billing-days { max-width: 100%; overflow-x: auto; margin: 8px 0 4px; }
+.art-billing-days svg { display: block; }
+.art-billing-slot { fill: var(--bg-sunk); }
+.art-billing-seg { fill: var(--fg-muted); opacity: 0.55; transition: opacity 150ms var(--art-ease); }
+.art-billing-seg[data-kind="billable"] { fill: var(--sage-ink); opacity: 1; }
+.art-billing-seg[data-kind="included"] { fill: var(--sage-ink); opacity: 0.5; stroke: var(--sage-ink); stroke-width: 1.5; stroke-dasharray: 3 2; }
+.art-billing-seg[data-kind="missing"] { opacity: 1; }
+.art-billing-hatch-bg { fill: color-mix(in oklch, var(--amber-ink) 70%, var(--bg)); }
+.art-billing-hatch-bar { fill: var(--amber-ink); }
+.art-billing-col-link { cursor: pointer; }
+.art-billing-col-link:hover .art-billing-seg, .art-billing-col-link:focus-visible .art-billing-seg { filter: brightness(1.15); }
+.art-billing-col-link:hover .art-label { fill: var(--fg); }
+.art-billing-target { stroke: var(--fg-muted); opacity: 0.7; fill: none; }
+
+.mirres-days li > .art-billing-ring { flex: none; }
+.art-billing-ring-arc { stroke: var(--sage); }
+.art-billing-ring-hatch { fill: var(--amber); }
+.mirres-days li:target { background: var(--bg-sunk); }
+.art-billing-pct { font-size: 9.5px; }
+.art-billing-pct[data-hit] { fill: var(--sage-ink); }

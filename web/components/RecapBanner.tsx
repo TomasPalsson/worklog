@@ -5,6 +5,7 @@
 
 import { useRef, useState, useTransition } from "react";
 import { Loader2 } from "lucide-react";
+import { CoverageRing } from "@/components/art/CoverageRing";
 import { formatBilledHours, formatRange } from "@/lib/format";
 import { RECAP_TOP_GAPS, type GapAction, type Recap, type RecapGap } from "@/lib/daily_helpers_contract";
 
@@ -171,6 +172,7 @@ export function RecapBanner({ recap: initial, resolve }: { recap: Recap | null; 
         </h2>
         <span className="review-sec-count">{`${recap.sent.length} sent · ${formatBilledHours(sentSeconds)}`}</span>
         <span className="review-sec-count">{`${recap.coverage_percent}% covered`}</span>
+        <CoverageRing percent={recap.coverage_percent} gaps={recap.gaps} heldBack={recap.held_back.length} />
         {gaps.length > 0 && (
           <p className="review-sec-hint">
             Fill each gap. Personal and Break are never billed or sent; Pick a ticket adds work time.

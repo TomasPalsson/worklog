@@ -6,6 +6,7 @@ import type { saveTempoLineHours } from "@/app/actions-tempo-lines";
 import { formatBilledHours } from "@/lib/format";
 import { HALF_HOUR_SECONDS, type TempoLine, type TempoLineKey } from "@/lib/tempo_line_contract";
 import { toast } from "@/lib/toast";
+import { RoundingRail } from "@/components/art/RoundingRail";
 
 const DAY_SECONDS = 24 * 3600;
 
@@ -212,6 +213,7 @@ export function LineHours({
         <span className="line-hours-value">{billed}</span>
         <span className="line-hours-unit">billed</span>
       </button>
+      <RoundingRail tracked={line.union_seconds} billed={line.effective_seconds} overridden={overridden} />
       {overridden && <span className="line-hours-note">hours changed · {tracked} tracked</span>}
     </span>
   );

@@ -1,5 +1,6 @@
 import { Fragment } from "react";
 import { billingDetailsText } from "@/lib/mirresDetails";
+import { AllowanceGauge } from "./art/AllowanceGauge";
 import type { MirresDetails } from "@/lib/tempo_line_contract";
 
 /** Owner / customer lead / contract hours line; renders nothing when empty. */
@@ -31,6 +32,12 @@ export function BillingDetails({
           )}
         </Fragment>
       ))}
+      {details?.allowance_hours != null && (
+        <AllowanceGauge
+          allowance={details.allowance_hours}
+          used={details.used_hours ?? (details.remaining_hours != null ? details.allowance_hours - details.remaining_hours : null)}
+        />
+      )}
     </span>
   );
 }
