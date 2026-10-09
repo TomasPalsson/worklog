@@ -6,9 +6,10 @@
 // is never re-hydrated.
 
 import { useEffect, useRef, useState } from "react";
-import { CalendarDays, ChevronDown } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import { connectGcal, fetchSettings } from "@/app/actions";
 import type { GcalStatus } from "@/lib/types";
+import { GoogleCalendarMark } from "@/components/SourceIcon";
 
 const POLL_MS = 3000;
 const POLL_LIMIT_MS = 5 * 60 * 1000;
@@ -61,7 +62,7 @@ export function GcalConnect({ gcal }: { gcal: GcalStatus }) {
     <details className="set-service" open={!connected}>
       <summary>
         <span className="set-service-icon" aria-hidden="true">
-          <CalendarDays size={18} />
+          <GoogleCalendarMark size={18} />
         </span>
         <span className="set-service-name">Google Calendar</span>
         <span className="set-pill" data-status={connected ? "on" : "off"}>
