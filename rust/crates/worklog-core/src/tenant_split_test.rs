@@ -213,6 +213,8 @@ fn no_clue_block_falls_back() {
         exported_at: None,
         ignored_at: None,
         ticket_origin: None,
+        rough_note: None,
+        description_origin: None,
     };
 
     let slices = tenant_slices_for_block(&conn, &block, "vitinn-infra", &reg)
@@ -313,6 +315,8 @@ fn pinned_session_gives_pinned_slice() {
         exported_at: None,
         ignored_at: None,
         ticket_origin: None,
+        rough_note: None,
+        description_origin: None,
     };
 
     let slices = tenant_slices_for_block(&conn, &block, "vitinn-infra", &reg)
@@ -379,6 +383,8 @@ fn conflicting_pins_do_not_emit_pinned_slice() {
         exported_at: None,
         ignored_at: None,
         ticket_origin: None,
+        rough_note: None,
+        description_origin: None,
     };
 
     let slices = tenant_slices_for_block(&conn, &block, "vitinn-infra", &reg)
@@ -436,6 +442,8 @@ fn partially_pinned_block_is_not_pinned() {
         exported_at: None,
         ignored_at: None,
         ticket_origin: None,
+        rough_note: None,
+        description_origin: None,
     };
 
     let slices = tenant_slices_for_block(&conn, &block, "vitinn-infra", &reg)
@@ -520,6 +528,8 @@ fn real_session_start_is_pinned() {
         exported_at: None,
         ignored_at: None,
         ticket_origin: None,
+        rough_note: None,
+        description_origin: None,
     };
 
     let slices = tenant_slices_for_block(&conn, &block, "vitinn-infra", &reg)
@@ -604,6 +614,8 @@ fn prompt_naming_the_pinned_customer_is_pinned() {
         exported_at: None,
         ignored_at: None,
         ticket_origin: None,
+        rough_note: None,
+        description_origin: None,
     };
 
     let slices = tenant_slices_for_block(&conn, &block, "vitinn-infra", &reg)
@@ -680,6 +692,8 @@ fn text_guess_disagreeing_with_pin_blocks_pinned_slice() {
         exported_at: None,
         ignored_at: None,
         ticket_origin: None,
+        rough_note: None,
+        description_origin: None,
     };
 
     let slices = tenant_slices_for_block(&conn, &block, "vitinn-infra", &reg)
@@ -723,6 +737,8 @@ fn unpinned_block_skips_the_day_load() {
         exported_at: None,
         ignored_at: None,
         ticket_origin: None,
+        rough_note: None,
+        description_origin: None,
     };
 
     let slices = tenant_slices_for_block(&conn, &block, "vitinn-infra", &reg)
@@ -821,6 +837,8 @@ fn session_spanning_blocks_agrees_with_lanes() {
         exported_at: None,
         ignored_at: None,
         ticket_origin: None,
+        rough_note: None,
+        description_origin: None,
     };
 
     let slices = tenant_slices_for_block(&conn, &block_b, "vitinn-infra", &reg)

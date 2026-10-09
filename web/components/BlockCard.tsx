@@ -14,7 +14,9 @@ import {
   undoLastChange,
 } from "@/app/actions";
 import { shouldShowSparkles } from "@/lib/group-actions";
+import type { NoteFields } from "@/lib/noteBlock";
 import { toast } from "@/lib/toast";
+import { useNoteRegenerate } from "./useNoteRegenerate";
 import { EstBadge } from "./EstBadge";
 import { TicketCombobox } from "./TicketCombobox";
 import { EventList } from "./EventList";
@@ -22,7 +24,7 @@ import { CommitList } from "./CommitList";
 import { isAutoTicket } from "@/lib/tempo_line_contract";
 
 interface Props {
-  block: Block;
+  block: Block & NoteFields;
   tickets: JiraTicket[];
   day: string;
   /**
@@ -80,8 +82,9 @@ export function BlockCard({
   // Article label for screen readers — useful info, not "block 42".
   const ariaLabel = `${timeRangeLabel} · ${block.jira_issue ?? "unassigned"} · ${durationLabel}`;
 
+  const { regenerate, writing } = useNoteRegenerate(block, day);
   // Never save this as a description: it would mark the block manual and the estimator would skip it forever.
-  const placeholder = block.estimated_by ? "Click to add a description…" : "Describing…";
+  const placeholder = writing ? "Writing…" : block.estimated_by ? "Click to add a description…" : "Describing…";
   const clearPlaceholder = () => {
     if (!block.description && descRef.current) descRef.current.textContent = "";
   };
@@ -184,10 +187,7 @@ export function BlockCard({
     });
   };
 
-  const showSparkles = shouldShowSparkles(
-    { jira_issue: block.jira_issue, is_personal: block.is_personal },
-    isSoleInGroup,
-  );
+  const showSparkles = shouldShowSparkles(block, isSoleInGroup);
 
   return (
     <article id={`block-${block.id}`} className={cls} aria-label={ariaLabel}>
@@ -328,7 +328,7 @@ export function BlockCard({
             aria-label={`describe ${timeRangeLabel} block with claude`}
             aria-busy={isPending || undefined}
             disabled={isPending}
-            onClick={onDescribe}
+            onClick={block.rough_note ? regenerate : onDescribe}
           >
             <Sparkles />
           </button>

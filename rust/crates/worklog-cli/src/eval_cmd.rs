@@ -170,6 +170,8 @@ mod tests {
             exported_at: None,
             ignored_at: None,
             ticket_origin: None,
+            rough_note: None,
+            description_origin: None,
         }
     }
 

@@ -1,0 +1,41 @@
+- Ruling: T001 files widened to tenant_split_test.rs, eval_cmd.rs, cli.rs — they hold Block struct literals that must gain the two new fields to compile (developer blocker, 2026-10-08).
+- Discovered: rust/crates/worklog-core/src/db.rs:364 — ensure_blocks_ticket_origin hand-rolls the PRAGMA check add_columns_if_missing already does — defer
+- Discovered: rust/crates/worklog-core/src/repo.rs:158 — two near-duplicate Block row mappers; every new column must be edited twice — defer
+- Discovered: T001 slop review minors (non-blocking) — schema.sql 'spec 019' comment; db_test.rs test names still say _is_20 / _without_a_version_bump while asserting 21 — defer
+- Discovered: T001 correctness minors — legacy-migration test never checks the CHECK rejects a bad origin on the ALTER path; repo.rs unknown origin parses to None silently — defer
+- Discovered: rust/crates/worklog-core/src/infer.rs — block rebuild may not carry rough_note/description_origin; check in T002/gates — defer
+- Discovered: web/app/actions-line-text.ts:13 — run() helper copied into each actions file (now 3 copies), unexported — defer
+- Discovered: T004 slop minors — run() now 4 copies across web/app/actions-*.ts; 'spec 019' in actions-note-block.ts:3 comment — defer
+- Discovered: T004 correctness minor — empty-message 'unknown error' fallback only tested for addNoteBlock, not regenerate/status — defer
+- Discovered: rust/crates/worklog-core/src/block_service.rs:1 — ~1190 lines vs 400-line size guard — defer
+- Discovered: rust/crates/worklog-core/src/block_service.rs:19 — MARK_DIRTY_IF_SYNCED doc comment not updated now it is pub(crate) — defer
+- Discovered: TASKS.md Behaviors 'Proven by' names differ from the real test fn names in note_writer_test.rs; acceptance.md maps by real names — defer
+- Discovered: T002 minors — log_note_block not atomic (log_time insert then separate UPDATE rough_note); 5th copy of 'SELECT summary FROM jira_tickets'; reply length check near-duplicates ticket_log.rs:54 — defer
+- Discovered: web/components/ActionBar.tsx:~60 — setTimeout(setConfirmSync false, 4000) never cleared on unmount (pre-existing) — defer
+- Ruling: T004 test's partial @/lib/daemon mock leaked into ActionBar.test.tsx once T005 imported actions; fixed in T004's own test file as a review fix round, not a new task.
+- Discovered: T005 minors — globals.css uses undefined var(--danger, #c0392b) (use a defined token e.g. --rose); page.tsx lastEnd compares ended_at as strings; poll-error test only checks one error; AddNoteBlock default-start test may be TZ-dependent — defer
+- Discovered: web/components/useNoteJob.ts — at the 30 s cap, Writing… vanishes with no toast/refresh; a late AI result needs a manual reload — defer
+- Discovered: web/app/actions-note-block.ts:12 — run() returns ok:false when revalidatePath throws after a successful write, so a retry from the form can create a duplicate block (existing pattern) — defer
+- Ruling: T006 files widened to web/components/BlockCard.test.tsx — BlockCard now mounts useRouter via useNoteRegenerate, so the file needs the repo's standard next/navigation mock (additive; it failed 29/29 when run alone, passed only via other files' process-wide mocks).
+- Discovered: rust/crates/worklog-core/src/daemon_assist.rs:20 — validated_key now has 3 copies (daemon_tasks, daemon_assist, daemon_note_block) — defer
+- Discovered: rust/crates/worklog-core/src/note_writer.rs:55 — prepare_note does not reject a hand-edited block, so a non-forced job spends one model call before commit_note refuses — defer
+- Discovered: web/lib/group-actions.ts:1 — header comment omits the rough_note Sparkles rule — defer
+- Ruling: T003 files widened to rust/crates/worklog-core/src/daemon_tasks.rs — make validated_key pub(super) so daemon_note_block reuses it instead of a 3rd copy (slop review, significant). daemon_assist.rs copy left as-is — defer.
+- Ruling: T006 useNoteRegenerate returns { regenerate, writing } instead of () => void, so BlockCard can show Writing… only while the job runs (B11/FR-13; correctness review, significant).
+- Discovered: T003 minors — no route-level test that regenerate's force body reaches the job; no log_note happy-path test (would shell out to claude); second-start test only asserts the bool; a panic in a note job leaves it Running (same as line-text jobs) — defer
+- Discovered: web/lib/group-actions.ts:313 — personal block with rough_note shows Sparkles (rough_note check runs before is_personal); untested either way — defer
+- Discovered: web/components/BlockCard.tsx:330 — Sparkles stays clickable while a regenerate runs; repeat clicks stack Replace toasts — defer
+- Discovered: web ActionBar 'Refresh Jira' title formats the cache date with the server/browser locale → hydration mismatch (pre-existing) — defer
+- Ruling: CHK001 Tempo step verified only to 'block is an ordinary unsynced ticketed block'; no real Tempo POST in an unattended run (needs the user's credentials) — user can confirm Send to Tempo on their real install.
+- Discovered: rust/crates/worklog-core/src/block_service.rs:434 — split_block copies description to the tail but not rough_note/description_origin, so the tail becomes a plain block (arguably intended) — defer
+- Discovered: web/lib/noteBlock.ts:30 — web counts UTF-16 units vs Rust chars() for the 500 limit; web is stricter (safe) — defer
+- Discovered: web/components/AddNoteBlock.tsx — default start uses browser-local formatClock while the daemon reads start in WORKLOG_TZ; differs if the zones differ — defer
+- Discovered: web/components/BlockCard.tsx — useNoteRegenerate (with useNoteJob) mounts in every BlockCard, even non-note blocks; overhead only — defer
+- Discovered: rust/crates/worklog-core/src/note_writer.rs — log_note_block is log_time + separate UPDATE, no transaction (also logged at T002) — defer
+- Ruling: branch review G002 fix round = W1 30 s 'still writing — check back' (spec §5), W2 quiet hand-edited drop (spec Journey 2), W3 integer id guard, R1 regenerate refuses non-note blocks before the tracker, R2 estimate never overwrites a note block, R3 route doc. Other branch-review minors deferred above.
+- Ruling: G002 fix round changed two assertions in test files created by this branch (not pre-existing): daemon_note_block_test regenerate-on-plain-block now expects started:false (R1 changes that contract); useNoteJob failed-toast test input reason 'hand-edited'→'model unavailable' (W2 makes hand-edited quiet). Both forced by intended behaviour changes; intent kept.
+- Discovered: rust/crates/worklog-core/src/estimate.rs — commit_block_estimate does not re-check rough_note after the model call; a plain block cannot gain a rough_note, so exposure is low — defer
+- Discovered: web/components/useNoteJob.ts — compares against literal 'hand-edited'; no web constant mirrors REASON_HAND_EDITED — defer
+- Discovered: rust/crates/worklog-core/src/daemon_note_block_test.rs — TEST_REPLY test seam is reset only after the asserts; a panic would leave it set for later tests (no other test reaches real_invoker today) — defer
+- Discovered: rust/crates/worklog-core/src/daemon_note_block_test.rs:~233 — regenerate_route_on_plain_block_fails_not_a_note_block name/comment stale after R1 — defer
+- Discovered: web/components/BlockCard.test.tsx — 'failed job still offers Regenerate' test pins existing behaviour; no distinct failed-state on the card — defer

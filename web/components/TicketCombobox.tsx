@@ -263,7 +263,7 @@ export function TicketCombobox({ blockId, current, tickets, day, onAssigned, def
             {currentIsStale ? (
               <span
                 className="summary stale-note"
-                title="Ticket key isn't in the Jira cache — click 'Refresh Jira' to reload"
+                title="Ticket key isn't in the Jira cache — click More → Refresh Jira to reload"
               >
                 <AlertCircle width={12} height={12} /> not in cache
               </span>
@@ -325,7 +325,7 @@ export function TicketCombobox({ blockId, current, tickets, day, onAssigned, def
             {flatItems.length === 0 ? (
               <div className="combobox-empty">
                 {tickets.length === 0
-                  ? "No tickets cached — click 'Refresh Jira'"
+                  ? "No tickets cached — click More → Refresh Jira"
                   : query.trim().length < SEARCH_MIN_LEN
                     ? `No match for "${query}"`
                     : searchPending
