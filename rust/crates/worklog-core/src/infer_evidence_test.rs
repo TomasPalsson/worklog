@@ -72,6 +72,32 @@ fn infer_evidence_claude_work_long_after_a_prompt_is_dropped() {
 }
 
 #[test]
+fn infer_evidence_unattended_tool_hooks_long_after_a_prompt_are_dropped() {
+    // Regression (2026-10-09): an overnight workflow fired dense
+    // PreToolUse/PostToolUse/SubagentStop hooks for hours with no prompt
+    // and became 4h of "work". Tool hooks follow the 60-min prompt rule
+    // even when dense; a UserPromptSubmit hook counts as the prompt.
+    let titled = |h, m, title: &str| {
+        let mut e = ev(h, m, "claude", Some("s1"));
+        e.title = Some(title.into());
+        e
+    };
+    let events = vec![
+        titled(9, 0, "UserPromptSubmit — fix it"),
+        titled(9, 40, "PreToolUse"),
+        titled(9, 41, "PostToolUse"),
+        titled(11, 0, "PreToolUse"),
+        titled(11, 1, "PostToolUse"),
+        titled(11, 2, "SubagentStop"),
+    ];
+    let kept: Vec<_> = drop_isolated_claude_work(events)
+        .into_iter()
+        .map(|e| e.ts)
+        .collect();
+    assert_eq!(kept, vec![at(9, 0), at(9, 40), at(9, 41)]);
+}
+
+#[test]
 fn infer_evidence_dedupe_shell_drops_exact_duplicates() {
     let mut a = ev(9, 0, "shell", None);
     a.title = Some("git status".into());

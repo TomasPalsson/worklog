@@ -512,7 +512,8 @@ pub fn load_day_events(conn: &Connection, day: NaiveDate) -> Result<Vec<InferEve
         ],
         infer_event_row,
     )?;
-    let mut events: Vec<InferEvent> = iter.collect::<Result<_, _>>()?;
+    let events: Vec<InferEvent> = iter.collect::<Result<_, _>>()?;
+    let mut events = crate::infer_future::drop_future(events, Utc::now());
     crate::infer_session_folder::fill_session_folders(&mut events);
     Ok(events)
 }

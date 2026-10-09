@@ -49,6 +49,7 @@ pub mod infer_allocations;
 mod infer_carry;
 mod infer_carry_shares;
 mod infer_evidence;
+mod infer_future;
 mod infer_lane_tags;
 pub mod infer_lanes;
 mod infer_session_folder;
