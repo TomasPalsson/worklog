@@ -5,6 +5,7 @@ import { CircleAlert, Plus } from "lucide-react";
 import { addNoteBlock } from "@/app/actions-note-block";
 import { formatClock } from "@/lib/format";
 import { NOTE_MAX_CHARS, NOTE_MAX_MINUTES, TICKET_KEY_RE } from "@/lib/noteBlock";
+import { toast } from "@/lib/toast";
 import type { JiraTicket } from "@/lib/types";
 import { useNoteJob } from "./useNoteJob";
 
@@ -70,6 +71,16 @@ function problem(f: { start: string; length: number; key: string; text: string }
   return null;
 }
 
+/** "ends 10:30" from Start + Minutes (warn: past midnight, which the daemon refuses); null while either is unusable. */
+function endLabel(start: string, minutes: string): { text: string; warn: boolean } | null {
+  const len = minutes.trim() === "" ? NaN : Number(minutes);
+  if (!/^\d\d:\d\d$/.test(start) || !Number.isInteger(len) || len < 1 || len > NOTE_MAX_MINUTES) return null;
+  const end = Number(start.slice(0, 2)) * 60 + Number(start.slice(3)) + len;
+  if (end > 1440) return { text: "ends after midnight", warn: true };
+  if (end === 1440) return { text: "ends at midnight", warn: false };
+  return { text: `ends ${String(Math.floor(end / 60)).padStart(2, "0")}:${String(end % 60).padStart(2, "0")}`, warn: false };
+}
+
 function NoteForm({
   day,
   tickets,
@@ -93,6 +104,15 @@ function NoteForm({
   const mark = (name: Field) =>
     badField === name ? { "aria-invalid": true as const, "aria-describedby": ERROR_ID } : {};
   const [busy, setBusy] = useState(false);
+  // Editing the field that is marked wrong retires its message at once.
+  const edit = (name: Field, set: (v: string) => void) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    set(e.target.value);
+    if (badField === name) {
+      setBadField(null);
+      setError(null);
+    }
+  };
+  const end = endLabel(start, minutes);
 
   async function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -112,6 +132,7 @@ function NoteForm({
     const res = await addNoteBlock({ jira_issue: key, day, start, minutes: length, note: text });
     setBusy(false);
     if (!res.ok) return setError(res.error);
+    toast.ok(`Added ${length} min on ${key} — writing the description…`);
     onSaved(res.data.id);
   }
 
@@ -129,11 +150,14 @@ function NoteForm({
           New block
         </h2>
         <span className="note-form-hint">Write a rough note — the AI turns it into the Tempo text.</span>
+        {end && (
+          <span className={`note-form-end${end.warn ? " warn" : ""}`}>{end.text}</span>
+        )}
       </div>
       <div className="note-form-fields">
         <label className="note-field">
           <span>Start</span>
-          <input type="time" data-field="Start" {...mark("Start")} value={start} disabled={busy} onChange={(e) => setStart(e.target.value)} />
+          <input type="time" data-field="Start" {...mark("Start")} value={start} disabled={busy} onChange={edit("Start", setStart)} />
         </label>
         <label className="note-field">
           <span>Minutes</span>
@@ -146,7 +170,7 @@ function NoteForm({
             max={NOTE_MAX_MINUTES}
             value={minutes}
             disabled={busy}
-            onChange={(e) => setMinutes(e.target.value)}
+            onChange={edit("Minutes", setMinutes)}
           />
         </label>
         <label className="note-field note-field-ticket">
@@ -161,7 +185,7 @@ function NoteForm({
             autoComplete="off"
             spellCheck={false}
             disabled={busy}
-            onChange={(e) => setTicket(e.target.value)}
+            onChange={edit("Ticket", setTicket)}
           />
         </label>
         <datalist id={LIST_ID}>
@@ -179,7 +203,7 @@ function NoteForm({
             value={note}
             placeholder="fixed login bug"
             disabled={busy}
-            onChange={(e) => setNote(e.target.value)}
+            onChange={edit("Note", setNote)}
           />
         </label>
       </div>

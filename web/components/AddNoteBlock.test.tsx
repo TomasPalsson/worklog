@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { JiraTicket, RawBlock } from "@/lib/types";
+import { subscribe } from "@/lib/toast";
 
 mock.module("next/navigation", () => ({ useRouter: () => ({ refresh: () => {} }), usePathname: () => "/" }));
 
@@ -208,5 +209,57 @@ describe("AddNoteBlock form chrome", () => {
     mount();
     open();
     expect(document.activeElement).toBe(field("Ticket"));
+  });
+});
+
+describe("AddNoteBlock feedback", () => {
+  it("clears the error as soon as the marked field is edited, not other fields", async () => {
+    mount();
+    open();
+    await fill({ Ticket: "abc-1" });
+    set("Note", "other edit");
+    expect(field("Ticket").getAttribute("aria-invalid")).toBe("true");
+    expect(screen.queryByRole("alert")).not.toBeNull();
+    set("Ticket", "ABC-1");
+    expect(field("Ticket").getAttribute("aria-invalid")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  const ends: [string, string, string, string | null][] = [
+    ["start + minutes", "10:00", "30", "ends 10:30"],
+    ["past midnight", "23:30", "60", "ends after midnight"],
+    ["exactly midnight", "23:00", "60", "ends at midnight"],
+    ["empty minutes", "10:00", "", null],
+    ["empty start", "", "30", null],
+    ["out-of-range minutes", "10:00", "721", null],
+  ];
+  it.each(ends)("end line: %s", (_n, start, minutes, text) => {
+    mount();
+    open();
+    set("Start", start);
+    set("Minutes", minutes);
+    const el = document.querySelector(".note-form-end");
+    if (text === null) expect(el).toBeNull();
+    else {
+      expect(el?.textContent).toBe(text);
+      expect(el?.closest("label")).toBeNull();
+    }
+  });
+
+  it("toasts the save, and not a daemon error", async () => {
+    let latest: { text: string }[] = [];
+    const unsub = subscribe((m) => (latest = m));
+    const before = latest.length;
+    addNoteBlock.mockImplementationOnce(async () => ({ ok: false, error: "daemon down" }));
+    mount();
+    open();
+    await fill();
+    expect(latest.length).toBe(before);
+    cleanup();
+    mount();
+    open();
+    await fill();
+    expect(latest.slice(before).map((m) => m.text)).toEqual(["Added 30 min on ABC-1 — writing the description…"]);
+    unsub();
   });
 });
