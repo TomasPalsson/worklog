@@ -1,0 +1,6 @@
+.sx-warehouse-card { margin: 0; background: var(--bg-raised); border: 1px solid var(--border); border-radius: 12px; padding: 16px; min-width: 0; }
+.sx-warehouse-head { margin: 0; font-family: var(--font-mono); font-size: 20px; line-height: 1.2; color: var(--fg); letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.sx-warehouse-svg { display: block; width: 100%; max-width: 560px; height: auto; margin: 12px auto 0; overflow: visible; }
+.sx-warehouse-legend { margin: 8px 0 0; font-size: 12px; color: var(--fg-muted); line-height: 1.45; }
+.sx-warehouse-stack { animation: sx-warehouse-drop 650ms var(--art-ease) both; }
+@keyframes sx-warehouse-drop { from { transform: translateY(-22px); opacity: 0; } }

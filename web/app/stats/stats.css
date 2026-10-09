@@ -1,0 +1,105 @@
+/* Statistics: a long editorial scroll. Tiles, records, then the charts. */
+
+.page:has(.stats-page) { width: 100%; max-width: 1100px; }
+
+.stats-main { display: flex; flex-direction: column; gap: 56px; padding-bottom: 64px; min-width: 0; }
+
+/* ── header ── */
+.stats-header { display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+.stats-header h1 { font-size: 32px; font-weight: 600; letter-spacing: -0.025em; line-height: 1.1; }
+.stats-sub { margin: 6px 0 0; font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+
+.stats-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.stats-chip {
+  padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px;
+  font-size: 12.5px; color: var(--fg-muted); text-decoration: none;
+  transition: color 120ms var(--art-ease), background 120ms var(--art-ease);
+}
+.stats-chip:hover { color: var(--fg); }
+.stats-chip[aria-current="page"] { color: var(--fg); background: var(--bg-raised); border-color: var(--border-strong); }
+
+/* ── sections ── */
+.stats-sec { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.stats-sec h2 {
+  margin: 0; font-family: var(--font-mono); font-size: 11px; font-weight: 500;
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--fg-subtle);
+  padding-bottom: 8px; border-bottom: 1px solid var(--border);
+}
+.stats-two, .stats-three { display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); }
+.stats-three { grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
+.stats-two > *, .stats-three > *, .stats-stack > * { min-width: 0; }
+.stats-stack { display: flex; flex-direction: column; gap: 28px; }
+
+/* ── hero tiles ── */
+.stats-hero {
+  list-style: none; margin: 0; padding: 0; display: grid; gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+@media (max-width: 800px) { .stats-hero { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 520px) { .stats-hero { grid-template-columns: 1fr; } }
+.stats-tile {
+  display: flex; flex-direction: column; gap: 4px; padding: 16px 16px 14px;
+  background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius-md);
+}
+.stats-tile-num {
+  font-family: var(--font-mono); font-size: 40px; font-weight: 500; line-height: 1;
+  letter-spacing: -0.03em; font-variant-numeric: tabular-nums; color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.stats-tile-num small { font-size: 18px; margin-left: 2px; color: var(--fg-muted); letter-spacing: 0; }
+.stats-tile-label { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-muted); }
+.stats-spark { display: block; width: 100%; height: 26px; margin: 8px 0 4px; overflow: visible; }
+.stats-tile-cap { font-size: 12.5px; line-height: 1.4; color: var(--fg-muted); }
+.stats-tile-num + .stats-tile-label + .stats-tile-cap { margin-top: 8px; }
+
+/* ── records ── */
+.stats-facts {
+  list-style: none; margin: 0; padding: 0; display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+}
+.stats-fact-link {
+  display: flex; flex-direction: column; gap: 6px; height: 100%; padding: 16px;
+  border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg);
+  color: inherit; text-decoration: none;
+  transition: border-color 120ms var(--art-ease), background 120ms var(--art-ease);
+}
+a.stats-fact-link:hover { border-color: var(--border-strong); background: var(--bg-raised); }
+.stats-fact-label { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-subtle); }
+.stats-fact-val {
+  display: flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 28px;
+  font-weight: 500; letter-spacing: -0.02em; font-variant-numeric: tabular-nums;
+}
+.stats-fact-note { font-size: 12.5px; color: var(--fg-muted); }
+.stats-flame { flex: none; transform-origin: 50% 100%; animation: stats-flicker 2.4s ease-in-out infinite; }
+@keyframes stats-flicker { 50% { transform: scale(1.08, 1.14) rotate(-3deg); } }
+
+/* ── prompt mood ── */
+.stats-card { display: flex; flex-direction: column; gap: 16px; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-raised); min-width: 0; }
+.stats-card-h { margin: 0; font-size: 15px; font-weight: 600; }
+.stats-card-sub, .stats-empty { margin: -10px 0 0; font-size: 12.5px; color: var(--fg-muted); }
+.stats-empty { margin: 0; }
+.stats-stamps { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 10px; }
+.stats-stamp {
+  padding: 5px 11px; border: 1.5px solid var(--amber-ink); border-radius: 6px; color: var(--amber-ink);
+  background: var(--amber-bg); font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.04em;
+  text-transform: uppercase; transform: rotate(-1.5deg);
+}
+.stats-stamp:nth-child(even) { transform: rotate(1.2deg); border-color: var(--sage-ink); color: var(--sage-ink); background: var(--sage-bg); }
+.stats-stamp[data-zero] { border-style: dashed; border-color: var(--border-strong); color: var(--fg-subtle); background: transparent; }
+.stats-ruler { display: flex; flex-direction: column; gap: 6px; }
+.stats-ruler-track {
+  height: 12px; border-radius: 3px; border: 1px solid var(--border-strong); overflow: hidden;
+  background: repeating-linear-gradient(90deg, transparent 0 9px, var(--border) 9px 10px);
+}
+.stats-ruler-fill { display: block; height: 100%; background: var(--slate-bg); border-right: 2px solid var(--slate-ink); transform-origin: left; }
+.stats-ruler-legend { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-family: var(--font-mono); font-size: 11px; color: var(--fg-muted); }
+.stats-openers { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; font-weight: 500; color: var(--fg); }
+.stats-openers sup { margin-left: 3px; font-family: var(--font-mono); font-size: 10px; color: var(--fg-subtle); }
+
+@media (max-width: 480px) {
+  .stats-main { gap: 40px; }
+  .stats-tile-num { font-size: 34px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .stats-flame { animation: none; }
+}

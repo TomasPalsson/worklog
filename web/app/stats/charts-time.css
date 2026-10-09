@@ -1,0 +1,28 @@
+/* Stats page: time charts. Tokens only; resting state = finished state. */
+.st-chart { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 12px; padding: 16px; min-width: 0; }
+.st-scroll { overflow-x: auto; max-width: 100%; }
+.st-svg { display: block; }
+.st-big { font-family: var(--font-mono); font-size: 28px; line-height: 1.1; color: var(--fg); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.st-caption { margin: 12px 0 0; font-size: 13px; color: var(--fg-muted); line-height: 1.45; }
+.st-caption b { color: var(--fg); font-weight: 600; font-family: var(--font-mono); }
+.st-empty { padding: 28px 8px; text-align: center; font-size: 13px; color: var(--fg-subtle); border: 1px dashed var(--border-strong); border-radius: 8px; }
+.st-row { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.st-row > .st-scroll { flex: 1 1 280px; min-width: 0; }
+.st-clock { flex: 0 0 auto; margin: 0 auto; }
+.st-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 12px 0 0; padding: 0; list-style: none; font-size: 12px; color: var(--fg-muted); }
+.st-legend li { display: inline-flex; align-items: center; gap: 6px; }
+.st-legend .st-num { font-family: var(--font-mono); color: var(--fg); font-variant-numeric: tabular-nums; }
+.st-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; flex: 0 0 auto; }
+.st-swatch-hatch { background: var(--art-hatch-muted); border: 1px solid var(--border-strong); }
+.st-cell { stroke: transparent; stroke-width: 1.5; }
+.st-cell:hover, .st-dot:hover { stroke: var(--fg); }
+.st-dot { stroke: transparent; stroke-width: 1.5; }
+.st-grid { stroke: var(--border); stroke-width: 1; }
+.st-today { fill: none; stroke: var(--fg); stroke-width: 1.5; }
+.st-layer { stroke: var(--bg); stroke-width: 0.75; }
+.st-layer:hover { fill-opacity: 1; }
+.st-scale { display: flex; align-items: center; gap: 4px; margin-top: 10px; font-size: 11px; color: var(--fg-subtle); }
+.st-scale > span.st-step { width: 10px; height: 10px; border-radius: 2px; }
+/* Axis labels in viewBox units: ~12px at wide widths; the SVG scrolls at 600px min, so bump on phones/tablets to stay >=10px on screen. */
+.st-svg .art-label { font-size: 12px; }
+@media (max-width: 900px) { .st-svg .art-label { font-size: 18px; } }
