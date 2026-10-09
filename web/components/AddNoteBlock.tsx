@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { CircleAlert, Plus } from "lucide-react";
+import { CircleAlert, CornerDownLeft, Plus, X } from "lucide-react";
 import { addNoteBlock } from "@/app/actions-note-block";
 import { formatClock } from "@/lib/format";
 import { NOTE_MAX_CHARS, NOTE_MAX_MINUTES, TICKET_KEY_RE } from "@/lib/noteBlock";
@@ -136,6 +136,8 @@ function NoteForm({
     onSaved(res.data.id);
   }
 
+  // Reads as a sentence: "From 10:00 for 30 min, ends 10:30, on ABC-123 — fixed login bug  [Add]".
+  // The field labels stay for screen readers; the sentence words carry them visually.
   return (
     <form
       className="note-form"
@@ -145,22 +147,18 @@ function NoteForm({
       onKeyDown={(e) => e.key === "Escape" && !ticket.trim() && !note.trim() && onCancel()}
       noValidate
     >
-      <div className="note-form-head">
-        <h2 id="note-form-title" className="task-label">
-          New block
-        </h2>
-        <span className="note-form-hint">Write a rough note — the AI turns it into the Tempo text.</span>
-        {end && (
-          <span className={`note-form-end${end.warn ? " warn" : ""}`}>{end.text}</span>
-        )}
-      </div>
-      <div className="note-form-fields">
-        <label className="note-field">
-          <span>Start</span>
+      <h2 id="note-form-title" className="sr-only">
+        New block
+      </h2>
+      <div className="note-line">
+        <span className="note-word" aria-hidden="true">From</span>
+        <label className="note-chip note-chip-time">
+          <span className="sr-only">Start</span>
           <input type="time" data-field="Start" {...mark("Start")} value={start} disabled={busy} onChange={edit("Start", setStart)} />
         </label>
-        <label className="note-field">
-          <span>Minutes</span>
+        <span className="note-word" aria-hidden="true">for</span>
+        <label className="note-chip note-chip-min">
+          <span className="sr-only">Minutes</span>
           <input
             type="number"
             inputMode="numeric"
@@ -173,8 +171,11 @@ function NoteForm({
             onChange={edit("Minutes", setMinutes)}
           />
         </label>
-        <label className="note-field note-field-ticket">
-          <span>Ticket</span>
+        <span className="note-word" aria-hidden="true">min</span>
+        {end && <span className={`note-form-end${end.warn ? " warn" : ""}`}>{end.text}</span>}
+        <span className="note-word" aria-hidden="true">on</span>
+        <label className="note-chip note-chip-ticket">
+          <span className="sr-only">Ticket</span>
           <input
             list={LIST_ID}
             data-field="Ticket"
@@ -195,32 +196,33 @@ function NoteForm({
             </option>
           ))}
         </datalist>
-        <label className="note-field note-field-note">
-          <span>Note</span>
+      </div>
+      <div className="note-line">
+        <label className="note-chip note-chip-note">
+          <span className="sr-only">Note</span>
           <input
             data-field="Note"
             {...mark("Note")}
             value={note}
-            placeholder="fixed login bug"
+            placeholder="What did you do? A rough note is fine — the AI writes the Tempo text."
             disabled={busy}
             onChange={edit("Note", setNote)}
           />
         </label>
-      </div>
-      <div className="note-form-foot">
-        {error && (
-          <p role="alert" id={ERROR_ID} className="note-form-error">
-            <CircleAlert aria-hidden="true" />
-            {error}
-          </p>
-        )}
-        <button type="button" className="action-btn" disabled={busy} onClick={onCancel}>
-          Cancel
-        </button>
-        <button type="submit" className="action-btn primary" disabled={busy}>
+        <button type="submit" className="action-btn primary note-add" disabled={busy}>
           {busy ? "Saving…" : "Add"}
+          {!busy && <CornerDownLeft aria-hidden="true" />}
+        </button>
+        <button type="button" className="note-cancel" aria-label="Cancel" title="Cancel (discards the note)" disabled={busy} onClick={onCancel}>
+          <X aria-hidden="true" />
         </button>
       </div>
+      {error && (
+        <p role="alert" id={ERROR_ID} className="note-form-error">
+          <CircleAlert aria-hidden="true" />
+          {error}
+        </p>
+      )}
     </form>
   );
 }
