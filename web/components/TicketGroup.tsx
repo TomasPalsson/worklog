@@ -15,6 +15,7 @@ import type { TempoLine } from "@/lib/tempo_line_contract";
 import { toast } from "@/lib/toast";
 import type { LineCheck } from "@/lib/verdict_contract";
 import { OriginIcon, originLabel } from "./BillingGroup";
+import { TicketEstimate } from "./DayProgressProvider";
 import { LineHours } from "./LineHours";
 import { MirresLine } from "./MirresLine";
 
@@ -333,7 +334,10 @@ export function TicketGroup({
         {!(line && lineKey) && mergeButton}
         <span className="ticket-group-hint" aria-hidden="true" />
       </summary>
-      <div className="ticket-group-body">{children}</div>
+      <div className="ticket-group-body">
+        {!group.unassigned && <TicketEstimate ticketKey={group.key} blocks={group.blocks} />}
+        {children}
+      </div>
     </details>
   );
 }

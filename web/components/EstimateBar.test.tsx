@@ -44,11 +44,11 @@ describe("EstimateBar ready", () => {
     expect(legend.getByText("JG")).toBeTruthy();
     expect(legend.getByText("2h", { selector: "b" })).toBeTruthy();
     expect(legend.getByText("2h 30m", { selector: "b" })).toBeTruthy();
-    expect(legend.getByText("This block, not in Tempo yet")).toBeTruthy();
+    expect(legend.getByText("Not in Tempo yet")).toBeTruthy();
     expect(legend.getByText("+1h", { selector: "b" })).toBeTruthy();
     const meter = screen.getByRole("meter");
     expect(meter.getAttribute("aria-valuenow")).toBe(String(5.5 * H));
-    expect(meter.getAttribute("aria-valuetext")).toBe("5h 30m of 4h estimate including this block, 1h 30m over");
+    expect(meter.getAttribute("aria-valuetext")).toBe("5h 30m of 4h estimate including unsynced time, 1h 30m over");
     expect(container.querySelector(".ep-flag-l")?.textContent).toBe("4h");
     expect(container.querySelector(".ep-overzone")).not.toBeNull();
     expect(container.querySelector(".ep-fill > i.ep-pend")).not.toBeNull();
