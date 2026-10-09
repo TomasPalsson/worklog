@@ -146,6 +146,7 @@ where
         pending
             .into_iter()
             .map(|(key, _, hash)| {
+                let meeting = crate::meeting_description::line_text(c, &key)?;
                 let msg = tempo_line_writer::prepare(c, &key);
                 let summary: Option<String> = c
                     .query_row(
@@ -154,7 +155,7 @@ where
                         |r| r.get(0),
                     )
                     .optional()?;
-                Ok((key, msg, summary.unwrap_or_default(), hash))
+                Ok((key, meeting, msg, summary.unwrap_or_default(), hash))
             })
             .collect::<Result<Vec<_>>>()
     })
@@ -162,7 +163,11 @@ where
     let texts = tokio::task::spawn_blocking(move || -> Result<Vec<_>> {
         let invoker = make_invoker()?;
         let mut out = Vec::new();
-        for (key, msg, summary, hash) in prepared {
+        for (key, meeting, msg, summary, hash) in prepared {
+            if let Some(text) = meeting {
+                out.push((key, text, None, hash));
+                continue;
+            }
             let written = msg.and_then(|m| {
                 let write = || {
                     tempo_line_writer::write(&m, &key, invoker.as_ref(), line_text::LINE_TEXT_MODEL)
