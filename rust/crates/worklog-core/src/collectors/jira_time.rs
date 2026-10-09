@@ -209,6 +209,7 @@ mod tests {
 
     #[test]
     fn worklogs_follow_pages_and_keep_every_author() {
+        let _g = crate::tz::test_env_lock();
         let server = MockServer::start();
         let p1 = server.mock(|when, then| {
             when.method(GET)
@@ -248,6 +249,7 @@ mod tests {
 
     #[test]
     fn worklog_day_is_taken_in_utc_not_from_the_offset_text() {
+        let _g = crate::tz::test_env_lock();
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET).path("/rest/api/3/issue/G-1/worklog");
@@ -259,6 +261,27 @@ mod tests {
         let got = fetch_worklogs_with(&auth(&server), "G-1", &http::client().unwrap()).unwrap();
         // 23:30-05:00 is 04:30 UTC on the 18th; wrong: slice the first 10 chars
         assert_eq!(got[0].day, NaiveDate::from_ymd_opt(2026, 4, 18).unwrap());
+    }
+
+    #[test]
+    fn worklog_day_follows_worklog_tz() {
+        let _g = crate::tz::test_env_lock();
+        std::env::set_var("WORKLOG_TZ", "-05:00");
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/rest/api/3/issue/G-1/worklog");
+            then.status(200)
+                .json_body(json!({"startAt": 0, "total": 1, "worklogs": [
+                    wl("1", "me", "Tomas", "2026-10-02T02:00:00.000+0000", 60)
+                ]}));
+        });
+        let got = fetch_worklogs_with(&auth(&server), "G-1", &http::client().unwrap());
+        std::env::remove_var("WORKLOG_TZ");
+        // 02:00Z is 21:00 on the 1st at -05:00; wrong: UTC date (2nd) or slicing the text (2nd)
+        assert_eq!(
+            got.unwrap()[0].day,
+            NaiveDate::from_ymd_opt(2026, 10, 1).unwrap()
+        );
     }
 
     #[test]
@@ -322,6 +345,7 @@ mod tests {
 
     #[test]
     fn tempo_worklogs_map_fields_and_look_up_each_name_once() {
+        let _g = crate::tz::test_env_lock();
         let jira = MockServer::start();
         let tempo = MockServer::start();
         issue_mock(&jira);
@@ -371,6 +395,37 @@ mod tests {
         assert_eq!(got[2].name, "Tomas");
         page.assert_hits(1); // wrong: re-request after a short page
         jon.assert_hits(1); // wrong: one user lookup per worklog
+    }
+
+    #[test]
+    fn tempo_worklog_day_follows_worklog_tz() {
+        let _g = crate::tz::test_env_lock();
+        std::env::set_var("WORKLOG_TZ", "-05:00");
+        let jira = MockServer::start();
+        let tempo = MockServer::start();
+        issue_mock(&jira);
+        tempo.mock(|when, then| {
+            when.method(GET).path("/worklogs/issue/10042");
+            then.status(200).json_body(json!({"results": [
+                tw(7, "me", "2026-10-02T02:00:00Z", 60)
+            ]}));
+        });
+        jira.mock(|when, then| {
+            when.method(GET).path("/rest/api/3/user");
+            then.status(200).json_body(json!({"displayName": "Tomas"}));
+        });
+        let got = fetch_tempo_worklogs_with(
+            &tempo_auth(&tempo),
+            &auth(&jira),
+            "G-1",
+            &http::client().unwrap(),
+        );
+        std::env::remove_var("WORKLOG_TZ");
+        // 02:00Z is 21:00 on the 1st at -05:00; wrong: UTC date (2nd) or slicing the text (2nd)
+        assert_eq!(
+            got.unwrap()[0].day,
+            NaiveDate::from_ymd_opt(2026, 10, 1).unwrap()
+        );
     }
 
     #[test]
