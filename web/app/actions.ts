@@ -16,6 +16,7 @@ import {
   listBlockCommits as daemonListBlockCommits,
   searchTickets as daemonSearchTickets,
   rememberExternalTicket as daemonRememberExternalTicket,
+  connectGcal as daemonConnectGcal,
   loadSettings as daemonLoadSettings,
   saveSettings as daemonSaveSettings,
   listProjects as daemonListProjects,
@@ -374,6 +375,11 @@ export async function markChangesSeen(upTo: number): Promise<ActionResult<{ mark
 /** Load the settings snapshot for the panel. Read-only, no revalidate. */
 export async function fetchSettings(): Promise<ActionResult<SettingsView>> {
   return runAction(() => daemonLoadSettings());
+}
+
+/** Kick off the Google Calendar browser login on the daemon host. */
+export async function connectGcal(): Promise<ActionResult<void>> {
+  return runAction(() => daemonConnectGcal());
 }
 
 /**

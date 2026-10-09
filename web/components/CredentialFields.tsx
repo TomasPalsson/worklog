@@ -6,8 +6,9 @@
 // parent settings form.
 
 import type { ComponentType } from "react";
-import { CalendarDays, ChevronDown, KeyRound, Ticket, Timer } from "lucide-react";
-import type { SettingField } from "@/lib/types";
+import { ChevronDown, KeyRound, Ticket, Timer } from "lucide-react";
+import type { GcalStatus, SettingField } from "@/lib/types";
+import { GcalConnect } from "./GcalConnect";
 import { CardHead } from "./SettingsNav";
 import { ClaudeMark, GitHubMark, SlackMark } from "./SourceIcon";
 
@@ -37,11 +38,6 @@ const GROUPS: { title: string; icon: Mark; keys: string[] }[] = [
   { title: "GitHub", icon: GitHubMark, keys: ["github_user", "github_token"] },
   { title: "Slack", icon: SlackMark, keys: ["slack_user_token"] },
   {
-    title: "Google Calendar",
-    icon: CalendarDays,
-    keys: ["google_client_id", "google_client_secret", "google_refresh_token"],
-  },
-  {
     title: "AI summaries",
     icon: ClaudeMark,
     keys: [
@@ -68,9 +64,6 @@ const LABELS: Record<string, string> = {
   github_user: "Username",
   github_token: "Token",
   slack_user_token: "User token",
-  google_client_id: "Client ID",
-  google_client_secret: "Client secret",
-  google_refresh_token: "Refresh token",
   worklog_estimator_provider: "Provider",
   anthropic_api_key: "Anthropic API key",
   litellm_base_url: "LiteLLM base URL",
@@ -156,9 +149,15 @@ function statusOf(fields: SettingField[]): keyof typeof STATUS_COPY {
 }
 
 /** How many services have every key stored, for the section index. */
-export function connectedCount(secrets: SettingField[]): { done: number; total: number } {
+export function connectedCount(
+  secrets: SettingField[],
+  gcal?: GcalStatus,
+): { done: number; total: number } {
   const groups = STATUS_GROUPS.map((g) => groupFields(secrets, g.keys)).filter((f) => f.length);
-  return { done: groups.filter((f) => statusOf(f) === "on").length, total: groups.length };
+  return {
+    done: groups.filter((f) => statusOf(f) === "on").length + (gcal?.connected ? 1 : 0),
+    total: groups.length + (gcal ? 1 : 0),
+  };
 }
 
 /** One service. Fully connected ones start folded to a single line —
@@ -210,15 +209,19 @@ function Group({
  * silently hidden. */
 export function CredentialGroups({
   secrets,
+  gcal,
   values,
   onChange,
 }: {
   secrets: SettingField[];
+  gcal?: GcalStatus;
   values: Record<string, string>;
   onChange: (key: string, value: string) => void;
 }) {
   const knownInGroups = new Set(GROUPS.flatMap((g) => g.keys));
-  const otherKeys = secrets.filter((f) => !knownInGroups.has(f.key));
+  // The google_* keychain secrets are not what the collector reads; the
+  // Google Calendar card replaces them, so they stay out of "Other".
+  const otherKeys = secrets.filter((f) => !knownInGroups.has(f.key) && !f.key.startsWith("google_"));
 
   return (
     <section id="connections" className="set-card" aria-labelledby="connections-title">
@@ -234,6 +237,7 @@ export function CredentialGroups({
           <Group key={g.title} title={g.title} icon={g.icon} fields={fields} values={values} onChange={onChange} />
         );
       })}
+      {gcal && <GcalConnect gcal={gcal} />}
       {otherKeys.length > 0 && (
         <Group title="Other" fields={otherKeys} values={values} onChange={onChange} />
       )}

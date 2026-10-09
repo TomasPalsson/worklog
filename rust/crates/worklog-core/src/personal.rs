@@ -46,6 +46,12 @@ pub struct ConfigFile {
     pub personal: Vec<String>,
     #[serde(default)]
     pub ignore: Vec<String>,
+    /// Jira key that all-internal calendar meetings land on (`APRO-7`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meeting_ticket: Option<String>,
+    /// Owner's company email domain (`apro.is`). Both keys must be set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub company_domain: Option<String>,
 }
 
 /// Loaded classification rules. Cheap to clone; load once per infer pass.

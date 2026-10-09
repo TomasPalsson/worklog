@@ -394,6 +394,11 @@ export async function loadSettings(): Promise<SettingsView> {
   return call<SettingsView>("GET", "/settings");
 }
 
+/** Starts the daemon's Google sign-in (opens the host browser); 202 = started. */
+export async function connectGcal(): Promise<void> {
+  await call("POST", "/gcal/connect");
+}
+
 /** Apply a partial settings update. Returns the fresh snapshot plus a
  * reclassify summary when the personal patterns changed. */
 export async function saveSettings(

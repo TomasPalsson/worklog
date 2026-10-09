@@ -574,6 +574,18 @@ pub fn estimate_day_with<I: ModelInvoker>(
     model: &str,
     invoker: &I,
 ) -> Result<EstimateStats> {
+    let meeting = crate::collectors::meeting_ticket::MeetingConfig::load();
+    estimate_day_with_meeting(conn, day, model, invoker, &meeting)
+}
+
+/// [`estimate_day_with`] with the internal-meeting config injected.
+pub fn estimate_day_with_meeting<I: ModelInvoker>(
+    conn: &Connection,
+    day: NaiveDate,
+    model: &str,
+    invoker: &I,
+    meeting: &crate::collectors::meeting_ticket::MeetingConfig,
+) -> Result<EstimateStats> {
     let mut stats = EstimateStats::default();
     let day_iso = day.to_string();
     bail_if_compressed(conn, &day_iso)?;
@@ -691,8 +703,10 @@ pub fn estimate_day_with<I: ModelInvoker>(
                 SET description        = ?1,
                     duration_seconds   = ?2,
                     jira_issue         = CASE WHEN ticket_origin = 'manual'
+                                           OR (ticket_origin = 'event' AND jira_issue = ?6)
                                       THEN jira_issue ELSE ?3 END,
                     ticket_origin      = CASE WHEN ticket_origin = 'manual' OR ?3 IS jira_issue
+                                           OR (ticket_origin = 'event' AND jira_issue = ?6)
                                       THEN ticket_origin
                                       WHEN ?3 IS NULL THEN NULL ELSE 'auto' END,
                     estimated_by       = 'claude_p',
@@ -704,7 +718,8 @@ pub fn estimate_day_with<I: ModelInvoker>(
                     minutes * 60,
                     ticket,
                     block.id,
-                    described_seconds
+                    described_seconds,
+                    meeting.ticket
                 ],
             )
             .context("updating block with estimate")?;
@@ -959,6 +974,7 @@ pub fn commit_block_estimate(
         minutes,
         ticket,
     } = reply;
+    let meeting_ticket = crate::collectors::meeting_ticket::MeetingConfig::load().ticket;
 
     // Catch the deleted-during-LLM-call race: a Sparkles click holds no
     // lock during the 30-60s claude-p shell-out, so another browser tab
@@ -973,8 +989,10 @@ pub fn commit_block_estimate(
                 SET description        = ?1,
                     duration_seconds   = ?2,
                     jira_issue         = CASE WHEN ticket_origin = 'manual'
+                                           OR (ticket_origin = 'event' AND jira_issue = ?6)
                                       THEN jira_issue ELSE ?3 END,
                     ticket_origin      = CASE WHEN ticket_origin = 'manual' OR ?3 IS jira_issue
+                                           OR (ticket_origin = 'event' AND jira_issue = ?6)
                                       THEN ticket_origin
                                       WHEN ?3 IS NULL THEN NULL ELSE 'auto' END,
                     estimated_by       = 'claude_p',
@@ -985,7 +1003,8 @@ pub fn commit_block_estimate(
                 minutes as i64 * 60,
                 ticket,
                 block.id,
-                described_seconds
+                described_seconds,
+                meeting_ticket
             ],
         )
         .context("updating block with per-block estimate")?;
@@ -2559,6 +2578,40 @@ mod tests {
         )
         .unwrap();
         bid
+    }
+
+    fn meeting_cfg() -> crate::collectors::meeting_ticket::MeetingConfig {
+        crate::collectors::meeting_ticket::MeetingConfig {
+            ticket: Some("APRO-7".into()),
+            domain: Some("apro.is".into()),
+        }
+    }
+
+    fn estimate_with_meeting(conn: &Connection, reply: &FixedInvoker) {
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        estimate_day_with_meeting(conn, day, "m", reply, &meeting_cfg()).unwrap();
+    }
+
+    #[test]
+    fn meeting_ticket_event_block_keeps_it_through_estimation() {
+        let conn = open_memory().unwrap();
+        upsert_open_ticket(&conn, "PROJ-1");
+        let bid = insert_block_with_origin(&conn, Some("APRO-7"), "event");
+        estimate_with_meeting(&conn, &pick_ticket_reply(Some("PROJ-1")));
+        let block = repo::get_block(&conn, bid).unwrap().unwrap();
+        assert_eq!(block.jira_issue.as_deref(), Some("APRO-7"));
+        assert_eq!(block.ticket_origin, Some(TicketOrigin::Event));
+        assert_eq!(block.description.as_deref(), Some("Work"));
+    }
+
+    #[test]
+    fn manual_ticket_beats_meeting_ticket() {
+        let conn = open_memory().unwrap();
+        let bid = insert_block_with_origin(&conn, Some("PROJ-9"), "manual");
+        estimate_with_meeting(&conn, &pick_ticket_reply(None));
+        let block = repo::get_block(&conn, bid).unwrap().unwrap();
+        assert_eq!(block.jira_issue.as_deref(), Some("PROJ-9"));
+        assert_eq!(block.ticket_origin, Some(TicketOrigin::Manual));
     }
 
     #[test]
