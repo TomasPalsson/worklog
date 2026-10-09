@@ -6,6 +6,10 @@
 .sx-terrain-svg { display: block; width: 100%; max-width: 720px; height: auto; margin: 12px auto 0; }
 .sx-terrain-face { stroke: var(--bg); stroke-width: 0.75; stroke-linejoin: round; }
 .sx-terrain-pillar:hover { opacity: 0.82; }
+.sx-terrain-tipped { cursor: help; outline: none; }
+.sx-terrain-tipped:hover .sx-terrain-face, .sx-terrain-tipped:focus-visible .sx-terrain-face, .sx-terrain-face.sx-terrain-tipped:hover, .sx-terrain-face.sx-terrain-tipped:focus-visible { stroke: var(--fg); stroke-width: 1.5; }
+text.sx-terrain-tipped:hover, text.sx-terrain-tipped:focus-visible { text-decoration: underline; }
+g.sx-terrain-tipped.sx-terrain-ink:hover, g.sx-terrain-tipped.sx-terrain-ink:focus-visible { stroke-width: 2.4; }
 .sx-terrain-ink { fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .sx-terrain-leader { stroke: var(--border-strong); stroke-width: 1; fill: none; }
 .sx-terrain-plate { fill: var(--bg-raised); stroke: var(--border-strong); stroke-width: 1; }

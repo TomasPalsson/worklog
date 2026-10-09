@@ -26,3 +26,18 @@
 /* Axis labels in viewBox units: ~12px at wide widths; the SVG scrolls at 600px min, so bump on phones/tablets to stay >=10px on screen. */
 .st-svg .art-label { font-size: 12px; }
 @media (max-width: 900px) { .st-svg .art-label { font-size: 18px; } }
+/* Hover / focus affordance for tipped marks (the card itself is tip.css). */
+.st-tipcell:hover .st-cell, .st-tipcell:focus-visible .st-cell { stroke: var(--fg); }
+.st-hit { fill: transparent; }
+.st-daybar:hover .st-hit, .st-daybar:focus-visible .st-hit { fill: var(--fg); fill-opacity: 0.07; }
+.st-col { fill: transparent; }
+.st-col:hover { fill: var(--fg); fill-opacity: 0.07; }
+.st-layer:focus-visible { fill-opacity: 1; stroke: var(--fg); stroke-width: 1.5; }
+.st-legtip { cursor: help; border-radius: 4px; }
+.st-legtip:hover { color: var(--fg); text-decoration: underline dotted; text-underline-offset: 3px; }
+.st-candle { cursor: help; outline: none; }
+.st-candle:hover, .st-candle:focus-visible { stroke: var(--fg); stroke-width: 2; filter: brightness(1.15); }
+.st-median { cursor: help; outline: none; }
+.st-median:hover line, .st-median:focus-visible line { stroke-width: 2.4; }
+.st-median:hover text, .st-median:focus-visible text { text-decoration: underline; }
+.st-cellday { fill: var(--fg); opacity: 0.55; font-family: var(--font-mono); pointer-events: none; }

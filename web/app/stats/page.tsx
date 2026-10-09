@@ -10,10 +10,14 @@ import { DailyStack } from "@/components/stats/DailyStack";
 import { FunFacts } from "@/components/stats/FunFacts";
 import { PeriodReceipt } from "@/components/stats/PeriodReceipt";
 import { PoliteBot } from "@/components/stats/PoliteBot";
+import { ProjectPodium } from "@/components/stats/ProjectPodium";
 import { RangeChips, parseRange, rangeDates } from "@/components/stats/RangeChips";
 import { RankedBars } from "@/components/stats/RankedBars";
+import { ShellKeycaps } from "@/components/stats/ShellKeycaps";
 import { SplitDonut } from "@/components/stats/SplitDonut";
 import { StatsHero } from "@/components/stats/StatsHero";
+import { TabGarden } from "@/components/stats/TabGarden";
+import { TipLayer } from "@/components/stats/StatTip";
 import { TicketMetro } from "@/components/stats/TicketMetro";
 import { ToolWarehouse } from "@/components/stats/ToolWarehouse";
 import { WeekTerrain } from "@/components/stats/WeekTerrain";
@@ -56,7 +60,7 @@ function Story({ r }: { r: StatsReport }) {
         <WorkdayCity daily={r.daily} today={r.today} />
       </Section>
       <Section title="Records">
-        <FunFacts records={r.records} />
+        <FunFacts records={r.records} daily={r.daily} />
       </Section>
       <Section title="Where the time went">
         <DayFlow
@@ -86,16 +90,17 @@ function Story({ r }: { r: StatsReport }) {
             helpers={r.helpers}
             totalCalls={r.totals.tool_calls}
             totalHelpers={r.totals.helpers}
+            daysWorked={r.totals.days_worked}
           />
-          <PoliteBot prompt={r.prompt} />
+          <PoliteBot prompt={r.prompt} daysWorked={r.totals.days_worked} />
         </div>
       </Section>
       <Section title="Tools of the trade">
-        <div className="stats-two">
-          <RankedBars title="Shell commands" unit="count" rows={r.shell} />
-          <RankedBars title="Websites" unit="minutes" rows={r.domains} />
+        <div className="stats-stack">
+          <ProjectPodium rows={r.folders} total={r.totals.work_seconds} days={r.totals.days_worked} />
+          <ShellKeycaps rows={r.shell} total={r.totals.shell_commands} days={r.totals.days_worked} />
+          <TabGarden rows={r.domains} />
           <RankedBars title="Slack" unit="count" rows={r.slack_channels} />
-          <RankedBars title="Projects" unit="seconds" rows={r.folders} />
         </div>
       </Section>
       <Section title="Tickets">
@@ -148,7 +153,9 @@ export default async function StatsPage({ searchParams }: Props) {
         <RangeChips current={range} />
       </header>
       {report ? (
-        <Story r={report} />
+        <TipLayer>
+          <Story r={report} />
+        </TipLayer>
       ) : (
         <div role="alert">
           <p className="export-error">Couldn&apos;t load statistics — {loadError}</p>

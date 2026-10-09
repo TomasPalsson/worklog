@@ -39,3 +39,10 @@
 .sr-swatch { width: 12px; height: 12px; border-radius: 3px; background: var(--c); }
 .sr-swatch[data-hatch] { background: var(--art-hatch-muted); border: 1px solid var(--border-strong); }
 .sr-leg-pct { font-family: var(--font-mono); color: var(--fg-subtle); min-width: 36px; text-align: right; }
+
+/* Hover / focus affordance for tipped rows, segments and legend items. */
+.sr-row { border-radius: 6px; }
+.sr-row:hover, .sr-row:focus-visible { background: var(--bg-sunk); box-shadow: 0 0 0 4px var(--bg-sunk); }
+.sr-seg:hover, .sr-seg:focus-visible { stroke-width: 17; }
+.sr-leg { border-radius: 4px; }
+.sr-leg:hover { background: var(--bg-sunk); box-shadow: 0 0 0 3px var(--bg-sunk); }

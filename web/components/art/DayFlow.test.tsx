@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { cleanup, fireEvent, render } from "@testing-library/react";
 import { formatDuration } from "@/lib/format";
-import { buildFlow, DayFlow, describeFlow, layoutFlow, type FlowBlock } from "./DayFlow";
+import { buildFlow, DayFlow, describeFlow, layoutFlow, nodeTip, ribbonTip, type FlowBlock } from "./DayFlow";
 
 afterEach(() => {
   cleanup();
@@ -112,5 +112,34 @@ describe("DayFlow", () => {
   it("describeFlow omits source flows when sources are hidden", () => {
     const f = buildFlow([blk(3600, "A")], null);
     expect(describeFlow(f, false)).not.toContain("Claude to");
+  });
+});
+
+describe("flow tips", () => {
+  const f = buildFlow([blk(7200, "A-1"), blk(3600, "B-2"), blk(1800, null)], null);
+  it("nodeTip: total, column share, top flows", () => {
+    const t = nodeTip(f, f.nodes.find((n) => n.id === "k:work")!, true);
+    expect(t.title).toBe("work");
+    expect(t.rows).toContainEqual(["Total", "3h 30m"]);
+    expect(t.rows).toContainEqual(["Share of kind column", "100%"]);
+    expect(t.rows).toContainEqual(["to A-1", "2h"]);
+    expect(t.bar).toEqual({ value: 12600, max: 12600, label: "100% of the kind column" });
+    const a = nodeTip(f, f.nodes.find((n) => n.id === "t:A-1")!, true);
+    expect(a.rows).toContainEqual(["Share of ticket column", "57%"]);
+    expect(a.note).toBe("The biggest ticket of the day.");
+  });
+  it("ribbonTip: duration and share of both ends", () => {
+    const L = layoutFlow(f, 1100, true);
+    const r = L.ribbons.find((x) => x.key === "k:work>t:A-1")!;
+    const t = ribbonTip(f, r);
+    expect(t.title).toBe("work \u2192 A-1");
+    expect(t.rows).toContainEqual(["Share of work", "57%"]);
+    expect(t.rows).toContainEqual(["Share of A-1", "100%"]);
+  });
+  it("marks carry data-stip and no native <title>", () => {
+    const { container } = render(<DayFlow blocks={[blk(3600, "A-1")]} billing={null} defaultOpen />);
+    expect(container.querySelectorAll(".art-dayflow-node[data-stip]").length).toBeGreaterThan(0);
+    expect(container.querySelectorAll(".art-dayflow-rib[data-stip]").length).toBeGreaterThan(0);
+    expect(container.querySelector("title")).toBeNull();
   });
 });

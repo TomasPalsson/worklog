@@ -1,6 +1,8 @@
 import "@/app/stats/charts-time.css";
 import type { DailyStat } from "@/lib/stats_contract";
-import { shortLabel } from "./time-utils";
+import { dayLabel, shortLabel } from "./time-utils";
+import { tipProps, type Tip } from "./tip";
+import { nf, ordinal, pct, times } from "./chart-tip-utils";
 
 const W = 1000;
 const H = 200;
@@ -69,6 +71,8 @@ export interface Layer {
   total: number;
   peak: number;
   peakDay: string;
+  /** Days with a non-zero value. */
+  active: number;
   path: string;
 }
 
@@ -91,8 +95,60 @@ export function buildLayers(daily: DailyStat[]): Layer[] {
     norm[si].forEach((v, i) => (acc[i] += v));
     const upper: Pt[] = xs.map((x, i) => [x, H / 2 + (acc[i] - tot[i] / 2) * unit]);
     const pi = vals[si].indexOf(maxes[si]);
-    return [{ label: s.label, color: s.color, total, peak: maxes[si], peakDay: rows[pi].day, path: bandPath(upper, lower) }];
+    return [{ label: s.label, color: s.color, total, peak: maxes[si], peakDay: rows[pi].day, active: daily.filter((d) => Number(d[s.key]) > 0).length, path: bandPath(upper, lower) }];
   });
+}
+
+/** Hover card for one series layer; rank = position by total among layers. */
+export function layerTip(l: Layer, layers: Layer[], days: number): Tip {
+  const grand = layers.reduce((a, x) => a + x.total, 0);
+  const avg = l.total / Math.max(1, l.active);
+  const rank = layers.filter((x) => x.total > l.total).length + 1;
+  return {
+    title: l.label,
+    sub: `${ordinal(rank)} biggest of ${layers.length} ${layers.length === 1 ? "stream" : "streams"}`,
+    rows: [
+      ["Total", nf.format(l.total)],
+      ["Peak day", `${nf.format(l.peak)} on ${shortLabel(l.peakDay)}`],
+      ["Active days", `${l.active} of ${days}`],
+      ["Avg per active day", nf.format(Math.round(avg))],
+      ["Share of all counts", pct(l.total / grand)],
+    ],
+    bar: { value: l.total, max: grand, label: `${pct(l.total / grand)} of everything counted here` },
+    note: l.peak > avg * 1.05 ? `Peak day was ${times(l.peak / avg)} its average active day.` : "Steady: no day stood far above the rest.",
+    accent: l.color,
+  };
+}
+
+/** Hover card for one day's column: every series' raw value. */
+export function columnTip(d: DailyStat, daily: DailyStat[]): Tip {
+  const val = (x: DailyStat, k: keyof DailyStat) => Math.max(0, Number(x[k]) || 0);
+  const peaked = SERIES.filter((s) => {
+    const all = daily.map((x) => val(x, s.key));
+    return val(d, s.key) > 0 && val(d, s.key) === Math.max(...all) && Math.min(...all) !== Math.max(...all);
+  }).map((s) => s.label);
+  return {
+    title: dayLabel(d.day),
+    sub: "every stream, raw values",
+    rows: SERIES.map((s) => [s.label, nf.format(val(d, s.key))]),
+    note: peaked.length ? `Peak day for ${peaked.join(" and ")}.` : "No stream peaked this day.",
+  };
+}
+
+/** Invisible full-height hover column per day, centred on the day's x. */
+function Columns({ daily }: { daily: DailyStat[] }) {
+  const n = daily.length;
+  const step = n > 1 ? (W - 2 * PAD) / (n - 1) : W;
+  return (
+    <>
+      {daily.map((d, i) => {
+        const cx = n > 1 ? PAD + i * step : W / 2;
+        const x0 = Math.max(0, cx - step / 2);
+        const x1 = Math.min(W, cx + step / 2);
+        return <rect key={d.day} className="st-col" x={x0} y={0} width={x1 - x0} height={H} {...tipProps(columnTip(d, daily))} />;
+      })}
+    </>
+  );
 }
 
 export function ActivityStream({ daily }: { daily: DailyStat[] }) {
@@ -117,17 +173,19 @@ export function ActivityStream({ daily }: { daily: DailyStat[] }) {
               d={l.path}
               fill={l.color}
               style={{ fillOpacity: 0.85, animationDelay: `${i * 120}ms` }}
-            >
-              <title>{`${l.label} · peak ${nf.format(l.peak)} on ${shortLabel(l.peakDay)}`}</title>
-            </path>
+              tabIndex={0}
+              aria-label={`${l.label}: ${nf.format(l.total)} total`}
+              {...tipProps(layerTip(l, layers, daily.length))}
+            />
           ))}
+          <Columns daily={daily} />
           <text x={PAD} y={H - 4} className="art-label">{shortLabel(daily[0].day)}</text>
           <text x={W - PAD} y={H - 4} textAnchor="end" className="art-label">{shortLabel(daily[daily.length - 1].day)}</text>
         </svg>
       </div>
       <ul className="st-legend">
         {layers.map((l) => (
-          <li key={l.label}>
+          <li key={l.label} className="st-legtip" {...tipProps(layerTip(l, layers, daily.length))}>
             <span className="st-swatch" style={{ background: l.color }} />
             {l.label} <span className="st-num">{nf.format(l.total)}</span>
           </li>

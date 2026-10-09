@@ -1,6 +1,8 @@
 import "@/app/stats/warehouse.css";
 import type { Ranked } from "@/lib/stats_contract";
 import { byDepth, iso, isoBox, tones } from "./iso";
+import { tipProps, type Tip } from "./tip";
+import { doorTip, forkliftTip, palletTip, pegsTip, ranked } from "./WarehouseTips";
 
 const U = 12; // px per grid step
 const P = 2.2; // pallet footprint (2x2 crates + 0.1 margin)
@@ -18,7 +20,7 @@ const MAX_CRATES = 24; // 2x2 footprint, 6 high: well inside the 4x4x6 budget
 const MAX_PEGS = 16;
 const SHOWN = 8;
 
-const fmt = (n: number) => Math.round(n).toLocaleString("en-US");
+export const fmt = (n: number) => Math.round(n).toLocaleString("en-US");
 const f = (n: number) => n.toFixed(2);
 
 /** "mcp__plugin_chrome-devtools-mcp_chrome-devtools__evaluate_script" -> "devtools·evaluate_script". */
@@ -212,14 +214,14 @@ function PalletDrawing({ p, n }: { p: Pallet; n: number }) {
 }
 
 /** Name plate painted flat on the floor in front of the pallet, so no crate can float over it. */
-function Label({ p, unit }: { p: Pallet; unit: number }) {
+function Label({ p, tip }: { p: Pallet; tip: Tip }) {
   const name = shortTool(p.tool.label);
   const shown = name.length > 9 ? `${name.slice(0, 8)}…` : name;
   const x0 = p.gx + P / 2 - DECAL_W / 2;
   const plate = [iso(x0, p.gy + DECAL_Y0, 0, U), iso(x0 + DECAL_W, p.gy + DECAL_Y0, 0, U), iso(x0 + DECAL_W, p.gy + DECAL_Y1, 0, U), iso(x0, p.gy + DECAL_Y1, 0, U)];
   const [ox, oy] = iso(p.gx + P / 2, p.gy + DECAL_Y0, 0, U);
   return (
-    <g>
+    <g {...tipProps(tip)}>
       <polygon points={plate.map(([a, b]) => `${f(a)},${f(b)}`).join(" ")} fill="var(--bg)" stroke="var(--border-strong)" strokeWidth={1} strokeLinejoin="round" />
       <g transform={`matrix(0.866 0.5 -0.866 0.5 ${f(ox)} ${f(oy)})`} textAnchor="middle" aria-hidden="true">
         <text x={0} y={13} className="art-label" style={{ fontSize: 11, fill: "var(--fg)" }}>
@@ -229,7 +231,6 @@ function Label({ p, unit }: { p: Pallet; unit: number }) {
           {fmt(p.tool.value)}
         </text>
       </g>
-      <title>{`${name} (${p.tool.label}): ${fmt(p.tool.value)} calls, ${p.crates.length} crates of ${fmt(unit)}`}</title>
     </g>
   );
 }
@@ -245,10 +246,10 @@ const FORKLIFT_REST: Box[] = [
   [-2.0, 1.4, 0.2, 1.4, 0.2, 0.08, "var(--slate)"],
 ];
 
-function Forklift() {
+function Forklift({ tip }: { tip: Tip }) {
   const [hx, hy] = iso(-3, 0.9, 1.1, U);
   return (
-    <g>
+    <g {...tipProps(tip)} tabIndex={0} aria-label={`${tip.title}, ${tip.rows?.[0]?.[1] ?? ""}`}>
       <Boxes list={[[-3.6, 0.2, 0.3, 1.4, 1.6, 0.8, "var(--amber)"]]} />
       <Peg x={hx} y={hy} fill="var(--violet)" />
       <Boxes list={FORKLIFT_REST} />
@@ -258,7 +259,7 @@ function Forklift() {
 
 const DOOR_X = -3.2;
 
-function Door({ yMax }: { yMax: number }) {
+function Door({ yMax, tip }: { yMax: number; tip: Tip }) {
   const frame: Box[] = [
     [DOOR_X, yMax - 0.3, 0, 0.25, 0.25, 3, "var(--slate)"],
     [DOOR_X + 2.35, yMax - 0.3, 0, 0.25, 0.25, 3, "var(--slate)"],
@@ -266,27 +267,22 @@ function Door({ yMax }: { yMax: number }) {
   ];
   const opening = isoBox(DOOR_X + 0.25, yMax - 0.05, 0, 2.1, 0.01, 2.8, U).left;
   return (
-    <g className="art-fade" style={{ animationDelay: "200ms" }}>
+    <g className="art-fade" style={{ animationDelay: "200ms" }} {...tipProps(tip)} tabIndex={0} aria-label={`${tip.title}, ${tip.rows?.[0]?.[1] ?? ""}`}>
       <polygon points={opening} fill="color-mix(in oklch, var(--slate) 30%, var(--bg))" />
       <Boxes list={frame} />
     </g>
   );
 }
 
-function Workers({ total, yWork, helpers }: { total: number; yWork: number; helpers: Ranked[] }) {
-  const { pegs, per } = pegCount(total);
+function Workers({ total, yWork, tip }: { total: number; yWork: number; tip: Tip }) {
+  const { pegs } = pegCount(total);
   if (pegs === 0) return null;
-  const detail = helpers
-    .filter((h) => h.value > 0)
-    .map((h) => `${h.label}: ${fmt(h.value)}`)
-    .join(" · ");
   return (
-    <g className="art-fade" style={{ animationDelay: "400ms" }}>
+    <g className="art-fade" style={{ animationDelay: "400ms" }} {...tipProps(tip)} tabIndex={0} aria-label={`Subagents, ${fmt(total)}`}>
       {Array.from({ length: pegs }, (_, k) => {
         const [px, py] = iso(1 + k, yWork, 0, U);
         return <Peg key={k} x={px} y={py} fill="var(--violet)" />;
       })}
-      <title>{`${fmt(total)} subagents, 1 peg = ${fmt(per)}. ${detail}`}</title>
     </g>
   );
 }
@@ -300,11 +296,14 @@ export function ToolWarehouse({
   helpers,
   totalCalls,
   totalHelpers,
+  daysWorked,
 }: {
   tools: Ranked[];
   helpers: Ranked[];
   totalCalls?: number;
   totalHelpers?: number;
+  /** `totals.days_worked`: enables the per-day rows and notes. */
+  daysWorked?: number;
 }) {
   const L = layout(tools);
   const { bounds: b, pallets, unit } = L;
@@ -334,6 +333,8 @@ export function ToolWarehouse({
   const top = pallets[0];
   const pct = all > 0 ? Math.round((top.tool.value / all) * 100) : 0;
   const name = shortTool(top.tool.label);
+  const list = ranked(tools);
+  const tipOf = (p: Pallet) => palletTip(p.tool, list, all, unit, daysWorked, hue(p.i, pallets.length));
   const parts = [...pallets].sort((a, c) => byDepth({ x: a.gx, y: a.gy }, { x: c.gx, y: c.gy }));
   const aria =
     `Tool warehouse: ${name} leads with ${fmt(top.tool.value)} calls, ${pct}% ${scope}. ` +
@@ -346,20 +347,26 @@ export function ToolWarehouse({
       </p>
       <svg className="sx-warehouse-svg" viewBox={viewBox} role="img" aria-label={aria}>
         {floor}
-        <Door yMax={L.yMax} />
+        <Door yMax={L.yMax} tip={doorTip(all, list.length, list[0], daysWorked)} />
         <g className="art-fade">
-          <Forklift />
+          <Forklift tip={forkliftTip(top.tool, all, unit, daysWorked)} />
         </g>
         {parts.map((p) => (
-          <g key={p.tool.label} className="sx-warehouse-stack" style={{ animationDelay: `${p.i * 70}ms` }}>
+          <g
+            key={p.tool.label}
+            className="sx-warehouse-stack"
+            style={{ animationDelay: `${p.i * 70}ms` }}
+            {...tipProps(tipOf(p))}
+            tabIndex={0}
+            aria-label={`${shortTool(p.tool.label)}, ${fmt(p.tool.value)} calls`}
+          >
             <PalletDrawing p={p} n={pallets.length} />
-            <title>{`${shortTool(p.tool.label)}: ${fmt(p.tool.value)} calls = ${p.crates.length} crates`}</title>
           </g>
         ))}
-        <Workers total={total} yWork={L.yWork} helpers={helpers} />
+        <Workers total={total} yWork={L.yWork} tip={pegsTip(helpers, total, pegCount(total).per, daysWorked)} />
         <g className="art-fade" style={{ animationDelay: "600ms" }}>
           {parts.map((p) => (
-            <Label key={p.tool.label} p={p} unit={unit} />
+            <Label key={p.tool.label} p={p} tip={tipOf(p)} />
           ))}
         </g>
       </svg>

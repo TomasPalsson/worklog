@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { cleanup, render, screen } from "@testing-library/react";
-import type { StatsRecords } from "@/lib/stats_contract";
-import { FunFacts, factsOf } from "./FunFacts";
+import type { DailyStat, StatsRecords } from "@/lib/stats_contract";
+import { FunFacts, factsOf, streakRuns, tipsOf } from "./FunFacts";
+import { parseTip } from "./tip";
 
 afterEach(cleanup);
 
@@ -44,5 +45,75 @@ describe("FunFacts", () => {
   });
   it("singular day", () => {
     expect(factsOf({ ...NONE, current_streak: 1 }).find((f) => f.key === "current")!.value).toBe("1 day");
+  });
+});
+
+const dd = (day: string, o: Partial<DailyStat> = {}): DailyStat => ({
+  day, work_seconds: 0, personal_seconds: 0, ignored_seconds: 0, prompts: 0, tool_calls: 0, shell: 0, slack: 0,
+  browser_minutes: 0, claude_busy_minutes: 0, commits: 0, meeting_seconds: 0, first_at: null, last_at: null,
+  folders: 0, tickets: 0, ...o,
+});
+const DAILY = [
+  dd("2025-03-03", { work_seconds: 3600, prompts: 10, first_at: "09:00", last_at: "17:00" }),
+  dd("2025-03-04", { work_seconds: 7200, prompts: 30, first_at: "08:00", last_at: "18:00", tickets: 2, folders: 1, meeting_seconds: 1800 }),
+  dd("2025-03-05", { work_seconds: 3600, prompts: 20, first_at: "10:00", last_at: "16:00" }),
+  dd("2025-03-06"),
+  dd("2025-03-07", { work_seconds: 600 }),
+];
+
+describe("FunFacts tips", () => {
+  const rec: StatsRecords = {
+    ...NONE,
+    busiest_day: { day: "2025-03-04", seconds: 7200 },
+    most_prompts: { day: "2025-03-04", n: 30 },
+    longest_streak: 3,
+    current_streak: 1,
+  };
+  it("streakRuns finds consecutive worked days", () => {
+    expect(streakRuns(DAILY)).toEqual([
+      { start: "2025-03-03", end: "2025-03-05", n: 3 },
+      { start: "2025-03-07", end: "2025-03-07", n: 1 },
+    ]);
+    expect(streakRuns([])).toEqual([]);
+  });
+  it("busiest day: breakdown and multiple of the average (exact strings)", () => {
+    const t = tipsOf(rec, DAILY).busiest;
+    expect(t.rows).toContainEqual(["Worked", "2h"]);
+    expect(t.rows).toContainEqual(["Meetings", "30m"]);
+    expect(t.rows).toContainEqual(["Active", "08:00 \u2013 18:00"]);
+    expect(t.rows).toContainEqual(["Average active day", "1h 3m"]);
+    expect(t.note).toBe("That's 1.9\u00d7 your average active day.");
+  });
+  it("prompts: share and average", () => {
+    const t = tipsOf(rec, DAILY).prompts;
+    expect(t.rows).toContainEqual(["Share of the range", "50%"]);
+    expect(t.note).toBe("That's 1.5\u00d7 your average active day.");
+  });
+  it("earliest start compares only worked days (a 06:00 Slack check on a day off doesn't count)", () => {
+    const daily = [...DAILY, dd("2025-03-08", { first_at: "06:00", slack: 1 })];
+    const t = tipsOf({ ...rec, earliest_start: { day: "2025-03-04", time: "08:00" } }, daily).early;
+    expect(t.note).toBe("Typically 09:00; this one is #1 of 3 days.");
+  });
+  it("streak tips carry start/end dates", () => {
+    const t = tipsOf(rec, DAILY);
+    expect(t.longest.sub).toBe("Mon Mar 3 \u2192 Wed Mar 5");
+    expect(t.longest.note).toBe("4 more to a full week.");
+    expect(t.current.rows).toContainEqual(["From", "Fri Mar 7"]);
+  });
+  it("works without daily, and with no data", () => {
+    const t = tipsOf(rec);
+    expect(t.longest.sub).toBeUndefined();
+    expect(t.busiest.rows).toEqual([["Worked", "2h"]]);
+    const none = tipsOf(NONE);
+    expect(JSON.stringify(none)).not.toMatch(/NaN|Infinity/);
+    expect(none.busiest.note).toBe("No work blocks yet.");
+  });
+  it("renders a data-stip on every card, tab-reachable, no <title>", () => {
+    const { container } = render(<FunFacts records={rec} daily={DAILY} />);
+    const cards = container.querySelectorAll(".stats-fact-link[data-stip]");
+    expect(cards.length).toBe(8);
+    expect(parseTip(cards[0].getAttribute("data-stip"))?.title).toBe("Busiest day");
+    expect(container.querySelector("title")).toBeNull();
+    expect(container.querySelector("div.stats-fact-link")?.getAttribute("tabindex")).toBe("0");
   });
 });

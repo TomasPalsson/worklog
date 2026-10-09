@@ -2,6 +2,8 @@ import { useId } from "react";
 import "@/app/stats/charts-ranked.css";
 import type { Ranked } from "@/lib/stats_contract";
 import { formatValue } from "./RankedBars";
+import { tipProps, type Tip } from "./tip";
+import { ordinal, pct, times } from "./chart-tip-utils";
 
 const COLORS = ["var(--sage)", "var(--amber)", "var(--violet)", "var(--slate)", "var(--terracotta)"];
 const HATCH = new Set(["none", "not yet"]);
@@ -34,6 +36,35 @@ function buildSegs<T extends { value: number; share: number }>(items: T[]) {
     });
 }
 
+type DonutItem = { label: string; value: number; hatch: boolean; color: string; share: number };
+
+/** Hover card for one donut segment / legend row. */
+export function segTip(it: DonutItem, items: DonutItem[], unit: "count" | "seconds", title: string): Tip {
+  const rank = items.filter((x) => x.value > it.value).length + 1;
+  const big = items.reduce((b, x) => (x.value > b.value ? x : b), items[0]);
+  const others = items.reduce((a, x) => a + x.value, 0) - it.value;
+  let note: string;
+  if (it.value <= 0) note = "Nothing in this slice yet.";
+  else if (items.filter((x) => x.value > 0).length === 1) note = "The whole ring: nothing else here.";
+  else if (it.value > others) note = `More than all the other slices combined (${formatValue(unit, others)}).`;
+  else if (rank === 1 && items.some((x) => x !== it && x.value === it.value)) note = `Level with ${items.find((x) => x !== it && x.value === it.value)!.label}.`;
+  else if (rank === 1) note = "The biggest slice, but not a majority.";
+  else note = `${times(big.value / it.value)} smaller than ${big.label}.`;
+  return {
+    title: it.label,
+    sub: `${title} · ${ordinal(rank)} of ${items.length}`,
+    rows: [
+      ["Value", formatValue(unit, it.value)],
+      ["Share", pct(it.share)],
+      ["Rank", `${rank} of ${items.length}`],
+      ["Of the rest", formatValue(unit, others)],
+    ],
+    bar: { value: it.value, max: big.value, label: `${pct(big.value > 0 ? it.value / big.value : 0)} of the biggest slice` },
+    note,
+    accent: it.hatch ? "var(--fg-subtle)" : it.color,
+  };
+}
+
 export function SplitDonut({ title, rows, unit }: { title: string; rows: Ranked[]; unit: "count" | "seconds" }) {
   const pid = useId().replace(/:/g, "");
   const vals = rows.map((r) => (Number.isFinite(r.value) ? Math.max(0, r.value) : 0));
@@ -44,7 +75,6 @@ export function SplitDonut({ title, rows, unit }: { title: string; rows: Ranked[
     return { ...r, value: vals[i], hatch, color: hatch ? "" : COLORS[colorN++ % COLORS.length], share: total > 0 ? vals[i] / total : 0 };
   });
   const big = items.reduce<(typeof items)[number] | null>((b, it) => (it.value > 0 && (!b || it.value > b.value) ? it : b), null);
-  const pct = (s: number) => `${Math.round(s * 100)}%`;
   const label = big
     ? `${title}: ${items.map((it) => `${it.label} ${pct(it.share)}`).join(", ")}`
     : `${title}: no data`;
@@ -69,27 +99,29 @@ export function SplitDonut({ title, rows, unit }: { title: string; rows: Ranked[
           <circle className="sr-ring-bg" cx={C} cy={C} r={R} />
           {segs.map(({ it, k, d, d2 }) =>
             [d, d2].filter((x): x is string => !!x).map((p, j) => (
-              <path key={`${k}-${j}`} className="sr-seg art-draw" pathLength={1} d={p} style={{ stroke: it.hatch ? `url(#${pid}-h)` : it.color, animationDelay: `${k * 90}ms` }}>
-                <title>{`${it.label}: ${formatValue(unit, it.value)} (${pct(it.share)})`}</title>
-              </path>
+              <path key={`${k}-${j}`} className="sr-seg art-draw" pathLength={1} d={p} style={{ stroke: it.hatch ? `url(#${pid}-h)` : it.color, animationDelay: `${k * 90}ms` }}
+                tabIndex={j === 0 ? 0 : undefined}
+                aria-label={`${it.label}: ${formatValue(unit, it.value)} (${pct(it.share)})`}
+                {...tipProps(segTip(it, items, unit, title))}
+              />
             )),
           )}
           <text className={big ? "sr-pct" : "sr-pct-sub"} x={C} y={C + 3}>{big ? pct(big.share) : "no data"}</text>
           {big && <text className="sr-pct-sub" x={C} y={C + 15}>{big.label.length > 14 ? `${big.label.slice(0, 13)}…` : big.label}</text>}
         </svg>
-        <Legend items={items} unit={unit} pct={pct} />
+        <Legend items={items} unit={unit} title={title} />
       </div>
     </section>
   );
 }
 
-function Legend({ items, unit, pct }: { items: { label: string; value: number; hatch: boolean; color: string; share: number }[]; unit: "count" | "seconds"; pct: (s: number) => string }) {
+function Legend({ items, unit, title }: { items: DonutItem[]; unit: "count" | "seconds"; title: string }) {
   return (
     <ul className="sr-legend">
       {items.map((it, i) => (
-        <li key={`${it.label}-${i}`} className="sr-leg">
+        <li key={`${it.label}-${i}`} className="sr-leg" {...tipProps(segTip(it, items, unit, title))}>
           <span className="sr-swatch" data-hatch={it.hatch || undefined} style={{ ["--c" as string]: it.color }} aria-hidden="true" />
-          <span className="sr-label" title={it.label}>{it.label}</span>
+          <span className="sr-label">{it.label}</span>
           <span className="sr-value">{formatValue(unit, it.value)}</span>
           <span className="sr-leg-pct">{pct(it.share)}</span>
         </li>

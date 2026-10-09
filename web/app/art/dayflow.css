@@ -19,3 +19,6 @@
 .art-dayflow-text { paint-order: stroke; stroke: var(--bg-raised); stroke-width: 2px; stroke-linejoin: round; font-size: 11px; }
 .art-dayflow-reveal { transform-box: fill-box; transform-origin: left center; animation: art-dayflow-reveal 900ms var(--art-ease) both; }
 @keyframes art-dayflow-reveal { from { transform: scaleX(0); } }
+.art-dayflow-node, .art-dayflow-rib { cursor: default; outline: none; }
+.art-dayflow-node:hover rect, .art-dayflow-node:focus-visible rect { stroke: var(--fg); stroke-width: 1.5px; }
+.art-dayflow-rib:focus-visible { fill-opacity: 0.55; stroke: var(--fg); stroke-width: 1.5px; }

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { cleanup, render } from "@testing-library/react";
-import { heightOf, labelPlate, PLATE_W, peakOf, rampColor, shares, W, WeekTerrain } from "./WeekTerrain";
+import { bandTip, heightOf, labelPlate, PLATE_W, peakOf, rampColor, shares, terrainTip, W, WeekTerrain, weekdayTip } from "./WeekTerrain";
+import { parseTip } from "./tip";
 
 afterEach(cleanup);
 
@@ -76,5 +77,70 @@ describe("WeekTerrain", () => {
     expect(container.textContent).toContain("nothing built yet");
     expect(container.querySelector("svg")!.getAttribute("aria-label")).toContain("nothing built yet");
     expect(container.querySelectorAll("g.sx-terrain-pillar").length).toBe(0);
+  });
+});
+
+describe("terrain tips", () => {
+  const g = () => {
+    const x = blank();
+    x[3][12] = 297;
+    x[3][9] = 3;
+    x[0][22] = 100;
+    return x;
+  };
+  it("peak slot", () => {
+    const t = terrainTip(g(), 3, 12);
+    expect(t.title).toBe("Thursdays · 12:00–13:00");
+    expect(t.sub).toBe("#1 of 168 weekday-hours");
+    expect(t.rows).toEqual([
+      ["Events this hour", "297"],
+      ["Share of all activity", "74%"],
+      ["Rank", "1 of 168"],
+      ["Busiest hour on Thursdays", "12:00 (297)"],
+      ["Avg hour on Thursdays", "12.5 events"],
+    ]);
+    expect(t.bar).toEqual({ value: 297, max: 297, label: "100% of the peak slot" });
+    expect(t.note).toBe("Your summit: the busiest weekday-hour of them all.");
+  });
+  it("quietest active slot and mid slot", () => {
+    const q = terrainTip(g(), 3, 9);
+    expect(q.note).toBe("Quietest weekday-hour you still showed up for.");
+    expect(q.rows![2]).toEqual(["Rank", "3 of 168"]);
+    const m = terrainTip(g(), 0, 22);
+    expect(m.note).toBe("Late-evening hour: 34% of your peak.");
+  });
+  it("empty slot and midnight wrap", () => {
+    const t = terrainTip(g(), 0, 23);
+    expect(t.title).toBe("Mondays · 23:00–00:00");
+    expect(t.rows).toEqual([["Events", "0"]]);
+  });
+  it("single event, huge value, empty grid", () => {
+    const one = blank();
+    one[6][0] = 1;
+    expect(terrainTip(one, 6, 0).note).toBe("Your summit: the busiest weekday-hour of them all.");
+    one[6][0] = 1e12;
+    expect(terrainTip(one, 6, 0).rows![0]).toEqual(["Events this hour", "1,000,000,000,000"]);
+    expect(terrainTip(blank(), 0, 0).sub).toBe("Nothing happened here");
+    expect(weekdayTip(blank(), 0).rows).toEqual([["Events", "0"], ["Share of all activity", "0%"]]);
+  });
+  it("weekday and band tips", () => {
+    expect(weekdayTip(g(), 3)).toMatchObject({
+      title: "Thursdays",
+      rows: [["Events", "300"], ["Share of all activity", "75%"], ["Peak hour", "12:00 (297 events)"]],
+      note: "Lunch hour is when Thursdays peak.",
+    });
+    expect(bandTip(g(), "sun").rows).toEqual([["Events", "3"], ["Share of all activity", "1%"]]);
+    expect(bandTip(g(), "moon").note).toBe("25% of your activity happens after dark.");
+    expect(bandTip(blank(), "moon").note).toBe("Nothing to compare yet.");
+  });
+  it("renders tips on marks and drops native titles", () => {
+    const { container } = render(<WeekTerrain grid={g()} />);
+    const pillar = container.querySelector("g.sx-terrain-tipped[tabindex]")!;
+    expect(parseTip(pillar.getAttribute("data-stip"))!.title).toContain("·");
+    expect(pillar.getAttribute("aria-label")).toContain("events");
+    expect(container.querySelectorAll("svg title").length).toBe(0);
+    expect(container.querySelectorAll("[data-stip]").length).toBeGreaterThan(168);
+    // tab stops: 3 pillars + 7 weekday labels + sun + moon
+    expect(container.querySelectorAll("[tabindex]").length).toBe(12);
   });
 });

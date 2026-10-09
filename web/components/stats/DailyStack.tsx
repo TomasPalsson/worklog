@@ -3,6 +3,8 @@ import "@/app/stats/charts-time.css";
 import type { DailyStat } from "@/lib/stats_contract";
 import { formatDuration } from "@/lib/format";
 import { dayLabel, shortLabel } from "./time-utils";
+import { tipProps, type Tip } from "./tip";
+import { ordinal, rankOf, times } from "./chart-tip-utils";
 
 const LEFT = 36;
 const TOP = 10;
@@ -22,6 +24,36 @@ export function scale(daily: DailyStat[]) {
   return { top, step };
 }
 
+/** Hover card for one day's stacked bar. */
+export function dayTip(d: DailyStat, all: DailyStat[]): Tip {
+  const total = d.work_seconds + d.personal_seconds + d.ignored_seconds;
+  const worked = all.filter((x) => x.work_seconds > 0);
+  const avg = worked.length ? worked.reduce((a, x) => a + x.work_seconds, 0) / worked.length : 0;
+  const target = TARGET_H * 3600;
+  const diff = d.work_seconds - target;
+  const vs = Math.abs(diff) < 30 ? "on target" : diff > 0 ? `+${formatDuration(diff)} over` : `${formatDuration(-diff)} under`;
+  let note: string;
+  if (total <= 0) note = "Nothing tracked this day.";
+  else if (d.work_seconds <= 0) note = "No work logged, only personal or ignored time.";
+  else if (d.personal_seconds > d.work_seconds) note = "More personal time than work today.";
+  else if (diff > 0) note = `Cleared the ${TARGET_H}h target by ${formatDuration(diff)}.`;
+  else note = `${times(d.work_seconds / avg)} your average worked day.`;
+  return {
+    title: dayLabel(d.day),
+    sub: d.work_seconds > 0 ? `${ordinal(rankOf(d.work_seconds, all.map((x) => x.work_seconds)))} most work of ${all.length} days` : `no work, ${all.length} days shown`,
+    rows: [
+      ["Work", formatDuration(d.work_seconds)],
+      ["Personal", formatDuration(d.personal_seconds)],
+      ["Ignored", formatDuration(d.ignored_seconds)],
+      ["Total", formatDuration(total)],
+      [`vs ${TARGET_H}h target`, vs],
+    ],
+    bar: { value: d.work_seconds, max: target, label: `${Math.round((d.work_seconds / target) * 100)}% of the ${TARGET_H}h target` },
+    note,
+    accent: "var(--sage)",
+  };
+}
+
 function Bars({ daily, top, slot, hatch }: { daily: DailyStat[]; top: number; slot: number; hatch: string }) {
   const yv = (h: number) => (h / top) * PLOT;
   const bw = Math.max(1, slot * 0.72);
@@ -35,10 +67,16 @@ function Bars({ daily, top, slot, hatch }: { daily: DailyStat[]; top: number; sl
         ] as const;
         let acc = 0;
         return (
-          <g key={d.day} className="art-grow-y" style={{ animationDelay: `${Math.min(i * 14, 600)}ms` }}>
-            <title>
-              {`${dayLabel(d.day)} · work ${formatDuration(d.work_seconds)}, personal ${formatDuration(d.personal_seconds)}, ignored ${formatDuration(d.ignored_seconds)}`}
-            </title>
+          <g
+            key={d.day}
+            className="st-daybar"
+            {...tipProps(dayTip(d, daily))}
+            {...(d.work_seconds + d.personal_seconds + d.ignored_seconds > 0
+              ? { tabIndex: 0, "aria-label": `${dayLabel(d.day)}: ${formatDuration(d.work_seconds)} work` }
+              : {})}
+          >
+            <rect className="st-hit" x={LEFT + i * slot} y={TOP} width={slot} height={PLOT} />
+            <g className="art-grow-y" style={{ animationDelay: `${Math.min(i * 14, 600)}ms` }}>
             {parts.map(([h, c], k) => {
               const rect = (
                 <rect key={k} x={LEFT + i * slot + (slot - bw) / 2} y={TOP + PLOT - yv(acc + h)} width={bw} height={yv(h)} fill={c} />
@@ -46,6 +84,7 @@ function Bars({ daily, top, slot, hatch }: { daily: DailyStat[]; top: number; sl
               acc += h;
               return h > 0 ? rect : null;
             })}
+            </g>
           </g>
         );
       })}

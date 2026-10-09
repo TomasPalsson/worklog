@@ -1,0 +1,30 @@
+/* Shared rich hover card for the stats graphics (components/stats/StatTip.tsx). */
+.stip-layer { display: contents; }
+.stip-card {
+  position: fixed; z-index: 60; pointer-events: none;
+  min-width: 180px; max-width: min(320px, calc(100vw - 16px));
+  padding: 10px 12px; border-radius: var(--radius-md);
+  background: var(--bg-raised); color: var(--fg);
+  border: 1px solid var(--border-strong); box-shadow: var(--elevation-modal);
+  font-size: 12.5px; line-height: 1.4;
+  opacity: 0; transform: translateY(4px);
+  transition: opacity 120ms var(--art-ease), transform 120ms var(--art-ease);
+}
+.stip-card[data-open] { opacity: 1; transform: none; }
+.stip-head { display: flex; align-items: center; gap: 8px; }
+.stip-swatch { flex: none; width: 10px; height: 10px; border-radius: 3px; }
+.stip-title { font-family: var(--font-mono); font-weight: 600; font-size: 13.5px; letter-spacing: -0.01em; }
+.stip-sub { margin-top: 2px; color: var(--fg-muted); font-size: 12px; }
+.stip-rows { margin: 8px 0 0; display: grid; gap: 3px; }
+.stip-row { display: flex; justify-content: space-between; gap: 16px; }
+.stip-row dt { color: var(--fg-muted); }
+.stip-row dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
+.stip-bar { margin-top: 8px; }
+.stip-bar-track { height: 6px; border-radius: 3px; background: var(--bg-sunk); overflow: hidden; }
+.stip-bar-fill { height: 100%; border-radius: 3px; }
+.stip-bar-label { margin-top: 3px; font-size: 11px; color: var(--fg-muted); }
+.stip-note { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border); color: var(--fg); font-style: italic; }
+/* any mark with a tip is clickable-looking and shows focus */
+[data-stip] { cursor: help; }
+[data-stip]:focus { outline: none; }
+[data-stip]:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }

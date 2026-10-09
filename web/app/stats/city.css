@@ -6,8 +6,12 @@
 :root[data-theme="dark"] .sx-city-card { --sx-city-deep: color-mix(in oklch, var(--sage), black 45%); }
 .sx-city-head { margin: 0 0 10px; font-size: 15px; line-height: 1.35; color: var(--fg); }
 .sx-city-svg { display: block; width: 100%; height: auto; margin: 0 auto; }
-.sx-city-plot:hover .sx-city-hot { stroke: var(--fg); stroke-width: 1; }
+.sx-city-plot:hover .sx-city-hot, .sx-city-plot:focus-within .sx-city-hot, .sx-city-plot:focus .sx-city-hot { stroke: var(--fg); stroke-width: 1; }
 .sx-city-rise { animation: sx-city-rise 800ms var(--art-ease) both; transform-box: fill-box; transform-origin: bottom; }
 @keyframes sx-city-rise { from { transform: scaleY(0); } }
 .sx-city-legend { margin: 10px 0 0; font-size: 12px; color: var(--fg-muted); font-family: var(--font-mono); line-height: 1.4; }
 .sx-city-empty { text-align: center; font-size: 13px; color: var(--fg-subtle); margin: 4px 0 0; }
+.sx-city-link, .sx-city-plot[tabindex] { outline: none; cursor: pointer; }
+.sx-city-link:hover, .sx-city-link:focus-visible, .sx-city-plot[tabindex]:focus-visible { filter: brightness(1.12); }
+.sx-city-mark { cursor: help; }
+.sx-city-mark:hover { filter: brightness(1.25); }

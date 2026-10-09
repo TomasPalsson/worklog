@@ -2,6 +2,8 @@
 
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { formatDuration } from "@/lib/format";
+import { TipLayer } from "@/components/stats/StatTip";
+import { tipProps, type Tip } from "@/components/stats/tip";
 
 export type FlowBlock = {
   seconds: number;
@@ -198,6 +200,67 @@ export function describeFlow(flow: Flow, withSources: boolean): string {
   return `Day flow, ${formatDuration(flow.total)} in total. Biggest flows: ${big.join("; ")}.`;
 }
 
+const pct = (a: number, b: number) => (b > 0 ? `${Math.round((a / b) * 100)}%` : "0%");
+const COL_NAME = ["source", "kind", "ticket", "billing"] as const;
+
+/** Top-3 flows touching a node on one side, as label/value rows. */
+function topFlows(flow: Flow, id: string, side: "in" | "out", withSources: boolean): [string, string][] {
+  const name = new Map(flow.nodes.map((n) => [n.id, n.label]));
+  return flow.links
+    .filter((l) => (side === "in" ? l.to === id : l.from === id) && (withSources || !l.from.startsWith("s:")))
+    .sort((a, b) => b.seconds - a.seconds)
+    .slice(0, 3)
+    .map((l) => [`${side === "in" ? "from" : "to"} ${name.get(side === "in" ? l.from : l.to)}`, formatDuration(l.seconds)]);
+}
+
+/** Tip for a node: total, share of its column, top 3 flows each way. */
+export function nodeTip(flow: Flow, n: FlowNode, withSources: boolean): Tip {
+  const colTotal = flow.nodes.filter((x) => x.col === n.col).reduce((a, x) => a + x.seconds, 0);
+  const share = pct(n.seconds, colTotal);
+  const rows: [string, string][] = [
+    ["Total", formatDuration(n.seconds)],
+    [`Share of ${COL_NAME[n.col]} column`, share],
+    ...topFlows(flow, n.id, "in", withSources),
+    ...topFlows(flow, n.id, "out", withSources),
+  ];
+  const biggest = [...flow.nodes].filter((x) => x.col === n.col).sort((a, b) => b.seconds - a.seconds)[0];
+  return {
+    title: n.label,
+    sub: `${COL_NAME[n.col]} · ${formatDuration(n.seconds)} of ${formatDuration(colTotal)}`,
+    rows,
+    bar: { value: n.seconds, max: colTotal, label: `${share} of the ${COL_NAME[n.col]} column` },
+    note: biggest && biggest.id === n.id && flow.nodes.filter((x) => x.col === n.col).length > 1
+      ? `The biggest ${COL_NAME[n.col]} of the day.`
+      : undefined,
+    accent: `var(${n.tone})`,
+  };
+}
+
+/** Tip for a ribbon: from to to, duration, share of both ends. */
+export function ribbonTip(flow: Flow, r: Ribbon): Tip {
+  const name = new Map(flow.nodes.map((n) => [n.id, n]));
+  const a = name.get(r.from);
+  const b = name.get(r.to);
+  const secs = flow.links.find((l) => l.from === r.from && l.to === r.to)?.seconds ?? 0;
+  return {
+    title: `${a?.label ?? r.from} \u2192 ${b?.label ?? r.to}`,
+    sub: formatDuration(secs),
+    rows: [
+      ["Duration", formatDuration(secs)],
+      [`Share of ${a?.label ?? "source"}`, pct(secs, a?.seconds ?? 0)],
+      [`Share of ${b?.label ?? "target"}`, pct(secs, b?.seconds ?? 0)],
+      ["Share of all tracked time", pct(secs, flow.total)],
+    ],
+    bar: { value: secs, max: a?.seconds ?? 0, label: `${pct(secs, a?.seconds ?? 0)} of ${a?.label ?? "source"}` },
+    accent: `var(${r.tone})`,
+  };
+}
+
+const ribbonAria = (flow: Flow, r: Ribbon) => {
+  const t = ribbonTip(flow, r);
+  return `${t.title}, ${t.sub}`;
+};
+
 function FlowSvg({ flow, width, height, withSources, cls }: { flow: Flow; width: number; height: number; withSources: boolean; cls: string }) {
   const uid = useId();
   const clip = `${uid}-clip`;
@@ -224,11 +287,25 @@ function FlowSvg({ flow, width, height, withSources, cls }: { flow: Flow; width:
       </defs>
       <g className="art-dayflow-ribbons" clipPath={`url(#${clip})`}>
         {L.ribbons.map((r) => (
-          <path key={r.key} className="art-dayflow-rib" d={r.d} style={{ fill: `var(${r.tone})` }} />
+          <path
+            key={r.key}
+            className="art-dayflow-rib"
+            d={r.d}
+            style={{ fill: `var(${r.tone})` }}
+            tabIndex={0}
+            aria-label={ribbonAria(flow, r)}
+            {...tipProps(ribbonTip(flow, r))}
+          />
         ))}
       </g>
       {L.nodes.map((n) => (
-        <g key={n.id} className="art-dayflow-node">
+        <g
+          key={n.id}
+          className="art-dayflow-node"
+          tabIndex={0}
+          aria-label={`${n.label}, ${formatDuration(n.seconds)}`}
+          {...tipProps(nodeTip(flow, n, withSources))}
+        >
           <rect x={n.x} y={n.y} width={NODE_W} height={n.h} rx="3" style={{ fill: `var(${n.tone})` }} />
           {n.hatch && <rect x={n.x} y={n.y} width={NODE_W} height={n.h} rx="3" fill={`url(#${hatch})`} />}
           <text className="art-label art-dayflow-text" x={n.x + NODE_W + 4} y={n.y + n.h / 2 + 3.5}>
@@ -262,12 +339,13 @@ export function DayFlow({
     } catch {
       /* storage unavailable: stay collapsed */
     }
-  }, []);
+  }, [defaultOpen]);
   const flow = buildFlow(blocks, billing);
   if (flow.total <= 0) return null;
   // Same total as the page header: ignored time is drawn, not counted.
   const kept = blocks.reduce((a, b) => (b.kind === "ignored" ? a : a + b.seconds), 0);
   return (
+    <TipLayer>
     <details
       className="art-dayflow"
       open={open}
@@ -299,5 +377,6 @@ export function DayFlow({
         </div>
       )}
     </details>
+    </TipLayer>
   );
 }

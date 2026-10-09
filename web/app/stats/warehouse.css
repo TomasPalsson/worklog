@@ -4,3 +4,6 @@
 .sx-warehouse-legend { margin: 8px 0 0; font-size: 12px; color: var(--fg-muted); line-height: 1.45; }
 .sx-warehouse-stack { animation: sx-warehouse-drop 650ms var(--art-ease) both; }
 @keyframes sx-warehouse-drop { from { transform: translateY(-22px); opacity: 0; } }
+/* hover/focus affordance for tipped marks: brighten plus a halo, so it is not colour-only */
+.sx-warehouse-svg [data-stip] { transition: filter 120ms var(--art-ease); }
+.sx-warehouse-svg [data-stip]:hover, .sx-warehouse-svg [data-stip]:focus-visible { filter: brightness(1.15) drop-shadow(0 0 3px var(--amber)); }
