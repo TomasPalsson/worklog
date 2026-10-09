@@ -1,0 +1,22 @@
+/* art: ring (shared hand in app/art.css) */
+.art-ring { display: inline-flex; align-items: center; gap: 12px; max-width: 100%; vertical-align: middle; }
+.art-ring-svg { flex: none; overflow: visible; }
+.art-ring-arc { transition: stroke-width 200ms var(--art-ease); }
+.art-ring:hover .art-ring-arc { stroke-width: 2.4; }
+.art-ring-check { animation-delay: 600ms; }
+.art-ring-rail {
+  position: relative; flex: 0 1 160px; width: 160px; min-width: 60px; height: 8px;
+  border-radius: 4px; background: var(--bg-sunk); border: 1px solid var(--border); overflow: hidden;
+}
+.art-ring-gap {
+  position: absolute; top: 0; bottom: 0; background: var(--art-hatch-amber);
+  box-shadow: inset 0 0 0 1px var(--amber); transition: opacity 200ms var(--art-ease);
+}
+.art-ring:hover .art-ring-gap { opacity: 0.75; }
+.art-ring-ray { opacity: 0; animation: art-ring-spark 900ms var(--art-ease) 500ms both; }
+@keyframes art-ring-spark {
+  0% { opacity: 0; }
+  30% { opacity: 1; }
+  100% { opacity: 0; }
+}
+.art-ring[data-done] .art-ring-rail { background: color-mix(in oklch, var(--sage) 40%, var(--bg-sunk)); border-color: var(--sage); }

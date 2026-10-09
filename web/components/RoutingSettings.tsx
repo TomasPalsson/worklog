@@ -12,6 +12,7 @@ import { Loader2, Trash2 } from "lucide-react";
 import type { Rule, RoutingStatus } from "@/lib/types";
 import { deleteRule, fetchRoutingRules, fetchRoutingStatus } from "@/app/actions";
 import { toast } from "@/lib/toast";
+import { RoutingPipeline } from "./art/RoutingPipeline";
 
 interface FieldsProps {
   workHours: string;
@@ -91,11 +92,14 @@ function formatStatusTime(iso: string | null): string {
 function StatusList({ status }: { status: RoutingStatus | null }) {
   const up = status?.classifier_reachable;
   return (
-    <ul className="set-status">
-      <li data-ok={!!status?.last_heartbeat}>Last heartbeat: {formatStatusTime(status?.last_heartbeat ?? null)}</li>
-      <li data-ok={!!status?.last_slack}>Last Slack collect: {formatStatusTime(status?.last_slack ?? null)}</li>
-      <li data-ok={!!up}>Model helper: {up ? "reachable" : "unreachable"}</li>
-    </ul>
+    <>
+      <RoutingPipeline status={status} />
+      <ul className="set-status">
+        <li data-ok={!!status?.last_heartbeat}>Last heartbeat: {formatStatusTime(status?.last_heartbeat ?? null)}</li>
+        <li data-ok={!!status?.last_slack}>Last Slack collect: {formatStatusTime(status?.last_slack ?? null)}</li>
+        <li data-ok={!!up}>Model helper: {up ? "reachable" : "unreachable"}</li>
+      </ul>
+    </>
   );
 }
 

@@ -1,0 +1,21 @@
+/* art: dayflow (shared hand in app/art.css) */
+.art-dayflow { margin: 0 0 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-raised); }
+.art-dayflow-summary { display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 0 10px; cursor: pointer; list-style: none; color: var(--fg-muted); font-size: 13px; }
+.art-dayflow-summary::-webkit-details-marker { display: none; }
+.art-dayflow-chev { display: inline-block; transition: transform 200ms var(--art-ease); color: var(--fg-subtle); }
+.art-dayflow[open] > .art-dayflow-summary .art-dayflow-chev { transform: rotate(90deg); }
+.art-dayflow-summary:hover .art-dayflow-chev { color: var(--fg); }
+.art-dayflow-total { color: var(--fg); font-size: 12px; }
+.art-dayflow-body { padding: 6px 10px 10px; }
+.art-dayflow-svg { display: block; width: 100%; height: auto; overflow: visible; }
+.art-dayflow-narrow { display: none; }
+@media (max-width: 639px) {
+  .art-dayflow-wide { display: none; }
+  .art-dayflow-narrow { display: block; }
+}
+.art-dayflow-rib { fill-opacity: 0.28; transition: fill-opacity 160ms var(--art-ease); }
+.art-dayflow-ribbons:has(.art-dayflow-rib:hover) .art-dayflow-rib { fill-opacity: 0.12; }
+.art-dayflow-ribbons:has(.art-dayflow-rib:hover) .art-dayflow-rib:hover { fill-opacity: 0.55; }
+.art-dayflow-text { paint-order: stroke; stroke: var(--bg-raised); stroke-width: 2px; stroke-linejoin: round; font-size: 11px; }
+.art-dayflow-reveal { transform-box: fill-box; transform-origin: left center; animation: art-dayflow-reveal 900ms var(--art-ease) both; }
+@keyframes art-dayflow-reveal { from { transform: scaleX(0); } }

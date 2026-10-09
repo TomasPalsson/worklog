@@ -7,6 +7,14 @@ import { AppNav } from "@/components/AppNav";
 import { ChangeNotices } from "@/components/ChangeNotices";
 import "./globals.css";
 import "./rail.css";
+import "./art.css";
+import "./art/rail.css";
+import "./art/ring.css";
+import "./art/meters.css";
+import "./art/billing.css";
+import "./art/export.css";
+import "./art/settings.css";
+import "./art/dayflow.css";
 
 export const metadata: Metadata = {
   title: "worklog",

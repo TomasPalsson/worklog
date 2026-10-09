@@ -1,0 +1,40 @@
+/* art: settings (shared hand in app/art.css) */
+
+/* routing pipeline */
+.art-settings-pipe { display: flex; align-items: flex-start; margin: 4px 0 14px; max-width: 420px; }
+.art-settings-node { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 56px; flex: none; }
+.art-settings-ring {
+  width: 36px; height: 36px; border-radius: 50%; box-sizing: border-box;
+  display: grid; place-items: center; background: var(--bg-raised);
+  border: 2px solid var(--border-strong); color: var(--fg);
+  transition: transform 160ms var(--art-ease);
+}
+.art-settings-node:hover .art-settings-ring { transform: scale(1.08); }
+.art-settings-node[data-health="ok"] .art-settings-ring { border-color: var(--sage); background: var(--sage-bg); }
+.art-settings-node[data-health="stale"] .art-settings-ring { border-color: var(--amber); background: var(--amber-bg); }
+.art-settings-node[data-health="bad"] .art-settings-ring { border-color: var(--terracotta); background: var(--terracotta-bg); }
+.art-settings-node[data-health="never"] .art-settings-ring { border-style: dashed; }
+.art-settings-age { margin-top: 4px; }
+.art-settings-name { font-size: 11px; color: var(--fg-subtle); }
+.art-settings-conn { flex: 1; min-width: 12px; margin-top: 16px; overflow: visible; stroke: var(--border-strong); stroke-width: 1.6; stroke-linecap: round; }
+.art-settings-conn[data-broken] line { stroke-dasharray: 2 5; }
+.art-settings-conn:not([data-broken]) line { stroke: var(--sage); }
+.art-settings-flow { stroke-dasharray: 4 4; animation: art-settings-flow 2.4s linear infinite; }
+@keyframes art-settings-flow { to { stroke-dashoffset: -16; } }
+
+/* prune dial */
+.art-settings-dialwrap { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 24px; margin: 4px 0 12px; }
+.art-settings-dialwrap[data-off] { filter: grayscale(1); opacity: 0.5; }
+.art-settings-dial { display: block; flex: none; max-width: 100%; color: var(--fg-muted); overflow: visible; }
+.art-settings-dial-today { font-family: var(--font-mono); font-size: 22px; font-weight: 500; fill: var(--fg); font-variant-numeric: tabular-nums; }
+.art-settings-legend { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 12px; color: var(--fg-muted); }
+.art-settings-legend li { display: flex; align-items: center; gap: 8px; }
+.art-settings-legend li::before { content: ""; flex: none; width: 14px; height: 10px; border-radius: 2px; border: 1.6px solid; }
+.art-settings-legend [data-k="cycle"]::before { border-color: var(--sage); background: color-mix(in oklch, var(--sage) 24%, transparent); }
+.art-settings-legend [data-k="edit"]::before { border-color: var(--amber); background: var(--art-hatch-amber); }
+.art-settings-legend [data-k="prune"]::before { border-color: var(--terracotta); background: color-mix(in oklch, var(--terracotta) 24%, transparent); }
+.art-settings-legend [data-k="close"]::before { width: 2px; height: 12px; border: none; background: var(--fg); }
+.art-settings-dial path { transition: opacity 160ms var(--art-ease); }
+.art-settings-dial:hover path { opacity: 0.85; }
+.art-settings-today { transition: transform 160ms var(--art-ease); transform-box: fill-box; transform-origin: center; }
+.art-settings-dial:hover .art-settings-today { transform: scale(1.4); }

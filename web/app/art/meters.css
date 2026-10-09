@@ -1,0 +1,24 @@
+/* art: meters (shared hand in app/art.css) */
+.logged-meter[data-ghost]::before {
+  content: ""; position: absolute; inset: 0 auto 0 0; width: var(--ghost);
+  background: var(--art-hatch-muted), color-mix(in oklch, var(--fg-subtle) 28%, transparent);
+  border-radius: inherit;
+}
+.logged-meter[data-ghost][data-orientation="column"]::before { inset: auto 0 0 0; width: auto; height: var(--ghost); }
+.logged-meter[data-ghost]::after { z-index: 1; }
+
+.art-meters-pace { display: block; width: 100%; margin: 0 0 12px; }
+.art-meters-pace-row { display: flex; align-items: flex-end; gap: 8px; }
+.art-meters-pace-chart { position: relative; flex: 1; min-width: 0; height: 14px; margin-top: 14px; }
+.art-meters-track { position: absolute; inset: 0; background: var(--bg-sunk); border-radius: 999px; box-shadow: inset 0 0 0 1px var(--border-strong); overflow: hidden; }
+.art-meters-bar { position: absolute; top: 0; bottom: 0; left: 0; transform-origin: left; }
+.art-meters-worked { background: color-mix(in oklch, var(--fg-subtle) 28%, transparent); }
+.art-meters-tempo { background: var(--sage); }
+.art-meters-gap { background: var(--art-hatch-amber); }
+.art-meters-sep { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--border-strong); }
+.art-meters-pace-tick { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--fg); border-radius: 1px; transition: background 150ms var(--art-ease); }
+.art-meters-today { position: absolute; top: -14px; transform: translateX(-50%); line-height: 1; white-space: nowrap; }
+.art-meters-total, .art-meters-delta { flex: none; line-height: 1; }
+.art-meters-delta[data-k="behind"] { color: var(--amber-ink); }
+.art-meters-delta[data-k="ahead"] { color: var(--sage-ink); }
+.art-meters-pace:hover .art-meters-pace-tick { background: var(--fg-muted); }
