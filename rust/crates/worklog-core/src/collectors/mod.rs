@@ -16,6 +16,7 @@ pub mod gcal;
 pub mod gcal_auth;
 pub mod github;
 pub mod jira;
+pub mod jira_time;
 pub mod meeting_ticket;
 pub mod reflog;
 pub mod slack;
