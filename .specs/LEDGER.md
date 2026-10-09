@@ -10,3 +10,10 @@
 2026-10-06 · 017-verdict-does-more · PR #113 merged (870c5fd) · Verdict supervised by the daemon (switch, state, restarts), shortlist filing with past-fix examples and order check, one-tap picks, clear ticket picks, Tempo text checks with needs-a-look, decision log + nightly scorecard + eval --replay, 17:00 auto-send and today's Review section
 2026-10-06 · 018-daily-helpers · PR #116 merged (35020d6) + fix PR #118 (d7bb316) · Tempo errors name the cause, one half-hour rounding shown as Tempo bills it, undo of the last 20 block changes, ask + where-did-I-stop, monthly customer report, standup draft posted to the Daily thread, footer nudges, pre-send checklist + fresh read-back, already-in-Tempo check before send, 17:00 recap with gap actions; /nudges never reads Keychain on the request path
 2026-10-08 · 019-ticket-blocks-ai-text-tempo · PR #130 merged (8828dc0) · + on the day page logs a ticket block from a rough note; the AI writes the description in the background (rough note kept, origin note/ai/hand), Regenerate with a confirm before replacing a hand edit, Writing… while the job runs, "still writing — check back" at 30 s, synced blocks go dirty, block estimate never overwrites a note block
+2026-10-09 · 002-billing-export · draft spec only, never built; archived as not pursued · Billing Export (per-day invoicing-form line items)
+2026-10-09 · 003-browser-slack-event-routing · verified, PASS 4709a48; archived after the fact · Browser + Slack events routed to the right block
+2026-10-09 · 004-verdict-routing · verified, PASS fb3a1a9; archived after the fact · Verdict routing
+2026-10-09 · 006-block-clues-and-detail-panel · verified, PASS 904434c; archived after the fact · Block clues, attribution and detail view
+2026-10-09 · 007-session-lanes-and-fresh-descriptions · verified, PASS f7cbfe3; archived after the fact · Session lanes and fresh descriptions
+2026-10-09 · 008-session-customer-pins · verified, PASS b11c0be; archived after the fact · Session customer pins
+2026-10-09 · 014-no-tempo-daily-log-overview · verified, PASS b2934dc; archived after the fact · Logged — see what's really in Tempo, and one home for Jira/Tempo
