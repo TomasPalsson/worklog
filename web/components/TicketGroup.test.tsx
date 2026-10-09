@@ -599,6 +599,49 @@ describe("TicketGroup estimate bar wiring", () => {
     expect(screen.getByRole("meter").getAttribute("aria-valuenow")).toBe(String(2 * H + 4500));
   });
 
+  const withLine = (blocks: B[], g: Partial<BlockGroup>, l: Partial<TempoLine>) =>
+    render(
+      <DayProgressProvider day={DAY}>
+        <TicketGroup group={group({ blocks, ...g })} day={DAY} line={line({ day: DAY, ...l })}>
+          {null}
+        </TicketGroup>
+      </DayProgressProvider>,
+    );
+
+  it("unsynced with a line counts the line's billed hours, not the raw blocks", async () => {
+    loaded(ticket({ estimate_seconds: H, people: [], logged_seconds: 0 }));
+    withLine([blk({ id: 1, duration_seconds: 2100 }), blk({ id: 2, duration_seconds: 900 })], {}, { effective_seconds: H });
+    await waitFor(() => expect(screen.getByRole("meter")).toBeTruthy());
+    // catches summing raw blocks (50m instead of the 1h that gets sent)
+    expect(screen.getByText("+1h")).toBeTruthy();
+    expect(screen.getByRole("meter").getAttribute("aria-valuenow")).toBe(String(H));
+    expect(screen.getByText("once synced").parentElement?.textContent).toBe("1h of 1h once synced");
+  });
+
+  it("a synced group with a line adds nothing", async () => {
+    loaded(ticket({ estimate_seconds: H, people: [], logged_seconds: 0 }));
+    withLine([blk({ tempo_worklog_id: "77" })], { syncState: "synced" }, { effective_seconds: H });
+    await waitFor(() => expect(screen.getByRole("meter")).toBeTruthy());
+    // catches adding the line hours again though they are already in Tempo
+    expect(screen.queryByText(/once synced/)).toBeNull();
+    expect(screen.queryByText(/Not in Tempo yet/)).toBeNull();
+  });
+
+  it("a mixed group counts only the line hours not yet in Tempo today", async () => {
+    loaded(
+      ticket({
+        estimate_seconds: 8 * H,
+        people: [{ account_id: "me", name: "Tomas P", is_you: true, seconds: H, by_day: [[DAY, H]] }],
+        logged_seconds: H,
+      }),
+    );
+    withLine([blk()], { syncState: "mixed" }, { effective_seconds: 2 * H });
+    await waitFor(() => expect(screen.getByRole("meter")).toBeTruthy());
+    // catches using the full line (+2h) instead of line minus what is already in Tempo
+    expect(screen.getByText("+1h")).toBeTruthy();
+    expect(screen.getByRole("meter").getAttribute("aria-valuenow")).toBe(String(2 * H));
+  });
+
   it("three blocks render exactly one meter (catches a bar per block)", async () => {
     loaded(ticket());
     withBar([blk({ id: 1 }), blk({ id: 2 }), blk({ id: 3 })]);

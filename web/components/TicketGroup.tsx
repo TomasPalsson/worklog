@@ -335,7 +335,14 @@ export function TicketGroup({
         <span className="ticket-group-hint" aria-hidden="true" />
       </summary>
       <div className="ticket-group-body">
-        {!group.unassigned && <TicketEstimate ticketKey={group.key} blocks={group.blocks} />}
+        {!group.unassigned && (
+          <TicketEstimate
+            ticketKey={group.key}
+            blocks={group.blocks}
+            lineSeconds={line?.effective_seconds}
+            syncState={group.syncState}
+          />
+        )}
         {children}
       </div>
     </details>
