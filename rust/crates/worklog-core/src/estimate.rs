@@ -619,6 +619,16 @@ pub fn estimate_day_with_meeting<I: ModelInvoker>(
             }
             _ => {}
         }
+        if let Some(title) = crate::meeting_description::calendar_title(conn, block.id)? {
+            crate::meeting_description::describe(
+                conn,
+                block.id,
+                &title,
+                block_span_seconds(&block),
+            )?;
+            stats.estimated += 1;
+            continue;
+        }
 
         let events = load_block_events(conn, block.id)?;
         let literals = collect_literal_matches(&events);
