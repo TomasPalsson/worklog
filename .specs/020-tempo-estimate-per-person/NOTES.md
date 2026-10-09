@@ -6,3 +6,18 @@
 - Discovered: rust/crates/worklog-core/sql/schema.sql — `ticket_progress_worklogs.worklog_id` is the sole PK; Jira ids are globally unique, so harmless — defer
 - Ruling: T002 also made `get_json` and `get_all_pages` `pub(crate)` (visibility only) to reuse paging/error handling instead of copying it; design said `str_at` only.
 - Discovered: web/lib/types.ts — 721 lines vs the 400-line size guard (688 before this feature); design §1 appends here — defer
+- Discovered: rust/crates/worklog-core/src/collectors/jira_time.rs:25 — `key in (...)` JQL fails the whole search when any key no longer exists in Jira (Jira answers 400), so one deleted ticket marks every due ticket on the day `jira_unavailable` — defer
+- Discovered: rust/crates/worklog-core/src/daemon_progress.rs:15 — the sqlite lock is held across the Jira calls (same as `run_sync`); a slow Jira stalls other daemon requests for that long — defer
+- Discovered: rust/crates/worklog-core/src/daemon.rs:2178 — the sync→mark-stale wiring in `run_sync` has no test (needs real Tempo creds); `mark_day_stale` itself is tested — defer
+- Discovered: rust/crates/worklog-core/src/daemon.rs — ~7.6k lines, `router` >150 lines; size guard fires on every edit — defer
+- Discovered: rust/crates/worklog-core/src/ticket_progress.rs:~70 — `stale_keys` treats an unparsable `pulled_at` as stale; correct, undocumented — defer
+- Discovered: web/components/EstimateBar.tsx:31 — when T008 maps the epoch `pulled_at` to null, a failed refresh after a sync hides the still-cached bar behind the error line; acceptable, revisit if the Owner dislikes it — defer
+- Discovered: web/lib/progress.ts:66,83 — `barModel`/`chartModel` treat estimate 0 as "no estimate" (FR-14); consistent, implicit — defer
+- Discovered: web/app/globals.css:129-132,171-174 — dark `--p*` tokens hand-copied into two blocks (pre-existing pattern the file demands) — defer
+- Discovered: web/components/EstimateBar.tsx — dark mode built from the mock's tokens but not eyeballed in a browser; CHK001 covers the visual check — defer
+- Discovered: web/components/DayProgressProvider.tsx:28 — a per-ticket retry whose whole call fails (`!r.ok`) keeps the old state, so "Try again" looks like it did nothing — defer
+- Discovered: web/components/BlockCard.tsx:49 — `billingCustomer` prop declared in `Props`, never used (pre-existing) — defer
+- Discovered: web/components/BlockCard.tsx — at the 400-line size-guard limit; any growth needs a split — defer
+- Ruling: T009 appended (EstimateBar apostrophes as `&apos;`) because T007's file broke `next build` lint, which only T008's verify runs; the visible text is unchanged so no test line was edited.
+- Discovered: rust/crates/worklog-core/src/collectors/jira_time.rs:56 — on this Jira site every worklog is a Tempo shadow worklog authored by the app "Timesheets by Tempo - Jira Time Tracking"; the real author is only in Tempo (`properties.tempo.tempo_id`), so the per-person split collapses to one fake person (verify/CHK001.md) — needs Owner decision, blocks CHK001
+- Discovered: GENAI-1897 has no `originalEstimateSeconds` in Jira today, so CHK001's 4h scenario cannot be shown on it as-is — needs Owner decision
