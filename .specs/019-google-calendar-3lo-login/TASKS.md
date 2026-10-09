@@ -24,6 +24,6 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-cli col
 - [x] CHK001 human-verify a real Google login — files: rust/crates/worklog-cli/src/cli.rs — verify: human: Owner runs `worklog collect gcal --auth`, clicks Allow, then `worklog collect gcal` shows today's meetings — after: T002 — done: ea6ce0d by user
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `flow check --fix --since 7b9cbb7`
-- [ ] G002 branch review clean — files: . — verify: `flow pass`
-- [ ] G003 verification evidence exists — files: . — verify: `test -s verify/`
+- [x] G001 project gates clean — files: . — verify: `flow check --fix --since 7b9cbb7` — done: 75e4177
+- [x] G002 branch review clean — files: . — verify: `flow pass` — done: 75e4177
+- [x] G003 verification evidence exists — files: . — verify: `test -s verify/` — done: 75e4177
