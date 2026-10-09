@@ -1,5 +1,6 @@
+Approved: 2026-10-09 by user
 # Tasks — Estimate progress per person on day-page blocks
-Spec: spec.md · Design: design.md · Base: baf323d · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && (cd web && bun test)`
+Spec: spec.md · Design: design.md · Base: 362bdaf · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && (cd web && bun test)`
 
 UI rule: every task that changes a screen is built with the `/design:design` skill and matches `mock.html` v3 (D-05). Rebuild the mock with `python3 .specs/020-tempo-estimate-per-person/.vary/build/gen.py`.
 
@@ -30,9 +31,9 @@ Independent test: `(cd web && bun test lib/progress components/EstimateBar compo
 - [ ] T006 Bar and chart model: order, fold, pending, tone, 14-day window (FR-06, FR-06a, FR-07, FR-09, FR-11a, B4, B5, B6) — files: web/lib/progress.ts, web/lib/progress.test.ts — verify: `(cd web && bun test lib/progress)` — after: T005
 - [ ] T007 EstimateBar + ProgressChart, all states, built with /design:design to match mock.html (FR-04a, FR-04b, FR-05, FR-05a, FR-07a, FR-08, FR-08a, FR-10, FR-10a, FR-11, FR-12, FR-13, FR-14, B7) — files: web/components/EstimateBar.tsx, web/components/EstimateBar.test.tsx, web/components/ProgressChart.tsx, web/components/ProgressChart.test.tsx, web/components/progressIcons.tsx, web/app/globals.css — verify: `(cd web && bun test components/EstimateBar components/ProgressChart && bun run typecheck)` — after: T006
 - [ ] T008 Wire into the day page without blocking it (FR-15, FR-15a, B8) — files: web/components/DayProgressProvider.tsx, web/components/BlockCard.tsx, web/components/BlockCard.test.tsx, web/app/[day]/page.tsx — verify: `(cd web && bun test components/BlockCard && bun run typecheck && bun run build)` — after: T004, T007
-- [ ] CHK001 Owner checks GENAI-1897 against Tempo — files: web/components/EstimateBar.tsx — verify: human: on a GENAI-1897 block not yet in Tempo the day page shows "5h 30m of 4h once synced · 1h 30m over", You 2h, Jón Geir 2h 30m, striped +1h and a running-total chart, and the numbers match Tempo's Time Tracking panel (Logged + Collaborators)
+- [ ] CHK001 Owner checks GENAI-1897 against Tempo — files: web/components/EstimateBar.tsx — verify: human: on a GENAI-1897 block not yet in Tempo the day page shows "5h 30m of 4h once synced · 1h 30m over", You 2h, Jón Geir 2h 30m, striped +1h and a running-total chart, and the numbers match Tempo's Time Tracking panel (Logged + Collaborators) — after: T008
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `flow check --fix --since baf323d`
+- [ ] G001 project gates clean — files: . — verify: `flow check --fix --since 362bdaf`
 - [ ] G002 branch review clean — files: . — verify: `flow pass`
 - [ ] G003 verification evidence exists — files: . — verify: `test -s .specs/020-tempo-estimate-per-person/verify/`
