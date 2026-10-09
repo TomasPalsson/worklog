@@ -563,7 +563,7 @@ fn account_from(v: &serde_json::Value) -> Option<AllowedAccount> {
     Some(AllowedAccount { id, name })
 }
 
-fn get_json(
+pub(crate) fn get_json(
     auth: &JiraAuth,
     url: &str,
     query: &[(&str, &str)],
@@ -581,7 +581,7 @@ fn get_json(
 }
 
 /// Collects every page of a `startAt`/`total` paginated Jira list under `key`.
-fn get_all_pages(
+pub(crate) fn get_all_pages(
     auth: &JiraAuth,
     url: &str,
     key: &str,
@@ -691,7 +691,7 @@ pub fn fetch_account_with(
     Ok(account_from(&body["fields"][field_id]))
 }
 
-fn str_at(v: &serde_json::Value, path: &[&str]) -> Option<String> {
+pub(crate) fn str_at(v: &serde_json::Value, path: &[&str]) -> Option<String> {
     let mut cur = v;
     for p in path {
         cur = cur.get(p)?;
