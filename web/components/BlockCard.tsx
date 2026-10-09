@@ -17,6 +17,7 @@ import { shouldShowSparkles } from "@/lib/group-actions";
 import type { NoteFields } from "@/lib/noteBlock";
 import { toast } from "@/lib/toast";
 import { useNoteRegenerate } from "./useNoteRegenerate";
+import { BlockEstimate } from "./DayProgressProvider";
 import { EstBadge } from "./EstBadge";
 import { TicketCombobox } from "./TicketCombobox";
 import { EventList } from "./EventList";
@@ -186,7 +187,6 @@ export function BlockCard({
       toast.ok(`Described — ${r.data.minutes}m on ${r.data.jira_issue ?? "no ticket"}`);
     });
   };
-
   const showSparkles = shouldShowSparkles(block, isSoleInGroup);
 
   return (
@@ -313,6 +313,7 @@ export function BlockCard({
           <CommitList blockId={block.id} isPersonal={block.is_personal} />
           <BlockDetailsLink day={block.day} blockId={block.id} />
         </div>
+        {!hideTicketing && <BlockEstimate block={block} />}
       </div>
 
       <div className="block-actions">
