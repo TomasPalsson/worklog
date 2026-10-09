@@ -21,7 +21,7 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core gc
 Goal: the command every error message already names actually works.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-cli collect_gcal_auth` — green.
 - [x] T002 `--auth` flag on `worklog collect` calling `gcal_auth::authorize` (B4) — files: rust/crates/worklog-cli/src/cli.rs, rust/crates/worklog-cli/tests/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-cli collect_gcal_auth` — after: T001 — done: ea6ce0d
-- [ ] CHK001 human-verify a real Google login — files: rust/crates/worklog-cli/src/cli.rs — verify: human: Owner runs `worklog collect gcal --auth`, clicks Allow, then `worklog collect gcal` shows today's meetings — after: T002
+- [x] CHK001 human-verify a real Google login — files: rust/crates/worklog-cli/src/cli.rs — verify: human: Owner runs `worklog collect gcal --auth`, clicks Allow, then `worklog collect gcal` shows today's meetings — after: T002 — done: ad66baa by user
 
 ## Gates
 - [ ] G001 project gates clean — files: . — verify: `flow check --fix --since 7b9cbb7`
