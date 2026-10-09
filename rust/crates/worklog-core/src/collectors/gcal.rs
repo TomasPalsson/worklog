@@ -289,6 +289,7 @@ pub fn collect_with_meeting(
         source: "gcal",
         ..Default::default()
     };
+    let customers = crate::billing_registry::list_customers(conn).unwrap_or_default();
 
     for cal in &auth.calendars {
         let mut page_token: Option<String> = None;
@@ -345,6 +346,11 @@ pub fn collect_with_meeting(
                     }
                     _ => None,
                 };
+                let ticket = meeting.ticket_for(
+                    &ev.organizer.email,
+                    ev.summary.as_deref().unwrap_or_default(),
+                    &customers,
+                );
                 let event = Event {
                     id: None,
                     source: "gcal".into(),
@@ -356,7 +362,7 @@ pub fn collect_with_meeting(
                     details: ev.description,
                     repo: None,
                     project_path: None,
-                    jira_issue: meeting.ticket_for(&ev.attendees),
+                    jira_issue: ticket,
                     session_id: None,
                     tempo_worklog_id: None,
                     raw_json: None,
@@ -421,7 +427,7 @@ struct GcalEvent {
     #[serde(default)]
     end: Option<GcalDate>,
     #[serde(default)]
-    attendees: Vec<super::meeting_ticket::Attendee>,
+    organizer: super::meeting_ticket::Organizer,
 }
 
 #[derive(Debug, Deserialize)]
@@ -690,16 +696,14 @@ mod tests {
                         "id": "in", "summary": "Standup",
                         "start": {"dateTime": "2026-04-18T09:00:00Z"},
                         "end":   {"dateTime": "2026-04-18T09:30:00Z"},
-                        "attendees": [
-                            {"email": "a@apro.is"},
-                            {"email": "room@resource.calendar.google.com", "resource": true},
-                        ],
+                        "organizer": {"email": "a@apro.is"},
+                        "attendees": [{"email": "speaker@bank.is"}],
                     },
                     {
-                        "id": "out", "summary": "Client call",
+                        "id": "out", "summary": "Acme sync",
                         "start": {"dateTime": "2026-04-18T11:00:00Z"},
                         "end":   {"dateTime": "2026-04-18T12:00:00Z"},
-                        "attendees": [{"email": "a@apro.is"}, {"email": "b@client.com"}],
+                        "organizer": {"email": "a@apro.is"},
                     },
                 ],
             }));
@@ -708,6 +712,15 @@ mod tests {
             ticket: Some("APRO-7".into()),
             domain: Some("apro.is".into()),
         };
+        crate::billing_registry::upsert_customer(
+            &conn,
+            &crate::billing_registry::Customer {
+                id: None,
+                name: "Acme".into(),
+                aliases: vec![],
+            },
+        )
+        .unwrap();
         collect_with_meeting(
             &conn,
             &auth,
