@@ -268,6 +268,45 @@ fn collect_skips_sources_when_credentials_missing() {
         .stdout(predicate::str::contains("github skipped"));
 }
 
+// Catches: --auth accepted but ignored (falls through to a normal collect, exit 0).
+#[test]
+fn collect_gcal_auth_runs_login_and_reports_missing_credentials() {
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["collect", "gcal", "--auth"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("google_credentials.json"));
+}
+
+// Catches: login swallowing the error and exiting 0.
+#[test]
+fn collect_gcal_auth_failure_is_not_collect_skip() {
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["collect", "gcal", "--auth"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("gcal skipped").not());
+}
+
+// Catches: --auth silently allowed on a non-gcal target.
+#[test]
+fn collect_gcal_auth_rejects_other_targets() {
+    let home = TempDir::new().unwrap();
+    for args in [
+        vec!["collect", "jira", "--auth"],
+        vec!["collect", "all", "--auth"],
+        vec!["collect", "--auth"],
+    ] {
+        cmd(&home)
+            .args(&args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("gcal"));
+    }
+}
+
 #[test]
 fn sync_errors_without_db() {
     let home = TempDir::new().unwrap();

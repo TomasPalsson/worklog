@@ -13,6 +13,7 @@ pub mod claude_transcript_cache;
 pub mod claude_transcripts;
 pub mod fish;
 pub mod gcal;
+pub mod gcal_auth;
 pub mod github;
 pub mod jira;
 pub mod reflog;

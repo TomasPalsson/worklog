@@ -92,6 +92,7 @@ worklog day --no-serve
 | `worklog doctor` | Environment, DB, secrets sanity report |
 | `worklog day [--day] [--no-serve] [--model]` | Full daily pipeline: collect → infer → estimate → web UI |
 | `worklog collect [all\|jira\|github\|gcal] [--days]` | Pull remote activity |
+| `worklog collect gcal --auth` | Log in to Google Calendar (browser consent) |
 | `worklog infer [--day]` | Gap-timeout clustering of events into blocks |
 | `worklog estimate [--day] [--model]` | `claude -p` fills jira + description + minutes |
 | `worklog sync [--day] [--dry-run]` | POST reviewed blocks to Tempo Cloud |
@@ -107,6 +108,21 @@ worklog day --no-serve
 | `worklog dev [keygen\|sign\|make-patch\|apply-patch]` | Maintainer tooling |
 
 Every subcommand accepts `--json` for structured output.
+
+## Google Calendar login
+
+worklog uses your own Google OAuth client; none is built in.
+
+1. In Google Cloud Console, create a project and enable the Google Calendar API.
+2. Configure the OAuth consent screen and add yourself as a test user.
+3. Create credentials: OAuth client ID, application type **Desktop app**.
+4. Download the JSON and save it as `~/.config/worklog/google_credentials.json`
+   (`$WORKLOG_HOME/google_credentials.json` when `$WORKLOG_HOME` is set).
+5. Run `worklog collect gcal --auth`, click "Allow" in the browser, and the
+   token is saved to `google_token.json`. If no browser opens, open the
+   printed link on the same machine. The login times out after 5 minutes.
+
+Re-run the same command if Google revokes the token.
 
 ## Storage
 
