@@ -36,6 +36,28 @@ export function ToneIcon({ tone }: { tone: Tone }) {
   );
 }
 
+const RING_R = 5.75;
+
+/** Mini fill ring for the collapsed group badge: the arc is the share of the estimate used; over = full ring + dot. */
+export function EstimateRingIcon({ used, estimate }: { used: number; estimate: number }) {
+  const share = Math.min(1, used / estimate);
+  const c = 2 * Math.PI * RING_R;
+  return (
+    <svg className="ep-ring" aria-hidden="true" viewBox="0 0 16 16" strokeWidth={2} {...stroke}>
+      <circle cx="8" cy="8" r={RING_R} opacity={0.28} />
+      <circle
+        cx="8"
+        cy="8"
+        r={RING_R}
+        strokeDasharray={`${(share * c).toFixed(2)} ${c.toFixed(2)}`}
+        transform="rotate(-90 8 8)"
+        strokeLinecap={share >= 1 ? "butt" : "round"}
+      />
+      {used > estimate && <circle cx="8" cy="8" r="2" fill="currentColor" stroke="none" />}
+    </svg>
+  );
+}
+
 export function EstimateFlagIcon() {
   return (
     <svg className="ep-fl" aria-hidden="true" viewBox="0 0 12 20" strokeWidth={1.5} {...stroke}>

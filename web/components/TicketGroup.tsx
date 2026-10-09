@@ -15,7 +15,7 @@ import type { TempoLine } from "@/lib/tempo_line_contract";
 import { toast } from "@/lib/toast";
 import type { LineCheck } from "@/lib/verdict_contract";
 import { OriginIcon, originLabel } from "./BillingGroup";
-import { TicketEstimate } from "./DayProgressProvider";
+import { TicketEstimate, TicketEstimateBadge } from "./DayProgressProvider";
 import { LineHours } from "./LineHours";
 import { MirresLine } from "./MirresLine";
 
@@ -52,6 +52,13 @@ export function TicketGroup({
   children,
 }: Props) {
   const blockNoun = group.blocks.length === 1 ? "block" : "blocks";
+  const estimateArgs = {
+    ticketKey: group.key,
+    blocks: group.blocks,
+    lineSeconds: line?.effective_seconds,
+    syncState: group.syncState,
+  };
+  const estimateBadge = !group.unassigned && <TicketEstimateBadge {...estimateArgs} />;
   const showMerge = canMergeGroup(group);
   // Separate transitions so a merge never shows "Writing…" on the text controls.
   const [pending, startTransition] = useTransition();
@@ -210,6 +217,7 @@ export function TicketGroup({
                   {group.blocks.length} {blockNoun}
                 </span>
                 <SyncChip state={group.syncState} />
+                {estimateBadge}
                 {mergeButton}
               </span>
               {line.billing && <MirresLine billing={line.billing} issue={line.jira_issue} />}
@@ -326,6 +334,7 @@ export function TicketGroup({
               </span>
             )}
             <SyncChip state={group.syncState} />
+            {estimateBadge}
             <span className="ticket-group-description" title={group.previewDescription}>
               {group.previewDescription}
             </span>
@@ -335,14 +344,7 @@ export function TicketGroup({
         <span className="ticket-group-hint" aria-hidden="true" />
       </summary>
       <div className="ticket-group-body">
-        {!group.unassigned && (
-          <TicketEstimate
-            ticketKey={group.key}
-            blocks={group.blocks}
-            lineSeconds={line?.effective_seconds}
-            syncState={group.syncState}
-          />
-        )}
+        {!group.unassigned && <TicketEstimate {...estimateArgs} />}
         {children}
       </div>
     </details>
