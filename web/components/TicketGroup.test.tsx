@@ -655,4 +655,47 @@ describe("TicketGroup estimate bar wiring", () => {
     await waitFor(() => expect(screen.getByRole("meter")).toBeTruthy());
     expect(screen.getByRole("meter").getAttribute("aria-valuenow")).toBe(String(2.5 * H));
   });
+
+  describe("collapsed-row badge", () => {
+    const badge = () => document.querySelector(".ep-badge");
+    const at = (seconds: number) => ticket({
+      logged_seconds: seconds,
+      people: [{ account_id: "me", name: "Tomas P", is_you: true, seconds, by_day: [[DAY, seconds]] as Array<[string, number]> }],
+    });
+
+    it("on track shows no badge (catches a badge on every group)", async () => {
+      loaded(ticket()); // 2h logged + 30m pending of 4h = 62%
+      withBar([blk()]);
+      await waitFor(() => expect(screen.getByRole("meter")).toBeTruthy());
+      expect(badge()).toBeNull();
+    });
+
+    it("running low says what is left, counting unsynced time (catches using logged only)", async () => {
+      loaded(at(3 * H)); // 3h + 30m pending = 3h 30m of 4h = 87.5%
+      withBar([blk()]);
+      await waitFor(() => expect(badge()).not.toBeNull());
+      expect(badge()!.getAttribute("data-tone")).toBe("low");
+      expect(badge()!.textContent).toBe("30m left"); // catches "1h left" from logged-only maths
+    });
+
+    it("over says by how much and the ring carries the over dot (catches clamping at the estimate)", async () => {
+      loaded(at(4 * H)); // 4h + 1h 30m pending of 4h
+      withBar([blk({ duration_seconds: 5400 })]);
+      await waitFor(() => expect(badge()).not.toBeNull());
+      expect(badge()!.getAttribute("data-tone")).toBe("over");
+      expect(badge()!.textContent).toBe("1h 30m over");
+      expect(badge()!.querySelectorAll("circle")).toHaveLength(3); // track + arc + dot; 2 means no over mark
+    });
+
+    it("shows no badge while loading or when the numbers failed (catches a badge from stale or missing data)", async () => {
+      loadDayProgress.mockImplementation(() => new Promise(() => {}));
+      const { unmount } = withBar([blk()]);
+      expect(badge()).toBeNull();
+      unmount();
+      loaded({ ...at(4 * H), error: "jira_unavailable" });
+      withBar([blk({ duration_seconds: 5400 })]);
+      await waitFor(() => expect(screen.getByText(/couldn't refresh/i)).toBeTruthy());
+      expect(badge()).toBeNull();
+    });
+  });
 });
