@@ -531,3 +531,22 @@ fn auto_ticket_keeps_its_origin_across_rebuild() {
         (Some("AUTO-2".into()), Some("auto".into()))
     );
 }
+
+/// `/days` calls `load_day_events` on every poll; only a `claude_turn`'s
+/// `raw_json` is ever read, so no other row's payload may be fetched — a
+/// busy day's `claude` rows carry tens of MB of it.
+#[test]
+fn day_loader_reads_raw_json_of_claude_turns_only() {
+    let _g = crate::tz::test_env_lock();
+    std::env::remove_var("WORKLOG_TZ");
+    let conn = crate::db::open_memory().unwrap();
+    let mut e = crate::models::Event::minimal("claude", "c1", at(9, 0).to_rfc3339(), "work");
+    e.project_path = Some(SHARED.into());
+    crate::repo::upsert_event(&conn, &e).unwrap();
+    // Not valid UTF-8: decoding this row's payload would fail the load.
+    conn.execute("UPDATE events SET raw_json = CAST(X'FF' AS TEXT)", [])
+        .unwrap();
+    let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
+    let events = crate::infer::load_day_events(&conn, day).unwrap();
+    assert_eq!(events.len(), 1);
+}
