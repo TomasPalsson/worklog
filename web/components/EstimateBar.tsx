@@ -32,7 +32,7 @@ export function EstimateBar({ ticket, pending, onRetry }: Props) {
     return (
       <div className="ep" data-tone="warn">
         <p className="ep-err" role="alert">
-          Couldn't load hours for {ticket.key} — Jira didn't answer. Your blocks are safe.{" "}
+          Couldn&apos;t load hours for {ticket.key} — Jira didn&apos;t answer. Your blocks are safe.{" "}
           <button type="button" className="ep-link" onClick={onRetry}>
             Try again
           </button>
