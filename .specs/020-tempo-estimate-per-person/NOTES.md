@@ -5,3 +5,4 @@
 - Discovered: rust/crates/worklog-core/src/ticket_progress.rs:mark_stale — writes epoch into `pulled_at`, so a failed refresh after a sync would read "Jira numbers from 1970"; the web must treat the epoch `pulled_at` as unknown — fold into T008
 - Discovered: rust/crates/worklog-core/sql/schema.sql — `ticket_progress_worklogs.worklog_id` is the sole PK; Jira ids are globally unique, so harmless — defer
 - Ruling: T002 also made `get_json` and `get_all_pages` `pub(crate)` (visibility only) to reuse paging/error handling instead of copying it; design said `str_at` only.
+- Discovered: web/lib/types.ts — 721 lines vs the 400-line size guard (688 before this feature); design §1 appends here — defer
