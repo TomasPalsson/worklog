@@ -6435,8 +6435,8 @@ a.task-rel-row:hover, button.task-rel-row:hover { background: var(--bg-sunk); }
 .note-chip input:focus-visible { outline: none; border-color: var(--border-strong); box-shadow: var(--ring); }
 .note-chip input[aria-invalid="true"] { border-color: var(--terracotta-ink); }
 .note-chip input:disabled { opacity: 0.6; cursor: progress; }
-/* Native width fits the browser's own time format ("22:00" or "10:00 PM" plus the clock icon); a fixed width clipped the AM/PM. */
-.note-chip-time input { width: auto; min-width: 7.25rem; font-variant-numeric: tabular-nums; }
+/* 24-hour HH:MM text field (the native time picker followed the browser locale and showed 10:00 PM). */
+.note-chip-time input { width: 4.75rem; text-align: center; font-variant-numeric: tabular-nums; }
 .note-chip-min input { width: 3.75rem; text-align: center; font-variant-numeric: tabular-nums; appearance: textfield; -moz-appearance: textfield; }
 .note-chip-min input::-webkit-inner-spin-button,
 .note-chip-min input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }

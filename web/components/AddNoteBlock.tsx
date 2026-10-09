@@ -58,11 +58,22 @@ export function AddNoteBlock({ day, tickets, lastEnd }: Props) {
 }
 
 type Field = "Start" | "Minutes" | "Ticket" | "Note";
+
+/** A real 24-hour "HH:MM" (00:00–23:59). */
+const isClock = (t: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(t);
+
+/** "9:30" / "930" / "0930" → "09:30"; anything else is left for validation to name. */
+function tidyClock(t: string): string {
+  const m = /^(\d{1,2}):?(\d{2})$/.exec(t.trim());
+  if (!m) return t;
+  const tidy = `${m[1].padStart(2, "0")}:${m[2]}`;
+  return isClock(tidy) ? tidy : t;
+}
 const ERROR_ID = "note-form-error";
 
 /** The first problem with the form, and the field it belongs to. */
 function problem(f: { start: string; length: number; key: string; text: string }): [Field, string] | null {
-  if (!/^\d\d:\d\d$/.test(f.start)) return ["Start", "Pick a start time."];
+  if (!isClock(f.start)) return ["Start", "Pick a start time."];
   if (!Number.isInteger(f.length) || f.length < 1 || f.length > NOTE_MAX_MINUTES)
     return ["Minutes", `Minutes must be 1 to ${NOTE_MAX_MINUTES}.`];
   if (!TICKET_KEY_RE.test(f.key)) return ["Ticket", "Invalid ticket key"];
@@ -74,7 +85,7 @@ function problem(f: { start: string; length: number; key: string; text: string }
 /** "ends 10:30" from Start + Minutes (warn: past midnight, which the daemon refuses); null while either is unusable. */
 function endLabel(start: string, minutes: string): { text: string; warn: boolean } | null {
   const len = minutes.trim() === "" ? NaN : Number(minutes);
-  if (!/^\d\d:\d\d$/.test(start) || !Number.isInteger(len) || len < 1 || len > NOTE_MAX_MINUTES) return null;
+  if (!isClock(start) || !Number.isInteger(len) || len < 1 || len > NOTE_MAX_MINUTES) return null;
   const end = Number(start.slice(0, 2)) * 60 + Number(start.slice(3)) + len;
   if (end > 1440) return { text: "ends after midnight", warn: true };
   if (end === 1440) return { text: "ends at midnight", warn: false };
@@ -120,7 +131,9 @@ function NoteForm({
     const key = ticket.trim();
     const text = note.trim();
     const length = minutes.trim() === "" ? NaN : Number(minutes);
-    const bad = problem({ start, length, key, text });
+    const at = tidyClock(start);
+    setStart(at);
+    const bad = problem({ start: at, length, key, text });
     setBadField(bad?.[0] ?? null);
     setError(bad?.[1] ?? null);
     if (bad) {
@@ -129,7 +142,7 @@ function NoteForm({
       return;
     }
     setBusy(true);
-    const res = await addNoteBlock({ jira_issue: key, day, start, minutes: length, note: text });
+    const res = await addNoteBlock({ jira_issue: key, day, start: at, minutes: length, note: text });
     setBusy(false);
     if (!res.ok) return setError(res.error);
     toast.ok(`Added ${length} min on ${key} — writing the description…`);
@@ -154,7 +167,20 @@ function NoteForm({
         <span className="note-word" aria-hidden="true">From</span>
         <label className="note-chip note-chip-time">
           <span className="sr-only">Start</span>
-          <input type="time" data-field="Start" {...mark("Start")} value={start} disabled={busy} onChange={edit("Start", setStart)} />
+          {/* Text, not type="time": the native picker follows the browser locale (10:00 PM); worklog is 24-hour. */}
+          <input
+            type="text"
+            inputMode="numeric"
+            placeholder="HH:MM"
+            maxLength={5}
+            autoComplete="off"
+            data-field="Start"
+            {...mark("Start")}
+            value={start}
+            disabled={busy}
+            onChange={edit("Start", setStart)}
+            onBlur={() => setStart((v) => tidyClock(v))}
+          />
         </label>
         <span className="note-word" aria-hidden="true">for</span>
         <label className="note-chip note-chip-min">
