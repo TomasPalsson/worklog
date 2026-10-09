@@ -1,5 +1,5 @@
-Task list: `.claude/loop/tasks.json` (items L1–L5). Background, read once: `.specs/USER-STORIES.md`
-(S3, S4, S7, S8, S9) and `.specs/DATA-SOURCES.md`. Repo rules: `CLAUDE.md` (collectors must be
+Task list: `.claude/loop/tasks.json` (items L1–L5). Background, read once: `.specs/archive/2026-10-09-loose-docs/USER-STORIES.md`
+(S3, S4, S7, S8, S9) and `.specs/archive/2026-10-09-loose-docs/DATA-SOURCES.md`. Repo rules: `CLAUDE.md` (collectors must be
 idempotent via `repo::upsert_event`; never print to stdout from `worklog hook-run`; UTC in the DB).
 
 Pick the FIRST item whose `passes` is false. Do only that item:

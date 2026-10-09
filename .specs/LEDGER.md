@@ -17,3 +17,4 @@
 2026-10-09 · 007-session-lanes-and-fresh-descriptions · verified, PASS f7cbfe3; archived after the fact · Session lanes and fresh descriptions
 2026-10-09 · 008-session-customer-pins · verified, PASS b11c0be; archived after the fact · Session customer pins
 2026-10-09 · 014-no-tempo-daily-log-overview · verified, PASS b2934dc; archived after the fact · Logged — see what's really in Tempo, and one home for Jira/Tempo
+2026-10-09 · loose-docs · DATA-SOURCES, TIMELINE-REPORT, USER-STORIES, ZERO-TOUCH + timeline screenshot moved to archive · background docs, no spec
