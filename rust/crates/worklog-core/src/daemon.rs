@@ -2128,6 +2128,7 @@ async fn day_progress(
                 day,
                 q.refresh.as_deref(),
                 auth.as_ref(),
+                tempo::TempoAuth::from_secrets().ok().as_ref(),
                 me.as_deref(),
                 &client,
                 Utc::now(),

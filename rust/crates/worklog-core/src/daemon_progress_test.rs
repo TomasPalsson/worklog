@@ -1,4 +1,5 @@
 use super::*;
+use crate::collectors::tempo::TempoAuth;
 use crate::daemon::{router, state_from_conn};
 use crate::db::open_memory;
 use crate::estimate_progress_contract::RawWorklog;
@@ -72,7 +73,7 @@ fn mock_worklogs<'a>(server: &'a MockServer, key: &str, secs: i64) -> httpmock::
 fn run(conn: &Connection, server: &MockServer, refresh: Option<&str>) -> DayProgress {
     let c = http::client().unwrap();
     let a = auth(server);
-    progress_with(conn, day(), refresh, Some(&a), Some("me"), &c, now()).unwrap()
+    progress_with(conn, day(), refresh, Some(&a), None, Some("me"), &c, now()).unwrap()
 }
 
 #[test]
@@ -193,7 +194,7 @@ fn no_credentials_is_not_configured_and_keeps_cache() {
     block(&conn, "G-2", 0);
     cache(&conn, "G-1", 14400, 3600, 700);
     let c = http::client().unwrap();
-    let got = progress_with(&conn, day(), None, None, None, &c, now()).unwrap();
+    let got = progress_with(&conn, day(), None, None, None, None, &c, now()).unwrap();
     assert_eq!(got.tickets[0].error, Some(ProgressError::NotConfigured)); // wrong: JiraUnavailable
     assert_eq!(got.tickets[0].logged_seconds, 3600);
     assert_eq!(got.tickets[1].pulled_at, None);
@@ -244,6 +245,99 @@ fn personal_blocks_yield_no_tickets_and_no_calls() {
     assert_eq!(any.hits(), 0); // wrong: search with an empty key list
 }
 
+fn tempo_auth(server: &MockServer) -> TempoAuth {
+    TempoAuth {
+        token: "ttok".into(),
+        author: "me".into(),
+        base_url: server.base_url(),
+    }
+}
+
+fn mock_issue_id(server: &MockServer) {
+    server.mock(|when, then| {
+        when.method(GET).path("/rest/api/3/issue/G-1");
+        then.status(200).json_body(json!({"id": "10042"}));
+    });
+}
+
+#[test]
+fn tempo_configured_people_are_the_tempo_authors() {
+    let jira = MockServer::start();
+    let tempo = MockServer::start();
+    mock_estimates(&jira, json!({"issues": []}));
+    mock_issue_id(&jira);
+    let jira_logs = mock_worklogs(&jira, "G-1", 999);
+    jira.mock(|when, then| {
+        when.method(GET).path("/rest/api/3/user");
+        then.status(200).json_body(json!({"displayName": "Name"}));
+    });
+    tempo.mock(|when, then| {
+        when.method(GET).path("/worklogs/issue/10042");
+        then.status(200).json_body(json!({"results": [
+            {"tempoWorklogId": 1, "author": {"accountId": "me"},
+             "startDateTimeUtc": "2026-10-09T09:00:00Z", "timeSpentSeconds": 3600},
+            {"tempoWorklogId": 2, "author": {"accountId": "jon"},
+             "startDateTimeUtc": "2026-10-09T09:00:00Z", "timeSpentSeconds": 1800}
+        ]}));
+    });
+    let conn = open_memory().unwrap();
+    block(&conn, "G-1", 0);
+    let c = http::client().unwrap();
+    let (a, t) = (auth(&jira), tempo_auth(&tempo));
+    let got = progress_with(
+        &conn,
+        day(),
+        None,
+        Some(&a),
+        Some(&t),
+        Some("me"),
+        &c,
+        now(),
+    )
+    .unwrap();
+    let ticket = &got.tickets[0];
+    assert_eq!(jira_logs.hits(), 0); // wrong: still read Jira's own worklog list
+    assert_eq!(ticket.error, None);
+    assert_eq!(ticket.logged_seconds, 5400);
+    let mut who: Vec<_> = ticket
+        .people
+        .iter()
+        .map(|p| (p.account_id.as_str(), p.is_you))
+        .collect();
+    who.sort();
+    assert_eq!(who, [("jon", false), ("me", true)]); // wrong: is_you for everyone or for none
+}
+
+#[test]
+fn tempo_failure_keeps_cache_and_flags_jira_unavailable() {
+    let jira = MockServer::start();
+    let tempo = MockServer::start();
+    mock_estimates(&jira, json!({"issues": []}));
+    mock_issue_id(&jira);
+    tempo.mock(|when, then| {
+        when.any_request();
+        then.status(500);
+    });
+    let conn = open_memory().unwrap();
+    block(&conn, "G-1", 0);
+    cache(&conn, "G-1", 14400, 3600, 700);
+    let c = http::client().unwrap();
+    let (a, t) = (auth(&jira), tempo_auth(&tempo));
+    let got = progress_with(
+        &conn,
+        day(),
+        None,
+        Some(&a),
+        Some(&t),
+        Some("me"),
+        &c,
+        now(),
+    )
+    .unwrap();
+    assert_eq!(got.tickets[0].error, Some(ProgressError::JiraUnavailable)); // wrong: swallow the failure
+    assert_eq!(got.tickets[0].logged_seconds, 3600); // wrong: overwrite cache with empty
+}
+
 #[test]
 fn people_are_marked_you_by_account_id() {
     let conn = open_memory().unwrap();
@@ -252,9 +346,9 @@ fn people_are_marked_you_by_account_id() {
     let server = MockServer::start();
     let c = http::client().unwrap();
     let a = auth(&server);
-    let got = progress_with(&conn, day(), None, Some(&a), Some("me"), &c, now()).unwrap();
+    let got = progress_with(&conn, day(), None, Some(&a), None, Some("me"), &c, now()).unwrap();
     assert!(got.tickets[0].people[0].is_you);
-    let got = progress_with(&conn, day(), None, Some(&a), None, &c, now()).unwrap();
+    let got = progress_with(&conn, day(), None, Some(&a), None, None, &c, now()).unwrap();
     assert!(!got.tickets[0].people[0].is_you); // wrong: everyone is you
 }
 

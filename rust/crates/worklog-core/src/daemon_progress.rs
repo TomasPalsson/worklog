@@ -1,5 +1,8 @@
 use crate::collectors::jira::JiraAuth;
-use crate::collectors::jira_time::{fetch_estimates_with, fetch_worklogs_with};
+use crate::collectors::jira_time::{
+    fetch_estimates_with, fetch_tempo_worklogs_with, fetch_worklogs_with,
+};
+use crate::collectors::tempo::TempoAuth;
 use crate::estimate_progress_contract::{DayProgress, ProgressError};
 use crate::ticket_progress;
 use anyhow::Result;
@@ -12,11 +15,13 @@ use tracing::warn;
 /// Refetch the day's due tickets from Jira, then answer from the cache.
 /// A failed fetch leaves that ticket's cached rows (and `pulled_at`) alone
 /// and flags it. `refresh` forces that one ticket and no other.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn progress_with(
     conn: &Connection,
     day: NaiveDate,
     refresh: Option<&str>,
     auth: Option<&JiraAuth>,
+    tempo: Option<&TempoAuth>,
     me: Option<&str>,
     client: &Client,
     now: DateTime<Utc>,
@@ -38,7 +43,11 @@ pub(crate) fn progress_with(
                 }
                 Ok(estimates) => {
                     for key in &due {
-                        match fetch_worklogs_with(auth, key, client) {
+                        let logs = match tempo {
+                            Some(t) => fetch_tempo_worklogs_with(t, auth, key, client),
+                            None => fetch_worklogs_with(auth, key, client),
+                        };
+                        match logs {
                             Ok(logs) => ticket_progress::store_ticket(
                                 conn,
                                 key,
