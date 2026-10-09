@@ -5,6 +5,7 @@
 import Link from "next/link";
 import { ChevronLeft } from "lucide-react";
 
+import { MirresAutoFetch } from "@/components/MirresAutoFetch";
 import { MirresDays } from "@/components/MirresDays";
 import { MirresFetch } from "@/components/MirresFetch";
 import { MirresFixList } from "@/components/MirresFixList";
@@ -61,6 +62,8 @@ export default async function MirresPage({ searchParams }: Props) {
         <Empty />
       ) : (
         <>
+          {/* Newest 7 stored days only: caps Jira/Mirres calls per visit. */}
+          <MirresAutoFetch days={days.slice(0, 7).map((d) => d.day)} />
           <MirresLedger days={days} />
           <MirresFixList days={days} />
           <MirresDays days={days} />

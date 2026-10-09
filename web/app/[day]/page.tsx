@@ -182,7 +182,7 @@ export default async function DayPage({
         trackedSeconds={workSeconds}
         billablePercent={billablePercent(lines)}
       />
-      <MirresAutoFetch day={day} needsFetch={lines.length > 0 && lines.every((l) => !l.billing)} />
+      <MirresAutoFetch days={lines.length > 0 ? [day] : []} />
       <ActionBar
         day={day}
         cacheCount={cache.count}
