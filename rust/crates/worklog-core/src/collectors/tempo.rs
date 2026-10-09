@@ -1235,7 +1235,7 @@ struct ScheduleDay {
     required_seconds: i64,
 }
 
-fn get_hub_json<T: serde::de::DeserializeOwned>(
+pub(crate) fn get_hub_json<T: serde::de::DeserializeOwned>(
     auth: &TempoAuth,
     client: &Client,
     url: &str,
