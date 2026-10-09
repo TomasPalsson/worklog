@@ -8,6 +8,7 @@ import { EstimateBar } from "./EstimateBar";
 
 type State = { tickets: Map<string, TicketProgress> | null; failed: boolean };
 interface Value extends State {
+  day: string;
   retry: (key: string) => void;
 }
 
@@ -47,17 +48,43 @@ export function DayProgressProvider({ day, children }: { day: string; children: 
     }
   };
 
-  return <Ctx.Provider value={{ ...state, retry }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ ...state, day, retry }}>{children}</Ctx.Provider>;
 }
 
-/** The ticket group's bar; nothing outside a provider or once loaded without that ticket. */
-export function TicketEstimate({ ticketKey, blocks }: { ticketKey: string; blocks: Block[] }) {
+/**
+ * The ticket group's bar; nothing outside a provider or once loaded without that ticket.
+ * With a Tempo line, "once synced" is what sync will send (the line's billed hours),
+ * not the raw block sum.
+ */
+export function TicketEstimate({
+  ticketKey,
+  blocks,
+  lineSeconds,
+  syncState,
+}: {
+  ticketKey: string;
+  blocks: Block[];
+  lineSeconds?: number;
+  syncState?: "synced" | "dirty" | "unsynced" | "mixed";
+}) {
   const ctx = useContext(Ctx);
   if (!ctx) return null;
   const ticket: TicketProgress | undefined = ctx.failed
     ? { key: ticketKey, estimate_seconds: null, people: [], logged_seconds: 0, pulled_at: null, error: "jira_unavailable" }
     : ctx.tickets?.get(ticketKey);
   if (ctx.tickets && !ticket) return null;
-  const pending = blocks.reduce((n, b) => (b.is_personal ? n : n + pendingSeconds(b)), 0);
+  let pending: number;
+  if (lineSeconds === undefined) {
+    pending = blocks.reduce((n, b) => (b.is_personal ? n : n + pendingSeconds(b)), 0);
+  } else if (syncState === "synced") {
+    pending = 0;
+  } else if (syncState === "unsynced") {
+    pending = lineSeconds;
+  } else {
+    // ponytail: mineToday also counts Tempo time logged by hand outside worklog; upgrade path is
+    // reading the line's synced Tempo worklog seconds once the daemon exposes them.
+    const mineToday = ticket?.people.find((p) => p.is_you)?.by_day.find(([d]) => d === ctx.day)?.[1] ?? 0;
+    pending = Math.max(0, lineSeconds - mineToday);
+  }
   return <EstimateBar ticket={ticket} pending={pending} onRetry={() => ctx.retry(ticketKey)} />;
 }
