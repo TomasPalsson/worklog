@@ -1,0 +1,17 @@
+/* WeekTerrain: isometric hour x weekday pillar field. Tokens only. */
+.sx-terrain-card { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 12px; padding: 16px; min-width: 0; }
+.sx-terrain-big { font-family: var(--font-mono); font-size: 22px; line-height: 1.15; color: var(--fg); letter-spacing: -0.02em; margin: 0; }
+.sx-terrain-sub { margin: 6px 0 0; font-size: 13px; color: var(--fg-muted); line-height: 1.45; }
+.sx-terrain-sub b { color: var(--fg); font-family: var(--font-mono); font-weight: 600; }
+.sx-terrain-svg { display: block; width: 100%; max-width: 720px; height: auto; margin: 12px auto 0; }
+.sx-terrain-face { stroke: var(--bg); stroke-width: 0.75; stroke-linejoin: round; }
+.sx-terrain-pillar:hover { opacity: 0.82; }
+.sx-terrain-ink { fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.sx-terrain-leader { stroke: var(--border-strong); stroke-width: 1; fill: none; }
+.sx-terrain-plate { fill: var(--bg-raised); stroke: var(--border-strong); stroke-width: 1; }
+.sx-terrain-ground { fill: var(--bg-raised); stroke: var(--border); stroke-width: 1; stroke-linejoin: round; }
+.sx-terrain-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 10px 0 0; font-size: 12px; color: var(--fg-muted); }
+.sx-terrain-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; margin-right: 4px; }
+.sx-terrain-empty { text-anchor: middle; font-family: var(--font-mono); font-size: 12px; fill: var(--fg-subtle); }
+.sx-terrain-svg .sx-terrain-plate-text { font-size: 11px; }
+@media (max-width: 480px) { .sx-terrain-svg .art-label { font-size: 13px; } .sx-terrain-svg .sx-terrain-plate-text { font-size: 13px; } }

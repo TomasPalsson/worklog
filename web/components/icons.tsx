@@ -62,6 +62,20 @@ export function WeekIcon(p: IconProps) {
   );
 }
 
+/** Statistics: three bars climbing a baseline, with a sparkle over the tallest. */
+export function StatsIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M3.5 20.5h17" />
+      <rect x="5" y="13" width="3.6" height="7.5" rx="1" {...WASH} />
+      <rect x="5" y="13" width="3.6" height="7.5" rx="1" />
+      <rect x="10.2" y="9.5" width="3.6" height="11" rx="1" />
+      <rect x="15.4" y="12" width="3.6" height="8.5" rx="1" {...WASH} opacity={0.5} />
+      <path d="M17.5 3v4.4M15.3 5.2h4.4" strokeWidth={1.4} />
+    </Svg>
+  );
+}
+
 /** Tasks: a ticket card checked off, with the next one behind it. */
 export function TasksIcon(p: IconProps) {
   return (

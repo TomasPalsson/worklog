@@ -19,6 +19,8 @@ export function timeoutMs(path: string): number {
   // `worklog estimate` in a terminal, which has no HTTP timeout.
   if (path.includes("/estimate")) return 600_000;
   if (path.startsWith("/sync")) return 30_000;
+  // Statistics scans every event in the range.
+  if (path.startsWith("/stats")) return 30_000;
   if (path.startsWith("/jira/refresh")) return 30_000;
   if (path.startsWith("/infer")) return 30_000;
   // Jira/Tempo round-trips: project + account listing and issue creation.

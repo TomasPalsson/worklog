@@ -1,0 +1,41 @@
+/* Ranked / split charts for the stats page. Tokens only; prefix sr-. */
+.sr-card { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; min-width: 0; }
+.sr-title { font-size: 11px; font-variant-caps: all-small-caps; letter-spacing: 0.08em; color: var(--fg-muted); margin: 0 0 4px; font-weight: 600; }
+.sr-caption { font-size: 14px; color: var(--fg); margin: 0 0 14px; }
+.sr-empty { font-size: 13px; color: var(--fg-subtle); font-style: italic; margin: 8px 0 4px; }
+
+.sr-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.sr-row { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 4px 10px; align-items: center; }
+.sr-rank { font-family: var(--font-mono); font-size: 11px; color: var(--fg-subtle); text-align: right; display: inline-flex; justify-content: flex-end; }
+.sr-label { font-family: var(--font-mono); font-size: 12px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.sr-value { font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+.sr-track { grid-column: 2 / 4; height: 6px; background: var(--bg-sunk); border-radius: 3px; overflow: hidden; }
+.sr-fill { height: 100%; border-radius: 3px; background: var(--slate); transform-origin: left center; animation: art-grow 700ms var(--art-ease) both; animation-delay: calc(var(--i, 0) * 60ms); }
+.sr-row[data-top] .sr-fill { background: var(--amber); }
+.sr-row[data-top] .sr-label, .sr-row[data-top] .sr-value { color: var(--amber-ink); font-weight: 600; }
+.sr-row[data-top] .sr-rank { color: var(--amber-ink); }
+.sr-crown { width: 14px; height: 14px; color: var(--amber-ink); }
+
+.sr-scroll { overflow-x: auto; }
+.sr-life { display: block; min-width: 560px; width: 100%; height: auto; }
+.sr-bar { transform-box: fill-box; transform-origin: left center; animation: art-grow 700ms var(--art-ease) both; animation-delay: calc(var(--i, 0) * 50ms); }
+.sr-key { font-family: var(--font-mono); font-size: 11px; fill: var(--fg); }
+.sr-sum { font-size: 11px; fill: var(--fg-muted); }
+.sr-hours { font-family: var(--font-mono); font-size: 11px; fill: var(--fg); text-anchor: end; }
+.sr-tick { stroke: var(--border); stroke-width: 1; }
+.sr-month { font-family: var(--font-mono); font-size: 10px; fill: var(--fg-muted); }
+.sr-line { stroke: var(--border-strong); stroke-width: 1.6; stroke-linecap: round; }
+.sr-span { fill: var(--sage); }
+.sr-dot { fill: var(--sage-ink); stroke: var(--bg-raised); stroke-width: 1.5; }
+
+.sr-donut-wrap { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+.sr-donut { width: 140px; height: 140px; flex: none; }
+.sr-ring-bg { fill: none; stroke: var(--bg-sunk); stroke-width: 14; }
+.sr-seg { fill: none; stroke-width: 14; }
+.sr-pct { font-family: var(--font-mono); font-size: 22px; font-weight: 600; fill: var(--fg); text-anchor: middle; }
+.sr-pct-sub { font-family: var(--font-mono); font-size: 8px; fill: var(--fg-muted); text-anchor: middle; }
+.sr-legend { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; flex: 1; min-width: 160px; }
+.sr-leg { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto auto; gap: 8px; align-items: center; font-size: 12px; }
+.sr-swatch { width: 12px; height: 12px; border-radius: 3px; background: var(--c); }
+.sr-swatch[data-hatch] { background: var(--art-hatch-muted); border: 1px solid var(--border-strong); }
+.sr-leg-pct { font-family: var(--font-mono); color: var(--fg-subtle); min-width: 36px; text-align: right; }

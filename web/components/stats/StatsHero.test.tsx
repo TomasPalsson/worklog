@@ -1,0 +1,69 @@
+import { afterEach, describe, expect, it } from "bun:test";
+import { cleanup, render } from "@testing-library/react";
+import type { DailyStat, StatsReport } from "@/lib/stats_contract";
+import { StatsHero, bucket, heroTiles, sparkPoints } from "./StatsHero";
+
+afterEach(cleanup);
+
+const day = (o: Partial<DailyStat> = {}): DailyStat => ({
+  day: "2026-10-01", work_seconds: 0, personal_seconds: 0, ignored_seconds: 0, prompts: 0, tool_calls: 0,
+  shell: 0, slack: 0, browser_minutes: 0, claude_busy_minutes: 0, commits: 0, meeting_seconds: 0,
+  first_at: null, last_at: null, folders: 0, tickets: 0, ...o,
+});
+const report = (daily: DailyStat[], t: Partial<StatsReport["totals"]> = {}): StatsReport =>
+  ({
+    totals: {
+      work_seconds: 0, days_worked: 0, prompts: 0, tool_calls: 0, helpers: 0, shell_commands: 0, commits: 0,
+      prs: 0, slack_messages: 0, browser_minutes: 0, meetings: 0, meeting_seconds: 0, ...t,
+    },
+    daily,
+  }) as unknown as StatsReport;
+
+describe("sparkPoints / bucket", () => {
+  it("all zero is a flat line, not NaN", () => {
+    const p = sparkPoints([0, 0, 0]);
+    expect(p).not.toContain("NaN");
+    expect(new Set(p.split(" ").map((s) => s.split(",")[1])).size).toBe(1);
+  });
+  it("empty is empty; single value is finite", () => {
+    expect(sparkPoints([])).toBe("");
+    expect(sparkPoints([5])).not.toContain("NaN");
+  });
+  it("peak sits at the top", () => {
+    expect(sparkPoints([0, 10]).split(" ")[1]).toBe("100.0,2.0");
+  });
+  it("buckets long series by summing and conserves the total", () => {
+    const v = Array.from({ length: 365 }, (_, i) => i);
+    const b = bucket(v, 60);
+    expect(b.length).toBe(60);
+    expect(b.reduce((a, x) => a + x, 0)).toBe(v.reduce((a, x) => a + x, 0));
+    expect(bucket([1, 2], 60)).toEqual([1, 2]);
+  });
+});
+
+describe("StatsHero", () => {
+  it("shows big numbers with thousands separators and per-day captions", () => {
+    const r = report([day(), day({ day: "2026-10-02" })], {
+      work_seconds: 7.5 * 3600, days_worked: 2, prompts: 4213, tool_calls: 1_000_000, commits: 3, prs: 1,
+    });
+    const tiles = heroTiles(r);
+    expect(tiles).toHaveLength(9);
+    expect(tiles[0].value).toBe("7.5");
+    expect(tiles[0].caption).toContain("3.8h");
+    expect(tiles.find((t) => t.key === "prompts")!.value).toBe("4,213");
+    expect(tiles.find((t) => t.key === "tools")!.value).toBe("1,000,000");
+    expect(tiles.find((t) => t.key === "shipped")!.value).toBe("4");
+    const { container } = render(<StatsHero report={r} />);
+    expect(container.querySelectorAll(".stats-tile").length).toBe(9);
+    expect(container.textContent).not.toContain("NaN");
+  });
+  it("zero everything stays calm", () => {
+    const { container } = render(<StatsHero report={report([])} />);
+    expect(container.textContent).not.toMatch(/NaN|Infinity/);
+    expect(container.textContent).toContain("No hours logged yet.");
+  });
+  it("single day draws a dot, not a line", () => {
+    const { container } = render(<StatsHero report={report([day({ prompts: 3 })], { prompts: 3, days_worked: 1 })} />);
+    expect(container.querySelector("circle")).not.toBeNull();
+  });
+});

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import { formatDuration } from "@/lib/format";
 
 export type FlowBlock = {
@@ -242,9 +242,21 @@ function FlowSvg({ flow, width, height, withSources, cls }: { flow: Flow; width:
 
 const KEY = "worklog.dayflow.open";
 
-export function DayFlow({ blocks, billing }: { blocks: FlowBlock[]; billing: Record<string, FlowBilling> | null }) {
-  const [open, setOpen] = useState(false);
+export function DayFlow({
+  blocks,
+  billing,
+  title,
+  defaultOpen = false,
+}: {
+  blocks: FlowBlock[];
+  billing: Record<string, FlowBilling> | null;
+  title?: ReactNode;
+  /** Start open and neither read nor write the remembered preference. */
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
   useEffect(() => {
+    if (defaultOpen) return;
     try {
       if (localStorage.getItem(KEY) === "1") setOpen(true);
     } catch {
@@ -262,6 +274,7 @@ export function DayFlow({ blocks, billing }: { blocks: FlowBlock[]; billing: Rec
       onToggle={(e) => {
         const o = e.currentTarget.open;
         setOpen(o);
+        if (defaultOpen) return;
         try {
           localStorage.setItem(KEY, o ? "1" : "0");
         } catch {
@@ -272,7 +285,11 @@ export function DayFlow({ blocks, billing }: { blocks: FlowBlock[]; billing: Rec
       <summary className="art-dayflow-summary">
         <span className="art-dayflow-chev" aria-hidden="true">▸</span>
         <span>
-          Where the day&rsquo;s <span className="art-label art-dayflow-total">{formatDuration(kept)}</span> went
+          {title ?? (
+            <>
+              Where the day&rsquo;s <span className="art-label art-dayflow-total">{formatDuration(kept)}</span> went
+            </>
+          )}
         </span>
       </summary>
       {open && (

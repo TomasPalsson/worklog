@@ -94,6 +94,21 @@ describe("DayFlow", () => {
     expect(localStorage.getItem("worklog.dayflow.open")).toBe("1");
   });
 
+  it("defaultOpen starts open and never writes the remembered preference", () => {
+    for (const stored of ["1", "0"]) {
+      localStorage.setItem("worklog.dayflow.open", stored);
+      const { container, unmount } = render(<DayFlow blocks={[blk(3600, "A-1")]} billing={null} defaultOpen />);
+      expect(container.querySelector("svg")).not.toBeNull();
+      const d = container.querySelector("details")!;
+      d.open = stored === "0";
+      fireEvent(d, new Event("toggle"));
+      d.open = stored !== "0";
+      fireEvent(d, new Event("toggle"));
+      expect(localStorage.getItem("worklog.dayflow.open")).toBe(stored);
+      unmount();
+    }
+  });
+
   it("describeFlow omits source flows when sources are hidden", () => {
     const f = buildFlow([blk(3600, "A")], null);
     expect(describeFlow(f, false)).not.toContain("Claude to");
