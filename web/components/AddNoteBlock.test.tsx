@@ -263,3 +263,42 @@ describe("AddNoteBlock feedback", () => {
     unsub();
   });
 });
+
+describe("AddNoteBlock 24-hour start", () => {
+  it("is a 24-hour text field, not the locale time picker (wrong version: type=time shows 10:00 PM)", () => {
+    mount();
+    open();
+    expect(field("Start").type).toBe("text");
+    expect(field("Start").value).toBe("09:00");
+  });
+
+  it.each([
+    ["9:30", "09:30"],
+    ["0930", "09:30"],
+    ["930", "09:30"],
+    ["14:05", "14:05"],
+    ["7:5", "7:5"],
+  ])("tidies %j to %j on blur", (typed, shown) => {
+    mount();
+    open();
+    set("Start", typed);
+    fireEvent.blur(field("Start"));
+    expect(field("Start").value).toBe(shown);
+  });
+
+  it("saves a loose time typed straight into Enter as HH:MM (wrong version: only tidied on blur)", async () => {
+    mount();
+    open();
+    await fill({ Start: "9:30" });
+    expect(addNoteBlock).toHaveBeenCalledTimes(1);
+    expect((addNoteBlock.mock.calls[0][0] as { start: string }).start).toBe("09:30");
+  });
+
+  it.each(["25:00", "12:75", "24:00", "7:5"])("refuses %j as a start (wrong version: only the shape is checked)", async (start) => {
+    mount();
+    open();
+    await fill({ Start: start });
+    expect(screen.getByText("Pick a start time.")).toBeTruthy();
+    expect(addNoteBlock).not.toHaveBeenCalled();
+  });
+});
