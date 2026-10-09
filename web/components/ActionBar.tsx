@@ -20,6 +20,7 @@ import type { ActionResult } from "@/app/actions";
 import { refreshMirresAction } from "@/app/actions-tempo-lines";
 import { toast } from "@/lib/toast";
 import type { JiraTicket } from "@/lib/types";
+import { ActionsMenu, type MenuAction } from "./ActionsMenu";
 import { AddNoteBlock } from "./AddNoteBlock";
 import { MirresIcon } from "./icons";
 
@@ -79,63 +80,61 @@ export function ActionBar({ day, cacheCount, cacheLast, tickets, lastEnd }: Prop
     void run("sync", "Synced to Tempo", () => runSync(day, false));
   };
 
+  const more: MenuAction[] = [
+    {
+      pending: isPending("infer"),
+      icon: <ListRestart />,
+      label: "Rebuild blocks",
+      pendingLabel: "Rebuilding…",
+      title: "Cluster today's events into blocks (idempotent)",
+      onClick: () => run("infer", "Rebuilt blocks", () => runInfer(day)),
+    },
+    {
+      pending: isPending("estimate"),
+      icon: <Sparkles />,
+      label: "Estimate with Claude",
+      pendingLabel: "Estimating…",
+      title: "Use claude -p to fill tickets/descriptions for un-estimated blocks",
+      onClick: () => run("estimate", "Estimated", () => runEstimate(day)),
+    },
+    {
+      pending: isPending("jira"),
+      icon: <RefreshCw />,
+      label: "Refresh Jira",
+      pendingLabel: "Refreshing…",
+      title: cacheLast
+        ? `${cacheCount} tickets cached · last ${new Date(cacheLast).toLocaleString()}`
+        : "Fetch open tickets from Jira",
+      onClick: () => run("jira", "Refreshed Jira", () => refreshJira(day)),
+    },
+    {
+      pending: isPending("mirres"),
+      icon: <MirresIcon />,
+      label: "Refresh Mirres",
+      pendingLabel: "Refreshing…",
+      title: "Fetch each line's billable status from Mirres",
+      onClick: () =>
+        run("mirres", "Mirres", async () => {
+          const r = await refreshMirresAction(day);
+          // Nothing matched is a problem to fix, not a success.
+          if (r.ok && r.data.length > 0 && !r.data.some((l) => l.billing))
+            return { ok: false as const, error: "no lines matched. Check that the tickets have an Account in Jira." };
+          return r;
+        }),
+    },
+    {
+      pending: isPending("dry-run"),
+      icon: <Braces />,
+      label: "Dry-run sync",
+      pendingLabel: "Checking…",
+      title: "Show what would be posted to Tempo — no network writes",
+      onClick: () => run("dry-run", "Dry-run", () => runSync(day, true)),
+    },
+  ];
+
   return (
     <div className="actions">
       <AddNoteBlock day={day} tickets={tickets} lastEnd={lastEnd} />
-      <ActionButton
-        pending={isPending("infer")}
-        icon={<ListRestart />}
-        label="Rebuild blocks"
-        pendingLabel="Rebuilding…"
-        title="Cluster today's events into blocks (idempotent)"
-        onClick={() => run("infer", "Rebuilt blocks", () => runInfer(day))}
-      />
-      <ActionButton
-        pending={isPending("estimate")}
-        icon={<Sparkles />}
-        label="Estimate with Claude"
-        pendingLabel="Estimating…"
-        title="Use claude -p to fill tickets/descriptions for un-estimated blocks"
-        onClick={() => run("estimate", "Estimated", () => runEstimate(day))}
-      />
-      <ActionButton
-        pending={isPending("jira")}
-        icon={<RefreshCw />}
-        label="Refresh Jira"
-        pendingLabel="Refreshing…"
-        title={
-          cacheLast
-            ? `${cacheCount} tickets cached · last ${new Date(cacheLast).toLocaleString()}`
-            : "Fetch open tickets from Jira"
-        }
-        onClick={() => run("jira", "Refreshed Jira", () => refreshJira(day))}
-      />
-      <ActionButton
-        pending={isPending("mirres")}
-        icon={<MirresIcon />}
-        label="Refresh Mirres"
-        pendingLabel="Refreshing…"
-        title="Fetch each line's billable status from Mirres"
-        onClick={() =>
-          run("mirres", "Mirres", async () => {
-            const r = await refreshMirresAction(day);
-            // Nothing matched is a problem to fix, not a success.
-            if (r.ok && r.data.length > 0 && !r.data.some((l) => l.billing))
-              return { ok: false as const, error: "no lines matched. Check that the tickets have an Account in Jira." };
-            return r;
-          })
-        }
-      />
-      <ActionButton
-        pending={isPending("dry-run")}
-        icon={<Braces />}
-        label="Dry-run sync"
-        pendingLabel="Checking…"
-        title="Show what would be posted to Tempo — no network writes"
-        onClick={() =>
-          run("dry-run", "Dry-run", () => runSync(day, true))
-        }
-      />
       <button
         type="button"
         className="action-btn"
@@ -177,30 +176,8 @@ export function ActionBar({ day, cacheCount, cacheLast, tickets, lastEnd }: Prop
           Cancel
         </button>
       )}
+      <ActionsMenu items={more} />
     </div>
-  );
-}
-
-function ActionButton(props: {
-  pending: boolean;
-  icon: React.ReactNode;
-  label: string;
-  pendingLabel: string;
-  title: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      className="action-btn"
-      disabled={props.pending}
-      title={props.title}
-      aria-busy={props.pending || undefined}
-      onClick={props.onClick}
-    >
-      {props.icon}
-      {props.pending ? props.pendingLabel : props.label}
-    </button>
   );
 }
 

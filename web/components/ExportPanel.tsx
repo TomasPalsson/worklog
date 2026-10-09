@@ -237,7 +237,7 @@ export function ExportPanel({ day }: Props) {
                   {undescribed > 0 && (
                     <span
                       className="export-missing-note"
-                      data-tip="Run “Estimate with Claude” to replace these with real descriptions"
+                      data-tip="Run More → Estimate with Claude to replace these with real descriptions"
                     >
                       <TriangleAlert size={12} /> {undescribed} need a description
                     </span>

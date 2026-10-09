@@ -14,7 +14,7 @@ export function EmptyState({ day }: { day: string }) {
         <code style={{ fontFamily: "var(--font-mono)", fontSize: 13 }}>
           worklog collect
         </code>{" "}
-        and then <em>Rebuild blocks</em> above.
+        and then <em>More → Rebuild blocks</em> above.
       </p>
     </div>
   );

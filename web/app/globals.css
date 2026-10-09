@@ -379,6 +379,12 @@ button {
   cursor: progress;
 }
 
+/* "More" menu: the occasional actions, anchored under their trigger. */
+.actions-more { position: relative; }
+.actions-more-menu { position: absolute; top: calc(100% + 4px); left: 0; z-index: 5; min-width: 220px; }
+.actions-more-menu button { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.actions-more-menu svg { width: 15px; height: 15px; flex: none; }
+
 .action-btn svg {
   width: 15px;
   height: 15px;
