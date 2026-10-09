@@ -10,6 +10,7 @@ import { CredentialGroups } from "./CredentialFields";
 import { RoutingFields, RoutingStatusAndRules } from "./RoutingSettings";
 import { CardHead } from "./SettingsNav";
 import { VerdictControl } from "./VerdictControl";
+import { PruneDial } from "./art/PruneDial";
 
 type Patch = (p: Partial<SettingsFormState>) => void;
 
@@ -147,6 +148,7 @@ function CleanupCard({ form, patch }: { form: SettingsFormState; patch: Patch })
         />
         <span>Enable automatic pruning</span>
       </label>
+      <PruneDial enabled={form.pruneEnabled} startDay={form.cycleStartDay} closeDay={form.closeDay} />
       <div className="settings-grid-2" data-off={!form.pruneEnabled || undefined}>
         <label className="settings-field settings-field-narrow">
           <span>Cycle start day</span>

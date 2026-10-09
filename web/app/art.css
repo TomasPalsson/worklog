@@ -1,0 +1,30 @@
+/*
+ * "Instrument panel" art: the shared hand for the data graphics in
+ * app/art/*.css. Same rules as icons.tsx (1.6 stroke, round caps, one
+ * currentColor wash), plus ruler ticks, a 135° hatch for "needs you",
+ * Geist Mono labels and a one-time draw-in on mount. Tokens only.
+ * The global reduced-motion rule in globals.css stills every animation,
+ * and every graphic's resting state is its finished state.
+ */
+:root {
+  --art-stroke: 1.6px;
+  --art-wash: 0.24;
+  --art-ease: cubic-bezier(0.25, 1, 0.5, 1); /* ease-out-quart */
+  --art-hatch-amber: repeating-linear-gradient(135deg, var(--amber) 0 3px, transparent 3px 6px);
+  --art-hatch-muted: repeating-linear-gradient(135deg, var(--border-strong) 0 3px, transparent 3px 6px);
+}
+
+/* stroke draw-in: give the path pathLength="1" */
+.art-draw { stroke-dasharray: 1; stroke-dashoffset: 0; animation: art-draw 900ms var(--art-ease) both; }
+@keyframes art-draw { from { stroke-dashoffset: 1; } }
+
+/* bar grow: the caller sets transform-origin */
+.art-grow { animation: art-grow 700ms var(--art-ease) both; }
+@keyframes art-grow { from { transform: scaleX(0); } }
+.art-grow-y { animation: art-grow-y 700ms var(--art-ease) both; transform-origin: bottom; transform-box: fill-box; }
+@keyframes art-grow-y { from { transform: scaleY(0); } }
+
+.art-fade { animation: art-fade 500ms var(--art-ease) both; }
+@keyframes art-fade { from { opacity: 0; } }
+
+.art-label { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.02em; fill: var(--fg-muted); color: var(--fg-muted); font-variant-numeric: tabular-nums; }

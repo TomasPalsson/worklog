@@ -1,0 +1,9 @@
+/* art: rail (shared hand in app/art.css) */
+.art-rail { flex: none; vertical-align: middle; overflow: visible; color: var(--fg-muted); }
+.art-rail-ticks line { stroke: var(--border-strong); stroke-width: 1; opacity: 0.55; transition: opacity 160ms var(--art-ease); }
+.art-rail:hover .art-rail-ticks line { opacity: 1; stroke: var(--fg-subtle); }
+.art-rail-tracked { fill: var(--sage); }
+.art-rail-billed { fill: none; stroke: var(--fg-muted); stroke-width: 1.6; stroke-linejoin: round; }
+.art-rail-hatch { stroke: var(--terracotta); stroke-width: 1.6; }
+.art-rail-cut { stroke: none; }
+.art-rail-pencil { stroke: var(--violet); }

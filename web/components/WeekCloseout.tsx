@@ -11,6 +11,7 @@ import { syncWeek, type WeekSyncDeps } from "@/lib/weekSync";
 import { RefreshIcon } from "./icons";
 import { dayLabel, hours, weekday } from "./LoggedEntries";
 import { LoggedMeter } from "./LoggedMeter";
+import { WeekPace } from "./art/WeekPace";
 
 type Result<T> = { ok: true; data: T } | { ok: false; error: string };
 
@@ -49,7 +50,7 @@ function DayCard({ d, today, worked }: { d: CloseoutDay; today: string; worked: 
         <span className="week-day-date">{dayLabel(d.day, "short").split(" ").slice(1).join(" ")}</span>
       </span>
       <span className="week-day-hours">{hours(worked)}</span>
-      {req ? <LoggedMeter logged={d.tempo_seconds} required={req} state={future ? "pending" : meterState(d)} /> : null}
+      {req ? <LoggedMeter logged={d.tempo_seconds} required={req} state={future ? "pending" : meterState(d)} worked={worked} /> : null}
       <span className="week-day-sub">
         {req === null ? "not pulled" : `${hours(d.tempo_seconds)} / ${hours(req)} in Tempo`}
       </span>
@@ -164,6 +165,7 @@ export function WeekCloseout({
         </div>
       </div>
       {error && <p role="alert" className="week-error">{error}</p>}
+      <WeekPace days={current.days} today={today} worked={worked} />
       <div className="week-strip">
         {current.days.map((d) => (
           <DayCard key={d.day} d={d} today={today} worked={daySeconds[d.day] ?? d.logged_seconds} />

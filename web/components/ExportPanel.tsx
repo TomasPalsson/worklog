@@ -38,6 +38,8 @@ import {
   formFields,
   totalBilledHours,
 } from "@/lib/export";
+import { ExportedStamp } from "@/components/art/ExportedStamp";
+import { ExportStrip } from "@/components/art/ExportStrip";
 import { toast } from "@/lib/toast";
 import type { ExportResponse } from "@/lib/types";
 
@@ -151,7 +153,6 @@ export function ExportPanel({ day }: Props) {
   }
 
   const total = totalBilledHours(rows);
-  const missingCount = rows.filter((r) => r.customer === null || r.verkefni === null).length;
   // Lines whose Texti á reikning is a "Work in <folder>" fallback because the
   // day was never estimated. Without saying so, that reads as a bug.
   const undescribed = rows.filter((r) => r.needs_description).length;
@@ -226,14 +227,10 @@ export function ExportPanel({ day }: Props) {
               </div>
             ) : (
               <div className="settings-body">
+                <div className="art-export-head">
                 <p className="export-summary">
                   {rows.length} line{rows.length === 1 ? "" : "s"} ·{" "}
                   {formatExportHours(total)} hrs
-                  {missingCount > 0 && (
-                    <span className="export-missing-note">
-                      <TriangleAlert size={12} /> {missingCount} need a pick
-                    </span>
-                  )}
                   {undescribed > 0 && (
                     <span
                       className="export-missing-note"
@@ -249,8 +246,13 @@ export function ExportPanel({ day }: Props) {
                     </span>
                   )}
                 </p>
+                {data?.exported_at && (
+                  <ExportedStamp date={new Date(data.exported_at).toLocaleDateString()} />
+                )}
+                </div>
 
                 {/* One line item, laid out in the invoicing form's order. */}
+                <div className="art-export-line">
                 <dl className={`export-form${done.has(index) ? " is-done" : ""}`}>
                   {fields.map((f) => (
                     <div
@@ -289,6 +291,8 @@ export function ExportPanel({ day }: Props) {
                     </div>
                   ))}
                 </dl>
+                {done.has(index) && <ExportedStamp date="" size={44} />}
+                </div>
 
                 {current && (
                   /* Enough to recognise the work when Viðskiptamaður is
@@ -364,21 +368,7 @@ export function ExportPanel({ day }: Props) {
                     <ChevronRight size={14} />
                   </button>
 
-                  <ol className="export-dots" aria-label="line progress">
-                    {rows.map((_, i) => (
-                      <li key={i}>
-                        <button
-                          type="button"
-                          className={`export-dot${i === index ? " is-current" : ""}${
-                            done.has(i) ? " is-done" : ""
-                          }`}
-                          aria-label={`Go to line ${i + 1}${done.has(i) ? " (done)" : ""}`}
-                          aria-current={i === index || undefined}
-                          onClick={() => setIndex(i)}
-                        />
-                      </li>
-                    ))}
-                  </ol>
+                  <ExportStrip rows={rows} index={index} done={done} onSelect={setIndex} />
               </div>
             )}
 

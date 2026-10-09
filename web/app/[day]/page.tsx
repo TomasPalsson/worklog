@@ -19,6 +19,7 @@ import { ActionBar } from "@/components/ActionBar";
 import { MirresAutoFetch } from "@/components/MirresAutoFetch";
 import { BlockCard } from "@/components/BlockCard";
 import { DayStrip } from "@/components/DayStrip";
+import { DayFlow, type FlowBilling } from "@/components/art/DayFlow";
 import { RecapBanner } from "@/components/RecapBanner";
 import { ReviewSection } from "@/components/ReviewSection";
 import { ElsewhereList } from "@/components/ElsewhereList";
@@ -161,6 +162,12 @@ export default async function DayPage({
       return acc + (line?.effective_seconds ?? 0);
     }, 0);
 
+  const flowBilling = lines.some((l) => l.billing)
+    ? Object.fromEntries(
+        lines.flatMap((l) => (l.billing ? [[l.jira_issue, l.billing.class as FlowBilling]] : [])),
+      )
+    : null;
+
   return (
     <>
       <DayHeader
@@ -191,6 +198,16 @@ export default async function DayPage({
         overlaps={overlaps}
         activity={activity}
         allocations={allocations}
+      />
+      <DayFlow
+        key={`flow-${day}`}
+        blocks={summary.blocks.map((b) => ({
+          seconds: b.duration_seconds,
+          kind: b.ignored_at ? "ignored" : b.is_personal ? "personal" : "work",
+          ticket: b.jira_issue,
+          sources: b.sources,
+        }))}
+        billing={flowBilling}
       />
       {verdict && <VerdictBanner key={`verdict-${day}`} status={verdict} />}
       <UnsortedList key={`unsorted-${day}`} day={day} events={routedEvents} folderOptions={folderOptions} />

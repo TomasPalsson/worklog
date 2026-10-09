@@ -1,0 +1,43 @@
+/* art: export (shared hand in app/art.css) */
+
+/* ── progress strip ── */
+.art-export-strip-wrap { flex: 1 1 100%; order: 9; margin-top: 4px; }
+.art-export-strip { display: flex; gap: 2px; height: 12px; margin: 0; padding: 0; list-style: none; width: 100%; min-width: 0; overflow-x: clip; }
+.art-export-seg-li { flex-basis: 0; flex-shrink: 1; min-width: 6px; display: flex; }
+.art-export-seg {
+  flex: 1; padding: 0; border: 1px solid transparent; border-radius: 3px; cursor: pointer;
+  transition: transform 160ms var(--art-ease);
+  transform-origin: left center;
+  animation: art-grow 700ms var(--art-ease) both;
+}
+.art-export-seg:hover { transform: translateY(-1px); }
+.art-export-seg.is-done { background: var(--sage); border-color: var(--sage); }
+.art-export-seg.is-todo { background: var(--bg-sunk); border-color: var(--border); }
+.art-export-seg.is-needs { background: var(--bg-sunk) var(--art-hatch-amber); border-color: var(--amber); }
+.art-export-seg.is-current { outline: 2px solid var(--fg); outline-offset: 0; transform: translateY(-2px); }
+.art-export-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 8px 0 0; font-size: 11px; color: var(--fg-muted); }
+.art-export-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.art-export-legend-n { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--amber-ink); }
+.art-export-sw { display: inline-block; width: 14px; height: 8px; border-radius: 2px; border: 1px solid transparent; }
+.art-export-sw.is-done { background: var(--sage); border-color: var(--sage); }
+.art-export-sw.is-todo { background: var(--bg-sunk); border-color: var(--border); }
+.art-export-sw.is-needs { background: var(--bg-sunk) var(--art-hatch-amber); border-color: var(--amber); }
+
+/* ── stamp ── */
+.art-export-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.art-export-head > p { flex: 1; min-width: 0; }
+.art-export-stamp-shake { display: inline-block; flex: none; animation: art-export-shake 380ms linear 160ms both; }
+.art-export-stamp { display: block; transform: rotate(-8deg); animation: art-export-thump 380ms var(--art-ease) backwards; transition: transform 200ms var(--art-ease); }
+.art-export-stamp:hover { transform: rotate(-6deg) scale(1.04); }
+.art-export-stamp-shake.is-mini { position: absolute; right: 0; bottom: 0; pointer-events: none; }
+.art-export-line { position: relative; }
+@keyframes art-export-thump {
+  from { transform: scale(1.6) rotate(-14deg); opacity: 0; }
+  60% { transform: scale(0.94) rotate(-8deg); opacity: 1; }
+  to { transform: scale(1) rotate(-8deg); opacity: 1; }
+}
+@keyframes art-export-shake {
+  0%, 100% { translate: 0 0; }
+  30% { translate: 1px 1px; }
+  60% { translate: -1px 0; }
+}
