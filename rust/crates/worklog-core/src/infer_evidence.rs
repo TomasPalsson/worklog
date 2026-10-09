@@ -34,6 +34,12 @@ pub(crate) const MIN_EVIDENCE_MINUTES: usize = 2;
 /// within ±3 min AND more than 60 min after that session's last prompt (or
 /// no prompt that day) never happened as far as the lane algorithm is
 /// concerned — it can't vote and it can't hold a minute open.
+///
+/// A `claude` tool hook (PreToolUse/PostToolUse/SubagentStop) gets the
+/// same 60-min rule with no density escape: an unattended workflow fires
+/// dense hooks for hours, and none of that is the owner working.
+// ponytail: the prompt lookup only sees this day's events, so tool hooks
+// after midnight from a prompt sent before it are dropped until the next prompt.
 pub(crate) fn drop_isolated_claude_work(events: Vec<InferEvent>) -> Vec<InferEvent> {
     let mut turns: std::collections::HashMap<String, Vec<i64>> = Default::default();
     let mut work: std::collections::HashMap<String, Vec<i64>> = Default::default();
@@ -41,10 +47,10 @@ pub(crate) fn drop_isolated_claude_work(events: Vec<InferEvent>) -> Vec<InferEve
         let Some(sid) = e.session_id.clone() else {
             continue;
         };
-        match e.source.as_str() {
-            "claude_turn" => turns.entry(sid).or_default().push(minute(e.ts)),
-            "claude_work" => work.entry(sid).or_default().push(minute(e.ts)),
-            _ => {}
+        if is_prompt(e) {
+            turns.entry(sid).or_default().push(minute(e.ts));
+        } else if e.source == "claude_work" {
+            work.entry(sid).or_default().push(minute(e.ts));
         }
     }
     for v in turns.values_mut() {
@@ -56,23 +62,25 @@ pub(crate) fn drop_isolated_claude_work(events: Vec<InferEvent>) -> Vec<InferEve
     events
         .into_iter()
         .filter(|e| {
-            if e.source != "claude_work" {
+            let tool_hook = is_tool_hook(e);
+            if e.source != "claude_work" && !tool_hook {
                 return true;
             }
             let Some(sid) = e.session_id.as_deref() else {
                 return true;
             };
             let m = minute(e.ts);
-            let dense = work
-                .get(sid)
-                .map(|siblings| {
-                    siblings
-                        .iter()
-                        .filter(|&&x| (x - m).abs() <= HEARTBEAT_DENSE_MINUTES)
-                        .count()
-                        > 1
-                })
-                .unwrap_or(false);
+            let dense = !tool_hook
+                && work
+                    .get(sid)
+                    .map(|siblings| {
+                        siblings
+                            .iter()
+                            .filter(|&&x| (x - m).abs() <= HEARTBEAT_DENSE_MINUTES)
+                            .count()
+                            > 1
+                    })
+                    .unwrap_or(false);
             let recent = turns
                 .get(sid)
                 .and_then(|t| t.iter().rev().find(|&&x| x <= m))
@@ -80,6 +88,26 @@ pub(crate) fn drop_isolated_claude_work(events: Vec<InferEvent>) -> Vec<InferEve
             dense || recent
         })
         .collect()
+}
+
+/// The owner sending a prompt: a `claude_turn`, or the `claude`
+/// UserPromptSubmit hook (`hook_run::title_for`) for the same prompt.
+fn is_prompt(e: &InferEvent) -> bool {
+    e.source == "claude_turn"
+        || (e.source == "claude"
+            && e.title
+                .as_deref()
+                .is_some_and(|t| t.starts_with("UserPromptSubmit")))
+}
+
+/// A `claude` hook fired by the tool working, not by the owner.
+fn is_tool_hook(e: &InferEvent) -> bool {
+    e.source == "claude"
+        && e.title.as_deref().is_some_and(|t| {
+            t.starts_with("PreToolUse")
+                || t.starts_with("PostToolUse")
+                || t.starts_with("SubagentStop")
+        })
 }
 
 /// R3 (data hygiene): a flaky `shell` collector sometimes logs the exact
