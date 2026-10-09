@@ -1,0 +1,38 @@
+# Notes — 020
+
+- Discovered: rust/crates/worklog-core/src/collectors/jira.rs:584 — `get_all_pages` stops paging when a response has no `total` (silent one-page truncation); Jira's worklog endpoint sends `total`, so not hit here — defer
+- Discovered: rust/crates/worklog-core/src/collectors/jira_time.rs — worklogs use Jira's default page size, not §5's "100 per page"; paging is correct, only the call count differs — defer
+- Discovered: rust/crates/worklog-core/src/ticket_progress.rs:mark_stale — writes epoch into `pulled_at`, so a failed refresh after a sync would read "Jira numbers from 1970"; the web must treat the epoch `pulled_at` as unknown — fold into T008
+- Discovered: rust/crates/worklog-core/sql/schema.sql — `ticket_progress_worklogs.worklog_id` is the sole PK; Jira ids are globally unique, so harmless — defer
+- Ruling: T002 also made `get_json` and `get_all_pages` `pub(crate)` (visibility only) to reuse paging/error handling instead of copying it; design said `str_at` only.
+- Discovered: web/lib/types.ts — 721 lines vs the 400-line size guard (688 before this feature); design §1 appends here — defer
+- Discovered: rust/crates/worklog-core/src/collectors/jira_time.rs:25 — `key in (...)` JQL fails the whole search when any key no longer exists in Jira (Jira answers 400), so one deleted ticket marks every due ticket on the day `jira_unavailable` — defer
+- Discovered: rust/crates/worklog-core/src/daemon_progress.rs:15 — the sqlite lock is held across the Jira calls (same as `run_sync`); a slow Jira stalls other daemon requests for that long — defer
+- Discovered: rust/crates/worklog-core/src/daemon.rs:2178 — the sync→mark-stale wiring in `run_sync` has no test (needs real Tempo creds); `mark_day_stale` itself is tested — defer
+- Discovered: rust/crates/worklog-core/src/daemon.rs — ~7.6k lines, `router` >150 lines; size guard fires on every edit — defer
+- Discovered: rust/crates/worklog-core/src/ticket_progress.rs:~70 — `stale_keys` treats an unparsable `pulled_at` as stale; correct, undocumented — defer
+- Discovered: web/components/EstimateBar.tsx:31 — when T008 maps the epoch `pulled_at` to null, a failed refresh after a sync hides the still-cached bar behind the error line; acceptable, revisit if the Owner dislikes it — defer
+- Discovered: web/lib/progress.ts:66,83 — `barModel`/`chartModel` treat estimate 0 as "no estimate" (FR-14); consistent, implicit — defer
+- Discovered: web/app/globals.css:129-132,171-174 — dark `--p*` tokens hand-copied into two blocks (pre-existing pattern the file demands) — defer
+- Discovered: web/components/EstimateBar.tsx — dark mode built from the mock's tokens but not eyeballed in a browser; CHK001 covers the visual check — defer
+- Discovered: web/components/DayProgressProvider.tsx:28 — a per-ticket retry whose whole call fails (`!r.ok`) keeps the old state, so "Try again" looks like it did nothing — defer
+- Discovered: web/components/BlockCard.tsx:49 — `billingCustomer` prop declared in `Props`, never used (pre-existing) — defer
+- Discovered: web/components/BlockCard.tsx — at the 400-line size-guard limit; any growth needs a split — defer
+- Ruling: T009 appended (EstimateBar apostrophes as `&apos;`) because T007's file broke `next build` lint, which only T008's verify runs; the visible text is unchanged so no test line was edited.
+- Discovered: rust/crates/worklog-core/src/collectors/jira_time.rs:56 — on this Jira site every worklog is a Tempo shadow worklog authored by the app "Timesheets by Tempo - Jira Time Tracking"; the real author is only in Tempo (`properties.tempo.tempo_id`), so the per-person split collapses to one fake person (verify/CHK001.md) — needs Owner decision, blocks CHK001
+- Discovered: GENAI-1897 has no `originalEstimateSeconds` in Jira today, so CHK001's 4h scenario cannot be shown on it as-is — needs Owner decision
+- Assumption: (--finish, decision auto-resolved on the stated recommendation) per-person hours come from Tempo's `/4/worklogs/issue/{id}` authors when Tempo is configured; Jira worklogs stay the fallback. Appended T010, T011. Live probe of GENAI-1897 (issue 114007) showed 2 Tempo authors: 2h 30m and 2h.
+- Assumption: GENAI-1897 has no Original estimate today; CHK001 is checked on its per-person numbers against Tempo plus the FR-14 no-estimate line; the over-estimate bar math is proven by B4 (progress.test).
+- Ruling: T011 put `#[allow(clippy::too_many_arguments)]` on `progress_with` (8 args after adding `tempo`); 11 other functions in worklog-core use the same allow, and a struct would change the spec'd signature mid-feature.
+- Ruling: G001 full `bun test` had 6 order-dependent fails in this feature's own T005 tests (process-wide `mock.module` leaks); appended T012 to rewrite their mocking to the repo pattern. Test lines change only in HOW the daemon is stubbed — every asserted path, query, encoding and result shape is kept.
+- Discovered: web/components/TaskWorkLog.test.tsx:140 — "long line text can be expanded" failed once in 3 full `bun test` runs (passes on reruns); flaky, not touched by this feature — defer
+- Discovered: web/components/BlockCard.test.tsx:46-48 — the `@/app/actions` mock must mirror BillingGroup.test by hand (pre-existing) — defer
+- Discovered: (branch review, 72) web/components/DayProgressProvider.tsx:30 — a per-ticket retry merges every returned ticket, overwriting another ticket's earlier `error` with an error-free view; an uncached failed ticket then reads "No estimate on this ticket yet" — defer
+- Discovered: (branch review, 68) web/components/EstimateBar.tsx:31 — epoch `pulled_at` + refresh error hides cached numbers behind "Couldn't load hours" (FR-04 on the after-sync path) — defer
+- Discovered: (branch review, 75) rust/crates/worklog-core/src/estimate_progress_contract.rs:5 — `PROGRESS_CHART_DAYS` unused; web hard-codes 14 in progress.ts:4 — defer
+- Discovered: (branch review, 75) rust/crates/worklog-core/sql/schema.sql — `ticket_progress.logged_seconds` written but never read (view derives it from worklog rows) — defer
+- Discovered: (branch review, 70) rust/crates/worklog-core/src/collectors/jira_time.rs:121 — missing `tempoWorklogId` yields id "tempo:null" (silent PK collision) instead of an error like its siblings — defer
+- Discovered: (branch review, 65) web/lib/daemonProgress.ts:9 — `day` interpolated into the path unencoded; daemon validates the day only after routing — defer
+- Discovered: (branch review, 60) rust/crates/worklog-core/src/daemon_progress_test.rs — `elapsed() < 200ms` wall-clock assertion can flake on a loaded runner — defer
+- Ruling: CHK001 ticked under --finish pre-approval with GENAI-1897's per-person numbers matched live to Tempo/Jira; the 4h over-estimate bar and the chart were not seen live (no estimate on the ticket, new daemon not installed) — proven only by unit tests — cost if wrong: a visual mismatch found after install.
+- Discovered: rust/crates/worklog-core/src/collectors/jira_time.rs:211 — UTC-day tests never clear an ambient `WORKLOG_TZ`, so they fail when it is set in the shell — defer

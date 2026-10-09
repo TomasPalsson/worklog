@@ -171,6 +171,7 @@ pub fn router(state: Shared) -> Router {
         .route("/health", get(health))
         .route("/blocks/:day", get(list_blocks))
         .route("/days/:day", get(day_summary))
+        .route("/progress/:day", get(day_progress))
         .route("/tickets", get(list_tickets))
         .route("/tickets/search", get(search_tickets))
         .route("/tickets/external", post(record_external_ticket))
@@ -2097,6 +2098,46 @@ fn default_dry_run() -> bool {
     true
 }
 
+#[derive(Deserialize)]
+struct ProgressQuery {
+    refresh: Option<String>,
+}
+
+/// `GET /progress/:day[?refresh=KEY]` — per-ticket estimate and per-person
+/// hours, refetched from Jira when the cache is stale (or `refresh` names it).
+async fn day_progress(
+    State(state): State<Shared>,
+    AxumPath(day): AxumPath<String>,
+    axum::extract::Query(q): axum::extract::Query<ProgressQuery>,
+) -> Result<Json<crate::estimate_progress_contract::DayProgress>, ApiError> {
+    let day = NaiveDate::parse_from_str(&day, "%Y-%m-%d")
+        .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{day}`: {e}")))?;
+    Ok(Json(
+        with_conn(state, move |c| {
+            let client = crate::http::client()?;
+            let auth = jira::JiraAuth::from_secrets().ok();
+            let me = auth.as_ref().and_then(|a| {
+                secrets::get("jira_account_id")
+                    .ok()
+                    .flatten()
+                    .filter(|v| !v.is_empty())
+                    .or_else(|| tempo::resolve_account_id(&a.email, &client).ok())
+            });
+            crate::daemon_progress::progress_with(
+                c,
+                day,
+                q.refresh.as_deref(),
+                auth.as_ref(),
+                tempo::TempoAuth::from_secrets().ok().as_ref(),
+                me.as_deref(),
+                &client,
+                Utc::now(),
+            )
+        })
+        .await?,
+    ))
+}
+
 /// Push blocks to Tempo for the given day. Defaults to dry-run so a careless
 /// click from the UI can't double-post. Requires `tempo_api_token` and
 /// `jira_email` (used as accountId) in the keychain or .env.
@@ -2126,7 +2167,7 @@ async fn run_sync(
             Some(estimate::ProviderChoice::LiteLLM(inv)) => Some(inv),
             None => None,
         };
-        tempo::sync_day_with_invoker_for(
+        let out = tempo::sync_day_with_invoker_for(
             c,
             &auth,
             day,
@@ -2135,7 +2176,13 @@ async fn run_sync(
             invoker,
             estimate::DEFAULT_MODEL,
             only_issue.as_deref(),
-        )
+        )?;
+        if !dry_run {
+            if let Err(e) = crate::daemon_progress::mark_day_stale(c, day, only_issue.as_deref()) {
+                warn!("marking progress stale after sync failed: {e:#}");
+            }
+        }
+        Ok(out)
     })
     .await?;
     Ok(Json(json!({

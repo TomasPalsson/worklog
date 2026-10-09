@@ -53,6 +53,25 @@ mock.module("@/app/actions-note-block", () => ({
   noteStatusAction: mock(async () => ({ ok: true as const, data: { state: "running" as const } })),
   addNoteBlock: mock(async () => ({ ok: false as const, error: "unused" })),
 }));
+type Progress = import("@/lib/types").DayProgress;
+type ProgressRes = { ok: true; data: Progress } | { ok: false; error: string };
+const loadDayProgress = mock(async (_day: string, _refresh?: string): Promise<ProgressRes> => ({
+  ok: false,
+  error: "unset",
+}));
+// Mock only the daemon boundary: bun's mock.module is process-wide, so
+// replacing @/app/actions-progress would leak into every later test file.
+const realDaemon = { ...(await import("@/lib/daemon")) };
+mock.module("@/lib/daemon", () => ({
+  ...realDaemon,
+  call: async (_method: string, path: string) => {
+    const m = path.match(/^\/progress\/([^?]+)(?:\?refresh=(.*))?$/);
+    if (!m) throw new Error(`unexpected daemon call ${path}`);
+    const r = await loadDayProgress(m[1], m[2] === undefined ? undefined : decodeURIComponent(m[2]));
+    if (!r.ok) throw new Error(r.error);
+    return r.data;
+  },
+}));
 mock.module("next/navigation", () => ({
   useRouter: () => ({ refresh: mock(() => {}) }),
   usePathname: () => "/",
@@ -66,9 +85,12 @@ let BlockCard: (props: {
   billingCustomer?: string | null;
 }) => React.JSX.Element;
 
+let DayProgressProvider: (props: { day: string; children: React.ReactNode }) => React.JSX.Element;
+
 beforeAll(async () => {
   const mod = await import("./BlockCard");
   BlockCard = mod.BlockCard;
+  DayProgressProvider = (await import("./DayProgressProvider")).DayProgressProvider;
 });
 
 afterEach(() => {
@@ -475,5 +497,119 @@ describe("BlockCard note-block Regenerate", () => {
     render(<BlockCard block={noteBlock({ description: null, estimated_by: "manual" })} tickets={[]} day={DAY} hideTicketing />);
     fireEvent.click(sparkles());
     await waitFor(() => expect(regenerateNoteAction).toHaveBeenCalledWith(9, DAY, false));
+  });
+});
+
+describe("BlockCard estimate bar wiring", () => {
+  const DAY = "2026-07-25";
+  const H = 3600;
+  const ticket = (o: Partial<import("@/lib/types").TicketProgress> = {}) => ({
+    key: "PROJ-1",
+    estimate_seconds: 4 * H,
+    people: [{ account_id: "me", name: "Tomas P", is_you: true, seconds: 2 * H, by_day: [[DAY, 2 * H]] as Array<[string, number]> }],
+    logged_seconds: 2 * H,
+    pulled_at: "2026-07-25T09:42:00Z",
+    error: null,
+    ...o,
+  });
+  const loaded = (...tickets: ReturnType<typeof ticket>[]) =>
+    loadDayProgress.mockImplementation(async () => ({ ok: true, data: { day: DAY, tickets } }));
+  const withBar = (b: Block, hideTicketing = false) =>
+    render(
+      <DayProgressProvider day={DAY}>
+        <BlockCard block={b} tickets={[]} day={DAY} hideTicketing={hideTicketing} />
+      </DayProgressProvider>,
+    );
+  const blk = (o: Partial<Block> = {}) => makeBlock({ jira_issue: "PROJ-1", description: "Fix the thing", ...o });
+
+  afterEach(() => loadDayProgress.mockClear());
+
+  it("B8: paints the block and 'Loading hours from Jira…' while the call is unresolved (catches awaiting before render)", () => {
+    loadDayProgress.mockImplementation(() => new Promise(() => {}));
+    withBar(blk());
+    expect(screen.getByText("Fix the thing")).toBeTruthy();
+    expect(screen.getByText("Loading hours from Jira…")).toBeTruthy();
+  });
+
+  it("asks the daemon for the block's day with no forced refresh", async () => {
+    loaded(ticket());
+    withBar(blk());
+    await waitFor(() => expect(screen.getByRole("meter")).toBeTruthy());
+    expect(loadDayProgress).toHaveBeenCalledTimes(1);
+    expect(loadDayProgress).toHaveBeenCalledWith(DAY, undefined);
+  });
+
+  it("an unsynced block adds its seconds on top of the logged ones (catches pending = 0)", async () => {
+    loaded(ticket());
+    withBar(blk({ duration_seconds: 1800, tempo_worklog_id: null }));
+    await waitFor(() => expect(screen.getByText("once synced")).toBeTruthy());
+    expect(screen.getByRole("meter").getAttribute("aria-valuenow")).toBe(String(2.5 * H));
+  });
+
+  it("a synced block adds nothing: its time is already in Tempo (catches pending = duration always)", async () => {
+    loaded(ticket());
+    withBar(blk({ duration_seconds: 1800, tempo_worklog_id: "77" }));
+    await waitFor(() => expect(screen.getByRole("meter")).toBeTruthy());
+    expect(screen.getByRole("meter").getAttribute("aria-valuenow")).toBe(String(2 * H));
+    expect(screen.queryByText("once synced")).toBeNull();
+  });
+
+  it("FR-15a: a 1970-01-01 pulled_at reads as unknown, never as a clock time", async () => {
+    loaded(ticket({ pulled_at: "1970-01-01T00:00:00+00:00" }));
+    withBar(blk());
+    await waitFor(() => expect(screen.getByRole("meter")).toBeTruthy());
+    expect(screen.queryByText(/Jira numbers from/)).toBeNull();
+  });
+
+  it("a real pulled_at still shows its time (catches hiding the line for every ticket)", async () => {
+    loaded(ticket());
+    withBar(blk());
+    await waitFor(() => expect(screen.getByText(/Jira numbers from \d\d:\d\d/)).toBeTruthy());
+  });
+
+  it("a failed call shows the error with Try again, and Try again asks again for the whole day (catches swallowing the error)", async () => {
+    loadDayProgress.mockImplementation(async () => ({ ok: false, error: "boom" }));
+    withBar(blk());
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+    expect(screen.getByRole("alert").textContent).toContain("PROJ-1");
+    loaded(ticket());
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(screen.getByRole("meter")).toBeTruthy());
+    expect(loadDayProgress).toHaveBeenLastCalledWith(DAY, undefined);
+  });
+
+  it("a per-ticket retry forces that ticket and keeps the others", async () => {
+    loaded(ticket({ error: "jira_unavailable" }), ticket({ key: "PROJ-2" }));
+    withBar(blk());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy());
+    loaded(ticket());
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(loadDayProgress).toHaveBeenLastCalledWith(DAY, "PROJ-1"));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Try again" })).toBeNull());
+  });
+
+  it("renders no bar for a personal block, an unassigned block, or the billing view", () => {
+    loadDayProgress.mockImplementation(() => new Promise(() => {}));
+    withBar(blk({ is_personal: true }));
+    expect(screen.queryByText("Loading hours from Jira…")).toBeNull();
+    cleanup();
+    withBar(blk({ jira_issue: null }));
+    expect(screen.queryByText("Loading hours from Jira…")).toBeNull();
+    cleanup();
+    withBar(blk(), true);
+    expect(screen.queryByText("Loading hours from Jira…")).toBeNull();
+  });
+
+  it("renders no bar outside the day provider", () => {
+    render(<BlockCard block={blk()} tickets={[]} day={DAY} />);
+    expect(screen.queryByText("Loading hours from Jira…")).toBeNull();
+  });
+
+  it("renders nothing once loaded when the ticket is not in the answer", async () => {
+    loaded(ticket({ key: "OTHER-9" }));
+    withBar(blk());
+    await waitFor(() => expect(loadDayProgress).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText("Loading hours from Jira…")).toBeNull());
+    expect(screen.queryByRole("meter")).toBeNull();
   });
 });

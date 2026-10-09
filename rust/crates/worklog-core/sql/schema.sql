@@ -522,3 +522,21 @@ CREATE TABLE IF NOT EXISTS recap_breaks (
     ended_at TEXT NOT NULL,
     PRIMARY KEY(day, started_at)
 );
+
+-- ───────────────── estimate progress per person (spec 020) ─────────────────
+CREATE TABLE IF NOT EXISTS ticket_progress (
+    key TEXT PRIMARY KEY,
+    estimate_seconds INTEGER,
+    logged_seconds INTEGER NOT NULL DEFAULT 0,
+    pulled_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ticket_progress_worklogs (
+    worklog_id TEXT PRIMARY KEY,
+    key TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    day TEXT NOT NULL,
+    seconds INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ticket_progress_worklogs_key ON ticket_progress_worklogs(key);

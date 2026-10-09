@@ -18,6 +18,7 @@ import { DayHeader } from "@/components/DayHeader";
 import { ActionBar } from "@/components/ActionBar";
 import { MirresAutoFetch } from "@/components/MirresAutoFetch";
 import { BlockCard } from "@/components/BlockCard";
+import { DayProgressProvider } from "@/components/DayProgressProvider";
 import { DayStrip } from "@/components/DayStrip";
 import { DayFlow, type FlowBilling } from "@/components/art/DayFlow";
 import { RecapBanner } from "@/components/RecapBanner";
@@ -169,7 +170,7 @@ export default async function DayPage({
     : null;
 
   return (
-    <>
+    <DayProgressProvider day={day}>
       <DayHeader
         day={day}
         heading={formatDayHeading(day)}
@@ -272,7 +273,7 @@ export default async function DayPage({
         </>
       )}
       <IgnoredLine blocks={ignoredBlocks} day={day} />
-    </>
+    </DayProgressProvider>
   );
 }
 
