@@ -1,37 +1,37 @@
-import { afterAll, beforeAll, expect, it } from "bun:test";
+import { beforeAll, expect, it, mock } from "bun:test";
 
-import { getDayProgress } from "./daemonProgress";
-
-const realFetch = globalThis.fetch;
-const realUrl = process.env.WORKLOG_DAEMON_URL;
-let urls: string[] = [];
-
-beforeAll(() => {
-  process.env.WORKLOG_DAEMON_URL = "http://daemon.test";
-  globalThis.fetch = (async (u: string) => {
-    urls.push(u);
-    return new Response(JSON.stringify({ day: "2026-10-09", tickets: [] }));
-  }) as unknown as typeof fetch;
+const calls: Array<[string, string]> = [];
+const callImpl = mock(async (method: string, path: string): Promise<unknown> => {
+  calls.push([method, path]);
+  return { day: "2026-10-09", tickets: [] };
 });
-afterAll(() => {
-  globalThis.fetch = realFetch;
-  if (realUrl === undefined) delete process.env.WORKLOG_DAEMON_URL;
-  else process.env.WORKLOG_DAEMON_URL = realUrl;
+// Spread the real module: bun's mock.module is process-wide, so dropping
+// DaemonError & co. here would break every later test file.
+const realDaemon = { ...(await import("@/lib/daemon")) };
+mock.module("@/lib/daemon", () => ({
+  ...realDaemon,
+  call: (method: string, path: string) => callImpl(method, path),
+}));
+
+let getDayProgress: typeof import("./daemonProgress").getDayProgress;
+
+beforeAll(async () => {
+  getDayProgress = (await import("./daemonProgress")).getDayProgress;
 });
 
 it("GETs /progress/:day with no query when no ticket is forced", async () => {
-  urls = [];
+  calls.length = 0;
   const r = await getDayProgress("2026-10-09");
-  expect(urls).toEqual(["http://daemon.test/progress/2026-10-09"]); // catches always appending ?refresh=
+  expect(calls).toEqual([["GET", "/progress/2026-10-09"]]); // catches always appending ?refresh=
   expect(r).toEqual({ day: "2026-10-09", tickets: [] });
 });
 
 it("adds ?refresh=KEY, URL-encoded, to force one ticket", async () => {
-  urls = [];
+  calls.length = 0;
   await getDayProgress("2026-10-09", "ABC-1");
   await getDayProgress("2026-10-09", "A B&c=1");
-  expect(urls).toEqual([
-    "http://daemon.test/progress/2026-10-09?refresh=ABC-1",
-    "http://daemon.test/progress/2026-10-09?refresh=A%20B%26c%3D1", // catches unencoded interpolation
+  expect(calls.map(([, p]) => p)).toEqual([
+    "/progress/2026-10-09?refresh=ABC-1",
+    "/progress/2026-10-09?refresh=A%20B%26c%3D1", // catches unencoded interpolation
   ]);
 });

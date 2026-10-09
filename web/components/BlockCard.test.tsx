@@ -59,7 +59,19 @@ const loadDayProgress = mock(async (_day: string, _refresh?: string): Promise<Pr
   ok: false,
   error: "unset",
 }));
-mock.module("@/app/actions-progress", () => ({ loadDayProgress }));
+// Mock only the daemon boundary: bun's mock.module is process-wide, so
+// replacing @/app/actions-progress would leak into every later test file.
+const realDaemon = { ...(await import("@/lib/daemon")) };
+mock.module("@/lib/daemon", () => ({
+  ...realDaemon,
+  call: async (_method: string, path: string) => {
+    const m = path.match(/^\/progress\/([^?]+)(?:\?refresh=(.*))?$/);
+    if (!m) throw new Error(`unexpected daemon call ${path}`);
+    const r = await loadDayProgress(m[1], m[2] === undefined ? undefined : decodeURIComponent(m[2]));
+    if (!r.ok) throw new Error(r.error);
+    return r.data;
+  },
+}));
 mock.module("next/navigation", () => ({
   useRouter: () => ({ refresh: mock(() => {}) }),
   usePathname: () => "/",
