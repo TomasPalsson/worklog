@@ -147,3 +147,66 @@ describe("AddNoteBlock", () => {
     expect((screen.getByRole("button", { name: "Add" }) as HTMLButtonElement).disabled).toBe(false);
   });
 });
+
+describe("AddNoteBlock form chrome", () => {
+  it("+ reports open/closed (wrong version: aria-expanded missing or stuck)", () => {
+    mount();
+    const plus = screen.getByRole("button", { name: "Add note block" });
+    expect(plus.getAttribute("aria-expanded")).toBe("false");
+    open();
+    expect(plus.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("Cancel closes the form without saving", () => {
+    mount();
+    open();
+    set("Note", "half typed");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(document.querySelector("form")).toBeNull();
+    expect(addNoteBlock).not.toHaveBeenCalled();
+  });
+
+  it("Escape closes the form without saving", () => {
+    mount();
+    open();
+    fireEvent.keyDown(field("Ticket"), { key: "Escape" });
+    expect(document.querySelector("form")).toBeNull();
+    expect(addNoteBlock).not.toHaveBeenCalled();
+  });
+
+  it("marks the field that is wrong and links it to the message (wrong version: message only in the footer)", async () => {
+    mount();
+    open();
+    await fill({ Ticket: "abc-1" });
+    const alert = screen.getByRole("alert");
+    expect(field("Ticket").getAttribute("aria-invalid")).toBe("true");
+    expect(field("Ticket").getAttribute("aria-describedby")).toBe(alert.id);
+    expect(field("Note").getAttribute("aria-invalid")).toBeNull();
+    // fixing it clears the mark on the next try
+    await fill({ Ticket: "ABC-1", Minutes: "0" });
+    expect(field("Ticket").getAttribute("aria-invalid")).toBeNull();
+    expect(field("Minutes").getAttribute("aria-invalid")).toBe("true");
+  });
+
+  it("moves the cursor to the field that is wrong (wrong version: focus stays on Add)", async () => {
+    mount();
+    open();
+    await fill({ Minutes: "0" });
+    expect(document.activeElement).toBe(field("Minutes"));
+  });
+
+  it("Escape keeps the form when a note or ticket is typed (wrong version: silent loss)", () => {
+    mount();
+    open();
+    set("Note", "half typed");
+    fireEvent.keyDown(field("Note"), { key: "Escape" });
+    expect(document.querySelector("form")).not.toBeNull();
+    expect(field("Note").value).toBe("half typed");
+  });
+
+  it("the cursor starts in Ticket — start and minutes come prefilled", () => {
+    mount();
+    open();
+    expect(document.activeElement).toBe(field("Ticket"));
+  });
+});
