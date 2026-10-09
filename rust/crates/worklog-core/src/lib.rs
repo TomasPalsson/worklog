@@ -28,6 +28,7 @@ pub mod clues_work_items;
 pub mod collectors;
 pub mod daemon;
 mod daemon_ask;
+mod daemon_gcal;
 mod daemon_nudges;
 mod daemon_preflight;
 pub mod daemon_service;

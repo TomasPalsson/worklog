@@ -266,6 +266,19 @@ pub fn collect_with(
     until: NaiveDate,
     client: &Client,
 ) -> Result<CollectReport> {
+    let meeting = super::meeting_ticket::MeetingConfig::load();
+    collect_with_meeting(conn, auth, since, until, client, &meeting)
+}
+
+/// [`collect_with`] with the internal-meeting config injected.
+pub fn collect_with_meeting(
+    conn: &Connection,
+    auth: &GcalAuth,
+    since: NaiveDate,
+    until: NaiveDate,
+    client: &Client,
+    meeting: &super::meeting_ticket::MeetingConfig,
+) -> Result<CollectReport> {
     ensure_credentials_exist(auth)?;
     let access_token = refresh_access_token(auth, client)?;
 
@@ -343,7 +356,7 @@ pub fn collect_with(
                     details: ev.description,
                     repo: None,
                     project_path: None,
-                    jira_issue: None,
+                    jira_issue: meeting.ticket_for(&ev.attendees),
                     session_id: None,
                     tempo_worklog_id: None,
                     raw_json: None,
@@ -407,6 +420,8 @@ struct GcalEvent {
     start: Option<GcalDate>,
     #[serde(default)]
     end: Option<GcalDate>,
+    #[serde(default)]
+    attendees: Vec<super::meeting_ticket::Attendee>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -660,6 +675,52 @@ mod tests {
         assert_eq!(ev.duration_seconds, Some(3600));
         assert_eq!(ev.title, "1:1 with Alice");
         assert_eq!(ev.details.as_deref(), Some("weekly sync"));
+    }
+
+    #[test]
+    fn internal_meeting_gets_ticket_external_does_not() {
+        use super::super::meeting_ticket::MeetingConfig;
+        let tmp = tempdir().unwrap();
+        let (server, auth, conn) = setup_gcal_env(tmp.path());
+        server.mock(|when, then| {
+            when.method(GET).path("/calendars/primary/events");
+            then.status(200).json_body(json!({
+                "items": [
+                    {
+                        "id": "in", "summary": "Standup",
+                        "start": {"dateTime": "2026-04-18T09:00:00Z"},
+                        "end":   {"dateTime": "2026-04-18T09:30:00Z"},
+                        "attendees": [
+                            {"email": "a@apro.is"},
+                            {"email": "room@resource.calendar.google.com", "resource": true},
+                        ],
+                    },
+                    {
+                        "id": "out", "summary": "Client call",
+                        "start": {"dateTime": "2026-04-18T11:00:00Z"},
+                        "end":   {"dateTime": "2026-04-18T12:00:00Z"},
+                        "attendees": [{"email": "a@apro.is"}, {"email": "b@client.com"}],
+                    },
+                ],
+            }));
+        });
+        let cfg = MeetingConfig {
+            ticket: Some("APRO-7".into()),
+            domain: Some("apro.is".into()),
+        };
+        collect_with_meeting(
+            &conn,
+            &auth,
+            NaiveDate::from_ymd_opt(2026, 4, 18).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 4, 19).unwrap(),
+            &crate::http::client().unwrap(),
+            &cfg,
+        )
+        .unwrap();
+        let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+        let by = |id: &str| events.iter().find(|e| e.source_id.ends_with(id)).unwrap();
+        assert_eq!(by(":in").jira_issue.as_deref(), Some("APRO-7"));
+        assert_eq!(by(":out").jira_issue, None);
     }
 
     #[test]

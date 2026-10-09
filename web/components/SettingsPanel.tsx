@@ -115,7 +115,7 @@ export function SettingsPanel({ day }: Props) {
 
   return (
     <div className="set-layout">
-      <SettingsIndex connections={connectedCount(view.secrets)} />
+      <SettingsIndex connections={connectedCount(view.secrets, view.gcal)} />
       <div className="set-main">
         <SettingsBody
           view={view}

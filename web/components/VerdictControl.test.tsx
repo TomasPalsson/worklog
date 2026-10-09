@@ -220,6 +220,7 @@ describe("auto-send", () => {
     abstain_margin: 1.2,
     runner_up_ratio: 1.1,
     auto_send,
+    gcal: { connected: false, has_client: false },
   });
 
   it("hydrates from the view; unchanged diffs to null", () => {

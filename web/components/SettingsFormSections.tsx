@@ -241,6 +241,7 @@ export function SettingsBody({
       <SortingCard form={form} patch={patch} day={day} />
       <CredentialGroups
         secrets={view.secrets}
+        gcal={view.gcal}
         values={form.secretInputs}
         onChange={(key, value) => patch({ secretInputs: { ...form.secretInputs, [key]: value } })}
       />

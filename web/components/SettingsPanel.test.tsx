@@ -20,6 +20,7 @@ const initialView: SettingsView = {
   abstain_margin: 1.2,
   runner_up_ratio: 1.1,
   auto_send: false,
+  gcal: { connected: false, has_client: true },
 };
 
 const initialRules: Rule[] = [];
@@ -30,6 +31,12 @@ const initialStatus: RoutingStatus = {
 };
 
 const fetchSettingsImpl = mock(async () => ({ ok: true as const, data: initialView }));
+const connectGcalImpl = mock(
+  async (): Promise<{ ok: true; data: undefined } | { ok: false; error: string }> => ({
+    ok: true,
+    data: undefined,
+  }),
+);
 const saveSettingsCalls: SettingsUpdate[] = [];
 const saveSettingsImpl = mock(async (update: SettingsUpdate, _day: string) => {
   saveSettingsCalls.push(update);
@@ -50,6 +57,7 @@ const deleteRuleImpl = mock(async (id: number, _day: string) => {
 // no real daemon call (or Next.js server-action runtime) is needed.
 mock.module("@/app/actions", () => ({
   fetchSettings: () => fetchSettingsImpl(),
+  connectGcal: () => connectGcalImpl(),
   saveSettings: (update: SettingsUpdate, day: string) => saveSettingsImpl(update, day),
   fetchRoutingRules: () => fetchRoutingRulesImpl(),
   fetchRoutingStatus: () => fetchRoutingStatusImpl(),
@@ -294,7 +302,36 @@ describe("SettingsPanel page helpers", () => {
     expect(github.open).toBe(false);
     expect(slack.open).toBe(true);
     expect(screen.getByText("Connected")).toBeTruthy();
+    // Slack, plus the Google Calendar card (not connected in initialView).
+    expect(screen.getAllByText("Not set up").length).toBe(2);
+  });
+
+  it("Google Calendar shows Not set up with a Connect button until connected", async () => {
+    await openPanel();
     expect(screen.getByText("Not set up")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Connect Google Calendar" }));
+    await screen.findByText(/Opened Google sign-in/);
+    expect(connectGcalImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("Google Calendar shows Connected with a Reconnect button", async () => {
+    fetchSettingsImpl.mockImplementationOnce(async () => ({
+      ok: true as const,
+      data: { ...initialView, gcal: { connected: true, has_client: true } },
+    }));
+    await openPanel();
+    expect(screen.getByText("Connected")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reconnect" })).toBeTruthy();
+  });
+
+  it("Google Calendar shows the daemon's error inline", async () => {
+    connectGcalImpl.mockImplementationOnce(async () => ({
+      ok: false as const,
+      error: "run `worklog collect gcal --auth`",
+    }));
+    await openPanel();
+    fireEvent.click(screen.getByRole("button", { name: "Connect Google Calendar" }));
+    await screen.findByText(/worklog collect gcal --auth/);
   });
 
   it("fills the time zone from this computer in one click", async () => {

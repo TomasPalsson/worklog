@@ -286,6 +286,7 @@ pub fn router(state: Shared) -> Router {
             post(daemon_tenants::move_line_deild),
         )
         .route("/settings", get(get_settings).post(post_settings))
+        .route("/gcal/connect", post(crate::daemon_gcal::post_connect))
         .route(
             "/browser/heartbeat",
             post(browser_heartbeat).options(browser_heartbeat_preflight),
@@ -2204,6 +2205,8 @@ pub struct SettingsView {
     pub daily_channel: String,
     /// The 17:00 Tempo auto-send switch. Mirrors `auto_send::enabled`.
     pub auto_send: bool,
+    /// Google Calendar connection state (token / client files on disk).
+    pub gcal: crate::daemon_gcal::GcalStatus,
 }
 
 /// Token-like keys whose value must never be serialised to the browser.
@@ -2261,6 +2264,7 @@ fn current_settings() -> Result<SettingsView> {
         runner_up_ratio: rule.runner_up_ratio,
         daily_channel: crate::envfile::read(SLACK_DAILY_CHANNEL_KEY).unwrap_or_default(),
         auto_send: crate::auto_send::enabled(),
+        gcal: crate::daemon_gcal::status(&crate::collectors::gcal::GcalAuth::from_paths()?),
     })
 }
 
@@ -2510,11 +2514,11 @@ async fn post_settings(
     if let Some(p) = body.personal {
         let path = personal::config_path()
             .ok_or_else(|| anyhow::anyhow!("no config dir — can't write personal.toml"))?;
+        // Settings only edits work/personal; every other field is kept.
         let file = personal::ConfigFile {
             work: clean_globs(p.work),
             personal: clean_globs(p.personal),
-            // Settings doesn't edit the ignore list; keep it.
-            ignore: personal::read_file(&path).ignore,
+            ..personal::read_file(&path)
         };
         personal::write_file(&path, &file)?;
         let stats = with_conn(state, move |c| personal::reclassify_blocks(c, None)).await?;

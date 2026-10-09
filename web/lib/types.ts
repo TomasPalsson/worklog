@@ -247,6 +247,13 @@ export interface SettingsView {
   runner_up_ratio: number;
   /** The 17:00 Tempo auto-send switch (WORKLOG_TEMPO_AUTO_SEND). */
   auto_send: boolean;
+  /** Google Calendar: token file present / OAuth client file present. */
+  gcal: GcalStatus;
+}
+
+export interface GcalStatus {
+  connected: boolean;
+  has_client: boolean;
 }
 
 /** Partial update sent to `POST /settings`. Omitted groups are left
