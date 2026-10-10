@@ -78,6 +78,11 @@ pub struct TicketStat {
     pub days_active: i64,
     /// Sorted distinct local days with a block on this ticket.
     pub days: Vec<String>,
+    /// Work seconds on this ticket per entry of `days` (same order/length).
+    pub day_seconds: Vec<i64>,
+    /// Cached Jira status / category ("new"|"indeterminate"|"done"), if known.
+    pub status: Option<String>,
+    pub status_category: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]

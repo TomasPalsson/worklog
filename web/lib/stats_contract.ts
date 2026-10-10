@@ -79,6 +79,12 @@ export interface TicketStat {
   days_active: number;
   /** Sorted distinct local days (YYYY-MM-DD) with a block on this ticket. */
   days: string[];
+  /** Work seconds on this ticket per entry of `days` (same order, same length). */
+  day_seconds: number[];
+  /** Jira status name ("In Progress"), null when the ticket isn't cached. */
+  status: string | null;
+  /** Jira status category key ("new" | "indeterminate" | "done"), null when unknown. */
+  status_category: string | null;
 }
 
 export interface PromptStats {
@@ -150,7 +156,7 @@ export interface StatsReport {
   folders: Ranked[];
   /** Subagent kinds by count, top 8. */
   helpers: Ranked[];
-  /** Top 15 tickets by work seconds. */
+  /** Top 40 tickets by work seconds. */
   tickets: TicketStat[];
   prompt: PromptStats;
   records: StatsRecords;

@@ -1,0 +1,71 @@
+/* TicketTimeline: a Gantt-style table. Tokens only. */
+.tt-card { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 12px; padding: 16px; min-width: 0; }
+.tt-head { margin: 0 0 4px; font-size: 16px; line-height: 1.35; font-weight: 600; color: var(--fg); }
+.tt-sub { margin: 0 0 10px; font-size: 13px; color: var(--fg-muted); }
+.tt-empty { margin: 4px 0; text-align: center; font-size: 13px; color: var(--fg-subtle); }
+.tt-bar { display: flex; flex-wrap: wrap; gap: 8px 16px; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.tt-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; font-family: var(--font-mono); color: var(--fg-muted); }
+.tt-lg { display: inline-flex; align-items: center; gap: 4px; }
+.tt-sw { display: inline-block; width: 14px; height: 14px; border-radius: 3px; background: var(--bg-sunk); }
+.tt-sw-we { background: color-mix(in oklch, var(--fg) 8%, var(--bg-raised)); border: 1px solid var(--border); }
+.tt-sw-today { background: transparent; outline: 2px solid var(--amber); outline-offset: -2px; }
+.tt-seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 6px; overflow: hidden; }
+.tt-seg button { font: inherit; font-size: 11px; padding: 3px 9px; background: transparent; color: var(--fg-muted); border: 0; cursor: pointer; }
+.tt-seg button + button { border-left: 1px solid var(--border-strong); }
+.tt-seg button[aria-pressed="true"] { background: var(--sage-bg); color: var(--sage-ink); font-weight: 600; }
+
+.tt-scroll { overflow-x: auto; max-width: 100%; border: 1px solid var(--border); border-radius: 8px; }
+.tt-grid { width: 100%; min-width: max-content; --tt-info: 360px; } /* fills the card; long ranges still scroll */
+.tt-row { display: grid; grid-template-columns: var(--tt-info) repeat(var(--tt-cols), minmax(var(--tt-w), 1fr)); border-bottom: 1px solid var(--border); }
+.tt-row:last-child { border-bottom: 0; }
+
+.tt-info { position: sticky; left: 0; z-index: 2; background: var(--bg-raised); padding: 8px 10px; border-right: 1px solid var(--border-strong); display: flex; flex-direction: column; gap: 4px; min-width: 0; cursor: help; }
+.tt-info:focus-visible, .tt-fill:focus-visible { outline: none; box-shadow: var(--ring); }
+.tt-top { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.tt-key { align-self: flex-start; font-family: var(--font-mono); font-size: 12px; font-weight: 600; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border-strong); color: var(--fg-muted); }
+.tt-chip { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--fg-muted); }
+.tt-key.tt-c-new, .tt-chip.tt-c-new { background: var(--slate-bg); color: var(--slate-ink); border-color: transparent; }
+.tt-key.tt-c-indeterminate, .tt-chip.tt-c-indeterminate { background: var(--amber-bg); color: var(--amber-ink); border-color: transparent; }
+.tt-key.tt-c-done, .tt-chip.tt-c-done { background: var(--sage-bg); color: var(--sage-ink); border-color: transparent; }
+.tt-sum { font-size: 13px; line-height: 1.3; color: var(--fg); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.tt-stats { font-size: 11px; color: var(--fg-muted); font-family: var(--font-mono); line-height: 1.35; }
+
+.tt-hdr { background: var(--bg-raised); }
+.tt-info-hdr { cursor: default; font-size: 11px; color: var(--fg-muted); justify-content: flex-end; }
+.tt-col { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; padding: 4px 0; font-size: 11px; color: var(--fg-muted); position: relative; }
+.tt-mo { height: 14px; font-size: 10px; font-weight: 600; color: var(--fg); white-space: nowrap; align-self: flex-start; padding-left: 2px; }
+.tt-dom { font-family: var(--font-mono); }
+.tt-dow { font-size: 10px; color: var(--fg-subtle); }
+.tt-compact .tt-dom, .tt-compact .tt-num, .tt-compact .tt-tnum, .tt-compact .tt-dow { display: none; }
+
+.tt-we { background: color-mix(in oklch, var(--fg) 6%, transparent); }
+.tt-mon { box-shadow: inset 1px 0 0 var(--border-strong); }
+.tt-today { outline: 2px solid var(--amber); outline-offset: -2px; z-index: 1; }
+
+.tt-cell { position: relative; display: flex; align-items: center; justify-content: center; min-height: 44px; }
+.tt-dot { width: 3px; height: 3px; border-radius: 50%; background: var(--border-strong); opacity: 0.6; }
+.tt-in::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 2px; background: color-mix(in oklch, var(--sage) 45%, transparent); }
+.tt-first::before { left: 50%; }
+.tt-last::before { right: 50%; }
+.tt-first.tt-last::before { display: none; }
+.tt-in .tt-dot { display: none; }
+.tt-fill { position: relative; z-index: 1; display: flex; align-items: center; justify-content: center; width: calc(100% - 2px); height: 26px; border-radius: 2px; font-family: var(--font-mono); font-size: 11px; color: var(--fg); cursor: help; }
+.tt-first .tt-fill { border-top-left-radius: 8px; border-bottom-left-radius: 8px; }
+.tt-last .tt-fill { border-top-right-radius: 8px; border-bottom-right-radius: 8px; }
+.tt-s1 { background: color-mix(in oklch, var(--sage) 25%, var(--bg-sunk)); }
+.tt-s2 { background: color-mix(in oklch, var(--sage) 50%, var(--bg-sunk)); }
+.tt-s3 { background: color-mix(in oklch, var(--sage) 75%, var(--bg-sunk)); }
+.tt-s4 { background: var(--sage); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .tt-fill.tt-s3, :root:not([data-theme="light"]) .tt-fill.tt-s4 { color: var(--bg); }
+}
+:root[data-theme="dark"] .tt-fill.tt-s3, :root[data-theme="dark"] .tt-fill.tt-s4 { color: var(--bg); }
+
+.tt-total { background: var(--bg-sunk); }
+.tt-total .tt-info { background: var(--bg-sunk); cursor: default; }
+.tt-total .tt-cell { flex-direction: column; justify-content: flex-end; padding: 4px 0; height: 52px; }
+.tt-tbar { display: block; width: 60%; max-height: 28px; border-radius: 2px 2px 0 0; background: var(--sage); }
+.tt-tnum { font-family: var(--font-mono); font-size: 10px; color: var(--fg-muted); }
+.tt-more { margin-top: 10px; font: inherit; font-size: 12px; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--border-strong); background: transparent; color: var(--fg); cursor: pointer; }
+.tt-more:hover { background: var(--bg-sunk); }
+@media (max-width: 640px) { .tt-grid { --tt-info: 220px; } }

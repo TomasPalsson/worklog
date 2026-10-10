@@ -493,3 +493,45 @@ fn folder_and_flow_sources_come_from_linked_events() {
         .collect();
     assert_eq!(got, [("shell", 2), ("slack", 1)]);
 }
+
+#[test]
+fn ticket_day_seconds_and_status() {
+    let _g = tz::test_env_lock();
+    std::env::set_var("WORKLOG_TZ", "-05:00");
+    let c = open_memory().unwrap();
+    seed(&c);
+    c.execute(
+        "INSERT INTO jira_tickets (key, summary, status, status_category) \
+         VALUES ('ABC-1', 'Do it', 'In Progress', 'indeterminate')",
+        [],
+    )
+    .unwrap();
+    // Second block on 09-01 for ABC-1, and a ticket with no cached Jira row.
+    let extra = |day, secs, ticket| B {
+        day,
+        secs,
+        ticket,
+        personal: 0,
+        ignored: false,
+        tempo: None,
+        exported: false,
+    };
+    block(&c, extra("2026-09-01", 900, Some("ABC-1")));
+    block(&c, extra("2026-09-03", 120, Some("ZZZ-9")));
+    let r = report(&c, "2026-09-03");
+    std::env::remove_var("WORKLOG_TZ");
+
+    let k = &r.tickets[0];
+    assert_eq!(k.key, "ABC-1");
+    assert_eq!(k.days.len(), k.day_seconds.len());
+    assert_eq!(k.day_seconds, vec![4500, 7200]);
+    assert_eq!(k.status.as_deref(), Some("In Progress"));
+    assert_eq!(k.status_category.as_deref(), Some("indeterminate"));
+    let z = &r.tickets[1];
+    assert_eq!(z.key, "ZZZ-9");
+    assert_eq!(z.day_seconds, vec![120]);
+    assert_eq!(
+        (&z.summary, &z.status, &z.status_category),
+        (&None, &None, &None)
+    );
+}
