@@ -13,6 +13,8 @@ import {
   stationIdx,
   thickness,
   TicketMetro,
+  lineTip,
+  stationTip,
 } from "./TicketMetro";
 
 afterEach(cleanup);
@@ -131,9 +133,11 @@ describe("TicketMetro", () => {
     expect(
       container.querySelector("svg")!.getAttribute("aria-label"),
     ).toContain("Longest ride ABC-1");
-    expect(container.innerHTML).toContain(
-      "ABC-1 · ABC-1 summary · 10h · 4 days active",
-    );
+    expect(container.querySelector("title")).toBeNull();
+    const g = container.querySelector("g.sx-metro-mark")!;
+    expect(g.getAttribute("data-stip")).toContain("ABC-1 summary");
+    expect(g.getAttribute("aria-label")).toBe("ABC-1, 10h");
+    expect(container.querySelectorAll("circle[data-stip]").length).toBe(7);
     expect(container.innerHTML).not.toContain("NaN");
   });
   it("single ticket, single day, range of one day", () => {
@@ -167,5 +171,47 @@ describe("TicketMetro", () => {
       <TicketMetro tickets={tickets} from="2026-10-31" to="2026-10-01" />,
     );
     expect(container.textContent).toContain("nothing built yet");
+  });
+});
+
+describe("tips", () => {
+  const t = tk("ABC-1", ["2026-10-01", "2026-10-02", "2026-10-03", "2026-10-20"], 36000);
+  it("lineTip gives exact rows and a longest-ride note", () => {
+    const tip = lineTip(t, 36000, 31, true, "red");
+    expect(tip.title).toBe("ABC-1");
+    expect(tip.sub).toBe("ABC-1 summary");
+    expect(tip.rows).toEqual([
+      ["Hours", "10h"],
+      ["Blocks", "4"],
+      ["Days active", "4 of 31"],
+      ["First day", "Thu 1 Oct"],
+      ["Last day", "Tue 20 Oct"],
+      ["Span", "20 days"],
+      ["Per active day", "2h 30m"],
+    ]);
+    expect(tip.bar!.label).toBe("the biggest ticket");
+    expect(tip.note).toBe("The longest ride on the map: 4 stations over 20 days.");
+  });
+  it("lineTip edge cases: single day, no summary, zero top", () => {
+    const one = tk("X-1", ["2026-10-05"], 1800, { summary: null });
+    const tip = lineTip(one, 36000, 31, false);
+    expect(tip.sub).toBe("no summary");
+    expect(tip.note).toBe("A one-stop sprint: all of it in a single day.");
+    expect(tip.bar!.label).toBe("5% of the biggest ticket");
+    expect(lineTip(one, 0, 31, false).bar!.label).toBe("0% of the biggest ticket");
+    expect(lineTip(t, 36000, 31, false).note).toBe("Rode it 4 days out of 31.");
+    expect(JSON.stringify(lineTip(tk("H-1", ["2026-10-01"], 1e12), 1e12, 1, false))).not.toContain("NaN");
+  });
+  it("stationTip names the day, position and termini", () => {
+    expect(stationTip("ABC-1", t.days, 0).rows).toEqual([["Station", "1 of 4"], ["Since previous", "none, this is the start"]]);
+    const last = stationTip("ABC-1", t.days, 3);
+    expect(last.title).toBe("ABC-1 · Tue 20 Oct");
+    expect(last.rows![1]).toEqual(["Since previous", "17 days earlier"]);
+    expect(last.sub).toBe("last station");
+    expect(last.note).toBe("Terminus: an end of the line.");
+    expect(stationTip("ABC-1", t.days, 1).rows![1][1]).toBe("the day before");
+    expect(stationTip("A", ["2026-10-01"], 0).note).toContain("one stop");
+    expect(stationTip("A", ["2026-10-01", "2026-10-02", "2026-10-20"], 2).note).toBe("Terminus: an end of the line.");
+    expect(stationTip("A", ["2026-10-01", "2026-10-02", "2026-10-20", "2026-10-21"], 2).note).toBe("Back after a week or more off.");
   });
 });

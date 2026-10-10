@@ -4,6 +4,10 @@ import type { DailyStat } from "@/lib/stats_contract";
 import { formatDuration } from "@/lib/format";
 import { byDepth, iso, isoBox, tones } from "./iso";
 import { dayLabel, dowMon, MONTHS, parseDay, shortLabel, WEEKDAYS, WEEKDAYS_LONG } from "./time-utils";
+import { tipProps, type Tip } from "./tip";
+import { craneTip, flagTip, plotTip } from "./CityTips";
+
+export { craneTip, flagTip, plotTip };
 
 const U = 18; // px per grid unit
 const P = 1.8; // plot pitch
@@ -29,6 +33,7 @@ export interface Plot {
   garden: number;
   busiest: boolean;
   today: boolean;
+  stat: DailyStat;
 }
 
 /** Shaft height in grid units: tallest day = MAX_H, any work shows at least MIN_H. */
@@ -77,6 +82,7 @@ export function layoutCity(daily: DailyStat[], today: string): Plot[] {
       garden: gardenShare(d.work_seconds, d.personal_seconds),
       busiest: d.day === busiest,
       today: d.day === today,
+      stat: d,
     };
   });
 }
@@ -148,18 +154,18 @@ const TREES = [
   { x: 0.5, y: 0.85, r: 0.18, ch: 0.8 },
 ];
 
-function Flag({ cx, cy, z }: { cx: number; cy: number; z: number }) {
+function Flag({ cx, cy, z, tip }: { cx: number; cy: number; z: number; tip: Tip }) {
   const a = iso(cx, cy, z + 1.6, U);
   const b = iso(cx, cy, z, U);
   return (
-    <g className="art-fade" style={{ animationDelay: "900ms" }}>
+    <g className="art-fade sx-city-mark" style={{ animationDelay: "900ms" }} {...tipProps(tip)}>
       <line x1={b[0]} y1={b[1]} x2={a[0]} y2={a[1]} stroke="var(--fg-muted)" strokeWidth={1} />
       <polygon points={pt([a, iso(cx + 0.6, cy, z + 1.4, U), iso(cx, cy, z + 1.1, U)])} fill="var(--amber)" />
     </g>
   );
 }
 
-function Crane({ x, y, z }: { x: number; y: number; z: number }) {
+function Crane({ x, y, z, tip }: { x: number; y: number; z: number; tip: Tip }) {
   const m0 = iso(x, y, z, U);
   const m1 = iso(x, y, z + 2.2, U);
   const a0 = iso(x - 0.4, y, z + 2.2, U);
@@ -167,7 +173,8 @@ function Crane({ x, y, z }: { x: number; y: number; z: number }) {
   const h1 = iso(x + 1.1, y, z + 1.5, U);
   const s = { stroke: "var(--fg-muted)", strokeWidth: 1 };
   return (
-    <g className="art-fade" style={{ animationDelay: "900ms" }}>
+    <g className="art-fade sx-city-mark" style={{ animationDelay: "900ms" }} {...tipProps(tip)}>
+      <rect x={Math.min(m0[0], a0[0]) - 3} y={m1[1] - 3} width={Math.abs(a1[0] - a0[0]) + 6} height={m0[1] - m1[1] + 6} fill="transparent" />
       <line x1={m0[0]} y1={m0[1]} x2={m1[0]} y2={m1[1]} style={s} />
       <line x1={a0[0]} y1={a0[1]} x2={a1[0]} y2={a1[1]} style={s} />
       <line x1={a1[0]} y1={a1[1]} x2={h1[0]} y2={h1[1]} style={{ ...s, strokeWidth: 0.75 }} />
@@ -176,7 +183,7 @@ function Crane({ x, y, z }: { x: number; y: number; z: number }) {
   );
 }
 
-function PlotView({ p, k }: { p: Plot; k: number }) {
+function PlotView({ p, k, plots }: { p: Plot; k: number; plots: Plot[] }) {
   const base = isoBox(p.x + 0.15, p.y + 0.15, 0, 1.2, 1.2, PLINTH, U);
   const pl = tones("var(--bg-sunk)");
   const delay = `${Math.min(k * 14, 700)}ms`;
@@ -207,22 +214,38 @@ function PlotView({ p, k }: { p: Plot; k: number }) {
             <polygon points={roof.top} fill={vt.top} />
           </>
         )}
-        {p.busiest && <Flag cx={x0 + 0.45} cy={y0 + 0.4} z={top} />}
+        {p.busiest && <Flag cx={x0 + 0.45} cy={y0 + 0.4} z={top} tip={flagTip(p)} />}
       </>
     );
   } else if (p.kind === "park") {
     body = [...TREES].sort(byDepth).map((t, i) => <Tree key={i} x={x0 - 0.15 + t.x} y={y0 - 0.15 + t.y} r={t.r} ch={t.ch} />);
   }
-  return (
-    <g className="sx-city-plot">
+  const tip = plotTip(p, plots);
+  const inner = (
+    <>
       <g className={p.kind === "tower" ? "sx-city-rise" : "art-fade"} style={{ animationDelay: delay }}>
         <polygon points={base.left} fill={pl.left} />
         <polygon points={base.right} fill={pl.right} />
         <polygon points={base.top} fill={pl.top} className="sx-city-hot" style={lotStroke} />
         {body}
       </g>
-      {p.today && <Crane x={x0 + 0.15} y={y0 + 0.15} z={p.kind === "tower" ? top : PLINTH} />}
-      <title>{plotTitle(p)}</title>
+      {p.today && <Crane x={x0 + 0.15} y={y0 + 0.15} z={p.kind === "tower" ? top : PLINTH} tip={craneTip(p)} />}
+    </>
+  );
+  if (p.kind === "tower") {
+    return (
+      <g className="sx-city-plot">
+        <a href={`/${p.day}`} className="sx-city-link" tabIndex={0} aria-label={plotTitle(p)} {...tipProps(tip)}>
+          {inner}
+        </a>
+      </g>
+    );
+  }
+  // Parks with some activity are worth a tab stop; empty lots and quiet parks are not.
+  const focusable = p.kind === "park" && p.stat.prompts + p.stat.tool_calls + p.stat.shell + p.stat.slack + p.stat.commits > 0;
+  return (
+    <g className="sx-city-plot" {...tipProps(tip)} {...(focusable ? { tabIndex: 0, role: "img", "aria-label": plotTitle(p) } : {})}>
+      {inner}
     </g>
   );
 }
@@ -292,12 +315,12 @@ export function WorkdayCity({ daily, today }: { daily: DailyStat[]; today: strin
         className="sx-city-svg"
         viewBox={`${x0.toFixed(1)} ${y0.toFixed(1)} ${W.toFixed(1)} ${(y1 - y0).toFixed(1)}`}
         style={{ maxWidth: Math.round(W * 1.1) }}
-        role="img"
+        role="group"
         aria-label={cityAria(plots)}
       >
         <Ground rows={rows} plots={plots} />
         {sorted.map((p, k) => (
-          <PlotView key={p.day} p={p} k={k} />
+          <PlotView key={p.day} p={p} k={k} plots={plots} />
         ))}
       </svg>
       {empty && <p className="sx-city-empty">nothing built yet</p>}

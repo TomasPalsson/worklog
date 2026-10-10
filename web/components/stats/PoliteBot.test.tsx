@@ -104,7 +104,7 @@ describe("PoliteBot", () => {
     expect(svg.getAttribute("role")).toBe("img");
     expect(svg.getAttribute("aria-label")).toContain("102 please");
     expect(svg.getAttribute("aria-label")).toContain("looks happy");
-    expect(container.querySelectorAll("title").length).toBeGreaterThan(6);
+    expect(container.querySelectorAll("[data-stip]").length).toBeGreaterThan(6);
     expect(container.textContent).toContain("Mostly polite: 116 kind words vs 28 swears · cut off 159×");
     expect(container.textContent).toContain("fix");
     expect(container.innerHTML).not.toContain("NaN");
@@ -168,5 +168,82 @@ describe("arms and tape", () => {
     const t = ts.find((e) => e.textContent === "prompt length")!;
     const avg = ts.find((e) => e.textContent?.startsWith("avg "))!;
     expect(Number(t.getAttribute("y"))).toBeGreaterThan(Number(avg.getAttribute("y")));
+  });
+});
+
+import { botTip, bubbleTip, openerTip, tapeTip } from "./PoliteBotTips";
+import { parseTip } from "./tip";
+
+describe("bot tips", () => {
+  const specs = bubbleSpecs(base);
+  const spec = (k: string) => specs.find((s) => s.key === k)!;
+  it("please bubble", () => {
+    const t = bubbleTip(spec("please"), specs, base, 10);
+    expect(t.title).toBe("please ×102");
+    expect(t.sub).toBe("#4 of 6 bubbles");
+    expect(t.rows).toEqual([
+      ["Prompts containing it", "102"],
+      ["Share of prompts", "20%"],
+      ["Per worked day", "10.2"],
+      ["What counts", 'prompts with the word "please"'],
+    ]);
+    expect(t.bar).toEqual({ value: 102, max: 500, label: "vs 500 prompts" });
+    expect(t.note).toBe("About 1 prompt in 5 has this.");
+    expect(t.accent).toBe("var(--sage)");
+    expect(bubbleTip(spec("please"), specs, base).rows!.length).toBe(3);
+  });
+  it("swears and interrupts bubbles", () => {
+    expect(bubbleTip(spec("swears"), specs, base).note).toBe("4.1 kind words for every swear.");
+    const i = bubbleTip(spec("interrupts"), specs, base);
+    expect(i.rows![0]).toEqual(["Turns", "159"]);
+    expect(i.rows![1]).toEqual(["Per 100 prompts", "31.8"]);
+    expect(i.note).toBe("That's 0.32 per prompt.");
+    const z = bubbleTip(spec("interrupts"), specs, p({ count: 0 }));
+    expect(z.rows![1]).toEqual(["Per 100 prompts", "0"]);
+    expect(JSON.stringify(z)).not.toContain("NaN");
+  });
+  it("bot tip explains the mood", () => {
+    const t = botTip(base, "happy");
+    expect(t.title).toBe("Politeness bot: happy");
+    expect(t.sub).toBe("Mostly polite");
+    expect(t.rows).toEqual([
+      ["Kind words", "116 (please + thanks + sorry)"],
+      ["Swears", "28"],
+      ["Interruptions", "159 (5 count as 1)"],
+      ["Politeness score", "116"],
+      ["Rudeness score", "59.8"],
+      ["Kindness share", "66%"],
+    ]);
+    expect(botTip(quiet, "neutral").rows![5]).toEqual(["Kindness share", "no signal yet"]);
+  });
+  it("tape tip", () => {
+    const t = tapeTip(base);
+    expect(t.rows).toEqual([["Average", "120 chars"], ["Longest", "4,321 chars"], ["Average vs longest", "3%"]]);
+    expect(t.note).toBe("Your longest prompt was 36× the average.");
+    expect(tapeTip(p({ avg_chars: 0, longest_chars: 0 })).note).toBe("Your longest prompt is barely longer than the average.");
+  });
+  it("opener tips", () => {
+    const a = openerTip(base.top_openers[0], base.top_openers, base, 10);
+    expect(a.title).toBe('"fix"');
+    expect(a.sub).toBe("your go-to first word, #1 of 2");
+    expect(a.rows).toEqual([["Prompts starting with it", "40"], ["Share of prompts", "8%"], ["Per worked day", "4.0"], ["Top openers together", "10%"]]);
+    expect(a.note).toBe('8% of your prompts start with "fix".');
+    const b = openerTip(base.top_openers[1], base.top_openers, base);
+    expect(b.sub).toBe("#2 of 2 openers");
+    expect(b.note).toBe('"fix" beats it by 30 prompts.');
+  });
+  it("marks carry data-stip, no native <title>, keyboard reachable", () => {
+    const { container } = render(<PoliteBot prompt={base} daysWorked={10} />);
+    expect(container.querySelector("title")).toBeNull();
+    expect(container.querySelector("li[title]")).toBeNull();
+    const tipped = [...container.querySelectorAll("[data-stip]")];
+    expect(tipped.length).toBe(10); // bot + 6 bubbles + tape + 2 openers
+    expect(tipped.every((e) => e.getAttribute("tabindex") === "0")).toBe(true);
+    const titles = tipped.map((e) => parseTip(e.getAttribute("data-stip"))!.title);
+    expect(titles).toContain("please ×102");
+    expect(titles).toContain("Politeness bot: happy");
+    expect(titles).toContain("Prompt length");
+    expect(titles).toContain('"fix"');
+    expect(container.innerHTML).not.toContain("NaN");
   });
 });

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { cleanup, render } from "@testing-library/react";
-import { CalendarHeatmap, layout, level } from "./CalendarHeatmap";
+import { CalendarHeatmap, heatZoom, layout, level } from "./CalendarHeatmap";
 import { day } from "./time-fixtures";
 
 afterEach(cleanup);
@@ -22,11 +22,15 @@ describe("layout", () => {
 
 describe("CalendarHeatmap", () => {
   const daily = [day({ day: "2026-10-06", work_seconds: 27000 }), day({ day: "2026-10-07" })];
-  it("titles cells and outlines today", () => {
+  it("tips cells (no native title), focusable only when worked, and outlines today", () => {
     const { container } = render(<CalendarHeatmap daily={daily} today="2026-10-07" />);
-    const titles = [...container.querySelectorAll("title")].map((t) => t.textContent);
-    expect(titles).toContain("Tue 6 Oct · 7h 30m");
-    expect(titles).toContain("Wed 7 Oct · no work");
+    expect(container.querySelectorAll("title").length).toBe(0);
+    const tips = [...container.querySelectorAll("g[data-stip]")];
+    expect(tips.length).toBe(2);
+    expect(JSON.parse(tips[0].getAttribute("data-stip")!).title).toBe("Tue 6 Oct");
+    expect(tips[0].getAttribute("tabindex")).toBe("0");
+    expect(tips[0].getAttribute("aria-label")).toBe("Tue 6 Oct: 7h 30m work");
+    expect(tips[1].getAttribute("tabindex")).toBeNull();
     expect(container.querySelectorAll(".st-today").length).toBe(1);
   });
   it("empty state for zeros and empty array", () => {
@@ -35,5 +39,14 @@ describe("CalendarHeatmap", () => {
     const { container } = render(<CalendarHeatmap daily={[day({ day: "2026-10-06" })]} />);
     expect(container.textContent).toContain("No data yet");
     expect(container.innerHTML).not.toContain("NaN");
+  });
+});
+
+describe("heatZoom", () => {
+  it("grows short ranges up to 3x and leaves a year at 1x", () => {
+    expect(heatZoom(71)).toBe(3); // three weeks would be a 71px strip
+    expect(heatZoom(210)).toBe(2);
+    expect(heatZoom(806)).toBe(1); // a year of columns
+    expect(heatZoom(0)).toBe(1);
   });
 });

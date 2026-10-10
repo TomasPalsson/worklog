@@ -103,3 +103,8 @@ a.stats-fact-link:hover { border-color: var(--border-strong); background: var(--
 @media (prefers-reduced-motion: reduce) {
   .stats-flame { animation: none; }
 }
+.stats-tile-num { cursor: default; border-radius: 4px; }
+.stats-tile-num:hover, .stats-tile-num:focus-visible { outline: 1.5px dashed currentColor; outline-offset: 3px; }
+.stats-spark-hit { cursor: crosshair; }
+.stats-spark-hit:hover { fill: currentColor !important; fill-opacity: 0.14; }
+div.stats-fact-link:hover, .stats-fact-link:focus-visible { border-color: var(--border-strong); background: var(--bg-raised); outline: none; }

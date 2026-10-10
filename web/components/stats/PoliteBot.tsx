@@ -1,7 +1,9 @@
 import "@/app/stats/robot.css";
 import { useId } from "react";
-import type { PromptStats } from "@/lib/stats_contract";
+import type { PromptStats, Ranked } from "@/lib/stats_contract";
 import { COS30, iso, isoBox, tones } from "./iso";
+import { tipProps, type Tip } from "./tip";
+import { botTip, bubbleTip, openerTip, tapeTip } from "./PoliteBotTips";
 
 const nf = new Intl.NumberFormat("en-US");
 const W = 336;
@@ -32,7 +34,7 @@ export function moodOf(p: PromptStats): Mood {
 export const antennaColor = (m: Mood) =>
   m === "delighted" || m === "happy" ? "var(--sage)" : m === "grumpy" ? "var(--terracotta)" : "var(--amber)";
 
-const LEAD: Record<Mood, string> = {
+export const LEAD: Record<Mood, string> = {
   delighted: "Impeccably polite",
   happy: "Mostly polite",
   neutral: "Evenly matched",
@@ -209,6 +211,7 @@ function Face({ mood }: { mood: Mood }) {
 }
 
 function Bot({ p, mood }: { p: PromptStats; mood: Mood }) {
+  const tip = botTip(p, mood);
   const lift = mood === "delighted" ? 0.8 : 0;
   const c = antennaColor(mood);
   const [bx, by] = iso(4, 4, 10.2, U);
@@ -218,8 +221,7 @@ function Bot({ p, mood }: { p: PromptStats; mood: Mood }) {
     [3.3, p.sorry],
   ];
   return (
-    <g className="sx-robot-drop">
-      <title>{`Politeness bot, ${mood}. ${nf.format(politeness(p))} kind words, ${nf.format(p.swears)} swears, ${nf.format(p.interrupts)} interruptions.`}</title>
+    <g className="sx-robot-drop" {...tipProps(tip)} tabIndex={0} aria-label={`${tip.title}, ${nf.format(politeness(p))} kind words`}>
       <Box x={0} y={0} z={-0.5} w={8} d={8} h={0.5} c="var(--bg-sunk)" />
       <Box x={2.4} y={4.6} z={0} w={1.3} d={1.3} h={0.8} c="var(--slate)" />
       <Box x={4.3} y={4.6} z={0} w={1.3} d={1.3} h={0.8} c="var(--slate)" />
@@ -240,7 +242,7 @@ function Bot({ p, mood }: { p: PromptStats; mood: Mood }) {
   );
 }
 
-function Bubble({ b, i }: { b: PlacedBubble; i: number }) {
+function Bubble({ b, i, tip }: { b: PlacedBubble; i: number; tip: Tip }) {
   const cy = b.y + b.h / 2;
   const edge = b.side === "L" ? b.x + b.w : b.x;
   const dir = b.side === "L" ? 1 : -1;
@@ -248,8 +250,7 @@ function Bubble({ b, i }: { b: PlacedBubble; i: number }) {
   const t0 = cy - ((b.lines.length - 1) * lh) / 2;
   const fill = `color-mix(in oklch, ${b.color} 22%, var(--bg-raised))`;
   return (
-    <g className="sx-robot-pop" style={{ animationDelay: `${300 + i * 80}ms` }}>
-      <title>{b.title}</title>
+    <g className="sx-robot-pop" style={{ animationDelay: `${300 + i * 80}ms` }} {...tipProps(tip)} tabIndex={0} aria-label={tip.title}>
       <polygon points={`${edge},${cy - 4} ${edge + dir * 7},${cy} ${edge},${cy + 4}`} fill={fill} stroke={b.color} strokeWidth={1} />
       <rect x={b.x} y={b.y} width={b.w} height={b.h} rx={8} fill={fill} stroke={b.color} strokeWidth={1} />
       <rect x={edge - 1} y={cy - 3} width={2} height={6} fill={fill} />
@@ -274,8 +275,7 @@ function Tape({ p, y }: { p: PromptStats; y: number }) {
   const ax = TX0 + tapeShare(p) * len;
   const ink = { fontFamily: "var(--font-mono)", fontSize: 10, fill: "var(--fg-muted)" };
   return (
-    <g>
-      <title>{`Average prompt ${nf.format(Math.round(p.avg_chars))} characters, longest ${nf.format(p.longest_chars)}`}</title>
+    <g {...tipProps(tapeTip(p))} tabIndex={0} aria-label={`Prompt length, average ${nf.format(Math.round(p.avg_chars))} characters, longest ${nf.format(p.longest_chars)}`}>
       <text x={0} y={y + 38} style={ink}>prompt length</text>
       <g className="sx-robot-tape">
         <rect x={TX0 - 4} y={y} width={len + 4} height={22} fill="var(--amber)" />
@@ -300,7 +300,7 @@ function Tape({ p, y }: { p: PromptStats; y: number }) {
   );
 }
 
-export function PoliteBot({ prompt: p }: { prompt: PromptStats }) {
+export function PoliteBot({ prompt: p, daysWorked }: { prompt: PromptStats; /** `totals.days_worked`: enables the per-day rows. */ daysWorked?: number }) {
   const uid = useId();
   if (p.count <= 0) {
     return (
@@ -316,7 +316,8 @@ export function PoliteBot({ prompt: p }: { prompt: PromptStats }) {
     );
   }
   const mood = moodOf(p);
-  const { placed, height } = layoutBubbles(bubbleSpecs(p));
+  const specs = bubbleSpecs(p);
+  const { placed, height } = layoutBubbles(specs);
   const dy = (height - BOT_H) / 2;
   const tapeY = height + 40;
   const H = tapeY + 48;
@@ -331,7 +332,7 @@ export function PoliteBot({ prompt: p }: { prompt: PromptStats }) {
           <Bot p={p} mood={mood} />
         </g>
         {placed.map((b, i) => (
-          <Bubble key={b.key} b={b} i={i} />
+          <Bubble key={b.key} b={b} i={i} tip={bubbleTip(b, specs, p, daysWorked)} />
         ))}
         <Tape p={p} y={tapeY} />
       </svg>
@@ -339,7 +340,13 @@ export function PoliteBot({ prompt: p }: { prompt: PromptStats }) {
       {p.top_openers.length > 0 && (
         <ul className="sx-robot-words" aria-label="Most common first words">
           {p.top_openers.map((o) => (
-            <li key={o.label} style={{ fontSize: openerSize(o.value, max) }} title={`${o.label}: ${nf.format(o.value)} prompts`}>
+            <li
+              key={o.label}
+              style={{ fontSize: openerSize(o.value, max) }}
+              {...tipProps(openerTip(o, p.top_openers, p, daysWorked))}
+              tabIndex={0}
+              aria-label={`${o.label}, ${nf.format(o.value)} prompts`}
+            >
               {o.label}
               <small>{nf.format(o.value)}</small>
             </li>

@@ -3,6 +3,7 @@ import "@/app/stats/metro.css";
 import type { TicketStat } from "@/lib/stats_contract";
 import { formatDuration } from "@/lib/format";
 import { iso, isoBox, tones } from "./iso";
+import { tipProps, type Tip } from "./tip";
 import { dayLabel, dowMon, MONTHS, parseDay } from "./time-utils";
 
 const DIP_DAYS = 7;
@@ -248,6 +249,59 @@ export const metroAria = (
     ? "Ticket metro map: nothing built yet."
     : `Ticket metro map, ${plural(lines.length, "line")} from ${from} to ${to}. Longest ride ${h.key}: ${plural(h.stations, "station")} over ${plural(h.days, "day")}. Biggest ticket ${lines[0].t.key}, ${formatDuration(lines[0].t.seconds)}.`;
 
+const nf = new Intl.NumberFormat("en-US");
+
+/** Whole days between two YYYY-MM-DD days; 0 when unparsable. */
+const daysBetween = (a: string, b: string) => {
+  const n = Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / DAY_MS);
+  return Number.isFinite(n) ? n : 0;
+};
+
+/** Hover card for a whole line (also used by its badge). */
+export function lineTip(t: TicketStat, topSeconds: number, rangeN: number, longest: boolean, accent?: string): Tip {
+  const active = Math.max(1, t.days_active);
+  const span = Math.max(active, daysBetween(t.first_day, t.last_day) + 1);
+  const pct = topSeconds > 0 ? Math.round((t.seconds / topSeconds) * 100) : 0;
+  const note = longest
+    ? `The longest ride on the map: ${plural(active, "station")} over ${plural(span, "day")}.`
+    : active === 1
+      ? "A one-stop sprint: all of it in a single day."
+      : `Rode it ${active} days out of ${rangeN}.`;
+  return {
+    title: t.key,
+    sub: t.summary ?? "no summary",
+    rows: [
+      ["Hours", formatDuration(t.seconds)],
+      ["Blocks", nf.format(t.blocks)],
+      ["Days active", `${active} of ${rangeN}`],
+      ["First day", dayLabel(t.first_day)],
+      ["Last day", dayLabel(t.last_day)],
+      ["Span", plural(span, "day")],
+      ["Per active day", formatDuration(t.seconds / active)],
+    ],
+    bar: { value: t.seconds, max: topSeconds, label: pct >= 100 ? "the biggest ticket" : `${pct}% of the biggest ticket` },
+    note,
+    accent,
+  };
+}
+
+/** Hover card for one station (a day worked on the ticket). */
+export function stationTip(key: string, days: string[], i: number, accent?: string): Tip {
+  const n = days.length;
+  const prev = i > 0 ? daysBetween(days[i - 1], days[i]) : null;
+  const end = i === 0 || i === n - 1;
+  return {
+    title: `${key} · ${dayLabel(days[i])}`,
+    sub: end && n > 1 ? (i === 0 ? "first station" : "last station") : undefined,
+    rows: [
+      ["Station", `${i + 1} of ${n}`],
+      ["Since previous", prev === null ? "none, this is the start" : prev === 1 ? "the day before" : `${plural(prev, "day")} earlier`],
+    ],
+    note: n === 1 ? "Terminus and terminus: the whole ride was one stop." : end ? "Terminus: an end of the line." : prev !== null && prev >= DIP_DAYS ? "Back after a week or more off." : undefined,
+    accent,
+  };
+}
+
 function Terminus({ x, y, color }: { x: number; y: number; color: string }) {
   const u = 4.5;
   const f = isoBox(0, 0, 0, 1, 1, 2.2, u);
@@ -293,16 +347,21 @@ function Empty() {
   );
 }
 
-function LineMarks({ l, k, step }: { l: MetroLine; k: number; step: number }) {
+function LineMarks({ l, k, step, top, n, from, longest }: { from: string; l: MetroLine; k: number; step: number; top: number; n: number; longest: boolean }) {
   const delay = `${k * 90}ms`;
   const summary = l.t.summary ? ell(l.t.summary, l.labelChars) : "";
   const r = Math.min(4.2, Math.max(1.8, step * 0.42, l.thick * 0.5 + 0.6));
   const last = l.xs.length - 1;
   const named = l.t.days && l.t.days.length === l.xs.length;
   const col = `oklch(var(--project-l) var(--project-c) ${l.hue})`;
+  const days = named ? l.t.days : l.idx.map((i) => new Date(Date.parse(`${from}T00:00:00Z`) + i * DAY_MS).toISOString().slice(0, 10));
   return (
-    <g>
-      <title>{`${l.t.key}${l.t.summary ? ` · ${l.t.summary}` : ""} · ${formatDuration(l.t.seconds)} · ${plural(l.t.days_active, "day")} active`}</title>
+    <g
+      className="sx-metro-mark"
+      tabIndex={0}
+      aria-label={`${l.t.key}, ${formatDuration(l.t.seconds)}`}
+      {...tipProps(lineTip(l.t, top, n, longest, col))}
+    >
       <path
         className="sx-metro-line"
         d={linePath(l.xs, l.y, undefined, l.idx)}
@@ -322,17 +381,15 @@ function LineMarks({ l, k, step }: { l: MetroLine; k: number; step: number }) {
         {l.xs.map((x, i) => (
           <circle
             key={i}
+            className="sx-metro-stop"
+            {...tipProps(stationTip(l.t.key, days, i, col))}
             cx={x}
             cy={l.y}
             r={r}
             fill="var(--bg)"
             stroke={col}
             strokeWidth={Math.min(2, r * 0.6)}
-          >
-            {named ? (
-              <title>{`${l.t.key} · ${dayLabel(l.t.days[i])}`}</title>
-            ) : null}
-          </circle>
+          />
         ))}
         <Terminus x={l.xs[0]} y={l.y} color={col} />
         {last > 0 ? <Terminus x={l.xs[last]} y={l.y} color={col} /> : null}
@@ -447,7 +504,7 @@ export function TicketMetro({
           ))}
           <g clipPath={`url(#${uid}-clip)`}>
             {lines.map((l, k) => (
-              <LineMarks key={l.t.key} l={l} k={k} step={step} />
+              <LineMarks key={l.t.key} l={l} k={k} step={step} top={lines[0].t.seconds} n={n} from={from} longest={l.t.key === hd.key} />
             ))}
           </g>
         </svg>

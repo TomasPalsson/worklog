@@ -11,3 +11,7 @@
 .sx-robot-tape { animation: sx-robot-tape 800ms var(--art-ease) 300ms both; transform-box: fill-box; transform-origin: left center; }
 @keyframes sx-robot-tape { from { transform: scaleX(0); } }
 .sx-robot-empty { margin: 8px 0 0; font-size: 13px; color: var(--fg-muted); text-align: center; }
+/* hover/focus affordance for tipped marks: brighten plus a halo / underline, so it is not colour-only */
+.sx-robot-svg [data-stip] { transition: filter 120ms var(--art-ease); }
+.sx-robot-svg [data-stip]:hover, .sx-robot-svg [data-stip]:focus-visible { filter: brightness(1.15) drop-shadow(0 0 3px var(--amber)); }
+.sx-robot-words li[data-stip]:hover, .sx-robot-words li[data-stip]:focus-visible { text-decoration: underline; text-underline-offset: 3px; }

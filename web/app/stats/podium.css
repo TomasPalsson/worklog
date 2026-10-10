@@ -1,0 +1,10 @@
+.sx-podium-card { margin: 0; background: var(--bg-raised); border: 1px solid var(--border); border-radius: 12px; padding: 16px; min-width: 0; }
+.sx-podium-head { margin: 0; font-family: var(--font-mono); font-size: 20px; line-height: 1.2; color: var(--fg); letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.sx-podium-svg { display: block; width: 100%; max-width: 400px; height: auto; margin: 12px auto 0; overflow: visible; }
+.sx-podium-legend { margin: 8px 0 0; font-size: 12px; color: var(--fg-muted); line-height: 1.45; }
+.sx-podium-rise { animation: sx-podium-rise 600ms var(--art-ease) both; }
+@keyframes sx-podium-rise { from { transform: translateY(16px); opacity: 0; } }
+.sx-podium-mark { cursor: default; outline: none; }
+.sx-podium-mark:hover, .sx-podium-mark:focus-visible { filter: brightness(1.12); }
+.sx-podium-mark:hover .sx-podium-plate, .sx-podium-mark:focus-visible .sx-podium-plate { stroke: var(--fg); stroke-width: 1.5; }
+.sx-podium-mark:focus-visible .sx-podium-plate { stroke-dasharray: 3 2; }
