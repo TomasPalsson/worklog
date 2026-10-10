@@ -1,5 +1,5 @@
 // Shared isometric kit for the stats signature graphics. One projection,
-// one shading rule, so the city, terrain, warehouse and metro read as one
+// one shading rule, so the city, terrain and warehouse read as one
 // set. Grid units: x runs down-right, y runs down-left, z is up.
 
 export const COS30 = Math.cos(Math.PI / 6);

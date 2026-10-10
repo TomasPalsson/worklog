@@ -2,7 +2,7 @@ import "@/app/stats/receipt.css";
 import type { DailyStat, StatsReport } from "@/lib/stats_contract";
 import { formatDuration, shortMonthDay } from "@/lib/format";
 import { tipProps, type Tip } from "./tip";
-import { rangeDays } from "./TicketMetro";
+import { rangeDays } from "./timelineLib";
 import { dayLabel } from "./time-utils";
 
 export interface ReceiptLine {

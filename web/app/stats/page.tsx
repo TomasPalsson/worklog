@@ -18,7 +18,7 @@ import { SplitDonut } from "@/components/stats/SplitDonut";
 import { StatsHero } from "@/components/stats/StatsHero";
 import { TabGarden } from "@/components/stats/TabGarden";
 import { TipLayer } from "@/components/stats/StatTip";
-import { TicketMetro } from "@/components/stats/TicketMetro";
+import { TicketTimeline } from "@/components/stats/TicketTimeline";
 import { ToolWarehouse } from "@/components/stats/ToolWarehouse";
 import { WeekTerrain } from "@/components/stats/WeekTerrain";
 import { WorkdayCity } from "@/components/stats/WorkdayCity";
@@ -104,7 +104,7 @@ function Story({ r }: { r: StatsReport }) {
         </div>
       </Section>
       <Section title="Tickets">
-        <TicketMetro tickets={r.tickets} from={r.from} to={r.to} />
+        <TicketTimeline tickets={r.tickets} from={r.from} to={r.to} today={r.today} totalWork={r.totals.work_seconds} />
       </Section>
       <Section title="Housekeeping">
         <div className="stats-three">

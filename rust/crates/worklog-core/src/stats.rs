@@ -3,7 +3,7 @@
 //! inflated for the sources that need it, and only the handful of fields
 //! used are deserialised.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use anyhow::Result;
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Timelike};
@@ -273,16 +273,17 @@ pub fn stats_report(
         let (id, s) = row?;
         sources.entry(id).or_default().push(s);
     }
-    let summaries: HashMap<String, String> = conn
-        .prepare("SELECT key, summary FROM jira_tickets")?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+    type JiraInfo = (Option<String>, Option<String>, Option<String>);
+    let jira: HashMap<String, JiraInfo> = conn
+        .prepare("SELECT key, summary, status, status_category FROM jira_tickets")?
+        .query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?))))?
         .collect::<rusqlite::Result<_>>()?;
 
     let mut flow_blocks = Vec::with_capacity(blocks.len());
     let mut folders: HashMap<String, i64> = HashMap::new();
     let mut day_folders: Vec<BTreeSet<String>> = vec![BTreeSet::new(); ndays];
     let mut day_tickets: Vec<BTreeSet<String>> = vec![BTreeSet::new(); ndays];
-    let mut ticket_acc: HashMap<String, (i64, i64, BTreeSet<String>)> = HashMap::new();
+    let mut ticket_acc: HashMap<String, (i64, i64, BTreeMap<String, i64>)> = HashMap::new();
     let (mut estimates, mut origins) = (HashMap::new(), HashMap::new());
     let mut rec = StatsRecords::default();
     for b in &blocks {
@@ -334,7 +335,7 @@ pub fn stats_report(
                     let e = ticket_acc.entry(k.clone()).or_default();
                     e.0 += b.seconds;
                     e.1 += 1;
-                    e.2.insert(b.day.clone());
+                    *e.2.entry(b.day.clone()).or_default() += b.seconds;
                 }
             }
         }
@@ -347,19 +348,25 @@ pub fn stats_report(
 
     let mut tickets: Vec<TicketStat> = ticket_acc
         .into_iter()
-        .map(|(key, (seconds, n, days))| TicketStat {
-            summary: summaries.get(&key).cloned(),
-            key,
-            seconds,
-            blocks: n,
-            first_day: days.first().cloned().unwrap_or_default(),
-            last_day: days.last().cloned().unwrap_or_default(),
-            days_active: days.len() as i64,
-            days: days.iter().cloned().collect(),
+        .map(|(key, (seconds, n, days))| {
+            let (summary, status, status_category) = jira.get(&key).cloned().unwrap_or_default();
+            TicketStat {
+                summary,
+                status,
+                status_category,
+                key,
+                seconds,
+                blocks: n,
+                first_day: days.keys().next().cloned().unwrap_or_default(),
+                last_day: days.keys().next_back().cloned().unwrap_or_default(),
+                days_active: days.len() as i64,
+                days: days.keys().cloned().collect(),
+                day_seconds: days.values().copied().collect(),
+            }
         })
         .collect();
     tickets.sort_by(|a, b| b.seconds.cmp(&a.seconds).then_with(|| a.key.cmp(&b.key)));
-    tickets.truncate(15);
+    tickets.truncate(40);
 
     let sync = SyncStats {
         synced_seconds: blocks
