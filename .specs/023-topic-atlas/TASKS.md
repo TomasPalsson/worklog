@@ -1,6 +1,6 @@
 Approved: 2026-10-11 by user (pre-approved: /goal directive, /flow:next --finish)
 # Tasks — Topic atlas
-Spec: spec.md · Design: design.md · Base: 361ac15 · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && (cd web && bun test)`
+Spec: spec.md · Design: design.md · Base: 9f27bd4 · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && (cd web && bun test)`
 
 ## Behaviors
 | ID | Given / When / Then | Task | Proven by |
