@@ -540,3 +540,12 @@ CREATE TABLE IF NOT EXISTS ticket_progress_worklogs (
     seconds INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ticket_progress_worklogs_key ON ticket_progress_worklogs(key);
+
+-- Display-only topic stats (spec 022): one text vector per block, filled
+-- lazily by embed::ensure_vectors. vec = little-endian f32 x EMBED_DIM.
+CREATE TABLE IF NOT EXISTS block_embeddings (
+    block_id INTEGER PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE,
+    model TEXT NOT NULL,
+    text_hash TEXT NOT NULL,
+    vec BLOB NOT NULL
+);
