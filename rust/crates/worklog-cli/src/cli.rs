@@ -1653,6 +1653,26 @@ enum CollectOutcome {
     },
 }
 
+/// Leave the outcome's health record (`collect.<source>.last_ok|last_err`).
+/// Skip and Warn both count as errors: either way the source collected nothing.
+fn record_outcome(
+    outcome: &CollectOutcome,
+    record: impl FnOnce(&str, std::result::Result<(), &str>) -> Result<()>,
+) -> Result<()> {
+    let name = |s: CollectTarget| match s {
+        CollectTarget::ClaudeTranscripts => "claude_transcripts",
+        other => source_label(other),
+    };
+    let (source, health) = match outcome {
+        CollectOutcome::Ok(s, _) => (name(*s), Ok(())),
+        CollectOutcome::Warn { source, message } | CollectOutcome::Skip { source, message } => {
+            (name(*source), Err(message.as_str()))
+        }
+        CollectOutcome::RoutingFailed { message, .. } => ("routing", Err(message.as_str())),
+    };
+    record(source, health)
+}
+
 /// Collect every source `target` wants — jira, github, gcal, slack, shell,
 /// reflog, transcripts — over `[since, until)`, then, for the umbrella `all`
 /// target, route + absorb each day in that range. Shared by `collect all`
@@ -1669,6 +1689,14 @@ fn collect_targets(
     paths.ensure()?;
     let conn = db::open(&paths.db)?;
     let client = http::client()?;
+    let record_health = |outcome: &CollectOutcome| {
+        let r = record_outcome(outcome, |s, h| {
+            worklog_core::collect_health::record(&conn, s, h)
+        });
+        if let Err(e) = r {
+            eprintln!("worklog: recording collect health failed: {e}");
+        }
+    };
 
     let mut outcomes = Vec::new();
     for source in collect_target_list(target) {
@@ -1715,7 +1743,7 @@ fn collect_targets(
             CollectTarget::All => unreachable!("collect_target_list only yields concrete sources"),
         };
         pb.finish_and_clear();
-        outcomes.push(match result {
+        let outcome = match result {
             Ok(r) => CollectOutcome::Ok(source, r),
             Err(msg) => match msg.strip_prefix("skipped: ") {
                 Some(reason) => CollectOutcome::Skip {
@@ -1727,7 +1755,9 @@ fn collect_targets(
                     message: msg.strip_prefix("fetch: ").unwrap_or(&msg).to_string(),
                 },
             },
-        });
+        };
+        record_health(&outcome);
+        outcomes.push(outcome);
     }
 
     if matches!(target, CollectTarget::All) {
@@ -1738,10 +1768,12 @@ fn collect_targets(
             let routed = routing::route_day(&conn, d, &classifier, rule)
                 .and_then(|_| routing_absorb::absorb_and_noise(&conn, d));
             if let Err(e) = routed {
-                outcomes.push(CollectOutcome::RoutingFailed {
+                let outcome = CollectOutcome::RoutingFailed {
                     day: d,
                     message: e.to_string(),
-                });
+                };
+                record_health(&outcome);
+                outcomes.push(outcome);
             }
             d += chrono::Duration::days(1);
         }
@@ -3093,6 +3125,15 @@ fn status_hints(daemon_up: bool, schedule: Option<bool>, web_up: bool) -> Vec<&'
     hints
 }
 
+fn source_health_line(h: &worklog_core::time_leaks_contract::SourceHealth) -> String {
+    format!(
+        "ok {} · err {} · {} events/24h",
+        h.last_ok.as_deref().unwrap_or("never"),
+        h.last_err.as_deref().unwrap_or("never"),
+        h.events_24h
+    )
+}
+
 /// `worklog status` — one screen folding the daemon / hook / schedule /
 /// web / database / secrets health checks (previously five separate
 /// `*-status` commands) plus today's tracked time. Read-only and fast.
@@ -3130,6 +3171,11 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
         .as_ref()
         .and_then(|c| worklog_core::purge::last_prune(c).ok())
         .flatten();
+
+    let sources = db_conn
+        .as_ref()
+        .and_then(|c| worklog_core::collect_health::all(c, chrono::Utc::now()).ok())
+        .unwrap_or_default();
 
     // Today's tracked time — only reachable when the daemon is up.
     let today = worklog_core::tz::local_date(chrono::Utc::now()).to_string();
@@ -3174,6 +3220,7 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
                     "ran_at": lp.ran_at,
                 })),
                 "secrets": { "set": secrets_set, "total": secrets_total, "missing": secrets_missing },
+                "sources": sources,
                 "today": today_agg.as_ref().map(day_agg_json),
             }))?
         )?;
@@ -3265,6 +3312,9 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
             )
         },
     ]);
+    for h in &sources {
+        t.add_row(vec![h.source.clone(), source_health_line(h)]);
+    }
     writeln!(out, "{t}")?;
 
     let hints = status_hints(daemon_up, sched.as_ref().ok().map(|s| s.installed), web_on);
@@ -5302,6 +5352,100 @@ mod tests {
         assert_eq!(
             probe_cell(Ok(false), "installed", "not installed"),
             "not installed"
+        );
+    }
+
+    fn health_of(
+        outcome: CollectOutcome,
+        source: &str,
+    ) -> worklog_core::time_leaks_contract::SourceHealth {
+        let conn = db::open_memory().unwrap();
+        record_outcome(&outcome, |s, h| {
+            worklog_core::collect_health::record(&conn, s, h)
+        })
+        .unwrap();
+        let rows = worklog_core::collect_health::all(&conn, chrono::Utc::now()).unwrap();
+        rows.into_iter().find(|r| r.source == source).unwrap()
+    }
+
+    /// FR-16: an Ok run leaves last_ok and no error.
+    #[test]
+    fn collect_health_ok_outcome_records_last_ok_only() {
+        let report = worklog_core::collectors::CollectReport::default();
+        let h = health_of(CollectOutcome::Ok(CollectTarget::Jira, report), "jira");
+        assert!(h.last_ok.is_some());
+        assert_eq!(h.last_err, None); // catches recording errors for Ok
+    }
+
+    /// FR-16: a Warn (fetch failure) leaves the error text, never last_ok.
+    #[test]
+    fn collect_health_warn_outcome_records_error_text() {
+        let o = CollectOutcome::Warn {
+            source: CollectTarget::Github,
+            message: "rate limited".into(),
+        };
+        let h = health_of(o, "github");
+        assert!(h.last_err.unwrap().contains("rate limited")); // catches swallowing Warn
+        assert_eq!(h.last_ok, None);
+    }
+
+    /// FR-16: a Skip (missing credentials) is recorded as an error too.
+    #[test]
+    fn collect_health_skip_outcome_records_reason() {
+        let o = CollectOutcome::Skip {
+            source: CollectTarget::Slack,
+            message: "no token".into(),
+        };
+        let h = health_of(o, "slack");
+        assert!(h.last_err.unwrap().contains("no token")); // catches dropping Skip
+        assert_eq!(h.last_ok, None);
+    }
+
+    /// FR-16: a failed routing day is recorded under "routing".
+    #[test]
+    fn collect_health_routing_failure_records_under_routing() {
+        let o = CollectOutcome::RoutingFailed {
+            day: chrono::NaiveDate::from_ymd_opt(2026, 10, 11).unwrap(),
+            message: "disk full".into(),
+        };
+        assert!(health_of(o, "routing")
+            .last_err
+            .unwrap()
+            .contains("disk full"));
+    }
+
+    /// FR-16: transcripts share the key the collector itself writes.
+    #[test]
+    fn collect_health_transcripts_use_collector_key() {
+        let report = worklog_core::collectors::CollectReport::default();
+        let o = CollectOutcome::Ok(CollectTarget::ClaudeTranscripts, report);
+        assert!(health_of(o, "claude_transcripts").last_ok.is_some());
+    }
+
+    /// FR-17: a row shows last ok, last error and the 24 h count; a missing
+    /// time reads "never", not an empty cell.
+    #[test]
+    fn status_source_line_shows_ok_err_and_count() {
+        use worklog_core::time_leaks_contract::SourceHealth;
+        let h = SourceHealth {
+            source: "github".into(),
+            last_ok: Some("2026-10-11T10:00:00+00:00".into()),
+            last_err: Some("2026-10-11T11:00:00+00:00 rate limited".into()),
+            events_24h: 7,
+        };
+        assert_eq!(
+            source_health_line(&h),
+            "ok 2026-10-11T10:00:00+00:00 · err 2026-10-11T11:00:00+00:00 rate limited · 7 events/24h"
+        );
+        let quiet = SourceHealth {
+            source: "shell".into(),
+            last_ok: None,
+            last_err: None,
+            events_24h: 0,
+        };
+        assert_eq!(
+            source_health_line(&quiet),
+            "ok never · err never · 0 events/24h"
         );
     }
 
