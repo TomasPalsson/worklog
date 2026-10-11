@@ -23,7 +23,7 @@ import { DayStrip } from "@/components/DayStrip";
 import { DayFlow, type FlowBilling } from "@/components/art/DayFlow";
 import { RecapBanner } from "@/components/RecapBanner";
 import { ReviewSection } from "@/components/ReviewSection";
-import { DayLoadNotice } from "@/components/DayLoadNotice";
+import { DayLoadNotice, sectionLoader } from "@/components/DayLoadNotice";
 import { ElsewhereList } from "@/components/ElsewhereList";
 import { EmptyState } from "@/components/EmptyState";
 import { TicketGroup } from "@/components/TicketGroup";
@@ -86,11 +86,7 @@ export default async function DayPage({
   // pulls in noise + dismissed events too, so the zero-touch summary line
   // can report a hidden count without a second round trip when Review opens.
   const failed: string[] = [];
-  const load = <T,>(name: string, p: Promise<T>, fallback: T): Promise<T> =>
-    p.catch(() => {
-      failed.push(name);
-      return fallback;
-    });
+  const load = sectionLoader(failed);
   const isToday = day === todayISO();
   const [routedEvents, registry, elsewhereItems, lines, verdict, reviewLines, recap] =
     await Promise.all([
