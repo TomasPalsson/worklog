@@ -21,6 +21,7 @@
 .hb-raster { display: grid; align-items: end; gap: 1px; height: 28px; min-width: 0; border-bottom: 1px solid var(--border); }
 .hb-tick { background: var(--hb-color); border-radius: 1px 1px 0 0; min-height: 1px; }
 .hb-data { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px 10px; align-items: center; }
+.hb-data > .hb-raster, .hb-data > .hb-dates, .hb-data > .hb-track, .hb-data > .hb-hours { grid-column: 1 / -1; }
 .hb-dates { display: flex; justify-content: space-between; margin-top: 4px; font-size: 13px; color: var(--fg-muted); }
 .hb-hours { text-align: right; }
 .hb-fill { background: var(--hb-color); }

@@ -321,4 +321,12 @@ describe("TopicHeartbeats", () => {
     expect(css).toMatch(/\.hb-dates {[^}]*justify-content: space-between[^}]*margin-top: 4px/); // catches missing 4px gap
     expect(css).toMatch(/\.hb-how {[^}]*max-width: 70ch/);
   });
+  it("css: every .hb-data child spans column 1 / -1 so rows share one time axis (catches sr-track's implicit columns)", () => {
+    const css = readFileSync(new URL("../../app/stats/heartbeats.css", import.meta.url), "utf8");
+    const rule = css.match(/([^{}]*){\s*grid-column: 1 \/ -1;\s*}/)?.[1] ?? "";
+    for (const c of ["hb-raster", "hb-dates", "hb-track", "hb-hours"]) {
+      expect(rule).toContain(`.hb-data > .${c}`); // child combinator outranks .sr-track's single-class rule
+    }
+    expect(css).toMatch(/\.hb-data {[^}]*grid-template-columns: minmax\(0, 1fr\)/);
+  });
 });
