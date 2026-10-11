@@ -113,7 +113,7 @@ function Story({ r, topics }: { r: StatsReport; topics: Promise<TopicsReport | n
       <Section title="Tickets">
         <TicketTimeline tickets={r.tickets} from={r.from} to={r.to} today={r.today} totalWork={r.totals.work_seconds} />
       </Section>
-      <Section title="Topics">
+      <Section title="Topic atlas">
         <Suspense fallback={<p>Loading topics…</p>}>
           <Topics topics={topics} />
         </Suspense>
