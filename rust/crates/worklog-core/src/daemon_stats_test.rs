@@ -80,6 +80,11 @@ async fn stats_rejects_bad_ranges_and_dates() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn topics_route_with_no_blocks_is_too_few_not_an_error() {
+    {
+        // Never read the developer's real env file.
+        let _g = crate::tz::test_env_lock();
+        std::env::set_var("WORKLOG_ENV_FILE", "/nonexistent/worklog.env");
+    }
     let (status, v) = call("/stats/topics?from=2026-10-05&to=2026-10-11").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v["status"], "too_few_blocks");
@@ -183,4 +188,42 @@ fn topics_report_maps_a_helper_error_to_helper_down() {
     assert_eq!(r.status, TopicsStatus::HelperDown);
     assert!(r.topics.is_empty());
     assert_eq!(r.embedded_blocks, 0);
+}
+
+#[test]
+fn topics_report_propagates_a_db_error_instead_of_helper_down() {
+    let conn = open_memory().unwrap();
+    block(&conn, "2026-10-05", 600, Some("alpha work"), 0, None);
+    conn.execute("DROP TABLE block_embeddings", []).unwrap();
+    let server = MockServer::start();
+    serve(&server, 200, vec![unit(0)]);
+
+    // catches: `let Ok(..) = ensure_vectors(..) else { HelperDown }`.
+    assert!(topics_report(&conn, &client(&server), day("2026-10-05"), day("2026-10-11")).is_err());
+}
+
+#[test]
+fn topics_report_stores_nothing_when_a_later_batch_is_bad() {
+    let conn = open_memory().unwrap();
+    for n in 0..40 {
+        block(&conn, "2026-10-05", 600, Some(&format!("b{n}")), 0, None);
+    }
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/embed").body_contains("\"b0\"");
+        then.status(200)
+            .json_body(json!({ "vectors": (0..32).map(unit).collect::<Vec<_>>() }));
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/embed").body_contains("\"b39\"");
+        then.status(200).json_body(json!({ "vectors": [unit(0)] }));
+    });
+
+    let r = topics_report(&conn, &client(&server), day("2026-10-05"), day("2026-10-11")).unwrap();
+
+    assert_eq!(r.status, TopicsStatus::HelperDown);
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM block_embeddings", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 0);
 }

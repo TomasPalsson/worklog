@@ -1,7 +1,7 @@
 //! GET /stats?from&to — the stats page's one payload. Child module of
 //! `daemon.rs` (via `#[path]`) so it reuses its private `with_conn`/`ApiError`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{anyhow, Result};
 use axum::extract::{Query, State};
@@ -81,22 +81,35 @@ pub async fn get_topics(
     Query(q): Query<RangeQuery>,
 ) -> Result<Json<TopicsReport>, ApiError> {
     let (from, to, today) = resolve_range(&q)?;
+    // Three phases so the shared connection is never held across the
+    // blocking /embed calls (same split as daemon_note_block).
+    let prep = with_conn(state.clone(), move |c| {
+        let from = match from {
+            Some(f) => f,
+            None => stats::first_day(c)?.unwrap_or(today).min(to),
+        };
+        if crate::envfile::read(VERDICT_ENABLED_KEY).as_deref() == Some("off") {
+            return Ok(Err(TopicsReport::empty(
+                TopicsStatus::HelperDown,
+                &from.to_string(),
+                &to.to_string(),
+            )));
+        }
+        topics_prepare(c, from, to).map(Ok)
+    })
+    .await?;
+    let prep = match prep {
+        Ok(p) => p,
+        Err(report) => return Ok(Json(report)),
+    };
+    let (prep, embedded) = tokio::task::spawn_blocking(move || {
+        let embedded = embed_pending(&EmbedClient::from_env(), &prep.pending);
+        (prep, embedded)
+    })
+    .await
+    .map_err(|e| anyhow!("embed task: {e}"))?;
     Ok(Json(
-        with_conn(state, move |c| {
-            let from = match from {
-                Some(f) => f,
-                None => stats::first_day(c)?.unwrap_or(today).min(to),
-            };
-            if crate::envfile::read(VERDICT_ENABLED_KEY).as_deref() == Some("off") {
-                return Ok(TopicsReport::empty(
-                    TopicsStatus::HelperDown,
-                    &from.to_string(),
-                    &to.to_string(),
-                ));
-            }
-            topics_report(c, &EmbedClient::from_env(), from, to)
-        })
-        .await?,
+        with_conn(state, move |c| topics_finish(c, prep, embedded)).await?,
     ))
 }
 
@@ -122,25 +135,70 @@ fn load_points(conn: &Connection, lo: NaiveDate, hi: NaiveDate) -> Result<Vec<Bl
     .map_err(Into::into)
 }
 
+struct TopicsPrep {
+    from: NaiveDate,
+    to: NaiveDate,
+    all: Vec<BlockPoint>,
+    pending: Vec<embed::PendingText>,
+}
+
+/// `None` = the helper failed; nothing may be stored (FR-19).
+fn embed_pending(client: &EmbedClient, pending: &[embed::PendingText]) -> Option<Vec<Vec<f32>>> {
+    let texts: Vec<String> = pending.iter().map(|p| p.text.clone()).collect();
+    client.embed_all(&texts).ok()
+}
+
+fn topics_prepare(conn: &Connection, from: NaiveDate, to: NaiveDate) -> Result<TopicsPrep> {
+    let len = (to - from).num_days() + 1;
+    let before_from = from - Duration::days(len);
+    let lo = before_from.min(from - Duration::days(TOPICS_HISTORY_DAYS));
+    let all = load_points(conn, lo, to)?;
+    let ids: Vec<i64> = all.iter().map(|p| p.id).collect();
+    let pending = embed::pending(conn, &ids)?;
+    Ok(TopicsPrep {
+        from,
+        to,
+        all,
+        pending,
+    })
+}
+
+#[cfg(test)]
 pub(super) fn topics_report(
     conn: &Connection,
     client: &EmbedClient,
     from: NaiveDate,
     to: NaiveDate,
 ) -> Result<TopicsReport> {
+    let prep = topics_prepare(conn, from, to)?;
+    let embedded = embed_pending(client, &prep.pending);
+    topics_finish(conn, prep, embedded)
+}
+
+fn topics_finish(
+    conn: &Connection,
+    prep: TopicsPrep,
+    embedded: Option<Vec<Vec<f32>>>,
+) -> Result<TopicsReport> {
+    let TopicsPrep {
+        from,
+        to,
+        all,
+        pending,
+    } = prep;
     let (from_s, to_s) = (from.to_string(), to.to_string());
     let len = (to - from).num_days() + 1;
     let before_from = from - Duration::days(len);
-    let lo = before_from.min(from - Duration::days(TOPICS_HISTORY_DAYS));
-    let all = load_points(conn, lo, to)?;
-    let ids: Vec<i64> = all.iter().map(|p| p.id).collect();
-    let Ok(mut vectors) = embed::ensure_vectors(conn, client, &ids) else {
+    let Some(new_vectors) = embedded else {
         return Ok(TopicsReport::empty(
             TopicsStatus::HelperDown,
             &from_s,
             &to_s,
         ));
     };
+    embed::store(conn, &pending, &new_vectors)?;
+    let ids: Vec<i64> = all.iter().map(|p| p.id).collect();
+    let mut vectors = embed::load(conn, &ids)?;
 
     let mut input = TopicsInput {
         from: from_s.clone(),
@@ -169,7 +227,12 @@ pub(super) fn topics_report(
             }
         }
     }
-    for t in input.now.iter().filter_map(|p| p.ticket.as_deref()) {
+    let tickets: HashSet<&str> = input
+        .now
+        .iter()
+        .filter_map(|p| p.ticket.as_deref())
+        .collect();
+    for t in tickets {
         if let Some(summary) = conn
             .query_row(
                 "SELECT summary FROM jira_tickets WHERE key = ?1",

@@ -376,3 +376,39 @@ fn embed_rejects_a_wrong_dimension_vector() {
     // catches: storing a vector that would later poison every cosine.
     assert!(at(&server).embed(&["a".to_string()]).is_err());
 }
+
+#[test]
+fn from_env_honours_verdict_url_then_falls_back_to_classifier_addr() {
+    let _g = crate::tz::test_env_lock();
+    std::env::set_var("WORKLOG_VERDICT_URL", "http://127.0.0.1:1");
+    assert_eq!(EmbedClient::from_env().base_url, "http://127.0.0.1:1");
+    std::env::remove_var("WORKLOG_VERDICT_URL");
+    assert_eq!(
+        EmbedClient::from_env().base_url,
+        format!("http://{CLASSIFIER_ADDR}")
+    );
+}
+
+#[test]
+fn embed_all_validates_every_batch_and_stores_nothing_on_a_late_failure() {
+    let conn = open_memory().unwrap();
+    let ids: Vec<i64> = (0..EMBED_BATCH + 8)
+        .map(|n| block(&conn, Some(&format!("b{n}"))))
+        .collect();
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/embed").body_contains("\"b0\"");
+        then.status(200)
+            .json_body(json!({ "vectors": (0..EMBED_BATCH).map(unit).collect::<Vec<_>>() }));
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/embed").body_contains("\"b39\"");
+        then.status(200).json_body(json!({ "vectors": [unit(0)] }));
+    });
+    // catches: storing batch 1 before batch 2 is known to be good (FR-19).
+    assert!(ensure_vectors(&conn, &at(&server), &ids).is_err());
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM block_embeddings", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 0);
+}

@@ -30,7 +30,9 @@ impl EmbedClient {
             .timeout(EMBED_TIMEOUT)
             .build()
             .unwrap_or_default();
-        Self::with_client(client, format!("http://{CLASSIFIER_ADDR}"))
+        let base = std::env::var("WORKLOG_VERDICT_URL")
+            .unwrap_or_else(|_| format!("http://{CLASSIFIER_ADDR}"));
+        Self::with_client(client, base)
     }
 
     pub fn with_client(client: Client, base_url: String) -> Self {
@@ -63,6 +65,23 @@ impl EmbedClient {
         }
         Ok(resp.vectors)
     }
+
+    /// Embeds in EMBED_BATCH chunks; every chunk is validated before any
+    /// vector is returned, so a late failure leaves nothing to store.
+    pub fn embed_all(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let mut out = Vec::with_capacity(texts.len());
+        for chunk in texts.chunks(EMBED_BATCH) {
+            out.extend(self.embed(chunk)?);
+        }
+        Ok(out)
+    }
+}
+
+/// A block whose stored vector is missing or stale.
+pub struct PendingText {
+    pub id: i64,
+    pub text: String,
+    pub hash: String,
 }
 
 fn strip_keys(s: &str) -> String {
@@ -113,14 +132,9 @@ fn from_blob(b: &[u8]) -> Option<Vec<f32>> {
     })
 }
 
-/// Vectors for every id that has text, embedding only what is missing or stale.
-pub fn ensure_vectors(
-    conn: &Connection,
-    client: &EmbedClient,
-    block_ids: &[i64],
-) -> Result<HashMap<i64, Vec<f32>>> {
-    let mut out = HashMap::new();
-    let mut stale: Vec<(i64, String, String)> = Vec::new();
+/// Blocks with text whose stored vector is missing, stale, or malformed.
+pub fn pending(conn: &Connection, block_ids: &[i64]) -> Result<Vec<PendingText>> {
+    let mut out = Vec::new();
     for &id in block_ids {
         let Some(text) = block_text(conn, id)? else {
             continue;
@@ -133,33 +147,66 @@ pub fn ensure_vectors(
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?;
-        match stored {
-            Some((model, h, blob)) if model == EMBED_MODEL_REVISION && h == hash => {
-                match from_blob(&blob) {
-                    Some(v) => {
-                        out.insert(id, v);
-                    }
-                    None => stale.push((id, text, hash)),
-                }
-            }
-            _ => stale.push((id, text, hash)),
-        }
-    }
-    for chunk in stale.chunks(EMBED_BATCH) {
-        let texts: Vec<String> = chunk.iter().map(|(_, t, _)| t.clone()).collect();
-        let vectors = client.embed(&texts)?;
-        for ((id, _, hash), v) in chunk.iter().zip(vectors) {
-            conn.execute(
-                "INSERT INTO block_embeddings (block_id, model, text_hash, vec)
-                 VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(block_id) DO UPDATE SET
-                   model = excluded.model, text_hash = excluded.text_hash, vec = excluded.vec",
-                params![id, EMBED_MODEL_REVISION, hash, to_blob(&v)],
-            )?;
-            out.insert(*id, v);
+        let fresh = matches!(&stored, Some((m, h, b))
+            if m == EMBED_MODEL_REVISION && *h == hash && from_blob(b).is_some());
+        if !fresh {
+            out.push(PendingText { id, text, hash });
         }
     }
     Ok(out)
+}
+
+/// Upserts `vectors` (same order as `items`) in one transaction.
+pub fn store(conn: &Connection, items: &[PendingText], vectors: &[Vec<f32>]) -> Result<()> {
+    if items.len() != vectors.len() {
+        bail!(
+            "{} vectors for {} pending texts",
+            vectors.len(),
+            items.len()
+        );
+    }
+    let tx = conn.unchecked_transaction()?;
+    for (p, v) in items.iter().zip(vectors) {
+        tx.execute(
+            "INSERT INTO block_embeddings (block_id, model, text_hash, vec)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(block_id) DO UPDATE SET
+               model = excluded.model, text_hash = excluded.text_hash, vec = excluded.vec",
+            params![p.id, EMBED_MODEL_REVISION, p.hash, to_blob(v)],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Stored current-revision vectors for `block_ids`.
+pub fn load(conn: &Connection, block_ids: &[i64]) -> Result<HashMap<i64, Vec<f32>>> {
+    let mut out = HashMap::new();
+    for &id in block_ids {
+        let blob: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT vec FROM block_embeddings WHERE block_id = ?1 AND model = ?2",
+                params![id, EMBED_MODEL_REVISION],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(v) = blob.as_deref().and_then(from_blob) {
+            out.insert(id, v);
+        }
+    }
+    Ok(out)
+}
+
+/// Vectors for every id that has text, embedding only what is missing or stale.
+pub fn ensure_vectors(
+    conn: &Connection,
+    client: &EmbedClient,
+    block_ids: &[i64],
+) -> Result<HashMap<i64, Vec<f32>>> {
+    let todo = pending(conn, block_ids)?;
+    let texts: Vec<String> = todo.iter().map(|p| p.text.clone()).collect();
+    store(conn, &todo, &client.embed_all(&texts)?)?;
+    load(conn, block_ids)
 }
 
 #[cfg(test)]
