@@ -434,13 +434,38 @@ fn the_stored_unreachable_reason_never_carries_the_request_url() {
     assert_eq!(stored, "Tempo could not be reached: connection failed");
 }
 
+/// Pins the env a rollover tick reads and restores it on drop, even when an assert panics.
+struct RolloverEnv {
+    _g: std::sync::MutexGuard<'static, ()>,
+    _e: tokio::sync::MutexGuard<'static, ()>,
+    saved: [(&'static str, Option<std::ffi::OsString>); 2],
+}
+
+impl RolloverEnv {
+    fn new() -> Self {
+        let _g = crate::tz::test_env_lock();
+        let _e = crate::envfile::ENV_TEST_LOCK.blocking_lock();
+        let saved = ["WORKLOG_TZ", "WORKLOG_ENV_FILE"].map(|k| (k, std::env::var_os(k)));
+        std::env::remove_var("WORKLOG_TZ");
+        std::env::set_var("WORKLOG_ENV_FILE", "/nonexistent/worklog.env");
+        Self { _g, _e, saved }
+    }
+}
+
+impl Drop for RolloverEnv {
+    fn drop(&mut self) {
+        for (k, v) in &self.saved {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+    }
+}
+
 #[test]
 fn a_day_whose_every_send_failed_still_gets_its_recap_at_rollover() {
-    let _g = crate::tz::test_env_lock();
-    let _e = crate::envfile::ENV_TEST_LOCK.blocking_lock();
-    let saved = ["WORKLOG_TZ", "WORKLOG_ENV_FILE"].map(|k| (k, std::env::var_os(k)));
-    std::env::remove_var("WORKLOG_TZ");
-    std::env::set_var("WORKLOG_ENV_FILE", "/nonexistent/worklog.env");
+    let _env = RolloverEnv::new();
     let conn = open_memory().unwrap();
     ready_line(&conn, DAY, "A-1");
     tick(&conn, local(6, 17, 0), true, unreachable);
@@ -453,12 +478,6 @@ fn a_day_whose_every_send_failed_still_gets_its_recap_at_rollover() {
     tick(&conn, local(7, 0, 15), true, unreachable);
     // catches: rebuilding every tick (RECAP_KEY not advanced to the finished day)
     assert_eq!(column_meta(&conn), stamp);
-    for (k, v) in saved {
-        match v {
-            Some(v) => std::env::set_var(k, v),
-            None => std::env::remove_var(k),
-        }
-    }
 }
 
 #[test]
@@ -486,11 +505,7 @@ fn an_upstream_error_body_is_never_stored() {
 
 #[test]
 fn a_day_already_recapped_is_not_rebuilt_at_rollover() {
-    let _g = crate::tz::test_env_lock();
-    let _e = crate::envfile::ENV_TEST_LOCK.blocking_lock();
-    let saved = ["WORKLOG_TZ", "WORKLOG_ENV_FILE"].map(|k| (k, std::env::var_os(k)));
-    std::env::remove_var("WORKLOG_TZ");
-    std::env::set_var("WORKLOG_ENV_FILE", "/nonexistent/worklog.env");
+    let _env = RolloverEnv::new();
     let conn = open_memory().unwrap();
     ready_line(&conn, DAY, "A-1");
     tick(&conn, local(6, 17, 0), true, unreachable);
@@ -501,12 +516,6 @@ fn a_day_already_recapped_is_not_rebuilt_at_rollover() {
     tick(&conn, local(7, 0, 15), true, unreachable);
     // catches: dropping the RECAP_KEY guard, so a recapped day is rebuilt on every rollover
     assert_eq!(column_meta(&conn).as_deref(), Some("first"));
-    for (k, v) in saved {
-        match v {
-            Some(v) => std::env::set_var(k, v),
-            None => std::env::remove_var(k),
-        }
-    }
 }
 
 #[test]
@@ -563,11 +572,7 @@ fn a_root_cause_that_embeds_a_url_is_reduced_to_a_generic_reason() {
 
 #[test]
 fn a_failed_rollover_recap_leaves_the_plan_so_the_next_tick_retries() {
-    let _g = crate::tz::test_env_lock();
-    let _e = crate::envfile::ENV_TEST_LOCK.blocking_lock();
-    let saved = ["WORKLOG_TZ", "WORKLOG_ENV_FILE"].map(|k| (k, std::env::var_os(k)));
-    std::env::remove_var("WORKLOG_TZ");
-    std::env::set_var("WORKLOG_ENV_FILE", "/nonexistent/worklog.env");
+    let _env = RolloverEnv::new();
     let conn = open_memory().unwrap();
     ready_line(&conn, DAY, "A-1");
     tick(&conn, local(6, 17, 0), true, unreachable);
@@ -582,21 +587,11 @@ fn a_failed_rollover_recap_leaves_the_plan_so_the_next_tick_retries() {
     tick(&conn, local(7, 0, 15), true, unreachable);
     let built = recap::latest(&conn).unwrap().map(|r| r.day);
     assert_eq!(built.as_deref(), Some(DAY));
-    for (k, v) in saved {
-        match v {
-            Some(v) => std::env::set_var(k, v),
-            None => std::env::remove_var(k),
-        }
-    }
 }
 
 #[test]
 fn a_failed_rollover_recap_does_not_stop_the_days_sending() {
-    let _g = crate::tz::test_env_lock();
-    let _e = crate::envfile::ENV_TEST_LOCK.blocking_lock();
-    let saved = ["WORKLOG_TZ", "WORKLOG_ENV_FILE"].map(|k| (k, std::env::var_os(k)));
-    std::env::remove_var("WORKLOG_TZ");
-    std::env::set_var("WORKLOG_ENV_FILE", "/nonexistent/worklog.env");
+    let _env = RolloverEnv::new();
     let conn = open_memory().unwrap();
     ready_line(&conn, DAY, "A-1");
     tick(&conn, local(6, 17, 0), true, unreachable);
@@ -606,12 +601,6 @@ fn a_failed_rollover_recap_does_not_stop_the_days_sending() {
     let tried = tick(&conn, local(7, 17, 0), true, unreachable);
     // catches: propagating the recap error, which skips today's sends
     assert_eq!(tried, vec!["2026-10-07/B-1".to_owned()]);
-    for (k, v) in saved {
-        match v {
-            Some(v) => std::env::set_var(k, v),
-            None => std::env::remove_var(k),
-        }
-    }
 }
 
 fn column_meta(conn: &Connection) -> Option<String> {
