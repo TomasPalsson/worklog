@@ -1,6 +1,6 @@
 import "@/app/stats/charts-ranked.css";
 import "@/app/stats/heartbeats.css";
-import { formatDuration } from "@/lib/format";
+import { formatDuration, shortMonthDay } from "@/lib/format";
 import type { Topic, TopicsReport } from "@/lib/topics_contract";
 import { RhythmIcon } from "./AtlasArt";
 import { pct } from "./chart-tip-utils";
@@ -56,9 +56,10 @@ interface RowProps {
   maxTopicSeconds: number;
   maxBinSeconds: number;
   workDays: number;
+  dates?: [string, string];
 }
 
-function HeartbeatRow({ topic, index, topicCount, river, totalSeconds, maxTopicSeconds, maxBinSeconds, workDays }: RowProps) {
+function HeartbeatRow({ topic, index, topicCount, river, totalSeconds, maxTopicSeconds, maxBinSeconds, workDays, dates }: RowProps) {
   const rhythm = rhythmOf(topic, workDays);
   const hue = 25 + topic.id * (360 / topicCount);
   const tip = { ...heartbeatTip(topic, totalSeconds, workDays, rhythm), accent: `oklch(var(--project-l) var(--project-c) ${hue})` };
@@ -94,7 +95,7 @@ function HeartbeatRow({ topic, index, topicCount, river, totalSeconds, maxTopicS
         </ul>
       </div>
       <div className="hb-data">
-        <div className="hb-raster" aria-hidden="true">
+        <div className="hb-raster" aria-hidden="true" style={{ gridTemplateColumns: `repeat(${river.length}, 1fr)` }}>
           {river.map((bin) => (
             <span
               key={bin.start}
@@ -104,6 +105,12 @@ function HeartbeatRow({ topic, index, topicCount, river, totalSeconds, maxTopicS
             />
           ))}
         </div>
+        {dates && (
+          <div className="hb-dates">
+            <span>{shortMonthDay(dates[0])}</span>
+            <span>{shortMonthDay(dates[1])}</span>
+          </div>
+        )}
         <span className="hb-hours sr-value">{formatDuration(topic.seconds)}</span>
         <span className="sr-track hb-track" aria-hidden="true">
           <span className="sr-fill hb-fill" style={{ display: "block", width: `${maxTopicSeconds > 0 ? (topic.seconds / maxTopicSeconds) * 100 : 0}%` }} />
@@ -116,6 +123,7 @@ function HeartbeatRow({ topic, index, topicCount, river, totalSeconds, maxTopicS
 
 export function TopicHeartbeats({ report }: { report: TopicsReport }) {
   const { topics, river } = report;
+  const active = river.filter((bin) => bin.seconds.some((s) => s > 0));
   const shared = {
     topicCount: topics.length,
     river,
@@ -129,11 +137,11 @@ export function TopicHeartbeats({ report }: { report: TopicsReport }) {
       <h3 className="sr-title">Topic heartbeats</h3>
       <ul className="hb-rows">
         {topics.map((topic, index) => (
-          <HeartbeatRow key={topic.id} topic={topic} index={index} {...shared} />
+          <HeartbeatRow key={topic.id} topic={topic} index={index} {...shared} dates={index === 0 && active.length > 0 ? [active[0].start, active[active.length - 1].start] : undefined} />
         ))}
       </ul>
       <p className="sr-caption hb-how">
-        How: Ticks show hours per day in this topic. Always on = active on at least half your work days. Sprint = at least 3 days, all within one week.
+        How it works: Ticks show hours per day in this topic. Always on = active on at least half your work days. Sprint = at least 3 days, all within one week.
       </p>
     </section>
   );

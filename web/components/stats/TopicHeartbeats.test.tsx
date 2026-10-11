@@ -175,7 +175,7 @@ describe("TopicHeartbeats", () => {
   });
   it("shows the How line and no NaN, undefined or null", () => {
     const { container } = render(<TopicHeartbeats report={report({ topics: [topic({ description: null, top_tickets: [] })] })} />);
-    expect(container.textContent).toContain("How: Ticks show hours per day in this topic.");
+    expect(container.textContent).toContain("How it works: Ticks show hours per day in this topic.");
     expect(container.innerHTML).not.toMatch(/NaN|undefined|null/);
   });
   it("every row is the same three-column template, whatever the description length", () => {
@@ -204,5 +204,43 @@ describe("TopicHeartbeats", () => {
     const css = readFileSync(new URL("../../app/stats/heartbeats.css", import.meta.url), "utf8");
     expect(css).toContain("grid-template-columns: minmax(150px, 220px) minmax(0, 1fr) 360px;");
     expect(css).toMatch(/@media \(max-width: 799px\)\s*{\s*\.hb-row { grid-template-columns: minmax\(0, 1fr\);/);
+  });
+  it("raster is a grid of one equal column per river bin, full width (catches flex or a fixed column count)", () => {
+    const { container } = render(<TopicHeartbeats report={report()} />);
+    for (const raster of Array.from(container.querySelectorAll(".hb-raster"))) {
+      expect((raster as HTMLElement).style.gridTemplateColumns).toBe("repeat(3, 1fr)");
+    }
+  });
+  it("ticks carry no inline max-width (catches a width cap that breaks the shared edge)", () => {
+    const { container } = render(<TopicHeartbeats report={report()} />);
+    for (const t of Array.from(container.querySelectorAll("[data-tick]"))) {
+      expect((t as HTMLElement).getAttribute("style")).not.toMatch(/max-width/);
+    }
+  });
+  it("only the first row has the date caption: first and last non-zero bins (catches every-row or river-end dates)", () => {
+    const river = [
+      { start: "2026-09-23", seconds: [3600, 0] },
+      { start: "2026-09-24", seconds: [0, 0] },
+      { start: "2026-10-10", seconds: [0, 1800] },
+      { start: "2026-10-11", seconds: [0, 0] },
+    ];
+    const { container } = render(<TopicHeartbeats report={report({ river })} />);
+    const captions = container.querySelectorAll(".hb-dates");
+    expect(captions.length).toBe(1);
+    expect(captions[0].closest("[data-heartbeat-row]")).toBe(container.querySelector("[data-heartbeat-row]"));
+    expect(Array.from(captions[0].children).map((c) => c.textContent)).toEqual(["Sep 23", "Oct 10"]);
+  });
+  it("no date caption when no bin has time (catches reading an undefined bin)", () => {
+    const river = [{ start: "2026-10-05", seconds: [0, 0] }];
+    const { container } = render(<TopicHeartbeats report={report({ river })} />);
+    expect(container.querySelector(".hb-dates")).toBeNull();
+  });
+  it("css: no tick max-width, raster is gapped, no text under 12px, ticket keys use --fg-muted", () => {
+    const css = readFileSync(new URL("../../app/stats/heartbeats.css", import.meta.url), "utf8");
+    expect(css).not.toMatch(/max-width: 8px/);
+    expect(css).toMatch(/\.hb-raster {[^}]*display: grid;[^}]*gap: 1px/);
+    expect(css).not.toMatch(/font-size: (?:[0-9]|1[01])px/);
+    expect(css).toMatch(/\.hb-tickets {[^}]*var\(--fg-muted\)/);
+    expect(css).toMatch(/\.hb-how {[^}]*max-width: 70ch/);
   });
 });
