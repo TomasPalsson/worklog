@@ -90,7 +90,7 @@ pub(crate) fn set_label(
 }
 
 /// Lowercased host, no scheme/path/query/port; `None` if unparseable.
-fn domain_of(url: &str) -> Option<String> {
+pub(crate) fn domain_of(url: &str) -> Option<String> {
     let rest = url.split("://").nth(1).unwrap_or(url);
     let host = rest.split(['/', '?', '#']).next()?;
     let host = host.rsplit('@').next().unwrap_or(host);

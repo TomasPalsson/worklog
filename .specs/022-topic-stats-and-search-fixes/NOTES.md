@@ -1,0 +1,34 @@
+# Notes — 022 topic stats and search fixes
+
+- Ruling: T001 changed ask_test `invoice AND` from 0 to 1 hit — the spec'd behaviour change (FR-01/FR-02: "and" is a stopword, so the query is "invoice"); the literal-operator safety is kept by the new `AND` → 0 assert and `query("invoice AND") == "\"invoice\""` (2026-10-11, orchestrator)
+- Ruling: T001 touched daemon_ask.rs:105 (outside its files:) — the `"kafka OR (` test expected 0 hits under AND; under OR it is 1. Same behaviour change, exact count kept; accepted (2026-10-11, orchestrator)
+- Ruling: T008 streams Topics through Suspense so a slow helper never blocks /stats (beyond the brief, in its own files) (2026-10-11, orchestrator)
+- Ruling: T006 left its fix-ladder tie-break edits uncommitted; orchestrator committed them as 3b04efc under T006's files only (2026-10-11, orchestrator)
+- Discovered: rust/crates/worklog-core/templates/verdict_server.py:~38 — _load_engine raises a bare KeyError when WORKLOG_VERDICT_MODEL_* env is missing (pre-existing) — defer
+- Discovered: rust/crates/worklog-core/src/billing.rs billing_tenant_tests::rows_for_day_with_deildir_under_200ms — timing test flakes under parallel load (pre-existing) — defer
+- Discovered: web/components/UnsortedList.tsx noiseOf — URL.hostname punycodes IDN hosts while routing::domain_of keeps unicode, so non-ASCII noise hosts are never tagged (fails safe) — defer
+- Discovered: web/components/UnsortedList.tsx:236 — "Dismiss the rest" run() never calls setConfirming(false); confirm markup duplicated with DismissNoise — defer
+- Ruling: T007 fix ladder (5eb6398) touched embed.rs/embed_test.rs (T005's files) to split ensure_vectors into pending/embed_all/store/load so the shared connection is released during /embed; needed for the review's lock-hold finding (2026-10-11, orchestrator)
+- Discovered: rust/crates/worklog-core/src/embed.rs load — a block whose text later became empty keeps its old vector and counts as embedded, not skipped — defer
+- Ruling: T009 and T010 appended during CHK001 — the live Chrome check found the helper could not load the model (sentence-transformers 5.7) and warm /stats/topics took ~5 s against the 2 s NFR; both fixed as new tasks, not by widening T004/T005 (2026-10-11, orchestrator)
+- Ruling: CHK001 done by the orchestrator in headless system Chrome via puppeteer-core (Claude-in-Chrome extension not connected; DevTools MCP browser held by another session), against a DB copy with 4 inserted test events (2026-10-11, orchestrator)
+- Ruling: G001 — `flow check` exits "No supported project file found" (Cargo.toml lives in rust/, package.json in web/); the gate is run as the CLAUDE.md command set instead: cargo fmt --check, cargo clippy -D warnings, cargo test, bun test, bun run typecheck, bun run build (2026-10-11, orchestrator)
+- Ruling: T011 appended at G001 — the T007 route test set WORKLOG_ENV_FILE under tz::test_env_lock only, racing daemon b29 (full suite 2014/1 failed); now holds envfile::ENV_TEST_LOCK (2026-10-11, orchestrator)
+- Ruling: G002 branch review clean — 0 findings ≥ 80 after blind re-score (24 dismissed); kept below the bar, cost if wrong: (70) clustering is O(n³) with no cap on the "all" range and runs inside with_conn — fine at today's ~300 blocks, slow at thousands; (65) embed_all stores only after every batch, so a first "all"-range backfill > 90 s never converges (Topics shows helper-down) — 7d cold load measured 48.7 s for 198 blocks; (70) sentence-transformers/torch/transformers/pillow/torchvision in uv_args are lower-bound/unpinned unlike the Verdict git rev; (68) store has no FK guard if a block is deleted mid-request; (70) block regeneration drops vectors (re-embed cost only); (70) IDN host mismatch (already deferred); (70) embed.rs keeps ensure_vectors as a test-only composition; (60) /embed shares the single-threaded helper with /classify. Recommended follow-up: cap the Topics window (e.g. last 90 days) and store per batch (2026-10-11, orchestrator)
+- Ruling: converge pass — FR-16 and FR-08 had no proving test → T012/T013 appended; FR-17 (SHOULD, topic hover cards) not built — v1.1 per the spec's MVP cut line, left out of this PR (2026-10-11, orchestrator)
+- Discovered: TASKS.md Behaviors B5 names `second_call_sends_nothing`; the real test is `ensure_does_not_re_embed_an_unchanged_block` — note only
+- Discovered: rust/crates/worklog-core/templates/verdict_server.py:244 do_POST cyclomatic complexity grew 12→14 (limit 10) with /embed — split per route later — defer
+- Discovered: rust/crates/worklog-core/src/daemon.rs day_progress / spawn_nudge_refresh_loop — read keychain secrets (JiraAuth/GitHubAuth::from_secrets) while holding the shared connection; a keychain permission prompt (new binary) freezes every daemon route until answered (pre-existing; seen in the sandbox) — defer
+- Discovered: rust/crates/worklog-core/src/daemon_stats.rs — jira_tickets summary query duplicates private billing::ticket_summary (billing.rs:471) — defer
+- Assumption: Kept the phased task structure despite the spec judge's critique that tasks are horizontal layers (each phase has an end-to-end independent test) — evidence: transcript:616 (audit)
+- Assumption: Patched the helper PORT to 9334 in a scratch copy and ran the sandbox daemon on 9343 (9333 is held by Chrome) for CHK001 — evidence: transcript:1209, 1246 (audit)
+- Assumption: Ran the sandbox daemon with WORKLOG_SECRETS_FILE (file-backed secrets) to avoid keychain prompts during CHK001 — evidence: transcript:1904 (audit)
+- Assumption: Discarded a leftover scale-probe test in stats_topics_test.rs found after the crash, as a reviewer's throwaway — evidence: transcript:2262 (audit)
+- Assumption: Committed spec, contract files and empty module stubs before Base so parallel builders would not collide on lib.rs — evidence: transcript:532, 677 (audit)
+- Assumption: Renamed the worktree branch to flow/topic-stats-and-search-fixes — evidence: transcript:463 (audit)
+- Assumption: Deferred the meeting-gravity stat (11 gcal events in the DB) — evidence: transcript:389 (audit)
+- Assumption: Rewrote the phase-3 Independent test line (cargo takes one filter) into three single-filter runs — evidence: transcript:1145, 1146 (audit)
+- Assumption: Accepted T003 after its review by ordering one test-strengthening pass instead of rejecting it — evidence: transcript:989, 996 (audit)
+- Assumption: Verified via a dev server on 3344 against the sandbox daemon and release/debug builds, not the install path — evidence: transcript:1513, 1658, 1839 (audit)
+- Assumption: Corrected the FR-12 evidence text and wrote Verified with the G002 row NOT-CHECKABLE by claim-check — evidence: transcript:2557 (audit)
+- Assumption: Ran babysit in drive mode (60 min / 5 waves) and left the PR as draft — evidence: transcript:2599, 2664 (audit)

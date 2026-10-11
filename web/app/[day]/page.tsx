@@ -8,6 +8,7 @@ import {
   loadBillingRegistry,
   loadDaySummary,
   routedForDay,
+  noiseHosts,
   verdictStatus,
 } from "@/lib/daemon";
 import { elsewhereForDay, type ElsewhereItem } from "@/lib/daemonElsewhere";
@@ -33,6 +34,7 @@ import { VerdictBanner } from "@/components/VerdictBanner";
 import { lastBlockEnd } from "@/lib/lastBlockEnd";
 import type { Block, BillingRegistry, RoutedEvent } from "@/lib/types";
 import type { GapAction, Recap } from "@/lib/daily_helpers_contract";
+import type { NoiseHosts } from "@/lib/topics_contract";
 
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -88,7 +90,7 @@ export default async function DayPage({
   const failed: string[] = [];
   const load = sectionLoader(failed);
   const isToday = day === todayISO();
-  const [routedEvents, registry, elsewhereItems, lines, verdict, reviewLines, recap] =
+  const [routedEvents, registry, elsewhereItems, lines, verdict, reviewLines, recap, noise] =
     await Promise.all([
       load("Unsorted events", routedForDay(day, true), [] as RoutedEvent[]),
       load("Folder list", loadBillingRegistry(), null as BillingRegistry | null),
@@ -97,6 +99,7 @@ export default async function DayPage({
       load("Verdict status", verdictStatus(day), null),
       isToday ? load("Review list", fetchReviewLines(), []) : [],
       isToday ? load("Recap", call<Recap | null>("GET", "/recap"), null) : null,
+      load("Noise hosts", noiseHosts(day), { hosts: [] } as NoiseHosts),
     ]);
   async function resolveGap(recapDay: string, startedAt: string, action: GapAction) {
     "use server";
@@ -204,7 +207,7 @@ export default async function DayPage({
         billing={flowBilling}
       />
       {verdict && <VerdictBanner key={`verdict-${day}`} status={verdict} />}
-      <UnsortedList key={`unsorted-${day}`} day={day} events={routedEvents} folderOptions={folderOptions} />
+      <UnsortedList key={`unsorted-${day}`} day={day} events={routedEvents} folderOptions={folderOptions} noiseHosts={noise.hosts} />
       <ElsewhereList key={`elsewhere-${day}`} day={day} items={elsewhereItems} blocks={blocks} />
       {blocks.length === 0 ? (
         <EmptyState day={day} />

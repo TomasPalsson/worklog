@@ -10,6 +10,9 @@ use crate::tempo_hub_contract::{StatusCategory, TicketDetail};
 
 /// The only Jira project the assistant writes to. Reads accept any key.
 pub const WRITE_PROJECT: &str = "GENAI";
+/// Internal catch-all tickets (meetings, sales, courses). Offered to the
+/// estimator even when not assigned to the user.
+pub const CATCH_ALL_PROJECT: &str = "APRO";
 /// Issue type every created ticket gets.
 pub const CREATE_ISSUE_TYPE: &str = "Story";
 /// A clue wrong this many times for one account stops counting for it.
