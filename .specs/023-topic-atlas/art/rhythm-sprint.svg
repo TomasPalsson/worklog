@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+  <!-- Sprint: a comet — one solid tapered tail behind a hot amber head -->
+  <polygon points="3.6,9.2 8.8,5.6 9.6,6.8" style="fill: var(--fg-muted)" opacity=".55"/>
+  <polygon points="0.8,15.2 8.6,4.9 11.6,8.3" style="fill: var(--fg-muted)"/>
+  <circle cx="11.8" cy="4.6" r="3.2" style="fill: var(--amber)"/>
+</svg>
