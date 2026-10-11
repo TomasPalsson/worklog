@@ -70,6 +70,6 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --
 - [x] CHK002 Owner checks `worklog week` and `worklog status` after install — files: rust/crates/worklog-cli/src/cli.rs — verify: human: Owner says 4–10 Oct adds up and status lists sources — after: T008, T024 — done: ee50e9f by user
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `flow check --fix --since 5d765ac`
-- [ ] G002 branch review clean — files: . — verify: `flow pass`
-- [ ] G003 verification evidence exists — files: . — verify: `test -s verify/`
+- [x] G001 project gates clean — files: . — verify: `flow check --fix --since 5d765ac` — done: 6271e1e
+- [x] G002 branch review clean — files: . — verify: `flow pass` — done: 6271e1e
+- [x] G003 verification evidence exists — files: . — verify: `test -s verify/` — done: 6271e1e
