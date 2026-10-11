@@ -1,3 +1,4 @@
+Approved: 2026-10-11 by user
 # Tasks — Time leaks
 Spec: spec.md · Design: design.md · Base: 5d765ac · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && cd web && bun test`
 
@@ -17,7 +18,7 @@ Spec: spec.md · Design: design.md · Base: 5d765ac · Route: dispatch · Test: 
 ## Phase 0 — Contract
 Goal: the shared shapes exist and compile on both sides.
 Independent test: `cargo check --manifest-path rust/Cargo.toml && cd web && bun run typecheck`
-- [ ] T000 Contract files from design §1 (orchestrator) — files: rust/crates/worklog-core/src/time_leaks_contract.rs, rust/crates/worklog-core/src/lib.rs, web/lib/time_leaks_contract.ts — verify: `cargo check --manifest-path rust/Cargo.toml && cd web && bun run typecheck`
+- [x] T000 Contract files from design §1 (orchestrator) — files: rust/crates/worklog-core/src/time_leaks_contract.rs, rust/crates/worklog-core/src/lib.rs, web/lib/time_leaks_contract.ts — verify: `cargo check --manifest-path rust/Cargo.toml && cd web && bun run typecheck` — done: 2618eed
 
 ## Phase 1 — Honest numbers and loud failures
 Goal: totals add up and every failure says what failed, the same day.
