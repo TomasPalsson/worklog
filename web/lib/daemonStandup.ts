@@ -6,10 +6,9 @@
 import type { ActionResult } from "@/app/actions";
 import { call, loadSettings } from "./daemon";
 import type { PostOutcome, StandupDraft } from "./daily_helpers_contract";
+import type { FocusSummary } from "./time_leaks_contract";
 import type { SettingsView } from "./types";
 
-export type FocusRun = { jira_issue: string; started_at: string; ended_at: string; seconds: number };
-export type FocusSummary = { day: string; switches: number; longest: FocusRun | null };
 /** `POST /standup/draft`: the answers with yesterday's focus beside them (never in the posted text). */
 export type DraftResult = StandupDraft & { focus?: FocusSummary | null };
 

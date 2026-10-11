@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
-import { draftStandup, postStandup, standupChannelSet, type FocusSummary } from "@/lib/daemonStandup";
+import { draftStandup, postStandup, standupChannelSet } from "@/lib/daemonStandup";
+import type { FocusSummary } from "@/lib/time_leaks_contract";
 import { formatDuration, formatRange } from "@/lib/format";
 import type { PostOutcome, StandupDraft } from "@/lib/daily_helpers_contract";
 

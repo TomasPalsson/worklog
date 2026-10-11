@@ -126,15 +126,6 @@ fn focus_line(f: &FocusSummary) -> String {
     let Some(run) = &f.longest else {
         return format!("yesterday: {} switches, no focus run", f.switches);
     };
-    let clock = |ts: &str| {
-        chrono::DateTime::parse_from_rfc3339(ts)
-            .map(|t| {
-                t.with_timezone(&tz::day_offset())
-                    .format("%H:%M")
-                    .to_string()
-            })
-            .unwrap_or_else(|_| ts.to_owned())
-    };
     let (h, m) = (run.seconds / 3600, run.seconds % 3600 / 60);
     let length = match (h, m) {
         (0, m) => format!("{m}m"),
@@ -145,8 +136,8 @@ fn focus_line(f: &FocusSummary) -> String {
         "yesterday: {} switches, longest focus {length} on {} ({}–{})",
         f.switches,
         run.jira_issue,
-        clock(&run.started_at),
-        clock(&run.ended_at)
+        hhmm(&run.started_at),
+        hhmm(&run.ended_at)
     )
 }
 

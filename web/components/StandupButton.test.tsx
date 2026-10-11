@@ -4,7 +4,8 @@
 import { afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { PostOutcome, StandupDraft } from "@/lib/daily_helpers_contract";
-import type { DraftResult, FocusSummary } from "@/lib/daemonStandup";
+import type { DraftResult } from "@/lib/daemonStandup";
+import type { FocusSummary } from "@/lib/time_leaks_contract";
 import { formatRange } from "@/lib/format";
 import type { SettingsUpdate, SettingsView } from "@/lib/types";
 import { buildSettingsUpdate, formStateFromView } from "@/lib/settingsForm";
