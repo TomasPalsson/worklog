@@ -106,12 +106,17 @@ async function install($: EngineInterface, cwd: string | undefined): Promise<str
   const refused = 'worklog install: run /wl install from inside the worklog repo'
   if (cwd === undefined) return refused
   const git = async (...argv: string[]) => {
-    const result = await $.process.run(['git', ...argv], { cwd }).catch(() => undefined)
-    return result?.exitCode === 0 ? result.stdout.trim() : undefined
+    const result = await $.process.run(['git', ...argv], { cwd })
+    return result.exitCode === 0 ? result.stdout.trim() : undefined
   }
-  const root = await git('rev-parse', '--show-toplevel')
-  if (root === undefined || !WORKLOG_ORIGIN_RE.test((await git('remote', 'get-url', 'origin')) ?? '')) {
-    return refused
+  let root: string | undefined
+  try {
+    root = await git('rev-parse', '--show-toplevel')
+    if (root === undefined || !WORKLOG_ORIGIN_RE.test((await git('remote', 'get-url', 'origin')) ?? '')) {
+      return refused
+    }
+  } catch (error) {
+    return `worklog install failed: ${error instanceof Error ? error.message : String(error)}`
   }
   const result = await $.process
     .run(['bash', 'scripts/install-local.sh'], { cwd: root })

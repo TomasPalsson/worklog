@@ -62,6 +62,7 @@ type Options = {
   origin?: string
   install?: { exitCode: number; stdout: string; stderr: string }
   spawnError?: string
+  probeError?: { argv: string; message: string }
 }
 
 type Posted = { url: string; body: unknown }
@@ -92,6 +93,9 @@ function world(on: On, options: Options = {}) {
   on('store.set', () => ({ value: undefined }))
   on('process.run', (_$, event) => {
     const line = event.argv.join(' ')
+    if (options.probeError !== undefined && line === options.probeError.argv) {
+      throw new Error(options.probeError.message)
+    }
     if (line === 'git rev-parse --show-toplevel' && options.origin !== undefined) {
       return { value: { exitCode: 0, stdout: `${REPO}\n`, stderr: '' } }
     }
@@ -509,4 +513,20 @@ test('/wl install reports a spawn failure as text instead of throwing (the host 
   // catches: letting the rejection escape the handler, or reporting ok
   // the engine rewrites a thrown hook error, so only the prefix and a non-empty reason are ours
   expect(text).toMatch(/^worklog install failed: .+/)
+})
+
+test('/wl install reports a failed toplevel probe as an install failure, not a wrong-repo refusal', async ($, on) => {
+  const probeError = { argv: 'git rev-parse --show-toplevel', message: 'spawn git ENOENT' }
+  const { text, installs } = await runInstall($, on, { origin: ORIGIN, probeError })
+  // catches: swallowing the spawn error into the refusal
+  expect(text).toMatch(/^worklog install failed: .+/)
+  expect(installs).toEqual([])
+})
+
+test('/wl install reports a failed origin probe as an install failure, not a wrong-repo refusal', async ($, on) => {
+  const probeError = { argv: 'git remote get-url origin', message: 'spawn git EACCES' }
+  const { text, installs } = await runInstall($, on, { origin: ORIGIN, probeError })
+  // catches: treating a failed origin lookup as a non-matching origin
+  expect(text).toMatch(/^worklog install failed: .+/)
+  expect(installs).toEqual([])
 })
