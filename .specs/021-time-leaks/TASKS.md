@@ -1,4 +1,5 @@
 Approved: 2026-10-11 by user
+Verified: 2026-10-11 by user (pre-approved: /flow:next --finish)
 # Tasks — Time leaks
 Spec: spec.md · Design: design.md · Base: 5d765ac · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && cd web && bun test`
 
