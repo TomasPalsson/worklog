@@ -20,3 +20,15 @@
 - Discovered: rust/crates/worklog-core/templates/verdict_server.py:244 do_POST cyclomatic complexity grew 12→14 (limit 10) with /embed — split per route later — defer
 - Discovered: rust/crates/worklog-core/src/daemon.rs day_progress / spawn_nudge_refresh_loop — read keychain secrets (JiraAuth/GitHubAuth::from_secrets) while holding the shared connection; a keychain permission prompt (new binary) freezes every daemon route until answered (pre-existing; seen in the sandbox) — defer
 - Discovered: rust/crates/worklog-core/src/daemon_stats.rs — jira_tickets summary query duplicates private billing::ticket_summary (billing.rs:471) — defer
+- Assumption: Kept the phased task structure despite the spec judge's critique that tasks are horizontal layers (each phase has an end-to-end independent test) — evidence: transcript:616 (audit)
+- Assumption: Patched the helper PORT to 9334 in a scratch copy and ran the sandbox daemon on 9343 (9333 is held by Chrome) for CHK001 — evidence: transcript:1209, 1246 (audit)
+- Assumption: Ran the sandbox daemon with WORKLOG_SECRETS_FILE (file-backed secrets) to avoid keychain prompts during CHK001 — evidence: transcript:1904 (audit)
+- Assumption: Discarded a leftover scale-probe test in stats_topics_test.rs found after the crash, as a reviewer's throwaway — evidence: transcript:2262 (audit)
+- Assumption: Committed spec, contract files and empty module stubs before Base so parallel builders would not collide on lib.rs — evidence: transcript:532, 677 (audit)
+- Assumption: Renamed the worktree branch to flow/topic-stats-and-search-fixes — evidence: transcript:463 (audit)
+- Assumption: Deferred the meeting-gravity stat (11 gcal events in the DB) — evidence: transcript:389 (audit)
+- Assumption: Rewrote the phase-3 Independent test line (cargo takes one filter) into three single-filter runs — evidence: transcript:1145, 1146 (audit)
+- Assumption: Accepted T003 after its review by ordering one test-strengthening pass instead of rejecting it — evidence: transcript:989, 996 (audit)
+- Assumption: Verified via a dev server on 3344 against the sandbox daemon and release/debug builds, not the install path — evidence: transcript:1513, 1658, 1839 (audit)
+- Assumption: Corrected the FR-12 evidence text and wrote Verified with the G002 row NOT-CHECKABLE by claim-check — evidence: transcript:2557 (audit)
+- Assumption: Ran babysit in drive mode (60 min / 5 waves) and left the PR as draft — evidence: transcript:2599, 2664 (audit)
