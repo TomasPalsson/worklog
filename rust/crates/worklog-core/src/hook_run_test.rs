@@ -498,11 +498,16 @@ fn hook_open_failure_returns_ok() {
 #[test]
 fn hook_error_text_keeps_full_anyhow_chain() {
     let conn = open_memory().unwrap();
-    conn.execute("DROP TABLE sessions", []).unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER boom BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'boom'); END",
+    )
+    .unwrap();
     handle_input(&conn, STOP, now()).unwrap();
-    // `to_string()` keeps only the outermost context, dropping ": <cause>".
+    // `to_string()` keeps only the outermost context ("upsert event"),
+    // dropping the SQLite cause after it.
     let err = last_err(&conn, "claude").expect("recorded");
-    assert!(err.contains(": "), "{err}");
+    assert!(err.starts_with("upsert event: "), "{err}");
+    assert!(err.contains("boom"), "{err}");
 }
 
 fn seed_last_ok(conn: &Connection, age_secs: i64) -> String {
