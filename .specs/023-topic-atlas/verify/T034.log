@@ -1,0 +1,30 @@
+bun test v1.2.4 (fd9a5ea6)
+
+components/stats/DayMirror.test.tsx:
+(pass) mirrorTip > builds the exact tip for a pair [7.44ms]
+(pass) mirrorTip > signs a positive similarity with + [0.46ms]
+(pass) DayMirror > renders D(D+1)/2 cells over the last D days [15.13ms]
+(pass) DayMirror > positive is amber family, negative slate family, scaled by the largest off-diagonal [6.18ms]
+(pass) DayMirror > is omitted below 3 days and shown at exactly 3 [5.25ms]
+(pass) DayMirror > renders no NaN, undefined or null, even when every pair is 0 [5.42ms]
+(pass) DayMirror > shows the plain How line, keeps jargon in a Method details, and caps the line length [5.88ms]
+(pass) DayMirror > uses the shared atlas card and small-caps title [4.81ms]
+(pass) DayMirror > shows a legend with both swatches and a 3-step strip [5.98ms]
+(pass) DayMirror > names the most alike and most opposite pair from the off-diagonal only [7.93ms]
+(pass) DayMirror > uses row-header labels, not diagonal labels, once a cell is under 44px [53.83ms]
+(pass) diagTip > names the most and least similar other day and the top topic [0.56ms]
+(pass) diagTip > reads the column for a later day (symmetric matrix)
+(pass) DayMirror cells > ringed cells' aria-label names both days, the strength and alike or opposite [5.08ms]
+(pass) DayMirror cells > a zero similarity reads alike, not opposite [4.33ms]
+(pass) DayMirror cells > rings the most alike cell solid and the most opposite cell dashed, exactly once each [4.31ms]
+(pass) DayMirror at 30 days > has one tab stop per day plus the two ringed cells (D + 2), never every cell [175.73ms]
+(pass) DayMirror at 30 days > only the two ringed off-diagonal cells are tabbable and labelled; all keep data-stip [180.92ms]
+(pass) DayMirror at 30 days > mirror.css has no font-size under 13px [1.04ms]
+(pass) DayMirror at 30 days > thins labels to every k-th day, keeps first and last, and puts them outside the matrix [176.36ms]
+(pass) DayMirror at 30 days > labels every day on the diagonal when cells are large [4.43ms]
+(pass) DayMirror at 30 days > diagonal chip has an aria-label with the tip text [179.99ms]
+
+ 22 pass
+ 0 fail
+ 61 expect() calls
+Ran 22 tests across 1 files. [958.00ms]

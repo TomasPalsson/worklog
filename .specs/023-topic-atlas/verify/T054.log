@@ -1,0 +1,116 @@
+bun test v1.2.4 (fd9a5ea6)
+
+components/stats/TopicHeartbeats.test.tsx:
+(pass) rhythmOf > always: exactly half the work days qualifies (catches > for >=)
+(pass) rhythmOf > always: one day short of half does not (catches >= off by one)
+(pass) rhythmOf > always: half of an odd count is not rounded down (catches Math.floor)
+(pass) rhythmOf > sprint: a 6-day span with 3 active days qualifies (catches < for <=)
+(pass) rhythmOf > sprint: a 7-day span does not (catches span <= 7)
+(pass) rhythmOf > sprint: 2 active days in a 6-day span does not (catches days_active >= 2)
+(pass) rhythmOf > sprint: spans are measured in days across a month end (catches day-of-month subtraction)
+(pass) rhythmOf > one_off: exactly one active day
+(pass) rhythmOf > one_off: two active days is not one-off (catches <= 2)
+(pass) rhythmOf > one_off: zero active days is not one-off (catches <= 1)
+(pass) heartbeatTip > exact values: duration, share of all topics, days, blocks, rhythm note [0.07ms]
+(pass) heartbeatTip > tickets are joined with commas; no tickets means no Tickets row [0.06ms]
+(pass) heartbeatTip > no rhythm means no note; no description means no sub
+(pass) heartbeatTip > zero total seconds does not divide by zero
+(pass) TopicHeartbeats > renders one row per topic [11.08ms]
+(pass) TopicHeartbeats > rows are keyboard focusable, labelled and carry the tip [2.14ms]
+(pass) TopicHeartbeats > one tick per river bin per topic, heights proportional to hours against the largest bin [1.93ms]
+(pass) TopicHeartbeats > caps keyword chips at 3 (catches the old cap of 4) [1.36ms]
+(pass) TopicHeartbeats > generic dev words are dropped from chips, case-insensitively (catches no filter, exact-case filter) [0.80ms]
+(pass) TopicHeartbeats > generic words do not use up the cap (catches slice-then-filter) [0.84ms]
+(pass) TopicHeartbeats > a word that merely contains a generic word stays (catches substring match) [0.94ms]
+(pass) TopicHeartbeats > keyword-named topics are marked for muted italic; AI-named are not [1.60ms]
+(pass) TopicHeartbeats > badge shows the rhythm text; none when no rhythm applies [1.55ms]
+(pass) TopicHeartbeats > work days count only days with work [0.44ms]
+(pass) TopicHeartbeats > tickets leave the visible row and live in the tooltip [0.74ms]
+(pass) TopicHeartbeats > description is one clamped line with the full text in title and aria-label [1.39ms]
+(pass) TopicHeartbeats > row padding is at most 8px vertically [0.03ms]
+(pass) TopicHeartbeats > newly generic words are dropped from chips [0.74ms]
+(pass) TopicHeartbeats > light-mode marks use project lightness 0.60, never under an OS-dark or dark-theme selector
+(pass) TopicHeartbeats > topic name is 15px 600 sans, not mono (catches the flat 13px mono hierarchy) [0.02ms]
+(pass) TopicHeartbeats > shows the How line and no NaN, undefined or null [0.97ms]
+(pass) TopicHeartbeats > every row is the same three-column template, whatever the description length [1.71ms]
+(pass) TopicHeartbeats > raster and bar sit in the third column, badge and name in the first [1.08ms]
+(pass) TopicHeartbeats > css fixes the row template at desktop width and stacks below 800px [0.12ms]
+(pass) TopicHeartbeats > raster is a grid of one equal column per river bin, full width (catches flex or a fixed column count) [1.19ms]
+(pass) TopicHeartbeats > ticks carry no inline max-width (catches a width cap that breaks the shared edge) [1.32ms]
+(pass) TopicHeartbeats > every row has its own caption: that topic's first and last non-zero bins (catches first-row-only or river-wide dates) [1.15ms]
+(pass) TopicHeartbeats > a topic with no active bin gets no caption while others keep theirs [2.88ms]
+(pass) TopicHeartbeats > date caption is one left-aligned span reading 'active A – B', hours outside it [1.05ms]
+(pass) TopicHeartbeats > no date caption when no bin has time (catches reading an undefined bin) [0.79ms]
+(pass) TopicHeartbeats > css: no tick max-width, raster is gapped, no text under 13px [0.13ms]
+(pass) TopicHeartbeats > css: every .hb-data child spans column 1 / -1 so rows share one time axis (catches sr-track's implicit columns) [0.05ms]
+
+components/stats/DayCompass.test.tsx:
+(pass) compassLayout > puts the crosshairs at the medians of the plotted days only
+(pass) compassLayout > uses the mean of the two middle values for an even count [0.30ms]
+(pass) compassLayout > assigns quadrants, with a value equal to the median counting as deep / new [0.05ms]
+(pass) compassLayout > flags the day farthest from the crosshairs per quadrant, normalised by axis span [0.08ms]
+(pass) compassLayout > lists None-focus days as skipped and never plots them
+(pass) compassLayout > scales radius with the square root of hours [0.05ms]
+(pass) compassLayout > keeps every coordinate finite with one plotted day, none, or zero hours [0.07ms]
+(pass) compassTip > lists day, hours, focus, novelty, switches, longest run and topics touched [0.29ms]
+(pass) DayCompass > draws one dot per plotted day with a tip, plus two crosshair lines and no quadrant captions [5.71ms]
+(pass) DayCompass > every dot has a 1.5px raised-background stroke [4.14ms]
+(pass) DayCompass > labels the extreme day of each quadrant with weekday and date [4.94ms]
+(pass) DayCompass > lists the None-focus days under the chart [4.61ms]
+(pass) DayCompass > omits the skipped line when every day has a focus [1.59ms]
+(pass) DayCompass > renders nothing when no day can be plotted [0.21ms]
+(pass) DayCompass > renders no NaN, undefined or null [4.52ms]
+(pass) DayCompass > shows the plain How line, keeps jargon in a Method details [4.64ms]
+(pass) DayCompass > uses the shared atlas card and small-caps title [4.34ms]
+(pass) DayCompass > has plain axis titles [4.51ms]
+(pass) DayCompass > has small end labels at each axis end [4.43ms]
+(pass) DayCompass > keys every topic that is some plotted day's top topic, most days first [4.64ms]
+(pass) DayCompass > explains dot size as hours, matching the sqrt-area radius [4.29ms]
+(pass) DayCompass > names the most focused and the most new-ground day in a callout, ignoring unplotted days [4.35ms]
+(pass) DayCompass > labels min(5, plotted) days, the fifth being the most-hours day not already labelled [11.17ms]
+(pass) DayCompass > vertical end labels are horizontal, new ground top-left and familiar bottom-left [4.43ms]
+(pass) DayCompass > keeps every leader label box inside the plot and clear of the captions [4.49ms]
+
+components/stats/TopicRiver.test.tsx:
+(pass) buildRiver > band thickness per bin equals bin seconds times one shared scale [0.45ms]
+(pass) buildRiver > is centred: each bin's stack is symmetric about the midline
+(pass) buildRiver > orders layers by first active bin, ties by id [0.24ms]
+(pass) buildRiver > drops topics with zero total [0.04ms]
+(pass) buildRiver > has no NaN with an all-zero bin [0.11ms]
+(pass) buildRiver > returns null when every bin is zero
+(pass) buildRiver > returns null for fewer than 2 bins, builds at exactly 2 [0.07ms]
+(pass) buildRiver > labels a band exactly at 18px and not just under [0.07ms]
+(pass) buildRiver > measures thickness at the layer's own widest bin [0.03ms]
+(pass) river trimming and labels > trims leading and trailing zero bins [0.04ms]
+(pass) river trimming and labels > keeps interior zero bins [0.02ms]
+(pass) river trimming and labels > returns null when only one bin has data
+(pass) river trimming and labels > axis ticks follow the trimmed bins [1.55ms]
+(pass) river trimming and labels > placed label boxes are pairwise disjoint with a 4px pad, and some are dropped [0.23ms]
+(pass) river trimming and labels > the largest topic keeps its label
+(pass) river trimming and labels > a topic peaking in the first bin keeps its label box inside x >= 8 [0.26ms]
+(pass) river trimming and labels > a topic peaking in the last bin keeps its label box inside x + w <= W - 8 [0.03ms]
+(pass) river trimming and labels > drops a label whose band is under 18px at the clamped x [0.04ms]
+(pass) river trimming and labels > skips a label wider than the viewBox and keeps one that fits [0.02ms]
+(pass) river trimming and labels > has no legend in markup or css [0.81ms]
+(pass) river trimming and labels > topics without an inline label keep a labelled band [1.24ms]
+(pass) river trimming and labels > scale label says per day for day bins and per week for week bins [0.92ms]
+(pass) river design pass > one tick and label per Monday in 3 weeks of day bins [1.17ms]
+(pass) river design pass > week bins tick every 4th bin (fixture bins are consecutive days) [0.68ms]
+(pass) river design pass > viewBox reserves a 120px gutter right of the 1000px plot [0.38ms]
+(pass) river design pass > scale label equals the tallest stack's hours and the bracket spans it [0.45ms]
+(pass) river design pass > scale label keeps a fractional hour [0.43ms]
+(pass) river design pass > focus-visible keeps its outline and gains a stroke [0.13ms]
+(pass) river design pass > river.css has no font-size under 13px [0.07ms]
+(pass) river design pass > label box width uses 13px text (0.6em + 0.06em letter-spacing per char) [0.17ms]
+(pass) river design pass > svg scrolls horizontally from 720px [0.46ms]
+(pass) river design pass > is an sr-card titled Topic river [0.41ms]
+(pass) TopicRiver > renders one band per layer with a band tip [0.36ms]
+(pass) TopicRiver > column tip shows the bin's top 4 topics by hours [0.77ms]
+(pass) TopicRiver > paints the column rects before the bands so bands receive the pointer [0.80ms]
+(pass) TopicRiver > shows the How it works line [1.30ms]
+(pass) TopicRiver > renders nothing for fewer than 2 bins
+
+ 104 pass
+ 0 fail
+ 277 expect() calls
+Ran 104 tests across 3 files. [243.00ms]

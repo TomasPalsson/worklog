@@ -1,0 +1,38 @@
+bun test v1.2.4 (fd9a5ea6)
+
+components/stats/TopicHeartbeats.test.tsx:
+(pass) rhythmOf > always: exactly half the work days qualifies (catches > for >=) [0.14ms]
+(pass) rhythmOf > always: one day short of half does not (catches >= off by one) [0.04ms]
+(pass) rhythmOf > always: half of an odd count is not rounded down (catches Math.floor)
+(pass) rhythmOf > sprint: a 6-day span with 3 active days qualifies (catches < for <=) [0.15ms]
+(pass) rhythmOf > sprint: a 7-day span does not (catches span <= 7)
+(pass) rhythmOf > sprint: 2 active days in a 6-day span does not (catches days_active >= 2)
+(pass) rhythmOf > sprint: spans are measured in days across a month end (catches day-of-month subtraction)
+(pass) rhythmOf > one_off: exactly one active day [0.03ms]
+(pass) rhythmOf > one_off: two active days is not one-off (catches <= 2)
+(pass) rhythmOf > one_off: zero active days is not one-off (catches <= 1) [0.04ms]
+(pass) heartbeatTip > exact values: duration, share of all topics, days, blocks, rhythm note [0.04ms]
+(pass) heartbeatTip > no rhythm means no note; no description means no sub
+(pass) heartbeatTip > zero total seconds does not divide by zero [0.13ms]
+(pass) TopicHeartbeats > renders one row per topic [16.38ms]
+(pass) TopicHeartbeats > rows are keyboard focusable, labelled and carry the tip [3.19ms]
+(pass) TopicHeartbeats > one tick per river bin per topic, heights proportional to hours against the largest bin [3.37ms]
+(pass) TopicHeartbeats > caps keyword chips at 5 [2.37ms]
+(pass) TopicHeartbeats > keyword-named topics are marked for muted italic; AI-named are not [3.00ms]
+(pass) TopicHeartbeats > badge shows the rhythm text; none when no rhythm applies [2.69ms]
+(pass) TopicHeartbeats > work days count only days with work [1.53ms]
+(pass) TopicHeartbeats > ticket keys appear without hours [2.28ms]
+(pass) TopicHeartbeats > shows the How line and no NaN, undefined or null [2.03ms]
+(pass) TopicHeartbeats > every row is the same three-column template, whatever the description length [3.00ms]
+(pass) TopicHeartbeats > raster, bar and tickets sit in the third column, badge and name in the first [1.79ms]
+(pass) TopicHeartbeats > css fixes the row template at desktop width and stacks below 800px [0.04ms]
+(pass) TopicHeartbeats > raster is a grid of one equal column per river bin, full width (catches flex or a fixed column count) [2.10ms]
+(pass) TopicHeartbeats > ticks carry no inline max-width (catches a width cap that breaks the shared edge) [2.06ms]
+(pass) TopicHeartbeats > only the first row has the date caption: first and last non-zero bins (catches every-row or river-end dates) [2.15ms]
+(pass) TopicHeartbeats > no date caption when no bin has time (catches reading an undefined bin) [1.37ms]
+(pass) TopicHeartbeats > css: no tick max-width, raster is gapped, no text under 12px, ticket keys use --fg-muted [0.32ms]
+
+ 30 pass
+ 0 fail
+ 71 expect() calls
+Ran 30 tests across 1 files. [211.00ms]

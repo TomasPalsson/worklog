@@ -1,0 +1,37 @@
+bun test v1.2.4 (fd9a5ea6)
+
+components/stats/TopicMoments.test.tsx:
+(pass) stripFraction > first day of the range is 0 (catches a +1 offset)
+(pass) stripFraction > last day of the range is 1 (catches dividing by day count instead of span)
+(pass) stripFraction > middle is exact (catches index-based rather than date-based position)
+(pass) stripFraction > measures across a month end (catches day-of-month subtraction)
+(pass) stripFraction > a day outside the range clamps to 0 or 1 (catches overflowing the strip)
+(pass) stripFraction > a one-day range is centred, not NaN (catches 0/0)
+(pass) momentTip > first time: exact title and rows [0.80ms]
+(pass) momentTip > oddball: nearest score beside the median [0.13ms]
+(pass) momentTip > clamps: novelty 1.5 -> 100%, cosine -0.5 -> 0%, median -0.1 -> 0% [0.17ms]
+(pass) momentTip > missing topic drops the Topic row [0.16ms]
+(pass) TopicMoments > novelty 1.5 shows 100% new on card, aria-label and tip [10.60ms]
+(pass) TopicMoments > cosine -0.5 and median -0.1 show 0% on card, aria-label, tip rows and How line [3.15ms]
+(pass) TopicMoments > keeps the server order in both lists (catches re-sorting by score) [3.08ms]
+(pass) TopicMoments > each card leads with a badge word, then the small number [2.75ms]
+(pass) TopicMoments > no cosine, novelty or Nearest anything in visible text or tips [3.39ms]
+(pass) TopicMoments > shows day, hours and the topic chip [2.10ms]
+(pass) TopicMoments > a topic id with no topic renders no chip [1.72ms]
+(pass) TopicMoments > strip marker sits at the exact fraction of the range [2.49ms]
+(pass) TopicMoments > cards are focusable, labelled and carry a tip [2.48ms]
+(pass) TopicMoments > empty lists render one empty line each and no cards [0.87ms]
+(pass) TopicMoments > only the empty list gets the empty line [1.68ms]
+(pass) TopicMoments > How line carries the median and threshold as percentages and says similarity, not cosine [1.95ms]
+(pass) TopicMoments > cosine lives in a Method disclosure [2.00ms]
+(pass) TopicMoments > each card title carries its reading direction [2.35ms]
+(pass) TopicMoments > exactly one range caption per column, under the heading [3.64ms]
+(pass) TopicMoments > the caption stays when a column is empty [1.34ms]
+(pass) TopicMoments > no font-size under 13px in moments.css or compass.css [0.13ms]
+(pass) TopicMoments > label carries the two-line clamp class and is the .tm-label element [1.78ms]
+(pass) TopicMoments > marks are drawn and nothing renders NaN, undefined or null [2.08ms]
+
+ 29 pass
+ 0 fail
+ 77 expect() calls
+Ran 29 tests across 1 files. [154.00ms]

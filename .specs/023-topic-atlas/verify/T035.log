@@ -1,0 +1,52 @@
+bun test v1.2.4 (fd9a5ea6)
+
+components/stats/TopicGalaxy.test.tsx:
+(pass) galaxyLayout dots > maps x/y in [0,1] to the padded viewBox [0.04ms]
+(pass) galaxyLayout dots > radius is 2.5 + 6*sqrt(seconds/max): max gives 8.5, quarter gives 5.5, zero gives 2.5
+(pass) galaxyLayout dots > rank is chronological by day then block id; delay is min(rank*3, 1200) ms
+(pass) galaxyLayout dots > delay caps at 1200ms exactly at rank 400 and stays there past it [0.65ms]
+(pass) galaxyLayout dots > drops points whose topic is unknown instead of drawing NaN [0.07ms]
+(pass) galaxyLayout labels > font size is 11 + 9*sqrt(share): whole share 20, quarter share 15.5 [0.08ms]
+(pass) galaxyLayout labels > sits at the hours-weighted median, not the mean or first member
+(pass) galaxyLayout labels > a topic with no points gets no label [0.04ms]
+(pass) galaxyLayout labels > labels do not overlap after nudging a crowded fixture [0.16ms]
+(pass) galaxyLayout labels > a long-named label on an island at x=1 ends fully inside [8, 992]
+(pass) galaxyLayout labels > a long-named label at the right edge is clamped to x1 <= 992 [0.09ms]
+(pass) galaxyLayout labels > a name wider than the map shrinks to the 11px floor, then truncates with an ellipsis within bounds
+(pass) galaxyLayout labels > a name that fits only after shrinking is not truncated
+(pass) galaxyLayout labels > six labels crowded at the right edge stay inside the map and never overlap [0.18ms]
+(pass) galaxyLayout labels > hue comes from the topic id, not array position: id 3 of K=10 is 133 [0.08ms]
+(pass) galaxyLayout labels > labels far apart horizontally are left where they are
+(pass) tips > dot tip has exact title and rows [0.08ms]
+(pass) tips > dot tip says none for a missing ticket
+(pass) tips > label tip carries description, keywords, hours and blocks
+(pass) tips > label tip omits sub without a description [0.15ms]
+(pass) TopicGalaxy markup > dots are pointer-only (tabindex -1, still tipped) and labels are the tab stops [14.99ms]
+(pass) TopicGalaxy markup > every label is focusable with a tip [3.75ms]
+(pass) TopicGalaxy markup > markup never contains NaN, undefined or null [3.61ms]
+(pass) TopicGalaxy markup > draws a dashed ring at r+5 only for oddballs [3.02ms]
+(pass) TopicGalaxy markup > pending chip shows only when naming is pending [6.41ms]
+(pass) TopicGalaxy markup > emits one hover isolation rule per topic [1.76ms]
+(pass) TopicGalaxy markup > isolation also triggers on keyboard focus (focus-visible and focus-within) [2.29ms]
+(pass) TopicGalaxy markup > shows the How line [1.61ms]
+(pass) TopicGalaxy markup > viewBox height follows the y extent but never drops below 360 (y 0.2-0.6 gives 360, not 620) [3.46ms]
+(pass) TopicGalaxy markup > viewBox height grows with the range: y 0-0.8 gives 0.8*540+80 = 512 [0.09ms]
+(pass) TopicGalaxy markup > full y range keeps 620 [0.02ms]
+(pass) TopicGalaxy markup > legend row has both marks and the plain-words text [1.87ms]
+(pass) TopicGalaxy markup > topic name fill is the topic hue lifted toward --fg [1.32ms]
+(pass) TopicGalaxy markup > every dot has a sibling hit circle r=12 behind it [1.64ms]
+(pass) TopicGalaxy markup > topic list has one focusable tipped row per topic with name and hours [1.76ms]
+(pass) TopicGalaxy markup > map svg fits its width: meet aspect ratio, no scroll or min-width container [2.13ms]
+(pass) TopicGalaxy markup > below 600px the css hides on-map labels, shows the list and enlarges dots 1.6x [0.08ms]
+(pass) TopicGalaxy markup > the caption has no jargon outside details [1.59ms]
+(pass) TopicGalaxy markup > no points shows the empty state and message, with no svg map [1.28ms]
+(pass) TopicGalaxy markup > contains no hard-coded hex colours [1.70ms]
+(pass) phone tap targets and spacing > below 600px the hit circle is scaled x3 about its centre
+(pass) phone tap targets and spacing > below 600px the map container is at least 260px tall
+(pass) phone tap targets and spacing > two labels at the same median y end at least 8px apart including the hours line
+(pass) phone tap targets and spacing > every caption and legend font rule is at least 13px
+
+ 44 pass
+ 0 fail
+ 175 expect() calls
+Ran 44 tests across 1 files. [176.00ms]

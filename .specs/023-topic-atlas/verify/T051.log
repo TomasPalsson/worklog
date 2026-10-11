@@ -1,0 +1,50 @@
+bun test v1.2.4 (fd9a5ea6)
+
+components/stats/TopicHeartbeats.test.tsx:
+(pass) rhythmOf > always: exactly half the work days qualifies (catches > for >=)
+(pass) rhythmOf > always: one day short of half does not (catches >= off by one)
+(pass) rhythmOf > always: half of an odd count is not rounded down (catches Math.floor)
+(pass) rhythmOf > sprint: a 6-day span with 3 active days qualifies (catches < for <=)
+(pass) rhythmOf > sprint: a 7-day span does not (catches span <= 7)
+(pass) rhythmOf > sprint: 2 active days in a 6-day span does not (catches days_active >= 2)
+(pass) rhythmOf > sprint: spans are measured in days across a month end (catches day-of-month subtraction) [1.23ms]
+(pass) rhythmOf > one_off: exactly one active day
+(pass) rhythmOf > one_off: two active days is not one-off (catches <= 2)
+(pass) rhythmOf > one_off: zero active days is not one-off (catches <= 1)
+(pass) heartbeatTip > exact values: duration, share of all topics, days, blocks, rhythm note [0.08ms]
+(pass) heartbeatTip > tickets are joined with commas; no tickets means no Tickets row [0.04ms]
+(pass) heartbeatTip > no rhythm means no note; no description means no sub
+(pass) heartbeatTip > zero total seconds does not divide by zero
+(pass) TopicHeartbeats > renders one row per topic [10.96ms]
+(pass) TopicHeartbeats > rows are keyboard focusable, labelled and carry the tip [2.48ms]
+(pass) TopicHeartbeats > one tick per river bin per topic, heights proportional to hours against the largest bin [1.98ms]
+(pass) TopicHeartbeats > caps keyword chips at 3 (catches the old cap of 4) [1.25ms]
+(pass) TopicHeartbeats > generic dev words are dropped from chips, case-insensitively (catches no filter, exact-case filter) [0.83ms]
+(pass) TopicHeartbeats > generic words do not use up the cap (catches slice-then-filter) [0.91ms]
+(pass) TopicHeartbeats > a word that merely contains a generic word stays (catches substring match) [0.83ms]
+(pass) TopicHeartbeats > keyword-named topics are marked for muted italic; AI-named are not [1.29ms]
+(pass) TopicHeartbeats > badge shows the rhythm text; none when no rhythm applies [1.42ms]
+(pass) TopicHeartbeats > work days count only days with work [0.16ms]
+(pass) TopicHeartbeats > tickets leave the visible row and live in the tooltip [1.26ms]
+(pass) TopicHeartbeats > description is one clamped line with the full text in title and aria-label [1.56ms]
+(pass) TopicHeartbeats > row padding is at most 8px vertically
+(pass) TopicHeartbeats > newly generic words are dropped from chips [1.11ms]
+(pass) TopicHeartbeats > light-mode marks use project lightness 0.60, never under an OS-dark or dark-theme selector
+(pass) TopicHeartbeats > topic name is 15px 600 sans, not mono (catches the flat 13px mono hierarchy) [0.17ms]
+(pass) TopicHeartbeats > shows the How line and no NaN, undefined or null [1.19ms]
+(pass) TopicHeartbeats > every row is the same three-column template, whatever the description length [1.90ms]
+(pass) TopicHeartbeats > raster and bar sit in the third column, badge and name in the first [1.23ms]
+(pass) TopicHeartbeats > css fixes the row template at desktop width and stacks below 800px
+(pass) TopicHeartbeats > raster is a grid of one equal column per river bin, full width (catches flex or a fixed column count) [1.69ms]
+(pass) TopicHeartbeats > ticks carry no inline max-width (catches a width cap that breaks the shared edge) [1.26ms]
+(pass) TopicHeartbeats > every row has its own caption: that topic's first and last non-zero bins (catches first-row-only or river-wide dates) [1.21ms]
+(pass) TopicHeartbeats > a topic with no active bin gets no caption while others keep theirs [0.86ms]
+(pass) TopicHeartbeats > date caption: en dash separator is aria-hidden between two date spans; hours sit outside it [2.79ms]
+(pass) TopicHeartbeats > no date caption when no bin has time (catches reading an undefined bin) [0.50ms]
+(pass) TopicHeartbeats > css: no tick max-width, raster is gapped, no text under 13px [0.18ms]
+(pass) TopicHeartbeats > css: every .hb-data child spans column 1 / -1 so rows share one time axis (catches sr-track's implicit columns) [0.11ms]
+
+ 42 pass
+ 0 fail
+ 110 expect() calls
+Ran 42 tests across 1 files. [138.00ms]

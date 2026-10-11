@@ -294,3 +294,81 @@ USAGE      the naming job's model call.
 CALLS      Review of T039: `parse_reply` drops names > 40 chars, but `SYSTEM_PROMPT` and `schema()` never state the limit, so a model that keeps returning long names gets re-asked every back-off window forever. Add `"maxLength": 40` to the name property and `"maxLength": 200` to description in `schema()`, and one prompt line: "Each name must be at most 40 characters." Keep everything else.
 TESTS      schema JSON contains maxLength 40 for name and 200 for description; SYSTEM_PROMPT contains the 40-character sentence.
 THE FIVE   (same five as T015)
+
+## Contract for T044 — One shared topic colour rule with alternating lightness
+USAGE      `import { topicColor } from "./topicColor"; style={{ fill: topicColor(t.id, topics.length) }}`
+CALLS      Design evaluator: ~10 topic hues where neighbours (teal/green/blue) are hard to tell apart; the hue rule is copy-pasted in 5+ modules (Discovered in NOTES). Create `web/components/stats/topicColor.ts` exporting `topicHue(id, k): number` (= 25 + id*(360/k), unchanged) and `topicColor(id, k): string` returning `oklch(calc(var(--project-l) + ${id % 2 === 0 ? 0 : -0.08}) var(--project-c) ${hue})` — odd ids are 0.08 darker so adjacent hues separate by lightness too. Replace every local hue/colour helper in the six modules with these imports (same visual hue, now with alternation). Do not change anything else.
+TESTS      topicColor.test.ts: hue for id 3 of 10 = 133; even ids have no lightness offset, odd ids −0.08; each module file no longer defines its own hue function (grep-style test reading the source files for `function topicHue` / `const hue =` definitions).
+THE FIVE   (same five as T015)
+
+## Contract for T045 — Galaxy headline insight and dot hint
+USAGE      `<TopicGalaxy/>`
+CALLS      Design evaluator: the galaxy has no "so what". Add one headline line above the map (16px, --fg): "{K} topics · {A} and {B} are {P}% of your time" where A, B are the two largest topics by seconds and P = their combined share of all topic seconds rounded; with one topic: "1 topic · {A}". Append to the legend row: "· hover or tap a dot for the block". Keep all else.
+TESTS      headline text for a 3-topic fixture with known seconds; one-topic fixture wording; legend contains the hint.
+THE FIVE   (same five as T015)
+
+## Contract for T046 — Galaxy labels never collide and topic list is keyboard-reachable on desktop
+USAGE      `galaxyLayout(report)` → labels; `<TopicGalaxy/>`
+CALLS      Design evaluator round 5 (composite 3.43): on real data the label box for "Code Interpreter and History Configuration / 2.0h" overprints "Sjúkra Claude Integration / 4.2h"; long names reach the right edge; per-block data is keyboard-unreachable because `.sx-gal-list` is `display:none` above 599px. In `web/components/stats/TopicGalaxy.tsx` `galaxyLayout` (line ~68–115):
+  1. Add `const MAX_LABEL_CHARS = 24;` — label text longer than 24 chars is cut to 23 chars + "…" (cut at the last space ≤ 23 when one exists after char 10, then "…"). The full name stays in the label's aria-label and tooltip (unchanged code paths using `topic.name`).
+  2. The label box used by the overlap nudge must cover BOTH lines (name line + hours line): `h` = fontSize + LABEL_LINE_GAP + the hours line's font size (read how the hours line is rendered ~line 217–230 and use its real size), and `w` = max(name width, hours width).
+  3. After nudging, re-clamp x with the label's real `w` so `x + w/2 <= LABEL_MAX_X` and `x - w/2 >= LABEL_MIN_X`; re-clamp y to the map's vertical bounds the same way.
+  4. Run the existing pairwise nudge until no two label boxes overlap (with LABEL_GAP) or 50 passes, whichever first.
+  In `web/app/stats/galaxy.css`: replace `.sx-gal-list { display: none; …}` at desktop with a visually-hidden-but-focusable pattern (position:absolute; width:1px; height:1px; overflow:hidden; clip-path: inset(50%); white-space:nowrap) that becomes fully visible (static, auto size, no clip) on `:focus-within` and at ≤599px (keep the existing phone rule). Do not change dot `tabIndex`.
+TESTS      (a) a 10-topic fixture whose labels would collide (two topics with near-identical centroid and long names) → no two label boxes overlap, every box inside [LABEL_MIN_X, LABEL_MAX_X] horizontally; (b) a 42-char name renders ≤ 24 chars ending in "…" while its aria-label carries the full name; (c) label `h` exceeds fontSize + LABEL_LINE_GAP (hours line counted); (d) galaxy.css has no `display: none` on `.sx-gal-list` outside the ≤599px media query and contains `:focus-within`.
+THE FIVE   (same five as T015)
+
+## Contract for T047 — Heartbeats compact rows, river legend removed, river scale says per day
+USAGE      `<TopicHeartbeats/>`, `<TopicRiver/>`
+CALLS      Design evaluator round 5: the ten topics are listed four times; Heartbeats takes ~1000px; river scale "10.4h" lacks a unit.
+  TopicHeartbeats.tsx / heartbeats.css: description clamped to ONE line (`-webkit-line-clamp: 1` + `title` attribute with the full text, also keep it in the row's aria-label if one exists); keyword chips capped at 3 (`MAX_CHIPS = 3`); ticket chips moved out of the visible row into the row's tooltip — the row already uses tipProps or add `{...tipProps(...)}` from `./StatTip` with rows ["Tickets", labels joined by ", "] alongside whatever the row tip has (grep StatTip usage in the same folder for the exact API); row vertical padding ≤ 8px so a row is ≤ ~64px at 1280px. Keep the rhythm badge, raster, hours bar.
+  TopicRiver.tsx / river.css: delete the `<ul className="sx-river-legend">` block and its CSS (Heartbeats is the colour key now). Topics that had no in-band label must still be discoverable: their band keeps its aria-label/tooltip (unchanged). The scale bracket label reads `${scaleHours(x)} / day` when bin is "day" and `${scaleHours(x)} / week` when bin is "week" (find where scaleHours is rendered).
+TESTS      Heartbeats: ≤3 chips for a topic with 8 keywords; no `.hb-ticket` in the visible row but the tooltip payload contains the ticket labels; description element carries `title` = full text; CSS has line-clamp 1. River: no `.sx-river-legend` in markup or river.css; scale label ends "/ day" for bin day and "/ week" for bin week.
+THE FIVE   (same five as T015)
+
+## Contract for T048 — Galaxy names wrap to two lines instead of being cut
+USAGE      `galaxyLayout(report)`; `<TopicGalaxy/>`
+CALLS      Design evaluator round 6: five of ten galaxy names end in "…" (T046's `shortName`, TopicGalaxy.tsx:69) and similar names ("Code Interpreter Infrastructure" vs "Code Interpreter and History Configuration") become indistinguishable. Replace the cut with a wrap: add `export function wrapName(name: string): string[]` — names ≤ MAX_LABEL_CHARS (24) → `[name]`; longer → split at the last space at or before index 24 into two lines; if there is no such space, or the second line is still > 24 chars, the second line is cut to 23 chars + "…" (so at most two lines, each ≤ 24 chars, and the first line is always whole words). Render each line as a `<tspan x={l.x} dy=…>` inside the existing `.sx-gal-name` text (first line dy 0, second line dy = fontSize * 1.1). The hours line moves down by one extra name line when wrapped. The label box used by the nudge: `h = lines * fontSize * 1.1 + LABEL_LINE_GAP + HOURS_FONT` (adjust to the real render offsets you use), `w = max(widest name line, hours width)`. Keep the pairwise nudge, clamping and the 50-pass cap from T046. Remove `shortName` if nothing else uses it. The aria-label and tooltip keep the full `topic.name`.
+TESTS      wrapName: 24-char name → 1 line; "Code Interpreter and History Configuration" → ["Code Interpreter and", "History Configuration"]; a 60-char name with spaces → 2 lines, second ends "…", each ≤ 24; a 30-char name with no space → 2 lines… (first 24 chars, then rest) — define and assert your rule. Layout: a wrapped label's h is greater than an unwrapped one at the same fontSize; the 10-topic collision fixture from T046 still has no overlapping boxes. Render: the two-line label renders two tspans and no "…" for "Code Interpreter and History Configuration".
+THE FIVE   (same five as T015)
+
+## Contract for T049 — Mirror column date labels and full compass key
+USAGE      `<DayMirror/>`, `<DayCompass/>`
+CALLS      Design evaluator rounds 5 and 6: the Mirror staircase has row labels (`.sx-mir-rowlabel`, DayMirror.tsx:73) but no column labels, so the second day of a pair cannot be found; the Compass key shows only KEY_MAX topics (DayCompass.tsx:121) and dot size is unexplained.
+  DayMirror: add a column-label row above the grid — one `<span className="sx-mir-collabel" aria-hidden="true">` per day placed with `gridRow` of a new first row and `gridColumn: column + 2` (match how row labels/cells are positioned; shift existing rows down by one if the grid uses explicit gridRow), text = day-of-month number (e.g. "23"), shown on every column when there are ≤ 31 days and every other column otherwise. Do NOT add tab stops (keep the current tabIndex model unchanged). mirror.css: `.sx-mir-collabel` 11px mono, --fg-muted, centered.
+  DayCompass: key lists every topic that has at least one plotted day (drop the KEY_MAX slice), sorted as today; append a key item "dot size = hours that day" (or what the dot radius actually encodes — read the code and state it exactly; if radius is constant, write nothing about size).
+TESTS      Mirror: a 10-day fixture renders 10 `.sx-mir-collabel` with the day numbers; a 40-day fixture renders 20; the count of tabIndex=0 elements is unchanged from before the change (assert the exact number for the fixture). Compass: a fixture with 7 topics plotted renders 7 key swatches; the size note text matches the real radius encoding.
+THE FIVE   (same five as T015)
+
+## Contract for T050 — Atlas type hierarchy: names larger and sans, mono for numbers only
+USAGE      CSS only
+CALLS      Design evaluator rounds 5 and 6: everything is 13px mono, so there is no hierarchy. heartbeats.css: `.hb-name` → `font-family: inherit` (Geist sans), `font-size: 15px`, `font-weight: 600`, `line-height: 1.25`; `.hb-chip` stays mono 12px; `.hb-description` 13px. moments.css: `.tm-label` 14px weight 500; `.tm-num`, `.tm-when` stay mono but 12px; `.tm-chip` 12px. Change nothing else.
+TESTS      CSS-content tests (the existing pattern in these test files reads the css file): .hb-name has 15px, 600 and no var(--font-mono); .tm-label 14px; .tm-num 12px mono.
+THE FIVE   (same five as T015)
+
+## Contract for T051 — Heartbeat strips share one time axis
+USAGE      CSS only
+CALLS      Design evaluator round 7 (severity 3, chart honesty): heartbeat rasters end at different x per row (855/865/868/889 px) so the same date sits at a different x in each row. Cause: `.hb-track` also has class `.sr-track`, whose rule `grid-column: 2 / 4` (web/app/stats/charts-ranked.css:12) spawns implicit auto columns inside the single-column `.hb-data` grid (heartbeats.css:23), so column 1 width depends on each row's text. Fix in web/app/stats/heartbeats.css only: give `.hb-raster`, `.hb-dates`, `.hb-track` and `.hb-hours` (every direct child of `.hb-data`) `grid-column: 1 / -1` (or `1`) so `.hb-data` never grows implicit columns; keep `grid-template-columns: minmax(0, 1fr)`. Do not touch charts-ranked.css (shared by other charts). If the hours/dates line needs to sit on one row, keep it inside `.hb-dates` as today.
+TESTS      CSS-content test: heartbeats.css sets `grid-column` on `.hb-track` (overriding sr-track) and on `.hb-raster`; a render test that every `.hb-data` child has no inline gridColumn other than column 1 is optional. Keep the 13px floor test green.
+THE FIVE   (same five as T015)
+
+## Contract for T052 — River focus ring and 13px text
+USAGE      CSS + one constant
+CALLS      Design evaluator round 7: `.sx-river-band:focus-visible { outline: none }` (river.css:2) leaves only an opacity change as the focus cue; `.sx-river-name` and `.sx-river .st-svg .art-label` are 12px, under the page's 13px floor; the scale label "10.4h / day" may clip in the 60px gutter (TopicRiver.tsx:12 `GUTTER = 60`). Fix: hover keeps fill-opacity 1; `:focus-visible` gets `fill-opacity: 1; stroke: var(--fg); stroke-width: 2` (no `outline: none` on focus); both 12px rules → 13px; `GUTTER` → 96. If any label-fit logic in TopicRiver.tsx uses a char-width constant tied to 12px, scale it to 13px so overlap checks stay correct.
+TESTS      river.css: no `outline: none` on focus-visible; focus-visible has a stroke; no font-size under 13px (add a floor test like the other modules'); GUTTER = 96 reflected in viewBox width (W + 96). Existing label-placement tests stay green (update only numbers that follow mechanically from the 13px/char width change and say which).
+THE FIVE   (same five as T015)
+
+## Contract for T053 — One name per idea: First time / Oddball / Newness
+USAGE      copy only
+CALLS      Design evaluator round 7: one idea has several names — "First times" (card), "first time" (galaxy legend), "New ground" (moments badge), "Novelty" (galaxy dot tip, TopicGalaxy.tsx:162); "Oddballs" (card), "oddball" (legend), "Unlike anything else" (badge). Rule: badge text in TopicMoments.tsx:54 becomes "First time" / "Oddball"; galaxy dot tip row "Novelty" → "Newness" (matching the compass axis). Column titles "First times"/"Oddballs" and the legend stay. Change no other copy.
+TESTS      update the assertions that pin the old strings to the new ones (this is the requested change, not a weakening); add one assertion that no rendered Moments/Galaxy output contains "New ground", "Unlike anything else" or "Novelty".
+THE FIVE   (same five as T015)
+
+## Contract for T054 — Three honesty fixes: compass arrow, river clipping, heartbeat active-dates label
+USAGE      `<DayCompass/>`, `<TopicRiver/>`, `<TopicHeartbeats/>`
+CALLS      Design evaluator round 8 found three things that mislead on real data:
+  1. DayCompass.tsx:136 — the y-axis label "Newness ↑" sits in a `<text>` with `rotate(-90)`, so the glyph rotates and renders pointing LEFT, while "new ground" is at the TOP. Change the text to "Newness →" (under rotate(-90), "→" points up).
+  2. TopicRiver.tsx:17 `CHAR_PX = 7.8` ignores river.css's `letter-spacing: 0.06em` on 13px mono uppercase (real advance ≈ 13·0.6 + 13·0.06 = 8.58); labels like "CODE INTERPRETER INFRASTRUCTURE" clip at the left edge and the scale "10.4h / day" clips to "10.4h / da". Set `CHAR_PX = 8.6` and `GUTTER = 120` (line 12). Comment the 8.6 derivation in one line.
+  3. TopicHeartbeats.tsx ~114–118 + heartbeats.css:25 — `.hb-dates` pins the topic's first-active and last-active dates to the left and right ends of a raster that spans the WHOLE report range, so "Sep 23 – Oct 1" looks like the raster's own edges. Render the dates as one left-aligned line "active Sep 23 – Oct 1" (one span of text; same shortMonthDay calls; when both dates are equal: "active Sep 23"), and change `.hb-dates` to `justify-content: flex-start` (keep 13px, --fg-muted, margin).
+TESTS      Compass: the rotated axis text is "Newness →" (assert no "↑" inside the rotated element). River: CHAR_PX = 8.6 reflected in labelBox width (chars × 8.6); viewBox width = W + 120. Update the existing numeric assertions that follow mechanically (say which). Heartbeats: the dates element's text is "active Sep 23 – Oct 1" for a two-date fixture and "active Sep 23" for a same-day fixture; css has `justify-content: flex-start` on `.hb-dates`. Keep all 13px floor tests green.
+THE FIVE   (same five as T015)

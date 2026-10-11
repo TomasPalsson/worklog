@@ -1,0 +1,43 @@
+bun test v1.2.4 (fd9a5ea6)
+
+components/stats/TopicHeartbeats.test.tsx:
+(pass) rhythmOf > always: exactly half the work days qualifies (catches > for >=)
+(pass) rhythmOf > always: one day short of half does not (catches >= off by one)
+(pass) rhythmOf > always: half of an odd count is not rounded down (catches Math.floor)
+(pass) rhythmOf > sprint: a 6-day span with 3 active days qualifies (catches < for <=) [0.88ms]
+(pass) rhythmOf > sprint: a 7-day span does not (catches span <= 7)
+(pass) rhythmOf > sprint: 2 active days in a 6-day span does not (catches days_active >= 2)
+(pass) rhythmOf > sprint: spans are measured in days across a month end (catches day-of-month subtraction)
+(pass) rhythmOf > one_off: exactly one active day
+(pass) rhythmOf > one_off: two active days is not one-off (catches <= 2)
+(pass) rhythmOf > one_off: zero active days is not one-off (catches <= 1) [0.04ms]
+(pass) heartbeatTip > exact values: duration, share of all topics, days, blocks, rhythm note
+(pass) heartbeatTip > no rhythm means no note; no description means no sub [0.10ms]
+(pass) heartbeatTip > zero total seconds does not divide by zero
+(pass) TopicHeartbeats > renders one row per topic [11.27ms]
+(pass) TopicHeartbeats > rows are keyboard focusable, labelled and carry the tip [2.65ms]
+(pass) TopicHeartbeats > one tick per river bin per topic, heights proportional to hours against the largest bin [2.18ms]
+(pass) TopicHeartbeats > caps keyword chips at 4 (catches the old cap of 5) [1.49ms]
+(pass) TopicHeartbeats > generic dev words are dropped from chips, case-insensitively (catches no filter, exact-case filter) [1.12ms]
+(pass) TopicHeartbeats > generic words do not use up the cap (catches slice-then-filter) [1.01ms]
+(pass) TopicHeartbeats > a word that merely contains a generic word stays (catches substring match) [1.02ms]
+(pass) TopicHeartbeats > keyword-named topics are marked for muted italic; AI-named are not [1.51ms]
+(pass) TopicHeartbeats > badge shows the rhythm text; none when no rhythm applies [1.54ms]
+(pass) TopicHeartbeats > work days count only days with work [0.66ms]
+(pass) TopicHeartbeats > ticket keys appear without hours [1.43ms]
+(pass) TopicHeartbeats > shows the How line and no NaN, undefined or null [1.07ms]
+(pass) TopicHeartbeats > every row is the same three-column template, whatever the description length [2.27ms]
+(pass) TopicHeartbeats > raster, bar and tickets sit in the third column, badge and name in the first [1.31ms]
+(pass) TopicHeartbeats > css fixes the row template at desktop width and stacks below 800px [0.16ms]
+(pass) TopicHeartbeats > raster is a grid of one equal column per river bin, full width (catches flex or a fixed column count) [1.35ms]
+(pass) TopicHeartbeats > ticks carry no inline max-width (catches a width cap that breaks the shared edge) [1.15ms]
+(pass) TopicHeartbeats > every row has its own caption: that topic's first and last non-zero bins (catches first-row-only or river-wide dates) [1.37ms]
+(pass) TopicHeartbeats > a topic with no active bin gets no caption while others keep theirs [2.68ms]
+(pass) TopicHeartbeats > date caption: en dash separator is aria-hidden between two date spans; hours sit outside it [1.14ms]
+(pass) TopicHeartbeats > no date caption when no bin has time (catches reading an undefined bin) [0.68ms]
+(pass) TopicHeartbeats > css: no tick max-width, raster is gapped, no text under 13px, ticket keys use --fg-muted [0.04ms]
+
+ 35 pass
+ 0 fail
+ 81 expect() calls
+Ran 35 tests across 1 files. [142.00ms]

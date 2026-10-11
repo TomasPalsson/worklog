@@ -1,0 +1,30 @@
+bun test v1.2.4 (fd9a5ea6)
+
+components/stats/TopicHeartbeats.test.tsx:
+(pass) rhythmOf > always: exactly half the work days qualifies (catches > for >=) [0.11ms]
+(pass) rhythmOf > always: one day short of half does not (catches >= off by one)
+(pass) rhythmOf > always: half of an odd count is not rounded down (catches Math.floor) [0.09ms]
+(pass) rhythmOf > sprint: a 6-day span with 3 active days qualifies (catches < for <=) [0.08ms]
+(pass) rhythmOf > sprint: a 7-day span does not (catches span <= 7)
+(pass) rhythmOf > sprint: 2 active days in a 6-day span does not (catches days_active >= 2) [0.07ms]
+(pass) rhythmOf > sprint: spans are measured in days across a month end (catches day-of-month subtraction)
+(pass) rhythmOf > one_off: exactly one active day
+(pass) rhythmOf > one_off: two active days is not one-off (catches <= 2)
+(pass) rhythmOf > one_off: zero active days is not one-off (catches <= 1)
+(pass) heartbeatTip > exact values: duration, share of all topics, days, blocks, rhythm note [0.10ms]
+(pass) heartbeatTip > no rhythm means no note; no description means no sub [0.02ms]
+(pass) heartbeatTip > zero total seconds does not divide by zero
+(pass) TopicHeartbeats > renders one row per topic [14.73ms]
+(pass) TopicHeartbeats > rows are keyboard focusable, labelled and carry the tip [3.19ms]
+(pass) TopicHeartbeats > one tick per river bin per topic, heights proportional to hours against the largest bin [2.80ms]
+(pass) TopicHeartbeats > caps keyword chips at 5 [2.10ms]
+(pass) TopicHeartbeats > keyword-named topics are marked for muted italic; AI-named are not [1.80ms]
+(pass) TopicHeartbeats > badge shows the rhythm text; none when no rhythm applies [1.76ms]
+(pass) TopicHeartbeats > work days count only days with work [1.19ms]
+(pass) TopicHeartbeats > ticket keys appear without hours [1.69ms]
+(pass) TopicHeartbeats > shows the How line and no NaN, undefined or null [1.42ms]
+
+ 22 pass
+ 0 fail
+ 36 expect() calls
+Ran 22 tests across 1 files. [193.00ms]

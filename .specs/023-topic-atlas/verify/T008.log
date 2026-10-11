@@ -1,0 +1,28 @@
+bun test v1.2.4 (fd9a5ea6)
+
+components/stats/ActivityStream.test.tsx:
+(pass) bandPath > is a closed path without NaN for flat and spiky data [0.28ms]
+(pass) buildLayers > drops all-zero series and records totals and peaks [0.34ms]
+(pass) buildLayers > supports a single day [0.06ms]
+(pass) ActivityStream > renders legend totals, aria and the caption [16.34ms]
+(pass) ActivityStream > empty state [0.86ms]
+
+components/stats/TopicRiver.test.tsx:
+(pass) buildRiver > band thickness per bin equals bin seconds times one shared scale [0.31ms]
+(pass) buildRiver > is centred: each bin's stack is symmetric about the midline [0.10ms]
+(pass) buildRiver > orders layers by first active bin, ties by id [0.16ms]
+(pass) buildRiver > drops topics with zero total [0.05ms]
+(pass) buildRiver > has no NaN with an all-zero bin [0.08ms]
+(pass) buildRiver > returns null when every bin is zero
+(pass) buildRiver > returns null for fewer than 2 bins, builds at exactly 2 [0.08ms]
+(pass) buildRiver > labels a band exactly at 14px and not just under [0.08ms]
+(pass) buildRiver > measures thickness at the layer's own widest bin [0.14ms]
+(pass) TopicRiver > renders one band per layer with a band tip [3.56ms]
+(pass) TopicRiver > column tip shows the bin's top 4 topics by hours [2.58ms]
+(pass) TopicRiver > shows axis labels in .art-label and the How line [1.97ms]
+(pass) TopicRiver > renders nothing for fewer than 2 bins [0.38ms]
+
+ 18 pass
+ 0 fail
+ 41 expect() calls
+Ran 18 tests across 2 files. [206.00ms]

@@ -1,0 +1,15 @@
+bun test v1.2.4 (fd9a5ea6)
+
+components/stats/DayMirror.test.tsx:
+(pass) mirrorTip > builds the exact tip for a pair [12.28ms]
+(pass) mirrorTip > signs a positive similarity with + [0.61ms]
+(pass) DayMirror > renders D(D+1)/2 cells over the last D days [19.03ms]
+(pass) DayMirror > positive is amber family, negative slate family, scaled by the largest off-diagonal [8.71ms]
+(pass) DayMirror > is omitted below 3 days and shown at exactly 3 [8.70ms]
+(pass) DayMirror > renders no NaN, undefined or null, even when every pair is 0 [7.93ms]
+(pass) DayMirror > shows the How line [6.99ms]
+
+ 7 pass
+ 0 fail
+ 18 expect() calls
+Ran 7 tests across 1 files. [216.00ms]

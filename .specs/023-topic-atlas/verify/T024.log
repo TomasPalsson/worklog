@@ -1,0 +1,24 @@
+bun test v1.2.4 (fd9a5ea6)
+
+components/stats/DayCompass.test.tsx:
+(pass) compassLayout > puts the crosshairs at the medians of the plotted days only [0.29ms]
+(pass) compassLayout > uses the mean of the two middle values for an even count
+(pass) compassLayout > assigns quadrants, with a value equal to the median counting as deep / new [0.14ms]
+(pass) compassLayout > flags the day farthest from the crosshairs per quadrant, normalised by axis span [0.05ms]
+(pass) compassLayout > lists None-focus days as skipped and never plots them [0.03ms]
+(pass) compassLayout > scales radius with the square root of hours [0.03ms]
+(pass) compassLayout > keeps every coordinate finite with one plotted day, none, or zero hours [0.16ms]
+(pass) compassTip > lists day, hours, focus, novelty, switches, longest run and topics touched [8.33ms]
+(pass) DayCompass > draws one dot per plotted day with a tip, plus two crosshair lines and four captions [18.01ms]
+(pass) DayCompass > labels the extreme day of each quadrant with weekday and date [7.46ms]
+(pass) DayCompass > lists the None-focus days under the chart [6.22ms]
+(pass) DayCompass > omits the skipped line when every day has a focus [1.94ms]
+(pass) DayCompass > renders nothing when no day can be plotted [0.27ms]
+(pass) DayCompass > renders no NaN, undefined or null [6.28ms]
+(pass) DayCompass > shows the How line [6.03ms]
+(pass) DayCompass > keeps every leader label box inside the plot and clear of the captions [6.04ms]
+
+ 16 pass
+ 0 fail
+ 73 expect() calls
+Ran 16 tests across 1 files. [198.00ms]

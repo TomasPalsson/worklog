@@ -1,0 +1,40 @@
+bun test v1.2.4 (fd9a5ea6)
+
+components/stats/TopicRiver.test.tsx:
+(pass) buildRiver > band thickness per bin equals bin seconds times one shared scale [0.49ms]
+(pass) buildRiver > is centred: each bin's stack is symmetric about the midline
+(pass) buildRiver > orders layers by first active bin, ties by id [0.30ms]
+(pass) buildRiver > drops topics with zero total [0.03ms]
+(pass) buildRiver > has no NaN with an all-zero bin [0.06ms]
+(pass) buildRiver > returns null when every bin is zero
+(pass) buildRiver > returns null for fewer than 2 bins, builds at exactly 2 [0.08ms]
+(pass) buildRiver > labels a band exactly at 18px and not just under [0.07ms]
+(pass) buildRiver > measures thickness at the layer's own widest bin
+(pass) river trimming and labels > trims leading and trailing zero bins [0.08ms]
+(pass) river trimming and labels > keeps interior zero bins
+(pass) river trimming and labels > returns null when only one bin has data
+(pass) river trimming and labels > axis ticks follow the trimmed bins [9.48ms]
+(pass) river trimming and labels > placed label boxes are pairwise disjoint with a 4px pad, and some are dropped [0.24ms]
+(pass) river trimming and labels > the largest topic keeps its label [0.16ms]
+(pass) river trimming and labels > a topic peaking in the first bin keeps its label box inside x >= 8 [0.02ms]
+(pass) river trimming and labels > a topic peaking in the last bin keeps its label box inside x + w <= W - 8 [0.11ms]
+(pass) river trimming and labels > drops a label whose band is under 18px at the clamped x [0.05ms]
+(pass) river trimming and labels > skips a label wider than the viewBox and keeps one that fits [0.09ms]
+(pass) river trimming and labels > legend lists every topic, labelled inline or not [3.41ms]
+(pass) river trimming and labels > legend still renders when every topic is labelled inline [1.09ms]
+(pass) river design pass > one tick and label per Monday in 3 weeks of day bins [1.85ms]
+(pass) river design pass > week bins tick every 4th bin (fixture bins are consecutive days) [1.31ms]
+(pass) river design pass > scale label equals the tallest stack's hours and the bracket spans it [1.36ms]
+(pass) river design pass > scale label keeps a fractional hour [0.91ms]
+(pass) river design pass > svg scrolls horizontally from 720px [0.90ms]
+(pass) river design pass > is an sr-card titled Topic river [0.77ms]
+(pass) TopicRiver > renders one band per layer with a band tip [0.89ms]
+(pass) TopicRiver > column tip shows the bin's top 4 topics by hours [1.61ms]
+(pass) TopicRiver > paints the column rects before the bands so bands receive the pointer [1.14ms]
+(pass) TopicRiver > shows the How it works line [1.54ms]
+(pass) TopicRiver > renders nothing for fewer than 2 bins
+
+ 32 pass
+ 0 fail
+ 61 expect() calls
+Ran 32 tests across 1 files. [135.00ms]

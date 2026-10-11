@@ -1,0 +1,33 @@
+bun test v1.2.4 (fd9a5ea6)
+
+components/stats/TopicHeartbeats.test.tsx:
+(pass) rhythmOf > always: exactly half the work days qualifies (catches > for >=) [0.10ms]
+(pass) rhythmOf > always: one day short of half does not (catches >= off by one) [0.03ms]
+(pass) rhythmOf > always: half of an odd count is not rounded down (catches Math.floor) [0.04ms]
+(pass) rhythmOf > sprint: a 6-day span with 3 active days qualifies (catches < for <=) [0.08ms]
+(pass) rhythmOf > sprint: a 7-day span does not (catches span <= 7) [0.01ms]
+(pass) rhythmOf > sprint: 2 active days in a 6-day span does not (catches days_active >= 2)
+(pass) rhythmOf > sprint: spans are measured in days across a month end (catches day-of-month subtraction) [0.04ms]
+(pass) rhythmOf > one_off: exactly one active day
+(pass) rhythmOf > one_off: two active days is not one-off (catches <= 2) [0.02ms]
+(pass) rhythmOf > one_off: zero active days is not one-off (catches <= 1) [0.01ms]
+(pass) heartbeatTip > exact values: duration, share of all topics, days, blocks, rhythm note [0.10ms]
+(pass) heartbeatTip > no rhythm means no note; no description means no sub [0.01ms]
+(pass) heartbeatTip > zero total seconds does not divide by zero
+(pass) TopicHeartbeats > renders one row per topic [19.89ms]
+(pass) TopicHeartbeats > rows are keyboard focusable, labelled and carry the tip [4.65ms]
+(pass) TopicHeartbeats > one tick per river bin per topic, heights proportional to hours against the largest bin [3.21ms]
+(pass) TopicHeartbeats > caps keyword chips at 5 [2.16ms]
+(pass) TopicHeartbeats > keyword-named topics are marked for muted italic; AI-named are not [2.34ms]
+(pass) TopicHeartbeats > badge shows the rhythm text; none when no rhythm applies [2.50ms]
+(pass) TopicHeartbeats > work days count only days with work [1.32ms]
+(pass) TopicHeartbeats > ticket keys appear without hours [2.42ms]
+(pass) TopicHeartbeats > shows the How line and no NaN, undefined or null [1.95ms]
+(pass) TopicHeartbeats > every row is the same three-column template, whatever the description length [3.13ms]
+(pass) TopicHeartbeats > raster, bar and tickets sit in the third column, badge and name in the first [2.13ms]
+(pass) TopicHeartbeats > css fixes the row template at desktop width and stacks below 800px [0.26ms]
+
+ 25 pass
+ 0 fail
+ 54 expect() calls
+Ran 25 tests across 1 files. [233.00ms]

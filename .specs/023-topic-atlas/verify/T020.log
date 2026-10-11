@@ -1,0 +1,55 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
+     Running unittests src/lib.rs (rust/target/debug/deps/worklog_core-5f98b59a3618f7a2)
+
+running 9 tests
+test claude_subprocess::tests::default_invoker_timeout_is_unchanged ... ok
+test claude_subprocess::tests::with_thinking_uses_the_longer_timeout ... ok
+test claude_subprocess::tests::with_timeout_sets_that_timeout_and_no_thinking ... ok
+test claude_subprocess::tests::default_has_no_thinking_env ... ok
+test claude_subprocess::tests::with_thinking_sets_max_thinking_tokens ... ok
+test claude_subprocess::tests::every_call_runs_without_tools_plugins_or_user_settings ... ok
+test claude_subprocess::tests::thinking_call_turns_thinking_on_explicitly ... ok
+test estimate::tests::resolve_provider_defaults_to_claude_subprocess_when_nothing_set ... ok
+test claude_subprocess::tests::bounded_concurrent_invoke_rolls_past_a_slow_call_in_order_and_bounded ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 2066 filtered out; finished in 0.91s
+
+     Running tests/env_fallback.rs (rust/target/debug/deps/env_fallback-47156b92c77a69b4)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
+     Running unittests src/lib.rs (rust/target/debug/deps/worklog_core-5f98b59a3618f7a2)
+
+running 20 tests
+test daemon::tests::daemon_stats::stats_returns_the_contract_keys ... ok
+test daemon::tests::daemon_stats::topics_report_loads_exactly_the_right_blocks_and_counts_skipped ... ok
+test daemon::tests::daemon_stats::stats_defaults_to_an_empty_one_day_range ... ok
+test daemon::tests::daemon_stats::naming_fully_cached_topics_get_ai_names_and_naming_is_ai ... ok
+test daemon::tests::daemon_stats::naming_helper_down_writes_no_names ... ok
+test daemon::tests::daemon_stats::topics_report_maps_a_helper_error_to_helper_down ... ok
+test daemon::tests::daemon_stats::a_failing_second_batch_keeps_the_first_batchs_names_and_stops ... ok
+test daemon::tests::daemon_stats::naming_one_uncached_topic_is_pending_with_a_keyword_name ... ok
+test daemon::tests::daemon_stats::ten_topics_are_named_in_batches_of_four_four_two ... ok
+test daemon::tests::daemon_stats::naming_without_an_invoker_is_off_and_keeps_keyword_names ... ok
+test daemon::tests::daemon_stats::a_failed_topic_is_not_retried_until_the_window_passes ... ok
+test daemon::tests::daemon_stats::naming_route_is_pending_first_then_ai_once_the_job_lands ... ok
+test daemon::tests::daemon_stats::map_points_carry_label_topic_novelty_and_oddball_from_the_blocks ... ok
+test daemon::tests::daemon_stats::topics_report_propagates_a_db_error_instead_of_helper_down ... ok
+test daemon::tests::daemon_stats::topics_report_stores_nothing_when_a_later_batch_is_bad ... ok
+test daemon::tests::daemon_stats::topics_report_writes_only_block_embeddings ... ok
+test daemon::tests::daemon_stats::topics_route_with_no_blocks_is_too_few_not_an_error ... ok
+test daemon::tests::daemon_stats::map_points_are_withheld_below_ten_blocks_and_present_at_ten ... ok
+test daemon::tests::daemon_stats::topics_route_rejects_bad_ranges_and_dates ... ok
+test daemon::tests::daemon_stats::stats_rejects_bad_ranges_and_dates ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 2055 filtered out; finished in 0.59s
+
+     Running tests/env_fallback.rs (rust/target/debug/deps/env_fallback-47156b92c77a69b4)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+

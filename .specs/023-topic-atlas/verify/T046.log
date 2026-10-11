@@ -1,0 +1,61 @@
+bun test v1.2.4 (fd9a5ea6)
+
+components/stats/TopicGalaxy.test.tsx:
+(pass) galaxyLayout dots > maps x/y in [0,1] to the padded viewBox
+(pass) galaxyLayout dots > radius is 2.5 + 6*sqrt(seconds/max): max gives 8.5, quarter gives 5.5, zero gives 2.5 [0.54ms]
+(pass) galaxyLayout dots > rank is chronological by day then block id; delay is min(rank*3, 1200) ms [0.06ms]
+(pass) galaxyLayout dots > delay caps at 1200ms exactly at rank 400 and stays there past it [0.59ms]
+(pass) galaxyLayout dots > drops points whose topic is unknown instead of drawing NaN [0.04ms]
+(pass) galaxyLayout labels > font size is 11 + 9*sqrt(share): whole share 20, quarter share 15.5 [0.08ms]
+(pass) galaxyLayout labels > sits at the hours-weighted median, not the mean or first member [0.03ms]
+(pass) galaxyLayout labels > a topic with no points gets no label
+(pass) galaxyLayout labels > labels do not overlap after nudging a crowded fixture [0.29ms]
+(pass) galaxyLayout labels > a long-named label on an island at x=1 ends fully inside [8, 992]
+(pass) galaxyLayout labels > a long-named label at the right edge is clamped to x1 <= 992
+(pass) galaxyLayout labels > a 200-char name is cut to 24 chars ending in an ellipsis; the topic keeps the full name [0.01ms]
+(pass) galaxyLayout labels > a 24-char name is kept whole, a 25-char name is cut [0.08ms]
+(pass) galaxyLayout labels > a 42-char name is cut at the last space within 23 chars and renders with its full aria-label [10.95ms]
+(pass) galaxyLayout labels > a space at or before char 10 is not used as the cut point
+(pass) galaxyLayout labels > ten topics with two near-identical long-named centroids end with no overlapping boxes, all inside the map [0.26ms]
+(pass) galaxyLayout labels > label box height counts the hours line and width covers the hours text
+(pass) galaxyLayout labels > six labels crowded at the right edge stay inside the map and never overlap [0.06ms]
+(pass) galaxyLayout labels > hue comes from the topic id, not array position: id 3 of K=10 is 133
+(pass) galaxyLayout labels > labels far apart horizontally are left where they are
+(pass) tips > dot tip has exact title and rows
+(pass) tips > dot tip says none for a missing ticket
+(pass) tips > label tip carries description, keywords, hours and blocks
+(pass) tips > label tip omits sub without a description
+(pass) TopicGalaxy markup > dots are pointer-only (tabindex -1, still tipped) and labels are the tab stops [3.37ms]
+(pass) TopicGalaxy markup > every label is focusable with a tip [2.21ms]
+(pass) TopicGalaxy markup > markup never contains NaN, undefined or null [2.29ms]
+(pass) TopicGalaxy markup > draws a dashed ring at r+5 only for oddballs [1.57ms]
+(pass) TopicGalaxy markup > pending chip shows only when naming is pending [4.56ms]
+(pass) TopicGalaxy markup > emits one hover isolation rule per topic [1.30ms]
+(pass) TopicGalaxy markup > isolation also triggers on keyboard focus (focus-visible and focus-within) [1.18ms]
+(pass) TopicGalaxy markup > shows the How line [1.18ms]
+(pass) TopicGalaxy markup > viewBox height follows the y extent but never drops below 360 (y 0.2-0.6 gives 360, not 620) [0.95ms]
+(pass) TopicGalaxy markup > viewBox height grows with the range: y 0-0.8 gives 0.8*540+80 = 512 [1.63ms]
+(pass) TopicGalaxy markup > full y range keeps 620 [0.06ms]
+(pass) TopicGalaxy markup > legend row has both marks and the plain-words text [1.86ms]
+(pass) TopicGalaxy markup > headline names the two largest topics by seconds (not first two) with their rounded combined share [1.41ms]
+(pass) TopicGalaxy markup > headline with one topic is '1 topic · {A}' with no percentage [1.00ms]
+(pass) TopicGalaxy markup > no headline in the empty state [1.10ms]
+(pass) TopicGalaxy markup > headline css is 16px in --fg [0.23ms]
+(pass) TopicGalaxy markup > legend ends with the dot hint [1.26ms]
+(pass) TopicGalaxy markup > topic name fill is the topic hue lifted toward --fg [1.31ms]
+(pass) TopicGalaxy markup > every dot has a sibling hit circle r=12 behind it [1.63ms]
+(pass) TopicGalaxy markup > topic list has one focusable tipped row per topic with name and hours [1.29ms]
+(pass) TopicGalaxy markup > map svg fits its width: meet aspect ratio, no scroll or min-width container [1.27ms]
+(pass) TopicGalaxy markup > below 600px the css hides on-map labels, shows the list and enlarges dots 1.6x [0.15ms]
+(pass) TopicGalaxy markup > the caption has no jargon outside details [1.05ms]
+(pass) TopicGalaxy markup > no points shows the empty state and message, with no svg map [0.76ms]
+(pass) TopicGalaxy markup > contains no hard-coded hex colours [1.13ms]
+(pass) phone tap targets and spacing > below 600px the hit circle is scaled x3 about its centre [0.04ms]
+(pass) phone tap targets and spacing > below 600px the map container is at least 260px tall [0.02ms]
+(pass) phone tap targets and spacing > two labels at the same median y end at least 8px apart including the hours line [0.07ms]
+(pass) phone tap targets and spacing > every caption and legend font rule is at least 13px [0.09ms]
+
+ 53 pass
+ 0 fail
+ 269 expect() calls
+Ran 53 tests across 1 files. [149.00ms]
