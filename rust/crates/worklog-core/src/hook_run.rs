@@ -238,11 +238,12 @@ pub fn handle_input(conn: &Connection, input: &str, now: DateTime<Utc>) -> Resul
         Ok(payload) => handle(conn, &payload, now).map_err(|e| e.to_string()),
         Err(e) => Err(format!("invalid JSON on stdin: {e}")),
     };
-    if let Err(msg) = outcome {
+    if let Err(msg) = &outcome {
         eprintln!("worklog hook: {msg}");
-        if let Err(e) = crate::collect_health::record(conn, "claude", Err(&msg)) {
-            eprintln!("worklog hook: recording failed: {e}");
-        }
+    }
+    let health = outcome.as_ref().map(|_| ()).map_err(|m| m.as_str());
+    if let Err(e) = crate::collect_health::record(conn, "claude", health) {
+        eprintln!("worklog hook: recording failed: {e}");
     }
     Ok(())
 }

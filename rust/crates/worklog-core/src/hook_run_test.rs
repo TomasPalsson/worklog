@@ -390,6 +390,14 @@ fn path_key_beats_branch_key() {
     assert_eq!(jira_issue_for(&payload).as_deref(), Some("PROJ-9"));
 }
 
+fn last_ok(conn: &Connection, source: &str) -> Option<String> {
+    crate::collect_health::all(conn, now())
+        .unwrap()
+        .into_iter()
+        .find(|h| h.source == source)
+        .and_then(|h| h.last_ok)
+}
+
 fn last_err(conn: &Connection, source: &str) -> Option<String> {
     crate::collect_health::all(conn, now())
         .unwrap()
@@ -424,7 +432,7 @@ fn hook_invalid_json_is_recorded() {
 #[test]
 fn hook_success_records_no_error() {
     let conn = open_memory().unwrap();
-    // Recording on every call would flag a healthy hook.
+    // Never recording Ok leaves a healthy hook with no last_ok.
     handle_input(
         &conn,
         r#"{"hook_event_name":"Stop","session_id":"s"}"#,
@@ -432,6 +440,7 @@ fn hook_success_records_no_error() {
     )
     .unwrap();
     assert_eq!(last_err(&conn, "claude"), None);
+    assert!(last_ok(&conn, "claude").is_some());
 }
 
 fn transcript_dir() -> tempfile::TempDir {
@@ -472,4 +481,6 @@ fn transcript_reader_success_records_no_error() {
     crate::collectors::claude_transcripts::collect_from_dir(&conn, tmp.path(), since, until)
         .unwrap();
     assert_eq!(last_err(&conn, "claude_transcripts"), None);
+    // Recording only on Err leaves a healthy reader with no last_ok.
+    assert!(last_ok(&conn, "claude_transcripts").is_some());
 }
