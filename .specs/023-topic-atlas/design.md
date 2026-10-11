@@ -276,3 +276,21 @@ USAGE      Topic atlas on /stats, all views.
 CALLS      Design round 4 (composite 3.38; usability/a11y 3.0). Apply exactly these: (1) compass.css: `@media (max-width: 599px) { .sx-cmp-end, .sx-cmp-axis, .sx-cmp-leader-label (whatever the leader label class is in DayCompass.tsx) { font-size: 22px; } }` so viewBox text renders ~12px at 343px. (2) mirror.css: below 599px the grid sits in an `overflow-x: auto` wrapper and each column is at least 24px wide (min-width on the grid = 24px × columns); if the wrapper element does not exist, add it via CSS only on the existing card container. (3) River: `GUTTER` 48 → 60 (scale label no longer clipped); at ≤ 599px add a right-edge fade mask on the scroll container (`mask-image: linear-gradient(to right, black 85%, transparent)`) and a small "scroll →" caption. (4) Heartbeats: each ticket key in its own `<span class="hb-ticket">` with `white-space: nowrap`, the ticket line prefixed "Tickets:"; extend the local GENERIC chip list with: pptx, prs, pr, file, files, boost, thinking, binding, multi, base, revise, pdf. (5) Light-mode mark contrast: in galaxy.css (it is imported by the atlas section) add `:root:not([data-theme="dark"]) .sx-gal, :root:not([data-theme="dark"]) .sx-river, :root:not([data-theme="dark"]) .hb-row, :root:not([data-theme="dark"]) .sx-cmp { --project-l: 0.60; }` guarded so it only applies in light mode (respect both dark selectors: under `@media (prefers-color-scheme: dark) :root:not([data-theme="light"])` and `:root[data-theme="dark"]` it must NOT apply). (6) Moments: show scores as percentages — first times "85% new", oddballs "closest match 23% · your usual 57%"; tips keep the decimals.
 TESTS      update/extend the existing stats tests for (3) gutter/caption, (4) nowrap ticket spans, prefix and new generic words filtered, (6) percentage strings; a CSS assertion for (1), (2) and (5) rules; full `bun test components/stats` green and typecheck clean.
 THE FIVE   (same five as T015)
+
+## Contract for T041 — Build lint: keys on JSX arrays in AtlasArt test
+USAGE      `cd web && bun run build` succeeds.
+CALLS      `next build` lint fails: `./components/stats/AtlasArt.test.tsx` lines ~10-17 and ~32: "Missing "key" prop for element in array (react/jsx-key)". Give every JSX element inside those array literals a stable `key` (e.g. the kind name). Do not change any assertion. Do not disable the lint rule.
+TESTS      AtlasArt tests unchanged and green; `bun run build` exit 0.
+THE FIVE   (same five as T015)
+
+## Contract for T042 — Moments percentages stay within 0–100% and match tips/labels
+USAGE      `<TopicMoments/>`
+CALLS      Review of T040: novelty is `1 − best cosine` on centred vectors, so it ranges 0..2, and nearest cosine can be negative; `pct(score)` then shows "150% new" or "closest match -50%". Map scores to a bounded 0–100% before display: newness% = clamp(novelty / 2 × 100... — NO: use newness% = round(clamp(novelty, 0, 1) × 100) and match% = round(clamp(cosine, 0, 1) × 100) (a negative cosine reads as 0% match, i.e. "nothing alike"); apply the same mapping to the median. Use the same percentage strings in the card's aria-label, the tip rows and the How line, so every surface shows one unit.
+TESTS      novelty 1.5 → "100% new"; cosine −0.5 → "closest match 0%"; median −0.1 → "your usual 0%"; aria-label and tip rows contain the same percentage strings as the visible card.
+THE FIVE   (same five as T015)
+
+## Contract for T043 — Namer is told the 40-char name limit
+USAGE      the naming job's model call.
+CALLS      Review of T039: `parse_reply` drops names > 40 chars, but `SYSTEM_PROMPT` and `schema()` never state the limit, so a model that keeps returning long names gets re-asked every back-off window forever. Add `"maxLength": 40` to the name property and `"maxLength": 200` to description in `schema()`, and one prompt line: "Each name must be at most 40 characters." Keep everything else.
+TESTS      schema JSON contains maxLength 40 for name and 200 for description; SYSTEM_PROMPT contains the 40-character sentence.
+THE FIVE   (same five as T015)
