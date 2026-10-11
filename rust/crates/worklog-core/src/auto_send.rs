@@ -186,10 +186,17 @@ pub fn run_if_due(
                 )?;
             }
         }
-        if enabled && meta_get(conn, RECAP_KEY)?.as_deref() != Some(day.as_str()) {
-            build_recap(conn, &day)?;
+        let recapped = if enabled && meta_get(conn, RECAP_KEY)?.as_deref() != Some(day.as_str()) {
+            build_recap(conn, &day)
+                .inspect_err(|e| tracing::warn!("auto-send rollover recap {day}: {e:#}"))
+                .is_ok()
+        } else {
+            true
+        };
+        // A failed recap keeps the plan, so the ticks before 17:00 retry it.
+        if recapped {
+            meta_set(conn, PLAN_KEY, "")?;
         }
-        meta_set(conn, PLAN_KEY, "")?;
     }
     if !enabled || local.hour() < AUTO_SEND_HOUR {
         return Ok(());

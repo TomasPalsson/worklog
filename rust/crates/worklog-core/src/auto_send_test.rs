@@ -574,7 +574,7 @@ fn a_failed_rollover_recap_leaves_the_plan_so_the_next_tick_retries() {
     conn.execute("ALTER TABLE recaps RENAME TO recaps_off", [])
         .unwrap();
     let mut send = |_: &Connection, _: &TempoLineKey| unreachable("");
-    assert!(run_if_due(&conn, local(7, 0, 0), true, &mut send).is_err());
+    run_if_due(&conn, local(7, 0, 0), true, &mut send).unwrap();
     // catches: clearing the plan before the recap is built, losing the day's recap
     assert!(meta_get(&conn, PLAN_KEY).unwrap().unwrap().starts_with(DAY));
     conn.execute("ALTER TABLE recaps_off RENAME TO recaps", [])
@@ -582,6 +582,30 @@ fn a_failed_rollover_recap_leaves_the_plan_so_the_next_tick_retries() {
     tick(&conn, local(7, 0, 15), true, unreachable);
     let built = recap::latest(&conn).unwrap().map(|r| r.day);
     assert_eq!(built.as_deref(), Some(DAY));
+    for (k, v) in saved {
+        match v {
+            Some(v) => std::env::set_var(k, v),
+            None => std::env::remove_var(k),
+        }
+    }
+}
+
+#[test]
+fn a_failed_rollover_recap_does_not_stop_the_days_sending() {
+    let _g = crate::tz::test_env_lock();
+    let _e = crate::envfile::ENV_TEST_LOCK.blocking_lock();
+    let saved = ["WORKLOG_TZ", "WORKLOG_ENV_FILE"].map(|k| (k, std::env::var_os(k)));
+    std::env::remove_var("WORKLOG_TZ");
+    std::env::set_var("WORKLOG_ENV_FILE", "/nonexistent/worklog.env");
+    let conn = open_memory().unwrap();
+    ready_line(&conn, DAY, "A-1");
+    tick(&conn, local(6, 17, 0), true, unreachable);
+    ready_line(&conn, "2026-10-07", "B-1");
+    conn.execute("ALTER TABLE recaps RENAME TO recaps_off", [])
+        .unwrap();
+    let tried = tick(&conn, local(7, 17, 0), true, accepts);
+    // catches: propagating the recap error, which skips today's sends
+    assert_eq!(tried, vec!["2026-10-07/B-1".to_owned()]);
     for (k, v) in saved {
         match v {
             Some(v) => std::env::set_var(k, v),
