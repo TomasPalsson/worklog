@@ -360,13 +360,21 @@ fn an_unreachable_tempo_is_retried_each_tick_with_the_original_plan() {
     );
     ready_line(&conn, DAY, "LATE-1");
     let retry = tick(&conn, local(6, 17, 15), true, accepts);
-    // catches: latching the day on a failed run (retry empty), marking Not sent on the first
-    // failure (after_failure.1), and re-planning on retry (LATE-1 in retry)
+    // catches: latching the day on a failed run (retry empty), dropping the error text
+    // (after_failure.1), and re-planning on retry (LATE-1 in retry)
     assert_eq!(
         (after_failure, retry),
-        ((None, None), vec![format!("{DAY}/A-1")])
+        (
+            (
+                None,
+                Some("Tempo could not be reached: connection refused".to_string())
+            ),
+            vec![format!("{DAY}/A-1")]
+        )
     );
     assert!(column(&conn, DAY, "A-1", "auto_sent_at").is_some());
+    // catches: leaving the failure text behind after a retry succeeds
+    assert_eq!(column(&conn, DAY, "A-1", "send_error"), None);
 }
 
 #[test]
@@ -377,9 +385,16 @@ fn lines_still_unreachable_when_the_day_ends_are_marked_not_sent() {
     let last_tick = tick(&conn, local(6, 23, 45), true, unreachable);
     let marked_early = column(&conn, DAY, "A-1", "send_error");
     let tomorrow = tick(&conn, local(7, 0, 0), true, accepts);
-    // catches: giving up before the day is over (marked_early), retrying into the next day
-    // (tomorrow), never retrying at the last tick (last_tick empty)
-    assert_eq!((last_tick.len(), marked_early, tomorrow), (1, None, vec![]));
+    // catches: giving up before the day is over (last_tick empty), retrying into the next day
+    // (tomorrow), losing the cause before the day ends (marked_early)
+    assert_eq!(
+        (last_tick.len(), marked_early.as_deref(), tomorrow),
+        (
+            1,
+            Some("Tempo could not be reached: connection refused"),
+            vec![]
+        )
+    );
     assert_eq!(
         column(&conn, DAY, "A-1", "send_error").as_deref(),
         Some("Tempo could not be reached")
@@ -437,6 +452,11 @@ fn a_send_that_errors_does_not_stop_the_next_ticket() {
     assert_eq!(tried.len(), 2);
     assert!(column(&conn, DAY, "B-GOOD", "auto_sent_at").is_some());
     assert_eq!(column(&conn, DAY, "A-ERR", "auto_sent_at"), None);
+    // catches: swallowing the error so the line shows nothing in Review the same day
+    assert_eq!(
+        column(&conn, DAY, "A-ERR", "send_error").as_deref(),
+        Some("Tempo could not be reached: connection refused")
+    );
     let retry = tick(&conn, local(6, 17, 15), true, accepts);
     // catches: dropping the failed ticket from the plan instead of retrying it
     assert_eq!(retry, vec![format!("{DAY}/A-ERR")]);

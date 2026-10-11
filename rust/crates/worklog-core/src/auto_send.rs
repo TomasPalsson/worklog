@@ -94,9 +94,10 @@ pub fn ready_lines(conn: &Connection, day: &str) -> Result<Vec<TempoLine>> {
 fn pending(conn: &Connection, day: &str, issue: &str) -> Result<bool> {
     let open = conn
         .query_row(
-            "SELECT auto_sent_at IS NULL AND send_error IS NULL FROM tempo_line_texts
+            "SELECT auto_sent_at IS NULL
+                    AND (send_error IS NULL OR send_error LIKE ?3 || '%') FROM tempo_line_texts
               WHERE day = ?1 AND jira_issue = ?2",
-            params![day, issue],
+            params![day, issue, UNREACHABLE],
             |r| r.get(0),
         )
         .optional()?;
@@ -126,8 +127,8 @@ fn plan(conn: &Connection) -> Result<Option<(String, Vec<String>)>> {
 }
 
 /// One 15-minute tick. Plans the day's run at the first tick from 17:00, then
-/// sends each planned line through `send`; an unreachable Tempo leaves the
-/// rest for the next tick. Lines still unsent when the day is over are marked
+/// sends each planned line through `send`; an unreachable Tempo stores its
+/// error on the line and leaves it for the next tick. Lines still unsent when the day is over are marked
 /// Not sent (FR-27b).
 pub fn run_if_due(
     conn: &Connection,
@@ -175,6 +176,7 @@ pub fn run_if_due(
             Ok(results) => results,
             Err(e) => {
                 tracing::warn!("auto-send {}: {e:#}", key.jira_issue);
+                set_outcome(conn, &key, Some(&format!("{UNREACHABLE}: {e}")))?;
                 continue;
             }
         };
