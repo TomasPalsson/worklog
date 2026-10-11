@@ -484,3 +484,56 @@ fn transcript_reader_success_records_no_error() {
     // Recording only on Err leaves a healthy reader with no last_ok.
     assert!(last_ok(&conn, "claude_transcripts").is_some());
 }
+
+const STOP: &str = r#"{"hook_event_name":"Stop","session_id":"s"}"#;
+
+#[test]
+fn hook_open_failure_returns_ok() {
+    // Propagating the open error would block Claude.
+    assert!(run_with(STOP, || anyhow::bail!("no db")).is_ok());
+    // Invalid JSON with an unopenable DB is stderr only, still Ok.
+    assert!(run_with("{not json", || anyhow::bail!("no db")).is_ok());
+}
+
+#[test]
+fn hook_error_text_keeps_full_anyhow_chain() {
+    let conn = open_memory().unwrap();
+    conn.execute("DROP TABLE sessions", []).unwrap();
+    handle_input(&conn, STOP, now()).unwrap();
+    // `to_string()` keeps only the outermost context, dropping ": <cause>".
+    let err = last_err(&conn, "claude").expect("recorded");
+    assert!(err.contains(": "), "{err}");
+}
+
+fn seed_last_ok(conn: &Connection, age_secs: i64) -> String {
+    let stamp = (now() - chrono::Duration::seconds(age_secs)).to_rfc3339();
+    crate::purge::meta_set(conn, "collect.claude.last_ok", &stamp).unwrap();
+    stamp
+}
+
+#[test]
+fn last_ok_younger_than_60s_is_not_rewritten() {
+    let conn = open_memory().unwrap();
+    let seeded = seed_last_ok(&conn, 59);
+    handle_input(&conn, STOP, now()).unwrap();
+    // Writing on every call changes the stamp.
+    assert_eq!(last_ok(&conn, "claude"), Some(seeded));
+}
+
+#[test]
+fn last_ok_exactly_60s_old_is_rewritten() {
+    let conn = open_memory().unwrap();
+    let seeded = seed_last_ok(&conn, 60);
+    handle_input(&conn, STOP, now()).unwrap();
+    // `<=` instead of `<` would keep the stale stamp.
+    assert_ne!(last_ok(&conn, "claude"), Some(seeded));
+}
+
+#[test]
+fn error_is_recorded_even_when_last_ok_is_fresh() {
+    let conn = open_memory().unwrap();
+    seed_last_ok(&conn, 1);
+    handle_input(&conn, "{not json", now()).unwrap();
+    // Throttling the whole record call would swallow errors.
+    assert!(last_err(&conn, "claude").is_some());
+}

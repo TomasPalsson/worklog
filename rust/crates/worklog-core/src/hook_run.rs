@@ -225,27 +225,56 @@ pub fn run_from_stdin() -> Result<()> {
         );
         return Ok(());
     }
-    let paths = crate::paths::Paths::resolve()?;
-    paths.ensure()?;
-    let conn = crate::db::open(&paths.db)?;
-    handle_input(&conn, &buf, Utc::now())
+    run_with(&buf, || {
+        let paths = crate::paths::Paths::resolve()?;
+        paths.ensure()?;
+        crate::db::open(&paths.db)
+    })
+}
+
+/// Opening the DB is the only step that can fail before `handle_input`;
+/// it reports to stderr and returns Ok so Claude is never blocked.
+fn run_with(input: &str, open: impl FnOnce() -> Result<Connection>) -> Result<()> {
+    match open() {
+        Ok(conn) => handle_input(&conn, input, Utc::now()),
+        Err(e) => {
+            eprintln!("worklog hook: cannot open db: {e:#}");
+            Ok(())
+        }
+    }
 }
 
 /// Parse and handle one raw payload. A failure goes to stderr and into the
 /// `claude` source health, never out as an error.
 pub fn handle_input(conn: &Connection, input: &str, now: DateTime<Utc>) -> Result<()> {
     let outcome = match serde_json::from_str::<Value>(input) {
-        Ok(payload) => handle(conn, &payload, now).map_err(|e| e.to_string()),
+        Ok(payload) => handle(conn, &payload, now).map_err(|e| format!("{e:#}")),
         Err(e) => Err(format!("invalid JSON on stdin: {e}")),
     };
     if let Err(msg) = &outcome {
         eprintln!("worklog hook: {msg}");
     }
     let health = outcome.as_ref().map(|_| ()).map_err(|m| m.as_str());
+    if health.is_ok() && last_ok_is_fresh(conn, now) {
+        return Ok(());
+    }
     if let Err(e) = crate::collect_health::record(conn, "claude", health) {
         eprintln!("worklog hook: recording failed: {e}");
     }
     Ok(())
+}
+
+const LAST_OK_MIN_AGE_SECS: i64 = 60;
+
+fn last_ok_is_fresh(conn: &Connection, now: DateTime<Utc>) -> bool {
+    crate::purge::meta_get(conn, &crate::time_leaks_contract::collect_ok_key("claude"))
+        .ok()
+        .flatten()
+        .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+        .is_some_and(|t| {
+            let age = (now - t.with_timezone(&Utc)).num_seconds();
+            (0..LAST_OK_MIN_AGE_SECS).contains(&age)
+        })
 }
 
 // Tests live in hook_run_test.rs (same module, split file for line budget).
