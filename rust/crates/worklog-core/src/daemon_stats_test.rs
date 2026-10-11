@@ -80,6 +80,7 @@ async fn stats_rejects_bad_ranges_and_dates() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn topics_route_with_no_blocks_is_too_few_not_an_error() {
+    let _env = crate::envfile::ENV_TEST_LOCK.lock().await;
     {
         // Never read the developer's real env file.
         let _g = crate::tz::test_env_lock();
