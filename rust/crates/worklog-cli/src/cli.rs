@@ -1692,40 +1692,54 @@ fn collect_targets(
     paths.ensure()?;
     let conn = db::open(&paths.db)?;
     let client = http::client()?;
-    collect_targets_with(&conn, target, since, until, |source| match source {
-        CollectTarget::Jira => match jira_col::JiraAuth::from_secrets() {
-            Ok(auth) => jira_col::fetch_open_tickets_with(&conn, &auth, &client)
+    let mut err = io::stderr();
+    collect_targets_with(
+        &conn,
+        target,
+        since,
+        until,
+        &mut err,
+        |source| match source {
+            CollectTarget::Jira => match jira_col::JiraAuth::from_secrets() {
+                Ok(auth) => jira_col::fetch_open_tickets_with(&conn, &auth, &client)
+                    .map_err(|e| format!("fetch: {e}")),
+                Err(e) => Err(format!("skipped: {e}")),
+            },
+            CollectTarget::Github => match gh::GitHubAuth::from_secrets() {
+                Ok(auth) => gh::collect_with(&conn, &auth, since, until, &client)
+                    .map_err(|e| format!("fetch: {e}")),
+                Err(e) => Err(format!("skipped: {e}")),
+            },
+            CollectTarget::Gcal => match gcal_col::GcalAuth::from_paths() {
+                Ok(auth) => gcal_col::collect_with(&conn, &auth, since, until, &client)
+                    .map_err(|e| format!("fetch: {e}")),
+                Err(e) => Err(format!("skipped: {e}")),
+            },
+            CollectTarget::Slack => match slack_col::SlackAuth::from_secrets() {
+                Ok(auth) => slack_col::collect_with(
+                    &conn,
+                    &auth,
+                    since,
+                    until,
+                    &client,
+                    slack_col::SLACK_API,
+                )
                 .map_err(|e| format!("fetch: {e}")),
-            Err(e) => Err(format!("skipped: {e}")),
-        },
-        CollectTarget::Github => match gh::GitHubAuth::from_secrets() {
-            Ok(auth) => gh::collect_with(&conn, &auth, since, until, &client)
-                .map_err(|e| format!("fetch: {e}")),
-            Err(e) => Err(format!("skipped: {e}")),
-        },
-        CollectTarget::Gcal => match gcal_col::GcalAuth::from_paths() {
-            Ok(auth) => gcal_col::collect_with(&conn, &auth, since, until, &client)
-                .map_err(|e| format!("fetch: {e}")),
-            Err(e) => Err(format!("skipped: {e}")),
-        },
-        CollectTarget::Slack => match slack_col::SlackAuth::from_secrets() {
-            Ok(auth) => {
-                slack_col::collect_with(&conn, &auth, since, until, &client, slack_col::SLACK_API)
+                Err(e) => Err(format!("skipped: {e}")),
+            },
+            CollectTarget::Shell => {
+                fish_col::collect(&conn, since, until).map_err(|e| format!("fetch: {e}"))
+            }
+            CollectTarget::Reflog => {
+                reflog_col::collect(&conn, since, until).map_err(|e| format!("fetch: {e}"))
+            }
+            CollectTarget::ClaudeTranscripts => {
+                claude_transcripts_col::collect(&conn, since, until)
                     .map_err(|e| format!("fetch: {e}"))
             }
-            Err(e) => Err(format!("skipped: {e}")),
+            CollectTarget::All => unreachable!("collect_target_list only yields concrete sources"),
         },
-        CollectTarget::Shell => {
-            fish_col::collect(&conn, since, until).map_err(|e| format!("fetch: {e}"))
-        }
-        CollectTarget::Reflog => {
-            reflog_col::collect(&conn, since, until).map_err(|e| format!("fetch: {e}"))
-        }
-        CollectTarget::ClaudeTranscripts => {
-            claude_transcripts_col::collect(&conn, since, until).map_err(|e| format!("fetch: {e}"))
-        }
-        CollectTarget::All => unreachable!("collect_target_list only yields concrete sources"),
-    })
+    )
 }
 
 fn collect_targets_with(
@@ -1733,17 +1747,16 @@ fn collect_targets_with(
     target: CollectTarget,
     since: chrono::NaiveDate,
     until: chrono::NaiveDate,
+    err: &mut impl Write,
     run: impl Fn(CollectTarget) -> std::result::Result<worklog_core::collectors::CollectReport, String>,
 ) -> Result<Vec<CollectOutcome>> {
-    let report_failure = |r: Result<()>| {
+    let mut report_failure = |r: Result<()>| {
         if let Err(e) = r {
-            eprintln!("worklog: recording collect health failed: {e}");
+            let _ = writeln!(err, "worklog: recording collect health failed: {e}");
         }
     };
-    let record_health = |outcome: &CollectOutcome| {
-        report_failure(record_outcome(outcome, |s, h| {
-            worklog_core::collect_health::record(conn, s, h)
-        }));
+    let record = |s: &str, h: std::result::Result<(), &str>| {
+        worklog_core::collect_health::record(conn, s, h)
     };
 
     let mut outcomes = Vec::new();
@@ -1765,7 +1778,7 @@ fn collect_targets_with(
                 },
             },
         };
-        record_health(&outcome);
+        report_failure(record_outcome(&outcome, record));
         outcomes.push(outcome);
     }
 
@@ -1777,17 +1790,13 @@ fn collect_targets_with(
             let routed = routing::route_day(conn, d, &classifier, rule)
                 .and_then(|_| routing_absorb::absorb_and_noise(conn, d));
             match routed {
-                Ok(_) => report_failure(worklog_core::collect_health::record(
-                    conn,
-                    "routing",
-                    Ok(()),
-                )),
+                Ok(_) => report_failure(record("routing", Ok(()))),
                 Err(e) => {
                     let outcome = CollectOutcome::RoutingFailed {
                         day: d,
                         message: e.to_string(),
                     };
-                    record_health(&outcome);
+                    report_failure(record_outcome(&outcome, record));
                     outcomes.push(outcome);
                 }
             }
@@ -3345,29 +3354,54 @@ fn db_probe<T>(
     }
 }
 
-/// Put each failed probe's error text under that probe's own `error` key
-/// (the `schedule.error` shape); ok probes get `error: null` beside their
-/// data, probes that never ran stay null.
-fn with_probe_errors<A, B, C>(
-    mut status: serde_json::Value,
-    database: &Option<Result<A>>,
-    last_prune: &Option<Result<B>>,
-    today: &Option<Result<C>>,
+/// A probe's `--json` value in the `schedule.error` shape: its data with
+/// `error: null` when it ran, `{"error": text}` when it failed, null when
+/// it never ran or had nothing to report.
+fn probe_value<T>(
+    probe: &Option<Result<T>>,
+    data: impl FnOnce(&T) -> Option<serde_json::Value>,
 ) -> serde_json::Value {
-    fn put<T>(status: &mut serde_json::Value, key: &str, p: &Option<Result<T>>) {
-        match p.as_ref().and_then(|r| r.as_ref().err()) {
-            Some(e) => status[key] = serde_json::json!({ "error": e.to_string() }),
-            None => {
-                if let Some(o) = status[key].as_object_mut() {
-                    o.insert("error".into(), serde_json::Value::Null);
-                }
-            }
-        }
+    match probe {
+        None => serde_json::Value::Null,
+        Some(Err(e)) => serde_json::json!({ "error": e.to_string() }),
+        Some(Ok(t)) => data(t).map_or(serde_json::Value::Null, |mut v| {
+            v["error"] = serde_json::Value::Null;
+            v
+        }),
     }
-    put(&mut status, "database", database);
-    put(&mut status, "last_prune", last_prune);
-    put(&mut status, "today", today);
-    status
+}
+
+fn database_json(probe: &Option<Result<db::DbSummary>>) -> serde_json::Value {
+    probe_value(probe, |d| {
+        Some(serde_json::json!({
+            "schema_version": d.schema_version,
+            "events": d.events,
+            "blocks": d.blocks,
+        }))
+    })
+}
+
+fn last_prune_json(
+    probe: &Option<Result<Option<worklog_core::purge::LastPrune>>>,
+) -> serde_json::Value {
+    probe_value(probe, |lp| {
+        lp.as_ref().map(|lp| {
+            serde_json::json!({
+                "cutoff": lp.report.cutoff_date,
+                "blocks_carded": lp.report.blocks_carded,
+                "blocks_deleted": lp.report.blocks_deleted,
+                "blocks_deleted_unbilled": lp.report.blocks_deleted_unbilled,
+                "events_deleted": lp.report.events_deleted,
+                "sessions_deleted": lp.report.sessions_deleted,
+                "tickets_deleted": lp.report.tickets_deleted,
+                "ran_at": lp.ran_at,
+            })
+        })
+    })
+}
+
+fn today_json(probe: &Option<Result<DayAgg>>) -> serde_json::Value {
+    probe_value(probe, |agg| Some(day_agg_json(agg)))
 }
 
 /// `worklog status` — one screen folding the daemon / hook / schedule /
@@ -3405,12 +3439,6 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
     // Today's tracked time — only reachable when the daemon is up.
     let today = worklog_core::tz::local_date(chrono::Utc::now()).to_string();
     let today_agg = daemon_up.then(|| fetch_day_blocks(&today).map(|b| aggregate_day(&today, &b)));
-    let db_summary_ok = db_summary.as_ref().and_then(|r| r.as_ref().ok());
-    let last_prune_ok = last_prune
-        .as_ref()
-        .and_then(|r| r.as_ref().ok())
-        .and_then(Option::as_ref);
-    let today_ok = today_agg.as_ref().and_then(|r| r.as_ref().ok());
 
     if json {
         let status = serde_json::json!({
@@ -3426,26 +3454,12 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
                     "interval_secs": sched.as_ref().ok().and_then(|s| s.interval_secs),
                 },
                 "web": { "running": web_on },
-                "database": db_summary_ok.map(|d| serde_json::json!({
-                    "schema_version": d.schema_version,
-                    "events": d.events,
-                    "blocks": d.blocks,
-                })),
-                "last_prune": last_prune_ok.map(|lp| serde_json::json!({
-                    "cutoff": lp.report.cutoff_date,
-                    "blocks_carded": lp.report.blocks_carded,
-                    "blocks_deleted": lp.report.blocks_deleted,
-                    "blocks_deleted_unbilled": lp.report.blocks_deleted_unbilled,
-                    "events_deleted": lp.report.events_deleted,
-                    "sessions_deleted": lp.report.sessions_deleted,
-                    "tickets_deleted": lp.report.tickets_deleted,
-                    "ran_at": lp.ran_at,
-                })),
+                "database": database_json(&db_summary),
+                "last_prune": last_prune_json(&last_prune),
                 "secrets": { "set": secrets_set, "total": secrets_total, "missing": secrets_missing },
                 "sources": sources,
-                "today": today_ok.map(day_agg_json),
+                "today": today_json(&today_agg),
         });
-        let status = with_probe_errors(status, &db_summary, &last_prune, &today_agg);
         writeln!(out, "{}", serde_json::to_string_pretty(&status)?)?;
         return Ok(());
     }
@@ -5682,11 +5696,18 @@ mod tests {
     fn collect_targets_with_records_each_source_outcome() {
         let conn = db::open_memory().unwrap();
         let (since, until) = day_range();
-        let out = collect_targets_with(&conn, CollectTarget::All, since, until, |s| match s {
-            CollectTarget::Jira => Err("fetch: boom".to_string()),
-            CollectTarget::Slack => Err("skipped: no token".to_string()),
-            _ => Ok(worklog_core::collectors::CollectReport::default()),
-        })
+        let out = collect_targets_with(
+            &conn,
+            CollectTarget::All,
+            since,
+            until,
+            &mut io::sink(),
+            |s| match s {
+                CollectTarget::Jira => Err("fetch: boom".to_string()),
+                CollectTarget::Slack => Err("skipped: no token".to_string()),
+                _ => Ok(worklog_core::collectors::CollectReport::default()),
+            },
+        )
         .unwrap();
         assert!(!out.is_empty());
         let rows = worklog_core::collect_health::all(&conn, chrono::Utc::now()).unwrap();
@@ -5703,9 +5724,14 @@ mod tests {
     fn collect_targets_with_records_routing_ok() {
         let conn = db::open_memory().unwrap();
         let (since, until) = day_range();
-        collect_targets_with(&conn, CollectTarget::All, since, until, |_| {
-            Ok(worklog_core::collectors::CollectReport::default())
-        })
+        collect_targets_with(
+            &conn,
+            CollectTarget::All,
+            since,
+            until,
+            &mut io::sink(),
+            |_| Ok(worklog_core::collectors::CollectReport::default()),
+        )
         .unwrap();
         let rows = worklog_core::collect_health::all(&conn, chrono::Utc::now()).unwrap();
         let r = rows.iter().find(|r| r.source == "routing").unwrap();
@@ -5720,9 +5746,14 @@ mod tests {
     fn collect_targets_with_routing_success_leaves_only_last_ok() {
         let conn = db::open_memory().unwrap();
         let (since, until) = day_range();
-        let out = collect_targets_with(&conn, CollectTarget::All, since, until, |_| {
-            Ok(worklog_core::collectors::CollectReport::default())
-        })
+        let out = collect_targets_with(
+            &conn,
+            CollectTarget::All,
+            since,
+            until,
+            &mut io::sink(),
+            |_| Ok(worklog_core::collectors::CollectReport::default()),
+        )
         .unwrap();
         assert!(out
             .iter()
@@ -5733,14 +5764,49 @@ mod tests {
         assert!(r.last_err.is_none());
     }
 
+    /// With collect_health::record failing, each record attempt prints the
+    /// failure exactly once: 6 recorded sources (transcripts records its own)
+    /// plus one routing success per routed day. Catches the routing success
+    /// path printing its own copy beside report_failure's, and swallowing it.
+    #[test]
+    fn collect_targets_with_prints_one_record_failure_per_outcome() {
+        let conn = db::open_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER no_meta BEFORE INSERT ON meta
+             BEGIN SELECT RAISE(ABORT, 'meta is read-only'); END;",
+        )
+        .unwrap();
+        let since = chrono::Utc::now().date_naive();
+        let until = since + chrono::Duration::days(2);
+        let mut err = Vec::new();
+        let out = collect_targets_with(&conn, CollectTarget::All, since, until, &mut err, |_| {
+            Ok(worklog_core::collectors::CollectReport::default())
+        })
+        .unwrap();
+        assert!(out
+            .iter()
+            .all(|o| !matches!(o, CollectOutcome::RoutingFailed { .. })));
+        let err = String::from_utf8(err).unwrap();
+        let lines: Vec<&str> = err.lines().collect();
+        assert_eq!(lines.len(), 6 + 2, "{err}");
+        assert!(lines
+            .iter()
+            .all(|l| *l == "worklog: recording collect health failed: writing meta"));
+    }
+
     /// A single-source collect does not touch routing health.
     #[test]
     fn collect_targets_with_single_target_skips_routing() {
         let conn = db::open_memory().unwrap();
         let (since, until) = day_range();
-        collect_targets_with(&conn, CollectTarget::Jira, since, until, |_| {
-            Ok(worklog_core::collectors::CollectReport::default())
-        })
+        collect_targets_with(
+            &conn,
+            CollectTarget::Jira,
+            since,
+            until,
+            &mut io::sink(),
+            |_| Ok(worklog_core::collectors::CollectReport::default()),
+        )
         .unwrap();
         let rows = worklog_core::collect_health::all(&conn, chrono::Utc::now()).unwrap();
         assert!(rows.iter().all(|r| r.source != "routing"));
@@ -5749,30 +5815,45 @@ mod tests {
 
     /// A failed probe's text sits under that probe's own `error` key, like
     /// `schedule.error`; ok probes carry `error: null` beside their data and
-    /// never-ran probes stay null. Catches flat top-level keys, swallowing
-    /// the error, and reporting "never ran" (None) as an error.
+    /// never-ran probes stay null. Each builder takes its own probe type, so
+    /// cmd_status cannot hand one probe to another's slot. Catches flat
+    /// top-level keys, swallowing the error, dropping the data of an ok
+    /// probe, and reporting "never ran" (None) as an error.
     #[test]
     fn status_json_nests_probe_errors_under_each_probe() {
-        let failed: Option<Result<u8>> = Some(Err(anyhow::anyhow!("disk I/O error")));
-        let ok: Option<Result<u8>> = Some(Ok(1));
-        let never: Option<Result<u8>> = None;
-        let base = serde_json::json!({
-            "web": { "running": true },
-            "database": null,
-            "last_prune": { "cutoff": "2026-01-01" },
-            "today": null,
-        });
-        let v = with_probe_errors(base.clone(), &failed, &ok, &failed);
-        assert_eq!(v["database"]["error"], "disk I/O error");
-        assert!(v["last_prune"]["error"].is_null());
-        assert_eq!(v["last_prune"]["cutoff"], "2026-01-01");
-        assert_eq!(v["today"]["error"], "disk I/O error");
-        assert_eq!(v["web"]["running"], true);
-        assert!(v.get("database_error").is_none());
-        let v = with_probe_errors(base.clone(), &never, &failed, &never);
-        assert!(v["database"].is_null());
-        assert_eq!(v["last_prune"]["error"], "disk I/O error");
-        assert!(v["today"].is_null());
+        fn failed<T>() -> Option<Result<T>> {
+            Some(Err(anyhow::anyhow!("disk I/O error")))
+        }
+        let conn = db::open_memory().unwrap();
+        let db_ok = Some(db::summarize(&conn));
+        let prune_ok = Some(Ok(Some(worklog_core::purge::LastPrune {
+            report: worklog_core::purge::PurgeReport {
+                cutoff_date: "2026-01-01".into(),
+                ..Default::default()
+            },
+            ran_at: "2026-01-02T00:00:00Z".into(),
+        })));
+        let today_ok = Some(Ok(aggregate_day("2026-10-11", &[])));
+
+        let err = serde_json::json!({ "error": "disk I/O error" });
+        assert_eq!(database_json(&failed()), err); // swallowed / flat key
+        assert_eq!(last_prune_json(&failed()), err);
+        assert_eq!(today_json(&failed()), err);
+
+        let v = database_json(&db_ok);
+        assert!(v["error"].is_null() && v.get("error").is_some()); // no error key
+        assert!(v["schema_version"].as_i64().unwrap() > 0); // data dropped
+        let v = last_prune_json(&prune_ok);
+        assert!(v["error"].is_null() && v.get("error").is_some());
+        assert_eq!(v["cutoff"], "2026-01-01");
+        assert!(last_prune_json(&Some(Ok(None))).is_null()); // never pruned
+        let v = today_json(&today_ok);
+        assert!(v["error"].is_null() && v.get("error").is_some());
+        assert_eq!(v["day"], "2026-10-11");
+
+        assert!(database_json(&None).is_null()); // never ran is not an error
+        assert!(last_prune_json(&None).is_null());
+        assert!(today_json(&None).is_null());
     }
 
     /// FR-17 at the call site: cmd_status reads health through sources_from_db.
