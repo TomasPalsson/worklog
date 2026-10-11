@@ -4,6 +4,7 @@ import { bandPath } from "./ActivityStream";
 import { shortMonthDay } from "@/lib/format";
 import { dayLabel, dowMon, shortLabel } from "./time-utils";
 import { tipProps, type Tip } from "./tip";
+import { topicColor } from "./topicColor";
 
 const W = 1000;
 const H = 240;
@@ -47,7 +48,6 @@ const overlaps = (a: ReturnType<typeof labelBox>, b: ReturnType<typeof labelBox>
 
 const hours = (s: number) => `${(s / 3600).toFixed(1)}h`;
 const scaleHours = (s: number) => `${Number((s / 3600).toFixed(1))}h`;
-const colorOf = (id: number, k: number) => `oklch(var(--project-l) var(--project-c) ${25 + id * (360 / k)})`;
 
 /** Stacked, centred-baseline layers; one shared scale so thickness is proportional to seconds. */
 export function buildRiver(report: TopicsReport): { layers: RiverLayer[]; unit: number; xs: number[]; bins: TopicsReport["river"] } | null {
@@ -81,7 +81,7 @@ export function buildRiver(report: TopicsReport): { layers: RiverLayer[]; unit: 
     const at = (pts: Pt[]) => pts[k][1] + (pts[k + 1][1] - pts[k][1]) * f;
     return {
       topic: t,
-      color: colorOf(t.id, topics.length),
+      color: topicColor(t.id, topics.length),
       total: sec.reduce((a, s) => a + s, 0),
       peak,
       peakStart: river[pi].start,

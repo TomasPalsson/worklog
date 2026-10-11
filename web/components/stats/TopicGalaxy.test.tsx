@@ -199,7 +199,7 @@ describe("galaxyLayout labels", () => {
   it("hue comes from the topic id, not array position: id 3 of K=10 is 133", () => {
     const topics = [topic(3), ...Array.from({ length: 9 }, (_, i) => topic(i < 3 ? i : i + 1))];
     const { dots } = galaxyLayout(report({ topics, points: [point(1, { topic_id: 3 })] }));
-    expect(dots[0].fill).toBe("oklch(var(--project-l) var(--project-c) 133)");
+    expect(dots[0].fill).toBe("oklch(calc(var(--project-l) + -0.08) var(--project-c) 133)");
   });
 
   it("labels far apart horizontally are left where they are", () => {
@@ -355,7 +355,7 @@ describe("TopicGalaxy markup", () => {
     const { container } = render(<TopicGalaxy report={slim} />);
     const names = container.querySelectorAll("text.sx-gal-name");
     const fill = (names[1] as SVGElement).getAttribute("style")!;
-    expect(fill).toContain("oklch(var(--project-l) var(--project-c) 205)");
+    expect(fill).toContain("oklch(calc(var(--project-l) + -0.08) var(--project-c) 205)");
     expect(fill).toContain("var(--fg) 35%");
   });
 

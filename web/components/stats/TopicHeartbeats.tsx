@@ -5,6 +5,7 @@ import type { Topic, TopicsReport } from "@/lib/topics_contract";
 import { RhythmIcon } from "./AtlasArt";
 import { pct } from "./chart-tip-utils";
 import { tipProps, type Tip } from "./tip";
+import { topicColor, topicHue } from "./topicColor";
 
 export type Rhythm = "always" | "sprint" | "one_off";
 
@@ -65,13 +66,13 @@ function HeartbeatRow({ topic, index, topicCount, river, totalSeconds, maxTopicS
   const rhythm = rhythmOf(topic, workDays);
   const activeBins = river.filter((bin) => (bin.seconds[index] ?? 0) > 0);
   const dates = activeBins.length > 0 ? [activeBins[0].start, activeBins[activeBins.length - 1].start] : undefined;
-  const hue = 25 + topic.id * (360 / topicCount);
-  const tip = { ...heartbeatTip(topic, totalSeconds, workDays, rhythm), accent: `oklch(var(--project-l) var(--project-c) ${hue})` };
+  const color = topicColor(topic.id, topicCount);
+  const tip = { ...heartbeatTip(topic, totalSeconds, workDays, rhythm), accent: color };
   return (
     <li
       className="hb-row"
       data-heartbeat-row
-      style={{ ["--h" as string]: hue, ["--i" as string]: index }}
+      style={{ ["--h" as string]: topicHue(topic.id, topicCount), ["--hb-color" as string]: color, ["--i" as string]: index }}
       tabIndex={0}
       aria-label={`${topic.name}: ${formatDuration(topic.seconds)}`}
       {...tipProps(tip)}

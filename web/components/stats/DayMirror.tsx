@@ -3,6 +3,7 @@ import "@/app/stats/mirror.css";
 import { formatDuration, shortMonthDay } from "@/lib/format";
 import type { TopicsReport } from "@/lib/topics_contract";
 import { tipProps, type Tip } from "./tip";
+import { topicColor } from "./topicColor";
 
 const MIN_DAYS = 3;
 const MINUS = "−";
@@ -14,7 +15,6 @@ const COMPACT_PX = 44;
 
 const signed = (similarity: number) => `${similarity < 0 ? MINUS : "+"}${Math.abs(similarity).toFixed(2)}`;
 
-const topicHue = (report: TopicsReport, topicId: number) => 25 + topicId * (360 / report.topics.length);
 
 const topicName = (report: TopicsReport, topicId: number) => report.topics.find((t) => t.id === topicId)?.name ?? "";
 
@@ -82,10 +82,10 @@ export function DayMirror({ report }: { report: TopicsReport }) {
       const tip = tipProps(mirrorTip(report, row, column));
       if (row === column) {
         const diag = diagTip(report, row);
-        const hue = topicHue(report, days[row].top_topic);
+        const topic = days[row].top_topic;
         cells.push(
           <div key={`${row}-${column}`} className="sx-mir-cell sx-mir-diag art-fade" style={position} tabIndex={0} aria-label={`${diag.title}. ${diag.note}`} {...tip}>
-            <span className="sx-mir-chip" style={{ "--h": hue } as React.CSSProperties} />
+            <span className="sx-mir-chip" style={{ background: topicColor(topic, report.topics.length) }} />
             {!compact && <span className="art-label">{shortMonthDay(days[row].day)}</span>}
           </div>,
         );

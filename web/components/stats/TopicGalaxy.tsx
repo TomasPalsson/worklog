@@ -4,6 +4,7 @@ import { formatDuration } from "@/lib/format";
 import type { MapPoint, Topic, TopicsReport } from "@/lib/topics_contract";
 import { AtlasEmpty, FirstTimeMark, OddballMark } from "./AtlasArt";
 import { type Tip, tipProps } from "./tip";
+import { topicColor } from "./topicColor";
 
 export const GAL_W = 1000;
 export const GAL_H = 620;
@@ -25,7 +26,6 @@ const METHOD =
   "The local embedding model turns each block's text into a vector, the vectors are centered, and t-SNE (perplexity 30) lays them out. Topics come from average-linkage clustering on cosine similarity.";
 
 const hoursLabel = (sec: number) => `${(sec / 3600).toFixed(1)}h`;
-const hue = (id: number, n: number) => `oklch(var(--project-l) var(--project-c) ${25 + id * (360 / Math.max(1, n))})`;
 
 export interface GalaxyDot {
   point: MapPoint;
@@ -86,7 +86,7 @@ export function galaxyLayout(report: Pick<TopicsReport, "topics" | "points">): G
       cx: PAD + p.x * (GAL_W - 2 * PAD),
       cy: top + (p.y - yMin) * (GAL_H - 2 * PAD),
       r: 2.5 + 6 * Math.sqrt(p.seconds / maxSec),
-      fill: hue(p.topic_id, topics.length),
+      fill: topicColor(p.topic_id, topics.length),
       rank,
       delayMs: Math.min(rank * 3, MAX_DELAY_MS),
     };
@@ -282,7 +282,7 @@ function GalaxyMap({ report, layout }: { report: TopicsReport; layout: GalaxyLay
         <Label
           key={l.topic.id}
           l={l}
-          color={`color-mix(in oklch, ${hue(l.topic.id, report.topics.length)} 65%, var(--fg) 35%)`}
+          color={`color-mix(in oklch, ${topicColor(l.topic.id, report.topics.length)} 65%, var(--fg) 35%)`}
         />
       ))}
     </svg>
@@ -314,7 +314,7 @@ function TopicList({ report }: { report: TopicsReport }) {
     <ul className="sx-gal-list">
       {report.topics.map((t) => (
         <li key={t.id} tabIndex={0} aria-label={`${t.name}, ${hoursLabel(t.seconds)}`} {...tipProps(galaxyTipLabel(t))}>
-          <span className="sx-gal-swatch" style={{ background: hue(t.id, report.topics.length) }} />
+          <span className="sx-gal-swatch" style={{ background: topicColor(t.id, report.topics.length) }} />
           <span className="sx-gal-list-name">{t.name}</span>
           <span className="sx-gal-list-hours">{hoursLabel(t.seconds)}</span>
         </li>

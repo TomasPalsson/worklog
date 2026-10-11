@@ -3,6 +3,7 @@ import "@/app/stats/compass.css";
 import { formatDuration, shortMonthDay, shortWeekday } from "@/lib/format";
 import type { DayRow, TopicsReport } from "@/lib/topics_contract";
 import { tipProps, type Tip } from "./tip";
+import { topicColor } from "./topicColor";
 
 const WIDTH = 480;
 const HEIGHT = 320;
@@ -35,7 +36,6 @@ const median = (values: number[]) => {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 };
 
-const topicHue = (report: TopicsReport, topicId: number) => 25 + topicId * (360 / report.topics.length);
 
 export function compassLayout(report: TopicsReport) {
   const plottedDays = report.days.filter((d): d is DayRow & { focus: number } => d.focus !== null);
@@ -158,7 +158,7 @@ export function DayCompass({ report }: { report: TopicsReport }) {
             r={dot.radius}
             stroke="var(--bg-raised)"
             strokeWidth={1.5}
-            style={{ "--h": topicHue(report, dot.topTopic) } as React.CSSProperties}
+            style={{ fill: topicColor(dot.topTopic, report.topics.length) }}
             tabIndex={0}
             aria-label={dayName(dot.day)}
             {...tipProps(compassTip(dayRows.get(dot.day)!))}
@@ -182,7 +182,7 @@ export function DayCompass({ report }: { report: TopicsReport }) {
         dot colour = that day&apos;s main topic
         {keyed.map(([id]) => (
           <span key={id} className="sx-cmp-key-item">
-            <span className="sx-cmp-key-swatch" style={{ "--h": topicHue(report, id) } as React.CSSProperties} />
+            <span className="sx-cmp-key-swatch" style={{ background: topicColor(id, report.topics.length) }} />
             {report.topics.find((t) => t.id === id)?.name ?? ""}
           </span>
         ))}
