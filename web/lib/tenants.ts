@@ -49,15 +49,6 @@ export async function getCustomerSlices(blockId: number): Promise<CustomerSlice[
   return call<CustomerSlice[]>("GET", `/blocks/${blockId}/customer-slices`);
 }
 
-/** Save the Owner's hand-set split. `shares` are fractions in `(0, 1]`
- * summing to 1 — the daemon rejects anything else with a 400. */
-export async function saveCustomerShares(
-  blockId: number,
-  shares: Record<string, number>,
-): Promise<{ ok: true }> {
-  return call("POST", `/blocks/${blockId}/customer-shares`, { shares });
-}
-
 /** Drop a hand-set split — the block goes back to the automatic split. */
 export async function clearCustomerShares(blockId: number): Promise<{ ok: true }> {
   return call("POST", `/blocks/${blockId}/customer-shares/clear`);
