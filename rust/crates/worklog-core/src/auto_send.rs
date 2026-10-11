@@ -146,7 +146,16 @@ fn reason(e: &anyhow::Error) -> String {
             Some(HubError::Upstream {
                 service, status, ..
             }) => format!("{service} said {status}"),
-            _ => e.root_cause().to_string(),
+            // Tempo's `bail!` sites append the response body after " — ".
+            _ => {
+                let cause = e.root_cause().to_string();
+                let head = cause.split(" \u{2014} ").next().unwrap_or_default();
+                if head.contains("://") || head.contains('?') {
+                    "request failed".to_owned()
+                } else {
+                    head.to_owned()
+                }
+            }
         },
     }
 }
@@ -177,10 +186,10 @@ pub fn run_if_due(
                 )?;
             }
         }
-        meta_set(conn, PLAN_KEY, "")?;
         if enabled && meta_get(conn, RECAP_KEY)?.as_deref() != Some(day.as_str()) {
             build_recap(conn, &day)?;
         }
+        meta_set(conn, PLAN_KEY, "")?;
     }
     if !enabled || local.hour() < AUTO_SEND_HOUR {
         return Ok(());

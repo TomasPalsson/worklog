@@ -466,12 +466,14 @@ fn an_upstream_error_body_is_never_stored() {
     let conn = open_memory().unwrap();
     ready_line(&conn, DAY, "A-1");
     let mut send = |_: &Connection, _: &TempoLineKey| -> Result<Vec<SyncResult>> {
-        Err(anyhow::Error::new(crate::tempo_hub_contract::HubError::Upstream {
-            service: "Tempo",
-            status: 502,
-            body: "<html>GET /4/worklogs?token=abc123</html>".into(),
-        })
-        .context("tempo GET http://tempo.example/4/worklogs"))
+        Err(
+            anyhow::Error::new(crate::tempo_hub_contract::HubError::Upstream {
+                service: "Tempo",
+                status: 502,
+                body: "<html>GET /4/worklogs?token=abc123</html>".into(),
+            })
+            .context("tempo GET http://tempo.example/4/worklogs"),
+        )
     };
     run_if_due(&conn, local(6, 17, 0), true, &mut send).unwrap();
     let stored = column(&conn, DAY, "A-1", "send_error").unwrap();
@@ -523,6 +525,69 @@ fn a_non_reqwest_failure_never_carries_the_request_url_or_body() {
         !stored.contains("http") && !stored.contains("<html>"),
         "{stored}"
     );
+}
+
+#[test]
+fn a_root_cause_with_a_url_or_body_is_never_stored() {
+    let conn = open_memory().unwrap();
+    ready_line(&conn, DAY, "A-1");
+    let mut send = |_: &Connection, _: &TempoLineKey| -> Result<Vec<SyncResult>> {
+        Err(anyhow::anyhow!(
+            "returned HTTP 500 \u{2014} <html>http://t.example/x?token=abc123</html>"
+        ))
+    };
+    run_if_due(&conn, local(6, 17, 0), true, &mut send).unwrap();
+    let stored = column(&conn, DAY, "A-1", "send_error").unwrap();
+    // catches: falling back to root_cause().to_string(), which carries any bail! body or URL
+    assert_eq!(stored, "Tempo could not be reached: returned HTTP 500");
+}
+
+#[test]
+fn a_root_cause_that_embeds_a_url_is_reduced_to_a_generic_reason() {
+    let conn = open_memory().unwrap();
+    ready_line(&conn, DAY, "A-1");
+    let mut send = |_: &Connection, _: &TempoLineKey| -> Result<Vec<SyncResult>> {
+        Err(anyhow::Error::new(std::io::Error::other(
+            "open http://t.example/rest?token=abc123 failed",
+        ))
+        .context("tempo GET"))
+    };
+    run_if_due(&conn, local(6, 17, 0), true, &mut send).unwrap();
+    let stored = column(&conn, DAY, "A-1", "send_error").unwrap();
+    // catches: a root cause that names a URL or query string reaching the stored error
+    assert!(
+        !stored.contains("token") && !stored.contains("://"),
+        "{stored}"
+    );
+}
+
+#[test]
+fn a_failed_rollover_recap_leaves_the_plan_so_the_next_tick_retries() {
+    let _g = crate::tz::test_env_lock();
+    let _e = crate::envfile::ENV_TEST_LOCK.blocking_lock();
+    let saved = ["WORKLOG_TZ", "WORKLOG_ENV_FILE"].map(|k| (k, std::env::var_os(k)));
+    std::env::remove_var("WORKLOG_TZ");
+    std::env::set_var("WORKLOG_ENV_FILE", "/nonexistent/worklog.env");
+    let conn = open_memory().unwrap();
+    ready_line(&conn, DAY, "A-1");
+    tick(&conn, local(6, 17, 0), true, unreachable);
+    conn.execute("ALTER TABLE recaps RENAME TO recaps_off", [])
+        .unwrap();
+    let mut send = |_: &Connection, _: &TempoLineKey| unreachable("");
+    assert!(run_if_due(&conn, local(7, 0, 0), true, &mut send).is_err());
+    // catches: clearing the plan before the recap is built, losing the day's recap
+    assert!(meta_get(&conn, PLAN_KEY).unwrap().unwrap().starts_with(DAY));
+    conn.execute("ALTER TABLE recaps_off RENAME TO recaps", [])
+        .unwrap();
+    tick(&conn, local(7, 0, 15), true, unreachable);
+    let built = recap::latest(&conn).unwrap().map(|r| r.day);
+    assert_eq!(built.as_deref(), Some(DAY));
+    for (k, v) in saved {
+        match v {
+            Some(v) => std::env::set_var(k, v),
+            None => std::env::remove_var(k),
+        }
+    }
 }
 
 fn column_meta(conn: &Connection) -> Option<String> {
