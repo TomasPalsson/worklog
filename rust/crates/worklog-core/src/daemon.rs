@@ -269,6 +269,7 @@ pub fn router(state: Shared) -> Router {
         .route("/hints", get(daemon_assist::hints))
         .route("/tempo/pull", post(daemon_week::pull))
         .route("/stats", get(daemon_stats::get_stats))
+        .route("/stats/topics", get(daemon_stats::get_topics))
         .route("/logged", get(daemon_logged::get_range))
         .route("/logged/pull", post(daemon_logged::pull_range))
         .route("/logged/dismiss", post(daemon_logged::dismiss_day))
