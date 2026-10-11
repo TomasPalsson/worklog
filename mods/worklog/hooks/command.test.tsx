@@ -61,6 +61,7 @@ type Options = {
   hits?: unknown[]
   origin?: string
   install?: { exitCode: number; stdout: string; stderr: string }
+  spawnError?: string
 }
 
 type Posted = { url: string; body: unknown }
@@ -98,6 +99,7 @@ function world(on: On, options: Options = {}) {
       return { value: { exitCode: 0, stdout: `${options.origin}\n`, stderr: '' } }
     }
     if (event.argv[0] === 'bash') {
+      if (options.spawnError !== undefined) throw new Error(options.spawnError)
       installs.push({ argv: event.argv, cwd: event.init?.cwd })
       return { value: options.install ?? { exitCode: 0, stdout: '', stderr: '' } }
     }
@@ -500,4 +502,11 @@ test('/wl install with a PR number never runs the installer', async ($, on) => {
   const { installs } = await runInstall($, on, { origin: ORIGIN }, 'install 124')
   // catches: forwarding an argument that makes the installer merge a PR
   expect(installs).toEqual([])
+})
+
+test('/wl install reports a spawn failure as text instead of throwing (the host API has no process timeout option)', async ($, on) => {
+  const { text } = await runInstall($, on, { origin: ORIGIN, spawnError: 'spawn bash ENOENT' })
+  // catches: letting the rejection escape the handler, or reporting ok
+  // the engine rewrites a thrown hook error, so only the prefix and a non-empty reason are ours
+  expect(text).toMatch(/^worklog install failed: .+/)
 })

@@ -113,7 +113,10 @@ async function install($: EngineInterface, cwd: string | undefined): Promise<str
   if (root === undefined || !WORKLOG_ORIGIN_RE.test((await git('remote', 'get-url', 'origin')) ?? '')) {
     return refused
   }
-  const result = await $.process.run(['bash', 'scripts/install-local.sh'], { cwd: root })
+  const result = await $.process
+    .run(['bash', 'scripts/install-local.sh'], { cwd: root })
+    .catch((error: unknown) => `worklog install failed: ${error instanceof Error ? error.message : String(error)}`)
+  if (typeof result === 'string') return result
   return result.exitCode === 0
     ? `worklog install: ok\n${tail(result.stdout)}`
     : `worklog install failed (exit ${result.exitCode})\n${tail(result.stderr || result.stdout)}`
