@@ -34,7 +34,7 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core au
 Goal: a quiet or failing source shows up in `worklog status`.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core collect_health`
 - [x] T007 collect_health module: record and read per-source health (FR-16, B8) — files: rust/crates/worklog-core/src/collect_health.rs, rust/crates/worklog-core/src/collect_health_test.rs, rust/crates/worklog-core/src/lib.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core collect_health` — after: T000 — done: 1c086a2
-- [ ] T008 Collect records every outcome; status lists sources (FR-16, FR-17, B8) — files: rust/crates/worklog-cli/src/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-cli` — after: T006, T007
+- [x] T008 Collect records every outcome; status lists sources (FR-16, FR-17, B8) — files: rust/crates/worklog-cli/src/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-cli` — after: T006, T007 — done: 69c95df
 - [x] T009 [P] Hook and transcript reader record their errors (FR-16) — files: rust/crates/worklog-core/src/hook_run.rs, rust/crates/worklog-core/src/hook_run_test.rs, rust/crates/worklog-core/src/collectors/claude_transcripts.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core hook_run` — after: T007 — done: cc13977
 
 ## Phase 3 — Ignore with a reason
@@ -43,13 +43,13 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core ig
 - [x] T010 ignore_reason column, model field, set_ignored(reason) (FR-04, B5) — files: rust/crates/worklog-core/sql/schema.sql, rust/crates/worklog-core/src/db.rs, rust/crates/worklog-core/src/models.rs, rust/crates/worklog-core/src/repo.rs, rust/crates/worklog-core/src/block_service.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core` — after: T000 — done: 77de18d
 - [x] T011 Rebuild keeps the ignore reason (FR-05, B5) — files: rust/crates/worklog-core/src/infer.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core infer` — after: T010 — done: 6be7dde
 - [x] T012 Ignore route takes an optional reason (FR-04, FR-07, B5) — files: rust/crates/worklog-core/src/daemon.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core daemon` — after: T010 — done: 1fddeeb
-- [ ] T013 Ignore menu: Noise, Duplicate (merge or ignore), Internal (ticket picker) (FR-06a, FR-06b, FR-06c) — files: web/components/BlockCard.tsx, web/components/BlockCard.test.tsx, web/app/actions.ts, web/lib/daemon.ts — verify: `cd web && bun test components/BlockCard.test.tsx && bun run typecheck` — after: T012
+- [x] T013 Ignore menu: Noise, Duplicate (merge or ignore), Internal (ticket picker) (FR-06a, FR-06b, FR-06c) — files: web/components/BlockCard.tsx, web/components/BlockCard.test.tsx, web/app/actions.ts, web/lib/daemon.ts — verify: `cd web && bun test components/BlockCard.test.tsx && bun run typecheck` — after: T012 — done: 41c2567
 
 ## Phase 4 — Helpers
 Goal: loose ends, deild hints, install command and focus line work end to end.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core loose_ends && cd web && bun test components/LooseEnds.test.tsx`
 - [x] T014 loose_ends module for the current billing cycle (FR-11, B6) — files: rust/crates/worklog-core/src/loose_ends.rs, rust/crates/worklog-core/src/loose_ends_test.rs, rust/crates/worklog-core/src/lib.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core loose_ends` — after: T007 — done: 6bbb464
-- [ ] T015 GET /loose-ends route (FR-11) — files: rust/crates/worklog-core/src/daemon.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core daemon` — after: T012, T014
+- [x] T015 GET /loose-ends route (FR-11) — files: rust/crates/worklog-core/src/daemon.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core daemon` — after: T012, T014 — done: 0eb63b4
 - [ ] T016 Loose ends page and nav link (FR-11, FR-12) — files: web/app/loose-ends/page.tsx, web/components/LooseEnds.tsx, web/components/LooseEnds.test.tsx, web/components/AppNav.tsx, web/lib/daemonLooseEnds.ts — verify: `cd web && bun test components/LooseEnds.test.tsx && bun run typecheck` — after: T015
 - [ ] T017 Deild suggestion query and route (FR-21) — files: rust/crates/worklog-core/src/daemon_tenants.rs, rust/crates/worklog-core/src/daemon_tenants_test.rs, rust/crates/worklog-core/src/daemon.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core daemon_tenants` — after: T015
 - [ ] T018 Deild suggestion chip, saves only on click (FR-21) — files: web/components/BlockCustomerSplit.tsx, web/components/BlockCustomerSplit.test.tsx, web/lib/tenants.ts — verify: `cd web && bun test components/BlockCustomerSplit.test.tsx && bun run typecheck` — after: T017

@@ -33,3 +33,15 @@
 - Discovered: rust/crates/worklog-cli/src/helpers_cmd.rs:~127 vs web/lib/format.ts:36 — CLI truncates minutes, web rounds (2h 15m vs 2h 16m) — defer
 - Discovered: web/components/StandupButton.test.tsx:~66 — expected window built with the same formatRange the component uses — defer
 - Discovered: rust/crates/worklog-cli/src/cli.rs ~3272 — status_hints suggests `worklog daemon install` when the service is installed but the port is down — defer
+- Phase 2 independent test (2026-10-11): `-p worklog-core collect_health` exit 0 (8 passed)
+- Phase 3 independent test (2026-10-11): `-p worklog-core ignore` exit 0 (46 passed); `bun test components/BlockCard.test.tsx` exit 0 (48 pass, after 41c2567)
+- Ruling: T013 fixed by orchestrator in 41c2567 — Duplicate could merge into a synced/exported/personal neighbour, changing billed hours (the merge only refuses a synced *absorbed* block). Red test first (3 fail), then the filter. BlockCard.tsx crossed the 400-line guard (398 at Base), so the ignore button + menu moved into web/components/IgnoreMenu.tsx (outside T013's files:, same feature).
+- Ruling: T013 also edited web/app/[day]/page.tsx and web/app/globals.css (outside files:) — dayBlocks wiring and menu popover CSS.
+- Ruling: T008 moved rusqlite from dev-dependencies to dependencies in worklog-cli/Cargo.toml (already a workspace dep).
+- Discovered: rust/crates/worklog-cli/src/cli.rs ~3328 — schedule row with installed=true and no interval prints a red dot + "installed" — defer
+- Discovered: rust/crates/worklog-cli/src/cli.rs test collect_targets_with_records_routing_ok — doc says a fixed failure stops showing, but record(Ok) never clears last_err; status prints both — defer
+- Discovered: rust/crates/worklog-cli/src/cli.rs ~1660 — transcripts health recorded twice (collector `{e:#}` and CLI `fetch:`-stripped), may differ — defer
+- Discovered: rust/crates/worklog-cli/src/cli.rs ~3170 — fold_event_sources keeps the first last_ok, not the latest (no live bug today) — defer
+- Discovered: rust/crates/worklog-core/src/daemon.rs ~65 — module doc route list omits GET /loose-ends — defer
+- Discovered: web/components/IgnoreMenu.tsx — no Escape / outside-click close; BlockCard `picking` never resets after an Internal pick — defer
+- Discovered: `worklog status` shows both a "claude" (hook) and a "claude_transcripts" row — distinct sources, confusable names — defer
