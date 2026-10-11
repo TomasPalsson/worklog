@@ -9,6 +9,9 @@ const H = 240;
 const PAD = 6;
 const MIN_LABEL_PX = 14;
 const COL_TIP_ROWS = 4;
+const CHAR_PX = 6.6;
+const LABEL_H = 12;
+const LABEL_PAD = 4;
 
 type Pt = [number, number];
 
@@ -29,12 +32,21 @@ export interface RiverLayer {
   labelY: number;
 }
 
+export const labelBox = (l: RiverLayer) => {
+  const w = l.topic.name.length * CHAR_PX;
+  return { x: l.labelX - w / 2, y: l.labelY - LABEL_H / 2, w, h: LABEL_H };
+};
+const overlaps = (a: ReturnType<typeof labelBox>, b: ReturnType<typeof labelBox>) =>
+  a.x < b.x + b.w + LABEL_PAD && b.x < a.x + a.w + LABEL_PAD && a.y < b.y + b.h + LABEL_PAD && b.y < a.y + a.h + LABEL_PAD;
+
 const hours = (s: number) => `${(s / 3600).toFixed(1)}h`;
 const colorOf = (id: number, k: number) => `oklch(var(--project-l) var(--project-c) ${25 + id * (360 / k)})`;
 
 /** Stacked, centred-baseline layers; one shared scale so thickness is proportional to seconds. */
-export function buildRiver(report: TopicsReport): { layers: RiverLayer[]; unit: number; xs: number[] } | null {
-  const { river, topics } = report;
+export function buildRiver(report: TopicsReport): { layers: RiverLayer[]; unit: number; xs: number[]; bins: TopicsReport["river"] } | null {
+  const { topics } = report;
+  const sums = report.river.map((b) => b.seconds.reduce((a, s) => a + s, 0));
+  const river = report.river.slice(Math.max(0, sums.findIndex((t) => t > 0)), sums.findLastIndex((t) => t > 0) + 1);
   const n = river.length;
   if (n < 2) return null;
   const tot = river.map((b) => b.seconds.reduce((a, s) => a + s, 0));
@@ -55,6 +67,7 @@ export function buildRiver(report: TopicsReport): { layers: RiverLayer[]; unit: 
     const peak = Math.max(...sec);
     const pi = sec.indexOf(peak);
     const thick = peak * unit;
+    const w = t.name.length * CHAR_PX;
     return {
       topic: t,
       color: colorOf(t.id, topics.length),
@@ -66,12 +79,19 @@ export function buildRiver(report: TopicsReport): { layers: RiverLayer[]; unit: 
       lower,
       path: bandPath(upper, lower),
       thick,
-      labelled: thick >= MIN_LABEL_PX,
-      labelX: Math.min(W - 70, Math.max(70, xs[pi])),
+      labelled: false,
+      labelX: Math.min(W - w / 2, Math.max(w / 2, xs[pi])),
       labelY: (upper[pi][1] + lower[pi][1]) / 2,
     };
   });
-  return { layers, unit, xs };
+  const placed: ReturnType<typeof labelBox>[] = [];
+  [...layers].sort((a, b) => b.total - a.total).forEach((l) => {
+    const box = labelBox(l);
+    if (l.thick < MIN_LABEL_PX || box.w > W || box.y < 0 || box.y + box.h > H || placed.some((p) => overlaps(box, p))) return;
+    l.labelled = true;
+    placed.push(box);
+  });
+  return { layers, unit, xs, bins: river };
 }
 
 function bandTip(l: RiverLayer, bins: number): Tip {
@@ -86,8 +106,8 @@ function bandTip(l: RiverLayer, bins: number): Tip {
   };
 }
 
-function columnTip(report: TopicsReport, i: number): Tip {
-  const { start, seconds } = report.river[i];
+function columnTip(report: TopicsReport, bins: TopicsReport["river"], i: number): Tip {
+  const { start, seconds } = bins[i];
   return {
     title: dayLabel(start),
     rows: report.topics
@@ -102,11 +122,11 @@ function columnTip(report: TopicsReport, i: number): Tip {
 export function TopicRiver({ report }: { report: TopicsReport }) {
   const built = buildRiver(report);
   if (!built) return null;
-  const { layers, xs } = built;
-  const n = report.river.length;
+  const { layers, xs, bins } = built;
+  const n = bins.length;
   const step = (W - 2 * PAD) / (n - 1);
-  const first = report.river[0].start;
-  const last = report.river[n - 1].start;
+  const first = bins[0].start;
+  const last = bins[n - 1].start;
   return (
     <div className="st-chart sx-river">
       <div className="st-scroll">
@@ -117,7 +137,7 @@ export function TopicRiver({ report }: { report: TopicsReport }) {
           role="img"
           aria-label={`Topic river over ${n} bins: ${layers.map((l) => `${l.topic.name} ${hours(l.total)}`).join(", ")}.`}
         >
-          {report.river.map((b, i) => (
+          {bins.map((b, i) => (
             <rect
               key={b.start}
               className="sx-river-col"
@@ -125,7 +145,7 @@ export function TopicRiver({ report }: { report: TopicsReport }) {
               y={0}
               width={Math.min(W, xs[i] + step / 2) - Math.max(0, xs[i] - step / 2)}
               height={H}
-              {...tipProps(columnTip(report, i))}
+              {...tipProps(columnTip(report, bins, i))}
             />
           ))}
           {layers.map((l) => (
@@ -148,6 +168,16 @@ export function TopicRiver({ report }: { report: TopicsReport }) {
           <text x={W - PAD} y={H - 4} textAnchor="end" className="art-label">{shortLabel(last)}</text>
         </svg>
       </div>
+      {layers.some((l) => !l.labelled) && (
+        <ul className="sx-river-legend">
+          {layers.filter((l) => !l.labelled).map((l) => (
+            <li key={l.topic.id} className="sx-river-legend-item">
+              <span className="sx-river-swatch" style={{ background: l.color }} />
+              {l.topic.name}
+            </li>
+          ))}
+        </ul>
+      )}
       <p className="st-caption">How: Hours per topic per day (per week when the range is longer than 90 days). Topics are fitted once over the whole range.</p>
     </div>
   );

@@ -1,6 +1,9 @@
 .sx-river-band { fill-opacity: 0.85; stroke: var(--bg); stroke-width: 1; }
 .sx-river-band:hover, .sx-river-band:focus-visible { fill-opacity: 1; outline: none; }
-.sx-river-name { font-family: var(--font-mono); font-size: 12px; text-transform: uppercase; fill: var(--fg); paint-order: stroke; stroke: var(--bg); stroke-width: 3px; pointer-events: none; }
+.sx-river-name { font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; fill: var(--fg); paint-order: stroke; stroke: var(--bg); stroke-width: 3px; pointer-events: none; }
 .sx-river-col { fill: transparent; }
 .sx-river-col:hover { fill: var(--fg); fill-opacity: 0.05; }
 @media (max-width: 900px) { .sx-river-name { font-size: 18px; } }
+.sx-river-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 6px 0 0; padding: 0; list-style: none; font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; }
+.sx-river-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.sx-river-swatch { width: 10px; height: 10px; flex: none; }

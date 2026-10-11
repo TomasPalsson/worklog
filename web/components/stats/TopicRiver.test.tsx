@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { cleanup, render } from "@testing-library/react";
 import type { Topic, TopicsReport } from "@/lib/topics_contract";
 import { parseTip } from "./tip";
-import { TopicRiver, buildRiver } from "./TopicRiver";
+import { TopicRiver, buildRiver, labelBox } from "./TopicRiver";
 
 afterEach(cleanup);
 
@@ -16,8 +16,17 @@ const report = (rows: number[][], bin: "day" | "week" = "day"): TopicsReport => 
   topics: (rows[0] ?? []).map((_, i) => topic(i, `T${i}`)),
   points: [], bin, days: [], day_similarity: [], first_times: [], oddballs: [],
   oddball_median: 0, embedded_blocks: 0, skipped_blocks: 0,
-  river: rows.map((seconds, i) => ({ start: `2026-10-0${5 + i}`, seconds })),
+  river: rows.map((seconds, i) => ({ start: new Date(Date.UTC(2026, 9, 5 + i)).toISOString().slice(0, 10), seconds })),
 });
+// 12 bins, 4 topics with 20-char names peaking in adjacent bins: boxes (~130px) outrun the ~90px bin spacing
+const crowded = () => {
+  const rows = Array.from({ length: 12 }, (_, b) => Array.from<unknown, number>({ length: 4 }, (_, t) => (b === 4 + t ? H : 0)));
+  rows[0][0] = 1; // keeps all 12 bins after trimming
+  rows[11][0] = 1;
+  const r = report(rows);
+  r.topics = r.topics.map((t) => ({ ...t, name: `${"N".repeat(19)}${t.id}` }));
+  return r;
+};
 
 describe("buildRiver", () => {
   // catches: heights normalised per layer instead of one shared scale
@@ -82,6 +91,76 @@ describe("buildRiver", () => {
     const { layers, unit } = buildRiver(report([[H, 0], [3 * H, 0], [H, 0]]))!;
     expect(layers[0].thick).toBeCloseTo(3 * H * unit, 6);
     expect(layers[0].labelX).toBeCloseTo(500, 6);
+  });
+});
+
+describe("river trimming and labels", () => {
+  // catches: trimming nothing, or trimming only one end
+  it("trims leading and trailing zero bins", () => {
+    const { bins, xs, layers } = buildRiver(report([[0], [0], [H], [2 * H], [0]]))!;
+    expect(bins.map((b) => b.start)).toEqual(["2026-10-07", "2026-10-08"]);
+    expect(xs[0]).toBe(6);
+    expect(xs[1]).toBe(994);
+    expect(layers[0].peakStart).toBe("2026-10-08");
+  });
+  // catches: trimming interior zero bins too
+  it("keeps interior zero bins", () => {
+    const { bins } = buildRiver(report([[0], [H], [0], [H], [0]]))!;
+    expect(bins.length).toBe(3);
+  });
+  // catches: trimming before the < 2 check being skipped (one data bin left)
+  it("returns null when only one bin has data", () => {
+    expect(buildRiver(report([[0], [H], [0]]))).toBeNull();
+  });
+  // catches: axis labels still reading the untrimmed river
+  it("axis labels show the first and last non-zero bin", () => {
+    const { container } = render(<TopicRiver report={report([[0], [0], [H], [H], [0]])} />);
+    const labels = [...container.querySelectorAll("text.art-label")].map((t) => t.textContent);
+    expect(labels).toEqual(["7 Oct", "8 Oct"]);
+    expect(container.querySelectorAll("rect.sx-river-col").length).toBe(2);
+  });
+  // catches: labels placed without checking earlier boxes (or without the pad)
+  it("placed label boxes are pairwise disjoint with a 4px pad, and some are dropped", () => {
+    const { layers } = buildRiver(crowded())!;
+    const placed = layers.filter((l) => l.labelled).map(labelBox);
+    expect(placed.length).toBeGreaterThan(0);
+    expect(placed.length).toBeLessThan(layers.length);
+    for (let i = 0; i < placed.length; i++) for (let j = i + 1; j < placed.length; j++) {
+      const a = placed[i], b = placed[j];
+      expect(a.x + a.w + 4 <= b.x || b.x + b.w + 4 <= a.x || a.y + a.h + 4 <= b.y || b.y + b.h + 4 <= a.y).toBe(true);
+    }
+  });
+  // catches: first-come placement instead of largest topic first
+  it("the largest topic keeps its label", () => {
+    const r = crowded();
+    r.river[8].seconds[3] = 3 * H; // T3 now clearly largest
+    const { layers } = buildRiver(r)!;
+    expect(layers.find((l) => l.topic.id === 3)!.labelled).toBe(true);
+  });
+  // catches: label wider than the viewBox being clamped and drawn anyway
+  it("skips a label wider than the viewBox and keeps one that fits", () => {
+    const r = report([[H, H], [H, H]]);
+    r.topics[0].name = "W".repeat(200);
+    const { layers } = buildRiver(r)!;
+    expect(layers[0].labelled).toBe(false);
+    expect(layers[1].labelled).toBe(true);
+    const b = labelBox(layers[1]);
+    expect(b.x).toBeGreaterThanOrEqual(0);
+    expect(b.x + b.w).toBeLessThanOrEqual(1000);
+  });
+  // catches: unlabelled topics vanishing from the chart
+  it("every topic appears inline or in the legend", () => {
+    const rep = crowded();
+    const { container } = render(<TopicRiver report={rep} />);
+    const inline = [...container.querySelectorAll("text.sx-river-name")].map((t) => t.textContent);
+    const legend = [...container.querySelectorAll(".sx-river-legend-item")].map((t) => t.textContent);
+    expect(inline.length).toBeGreaterThan(0);
+    expect(legend.length).toBeGreaterThan(0);
+    expect([...inline, ...legend].sort()).toEqual(rep.topics.map((t) => t.name).sort());
+  });
+  it("renders no legend when every topic is labelled inline", () => {
+    const { container } = render(<TopicRiver report={report([[H], [H]])} />);
+    expect(container.querySelector(".sx-river-legend")).toBeNull();
   });
 });
 
