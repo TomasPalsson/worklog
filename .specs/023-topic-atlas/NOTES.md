@@ -14,3 +14,13 @@
 - Discovered: web/components/stats/TopicRiver.tsx labelBox uses a fixed CHAR_PX estimate; overlap check approximate for wide glyphs — defer
 - Discovered: rust/crates/worklog-core/src/topic_names.rs:55 parse_ids drops unparseable ids silently (corrupt members row could Jaccard-match) — defer
 - Discovered: rust/crates/worklog-core/src/daemon_stats.rs is 402 lines, over the 400-line size guard — defer
+- Assumption: graphics critic loop capped at 2 rounds; art shipped at 6.9 vs 7.5 bar (round-2 fixes applied, not re-scored) — evidence: transcript:3434 (audit)
+- Assumption: Moments scores bounded to 0–100% with plain-word badges replacing raw scores — evidence: transcript:4954, 5638, 5931 (audit)
+- Assumption: novelty warm-up threshold = 20 earlier blocks; T025 enlarged the old test fixture rather than changing the rule — evidence: transcript:4631 (audit)
+- Assumption: generic keyword-chip list chosen by the orchestrator; ticket keys nowrap — evidence: transcript:5431, 5638 (audit)
+- Assumption: mirror keyboard model = one stop per day + 2 ringed cells; evaluator's "210 stops" claim judged outdated — evidence: transcript:4258, 5323, 5431 (audit)
+- Assumption: galaxy names in topic hue with shrink-then-ellipsis; phone tap/spacing changes from T035 kept after phone was scoped out — evidence: transcript:4287, 4923, 5431 (audit)
+- Assumption: river trimmed to first data day; unplaced names go to a legend — evidence: transcript:4621 (audit)
+- Assumption: "largest topic ≤ 25%" verified on the sandbox DB copy (20%), not the live DB; naming prompt gained the 40-char line — evidence: transcript:6068, 5931 (audit)
+- Assumption: flat-geometric art style (pick-style) drawn by the orchestrator to match the page's flat isometric art — evidence: transcript:3249 (audit)
+- Assumption: verified in system Chrome via puppeteer instead of waiting for the Claude-in-Chrome extension to be reconnected — evidence: transcript:4865 (audit)
