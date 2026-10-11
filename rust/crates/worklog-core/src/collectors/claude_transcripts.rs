@@ -113,7 +113,7 @@ pub fn collect_from_dirs(
     if let Err(e) = crate::collect_health::record(
         conn,
         "claude_transcripts",
-        health.as_ref().map_err(|m| m.as_str()),
+        health.as_ref().map(|_| ()).map_err(|m| m.as_str()),
     ) {
         eprintln!("worklog: recording claude_transcripts health failed: {e}");
     }
