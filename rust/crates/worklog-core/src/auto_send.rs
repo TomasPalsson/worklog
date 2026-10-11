@@ -141,7 +141,7 @@ fn reason(e: &anyhow::Error) -> String {
         Some(r) => r.status().map_or("request failed".to_owned(), |s| {
             format!("HTTP {}", s.as_u16())
         }),
-        None => e.to_string(),
+        None => e.root_cause().to_string(),
     }
 }
 

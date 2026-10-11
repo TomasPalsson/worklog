@@ -11,8 +11,14 @@ const DAY: &str = "2026-10-06"; // a Tuesday
 const SATURDAY: &str = "2026-10-10";
 const HOURS: &str = "Mon-Fri 09:00-17:00";
 
-fn utc() -> std::sync::MutexGuard<'static, ()> {
-    let g = crate::tz::test_env_lock();
+fn utc() -> (
+    std::sync::MutexGuard<'static, ()>,
+    tokio::sync::MutexGuard<'static, ()>,
+) {
+    let g = (
+        crate::tz::test_env_lock(),
+        crate::envfile::ENV_TEST_LOCK.blocking_lock(),
+    );
     std::env::remove_var("WORKLOG_TZ");
     std::env::set_var("WORKLOG_ENV_FILE", "/nonexistent/worklog.env");
     g

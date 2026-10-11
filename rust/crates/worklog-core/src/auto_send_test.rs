@@ -437,6 +437,8 @@ fn the_stored_unreachable_reason_never_carries_the_request_url() {
 #[test]
 fn a_day_whose_every_send_failed_still_gets_its_recap_at_rollover() {
     let _g = crate::tz::test_env_lock();
+    let _e = crate::envfile::ENV_TEST_LOCK.blocking_lock();
+    let saved = ["WORKLOG_TZ", "WORKLOG_ENV_FILE"].map(|k| (k, std::env::var_os(k)));
     std::env::remove_var("WORKLOG_TZ");
     std::env::set_var("WORKLOG_ENV_FILE", "/nonexistent/worklog.env");
     let conn = open_memory().unwrap();
@@ -451,6 +453,30 @@ fn a_day_whose_every_send_failed_still_gets_its_recap_at_rollover() {
     tick(&conn, local(7, 0, 15), true, unreachable);
     // catches: rebuilding every tick (RECAP_KEY not advanced to the finished day)
     assert_eq!(column_meta(&conn), stamp);
+    for (k, v) in saved {
+        match v {
+            Some(v) => std::env::set_var(k, v),
+            None => std::env::remove_var(k),
+        }
+    }
+}
+
+#[test]
+fn a_non_reqwest_failure_never_carries_the_request_url_or_body() {
+    let conn = open_memory().unwrap();
+    ready_line(&conn, DAY, "A-1");
+    let url = "http://tempo.example/rest/secret?token=abc123";
+    let mut send = |_: &Connection, _: &TempoLineKey| -> Result<Vec<SyncResult>> {
+        let bad = serde_json::from_str::<u32>("<html>").unwrap_err();
+        Err(anyhow::Error::new(bad).context(format!("decode tempo response from {url}: <html>")))
+    };
+    run_if_due(&conn, local(6, 17, 0), true, &mut send).unwrap();
+    let stored = column(&conn, DAY, "A-1", "send_error").unwrap();
+    // catches: falling back to e.to_string(), the outermost context with URL and body
+    assert!(
+        !stored.contains("http") && !stored.contains("<html>"),
+        "{stored}"
+    );
 }
 
 fn column_meta(conn: &Connection) -> Option<String> {
