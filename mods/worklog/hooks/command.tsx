@@ -23,7 +23,7 @@ type ReviewState = {
   error: string | undefined
 }
 
-const USAGE = 'usage: /wl today|week|review|ask <question>'
+const USAGE = 'usage: /wl today|week|review|install|ask <question>'
 
 const review = atom(
   { plugin: 'worklog', key: 'review' } as const,
@@ -98,7 +98,7 @@ async function ask(io: Io, question: string): Promise<string> {
     .join('\n')
 }
 
-const WORKLOG_ORIGIN_RE = /github\.com[:/]TomasPalsson\/worklog(\.git)?$/
+const WORKLOG_ORIGIN_RE = /^(https:\/\/|ssh:\/\/git@|git@)github\.com[:/]TomasPalsson\/worklog(\.git)?\/?$/
 
 const tail = (text: string): string => text.trim().split('\n').slice(-10).join('\n')
 
@@ -208,8 +208,8 @@ export function registerCommand(on: On): void {
     sessionCwd = event.cwd
     await $.command.register({
       name: 'wl',
-      description: 'Show logged hours, or review today in a pane',
-      argumentHint: 'today|week|review|ask',
+      description: 'Show logged hours, review today in a pane, or install origin/main',
+      argumentHint: 'today|week|review|install|ask',
     })
     return next(event)
   })

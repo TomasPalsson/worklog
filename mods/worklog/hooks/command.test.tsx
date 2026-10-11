@@ -146,7 +146,7 @@ test('session start registers /wl with its argument hint', async ($, on) => {
   const seen = world(on)
   mock.clock(on)
   await $.session.start(SESSION)
-  expect(seen.registered).toEqual([{ name: 'wl', argumentHint: 'today|week|review|ask' }])
+  expect(seen.registered).toEqual([{ name: 'wl', argumentHint: 'today|week|review|install|ask' }])
 })
 
 test('/wl today prints the hours of the blocks that are neither personal nor ignored', async ($, on) => {
@@ -173,8 +173,8 @@ test('any other argument, or none, prints the usage', async ($, on) => {
   world(on)
   mock.clock(on)
   await $.session.start(SESSION)
-  expect((await $.command.run(command('year'))).text).toBe('usage: /wl today|week|review|ask <question>')
-  expect((await $.command.run(command(''))).text).toBe('usage: /wl today|week|review|ask <question>')
+  expect((await $.command.run(command('year'))).text).toBe('usage: /wl today|week|review|install|ask <question>')
+  expect((await $.command.run(command(''))).text).toBe('usage: /wl today|week|review|install|ask <question>')
 })
 
 test('/wl today says so when the daemon is down', async ($, on) => {
@@ -385,8 +385,8 @@ test('/wl ask with no question prints the usage and asks the daemon nothing', as
   mock.clock(on)
   await $.session.start(SESSION)
   // catches: querying with an empty q
-  expect((await $.command.run(command('ask'))).text).toBe('usage: /wl today|week|review|ask <question>')
-  expect((await $.command.run(command('ask   '))).text).toBe('usage: /wl today|week|review|ask <question>')
+  expect((await $.command.run(command('ask'))).text).toBe('usage: /wl today|week|review|install|ask <question>')
+  expect((await $.command.run(command('ask   '))).text).toBe('usage: /wl today|week|review|install|ask <question>')
   expect(seen.requested.filter(url => url.includes('/ask'))).toEqual([])
 })
 
@@ -395,7 +395,7 @@ test('an argument that only starts with ask is not ask', async ($, on) => {
   mock.clock(on)
   await $.session.start(SESSION)
   // catches: startswith('ask') with no word boundary
-  expect((await $.command.run(command('asking kafka'))).text).toBe('usage: /wl today|week|review|ask <question>')
+  expect((await $.command.run(command('asking kafka'))).text).toBe('usage: /wl today|week|review|install|ask <question>')
   expect(seen.requested.filter(url => url.includes('/ask'))).toEqual([])
 })
 
@@ -475,6 +475,25 @@ test('/wl install shows the failure and its error output when the installer exit
   })
   // catches: swallowing the error and reporting ok
   expect(text).toBe('worklog install failed (exit 2)\nerror: link failed')
+})
+
+test('/wl install refuses a host that merely ends in github.com', async ($, on) => {
+  const { text, installs } = await runInstall($, on, { origin: 'https://evilgithub.com/TomasPalsson/worklog' })
+  // catches: a regex with no start anchor
+  expect(text).toBe(REFUSED)
+  expect(installs).toEqual([])
+})
+
+test('/wl install refuses a lookalike host in scp form', async ($, on) => {
+  const { installs } = await runInstall($, on, { origin: 'https://github.com.evil.io:TomasPalsson/worklog' })
+  // catches: an unanchored host match
+  expect(installs).toEqual([])
+})
+
+test('/wl install accepts a trailing slash on the https origin', async ($, on) => {
+  const { installs } = await runInstall($, on, { origin: 'https://github.com/TomasPalsson/worklog/' })
+  // catches: refusing a valid origin over a trailing slash
+  expect(installs).toHaveLength(1)
 })
 
 test('/wl install with a PR number never runs the installer', async ($, on) => {
