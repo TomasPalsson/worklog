@@ -1735,13 +1735,15 @@ fn collect_targets_with(
     until: chrono::NaiveDate,
     run: impl Fn(CollectTarget) -> std::result::Result<worklog_core::collectors::CollectReport, String>,
 ) -> Result<Vec<CollectOutcome>> {
-    let record_health = |outcome: &CollectOutcome| {
-        let r = record_outcome(outcome, |s, h| {
-            worklog_core::collect_health::record(conn, s, h)
-        });
+    let report_failure = |r: Result<()>| {
         if let Err(e) = r {
             eprintln!("worklog: recording collect health failed: {e}");
         }
+    };
+    let record_health = |outcome: &CollectOutcome| {
+        report_failure(record_outcome(outcome, |s, h| {
+            worklog_core::collect_health::record(conn, s, h)
+        }));
     };
 
     let mut outcomes = Vec::new();
@@ -1775,11 +1777,11 @@ fn collect_targets_with(
             let routed = routing::route_day(conn, d, &classifier, rule)
                 .and_then(|_| routing_absorb::absorb_and_noise(conn, d));
             match routed {
-                Ok(_) => {
-                    if let Err(e) = worklog_core::collect_health::record(conn, "routing", Ok(())) {
-                        eprintln!("worklog: recording collect health failed: {e}");
-                    }
-                }
+                Ok(_) => report_failure(worklog_core::collect_health::record(
+                    conn,
+                    "routing",
+                    Ok(()),
+                )),
                 Err(e) => {
                     let outcome = CollectOutcome::RoutingFailed {
                         day: d,
@@ -3343,6 +3345,25 @@ fn db_probe<T>(
     }
 }
 
+/// The error text of each failed database probe, `null` when the probe
+/// succeeded or never ran — the `--json` analog of `daemon.service_error`.
+fn probe_errors_json<A, B, C>(
+    database: &Option<Result<A>>,
+    last_prune: &Option<Result<B>>,
+    today: &Option<Result<C>>,
+) -> serde_json::Value {
+    fn text<T>(p: &Option<Result<T>>) -> Option<String> {
+        p.as_ref()
+            .and_then(|r| r.as_ref().err())
+            .map(|e| e.to_string())
+    }
+    serde_json::json!({
+        "database_error": text(database),
+        "last_prune_error": text(last_prune),
+        "today_error": text(today),
+    })
+}
+
 /// `worklog status` — one screen folding the daemon / hook / schedule /
 /// web / database / secrets health checks (previously five separate
 /// `*-status` commands) plus today's tracked time. Read-only and fast.
@@ -3386,10 +3407,7 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
     let today_ok = today_agg.as_ref().and_then(|r| r.as_ref().ok());
 
     if json {
-        writeln!(
-            out,
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
+        let mut status = serde_json::json!({
                 "daemon": {
                     "running": daemon_up,
                     "service_installed": daemon_svc_on,
@@ -3420,8 +3438,14 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
                 "secrets": { "set": secrets_set, "total": secrets_total, "missing": secrets_missing },
                 "sources": sources,
                 "today": today_ok.map(day_agg_json),
-            }))?
-        )?;
+        });
+        if let (Some(base), Some(errs)) = (
+            status.as_object_mut(),
+            probe_errors_json(&db_summary, &last_prune, &today_agg).as_object(),
+        ) {
+            base.extend(errs.clone());
+        }
+        writeln!(out, "{}", serde_json::to_string_pretty(&status)?)?;
         return Ok(());
     }
 
@@ -5699,6 +5723,26 @@ mod tests {
         let rows = worklog_core::collect_health::all(&conn, chrono::Utc::now()).unwrap();
         assert!(rows.iter().all(|r| r.source != "routing"));
         assert!(rows.iter().any(|r| r.source == "jira"));
+    }
+
+    /// A failed database / last-prune / today probe puts its text in the
+    /// status JSON; ok and never-ran probes stay null. Catches swallowing
+    /// the error (null for Err) and reporting "never ran" (None) as an error.
+    #[test]
+    fn probe_errors_json_carries_failed_probe_text() {
+        let failed: Option<Result<u8>> = Some(Err(anyhow::anyhow!("disk I/O error")));
+        let ok: Option<Result<u8>> = Some(Ok(1));
+        let never: Option<Result<u8>> = None;
+        let v = probe_errors_json(&failed, &ok, &never);
+        assert_eq!(v["database_error"], "disk I/O error");
+        assert!(v["last_prune_error"].is_null());
+        assert!(v["today_error"].is_null());
+        let v = probe_errors_json(&ok, &never, &failed);
+        assert!(v["database_error"].is_null());
+        assert!(v["last_prune_error"].is_null());
+        assert_eq!(v["today_error"], "disk I/O error");
+        let v = probe_errors_json(&never, &failed, &ok);
+        assert_eq!(v["last_prune_error"], "disk I/O error");
     }
 
     /// FR-17 at the call site: cmd_status reads health through sources_from_db.
