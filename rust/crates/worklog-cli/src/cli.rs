@@ -2839,13 +2839,13 @@ fn print_day_hints<W: Write>(out: &mut W, agg: &DayAgg) -> Result<()> {
         )?;
     }
     // Only flag overlaps worth acting on — sub-minute slivers are noise.
-    if agg.overlap_secs >= 60 {
+    if agg.class_overlap_secs() >= 60 {
         style::warn(
             out,
             &format!(
                 "blocks overlap by {} — times above already count it once; \
                  `worklog block list --day {}` shows which to merge/split",
-                human_dur(agg.overlap_secs),
+                human_dur(agg.class_overlap_secs()),
                 agg.day,
             ),
         )?;
@@ -2862,7 +2862,7 @@ fn day_agg_json(agg: &DayAgg) -> serde_json::Value {
         "personal_seconds": agg.personal_secs,
         "ignored_secs": agg.ignored_secs,
         "unassigned_seconds": agg.unassigned_secs,
-        "overlap_seconds": agg.overlap_secs,
+        "overlap_seconds": agg.class_overlap_secs(),
         "blocks": agg.block_count,
         "dirty": agg.dirty,
         "gap": agg.gap,
@@ -2938,7 +2938,7 @@ fn print_week<W: Write>(
     let ignored: i64 = days.iter().map(|d| d.ignored_secs).sum();
     let dirty: i64 = days.iter().map(|d| d.dirty).sum();
     let unassigned: i64 = days.iter().map(|d| d.unassigned_n).sum();
-    let overlap: i64 = days.iter().map(|d| d.overlap_secs).sum();
+    let overlap: i64 = days.iter().map(DayAgg::class_overlap_secs).sum();
 
     if json {
         writeln!(
@@ -5127,7 +5127,11 @@ mod tests {
         assert_eq!(agg.class_overlap_secs(), 0);
         let mut out = Vec::new();
         print_day_summary(&mut out, &agg).unwrap();
-        assert!(!String::from_utf8(out).unwrap().contains("\noverlap "));
+        let text = String::from_utf8(out).unwrap();
+        assert!(!text.contains("\noverlap "), "{text}");
+        // the hint and JSON must agree with the table (raw 30m would leak here)
+        assert!(!text.contains("blocks overlap by"), "{text}");
+        assert_eq!(day_agg_json(&agg)["overlap_seconds"], 0);
     }
 
     #[test]
