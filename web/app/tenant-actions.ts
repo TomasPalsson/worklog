@@ -7,8 +7,10 @@ import {
   listTenants as daemonListTenants,
   linkTenant as daemonLinkTenant,
   clearCustomerShares as daemonClearCustomerShares,
+  fetchDeildSuggestion as daemonFetchDeildSuggestion,
 } from "@/lib/tenants";
 import type { Tenant, TenantLink } from "@/lib/tenants";
+import type { DeildSuggestion } from "@/lib/time_leaks_contract";
 import { call } from "@/lib/daemon";
 import type { BillingSlice, ShareRow } from "@/lib/deildir";
 import type { ActionResult } from "./actions";
@@ -73,4 +75,10 @@ export async function moveLineDeild(args: {
       to_deild: args.toDeild,
     }),
   );
+}
+
+/** The deild the Owner saved most often for the block's customer (`null`
+ * when none). A server action because the lib module is not one. */
+export async function fetchDeildSuggestion(blockId: number): Promise<DeildSuggestion | null> {
+  return daemonFetchDeildSuggestion(blockId);
 }

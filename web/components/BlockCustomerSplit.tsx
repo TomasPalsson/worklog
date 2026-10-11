@@ -9,7 +9,8 @@
 import { useEffect, useState } from "react";
 import { saveCustomerShares } from "@/app/tenant-actions";
 import { SHARE_TOLERANCE_PERCENT, type BillingSlice } from "@/lib/deildir";
-import { fetchDeildSuggestion, type SplitOrigin } from "@/lib/tenants";
+import { fetchDeildSuggestion } from "@/app/tenant-actions";
+import type { SplitOrigin } from "@/lib/tenants";
 import type { DeildSuggestion } from "@/lib/time_leaks_contract";
 import {
   type CustomerOptions,

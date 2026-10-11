@@ -5,6 +5,7 @@
 // just means nothing to show yet, not "not multi-tenant". Fetched lazily on
 // mount so the day's card list never waits.
 
+import { readFileSync } from "node:fs";
 import { afterAll, afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { registryHook, resetRegistryHook } from "./billingRegistryTestHook";
@@ -67,11 +68,9 @@ mock.module("@/app/tenant-actions", () => ({
   fetchCustomerSlices: (blockId: number) => fetchCustomerSlicesImpl(blockId),
   saveCustomerShares: (blockId: number, rows: ShareRow[]) => saveCustomerSharesImpl(blockId, rows),
   clearCustomerShares: (blockId: number) => clearCustomerSharesImpl(blockId),
+  fetchDeildSuggestion: (blockId: number) => fetchDeildSuggestionImpl(blockId),
   fetchTenants: async () => ({ ok: true as const, data: [] }),
   saveTenantLink: async () => ({ ok: true as const }),
-}));
-mock.module("@/lib/tenants", () => ({
-  fetchDeildSuggestion: (blockId: number) => fetchDeildSuggestionImpl(blockId),
 }));
 const otherActions = { ...(await import("@/app/actions")) };
 
@@ -383,5 +382,12 @@ describe("BlockCustomerSplit deild chip (FR-21)", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Rekstur" }));
 
     expect(await screen.findByText("Customer no longer exists")).not.toBeNull(); // catches swallowed error
+  });
+});
+
+describe("web/lib/tenants.ts", () => {
+  it("is not a Server Actions module (its exports must not be browser-invocable)", () => {
+    const src = readFileSync(new URL("../lib/tenants.ts", import.meta.url), "utf8");
+    expect(src).not.toMatch(/^\s*["']use server["']/m);
   });
 });

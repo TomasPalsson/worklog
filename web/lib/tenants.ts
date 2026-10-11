@@ -1,8 +1,6 @@
 // Types mirror rust/crates/worklog-core/src/tenant_contract.rs; daemon
 // calls behind the Billing panel's tenant list + link editor (spec 005).
 
-"use server";
-
 import { call } from "./daemon";
 import type { DeildSuggestion } from "./time_leaks_contract";
 
