@@ -10,6 +10,11 @@ const PAD_Y = 40;
 const MAX_RADIUS = 12;
 const LEADER_X = 20;
 const LEADER_Y = 18;
+const CHAR_W = 6.2;
+const EDGE = 8;
+const LABEL_H = 10;
+const LABEL_TOP = 24;
+const LABEL_BOTTOM = 296;
 
 type Quadrant = "deep-new" | "deep-familiar" | "scattered-exploring" | "scattered-routine";
 
@@ -80,6 +85,18 @@ export function compassLayout(report: TopicsReport) {
   return { plotted, skipped, medianX, medianY };
 }
 
+// Flip to the inner side when the text would cross the plot edge; clamp so the box stays in the plot.
+function leaderPlacement(dot: CompassDot) {
+  const width = dayName(dot.day).length * CHAR_W;
+  let sideX = dot.quadrant.startsWith("deep") ? 1 : -1;
+  const reachX = (side: number) => dot.x + side * (LEADER_X + 3 + width);
+  if (reachX(sideX) > WIDTH - EDGE || reachX(sideX) < EDGE) sideX = -sideX;
+  const sideY = dot.quadrant.endsWith("new") || dot.quadrant.endsWith("exploring") ? -1 : 1;
+  const drop = sideY < 0 ? 0 : LABEL_H;
+  const labelY = Math.min(LABEL_BOTTOM, Math.max(LABEL_TOP + LABEL_H, dot.y + sideY * LEADER_Y + drop));
+  return { sideX, endX: dot.x + sideX * LEADER_X, endY: labelY - drop, labelY };
+}
+
 const dayName = (day: string) => `${shortWeekday(day)} ${shortMonthDay(day)}`;
 
 export function compassTip(day: DayRow): Tip {
@@ -128,14 +145,11 @@ export function DayCompass({ report }: { report: TopicsReport }) {
         {plotted
           .filter((dot) => dot.labelled)
           .map((dot) => {
-            const sideX = dot.quadrant.startsWith("deep") ? 1 : -1;
-            const sideY = dot.quadrant.endsWith("new") || dot.quadrant.endsWith("exploring") ? -1 : 1;
-            const endX = dot.x + sideX * LEADER_X;
-            const endY = dot.y + sideY * LEADER_Y;
+            const { sideX, endX, endY, labelY } = leaderPlacement(dot);
             return (
               <g key={dot.day}>
                 <line className="sx-cmp-leader" x1={dot.x} y1={dot.y} x2={endX} y2={endY} />
-                <text className="art-label sx-cmp-leader-label" x={endX + sideX * 3} y={endY + (sideY < 0 ? 0 : 10)} textAnchor={sideX > 0 ? "start" : "end"}>
+                <text className="art-label sx-cmp-leader-label" x={endX + sideX * 3} y={labelY} textAnchor={sideX > 0 ? "start" : "end"}>
                   {dayName(dot.day)}
                 </text>
               </g>

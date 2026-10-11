@@ -117,6 +117,17 @@ export function TopicRiver({ report }: { report: TopicsReport }) {
           role="img"
           aria-label={`Topic river over ${n} bins: ${layers.map((l) => `${l.topic.name} ${hours(l.total)}`).join(", ")}.`}
         >
+          {report.river.map((b, i) => (
+            <rect
+              key={b.start}
+              className="sx-river-col"
+              x={Math.max(0, xs[i] - step / 2)}
+              y={0}
+              width={Math.min(W, xs[i] + step / 2) - Math.max(0, xs[i] - step / 2)}
+              height={H}
+              {...tipProps(columnTip(report, i))}
+            />
+          ))}
           {layers.map((l) => (
             <path
               key={l.topic.id}
@@ -132,17 +143,6 @@ export function TopicRiver({ report }: { report: TopicsReport }) {
             <text key={l.topic.id} className="sx-river-name" x={l.labelX} y={l.labelY} textAnchor="middle" dominantBaseline="central">
               {l.topic.name}
             </text>
-          ))}
-          {report.river.map((b, i) => (
-            <rect
-              key={b.start}
-              className="sx-river-col"
-              x={Math.max(0, xs[i] - step / 2)}
-              y={0}
-              width={Math.min(W, xs[i] + step / 2) - Math.max(0, xs[i] - step / 2)}
-              height={H}
-              {...tipProps(columnTip(report, i))}
-            />
           ))}
           <text x={PAD} y={H - 4} className="art-label">{shortLabel(first)}</text>
           <text x={W - PAD} y={H - 4} textAnchor="end" className="art-label">{shortLabel(last)}</text>

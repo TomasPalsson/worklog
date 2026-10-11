@@ -110,6 +110,15 @@ describe("TopicRiver", () => {
     expect(tip.rows!.map((r) => r[0])).toEqual(["T1", "T4", "T2", "T3"]);
     expect(tip.rows![0][1]).toBe("5.0h");
   });
+  // catches: column rects painted after the bands, swallowing every pointer
+  it("paints the column rects before the bands so bands receive the pointer", () => {
+    const { container } = render(<TopicRiver report={rep} />);
+    const all = [...container.querySelectorAll("rect.sx-river-col, path.sx-river-band")];
+    const lastCol = all.map((e) => e.tagName).lastIndexOf("rect");
+    const firstBand = all.findIndex((e) => e.tagName === "path");
+    expect(lastCol).toBeLessThan(firstBand);
+    expect(container.querySelectorAll("path.sx-river-band[data-stip]").length).toBe(2);
+  });
   it("shows axis labels in .art-label and the How line", () => {
     const { container, getByText } = render(<TopicRiver report={rep} />);
     const labels = [...container.querySelectorAll("text.art-label")].map((t) => t.textContent);

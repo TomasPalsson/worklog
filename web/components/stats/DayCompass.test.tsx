@@ -158,4 +158,28 @@ describe("DayCompass", () => {
       "How: Focus = how alike that day's blocks are (hours-weighted mean pairwise cosine). Novelty = how unlike anything you did before (1 − nearest earlier block). Lines are your medians.",
     );
   });
+  // catches: labels placed at a fixed offset with no edge flip, clamp or caption avoidance
+  it("keeps every leader label box inside the plot and clear of the captions", () => {
+    const edges = report([
+      dayRow("2026-09-19", 0.1, 0.1), dayRow("2026-09-20", 0.5, 0.5), dayRow("2026-09-25", 1, 1),
+      dayRow("2026-09-27", 1, 0.1), dayRow("2026-09-26", 0.1, 1),
+    ]);
+    const { container } = render(<DayCompass report={edges} />);
+    const box = (el: Element) => {
+      const x = Number(el.getAttribute("x")), y = Number(el.getAttribute("y"));
+      const w = el.textContent!.length * 6.2;
+      const x0 = el.getAttribute("text-anchor") === "end" ? x - w : x;
+      return { x0, x1: x0 + w, y0: y - 10, y1: y };
+    };
+    const labels = [...container.querySelectorAll(".sx-cmp-leader-label")].map(box);
+    const captions = [...container.querySelectorAll(".sx-cmp-caption")].map(box);
+    expect(labels.length).toBe(4);
+    for (const l of labels) {
+      expect(l.x0).toBeGreaterThanOrEqual(8);
+      expect(l.x1).toBeLessThanOrEqual(472);
+      expect(l.y0).toBeGreaterThanOrEqual(24);
+      expect(l.y1).toBeLessThanOrEqual(296);
+      for (const c of captions) expect(l.x1 <= c.x0 || l.x0 >= c.x1 || l.y1 <= c.y0 || l.y0 >= c.y1).toBe(true);
+    }
+  });
 });
