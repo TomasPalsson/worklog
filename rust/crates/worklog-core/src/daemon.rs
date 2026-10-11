@@ -78,7 +78,7 @@
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result};
 use axum::extract::{Path as AxumPath, State};
@@ -171,7 +171,10 @@ pub struct AppState {
 
 pub type Shared = Arc<AppState>;
 
+static STARTED_AT: OnceLock<String> = OnceLock::new();
+
 pub fn router(state: Shared) -> Router {
+    STARTED_AT.get_or_init(|| Utc::now().to_rfc3339());
     Router::new()
         .route("/health", get(health))
         .route("/blocks/:day", get(list_blocks))
@@ -767,7 +770,12 @@ impl IntoResponse for ApiError {
 }
 
 async fn health() -> Json<Value> {
-    Json(json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") }))
+    Json(json!({
+        "ok": true,
+        "version": env!("CARGO_PKG_VERSION"),
+        "pid": std::process::id(),
+        "started_at": STARTED_AT.get(),
+    }))
 }
 
 async fn list_blocks(
@@ -2194,17 +2202,20 @@ async fn run_sync(
     let auth = tempo::TempoAuth::from_secrets().map_err(ApiError::from)?;
     let dry_run = body.dry_run;
     let only_issue = body.jira_issue.clone();
-    // Same invoker dance as the CLI: construct an LLM provider for
-    // multi-block ticket-day description summaries. We do this inside
-    // `with_conn` so the (non-Send) reqwest client lives on the
-    // spawn_blocking thread alongside the sqlite Connection.
-    let (report, results) = with_conn(state, move |c| {
+    // Same invoker dance as the CLI: an LLM provider for multi-block
+    // ticket-day description summaries. Blocking clients must be built
+    // off the async runtime thread, but before `with_conn` holds the lock.
+    let (provider, http_client) = tokio::task::spawn_blocking(move || -> Result<_> {
         let provider = if dry_run {
             None
         } else {
             estimate::resolve_provider().ok()
         };
-        let http_client = crate::http::client()?;
+        Ok((provider, crate::http::client()?))
+    })
+    .await
+    .context("spawn_blocking")??;
+    let (report, results) = with_conn(state, move |c| {
         let claude = estimate::ClaudeSubprocess::default();
         let invoker: Option<&dyn estimate::ModelInvoker> = match provider.as_ref() {
             Some(estimate::ProviderChoice::ClaudeSubprocess) => Some(&claude),
@@ -3507,6 +3518,16 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let v = read_json(resp).await;
         assert_eq!(v["ok"], true);
+        assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(v["pid"], std::process::id()); // catches a missing or hardcoded pid
+        let first = v["started_at"].as_str().expect("started_at is a string");
+        let t = DateTime::parse_from_rfc3339(first).expect("started_at is RFC 3339");
+        assert!(t <= Utc::now()); // catches a stamp taken in the future
+        let again = router(state_with_block())
+            .oneshot(Request::get("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(read_json(again).await["started_at"], first); // catches a stamp taken per request
     }
 
     #[tokio::test(flavor = "current_thread")]
