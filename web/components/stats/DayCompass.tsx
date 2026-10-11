@@ -76,6 +76,9 @@ export function compassLayout(report: TopicsReport) {
     if (!best || reach(dot) > reach(best)) farthest.set(dot.quadrant, dot);
   }
   for (const dot of farthest.values()) dot.labelled = true;
+  const hours = new Map(plottedDays.map((d) => [d.day, d.work_seconds]));
+  const busiest = plotted.filter((d) => !d.labelled).reduce<CompassDot | null>((a, b) => (!a || hours.get(b.day)! > hours.get(a.day)! ? b : a), null);
+  if (busiest) busiest.labelled = true;
   return { plotted, skipped, medianX, medianY };
 }
 
@@ -140,10 +143,10 @@ export function DayCompass({ report }: { report: TopicsReport }) {
         <text className="art-label sx-cmp-end" x={WIDTH - PAD_X} y={HEIGHT - 8} textAnchor="end">
           focused
         </text>
-        <text className="art-label sx-cmp-end" transform={`translate(12 ${HEIGHT - PAD_Y}) rotate(-90)`} textAnchor="start">
+        <text className="art-label sx-cmp-end" x={8} y={HEIGHT - 22} textAnchor="start">
           familiar
         </text>
-        <text className="art-label sx-cmp-end" transform={`translate(12 ${PAD_Y}) rotate(-90)`} textAnchor="end">
+        <text className="art-label sx-cmp-end" x={8} y={16} textAnchor="start">
           new ground
         </text>
         {plotted.map((dot) => (

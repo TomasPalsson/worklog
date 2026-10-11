@@ -49,10 +49,8 @@ function MomentCard({ item, kind, topics, from, to, median }: CardProps) {
       aria-label={`${item.label}: ${score(item.score)}`}
       {...tipProps(momentTip(item, kind, topicName, median))}
     >
-      <span className="tm-score">
-        {score(item.score)}
-        <span className="tm-unit">{kind === "first_time" ? " new" : " match"}</span>
-      </span>
+      <span className="tm-badge">{kind === "first_time" ? "New ground" : "Unlike anything else"}</span>
+      <span className="tm-num">{kind === "first_time" ? score(item.score) : `closest ${score(item.score)} · usual ${score(median)}`}</span>
       <span className="tm-label">
         {kind === "first_time" ? <FirstTimeMark /> : <OddballMark />}
         <span className="tm-clamp">{item.label}</span>
@@ -61,17 +59,8 @@ function MomentCard({ item, kind, topics, from, to, median }: CardProps) {
         {shortMonthDay(item.day)} · {formatDuration(item.seconds)}
       </span>
       {topicName && <span className="tm-chip">{topicName}</span>}
-      {kind === "oddball" && (
-        <span className="tm-nearest">
-          closest match {score(item.score)} (typical {score(median)})
-        </span>
-      )}
       <span className="tm-strip" aria-hidden="true">
         <span className="tm-marker" style={{ left: `${stripFraction(item.day, from, to) * 100}%` }} />
-      </span>
-      <span className="tm-ends">
-        <span>{shortMonthDay(from)}</span>
-        <span>{shortMonthDay(to)}</span>
       </span>
     </li>
   );
@@ -83,6 +72,9 @@ export function TopicMoments({ report }: { report: TopicsReport }) {
     <section className="sr-card">
       <h3 className="sr-title">{title}</h3>
       <p className="tm-sub">{subtitle}</p>
+      <p className="tm-range">
+        {shortMonthDay(from)} … {shortMonthDay(to)}
+      </p>
       {items.length === 0 ? (
         <p className="sr-empty">{EMPTY}</p>
       ) : (

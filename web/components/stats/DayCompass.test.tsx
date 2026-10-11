@@ -85,7 +85,8 @@ describe("compassLayout", () => {
   it("flags the day farthest from the crosshairs per quadrant, normalised by axis span", () => {
     const labelled = compassLayout(week).plotted.filter((p) => p.labelled).map((p) => p.day).sort();
     // deep-new holds Oct 3 (0, 0.5 of the novelty span) and Oct 5 (0.5, 0.25): Oct 5 is farther.
-    expect(labelled).toEqual(["2026-10-01", "2026-10-02", "2026-10-04", "2026-10-05"]);
+    // plus Oct 3, the leftover most-hours day (all tie; first wins)
+    expect(labelled).toEqual(["2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05"]);
   });
   it("lists None-focus days as skipped and never plots them", () => {
     const { plotted, skipped } = compassLayout(week);
@@ -145,8 +146,9 @@ describe("DayCompass", () => {
   it("labels the extreme day of each quadrant with weekday and date", () => {
     const { container } = render(<DayCompass report={week} />);
     const labels = [...container.querySelectorAll(".sx-cmp-leader-label")].map((el) => el.textContent).sort();
-    expect(labels).toEqual(["Fri Oct 2", "Mon Oct 5", "Sun Oct 4", "Thu Oct 1"]);
-    expect(container.querySelectorAll(".sx-cmp-leader").length).toBe(4);
+    // four quadrant extremes plus the most-hours day among the rest (Oct 3, first of the ties)
+    expect(labels).toEqual(["Fri Oct 2", "Mon Oct 5", "Sat Oct 3", "Sun Oct 4", "Thu Oct 1"]);
+    expect(container.querySelectorAll(".sx-cmp-leader").length).toBe(5);
   });
   it("lists the None-focus days under the chart", () => {
     const { container } = render(<DayCompass report={week} />);
@@ -211,6 +213,31 @@ describe("DayCompass", () => {
     expect(callout.textContent).toBe("Most focused: Mon Oct 5 · Most new ground: Sat Oct 3");
   });
   // catches: labels placed at a fixed offset with no edge flip, clamp or caption avoidance
+  // catches: a fixed 5, or the busiest day labelled twice / skipped
+  it("labels min(5, plotted) days, the fifth being the most-hours day not already labelled", () => {
+    const busy = report([dayRow("2026-10-01", 0.1, 0.5), dayRow("2026-10-02", 0.2, 0.6, 7200), dayRow("2026-10-03", 0.3, 0.7), dayRow("2026-10-04", 0.4, 0.55), dayRow("2026-10-05", 0.5, 0.65)]);
+    const labels = [...render(<DayCompass report={busy} />).container.querySelectorAll(".sx-cmp-leader-label")].map((el) => el.textContent);
+    expect(labels.length).toBe(5);
+    expect(new Set(labels).size).toBe(5);
+    cleanup();
+    const two = report([dayRow("2026-10-01", 0.1, 0.5), dayRow("2026-10-02", 0.9, 0.9)]);
+    expect(render(<DayCompass report={two} />).container.querySelectorAll(".sx-cmp-leader-label").length).toBe(2);
+    cleanup();
+    const seven = report(Array.from({ length: 7 }, (_, i) => dayRow(`2026-10-0${i + 1}`, 0.1 * (i + 1), 0.3 + 0.05 * ((i * 3) % 7))));
+    expect(render(<DayCompass report={seven} />).container.querySelectorAll(".sx-cmp-leader-label").length).toBe(5);
+  });
+  // catches: rotated vertical end labels, or them parked at the right/centre
+  it("vertical end labels are horizontal, new ground top-left and familiar bottom-left", () => {
+    const ends = [...render(<DayCompass report={week} />).container.querySelectorAll(".sx-cmp-end")];
+    for (const el of ends.filter((e) => ["familiar", "new ground"].includes(e.textContent!))) {
+      expect(el.getAttribute("transform")).toBeNull();
+      expect(el.getAttribute("text-anchor")).toBe("start");
+      expect(Number(el.getAttribute("x"))).toBeLessThan(64);
+    }
+    const y = (t: string) => Number(ends.find((e) => e.textContent === t)!.getAttribute("y"));
+    expect(y("new ground")).toBeLessThan(160);
+    expect(y("familiar")).toBeGreaterThan(160);
+  });
   it("keeps every leader label box inside the plot and clear of the captions", () => {
     const edges = report([
       dayRow("2026-09-19", 0.1, 0.1), dayRow("2026-09-20", 0.5, 0.5), dayRow("2026-09-25", 1, 1),
@@ -225,7 +252,7 @@ describe("DayCompass", () => {
     };
     const labels = [...container.querySelectorAll(".sx-cmp-leader-label")].map(box);
     const captions = [...container.querySelectorAll(".sx-cmp-caption")].map(box);
-    expect(labels.length).toBe(4);
+    expect(labels.length).toBe(5);
     for (const l of labels) {
       expect(l.x0).toBeGreaterThanOrEqual(8);
       expect(l.x1).toBeLessThanOrEqual(472);

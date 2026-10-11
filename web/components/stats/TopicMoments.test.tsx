@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "bun:test";
 import { cleanup, render } from "@testing-library/react";
 import type { Highlight, Topic, TopicsReport } from "@/lib/topics_contract";
@@ -102,12 +103,18 @@ describe("TopicMoments", () => {
     expect(labels("first_time")).toEqual(["Merge billing view", "Second"]);
     expect(labels("oddball")).toEqual(["Typed state rows", "Other"]);
   });
-  // catches: bare number with no word, or the word swapped between the two cards
-  it("score is shown with two decimals and a plain word beside it", () => {
+  // catches: number-first card, wrong word on a card, or the number dropped
+  it("each card leads with a badge word, then the small number", () => {
     const { container } = render(<TopicMoments report={report()} />);
-    expect(container.querySelector('[data-moment="first_time"] .tm-score')!.textContent).toBe("0.85 new");
-    expect(container.querySelector('[data-moment="oddball"] .tm-score')!.textContent).toBe("0.23 match");
-    expect(container.querySelector('[data-moment="first_time"] .tm-score .tm-unit')!.textContent).toBe(" new");
+    const first = container.querySelector('[data-moment="first_time"]')!;
+    const odd = container.querySelector('[data-moment="oddball"]')!;
+    expect(first.querySelector(".tm-badge")!.textContent).toBe("New ground");
+    expect(first.querySelector(".tm-num")!.textContent).toBe("0.85");
+    expect(odd.querySelector(".tm-badge")!.textContent).toBe("Unlike anything else");
+    expect(odd.querySelector(".tm-num")!.textContent).toBe("closest 0.23 · usual 0.57");
+    for (const card of [first, odd]) {
+      expect(card.querySelector(".tm-badge")!.compareDocumentPosition(card.querySelector(".tm-num")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
   });
   // catches: jargon left in visible text or tips
   it("no cosine, novelty or Nearest anything in visible text or tips", () => {
@@ -116,11 +123,6 @@ describe("TopicMoments", () => {
     visible.querySelector("details")!.remove();
     expect(visible.textContent!).not.toMatch(/cosine|novelty|nearest anything/i);
     for (const card of container.querySelectorAll("[data-stip]")) expect(card.getAttribute("data-stip")).not.toMatch(/cosine|novelty|nearest anything/i);
-  });
-  it("oddball card says closest match against typical; first-time card does not", () => {
-    const { container } = render(<TopicMoments report={report()} />);
-    expect(container.querySelector('[data-moment="oddball"] .tm-nearest')!.textContent).toBe("closest match 0.23 (typical 0.57)");
-    expect(container.querySelector('[data-moment="first_time"] .tm-nearest')).toBeNull();
   });
   it("shows day, hours and the topic chip", () => {
     const { container } = render(<TopicMoments report={report()} />);
@@ -174,12 +176,24 @@ describe("TopicMoments", () => {
     const subs = [...container.querySelectorAll("section.sr-card")].map((s) => [s.querySelector(".sr-title")!.textContent, s.querySelector(".tm-sub")!.textContent]);
     expect(subs).toEqual([["First times", "higher = newer ground"], ["Oddballs", "lower = more unusual"]]);
   });
-  // catches: endpoints omitted or taken from the card's own day
-  it("every strip is labelled with the range's first and last day", () => {
+  // catches: caption per card, caption missing on a column, or endpoints taken from a card's own day
+  it("exactly one range caption per column, under the heading", () => {
     const { container } = render(<TopicMoments report={report()} />);
-    const ends = [...container.querySelectorAll(".tm-ends")];
-    expect(ends.length).toBe(4);
-    ends.forEach((e) => expect([...e.children].map((c) => c.textContent)).toEqual(["Oct 5", "Oct 9"]));
+    expect(container.querySelectorAll(".tm-ends").length).toBe(0);
+    const ranges = [...container.querySelectorAll("section.sr-card")].map((s) => s.querySelectorAll(".tm-range").length + ":" + s.querySelector(".tm-range")!.textContent);
+    expect(ranges).toEqual(["1:Oct 5 … Oct 9", "1:Oct 5 … Oct 9"]);
+  });
+  it("the caption stays when a column is empty", () => {
+    const { container } = render(<TopicMoments report={report({ oddballs: [] })} />);
+    expect(container.querySelectorAll(".tm-range").length).toBe(2);
+  });
+  // catches: sub-13px text left in the stylesheets
+  it("no font-size under 13px in moments.css or compass.css", () => {
+    for (const f of ["../../app/stats/moments.css", "../../app/stats/compass.css"]) {
+      const sizes = [...readFileSync(new URL(f, import.meta.url), "utf8").matchAll(/font-size:\s*(\d+(?:\.\d+)?)px/g)].map((m) => Number(m[1]));
+      expect(sizes.length).toBeGreaterThan(0);
+      for (const n of sizes) expect(n).toBeGreaterThanOrEqual(13);
+    }
   });
   it("label carries the two-line clamp class and is the .tm-label element", () => {
     const { container } = render(<TopicMoments report={report()} />);
