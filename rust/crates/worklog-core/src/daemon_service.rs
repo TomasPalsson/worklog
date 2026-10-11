@@ -79,7 +79,11 @@ fn install_at(
             step,
         )
         .with_context(|| {
-            format!("old daemon did not answer the stop request: /health on {tcp} still answered")
+            format!(
+                "old daemon did not answer the stop request: /health on {tcp} still answered; \
+                 a daemon started outside the service (e.g. `worklog daemon` in a terminal) \
+                 must be stopped by hand, then re-run install"
+            )
         });
     }
     let status = match Platform::current() {
@@ -978,6 +982,24 @@ mod tests {
         );
         restore();
         assert!(r.unwrap().installed);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn install_over_an_unmanaged_daemon_fails_naming_the_stop_and_the_fix() {
+        // catches: dropping `old_gone?` (Ok: the post-load wait passes on the old daemon),
+        // inverting `b != *old` (Ok: the stop wait passes at once), and a bare
+        // "did not answer" that never tells the user to stop the hand-started daemon
+        let tmp = tempdir().unwrap();
+        let _g = redirect(tmp.path());
+        crate::schedule::fake_tool(tmp.path(), 0);
+        let tcp = serve_health();
+        let r = install_at("worklog daemon", &tcp, SHORT, Duration::from_millis(1));
+        restore();
+        let e = r.unwrap_err().to_string();
+        assert!(e.contains("did not answer the stop request"), "{e}");
+        assert!(e.contains(&tcp), "{e}");
+        assert!(e.contains("started outside"), "{e}");
     }
 
     fn replaced(before: Option<&str>, seq: &[Option<&str>]) -> bool {
