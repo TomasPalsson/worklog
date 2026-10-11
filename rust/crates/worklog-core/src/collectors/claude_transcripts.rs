@@ -109,11 +109,13 @@ pub fn collect_from_dirs(
     until: NaiveDate,
 ) -> Result<CollectReport> {
     let res = read_transcripts(conn, dir, jobs_dir, since, until);
-    match &res {
-        Ok(_) => crate::collect_health::record(conn, "claude_transcripts", Ok(()))?,
-        Err(e) => {
-            crate::collect_health::record(conn, "claude_transcripts", Err(&format!("{e:#}")))?
-        }
+    let health = res.as_ref().map(|_| ()).map_err(|e| format!("{e:#}"));
+    if let Err(e) = crate::collect_health::record(
+        conn,
+        "claude_transcripts",
+        health.as_ref().map_err(|m| m.as_str()),
+    ) {
+        eprintln!("worklog: recording claude_transcripts health failed: {e}");
     }
     res
 }
