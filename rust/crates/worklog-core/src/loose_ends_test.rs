@@ -213,13 +213,19 @@ fn query_over_2000_blocks_takes_under_200ms() {
     let conn = open_memory().unwrap();
     conn.execute_batch("BEGIN").unwrap();
     for i in 0..2000 {
-        let day = format!("2026-{:02}-{:02}", 1 + (i / 28) % 12, 1 + i % 28);
+        // Every block lands inside the queried cycle (2026-09-20..=2026-10-19).
+        let d = i % 30;
+        let day = if d <= 10 {
+            format!("2026-09-{}", 20 + d)
+        } else {
+            format!("2026-10-{:02}", d - 10)
+        };
         seed(&conn, open(&day));
     }
     conn.execute_batch("COMMIT").unwrap();
     let t = std::time::Instant::now();
     let le = for_cycle_with(&conn, TODAY, START).unwrap();
     let took = t.elapsed();
-    assert!(!le.items.is_empty());
+    assert_eq!(le.items.len(), 2000, "every seeded block is in the cycle");
     assert!(took.as_millis() < 200, "took {took:?}");
 }
