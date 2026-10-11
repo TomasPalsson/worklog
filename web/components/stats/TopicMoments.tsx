@@ -25,8 +25,8 @@ export function momentTip(item: Highlight, kind: Kind, topicName: string | undef
     ["Time", formatDuration(item.seconds)],
   ];
   if (topicName) rows.push(["Topic", topicName]);
-  if (kind === "first_time") rows.push(["Novelty", score(item.score)]);
-  else rows.push(["Nearest anything", score(item.score)], ["Your median", score(median)]);
+  if (kind === "first_time") rows.push(["Newness", score(item.score)]);
+  else rows.push(["Closest match", score(item.score)], ["Your median", score(median)]);
   return { title: item.label, rows, accent: kind === "first_time" ? "var(--amber)" : "var(--fg-muted)" };
 }
 
@@ -49,7 +49,10 @@ function MomentCard({ item, kind, topics, from, to, median }: CardProps) {
       aria-label={`${item.label}: ${score(item.score)}`}
       {...tipProps(momentTip(item, kind, topicName, median))}
     >
-      <span className="tm-score">{score(item.score)}</span>
+      <span className="tm-score">
+        {score(item.score)}
+        <span className="tm-unit">{kind === "first_time" ? " new" : " match"}</span>
+      </span>
       <span className="tm-label">
         {kind === "first_time" ? <FirstTimeMark /> : <OddballMark />}
         <span className="tm-clamp">{item.label}</span>

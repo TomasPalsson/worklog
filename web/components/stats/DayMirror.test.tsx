@@ -124,8 +124,9 @@ describe("DayMirror", () => {
   it("shows a legend with both swatches and a 3-step strip", () => {
     const { container } = render(<DayMirror report={full} />);
     const legend = container.querySelector(".sx-mir-legend")!;
-    expect(legend.textContent).toContain("alike");
-    expect(legend.textContent).toContain("opposite");
+    expect(legend.textContent).toContain("similar work");
+    expect(legend.textContent).toContain("different work");
+    expect(legend.textContent).not.toMatch(/alike|opposite/);
     expect(legend.querySelector(".sx-mir-swatch.sx-mir-pos")).toBeTruthy();
     expect(legend.querySelector(".sx-mir-swatch.sx-mir-neg")).toBeTruthy();
     expect(legend.querySelectorAll(".sx-mir-step").length).toBe(3);
@@ -171,17 +172,46 @@ describe("diagTip", () => {
   });
 });
 
+describe("DayMirror cells", () => {
+  const cellLabels = () => [...render(<DayMirror report={full} />).container.querySelectorAll(".sx-mir-cell:not(.sx-mir-diag)")].map((c) => c.getAttribute("aria-label"));
+  // catches: signed number in the label, or opposite worded as alike
+  it("aria-label names both days, the strength and alike or opposite", () => {
+    expect(cellLabels()).toEqual(["Oct 5 and Oct 6: 0.50 alike", "Oct 5 and Oct 7: 0.25 opposite", "Oct 6 and Oct 7: 0.10 alike"]);
+  });
+  it("a zero similarity reads alike, not opposite", () => {
+    const flat = report([[1, 0, 0], [0, 1, 0], [0, 0, 1]], days);
+    expect(render(<DayMirror report={flat} />).container.querySelector(".sx-mir-cell:not(.sx-mir-diag)")!.getAttribute("aria-label")).toBe("Oct 5 and Oct 6: 0.00 alike");
+  });
+  // catches: ring on the wrong cell, on both, or missing
+  it("rings the most alike cell solid and the most opposite cell dashed, exactly once each", () => {
+    const { container } = render(<DayMirror report={full} />);
+    const solid = container.querySelectorAll(".sx-mir-ring-alike");
+    const dashed = container.querySelectorAll(".sx-mir-ring-opposite");
+    expect(solid.length).toBe(1);
+    expect(dashed.length).toBe(1);
+    expect(solid[0].getAttribute("aria-label")).toBe("Oct 5 and Oct 6: 0.50 alike");
+    expect(dashed[0].getAttribute("aria-label")).toBe("Oct 5 and Oct 7: 0.25 opposite");
+  });
+});
+
 describe("DayMirror at 30 days", () => {
   const html = () => render(<DayMirror report={wide(30)} />).container;
-  it("has exactly one tab stop per day", () => {
-    // catches: tabIndex on every similarity cell (465 stops)
-    expect(html().querySelectorAll("[tabindex]").length).toBe(30);
+  it("has one tab stop per day plus the last-14-days upper triangle (91), never all 435 cells", () => {
+    // catches: tabIndex on every similarity cell (465 stops), or on none, or a 15-day window (105)
+    expect(html().querySelectorAll("[tabindex]").length).toBe(30 + 91);
   });
-  it("similarity cells carry no tabindex or aria-label but keep data-stip", () => {
-    const cells = [...html().querySelectorAll(".sx-mir-cell:not(.sx-mir-diag)")];
+  it("only upper-triangle cells inside the last 14 days are tabbable and labelled", () => {
+    const cells = [...html().querySelectorAll<HTMLElement>(".sx-mir-cell:not(.sx-mir-diag)")];
     expect(cells.length).toBe(435);
-    expect(cells.some((c) => c.hasAttribute("tabindex") || c.hasAttribute("aria-label"))).toBe(false);
     expect(cells.every((c) => c.hasAttribute("data-stip"))).toBe(true);
+    const stops = cells.filter((c) => c.hasAttribute("tabindex"));
+    expect(stops.length).toBe(91);
+    expect(stops.every((c) => c.hasAttribute("aria-label"))).toBe(true);
+    // catches: window off by one at the boundary (row 16 = day 17 is outside, row 16..29 inside)
+    const at = (row: number, column: number) => cells.find((c) => c.style.gridRow === String(row + 1) && c.style.gridColumn === String(column + 2))!;
+    expect(at(16, 17).hasAttribute("tabindex")).toBe(true);
+    expect(at(15, 17).hasAttribute("tabindex")).toBe(false);
+    expect(at(0, 29).hasAttribute("tabindex")).toBe(false);
   });
   it("thins labels to every k-th day, keeps first and last, and puts them outside the matrix", () => {
     const c = html();

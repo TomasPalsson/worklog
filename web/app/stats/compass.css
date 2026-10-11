@@ -3,9 +3,9 @@
 .sx-cmp-callout { margin: 4px 0 6px; font-size: 12px; line-height: 1.4; color: var(--fg); max-width: 70ch; }
 .sx-cmp-svg { display: block; width: 100%; height: auto; }
 .sx-cmp-cross { stroke: var(--border); stroke-width: 1; stroke-dasharray: 4 3; }
-.sx-cmp-caption { fill: var(--fg-muted); font-size: 12px; letter-spacing: 0.06em; }
+.sx-cmp-end { fill: var(--fg-muted); font-size: 12px; }
 .sx-cmp-axis { fill: var(--fg-muted); font-size: 12px; font-family: inherit; }
-.sx-cmp-dot { fill: oklch(var(--project-l) var(--project-c) calc(var(--h))); fill-opacity: 0.85; stroke: var(--bg-raised); stroke-width: 1; cursor: help; }
+.sx-cmp-dot { fill: oklch(var(--project-l) var(--project-c) calc(var(--h))); fill-opacity: 0.85; cursor: help; }
 .sx-cmp-dot:hover, .sx-cmp-dot:focus-visible { fill-opacity: 1; stroke: var(--fg); }
 .sx-cmp-leader { stroke: var(--fg-muted); stroke-width: 1; }
 .sx-cmp-leader-label { fill: var(--fg); font-size: 12px; stroke: var(--bg-raised); stroke-width: 3px; paint-order: stroke; stroke-linejoin: round; }

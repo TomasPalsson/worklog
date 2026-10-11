@@ -112,7 +112,7 @@ describe("compassTip", () => {
     expect(tip.rows).toEqual([
       ["Hours", "1h"],
       ["Focus", "0.30"],
-      ["Novelty", "0.70"],
+      ["Newness", "0.70"],
       ["Switches", "4"],
       ["Longest run", "1h 30m"],
       ["Topics touched", "3"],
@@ -121,14 +121,25 @@ describe("compassTip", () => {
 });
 
 describe("DayCompass", () => {
-  it("draws one dot per plotted day with a tip, plus two crosshair lines and four captions", () => {
+  it("draws one dot per plotted day with a tip, plus two crosshair lines and no quadrant captions", () => {
     const { container } = render(<DayCompass report={week} />);
     const dots = container.querySelectorAll(".sx-cmp-dot");
     expect(dots.length).toBe(5);
     for (const dot of dots) expect(dot.getAttribute("data-stip")).toBeTruthy();
     expect(container.querySelectorAll(".sx-cmp-cross").length).toBe(2);
+    // catches: quadrant captions kept alongside the axis titles
+    expect(container.querySelectorAll(".sx-cmp-caption").length).toBe(0);
     for (const caption of ["Deep · new ground", "Deep · familiar", "Scattered · exploring", "Scattered · routine"]) {
-      expect(container.textContent).toContain(caption);
+      expect(container.textContent).not.toContain(caption);
+    }
+  });
+  // catches: dots with no separating stroke (overlap merges into one blob)
+  it("every dot has a 1.5px raised-background stroke", () => {
+    const dots = [...render(<DayCompass report={week} />).container.querySelectorAll(".sx-cmp-dot")];
+    expect(dots.length).toBe(5);
+    for (const dot of dots) {
+      expect(dot.getAttribute("stroke")).toBe("var(--bg-raised)");
+      expect(dot.getAttribute("stroke-width")).toBe("1.5");
     }
   });
   it("labels the extreme day of each quadrant with weekday and date", () => {
@@ -171,7 +182,12 @@ describe("DayCompass", () => {
   });
   it("has plain axis titles", () => {
     const axes = [...render(<DayCompass report={week} />).container.querySelectorAll(".sx-cmp-axis")].map((el) => el.textContent);
-    expect(axes).toEqual(["scattered ← → focused", "familiar ↓ ↑ new ground"]);
+    // catches: a third axis title, or end labels counted as titles
+    expect(axes).toEqual(["Focus →", "Newness ↑"]);
+  });
+  it("has small end labels at each axis end", () => {
+    const ends = [...render(<DayCompass report={week} />).container.querySelectorAll(".sx-cmp-end")].map((el) => el.textContent);
+    expect(ends).toEqual(["scattered", "focused", "familiar", "new ground"]);
   });
   it("keys only topics that are some plotted day's top topic, most days first, at most 5", () => {
     const topics = Array.from({ length: 8 }, (_, i) => topic(i, `Topic ${i}`));

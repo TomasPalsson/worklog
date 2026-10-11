@@ -81,12 +81,12 @@ describe("momentTip", () => {
       ["Day", "Oct 7"],
       ["Time", "1h 30m"],
       ["Topic", "Billing export"],
-      ["Novelty", "0.85"],
+      ["Newness", "0.85"],
     ]);
   });
   it("oddball: nearest score beside the median", () => {
     const tip = momentTip(highlight({ score: 0.231 }), "oddball", "Billing export", 0.567);
-    expect(tip.rows).toContainEqual(["Nearest anything", "0.23"]);
+    expect(tip.rows).toContainEqual(["Closest match", "0.23"]);
     expect(tip.rows).toContainEqual(["Your median", "0.57"]);
   });
   it("missing topic drops the Topic row", () => {
@@ -102,10 +102,20 @@ describe("TopicMoments", () => {
     expect(labels("first_time")).toEqual(["Merge billing view", "Second"]);
     expect(labels("oddball")).toEqual(["Typed state rows", "Other"]);
   });
-  it("score is shown with two decimals", () => {
+  // catches: bare number with no word, or the word swapped between the two cards
+  it("score is shown with two decimals and a plain word beside it", () => {
     const { container } = render(<TopicMoments report={report()} />);
-    expect(container.querySelector('[data-moment="first_time"] .tm-score')!.textContent).toBe("0.85");
-    expect(container.querySelector('[data-moment="oddball"] .tm-score')!.textContent).toBe("0.23");
+    expect(container.querySelector('[data-moment="first_time"] .tm-score')!.textContent).toBe("0.85 new");
+    expect(container.querySelector('[data-moment="oddball"] .tm-score')!.textContent).toBe("0.23 match");
+    expect(container.querySelector('[data-moment="first_time"] .tm-score .tm-unit')!.textContent).toBe(" new");
+  });
+  // catches: jargon left in visible text or tips
+  it("no cosine, novelty or Nearest anything in visible text or tips", () => {
+    const { container } = render(<TopicMoments report={report()} />);
+    const visible = container.cloneNode(true) as HTMLElement;
+    visible.querySelector("details")!.remove();
+    expect(visible.textContent!).not.toMatch(/cosine|novelty|nearest anything/i);
+    for (const card of container.querySelectorAll("[data-stip]")) expect(card.getAttribute("data-stip")).not.toMatch(/cosine|novelty|nearest anything/i);
   });
   it("oddball card says closest match against typical; first-time card does not", () => {
     const { container } = render(<TopicMoments report={report()} />);

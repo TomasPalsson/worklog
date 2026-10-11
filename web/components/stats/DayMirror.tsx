@@ -11,6 +11,7 @@ const PAD_PX = 32;
 const GAP_PX = 2;
 const LABEL_PX = 23;
 const COMPACT_PX = 44;
+const TAB_DAYS = 14;
 
 const signed = (similarity: number) => `${similarity < 0 ? MINUS : "+"}${Math.abs(similarity).toFixed(2)}`;
 
@@ -93,12 +94,18 @@ export function DayMirror({ report }: { report: TopicsReport }) {
         continue;
       }
       const similarity = report.day_similarity[row][column];
+      const tabbable = row >= size - TAB_DAYS;
+      const ring = row === alike[0] && column === alike[1] ? " sx-mir-ring-alike" : row === opposite[0] && column === opposite[1] ? " sx-mir-ring-opposite" : "";
       const percent = largest > 0 ? Math.round((Math.abs(similarity) / largest) * 100) : 0;
       cells.push(
         <div
           key={`${row}-${column}`}
-          className={`sx-mir-cell art-fade ${similarity < 0 ? "sx-mir-neg" : "sx-mir-pos"}`}
+          className={`sx-mir-cell art-fade ${similarity < 0 ? "sx-mir-neg" : "sx-mir-pos"}${ring}`}
           style={{ ...position, "--p": percent } as React.CSSProperties}
+          {...(tabbable && {
+            tabIndex: 0,
+            "aria-label": `${shortMonthDay(days[row].day)} and ${shortMonthDay(days[column].day)}: ${Math.abs(similarity).toFixed(2)} ${similarity < 0 ? "opposite" : "alike"}`,
+          })}
           {...tip}
         />,
       );
@@ -109,7 +116,7 @@ export function DayMirror({ report }: { report: TopicsReport }) {
     <section className="sr-card sx-mir">
       <h3 className="sr-title">Day mirror</h3>
       <div className="sx-mir-legend">
-        alike <span className="sx-mir-swatch sx-mir-pos" style={{ "--p": 100 } as React.CSSProperties} /> · opposite{" "}
+        similar work <span className="sx-mir-swatch sx-mir-pos" style={{ "--p": 100 } as React.CSSProperties} /> · different work{" "}
         <span className="sx-mir-swatch sx-mir-neg" style={{ "--p": 100 } as React.CSSProperties} />
         <span className="sx-mir-strip">
           {[33, 66, 100].map((p) => (

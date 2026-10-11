@@ -19,13 +19,6 @@ const LABEL_BOTTOM = 296;
 
 type Quadrant = "deep-new" | "deep-familiar" | "scattered-exploring" | "scattered-routine";
 
-const CAPTIONS: { quadrant: Quadrant; text: string; x: number; y: number; anchor: "start" | "end" }[] = [
-  { quadrant: "scattered-exploring", text: "Scattered · exploring", x: 8, y: 16, anchor: "start" },
-  { quadrant: "deep-new", text: "Deep · new ground", x: WIDTH - 8, y: 16, anchor: "end" },
-  { quadrant: "scattered-routine", text: "Scattered · routine", x: 8, y: HEIGHT - 8, anchor: "start" },
-  { quadrant: "deep-familiar", text: "Deep · familiar", x: WIDTH - 8, y: HEIGHT - 8, anchor: "end" },
-];
-
 export interface CompassDot {
   day: string;
   x: number;
@@ -106,7 +99,7 @@ export function compassTip(day: DayRow): Tip {
     rows: [
       ["Hours", formatDuration(day.work_seconds)],
       ["Focus", day.focus === null ? "–" : day.focus.toFixed(2)],
-      ["Novelty", day.novelty.toFixed(2)],
+      ["Newness", day.novelty.toFixed(2)],
       ["Switches", String(day.switches)],
       ["Longest run", formatDuration(day.longest_run_seconds)],
       ["Topics touched", String(day.topics_touched)],
@@ -135,16 +128,23 @@ export function DayCompass({ report }: { report: TopicsReport }) {
       <svg className="sx-cmp-svg" viewBox={`0 0 ${WIDTH} ${HEIGHT}`} role="img" aria-label="Focus against novelty, one dot per day">
         <line className="sx-cmp-cross" x1={medianX} x2={medianX} y1={PAD_Y / 2} y2={HEIGHT - PAD_Y / 2} />
         <line className="sx-cmp-cross" x1={PAD_X / 2} x2={WIDTH - PAD_X / 2} y1={medianY} y2={medianY} />
-        {CAPTIONS.map((c) => (
-          <text key={c.quadrant} className="art-label sx-cmp-caption" x={c.x} y={c.y} textAnchor={c.anchor}>
-            {c.text}
-          </text>
-        ))}
         <text className="art-label sx-cmp-axis" x={WIDTH / 2} y={HEIGHT - 8} textAnchor="middle">
-          scattered ← → focused
+          Focus →
         </text>
         <text className="art-label sx-cmp-axis" transform={`translate(12 ${HEIGHT / 2}) rotate(-90)`} textAnchor="middle">
-          familiar ↓ ↑ new ground
+          Newness ↑
+        </text>
+        <text className="art-label sx-cmp-end" x={PAD_X} y={HEIGHT - 8} textAnchor="start">
+          scattered
+        </text>
+        <text className="art-label sx-cmp-end" x={WIDTH - PAD_X} y={HEIGHT - 8} textAnchor="end">
+          focused
+        </text>
+        <text className="art-label sx-cmp-end" transform={`translate(12 ${HEIGHT - PAD_Y}) rotate(-90)`} textAnchor="start">
+          familiar
+        </text>
+        <text className="art-label sx-cmp-end" transform={`translate(12 ${PAD_Y}) rotate(-90)`} textAnchor="end">
+          new ground
         </text>
         {plotted.map((dot) => (
           <circle
@@ -153,6 +153,8 @@ export function DayCompass({ report }: { report: TopicsReport }) {
             cx={dot.x}
             cy={dot.y}
             r={dot.radius}
+            stroke="var(--bg-raised)"
+            strokeWidth={1.5}
             style={{ "--h": topicHue(report, dot.topTopic) } as React.CSSProperties}
             tabIndex={0}
             aria-label={dayName(dot.day)}
@@ -184,10 +186,10 @@ export function DayCompass({ report }: { report: TopicsReport }) {
       </p>
       {skipped.length > 0 && <p className="sx-cmp-skipped">single-block days: {skipped.map(shortMonthDay).join(", ")}</p>}
       <div className="sx-cmp-how">
-        How it works: Focus is how alike a day&apos;s blocks are. Novelty is how unlike anything earlier they are. Dashed lines are your medians.
+        How it works: Focus is how alike a day&apos;s blocks are. Newness is how unlike anything earlier they are. Dashed lines are your medians.
         <details>
           <summary>Method</summary>
-          Focus = how alike that day&apos;s blocks are (hours-weighted mean pairwise cosine). Novelty = how unlike anything you did before (1 − nearest earlier block).
+          Focus = how alike that day&apos;s blocks are (hours-weighted mean pairwise cosine). Newness = how unlike anything you did before (1 − nearest earlier block).
         </details>
       </div>
     </section>
