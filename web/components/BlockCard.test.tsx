@@ -2,8 +2,9 @@
 // aria-label for every confidence level the daemon can send.
 
 import { afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { dismiss, subscribe, type ToastMsg } from "@/lib/toast";
+import { registryHook } from "./billingRegistryTestHook";
 import type { Block, JiraTicket } from "@/lib/types";
 
 const setDescription = mock(async (_id: number, _text: string, _day: string) => ({
@@ -43,13 +44,7 @@ mock.module("@/app/actions", () => ({
   // Bun's mock.module is process-wide: BillingGroup.test mocks this same
   // specifier, so both must export every name either file's tree imports.
   saveBillingFolder: mock(async () => ({ ok: true as const, data: undefined })),
-  // BlockCustomerSplit.test shares this mock (the first one linked wins):
-  // it installs its registry on globalThis; unset, the registry is empty.
-  fetchBillingRegistry: async () =>
-    (globalThis as { __fetchBillingRegistry?: () => unknown }).__fetchBillingRegistry?.() ?? {
-      ok: true as const,
-      data: { customers: [], folders: [], unmapped: [], deildir: [] },
-    },
+  fetchBillingRegistry: () => registryHook.fetch(),
   mergeGroup,
 }));
 const regenerateNoteAction = mock(async (_id: number, _day: string, _force: boolean) => ({
@@ -477,9 +472,13 @@ describe("BlockCard ignore menu (FR-06)", () => {
   it("the Internal ticket picker goes away once a ticket is set (catches a picker stuck open)", async () => {
     open([]);
     pick("Internal");
-    expect(screen.queryByRole("button", { name: /^Change ticket/ })).not.toBeNull();
+    // Plain attribute selector + act flush: waitFor around this transition
+    // took ~3 s per run (flaky against bun's 5 s timeout).
+    const trigger = () => document.querySelector('[aria-label^="Change ticket"]');
+    expect(trigger()).not.toBeNull();
     fireEvent.click(await screen.findByRole("option", { name: /PROJ-1/ }));
-    await waitFor(() => expect(screen.queryByRole("button", { name: /^Change ticket/ })).toBeNull());
+    await act(async () => {});
+    expect(trigger()).toBeNull();
   });
 
   it("the Internal ticket picker goes away on Escape (catches a picker stuck open)", async () => {

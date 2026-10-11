@@ -7,6 +7,7 @@
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { registryHook, resetRegistryHook } from "./billingRegistryTestHook";
 import type { BillingSlice, ShareRow } from "@/lib/deildir";
 import type { BillingCustomer } from "@/lib/types";
 import type { DeildSuggestion } from "@/lib/time_leaks_contract";
@@ -72,25 +73,22 @@ mock.module("@/app/tenant-actions", () => ({
 mock.module("@/lib/tenants", () => ({
   fetchDeildSuggestion: (blockId: number) => fetchDeildSuggestionImpl(blockId),
 }));
-// Registered for this file's run only: BlockCard.test mocks the same
-// specifier without fetchBillingRegistry, and the last registration wins.
-// A module already linked through BlockCard's tree keeps that mock, so the
-// registry fetch also goes through the hook BlockCard.test's mock calls.
 const otherActions = { ...(await import("@/app/actions")) };
-(globalThis as { __fetchBillingRegistry?: unknown }).__fetchBillingRegistry = fetchBillingRegistryImpl;
 
 let BlockCustomerSplit: (props: { blockId: number }) => React.JSX.Element | null;
 
 beforeAll(async () => {
   mock.module("@/app/actions", () => ({
     ...otherActions,
-    fetchBillingRegistry: () => fetchBillingRegistryImpl(),
+    fetchBillingRegistry: () => registryHook.fetch(),
   }));
+  registryHook.fetch = () => fetchBillingRegistryImpl();
   const mod = await import("./BlockCustomerSplit");
   BlockCustomerSplit = mod.BlockCustomerSplit;
 });
 
 afterAll(() => {
+  resetRegistryHook();
   mock.module("@/app/actions", () => otherActions);
 });
 
