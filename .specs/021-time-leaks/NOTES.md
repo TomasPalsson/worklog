@@ -51,4 +51,12 @@
 - Discovered: rust/crates/worklog-core/src/daemon_tenants_test.rs ~907 — pins unknown block → 500 (personal → 400), locking in an inconsistent error contract — defer
 - Discovered: web/components/LooseEnds.tsx:23 — description and times fetched but not rendered; row text runs together; tests only `toContain` — defer
 - Discovered: web/app/loose-ends/page.tsx:11 — `.catch(() => null)` drops the cause (alert still shows) — defer
+- Discovered: OWNER ACTION — the real ~/Library/LaunchAgents/is.p5.worklog.collect.plist was overwritten at 11:39:58 by a test fixture (`/Users/x/.local/bin/worklog day`); launchd exit 127 since, so scheduled collection is not running. Cause: at Base, schedule.rs and daemon_service.rs tests each had their own ENV_LOCK, so one test's `remove_var(WORKLOG_SCHEDULE_HOME)` raced the other's install into the real HOME. T022's 5acd1fc (11:43:32) shares one lock, so HEAD no longer races. The repair was refused by the auto-mode guard (installs a background job). Owner runs: `~/.local/bin/worklog schedule install --interval 15m --command "/Users/tomas/.local/bin/worklog day"` (the old log shows `worklog day` every 15 min).
+- Discovered: running the branch's `worklog week` printed "daemon service installed and started" at 13:15 — ensure_running reinstalled the daemon plist (it points at ~/.local/bin/worklog, unchanged) — note only
+- Ruling: T018 put `"use server"` on web/lib/tenants.ts so the client chip can fetch the suggestion; every export there becomes a server action. They already exist as server actions in app/tenant-actions.ts, so no new write capability.
+- T025 extra check (2026-10-11): all 32 top-level commands in `worklog --help` appear as `worklog <cmd>` in README.md (exit 0, 0 missing)
+- Discovered: web/components/BlockCustomerSplit.tsx:~180 — editor Total uses rounded percents, so an even 3-way split (33/33/33) can never reach 100% — defer
+- Discovered: web/components/BlockCustomerSplit.tsx:~139 — two blank-deild rows for the same customer share an aria-label — defer
+- Phase 4 independent test (2026-10-11): `-p worklog-core loose_ends` exit 0 (10 passed); `bun test components/LooseEnds.test.tsx` exit 0 (8 pass)
+- Phase 5 independent test (2026-10-11): `-p worklog-core -- daemon_service web:: schedule` exit 0 (59 passed)
 - Discovered: `worklog status` shows both a "claude" (hook) and a "claude_transcripts" row — distinct sources, confusable names — defer
