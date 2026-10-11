@@ -232,11 +232,20 @@ pub fn run_from_stdin() -> Result<()> {
     })
 }
 
-/// Opening the DB is the only step that can fail before `handle_input`;
-/// it reports to stderr and returns Ok so Claude is never blocked.
+fn parse_payload(input: &str) -> std::result::Result<Value, String> {
+    serde_json::from_str::<Value>(input).map_err(|e| format!("invalid JSON on stdin: {e}"))
+}
+
+/// Parses first (invalid JSON is reported to stderr even if the DB cannot
+/// open), then opens the DB. An open failure reports to stderr and returns
+/// Ok so Claude is never blocked.
 fn run_with(input: &str, open: impl FnOnce() -> Result<Connection>) -> Result<()> {
+    let parsed = parse_payload(input);
+    if let Err(msg) = &parsed {
+        eprintln!("worklog hook: {msg}");
+    }
     match open() {
-        Ok(conn) => handle_input(&conn, input, Utc::now()),
+        Ok(conn) => finish(&conn, parsed, Utc::now()),
         Err(e) => {
             eprintln!("worklog hook: cannot open db: {e:#}");
             Ok(())
@@ -247,13 +256,26 @@ fn run_with(input: &str, open: impl FnOnce() -> Result<Connection>) -> Result<()
 /// Parse and handle one raw payload. A failure goes to stderr and into the
 /// `claude` source health, never out as an error.
 pub fn handle_input(conn: &Connection, input: &str, now: DateTime<Utc>) -> Result<()> {
-    let outcome = match serde_json::from_str::<Value>(input) {
-        Ok(payload) => handle(conn, &payload, now).map_err(|e| format!("{e:#}")),
-        Err(e) => Err(format!("invalid JSON on stdin: {e}")),
-    };
-    if let Err(msg) = &outcome {
+    let parsed = parse_payload(input);
+    if let Err(msg) = &parsed {
         eprintln!("worklog hook: {msg}");
     }
+    finish(conn, parsed, now)
+}
+
+fn finish(
+    conn: &Connection,
+    parsed: std::result::Result<Value, String>,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    let outcome = match parsed {
+        Ok(p) => handle(conn, &p, now).map_err(|e| {
+            let msg = format!("{e:#}");
+            eprintln!("worklog hook: {msg}");
+            msg
+        }),
+        Err(m) => Err(m),
+    };
     let health = outcome.as_ref().map(|_| ()).map_err(|m| m.as_str());
     if health.is_ok() && last_ok_is_fresh(conn, now) {
         return Ok(());

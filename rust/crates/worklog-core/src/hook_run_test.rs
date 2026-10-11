@@ -496,6 +496,21 @@ fn hook_open_failure_returns_ok() {
 }
 
 #[test]
+fn hook_invalid_json_message_and_open_still_attempted_once() {
+    // Catches: message lost because the open error replaced it.
+    let msg = parse_payload("{not json").unwrap_err();
+    assert!(msg.starts_with("invalid JSON on stdin: "), "{msg}");
+    // Catches: skipping the open for bad JSON (health could never be recorded).
+    let calls = std::cell::Cell::new(0);
+    run_with("{not json", || {
+        calls.set(calls.get() + 1);
+        anyhow::bail!("no db")
+    })
+    .unwrap();
+    assert_eq!(calls.get(), 1);
+}
+
+#[test]
 fn hook_error_text_keeps_full_anyhow_chain() {
     let conn = open_memory().unwrap();
     conn.execute_batch(
