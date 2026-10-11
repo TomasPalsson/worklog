@@ -116,7 +116,10 @@ mod tests {
     fn ignore_reason_round_trips_and_rejects_unknown() {
         for r in [IgnoreReason::Noise, IgnoreReason::Duplicate] {
             assert_eq!(IgnoreReason::parse(r.as_str()), Some(r));
-            assert_eq!(serde_json::to_string(&r).unwrap(), format!("\"{}\"", r.as_str()));
+            assert_eq!(
+                serde_json::to_string(&r).unwrap(),
+                format!("\"{}\"", r.as_str())
+            );
         }
         assert_eq!(IgnoreReason::parse("internal"), None);
     }
