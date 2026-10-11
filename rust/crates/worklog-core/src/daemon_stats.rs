@@ -149,9 +149,7 @@ fn embed_pending(client: &EmbedClient, pending: &[embed::PendingText]) -> Option
 }
 
 fn topics_prepare(conn: &Connection, from: NaiveDate, to: NaiveDate) -> Result<TopicsPrep> {
-    let len = (to - from).num_days() + 1;
-    let before_from = from - Duration::days(len);
-    let lo = before_from.min(from - Duration::days(TOPICS_HISTORY_DAYS));
+    let lo = from - Duration::days(TOPICS_HISTORY_DAYS);
     let all = load_points(conn, lo, to)?;
     let ids: Vec<i64> = all.iter().map(|p| p.id).collect();
     let pending = embed::pending(conn, &ids)?;
@@ -187,8 +185,6 @@ fn topics_finish(
         pending,
     } = prep;
     let (from_s, to_s) = (from.to_string(), to.to_string());
-    let len = (to - from).num_days() + 1;
-    let before_from = from - Duration::days(len);
     let Some(new_vectors) = embedded else {
         return Ok(TopicsReport::empty(
             TopicsStatus::HelperDown,
@@ -204,7 +200,6 @@ fn topics_finish(
         from: from_s.clone(),
         to: to_s.clone(),
         now: vec![],
-        before: vec![],
         history: vec![],
         ticket_summaries: HashMap::new(),
     };
@@ -219,9 +214,6 @@ fn topics_finish(
         if in_now {
             input.now.push(p.clone());
         } else {
-            if p.day >= before_from.to_string() {
-                input.before.push(p.clone());
-            }
             if p.day >= (from - Duration::days(TOPICS_HISTORY_DAYS)).to_string() {
                 input.history.push(p);
             }

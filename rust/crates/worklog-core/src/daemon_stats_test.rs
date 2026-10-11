@@ -172,9 +172,6 @@ fn topics_report_loads_exactly_the_right_blocks_and_counts_skipped() {
     assert_eq!(r.embedded_blocks, 6);
     assert_eq!(r.skipped_blocks, 1);
     assert_eq!(r.topics[0].seconds, 3 * 3600);
-    // The previous-range block (600 s, alpha-like) lands in the alpha topic.
-    assert_eq!(r.drift[0].seconds_before, 600);
-    assert_eq!(r.drift[1].seconds_before, 0);
 }
 
 #[test]
