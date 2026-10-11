@@ -769,3 +769,156 @@ async fn save_customer_shares_logs_a_user_split_change() {
         .expect("the second save must log a Split change");
     assert_eq!(split_change.source, ChangeSource::User);
 }
+
+/// Saves `rows_json` on a fresh history block starting at `hour`:00 on
+/// 2026-04-18 (hours later in the day are more recent).
+async fn save_history(state: &Shared, hour: u32, rows_json: &str) {
+    let id = {
+        let conn = state.conn.lock().await;
+        insert_bare_block(
+            &conn,
+            &format!("2026-04-18T{hour:02}:00:00+00:00"),
+            &format!("2026-04-18T{hour:02}:30:00+00:00"),
+        )
+    };
+    set_rows(state, id, rows_json).await;
+}
+
+fn rows(customer: &str, deild: Option<&str>) -> String {
+    let deild = deild.map_or("null".to_string(), |d| format!("\"{d}\""));
+    format!(r#"[{{"customer":"{customer}","deild":{deild},"fraction":1.0}}]"#)
+}
+
+async fn suggestion(state: &Shared, block_id: i64) -> (StatusCode, Value) {
+    let resp = router(state.clone())
+        .oneshot(
+            Request::get(format!("/blocks/{block_id}/deild-suggestion"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    (resp.status(), read_json(resp).await)
+}
+
+/// FR-21: the target block has customer Acme and no deild.
+async fn seed_target() -> (Shared, i64) {
+    let (state, block_id) = seed();
+    set_rows(&state, block_id, &rows("Acme", None)).await;
+    (state, block_id)
+}
+
+/// Most uses wins over most recent (catches "latest row wins").
+#[tokio::test(flavor = "current_thread")]
+async fn deild_suggestion_picks_the_most_used_deild() {
+    let (state, block_id) = seed_target().await;
+    save_history(&state, 10, &rows("Acme", Some("Rekstur"))).await;
+    save_history(&state, 11, &rows("Acme", Some("Rekstur"))).await;
+    save_history(&state, 12, &rows("Acme", Some("Vefur"))).await;
+    let (status, v) = suggestion(&state, block_id).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        v,
+        json!({"customer": "Acme", "deild": "Rekstur", "uses": 2})
+    );
+}
+
+/// A tie goes to the most recent use (catches first-seen / alphabetical
+/// order: Rekstur sorts and was seen first, Vefur is newer).
+#[tokio::test(flavor = "current_thread")]
+async fn deild_suggestion_tie_goes_to_the_most_recent() {
+    let (state, block_id) = seed_target().await;
+    save_history(&state, 10, &rows("Acme", Some("Rekstur"))).await;
+    save_history(&state, 11, &rows("Acme", Some("Vefur"))).await;
+    let (_, v) = suggestion(&state, block_id).await;
+    assert_eq!(v["deild"], "Vefur");
+}
+
+/// The same tie with the newer use alphabetically first (catches
+/// "last alphabetical wins").
+#[tokio::test(flavor = "current_thread")]
+async fn deild_suggestion_tie_recency_beats_alphabetical_order() {
+    let (state, block_id) = seed_target().await;
+    save_history(&state, 10, &rows("Acme", Some("Vefur"))).await;
+    save_history(&state, 11, &rows("Acme", Some("Rekstur"))).await;
+    let (_, v) = suggestion(&state, block_id).await;
+    assert_eq!(v["deild"], "Rekstur");
+}
+
+/// Another customer's deildir never count (catches a missing customer filter).
+#[tokio::test(flavor = "current_thread")]
+async fn deild_suggestion_ignores_other_customers() {
+    let (state, block_id) = seed_target().await;
+    upsert_customer(&state, "Beta").await;
+    save_history(&state, 10, &rows("Acme", Some("Rekstur"))).await;
+    for hour in 11..14 {
+        save_history(&state, hour, &rows("Beta", Some("Vefur"))).await;
+    }
+    let (_, v) = suggestion(&state, block_id).await;
+    assert_eq!(v["deild"], "Rekstur");
+    assert_eq!(v["uses"], 1);
+}
+
+/// Rows with no deild are not a pick (catches counting None as a deild).
+#[tokio::test(flavor = "current_thread")]
+async fn deild_suggestion_does_not_count_rows_without_a_deild() {
+    let (state, block_id) = seed_target().await;
+    for hour in 10..13 {
+        save_history(&state, hour, &rows("Acme", None)).await;
+    }
+    save_history(&state, 13, &rows("Acme", Some("Rekstur"))).await;
+    let (_, v) = suggestion(&state, block_id).await;
+    assert_eq!(v["deild"], "Rekstur");
+}
+
+/// No saved deild anywhere for the customer → null (catches an error or
+/// an invented default).
+#[tokio::test(flavor = "current_thread")]
+async fn deild_suggestion_is_null_without_history() {
+    let (state, block_id) = seed_target().await;
+    let (status, v) = suggestion(&state, block_id).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(v, Value::Null);
+}
+
+/// A block that already has a deild gets no chip (catches suggesting over a pick).
+#[tokio::test(flavor = "current_thread")]
+async fn deild_suggestion_is_null_when_the_block_has_a_deild() {
+    let (state, block_id) = seed();
+    set_rows(&state, block_id, &rows("Acme", Some("Vefur"))).await;
+    save_history(&state, 10, &rows("Acme", Some("Rekstur"))).await;
+    let (_, v) = suggestion(&state, block_id).await;
+    assert_eq!(v, Value::Null);
+}
+
+/// A block with no customer has nothing to suggest for (catches guessing
+/// a customer from history).
+#[tokio::test(flavor = "current_thread")]
+async fn deild_suggestion_is_null_without_a_customer() {
+    let (state, block_id) = seed();
+    save_history(&state, 10, &rows("Acme", Some("Rekstur"))).await;
+    let (status, v) = suggestion(&state, block_id).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(v, Value::Null);
+}
+
+/// Personal blocks and unknown blocks are errors, like the sibling slice route.
+#[tokio::test(flavor = "current_thread")]
+async fn deild_suggestion_rejects_personal_and_unknown_blocks() {
+    let (state, _) = seed();
+    let personal = {
+        let conn = state.conn.lock().await;
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds, is_personal)
+             VALUES ('2026-04-19', '2026-04-19T09:00:00+00:00', '2026-04-19T09:30:00+00:00', 1800, 1)",
+            [],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    };
+    let (status, v) = suggestion(&state, personal).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(v["error"], "Block is personal");
+    let (status, _) = suggestion(&state, 9999).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+}

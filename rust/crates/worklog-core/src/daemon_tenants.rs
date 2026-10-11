@@ -5,8 +5,10 @@
 
 use axum::extract::{Path as AxumPath, State};
 use axum::Json;
+use rusqlite::Connection;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use tracing::info;
 
 use crate::billing;
@@ -17,6 +19,7 @@ use crate::deild_contract::{BillingSlice, BlockShares, ChangeSource, ShareRow};
 use crate::tenant_contract::{Tenant, TenantLink};
 use crate::tenant_shares;
 use crate::tenants;
+use crate::time_leaks_contract::DeildSuggestion;
 
 use super::{refresh_recent_days, with_conn, ApiError, Shared};
 
@@ -59,29 +62,81 @@ pub async fn link_tenant(
     Ok(Json(json!({ "ok": true })))
 }
 
+/// A non-personal block's resolved slices.
+fn block_slices(c: &Connection, id: i64) -> anyhow::Result<Vec<BillingSlice>> {
+    let block =
+        crate::repo::get_block(c, id)?.ok_or_else(|| anyhow::anyhow!("block {id} not found"))?;
+    if block.is_personal {
+        anyhow::bail!("Block is personal");
+    }
+    // A folder-less block (e.g. pure calendar/Jira, no events) still
+    // gets its saved split — `resolve_block_slices` checks that before
+    // ever looking at the folder — so it must run for every block, not
+    // just ones with a resolvable folder. `BLANK` mirrors the folder
+    // `rows_for_day` uses for the same case.
+    let folder =
+        billing::work_folder_for_block(c, id)?.unwrap_or_else(|| billing::BLANK.to_string());
+    let registry = Registry::load(c)?;
+    let deildir = billing_deildir::list_deildir(c)?;
+    billing::resolve_block_slices(c, &block, &folder, &registry, &deildir)
+}
+
+/// The deild the Owner saved most often for `customer` across every saved
+/// split; a tie goes to the one used most recently.
+fn deild_suggestion(c: &Connection, customer: &str) -> anyhow::Result<Option<DeildSuggestion>> {
+    let mut stmt =
+        c.prepare("SELECT rows_json, shares FROM block_customer_shares ORDER BY day, started_at")?;
+    let saved = stmt
+        .query_map([], |r| {
+            Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    // deild -> (uses, index of its latest use)
+    let mut tally: HashMap<String, (u32, usize)> = HashMap::new();
+    for (i, (rows_json, shares)) in saved.iter().enumerate() {
+        for row in tenant_shares::parse_rows(rows_json.as_deref(), shares) {
+            if let (true, Some(deild)) = (row.customer == customer, row.deild) {
+                let t = tally.entry(deild).or_default();
+                *t = (t.0 + 1, i);
+            }
+        }
+    }
+    Ok(tally
+        .into_iter()
+        .max_by_key(|(_, t)| *t)
+        .map(|(deild, (uses, _))| DeildSuggestion {
+            customer: customer.to_string(),
+            deild,
+            uses,
+        }))
+}
+
+pub async fn deild_suggestion_for_block(
+    State(state): State<Shared>,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<Json<Option<DeildSuggestion>>, ApiError> {
+    let suggestion = with_conn(state, move |c| {
+        let slices = block_slices(c, id)?;
+        let Some(customer) = slices.iter().find_map(|s| s.customer.as_deref()) else {
+            return Ok(None);
+        };
+        if slices.iter().any(|s| s.deild.is_some()) {
+            return Ok(None);
+        }
+        deild_suggestion(c, customer)
+    })
+    .await
+    .map_err(tenant_bad_request)?;
+    Ok(Json(suggestion))
+}
+
 pub async fn customer_slices(
     State(state): State<Shared>,
     AxumPath(id): AxumPath<i64>,
 ) -> Result<Json<Vec<BillingSlice>>, ApiError> {
-    let slices = with_conn(state, move |c| {
-        let block = crate::repo::get_block(c, id)?
-            .ok_or_else(|| anyhow::anyhow!("block {id} not found"))?;
-        if block.is_personal {
-            anyhow::bail!("Block is personal");
-        }
-        // A folder-less block (e.g. pure calendar/Jira, no events) still
-        // gets its saved split — `resolve_block_slices` checks that before
-        // ever looking at the folder — so it must run for every block, not
-        // just ones with a resolvable folder. `BLANK` mirrors the folder
-        // `rows_for_day` uses for the same case.
-        let folder =
-            billing::work_folder_for_block(c, id)?.unwrap_or_else(|| billing::BLANK.to_string());
-        let registry = Registry::load(c)?;
-        let deildir = billing_deildir::list_deildir(c)?;
-        billing::resolve_block_slices(c, &block, &folder, &registry, &deildir)
-    })
-    .await
-    .map_err(tenant_bad_request)?;
+    let slices = with_conn(state, move |c| block_slices(c, id))
+        .await
+        .map_err(tenant_bad_request)?;
     Ok(Json(slices))
 }
 

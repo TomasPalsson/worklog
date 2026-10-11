@@ -279,6 +279,10 @@ pub fn router(state: Shared) -> Router {
             get(daemon_tenants::customer_slices),
         )
         .route(
+            "/blocks/:id/deild-suggestion",
+            get(daemon_tenants::deild_suggestion_for_block),
+        )
+        .route(
             "/blocks/:id/customer-shares",
             post(daemon_tenants::save_customer_shares),
         )
