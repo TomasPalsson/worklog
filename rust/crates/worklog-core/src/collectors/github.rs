@@ -22,6 +22,7 @@ use crate::local_clone;
 use crate::models::Event;
 use crate::repo;
 use crate::scrub;
+use crate::time_leaks_contract::GITHUB_MAX_PAGES;
 
 use super::CollectReport;
 
@@ -74,16 +75,10 @@ pub fn collect_with(
 
     // --- commits -----------------------------------------------------------
     let commits_q = format!("author:{} author-date:{}..{}", auth.user, since, until);
-    let commits: CommitSearch = client
-        .get(format!("{}/search/commits", auth.base))
-        .bearer_auth(&auth.token)
-        .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28")
-        .query(&[("q", commits_q.as_str()), ("per_page", "100")])
-        .json_ok()
-        .context("github commit search")?;
-    debug!(total = commits.items.len(), "github commits");
-    for c in commits.items {
+    let commits: Vec<CommitItem> =
+        search_pages(client, auth, "commits", &commits_q).context("github commit search")?;
+    debug!(total = commits.len(), "github commits");
+    for c in commits {
         if is_personal_owner(&c.repository.full_name, &auth.user) {
             continue;
         }
@@ -137,15 +132,9 @@ pub fn collect_with(
     let mut prs = Vec::new();
     for field in ["created", "merged"] {
         let pr_q = format!("author:{} type:pr {field}:{}..{}", auth.user, since, until);
-        let found: IssueSearch = client
-            .get(format!("{}/search/issues", auth.base))
-            .bearer_auth(&auth.token)
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .query(&[("q", pr_q.as_str()), ("per_page", "100")])
-            .json_ok()
-            .context("github issue search")?;
-        for item in found.items {
+        let found: Vec<IssueItem> =
+            search_pages(client, auth, "issues", &pr_q).context("github issue search")?;
+        for item in found {
             if !prs.iter().any(|p: &IssueItem| p.id == item.id) {
                 prs.push(item);
             }
@@ -207,6 +196,32 @@ pub fn collect_with(
     Ok(report)
 }
 
+/// Every result of a search endpoint, page by page, until a short page or
+/// `GITHUB_MAX_PAGES` (the API serves no more than 1,000 results).
+fn search_pages<T: serde::de::DeserializeOwned>(
+    client: &Client,
+    auth: &GitHubAuth,
+    endpoint: &str,
+    q: &str,
+) -> Result<Vec<T>> {
+    let mut all = Vec::new();
+    for page in 1..=GITHUB_MAX_PAGES {
+        let body: Search<T> = client
+            .get(format!("{}/search/{endpoint}", auth.base))
+            .bearer_auth(&auth.token)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .query(&[("q", q), ("per_page", "100"), ("page", &page.to_string())])
+            .json_ok()?;
+        let full = body.items.len() == 100;
+        all.extend(body.items);
+        if !full {
+            break;
+        }
+    }
+    Ok(all)
+}
+
 /// Raw search body of open PRs where the user is a requested reviewer.
 pub fn review_requests(client: &Client, auth: &GitHubAuth) -> Result<String> {
     let q = format!("is:pr is:open review-requested:{}", auth.user);
@@ -250,8 +265,8 @@ fn mark_elsewhere(conn: &Connection, source: &str, source_id: &str, elsewhere: b
 // ───────────────────────── JSON shapes ─────────────────────────
 
 #[derive(Debug, Deserialize)]
-struct CommitSearch {
-    items: Vec<CommitItem>,
+struct Search<T> {
+    items: Vec<T>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -275,11 +290,6 @@ struct CommitPayload {
 #[derive(Debug, Deserialize)]
 struct CommitAuthor {
     date: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct IssueSearch {
-    items: Vec<IssueItem>,
 }
 
 #[derive(Debug, Deserialize)]
