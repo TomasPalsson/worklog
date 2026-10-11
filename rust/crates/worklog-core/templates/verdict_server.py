@@ -44,6 +44,7 @@ QUESTION = "Which project folder does this work activity belong to? Links, repo 
 PICK_QUESTION = "Which Jira ticket is this coding session working on? Ticket keys, branch names and the request's own words are the strongest evidence."
 
 EMBED_MAX = 64
+EMBED_DIM = 768
 EMBED_REPO = "google/embeddinggemma-2"
 EMBED_REVISION = "914f7f89142e33e77833254d9c9b90c3cef7303b"
 EMBED_PREFIX = "task: clustering | query: "
@@ -261,7 +262,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(400)
                 self.end_headers()
                 return
-            self._send_json({"vectors": embed([str(text) for text in texts])})
+            vectors = embed([str(text) for text in texts])
+            if any(len(vector) != EMBED_DIM for vector in vectors):
+                self.send_response(500)
+                self.end_headers()
+                return
+            self._send_json({"vectors": vectors})
             return
         if self.path == "/pick":
             text = str(body.get("text", "")).strip()
@@ -428,7 +434,7 @@ def _embed_checks():
     global _encode
     seen = []
     real = _encode
-    _encode = lambda prefixed: seen.append(prefixed) or [[3.0, 4.0] for _ in prefixed]
+    _encode = lambda prefixed: seen.append(prefixed) or [[3.0, 4.0] + [0.0] * (EMBED_DIM - 2) for _ in prefixed]
     server = HTTPServer((HOST, 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
@@ -446,7 +452,9 @@ def _embed_checks():
     try:
         reply = json.load(post(["fix sso login", "b"]))
         # unit length (catches returning raw vectors), one per text in order
-        assert reply == {"vectors": [[0.6, 0.8], [0.6, 0.8]]}
+        assert reply == {"vectors": [[0.6, 0.8] + [0.0] * (EMBED_DIM - 2)] * 2}
+        # full width and unit norm (catches truncating or skipping normalisation)
+        assert all(len(v) == EMBED_DIM and abs(math.sqrt(sum(x * x for x in v)) - 1.0) < 1e-6 for v in reply["vectors"])
         # every text carries the clustering prefix (catches sending raw text)
         assert seen == [["task: clustering | query: fix sso login", "task: clustering | query: b"]]
         # exactly 64 accepted, 65 rejected (catches > vs >=), empty rejected
@@ -459,8 +467,14 @@ def _embed_checks():
         status(["t"] * (EMBED_MAX + 1))
         assert len(seen) == before
         # a zero vector stays finite (catches divide by zero)
-        _encode = lambda prefixed: [[0.0, 0.0] for _ in prefixed]
-        assert json.load(post(["z"])) == {"vectors": [[0.0, 0.0]]}
+        _encode = lambda prefixed: [[0.0] * EMBED_DIM for _ in prefixed]
+        assert json.load(post(["z"])) == {"vectors": [[0.0] * EMBED_DIM]}
+        # a short vector is a 500, not passed through (catches missing width check)
+        _encode = lambda prefixed: [[1.0] * (EMBED_DIM - 1) for _ in prefixed]
+        assert status(["s"]) == 500
+        # a long vector too (catches < instead of !=)
+        _encode = lambda prefixed: [[1.0] * (EMBED_DIM + 1) for _ in prefixed]
+        assert status(["l"]) == 500
     finally:
         server.shutdown()
         _encode = real
