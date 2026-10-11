@@ -132,6 +132,15 @@ pub fn yesterday_focus(conn: &Connection, today: NaiveDate) -> Result<Option<Foc
     Ok((summary.switches > 0 || summary.longest.is_some()).then_some(summary))
 }
 
+/// Like `yesterday_focus`, but a read failure is logged and shows no focus, so
+/// it never fails the draft.
+pub fn yesterday_focus_or_none(conn: &Connection, today: NaiveDate) -> Option<FocusSummary> {
+    yesterday_focus(conn, today).unwrap_or_else(|e| {
+        tracing::warn!("yesterday's focus unavailable: {e:#}");
+        None
+    })
+}
+
 pub fn focus_summary(day: &str, blocks: &[Block]) -> FocusSummary {
     let mut counted: Vec<&Block> = blocks
         .iter()
@@ -151,15 +160,21 @@ pub fn focus_summary(day: &str, blocks: &[Block]) -> FocusSummary {
         });
         if extends {
             let r = run.as_mut().expect("extends implies a run");
-            r.ended_at = b.ended_at.clone();
+            if gap_seconds(&r.ended_at, &b.ended_at) > 0 {
+                r.ended_at = b.ended_at.clone();
+            }
             r.seconds += b.duration_seconds;
         } else {
-            run = b.jira_issue.clone().map(|jira_issue| FocusRun {
-                jira_issue,
-                started_at: b.started_at.clone(),
-                ended_at: b.ended_at.clone(),
-                seconds: b.duration_seconds,
-            });
+            run = b
+                .jira_issue
+                .clone()
+                .filter(|t| !t.is_empty())
+                .map(|jira_issue| FocusRun {
+                    jira_issue,
+                    started_at: b.started_at.clone(),
+                    ended_at: b.ended_at.clone(),
+                    seconds: b.duration_seconds,
+                });
         }
         if let Some(r) = run
             .as_ref()

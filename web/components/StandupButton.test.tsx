@@ -6,11 +6,12 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import type { PostOutcome, StandupDraft } from "@/lib/daily_helpers_contract";
 import type { DraftResult } from "@/lib/daemonStandup";
 import type { FocusSummary } from "@/lib/time_leaks_contract";
-import { formatRange } from "@/lib/format";
 import type { SettingsUpdate, SettingsView } from "@/lib/types";
 import { buildSettingsUpdate, formStateFromView } from "@/lib/settingsForm";
 
-type Res<T> = { ok: true; data: T } | { ok: false; error: string };
+process.env.TZ = "UTC"; // the focus window asserted below is a literal UTC clock range
+
+type Res<T> ={ ok: true; data: T } | { ok: false; error: string };
 
 const draft: StandupDraft = { today: ["GENAI-12 tenant stack"], next: [], blockers: [] };
 const draftStandup = mock(async (): Promise<Res<DraftResult>> => ({ ok: true, data: draft }));
@@ -66,14 +67,23 @@ describe("StandupButton", () => {
   it("shows yesterday's focus line beside the draft and keeps it out of the text", async () => {
     draftStandup.mockResolvedValueOnce({ ok: true, data: { ...draft, focus } });
     const box = await open();
-    const window = formatRange(focus.longest!.started_at, focus.longest!.ended_at);
     // catches: focus dropped from the dialog, or the duration/window/ticket wrong
-    expect(screen.getByText(`yesterday: 7 switches, longest focus 2h 15m on ABC-12 (${window})`)).toBeTruthy();
+    expect(screen.getByText("yesterday: 7 switches, longest focus 2h 15m on ABC-12 (09:05–11:35)")).toBeTruthy();
     // catches: focus folded into the editable text that gets posted
     expect(box.value).toBe("1. GENAI-12 tenant stack\n2. Nothing.\n3. Nothing.\n");
     fireEvent.click(post());
     await screen.findByText(/Posted/);
     expect(postStandup).toHaveBeenCalledWith("1. GENAI-12 tenant stack\n2. Nothing.\n3. Nothing.\n");
+  });
+
+  it("says 1 switch, not 1 switches, and rounds 8130 s to 2h 16m", async () => {
+    draftStandup.mockResolvedValueOnce({
+      ok: true,
+      data: { ...draft, focus: { ...focus, switches: 1, longest: { ...focus.longest!, seconds: 8130 } } },
+    });
+    await open();
+    // catches: "1 switches", or truncating the duration
+    expect(screen.getByText("yesterday: 1 switch, longest focus 2h 16m on ABC-12 (09:05–11:35)")).toBeTruthy();
   });
 
   it("says no focus run when yesterday had switches but no run, and shows nothing when focus is null", async () => {

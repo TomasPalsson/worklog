@@ -60,7 +60,7 @@ pub fn cmd_standup<W: Write>(yes: bool, out: &mut W, json: bool) -> Result<()> {
     let conn = db::open(&db_path()?)?;
     let today = tz::local_date(chrono::Utc::now());
     let draft = standup::draft(&conn, today, estimate::build_invoker()?.as_ref())?;
-    let focus = standup::yesterday_focus(&conn, today)?;
+    let focus = standup::yesterday_focus_or_none(&conn, today);
     show_standup(
         &draft,
         focus.as_ref(),
@@ -123,18 +123,22 @@ fn show_standup<W: Write>(
 
 /// Yesterday's focus for the terminal; never part of the posted text.
 fn focus_line(f: &FocusSummary) -> String {
-    let Some(run) = &f.longest else {
-        return format!("yesterday: {} switches, no focus run", f.switches);
+    let switches = match f.switches {
+        1 => "1 switch".to_string(),
+        n => format!("{n} switches"),
     };
-    let (h, m) = (run.seconds / 3600, run.seconds % 3600 / 60);
+    let Some(run) = &f.longest else {
+        return format!("yesterday: {switches}, no focus run");
+    };
+    let minutes = (run.seconds + 30) / 60;
+    let (h, m) = (minutes / 60, minutes % 60);
     let length = match (h, m) {
         (0, m) => format!("{m}m"),
         (h, 0) => format!("{h}h"),
         (h, m) => format!("{h}h {m}m"),
     };
     format!(
-        "yesterday: {} switches, longest focus {length} on {} ({}–{})",
-        f.switches,
+        "yesterday: {switches}, longest focus {length} on {} ({}–{})",
         run.jira_issue,
         hhmm(&run.started_at),
         hhmm(&run.ended_at)
@@ -547,6 +551,25 @@ mod tests {
             ..focus()
         };
         assert_eq!(focus_line(&f), "yesterday: 3 switches, no focus run");
+    }
+
+    #[test]
+    fn focus_line_pluralises_switches_and_rounds_to_the_nearest_minute() {
+        let mut f = FocusSummary {
+            switches: 1,
+            ..focus()
+        };
+        // catches: "1 switches"
+        assert!(focus_line(&f).starts_with("yesterday: 1 switch, "));
+        f.switches = 0;
+        assert!(focus_line(&f).starts_with("yesterday: 0 switches, "));
+        f.longest.as_mut().unwrap().seconds = 8130;
+        // catches: truncating 135.5 min to 2h 15m (web shows 2h 16m)
+        assert!(focus_line(&f).contains("longest focus 2h 16m on"));
+        f.longest = None;
+        f.switches = 1;
+        // catches: "1 switches" on the no-run line
+        assert_eq!(focus_line(&f), "yesterday: 1 switch, no focus run");
     }
 
     #[test]

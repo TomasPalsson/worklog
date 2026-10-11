@@ -508,3 +508,32 @@ fn yesterday_focus_reads_yesterdays_blocks_and_is_none_when_there_is_nothing() {
         (YESTERDAY, 3600)
     );
 }
+
+#[test]
+fn a_block_nested_in_the_run_does_not_pull_its_end_back() {
+    let conn = db::open_memory().unwrap();
+    work(&conn, Some("A-1"), "09:00:00", "11:00:00");
+    work(&conn, Some("A-1"), "09:10:00", "09:20:00");
+    let run = focus(&conn).longest.unwrap();
+    // catches: ended_at taken from the last block (09:20) instead of the max
+    assert_eq!(run.ended_at, format!("{YESTERDAY}T11:00:00+00:00"));
+}
+
+#[test]
+fn an_empty_ticket_is_unassigned_and_never_a_focus_run() {
+    let conn = db::open_memory().unwrap();
+    work(&conn, Some(""), "09:00:00", "12:00:00");
+    // catches: "" treated as a ticket, so the run is named ""
+    assert_eq!(focus(&conn).longest, None);
+    work(&conn, Some("A-1"), "12:00:00", "12:10:00");
+    // catches: the empty-ticket run winning on length
+    assert_eq!(focus(&conn).longest.unwrap().jira_issue, "A-1");
+}
+
+#[test]
+fn a_failing_focus_read_is_no_focus_not_an_error() {
+    let conn = db::open_memory().unwrap();
+    conn.execute_batch("DROP TABLE blocks").unwrap();
+    // catches: propagating the error and failing the whole draft
+    assert_eq!(yesterday_focus_or_none(&conn, today()), None);
+}

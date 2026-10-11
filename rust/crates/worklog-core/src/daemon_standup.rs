@@ -73,7 +73,7 @@ where
             Some(previous) => standup::regenerate(&conn, today, model.as_ref(), &previous),
             None => standup::draft(&conn, today, model.as_ref()),
         }?;
-        let focus = standup::yesterday_focus(&conn, today)?;
+        let focus = standup::yesterday_focus_or_none(&conn, today);
         anyhow::Ok(DraftResponse { draft, focus })
     })
     .await

@@ -16,8 +16,9 @@ function draftText(d: StandupDraft): string {
 
 function focusLine(f: FocusSummary): string {
   const r = f.longest;
-  if (!r) return `yesterday: ${f.switches} switches, no focus run`;
-  return `yesterday: ${f.switches} switches, longest focus ${formatDuration(r.seconds)} on ${r.jira_issue} (${formatRange(r.started_at, r.ended_at)})`;
+  const switches = f.switches === 1 ? "1 switch" : `${f.switches} switches`;
+  if (!r) return `yesterday: ${switches}, no focus run`;
+  return `yesterday: ${switches}, longest focus ${formatDuration(r.seconds)} on ${r.jira_issue} (${formatRange(r.started_at, r.ended_at)})`;
 }
 
 function failure(o: PostOutcome): string | null {
