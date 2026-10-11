@@ -1,7 +1,7 @@
 // Statistics: "Wrapped" for the workday. Every number comes from the daemon's
 // GET /stats; this page only lays the story out.
 
-import type { ReactNode } from "react";
+import { Suspense, type ReactNode } from "react";
 
 import { DayFlow } from "@/components/art/DayFlow";
 import { ActivityStream } from "@/components/stats/ActivityStream";
@@ -23,9 +23,11 @@ import { ToolWarehouse } from "@/components/stats/ToolWarehouse";
 import { WeekTerrain } from "@/components/stats/WeekTerrain";
 import { WorkdayCity } from "@/components/stats/WorkdayCity";
 import { WorkdaySpans } from "@/components/stats/WorkdaySpans";
-import { getStats } from "@/lib/daemonStats";
+import { TopicsSection } from "@/components/stats/TopicsSection";
+import { getStats, getTopics } from "@/lib/daemonStats";
 import { formatTotalHours, todayISO } from "@/lib/format";
 import type { Ranked, StatsReport } from "@/lib/stats_contract";
+import type { TopicsReport } from "@/lib/topics_contract";
 
 export const dynamic = "force-dynamic";
 
@@ -52,7 +54,12 @@ const TICKET_ORIGIN: Record<string, string> = { event: "from activity", auto: "a
 const friendly = (rows: Ranked[], names: Record<string, string>) =>
   rows.map((x) => ({ ...x, label: names[x.label] ?? x.label }));
 
-function Story({ r }: { r: StatsReport }) {
+// Streams in after the rest of the page: the helper may take up to 90s to embed.
+async function Topics({ topics }: { topics: Promise<TopicsReport | null> }) {
+  return <TopicsSection report={await topics} />;
+}
+
+function Story({ r, topics }: { r: StatsReport; topics: Promise<TopicsReport | null> }) {
   return (
     <>
       <StatsHero report={r} />
@@ -106,6 +113,11 @@ function Story({ r }: { r: StatsReport }) {
       <Section title="Tickets">
         <TicketTimeline tickets={r.tickets} from={r.from} to={r.to} today={r.today} totalWork={r.totals.work_seconds} />
       </Section>
+      <Section title="Topics">
+        <Suspense fallback={<p>Loading topics…</p>}>
+          <Topics topics={topics} />
+        </Suspense>
+      </Section>
       <Section title="Housekeeping">
         <div className="stats-three">
           <SplitDonut title="Who set the hours" rows={friendly(r.estimates, ESTIMATED_BY)} unit="count" />
@@ -133,6 +145,7 @@ export default async function StatsPage({ searchParams }: Props) {
 
   let report: StatsReport | null = null;
   let loadError: string | null = null;
+  const topics = getTopics(from, to).catch(() => null);
   try {
     report = await getStats(from, to);
   } catch (e) {
@@ -154,7 +167,7 @@ export default async function StatsPage({ searchParams }: Props) {
       </header>
       {report ? (
         <TipLayer>
-          <Story r={report} />
+          <Story r={report} topics={topics} />
         </TipLayer>
       ) : (
         <div role="alert">

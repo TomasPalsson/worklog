@@ -8,6 +8,7 @@ import {
   loadBillingRegistry,
   loadDaySummary,
   routedForDay,
+  noiseHosts,
   verdictStatus,
 } from "@/lib/daemon";
 import { elsewhereForDay, type ElsewhereItem } from "@/lib/daemonElsewhere";
@@ -101,6 +102,7 @@ export default async function DayPage({
     elsewhereItems = [];
     lines = [];
   }
+  const noise = await noiseHosts(day).catch(() => ({ hosts: [] }));
   const verdict = await verdictStatus(day).catch(() => null);
   const reviewLines =
     day === todayISO() ? await fetchReviewLines().catch(() => []) : [];
@@ -211,7 +213,7 @@ export default async function DayPage({
         billing={flowBilling}
       />
       {verdict && <VerdictBanner key={`verdict-${day}`} status={verdict} />}
-      <UnsortedList key={`unsorted-${day}`} day={day} events={routedEvents} folderOptions={folderOptions} />
+      <UnsortedList key={`unsorted-${day}`} day={day} events={routedEvents} folderOptions={folderOptions} noiseHosts={noise.hosts} />
       <ElsewhereList key={`elsewhere-${day}`} day={day} items={elsewhereItems} blocks={blocks} />
       {blocks.length === 0 ? (
         <EmptyState day={day} />

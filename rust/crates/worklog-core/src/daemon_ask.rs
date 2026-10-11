@@ -102,7 +102,7 @@ mod tests {
         // catches: blank query reaching FTS5 as a syntax error
         assert!(ask_for(&state, "   ").await.is_empty());
         // catches: unescaped quote/operator breaking the MATCH
-        assert!(ask_for(&state, "\"kafka OR (").await.is_empty());
+        assert_eq!(ask_for(&state, "\"kafka OR (").await.len(), 1);
     }
 
     #[tokio::test(flavor = "multi_thread")]

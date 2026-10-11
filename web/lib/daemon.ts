@@ -184,6 +184,7 @@ export async function estimateBlock(blockId: number): Promise<{
 // ───────────────────── reads (v0.6) ─────────────────────
 
 import type { ChangeFeed, Deild } from "./deildir";
+import type { NoiseHosts } from "./topics_contract";
 import type { ReviewLine, VerdictState, VerdictStatus } from "./verdict_contract";
 import type {
   BillingCustomer,
@@ -448,6 +449,9 @@ export async function labelEvent(id: number, folder: string, always: RuleKind | 
 }
 export async function dismissEvent(id: number, ruleKind: RuleKind | null) {
   return call<RoutedEvent>("POST", `/events/${id}/dismiss`, { rule_kind: ruleKind });
+}
+export async function noiseHosts(day: string): Promise<NoiseHosts> {
+  return call<NoiseHosts>("GET", `/days/${day}/noise-hosts`);
 }
 export async function routingRules(): Promise<Rule[]> {
   return call<Rule[]>("GET", "/routing/rules");
