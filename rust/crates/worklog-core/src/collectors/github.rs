@@ -14,7 +14,7 @@ use regex::Regex;
 use reqwest::blocking::Client;
 use rusqlite::{params, Connection};
 use serde::Deserialize;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::clues_contract::RawRecord;
 use crate::http::{self, RequestBuilderExt};
@@ -48,8 +48,10 @@ impl GitHubAuth {
     }
 }
 
-/// Collect commits + PRs between `since` (inclusive) and `until`
-/// (exclusive). Both dates are UTC.
+/// Collect commits + PRs from `since` (inclusive). Callers pass `until`
+/// exclusive, but the search `a..b` range includes `b`, so events on the
+/// `until` day are fetched too (harmless: upserts are idempotent). Both
+/// dates are UTC.
 pub fn collect(
     conn: &Connection,
     auth: &GitHubAuth,
@@ -76,7 +78,8 @@ pub fn collect_with(
     // --- commits -----------------------------------------------------------
     let commits_q = format!("author:{} author-date:{}..{}", auth.user, since, until);
     let commits: Vec<CommitItem> =
-        search_pages(client, auth, "commits", &commits_q).context("github commit search")?;
+        search_pages(client, auth, "commits", &commits_q, &mut report.errors)
+            .context("github commit search")?;
     debug!(total = commits.len(), "github commits");
     for c in commits {
         if is_personal_owner(&c.repository.full_name, &auth.user) {
@@ -132,8 +135,8 @@ pub fn collect_with(
     let mut prs = Vec::new();
     for field in ["created", "merged"] {
         let pr_q = format!("author:{} type:pr {field}:{}..{}", auth.user, since, until);
-        let found: Vec<IssueItem> =
-            search_pages(client, auth, "issues", &pr_q).context("github issue search")?;
+        let found: Vec<IssueItem> = search_pages(client, auth, "issues", &pr_q, &mut report.errors)
+            .context("github issue search")?;
         for item in found {
             if !prs.iter().any(|p: &IssueItem| p.id == item.id) {
                 prs.push(item);
@@ -197,12 +200,14 @@ pub fn collect_with(
 }
 
 /// Every result of a search endpoint, page by page, until a short page or
-/// `GITHUB_MAX_PAGES` (the API serves no more than 1,000 results).
+/// `GITHUB_MAX_PAGES` (the API serves no more than 1,000 results). A
+/// truncated or `incomplete_results` search pushes a warning onto `warnings`.
 fn search_pages<T: serde::de::DeserializeOwned>(
     client: &Client,
     auth: &GitHubAuth,
     endpoint: &str,
     q: &str,
+    warnings: &mut Vec<String>,
 ) -> Result<Vec<T>> {
     let mut all = Vec::new();
     for page in 1..=GITHUB_MAX_PAGES {
@@ -214,9 +219,21 @@ fn search_pages<T: serde::de::DeserializeOwned>(
             .query(&[("q", q), ("per_page", "100"), ("page", &page.to_string())])
             .json_ok()?;
         let full = body.items.len() == 100;
+        if body.incomplete_results {
+            let msg = format!("github {endpoint} search `{q}` reported incomplete_results");
+            warn!("{msg}");
+            warnings.push(msg);
+        }
         all.extend(body.items);
         if !full {
             break;
+        }
+        if page == GITHUB_MAX_PAGES {
+            let msg = format!(
+                "github {endpoint} search `{q}` stopped at the {GITHUB_MAX_PAGES}-page cap; results truncated"
+            );
+            warn!("{msg}");
+            warnings.push(msg);
         }
     }
     Ok(all)
@@ -267,6 +284,8 @@ fn mark_elsewhere(conn: &Connection, source: &str, source_id: &str, elsewhere: b
 #[derive(Debug, Deserialize)]
 struct Search<T> {
     items: Vec<T>,
+    #[serde(default)]
+    incomplete_results: bool,
 }
 
 #[derive(Debug, Deserialize)]
