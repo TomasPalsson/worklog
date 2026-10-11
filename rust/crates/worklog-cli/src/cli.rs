@@ -3068,6 +3068,15 @@ fn probe_cell(probe: Result<bool, &anyhow::Error>, yes: &str, no: &str) -> Strin
     }
 }
 
+/// A probe's JSON form: `installed` stays false on error, but `error`
+/// carries the reason so a failed check is not read as "not installed".
+fn probe_json(probe: Result<bool, &anyhow::Error>) -> serde_json::Value {
+    serde_json::json!({
+        "installed": probe.as_ref().is_ok_and(|on| *on),
+        "error": probe.err().map(|e| e.to_string()),
+    })
+}
+
 /// Fix commands for whatever is down. `schedule` is `None` when its
 /// probe errored: unknown is not down, so it gets no hint.
 fn status_hints(daemon_up: bool, schedule: Option<bool>, web_up: bool) -> Vec<&'static str> {
@@ -3137,10 +3146,15 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
             out,
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
-                "daemon": { "running": daemon_up, "service_installed": daemon_svc_on },
-                "hook": { "installed": hook_on },
+                "daemon": {
+                    "running": daemon_up,
+                    "service_installed": daemon_svc_on,
+                    "service_error": daemon_svc.as_ref().err().map(|e| e.to_string()),
+                },
+                "hook": probe_json(hook.as_ref().map(|h| h.installed)),
                 "schedule": {
                     "installed": sched_on,
+                    "error": sched.as_ref().err().map(|e| e.to_string()),
                     "interval_secs": sched.as_ref().ok().and_then(|s| s.interval_secs),
                 },
                 "web": { "running": web_on },
@@ -5262,14 +5276,25 @@ mod tests {
     /// FR-14: a probe that errors says "check failed (reason)" — never
     /// the "not installed" a swallowed error would have produced.
     #[test]
-    fn probe_cell_error_says_check_failed_with_reason() {
+    fn status_probe_cell_error_says_check_failed_with_reason() {
         let cell = probe_cell(Err(&anyhow::anyhow!("boom")), "installed", "not installed");
         assert_eq!(cell, "check failed (boom)");
     }
 
     /// FR-14: a healthy probe keeps its plain wording for both answers.
     #[test]
-    fn probe_cell_ok_keeps_plain_wording() {
+    fn status_probe_json_reports_error_reason() {
+        // swallowing the error (installed:false, no reason) fails this
+        let v = probe_json(Err(&anyhow::anyhow!("boom")));
+        assert_eq!(v["installed"], false);
+        assert_eq!(v["error"], "boom");
+        let ok = probe_json(Ok(true));
+        assert_eq!(ok["installed"], true);
+        assert!(ok["error"].is_null());
+    }
+
+    #[test]
+    fn status_probe_cell_ok_keeps_plain_wording() {
         assert_eq!(
             probe_cell(Ok(true), "installed", "not installed"),
             "installed"
