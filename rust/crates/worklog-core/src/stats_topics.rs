@@ -164,10 +164,27 @@ fn highlights(
         .collect()
 }
 
+/// Per-block results of one `build`, parallel to `block_ids` (ascending id).
+#[derive(Debug, Default)]
+pub struct Assignments {
+    pub block_ids: Vec<i64>,
+    pub topic_of: Vec<usize>,
+    pub centered: Vec<Vec<f32>>,
+    pub novelty: Vec<f64>,
+    pub oddball: Vec<bool>,
+}
+
 pub fn build(input: &TopicsInput) -> TopicsReport {
+    build_with_assignments(input).0
+}
+
+pub fn build_with_assignments(input: &TopicsInput) -> (TopicsReport, Assignments) {
     let n = input.now.len();
     if n < MIN_BLOCKS {
-        return TopicsReport::empty(TopicsStatus::TooFewBlocks, &input.from, &input.to);
+        return (
+            TopicsReport::empty(TopicsStatus::TooFewBlocks, &input.from, &input.to),
+            Assignments::default(),
+        );
     }
     let mut pts: Vec<&BlockPoint> = input.now.iter().collect();
     pts.sort_by_key(|p| p.id);
@@ -183,11 +200,12 @@ pub fn build(input: &TopicsInput) -> TopicsReport {
     let now_points: Vec<BlockPoint> = pts.iter().map(|p| (*p).clone()).collect();
     let novelty = novelty(&now_points, &centered, &input.history, &history_centered);
     let nearest = nearest_cos(&centered);
-    let oddball_ids = (0..n).filter(|&i| is_oddball(nearest[i])).collect();
+    let oddball: Vec<bool> = nearest.iter().map(|&c| is_oddball(c)).collect();
+    let oddball_ids = (0..n).filter(|&i| oddball[i]).collect();
     let days = day_rows(&pts, &centered, &novelty, &topic_of);
     let (bin, river) = river(&pts, &topic_of, topics.len(), &input.from, &input.to);
 
-    TopicsReport {
+    let report = TopicsReport {
         status: TopicsStatus::Ready,
         from: input.from.clone(),
         to: input.to.clone(),
@@ -203,7 +221,15 @@ pub fn build(input: &TopicsInput) -> TopicsReport {
         days,
         embedded_blocks: n as i64,
         skipped_blocks: 0,
-    }
+    };
+    let assignments = Assignments {
+        block_ids: pts.iter().map(|p| p.id).collect(),
+        topic_of,
+        centered,
+        novelty,
+        oddball,
+    };
+    (report, assignments)
 }
 
 #[cfg(test)]

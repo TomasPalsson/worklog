@@ -307,3 +307,50 @@ fn equal_seconds_topics_order_by_lowest_member_id() {
     }
     assert_eq!(lead_ticket(&ready(&input(pts))), "b");
 }
+
+#[test]
+fn assignments_match_the_reports_topics_block_for_block() {
+    let i = input(two_groups());
+    let (r, a) = build_with_assignments(&i);
+
+    // catches: assignments from a second clustering that disagrees with `topics`.
+    assert_eq!(a.block_ids, vec![1, 2, 3, 4, 5, 6]);
+    assert_eq!(a.topic_of.len(), 6);
+    for t in &r.topics {
+        let members: Vec<usize> = (0..6).filter(|&k| a.topic_of[k] == t.id).collect();
+        assert_eq!(members.len() as i64, t.blocks, "topic {}", t.id);
+        let seconds: i64 = members.iter().map(|&k| i.now[k].seconds).sum();
+        assert_eq!(seconds, t.seconds, "topic {}", t.id);
+    }
+    // A (6000 s) outranks B (3600 s): ids 1-3 are topic 0.
+    assert_eq!(a.topic_of, vec![0, 0, 0, 1, 1, 1]);
+}
+
+#[test]
+fn assignments_carry_novelty_and_oddball_per_block_in_id_order() {
+    let mut now = two_groups();
+    now.reverse();
+    let i = input(now);
+    let (r, a) = build_with_assignments(&i);
+
+    // catches: input order leaking through instead of id order.
+    assert_eq!(a.block_ids, vec![1, 2, 3, 4, 5, 6]);
+    assert_eq!(a.novelty.len(), 6);
+    assert_eq!(a.oddball.len(), 6);
+    assert_eq!(a.centered.len(), 6);
+    // catches: oddball flags that disagree with the report's own oddball list.
+    let flagged: Vec<i64> = (0..6)
+        .filter(|&k| a.oddball[k])
+        .map(|k| a.block_ids[k])
+        .collect();
+    let mut listed: Vec<i64> = r.oddballs.iter().map(|h| h.block_id).collect();
+    listed.sort();
+    assert_eq!(flagged, listed);
+}
+
+#[test]
+fn assignments_are_empty_when_too_few_blocks() {
+    // catches: panicking or stale data below the minimum.
+    let (_, a) = build_with_assignments(&input(fan(MIN_BLOCKS - 1)));
+    assert!(a.block_ids.is_empty() && a.topic_of.is_empty());
+}

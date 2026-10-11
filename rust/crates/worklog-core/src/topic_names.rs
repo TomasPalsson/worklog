@@ -1,8 +1,9 @@
 //! AI topic names: cache in `topic_names`, keyword fallback, background naming job.
 
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use chrono::Utc;
@@ -14,12 +15,16 @@ use crate::updater::crypto::sha256_hex;
 
 const SCAN_ROWS: i64 = 200;
 const FALLBACK_KEYWORDS: usize = 3;
+/// Topics per model call: a bigger prompt outruns the claude -p timeout.
+pub const BATCH: usize = 4;
 
 /// Lets route-level tests answer the model call without a provider.
 #[cfg(test)]
 pub(crate) static TEST_REPLY: Mutex<Option<Value>> = Mutex::new(None);
 
 static IN_FLIGHT: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Default::default);
+
+static FAILED: LazyLock<Mutex<HashMap<String, Instant>>> = LazyLock::new(Default::default);
 
 /// One topic as the namer sees it; `members` are its block ids.
 #[derive(Debug, Clone)]
@@ -289,6 +294,22 @@ pub fn release(inputs: &[TopicInput]) {
     for i in inputs {
         set.remove(&member_hash(&i.members));
     }
+}
+
+pub fn record_failure(inputs: &[TopicInput]) {
+    let mut failed = FAILED.lock().unwrap();
+    for i in inputs {
+        failed.insert(member_hash(&i.members), Instant::now());
+    }
+}
+
+/// True when naming this topic failed less than `window` ago.
+pub fn backed_off(input: &TopicInput, window: Duration) -> bool {
+    FAILED
+        .lock()
+        .unwrap()
+        .get(&member_hash(&input.members))
+        .is_some_and(|at| at.elapsed() < window)
 }
 
 #[cfg(test)]

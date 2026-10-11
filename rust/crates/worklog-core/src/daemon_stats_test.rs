@@ -11,6 +11,13 @@ use chrono::NaiveDate;
 use httpmock::prelude::*;
 use rusqlite::{params, Connection};
 use serde_json::json;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+use std::time::Duration;
+
+use crate::daemon::daemon_stats::{name_in_background, BACKOFF};
+use crate::estimate::ModelInvoker;
+use crate::topic_names::{self, TopicInput};
 
 async fn call(path: &str) -> (StatusCode, serde_json::Value) {
     let state = state_from_conn(open_memory().unwrap());
@@ -422,6 +429,7 @@ fn naming_without_an_invoker_is_off_and_keeps_keyword_names() {
             &mut r,
             pending,
             || Err(anyhow::anyhow!("no model configured")),
+            crate::daemon::daemon_stats::BACKOFF,
         ));
 
     // catches: leaving Pending forever when the invoker cannot be built.
@@ -547,4 +555,131 @@ fn map_points_carry_label_topic_novelty_and_oddball_from_the_blocks() {
     // catches: oddball hardcoded or inverted.
     assert!(by_id(10).oddball);
     assert!(!by_id(1).oddball);
+}
+
+/// Replies with a name for every theme in the prompt; call `fail_on` (1-based) errors.
+struct Scripted {
+    calls: &'static AtomicUsize,
+    sizes: &'static Mutex<Vec<usize>>,
+    fail_on: usize,
+}
+
+impl ModelInvoker for Scripted {
+    fn invoke(&self, _: &str, user: &str, _: &serde_json::Value, _: &str) -> anyhow::Result<serde_json::Value> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        let ids: Vec<usize> = user
+            .lines()
+            .filter_map(|l| l.strip_prefix("Theme ")?.split(' ').next()?.parse().ok())
+            .collect();
+        self.sizes.lock().unwrap().push(ids.len());
+        if n == self.fail_on {
+            anyhow::bail!("scripted failure");
+        }
+        let topics: Vec<_> = ids
+            .iter()
+            .map(|id| json!({"id": id, "name": format!("Name {id}"), "description": "D."}))
+            .collect();
+        Ok(json!({"topics": topics}))
+    }
+}
+
+fn batch_inputs(base: i64) -> Vec<TopicInput> {
+    (0..10)
+        .map(|i| TopicInput { members: vec![base + i as i64], ..pending_input(i) })
+        .collect()
+}
+
+fn blank_report() -> crate::topics_contract::TopicsReport {
+    let mut r = crate::topics_contract::TopicsReport::empty(TopicsStatus::Ready, "2026-10-05", "2026-10-11");
+    r.naming = Naming::Pending;
+    r
+}
+
+async fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
+    for _ in 0..500 {
+        if cond() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("timed out waiting for {what}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ten_topics_are_named_in_batches_of_four_four_two() {
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    static SIZES: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+    let state = state_from_conn(open_memory().unwrap());
+    let inputs = batch_inputs(8000);
+    name_in_background(
+        &state,
+        &mut blank_report(),
+        inputs,
+        || Ok(Box::new(Scripted { calls: &CALLS, sizes: &SIZES, fail_on: 0 })),
+        BACKOFF,
+    )
+    .await;
+
+    wait_for("ten names", || state.conn.try_lock().is_ok_and(|c| names_rows(&c) == 10)).await;
+
+    // catches: one call for all ten, or an unbatched per-topic loop.
+    assert_eq!(*SIZES.lock().unwrap(), vec![4, 4, 2]);
+    assert_eq!(CALLS.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_failing_second_batch_keeps_the_first_batchs_names_and_stops() {
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    static SIZES: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+    let state = state_from_conn(open_memory().unwrap());
+    let inputs = batch_inputs(8100);
+    name_in_background(
+        &state,
+        &mut blank_report(),
+        inputs.clone(),
+        || Ok(Box::new(Scripted { calls: &CALLS, sizes: &SIZES, fail_on: 2 })),
+        BACKOFF,
+    )
+    .await;
+
+    wait_for("the failure to be recorded", || topic_names::backed_off(&inputs[9], BACKOFF)).await;
+
+    // catches: names stored only after every batch succeeds.
+    assert_eq!(names_rows(&*state.conn.lock().await), 4);
+    // catches: carrying on to batch three after a failure.
+    assert_eq!(CALLS.load(Ordering::SeqCst), 2);
+    // catches: backing off topics that were named, or only the failed batch.
+    assert!(!topic_names::backed_off(&inputs[0], BACKOFF));
+    assert!(!topic_names::backed_off(&inputs[3], BACKOFF));
+    assert!(topic_names::backed_off(&inputs[4], BACKOFF));
+    assert!(topic_names::backed_off(&inputs[9], BACKOFF));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_failed_topic_is_not_retried_until_the_window_passes() {
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    static SIZES: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+    let make: fn() -> anyhow::Result<Box<dyn ModelInvoker>> =
+        || Ok(Box::new(Scripted { calls: &CALLS, sizes: &SIZES, fail_on: 1 }));
+    let state = state_from_conn(open_memory().unwrap());
+    let inputs = batch_inputs(8200)[..3].to_vec();
+
+    name_in_background(&state, &mut blank_report(), inputs.clone(), make, BACKOFF).await;
+    wait_for("the failure to be recorded", || topic_names::backed_off(&inputs[0], BACKOFF)).await;
+    assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+
+    let mut second = blank_report();
+    name_in_background(&state, &mut second, inputs.clone(), make, BACKOFF).await;
+    // catches: relaunching on every GET, or leaving the chip on pending.
+    assert_eq!(second.naming, Naming::Off);
+    let free = topic_names::claim(&inputs);
+    assert_eq!(free.len(), 3, "a job was started inside the window");
+    topic_names::release(&inputs);
+    assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+
+    // catches: a window that never expires.
+    let mut third = blank_report();
+    name_in_background(&state, &mut third, inputs.clone(), make, Duration::ZERO).await;
+    wait_for("the retry", || CALLS.load(Ordering::SeqCst) == 2).await;
+    assert_eq!(third.naming, Naming::Pending);
 }

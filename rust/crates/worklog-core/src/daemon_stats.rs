@@ -16,13 +16,11 @@ const TOPICS_HISTORY_DAYS: i64 = 60;
 use crate::embed::{self, EmbedClient};
 use crate::estimate::{self, ModelInvoker};
 use crate::stats_contract::StatsReport;
-use crate::stats_topics::{self, BlockPoint, TopicsInput};
-use crate::topic_metrics::{center_with, mean, nearest_cos, novelty};
+use crate::stats_topics::{self, Assignments, BlockPoint, TopicsInput};
 use crate::topic_names::{self, TopicInput};
 use crate::topic_terms::{keywords, representatives, tokenize};
 use crate::topics_contract::{
-    MapPoint, Naming, TopicsReport, TopicsStatus, MAP_MIN_POINTS, MAX_TOPICS, MIN_TOPICS,
-    NAMING_EXAMPLES, TOPIC_KEYWORDS,
+    MapPoint, Naming, TopicsReport, TopicsStatus, MAP_MIN_POINTS, NAMING_EXAMPLES, TOPIC_KEYWORDS,
 };
 use crate::verdict_contract::VERDICT_ENABLED_KEY;
 use crate::{stats, topic_map, tz};
@@ -117,7 +115,7 @@ pub async fn get_topics(
     .map_err(|e| anyhow!("embed task: {e}"))?;
     let (mut report, pending) =
         with_conn(state.clone(), move |c| topics_finish(c, prep, embedded)).await?;
-    name_in_background(&state, &mut report, pending, real_invoker).await;
+    name_in_background(&state, &mut report, pending, real_invoker, BACKOFF).await;
     Ok(Json(report))
 }
 
@@ -131,15 +129,28 @@ fn real_invoker() -> Result<Box<dyn ModelInvoker>> {
     estimate::build_invoker()
 }
 
-/// `Off` when no model can be built; otherwise one background job names
-/// `pending` and the keyword names stay until a later request.
+/// How long a topic that failed naming is left alone.
+pub(super) const BACKOFF: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// `Off` when no model can be built or every pending topic failed within
+/// `backoff`; otherwise one background job names the rest and the keyword
+/// names stay until a later request.
 pub(super) async fn name_in_background(
     state: &Shared,
     report: &mut TopicsReport,
     pending: Vec<TopicInput>,
     make_invoker: MakeInvoker,
+    backoff: std::time::Duration,
 ) {
     if pending.is_empty() {
+        return;
+    }
+    let pending: Vec<TopicInput> = pending
+        .into_iter()
+        .filter(|i| !topic_names::backed_off(i, backoff))
+        .collect();
+    if pending.is_empty() {
+        report.naming = Naming::Off;
         return;
     }
     // The probe builds a throwaway invoker: the real one is not Send, so the
@@ -157,31 +168,40 @@ pub(super) async fn name_in_background(
     }
 }
 
+/// Batches run in order and each is stored as it lands; the first failure
+/// stops the job and backs off every topic not yet named.
 async fn run_naming_job(state: Shared, inputs: Vec<TopicInput>, make_invoker: MakeInvoker) {
-    let result: Result<()> = async {
-        let for_call = inputs.clone();
-        let ids: Vec<usize> = inputs.iter().map(|i| i.id).collect();
-        let names = tokio::task::spawn_blocking(move || {
-            let reply = make_invoker()?.invoke(
-                topic_names::SYSTEM_PROMPT,
-                &topic_names::prompt(&for_call),
-                &topic_names::schema(),
-                estimate::DEFAULT_MODEL,
-            )?;
-            topic_names::parse_reply(&reply, &ids)
-        })
-        .await??;
-        let to_store = inputs.clone();
-        with_conn(state, move |c| {
-            topic_names::store(c, &to_store, &names, estimate::DEFAULT_MODEL)
-        })
-        .await
+    for (n, batch) in inputs.chunks(topic_names::BATCH).enumerate() {
+        if let Err(e) = name_batch(&state, batch.to_vec(), make_invoker).await {
+            topic_names::record_failure(&inputs[n * topic_names::BATCH..]);
+            eprintln!("topic naming failed: {e:#}");
+            break;
+        }
     }
-    .await;
     topic_names::release(&inputs);
-    if let Err(e) = result {
-        eprintln!("topic naming failed: {e:#}");
-    }
+}
+
+async fn name_batch(
+    state: &Shared,
+    batch: Vec<TopicInput>,
+    make_invoker: MakeInvoker,
+) -> Result<()> {
+    let for_call = batch.clone();
+    let ids: Vec<usize> = batch.iter().map(|i| i.id).collect();
+    let names = tokio::task::spawn_blocking(move || {
+        let reply = make_invoker()?.invoke(
+            topic_names::SYSTEM_PROMPT,
+            &topic_names::prompt(&for_call),
+            &topic_names::schema(),
+            estimate::DEFAULT_MODEL,
+        )?;
+        topic_names::parse_reply(&reply, &ids)
+    })
+    .await??;
+    with_conn(state.clone(), move |c| {
+        topic_names::store(c, &batch, &names, estimate::DEFAULT_MODEL)
+    })
+    .await
 }
 
 fn load_points(conn: &Connection, lo: NaiveDate, hi: NaiveDate) -> Result<Vec<BlockPoint>> {
@@ -306,12 +326,12 @@ fn topics_finish(
             input.ticket_summaries.insert(t.to_string(), summary);
         }
     }
-    let mut report = stats_topics::build(&input);
+    let (mut report, assigned) = stats_topics::build_with_assignments(&input);
     report.skipped_blocks = skipped;
     if report.status != TopicsStatus::Ready {
         return Ok((report, vec![]));
     }
-    let inputs = atlas(&mut report, &input);
+    let inputs = atlas(&mut report, &input, &assigned);
     let pending = topic_names::resolve(conn, &mut report, &inputs)?.pending;
     report.naming = if pending.is_empty() {
         Naming::Ai
@@ -321,29 +341,22 @@ fn topics_finish(
     Ok((report, pending))
 }
 
-/// Keywords, map points and naming inputs for a Ready report. Regroups the
-/// blocks exactly as `stats_topics::build` did (same centering, `k`, linkage
-/// and seconds ordering) because `build` does not expose membership.
-fn atlas(report: &mut TopicsReport, input: &TopicsInput) -> Vec<TopicInput> {
+/// Keywords, map points and naming inputs for a Ready report, using the
+/// per-block topic assignment `build` already made.
+fn atlas(report: &mut TopicsReport, input: &TopicsInput, a: &Assignments) -> Vec<TopicInput> {
     let mut pts: Vec<&BlockPoint> = input.now.iter().collect();
     pts.sort_by_key(|p| p.id);
-    let raw: Vec<Vec<f32>> = pts.iter().map(|p| p.vec.clone()).collect();
-    let now_mean = mean(&raw);
-    let centered = center_with(&raw, &now_mean);
-    let k = ((pts.len() as f64 / 2.0).sqrt().round() as usize).clamp(MIN_TOPICS, MAX_TOPICS);
-    let labels = stats_topics::cluster(&centered, k);
-    let mut groups: Vec<Vec<usize>> = vec![vec![]; labels.iter().max().map_or(0, |m| m + 1)];
-    for (i, &l) in labels.iter().enumerate() {
-        groups[l].push(i);
+    let centered = &a.centered;
+    let mut groups: Vec<Vec<usize>> = vec![vec![]; report.topics.len()];
+    for (i, &t) in a.topic_of.iter().enumerate() {
+        groups[t].push(i);
     }
-    groups.sort_by_key(|g| -g.iter().map(|&i| pts[i].seconds).sum::<i64>());
 
     let text = |i: usize| pts[i].description.clone().unwrap_or_default();
     let docs: Vec<Vec<String>> = groups
         .iter()
         .map(|g| g.iter().flat_map(|&i| tokenize(&text(i))).collect())
         .collect();
-    let mut topic_of = vec![0; pts.len()];
     let mut inputs = Vec::new();
     for (id, (g, terms)) in groups
         .iter()
@@ -352,9 +365,6 @@ fn atlas(report: &mut TopicsReport, input: &TopicsInput) -> Vec<TopicInput> {
     {
         let vecs: Vec<Vec<f32>> = g.iter().map(|&i| centered[i].clone()).collect();
         let descriptions: Vec<String> = g.iter().map(|&i| text(i)).collect();
-        for &i in g {
-            topic_of[i] = id;
-        }
         report.topics[id].keywords = terms.clone();
         inputs.push(TopicInput {
             id,
@@ -371,29 +381,20 @@ fn atlas(report: &mut TopicsReport, input: &TopicsInput) -> Vec<TopicInput> {
     }
 
     if pts.len() >= MAP_MIN_POINTS {
-        let history_raw: Vec<Vec<f32>> = input.history.iter().map(|p| p.vec.clone()).collect();
-        let now_points: Vec<BlockPoint> = pts.iter().map(|p| (*p).clone()).collect();
-        let novel = novelty(
-            &now_points,
-            &centered,
-            &input.history,
-            &center_with(&history_raw, &now_mean),
-        );
-        let nearest = nearest_cos(&centered);
-        report.points = topic_map::layout(&centered)
+        report.points = topic_map::layout(centered)
             .into_iter()
             .enumerate()
             .map(|(i, [x, y])| MapPoint {
                 block_id: pts[i].id,
                 x,
                 y,
-                topic_id: topic_of[i],
+                topic_id: a.topic_of[i],
                 day: pts[i].day.clone(),
                 seconds: pts[i].seconds,
                 label: text(i).chars().take(90).collect(),
                 ticket: pts[i].ticket.clone(),
-                novelty: novel[i] as f32,
-                oddball: stats_topics::is_oddball(nearest[i]),
+                novelty: a.novelty[i] as f32,
+                oddball: a.oddball[i],
             })
             .collect();
     }

@@ -256,3 +256,23 @@ fn claim_blocks_a_second_job_for_the_same_hashes_until_released() {
     assert_eq!(claim(&a).len(), 1);
     release(&a);
 }
+
+#[test]
+fn batch_size_is_four() {
+    assert_eq!(BATCH, 4);
+}
+
+#[test]
+fn backoff_holds_inside_the_window_and_lifts_at_its_end() {
+    let a = input(0, &[7001], &[]);
+    let b = input(1, &[7002], &[]);
+    let w = std::time::Duration::from_secs(600);
+    // catches: a failure that never registers.
+    assert!(!backed_off(&a, w));
+    record_failure(std::slice::from_ref(&a));
+    assert!(backed_off(&a, w));
+    // catches: backing off every topic after one failure.
+    assert!(!backed_off(&b, w));
+    // catches: `<=` instead of `<` — a zero window must never hold.
+    assert!(!backed_off(&a, std::time::Duration::ZERO));
+}
