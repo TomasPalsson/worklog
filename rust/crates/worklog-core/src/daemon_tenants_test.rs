@@ -845,6 +845,29 @@ async fn deild_suggestion_tie_recency_beats_alphabetical_order() {
     assert_eq!(v["deild"], "Rekstur");
 }
 
+/// Recency compares instants, not text: `Z` sorts after `.5+00:00` as text
+/// though it is earlier (catches ORDER BY on the raw started_at string).
+#[tokio::test(flavor = "current_thread")]
+async fn deild_suggestion_tie_recency_compares_instants_across_formats() {
+    let (state, block_id) = seed_target().await;
+    for (start, end, deild) in [
+        ("2026-04-18T10:00:00Z", "2026-04-18T10:20:00Z", "Vefur"),
+        (
+            "2026-04-18T10:00:00.500+00:00",
+            "2026-04-18T10:20:00+00:00",
+            "Rekstur",
+        ),
+    ] {
+        let id = {
+            let conn = state.conn.lock().await;
+            insert_bare_block(&conn, start, end)
+        };
+        set_rows(&state, id, &rows("Acme", Some(deild))).await;
+    }
+    let (_, v) = suggestion(&state, block_id).await;
+    assert_eq!(v["deild"], "Rekstur");
+}
+
 /// Another customer's deildir never count (catches a missing customer filter).
 #[tokio::test(flavor = "current_thread")]
 async fn deild_suggestion_ignores_other_customers() {
@@ -932,5 +955,5 @@ async fn deild_suggestion_rejects_personal_and_unknown_blocks() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(v["error"], "Block is personal");
     let (status, _) = suggestion(&state, 9999).await;
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }

@@ -33,8 +33,11 @@ fn tenant_bad_request(e: anyhow::Error) -> ApiError {
         "Share must be above 0",
         "Block is personal",
     ];
-    if BAD_REQUESTS.contains(&e.to_string().as_str()) {
+    let msg = e.to_string();
+    if BAD_REQUESTS.contains(&msg.as_str()) {
         ApiError::bad_request(e)
+    } else if msg.starts_with("block ") && msg.ends_with(" not found") {
+        ApiError::NotFound(e)
     } else {
         ApiError::from(e)
     }
@@ -84,16 +87,25 @@ fn block_slices(c: &Connection, id: i64) -> anyhow::Result<Vec<BillingSlice>> {
 /// The deild the Owner saved most often for `customer` across every saved
 /// split; a tie goes to the one used most recently.
 fn deild_suggestion(c: &Connection, customer: &str) -> anyhow::Result<Option<DeildSuggestion>> {
-    let mut stmt =
-        c.prepare("SELECT rows_json, shares FROM block_customer_shares ORDER BY day, started_at")?;
-    let saved = stmt
+    let mut stmt = c.prepare("SELECT rows_json, shares, started_at FROM block_customer_shares")?;
+    let mut saved = stmt
         .query_map([], |r| {
-            Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?))
+            Ok((
+                r.get::<_, Option<String>>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    // Text order is wrong across `Z` / `+00:00` spellings; unparseable sorts first.
+    saved.sort_by_cached_key(|(_, _, at)| {
+        chrono::DateTime::parse_from_rfc3339(at)
+            .ok()
+            .map(|t| t.to_utc())
+    });
     // deild -> (uses, index of its latest use)
     let mut tally: HashMap<String, (u32, usize)> = HashMap::new();
-    for (i, (rows_json, shares)) in saved.iter().enumerate() {
+    for (i, (rows_json, shares, _)) in saved.iter().enumerate() {
         for row in tenant_shares::parse_rows(rows_json.as_deref(), shares) {
             let deild = row.deild.filter(|d| !d.trim().is_empty());
             if let (true, Some(deild)) = (row.customer == customer, deild) {

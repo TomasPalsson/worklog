@@ -173,6 +173,7 @@ pub fn set_personal(conn: &Connection, block_id: i64, is_personal: bool) -> Resu
 /// and estimation, and keep it hidden across "Rebuild blocks" (see the
 /// carry rule in `infer::persist_blocks`). Implemented as `is_personal = 1`
 /// plus an `ignored_at` marker so every existing personal exclusion applies.
+/// `reason` is stored in `ignore_reason`; un-ignoring clears it with `ignored_at`.
 /// Refuses blocks already synced to Tempo or exported for billing; never
 /// clears `tempo_worklog_id` / `exported_at`.
 pub fn set_ignored(
