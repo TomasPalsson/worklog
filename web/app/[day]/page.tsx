@@ -227,6 +227,7 @@ export default async function DayPage({
                           tickets={tickets}
                           day={day}
                           isSoleInGroup={g.blocks.length === 1 && !g.unassigned}
+                          dayBlocks={blocks}
                         />
                       </li>
                     ))}
@@ -257,6 +258,7 @@ export default async function DayPage({
                       tickets={tickets}
                       day={day}
                       isSoleInGroup={false}
+                      dayBlocks={blocks}
                     />
                   </li>
                 ))}
