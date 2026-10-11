@@ -174,6 +174,27 @@ fn run_in_transaction_commits_what_succeeded_before_propagating_an_error() {
 }
 
 #[test]
+fn run_in_transaction_survives_another_connection_writing_mid_body() {
+    // catches: a deferred transaction that reads, then fails to upgrade to a
+    // write with SQLITE_BUSY_SNAPSHOT (517) because the daemon committed in
+    // between — busy_timeout cannot retry that case.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("w.db");
+    let a = crate::db::open(&path).unwrap();
+    let b = crate::db::open(&path).unwrap();
+    b.busy_timeout(std::time::Duration::ZERO).unwrap();
+
+    let result = run_in_transaction(&a, |tx| {
+        assert!(lookup(tx, "/f", 0, 100, 10, 1, "").is_none()); // the read
+        let _ = purge::meta_set(&b, "other_writer", "1"); // the daemon's write
+        store(tx, "/f", 0, 100, 10, 1, &["u1".to_string()], 1, "")
+    });
+
+    assert!(result.is_ok(), "{result:?}");
+    assert!(lookup(&a, "/f", 0, 100, 10, 1, "").is_some());
+}
+
+#[test]
 fn keep_first_error_prefers_the_body_error_over_a_commit_error() {
     // A commit that fails after the body already failed must not hide the
     // body's own (more useful) error behind a confusing commit error.

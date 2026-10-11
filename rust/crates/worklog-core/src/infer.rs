@@ -640,7 +640,7 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
     // can't both inherit the same prior state.
     let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::write_tx(conn)?;
     tx.execute(
         &format!("DELETE FROM blocks WHERE day = ?1 AND NOT ({HAND_LOGGED})"),
         params![day_iso],

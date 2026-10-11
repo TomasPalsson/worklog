@@ -18,7 +18,7 @@ fn class_str(c: BillingClass) -> &'static str {
 
 /// Replaces the day's rows in one transaction.
 pub fn store_day(conn: &Connection, day: &str, rows: &[(String, LineBilling)]) -> Result<()> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::write_tx(conn)?;
     tx.execute("DELETE FROM mirres_line_billing WHERE day = ?1", [day])?;
     let pulled_at = Utc::now().to_rfc3339();
     for (issue, b) in rows {

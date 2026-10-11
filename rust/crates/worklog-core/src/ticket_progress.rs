@@ -15,7 +15,7 @@ pub fn store_ticket(
     logs: &[RawWorklog],
     now: DateTime<Utc>,
 ) -> Result<()> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::write_tx(conn)?;
     tx.execute("DELETE FROM ticket_progress_worklogs WHERE key = ?1", [key])?;
     for l in logs {
         tx.execute(

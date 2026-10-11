@@ -37,7 +37,7 @@ pub fn store_range(
     pulled_at: &str,
 ) -> Result<PullReport> {
     let (from, to) = (from.to_string(), to.to_string());
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::write_tx(conn)?;
     tx.execute(
         "DELETE FROM tempo_remote_worklogs WHERE day BETWEEN ?1 AND ?2",
         params![from, to],

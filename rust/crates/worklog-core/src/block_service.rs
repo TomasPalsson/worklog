@@ -34,7 +34,7 @@ pub fn assign_ticket(conn: &Connection, block_id: i64, key: Option<&str>) -> Res
     // want the personal flag managed by the path classifier on the next
     // `worklog tag reclassify`.
     let previous = repo::get_block(conn, block_id)?.and_then(|b| b.jira_issue);
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::write_tx(conn)?;
     undo::record(&tx, BlockChange::Ticket, &[block_id])?;
     if key.is_some() {
         tx.execute(
@@ -84,7 +84,7 @@ pub fn set_duration(conn: &Connection, block_id: i64, minutes: u32) -> Result<Bl
     let new_end = derive_ended_at(&started_at, minutes as i64 * 60)?;
 
     // Mark as manual so re-estimation doesn't clobber it.
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::write_tx(conn)?;
     undo::record(&tx, BlockChange::Hours, &[block_id])?;
     tx.execute(
         &format!(
@@ -121,7 +121,7 @@ fn derive_ended_at(started_at: &str, duration_seconds: i64) -> Result<String> {
 }
 
 pub fn set_description(conn: &Connection, block_id: i64, description: &str) -> Result<Block> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::write_tx(conn)?;
     undo::record(&tx, BlockChange::Text, &[block_id])?;
     tx.execute(
         &format!(
@@ -153,7 +153,7 @@ pub fn set_description(conn: &Connection, block_id: i64, description: &str) -> R
 /// dimmed in the UI, skipped by the estimator, and excluded from Tempo
 /// sync. Only the flag changes — the ticket, if any, is left untouched.
 pub fn set_personal(conn: &Connection, block_id: i64, is_personal: bool) -> Result<Block> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::write_tx(conn)?;
     undo::record(&tx, BlockChange::Personal, &[block_id])?;
     tx.execute(
         "UPDATE blocks SET is_personal = ?1 WHERE id = ?2",
@@ -184,7 +184,7 @@ pub fn set_ignored(
 ) -> Result<Block> {
     let block = repo::get_block(conn, block_id)?
         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::write_tx(conn)?;
     undo::record(&tx, BlockChange::Ignored, &[block_id])?;
     if ignored {
         let set = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.is_empty());
@@ -244,7 +244,7 @@ pub fn mark_exported(conn: &Connection, day: &str) -> Result<usize> {
 }
 
 pub fn delete_block(conn: &Connection, block_id: i64) -> Result<()> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::write_tx(conn)?;
     undo::record(&tx, BlockChange::Delete, &[block_id])?;
     let n = tx
         .execute("DELETE FROM blocks WHERE id = ?1", params![block_id])
@@ -346,7 +346,7 @@ pub fn merge_blocks(
         .sum();
     let ended_at = derive_ended_at(&started_at, total_seconds)?;
 
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::write_tx(conn)?;
     let touched: Vec<i64> = std::iter::once(primary_id)
         .chain(others.iter().map(|b| b.id))
         .collect();
@@ -423,7 +423,7 @@ pub fn split_block(conn: &Connection, block_id: i64, first_minutes: u32) -> Resu
     let boundary = derive_ended_at(&block.started_at, first_secs)?;
     let second_secs = block.duration_seconds - first_secs;
 
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::write_tx(conn)?;
     undo::record(&tx, BlockChange::Split, &[block_id])?;
     // The original block keeps its id; shrink it to the first slice.
     tx.execute(

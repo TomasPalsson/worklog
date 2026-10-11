@@ -262,7 +262,7 @@ fn restore_satellites(tx: &Transaction, s: &Snapshot) -> Result<()> {
 /// Reverses the newest journaled change. Refuses, changing nothing, when
 /// it would touch a block sent to Tempo.
 pub fn undo_last(conn: &mut Connection) -> Result<UndoOutcome> {
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let newest: Option<(i64, String, String)> = tx
         .query_row(
             "SELECT id, change, payload_json FROM block_undo ORDER BY id DESC LIMIT 1",

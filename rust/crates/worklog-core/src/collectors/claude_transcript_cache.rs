@@ -199,7 +199,7 @@ pub(super) fn run_in_transaction(
     conn: &Connection,
     body: impl FnOnce(&Connection) -> Result<()>,
 ) -> Result<()> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::write_tx(conn)?;
     let result = body(&tx);
     let commit = tx.commit();
     keep_first_error(result, commit)
