@@ -220,6 +220,12 @@ describe("TopicMoments", () => {
       for (const n of sizes) expect(n).toBeGreaterThanOrEqual(13);
     }
   });
+  it("moment label is 14px weight 500 (catches the flat 13px hierarchy)", () => {
+    const css = readFileSync(new URL("../../app/stats/moments.css", import.meta.url), "utf8");
+    const rule = css.match(/\.tm-label {([^}]*)}/)![1];
+    expect(rule).toContain("font-size: 14px");
+    expect(rule).toContain("font-weight: 500");
+  });
   it("label carries the two-line clamp class and is the .tm-label element", () => {
     const { container } = render(<TopicMoments report={report()} />);
     expect(container.querySelector(".tm-label .tm-clamp")!.textContent).toBe("Merge billing view");

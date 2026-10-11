@@ -227,6 +227,15 @@ describe("TopicHeartbeats", () => {
     expect(light![1]).toMatch(/--project-l: 0\.60;/);
     expect(css).not.toMatch(/:root\[data-theme="dark"\][^{]*{[^}]*--project-l/);
   });
+  it("topic name is 15px 600 sans, not mono (catches the flat 13px mono hierarchy)", () => {
+    const css = readFileSync(new URL("../../app/stats/heartbeats.css", import.meta.url), "utf8");
+    const rule = css.match(/\.hb-name {([^}]*)}/)![1];
+    expect(rule).toContain("font-size: 15px");
+    expect(rule).toContain("font-weight: 600");
+    expect(rule).toContain("line-height: 1.25");
+    expect(rule).toContain("font-family: inherit");
+    expect(rule).not.toContain("var(--font-mono)");
+  });
   it("shows the How line and no NaN, undefined or null", () => {
     const { container } = render(<TopicHeartbeats report={report({ topics: [topic({ description: null, top_tickets: [] })] })} />);
     expect(container.textContent).toContain("How it works: Ticks show hours per day in this topic.");

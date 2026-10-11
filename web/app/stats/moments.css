@@ -11,7 +11,7 @@
 .tm-card:hover, .tm-card:focus-visible { background: var(--bg-sunk); }
 .tm-badge { justify-self: start; font-size: 13px; font-weight: 600; color: var(--fg); background: var(--bg-sunk); border: 1px solid var(--border); border-radius: 999px; padding: 1px 9px; }
 .tm-num { font-family: var(--font-mono); font-size: 13px; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
-.tm-label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--fg); min-width: 0; overflow-wrap: anywhere; }
+.tm-label { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 500; color: var(--fg); min-width: 0; overflow-wrap: anywhere; }
 .tm-clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
 .tm-when { font-family: var(--font-mono); font-size: 13px; color: var(--fg-muted); }
 .tm-chip { justify-self: start; font-family: var(--font-mono); font-size: 13px; color: var(--fg-muted); background: var(--bg-sunk); border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; }
