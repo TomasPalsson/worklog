@@ -1,0 +1,14 @@
+/* Topic galaxy: star map of the work blocks (components/stats/TopicGalaxy.tsx). */
+.sx-gal-card { background: var(--bg-sunk); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; }
+.sx-gal-svg { display: block; width: 100%; height: auto; }
+.sx-gal-bg-in { stop-color: var(--bg-sunk); }
+.sx-gal-bg-out { stop-color: color-mix(in oklch, var(--bg-sunk) 70%, var(--bg)); }
+.sx-gal-dot { stroke: var(--bg); stroke-width: 1; transition: opacity 120ms var(--art-ease); }
+.sx-gal-ring { fill: none; stroke: var(--fg-muted); stroke-width: 1; stroke-dasharray: 3 2; pointer-events: none; transition: opacity 120ms var(--art-ease); }
+.sx-gal-neb, .sx-gal-label { transition: opacity 120ms var(--art-ease); }
+.sx-gal-label { cursor: help; }
+.sx-gal-name { font-family: var(--font-mono); text-transform: uppercase; font-weight: 600; letter-spacing: 0.04em; fill: var(--fg); stroke: var(--bg-sunk); stroke-width: 3px; paint-order: stroke; stroke-linejoin: round; }
+.sx-gal-hours { font-family: var(--font-mono); font-size: 10px; fill: var(--fg-muted); stroke: var(--bg-sunk); stroke-width: 3px; paint-order: stroke; stroke-linejoin: round; }
+.sx-gal-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 32px 16px; }
+.sx-gal-chip { display: inline-block; margin: 8px 12px; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-raised); color: var(--fg-muted); font-size: 12px; }
+.sx-gal-how { margin: 0; padding: 8px 12px 12px; font-size: 12px; line-height: 1.45; color: var(--fg-muted); }
