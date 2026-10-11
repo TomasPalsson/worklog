@@ -113,9 +113,10 @@ function HeartbeatRow({ topic, index, topicCount, river, totalSeconds, maxTopicS
         </div>
         {dates && (
           <div className="hb-dates">
-            <span>{shortMonthDay(dates[0])}</span>
-            <span aria-hidden="true"> – </span>
-            <span>{shortMonthDay(dates[1])}</span>
+            <span>
+              active {shortMonthDay(dates[0])}
+              {dates[0] !== dates[1] && ` – ${shortMonthDay(dates[1])}`}
+            </span>
           </div>
         )}
         <span className="hb-hours sr-value">{formatDuration(topic.seconds)}</span>

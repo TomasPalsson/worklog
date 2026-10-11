@@ -288,9 +288,9 @@ describe("TopicHeartbeats", () => {
     ];
     const { container } = render(<TopicHeartbeats report={report({ river })} />);
     const rows = Array.from(container.querySelectorAll("[data-heartbeat-row]"));
-    const text = (row: Element) => Array.from(row.querySelector(".hb-dates")!.children).map((c) => c.textContent);
-    expect(text(rows[0])).toEqual(["Sep 23", " – ", "Sep 24"]);
-    expect(text(rows[1])).toEqual(["Oct 10", " – ", "Oct 10"]);
+    const text = (row: Element) => row.querySelector(".hb-dates")!.textContent;
+    expect(text(rows[0])).toBe("active Sep 23 – Sep 24");
+    expect(text(rows[1])).toBe("active Oct 10"); // catches "Oct 10 – Oct 10" for a single-day topic
   });
   it("a topic with no active bin gets no caption while others keep theirs", () => {
     const river = [{ start: "2026-10-05", seconds: [3600, 0] }];
@@ -299,12 +299,11 @@ describe("TopicHeartbeats", () => {
     expect(rows[0].querySelector(".hb-dates")).not.toBeNull();
     expect(rows[1].querySelector(".hb-dates")).toBeNull();
   });
-  it("date caption: en dash separator is aria-hidden between two date spans; hours sit outside it", () => {
+  it("date caption is one left-aligned span reading 'active A – B', hours outside it", () => {
     const { container } = render(<TopicHeartbeats report={report()} />);
     const kids = Array.from(container.querySelector(".hb-dates")!.children);
-    expect(kids.map((c) => c.tagName)).toEqual(["SPAN", "SPAN", "SPAN"]); // catches a bare text node or missing separator
-    expect(kids[1].textContent).toBe(" – "); // catches a hyphen instead of an en dash
-    expect(kids[1].getAttribute("aria-hidden")).toBe("true"); // catches an exposed separator
+    expect(kids.map((c) => c.tagName)).toEqual(["SPAN"]); // catches pinned separate end spans
+    expect(kids[0].textContent).toMatch(/^active \w{3} \d+ – \w{3} \d+$/); // catches a hyphen or missing prefix
     expect(container.querySelector(".hb-dates .hb-hours")).toBeNull(); // catches hours jammed into the caption
   });
   it("no date caption when no bin has time (catches reading an undefined bin)", () => {
@@ -318,7 +317,7 @@ describe("TopicHeartbeats", () => {
     expect(css).toMatch(/\.hb-raster {[^}]*display: grid;[^}]*gap: 1px/);
     expect(css).not.toMatch(/font-size: (?:[0-9]|1[012])(?:\.\d+)?px/);
     expect(css).toMatch(/\.hb-description {[^}]*font-size: 13\.5px/); // catches the old 12px tier
-    expect(css).toMatch(/\.hb-dates {[^}]*justify-content: space-between[^}]*margin-top: 4px/); // catches missing 4px gap
+    expect(css).toMatch(/\.hb-dates {[^}]*justify-content: flex-start[^}]*margin-top: 4px/); // catches missing 4px gap
     expect(css).toMatch(/\.hb-how {[^}]*max-width: 70ch/);
   });
   it("css: every .hb-data child spans column 1 / -1 so rows share one time axis (catches sr-track's implicit columns)", () => {

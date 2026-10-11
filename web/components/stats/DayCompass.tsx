@@ -133,7 +133,7 @@ export function DayCompass({ report }: { report: TopicsReport }) {
           Focus →
         </text>
         <text className="art-label sx-cmp-axis" transform={`translate(12 ${HEIGHT / 2}) rotate(-90)`} textAnchor="middle">
-          Newness ↑
+          Newness →
         </text>
         <text className="art-label sx-cmp-end" x={PAD_X} y={HEIGHT - 8} textAnchor="start">
           scattered

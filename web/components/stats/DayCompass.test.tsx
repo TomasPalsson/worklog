@@ -185,7 +185,7 @@ describe("DayCompass", () => {
   it("has plain axis titles", () => {
     const axes = [...render(<DayCompass report={week} />).container.querySelectorAll(".sx-cmp-axis")].map((el) => el.textContent);
     // catches: a third axis title, or end labels counted as titles
-    expect(axes).toEqual(["Focus →", "Newness ↑"]);
+    expect(axes).toEqual(["Focus →", "Newness →"]);
   });
   it("has small end labels at each axis end", () => {
     const ends = [...render(<DayCompass report={week} />).container.querySelectorAll(".sx-cmp-end")].map((el) => el.textContent);

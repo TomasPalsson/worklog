@@ -153,7 +153,7 @@ describe("river trimming and labels", () => {
     const l = named(edgeRows(40), 0);
     expect(l.labelled).toBe(true);
     expect(labelBox(l).x).toBeGreaterThanOrEqual(8);
-    expect(labelBox(l).w).toBeCloseTo(156, 6);
+    expect(labelBox(l).w).toBeCloseTo(172, 6);
   });
   // catches: clamping only the left edge
   it("a topic peaking in the last bin keeps its label box inside x + w <= W - 8", () => {
@@ -210,10 +210,10 @@ describe("river design pass", () => {
     const { container } = render(<TopicRiver report={report(days(9), "week")} />);
     expect([...container.querySelectorAll("text.sx-river-tick-label")].map((t) => t.textContent)).toEqual(["Oct 5", "Oct 9", "Oct 13"]);
   });
-  // catches: GUTTER left at 60, clipping the 13px scale label
-  it("viewBox reserves a 96px gutter right of the 1000px plot", () => {
+  // catches: GUTTER left at 96, clipping the 13px scale label
+  it("viewBox reserves a 120px gutter right of the 1000px plot", () => {
     const { container } = render(<TopicRiver report={report([[H], [H]])} />);
-    expect(container.querySelector("svg")!.getAttribute("viewBox")).toBe("0 0 1096 240");
+    expect(container.querySelector("svg")!.getAttribute("viewBox")).toBe("0 0 1120 240");
   });
   // catches: scale label from the summed total, the first bin or a per-layer peak
   it("scale label equals the tallest stack's hours and the bracket spans it", () => {
@@ -241,9 +241,9 @@ describe("river design pass", () => {
     expect(Math.min(...sizes)).toBeGreaterThanOrEqual(13);
   });
   // catches: char width left at the 12px value so 13px labels overlap undetected
-  it("label box width uses 13px text (0.6em per char)", () => {
+  it("label box width uses 13px text (0.6em + 0.06em letter-spacing per char)", () => {
     const l = buildRiver(report([[H], [H]]))!.layers[0];
-    expect(labelBox(l).w).toBeCloseTo(l.topic.name.length * 7.8, 6);
+    expect(labelBox(l).w).toBeCloseTo(l.topic.name.length * 8.6, 6);
     expect(labelBox(l).h).toBe(13);
   });
   // catches: horizontal scroll floor left at 600
