@@ -389,3 +389,87 @@ fn path_key_beats_branch_key() {
     });
     assert_eq!(jira_issue_for(&payload).as_deref(), Some("PROJ-9"));
 }
+
+fn last_err(conn: &Connection, source: &str) -> Option<String> {
+    crate::collect_health::all(conn, now())
+        .unwrap()
+        .into_iter()
+        .find(|h| h.source == source)
+        .and_then(|h| h.last_err)
+}
+
+#[test]
+fn hook_db_failure_is_recorded_and_still_ok() {
+    let conn = open_memory().unwrap();
+    conn.execute("DROP TABLE sessions", []).unwrap();
+    // Swallowing the error (eprintln only) leaves no record.
+    handle_input(
+        &conn,
+        r#"{"hook_event_name":"Stop","session_id":"s"}"#,
+        now(),
+    )
+    .unwrap();
+    assert!(last_err(&conn, "claude").is_some());
+}
+
+#[test]
+fn hook_invalid_json_is_recorded() {
+    let conn = open_memory().unwrap();
+    // Recording only handle() failures misses parse failures.
+    handle_input(&conn, "{not json", now()).unwrap();
+    let err = last_err(&conn, "claude").expect("recorded");
+    assert!(err.contains("invalid JSON"), "{err}");
+}
+
+#[test]
+fn hook_success_records_no_error() {
+    let conn = open_memory().unwrap();
+    // Recording on every call would flag a healthy hook.
+    handle_input(
+        &conn,
+        r#"{"hook_event_name":"Stop","session_id":"s"}"#,
+        now(),
+    )
+    .unwrap();
+    assert_eq!(last_err(&conn, "claude"), None);
+}
+
+fn transcript_dir() -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("proj");
+    std::fs::create_dir(&project).unwrap();
+    let line = r#"{"type":"user","timestamp":"2026-04-18T09:00:00Z","sessionId":"s1","uuid":"u1","cwd":"/home/x/Desktop/Work/widget","message":{"role":"user","content":"hello there"}}"#;
+    std::fs::write(project.join("s1.jsonl"), format!("{line}\n")).unwrap();
+    tmp
+}
+
+fn window() -> (chrono::NaiveDate, chrono::NaiveDate) {
+    (
+        chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap(),
+        chrono::NaiveDate::from_ymd_opt(2100, 1, 1).unwrap(),
+    )
+}
+
+#[test]
+fn transcript_reader_failure_is_recorded_and_propagated() {
+    let conn = open_memory().unwrap();
+    conn.execute("DROP TABLE transcript_file_cache", [])
+        .unwrap();
+    let tmp = transcript_dir();
+    let (since, until) = window();
+    // Recording but dropping the Err would hide the failure from the caller.
+    let res =
+        crate::collectors::claude_transcripts::collect_from_dir(&conn, tmp.path(), since, until);
+    assert!(res.is_err());
+    assert!(last_err(&conn, "claude_transcripts").is_some());
+}
+
+#[test]
+fn transcript_reader_success_records_no_error() {
+    let conn = open_memory().unwrap();
+    let tmp = transcript_dir();
+    let (since, until) = window();
+    crate::collectors::claude_transcripts::collect_from_dir(&conn, tmp.path(), since, until)
+        .unwrap();
+    assert_eq!(last_err(&conn, "claude_transcripts"), None);
+}

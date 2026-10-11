@@ -225,19 +225,24 @@ pub fn run_from_stdin() -> Result<()> {
         );
         return Ok(());
     }
-    let payload: Value = match serde_json::from_str(&buf) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("worklog hook: invalid JSON on stdin: {e}");
-            return Ok(());
-        }
-    };
-
     let paths = crate::paths::Paths::resolve()?;
     paths.ensure()?;
     let conn = crate::db::open(&paths.db)?;
-    if let Err(e) = handle(&conn, &payload, Utc::now()) {
-        eprintln!("worklog hook: {e}");
+    handle_input(&conn, &buf, Utc::now())
+}
+
+/// Parse and handle one raw payload. A failure goes to stderr and into the
+/// `claude` source health, never out as an error.
+pub fn handle_input(conn: &Connection, input: &str, now: DateTime<Utc>) -> Result<()> {
+    let outcome = match serde_json::from_str::<Value>(input) {
+        Ok(payload) => handle(conn, &payload, now).map_err(|e| e.to_string()),
+        Err(e) => Err(format!("invalid JSON on stdin: {e}")),
+    };
+    if let Err(msg) = outcome {
+        eprintln!("worklog hook: {msg}");
+        if let Err(e) = crate::collect_health::record(conn, "claude", Err(&msg)) {
+            eprintln!("worklog hook: recording failed: {e}");
+        }
     }
     Ok(())
 }
