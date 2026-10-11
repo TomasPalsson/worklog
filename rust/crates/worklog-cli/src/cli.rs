@@ -2901,7 +2901,6 @@ fn cmd_summary<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result
 }
 
 fn cmd_week<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()> {
-    use std::collections::BTreeMap;
     ensure_daemon_running(&mut io::stderr())?;
     // The window is the 7 days ending on `--day` (default: today).
     let end = parse_local_day(day.as_deref())?;
@@ -2912,10 +2911,20 @@ fn cmd_week<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()
             fetch_day_blocks(&d).map(|b| aggregate_day(&d, &b))
         })
         .collect::<Result<_>>()?;
+    print_week(out, start, end, &days, json)
+}
 
+fn print_week<W: Write>(
+    out: &mut W,
+    start: chrono::NaiveDate,
+    end: chrono::NaiveDate,
+    days: &[DayAgg],
+    json: bool,
+) -> Result<()> {
+    use std::collections::BTreeMap;
     // Roll the per-ticket totals up across the whole window.
     let mut ticket_totals: BTreeMap<String, i64> = BTreeMap::new();
-    for d in &days {
+    for d in days {
         for r in &d.tickets {
             *ticket_totals.entry(r.ticket.clone()).or_insert(0) += r.secs;
         }
@@ -5039,10 +5048,71 @@ mod tests {
         let agg = aggregate_day("2026-05-16", &blocks);
         assert_eq!(agg.total_secs, 5400);
         assert_eq!(agg.overlap_secs, 1800);
+        assert_eq!(agg.work_secs, 3600); // ignored must not merge into work
+        assert_eq!(agg.ignored_secs, 3600);
+        assert_eq!(agg.personal_secs, 0);
+        assert_eq!(agg.class_overlap_secs(), 1800); // hand-computed 3600+3600-5400
+    }
+
+    fn week_fixture() -> (chrono::NaiveDate, chrono::NaiveDate, Vec<DayAgg>) {
+        let d1 = vec![
+            block(1, "2026-05-15T09:00:00+00:00", 3600, Some("GOJ-1")),
+            ignored_block(2, "2026-05-15T09:30:00+00:00", 3600, None),
+        ];
+        let mut p = block(3, "2026-05-16T09:00:00+00:00", 900, None);
+        p.is_personal = true;
+        let d2 = vec![ignored_block(4, "2026-05-16T11:00:00+00:00", 1800, None), p];
+        let start = chrono::NaiveDate::from_ymd_opt(2026, 5, 15).unwrap();
+        let end = start + chrono::Duration::days(1);
+        (
+            start,
+            end,
+            vec![
+                aggregate_day("2026-05-15", &d1),
+                aggregate_day("2026-05-16", &d2),
+            ],
+        )
+    }
+
+    #[test]
+    fn print_week_json_sums_ignored_and_keeps_it_apart_from_personal() {
+        let (s, e, days) = week_fixture();
+        let mut out = Vec::new();
+        print_week(&mut out, s, e, &days, true).unwrap();
+        let j: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(j["ignored_secs"], 5400); // 3600 + 1800
+        assert_eq!(j["personal_seconds"], 900);
+        assert_eq!(j["work_seconds"], 3600);
+        assert_eq!(j["days"][1]["ignored_secs"], 1800);
+    }
+
+    #[test]
+    fn print_week_table_has_ignored_column_total_and_overlap_line() {
+        let (s, e, days) = week_fixture();
+        let mut out = Vec::new();
+        print_week(&mut out, s, e, &days, false).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let header = text.lines().find(|l| l.contains("personal")).unwrap();
+        let cols: Vec<&str> = header
+            .split(['│', '┆'])
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .collect();
         assert_eq!(
-            agg.work_secs + agg.personal_secs + agg.ignored_secs - agg.class_overlap_secs(),
-            agg.total_secs
-        ); // a running sum without the overlap line would not add up
+            cols,
+            ["day", "total", "work", "personal", "ignored", "blocks"],
+            "{text}"
+        );
+        let total = text.lines().find(|l| l.starts_with("│ total")).unwrap();
+        let cells: Vec<&str> = total
+            .split(['│', '┆'])
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .collect();
+        // total 2h15m, work 1h, personal 15m, ignored 1h30m, 4 blocks
+        assert_eq!(cells[3], "15m", "{text}");
+        assert_eq!(cells[4], "1h 30m", "{text}");
+        assert!(text.contains("overlap 30m"), "{text}");
     }
 
     #[test]
