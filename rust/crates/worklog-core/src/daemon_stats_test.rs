@@ -228,3 +228,85 @@ fn topics_report_stores_nothing_when_a_later_batch_is_bad() {
         .unwrap();
     assert_eq!(n, 0);
 }
+
+fn snapshot(conn: &Connection) -> std::collections::BTreeMap<String, (i64, String)> {
+    let names: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    names
+        .into_iter()
+        .map(|t| {
+            let cols: Vec<String> = conn
+                .prepare(&format!("SELECT name FROM pragma_table_info('{t}')"))
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            let row = cols
+                .iter()
+                .map(|c| format!("quote(\"{c}\")"))
+                .collect::<Vec<_>>()
+                .join("||'|'||");
+            let snap = conn
+                .query_row(
+                    &format!(
+                        "SELECT count(*), coalesce(group_concat(r, char(10)), '')
+                           FROM (SELECT {row} AS r FROM \"{t}\" ORDER BY 1)"
+                    ),
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            (t, snap)
+        })
+        .collect()
+}
+
+#[test]
+fn topics_report_writes_only_block_embeddings() {
+    let conn = open_memory().unwrap();
+    conn.execute(
+        "INSERT INTO jira_tickets (key, summary) VALUES ('ABC-1', 'Fix the thing')",
+        [],
+    )
+    .unwrap();
+    for (d, text) in [
+        ("2026-10-05", "alpha one"),
+        ("2026-10-06", "alpha two"),
+        ("2026-10-07", "alpha three"),
+        ("2026-10-08", "beta one"),
+        ("2026-10-09", "beta two"),
+        ("2026-10-10", "beta three"),
+    ] {
+        block(&conn, d, 3600, Some(text), 0, None);
+    }
+    conn.execute("UPDATE blocks SET jira_issue = 'ABC-1'", []).unwrap();
+    let server = MockServer::start();
+    serve(
+        &server,
+        200,
+        vec![unit(0), unit(0), unit(0), unit(1), unit(1), unit(1)],
+    );
+    let before = snapshot(&conn);
+
+    let r = topics_report(&conn, &client(&server), day("2026-10-05"), day("2026-10-11")).unwrap();
+    let after = snapshot(&conn);
+
+    assert_eq!(r.status, TopicsStatus::Ready);
+    assert_eq!(r.embedded_blocks, 6);
+    // catches: a stray write to any other table (blocks, tickets, FTS, change log).
+    for (table, snap) in &before {
+        if table != "block_embeddings" {
+            assert_eq!(&after[table], snap, "table {table} changed");
+        }
+    }
+    // catches: a vacuous snapshot that never sees the embeddings land.
+    assert_eq!(before["block_embeddings"].0, 0);
+    assert_eq!(after["block_embeddings"].0, 6);
+    assert_eq!(after.keys().collect::<Vec<_>>(), before.keys().collect::<Vec<_>>());
+}
