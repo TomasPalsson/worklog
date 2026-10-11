@@ -64,12 +64,31 @@ fn install_at(
     };
     let probe = std::time::Duration::from_millis(200);
     let before = service_tool(tool).and_then(|_| health_body(tcp, probe));
+    let mut old_gone = Ok(());
+    if let Some(old) = &before {
+        // /health carries no pid, so the new daemon is only provable once
+        // the old one is seen gone (down, or answering a different body).
+        match Platform::current() {
+            Platform::MacOS => macos::stop(),
+            _ => linux::stop(),
+        }
+        old_gone = await_healthy(
+            tcp,
+            |a| health_body(a, probe).is_none_or(|b| b != *old),
+            budget,
+            step,
+        )
+        .with_context(|| {
+            format!("old daemon did not answer the stop request: /health on {tcp} still answered")
+        });
+    }
     let status = match Platform::current() {
         Platform::MacOS => macos::install(command)?,
         _ => linux::install(command)?,
     };
+    old_gone?;
     if service_tool(tool).is_some() {
-        await_replaced(tcp, before, |a| health_body(a, probe), budget, step)?;
+        await_replaced(tcp, None, |a| health_body(a, probe), budget, step)?;
     }
     Ok(status)
 }
@@ -385,6 +404,14 @@ mod macos {
         Ok((dir.join("daemon.out.log"), dir.join("daemon.err.log")))
     }
 
+    pub fn stop() {
+        if let (Some(tool), Ok(path)) = (service_tool("launchctl"), plist_path()) {
+            let _ = std::process::Command::new(tool)
+                .args(["unload", path.to_string_lossy().as_ref()])
+                .output();
+        }
+    }
+
     pub fn install(command: &str) -> Result<DaemonServiceStatus> {
         let path = plist_path()?;
         let (stdout, stderr) = log_paths()?;
@@ -582,6 +609,14 @@ mod linux {
 
     fn service_path() -> Result<PathBuf> {
         Ok(unit_dir()?.join("worklog-daemon.service"))
+    }
+
+    pub fn stop() {
+        if let Some(tool) = service_tool("systemctl") {
+            let _ = std::process::Command::new(tool)
+                .args(["--user", "stop", "worklog-daemon.service"])
+                .output();
+        }
     }
 
     pub fn install(command: &str) -> Result<DaemonServiceStatus> {
@@ -889,6 +924,60 @@ mod tests {
         restore();
         let e = r.unwrap_err().to_string();
         assert!(e.contains("did not answer"), "{e}");
+    }
+
+    fn serve_restartable(flag: PathBuf) -> String {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap().to_string();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for mut c in l.incoming().flatten() {
+                let _ = c.read(&mut [0u8; 1024]);
+                let resp: &[u8] = if flag.exists() {
+                    b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                } else {
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nv1"
+                };
+                let _ = c.write_all(resp);
+            }
+        });
+        addr
+    }
+
+    fn fake_restartable_tool(home: &Path, flag: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let name = if cfg!(target_os = "macos") {
+            "launchctl"
+        } else {
+            "systemctl"
+        };
+        let bin = home.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let f = bin.join(name);
+        let flag = flag.display();
+        let script = format!(
+            "#!/bin/sh\ncase \"$*\" in\n*unload*|*stop*) touch {flag};;\n*load*|*enable*) rm -f {flag};;\nesac\n"
+        );
+        std::fs::write(&f, script).unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn install_over_a_same_version_daemon_that_restarts_instantly_succeeds() {
+        // catches: demanding a down probe AFTER the load step (a fast restart is never seen down)
+        let tmp = tempdir().unwrap();
+        let _g = redirect(tmp.path());
+        let flag = tmp.path().join("stopped");
+        fake_restartable_tool(tmp.path(), &flag);
+        let r = install_at(
+            "worklog daemon",
+            &serve_restartable(flag),
+            Duration::from_secs(5),
+            Duration::from_millis(1),
+        );
+        restore();
+        assert!(r.unwrap().installed);
     }
 
     fn replaced(before: Option<&str>, seq: &[Option<&str>]) -> bool {
