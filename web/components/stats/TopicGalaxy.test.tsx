@@ -319,7 +319,77 @@ describe("TopicGalaxy markup", () => {
 
   it("shows the How line", () => {
     const { container } = render(<TopicGalaxy report={full} />);
-    expect(container.textContent).toContain("How: Each dot is a work block.");
+    expect(container.textContent).toContain("How it works: Each dot is a work block.");
+  });
+
+  const slim = report({
+    topics: [topic(0), topic(1)],
+    points: [point(1, { y: 0.2 }), point(2, { topic_id: 1, x: 0.2, y: 0.6 })],
+  });
+
+  it("viewBox height follows the y extent but never drops below 360 (y 0.2-0.6 gives 360, not 620)", () => {
+    const { container } = render(<TopicGalaxy report={slim} />);
+    expect(container.querySelector("svg.sx-gal-svg")!.getAttribute("viewBox")).toBe("0 0 1000 360");
+  });
+
+  it("viewBox height grows with the range: y 0-0.8 gives 0.8*540+80 = 512", () => {
+    const r = report({ points: [point(1, { y: 0 }), point(2, { y: 0.8 })] });
+    expect(galaxyLayout(r).height).toBeCloseTo(512, 10);
+  });
+
+  it("full y range keeps 620", () => {
+    expect(galaxyLayout(report({ points: [point(1, { y: 0 }), point(2, { y: 1 })] })).height).toBe(620);
+  });
+
+  it("legend row has both marks and the plain-words text", () => {
+    const { container } = render(<TopicGalaxy report={full} />);
+    const legend = container.querySelector(".sx-gal-legend")!;
+    expect(legend.textContent).toContain("dot size = hours");
+    expect(legend.textContent).toContain("first time");
+    expect(legend.textContent).toContain("oddball");
+    expect(legend.querySelectorAll("svg")).toHaveLength(3);
+  });
+
+  it("topic name fill is the topic hue lifted toward --fg", () => {
+    const { container } = render(<TopicGalaxy report={slim} />);
+    const names = container.querySelectorAll("text.sx-gal-name");
+    const fill = (names[1] as SVGElement).getAttribute("style")!;
+    expect(fill).toContain("oklch(var(--project-l) var(--project-c) 205)");
+    expect(fill).toContain("var(--fg) 35%");
+  });
+
+  it("every dot has a sibling hit circle r=12 behind it", () => {
+    const { container } = render(<TopicGalaxy report={full} />);
+    for (const d of container.querySelectorAll(".sx-gal-dot")) {
+      const hit = d.previousElementSibling!;
+      expect(hit.classList.contains("sx-gal-hit")).toBe(true);
+      expect(hit.getAttribute("r")).toBe("12");
+      expect(hit.getAttribute("cx")).toBe(d.getAttribute("cx"));
+      expect(hit.getAttribute("cy")).toBe(d.getAttribute("cy"));
+    }
+  });
+
+  it("topic list has one focusable tipped row per topic with name and hours", () => {
+    const { container } = render(<TopicGalaxy report={full} />);
+    const rows = container.querySelectorAll(".sx-gal-list > li");
+    expect(rows).toHaveLength(2);
+    for (const r of rows) {
+      expect(r.getAttribute("tabindex")).toBe("0");
+      expect(r.getAttribute("data-stip")).toBeTruthy();
+    }
+    expect(rows[0].textContent).toContain("topic 0");
+    expect(rows[0].textContent).toContain("1.0h");
+  });
+
+  it("map is wrapped in a scroll container and the caption has no jargon outside details", () => {
+    const { container } = render(<TopicGalaxy report={full} />);
+    expect(container.querySelector(".sx-gal-scroll svg.sx-gal-svg")).not.toBeNull();
+    const p = container.querySelector(".sx-gal-how")!;
+    expect(p.textContent).not.toMatch(/t-SNE|cosine|perplexity|average-linkage/);
+    const det = container.querySelector("details")!;
+    expect(det.querySelector("summary")!.textContent).toBe("Method");
+    expect(det.textContent).toContain("t-SNE");
+    expect(container.querySelector(".sr-title")!.textContent).toBe("Topic galaxy");
   });
 
   it("no points shows the empty state and message, with no svg map", () => {

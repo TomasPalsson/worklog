@@ -7,6 +7,7 @@ import { type Tip, tipProps } from "./tip";
 
 export const GAL_W = 1000;
 export const GAL_H = 620;
+const MIN_H = 360;
 const PAD = 40;
 const NEBULA_R = 26;
 const NUDGE_ITERATIONS = 20;
@@ -19,7 +20,9 @@ const LABEL_GAP = 2; // breathing room kept between nudged labels
 const LABEL_LINE_GAP = 14; // hours line under the name
 
 const HOW =
-  "How: Each dot is a work block. The local embedding model turns its text into a vector, the vectors are centered, and t-SNE (perplexity 30) lays them out so similar work sits close together. Topics come from average-linkage clustering. Names: AI (Haiku) from keywords plus examples, or keywords if no model is available. Distance between islands is only roughly meaningful.";
+  "How it works: Each dot is a work block. Blocks about similar things sit close together, and each cluster is a topic. Names come from AI (Haiku), or from keywords if no model is available. Distance between islands is only roughly meaningful.";
+const METHOD =
+  "The local embedding model turns each block's text into a vector, the vectors are centered, and t-SNE (perplexity 30) lays them out. Topics come from average-linkage clustering on cosine similarity.";
 
 const hoursLabel = (sec: number) => `${(sec / 3600).toFixed(1)}h`;
 const hue = (id: number, n: number) => `oklch(var(--project-l) var(--project-c) ${25 + id * (360 / Math.max(1, n))})`;
@@ -45,6 +48,7 @@ export interface GalaxyLabel {
 }
 
 export interface GalaxyLayout {
+  height: number;
   dots: GalaxyDot[];
   labels: GalaxyLabel[];
 }
@@ -60,7 +64,7 @@ function weightedMedian(vals: { v: number; w: number }[]): number {
   return sorted[0].v;
 }
 
-/** Pure placement of dots and labels in the 1000x620 viewBox. */
+/** Pure placement of dots and labels in a 1000-wide viewBox whose height follows the y extent. */
 export function galaxyLayout(report: Pick<TopicsReport, "topics" | "points">): GalaxyLayout {
   const { topics } = report;
   const index = new Set(topics.map((t) => t.id));
@@ -69,12 +73,18 @@ export function galaxyLayout(report: Pick<TopicsReport, "topics" | "points">): G
   const order = [...points].sort((a, b) => a.day.localeCompare(b.day) || a.block_id - b.block_id);
   const rankOf = new Map(order.map((p, i) => [p.block_id, i]));
 
+  const ys = points.map((p) => p.y);
+  const yMin = Math.min(...ys);
+  const span = (Math.max(...ys) - yMin) * (GAL_H - 2 * PAD);
+  const height = points.length ? Math.max(MIN_H, span + 2 * PAD) : GAL_H;
+  const top = (height - span) / 2;
+
   const dots = points.map((p) => {
     const rank = rankOf.get(p.block_id) ?? 0;
     return {
       point: p,
       cx: PAD + p.x * (GAL_W - 2 * PAD),
-      cy: PAD + p.y * (GAL_H - 2 * PAD),
+      cy: top + (p.y - yMin) * (GAL_H - 2 * PAD),
       r: 2.5 + 6 * Math.sqrt(p.seconds / maxSec),
       fill: hue(p.topic_id, topics.length),
       rank,
@@ -120,9 +130,9 @@ export function galaxyLayout(report: Pick<TopicsReport, "topics" | "points">): G
         b.y += dir * push;
       }
     }
-    for (const l of labels) l.y = Math.min(GAL_H - l.h / 2, Math.max(l.h / 2, l.y));
+    for (const l of labels) l.y = Math.min(height - l.h / 2, Math.max(l.h / 2, l.y));
   }
-  return { dots, labels };
+  return { height, dots, labels };
 }
 
 export function galaxyTipDot(p: MapPoint, topicName: string): Tip {
@@ -171,6 +181,15 @@ function Star({ d, topicName }: { d: GalaxyDot; topicName: string }) {
   return (
     <g>
       <circle
+        className="sx-gal-hit"
+        data-t={p.topic_id}
+        cx={d.cx}
+        cy={d.cy}
+        r={12}
+        fill="transparent"
+        {...tipProps(galaxyTipDot(p, topicName))}
+      />
+      <circle
         className="sx-gal-dot art-fade"
         data-t={p.topic_id}
         cx={d.cx}
@@ -194,7 +213,7 @@ function Star({ d, topicName }: { d: GalaxyDot; topicName: string }) {
   );
 }
 
-function Label({ l }: { l: GalaxyLabel }) {
+function Label({ l, color }: { l: GalaxyLabel; color: string }) {
   const top = l.y - l.h / 2 + l.fontSize;
   return (
     <g
@@ -204,7 +223,7 @@ function Label({ l }: { l: GalaxyLabel }) {
       aria-label={`${l.topic.name}, ${hoursLabel(l.topic.seconds)}`}
       {...tipProps(galaxyTipLabel(l.topic))}
     >
-      <text className="sx-gal-name" x={l.x} y={top} textAnchor="middle" fontSize={l.fontSize}>
+      <text className="sx-gal-name" x={l.x} y={top} textAnchor="middle" fontSize={l.fontSize} style={{ fill: color }}>
         {l.text}
       </text>
       <text className="sx-gal-hours" x={l.x} y={top + LABEL_LINE_GAP} textAnchor="middle">
@@ -216,7 +235,7 @@ function Label({ l }: { l: GalaxyLabel }) {
 
 function GalaxyMap({ report, layout }: { report: TopicsReport; layout: GalaxyLayout }) {
   const uid = useId().replace(/:/g, "");
-  const { dots, labels } = layout;
+  const { dots, labels, height } = layout;
   const names = new Map(report.topics.map((t) => [t.id, t.name]));
   const dotByBlock = new Map(dots.map((d) => [d.point.block_id, d]));
   const firstTimes = report.first_times.flatMap((h) => dotByBlock.get(h.block_id) ?? []);
@@ -231,7 +250,7 @@ function GalaxyMap({ report, layout }: { report: TopicsReport; layout: GalaxyLay
     .flat()
     .join("");
   return (
-    <svg className="sx-gal-svg" viewBox={`0 0 ${GAL_W} ${GAL_H}`} role="group" aria-label="Topic map of your work blocks">
+    <svg className="sx-gal-svg" viewBox={`0 0 ${GAL_W} ${height}`} role="group" aria-label="Topic map of your work blocks">
       <style>{hover}</style>
       <defs>
         <radialGradient id={`${uid}-bg`} cx="50%" cy="50%" r="70%">
@@ -242,7 +261,7 @@ function GalaxyMap({ report, layout }: { report: TopicsReport; layout: GalaxyLay
           <feGaussianBlur stdDeviation="16" />
         </filter>
       </defs>
-      <rect width={GAL_W} height={GAL_H} fill={`url(#${uid}-bg)`} />
+      <rect width={GAL_W} height={height} fill={`url(#${uid}-bg)`} />
       <g filter={`url(#${uid}-blur)`} aria-hidden="true">
         <Nebula report={report} dots={dots} />
       </g>
@@ -260,16 +279,55 @@ function GalaxyMap({ report, layout }: { report: TopicsReport; layout: GalaxyLay
         </g>
       ))}
       {labels.map((l) => (
-        <Label key={l.topic.id} l={l} />
+        <Label
+          key={l.topic.id}
+          l={l}
+          color={`color-mix(in oklch, ${hue(l.topic.id, report.topics.length)} 65%, var(--fg) 35%)`}
+        />
       ))}
     </svg>
+  );
+}
+
+function Legend() {
+  return (
+    <div className="sx-gal-legend">
+      <span className="sx-gal-key">
+        <svg width="26" height="14" viewBox="0 0 26 14" aria-hidden="true">
+          <circle cx="6" cy="7" r="3" fill="var(--fg-muted)" />
+          <circle cx="18" cy="7" r="6" fill="var(--fg-muted)" />
+        </svg>
+        dot size = hours
+      </span>
+      <span className="sx-gal-key">
+        <FirstTimeMark /> first time
+      </span>
+      <span className="sx-gal-key">
+        <OddballMark /> oddball
+      </span>
+    </div>
+  );
+}
+
+function TopicList({ report }: { report: TopicsReport }) {
+  return (
+    <ul className="sx-gal-list">
+      {report.topics.map((t) => (
+        <li key={t.id} tabIndex={0} aria-label={`${t.name}, ${hoursLabel(t.seconds)}`} {...tipProps(galaxyTipLabel(t))}>
+          <span className="sx-gal-swatch" style={{ background: hue(t.id, report.topics.length) }} />
+          <span className="sx-gal-list-name">{t.name}</span>
+          <span className="sx-gal-list-hours">{hoursLabel(t.seconds)}</span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
 export function TopicGalaxy({ report }: { report: TopicsReport }) {
   const layout = galaxyLayout(report);
   return (
-    <div className="sx-gal sx-gal-card">
+    <div className="sx-gal sr-card">
+      <h3 className="sr-title">Topic galaxy</h3>
       {report.naming === "pending" && <span className="sx-gal-chip">AI is naming topics…</span>}
       {layout.dots.length === 0 ? (
         <div className="sx-gal-empty">
@@ -277,9 +335,19 @@ export function TopicGalaxy({ report }: { report: TopicsReport }) {
           <p className="sr-empty">Map needs at least 10 described blocks.</p>
         </div>
       ) : (
-        <GalaxyMap report={report} layout={layout} />
+        <>
+          <div className="sx-gal-scroll">
+            <GalaxyMap report={report} layout={layout} />
+          </div>
+          <Legend />
+          <TopicList report={report} />
+        </>
       )}
       <p className="sx-gal-how">{HOW}</p>
+      <details className="sx-gal-method">
+        <summary>Method</summary>
+        <p>{METHOD}</p>
+      </details>
     </div>
   );
 }
