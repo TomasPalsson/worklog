@@ -1,5 +1,6 @@
+Approved: 2026-10-11 by user (pre-approved: /flow:next --finish)
 # Tasks — Topic stats and search fixes
-Spec: spec.md · Design: design.md · Base: e5d5380 · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && (cd web && bun test)`
+Spec: spec.md · Design: design.md · Base: 8148ed7 · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && (cd web && bun test)`
 
 ## Behaviors
 | ID | Given / When / Then | Task | Proven by |
@@ -32,6 +33,6 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core st
 - [ ] CHK001 Owner checks the noise tag and the Topics section in Chrome on real data — files: web/components/UnsortedList.tsx, web/components/stats/TopicsSection.tsx — verify: human: the day view shows "dismissed N× before" on always-dismissed hosts and /stats shows named topics with hours — after: T003, T007, T008
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `flow check --fix --since e5d5380`
+- [ ] G001 project gates clean — files: . — verify: `flow check --fix --since 8148ed7`
 - [ ] G002 branch review clean — files: . — verify: `flow pass`
 - [ ] G003 verification evidence exists — files: . — verify: `test -s verify/`
