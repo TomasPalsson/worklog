@@ -131,7 +131,7 @@ const STOPWORDS: &[&str] = &[
 
 fn is_stopword(word: &str) -> bool {
     let bare = word.trim_matches(|c| ".,:;()".contains(c)).to_lowercase();
-    STOPWORDS.contains(&bare.as_str())
+    bare.is_empty() || STOPWORDS.contains(&bare.as_str())
 }
 
 /// Each word becomes a quoted FTS5 string, so quotes and operators are text.

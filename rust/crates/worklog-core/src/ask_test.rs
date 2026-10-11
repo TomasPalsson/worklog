@@ -178,6 +178,7 @@ fn operator_characters_are_text_not_syntax() {
     ] {
         assert!(search(&conn, q).is_ok(), "query {q:?} errored");
     }
+    assert_eq!(ask(&conn, "invoice AND").len(), 1); // operator word mixed with real words is ignored text
     assert_eq!(ask(&conn, "AND").len(), 0); // lone operator word stays a literal, not syntax
     assert_eq!(ask(&conn, "\"refactor\" invoice").len(), 1);
 }
@@ -325,6 +326,12 @@ fn query_joins_words_with_or_and_drops_stopwords() {
     assert_eq!(query("(the) geitin,").as_deref(), Some("\"geitin,\""));
     // catches: all-stopword query dropped to nothing instead of kept
     assert_eq!(query("the og").as_deref(), Some("\"the\" OR \"og\""));
+    // catches: pure-punctuation token kept as a literal term
+    assert_eq!(query("kafka ( )").as_deref(), Some("\"kafka\""));
+    // catches: all-punctuation query dropped instead of kept
+    assert_eq!(query("(").as_deref(), Some("\"(\""));
+    // catches: operator word mixed with real words kept as syntax/term
+    assert_eq!(query("invoice AND").as_deref(), Some("\"invoice\""));
     // catches: blank query returning Some
     assert_eq!(query("  "), None);
 }
