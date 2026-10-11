@@ -310,6 +310,13 @@ fn ensure_running_at(
     }
     if !status()?.installed {
         install_at(&default_command(), tcp, budget, step)?;
+        // install_at skips its own wait with no service tool; a no-op when it ran.
+        await_healthy(
+            tcp,
+            |a| is_running(a, std::time::Duration::from_millis(200)),
+            budget,
+            step,
+        )?;
         return Ok(DaemonEnsureOutcome::Installed);
     }
     // Installed but not responding — launchd / systemd should already be
@@ -870,6 +877,18 @@ mod tests {
             "{e}"
         );
         assert!(!e.contains("9323"), "{e}");
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn ensure_running_waits_after_install_when_no_service_tool_exists() {
+        // catches: returning Installed straight after install_at, which skips its wait without a tool
+        let tmp = tempdir().unwrap();
+        let _g = redirect(tmp.path());
+        let r = ensure_running_at("127.0.0.1:1", SHORT, Duration::from_millis(1));
+        restore();
+        let e = r.unwrap_err().to_string();
+        assert!(e.contains("did not answer"), "{e}");
     }
 
     fn replaced(before: Option<&str>, seq: &[Option<&str>]) -> bool {
