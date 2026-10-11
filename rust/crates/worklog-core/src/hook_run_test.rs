@@ -506,8 +506,7 @@ fn hook_error_text_keeps_full_anyhow_chain() {
     // `to_string()` keeps only the outermost context ("upsert event"),
     // dropping the SQLite cause after it.
     let err = last_err(&conn, "claude").expect("recorded");
-    assert!(err.starts_with("upsert event: "), "{err}");
-    assert!(err.contains("boom"), "{err}");
+    assert!(err.contains("upsert event: boom"), "{err}");
 }
 
 fn seed_last_ok(conn: &Connection, age_secs: i64) -> String {
