@@ -57,20 +57,45 @@ fn install_at(
     budget: std::time::Duration,
     step: std::time::Duration,
 ) -> Result<DaemonServiceStatus> {
-    let (status, tool) = match Platform::current() {
-        Platform::MacOS => (macos::install(command)?, "launchctl"),
-        Platform::Linux => (linux::install(command)?, "systemctl"),
+    let tool = match Platform::current() {
+        Platform::MacOS => "launchctl",
+        Platform::Linux => "systemctl",
         Platform::Unsupported => return Ok(unsupported_status()),
     };
+    let probe = std::time::Duration::from_millis(200);
+    let before = service_tool(tool).and_then(|_| health_body(tcp, probe));
+    let status = match Platform::current() {
+        Platform::MacOS => macos::install(command)?,
+        _ => linux::install(command)?,
+    };
     if service_tool(tool).is_some() {
-        await_healthy(
-            tcp,
-            |a| is_running(a, std::time::Duration::from_millis(200)),
-            budget,
-            step,
-        )?;
+        await_replaced(tcp, before, |a| health_body(a, probe), budget, step)?;
     }
     Ok(status)
+}
+
+/// Healthy AND not the daemon that answered before the load step: its
+/// `/health` body changed, or the address was seen down in between.
+fn await_replaced(
+    tcp: &str,
+    before: Option<String>,
+    fetch: impl Fn(&str) -> Option<String>,
+    budget: std::time::Duration,
+    step: std::time::Duration,
+) -> Result<()> {
+    let seen_down = std::cell::Cell::new(false);
+    await_healthy(
+        tcp,
+        |a| match fetch(a) {
+            None => {
+                seen_down.set(true);
+                false
+            }
+            Some(b) => seen_down.get() || before.as_ref().is_none_or(|o| *o != b),
+        },
+        budget,
+        step,
+    )
 }
 
 fn await_healthy(
@@ -244,14 +269,19 @@ fn get_uid() -> String {
 /// (connect refused, slow, wrong status, whatever). No retries — callers
 /// own the retry loop.
 pub fn is_running(tcp: &str, timeout: std::time::Duration) -> bool {
-    let Ok(client) = reqwest::blocking::Client::builder()
+    health_body(tcp, timeout).is_some()
+}
+
+/// `/health` response body on HTTP 2xx, `None` otherwise.
+fn health_body(tcp: &str, timeout: std::time::Duration) -> Option<String> {
+    let client = reqwest::blocking::Client::builder()
         .timeout(timeout)
         .build()
-    else {
-        return false;
-    };
-    let url = format!("http://{tcp}/health");
-    matches!(client.get(&url).send(), Ok(r) if r.status().is_success())
+        .ok()?;
+    let r = client.get(format!("http://{tcp}/health")).send().ok()?;
+    r.status()
+        .is_success()
+        .then(|| r.text().unwrap_or_default())
 }
 
 /// Probe /health; if the daemon isn't up, install the service unit (if
@@ -263,34 +293,34 @@ pub fn is_running(tcp: &str, timeout: std::time::Duration) -> bool {
 /// invocation is cheap — the plist write + rename is a no-op when the
 /// file content matches.
 pub fn ensure_running(tcp: &str) -> Result<DaemonEnsureOutcome> {
+    ensure_running_at(
+        tcp,
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(200),
+    )
+}
+
+fn ensure_running_at(
+    tcp: &str,
+    budget: std::time::Duration,
+    step: std::time::Duration,
+) -> Result<DaemonEnsureOutcome> {
     if is_running(tcp, std::time::Duration::from_millis(500)) {
         return Ok(DaemonEnsureOutcome::AlreadyUp);
     }
-    let s = status()?;
-    let did_install = if !s.installed {
-        install(&default_command())?;
-        true
-    } else {
-        // Already installed but not responding — launchd / systemd should
-        // already be trying to keep it alive. Fall through to the polling
-        // loop; if it stays down, surface the error.
-        false
-    };
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while std::time::Instant::now() < deadline {
-        if is_running(tcp, std::time::Duration::from_millis(200)) {
-            return Ok(if did_install {
-                DaemonEnsureOutcome::Installed
-            } else {
-                DaemonEnsureOutcome::Restarted
-            });
-        }
-        std::thread::sleep(std::time::Duration::from_millis(200));
+    if !status()?.installed {
+        install_at(&default_command(), tcp, budget, step)?;
+        return Ok(DaemonEnsureOutcome::Installed);
     }
-    anyhow::bail!(
-        "daemon did not come up within 5s on {tcp} — try `worklog daemon status` to diagnose"
-    )
+    // Installed but not responding — launchd / systemd should already be
+    // restarting it; wait, and surface the error if it stays down.
+    await_healthy(
+        tcp,
+        |a| is_running(a, std::time::Duration::from_millis(200)),
+        budget,
+        step,
+    )?;
+    Ok(DaemonEnsureOutcome::Restarted)
 }
 
 /// What `ensure_running` actually did. Drives the spinner / log line the
@@ -720,10 +750,30 @@ mod tests {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap().to_string();
         std::thread::spawn(move || {
-            use std::io::Write;
+            use std::io::{Read, Write};
             for mut c in l.incoming().flatten() {
+                let _ = c.read(&mut [0u8; 1024]);
                 let _ = c.write_all(
                     b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            }
+        });
+        addr
+    }
+
+    fn serve_versions() -> String {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap().to_string();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for (i, mut c) in l.incoming().flatten().enumerate() {
+                let _ = c.read(&mut [0u8; 1024]);
+                let body = if i == 0 { "old" } else { "new" };
+                let _ = c.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\n{body}"
+                    )
+                    .as_bytes(),
                 );
             }
         });
@@ -780,12 +830,86 @@ mod tests {
         crate::schedule::fake_tool(tmp.path(), 0);
         let r = install_at(
             "worklog daemon",
-            &serve_health(),
+            &serve_versions(),
             Duration::from_secs(5),
             Duration::from_millis(1),
         );
         restore();
         assert!(r.unwrap().installed);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn install_fails_when_the_old_daemon_is_still_answering() {
+        // catches: treating any 2xx /health as proof the new daemon is up
+        let tmp = tempdir().unwrap();
+        let _g = redirect(tmp.path());
+        crate::schedule::fake_tool(tmp.path(), 0);
+        let r = install_at(
+            "worklog daemon",
+            &serve_health(),
+            SHORT,
+            Duration::from_millis(1),
+        );
+        restore();
+        assert!(r.unwrap_err().to_string().contains("did not answer"));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn ensure_running_waits_on_the_callers_address_once() {
+        // catches: install() waiting on the hardcoded 9323 instead of `tcp`
+        let tmp = tempdir().unwrap();
+        let _g = redirect(tmp.path());
+        crate::schedule::fake_tool(tmp.path(), 0);
+        let r = ensure_running_at("127.0.0.1:1", SHORT, Duration::from_millis(1));
+        restore();
+        let e = r.unwrap_err().to_string();
+        assert!(
+            e.contains("did not answer") && e.contains("127.0.0.1:1"),
+            "{e}"
+        );
+        assert!(!e.contains("9323"), "{e}");
+    }
+
+    fn replaced(before: Option<&str>, seq: &[Option<&str>]) -> bool {
+        let n = Cell::new(0);
+        await_replaced(
+            "x",
+            before.map(str::to_owned),
+            |_| {
+                let v = seq[n.get().min(seq.len() - 1)].map(str::to_owned);
+                n.set(n.get() + 1);
+                v
+            },
+            Duration::from_millis(20),
+            Duration::from_millis(1),
+        )
+        .is_ok()
+    }
+
+    #[test]
+    fn await_replaced_rejects_an_unchanged_old_daemon() {
+        // catches: accepting any answer
+        assert!(!replaced(Some("v1"), &[Some("v1")]));
+    }
+
+    #[test]
+    fn await_replaced_accepts_a_different_answer() {
+        // catches: requiring a down probe even when the version changed
+        assert!(replaced(Some("v1"), &[Some("v2")]));
+    }
+
+    #[test]
+    fn await_replaced_accepts_same_answer_after_a_down_probe() {
+        // catches: always demanding a version change (same-version restart)
+        assert!(replaced(Some("v1"), &[Some("v1"), None, Some("v1")]));
+    }
+
+    #[test]
+    fn await_replaced_accepts_any_answer_when_nothing_ran_before() {
+        // catches: demanding a down probe on a fresh install
+        assert!(replaced(None, &[Some("v1")]));
     }
 
     #[cfg(target_os = "macos")]
