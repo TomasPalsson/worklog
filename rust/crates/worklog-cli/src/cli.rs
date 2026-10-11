@@ -261,6 +261,7 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
     /// `worklog verdict serve` running. With `--replay`, instead replay the
     /// last 30 days of Verdict's project and ticket decisions and print how
     /// many it got right, wrong or was unsure of.
+    #[command(hide = true)]
     Eval {
         /// What the work was about, in plain words.
         #[arg(required_unless_present = "replay", conflicts_with = "replay")]
@@ -413,6 +414,7 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
 
     /// Bring up the review UI. Convenience alias for `web up` — kept so
     /// muscle memory from the Python era (`worklog serve`) keeps working.
+    #[command(hide = true)]
     Serve {
         /// Host port the container binds. Default: 3333.
         #[arg(long, default_value_t = 3333)]
@@ -4811,6 +4813,20 @@ fn cmd_dev_apply_patch<W: Write>(
 mod tests {
     use super::*;
     use worklog_core::models::Block;
+
+    #[test]
+    fn serve_and_eval_are_hidden_from_help_but_still_parse() {
+        let help = Cli::command().render_help().to_string();
+        let listed = |name: &str| {
+            help.lines()
+                .any(|l| l.trim_start().starts_with(&format!("{name} ")))
+        };
+        assert!(!listed("serve"), "serve listed in help");
+        assert!(!listed("eval"), "eval listed in help");
+        assert!(listed("collect"), "help listing sanity check");
+        assert!(Cli::try_parse_from(["worklog", "serve"]).is_ok());
+        assert!(Cli::try_parse_from(["worklog", "eval", "x"]).is_ok());
+    }
 
     fn seeded_db() -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::TempDir::new().unwrap();
