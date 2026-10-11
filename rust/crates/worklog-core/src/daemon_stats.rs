@@ -126,7 +126,7 @@ fn real_invoker() -> Result<Box<dyn ModelInvoker>> {
     if let Some(reply) = crate::topic_names::TEST_REPLY.lock().unwrap().clone() {
         return Ok(Box::new(estimate::FixedInvoker(reply)));
     }
-    estimate::build_invoker()
+    estimate::build_naming_invoker()
 }
 
 /// How long a topic that failed naming is left alone.

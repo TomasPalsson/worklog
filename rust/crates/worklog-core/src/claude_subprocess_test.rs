@@ -61,6 +61,16 @@ fn default_invoker_timeout_is_unchanged() {
 }
 
 #[test]
+fn with_timeout_sets_that_timeout_and_no_thinking() {
+    // catches: reusing with_thinking (sets thinking env) or ignoring the argument
+    let inv = ClaudeSubprocess::with_timeout(180);
+    assert_eq!(inv.timeout_secs(), 180);
+    assert_eq!(inv.thinking_tokens, None);
+    let other = ClaudeSubprocess::with_timeout(7);
+    assert_eq!(other.timeout_secs(), 7);
+}
+
+#[test]
 fn with_thinking_uses_the_longer_timeout() {
     let inv = ClaudeSubprocess::with_thinking(8000);
     assert_eq!(inv.timeout_secs(), THINKING_TIMEOUT_SECS);

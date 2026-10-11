@@ -39,6 +39,15 @@ impl ClaudeSubprocess {
         }
     }
 
+    /// A plain `claude -p` (no thinking budget) with a custom wall-clock
+    /// timeout.
+    pub fn with_timeout(secs: u64) -> Self {
+        Self {
+            thinking_tokens: None,
+            timeout_secs: Some(secs),
+        }
+    }
+
     fn timeout_secs(&self) -> u64 {
         self.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS)
     }
