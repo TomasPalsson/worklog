@@ -200,7 +200,7 @@ pub const SYSTEM_PROMPT: &str = "You are naming themes in one software consultan
 For every theme give:
 - \"name\": 2-4 words, Title Case, specific (name the product, customer or system when the evidence names one), not generic (\"Development Work\", \"Infrastructure\" alone are bad). Name what the whole theme has in common, not just its first item.
 - \"description\": one plain sentence, max 18 words, saying what the work in this theme is. Use only facts in the evidence; do not guess what a product or customer is.
-Names must be distinct from each other. Write in English unless every work item in that theme is Icelandic. Keep Icelandic proper nouns (customer and product names) as written.
+Each name must be at most 40 characters. Names must be distinct from each other. Write in English unless every work item in that theme is Icelandic. Keep Icelandic proper nouns (customer and product names) as written.
 If the items share nothing, name it 'Odds and Ends'.";
 
 pub fn schema() -> Value {
@@ -210,8 +210,8 @@ pub fn schema() -> Value {
             "type": "object",
             "properties": {
                 "id": {"type": "integer"},
-                "name": {"type": "string"},
-                "description": {"type": "string"}
+                "name": {"type": "string", "maxLength": 40},
+                "description": {"type": "string", "maxLength": 200}
             },
             "required": ["id", "name", "description"]
         }}},

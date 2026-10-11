@@ -335,3 +335,15 @@ fn parse_reply_truncates_a_long_description_at_a_word_boundary_to_200() {
         .clone();
     assert_eq!(got, format!("{}a…", "a ".repeat(94)));
 }
+
+#[test]
+fn schema_and_prompt_state_the_name_and_description_limits() {
+    let props = &schema()["properties"]["topics"]["items"]["properties"];
+    // catches: limit missing from the schema, or put on the wrong property.
+    assert_eq!(props["name"]["maxLength"], 40);
+    assert_eq!(props["description"]["maxLength"], 200);
+    // catches: limit missing from the prompt, or a different number.
+    assert!(SYSTEM_PROMPT.contains("Each name must be at most 40 characters."));
+    // catches: prompt/schema limit drifting from the parse_reply cutoff.
+    assert_eq!(NAME_MAX_CHARS, 40);
+}
