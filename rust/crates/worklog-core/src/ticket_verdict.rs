@@ -12,6 +12,7 @@ use crate::billing::billable_work_folder;
 use crate::block_service::is_synced;
 use crate::estimate::load_open_tickets;
 use crate::hook_run::jira_re;
+use crate::jira_assist_contract::CATCH_ALL_PROJECT;
 use crate::models::{Block, Event};
 use crate::repo;
 use crate::routing::{decide, Pending};
@@ -28,9 +29,9 @@ const STATE_TITLES: usize = 10;
 const STATE_TITLE_CHARS: usize = 120;
 
 /// At most `SHORTLIST_MAX` tickets, in order: the ticket of the block's coding
-/// session, open ticket keys written in its events, then tickets logged on
+/// session, open ticket keys written in its events, tickets logged on
 /// blocks of the same project root in the last `RECENT_TICKET_DAYS` days,
-/// newest first.
+/// newest first, then the open internal `CATCH_ALL_PROJECT` tickets.
 pub fn ticket_options(conn: &Connection, block: &Block) -> Result<Vec<String>> {
     options_for(conn, block, &repo::list_events_for_block(conn, block.id)?)
 }
@@ -54,9 +55,16 @@ fn options_for(conn: &Connection, block: &Block, events: &[Event]) -> Result<Vec
         .flat_map(|text| re.find_iter(text).map(|m| m.as_str().to_owned()))
         .filter(|k| open.contains(k));
     let recent = recent_tickets(conn, block, day, events)?;
+    let prefix = format!("{CATCH_ALL_PROJECT}-");
+    let catch_alls = open.iter().filter(|k| k.starts_with(&prefix)).cloned();
 
     let mut out: Vec<String> = Vec::new();
-    for key in session.into_iter().chain(written).chain(recent) {
+    for key in session
+        .into_iter()
+        .chain(written)
+        .chain(recent)
+        .chain(catch_alls)
+    {
         if out.len() == SHORTLIST_MAX {
             break;
         }
@@ -232,3 +240,7 @@ pub(crate) fn record_swap(
 #[cfg(test)]
 #[path = "ticket_verdict_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "ticket_verdict_catch_all_test.rs"]
+mod catch_all_tests;
