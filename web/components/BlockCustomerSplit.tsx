@@ -249,9 +249,12 @@ function DeildChip({
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
-    fetchDeildSuggestion(blockId).then((r) => {
-      if (alive) setSuggestion(r);
-    });
+    fetchDeildSuggestion(blockId)
+      .then((r) => {
+        if (alive) setSuggestion(r);
+      })
+      // The chip is only a hint: no suggestion when the daemon fails.
+      .catch((e) => console.warn("deild suggestion failed", e));
     return () => {
       alive = false;
     };

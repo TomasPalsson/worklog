@@ -393,6 +393,13 @@ describe("BlockCard ignore menu (FR-06)", () => {
     expect(mergeGroup).not.toHaveBeenCalled();
   });
 
+  it("Duplicate of an overlapping same-ticket block ignores instead of merging (catches summing a duplicate's hours)", async () => {
+    open([self, at(2, "10:00", "10:30")]);
+    pick("Duplicate");
+    await waitFor(() => expect(setIgnored).toHaveBeenCalledWith(1, true, DAY, "duplicate"));
+    expect(mergeGroup).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["synced", { tempo_worklog_id: "77" }],
     ["exported", { exported_at: `${DAY}T18:00:00Z` }],

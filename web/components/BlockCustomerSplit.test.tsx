@@ -264,6 +264,23 @@ describe("BlockCustomerSplit deild chip (FR-21)", () => {
     expect(screen.queryByRole("button", { name: "Rekstur" })).toBeNull();
   });
 
+  it("a failed suggestion fetch shows no chip and is caught (catches an unhandled rejection)", async () => {
+    fetchDeildSuggestionImpl.mockImplementationOnce(async () => {
+      throw new Error("daemon down");
+    });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => unhandled.push(e);
+    process.on("unhandledRejection", onUnhandled);
+    render(<BlockCustomerSplit blockId={101} />);
+
+    await screen.findByText("Sjúkra 70% · MMS 30%");
+    await waitFor(() => expect(fetchDeildSuggestionImpl).toHaveBeenCalledWith(101));
+    await new Promise((r) => setTimeout(r, 20));
+    process.off("unhandledRejection", onUnhandled);
+    expect(unhandled).toEqual([]);
+    expect(screen.queryByRole("button", { name: "Rekstur" })).toBeNull();
+  });
+
   it("click saves the deild on the suggested customer's rows only, keeping exact shares", async () => {
     currentSuggestion = suggestion;
     render(<BlockCustomerSplit blockId={101} />);

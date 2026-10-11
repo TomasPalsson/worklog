@@ -39,7 +39,8 @@ export function IgnoreMenu({ block, day, dayBlocks, onInternal }: Props) {
 
   const onDuplicate = () => {
     const neighbour = nearestSameTicket(block, dayBlocks);
-    if (!neighbour) return onIgnore("duplicate");
+    // An overlapping twin already counts this time; merging would sum it twice.
+    if (!neighbour || overlaps(block, neighbour)) return onIgnore("duplicate");
     setMenuOpen(false);
     start(async () => {
       const r = await mergeGroup(neighbour.id, [block.id], day);
@@ -83,6 +84,9 @@ function ignoreTitle(synced: boolean, exported: boolean): string {
   if (exported) return "Already exported for billing";
   return "Ignore — hide from the day, billing and Tempo. Survives Rebuild.";
 }
+
+const overlaps = (a: Block, b: Block) =>
+  Date.parse(a.started_at) < Date.parse(b.ended_at) && Date.parse(b.started_at) < Date.parse(a.ended_at);
 
 /** Nearest (by gap between intervals) other live block on the same day and ticket. */
 function nearestSameTicket(block: Block, blocks: Block[]): Block | undefined {
