@@ -653,3 +653,34 @@ fn kick_platform_is_noop_under_env_override() {
     kick_platform().unwrap();
     restore();
 }
+
+fn serve_slow_first_then_pid_one() -> String {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap().to_string();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for (i, mut c) in l.incoming().flatten().enumerate() {
+            let _ = c.read(&mut [0u8; 1024]);
+            if i == 0 {
+                std::thread::sleep(Duration::from_millis(400));
+            }
+            let _ = c.write_all(format!("{PID_REPLY}{{\"pid\":1}}").as_bytes());
+        }
+    });
+    addr
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn install_after_a_timed_out_pre_probe_does_not_take_the_old_pid_as_the_new_daemon() {
+    // catches: comparing against an unknown old pid (None) so any answering pid counts as gone/new
+    let tmp = tempdir().unwrap();
+    let _g = redirect(tmp.path());
+    let flag = tmp.path().join("stopped");
+    fake_restartable_tool(tmp.path(), &flag);
+    let tcp = serve_slow_first_then_pid_one();
+    let r = install_at("worklog daemon", &tcp, SHORT, Duration::from_millis(1));
+    restore();
+    let e = r.unwrap_err().to_string();
+    assert!(e.contains("did not answer the stop request"), "{e}");
+}

@@ -311,11 +311,12 @@ fn pre_install_pid(tcp: &str, timeout: std::time::Duration) -> Option<Option<u64
     }
 }
 
-/// A timeout is not proof: a loaded old daemon is slow, not gone.
+/// A timeout is not proof: a loaded old daemon is slow, not gone. With no
+/// known old pid, any successful answer could be the old daemon.
 fn old_daemon_gone(tcp: &str, old: Option<u64>, timeout: std::time::Duration) -> bool {
     match get_health(tcp, timeout) {
         Err(e) => !e.is_timeout(),
-        Ok(r) => pid_of(r).is_none_or(|p| p != old),
+        Ok(r) => pid_of(r).is_none_or(|p| old.is_some() && p != old),
     }
 }
 
