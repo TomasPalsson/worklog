@@ -6,3 +6,11 @@
 - Ruling: T006 left its fix-ladder tie-break edits uncommitted; orchestrator committed them as 3b04efc under T006's files only (2026-10-11, orchestrator)
 - Discovered: rust/crates/worklog-core/templates/verdict_server.py:~38 — _load_engine raises a bare KeyError when WORKLOG_VERDICT_MODEL_* env is missing (pre-existing) — defer
 - Discovered: rust/crates/worklog-core/src/billing.rs billing_tenant_tests::rows_for_day_with_deildir_under_200ms — timing test flakes under parallel load (pre-existing) — defer
+- Discovered: web/components/UnsortedList.tsx noiseOf — URL.hostname punycodes IDN hosts while routing::domain_of keeps unicode, so non-ASCII noise hosts are never tagged (fails safe) — defer
+- Discovered: web/components/UnsortedList.tsx:236 — "Dismiss the rest" run() never calls setConfirming(false); confirm markup duplicated with DismissNoise — defer
+- Ruling: T007 fix ladder (5eb6398) touched embed.rs/embed_test.rs (T005's files) to split ensure_vectors into pending/embed_all/store/load so the shared connection is released during /embed; needed for the review's lock-hold finding (2026-10-11, orchestrator)
+- Discovered: rust/crates/worklog-core/src/embed.rs load — a block whose text later became empty keeps its old vector and counts as embedded, not skipped — defer
+- Ruling: T009 and T010 appended during CHK001 — the live Chrome check found the helper could not load the model (sentence-transformers 5.7) and warm /stats/topics took ~5 s against the 2 s NFR; both fixed as new tasks, not by widening T004/T005 (2026-10-11, orchestrator)
+- Ruling: CHK001 done by the orchestrator in headless system Chrome via puppeteer-core (Claude-in-Chrome extension not connected; DevTools MCP browser held by another session), against a DB copy with 4 inserted test events (2026-10-11, orchestrator)
+- Discovered: rust/crates/worklog-core/src/daemon.rs day_progress / spawn_nudge_refresh_loop — read keychain secrets (JiraAuth/GitHubAuth::from_secrets) while holding the shared connection; a keychain permission prompt (new binary) freezes every daemon route until answered (pre-existing; seen in the sandbox) — defer
+- Discovered: rust/crates/worklog-core/src/daemon_stats.rs — jira_tickets summary query duplicates private billing::ticket_summary (billing.rs:471) — defer
