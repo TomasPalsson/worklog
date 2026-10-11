@@ -64,6 +64,7 @@ mod line_text_jobs;
 pub mod local_clone;
 pub mod logged;
 pub mod logged_contract;
+pub mod loose_ends;
 mod meeting_description;
 pub mod mirres;
 pub mod models;
