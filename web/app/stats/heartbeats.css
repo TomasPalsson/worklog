@@ -15,13 +15,13 @@
 .hb-name { font-family: var(--font-mono); font-size: 12px; color: var(--fg); overflow-wrap: anywhere; }
 .hb-name[data-keywords] { color: var(--fg-muted); font-style: italic; }
 .hb-about { min-width: 0; display: grid; gap: 4px; }
-.hb-description { margin: 0; font-size: 12px; color: var(--fg-muted); }
+.hb-description { margin: 0; font-size: 13.5px; color: var(--fg-muted); }
 .hb-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px; }
 .hb-chip { font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); background: var(--bg-sunk); border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; }
 .hb-raster { display: grid; align-items: end; gap: 1px; height: 28px; min-width: 0; border-bottom: 1px solid var(--border); }
 .hb-tick { background: var(--hb-color); border-radius: 1px 1px 0 0; min-height: 1px; }
 .hb-data { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px 10px; align-items: center; }
-.hb-dates { display: flex; justify-content: space-between; font-size: 12px; color: var(--fg-muted); }
+.hb-dates { display: flex; justify-content: space-between; margin-top: 4px; font-size: 12px; color: var(--fg-muted); }
 .hb-hours { text-align: right; }
 .hb-fill { background: var(--hb-color); }
 .hb-badge { grid-column: 2; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-muted); }

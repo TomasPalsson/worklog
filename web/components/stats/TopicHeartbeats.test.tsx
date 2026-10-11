@@ -228,7 +228,15 @@ describe("TopicHeartbeats", () => {
     const captions = container.querySelectorAll(".hb-dates");
     expect(captions.length).toBe(1);
     expect(captions[0].closest("[data-heartbeat-row]")).toBe(container.querySelector("[data-heartbeat-row]"));
-    expect(Array.from(captions[0].children).map((c) => c.textContent)).toEqual(["Sep 23", "Oct 10"]);
+    expect(Array.from(captions[0].children).map((c) => c.textContent)).toEqual(["Sep 23", " – ", "Oct 10"]);
+  });
+  it("date caption: en dash separator is aria-hidden between two date spans; hours sit outside it", () => {
+    const { container } = render(<TopicHeartbeats report={report()} />);
+    const kids = Array.from(container.querySelector(".hb-dates")!.children);
+    expect(kids.map((c) => c.tagName)).toEqual(["SPAN", "SPAN", "SPAN"]); // catches a bare text node or missing separator
+    expect(kids[1].textContent).toBe(" – "); // catches a hyphen instead of an en dash
+    expect(kids[1].getAttribute("aria-hidden")).toBe("true"); // catches an exposed separator
+    expect(container.querySelector(".hb-dates .hb-hours")).toBeNull(); // catches hours jammed into the caption
   });
   it("no date caption when no bin has time (catches reading an undefined bin)", () => {
     const river = [{ start: "2026-10-05", seconds: [0, 0] }];
@@ -239,8 +247,10 @@ describe("TopicHeartbeats", () => {
     const css = readFileSync(new URL("../../app/stats/heartbeats.css", import.meta.url), "utf8");
     expect(css).not.toMatch(/max-width: 8px/);
     expect(css).toMatch(/\.hb-raster {[^}]*display: grid;[^}]*gap: 1px/);
-    expect(css).not.toMatch(/font-size: (?:[0-9]|1[01])px/);
+    expect(css).not.toMatch(/font-size: (?:[0-9]|1[01])(?:\.\d+)?px/);
     expect(css).toMatch(/\.hb-tickets {[^}]*var\(--fg-muted\)/);
+    expect(css).toMatch(/\.hb-description {[^}]*font-size: 13\.5px/); // catches the old 12px tier
+    expect(css).toMatch(/\.hb-dates {[^}]*justify-content: space-between[^}]*margin-top: 4px/); // catches missing 4px gap
     expect(css).toMatch(/\.hb-how {[^}]*max-width: 70ch/);
   });
 });
