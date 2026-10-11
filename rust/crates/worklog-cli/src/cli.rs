@@ -5197,7 +5197,7 @@ mod tests {
                 "--with".to_string(),
                 "huggingface_hub".to_string(),
                 "--with".to_string(),
-                "sentence-transformers>=5".to_string(),
+                "sentence-transformers>=6.1".to_string(),
                 "--with".to_string(),
                 "torch".to_string(),
                 "--with".to_string(),
