@@ -23,6 +23,8 @@ use crate::{envfile, recap};
 /// committed to. Retries use it, so a line that turns ready later is not sent.
 const PLAN_KEY: &str = "auto_send_plan";
 const UNREACHABLE: &str = "Tempo could not be reached";
+/// The sync's skip reason for a line Tempo already holds; the one skip that counts as sent.
+const ALREADY_IN_TEMPO_REASON: &str = "already in Tempo";
 /// `meta` key holding the day the recap was last built for, so later ticks keep it.
 const RECAP_KEY: &str = "recap_built_for";
 
@@ -173,10 +175,13 @@ pub fn run_if_due(
             Ok(results) => results,
             Err(e) => {
                 tracing::warn!("auto-send {}: {e:#}", key.jira_issue);
-                return Ok(());
+                continue;
             }
         };
-        let rejected = results.iter().find(|r| r.status == "error");
+        let rejected = results.iter().find(|r| {
+            r.status == "error"
+                || (r.status == "skipped" && r.reason.as_deref() != Some(ALREADY_IN_TEMPO_REASON))
+        });
         let reason = rejected.map(|r| r.reason.as_deref().unwrap_or("Tempo rejected the line"));
         set_outcome(conn, &key, reason)?;
     }
@@ -189,12 +194,12 @@ pub fn run_if_due(
 }
 
 /// Earlier days' lines that went out (or failed) and are not confirmed yet,
-/// newest day first (FR-29, FR-32).
+/// plus today's failed ones, newest day first (FR-29, FR-32).
 pub fn review_lines(conn: &Connection, today: &str) -> Result<Vec<ReviewLine>> {
     let mut stmt = conn.prepare(
         "SELECT day, jira_issue, send_error FROM tempo_line_texts
-          WHERE day < ?1 AND confirmed_at IS NULL
-            AND (auto_sent_at IS NOT NULL OR send_error IS NOT NULL)
+          WHERE day <= ?1 AND confirmed_at IS NULL
+            AND (send_error IS NOT NULL OR (day < ?1 AND auto_sent_at IS NOT NULL))
           ORDER BY day DESC, jira_issue",
     )?;
     let rows = stmt

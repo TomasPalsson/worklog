@@ -411,6 +411,77 @@ fn a_rejected_line_records_tempos_message_and_the_others_still_go() {
     assert_eq!(column(&conn, DAY, "B-GOOD", "send_error"), None);
 }
 
+fn skipped(why: &str) -> SyncResult {
+    SyncResult {
+        status: "skipped",
+        reason: Some(why.into()),
+        tempo_id: None,
+        http_status: None,
+        ..ok()
+    }
+}
+
+#[test]
+fn a_send_that_errors_does_not_stop_the_next_ticket() {
+    let conn = open_memory().unwrap();
+    ready_line(&conn, DAY, "A-ERR");
+    ready_line(&conn, DAY, "B-GOOD");
+    let tried = tick(&conn, local(6, 17, 0), true, |issue| {
+        if issue == "A-ERR" {
+            unreachable(issue)
+        } else {
+            accepts(issue)
+        }
+    });
+    // catches: returning at the first failing ticket
+    assert_eq!(tried.len(), 2);
+    assert!(column(&conn, DAY, "B-GOOD", "auto_sent_at").is_some());
+}
+
+#[test]
+fn a_skipped_line_is_not_sent_and_keeps_the_sync_reason() {
+    for (issue, why) in [
+        ("A-1", "no jira_issue — assign one in the UI"),
+        (
+            "A-2",
+            "rounds to 0h — 600s of tracked work is under the 0.5h minimum",
+        ),
+    ] {
+        let conn = open_memory().unwrap();
+        ready_line(&conn, DAY, issue);
+        tick(&conn, local(6, 17, 0), true, |_| Ok(vec![skipped(why)]));
+        // catches: a skip recorded as sent, the reason replaced by a generic text
+        assert_eq!(
+            column(&conn, DAY, issue, "send_error").as_deref(),
+            Some(why)
+        );
+        assert_eq!(column(&conn, DAY, issue, "auto_sent_at"), None);
+    }
+}
+
+#[test]
+fn a_line_already_in_tempo_stays_sent() {
+    let conn = open_memory().unwrap();
+    ready_line(&conn, DAY, "A-1");
+    tick(&conn, local(6, 17, 0), true, |_| {
+        Ok(vec![skipped("already in Tempo")])
+    });
+    // catches: treating every skip as a failure
+    assert!(column(&conn, DAY, "A-1", "auto_sent_at").is_some());
+    assert_eq!(column(&conn, DAY, "A-1", "send_error"), None);
+}
+
+#[test]
+fn review_lists_todays_not_sent_lines_but_not_todays_sent_ones() {
+    let conn = open_memory().unwrap();
+    failed(&conn, DAY, "FAIL-1");
+    sent(&conn, DAY, "SENT-1");
+    let lines = review_lines(&conn, DAY).unwrap();
+    // catches: `<` for `<=` on the day, or listing today's sent lines
+    let issues: Vec<_> = lines.iter().map(|l| l.jira_issue.as_str()).collect();
+    assert_eq!(issues, ["FAIL-1"]);
+}
+
 // ───────────────────────── review and confirm (FR-29..FR-33) ─────────────────────────
 
 fn sent(conn: &Connection, day: &str, issue: &str) {
