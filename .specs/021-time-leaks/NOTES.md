@@ -1,0 +1,23 @@
+# Notes — 021 time leaks
+
+- Ruling: T026 dropped — folders 003/004/007/008 were archived with LEDGER rows in 5d202a9 (#132), before Base; its verify passes as-is.
+- Ruling: T027 dropped — this run is isolated in its own worktree and the harness refuses git on sibling worktrees. Owner, from the main checkout, for each of billed-hours-header settings-z-index task-board-5-columns task-board-wide ticket-create-assign-me: check `git -C .claude/worktrees/<w> status --porcelain` is empty, it is not locked in `git worktree list`, nothing changed in 48 h, and `git log origin/main..<w-HEAD>` subjects are all on main; then `git worktree remove .claude/worktrees/<w>` (branches stay).
+- Ruling: T021 verify changed from `cd mods/worklog/hooks && bun test command.test.tsx` to `claude plugin test mods/worklog` — bare bun cannot resolve the host-only `claude-code/testing` (same ruling as spec 018). Whole mod suite, so stricter. The test fake read `event.cwd`; the host puts it at `event.init.cwd` — fixed in the fake, assertion unchanged.
+- Ruling: T003 regression fixed by orchestrator in a09cd90 — continuing past an unreachable Tempo also built the recap that tick; `recap_test.rs:482` caught it. Recap now still waits for a tick with no unreachable send.
+- Ruling: T010 touched files outside its list (daemon.rs, estimate.rs, undo_test.rs, tenant_split_test.rs, worklog-cli eval_cmd.rs) — only `None` / `ignore_reason: None` additions forced by the new `set_ignored` arg and Block field; no behaviour change there.
+- Discovered: rust/crates/worklog-core/src/block_service.rs:177 — `set_ignored` doc comment does not mention the reason argument — defer
+- Discovered: T001 open question — same-class double-booking (two work blocks overlapping) no longer shows any overlap hint in day/week output; only cross-class overlap is reported — defer
+- Discovered: rust/crates/worklog-core/src/auto_send.rs:193 — Tempo unreachable until midnight means that day's recap is never built (same as before this spec: the old early return skipped it too) — defer
+- Discovered: rust/crates/worklog-cli/src/cli.rs:2577 — dirty/gap counted before the ignored `continue`, so an ignored gap block still prints "failed estimation" — defer
+- Discovered: rust/crates/worklog-cli/src/cli.rs:2937,2995 — print_week sums class_overlap_secs twice into two variables — defer
+- Discovered: rust/crates/worklog-cli/src/cli.rs:2651,2205 — fetch_day_blocks `unwrap_or_default()` turns a decode failure into an empty day with no error — defer
+- Discovered: rust/crates/worklog-core/src/collectors/github.rs:216 — hitting GITHUB_MAX_PAGES drops results with no warning; `incomplete_results` ignored — defer
+- Discovered: rust/crates/worklog-core/src/collectors/github.rs:52 — doc says `until` is exclusive but the `..` search range includes it — defer
+- Discovered: rust/crates/worklog-core/src/daemon_service.rs:265-285 — ensure_running → install waits on the fixed 127.0.0.1:9323, then polls its own tcp arg: wrong address for non-default tcp, budget spent twice — defer
+- Discovered: rust/crates/worklog-core/src/daemon_service.rs:49-67 — install health check can pass against the still-running old daemon — defer
+- Discovered: scripts/install-local.sh:60-65 — under `set -e`, a failed `kill $stale` (EPERM, already gone, docker proxy) aborts before `web up`; loud by FR-20 design, but leaves the UI down — defer
+- Discovered: rust/crates/worklog-core/src/standup.rs:154 — a nested block moves a focus run's ended_at backwards; a `Some("")` ticket forms a focus run — defer
+- Discovered: web/components/DayLoadNotice.tsx:3-6 — sectionLoader drops the rejection cause (never logged); failed-name order depends on settle order — defer
+- Discovered: mods/worklog/hooks/command.tsx:116 — installer process.run has no .catch and no timeout; a spawn failure throws instead of returning "failed" text — defer
+- Discovered: rust/crates/worklog-core/src/personal.rs:~272 — "Strong override" comment now sits above the ignored early-continue; dominant_project_path_for_block still runs for ignored blocks — defer
+- Discovered: rust/crates/worklog-core/src/auto_send.rs:177-181 — unreachable send_error stores the raw reqwest text (may include the request URL) and shows it in Review — defer
