@@ -75,22 +75,28 @@ fn cluster(pts: &[&BlockPoint], k: usize) -> Vec<Vec<usize>> {
         }
     }
     let mut cl: Vec<Vec<usize>> = (0..n).map(|i| vec![i]).collect();
+    // `slot[i]` is the row of `dist` holding cluster i; rows are updated in
+    // place with the average-linkage (UPGMA) recurrence, so a step is O(m^2).
+    let mut slot: Vec<usize> = (0..n).collect();
     while cl.len() > k {
         let (mut bi, mut bj, mut best) = (0, 1, f64::INFINITY);
         for i in 0..cl.len() {
             for j in i + 1..cl.len() {
-                let sum: f64 = cl[i]
-                    .iter()
-                    .flat_map(|&a| cl[j].iter().map(move |&b| (a, b)))
-                    .map(|(a, b)| dist[a][b])
-                    .sum();
-                let avg = sum / (cl[i].len() * cl[j].len()) as f64;
+                let avg = dist[slot[i]][slot[j]];
                 // 1e-12: float noise must not break a tie toward the later pair.
                 if avg < best - 1e-12 {
                     (bi, bj, best) = (i, j, avg);
                 }
             }
         }
+        let (a, b) = (slot[bi], slot[bj]);
+        let (na, nb) = (cl[bi].len() as f64, cl[bj].len() as f64);
+        for &c in &slot {
+            let d = (na * dist[a][c] + nb * dist[b][c]) / (na + nb);
+            dist[a][c] = d;
+            dist[c][a] = d;
+        }
+        slot.remove(bj);
         let merged = cl.remove(bj);
         cl[bi].extend(merged);
     }

@@ -405,3 +405,70 @@ fn build_is_deterministic_under_input_order() {
     rev.reverse();
     assert_eq!(a, ready(&input(rev)));
 }
+
+const M: [f32; 2] = [1.0, 1.0];
+
+fn tie_group(first_id: i64, v: [f32; 2], name: &str) -> Vec<BlockPoint> {
+    (0..2)
+        .map(|i| {
+            let n = format!("{name}{i}");
+            pt(first_id + i, "2026-10-06", "09:00", 60, None, Some(&n), v)
+        })
+        .collect()
+}
+
+#[test]
+fn equidistant_cluster_pairs_merge_lower_id_first() {
+    // catches: last-pair-wins on an exact distance tie (M is equidistant from A and B).
+    let mut pts = tie_group(1, A, "a");
+    pts.extend(tie_group(3, M, "m"));
+    pts.extend(tie_group(5, B, "b"));
+    let r = ready(&input(pts));
+    assert_eq!(r.topics.len(), 2);
+    assert_eq!(r.topics[0].blocks, 4);
+    assert_eq!(r.topics[0].name, "a0"); // A+M merged, not M+B
+}
+
+#[test]
+fn equal_seconds_topics_order_by_lowest_member_id() {
+    // catches: unstable or reversed order among topics with equal seconds.
+    let mut pts = tie_group(1, A, "a");
+    pts.extend(tie_group(3, B, "b"));
+    pts.extend(tie_group(5, A, "a"));
+    pts.extend(tie_group(7, B, "b"));
+    pts.extend(tie_group(9, A, "a"));
+    pts.extend(tie_group(11, B, "b"));
+    assert_eq!(ready(&input(pts.clone())).topics[0].name, "a0");
+    for p in &mut pts {
+        p.id = 100 - p.id; // B groups now hold the lowest ids
+    }
+    assert!(ready(&input(pts)).topics[0].name.starts_with('b'));
+}
+
+#[test]
+fn drift_tie_goes_to_the_first_topic() {
+    // catches: `>=` letting the last equally-near centroid win.
+    let mut i = input(two_groups());
+    i.before = vec![pt(900, "2026-09-29", "09:00", 500, None, None, M)];
+    let r = ready(&i);
+    assert_eq!(r.drift[0].seconds_before, 500);
+    assert_eq!(r.drift[1].seconds_before, 0);
+}
+
+#[test]
+fn similar_day_ties_order_by_earlier_day_first() {
+    // catches: tie order on equal similarity flipping to latest-day-first.
+    let mut i = input(today_like_a());
+    i.history = ["2026-09-02", "2026-09-01"]
+        .iter()
+        .enumerate()
+        .map(|(n, d)| pt(500 + n as i64, d, "09:00", 600, None, None, A))
+        .collect();
+    let days: Vec<_> = ready(&i)
+        .similar_days
+        .into_iter()
+        .map(|d| d.day)
+        .filter(|d| d.starts_with("2026-09"))
+        .collect();
+    assert_eq!(days, ["2026-09-01", "2026-09-02"]);
+}
