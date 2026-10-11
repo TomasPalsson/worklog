@@ -289,6 +289,14 @@ function GalaxyMap({ report, layout }: { report: TopicsReport; layout: GalaxyLay
   );
 }
 
+export function galaxyHeadline(topics: Topic[]): string {
+  const [a, b] = [...topics].sort((p, q) => q.seconds - p.seconds);
+  if (!b) return `1 topic · ${a.name}`;
+  const total = topics.reduce((s, t) => s + t.seconds, 0);
+  const pct = total > 0 ? Math.round(((a.seconds + b.seconds) / total) * 100) : 0;
+  return `${topics.length} topics · ${a.name} and ${b.name} are ${pct}% of your time`;
+}
+
 function Legend() {
   return (
     <div className="sx-gal-legend">
@@ -305,6 +313,7 @@ function Legend() {
       <span className="sx-gal-key">
         <OddballMark /> oddball
       </span>
+      <span className="sx-gal-key">· hover or tap a dot for the block</span>
     </div>
   );
 }
@@ -336,6 +345,7 @@ export function TopicGalaxy({ report }: { report: TopicsReport }) {
         </div>
       ) : (
         <>
+          <p className="sx-gal-headline">{galaxyHeadline(report.topics)}</p>
           <div className="sx-gal-map">
             <GalaxyMap report={report} layout={layout} />
           </div>

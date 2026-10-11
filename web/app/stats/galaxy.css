@@ -1,5 +1,6 @@
 /* Topic galaxy: star map of the work blocks (components/stats/TopicGalaxy.tsx). */
 .sx-gal-map { background: var(--bg-sunk); border-radius: var(--radius-md); }
+.sx-gal-headline { margin: 8px 0; font-size: 16px; color: var(--fg); }
 .sx-gal-svg { display: block; width: 100%; height: auto; }
 .sx-gal-bg-in { stop-color: var(--bg-sunk); }
 .sx-gal-bg-out { stop-color: color-mix(in oklch, var(--bg-sunk) 70%, var(--bg)); }

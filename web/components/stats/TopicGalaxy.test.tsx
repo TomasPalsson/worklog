@@ -351,6 +351,37 @@ describe("TopicGalaxy markup", () => {
     expect(legend.querySelectorAll("svg")).toHaveLength(3);
   });
 
+  it("headline names the two largest topics by seconds (not first two) with their rounded combined share", () => {
+    const r = report({
+      topics: [topic(0, { name: "Gamma", seconds: 1800 }), topic(1, { name: "Alpha", seconds: 7200 }), topic(2, { name: "Beta", seconds: 3600 })],
+      points: [point(1, { topic_id: 0 }), point(2, { topic_id: 1, x: 0.2 }), point(3, { topic_id: 2, x: 0.8 })],
+    });
+    const { container } = render(<TopicGalaxy report={r} />);
+    const h = container.querySelector(".sx-gal-headline")!;
+    expect(h.textContent).toBe("3 topics · Alpha and Beta are 86% of your time"); // 10800/12600 = 85.7 rounds up; catches floor/unsorted
+    expect(h.nextElementSibling!.classList.contains("sx-gal-map")).toBe(true); // catches headline below the map
+  });
+
+  it("headline with one topic is '1 topic · {A}' with no percentage", () => {
+    const { container } = render(<TopicGalaxy report={report({ topics: [topic(0, { name: "Solo" })] })} />);
+    expect(container.querySelector(".sx-gal-headline")!.textContent).toBe("1 topic · Solo"); // catches '1 topics' / 100%
+  });
+
+  it("no headline in the empty state", () => {
+    const { container } = render(<TopicGalaxy report={report({ points: [] })} />);
+    expect(container.querySelector(".sx-gal-headline")).toBeNull();
+  });
+
+  it("headline css is 16px in --fg", () => {
+    const css = readFileSync(`${import.meta.dir}/../../app/stats/galaxy.css`, "utf8");
+    expect(css).toMatch(/\.sx-gal-headline\s*\{[^}]*font-size:\s*16px[^}]*color:\s*var\(--fg\)/);
+  });
+
+  it("legend ends with the dot hint", () => {
+    const { container } = render(<TopicGalaxy report={full} />);
+    expect(container.querySelector(".sx-gal-legend")!.textContent).toMatch(/· hover or tap a dot for the block$/);
+  });
+
   it("topic name fill is the topic hue lifted toward --fg", () => {
     const { container } = render(<TopicGalaxy report={slim} />);
     const names = container.querySelectorAll("text.sx-gal-name");
