@@ -10,9 +10,10 @@ const H = 240;
 const PAD = 6;
 const GUTTER = 48;
 const WEEK_TICK_EVERY = 4;
-const MIN_LABEL_PX = 14;
+const MIN_LABEL_PX = 18;
+const EDGE = 8;
 const COL_TIP_ROWS = 4;
-const CHAR_PX = 6.6;
+const CHAR_PX = 7.2;
 const LABEL_H = 12;
 const LABEL_PAD = 4;
 
@@ -33,6 +34,8 @@ export interface RiverLayer {
   labelled: boolean;
   labelX: number;
   labelY: number;
+  /** Band thickness at labelX, where the text sits. */
+  labelThick: number;
 }
 
 export const labelBox = (l: RiverLayer) => {
@@ -72,6 +75,10 @@ export function buildRiver(report: TopicsReport): { layers: RiverLayer[]; unit: 
     const pi = sec.indexOf(peak);
     const thick = peak * unit;
     const w = t.name.length * CHAR_PX;
+    const lx = Math.min(W - w / 2 - EDGE, Math.max(w / 2 + EDGE, xs[pi]));
+    const k = Math.min(n - 2, Math.max(0, Math.floor((lx - PAD) / (xs[1] - xs[0]))));
+    const f = (lx - xs[k]) / (xs[k + 1] - xs[k]);
+    const at = (pts: Pt[]) => pts[k][1] + (pts[k + 1][1] - pts[k][1]) * f;
     return {
       topic: t,
       color: colorOf(t.id, topics.length),
@@ -84,14 +91,15 @@ export function buildRiver(report: TopicsReport): { layers: RiverLayer[]; unit: 
       path: bandPath(upper, lower),
       thick,
       labelled: false,
-      labelX: Math.min(W - w / 2, Math.max(w / 2, xs[pi])),
-      labelY: (upper[pi][1] + lower[pi][1]) / 2,
+      labelX: lx,
+      labelY: (at(upper) + at(lower)) / 2,
+      labelThick: at(lower) - at(upper),
     };
   });
   const placed: ReturnType<typeof labelBox>[] = [];
   [...layers].sort((a, b) => b.total - a.total).forEach((l) => {
     const box = labelBox(l);
-    if (l.thick < MIN_LABEL_PX || box.w > W || box.y < 0 || box.y + box.h > H || placed.some((p) => overlaps(box, p))) return;
+    if (l.labelThick < MIN_LABEL_PX || box.w > W - 2 * EDGE || box.y < 0 || box.y + box.h > H || placed.some((p) => overlaps(box, p))) return;
     l.labelled = true;
     placed.push(box);
   });

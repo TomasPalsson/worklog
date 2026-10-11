@@ -76,15 +76,17 @@ describe("buildRiver", () => {
     expect(buildRiver(report([]))).toBeNull();
     expect(buildRiver(report([[H], [H]]))).not.toBeNull();
   });
-  // catches: > 14 instead of >= 14, and thickness taken at the wrong bin
-  it("labels a band exactly at 14px and not just under", () => {
-    // total 456s -> unit 0.5 px/s (exact in binary): 28s is exactly 14px
-    const at = buildRiver(report([[428, 28], [428, 28]]))!;
+  // catches: > 18 instead of >= 18, 14px floor left in place, and thickness taken at the wrong bin
+  it("labels a band exactly at 18px and not just under", () => {
+    // total 456s -> unit 0.5 px/s (exact in binary): 36s is exactly 18px
+    const at = buildRiver(report([[420, 36], [420, 36]]))!;
     const l = at.layers.find((x) => x.topic.id === 1)!;
-    expect(l.thick).toBe(14);
+    expect(l.thick).toBe(18);
     expect(l.labelled).toBe(true);
-    const under = buildRiver(report([[429, 27], [429, 27]]))!;
+    const under = buildRiver(report([[421, 35], [421, 35]]))!;
     expect(under.layers.find((x) => x.topic.id === 1)!.labelled).toBe(false);
+    const seventeen = buildRiver(report([[422, 34], [422, 34]]))!;
+    expect(seventeen.layers.find((x) => x.topic.id === 1)!.labelled).toBe(false);
   });
   // catches: using the first bin or the widest of a different layer
   it("measures thickness at the layer's own widest bin", () => {
@@ -136,7 +138,33 @@ describe("river trimming and labels", () => {
     const { layers } = buildRiver(r)!;
     expect(layers.find((l) => l.topic.id === 3)!.labelled).toBe(true);
   });
-  // catches: label wider than the viewBox being clamped and drawn anyway
+  const edgeRows = (a: number, flip = false) => {
+    const rows = [[a, 0], [0, 228], [0, 228]];
+    return flip ? rows.map((r) => [r[1], r[0]]).reverse() : rows;
+  };
+  const named = (rows: number[][], id: number) => {
+    const r = report(rows);
+    r.topics[id].name = "N".repeat(20);
+    return buildRiver(r)!.layers.find((l) => l.topic.id === id)!;
+  };
+  // catches: clamping to w/2 (text-anchor middle crosses the plot edge) or 6.6px/char estimate
+  it("a topic peaking in the first bin keeps its label box inside x >= 8", () => {
+    const l = named(edgeRows(40), 0);
+    expect(l.labelled).toBe(true);
+    expect(labelBox(l).x).toBeGreaterThanOrEqual(8);
+    expect(labelBox(l).w).toBeCloseTo(144, 6);
+  });
+  // catches: clamping only the left edge
+  it("a topic peaking in the last bin keeps its label box inside x + w <= W - 8", () => {
+    const l = named(edgeRows(40, true), 1);
+    expect(l.labelled).toBe(true);
+    expect(labelBox(l).x + labelBox(l).w).toBeLessThanOrEqual(992);
+  });
+  // catches: thickness measured at the unclamped peak bin (20px) instead of at the clamped x (17px)
+  it("drops a label whose band is under 18px at the clamped x", () => {
+    expect(named(edgeRows(20), 0).labelled).toBe(false);
+  });
+  // catches: label wider than the clamp range being clamped and drawn anyway
   it("skips a label wider than the viewBox and keeps one that fits", () => {
     const r = report([[H, H], [H, H]]);
     r.topics[0].name = "W".repeat(200);
