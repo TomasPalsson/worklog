@@ -264,6 +264,19 @@ fn which_ok(bin: &str) -> Option<PathBuf> {
     None
 }
 
+/// Maps a service tool's result to an error carrying its stderr text.
+pub(crate) fn check_output(what: &str, out: std::io::Result<std::process::Output>) -> Result<()> {
+    let out = out.with_context(|| format!("spawning {what}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "{what} failed ({}): {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr).trim()
+    )
+}
+
 fn atomic_write(path: &Path, contents: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("mkdir {}", parent.display()))?;
@@ -312,9 +325,12 @@ mod macos {
             let _ = std::process::Command::new("launchctl")
                 .args(["unload", path.to_string_lossy().as_ref()])
                 .output();
-            let _ = std::process::Command::new("launchctl")
-                .args(["load", "-w", path.to_string_lossy().as_ref()])
-                .output();
+            check_output(
+                "launchctl load",
+                std::process::Command::new("launchctl")
+                    .args(["load", "-w", path.to_string_lossy().as_ref()])
+                    .output(),
+            )?;
         }
 
         Ok(ScheduleStatus {
@@ -490,9 +506,12 @@ mod linux {
             let _ = std::process::Command::new("systemctl")
                 .args(["--user", "daemon-reload"])
                 .status();
-            let _ = std::process::Command::new("systemctl")
-                .args(["--user", "enable", "--now", "worklog-collect.timer"])
-                .status();
+            check_output(
+                "systemctl enable",
+                std::process::Command::new("systemctl")
+                    .args(["--user", "enable", "--now", "worklog-collect.timer"])
+                    .output(),
+            )?;
         }
 
         Ok(ScheduleStatus {
@@ -592,6 +611,51 @@ mod linux {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::process::ExitStatusExt;
+
+    fn out(code: i32, stderr: &str) -> std::io::Result<std::process::Output> {
+        Ok(std::process::Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: vec![],
+            stderr: stderr.as_bytes().to_vec(),
+        })
+    }
+
+    #[test]
+    fn check_output_ok_on_exit_zero() {
+        // catches: always-Err mapping
+        assert!(check_output("launchctl load", out(0, "noise")).is_ok());
+    }
+
+    #[test]
+    fn check_output_fails_with_tool_stderr_on_nonzero() {
+        // catches: swallowing the error (let _ =) and dropping stderr text
+        let e = check_output(
+            "launchctl load",
+            out(5, "Load failed: 5: Input/output error\n"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("Load failed: 5: Input/output error"), "{e}");
+        assert!(e.contains("launchctl load"), "{e}");
+    }
+
+    #[test]
+    fn check_output_nonzero_with_empty_stderr_still_fails() {
+        // catches: only erroring when stderr is non-empty
+        let e = check_output("systemctl enable", out(1, ""))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("systemctl enable"), "{e}");
+    }
+
+    #[test]
+    fn check_output_spawn_failure_is_an_error() {
+        // catches: treating a missing binary as success
+        let err = std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert!(check_output("systemctl enable", Err(err)).is_err());
+    }
+
     #[test]
     fn never_repoints_the_real_schedule_at_a_temp_binary() {
         // Updater tests swap in a binary under the OS temp dir; that must

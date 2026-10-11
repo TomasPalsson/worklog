@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::schedule::{Platform, ENV_SCHEDULE_HOME};
+use crate::schedule::{check_output, Platform, ENV_SCHEDULE_HOME};
 
 /// launchd label + systemd unit stem. Stable across worklog versions so
 /// reinstalls never leave orphaned units behind.
@@ -40,11 +40,40 @@ pub struct DaemonServiceStatus {
 
 // ───────────────────────── public API ─────────────────────────
 
+const HEALTH_ADDR: &str = "127.0.0.1:9323";
+
 pub fn install(command: &str) -> Result<DaemonServiceStatus> {
-    match Platform::current() {
-        Platform::MacOS => macos::install(command),
-        Platform::Linux => linux::install(command),
-        Platform::Unsupported => Ok(unsupported_status()),
+    let status = match Platform::current() {
+        Platform::MacOS => macos::install(command)?,
+        Platform::Linux => linux::install(command)?,
+        Platform::Unsupported => return Ok(unsupported_status()),
+    };
+    if std::env::var_os(ENV_SCHEDULE_HOME).is_none() {
+        await_healthy(
+            HEALTH_ADDR,
+            |a| is_running(a, std::time::Duration::from_millis(200)),
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(200),
+        )?;
+    }
+    Ok(status)
+}
+
+fn await_healthy(
+    tcp: &str,
+    probe: impl Fn(&str) -> bool,
+    budget: std::time::Duration,
+    step: std::time::Duration,
+) -> Result<()> {
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        if probe(tcp) {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            anyhow::bail!("daemon did not answer /health within 5s on {tcp}");
+        }
+        std::thread::sleep(step);
     }
 }
 
@@ -324,9 +353,12 @@ mod macos {
             let _ = std::process::Command::new("launchctl")
                 .args(["unload", path.to_string_lossy().as_ref()])
                 .output();
-            let _ = std::process::Command::new("launchctl")
-                .args(["load", "-w", path.to_string_lossy().as_ref()])
-                .output();
+            check_output(
+                "launchctl load",
+                std::process::Command::new("launchctl")
+                    .args(["load", "-w", path.to_string_lossy().as_ref()])
+                    .output(),
+            )?;
         }
 
         Ok(DaemonServiceStatus {
@@ -509,9 +541,12 @@ mod linux {
             let _ = std::process::Command::new("systemctl")
                 .args(["--user", "daemon-reload"])
                 .status();
-            let _ = std::process::Command::new("systemctl")
-                .args(["--user", "enable", "--now", "worklog-daemon.service"])
-                .status();
+            check_output(
+                "systemctl enable",
+                std::process::Command::new("systemctl")
+                    .args(["--user", "enable", "--now", "worklog-daemon.service"])
+                    .output(),
+            )?;
         }
 
         Ok(DaemonServiceStatus {
@@ -592,6 +627,40 @@ mod linux {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    #[test]
+    fn await_healthy_ok_when_probe_answers_within_budget() {
+        // catches: failing on the first unanswered probe (no polling)
+        let n = Cell::new(0);
+        let r = await_healthy(
+            "127.0.0.1:1",
+            |_| {
+                n.set(n.get() + 1);
+                n.get() == 3
+            },
+            Duration::from_secs(5),
+            Duration::from_millis(1),
+        );
+        assert!(r.is_ok());
+        assert_eq!(n.get(), 3);
+    }
+
+    #[test]
+    fn await_healthy_errors_when_probe_never_answers() {
+        // catches: returning Ok without checking health
+        let e = await_healthy(
+            "127.0.0.1:1",
+            |_| false,
+            Duration::from_millis(20),
+            Duration::from_millis(1),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("127.0.0.1:1") && e.contains("5s"), "{e}");
+    }
+
     use super::*;
 
     #[test]
