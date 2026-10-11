@@ -263,12 +263,6 @@ pub fn reclassify_blocks(conn: &Connection, day_filter: Option<&str>) -> Result<
         ..Default::default()
     };
     for id in ids {
-        let project = dominant_project_path_for_block(conn, id)?;
-        let path_personal = cfg.classify(project.as_deref());
-        // Strong override: any block carrying a Jira ticket is by
-        // definition work. Assignment beats the path heuristic — if you
-        // (or the estimator) committed to a ticket, that's a clearer
-        // signal than what folder the events came from.
         let (current_personal, has_ticket, ignored): (i64, bool, bool) = conn.query_row(
             "SELECT is_personal, jira_issue IS NOT NULL AND jira_issue != '',
                     ignored_at IS NOT NULL
@@ -287,6 +281,12 @@ pub fn reclassify_blocks(conn: &Connection, day_filter: Option<&str>) -> Result<
             stats.unchanged += 1;
             continue;
         }
+        let project = dominant_project_path_for_block(conn, id)?;
+        let path_personal = cfg.classify(project.as_deref());
+        // Strong override: any block carrying a Jira ticket is by
+        // definition work. Assignment beats the path heuristic — if you
+        // (or the estimator) committed to a ticket, that's a clearer
+        // signal than what folder the events came from.
         let new_personal = path_personal && !has_ticket;
         let was_personal = current_personal != 0;
         if was_personal == new_personal {
@@ -484,6 +484,28 @@ mod tests {
         assert_eq!(is_personal(&conn, ticketed), 1);
         assert_eq!(stats.changed_to_work, 0);
         assert_eq!(stats.unchanged, 2);
+    }
+
+    #[test]
+    fn reclassify_does_not_compute_path_for_ignored_block() {
+        let conn = crate::db::open_memory().unwrap();
+        let id = block_with(&conn, 1, true, None);
+        // a blob path makes the path lookup error, so only a pass that
+        // never computes the path for an ignored block survives it
+        conn.execute(
+            "INSERT INTO events (source, source_id, started_at, title, project_path)
+             VALUES ('t','1','2026-04-18T09:00:00+00:00','x', x'ff')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+            rusqlite::params![id, conn.last_insert_rowid()],
+        )
+        .unwrap();
+        let stats = reclassify_blocks(&conn, None).unwrap();
+        assert_eq!(is_personal(&conn, id), 1);
+        assert_eq!(stats.unchanged, 1);
     }
 
     #[test]
