@@ -164,6 +164,7 @@ pub fn run_if_due(
             issues
         }
     };
+    let mut unreachable = false;
     for issue in issues {
         if !pending(conn, &today, &issue)? {
             continue;
@@ -177,6 +178,7 @@ pub fn run_if_due(
             Err(e) => {
                 tracing::warn!("auto-send {}: {e:#}", key.jira_issue);
                 set_outcome(conn, &key, Some(&format!("{UNREACHABLE}: {e}")))?;
+                unreachable = true;
                 continue;
             }
         };
@@ -187,7 +189,8 @@ pub fn run_if_due(
         let reason = rejected.map(|r| r.reason.as_deref().unwrap_or("Tempo rejected the line"));
         set_outcome(conn, &key, reason)?;
     }
-    if meta_get(conn, RECAP_KEY)?.as_deref() != Some(today.as_str()) {
+    // An unreachable Tempo defers the recap to the tick that finishes sending.
+    if !unreachable && meta_get(conn, RECAP_KEY)?.as_deref() != Some(today.as_str()) {
         let hours = envfile::read(WORK_HOURS_KEY).unwrap_or_else(|| DEFAULT_WORK_HOURS.to_owned());
         recap::build_and_store(conn, &today, &hours)?;
         meta_set(conn, RECAP_KEY, &today)?;
