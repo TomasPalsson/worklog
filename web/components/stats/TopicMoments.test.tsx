@@ -82,13 +82,19 @@ describe("momentTip", () => {
       ["Day", "Oct 7"],
       ["Time", "1h 30m"],
       ["Topic", "Billing export"],
-      ["Newness", "0.85"],
+      ["Newness", "85%"],
     ]);
   });
   it("oddball: nearest score beside the median", () => {
     const tip = momentTip(highlight({ score: 0.231 }), "oddball", "Billing export", 0.567);
-    expect(tip.rows).toContainEqual(["Closest match", "0.23"]);
-    expect(tip.rows).toContainEqual(["Your median", "0.57"]);
+    expect(tip.rows).toContainEqual(["Closest match", "23%"]);
+    expect(tip.rows).toContainEqual(["Your median", "57%"]);
+  });
+  it("clamps: novelty 1.5 -> 100%, cosine -0.5 -> 0%, median -0.1 -> 0%", () => {
+    expect(momentTip(highlight({ score: 1.5 }), "first_time", undefined, 0.5).rows).toContainEqual(["Newness", "100%"]);
+    const rows = momentTip(highlight({ score: -0.5 }), "oddball", undefined, -0.1).rows;
+    expect(rows).toContainEqual(["Closest match", "0%"]);
+    expect(rows).toContainEqual(["Your median", "0%"]);
   });
   it("missing topic drops the Topic row", () => {
     const tip = momentTip(highlight(), "first_time", undefined, 0.5);
@@ -97,6 +103,25 @@ describe("momentTip", () => {
 });
 
 describe("TopicMoments", () => {
+  // catches: raw novelty (0..2) shown unclamped
+  it("novelty 1.5 shows 100% new on card, aria-label and tip", () => {
+    const { container } = render(<TopicMoments report={report({ first_times: [highlight({ score: 1.5 })] })} />);
+    const card = container.querySelector('[data-moment="first_time"]')!;
+    expect(card.querySelector(".tm-num")!.textContent).toBe("100% new");
+    expect(card.getAttribute("aria-label")).toBe("Merge billing view: 100% new");
+    expect(parseTip(card.getAttribute("data-stip"))!.rows).toContainEqual(["Newness", "100%"]);
+  });
+  // catches: negative cosine/median shown as -50% or left unclamped in tip/How
+  it("cosine -0.5 and median -0.1 show 0% on card, aria-label, tip rows and How line", () => {
+    const { container } = render(<TopicMoments report={report({ oddballs: [highlight({ score: -0.5 })], oddball_median: -0.1 })} />);
+    const card = container.querySelector('[data-moment="oddball"]')!;
+    expect(card.querySelector(".tm-num")!.textContent).toBe("closest match 0% · your usual 0%");
+    expect(card.getAttribute("aria-label")).toBe("Merge billing view: closest match 0% · your usual 0%");
+    const rows = parseTip(card.getAttribute("data-stip"))!.rows!;
+    expect(rows).toContainEqual(["Closest match", "0%"]);
+    expect(rows).toContainEqual(["Your median", "0%"]);
+    expect(container.querySelector(".tm-how > p")!.textContent).toContain("your median block's closest is 0%.");
+  });
   it("keeps the server order in both lists (catches re-sorting by score)", () => {
     const { container } = render(<TopicMoments report={report()} />);
     const labels = (kind: string) => Array.from(container.querySelectorAll(`[data-moment="${kind}"] .tm-label`)).map((e) => e.textContent);
@@ -143,7 +168,7 @@ describe("TopicMoments", () => {
     const { container } = render(<TopicMoments report={report()} />);
     const card = container.querySelector('[data-moment="oddball"]')!;
     expect(card.getAttribute("tabindex")).toBe("0");
-    expect(card.getAttribute("aria-label")).toBe("Typed state rows: 0.23");
+    expect(card.getAttribute("aria-label")).toBe("Typed state rows: closest match 23% · your usual 57%");
     expect(parseTip(card.getAttribute("data-stip"))!.title).toBe("Typed state rows");
   });
   it("empty lists render one empty line each and no cards", () => {
@@ -157,10 +182,10 @@ describe("TopicMoments", () => {
     expect(container.querySelectorAll(".sr-empty").length).toBe(1);
     expect(container.querySelectorAll('[data-moment="first_time"]').length).toBe(2);
   });
-  it("How line carries the median to two decimals and says similarity, not cosine", () => {
+  it("How line carries the median and threshold as percentages and says similarity, not cosine", () => {
     const { container } = render(<TopicMoments report={report()} />);
     expect(container.querySelector(".tm-how > p")!.textContent).toBe(
-      "How it works: First time = lowest similarity to any earlier block, including the 60 days before the range. Your first 20 blocks are skipped — they have nothing earlier to compare with. Oddball = its closest block in this range is under 0.30 similarity; your median block's closest is 0.57.",
+      "How it works: First time = lowest similarity to any earlier block, including the 60 days before the range. Your first 20 blocks are skipped — they have nothing earlier to compare with. Oddball = its closest block in this range is under 30% similarity; your median block's closest is 57%.",
     );
     expect(container.querySelector(".tm-how > p")!.textContent).not.toMatch(/cosine/i);
   });

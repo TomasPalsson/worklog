@@ -12,7 +12,7 @@ const MILLISECONDS_PER_DAY = 86_400_000;
 const EMPTY = "Nothing here stands apart; your work is well clustered.";
 
 const dayNumber = (day: string) => Date.parse(`${day}T00:00:00Z`) / MILLISECONDS_PER_DAY;
-const score = (value: number) => value.toFixed(2);
+const percent = (value: number) => pct(Math.min(1, Math.max(0, value)));
 
 export function stripFraction(day: string, from: string, to: string): number {
   const span = dayNumber(to) - dayNumber(from);
@@ -26,8 +26,8 @@ export function momentTip(item: Highlight, kind: Kind, topicName: string | undef
     ["Time", formatDuration(item.seconds)],
   ];
   if (topicName) rows.push(["Topic", topicName]);
-  if (kind === "first_time") rows.push(["Newness", score(item.score)]);
-  else rows.push(["Closest match", score(item.score)], ["Your median", score(median)]);
+  if (kind === "first_time") rows.push(["Newness", percent(item.score)]);
+  else rows.push(["Closest match", percent(item.score)], ["Your median", percent(median)]);
   return { title: item.label, rows, accent: kind === "first_time" ? "var(--amber)" : "var(--fg-muted)" };
 }
 
@@ -42,16 +42,17 @@ interface CardProps {
 
 function MomentCard({ item, kind, topics, from, to, median }: CardProps) {
   const topicName = topics.find((t) => t.id === item.topic_id)?.name;
+  const num = kind === "first_time" ? `${percent(item.score)} new` : `closest match ${percent(item.score)} · your usual ${percent(median)}`;
   return (
     <li
       className="tm-card"
       data-moment={kind}
       tabIndex={0}
-      aria-label={`${item.label}: ${score(item.score)}`}
+      aria-label={`${item.label}: ${num}`}
       {...tipProps(momentTip(item, kind, topicName, median))}
     >
       <span className="tm-badge">{kind === "first_time" ? "New ground" : "Unlike anything else"}</span>
-      <span className="tm-num">{kind === "first_time" ? `${pct(item.score)} new` : `closest match ${pct(item.score)} · your usual ${pct(median)}`}</span>
+      <span className="tm-num">{num}</span>
       <span className="tm-label">
         {kind === "first_time" ? <FirstTimeMark /> : <OddballMark />}
         <span className="tm-clamp">{item.label}</span>
@@ -96,7 +97,7 @@ export function TopicMoments({ report }: { report: TopicsReport }) {
       <div className="tm-how">
         <p className="sr-caption">
           How it works: First time = lowest similarity to any earlier block, including the 60 days before the range. Your first 20 blocks are skipped — they have nothing earlier to compare with. Oddball = its closest block in this range is
-          under {ODDBALL_MAX_COS.toFixed(2)} similarity; your median block&apos;s closest is {score(median)}.
+          under {percent(ODDBALL_MAX_COS)} similarity; your median block&apos;s closest is {percent(median)}.
         </p>
         <details>
           <summary>Method</summary>
