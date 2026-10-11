@@ -3058,17 +3058,43 @@ fn last_prune_line(lp: Option<&worklog_core::purge::LastPrune>) -> String {
     }
 }
 
+/// A probe's table cell: its plain wording, or "check failed (reason)"
+/// when the probe itself errored — an error is not "not installed".
+fn probe_cell(probe: Result<bool, &anyhow::Error>, yes: &str, no: &str) -> String {
+    match probe {
+        Ok(true) => yes.to_owned(),
+        Ok(false) => no.to_owned(),
+        Err(e) => format!("check failed ({e})"),
+    }
+}
+
+/// Fix commands for whatever is down. `schedule` is `None` when its
+/// probe errored: unknown is not down, so it gets no hint.
+fn status_hints(daemon_up: bool, schedule: Option<bool>, web_up: bool) -> Vec<&'static str> {
+    let mut hints = Vec::new();
+    if !daemon_up {
+        hints.push("worklog daemon install");
+    }
+    if schedule == Some(false) {
+        hints.push("worklog schedule install");
+    }
+    if !web_up {
+        hints.push("worklog web up");
+    }
+    hints
+}
+
 /// `worklog status` — one screen folding the daemon / hook / schedule /
 /// web / database / secrets health checks (previously five separate
 /// `*-status` commands) plus today's tracked time. Read-only and fast.
 fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
     let daemon_up = daemon_tcp_reachable("127.0.0.1:9323");
-    let daemon_svc = worklog_core::daemon_service::status().ok();
-    let daemon_svc_on = daemon_svc.as_ref().is_some_and(|s| s.installed);
-    let hook = hook::status().ok();
-    let hook_on = hook.as_ref().is_some_and(|h| h.installed);
-    let sched = schedule::status().ok();
-    let sched_on = sched.as_ref().is_some_and(|s| s.installed);
+    let daemon_svc = worklog_core::daemon_service::status();
+    let daemon_svc_on = daemon_svc.as_ref().is_ok_and(|s| s.installed);
+    let hook = hook::status();
+    let hook_on = hook.as_ref().is_ok_and(|h| h.installed);
+    let sched = schedule::status();
+    let sched_on = sched.as_ref().is_ok_and(|s| s.installed);
 
     let audit = secrets::audit();
     let secrets_set = audit.iter().filter(|s| s.present).count();
@@ -3115,7 +3141,7 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
                 "hook": { "installed": hook_on },
                 "schedule": {
                     "installed": sched_on,
-                    "interval_secs": sched.as_ref().and_then(|s| s.interval_secs),
+                    "interval_secs": sched.as_ref().ok().and_then(|s| s.interval_secs),
                 },
                 "web": { "running": web_on },
                 "database": db_summary.as_ref().map(|d| serde_json::json!({
@@ -3152,11 +3178,11 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
             "{} {} · service {}",
             dot(daemon_up),
             if daemon_up { "running" } else { "not running" },
-            if daemon_svc_on {
-                "installed"
-            } else {
+            probe_cell(
+                daemon_svc.as_ref().map(|s| s.installed),
+                "installed",
                 "not installed"
-            },
+            ),
         ),
     ]);
     t.add_row(vec![
@@ -3164,16 +3190,16 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
         format!(
             "{} {}",
             dot(hook_on),
-            if hook_on {
-                "installed"
-            } else {
+            probe_cell(
+                hook.as_ref().map(|h| h.installed),
+                "installed",
                 "not installed"
-            },
+            ),
         ),
     ]);
     t.add_row(vec![
         "schedule".to_owned(),
-        match sched.as_ref().and_then(|s| s.interval_secs) {
+        match sched.as_ref().ok().and_then(|s| s.interval_secs) {
             Some(secs) if sched_on => format!(
                 "{} installed · {}",
                 dot(true),
@@ -3181,7 +3207,15 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
                     .map(|i| i.human())
                     .unwrap_or_else(|_| format!("{secs}s")),
             ),
-            _ => format!("{} not installed", dot(false)),
+            _ => format!(
+                "{} {}",
+                dot(false),
+                probe_cell(
+                    sched.as_ref().map(|s| s.installed),
+                    "installed",
+                    "not installed"
+                )
+            ),
         },
     ]);
     t.add_row(vec![
@@ -3218,6 +3252,12 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
         },
     ]);
     writeln!(out, "{t}")?;
+
+    let hints = status_hints(daemon_up, sched.as_ref().ok().map(|s| s.installed), web_on);
+    if !hints.is_empty() {
+        writeln!(out, "fix: {}", hints.join(" · "))?;
+        writeln!(out)?;
+    }
 
     if let Some(agg) = &today_agg {
         let mut line = format!(
@@ -5217,6 +5257,61 @@ mod tests {
             !line.chars().any(|c| c.is_ascii_digit()),
             "must contain no digits that look like a date: {line}"
         );
+    }
+
+    /// FR-14: a probe that errors says "check failed (reason)" — never
+    /// the "not installed" a swallowed error would have produced.
+    #[test]
+    fn probe_cell_error_says_check_failed_with_reason() {
+        let cell = probe_cell(Err(&anyhow::anyhow!("boom")), "installed", "not installed");
+        assert_eq!(cell, "check failed (boom)");
+    }
+
+    /// FR-14: a healthy probe keeps its plain wording for both answers.
+    #[test]
+    fn probe_cell_ok_keeps_plain_wording() {
+        assert_eq!(
+            probe_cell(Ok(true), "installed", "not installed"),
+            "installed"
+        );
+        assert_eq!(
+            probe_cell(Ok(false), "installed", "not installed"),
+            "not installed"
+        );
+    }
+
+    /// FR-15: each down component prints its own fix command.
+    #[test]
+    fn status_hints_name_the_command_for_each_down_component() {
+        assert_eq!(
+            status_hints(false, Some(false), false),
+            vec![
+                "worklog daemon install",
+                "worklog schedule install",
+                "worklog web up"
+            ]
+        );
+    }
+
+    /// FR-15: nothing down prints nothing; one down prints only its own.
+    #[test]
+    fn status_hints_only_for_what_is_down() {
+        assert!(status_hints(true, Some(true), true).is_empty());
+        assert_eq!(
+            status_hints(true, Some(true), false),
+            vec!["worklog web up"]
+        );
+        assert_eq!(
+            status_hints(false, Some(true), true),
+            vec!["worklog daemon install"]
+        );
+    }
+
+    /// FR-15: a schedule probe that failed is unknown, not down, so no
+    /// install hint is printed for it.
+    #[test]
+    fn status_hints_skip_schedule_when_probe_failed() {
+        assert!(status_hints(true, None, true).is_empty());
     }
 
     /// B36: no user-facing text anywhere in this crate or in the shipped
