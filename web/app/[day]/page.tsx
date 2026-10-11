@@ -23,6 +23,7 @@ import { DayStrip } from "@/components/DayStrip";
 import { DayFlow, type FlowBilling } from "@/components/art/DayFlow";
 import { RecapBanner } from "@/components/RecapBanner";
 import { ReviewSection } from "@/components/ReviewSection";
+import { DayLoadNotice } from "@/components/DayLoadNotice";
 import { ElsewhereList } from "@/components/ElsewhereList";
 import { EmptyState } from "@/components/EmptyState";
 import { TicketGroup } from "@/components/TicketGroup";
@@ -84,28 +85,23 @@ export default async function DayPage({
   // feeds the folder options below. `includeHidden`
   // pulls in noise + dismissed events too, so the zero-touch summary line
   // can report a hidden count without a second round trip when Review opens.
-  let routedEvents: RoutedEvent[] = [];
-  let registry: BillingRegistry | null = null;
-  let elsewhereItems: ElsewhereItem[] = [];
-  let lines: TempoLine[] = [];
-  try {
-    [routedEvents, registry, elsewhereItems, lines] = await Promise.all([
-      routedForDay(day, true),
-      loadBillingRegistry(),
-      elsewhereForDay(day),
-      tempoLines(day).catch((): TempoLine[] => []),
+  const failed: string[] = [];
+  const load = <T,>(name: string, p: Promise<T>, fallback: T): Promise<T> =>
+    p.catch(() => {
+      failed.push(name);
+      return fallback;
+    });
+  const isToday = day === todayISO();
+  const [routedEvents, registry, elsewhereItems, lines, verdict, reviewLines, recap] =
+    await Promise.all([
+      load("Unsorted events", routedForDay(day, true), [] as RoutedEvent[]),
+      load("Folder list", loadBillingRegistry(), null as BillingRegistry | null),
+      load("Elsewhere items", elsewhereForDay(day), [] as ElsewhereItem[]),
+      load("Tempo lines", tempoLines(day), [] as TempoLine[]),
+      load("Verdict status", verdictStatus(day), null),
+      isToday ? load("Review list", fetchReviewLines(), []) : [],
+      isToday ? load("Recap", call<Recap | null>("GET", "/recap"), null) : null,
     ]);
-  } catch {
-    routedEvents = [];
-    registry = null;
-    elsewhereItems = [];
-    lines = [];
-  }
-  const verdict = await verdictStatus(day).catch(() => null);
-  const reviewLines =
-    day === todayISO() ? await fetchReviewLines().catch(() => []) : [];
-  const recap =
-    day === todayISO() ? await call<Recap | null>("GET", "/recap").catch(() => null) : null;
   async function resolveGap(recapDay: string, startedAt: string, action: GapAction) {
     "use server";
     try {
@@ -190,6 +186,7 @@ export default async function DayPage({
         tickets={tickets}
         lastEnd={lastEnd}
       />
+      <DayLoadNotice failed={failed} />
       <ReviewSection key={`review-${day}`} lines={reviewLines} />
       <RecapBanner key={`recap-${day}`} recap={recap} resolve={resolveGap} />
       <DayStrip
