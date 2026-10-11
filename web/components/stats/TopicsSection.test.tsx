@@ -5,9 +5,42 @@ import { timeoutMs } from "@/lib/daemonTimeout";
 import type { TopicsReport } from "@/lib/topics_contract";
 import { TopicsSection } from "./TopicsSection";
 
-mock.module("next/navigation", () => ({ useRouter: () => ({ refresh: () => {} }) }));
+const refresh = mock(() => {});
+const router = { refresh };
+mock.module("next/navigation", () => ({ useRouter: () => router }));
 
-afterEach(cleanup);
+const realSetInterval = globalThis.setInterval;
+const realClearInterval = globalThis.clearInterval;
+
+// bun 1.2 has no jest.advanceTimersByTime; fake only the interval clock.
+function fakeIntervals() {
+  let now = 0;
+  let next = 1;
+  const live = new Map<number, { every: number; due: number; fn: () => void }>();
+  globalThis.setInterval = ((fn: () => void, every: number) => {
+    live.set(next, { every, due: now + every, fn });
+    return next++;
+  }) as unknown as typeof setInterval;
+  globalThis.clearInterval = ((id: number) => void live.delete(id)) as unknown as typeof clearInterval;
+  return (ms: number) => {
+    const end = now + ms;
+    for (;;) {
+      const [id, t] = [...live].filter(([, v]) => v.due <= end).sort((a, b) => a[1].due - b[1].due)[0] ?? [];
+      if (id === undefined || !t) break;
+      now = t.due;
+      t.due += t.every;
+      t.fn();
+    }
+    now = end;
+  };
+}
+
+afterEach(() => {
+  cleanup();
+  globalThis.setInterval = realSetInterval;
+  globalThis.clearInterval = realClearInterval;
+  refresh.mockClear();
+});
 
 const DOWN = "Topic stats need the local helper (`worklog verdict`).";
 const FEW = "Not enough described work in this range yet.";
@@ -131,5 +164,39 @@ describe("TopicsSection", () => {
   it("output carries no retired drift/sprawl/similar-days text", () => {
     const t = text(base).toLowerCase();
     for (const w of ["drift", "sprawl", "similar_days", "similar days", "catch-all"]) expect(t).not.toContain(w);
+  });
+
+  describe("refresh cadence while naming is pending", () => {
+    const pending = { ...base, naming: "pending" as const };
+
+    // catches: the old single 25 s timer (no repeat), or an initial delay other than 20 s
+    it("refreshes nothing before 20 s and exactly once at 20 s", () => {
+      const at = fakeIntervals();
+      render(<TopicsSection report={pending} />);
+      at(19_999);
+      expect(refresh).toHaveBeenCalledTimes(0);
+      at(1);
+      expect(refresh).toHaveBeenCalledTimes(1);
+    });
+
+    // catches: no cap (7th call), cap off by one (5 calls), or a non-repeating timer
+    it("refreshes 6 times by 120 s and never a 7th", () => {
+      const at = fakeIntervals();
+      render(<TopicsSection report={pending} />);
+      at(120_000);
+      expect(refresh).toHaveBeenCalledTimes(6);
+      at(600_000);
+      expect(refresh).toHaveBeenCalledTimes(6);
+    });
+
+    // catches: interval left running after unmount
+    it("makes no call after unmount", () => {
+      const at = fakeIntervals();
+      const { unmount } = render(<TopicsSection report={pending} />);
+      at(20_000);
+      unmount();
+      at(600_000);
+      expect(refresh).toHaveBeenCalledTimes(1);
+    });
   });
 });

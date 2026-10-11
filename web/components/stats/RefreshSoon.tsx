@@ -3,13 +3,15 @@
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 
-const DELAY_MS = 25_000;
-
-export function RefreshSoon() {
+export function RefreshSoon({ intervalMs = 20_000, maxTries = 6 }: { intervalMs?: number; maxTries?: number }) {
   const router = useRouter();
   useEffect(() => {
-    const id = setTimeout(() => router.refresh(), DELAY_MS);
-    return () => clearTimeout(id);
-  }, [router]);
+    let tries = 0;
+    const id = setInterval(() => {
+      router.refresh();
+      if (++tries >= maxTries) clearInterval(id);
+    }, intervalMs);
+    return () => clearInterval(id);
+  }, [router, intervalMs, maxTries]);
   return <span data-refresh-soon hidden />;
 }
