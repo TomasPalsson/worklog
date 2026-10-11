@@ -3364,6 +3364,20 @@ fn probe_errors_json<A, B, C>(
     })
 }
 
+/// `status` with the three probe-error fields merged in.
+fn with_probe_errors<A, B, C>(
+    mut status: serde_json::Value,
+    database: &Option<Result<A>>,
+    last_prune: &Option<Result<B>>,
+    today: &Option<Result<C>>,
+) -> serde_json::Value {
+    let errs = probe_errors_json(database, last_prune, today);
+    for k in ["database_error", "last_prune_error", "today_error"] {
+        status[k] = errs[k].clone();
+    }
+    status
+}
+
 /// `worklog status` — one screen folding the daemon / hook / schedule /
 /// web / database / secrets health checks (previously five separate
 /// `*-status` commands) plus today's tracked time. Read-only and fast.
@@ -3407,7 +3421,7 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
     let today_ok = today_agg.as_ref().and_then(|r| r.as_ref().ok());
 
     if json {
-        let mut status = serde_json::json!({
+        let status = serde_json::json!({
                 "daemon": {
                     "running": daemon_up,
                     "service_installed": daemon_svc_on,
@@ -3439,12 +3453,7 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
                 "sources": sources,
                 "today": today_ok.map(day_agg_json),
         });
-        if let (Some(base), Some(errs)) = (
-            status.as_object_mut(),
-            probe_errors_json(&db_summary, &last_prune, &today_agg).as_object(),
-        ) {
-            base.extend(errs.clone());
-        }
+        let status = with_probe_errors(status, &db_summary, &last_prune, &today_agg);
         writeln!(out, "{}", serde_json::to_string_pretty(&status)?)?;
         return Ok(());
     }
@@ -5743,6 +5752,20 @@ mod tests {
         assert_eq!(v["today_error"], "disk I/O error");
         let v = probe_errors_json(&never, &failed, &ok);
         assert_eq!(v["last_prune_error"], "disk I/O error");
+    }
+
+    /// The status document itself carries the failed-probe text, beside
+    /// the fields already there. Catches a merge that is dropped or skipped.
+    #[test]
+    fn status_json_with_probe_errors_carries_failed_probe_text() {
+        let failed: Option<Result<u8>> = Some(Err(anyhow::anyhow!("disk I/O error")));
+        let ok: Option<Result<u8>> = Some(Ok(1));
+        let base = serde_json::json!({ "web": { "running": true } });
+        let v = with_probe_errors(base, &failed, &ok, &failed);
+        assert_eq!(v["database_error"], "disk I/O error");
+        assert!(v["last_prune_error"].is_null());
+        assert_eq!(v["today_error"], "disk I/O error");
+        assert_eq!(v["web"]["running"], true);
     }
 
     /// FR-17 at the call site: cmd_status reads health through sources_from_db.
