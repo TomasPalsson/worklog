@@ -16,8 +16,8 @@ const NAME_CHAR_W = 0.62; // mono advance per font-size, including letter-spacin
 const LABEL_MIN_X = 8;
 const LABEL_MAX_X = GAL_W - 8;
 const MIN_FONT = 11;
-const LABEL_GAP = 2; // breathing room kept between nudged labels
-const LABEL_LINE_GAP = 14; // hours line under the name
+const LABEL_GAP = 8; // breathing room kept between nudged labels
+const LABEL_LINE_GAP = 16; // name-to-hours baseline step; the hours line is part of the label's box
 
 const HOW =
   "How it works: Each dot is a work block. Blocks about similar things sit close together, and each cluster is a topic. Names come from AI (Haiku), or from keywords if no model is available. Distance between islands is only roughly meaningful.";

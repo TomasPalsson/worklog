@@ -423,3 +423,34 @@ describe("TopicGalaxy markup", () => {
     expect(container.innerHTML).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
   });
 });
+
+describe("phone tap targets and spacing", () => {
+  const css = readFileSync(`${import.meta.dir}/../../app/stats/galaxy.css`, "utf8");
+  const phone = [...css.matchAll(/@media \(max-width: 599px\) \{([^@]*)\}\s*(?=\n|$)/g)].map((m) => m[1]).join("\n");
+
+  it("below 600px the hit circle is scaled x3 about its centre", () => {
+    expect(phone).toMatch(/\.sx-gal-hit\s*\{[^}]*transform-box:\s*fill-box/); // catches missing fill-box (scales about the svg origin)
+    expect(phone).toMatch(/\.sx-gal-hit\s*\{[^}]*transform-origin:\s*center/);
+    expect(phone).toMatch(/\.sx-gal-hit\s*\{[^}]*transform:\s*scale\(3\)/); // catches no enlargement
+  });
+
+  it("below 600px the map container is at least 260px tall", () => {
+    expect(phone).toMatch(/\.sx-gal-map\s*\{[^}]*min-height:\s*260px/); // catches a desktop-only or smaller min-height
+  });
+
+  it("two labels at the same median y end at least 8px apart including the hours line", () => {
+    const topics = [topic(0, { name: "code interpreter infrastructure" }), topic(1, { name: "code interpreter and history configuration" })];
+    const { labels } = galaxyLayout(report({ topics, points: [point(1, { topic_id: 0 }), point(2, { topic_id: 1 })] }));
+    const [a, b] = [...labels].sort((p, q) => p.y - q.y);
+    expect(a.h).toBeCloseTo(a.fontSize + 16, 10); // catches the old name-only box (font + 14)
+    expect(b.y - b.h / 2 - (a.y + a.h / 2)).toBeGreaterThanOrEqual(8 - 1e-9); // catches the 2px pad
+  });
+
+  it("every caption and legend font rule is at least 13px", () => {
+    for (const sel of ["sx-gal-hours", "sx-gal-chip", "sx-gal-legend", "sx-gal-list-hours", "sx-gal-how", "sx-gal-method"]) {
+      const m = css.match(new RegExp(`\\.${sel}\\s*\\{[^}]*font-size:\\s*(\\d+(?:\\.\\d+)?)px`));
+      expect(m).not.toBeNull();
+      expect(Number(m![1])).toBeGreaterThanOrEqual(13); // catches a leftover 12px
+    }
+  });
+});
