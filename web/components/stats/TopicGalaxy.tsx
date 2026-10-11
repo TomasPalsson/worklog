@@ -12,6 +12,9 @@ const NEBULA_R = 26;
 const NUDGE_ITERATIONS = 20;
 const MAX_DELAY_MS = 1200;
 const NAME_CHAR_W = 0.62; // mono advance per font-size, including letter-spacing
+const LABEL_MIN_X = 8;
+const LABEL_MAX_X = GAL_W - 8;
+const MIN_FONT = 11;
 const LABEL_GAP = 2; // breathing room kept between nudged labels
 const LABEL_LINE_GAP = 14; // hours line under the name
 
@@ -19,8 +22,7 @@ const HOW =
   "How: Each dot is a work block. The local embedding model turns its text into a vector, the vectors are centered, and t-SNE (perplexity 30) lays them out so similar work sits close together. Topics come from average-linkage clustering. Names: AI (Haiku) from keywords plus examples, or keywords if no model is available. Distance between islands is only roughly meaningful.";
 
 const hoursLabel = (sec: number) => `${(sec / 3600).toFixed(1)}h`;
-const hue = (i: number, n: number) =>
-  `oklch(var(--project-l) var(--project-c) ${Math.round((i * 360) / Math.max(1, n) + 25) % 360})`;
+const hue = (id: number, n: number) => `oklch(var(--project-l) var(--project-c) ${25 + id * (360 / Math.max(1, n))})`;
 
 export interface GalaxyDot {
   point: MapPoint;
@@ -34,6 +36,7 @@ export interface GalaxyDot {
 
 export interface GalaxyLabel {
   topic: Topic;
+  text: string;
   x: number;
   y: number;
   fontSize: number;
@@ -60,7 +63,7 @@ function weightedMedian(vals: { v: number; w: number }[]): number {
 /** Pure placement of dots and labels in the 1000x620 viewBox. */
 export function galaxyLayout(report: Pick<TopicsReport, "topics" | "points">): GalaxyLayout {
   const { topics } = report;
-  const index = new Map(topics.map((t, i) => [t.id, i]));
+  const index = new Set(topics.map((t) => t.id));
   const points = report.points.filter((p) => index.has(p.topic_id));
   const maxSec = Math.max(1, ...points.map((p) => p.seconds));
   const order = [...points].sort((a, b) => a.day.localeCompare(b.day) || a.block_id - b.block_id);
@@ -73,7 +76,7 @@ export function galaxyLayout(report: Pick<TopicsReport, "topics" | "points">): G
       cx: PAD + p.x * (GAL_W - 2 * PAD),
       cy: PAD + p.y * (GAL_H - 2 * PAD),
       r: 2.5 + 6 * Math.sqrt(p.seconds / maxSec),
-      fill: hue(index.get(p.topic_id) ?? 0, topics.length),
+      fill: hue(p.topic_id, topics.length),
       rank,
       delayMs: Math.min(rank * 3, MAX_DELAY_MS),
     };
@@ -85,13 +88,19 @@ export function galaxyLayout(report: Pick<TopicsReport, "topics" | "points">): G
     const mine = dots.filter((d) => d.point.topic_id === topic.id);
     if (mine.length === 0) continue;
     const wts = (f: (d: GalaxyDot) => number) => mine.map((d) => ({ v: f(d), w: d.point.seconds + 1 }));
-    const fontSize = 11 + 9 * Math.sqrt(totalSec > 0 ? topic.seconds / totalSec : 0);
+    const wanted = MIN_FONT + 9 * Math.sqrt(totalSec > 0 ? topic.seconds / totalSec : 0);
+    const room = LABEL_MAX_X - LABEL_MIN_X;
+    const fontSize = Math.max(MIN_FONT, Math.min(wanted, room / (topic.name.length * NAME_CHAR_W)));
+    const maxChars = Math.floor(room / (fontSize * NAME_CHAR_W));
+    const text = topic.name.length > maxChars ? `${topic.name.slice(0, maxChars - 1)}…` : topic.name;
+    const w = text.length * fontSize * NAME_CHAR_W;
     labels.push({
       topic,
-      x: weightedMedian(wts((d) => d.cx)),
+      text,
+      x: Math.min(LABEL_MAX_X - w / 2, Math.max(LABEL_MIN_X + w / 2, weightedMedian(wts((d) => d.cx)))),
       y: weightedMedian(wts((d) => d.cy)),
       fontSize,
-      w: topic.name.length * fontSize * NAME_CHAR_W,
+      w,
       h: fontSize + LABEL_LINE_GAP,
     });
   }
@@ -136,7 +145,7 @@ export function galaxyTipLabel(t: Topic): Tip {
     rows: [
       ["Keywords", t.keywords.length ? t.keywords.join(", ") : "none"],
       ["Hours", hoursLabel(t.seconds)],
-      ["Blocks", String(t.blocks)],
+      ["Blocks", `${t.blocks} · ${t.first_day} … ${t.last_day}`],
     ],
   };
 }
@@ -168,7 +177,7 @@ function Star({ d, topicName }: { d: GalaxyDot; topicName: string }) {
         cy={d.cy}
         r={d.r}
         fill={d.fill}
-        tabIndex={0}
+        tabIndex={-1}
         aria-label={`${p.label}, ${p.day}, ${formatDuration(p.seconds)}`}
         style={{ ["--i" as string]: d.rank, animationDelay: `${d.delayMs}ms` }}
         {...tipProps(galaxyTipDot(p, topicName))}
@@ -196,7 +205,7 @@ function Label({ l }: { l: GalaxyLabel }) {
       {...tipProps(galaxyTipLabel(l.topic))}
     >
       <text className="sx-gal-name" x={l.x} y={top} textAnchor="middle" fontSize={l.fontSize}>
-        {l.topic.name}
+        {l.text}
       </text>
       <text className="sx-gal-hours" x={l.x} y={top + LABEL_LINE_GAP} textAnchor="middle">
         {hoursLabel(l.topic.seconds)}
@@ -214,8 +223,12 @@ function GalaxyMap({ report, layout }: { report: TopicsReport; layout: GalaxyLay
   const hover = report.topics
     .map(
       (t) =>
-        `.sx-gal:has([data-t="${t.id}"]:hover) :is(.sx-gal-dot,.sx-gal-ring,.sx-gal-neb,.sx-gal-label,.sx-gal-mark):not([data-t="${t.id}"]){opacity:.12}`,
+        [":hover", ":focus-visible", ":focus-within"].map(
+          (state) =>
+            `.sx-gal:has([data-t="${t.id}"]${state}) :is(.sx-gal-dot,.sx-gal-ring,.sx-gal-neb,.sx-gal-label,.sx-gal-mark):not([data-t="${t.id}"]){opacity:.12}`,
+        ),
     )
+    .flat()
     .join("");
   return (
     <svg className="sx-gal-svg" viewBox={`0 0 ${GAL_W} ${GAL_H}`} role="group" aria-label="Topic map of your work blocks">

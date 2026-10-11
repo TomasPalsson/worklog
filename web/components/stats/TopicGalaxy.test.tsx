@@ -118,12 +118,12 @@ describe("galaxyLayout labels", () => {
       report({
         points: [
           point(1, { x: 0, seconds: 3600 }),
-          point(2, { x: 0.5, seconds: 3600 }),
-          point(3, { x: 1, seconds: 100000 }),
+          point(2, { x: 0.25, seconds: 3600 }),
+          point(3, { x: 0.5, seconds: 100000 }),
         ],
       }),
     );
-    expect(l.labels[0].x).toBe(960);
+    expect(l.labels[0].x).toBe(500);
   });
 
   it("a topic with no points gets no label", () => {
@@ -139,6 +139,66 @@ describe("galaxyLayout labels", () => {
     for (let i = 0; i < labels.length; i++)
       for (let j = i + 1; j < labels.length; j++) expect(overlaps(labels[i], labels[j])).toBe(false);
     for (const l of labels) expect(l.y - l.h / 2).toBeGreaterThanOrEqual(0);
+  });
+
+  it("a long-named label on an island at x=1 ends fully inside [8, 992]", () => {
+    const name = "Billing export · invoice · customer";
+    const { labels } = galaxyLayout(
+      report({ topics: [topic(0, { name })], points: [point(1, { x: 0, y: 0.5 }), point(2, { x: 0.001, y: 0.5 })] }),
+    );
+    const l = labels[0];
+    expect(l.x - l.w / 2).toBeGreaterThanOrEqual(8);
+    expect(l.x + l.w / 2).toBeLessThanOrEqual(992);
+    expect(l.text).toBe(name);
+  });
+
+  it("a long-named label at the right edge is clamped to x1 <= 992", () => {
+    const { labels } = galaxyLayout(
+      report({ topics: [topic(0, { name: "Billing export · invoice · customer" })], points: [point(1, { x: 1 })] }),
+    );
+    expect(labels[0].x + labels[0].w / 2).toBeLessThanOrEqual(992);
+    expect(labels[0].x + labels[0].w / 2).toBeGreaterThan(900);
+  });
+
+  it("a name wider than the map shrinks to the 11px floor, then truncates with an ellipsis within bounds", () => {
+    const name = "x".repeat(200);
+    const { labels } = galaxyLayout(report({ topics: [topic(0, { name })], points: [point(1)] }));
+    const l = labels[0];
+    expect(l.fontSize).toBe(11);
+    expect(l.text.endsWith("…")).toBe(true);
+    expect(l.text.length).toBeLessThan(200);
+    expect(l.x - l.w / 2).toBeGreaterThanOrEqual(8);
+    expect(l.x + l.w / 2).toBeLessThanOrEqual(992);
+    expect(l.topic.name).toBe(name);
+  });
+
+  it("a name that fits only after shrinking is not truncated", () => {
+    const name = "y".repeat(100);
+    const { labels } = galaxyLayout(report({ topics: [topic(0, { name })], points: [point(1)] }));
+    expect(labels[0].text).toBe(name);
+    expect(labels[0].fontSize).toBeLessThan(20);
+    expect(labels[0].fontSize).toBeGreaterThanOrEqual(11);
+    expect(labels[0].w).toBeLessThanOrEqual(984);
+  });
+
+  it("six labels crowded at the right edge stay inside the map and never overlap", () => {
+    const topics = Array.from({ length: 6 }, (_, i) => topic(i, { name: `Billing export · invoice ${i}`, seconds: 3600 * (i + 1) }));
+    const points = topics.map((t, i) => point(i + 1, { topic_id: t.id, x: 1, y: 0.5 + i * 0.01 }));
+    const { labels } = galaxyLayout(report({ topics, points }));
+    for (const l of labels) {
+      expect(l.x - l.w / 2).toBeGreaterThanOrEqual(8);
+      expect(l.x + l.w / 2).toBeLessThanOrEqual(992);
+      expect(l.y - l.h / 2).toBeGreaterThanOrEqual(0);
+      expect(l.y + l.h / 2).toBeLessThanOrEqual(620);
+    }
+    for (let i = 0; i < labels.length; i++)
+      for (let j = i + 1; j < labels.length; j++) expect(overlaps(labels[i], labels[j])).toBe(false);
+  });
+
+  it("hue comes from the topic id, not array position: id 3 of K=10 is 133", () => {
+    const topics = [topic(3), ...Array.from({ length: 9 }, (_, i) => topic(i < 3 ? i : i + 1))];
+    const { dots } = galaxyLayout(report({ topics, points: [point(1, { topic_id: 3 })] }));
+    expect(dots[0].fill).toBe("oklch(var(--project-l) var(--project-c) 133)");
   });
 
   it("labels far apart horizontally are left where they are", () => {
@@ -172,14 +232,14 @@ describe("tips", () => {
   });
 
   it("label tip carries description, keywords, hours and blocks", () => {
-    const t = topic(0, { name: "Auth", description: "Login work", keywords: ["login", "token"], seconds: 9000, blocks: 4 });
+    const t = topic(0, { name: "Auth", description: "Login work", keywords: ["login", "token"], seconds: 9000, blocks: 4, first_day: "2026-10-01", last_day: "2026-10-03" });
     expect(galaxyTipLabel(t)).toEqual({
       title: "Auth",
       sub: "Login work",
       rows: [
         ["Keywords", "login, token"],
         ["Hours", "2.5h"],
-        ["Blocks", "4"],
+        ["Blocks", "4 · 2026-10-01 … 2026-10-03"],
       ],
     });
   });
@@ -196,12 +256,12 @@ describe("TopicGalaxy markup", () => {
     first_times: [{ block_id: 3, day: "2026-10-01", label: "x", ticket: null, topic_id: 0, seconds: 3600, score: 1 }],
   });
 
-  it("every dot has tabIndex 0 and an aria-label", () => {
+  it("dots are pointer-only (tabindex -1, still tipped) and labels are the tab stops", () => {
     const { container } = render(<TopicGalaxy report={full} />);
     const dots = container.querySelectorAll(".sx-gal-dot");
     expect(dots).toHaveLength(3);
     for (const d of dots) {
-      expect(d.getAttribute("tabindex")).toBe("0");
+      expect(d.getAttribute("tabindex")).toBe("-1");
       expect(d.getAttribute("aria-label")).toBeTruthy();
       expect(d.getAttribute("data-stip")).toBeTruthy();
     }
@@ -247,7 +307,14 @@ describe("TopicGalaxy markup", () => {
     const css = container.querySelector("style")!.textContent!;
     expect(css).toContain('.sx-gal:has([data-t="0"]:hover)');
     expect(css).toContain('.sx-gal:has([data-t="1"]:hover)');
-    expect(css.match(/opacity:\.12/g)).toHaveLength(2);
+    expect(css.match(/opacity:\.12/g)).toHaveLength(2 * 3);
+  });
+
+  it("isolation also triggers on keyboard focus (focus-visible and focus-within)", () => {
+    const { container } = render(<TopicGalaxy report={full} />);
+    const css = container.querySelector("style")!.textContent!;
+    expect(css).toContain('[data-t="0"]:focus-visible');
+    expect(css).toContain('[data-t="1"]:focus-within');
   });
 
   it("shows the How line", () => {
