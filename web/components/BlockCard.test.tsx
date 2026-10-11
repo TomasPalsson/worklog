@@ -393,6 +393,17 @@ describe("BlockCard ignore menu (FR-06)", () => {
     expect(mergeGroup).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["synced", { tempo_worklog_id: "77" }],
+    ["exported", { exported_at: `${DAY}T18:00:00Z` }],
+    ["personal", { is_personal: true }],
+  ])("Duplicate never merges into a %s neighbour (catches changing billed hours)", async (_, o) => {
+    open([self, at(2, "10:30", "11:00", o)]);
+    pick("Duplicate");
+    await waitFor(() => expect(setIgnored).toHaveBeenCalledWith(1, true, DAY, "duplicate"));
+    expect(mergeGroup).not.toHaveBeenCalled();
+  });
+
   it("Duplicate on an unticketed block does not merge with another unticketed block (null == null)", async () => {
     open([makeBlock({ id: 2, jira_issue: null })], makeBlock({ id: 1, jira_issue: null }));
     pick("Duplicate");
