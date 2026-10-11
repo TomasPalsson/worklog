@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { EyeOff } from "lucide-react";
 import type { Block } from "@/lib/types";
 import { formatRange } from "@/lib/format";
 import { mergeGroup, setIgnored, undoLastChange } from "@/app/actions";
+import { useMenuDismiss } from "./useMenuDismiss";
 import { toast } from "@/lib/toast";
 import type { IgnoreReason } from "@/lib/time_leaks_contract";
 
@@ -26,19 +27,7 @@ export function IgnoreMenu({ block, day, dayBlocks, onInternal }: Props) {
   const exported = !!block.exported_at;
   const timeRangeLabel = formatRange(block.started_at, block.ended_at);
 
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setMenuOpen(false);
-    const onDown = (e: MouseEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setMenuOpen(false);
-    };
-    document.addEventListener("keydown", onKey);
-    document.addEventListener("mousedown", onDown);
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      document.removeEventListener("mousedown", onDown);
-    };
-  }, [menuOpen]);
+  useMenuDismiss(menuOpen, rootRef, () => setMenuOpen(false));
 
   const onIgnore = (reason: IgnoreReason) => {
     setMenuOpen(false);

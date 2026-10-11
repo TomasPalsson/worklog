@@ -481,6 +481,15 @@ describe("BlockCard ignore menu (FR-06)", () => {
     expect(trigger()).toBeNull();
   });
 
+  it("the Internal ticket picker goes away on an outside click (catches picking stuck true)", async () => {
+    open([]);
+    pick("Internal");
+    await screen.findByLabelText("Search tickets");
+    fireEvent.mouseDown(document.body);
+    await act(async () => {});
+    expect(document.querySelector('[aria-label^="Change ticket"]')).toBeNull();
+  });
+
   it("the Internal ticket picker goes away on Escape (catches a picker stuck open)", async () => {
     open([]);
     pick("Internal");

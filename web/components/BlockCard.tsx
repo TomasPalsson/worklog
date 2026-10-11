@@ -21,6 +21,7 @@ import { TicketCombobox } from "./TicketCombobox";
 import { EventList } from "./EventList";
 import { CommitList } from "./CommitList";
 import { IgnoreMenu } from "./IgnoreMenu";
+import { useMenuDismiss } from "./useMenuDismiss";
 import { isAutoTicket } from "@/lib/tempo_line_contract";
 
 interface Props {
@@ -64,6 +65,8 @@ export function BlockCard({
 }: Props) {
   const [editingDur, setEditingDur] = useState(false);
   const [picking, setPicking] = useState(false);
+  const pickRef = useRef<HTMLSpanElement>(null);
+  useMenuDismiss(picking, pickRef, () => setPicking(false));
   const [durVal, setDurVal] = useState(Math.round(block.duration_seconds / 60));
   const [isPending, start] = useTransition();
   const descRef = useRef<HTMLDivElement>(null);
@@ -243,10 +246,7 @@ export function BlockCard({
 
         <div className="block-title-row">
           {(!hideTicketing || picking) && (
-            <span
-              style={{ display: "contents" }}
-              onKeyDown={(e) => e.key === "Escape" && setPicking(false)}
-            >
+            <span ref={pickRef} style={{ display: "contents" }}>
               <TicketCombobox
                 key={String(picking)}
                 defaultOpen={picking}
