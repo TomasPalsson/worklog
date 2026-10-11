@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "bun:test";
 import { cleanup, render } from "@testing-library/react";
 import type { MapPoint, Topic, TopicsReport } from "@/lib/topics_contract";
-import { galaxyLayout, galaxyTipDot, galaxyTipLabel, TopicGalaxy } from "./TopicGalaxy";
+import { galaxyLayout, galaxyTipDot, galaxyTipLabel, TopicGalaxy, wrapName } from "./TopicGalaxy";
 
 afterEach(cleanup);
 
@@ -101,6 +101,40 @@ describe("galaxyLayout dots", () => {
   });
 });
 
+describe("wrapName", () => {
+  const a = (n: number) => "a".repeat(n);
+  it("24 chars stays one line", () => {
+    expect(wrapName(a(24))).toEqual([a(24)]); // catches >= instead of >
+  });
+  it("25 chars with a space at index 12 splits there", () => {
+    expect(wrapName(`${a(12)} ${a(12)}`)).toEqual([a(12), a(12)]); // catches no wrap for 25
+  });
+  it("wraps at the last space at or before index 24, keeping whole words", () => {
+    expect(wrapName("Code Interpreter and History Configuration")).toEqual(["Code Interpreter and", "History Configuration"]); // catches a hard cut at 24
+  });
+  it("a space exactly at index 24 is a valid split point", () => {
+    expect(wrapName(`${a(24)} bbb`)).toEqual([a(24), "bbb"]); // catches < 24 instead of <= 24
+  });
+  it("a space at index 25 is too late: the first 24 chars are the first line", () => {
+    expect(wrapName(`${a(25)} bbb`)).toEqual([a(24), `${a(1)} bbb`]); // catches searching past index 24
+  });
+  it("a 60-char spaced name gives two lines, each <= 24, second ending in an ellipsis", () => {
+    const name = Array.from({ length: 10 }, () => "abcde").join(" "); // 59 chars
+    const lines = wrapName(name);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toBe("abcde abcde abcde abcde"); // last space <= 24 is at 23
+    expect(lines[1]).toBe(`${"abcde abcde abcde abcde abcde abcde".slice(0, 23)}…`); // catches an uncut second line
+    for (const l of lines) expect(l.length).toBeLessThanOrEqual(24);
+  });
+  it("a 30-char name with no space is its first 24 chars then the rest", () => {
+    expect(wrapName(a(30))).toEqual([a(24), a(6)]); // catches a cut to one line
+  });
+  it("a second line of exactly 24 is kept, 25 is cut", () => {
+    expect(wrapName(`${a(10)} ${a(24)}`)).toEqual([a(10), a(24)]); // catches > 23 on the second line
+    expect(wrapName(`${a(10)} ${a(25)}`)).toEqual([a(10), `${a(23)}…`]); // catches no cut on the second line
+  });
+});
+
 describe("galaxyLayout labels", () => {
   it("font size is 11 + 9*sqrt(share): whole share 20, quarter share 15.5", () => {
     const whole = galaxyLayout(report());
@@ -150,7 +184,7 @@ describe("galaxyLayout labels", () => {
     const l = labels[0];
     expect(l.x - l.w / 2).toBeGreaterThanOrEqual(8);
     expect(l.x + l.w / 2).toBeLessThanOrEqual(992);
-    expect(l.text).toBe("Billing export ·…");
+    expect(l.lines).toEqual(["Billing export · invoice", "· customer"]);
   });
 
   it("a long-named label at the right edge is clamped to x1 <= 992", () => {
@@ -161,38 +195,41 @@ describe("galaxyLayout labels", () => {
     expect(labels[0].x + labels[0].w / 2).toBeCloseTo(992, 6);
   });
 
-  it("a 200-char name is cut to 24 chars ending in an ellipsis; the topic keeps the full name", () => {
+  it("a 200-char name wraps to two lines, the second cut to 23 chars + ellipsis; the topic keeps the full name", () => {
     const name = "x".repeat(200);
     const { labels } = galaxyLayout(report({ topics: [topic(0, { name })], points: [point(1)] }));
     const l = labels[0];
-    expect(l.text).toBe(`${"x".repeat(23)}…`);
+    expect(l.lines).toEqual(["x".repeat(24), `${"x".repeat(23)}…`]);
     expect(l.topic.name).toBe(name);
     expect(l.x + l.w / 2).toBeLessThanOrEqual(992);
   });
 
-  it("a 24-char name is kept whole, a 25-char name is cut", () => {
-    const at = galaxyLayout(report({ topics: [topic(0, { name: "a".repeat(24) })], points: [point(1)] }));
-    expect(at.labels[0].text).toBe("a".repeat(24)); // catches >= instead of >
-    const past = galaxyLayout(report({ topics: [topic(0, { name: "a".repeat(25) })], points: [point(1)] }));
-    expect(past.labels[0].text).toBe(`${"a".repeat(23)}…`);
-  });
-
-  it("a 42-char name is cut at the last space within 23 chars and renders with its full aria-label", () => {
+  it("the 42-char name renders two tspans, no ellipsis, and the full aria-label", () => {
     const name = "Code Interpreter and History Configuration";
-    expect(name).toHaveLength(42);
-    const { labels } = galaxyLayout(report({ topics: [topic(0, { name })], points: [point(1)] }));
-    expect(labels[0].text).toBe("Code Interpreter and…"); // catches a hard cut at 23 ("Code Interpreter and Hi…")
-    expect(labels[0].text.length).toBeLessThanOrEqual(24);
     const { container } = render(<TopicGalaxy report={report({ topics: [topic(0, { name })], points: [point(1)] })} />);
     const g = container.querySelector(".sx-gal-label")!;
     expect(g.getAttribute("aria-label")).toBe(`${name}, 1.0h`);
-    expect(g.querySelector("text.sx-gal-name")!.textContent).toBe("Code Interpreter and…");
+    const text = g.querySelector("text.sx-gal-name")!;
+    const spans = text.querySelectorAll("tspan");
+    expect(spans).toHaveLength(2); // catches a single-line render
+    expect([...spans].map((s) => s.textContent)).toEqual(["Code Interpreter and", "History Configuration"]);
+    expect(text.textContent).not.toContain("…"); // catches the old cut
+    expect(spans[0].getAttribute("dy")).toBe("0");
+    expect(spans[1].getAttribute("x")).toBe(spans[0].getAttribute("x")); // catches a second line that drifts off-centre
+    const fs = Number(text.getAttribute("font-size"));
+    expect(Number(spans[1].getAttribute("dy"))).toBeCloseTo(fs * 1.1, 6);
   });
 
-  it("a space at or before char 10 is not used as the cut point", () => {
-    const name = `abcdefghij ${"k".repeat(30)}`; // only space is at index 10
-    const { labels } = galaxyLayout(report({ topics: [topic(0, { name })], points: [point(1)] }));
-    expect(labels[0].text).toBe(`${name.slice(0, 23)}…`); // catches a cut to "abcdefghij…"
+  it("a wrapped label is taller than an unwrapped one at the same font size, by one 1.1 line", () => {
+    const one = galaxyLayout(report({ topics: [topic(0, { name: "Short name" })], points: [point(1)] })).labels[0];
+    const two = galaxyLayout(report({ topics: [topic(0, { name: "Code Interpreter and History Configuration" })], points: [point(1)] })).labels[0];
+    expect(two.fontSize).toBeCloseTo(one.fontSize, 10);
+    expect(two.h - one.h).toBeCloseTo(one.fontSize * 1.1, 10); // catches an unchanged box
+  });
+
+  it("a wrapped label's width is its widest line", () => {
+    const l = galaxyLayout(report({ topics: [topic(0, { name: "Code Interpreter and History Configuration" })], points: [point(1)] })).labels[0];
+    expect(l.w).toBeCloseTo(21 * l.fontSize * 0.62, 10); // second line (21) is wider than the first (20)
   });
 
   it("ten topics with two near-identical long-named centroids end with no overlapping boxes, all inside the map", () => {
@@ -222,7 +259,11 @@ describe("galaxyLayout labels", () => {
 
   it("six labels crowded at the right edge stay inside the map and never overlap", () => {
     const topics = Array.from({ length: 6 }, (_, i) => topic(i, { name: `Billing export · invoice ${i}`, seconds: 3600 * (i + 1) }));
-    const points = topics.map((t, i) => point(i + 1, { topic_id: t.id, x: 1, y: 0.5 + i * 0.01 }));
+    const points = [
+      ...topics.map((t, i) => point(i + 1, { topic_id: t.id, x: 1, y: 0.5 + i * 0.01 })),
+      point(7, { topic_id: 0, x: 0, y: 0 }),
+      point(8, { topic_id: 0, x: 0, y: 1 }),
+    ]; // full y range: six two-line labels need more than the 360 minimum height
     const { labels } = galaxyLayout(report({ topics, points }));
     for (const l of labels) {
       expect(l.x - l.w / 2).toBeGreaterThanOrEqual(8);
@@ -514,7 +555,7 @@ describe("phone tap targets and spacing", () => {
     const topics = [topic(0, { name: "code interpreter infrastructure" }), topic(1, { name: "code interpreter and history configuration" })];
     const { labels } = galaxyLayout(report({ topics, points: [point(1, { topic_id: 0 }), point(2, { topic_id: 1 })] }));
     const [a, b] = [...labels].sort((p, q) => p.y - q.y);
-    expect(a.h).toBeCloseTo(a.fontSize + 16 + 13, 10); // catches the name-only box
+    expect(a.h).toBeCloseTo(a.fontSize * 2.1 + 16 + 13, 10); // catches the name-only box (both names wrap to two lines)
     expect(b.y - b.h / 2 - (a.y + a.h / 2)).toBeGreaterThanOrEqual(8 - 1e-9); // catches the 2px pad
   });
 

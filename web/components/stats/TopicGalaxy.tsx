@@ -18,6 +18,7 @@ const LABEL_MIN_X = 8;
 const LABEL_MAX_X = GAL_W - 8;
 const MIN_FONT = 11;
 const LABEL_GAP = 8; // breathing room kept between nudged labels
+const NAME_LINE_H = 1.1; // second name line step, per font-size
 const LABEL_LINE_GAP = 16; // name-to-hours baseline step; the hours line is part of the label's box
 const HOURS_FONT = 13; // keep equal to .sx-gal-hours font-size in galaxy.css
 const MAX_LABEL_CHARS = 24;
@@ -41,7 +42,7 @@ export interface GalaxyDot {
 
 export interface GalaxyLabel {
   topic: Topic;
-  text: string;
+  lines: string[];
   x: number;
   y: number;
   fontSize: number;
@@ -66,11 +67,12 @@ function weightedMedian(vals: { v: number; w: number }[]): number {
   return sorted[0].v;
 }
 
-function shortName(name: string): string {
-  if (name.length <= MAX_LABEL_CHARS) return name;
-  const cut = name.slice(0, MAX_LABEL_CHARS - 1);
-  const space = cut.lastIndexOf(" ");
-  return `${space > 10 ? cut.slice(0, space) : cut}…`;
+export function wrapName(name: string): string[] {
+  if (name.length <= MAX_LABEL_CHARS) return [name];
+  const space = name.lastIndexOf(" ", MAX_LABEL_CHARS);
+  const at = space > 0 ? space : MAX_LABEL_CHARS;
+  const rest = name.slice(space > 0 ? at + 1 : at);
+  return [name.slice(0, at), rest.length > MAX_LABEL_CHARS ? `${rest.slice(0, MAX_LABEL_CHARS - 1)}…` : rest];
 }
 
 /** Pure placement of dots and labels in a 1000-wide viewBox whose height follows the y extent. */
@@ -108,17 +110,17 @@ export function galaxyLayout(report: Pick<TopicsReport, "topics" | "points">): G
     if (mine.length === 0) continue;
     const wts = (f: (d: GalaxyDot) => number) => mine.map((d) => ({ v: f(d), w: d.point.seconds + 1 }));
     const fontSize = MIN_FONT + 9 * Math.sqrt(totalSec > 0 ? topic.seconds / totalSec : 0);
-    const text = shortName(topic.name);
+    const lines = wrapName(topic.name);
     const hoursW = hoursLabel(topic.seconds).length * HOURS_FONT * NAME_CHAR_W;
-    const w = Math.max(text.length * fontSize * NAME_CHAR_W, hoursW);
+    const w = Math.max(Math.max(...lines.map((t) => t.length)) * fontSize * NAME_CHAR_W, hoursW);
     labels.push({
       topic,
-      text,
+      lines,
       x: weightedMedian(wts((d) => d.cx)),
       y: weightedMedian(wts((d) => d.cy)),
       fontSize,
       w,
-      h: fontSize + LABEL_LINE_GAP + HOURS_FONT,
+      h: fontSize * (1 + (lines.length - 1) * NAME_LINE_H) + LABEL_LINE_GAP + HOURS_FONT,
     });
   }
 
@@ -238,9 +240,13 @@ function Label({ l, color }: { l: GalaxyLabel; color: string }) {
       {...tipProps(galaxyTipLabel(l.topic))}
     >
       <text className="sx-gal-name" x={l.x} y={top} textAnchor="middle" fontSize={l.fontSize} style={{ fill: color }}>
-        {l.text}
+        {l.lines.map((line, i) => (
+          <tspan key={line} x={l.x} dy={i === 0 ? 0 : l.fontSize * NAME_LINE_H}>
+            {line}
+          </tspan>
+        ))}
       </text>
-      <text className="sx-gal-hours" x={l.x} y={top + LABEL_LINE_GAP} textAnchor="middle">
+      <text className="sx-gal-hours" x={l.x} y={top + (l.lines.length - 1) * l.fontSize * NAME_LINE_H + LABEL_LINE_GAP} textAnchor="middle">
         {hoursLabel(l.topic.seconds)}
       </text>
     </g>
