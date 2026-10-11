@@ -11,7 +11,6 @@ const PAD_PX = 32;
 const GAP_PX = 2;
 const LABEL_PX = 23;
 const COMPACT_PX = 44;
-const TAB_DAYS = 14;
 
 const signed = (similarity: number) => `${similarity < 0 ? MINUS : "+"}${Math.abs(similarity).toFixed(2)}`;
 
@@ -60,8 +59,7 @@ export function DayMirror({ report }: { report: TopicsReport }) {
       if (similarity < report.day_similarity[opposite[0]][opposite[1]]) opposite = [row, column];
     }
   }
-  const pair = ([row, column]: [number, number]) =>
-    `${shortMonthDay(days[row].day)} & ${shortMonthDay(days[column].day)} (${signed(report.day_similarity[row][column])})`;
+  const pair = ([row, column]: [number, number]) => `${shortMonthDay(days[row].day)} & ${shortMonthDay(days[column].day)}`;
 
   const cellPx = (CARD_PX - PAD_PX - GAP_PX * (size - 1)) / size;
   const compact = cellPx < COMPACT_PX;
@@ -94,8 +92,8 @@ export function DayMirror({ report }: { report: TopicsReport }) {
         continue;
       }
       const similarity = report.day_similarity[row][column];
-      const tabbable = row >= size - TAB_DAYS;
       const ring = row === alike[0] && column === alike[1] ? " sx-mir-ring-alike" : row === opposite[0] && column === opposite[1] ? " sx-mir-ring-opposite" : "";
+      const tabbable = ring !== "";
       const percent = largest > 0 ? Math.round((Math.abs(similarity) / largest) * 100) : 0;
       cells.push(
         <div
@@ -125,7 +123,7 @@ export function DayMirror({ report }: { report: TopicsReport }) {
         </span>
       </div>
       <p className="sx-mir-callout">
-        Most alike days: {pair(alike)} · Most opposite: {pair(opposite)}
+        Most similar days: {pair(alike)} · Most different: {pair(opposite)}
       </p>
       <div className="sx-mir-grid" data-k={step}
         style={{ gridTemplateColumns: `${compact ? "auto " : ""}repeat(${size}, minmax(0, 1fr))` }}>

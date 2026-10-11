@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "bun:test";
 import { cleanup, render } from "@testing-library/react";
 import type { DayRow, Topic, TopicsReport } from "@/lib/topics_contract";
@@ -140,7 +141,9 @@ describe("DayMirror", () => {
       days,
     );
     const callout = render(<DayMirror report={four} />).container.querySelector(".sx-mir-callout")!;
-    expect(callout.textContent).toBe("Most alike days: Oct 4 & Oct 7 (+0.60) · Most opposite: Oct 5 & Oct 6 (−0.70)");
+    // catches: numbers left in the callout, or the old "alike/opposite" wording
+    expect(callout.textContent).toBe("Most similar days: Oct 4 & Oct 7 · Most different: Oct 5 & Oct 6");
+    expect(callout.textContent).not.toMatch(/[+−]|\d\.\d/);
   });
   it("uses row-header labels, not diagonal labels, once a cell is under 44px", () => {
     // 11 days -> cell 43.3px; 10 days -> 47.2px
@@ -175,8 +178,8 @@ describe("diagTip", () => {
 describe("DayMirror cells", () => {
   const cellLabels = () => [...render(<DayMirror report={full} />).container.querySelectorAll(".sx-mir-cell:not(.sx-mir-diag)")].map((c) => c.getAttribute("aria-label"));
   // catches: signed number in the label, or opposite worded as alike
-  it("aria-label names both days, the strength and alike or opposite", () => {
-    expect(cellLabels()).toEqual(["Oct 5 and Oct 6: 0.50 alike", "Oct 5 and Oct 7: 0.25 opposite", "Oct 6 and Oct 7: 0.10 alike"]);
+  it("ringed cells' aria-label names both days, the strength and alike or opposite", () => {
+    expect(cellLabels()).toEqual(["Oct 5 and Oct 6: 0.50 alike", "Oct 5 and Oct 7: 0.25 opposite", null]);
   });
   it("a zero similarity reads alike, not opposite", () => {
     const flat = report([[1, 0, 0], [0, 1, 0], [0, 0, 1]], days);
@@ -196,22 +199,27 @@ describe("DayMirror cells", () => {
 
 describe("DayMirror at 30 days", () => {
   const html = () => render(<DayMirror report={wide(30)} />).container;
-  it("has one tab stop per day plus the last-14-days upper triangle (91), never all 435 cells", () => {
-    // catches: tabIndex on every similarity cell (465 stops), or on none, or a 15-day window (105)
-    expect(html().querySelectorAll("[tabindex]").length).toBe(30 + 91);
+  it("has one tab stop per day plus the two ringed cells (D + 2), never every cell", () => {
+    // catches: tabIndex on a 14-day window (30 + 91), on every cell, or on none of the rings
+    expect(html().querySelectorAll("[tabindex]").length).toBe(30 + 2);
   });
-  it("only upper-triangle cells inside the last 14 days are tabbable and labelled", () => {
+  it("only the two ringed off-diagonal cells are tabbable and labelled; all keep data-stip", () => {
     const cells = [...html().querySelectorAll<HTMLElement>(".sx-mir-cell:not(.sx-mir-diag)")];
     expect(cells.length).toBe(435);
     expect(cells.every((c) => c.hasAttribute("data-stip"))).toBe(true);
     const stops = cells.filter((c) => c.hasAttribute("tabindex"));
-    expect(stops.length).toBe(91);
-    expect(stops.every((c) => c.hasAttribute("aria-label"))).toBe(true);
-    // catches: window off by one at the boundary (row 16 = day 17 is outside, row 16..29 inside)
-    const at = (row: number, column: number) => cells.find((c) => c.style.gridRow === String(row + 1) && c.style.gridColumn === String(column + 2))!;
-    expect(at(16, 17).hasAttribute("tabindex")).toBe(true);
-    expect(at(15, 17).hasAttribute("tabindex")).toBe(false);
-    expect(at(0, 29).hasAttribute("tabindex")).toBe(false);
+    expect(stops.length).toBe(2);
+    // catches: tabindex on a ring that lacks its aria-label, or on a non-ringed cell
+    expect(stops.every((c) => c.getAttribute("tabindex") === "0" && /: \d\.\d\d (alike|opposite)$/.test(c.getAttribute("aria-label") ?? ""))).toBe(true);
+    expect(stops.every((c) => /sx-mir-ring-(alike|opposite)/.test(c.className))).toBe(true);
+    expect(cells.filter((c) => c.hasAttribute("aria-label")).length).toBe(2);
+  });
+  it("mirror.css has no font-size under 13px", () => {
+    const css = readFileSync(new URL("../../app/stats/mirror.css", import.meta.url), "utf8");
+    const sizes = [...css.matchAll(/font-size:\s*([\d.]+)px/g)].map((m) => Number(m[1]));
+    expect(sizes.length).toBeGreaterThan(0);
+    // catches: a leftover 12px rule
+    expect(Math.min(...sizes)).toBeGreaterThanOrEqual(13);
   });
   it("thins labels to every k-th day, keeps first and last, and puts them outside the matrix", () => {
     const c = html();
