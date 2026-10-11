@@ -8,7 +8,10 @@ import { tipProps, type Tip } from "./tip";
 
 export type Rhythm = "always" | "sprint" | "one_off";
 
-const MAX_CHIPS = 5;
+const MAX_CHIPS = 4;
+const GENERIC = new Set(
+  "tool tools code block blocks pull enable enabled page pages chat chats project projects update fix issue issues test tests config configuration setup work".split(" "),
+);
 const SPRINT_MAX_SPAN_DAYS = 6;
 const SPRINT_MIN_DAYS = 3;
 const MILLISECONDS_PER_DAY = 86_400_000;
@@ -56,11 +59,12 @@ interface RowProps {
   maxTopicSeconds: number;
   maxBinSeconds: number;
   workDays: number;
-  dates?: [string, string];
 }
 
-function HeartbeatRow({ topic, index, topicCount, river, totalSeconds, maxTopicSeconds, maxBinSeconds, workDays, dates }: RowProps) {
+function HeartbeatRow({ topic, index, topicCount, river, totalSeconds, maxTopicSeconds, maxBinSeconds, workDays }: RowProps) {
   const rhythm = rhythmOf(topic, workDays);
+  const activeBins = river.filter((bin) => (bin.seconds[index] ?? 0) > 0);
+  const dates = activeBins.length > 0 ? [activeBins[0].start, activeBins[activeBins.length - 1].start] : undefined;
   const hue = 25 + topic.id * (360 / topicCount);
   const tip = { ...heartbeatTip(topic, totalSeconds, workDays, rhythm), accent: `oklch(var(--project-l) var(--project-c) ${hue})` };
   return (
@@ -87,7 +91,7 @@ function HeartbeatRow({ topic, index, topicCount, river, totalSeconds, maxTopicS
       <div className="hb-about">
         {topic.description && <p className="hb-description">{topic.description}</p>}
         <ul className="hb-chips">
-          {topic.keywords.slice(0, MAX_CHIPS).map((keyword) => (
+          {topic.keywords.filter((keyword) => !GENERIC.has(keyword.toLowerCase())).slice(0, MAX_CHIPS).map((keyword) => (
             <li key={keyword} className="hb-chip">
               {keyword}
             </li>
@@ -124,7 +128,6 @@ function HeartbeatRow({ topic, index, topicCount, river, totalSeconds, maxTopicS
 
 export function TopicHeartbeats({ report }: { report: TopicsReport }) {
   const { topics, river } = report;
-  const active = river.filter((bin) => bin.seconds.some((s) => s > 0));
   const shared = {
     topicCount: topics.length,
     river,
@@ -138,7 +141,7 @@ export function TopicHeartbeats({ report }: { report: TopicsReport }) {
       <h3 className="sr-title">Topic heartbeats</h3>
       <ul className="hb-rows">
         {topics.map((topic, index) => (
-          <HeartbeatRow key={topic.id} topic={topic} index={index} {...shared} dates={index === 0 && active.length > 0 ? [active[0].start, active[active.length - 1].start] : undefined} />
+          <HeartbeatRow key={topic.id} topic={topic} index={index} {...shared} />
         ))}
       </ul>
       <p className="sr-caption hb-how">

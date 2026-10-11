@@ -142,11 +142,25 @@ describe("TopicHeartbeats", () => {
     expect(heights(rows[1])).toEqual(["0%", "100%", "0%"]);
     expect(heights(rows[0])).toEqual(["50%", "25%", "25%"]);
   });
-  it("caps keyword chips at 5", () => {
+  it("caps keyword chips at 4 (catches the old cap of 5)", () => {
     const keywords = ["a1", "b2", "c3", "d4", "e5", "f6", "g7"];
     const { container } = render(<TopicHeartbeats report={report({ topics: [topic({ keywords })] })} />);
-    expect(container.querySelectorAll(".hb-chip").length).toBe(5);
-    expect(container.textContent).not.toContain("f6");
+    expect(container.querySelectorAll(".hb-chip").length).toBe(4);
+    expect(container.textContent).not.toContain("e5");
+  });
+  it("generic dev words are dropped from chips, case-insensitively (catches no filter, exact-case filter)", () => {
+    const keywords = ["code", "librechat", "tool", "pptx", "Pages"];
+    const { container } = render(<TopicHeartbeats report={report({ topics: [topic({ keywords })] })} />);
+    expect(Array.from(container.querySelectorAll(".hb-chip")).map((c) => c.textContent)).toEqual(["librechat", "pptx"]);
+  });
+  it("generic words do not use up the cap (catches slice-then-filter)", () => {
+    const keywords = ["code", "tool", "block", "pull", "alpha", "beta", "gamma", "delta", "eps"];
+    const { container } = render(<TopicHeartbeats report={report({ topics: [topic({ keywords })] })} />);
+    expect(Array.from(container.querySelectorAll(".hb-chip")).map((c) => c.textContent)).toEqual(["alpha", "beta", "gamma", "delta"]);
+  });
+  it("a word that merely contains a generic word stays (catches substring match)", () => {
+    const { container } = render(<TopicHeartbeats report={report({ topics: [topic({ keywords: ["codex", "toolbar"] })] })} />);
+    expect(container.querySelectorAll(".hb-chip").length).toBe(2);
   });
   it("keyword-named topics are marked for muted italic; AI-named are not", () => {
     const { container } = render(
@@ -217,18 +231,25 @@ describe("TopicHeartbeats", () => {
       expect((t as HTMLElement).getAttribute("style")).not.toMatch(/max-width/);
     }
   });
-  it("only the first row has the date caption: first and last non-zero bins (catches every-row or river-end dates)", () => {
+  it("every row has its own caption: that topic's first and last non-zero bins (catches first-row-only or river-wide dates)", () => {
     const river = [
       { start: "2026-09-23", seconds: [3600, 0] },
-      { start: "2026-09-24", seconds: [0, 0] },
+      { start: "2026-09-24", seconds: [1800, 0] },
       { start: "2026-10-10", seconds: [0, 1800] },
       { start: "2026-10-11", seconds: [0, 0] },
     ];
     const { container } = render(<TopicHeartbeats report={report({ river })} />);
-    const captions = container.querySelectorAll(".hb-dates");
-    expect(captions.length).toBe(1);
-    expect(captions[0].closest("[data-heartbeat-row]")).toBe(container.querySelector("[data-heartbeat-row]"));
-    expect(Array.from(captions[0].children).map((c) => c.textContent)).toEqual(["Sep 23", " – ", "Oct 10"]);
+    const rows = Array.from(container.querySelectorAll("[data-heartbeat-row]"));
+    const text = (row: Element) => Array.from(row.querySelector(".hb-dates")!.children).map((c) => c.textContent);
+    expect(text(rows[0])).toEqual(["Sep 23", " – ", "Sep 24"]);
+    expect(text(rows[1])).toEqual(["Oct 10", " – ", "Oct 10"]);
+  });
+  it("a topic with no active bin gets no caption while others keep theirs", () => {
+    const river = [{ start: "2026-10-05", seconds: [3600, 0] }];
+    const { container } = render(<TopicHeartbeats report={report({ river })} />);
+    const rows = container.querySelectorAll("[data-heartbeat-row]");
+    expect(rows[0].querySelector(".hb-dates")).not.toBeNull();
+    expect(rows[1].querySelector(".hb-dates")).toBeNull();
   });
   it("date caption: en dash separator is aria-hidden between two date spans; hours sit outside it", () => {
     const { container } = render(<TopicHeartbeats report={report()} />);
@@ -243,11 +264,11 @@ describe("TopicHeartbeats", () => {
     const { container } = render(<TopicHeartbeats report={report({ river })} />);
     expect(container.querySelector(".hb-dates")).toBeNull();
   });
-  it("css: no tick max-width, raster is gapped, no text under 12px, ticket keys use --fg-muted", () => {
+  it("css: no tick max-width, raster is gapped, no text under 13px, ticket keys use --fg-muted", () => {
     const css = readFileSync(new URL("../../app/stats/heartbeats.css", import.meta.url), "utf8");
     expect(css).not.toMatch(/max-width: 8px/);
     expect(css).toMatch(/\.hb-raster {[^}]*display: grid;[^}]*gap: 1px/);
-    expect(css).not.toMatch(/font-size: (?:[0-9]|1[01])(?:\.\d+)?px/);
+    expect(css).not.toMatch(/font-size: (?:[0-9]|1[012])(?:\.\d+)?px/);
     expect(css).toMatch(/\.hb-tickets {[^}]*var\(--fg-muted\)/);
     expect(css).toMatch(/\.hb-description {[^}]*font-size: 13\.5px/); // catches the old 12px tier
     expect(css).toMatch(/\.hb-dates {[^}]*justify-content: space-between[^}]*margin-top: 4px/); // catches missing 4px gap
