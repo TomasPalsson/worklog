@@ -98,6 +98,27 @@ async function ask(io: Io, question: string): Promise<string> {
     .join('\n')
 }
 
+const WORKLOG_ORIGIN_RE = /github\.com[:/]TomasPalsson\/worklog(\.git)?$/
+
+const tail = (text: string): string => text.trim().split('\n').slice(-10).join('\n')
+
+async function install($: EngineInterface, cwd: string | undefined): Promise<string> {
+  const refused = 'worklog install: run /wl install from inside the worklog repo'
+  if (cwd === undefined) return refused
+  const git = async (...argv: string[]) => {
+    const result = await $.process.run(['git', ...argv], { cwd }).catch(() => undefined)
+    return result?.exitCode === 0 ? result.stdout.trim() : undefined
+  }
+  const root = await git('rev-parse', '--show-toplevel')
+  if (root === undefined || !WORKLOG_ORIGIN_RE.test((await git('remote', 'get-url', 'origin')) ?? '')) {
+    return refused
+  }
+  const result = await $.process.run(['bash', 'scripts/install-local.sh'], { cwd: root })
+  return result.exitCode === 0
+    ? `worklog install: ok\n${tail(result.stdout)}`
+    : `worklog install failed (exit ${result.exitCode})\n${tail(result.stderr || result.stdout)}`
+}
+
 function typedAction(editing: 'ticket' | 'description', value: string): ReviewAction {
   return editing === 'ticket'
     ? { kind: 'ticket', jira_issue: value.trim() === '' ? null : value.trim() }
@@ -181,7 +202,10 @@ async function reviewPane($: EngineInterface, event: RenderInput<'Pane'>) {
 }
 
 export function registerCommand(on: On): void {
+  let sessionCwd: string | undefined
+
   on('session.start', { isInteractive: true }, async ($, event, next) => {
+    sessionCwd = event.cwd
     await $.command.register({
       name: 'wl',
       description: 'Show logged hours, or review today in a pane',
@@ -194,6 +218,7 @@ export function registerCommand(on: On): void {
     const argument = event.args.trim()
     const question = /^ask\s+(\S[\s\S]*)$/.exec(argument)?.[1]
     if (question !== undefined) return { text: await ask(await makeIo($), question) }
+    if (argument === 'install') return { text: await install($, sessionCwd) }
     if (argument !== 'today' && argument !== 'week' && argument !== 'review') {
       return { text: USAGE }
     }

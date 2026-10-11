@@ -4,6 +4,8 @@ import type { Block, CloseoutDay } from './contract'
 
 const SESSION = { surface: 'terminal', isInteractive: true, cwd: '/Users/me/Desktop/Work/app' } as const
 const TODAY = '2026-10-07'
+const REPO = '/Users/me/Desktop/Projects/worklog'
+const ORIGIN = 'git@github.com:TomasPalsson/worklog.git'
 const PANE = {
   component: 'Pane',
   surface: 'terminal',
@@ -57,6 +59,8 @@ type Options = {
   refusal?: string
   isDown?: boolean
   hits?: unknown[]
+  origin?: string
+  install?: { exitCode: number; stdout: string; stderr: string }
 }
 
 type Posted = { url: string; body: unknown }
@@ -66,6 +70,7 @@ function world(on: On, options: Options = {}) {
   const posted: Posted[] = []
   const opened: { id: string; focus: boolean; closeOnEscape: boolean }[] = []
   const registered: { name: string; argumentHint: string | undefined }[] = []
+  const installs: { argv: string[]; cwd: string | undefined }[] = []
   const answer = (status: number, body: unknown) => ({
     value: { status, ok: status < 300, headers: {}, text: JSON.stringify(body) },
   })
@@ -84,7 +89,20 @@ function world(on: On, options: Options = {}) {
   on('ui.toast', () => ({ value: undefined }))
   on('store.get', () => ({ value: undefined }))
   on('store.set', () => ({ value: undefined }))
-  on('process.run', () => ({ value: { exitCode: 1, stdout: '' } }))
+  on('process.run', (_$, event) => {
+    const line = event.argv.join(' ')
+    if (line === 'git rev-parse --show-toplevel' && options.origin !== undefined) {
+      return { value: { exitCode: 0, stdout: `${REPO}\n`, stderr: '' } }
+    }
+    if (line === 'git remote get-url origin' && options.origin !== undefined) {
+      return { value: { exitCode: 0, stdout: `${options.origin}\n`, stderr: '' } }
+    }
+    if (event.argv[0] === 'bash') {
+      installs.push({ argv: event.argv, cwd: event.cwd })
+      return { value: options.install ?? { exitCode: 0, stdout: '', stderr: '' } }
+    }
+    return { value: { exitCode: 1, stdout: '', stderr: '' } }
+  })
   on('http.fetch', ($, event) => {
     if (options.isDown) return { deny: 'connection refused' }
     if (event.init?.method === 'POST') {
@@ -101,7 +119,7 @@ function world(on: On, options: Options = {}) {
     }
     return answer(200, { days: options.closeoutDays ?? [] })
   })
-  return { requested, posted, opened, registered }
+  return { requested, posted, opened, registered, installs }
 }
 
 type Node = string | { type?: string; props?: Record<string, unknown>; children?: Node[] }
@@ -389,4 +407,78 @@ test('/wl ask says so when the daemon is down', async ($, on) => {
   // catches: swallowing the error into "no matches"
   expect(result.text).toContain('worklog:')
   expect(result.text).toContain('connection refused')
+})
+
+const REFUSED = 'worklog install: run /wl install from inside the worklog repo'
+
+async function runInstall(
+  $: Parameters<Parameters<typeof test>[1]>[0],
+  on: On,
+  options: Options,
+  args = 'install',
+) {
+  const seen = world(on, options)
+  mock.clock(on)
+  await $.session.start({ ...SESSION, cwd: `${REPO}/rust/crates` })
+  const result = await $.command.run(command(args))
+  return { text: result.text, installs: seen.installs }
+}
+
+test('/wl install runs the installer from the repo root with no PR argument', async ($, on) => {
+  const { text, installs } = await runInstall($, on, {
+    origin: ORIGIN,
+    install: { exitCode: 0, stdout: 'a\nhealthy\n', stderr: '' },
+  })
+  // catches: running from the session cwd, or passing a PR number (a merge)
+  expect(installs).toEqual([{ argv: ['bash', 'scripts/install-local.sh'], cwd: REPO }])
+  expect(text).toBe('worklog install: ok\na\nhealthy')
+})
+
+test('/wl install accepts the https origin of the worklog repo', async ($, on) => {
+  const { installs } = await runInstall($, on, { origin: 'https://github.com/TomasPalsson/worklog' })
+  // catches: matching the ssh form only
+  expect(installs).toHaveLength(1)
+})
+
+test('/wl install refuses in another repository and runs nothing', async ($, on) => {
+  const { text, installs } = await runInstall($, on, { origin: 'git@github.com:aproorg/app.git' })
+  // catches: running the installer anywhere
+  expect(text).toBe(REFUSED)
+  expect(installs).toEqual([])
+})
+
+test('/wl install refuses a sibling repository whose name starts with worklog', async ($, on) => {
+  const { text, installs } = await runInstall($, on, { origin: 'git@github.com:TomasPalsson/worklog-web.git' })
+  // catches: prefix match with no boundary
+  expect(text).toBe(REFUSED)
+  expect(installs).toEqual([])
+})
+
+test('/wl install refuses another owner with the same repo name', async ($, on) => {
+  const { text, installs } = await runInstall($, on, { origin: 'git@github.com:someone/worklog.git' })
+  // catches: matching on the repo name alone
+  expect(text).toBe(REFUSED)
+  expect(installs).toEqual([])
+})
+
+test('/wl install refuses outside any git repository', async ($, on) => {
+  const { text, installs } = await runInstall($, on, {})
+  // catches: treating a failed git probe as the worklog repo
+  expect(text).toBe(REFUSED)
+  expect(installs).toEqual([])
+})
+
+test('/wl install shows the failure and its error output when the installer exits non-zero', async ($, on) => {
+  const { text } = await runInstall($, on, {
+    origin: ORIGIN,
+    install: { exitCode: 2, stdout: 'build\n', stderr: 'error: link failed\n' },
+  })
+  // catches: swallowing the error and reporting ok
+  expect(text).toBe('worklog install failed (exit 2)\nerror: link failed')
+})
+
+test('/wl install with a PR number never runs the installer', async ($, on) => {
+  const { installs } = await runInstall($, on, { origin: ORIGIN }, 'install 124')
+  // catches: forwarding an argument that makes the installer merge a PR
+  expect(installs).toEqual([])
 })
