@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::schedule::{check_output, Platform, ENV_SCHEDULE_HOME};
+use crate::schedule::{check_output, service_tool, Platform, ENV_SCHEDULE_HOME};
 
 /// launchd label + systemd unit stem. Stable across worklog versions so
 /// reinstalls never leave orphaned units behind.
@@ -43,17 +43,31 @@ pub struct DaemonServiceStatus {
 const HEALTH_ADDR: &str = "127.0.0.1:9323";
 
 pub fn install(command: &str) -> Result<DaemonServiceStatus> {
-    let status = match Platform::current() {
-        Platform::MacOS => macos::install(command)?,
-        Platform::Linux => linux::install(command)?,
+    install_at(
+        command,
+        HEALTH_ADDR,
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(200),
+    )
+}
+
+fn install_at(
+    command: &str,
+    tcp: &str,
+    budget: std::time::Duration,
+    step: std::time::Duration,
+) -> Result<DaemonServiceStatus> {
+    let (status, tool) = match Platform::current() {
+        Platform::MacOS => (macos::install(command)?, "launchctl"),
+        Platform::Linux => (linux::install(command)?, "systemctl"),
         Platform::Unsupported => return Ok(unsupported_status()),
     };
-    if std::env::var_os(ENV_SCHEDULE_HOME).is_none() {
+    if service_tool(tool).is_some() {
         await_healthy(
-            HEALTH_ADDR,
+            tcp,
             |a| is_running(a, std::time::Duration::from_millis(200)),
-            std::time::Duration::from_secs(5),
-            std::time::Duration::from_millis(200),
+            budget,
+            step,
         )?;
     }
     Ok(status)
@@ -71,7 +85,7 @@ fn await_healthy(
             return Ok(());
         }
         if std::time::Instant::now() >= deadline {
-            anyhow::bail!("daemon did not answer /health within 5s on {tcp}");
+            anyhow::bail!("daemon did not answer /health within {budget:?} on {tcp}");
         }
         std::thread::sleep(step);
     }
@@ -349,13 +363,13 @@ mod macos {
         // launchctl complains when unload targets a service that wasn't
         // loaded yet, but that's expected on a fresh install and users
         // shouldn't see the noise.
-        if std::env::var_os(ENV_SCHEDULE_HOME).is_none() {
-            let _ = std::process::Command::new("launchctl")
+        if let Some(tool) = service_tool("launchctl") {
+            let _ = std::process::Command::new(&tool)
                 .args(["unload", path.to_string_lossy().as_ref()])
                 .output();
             check_output(
                 "launchctl load",
-                std::process::Command::new("launchctl")
+                std::process::Command::new(&tool)
                     .args(["load", "-w", path.to_string_lossy().as_ref()])
                     .output(),
             )?;
@@ -537,13 +551,13 @@ mod linux {
         let svc = service_path()?;
         atomic_write(&svc, &service_unit(command))?;
 
-        if std::env::var_os(ENV_SCHEDULE_HOME).is_none() {
-            let _ = std::process::Command::new("systemctl")
+        if let Some(tool) = service_tool("systemctl") {
+            let _ = std::process::Command::new(&tool)
                 .args(["--user", "daemon-reload"])
                 .status();
             check_output(
                 "systemctl enable",
-                std::process::Command::new("systemctl")
+                std::process::Command::new(&tool)
                     .args(["--user", "enable", "--now", "worklog-daemon.service"])
                     .output(),
             )?;
@@ -658,7 +672,7 @@ mod tests {
         )
         .unwrap_err()
         .to_string();
-        assert!(e.contains("127.0.0.1:1") && e.contains("5s"), "{e}");
+        assert!(e.contains("127.0.0.1:1") && e.contains("20ms"), "{e}");
     }
 
     use super::*;
@@ -686,12 +700,11 @@ mod tests {
             "user bin dirs must precede system: {path}"
         );
     }
-    use std::sync::Mutex;
+    use crate::schedule::ENV_LOCK;
     use tempfile::tempdir;
 
     // Shared between schedule.rs tests and these — both redirect the same
     // env var. Avoiding interleaving keeps platform probes stable.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn redirect(dir: &Path) -> std::sync::MutexGuard<'static, ()> {
         let g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -701,6 +714,78 @@ mod tests {
 
     fn restore() {
         std::env::remove_var(ENV_SCHEDULE_HOME);
+    }
+
+    fn serve_health() -> String {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap().to_string();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            for mut c in l.incoming().flatten() {
+                let _ = c.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            }
+        });
+        addr
+    }
+
+    const SHORT: Duration = Duration::from_millis(50);
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn install_fails_when_the_load_step_fails() {
+        // catches: `let _ =` / dropped `?` on launchctl load / systemctl enable
+        let tmp = tempdir().unwrap();
+        let _g = redirect(tmp.path());
+        let step = crate::schedule::fake_tool(tmp.path(), 1);
+        let r = install_at(
+            "worklog daemon",
+            &serve_health(),
+            SHORT,
+            Duration::from_millis(1),
+        );
+        restore();
+        let e = r.unwrap_err().to_string();
+        assert!(e.contains(step) && e.contains("boom"), "{e}");
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn install_fails_when_the_daemon_never_answers_health() {
+        // catches: install() not calling await_healthy after a clean load
+        let tmp = tempdir().unwrap();
+        let _g = redirect(tmp.path());
+        crate::schedule::fake_tool(tmp.path(), 0);
+        let r = install_at(
+            "worklog daemon",
+            "127.0.0.1:1",
+            SHORT,
+            Duration::from_millis(1),
+        );
+        restore();
+        let e = r.unwrap_err().to_string();
+        assert!(
+            e.contains("did not answer") && e.contains("127.0.0.1:1"),
+            "{e}"
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn install_ok_when_load_succeeds_and_daemon_answers() {
+        // catches: failing the wait even when /health answers
+        let tmp = tempdir().unwrap();
+        let _g = redirect(tmp.path());
+        crate::schedule::fake_tool(tmp.path(), 0);
+        let r = install_at(
+            "worklog daemon",
+            &serve_health(),
+            Duration::from_secs(5),
+            Duration::from_millis(1),
+        );
+        restore();
+        assert!(r.unwrap().installed);
     }
 
     #[cfg(target_os = "macos")]
