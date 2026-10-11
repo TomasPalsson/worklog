@@ -7,14 +7,14 @@ afterEach(cleanup);
 const HEX = /#[0-9a-fA-F]{3,8}\b/;
 
 const cases = [
-  ["RhythmIcon always", <RhythmIcon kind="always" />, "16"],
-  ["RhythmIcon sprint", <RhythmIcon kind="sprint" />, "16"],
-  ["RhythmIcon one_off", <RhythmIcon kind="one_off" />, "16"],
-  ["FirstTimeMark", <FirstTimeMark />, "14"],
-  ["OddballMark", <OddballMark />, "14"],
-  ["AtlasEmpty helper_down", <AtlasEmpty kind="helper_down" />, "120"],
-  ["AtlasEmpty too_few", <AtlasEmpty kind="too_few" />, "120"],
-  ["AtlasEmpty no_map", <AtlasEmpty kind="no_map" />, "120"],
+  ["RhythmIcon always", <RhythmIcon key="RhythmIcon always" kind="always" />, "16"],
+  ["RhythmIcon sprint", <RhythmIcon key="RhythmIcon sprint" kind="sprint" />, "16"],
+  ["RhythmIcon one_off", <RhythmIcon key="RhythmIcon one_off" kind="one_off" />, "16"],
+  ["FirstTimeMark", <FirstTimeMark key="FirstTimeMark" />, "14"],
+  ["OddballMark", <OddballMark key="OddballMark" />, "14"],
+  ["AtlasEmpty helper_down", <AtlasEmpty key="AtlasEmpty helper_down" kind="helper_down" />, "120"],
+  ["AtlasEmpty too_few", <AtlasEmpty key="AtlasEmpty too_few" kind="too_few" />, "120"],
+  ["AtlasEmpty no_map", <AtlasEmpty key="AtlasEmpty no_map" kind="no_map" />, "120"],
 ] as const;
 
 describe("AtlasArt", () => {
@@ -29,7 +29,7 @@ describe("AtlasArt", () => {
   }
 
   it("icons and marks are aria-hidden; they are paired with text", () => {
-    for (const el of [<RhythmIcon kind="always" />, <FirstTimeMark />, <OddballMark />]) {
+    for (const el of [<RhythmIcon key="rhythm" kind="always" />, <FirstTimeMark key="first" />, <OddballMark key="oddball" />]) {
       const { container, unmount } = render(el);
       expect(container.querySelector("svg")!.getAttribute("aria-hidden")).toBe("true");
       unmount();
