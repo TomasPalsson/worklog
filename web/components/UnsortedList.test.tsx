@@ -4,9 +4,10 @@
 // convention: mock the @/app/actions boundary, no real daemon/server-action
 // runtime needed.
 
-import { afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeAll, describe, expect, it, mock, spyOn } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { RoutedEvent, RuleKind } from "@/lib/types";
+import { toast } from "@/lib/toast";
 
 const slack1: RoutedEvent = {
   id: 1,
@@ -506,6 +507,12 @@ describe("noise groups", () => {
     expect(screen.queryByRole("button", { name: /noise group/ })).toBeNull();
   });
 
+  it("tags a github.com group (grouped by org/repo) when github.com is listed", () => {
+    const gh = ff(30, "https://github.com/org/repo/pull/1");
+    renderNoise([gh, other], [{ host: "github.com", dismissed_before: 3 }]);
+    expect(within(rowFor("github.com/org/repo")).getByText("dismissed 3× before")).toBeTruthy();
+  });
+
   it("does not tag non-firefox groups even when details parse to a listed host", () => {
     renderNoise([ff(20, "https://news.example.com/a", "slack")]);
     expect(screen.queryByText(/dismissed \d+× before/)).toBeNull();
@@ -521,7 +528,7 @@ describe("noise groups", () => {
     expect(screen.queryByRole("button", { name: /noise group/ })).toBeNull();
   });
 
-  it("singular/plural count: one tagged group says 1, two say 2", () => {
+  it("button label counts tagged groups: one tagged group says 1, two say 2", () => {
     renderNoise([noisy1, other]);
     expect(screen.getByRole("button", { name: "Dismiss 1 noise groups" })).toBeTruthy();
     cleanup();
@@ -558,6 +565,7 @@ describe("noise groups", () => {
       dismissEventCalls.push([id, ruleKind, day]);
       return { ok: false as const, error: "boom" } as never;
     });
+    const errSpy = spyOn(toast, "error").mockImplementation(() => 0 as never);
     renderNoise([noisy1, noisy2, noisy3, other]);
     fireEvent.click(screen.getByRole("button", { name: "Dismiss 2 noise groups" }));
     fireEvent.click(screen.getAllByRole("button", { name: "Yes" })[0]);
@@ -566,5 +574,9 @@ describe("noise groups", () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(dismissEventCalls.length).toBe(2);
     expect(screen.getByText("feed.example.org")).toBeTruthy();
+    // id 10 was dismissed, so the news group dropped from 2 visits to 1.
+    expect(within(rowFor("news.example.com")).getByText("1 visit")).toBeTruthy();
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    errSpy.mockRestore();
   });
 });
