@@ -1,0 +1,79 @@
+bun test v1.2.4 (fd9a5ea6)
+
+components/stats/DayMirror.test.tsx:
+(pass) mirrorTip > builds the exact tip for a pair [6.22ms]
+(pass) mirrorTip > signs a positive similarity with + [0.39ms]
+(pass) DayMirror > renders D(D+1)/2 cells over the last D days [13.58ms]
+(pass) DayMirror > positive is amber family, negative slate family, scaled by the largest off-diagonal [5.79ms]
+(pass) DayMirror > is omitted below 3 days and shown at exactly 3 [4.92ms]
+(pass) DayMirror > renders no NaN, undefined or null, even when every pair is 0 [4.72ms]
+(pass) DayMirror > shows the plain How line, keeps jargon in a Method details, and caps the line length [4.83ms]
+(pass) DayMirror > uses the shared atlas card and small-caps title [4.35ms]
+(pass) DayMirror > shows a legend with both swatches and a 3-step strip [4.72ms]
+(pass) DayMirror > names the most alike and most opposite pair from the off-diagonal only [6.16ms]
+(pass) DayMirror > uses row-header labels, not diagonal labels, once a cell is under 44px [52.09ms]
+(pass) diagTip > names the most and least similar other day and the top topic [0.34ms]
+(pass) diagTip > reads the column for a later day (symmetric matrix) [0.18ms]
+(pass) DayMirror cells > ringed cells' aria-label names both days, the strength and alike or opposite [4.65ms]
+(pass) DayMirror cells > a zero similarity reads alike, not opposite [4.01ms]
+(pass) DayMirror cells > rings the most alike cell solid and the most opposite cell dashed, exactly once each [4.01ms]
+(pass) DayMirror at 30 days > has one tab stop per day plus the two ringed cells (D + 2), never every cell [164.46ms]
+(pass) DayMirror at 30 days > only the two ringed off-diagonal cells are tabbable and labelled; all keep data-stip [164.50ms]
+(pass) DayMirror at 30 days > mirror.css has no font-size under 13px [0.29ms]
+(pass) DayMirror at 30 days > thins labels to every k-th day, keeps first and last, and puts them outside the matrix [161.70ms]
+(pass) DayMirror at 30 days > labels every day on the diagonal when cells are large [6.12ms]
+(pass) DayMirror at 30 days > diagonal chip has an aria-label with the tip text [162.61ms]
+(pass) DayMirror column labels > labels every column with its day of month at 10 days, without adding tab stops [24.83ms]
+(pass) DayMirror column labels > 31 days no longer labels all 31 columns: that overprinted 13px two-digit labels (catches colStep 1 up to 31) [356.57ms]
+(pass) DayMirror column labels > labelled columns are at least 18px apart at the card width; 10 days stay fully labelled [1295.54ms]
+(pass) DayMirror column labels > labels every other column at 40 days [259.31ms]
+(pass) DayMirror column labels > shifts the matrix down one row so labels have their own row [4.07ms]
+(pass) DayMirror column labels > styles the label in mirror.css
+
+components/stats/TopicHeartbeats.test.tsx:
+(pass) rhythmOf > always: exactly half the work days qualifies (catches > for >=)
+(pass) rhythmOf > always: one day short of half does not (catches >= off by one)
+(pass) rhythmOf > always: half of an odd count is not rounded down (catches Math.floor)
+(pass) rhythmOf > sprint: a 6-day span with 3 active days qualifies (catches < for <=)
+(pass) rhythmOf > sprint: a 7-day span does not (catches span <= 7) [0.06ms]
+(pass) rhythmOf > sprint: 2 active days in a 6-day span does not (catches days_active >= 2)
+(pass) rhythmOf > sprint: spans are measured in days across a month end (catches day-of-month subtraction) [0.01ms]
+(pass) rhythmOf > one_off: exactly one active day
+(pass) rhythmOf > one_off: two active days is not one-off (catches <= 2)
+(pass) rhythmOf > one_off: zero active days is not one-off (catches <= 1)
+(pass) heartbeatTip > exact values: duration, share of all topics, days, blocks, rhythm note
+(pass) heartbeatTip > tickets are joined with commas; no tickets means no Tickets row
+(pass) heartbeatTip > no rhythm means no note; no description means no sub
+(pass) heartbeatTip > zero total seconds does not divide by zero
+(pass) TopicHeartbeats > renders one row per topic [2.94ms]
+(pass) TopicHeartbeats > rows are keyboard focusable, labelled and carry the tip [1.13ms]
+(pass) TopicHeartbeats > one tick per river bin per topic, heights proportional to hours against the largest bin [1.12ms]
+(pass) TopicHeartbeats > caps keyword chips at 3 (catches the old cap of 4) [0.70ms]
+(pass) TopicHeartbeats > generic dev words are dropped from chips, case-insensitively (catches no filter, exact-case filter) [0.48ms]
+(pass) TopicHeartbeats > generic words do not use up the cap (catches slice-then-filter) [0.51ms]
+(pass) TopicHeartbeats > a word that merely contains a generic word stays (catches substring match) [0.71ms]
+(pass) TopicHeartbeats > keyword-named topics are marked for muted italic; AI-named are not [1.14ms]
+(pass) TopicHeartbeats > badge shows the rhythm text; none when no rhythm applies [1.09ms]
+(pass) TopicHeartbeats > work days count only days with work [0.57ms]
+(pass) TopicHeartbeats > tickets leave the visible row and live in the tooltip [0.66ms]
+(pass) TopicHeartbeats > row aria-label ends with the tickets when there are any, and has none otherwise (catches tickets only in the tooltip) [0.96ms]
+(pass) TopicHeartbeats > description is one clamped line with the full text in title and aria-label [0.96ms]
+(pass) TopicHeartbeats > row padding is at most 8px vertically [0.06ms]
+(pass) TopicHeartbeats > newly generic words are dropped from chips [0.54ms]
+(pass) TopicHeartbeats > light-mode marks use project lightness 0.60, never under an OS-dark or dark-theme selector [0.12ms]
+(pass) TopicHeartbeats > topic name is 15px 600 sans, not mono (catches the flat 13px mono hierarchy)
+(pass) TopicHeartbeats > shows the How line and no NaN, undefined or null [0.69ms]
+(pass) TopicHeartbeats > every row is the same three-column template, whatever the description length [1.58ms]
+(pass) TopicHeartbeats > raster and bar sit in the third column, badge and name in the first [0.92ms]
+(pass) TopicHeartbeats > css fixes the row template at desktop width and stacks below 800px [0.02ms]
+(pass) TopicHeartbeats > raster is a grid of one equal column per river bin, full width (catches flex or a fixed column count) [0.97ms]
+(pass) TopicHeartbeats > ticks carry no inline max-width (catches a width cap that breaks the shared edge) [0.92ms]
+(pass) TopicHeartbeats > caption uses the topic's true first and last day, not week-bin Mondays (catches reading river bin starts) [1.02ms]
+(pass) TopicHeartbeats > date caption is one left-aligned span reading 'active A – B', hours outside it [0.98ms]
+(pass) TopicHeartbeats > css: no tick max-width, raster is gapped, no text under 13px [0.15ms]
+(pass) TopicHeartbeats > css: every .hb-data child spans column 1 / -1 so rows share one time axis (catches sr-track's implicit columns) [0.01ms]
+
+ 69 pass
+ 0 fail
+ 186 expect() calls
+Ran 69 tests across 2 files. [2.88s]
