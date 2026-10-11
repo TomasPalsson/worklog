@@ -186,17 +186,9 @@ export function TopicRiver({ report }: { report: TopicsReport }) {
             </g>
           ))}
           <path className="sx-river-bracket" d={`M${bx - 4} ${PAD}H${bx}V${PAD + stack}H${bx - 4}`} />
-          <text className="art-label sx-river-scale" x={bx + 4} y={H / 2} dominantBaseline="central">{scaleHours(stack / unit)}</text>
+          <text className="art-label sx-river-scale" x={bx + 4} y={H / 2} dominantBaseline="central">{scaleHours(stack / unit)} / {report.bin}</text>
         </svg>
       </div>
-      <ul className="sx-river-legend">
-        {layers.map((l) => (
-          <li key={l.topic.id} className="sx-river-legend-item">
-            <span className="sx-river-swatch" style={{ background: l.color }} />
-            {l.topic.name}
-          </li>
-        ))}
-      </ul>
       <p className="st-caption">How it works: Hours per topic per day (per week when the range is longer than 90 days). Topics are fitted once over the whole range.</p>
     </section>
   );

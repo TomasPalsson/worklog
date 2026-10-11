@@ -108,9 +108,15 @@ describe("heartbeatTip", () => {
       ["Share of topics", "50%"],
       ["Days active", "3 of 5 work days"],
       ["Blocks", "4"],
+      ["Tickets", "ABC-1"],
     ]);
     expect(tip.bar).toEqual({ value: 7200, max: 14400, label: "50% of topic time" });
     expect(tip.note).toBe("Always on: active on at least half your work days.");
+  });
+  it("tickets are joined with commas; no tickets means no Tickets row", () => {
+    const two = heartbeatTip(topic({ top_tickets: [{ label: "ABC-1", value: 2 }, { label: "XYZ-22", value: 1 }] }), 14400, 5, null);
+    expect(two.rows!.at(-1)).toEqual(["Tickets", "ABC-1, XYZ-22"]);
+    expect(heartbeatTip(topic({ top_tickets: [] }), 14400, 5, null).rows!.map(([k]) => k)).not.toContain("Tickets");
   });
   it("no rhythm means no note; no description means no sub", () => {
     const tip = heartbeatTip(topic({ description: null }), 14400, 5, null);
@@ -131,7 +137,7 @@ describe("TopicHeartbeats", () => {
     const { container } = render(<TopicHeartbeats report={report()} />);
     const row = container.querySelector("[data-heartbeat-row]")!;
     expect(row.getAttribute("tabindex")).toBe("0");
-    expect(row.getAttribute("aria-label")).toBe("Billing export: 2h");
+    expect(row.getAttribute("aria-label")).toBe("Billing export: 2h. Invoice lines and rounding");
     const tip = parseTip(row.getAttribute("data-stip"));
     expect(tip!.rows![2]).toEqual(["Days active", "3 of 5 work days"]);
   });
@@ -142,11 +148,11 @@ describe("TopicHeartbeats", () => {
     expect(heights(rows[1])).toEqual(["0%", "100%", "0%"]);
     expect(heights(rows[0])).toEqual(["50%", "25%", "25%"]);
   });
-  it("caps keyword chips at 4 (catches the old cap of 5)", () => {
-    const keywords = ["a1", "b2", "c3", "d4", "e5", "f6", "g7"];
+  it("caps keyword chips at 3 (catches the old cap of 4)", () => {
+    const keywords = ["a1", "b2", "c3", "d4", "e5", "f6", "g7", "h8"];
     const { container } = render(<TopicHeartbeats report={report({ topics: [topic({ keywords })] })} />);
-    expect(container.querySelectorAll(".hb-chip").length).toBe(4);
-    expect(container.textContent).not.toContain("e5");
+    expect(container.querySelectorAll(".hb-chip").length).toBe(3);
+    expect(container.textContent).not.toContain("d4");
   });
   it("generic dev words are dropped from chips, case-insensitively (catches no filter, exact-case filter)", () => {
     const keywords = ["code", "librechat", "tool", "pptx", "Pages"];
@@ -156,7 +162,7 @@ describe("TopicHeartbeats", () => {
   it("generic words do not use up the cap (catches slice-then-filter)", () => {
     const keywords = ["code", "tool", "block", "pull", "alpha", "beta", "gamma", "delta", "eps"];
     const { container } = render(<TopicHeartbeats report={report({ topics: [topic({ keywords })] })} />);
-    expect(Array.from(container.querySelectorAll(".hb-chip")).map((c) => c.textContent)).toEqual(["alpha", "beta", "gamma", "delta"]);
+    expect(Array.from(container.querySelectorAll(".hb-chip")).map((c) => c.textContent)).toEqual(["alpha", "beta", "gamma"]);
   });
   it("a word that merely contains a generic word stays (catches substring match)", () => {
     const { container } = render(<TopicHeartbeats report={report({ topics: [topic({ keywords: ["codex", "toolbar"] })] })} />);
@@ -183,17 +189,26 @@ describe("TopicHeartbeats", () => {
     const { container } = render(<TopicHeartbeats report={report({ days, topics: [topic({ days_active: 1, ...wide })] })} />);
     expect(container.querySelector(".hb-badge")!.textContent).toBe("Always on");
   });
-  it("ticket keys appear without hours", () => {
-    const { container } = render(<TopicHeartbeats report={report()} />);
-    expect(container.querySelector(".hb-tickets")!.textContent).toBe("Tickets: ABC-1");
-  });
-  // catches: keys joined in one text node, so a key can wrap mid-token
-  it("each ticket key is its own nowrap span", () => {
+  it("tickets leave the visible row and live in the tooltip", () => {
     const top_tickets = [{ label: "ABC-1", value: 2 }, { label: "XYZ-22", value: 1 }];
     const { container } = render(<TopicHeartbeats report={report({ topics: [topic({ top_tickets })] })} />);
-    expect(Array.from(container.querySelectorAll(".hb-tickets .hb-ticket")).map((s) => s.textContent)).toEqual(["ABC-1", "XYZ-22"]);
+    expect(container.querySelector(".hb-ticket")).toBeNull();
+    expect(container.querySelector(".hb-tickets")).toBeNull();
+    expect(container.textContent).not.toContain("ABC-1");
+    const tip = parseTip(container.querySelector("[data-heartbeat-row]")!.getAttribute("data-stip"));
+    expect(tip!.rows).toContainEqual(["Tickets", "ABC-1, XYZ-22"]);
+  });
+  it("description is one clamped line with the full text in title and aria-label", () => {
+    const { container } = render(<TopicHeartbeats report={report()} />);
+    const d = container.querySelector(".hb-description")!;
+    expect(d.getAttribute("title")).toBe("Invoice lines and rounding");
+    expect(container.querySelector("[data-heartbeat-row]")!.getAttribute("aria-label")).toContain("Invoice lines and rounding");
     const css = readFileSync(new URL("../../app/stats/heartbeats.css", import.meta.url), "utf8");
-    expect(css).toMatch(/\.hb-ticket {[^}]*white-space: nowrap/);
+    expect(css).toMatch(/\.hb-description {[^}]*-webkit-line-clamp: 1/);
+  });
+  it("row padding is at most 8px vertically", () => {
+    const css = readFileSync(new URL("../../app/stats/heartbeats.css", import.meta.url), "utf8");
+    expect(css).toMatch(/\.hb-row {[^}]*padding: [0-8]px /);
   });
   it("newly generic words are dropped from chips", () => {
     const keywords = "pptx prs pr file files boost thinking binding multi base revise pdf keep".split(" ");
@@ -232,12 +247,11 @@ describe("TopicHeartbeats", () => {
       expect(row.querySelector(".hb-data .hb-track")).not.toBeNull();
     }
   });
-  it("raster, bar and tickets sit in the third column, badge and name in the first", () => {
+  it("raster and bar sit in the third column, badge and name in the first", () => {
     const { container } = render(<TopicHeartbeats report={report()} />);
     const row = container.querySelector("[data-heartbeat-row]")!;
     expect(row.querySelector(".hb-id .hb-name")).not.toBeNull();
     expect(row.querySelector(".hb-id .hb-badge")).not.toBeNull();
-    expect(row.querySelector(".hb-data .hb-tickets")).not.toBeNull();
   });
   it("css fixes the row template at desktop width and stacks below 800px", () => {
     const css = readFileSync(new URL("../../app/stats/heartbeats.css", import.meta.url), "utf8");
@@ -289,12 +303,11 @@ describe("TopicHeartbeats", () => {
     const { container } = render(<TopicHeartbeats report={report({ river })} />);
     expect(container.querySelector(".hb-dates")).toBeNull();
   });
-  it("css: no tick max-width, raster is gapped, no text under 13px, ticket keys use --fg-muted", () => {
+  it("css: no tick max-width, raster is gapped, no text under 13px", () => {
     const css = readFileSync(new URL("../../app/stats/heartbeats.css", import.meta.url), "utf8");
     expect(css).not.toMatch(/max-width: 8px/);
     expect(css).toMatch(/\.hb-raster {[^}]*display: grid;[^}]*gap: 1px/);
     expect(css).not.toMatch(/font-size: (?:[0-9]|1[012])(?:\.\d+)?px/);
-    expect(css).toMatch(/\.hb-tickets {[^}]*var\(--fg-muted\)/);
     expect(css).toMatch(/\.hb-description {[^}]*font-size: 13\.5px/); // catches the old 12px tier
     expect(css).toMatch(/\.hb-dates {[^}]*justify-content: space-between[^}]*margin-top: 4px/); // catches missing 4px gap
     expect(css).toMatch(/\.hb-how {[^}]*max-width: 70ch/);

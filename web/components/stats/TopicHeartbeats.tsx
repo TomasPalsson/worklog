@@ -9,7 +9,7 @@ import { topicColor, topicHue } from "./topicColor";
 
 export type Rhythm = "always" | "sprint" | "one_off";
 
-const MAX_CHIPS = 4;
+const MAX_CHIPS = 3;
 const GENERIC = new Set(
   "tool tools code block blocks pull enable enabled page pages chat chats project projects update fix issue issues test tests config configuration setup work pptx prs pr file files boost thinking binding multi base revise pdf".split(" "),
 );
@@ -44,6 +44,7 @@ export function heartbeatTip(topic: Topic, totalSeconds: number, workDays: numbe
       ["Share of topics", pct(share)],
       ["Days active", `${topic.days_active} of ${workDays} work days`],
       ["Blocks", String(topic.blocks)],
+      ...(topic.top_tickets.length > 0 ? [["Tickets", topic.top_tickets.map((t) => t.label).join(", ")] as [string, string]] : []),
     ],
     bar: { value: topic.seconds, max: totalSeconds, label: `${pct(share)} of topic time` },
     note: rhythm ? NOTE[rhythm] : undefined,
@@ -74,7 +75,7 @@ function HeartbeatRow({ topic, index, topicCount, river, totalSeconds, maxTopicS
       data-heartbeat-row
       style={{ ["--h" as string]: topicHue(topic.id, topicCount), ["--hb-color" as string]: color, ["--i" as string]: index }}
       tabIndex={0}
-      aria-label={`${topic.name}: ${formatDuration(topic.seconds)}`}
+      aria-label={`${topic.name}: ${formatDuration(topic.seconds)}${topic.description ? `. ${topic.description}` : ""}`}
       {...tipProps(tip)}
     >
       <div className="hb-id">
@@ -90,7 +91,7 @@ function HeartbeatRow({ topic, index, topicCount, river, totalSeconds, maxTopicS
         )}
       </div>
       <div className="hb-about">
-        {topic.description && <p className="hb-description">{topic.description}</p>}
+        {topic.description && <p className="hb-description" title={topic.description}>{topic.description}</p>}
         <ul className="hb-chips">
           {topic.keywords.filter((keyword) => !GENERIC.has(keyword.toLowerCase())).slice(0, MAX_CHIPS).map((keyword) => (
             <li key={keyword} className="hb-chip">
@@ -121,17 +122,6 @@ function HeartbeatRow({ topic, index, topicCount, river, totalSeconds, maxTopicS
         <span className="sr-track hb-track" aria-hidden="true">
           <span className="sr-fill hb-fill" style={{ display: "block", width: `${maxTopicSeconds > 0 ? (topic.seconds / maxTopicSeconds) * 100 : 0}%` }} />
         </span>
-        {topic.top_tickets.length > 0 && (
-          <span className="hb-tickets">
-            Tickets:{" "}
-            {topic.top_tickets.map((ticket, i) => (
-              <span key={ticket.label}>
-                {i > 0 && " "}
-                <span className="hb-ticket">{ticket.label}</span>
-              </span>
-            ))}
-          </span>
-        )}
       </div>
     </li>
   );

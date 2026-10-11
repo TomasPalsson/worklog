@@ -6,6 +6,3 @@
 .sx-river .st-svg .art-label { font-size: 12px; }
 .sx-river-axis, .sx-river-tick, .sx-river-bracket { stroke: var(--fg-muted); stroke-opacity: 0.5; stroke-width: 1; fill: none; }
 .sx-river .st-caption { max-width: 70ch; }
-.sx-river-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 6px 0 0; padding: 0; list-style: none; font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; }
-.sx-river-legend-item { display: inline-flex; align-items: center; gap: 6px; }
-.sx-river-swatch { width: 10px; height: 10px; flex: none; }

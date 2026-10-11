@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
 import { cleanup, render } from "@testing-library/react";
 import type { Topic, TopicsReport } from "@/lib/topics_contract";
 import { parseTip } from "./tip";
@@ -175,19 +176,24 @@ describe("river trimming and labels", () => {
     expect(b.x).toBeGreaterThanOrEqual(0);
     expect(b.x + b.w).toBeLessThanOrEqual(1000);
   });
-  // catches: legend limited to the topics without an inline label
-  it("legend lists every topic, labelled inline or not", () => {
+  // catches: legend left in markup or css
+  it("has no legend in markup or css", () => {
+    const { container } = render(<TopicRiver report={crowded()} />);
+    expect(container.querySelector(".sx-river-legend")).toBeNull();
+    expect(readFileSync(new URL("../../app/stats/river.css", import.meta.url), "utf8")).not.toContain("sx-river-legend");
+  });
+  it("topics without an inline label keep a labelled band", () => {
     const rep = crowded();
     const { container } = render(<TopicRiver report={rep} />);
-    const inline = container.querySelectorAll("text.sx-river-name").length;
-    const legend = [...container.querySelectorAll(".sx-river-legend-item")].map((t) => t.textContent);
-    expect(inline).toBeGreaterThan(0);
-    expect(inline).toBeLessThan(rep.topics.length);
-    expect(legend.sort()).toEqual(rep.topics.map((t) => t.name).sort());
+    expect(container.querySelectorAll("path.sx-river-band[aria-label]").length).toBe(rep.topics.length);
   });
-  it("legend still renders when every topic is labelled inline", () => {
-    const { container } = render(<TopicRiver report={report([[H], [H]])} />);
-    expect(container.querySelectorAll(".sx-river-legend-item").length).toBe(1);
+  // catches: unit missing, or day/week swapped
+  it("scale label says per day for day bins and per week for week bins", () => {
+    const day = render(<TopicRiver report={report([[H], [H]], "day")} />);
+    expect(day.container.querySelector(".sx-river-scale")!.textContent).toMatch(/h \/ day$/);
+    cleanup();
+    const week = render(<TopicRiver report={report([[H], [H]], "week")} />);
+    expect(week.container.querySelector(".sx-river-scale")!.textContent).toMatch(/h \/ week$/);
   });
 });
 
@@ -212,12 +218,12 @@ describe("river design pass", () => {
   // catches: scale label from the summed total, the first bin or a per-layer peak
   it("scale label equals the tallest stack's hours and the bracket spans it", () => {
     const { container } = render(<TopicRiver report={report([[2 * H, 1 * H], [4 * H, 4 * H], [H, 0]])} />);
-    expect(container.querySelector("text.sx-river-scale")!.textContent).toBe("8h");
+    expect(container.querySelector("text.sx-river-scale")!.textContent).toBe("8h / day");
     expect(container.querySelector("path.sx-river-bracket")).not.toBeNull();
   });
   it("scale label keeps a fractional hour", () => {
     const { container } = render(<TopicRiver report={report([[H, H / 2], [H, 0]])} />);
-    expect(container.querySelector("text.sx-river-scale")!.textContent).toBe("1.5h");
+    expect(container.querySelector("text.sx-river-scale")!.textContent).toBe("1.5h / day");
   });
   // catches: horizontal scroll floor left at 600
   it("svg scrolls horizontally from 720px", () => {
