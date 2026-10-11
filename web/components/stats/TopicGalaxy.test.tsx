@@ -150,7 +150,7 @@ describe("galaxyLayout labels", () => {
     const l = labels[0];
     expect(l.x - l.w / 2).toBeGreaterThanOrEqual(8);
     expect(l.x + l.w / 2).toBeLessThanOrEqual(992);
-    expect(l.text).toBe(name);
+    expect(l.text).toBe("Billing export ·…");
   });
 
   it("a long-named label at the right edge is clamped to x1 <= 992", () => {
@@ -158,28 +158,66 @@ describe("galaxyLayout labels", () => {
       report({ topics: [topic(0, { name: "Billing export · invoice · customer" })], points: [point(1, { x: 1 })] }),
     );
     expect(labels[0].x + labels[0].w / 2).toBeLessThanOrEqual(992);
-    expect(labels[0].x + labels[0].w / 2).toBeGreaterThan(900);
+    expect(labels[0].x + labels[0].w / 2).toBeCloseTo(992, 6);
   });
 
-  it("a name wider than the map shrinks to the 11px floor, then truncates with an ellipsis within bounds", () => {
+  it("a 200-char name is cut to 24 chars ending in an ellipsis; the topic keeps the full name", () => {
     const name = "x".repeat(200);
     const { labels } = galaxyLayout(report({ topics: [topic(0, { name })], points: [point(1)] }));
     const l = labels[0];
-    expect(l.fontSize).toBe(11);
-    expect(l.text.endsWith("…")).toBe(true);
-    expect(l.text.length).toBeLessThan(200);
-    expect(l.x - l.w / 2).toBeGreaterThanOrEqual(8);
-    expect(l.x + l.w / 2).toBeLessThanOrEqual(992);
+    expect(l.text).toBe(`${"x".repeat(23)}…`);
     expect(l.topic.name).toBe(name);
+    expect(l.x + l.w / 2).toBeLessThanOrEqual(992);
   });
 
-  it("a name that fits only after shrinking is not truncated", () => {
-    const name = "y".repeat(100);
+  it("a 24-char name is kept whole, a 25-char name is cut", () => {
+    const at = galaxyLayout(report({ topics: [topic(0, { name: "a".repeat(24) })], points: [point(1)] }));
+    expect(at.labels[0].text).toBe("a".repeat(24)); // catches >= instead of >
+    const past = galaxyLayout(report({ topics: [topic(0, { name: "a".repeat(25) })], points: [point(1)] }));
+    expect(past.labels[0].text).toBe(`${"a".repeat(23)}…`);
+  });
+
+  it("a 42-char name is cut at the last space within 23 chars and renders with its full aria-label", () => {
+    const name = "Code Interpreter and History Configuration";
+    expect(name).toHaveLength(42);
     const { labels } = galaxyLayout(report({ topics: [topic(0, { name })], points: [point(1)] }));
-    expect(labels[0].text).toBe(name);
-    expect(labels[0].fontSize).toBeLessThan(20);
-    expect(labels[0].fontSize).toBeGreaterThanOrEqual(11);
-    expect(labels[0].w).toBeLessThanOrEqual(984);
+    expect(labels[0].text).toBe("Code Interpreter and…"); // catches a hard cut at 23 ("Code Interpreter and Hi…")
+    expect(labels[0].text.length).toBeLessThanOrEqual(24);
+    const { container } = render(<TopicGalaxy report={report({ topics: [topic(0, { name })], points: [point(1)] })} />);
+    const g = container.querySelector(".sx-gal-label")!;
+    expect(g.getAttribute("aria-label")).toBe(`${name}, 1.0h`);
+    expect(g.querySelector("text.sx-gal-name")!.textContent).toBe("Code Interpreter and…");
+  });
+
+  it("a space at or before char 10 is not used as the cut point", () => {
+    const name = `abcdefghij ${"k".repeat(30)}`; // only space is at index 10
+    const { labels } = galaxyLayout(report({ topics: [topic(0, { name })], points: [point(1)] }));
+    expect(labels[0].text).toBe(`${name.slice(0, 23)}…`); // catches a cut to "abcdefghij…"
+  });
+
+  it("ten topics with two near-identical long-named centroids end with no overlapping boxes, all inside the map", () => {
+    const names = ["Code Interpreter and History Configuration", "Sjúkra Claude Integration"];
+    const topics = Array.from({ length: 10 }, (_, i) => topic(i, { name: names[i] ?? `Theme number ${i}`, seconds: 3600 * (i < 2 ? 3 : 1) }));
+    const points = topics.map((t, i) =>
+      point(i + 1, { topic_id: t.id, x: i < 2 ? 0.9 + i * 0.001 : (i - 2) / 8, y: i < 2 ? 0.5 + i * 0.001 : (i - 2) / 7 }),
+    );
+    const { labels, height } = galaxyLayout(report({ topics, points }));
+    expect(labels).toHaveLength(10);
+    for (let i = 0; i < labels.length; i++)
+      for (let j = i + 1; j < labels.length; j++) expect(overlaps(labels[i], labels[j])).toBe(false);
+    for (const l of labels) {
+      expect(l.x - l.w / 2).toBeGreaterThanOrEqual(8 - 1e-9);
+      expect(l.x + l.w / 2).toBeLessThanOrEqual(992 + 1e-9);
+      expect(l.y - l.h / 2).toBeGreaterThanOrEqual(-1e-9);
+      expect(l.y + l.h / 2).toBeLessThanOrEqual(height + 1e-9);
+    }
+  });
+
+  it("label box height counts the hours line and width covers the hours text", () => {
+    const { labels } = galaxyLayout(report({ topics: [topic(0, { name: "ab", seconds: 3600 * 100 })], points: [point(1)] }));
+    const l = labels[0];
+    expect(l.h).toBeCloseTo(l.fontSize + 16 + 13, 10); // catches a name-only box
+    expect(l.w).toBeCloseTo("100.0h".length * 13 * 0.62, 10); // catches a name-only width
   });
 
   it("six labels crowded at the right edge stay inside the map and never overlap", () => {
@@ -429,7 +467,10 @@ describe("TopicGalaxy markup", () => {
     expect(blocks).toMatch(/\.sx-gal-label\s*\{[^}]*display:\s*none/); // catches labels left visible on phone
     expect(blocks).toMatch(/\.sx-gal-list\s*\{[^}]*display:\s*block/); // catches list hidden on phone
     expect(blocks).toMatch(/\.sx-gal-dot[^{]*\{[^}]*transform:\s*scale\(1\.6\)/); // catches missing dot enlargement
-    expect(css).toMatch(/\.sx-gal-list\s*\{[^}]*display:\s*none/); // catches list shown on desktop
+    const desktop = css.replace(/@media \(max-width: 599px\) \{[^@]*\}\s*(?=\n|$)/g, "");
+    expect(desktop).not.toMatch(/\.sx-gal-list\s*\{[^}]*display:\s*none/); // catches a keyboard-unreachable list
+    expect(desktop).toMatch(/\.sx-gal-list\s*\{[^}]*clip-path:\s*inset\(50%\)/); // catches no visually-hidden pattern
+    expect(desktop).toMatch(/\.sx-gal-list:focus-within/); // catches a list that never becomes visible on focus
   });
 
   it("the caption has no jargon outside details", () => {
@@ -473,7 +514,7 @@ describe("phone tap targets and spacing", () => {
     const topics = [topic(0, { name: "code interpreter infrastructure" }), topic(1, { name: "code interpreter and history configuration" })];
     const { labels } = galaxyLayout(report({ topics, points: [point(1, { topic_id: 0 }), point(2, { topic_id: 1 })] }));
     const [a, b] = [...labels].sort((p, q) => p.y - q.y);
-    expect(a.h).toBeCloseTo(a.fontSize + 16, 10); // catches the old name-only box (font + 14)
+    expect(a.h).toBeCloseTo(a.fontSize + 16 + 13, 10); // catches the name-only box
     expect(b.y - b.h / 2 - (a.y + a.h / 2)).toBeGreaterThanOrEqual(8 - 1e-9); // catches the 2px pad
   });
 

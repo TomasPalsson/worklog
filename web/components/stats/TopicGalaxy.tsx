@@ -11,7 +11,7 @@ export const GAL_H = 620;
 const MIN_H = 360;
 const PAD = 40;
 const NEBULA_R = 26;
-const NUDGE_ITERATIONS = 20;
+const NUDGE_ITERATIONS = 50;
 const MAX_DELAY_MS = 1200;
 const NAME_CHAR_W = 0.62; // mono advance per font-size, including letter-spacing
 const LABEL_MIN_X = 8;
@@ -19,6 +19,8 @@ const LABEL_MAX_X = GAL_W - 8;
 const MIN_FONT = 11;
 const LABEL_GAP = 8; // breathing room kept between nudged labels
 const LABEL_LINE_GAP = 16; // name-to-hours baseline step; the hours line is part of the label's box
+const HOURS_FONT = 13; // keep equal to .sx-gal-hours font-size in galaxy.css
+const MAX_LABEL_CHARS = 24;
 
 const HOW =
   "How it works: Each dot is a work block. Blocks about similar things sit close together, and each cluster is a topic. Names come from AI (Haiku), or from keywords if no model is available. Distance between islands is only roughly meaningful.";
@@ -64,6 +66,13 @@ function weightedMedian(vals: { v: number; w: number }[]): number {
   return sorted[0].v;
 }
 
+function shortName(name: string): string {
+  if (name.length <= MAX_LABEL_CHARS) return name;
+  const cut = name.slice(0, MAX_LABEL_CHARS - 1);
+  const space = cut.lastIndexOf(" ");
+  return `${space > 10 ? cut.slice(0, space) : cut}…`;
+}
+
 /** Pure placement of dots and labels in a 1000-wide viewBox whose height follows the y extent. */
 export function galaxyLayout(report: Pick<TopicsReport, "topics" | "points">): GalaxyLayout {
   const { topics } = report;
@@ -98,39 +107,44 @@ export function galaxyLayout(report: Pick<TopicsReport, "topics" | "points">): G
     const mine = dots.filter((d) => d.point.topic_id === topic.id);
     if (mine.length === 0) continue;
     const wts = (f: (d: GalaxyDot) => number) => mine.map((d) => ({ v: f(d), w: d.point.seconds + 1 }));
-    const wanted = MIN_FONT + 9 * Math.sqrt(totalSec > 0 ? topic.seconds / totalSec : 0);
-    const room = LABEL_MAX_X - LABEL_MIN_X;
-    const fontSize = Math.max(MIN_FONT, Math.min(wanted, room / (topic.name.length * NAME_CHAR_W)));
-    const maxChars = Math.floor(room / (fontSize * NAME_CHAR_W));
-    const text = topic.name.length > maxChars ? `${topic.name.slice(0, maxChars - 1)}…` : topic.name;
-    const w = text.length * fontSize * NAME_CHAR_W;
+    const fontSize = MIN_FONT + 9 * Math.sqrt(totalSec > 0 ? topic.seconds / totalSec : 0);
+    const text = shortName(topic.name);
+    const hoursW = hoursLabel(topic.seconds).length * HOURS_FONT * NAME_CHAR_W;
+    const w = Math.max(text.length * fontSize * NAME_CHAR_W, hoursW);
     labels.push({
       topic,
       text,
-      x: Math.min(LABEL_MAX_X - w / 2, Math.max(LABEL_MIN_X + w / 2, weightedMedian(wts((d) => d.cx)))),
+      x: weightedMedian(wts((d) => d.cx)),
       y: weightedMedian(wts((d) => d.cy)),
       fontSize,
       w,
-      h: fontSize + LABEL_LINE_GAP,
+      h: fontSize + LABEL_LINE_GAP + HOURS_FONT,
     });
   }
 
+  const clamp = (l: GalaxyLabel) => {
+    l.x = Math.min(LABEL_MAX_X - l.w / 2, Math.max(LABEL_MIN_X + l.w / 2, l.x));
+    l.y = Math.min(height - l.h / 2, Math.max(l.h / 2, l.y));
+  };
+  labels.forEach(clamp);
   for (let it = 0; it < NUDGE_ITERATIONS; it++) {
+    let moved = false;
     const byY = [...labels].sort((p, q) => p.y - q.y);
     for (let i = 0; i < byY.length; i++) {
       for (let j = i + 1; j < byY.length; j++) {
         const a = byY[i];
         const b = byY[j];
         if (Math.abs(a.x - b.x) >= (a.w + b.w) / 2) continue;
-        const overlap = (a.h + b.h) / 2 - Math.abs(a.y - b.y);
-        if (overlap <= 0) continue;
+        const need = (a.h + b.h) / 2 + LABEL_GAP - Math.abs(a.y - b.y);
+        if (need <= 1e-9) continue;
         const dir = a.y <= b.y ? 1 : -1;
-        const push = (overlap + LABEL_GAP) / 2;
-        a.y -= dir * push;
-        b.y += dir * push;
+        a.y -= (dir * need) / 2;
+        b.y += (dir * need) / 2;
+        moved = true;
       }
     }
-    for (const l of labels) l.y = Math.min(height - l.h / 2, Math.max(l.h / 2, l.y));
+    labels.forEach(clamp);
+    if (!moved) break;
   }
   return { height, dots, labels };
 }
