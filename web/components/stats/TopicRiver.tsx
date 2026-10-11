@@ -1,12 +1,15 @@
 import "@/app/stats/river.css";
 import type { Topic, TopicsReport } from "@/lib/topics_contract";
 import { bandPath } from "./ActivityStream";
-import { dayLabel, shortLabel } from "./time-utils";
+import { shortMonthDay } from "@/lib/format";
+import { dayLabel, dowMon, shortLabel } from "./time-utils";
 import { tipProps, type Tip } from "./tip";
 
 const W = 1000;
 const H = 240;
 const PAD = 6;
+const GUTTER = 48;
+const WEEK_TICK_EVERY = 4;
 const MIN_LABEL_PX = 14;
 const COL_TIP_ROWS = 4;
 const CHAR_PX = 6.6;
@@ -40,6 +43,7 @@ const overlaps = (a: ReturnType<typeof labelBox>, b: ReturnType<typeof labelBox>
   a.x < b.x + b.w + LABEL_PAD && b.x < a.x + a.w + LABEL_PAD && a.y < b.y + b.h + LABEL_PAD && b.y < a.y + a.h + LABEL_PAD;
 
 const hours = (s: number) => `${(s / 3600).toFixed(1)}h`;
+const scaleHours = (s: number) => `${Number((s / 3600).toFixed(1))}h`;
 const colorOf = (id: number, k: number) => `oklch(var(--project-l) var(--project-c) ${25 + id * (360 / k)})`;
 
 /** Stacked, centred-baseline layers; one shared scale so thickness is proportional to seconds. */
@@ -122,18 +126,20 @@ function columnTip(report: TopicsReport, bins: TopicsReport["river"], i: number)
 export function TopicRiver({ report }: { report: TopicsReport }) {
   const built = buildRiver(report);
   if (!built) return null;
-  const { layers, xs, bins } = built;
+  const { layers, unit, xs, bins } = built;
   const n = bins.length;
   const step = (W - 2 * PAD) / (n - 1);
-  const first = bins[0].start;
-  const last = bins[n - 1].start;
+  const ticks = bins.flatMap((b, i) => ((report.bin === "week" ? i % WEEK_TICK_EVERY === 0 : dowMon(b.start) === 0) ? [{ x: xs[i], label: shortMonthDay(b.start) }] : []));
+  const stack = H - 2 * PAD;
+  const bx = W + 10;
   return (
-    <div className="st-chart sx-river">
+    <section className="sr-card sx-river">
+      <h3 className="sr-title">Topic river</h3>
       <div className="st-scroll">
         <svg
           className="st-svg"
-          viewBox={`0 0 ${W} ${H}`}
-          style={{ width: "100%", minWidth: 600, maxHeight: 300 }}
+          viewBox={`0 0 ${W + GUTTER} ${H}`}
+          style={{ width: "100%", minWidth: 720, maxHeight: 300 }}
           role="img"
           aria-label={`Topic river over ${n} bins: ${layers.map((l) => `${l.topic.name} ${hours(l.total)}`).join(", ")}.`}
         >
@@ -164,21 +170,26 @@ export function TopicRiver({ report }: { report: TopicsReport }) {
               {l.topic.name}
             </text>
           ))}
-          <text x={PAD} y={H - 4} className="art-label">{shortLabel(first)}</text>
-          <text x={W - PAD} y={H - 4} textAnchor="end" className="art-label">{shortLabel(last)}</text>
+          <line className="sx-river-axis" x1={PAD} x2={W - PAD} y1={H - 1} y2={H - 1} />
+          {ticks.map((t) => (
+            <g key={t.x}>
+              <line className="sx-river-tick" x1={t.x} x2={t.x} y1={H - 6} y2={H - 1} />
+              <text className="art-label sx-river-tick-label" x={t.x + 3} y={H - 8}>{t.label}</text>
+            </g>
+          ))}
+          <path className="sx-river-bracket" d={`M${bx - 4} ${PAD}H${bx}V${PAD + stack}H${bx - 4}`} />
+          <text className="art-label sx-river-scale" x={bx + 4} y={H / 2} dominantBaseline="central">{scaleHours(stack / unit)}</text>
         </svg>
       </div>
-      {layers.some((l) => !l.labelled) && (
-        <ul className="sx-river-legend">
-          {layers.filter((l) => !l.labelled).map((l) => (
-            <li key={l.topic.id} className="sx-river-legend-item">
-              <span className="sx-river-swatch" style={{ background: l.color }} />
-              {l.topic.name}
-            </li>
-          ))}
-        </ul>
-      )}
-      <p className="st-caption">How: Hours per topic per day (per week when the range is longer than 90 days). Topics are fitted once over the whole range.</p>
-    </div>
+      <ul className="sx-river-legend">
+        {layers.map((l) => (
+          <li key={l.topic.id} className="sx-river-legend-item">
+            <span className="sx-river-swatch" style={{ background: l.color }} />
+            {l.topic.name}
+          </li>
+        ))}
+      </ul>
+      <p className="st-caption">How it works: Hours per topic per day (per week when the range is longer than 90 days). Topics are fitted once over the whole range.</p>
+    </section>
   );
 }

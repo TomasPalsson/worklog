@@ -107,9 +107,9 @@ describe("TopicMoments", () => {
     expect(container.querySelector('[data-moment="first_time"] .tm-score')!.textContent).toBe("0.85");
     expect(container.querySelector('[data-moment="oddball"] .tm-score')!.textContent).toBe("0.23");
   });
-  it("oddball card says nearest anything against the median; first-time card does not", () => {
+  it("oddball card says closest match against typical; first-time card does not", () => {
     const { container } = render(<TopicMoments report={report()} />);
-    expect(container.querySelector('[data-moment="oddball"] .tm-nearest')!.textContent).toBe("nearest anything: 0.23 vs median 0.57");
+    expect(container.querySelector('[data-moment="oddball"] .tm-nearest')!.textContent).toBe("closest match 0.23 (typical 0.57)");
     expect(container.querySelector('[data-moment="first_time"] .tm-nearest')).toBeNull();
   });
   it("shows day, hours and the topic chip", () => {
@@ -145,11 +145,35 @@ describe("TopicMoments", () => {
     expect(container.querySelectorAll(".sr-empty").length).toBe(1);
     expect(container.querySelectorAll('[data-moment="first_time"]').length).toBe(2);
   });
-  it("How line carries the median to two decimals", () => {
+  it("How line carries the median to two decimals and says similarity, not cosine", () => {
     const { container } = render(<TopicMoments report={report()} />);
-    expect(container.querySelector(".tm-how")!.textContent).toBe(
-      "How: First time = lowest similarity to any earlier block, including the 60 days before the range. Your first 20 blocks are skipped — they have nothing earlier to compare with. Oddball = its closest block in this range is under 0.30 cosine; your median block's closest is 0.57.",
+    expect(container.querySelector(".tm-how > p")!.textContent).toBe(
+      "How it works: First time = lowest similarity to any earlier block, including the 60 days before the range. Your first 20 blocks are skipped — they have nothing earlier to compare with. Oddball = its closest block in this range is under 0.30 similarity; your median block's closest is 0.57.",
     );
+    expect(container.querySelector(".tm-how > p")!.textContent).not.toMatch(/cosine/i);
+  });
+  it("cosine lives in a Method disclosure", () => {
+    const { container } = render(<TopicMoments report={report()} />);
+    const d = container.querySelector(".tm-how > details")!;
+    expect(d.querySelector("summary")!.textContent).toBe("Method");
+    expect(d.textContent).toMatch(/cosine/);
+  });
+  // catches: subtitles swapped between the cards or missing
+  it("each card title carries its reading direction", () => {
+    const { container } = render(<TopicMoments report={report()} />);
+    const subs = [...container.querySelectorAll("section.sr-card")].map((s) => [s.querySelector(".sr-title")!.textContent, s.querySelector(".tm-sub")!.textContent]);
+    expect(subs).toEqual([["First times", "higher = newer ground"], ["Oddballs", "lower = more unusual"]]);
+  });
+  // catches: endpoints omitted or taken from the card's own day
+  it("every strip is labelled with the range's first and last day", () => {
+    const { container } = render(<TopicMoments report={report()} />);
+    const ends = [...container.querySelectorAll(".tm-ends")];
+    expect(ends.length).toBe(4);
+    ends.forEach((e) => expect([...e.children].map((c) => c.textContent)).toEqual(["Oct 5", "Oct 9"]));
+  });
+  it("label carries the two-line clamp class and is the .tm-label element", () => {
+    const { container } = render(<TopicMoments report={report()} />);
+    expect(container.querySelector(".tm-label .tm-clamp")!.textContent).toBe("Merge billing view");
   });
   it("marks are drawn and nothing renders NaN, undefined or null", () => {
     const { container } = render(<TopicMoments report={report({ first_times: [highlight({ ticket: null })] })} />);

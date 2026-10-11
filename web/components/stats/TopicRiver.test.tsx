@@ -112,12 +112,11 @@ describe("river trimming and labels", () => {
   it("returns null when only one bin has data", () => {
     expect(buildRiver(report([[0], [H], [0]]))).toBeNull();
   });
-  // catches: axis labels still reading the untrimmed river
-  it("axis labels show the first and last non-zero bin", () => {
-    const { container } = render(<TopicRiver report={report([[0], [0], [H], [H], [0]])} />);
-    const labels = [...container.querySelectorAll("text.art-label")].map((t) => t.textContent);
-    expect(labels).toEqual(["7 Oct", "8 Oct"]);
-    expect(container.querySelectorAll("rect.sx-river-col").length).toBe(2);
+  // catches: ticks computed from the untrimmed river (Oct 5 is a Monday inside the zero prefix)
+  it("axis ticks follow the trimmed bins", () => {
+    const withMonday = [...Array.from({ length: 7 }, () => [0]), [H], [H], [H]];
+    const { container } = render(<TopicRiver report={report(withMonday)} />);
+    expect([...container.querySelectorAll("text.sx-river-tick-label")].map((t) => t.textContent)).toEqual(["Oct 12"]);
   });
   // catches: labels placed without checking earlier boxes (or without the pad)
   it("placed label boxes are pairwise disjoint with a 4px pad, and some are dropped", () => {
@@ -148,19 +147,53 @@ describe("river trimming and labels", () => {
     expect(b.x).toBeGreaterThanOrEqual(0);
     expect(b.x + b.w).toBeLessThanOrEqual(1000);
   });
-  // catches: unlabelled topics vanishing from the chart
-  it("every topic appears inline or in the legend", () => {
+  // catches: legend limited to the topics without an inline label
+  it("legend lists every topic, labelled inline or not", () => {
     const rep = crowded();
     const { container } = render(<TopicRiver report={rep} />);
-    const inline = [...container.querySelectorAll("text.sx-river-name")].map((t) => t.textContent);
+    const inline = container.querySelectorAll("text.sx-river-name").length;
     const legend = [...container.querySelectorAll(".sx-river-legend-item")].map((t) => t.textContent);
-    expect(inline.length).toBeGreaterThan(0);
-    expect(legend.length).toBeGreaterThan(0);
-    expect([...inline, ...legend].sort()).toEqual(rep.topics.map((t) => t.name).sort());
+    expect(inline).toBeGreaterThan(0);
+    expect(inline).toBeLessThan(rep.topics.length);
+    expect(legend.sort()).toEqual(rep.topics.map((t) => t.name).sort());
   });
-  it("renders no legend when every topic is labelled inline", () => {
+  it("legend still renders when every topic is labelled inline", () => {
     const { container } = render(<TopicRiver report={report([[H], [H]])} />);
-    expect(container.querySelector(".sx-river-legend")).toBeNull();
+    expect(container.querySelectorAll(".sx-river-legend-item").length).toBe(1);
+  });
+});
+
+describe("river design pass", () => {
+  const days = (n: number) => Array.from({ length: n }, () => [H]);
+  // catches: ticks on every day, or none, or only the first Monday (3 Mondays: Oct 5, 12, 19)
+  it("one tick and label per Monday in 3 weeks of day bins", () => {
+    const { container } = render(<TopicRiver report={report(days(21))} />);
+    expect(container.querySelectorAll("line.sx-river-tick").length).toBe(3);
+    expect([...container.querySelectorAll("text.sx-river-tick-label")].map((t) => t.textContent)).toEqual(["Oct 5", "Oct 12", "Oct 19"]);
+  });
+  // catches: week bins ticked every week or every 5th
+  it("week bins tick every 4th bin (fixture bins are consecutive days)", () => {
+    const { container } = render(<TopicRiver report={report(days(9), "week")} />);
+    expect([...container.querySelectorAll("text.sx-river-tick-label")].map((t) => t.textContent)).toEqual(["Oct 5", "Oct 9", "Oct 13"]);
+  });
+  // catches: scale label from the summed total, the first bin or a per-layer peak
+  it("scale label equals the tallest stack's hours and the bracket spans it", () => {
+    const { container } = render(<TopicRiver report={report([[2 * H, 1 * H], [4 * H, 4 * H], [H, 0]])} />);
+    expect(container.querySelector("text.sx-river-scale")!.textContent).toBe("8h");
+    expect(container.querySelector("path.sx-river-bracket")).not.toBeNull();
+  });
+  it("scale label keeps a fractional hour", () => {
+    const { container } = render(<TopicRiver report={report([[H, H / 2], [H, 0]])} />);
+    expect(container.querySelector("text.sx-river-scale")!.textContent).toBe("1.5h");
+  });
+  // catches: horizontal scroll floor left at 600
+  it("svg scrolls horizontally from 720px", () => {
+    const { container } = render(<TopicRiver report={report(days(3))} />);
+    expect((container.querySelector("svg.st-svg") as SVGElement).style.minWidth).toBe("720px");
+  });
+  it("is an sr-card titled Topic river", () => {
+    const { container } = render(<TopicRiver report={report(days(3))} />);
+    expect(container.querySelector("section.sr-card > h3.sr-title")!.textContent).toBe("Topic river");
   });
 });
 
@@ -198,12 +231,9 @@ describe("TopicRiver", () => {
     expect(lastCol).toBeLessThan(firstBand);
     expect(container.querySelectorAll("path.sx-river-band[data-stip]").length).toBe(2);
   });
-  it("shows axis labels in .art-label and the How line", () => {
-    const { container, getByText } = render(<TopicRiver report={rep} />);
-    const labels = [...container.querySelectorAll("text.art-label")].map((t) => t.textContent);
-    expect(labels).toContain("5 Oct");
-    expect(labels).toContain("7 Oct");
-    expect(getByText(/^How:/).textContent).toContain("per week when the range is longer than 90 days");
+  it("shows the How it works line", () => {
+    const { getByText } = render(<TopicRiver report={rep} />);
+    expect(getByText(/^How it works:/).textContent).toContain("per week when the range is longer than 90 days");
   });
   it("renders nothing for fewer than 2 bins", () => {
     const { container } = render(<TopicRiver report={report([[H, H]])} />);

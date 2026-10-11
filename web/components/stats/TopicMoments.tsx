@@ -52,7 +52,7 @@ function MomentCard({ item, kind, topics, from, to, median }: CardProps) {
       <span className="tm-score">{score(item.score)}</span>
       <span className="tm-label">
         {kind === "first_time" ? <FirstTimeMark /> : <OddballMark />}
-        {item.label}
+        <span className="tm-clamp">{item.label}</span>
       </span>
       <span className="tm-when">
         {shortMonthDay(item.day)} · {formatDuration(item.seconds)}
@@ -60,11 +60,15 @@ function MomentCard({ item, kind, topics, from, to, median }: CardProps) {
       {topicName && <span className="tm-chip">{topicName}</span>}
       {kind === "oddball" && (
         <span className="tm-nearest">
-          nearest anything: {score(item.score)} vs median {score(median)}
+          closest match {score(item.score)} (typical {score(median)})
         </span>
       )}
       <span className="tm-strip" aria-hidden="true">
         <span className="tm-marker" style={{ left: `${stripFraction(item.day, from, to) * 100}%` }} />
+      </span>
+      <span className="tm-ends">
+        <span>{shortMonthDay(from)}</span>
+        <span>{shortMonthDay(to)}</span>
       </span>
     </li>
   );
@@ -72,9 +76,10 @@ function MomentCard({ item, kind, topics, from, to, median }: CardProps) {
 
 export function TopicMoments({ report }: { report: TopicsReport }) {
   const { topics, from, to, oddball_median: median } = report;
-  const column = (kind: Kind, title: string, items: Highlight[]) => (
+  const column = (kind: Kind, title: string, subtitle: string, items: Highlight[]) => (
     <section className="sr-card">
       <h3 className="sr-title">{title}</h3>
+      <p className="tm-sub">{subtitle}</p>
       {items.length === 0 ? (
         <p className="sr-empty">{EMPTY}</p>
       ) : (
@@ -89,13 +94,19 @@ export function TopicMoments({ report }: { report: TopicsReport }) {
   return (
     <div className="tm-wrap">
       <div className="stats-two">
-        {column("first_time", "First times", report.first_times)}
-        {column("oddball", "Oddballs", report.oddballs)}
+        {column("first_time", "First times", "higher = newer ground", report.first_times)}
+        {column("oddball", "Oddballs", "lower = more unusual", report.oddballs)}
       </div>
-      <p className="sr-caption tm-how">
-        How: First time = lowest similarity to any earlier block, including the 60 days before the range. Your first 20 blocks are skipped — they have nothing earlier to compare with. Oddball = its closest block in this range is
-        under {ODDBALL_MAX_COS.toFixed(2)} cosine; your median block&apos;s closest is {score(median)}.
-      </p>
+      <div className="tm-how">
+        <p className="sr-caption">
+          How it works: First time = lowest similarity to any earlier block, including the 60 days before the range. Your first 20 blocks are skipped — they have nothing earlier to compare with. Oddball = its closest block in this range is
+          under {ODDBALL_MAX_COS.toFixed(2)} similarity; your median block&apos;s closest is {score(median)}.
+        </p>
+        <details>
+          <summary>Method</summary>
+          Similarity is the cosine similarity between block embeddings, 1 for identical meaning and near 0 for unrelated.
+        </details>
+      </div>
     </div>
   );
 }
