@@ -126,6 +126,25 @@ fn plan(conn: &Connection) -> Result<Option<(String, Vec<String>)>> {
     }))
 }
 
+fn build_recap(conn: &Connection, day: &str) -> Result<()> {
+    let hours = envfile::read(WORK_HOURS_KEY).unwrap_or_else(|| DEFAULT_WORK_HOURS.to_owned());
+    recap::build_and_store(conn, day, &hours)?;
+    meta_set(conn, RECAP_KEY, day)
+}
+
+/// A short cause for the stored error: a reqwest failure's text carries the
+/// request URL, so it is reduced to its kind.
+fn reason(e: &anyhow::Error) -> String {
+    match e.chain().find_map(|c| c.downcast_ref::<reqwest::Error>()) {
+        Some(r) if r.is_timeout() => "timed out".to_owned(),
+        Some(r) if r.is_connect() => "connection failed".to_owned(),
+        Some(r) => r.status().map_or("request failed".to_owned(), |s| {
+            format!("HTTP {}", s.as_u16())
+        }),
+        None => e.to_string(),
+    }
+}
+
 /// One 15-minute tick. Plans the day's run at the first tick from 17:00, then
 /// sends each planned line through `send`; an unreachable Tempo stores its
 /// error on the line and leaves it for the next tick. Lines still unsent when the day is over are marked
@@ -145,10 +164,17 @@ pub fn run_if_due(
                     day: day.clone(),
                     jira_issue: issue,
                 };
-                set_outcome(conn, &key, Some(UNREACHABLE))?;
+                conn.execute(
+                    "UPDATE tempo_line_texts SET send_error = COALESCE(send_error, ?3)
+                      WHERE day = ?1 AND jira_issue = ?2",
+                    params![key.day, key.jira_issue, UNREACHABLE],
+                )?;
             }
         }
         meta_set(conn, PLAN_KEY, "")?;
+        if enabled && meta_get(conn, RECAP_KEY)?.as_deref() != Some(day.as_str()) {
+            build_recap(conn, &day)?;
+        }
     }
     if !enabled || local.hour() < AUTO_SEND_HOUR {
         return Ok(());
@@ -177,7 +203,7 @@ pub fn run_if_due(
             Ok(results) => results,
             Err(e) => {
                 tracing::warn!("auto-send {}: {e:#}", key.jira_issue);
-                set_outcome(conn, &key, Some(&format!("{UNREACHABLE}: {e}")))?;
+                set_outcome(conn, &key, Some(&format!("{UNREACHABLE}: {}", reason(&e))))?;
                 unreachable = true;
                 continue;
             }
@@ -191,9 +217,7 @@ pub fn run_if_due(
     }
     // An unreachable Tempo defers the recap to the tick that finishes sending.
     if !unreachable && meta_get(conn, RECAP_KEY)?.as_deref() != Some(today.as_str()) {
-        let hours = envfile::read(WORK_HOURS_KEY).unwrap_or_else(|| DEFAULT_WORK_HOURS.to_owned());
-        recap::build_and_store(conn, &today, &hours)?;
-        meta_set(conn, RECAP_KEY, &today)?;
+        build_recap(conn, &today)?;
     }
     Ok(())
 }

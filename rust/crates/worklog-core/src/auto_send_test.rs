@@ -395,11 +395,69 @@ fn lines_still_unreachable_when_the_day_ends_are_marked_not_sent() {
             vec![]
         )
     );
+    // catches: the rollover overwriting the stored cause with the bare constant
+    assert_eq!(
+        column(&conn, DAY, "A-1", "send_error").as_deref(),
+        Some("Tempo could not be reached: connection refused")
+    );
+    assert_eq!(column(&conn, DAY, "A-1", "auto_sent_at"), None);
+}
+
+#[test]
+fn a_planned_line_never_attempted_gets_the_bare_reason_at_rollover() {
+    let conn = open_memory().unwrap();
+    ready_line(&conn, DAY, "A-1");
+    meta_set(&conn, PLAN_KEY, &format!("{DAY}|A-1")).unwrap();
+    tick(&conn, local(7, 0, 0), true, accepts);
+    // catches: keeping a NULL error (line silently never marked) instead of the fallback
     assert_eq!(
         column(&conn, DAY, "A-1", "send_error").as_deref(),
         Some("Tempo could not be reached")
     );
-    assert_eq!(column(&conn, DAY, "A-1", "auto_sent_at"), None);
+}
+
+#[test]
+fn the_stored_unreachable_reason_never_carries_the_request_url() {
+    let conn = open_memory().unwrap();
+    ready_line(&conn, DAY, "A-1");
+    let url = "http://127.0.0.1:1/rest/secret?token=abc123";
+    let mut send = |_: &Connection, _: &TempoLineKey| -> Result<Vec<SyncResult>> {
+        let cause = reqwest::blocking::Client::new()
+            .get(url)
+            .send()
+            .unwrap_err();
+        Err(anyhow::Error::new(cause).context(format!("tempo GET {url}")))
+    };
+    run_if_due(&conn, local(6, 17, 0), true, &mut send).unwrap();
+    let stored = column(&conn, DAY, "A-1", "send_error").unwrap();
+    // catches: storing {e} / {e:#} (URL and token leak) and dropping the reason entirely
+    assert_eq!(stored, "Tempo could not be reached: connection failed");
+}
+
+#[test]
+fn a_day_whose_every_send_failed_still_gets_its_recap_at_rollover() {
+    let _g = crate::tz::test_env_lock();
+    std::env::remove_var("WORKLOG_TZ");
+    std::env::set_var("WORKLOG_ENV_FILE", "/nonexistent/worklog.env");
+    let conn = open_memory().unwrap();
+    ready_line(&conn, DAY, "A-1");
+    tick(&conn, local(6, 17, 0), true, unreachable);
+    assert_eq!(recap::latest(&conn).unwrap(), None);
+    tick(&conn, local(7, 0, 0), true, unreachable);
+    let built = recap::latest(&conn).unwrap().map(|r| r.day);
+    // catches: no rollover recap (None), building for the new day instead of the finished one
+    assert_eq!(built.as_deref(), Some(DAY));
+    let stamp = column_meta(&conn);
+    tick(&conn, local(7, 0, 15), true, unreachable);
+    // catches: rebuilding every tick (RECAP_KEY not advanced to the finished day)
+    assert_eq!(column_meta(&conn), stamp);
+}
+
+fn column_meta(conn: &Connection) -> Option<String> {
+    conn.query_row("SELECT built_at FROM recaps WHERE day = ?1", [DAY], |r| {
+        r.get(0)
+    })
+    .ok()
 }
 
 #[test]
