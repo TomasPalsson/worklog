@@ -115,3 +115,74 @@ USAGE      page.tsx keeps streaming `getTopics(from,to).catch(() => null)` throu
 CALLS      TopicsSection renders: null / helper_down → `<AtlasEmpty kind="helper_down"/>` + the existing helper message; too_few_blocks → `<AtlasEmpty kind="too_few"/>` + existing message; ready → Galaxy → Heartbeats → River → (Mirror | Compass in `.stats-two`) → Moments. `RefreshSoon` = tiny client component calling `router.refresh()` once after 25 s, rendered only when `naming === "pending"`. Remove the old Card helper and every drift/sprawl/similar-days/name_ticket reference in web/.
 TESTS      each status renders its state; ready renders all six module roots; pending renders RefreshSoon; grep-style test that "drift"/"sprawl"/"similar_days" don't appear in the output.
 THE FIVE   (same five as T002)
+
+## Contract for T014 — Route drops the before window so the crate compiles
+USAGE      `cargo test -p worklog-core daemon_stats` compiles and passes again after T002 removed `TopicsInput.before` and `TopicsReport.drift/sprawl/similar_days/switches`.
+CALLS      In daemon_stats.rs delete the previous-range (`before_from`, `before` pushes) loading and anything feeding `TopicsInput.before`; history (60 days before `from`) stays. In daemon_stats_test.rs remove only the assertions on removed fields (`r.drift`, sprawl, similar_days, switches) — do not weaken any other assertion; where a test only existed to prove drift/before windows, replace it with one asserting the same window arithmetic still feeds `history` correctly. Nothing else changes (naming, map, keywords are T005).
+THE FIVE   (same five as T002)
+
+## Contract for T015 — Galaxy: labels stay inside the map, keyboard isolation, fewer tab stops
+USAGE      `<TopicGalaxy report={report} />` unchanged API.
+CALLS      Review findings (Chromium-measured): (a) topic labels are clamped in y but never in x — "Billing export · invoice · customer" rendered x0 −93..x1 231 (card has overflow:hidden). Fix in `galaxyLayout`: estimate width (existing name.length×font×0.62), shrink font down to a 11px floor, then truncate the name with "…" (full name stays in the tip and aria-label), then clamp x so the whole box sits within [8, 992]; run the vertical nudge AFTER the clamp and re-clamp, iterate to convergence (≤ 20 rounds). (b) add `:focus-visible` (and `:focus-within`) alongside `:hover` in the generated per-topic isolation rules. (c) tab stops: dots get `tabIndex={-1}` (still `data-stip` for pointer); topic labels stay `tabIndex=0` and their tip gains "Blocks: N · first … last". (d) use topic `id` (not array position) for hue: `25 + id*(360/K)` unrounded, same formula as the other modules.
+TESTS      a label whose island sits at x=1 with a long keyword name ends fully within [8, 992] (assert box edges); after clamp no two labels overlap (6-label crowd at the right edge); generated CSS contains `:focus-visible`; dots have tabindex −1, labels 0; hue for id 3 of K=10 equals 133.
+THE FIVE   (1) NEVER invent an error type, field name or result shape that already exists in the contract — copy the literal declaration. (2) NEVER type a boundary function's parameter as the narrow type; the narrow type is only ever the RETURN of a fallible function. (3) NEVER add a mode, flag or extra required parameter to a shared abstraction the design handed you — duplicate it inside your task and say so. (4) NEVER refactor or rename outside the task's `files:` list — a change to an unlisted file is a defect. (5) NEVER abbreviate inside an identifier. Spell the word.
+
+## Contract for T016 — River bands hoverable; compass labels inside the plot
+USAGE      `<TopicRiver report={report}/>`, `<DayCompass report={report}/>` unchanged.
+CALLS      River (measured: 0 of 10 bands hit by mouse; the full-height transparent `rect.sx-river-col` column rects are painted after the bands and catch every pointer): draw the column rects BEFORE the bands (or give them `pointer-events: none` and put the column tip on the axis strip below the chart) so a pointer over a band gets the band tip and a pointer over empty space gets the column tip. Keep `tabIndex` behaviour. Compass (measured: "Fri Sep 25" x 439..485 cut at 480; "Sun Sep 27" x −9; "Sat Sep 19" overlaps the "Scattered · exploring" caption at y 13): place each leader label with an estimated width (text.length×6.2 at 10px mono), flip its anchor to the inner side when it would cross 8..472, clamp y into [24, 296], and if its box intersects a quadrant caption box, move it vertically by the overlap + 4px.
+TESTS      river: in the rendered SVG the band paths come after the column rects in document order OR the column rects carry pointer-events none (assert whichever you implement) and band tips still exist; compass: for a fixture with extreme days at the plot edges, every label box is within [8, 472]×[24, 296] and intersects no caption box.
+THE FIVE   (same five as T015)
+
+## Contract for T017 — Mirror labels fit, one tab stop per day
+USAGE      `<DayMirror report={report}/>` unchanged.
+CALLS      Measured: at D=30 in a half-width card the cell is 15px and every diagonal label (23px) overflows; D=62 → 1953 tab stops and ~1.2 MB HTML. Fix: (a) labels — compute cell px from the viewBox (assume the card is the `.stats-two` half width ~520px when unknown); show a label only every k-th day where k = ceil(labelPx / cellPx), always label the first and last day, and render labels OUTSIDE the matrix along the left edge (row headers) instead of on the diagonal when cell < 22px; (b) a11y/payload — similarity cells get no `tabIndex` and no per-cell `aria-label`; keep `data-stip` on cells for pointer; add one focusable diagonal chip per day (`tabIndex=0`, `aria-label`, tip: "Most like: <day> (+0.53) · Least like: <day> (−0.52) · Top topic: <name>"); (c) hue `25 + id*(360/K)`.
+TESTS      at D=30 the number of rendered day labels ≤ ceil(30 / k) + 1 and includes first and last; tab stops == D; cells have no tabindex; diagonal tip names the correct most/least similar day for a fixture.
+THE FIVE   (same five as T015)
+
+## Contract for T018 — Naming chip keeps checking until names land
+USAGE      `<RefreshSoon />` rendered by TopicsSection while `naming === "pending"`.
+CALLS      Measured: a real naming job takes 30–120 s, so one refresh at 25 s leaves the chip up forever. Change to: refresh after 20 s, then every 20 s while still mounted, at most 6 refreshes (≈ 2 min), stop on unmount. The component stays a tiny client component with no props beyond optional `intervalMs` / `maxTries` for tests.
+TESTS      with fake timers: refresh called once at 20 s, 6 times by 120 s, never a 7th; no call after unmount.
+THE FIVE   (same five as T015)
+
+## Contract for T019 — Naming that finishes: batched calls, longer timeout, failure back-off, one clustering
+USAGE      GET /stats/topics → `naming: pending` → within ~2 min a later GET returns `ai` on the live-data copy (10 topics).
+CALLS      Live failure: "topic naming failed: claude -p timed out after 60s" for a 10-topic batch, and every GET re-launched it. Fix in topic_names.rs / daemon_stats.rs: (a) name in batches of ≤ 4 topics per model call, run sequentially in the one background job, store each batch's rows as soon as it returns (a later batch failing keeps earlier names); (b) give the naming invocation a 180 s timeout — find where the invoker's 60 s comes from (estimate.rs / claude_subprocess.rs) and add a timeout parameter or a dedicated constructor used only by naming, without changing other callers' timeouts; (c) failure back-off: a static map member_hash → last failure Instant; skip starting a job for a hash that failed < 10 minutes ago and report `naming: off` for that load so the chip doesn't show; (d) remove the duplicated clustering in daemon_stats (`atlas` regroups blocks itself): make `stats_topics::build` return (or expose via a companion fn) the per-block topic id, novelty and oddball for `now` blocks in input order, and use that for map points, keywords documents and naming membership.
+TESTS      batches: 10 topics with a test invoker → 3 calls (4+4+2), all names stored; second batch erroring keeps first batch's 4 names; back-off: after a failure the next GET does not invoke and reports off, and after the window (inject a clock or make the window a parameter in tests) it invokes again; membership: map point topic ids equal build's topic ids for the same input (no second clustering code path — grep-free assertion via the returned assignments).
+THE FIVE   (same five as T015)
+
+## Contract for T020 — Naming calls get a 180 s timeout
+USAGE      the naming job's model call may run up to 180 s; every other `claude -p` caller keeps today's 60 s default.
+CALLS      Live: batch 3 of 3 ("topic naming failed: claude -p timed out after 60s"); 60 s = `DEFAULT_TIMEOUT_SECS` in claude_subprocess.rs; `timeout_secs` is private and only set by `with_thinking`. Add `pub fn with_timeout(secs: u64) -> Self` (thinking_tokens None, timeout_secs Some(secs)) in claude_subprocess.rs; add `pub fn build_naming_invoker()` in estimate.rs mirroring `build_invoker` (same LiteLLM/claude selection) but using `ClaudeSubprocess::with_timeout(180)` for the subprocess path (LiteLLM path: use a 180 s HTTP timeout if it has one, else unchanged); point daemon_stats.rs `real_invoker` (the naming MakeInvoker) at `build_naming_invoker`. No other caller changes.
+TESTS      `with_timeout(180)` sets 180 and no thinking; `default()` still 60; naming invoker path uses the new constructor (unit-test the constructor; route tests keep their test invoker).
+THE FIVE   (same five as T015)
+
+## Contract for T021 — River starts at the first data day; labels never overlap
+USAGE      `<TopicRiver report={report}/>`
+CALLS      Seen in Chrome on real data (30d range, data starts Sep 23): the left ~40% of the chart is a flat empty line, and inline labels collide ("MULTI-CUSTOME…" under "BILLING · BINDING · BLOCK", "APRÓ SKILLS FRAMEWORK" touching "SUPPORT AGENT INFRASTRUCTURE"). Fix in `buildRiver`: trim leading and trailing bins whose total is 0 before laying out (axis labels show the trimmed first/last bin); labels: estimate box (text.length × 6.6 at 11px mono, height 12), place each candidate at its widest bin, process largest topics first, skip a label whose box intersects an already placed label (+4px pad) or does not fit inside its band thickness (≥ 14px rule stays) or the viewBox; topics without an inline label are listed in a compact legend row under the chart (swatch + name), so every topic is still named.
+TESTS      leading/trailing zero bins trimmed (first axis label = first non-zero bin); placed label boxes pairwise disjoint for a crowded fixture; every topic appears either inline or in the legend.
+THE FIVE   (same five as T015)
+
+## Contract for T022 — Heartbeats columns line up across rows
+USAGE      `<TopicHeartbeats report={report}/>`
+CALLS      Seen in Chrome: the raster/bar column starts at a different x per row (633, 638, 655 px) because the grid columns size to content. Make the row a fixed template: `grid-template-columns: minmax(150px, 220px) minmax(0, 1fr) 360px` (name+badge | description+chips | raster+bar+tickets) at ≥ 800px, stacking below as today; raster and bar take the full third column width; long names wrap within column 1.
+TESTS      every row element uses the same grid class/template (assert the CSS rule string and that rows have no inline width overrides); render with a long and a short description still yields the same column classes.
+THE FIVE   (same five as T015)
+
+## Contract for T023 — Novelty ignores the warm-up at the start of history
+USAGE      `first_times` and the compass novelty axis only judge blocks that had something earlier to be compared with.
+CALLS      Seen on real data: the top 4 "first times" are all from Sep 23, the first day with any embedded block, so their novelty (1.00, 0.99, 0.91, 0.88) only says "nothing came before". Add `pub const NOVELTY_WARMUP_BLOCKS: usize = 20;` LOCALLY in topic_metrics.rs (do not edit the contract file); a block's novelty is computed only when ≥ NOVELTY_WARMUP_BLOCKS blocks precede it (history ∪ now, by started_at); otherwise it is excluded from `first_times`, from DayRow.novelty averaging (a day whose blocks are all in warm-up gets novelty = the median of the other days' novelty so it plots neutrally — document in a comment) and MapPoint.novelty is 0.0 for them. TopicMoments How line gains: "Your first 20 blocks are skipped — they have nothing earlier to compare with."
+TESTS      rust: with 25 blocks, the first 20 never appear in first_times; block 21 can; day of only warm-up blocks gets the median; web: How line contains the warm-up sentence.
+THE FIVE   (same five as T015)
+
+## Contract for T024 — Compass card sizes to its content
+USAGE      Compass sits beside the Mirror in `.stats-two`.
+CALLS      Seen in Chrome: the compass card stretches to the mirror's height leaving ~300px empty. In compass.css set the card (`.sx-cmp` root or its card wrapper) `align-self: start`. CSS only.
+TESTS      DayCompass tests still pass (no markup change).
+THE FIVE   (same five as T015)
+
+## Contract for T025 — Map-point novelty test uses a fixture past the warm-up
+USAGE      `cargo test -p worklog-core daemon_stats` green again after T023.
+CALLS      T023 made blocks with < 20 earlier blocks "warm-up" (MapPoint.novelty = 0.0, excluded from first_times) — an intended spec change. `map_points_carry_label_topic_novelty_and_oddball_from_the_blocks` (daemon_stats_test.rs ~:553) asserts `by_id(1).novelty == 1.0` on a 10-block fixture and `by_id(4).novelty < 0.5`, which now passes only vacuously. Update it so it still proves novelty is carried from the blocks: seed ≥ 20 earlier history blocks (or a 25-block fixture), then assert a post-warm-up block that is unlike everything earlier has novelty > 0.9 and one that repeats an earlier block has novelty < 0.1; additionally assert a warm-up block has novelty exactly 0.0. Keep the label / topic / oddball assertions unchanged.
+TESTS      the updated test passes; mutate MapPoint novelty to always 0.0 in a scratch copy → the test fails (report it), revert.
+THE FIVE   (same five as T015)
