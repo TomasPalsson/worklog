@@ -49,9 +49,9 @@ fn clap_styles() -> clap::builder::Styles {
 /// would need lifetime gymnastics in the derive attribute.
 const HELP_OVERVIEW: &str = "\x1b[1;36m\
 commands by area\x1b[0m
-  daily workflow       \x1b[32mday  summary  week  eval  export  block  sync\x1b[0m
+  daily workflow       \x1b[32mday  summary  week  export  block  sync\x1b[0m
   data collection      \x1b[32mcollect  infer  estimate  hook\x1b[0m
-  review UI            \x1b[32mweb  serve\x1b[0m
+  review UI            \x1b[32mweb\x1b[0m
   setup & diagnostics  \x1b[32msetup  status  doctor  db  secret  completions  version\x1b[0m
   daemon & schedule    \x1b[32mdaemon  schedule  verdict\x1b[0m
   release ops          \x1b[32mself-update  upgrade  dev\x1b[0m
@@ -4818,8 +4818,9 @@ mod tests {
     fn serve_and_eval_are_hidden_from_help_but_still_parse() {
         let help = Cli::command().render_help().to_string();
         let listed = |name: &str| {
-            help.lines()
-                .any(|l| l.trim_start().starts_with(&format!("{name} ")))
+            // word match covers the banner (ANSI-wrapped) and the command list
+            help.split(|c: char| !c.is_alphanumeric() && c != '-')
+                .any(|w| w == name)
         };
         assert!(!listed("serve"), "serve listed in help");
         assert!(!listed("eval"), "eval listed in help");
