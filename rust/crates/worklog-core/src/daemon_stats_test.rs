@@ -508,8 +508,17 @@ fn map_blocks(conn: &Connection, n: usize) {
 fn map_vectors(n: usize) -> Vec<Vec<f32>> {
     (0..n)
         .map(|i| {
-            // Block 9 sits alone on its own axis; the rest are three loose groups.
-            let mut v = if i == 9 { unit(5) } else { unit(i % 3) };
+            // Blocks 9 and 22 sit alone on their own axes; the rest are three loose groups.
+            let mut v = match i {
+                9 => unit(5),
+                22 => {
+                    // Sits at the group mean on axes 0..3 so centering leaves only its own axis.
+                    let mut v = unit(6);
+                    v[..3].fill(1.0 / 3.0);
+                    v
+                }
+                _ => unit(i % 3),
+            };
             v[10 + i] = 0.1;
             v
         })
@@ -522,7 +531,7 @@ fn map_report(n: usize) -> crate::topics_contract::TopicsReport {
     store_vectors(&conn, map_vectors(n));
     let server = MockServer::start();
     serve(&server, 200, vec![]);
-    topics_report(&conn, &client(&server), day("2026-10-01"), day("2026-10-11")).unwrap()
+    topics_report(&conn, &client(&server), day("2026-10-01"), day(&format!("2026-10-{:02}", n.max(11)))).unwrap()
 }
 
 #[test]
@@ -537,7 +546,7 @@ fn map_points_are_withheld_below_ten_blocks_and_present_at_ten() {
 
 #[test]
 fn map_points_carry_label_topic_novelty_and_oddball_from_the_blocks() {
-    let r = map_report(10);
+    let r = map_report(25);
     let by_id = |id: i64| r.points.iter().find(|p| p.block_id == id).unwrap();
 
     // catches: an untruncated label.
@@ -549,9 +558,12 @@ fn map_points_carry_label_topic_novelty_and_oddball_from_the_blocks() {
         assert!(p.topic_id < r.topics.len());
         assert!((0.0..=1.0).contains(&p.x) && (0.0..=1.0).contains(&p.y), "{p:?}");
     }
-    // The earliest block has nothing before it; block 4 repeats block 1's group.
-    assert_eq!(by_id(1).novelty, 1.0);
-    assert!(by_id(4).novelty < 0.5, "{}", by_id(4).novelty);
+    // catches: warm-up novelty leaking (block 1 has nothing before it, raw novelty 1.0).
+    assert_eq!(by_id(1).novelty, 0.0);
+    assert_eq!(by_id(20).novelty, 0.0);
+    // catches: novelty not carried (always 0.0) or `<` vs `<=` shifting the warm-up edge to block 21.
+    assert!(by_id(23).novelty > 0.9, "{}", by_id(23).novelty);
+    assert!(by_id(22).novelty < 0.1, "{}", by_id(22).novelty);
     // catches: oddball hardcoded or inverted.
     assert!(by_id(10).oddball);
     assert!(!by_id(1).oddball);
