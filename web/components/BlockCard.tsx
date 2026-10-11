@@ -10,6 +10,7 @@ import {
   setDescription,
   setDuration,
   setIgnored,
+  mergeGroup,
   setPersonal,
   undoLastChange,
 } from "@/app/actions";
@@ -21,6 +22,7 @@ import { EstBadge } from "./EstBadge";
 import { TicketCombobox } from "./TicketCombobox";
 import { EventList } from "./EventList";
 import { CommitList } from "./CommitList";
+import type { IgnoreReason } from "@/lib/time_leaks_contract";
 import { isAutoTicket } from "@/lib/tempo_line_contract";
 
 interface Props {
@@ -34,6 +36,8 @@ interface Props {
    * else (description, duration, personal, delete) stays editable.
    */
   hideTicketing?: boolean;
+  /** The day's blocks; Duplicate merges into the nearest same-ticket one. */
+  dayBlocks?: Block[];
   /**
    * True when this block is the sole survivor of its ticket group.
    * Drives the Sparkles "Describe with Claude" button — see
@@ -57,9 +61,12 @@ export function BlockCard({
   tickets,
   day,
   hideTicketing = false,
+  dayBlocks = [],
   isSoleInGroup = false,
 }: Props) {
   const [editingDur, setEditingDur] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [picking, setPicking] = useState(false);
   const [durVal, setDurVal] = useState(Math.round(block.duration_seconds / 60));
   const [isPending, start] = useTransition();
   const descRef = useRef<HTMLDivElement>(null);
@@ -165,15 +172,32 @@ export function BlockCard({
   const exported = !!block.exported_at;
   const ignoreLocked = synced || exported;
 
-  const onIgnore = () => {
+  const onIgnore = (reason: IgnoreReason) => {
+    setMenuOpen(false);
     start(async () => {
-      const r = await setIgnored(block.id, true, day);
+      const r = await setIgnored(block.id, true, day, reason);
       if (!r.ok) {
         toast.error(`Ignore failed — ${r.error}`);
         return;
       }
       toast.undoable(`Ignored ${timeRangeLabel}`, () => undoLastChange(day));
     });
+  };
+
+  const onDuplicate = () => {
+    const neighbour = nearestSameTicket(block, dayBlocks);
+    if (!neighbour) return onIgnore("duplicate");
+    setMenuOpen(false);
+    start(async () => {
+      const r = await mergeGroup(neighbour.id, [block.id], day);
+      if (!r.ok) toast.error(`Merge failed — ${r.error}`);
+      else toast.ok(`Merged ${timeRangeLabel} into ${formatRange(neighbour.started_at, neighbour.ended_at)}`);
+    });
+  };
+
+  const onInternal = () => {
+    setMenuOpen(false);
+    setPicking(true);
   };
 
   const onDescribe = () => {
@@ -252,8 +276,10 @@ export function BlockCard({
         {block.sources.length > 0 && <p className="block-clue-line">{clueLine(block.sources)}</p>}
 
         <div className="block-title-row">
-          {!hideTicketing && (
+          {(!hideTicketing || picking) && (
             <TicketCombobox
+              key={String(picking)}
+              defaultOpen={picking}
               blockId={block.id}
               current={block.jira_issue}
               tickets={tickets}
@@ -364,13 +390,38 @@ export function BlockCard({
           aria-label={`ignore ${timeRangeLabel} block`}
           aria-busy={isPending || undefined}
           disabled={ignoreLocked}
-          onClick={onIgnore}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          onClick={() => setMenuOpen((o) => !o)}
         >
           <EyeOff />
         </button>
+        {menuOpen && (
+          <div role="menu" className="ignore-menu">
+            <button type="button" role="menuitem" onClick={() => onIgnore("noise")}>
+              Noise
+            </button>
+            <button type="button" role="menuitem" onClick={onDuplicate}>
+              Duplicate
+            </button>
+            <button type="button" role="menuitem" onClick={onInternal}>
+              Internal
+            </button>
+          </div>
+        )}
       </div>
     </article>
   );
+}
+
+/** Nearest (by gap between intervals) other live block on the same day and ticket. */
+function nearestSameTicket(block: Block, blocks: Block[]): Block | undefined {
+  const start = Date.parse(block.started_at);
+  const end = Date.parse(block.ended_at);
+  const gap = (o: Block) => Math.max(0, Date.parse(o.started_at) - end, start - Date.parse(o.ended_at));
+  return blocks
+    .filter((o) => o.id !== block.id && o.day === block.day && o.jira_issue && o.jira_issue === block.jira_issue && !o.ignored_at)
+    .reduce<Block | undefined>((best, o) => (!best || gap(o) < gap(best) ? o : best), undefined);
 }
 
 /** Short human names for the clue line under the description — mirrors

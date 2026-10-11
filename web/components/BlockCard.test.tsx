@@ -16,6 +16,7 @@ const setDuration = mock(okRes);
 const setPersonal = mock(okRes);
 const setIgnored = mock(okRes);
 const assignTicket = mock(okRes);
+const mergeGroup = mock(okRes);
 const undoLastChange = mock(async () => ({
   ok: true as const,
   data: { outcome: "restored" as const, change: "ignored" as const, block_ids: [1] },
@@ -42,7 +43,7 @@ mock.module("@/app/actions", () => ({
   // Bun's mock.module is process-wide: BillingGroup.test mocks this same
   // specifier, so both must export every name either file's tree imports.
   saveBillingFolder: mock(async () => ({ ok: true as const, data: undefined })),
-  mergeGroup: mock(async () => ({ ok: true as const, data: undefined })),
+  mergeGroup,
 }));
 const regenerateNoteAction = mock(async (_id: number, _day: string, _force: boolean) => ({
   ok: true as const,
@@ -82,6 +83,7 @@ let BlockCard: (props: {
   tickets: JiraTicket[];
   day: string;
   hideTicketing?: boolean;
+  dayBlocks?: Block[];
   billingCustomer?: string | null;
 }) => React.JSX.Element;
 
@@ -96,11 +98,12 @@ beforeAll(async () => {
 afterEach(() => {
   cleanup();
   subscribe((queued) => queued.forEach((msg) => dismiss(msg.id)))();
-  for (const m of [setDuration, setPersonal, setIgnored, assignTicket, undoLastChange]) m.mockClear();
+  for (const m of [setDuration, setPersonal, setIgnored, assignTicket, mergeGroup, undoLastChange]) m.mockClear();
   setDuration.mockImplementation(okRes);
   setPersonal.mockImplementation(okRes);
   setIgnored.mockImplementation(okRes);
   assignTicket.mockImplementation(okRes);
+  mergeGroup.mockImplementation(okRes);
 });
 
 function makeBlock(overrides: Partial<Block>): Block {
@@ -340,6 +343,99 @@ describe("BlockCard ignore button", () => {
   });
 });
 
+describe("BlockCard ignore menu (FR-06)", () => {
+  const DAY = "2026-07-25";
+  const tickets = [{ key: "PROJ-1", summary: "Importer", status: null, updated: null }];
+  const at = (id: number, start: string, end: string, o: Partial<Block> = {}) =>
+    makeBlock({ id, jira_issue: "PROJ-1", started_at: `${DAY}T${start}:00Z`, ended_at: `${DAY}T${end}:00Z`, ...o });
+  const self = at(1, "10:00", "10:30");
+  const open = (dayBlocks: Block[], block: Block = self) => {
+    render(<BlockCard block={block} tickets={tickets} day={DAY} hideTicketing dayBlocks={dayBlocks} />);
+    fireEvent.click(screen.getByRole("button", { name: /^ignore .* block$/ }));
+  };
+  const pick = (name: string) => fireEvent.click(screen.getByRole("menuitem", { name }));
+
+  it("opening the menu does not ignore (catches click-to-ignore)", () => {
+    open([]);
+    expect(setIgnored).not.toHaveBeenCalled();
+  });
+
+  it("Noise ignores with reason noise (catches a missing or wrong reason)", async () => {
+    open([]);
+    pick("Noise");
+    await waitFor(() => expect(setIgnored).toHaveBeenCalledWith(1, true, DAY, "noise"));
+  });
+
+  it("Duplicate merges into the same-ticket neighbour and does not ignore", async () => {
+    open([self, at(2, "11:00", "11:30")]);
+    pick("Duplicate");
+    await waitFor(() => expect(mergeGroup).toHaveBeenCalledWith(2, [1], DAY));
+    expect(setIgnored).not.toHaveBeenCalled();
+  });
+
+  it("Duplicate picks the nearest neighbour, not the first listed", async () => {
+    open([at(2, "06:00", "06:30"), at(3, "10:40", "11:00"), self]);
+    pick("Duplicate");
+    await waitFor(() => expect(mergeGroup).toHaveBeenCalledWith(3, [1], DAY));
+  });
+
+  it("Duplicate with no neighbour ignores with reason duplicate", async () => {
+    open([self]);
+    pick("Duplicate");
+    await waitFor(() => expect(setIgnored).toHaveBeenCalledWith(1, true, DAY, "duplicate"));
+    expect(mergeGroup).not.toHaveBeenCalled();
+  });
+
+  it("Duplicate skips a neighbour on another ticket (catches matching any block)", async () => {
+    open([at(2, "10:30", "11:00", { jira_issue: "PROJ-2" })]);
+    pick("Duplicate");
+    await waitFor(() => expect(setIgnored).toHaveBeenCalledWith(1, true, DAY, "duplicate"));
+    expect(mergeGroup).not.toHaveBeenCalled();
+  });
+
+  it("Duplicate on an unticketed block does not merge with another unticketed block (null == null)", async () => {
+    open([makeBlock({ id: 2, jira_issue: null })], makeBlock({ id: 1, jira_issue: null }));
+    pick("Duplicate");
+    await waitFor(() => expect(setIgnored).toHaveBeenCalledWith(1, true, DAY, "duplicate"));
+    expect(mergeGroup).not.toHaveBeenCalled();
+  });
+
+  it("Duplicate skips a neighbour on another day (catches a missing same-day filter)", async () => {
+    open([at(2, "10:30", "11:00", { day: "2026-07-24" })]);
+    pick("Duplicate");
+    await waitFor(() => expect(setIgnored).toHaveBeenCalledWith(1, true, DAY, "duplicate"));
+    expect(mergeGroup).not.toHaveBeenCalled();
+  });
+
+  it("Duplicate skips an already-ignored neighbour", async () => {
+    open([at(2, "10:30", "11:00", { ignored_at: "2026-07-25T12:00:00Z" })]);
+    pick("Duplicate");
+    await waitFor(() => expect(setIgnored).toHaveBeenCalledWith(1, true, DAY, "duplicate"));
+    expect(mergeGroup).not.toHaveBeenCalled();
+  });
+
+  it("a failed merge shows an error and no Undo (catches a swallowed error)", async () => {
+    mergeGroup.mockImplementation(async () => ({ ok: false, error: "synced" }));
+    open([at(2, "11:00", "11:30")]);
+    pick("Duplicate");
+    let q: ToastMsg[] = [];
+    await waitFor(() => {
+      subscribe((m) => (q = m))();
+      expect(q.some((t) => t.tone === "error")).toBe(true);
+    });
+    expect(q.some((t) => t.action?.label === "Undo")).toBe(false);
+  });
+
+  it("Internal opens the ticket picker; assigning a ticket does not ignore", async () => {
+    open([]);
+    pick("Internal");
+    expect(setIgnored).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole("option", { name: /PROJ-1/ }));
+    await waitFor(() => expect(assignTicket).toHaveBeenCalled());
+    expect(setIgnored).not.toHaveBeenCalled();
+  });
+});
+
 describe("auto ticket tag", () => {
   const renderCard = (overrides: Partial<Block>) =>
     render(<BlockCard block={makeBlock(overrides)} tickets={[]} day="2026-07-25" />);
@@ -445,6 +541,7 @@ describe("BlockCard change confirmations offer Undo (FR-29)", () => {
   it("ignore: Undo goes through the journal, not a bare setIgnored(false)", async () => {
     render(<BlockCard block={makeBlock({})} tickets={[]} day={DAY} hideTicketing />);
     fireEvent.click(screen.getByRole("button", { name: /^ignore .* block$/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Noise" }));
     await waitFor(() => expect(undoToast()).toBeDefined());
     await expectUndoRuns();
     expect(setIgnored).toHaveBeenCalledTimes(1);
@@ -454,6 +551,7 @@ describe("BlockCard change confirmations offer Undo (FR-29)", () => {
     setIgnored.mockImplementation(async () => ({ ok: false, error: "locked" }));
     render(<BlockCard block={makeBlock({})} tickets={[]} day={DAY} hideTicketing />);
     fireEvent.click(screen.getByRole("button", { name: /^ignore .* block$/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Noise" }));
     await waitFor(() => expect(queued().some((t) => t.tone === "error")).toBe(true));
     expect(undoToast()).toBeUndefined();
   });
