@@ -161,9 +161,12 @@ describe("TopicsSection", () => {
   });
 
   // catches: old Card sections surviving the rewrite
-  it("output carries no retired drift/sprawl/similar-days text", () => {
-    const t = text(base).toLowerCase();
-    for (const w of ["drift", "sprawl", "similar_days", "similar days", "catch-all"]) expect(t).not.toContain(w);
+  it("output carries no retired drift/sprawl/similar-days cards", () => {
+    const { container } = render(<TopicsSection report={base} />);
+    const t = (container.textContent ?? "").toLowerCase();
+    for (const w of ["drift", "sprawl", "similar_days", "catch-all"]) expect(t).not.toContain(w);
+    const titles = [...container.querySelectorAll("h2, h3, .sr-title")].map((e) => (e.textContent ?? "").trim().toLowerCase());
+    for (const w of ["switches per day", "drift", "catch-all tickets", "similar days"]) expect(titles).not.toContain(w);
   });
 
   describe("refresh cadence while naming is pending", () => {
