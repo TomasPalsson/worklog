@@ -531,6 +531,18 @@ fn an_empty_ticket_is_unassigned_and_never_a_focus_run() {
 }
 
 #[test]
+fn an_empty_ticket_and_no_ticket_are_not_a_switch() {
+    let conn = db::open_memory().unwrap();
+    work(&conn, Some(""), "09:00:00", "10:00:00");
+    work(&conn, None, "10:00:00", "11:00:00");
+    // catches: comparing raw Option<String>, counting "" -> None as a switch
+    assert_eq!(focus(&conn).switches, 0);
+    work(&conn, Some("A-1"), "11:00:00", "12:00:00");
+    // catches: over-normalising so unassigned -> A-1 stops counting
+    assert_eq!(focus(&conn).switches, 1);
+}
+
+#[test]
 fn a_failing_focus_read_is_no_focus_not_an_error() {
     let conn = db::open_memory().unwrap();
     conn.execute_batch("DROP TABLE blocks").unwrap();

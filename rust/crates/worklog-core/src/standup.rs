@@ -141,6 +141,11 @@ pub fn yesterday_focus_or_none(conn: &Connection, today: NaiveDate) -> Option<Fo
     })
 }
 
+/// The block's ticket, with an empty string counted as unassigned.
+fn ticket(b: &Block) -> Option<&str> {
+    b.jira_issue.as_deref().filter(|t| !t.is_empty())
+}
+
 pub fn focus_summary(day: &str, blocks: &[Block]) -> FocusSummary {
     let mut counted: Vec<&Block> = blocks
         .iter()
@@ -149,7 +154,7 @@ pub fn focus_summary(day: &str, blocks: &[Block]) -> FocusSummary {
     counted.sort_by(|a, b| a.started_at.cmp(&b.started_at));
     let switches = counted
         .windows(2)
-        .filter(|w| w[0].jira_issue != w[1].jira_issue)
+        .filter(|w| ticket(w[0]) != ticket(w[1]))
         .count() as u32;
     let mut longest: Option<FocusRun> = None;
     let mut run: Option<FocusRun> = None;
