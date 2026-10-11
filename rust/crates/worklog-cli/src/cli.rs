@@ -5712,6 +5712,27 @@ mod tests {
         assert!(r.last_ok.is_some());
     }
 
+    /// A healthy routing pass leaves a routing last_ok and no last_err, and
+    /// adds no outcome of its own (the only message on that path is the
+    /// record-failure one). Catches recording the success as an error and
+    /// pushing an outcome per routed day.
+    #[test]
+    fn collect_targets_with_routing_success_leaves_only_last_ok() {
+        let conn = db::open_memory().unwrap();
+        let (since, until) = day_range();
+        let out = collect_targets_with(&conn, CollectTarget::All, since, until, |_| {
+            Ok(worklog_core::collectors::CollectReport::default())
+        })
+        .unwrap();
+        assert!(out
+            .iter()
+            .all(|o| !matches!(o, CollectOutcome::RoutingFailed { .. })));
+        let rows = worklog_core::collect_health::all(&conn, chrono::Utc::now()).unwrap();
+        let r = rows.iter().find(|r| r.source == "routing").unwrap();
+        assert!(r.last_ok.is_some());
+        assert!(r.last_err.is_none());
+    }
+
     /// A single-source collect does not touch routing health.
     #[test]
     fn collect_targets_with_single_target_skips_routing() {
