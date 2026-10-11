@@ -592,7 +592,7 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
         // ensures the earliest-starting new block claims the earliest
         // prior.
         let mut stmt = conn.prepare(&format!(
-            "SELECT started_at, ended_at, jira_issue, description, estimated_by, tempo_worklog_id, exported_at, described_seconds, ignored_at, ticket_origin
+            "SELECT started_at, ended_at, jira_issue, description, estimated_by, tempo_worklog_id, exported_at, described_seconds, ignored_at, ticket_origin, ignore_reason
                FROM blocks WHERE day = ?1 AND NOT ({HAND_LOGGED}) ORDER BY started_at"
         ))?;
         let iter = stmt.query_map(params![day_iso], |r| {
@@ -609,6 +609,7 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
                 ticket_origin: r
                     .get::<_, Option<String>>(9)?
                     .and_then(|s| TicketOrigin::parse(&s)),
+                ignore_reason: r.get(10)?,
             })
         })?;
         for row in iter {
@@ -730,18 +731,21 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
         // instant (strict map hit, not the overlap fallback) and did not
         // grow past the prior end. A block that grew may now hold real work,
         // so the ignore is dropped rather than silently swallowing it.
-        let ignored_at = prior.get(&started_key).and_then(|c| {
-            let ign = c.ignored_at.clone()?;
-            let (_, prior_end) = parse_pair(&c.started_at, &c.ended_at)?;
-            (b.ended_at <= prior_end).then_some(ign)
-        });
+        let (ignored_at, ignore_reason) = prior
+            .get(&started_key)
+            .and_then(|c| {
+                let ign = c.ignored_at.clone()?;
+                let (_, prior_end) = parse_pair(&c.started_at, &c.ended_at)?;
+                (b.ended_at <= prior_end).then(|| (Some(ign), c.ignore_reason.clone()))
+            })
+            .unwrap_or((None, None));
         let is_personal = ignored_at.is_some() || (path_personal && !has_real_ticket);
         tx.execute(
             "INSERT INTO blocks (
                 day, jira_issue, started_at, ended_at,
                 duration_seconds, description, estimated_by, flagged,
-                tempo_worklog_id, is_personal, exported_at, described_seconds, ignored_at, ticket_origin
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                tempo_worklog_id, is_personal, exported_at, described_seconds, ignored_at, ticket_origin, ignore_reason
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 b.day,
                 jira_issue,
@@ -757,6 +761,7 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
                 described_seconds,
                 ignored_at,
                 ticket_origin.map(TicketOrigin::as_str),
+                ignore_reason,
             ],
         )
         .context("inserting block")?;
@@ -823,6 +828,7 @@ struct CarryRow {
     described_seconds: Option<i64>,
     ignored_at: Option<String>,
     ticket_origin: Option<TicketOrigin>,
+    ignore_reason: Option<String>,
 }
 
 /// Overlap check on ISO-8601 timestamps. Parses each string to a
@@ -1009,6 +1015,65 @@ mod tests {
         .unwrap();
         persist_blocks(&conn, day, &[ib((9, 0), (10, 0))]).unwrap();
         assert_eq!(ignored_state(&conn).0, None);
+    }
+
+    fn reason_of(conn: &rusqlite::Connection) -> Option<String> {
+        conn.query_row("SELECT ignore_reason FROM blocks", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn ignore_with_reason(conn: &rusqlite::Connection, reason: Option<&str>) {
+        conn.execute(
+            "UPDATE blocks SET ignored_at = '2026-04-18T12:00:00Z', ignore_reason = ?1, is_personal = 1",
+            [reason],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn persist_blocks_keeps_ignore_reason_when_block_unchanged() {
+        let conn = open_memory().unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        persist_blocks(&conn, day, &[ib((9, 0), (9, 30))]).unwrap();
+        ignore_with_reason(&conn, Some("duplicate"));
+        persist_blocks(&conn, day, &[ib((9, 0), (9, 30))]).unwrap();
+        // catches: carrying ignored_at but re-inserting ignore_reason as NULL
+        assert_eq!(reason_of(&conn), Some("duplicate".to_string()));
+    }
+
+    #[test]
+    fn persist_blocks_ignore_without_reason_stays_null() {
+        let conn = open_memory().unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        persist_blocks(&conn, day, &[ib((9, 0), (9, 30))]).unwrap();
+        ignore_with_reason(&conn, None);
+        persist_blocks(&conn, day, &[ib((9, 0), (9, 30))]).unwrap();
+        // catches: defaulting a missing reason to a non-null value
+        assert!(ignored_state(&conn).0.is_some());
+        assert_eq!(reason_of(&conn), None);
+    }
+
+    #[test]
+    fn persist_blocks_drops_ignore_reason_when_block_grows() {
+        let conn = open_memory().unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        persist_blocks(&conn, day, &[ib((9, 0), (9, 30))]).unwrap();
+        ignore_with_reason(&conn, Some("internal"));
+        persist_blocks(&conn, day, &[ib((9, 0), (10, 0))]).unwrap();
+        // catches: carrying the reason independently of the ignored_at rule
+        assert_eq!(ignored_state(&conn).0, None);
+        assert_eq!(reason_of(&conn), None);
+    }
+
+    #[test]
+    fn persist_blocks_overlap_fallback_does_not_carry_ignore_reason() {
+        let conn = open_memory().unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        persist_blocks(&conn, day, &[ib((9, 0), (9, 30))]).unwrap();
+        ignore_with_reason(&conn, Some("duplicate"));
+        persist_blocks(&conn, day, &[ib((9, 5), (9, 30))]).unwrap();
+        // catches: carrying the reason via the overlap fallback instead of the strict start match
+        assert_eq!(reason_of(&conn), None);
     }
 
     fn at(h: u32, m: u32) -> DateTime<Utc> {

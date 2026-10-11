@@ -13,7 +13,9 @@ use worklog_core::{
     paths::Paths,
     report::{monthly_report, MonthlyReport},
     routing_contract::SLACK_TOKEN_KEY,
-    secrets, slack_post, standup, tz, undo,
+    secrets, slack_post, standup,
+    time_leaks_contract::FocusSummary,
+    tz, undo,
 };
 
 fn db_path() -> Result<std::path::PathBuf> {
@@ -58,8 +60,10 @@ pub fn cmd_standup<W: Write>(yes: bool, out: &mut W, json: bool) -> Result<()> {
     let conn = db::open(&db_path()?)?;
     let today = tz::local_date(chrono::Utc::now());
     let draft = standup::draft(&conn, today, estimate::build_invoker()?.as_ref())?;
+    let focus = standup::yesterday_focus_or_none(&conn, today);
     show_standup(
         &draft,
+        focus.as_ref(),
         yes,
         || crate::cli::confirm("Post this to today's Daily thread?"),
         |text| {
@@ -84,6 +88,7 @@ pub fn cmd_standup<W: Write>(yes: bool, out: &mut W, json: bool) -> Result<()> {
 /// Prints the draft; posts only after `yes` or an explicit confirm.
 fn show_standup<W: Write>(
     draft: &StandupDraft,
+    focus: Option<&FocusSummary>,
     yes: bool,
     confirm: impl FnOnce() -> Result<bool>,
     post: impl FnOnce(&str) -> Result<PostOutcome>,
@@ -91,11 +96,16 @@ fn show_standup<W: Write>(
     json: bool,
 ) -> Result<()> {
     if json {
-        writeln!(out, "{}", serde_json::to_string_pretty(draft)?)?;
+        let mut v = serde_json::to_value(draft)?;
+        v["focus"] = serde_json::to_value(focus)?;
+        writeln!(out, "{}", serde_json::to_string_pretty(&v)?)?;
         return Ok(());
     }
     let text = draft.to_text();
     write!(out, "{text}")?;
+    if let Some(f) = focus {
+        writeln!(out, "{}", focus_line(f))?;
+    }
     if !yes && !confirm()? {
         writeln!(out, "not posted")?;
         return Ok(());
@@ -109,6 +119,30 @@ fn show_standup<W: Write>(
         PostOutcome::SlackRefused { error } => bail!("not posted: Slack refused ({error})"),
     }
     Ok(())
+}
+
+/// Yesterday's focus for the terminal; never part of the posted text.
+fn focus_line(f: &FocusSummary) -> String {
+    let switches = match f.switches {
+        1 => "1 switch".to_string(),
+        n => format!("{n} switches"),
+    };
+    let Some(run) = &f.longest else {
+        return format!("yesterday: {switches}, no focus run");
+    };
+    let minutes = (run.seconds + 30) / 60;
+    let (h, m) = (minutes / 60, minutes % 60);
+    let length = match (h, m) {
+        (0, m) => format!("{m}m"),
+        (h, 0) => format!("{h}h"),
+        (h, m) => format!("{h}h {m}m"),
+    };
+    format!(
+        "yesterday: {switches}, longest focus {length} on {} ({}–{})",
+        run.jira_issue,
+        hhmm(&run.started_at),
+        hhmm(&run.ended_at)
+    )
 }
 
 /// Prints the checklist; true when the send may go ahead, i.e. nothing is
@@ -223,6 +257,7 @@ mod tests {
     use clap::Parser;
     use worklog_core::daily_helpers_contract::{BlockChange, PreflightCheck};
     use worklog_core::report::ReportLine;
+    use worklog_core::time_leaks_contract::FocusRun;
 
     fn run<F: FnOnce(&mut Vec<u8>) -> Result<()>>(f: F) -> (Result<()>, String) {
         let mut buf = Vec::new();
@@ -353,11 +388,22 @@ mod tests {
         outcome: PostOutcome,
         json: bool,
     ) -> (Result<()>, String, Vec<String>, usize) {
+        standup_run_with_focus(yes, answer, outcome, json, None)
+    }
+
+    fn standup_run_with_focus(
+        yes: bool,
+        answer: Result<bool>,
+        outcome: PostOutcome,
+        json: bool,
+        focus: Option<&FocusSummary>,
+    ) -> (Result<()>, String, Vec<String>, usize) {
         let posted = std::cell::RefCell::new(Vec::new());
         let asked = std::cell::Cell::new(0);
         let (res, text) = run(|w| {
             show_standup(
                 &draft(),
+                focus,
                 yes,
                 || {
                     asked.set(asked.get() + 1);
@@ -457,6 +503,98 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(v["today"][0], "GENAI-12 tenant stack");
         assert_eq!((sent.len(), asked), (0, 0));
+    }
+
+    fn focus() -> FocusSummary {
+        FocusSummary {
+            day: "2026-10-05".into(),
+            switches: 7,
+            longest: Some(FocusRun {
+                jira_issue: "ABC-12".into(),
+                started_at: "2026-10-05T09:05:00+00:00".into(),
+                ended_at: "2026-10-05T11:35:00+00:00".into(),
+                seconds: 8100,
+            }),
+        }
+    }
+
+    #[test]
+    fn focus_line_names_switches_longest_run_and_window() {
+        // catches: seconds shown raw, or the window taken from the day instead of the run
+        assert_eq!(
+            focus_line(&focus()),
+            "yesterday: 7 switches, longest focus 2h 15m on ABC-12 (09:05–11:35)"
+        );
+        // catches: a stray "0m" on a whole hour (the web line says "2h")
+        let mut f = focus();
+        f.longest.as_mut().unwrap().seconds = 7200;
+        assert!(
+            focus_line(&f).contains("longest focus 2h on"),
+            "{}",
+            focus_line(&f)
+        );
+        // catches: minutes lost under an hour, or a stray "0h"
+        f.longest.as_mut().unwrap().seconds = 2700;
+        assert!(
+            focus_line(&f).contains("longest focus 45m on"),
+            "{}",
+            focus_line(&f)
+        );
+    }
+
+    #[test]
+    fn focus_line_without_a_run_still_counts_switches() {
+        // catches: unwrapping longest, or inventing a ticket when no run exists
+        let f = FocusSummary {
+            longest: None,
+            switches: 3,
+            ..focus()
+        };
+        assert_eq!(focus_line(&f), "yesterday: 3 switches, no focus run");
+    }
+
+    #[test]
+    fn focus_line_pluralises_switches_and_rounds_to_the_nearest_minute() {
+        let mut f = FocusSummary {
+            switches: 1,
+            ..focus()
+        };
+        // catches: "1 switches"
+        assert!(focus_line(&f).starts_with("yesterday: 1 switch, "));
+        f.switches = 0;
+        assert!(focus_line(&f).starts_with("yesterday: 0 switches, "));
+        f.longest.as_mut().unwrap().seconds = 8130;
+        // catches: truncating 135.5 min to 2h 15m (web shows 2h 16m)
+        assert!(focus_line(&f).contains("longest focus 2h 16m on"));
+        f.longest = None;
+        f.switches = 1;
+        // catches: "1 switches" on the no-run line
+        assert_eq!(focus_line(&f), "yesterday: 1 switch, no focus run");
+    }
+
+    #[test]
+    fn focus_prints_after_the_draft_and_is_not_in_the_posted_text() {
+        let f = focus();
+        let (res, text, sent, _) =
+            standup_run_with_focus(true, Ok(true), posted(), false, Some(&f));
+        res.unwrap();
+        // catches: focus line dropped from the terminal
+        assert!(
+            text.starts_with(&draft().to_text()) && text.contains(&focus_line(&f)),
+            "{text}"
+        );
+        // catches: focus folded into the Slack post (privacy NFR)
+        assert_eq!(sent, [draft().to_text()]);
+    }
+
+    #[test]
+    fn json_carries_focus_beside_the_answers() {
+        let f = focus();
+        let (_, text, _, _) = standup_run_with_focus(true, Ok(true), posted(), true, Some(&f));
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        // catches: focus missing from --json, or answers nested away from the top level
+        assert_eq!(v["focus"]["longest"]["jira_issue"], "ABC-12");
+        assert_eq!(v["today"][0], "GENAI-12 tenant stack");
     }
 
     fn report() -> MonthlyReport {

@@ -4,13 +4,17 @@
 import { afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { PostOutcome, StandupDraft } from "@/lib/daily_helpers_contract";
+import type { DraftResult } from "@/lib/daemonStandup";
+import type { FocusSummary } from "@/lib/time_leaks_contract";
 import type { SettingsUpdate, SettingsView } from "@/lib/types";
 import { buildSettingsUpdate, formStateFromView } from "@/lib/settingsForm";
 
-type Res<T> = { ok: true; data: T } | { ok: false; error: string };
+process.env.TZ = "UTC"; // the focus window asserted below is a literal UTC clock range
+
+type Res<T> ={ ok: true; data: T } | { ok: false; error: string };
 
 const draft: StandupDraft = { today: ["GENAI-12 tenant stack"], next: [], blockers: [] };
-const draftStandup = mock(async (): Promise<Res<StandupDraft>> => ({ ok: true, data: draft }));
+const draftStandup = mock(async (): Promise<Res<DraftResult>> => ({ ok: true, data: draft }));
 const postStandup = mock(
   async (_text: string): Promise<Res<PostOutcome>> => ({
     ok: true,
@@ -47,6 +51,51 @@ describe("StandupButton", () => {
     expect(postStandup).toHaveBeenCalledTimes(0);
     // catches: repeating the questions, or dropping an empty answer's line
     expect(box.value).toBe("1. GENAI-12 tenant stack\n2. Nothing.\n3. Nothing.\n");
+  });
+
+  const focus: FocusSummary = {
+    day: "2026-10-05",
+    switches: 7,
+    longest: {
+      jira_issue: "ABC-12",
+      started_at: "2026-10-05T09:05:00Z",
+      ended_at: "2026-10-05T11:35:00Z",
+      seconds: 8100,
+    },
+  };
+
+  it("shows yesterday's focus line beside the draft and keeps it out of the text", async () => {
+    draftStandup.mockResolvedValueOnce({ ok: true, data: { ...draft, focus } });
+    const box = await open();
+    // catches: focus dropped from the dialog, or the duration/window/ticket wrong
+    expect(screen.getByText("yesterday: 7 switches, longest focus 2h 15m on ABC-12 (09:05–11:35)")).toBeTruthy();
+    // catches: focus folded into the editable text that gets posted
+    expect(box.value).toBe("1. GENAI-12 tenant stack\n2. Nothing.\n3. Nothing.\n");
+    fireEvent.click(post());
+    await screen.findByText(/Posted/);
+    expect(postStandup).toHaveBeenCalledWith("1. GENAI-12 tenant stack\n2. Nothing.\n3. Nothing.\n");
+  });
+
+  it("says 1 switch, not 1 switches, and rounds 8130 s to 2h 16m", async () => {
+    draftStandup.mockResolvedValueOnce({
+      ok: true,
+      data: { ...draft, focus: { ...focus, switches: 1, longest: { ...focus.longest!, seconds: 8130 } } },
+    });
+    await open();
+    // catches: "1 switches", or truncating the duration
+    expect(screen.getByText("yesterday: 1 switch, longest focus 2h 16m on ABC-12 (09:05–11:35)")).toBeTruthy();
+  });
+
+  it("says no focus run when yesterday had switches but no run, and shows nothing when focus is null", async () => {
+    draftStandup.mockResolvedValueOnce({ ok: true, data: { ...draft, focus: { ...focus, switches: 3, longest: null } } });
+    await open();
+    // catches: dereferencing a null longest
+    expect(screen.getByText("yesterday: 3 switches, no focus run")).toBeTruthy();
+    cleanup();
+    draftStandup.mockResolvedValueOnce({ ok: true, data: { ...draft, focus: null } });
+    await open();
+    // catches: rendering an empty or "undefined" focus line when there is no work
+    expect(screen.queryByText(/^yesterday:/)).toBeNull();
   });
 
   it("posts the edited text, not the original draft", async () => {

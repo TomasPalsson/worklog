@@ -6,19 +6,29 @@ use anyhow::Context;
 use axum::extract::State;
 use axum::Json;
 use chrono::{NaiveDate, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::collectors::slack::SLACK_API;
 use crate::daemon::{ApiError, Shared};
 use crate::daily_helpers_contract::{PostOutcome, StandupDraft, SLACK_DAILY_CHANNEL_KEY};
 use crate::estimate::{self, ModelInvoker};
 use crate::routing_contract::SLACK_TOKEN_KEY;
+use crate::time_leaks_contract::FocusSummary;
 use crate::{envfile, http, secrets, slack_post, standup, tz};
 
 #[derive(Deserialize)]
 pub struct DraftBody {
     /// Present on a regenerate (FR-24): the draft to reword.
     pub previous: Option<StandupDraft>,
+}
+
+/// The draft plus yesterday's focus line; the focus is shown beside the
+/// answers and is not part of the text that gets posted.
+#[derive(Serialize)]
+pub struct DraftResponse {
+    #[serde(flatten)]
+    pub draft: StandupDraft,
+    pub focus: Option<FocusSummary>,
 }
 
 #[derive(Deserialize)]
@@ -29,7 +39,7 @@ pub struct PostBody {
 pub async fn draft(
     State(state): State<Shared>,
     Json(body): Json<DraftBody>,
-) -> Result<Json<StandupDraft>, ApiError> {
+) -> Result<Json<DraftResponse>, ApiError> {
     let today = tz::local_date(Utc::now());
     Ok(Json(
         draft_with(state, today, body.previous, estimate::build_invoker).await?,
@@ -52,21 +62,23 @@ async fn draft_with<F>(
     today: NaiveDate,
     previous: Option<StandupDraft>,
     make_invoker: F,
-) -> Result<StandupDraft, ApiError>
+) -> Result<DraftResponse, ApiError>
 where
     F: FnOnce() -> anyhow::Result<Box<dyn ModelInvoker>> + Send + 'static,
 {
-    let draft = tokio::task::spawn_blocking(move || {
+    let response = tokio::task::spawn_blocking(move || {
         let model = make_invoker()?;
         let conn = state.conn.blocking_lock();
-        match previous {
+        let draft = match previous {
             Some(previous) => standup::regenerate(&conn, today, model.as_ref(), &previous),
             None => standup::draft(&conn, today, model.as_ref()),
-        }
+        }?;
+        let focus = standup::yesterday_focus_or_none(&conn, today);
+        anyhow::Ok(DraftResponse { draft, focus })
     })
     .await
     .context("spawn_blocking")??;
-    Ok(draft)
+    Ok(response)
 }
 
 async fn post_with(
@@ -185,8 +197,43 @@ mod tests {
         })
         .await
         .unwrap_or_else(|_| panic!("draft should succeed"));
-        assert_eq!(got.today, ["a"]);
-        assert_eq!(got.blockers, ["c"]);
+        assert_eq!(got.draft.today, ["a"]);
+        assert_eq!(got.draft.blockers, ["c"]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn draft_json_carries_yesterdays_focus_beside_the_answers_and_not_in_the_text() {
+        let state = state();
+        state
+            .conn
+            .lock()
+            .await
+            .execute(
+                "INSERT INTO blocks (day, started_at, ended_at, duration_seconds, jira_issue)
+                 VALUES ('2026-10-05', '2026-10-05T09:00:00+00:00', '2026-10-05T10:00:00+00:00', 3600, 'A-1')",
+                [],
+            )
+            .unwrap();
+        let got = draft_with(state, today(), None, || Ok(Box::new(FixedInvoker(reply()))))
+            .await
+            .unwrap_or_else(|_| panic!("draft should succeed"));
+        let v = serde_json::to_value(&got).unwrap();
+        // catches: focus missing from the wire, or answers nested away from the top level
+        assert_eq!(v["today"], json!(["a"]));
+        assert_eq!(v["focus"]["day"], "2026-10-05");
+        assert_eq!(v["focus"]["longest"]["jira_issue"], "A-1");
+        // catches: focus folded into the text the Owner posts
+        assert_eq!(got.draft.to_text(), "1. a\n2. b\n3. c\n");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn draft_json_focus_is_null_when_yesterday_has_no_work() {
+        let got = draft_with(state(), today(), None, || {
+            Ok(Box::new(FixedInvoker(reply())))
+        })
+        .await
+        .unwrap_or_else(|_| panic!("draft should succeed"));
+        assert!(serde_json::to_value(&got).unwrap()["focus"].is_null());
     }
 
     #[tokio::test(flavor = "current_thread")]

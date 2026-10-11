@@ -5,10 +5,13 @@
 // just means nothing to show yet, not "not multi-tenant". Fetched lazily on
 // mount so the day's card list never waits.
 
-import { afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
+import { readFileSync } from "node:fs";
+import { afterAll, afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { registryHook, resetRegistryHook } from "./billingRegistryTestHook";
 import type { BillingSlice, ShareRow } from "@/lib/deildir";
 import type { BillingCustomer } from "@/lib/types";
+import type { DeildSuggestion } from "@/lib/time_leaks_contract";
 
 const splitSlices: BillingSlice[] = [
   { customer: "Sjúkra", deild: null, intervals: [[0, 2520]], origin: "clues", deild_origin: "blank" },
@@ -28,6 +31,9 @@ const saveCustomerSharesImpl = mock(async (blockId: number, rows: ShareRow[]) =>
   saveCustomerSharesCalls.push([blockId, rows]);
   return saveCustomerSharesResult;
 });
+
+let currentSuggestion: DeildSuggestion | null = null;
+const fetchDeildSuggestionImpl = mock(async (_blockId: number) => currentSuggestion);
 
 const clearCustomerSharesImpl = mock(async (_blockId: number) => ({ ok: true as const }));
 
@@ -62,23 +68,34 @@ mock.module("@/app/tenant-actions", () => ({
   fetchCustomerSlices: (blockId: number) => fetchCustomerSlicesImpl(blockId),
   saveCustomerShares: (blockId: number, rows: ShareRow[]) => saveCustomerSharesImpl(blockId, rows),
   clearCustomerShares: (blockId: number) => clearCustomerSharesImpl(blockId),
+  fetchDeildSuggestion: (blockId: number) => fetchDeildSuggestionImpl(blockId),
   fetchTenants: async () => ({ ok: true as const, data: [] }),
   saveTenantLink: async () => ({ ok: true as const }),
 }));
-mock.module("@/app/actions", () => ({
-  fetchBillingRegistry: () => fetchBillingRegistryImpl(),
-}));
+const otherActions = { ...(await import("@/app/actions")) };
 
 let BlockCustomerSplit: (props: { blockId: number }) => React.JSX.Element | null;
 
 beforeAll(async () => {
+  mock.module("@/app/actions", () => ({
+    ...otherActions,
+    fetchBillingRegistry: () => registryHook.fetch(),
+  }));
+  registryHook.fetch = () => fetchBillingRegistryImpl();
   const mod = await import("./BlockCustomerSplit");
   BlockCustomerSplit = mod.BlockCustomerSplit;
+});
+
+afterAll(() => {
+  resetRegistryHook();
+  mock.module("@/app/actions", () => otherActions);
 });
 
 afterEach(() => {
   cleanup();
   currentSlices = splitSlices;
+  currentSuggestion = null;
+  fetchDeildSuggestionImpl.mockClear();
   fetchCustomerSlicesImpl.mockClear();
   saveCustomerSharesImpl.mockClear();
   saveCustomerSharesCalls.length = 0;
@@ -182,6 +199,58 @@ describe("BlockCustomerSplit (B17)", () => {
     expect(saveCustomerSharesCalls.length).toBe(0);
   });
 
+  it("saves an even three-way split (catches an exact-100 gate on rounded 33/33/33)", async () => {
+    currentSlices = [
+      { customer: "Sjúkra", deild: null, intervals: [[0, 1200]], origin: "clues", deild_origin: "blank" },
+      { customer: "MMS", deild: null, intervals: [[1200, 2400]], origin: "clues", deild_origin: "blank" },
+      { customer: "Byko", deild: null, intervals: [[2400, 3600]], origin: "clues", deild_origin: "blank" },
+    ];
+    render(<BlockCustomerSplit blockId={303} />);
+    await screen.findByRole("button", { name: "Change" });
+    fireEvent.click(screen.getByRole("button", { name: "Change" }));
+    await screen.findByLabelText("Sjúkra share percent");
+
+    expect(screen.getByText("Total: 100%")).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(saveCustomerSharesCalls.length).toBe(1));
+    const fractions = saveCustomerSharesCalls[0][1].map((r) => r.fraction);
+    for (const f of fractions) expect(f).toBeCloseTo(1 / 3, 3);
+    expect(Math.abs(fractions.reduce((a, b) => a + b, 0) - 1)).toBeLessThanOrEqual(0.001);
+  });
+
+  it("gates Save at the daemon's 0.1% share tolerance: 99.91% saves, 99.86% does not (catches a 0.5% or exact gate)", async () => {
+    currentSlices = [
+      { customer: "Sjúkra", deild: null, intervals: [[0, 1200]], origin: "clues", deild_origin: "blank" },
+      { customer: "MMS", deild: null, intervals: [[1200, 2400]], origin: "clues", deild_origin: "blank" },
+      { customer: "Byko", deild: null, intervals: [[2400, 3600]], origin: "clues", deild_origin: "blank" },
+    ];
+    render(<BlockCustomerSplit blockId={303} />);
+    await screen.findByRole("button", { name: "Change" });
+    fireEvent.click(screen.getByRole("button", { name: "Change" }));
+    const byko = await screen.findByLabelText("Byko share percent");
+    const save = () => (screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled;
+
+    fireEvent.change(byko, { target: { value: "33.25" } });
+    expect(save()).toBe(false);
+    fireEvent.change(byko, { target: { value: "33.2" } });
+    expect(save()).toBe(true);
+  });
+
+  it("gives two blank-deild rows of one customer distinct labels (catches a shared aria-label)", async () => {
+    currentSlices = [
+      { customer: "Sjúkra", deild: null, intervals: [[0, 1800]], origin: "clues", deild_origin: "blank" },
+      { customer: "Sjúkra", deild: null, intervals: [[1800, 3600]], origin: "clues", deild_origin: "blank" },
+    ];
+    render(<BlockCustomerSplit blockId={404} />);
+    await screen.findByRole("button", { name: "Change" });
+    fireEvent.click(screen.getByRole("button", { name: "Change" }));
+
+    expect(await screen.findByLabelText("Sjúkra #1 share percent")).not.toBeNull();
+    expect(screen.getByLabelText("Sjúkra #2 share percent")).not.toBeNull();
+    expect(screen.getByLabelText("Sjúkra #2 deild")).not.toBeNull();
+  });
+
   it("renders nothing when there are no slices to show", async () => {
     currentSlices = [];
     const { container } = render(<BlockCustomerSplit blockId={202} />);
@@ -233,5 +302,92 @@ describe("BlockCustomerSplit (B17)", () => {
 
     await waitFor(() => expect(saveCustomerSharesCalls.length).toBe(1));
     expect(saveCustomerSharesCalls[0]).toEqual([303, [{ customer: "MMS", deild: null, fraction: 1 }]]);
+  });
+});
+
+describe("BlockCustomerSplit deild chip (FR-21)", () => {
+  const suggestion: DeildSuggestion = { customer: "Sjúkra", deild: "Rekstur", uses: 3 };
+
+  it("shows the suggested deild as a chip and saves nothing until it is clicked", async () => {
+    currentSuggestion = suggestion;
+    render(<BlockCustomerSplit blockId={101} />);
+
+    expect(await screen.findByRole("button", { name: "Rekstur" })).not.toBeNull();
+    expect(saveCustomerSharesCalls.length).toBe(0); // catches save-on-render
+  });
+
+  it("shows no chip when the route has no suggestion", async () => {
+    render(<BlockCustomerSplit blockId={101} />);
+
+    await screen.findByText("Sjúkra 70% · MMS 30%");
+    await waitFor(() => expect(fetchDeildSuggestionImpl).toHaveBeenCalledWith(101));
+    expect(screen.queryByRole("button", { name: "Rekstur" })).toBeNull();
+  });
+
+  it("a failed suggestion fetch shows no chip and is caught (catches an unhandled rejection)", async () => {
+    fetchDeildSuggestionImpl.mockImplementationOnce(async () => {
+      throw new Error("daemon down");
+    });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => unhandled.push(e);
+    process.on("unhandledRejection", onUnhandled);
+    render(<BlockCustomerSplit blockId={101} />);
+
+    await screen.findByText("Sjúkra 70% · MMS 30%");
+    await waitFor(() => expect(fetchDeildSuggestionImpl).toHaveBeenCalledWith(101));
+    await new Promise((r) => setTimeout(r, 20));
+    process.off("unhandledRejection", onUnhandled);
+    expect(unhandled).toEqual([]);
+    expect(screen.queryByRole("button", { name: "Rekstur" })).toBeNull();
+  });
+
+  it("click saves the deild on the suggested customer's rows only, keeping exact shares", async () => {
+    currentSuggestion = suggestion;
+    render(<BlockCustomerSplit blockId={101} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Rekstur" }));
+
+    await waitFor(() => expect(saveCustomerSharesCalls.length).toBe(1));
+    // catches applying the deild to every row (MMS must stay null)
+    expect(saveCustomerSharesCalls[0]).toEqual([
+      101,
+      [
+        { customer: "Sjúkra", deild: "Rekstur", fraction: 0.7 },
+        { customer: "MMS", deild: null, fraction: 0.3 },
+      ],
+    ]);
+  });
+
+  it("saves fractions from durations, not rounded percents (thirds sum to 1)", async () => {
+    currentSlices = [
+      { customer: "Sjúkra", deild: null, intervals: [[0, 1200]], origin: "clues", deild_origin: "blank" },
+      { customer: "MMS", deild: null, intervals: [[1200, 2400]], origin: "clues", deild_origin: "blank" },
+      { customer: "APRÓ", deild: null, intervals: [[2400, 3600]], origin: "clues", deild_origin: "blank" },
+    ];
+    currentSuggestion = suggestion;
+    render(<BlockCustomerSplit blockId={808} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Rekstur" }));
+
+    await waitFor(() => expect(saveCustomerSharesCalls.length).toBe(1));
+    const rows = saveCustomerSharesCalls[0][1];
+    expect(rows.map((r) => r.fraction)).toEqual([1 / 3, 1 / 3, 1 / 3]); // catches 0.33 x3 = 0.99
+  });
+
+  it("shows the save error when the click-save fails", async () => {
+    currentSuggestion = suggestion;
+    saveCustomerSharesResult = { ok: false, error: "Customer no longer exists" };
+    render(<BlockCustomerSplit blockId={101} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Rekstur" }));
+
+    expect(await screen.findByText("Customer no longer exists")).not.toBeNull(); // catches swallowed error
+  });
+});
+
+describe("web/lib/tenants.ts", () => {
+  it("is not a Server Actions module (its exports must not be browser-invocable)", () => {
+    const src = readFileSync(new URL("../lib/tenants.ts", import.meta.url), "utf8");
+    expect(src).not.toMatch(/^\s*["']use server["']/m);
   });
 });

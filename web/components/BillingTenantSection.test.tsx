@@ -40,6 +40,7 @@ mock.module("@/app/tenant-actions", () => ({
   fetchCustomerSlices: async () => ({ ok: true as const, data: [] }),
   saveCustomerShares: async () => ({ ok: true as const }),
   clearCustomerShares: async () => ({ ok: true as const }),
+  fetchDeildSuggestion: async () => null,
 }));
 
 let BillingTenantSection: (props: { customers: BillingCustomer[] }) => React.JSX.Element | null;

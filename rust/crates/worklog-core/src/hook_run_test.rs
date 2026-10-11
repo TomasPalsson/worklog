@@ -389,3 +389,170 @@ fn path_key_beats_branch_key() {
     });
     assert_eq!(jira_issue_for(&payload).as_deref(), Some("PROJ-9"));
 }
+
+fn last_ok(conn: &Connection, source: &str) -> Option<String> {
+    crate::collect_health::all(conn, now())
+        .unwrap()
+        .into_iter()
+        .find(|h| h.source == source)
+        .and_then(|h| h.last_ok)
+}
+
+fn last_err(conn: &Connection, source: &str) -> Option<String> {
+    crate::collect_health::all(conn, now())
+        .unwrap()
+        .into_iter()
+        .find(|h| h.source == source)
+        .and_then(|h| h.last_err)
+}
+
+#[test]
+fn hook_db_failure_is_recorded_and_still_ok() {
+    let conn = open_memory().unwrap();
+    conn.execute("DROP TABLE sessions", []).unwrap();
+    // Swallowing the error (eprintln only) leaves no record.
+    handle_input(
+        &conn,
+        r#"{"hook_event_name":"Stop","session_id":"s"}"#,
+        now(),
+    )
+    .unwrap();
+    assert!(last_err(&conn, "claude").is_some());
+}
+
+#[test]
+fn hook_invalid_json_is_recorded() {
+    let conn = open_memory().unwrap();
+    // Recording only handle() failures misses parse failures.
+    handle_input(&conn, "{not json", now()).unwrap();
+    let err = last_err(&conn, "claude").expect("recorded");
+    assert!(err.contains("invalid JSON"), "{err}");
+}
+
+#[test]
+fn hook_success_records_no_error() {
+    let conn = open_memory().unwrap();
+    // Never recording Ok leaves a healthy hook with no last_ok.
+    handle_input(
+        &conn,
+        r#"{"hook_event_name":"Stop","session_id":"s"}"#,
+        now(),
+    )
+    .unwrap();
+    assert_eq!(last_err(&conn, "claude"), None);
+    assert!(last_ok(&conn, "claude").is_some());
+}
+
+fn transcript_dir() -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("proj");
+    std::fs::create_dir(&project).unwrap();
+    let line = r#"{"type":"user","timestamp":"2026-04-18T09:00:00Z","sessionId":"s1","uuid":"u1","cwd":"/home/x/Desktop/Work/widget","message":{"role":"user","content":"hello there"}}"#;
+    std::fs::write(project.join("s1.jsonl"), format!("{line}\n")).unwrap();
+    tmp
+}
+
+fn window() -> (chrono::NaiveDate, chrono::NaiveDate) {
+    (
+        chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap(),
+        chrono::NaiveDate::from_ymd_opt(2100, 1, 1).unwrap(),
+    )
+}
+
+#[test]
+fn transcript_reader_failure_is_recorded_and_propagated() {
+    let conn = open_memory().unwrap();
+    conn.execute("DROP TABLE transcript_file_cache", [])
+        .unwrap();
+    let tmp = transcript_dir();
+    let (since, until) = window();
+    // Recording but dropping the Err would hide the failure from the caller.
+    let res =
+        crate::collectors::claude_transcripts::collect_from_dir(&conn, tmp.path(), since, until);
+    assert!(res.is_err());
+    assert!(last_err(&conn, "claude_transcripts").is_some());
+}
+
+#[test]
+fn transcript_reader_success_records_no_error() {
+    let conn = open_memory().unwrap();
+    let tmp = transcript_dir();
+    let (since, until) = window();
+    crate::collectors::claude_transcripts::collect_from_dir(&conn, tmp.path(), since, until)
+        .unwrap();
+    assert_eq!(last_err(&conn, "claude_transcripts"), None);
+    // Recording only on Err leaves a healthy reader with no last_ok.
+    assert!(last_ok(&conn, "claude_transcripts").is_some());
+}
+
+const STOP: &str = r#"{"hook_event_name":"Stop","session_id":"s"}"#;
+
+#[test]
+fn hook_open_failure_returns_ok() {
+    // Propagating the open error would block Claude.
+    assert!(run_with(STOP, || anyhow::bail!("no db")).is_ok());
+    // Invalid JSON with an unopenable DB is stderr only, still Ok.
+    assert!(run_with("{not json", || anyhow::bail!("no db")).is_ok());
+}
+
+#[test]
+fn hook_invalid_json_message_and_open_still_attempted_once() {
+    // Catches: message lost because the open error replaced it.
+    let msg = parse_payload("{not json").unwrap_err();
+    assert!(msg.starts_with("invalid JSON on stdin: "), "{msg}");
+    // Catches: skipping the open for bad JSON (health could never be recorded).
+    let calls = std::cell::Cell::new(0);
+    run_with("{not json", || {
+        calls.set(calls.get() + 1);
+        anyhow::bail!("no db")
+    })
+    .unwrap();
+    assert_eq!(calls.get(), 1);
+}
+
+#[test]
+fn hook_error_text_keeps_full_anyhow_chain() {
+    let conn = open_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER boom BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'boom'); END",
+    )
+    .unwrap();
+    handle_input(&conn, STOP, now()).unwrap();
+    // `to_string()` keeps only the outermost context ("upsert event"),
+    // dropping the SQLite cause after it.
+    let err = last_err(&conn, "claude").expect("recorded");
+    assert!(err.contains("upsert event: boom"), "{err}");
+}
+
+fn seed_last_ok(conn: &Connection, age_secs: i64) -> String {
+    let stamp = (now() - chrono::Duration::seconds(age_secs)).to_rfc3339();
+    crate::purge::meta_set(conn, "collect.claude.last_ok", &stamp).unwrap();
+    stamp
+}
+
+#[test]
+fn last_ok_younger_than_60s_is_not_rewritten() {
+    let conn = open_memory().unwrap();
+    let seeded = seed_last_ok(&conn, 59);
+    handle_input(&conn, STOP, now()).unwrap();
+    // Writing on every call changes the stamp.
+    assert_eq!(last_ok(&conn, "claude"), Some(seeded));
+}
+
+#[test]
+fn last_ok_exactly_60s_old_is_rewritten() {
+    let conn = open_memory().unwrap();
+    let seeded = seed_last_ok(&conn, 60);
+    handle_input(&conn, STOP, now()).unwrap();
+    // `<=` instead of `<` would keep the stale stamp.
+    assert_ne!(last_ok(&conn, "claude"), Some(seeded));
+}
+
+#[test]
+fn error_is_recorded_even_when_last_ok_is_fresh() {
+    let conn = open_memory().unwrap();
+    seed_last_ok(&conn, 1);
+    handle_input(&conn, "{not json", now()).unwrap();
+    // Throttling the whole record call would swallow errors.
+    assert!(last_err(&conn, "claude").is_some());
+}

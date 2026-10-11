@@ -49,6 +49,7 @@ import {
 } from "@/lib/daemon";
 import { undoLast as daemonUndoLast } from "@/lib/daemonUndo";
 import type { UndoOutcome } from "@/lib/daily_helpers_contract";
+import type { IgnoreReason } from "@/lib/time_leaks_contract";
 import type { VerdictState, VerdictStatus } from "@/lib/verdict_contract";
 import type { ChangeFeed, Deild } from "@/lib/deildir";
 import type {
@@ -163,8 +164,9 @@ export async function setIgnored(
   blockId: number,
   ignored: boolean,
   day: string,
+  reason?: IgnoreReason,
 ): Promise<ActionResult> {
-  const r = await runAction(() => daemonSetIgnored(blockId, ignored), `/${day}`);
+  const r = await runAction(() => daemonSetIgnored(blockId, ignored, reason), `/${day}`);
   return r.ok ? { ok: true, data: undefined } : r;
 }
 

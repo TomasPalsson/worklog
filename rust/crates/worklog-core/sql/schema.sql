@@ -102,6 +102,8 @@ CREATE TABLE IF NOT EXISTS blocks (
     -- User-ignored block (ISO time). Always paired with is_personal = 1 so
     -- every personal exclusion applies; survives rebuilds via infer.rs carry.
     ignored_at TEXT,
+    -- Why the block was ignored (IgnoreReason text); NULL when not ignored or no reason given.
+    ignore_reason TEXT,
     -- Wall-clock span (ended_at - started_at, seconds) of the block at the
     -- moment its description was last written by the estimator. Compared
     -- against, not the current duration_seconds, so a description survives

@@ -108,6 +108,25 @@ pub fn collect_from_dirs(
     since: NaiveDate,
     until: NaiveDate,
 ) -> Result<CollectReport> {
+    let res = read_transcripts(conn, dir, jobs_dir, since, until);
+    let health = res.as_ref().map(|_| ()).map_err(|e| format!("{e:#}"));
+    if let Err(e) = crate::collect_health::record(
+        conn,
+        "claude_transcripts",
+        health.as_ref().map(|_| ()).map_err(|m| m.as_str()),
+    ) {
+        eprintln!("worklog: recording claude_transcripts health failed: {e}");
+    }
+    res
+}
+
+fn read_transcripts(
+    conn: &Connection,
+    dir: &Path,
+    jobs_dir: &Path,
+    since: NaiveDate,
+    until: NaiveDate,
+) -> Result<CollectReport> {
     let mut report = CollectReport {
         source: "claude_turn",
         ..Default::default()

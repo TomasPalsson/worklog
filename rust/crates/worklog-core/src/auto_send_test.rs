@@ -360,13 +360,21 @@ fn an_unreachable_tempo_is_retried_each_tick_with_the_original_plan() {
     );
     ready_line(&conn, DAY, "LATE-1");
     let retry = tick(&conn, local(6, 17, 15), true, accepts);
-    // catches: latching the day on a failed run (retry empty), marking Not sent on the first
-    // failure (after_failure.1), and re-planning on retry (LATE-1 in retry)
+    // catches: latching the day on a failed run (retry empty), dropping the error text
+    // (after_failure.1), and re-planning on retry (LATE-1 in retry)
     assert_eq!(
         (after_failure, retry),
-        ((None, None), vec![format!("{DAY}/A-1")])
+        (
+            (
+                None,
+                Some("Tempo could not be reached: connection refused".to_string())
+            ),
+            vec![format!("{DAY}/A-1")]
+        )
     );
     assert!(column(&conn, DAY, "A-1", "auto_sent_at").is_some());
+    // catches: leaving the failure text behind after a retry succeeds
+    assert_eq!(column(&conn, DAY, "A-1", "send_error"), None);
 }
 
 #[test]
@@ -377,14 +385,229 @@ fn lines_still_unreachable_when_the_day_ends_are_marked_not_sent() {
     let last_tick = tick(&conn, local(6, 23, 45), true, unreachable);
     let marked_early = column(&conn, DAY, "A-1", "send_error");
     let tomorrow = tick(&conn, local(7, 0, 0), true, accepts);
-    // catches: giving up before the day is over (marked_early), retrying into the next day
-    // (tomorrow), never retrying at the last tick (last_tick empty)
-    assert_eq!((last_tick.len(), marked_early, tomorrow), (1, None, vec![]));
+    // catches: giving up before the day is over (last_tick empty), retrying into the next day
+    // (tomorrow), losing the cause before the day ends (marked_early)
+    assert_eq!(
+        (last_tick.len(), marked_early.as_deref(), tomorrow),
+        (
+            1,
+            Some("Tempo could not be reached: connection refused"),
+            vec![]
+        )
+    );
+    // catches: the rollover overwriting the stored cause with the bare constant
+    assert_eq!(
+        column(&conn, DAY, "A-1", "send_error").as_deref(),
+        Some("Tempo could not be reached: connection refused")
+    );
+    assert_eq!(column(&conn, DAY, "A-1", "auto_sent_at"), None);
+}
+
+#[test]
+fn a_planned_line_never_attempted_gets_the_bare_reason_at_rollover() {
+    let conn = open_memory().unwrap();
+    ready_line(&conn, DAY, "A-1");
+    meta_set(&conn, PLAN_KEY, &format!("{DAY}|A-1")).unwrap();
+    tick(&conn, local(7, 0, 0), true, accepts);
+    // catches: keeping a NULL error (line silently never marked) instead of the fallback
     assert_eq!(
         column(&conn, DAY, "A-1", "send_error").as_deref(),
         Some("Tempo could not be reached")
     );
-    assert_eq!(column(&conn, DAY, "A-1", "auto_sent_at"), None);
+}
+
+#[test]
+fn the_stored_unreachable_reason_never_carries_the_request_url() {
+    let conn = open_memory().unwrap();
+    ready_line(&conn, DAY, "A-1");
+    let url = "http://127.0.0.1:1/rest/secret?token=abc123";
+    let mut send = |_: &Connection, _: &TempoLineKey| -> Result<Vec<SyncResult>> {
+        let cause = reqwest::blocking::Client::new()
+            .get(url)
+            .send()
+            .unwrap_err();
+        Err(anyhow::Error::new(cause).context(format!("tempo GET {url}")))
+    };
+    run_if_due(&conn, local(6, 17, 0), true, &mut send).unwrap();
+    let stored = column(&conn, DAY, "A-1", "send_error").unwrap();
+    // catches: storing {e} / {e:#} (URL and token leak) and dropping the reason entirely
+    assert_eq!(stored, "Tempo could not be reached: connection failed");
+}
+
+/// Pins the env a rollover tick reads and restores it on drop, even when an assert panics.
+struct RolloverEnv {
+    _g: std::sync::MutexGuard<'static, ()>,
+    _e: tokio::sync::MutexGuard<'static, ()>,
+    saved: [(&'static str, Option<std::ffi::OsString>); 2],
+}
+
+impl RolloverEnv {
+    fn new() -> Self {
+        let _g = crate::tz::test_env_lock();
+        let _e = crate::envfile::ENV_TEST_LOCK.blocking_lock();
+        let saved = ["WORKLOG_TZ", "WORKLOG_ENV_FILE"].map(|k| (k, std::env::var_os(k)));
+        std::env::remove_var("WORKLOG_TZ");
+        std::env::set_var("WORKLOG_ENV_FILE", "/nonexistent/worklog.env");
+        Self { _g, _e, saved }
+    }
+}
+
+impl Drop for RolloverEnv {
+    fn drop(&mut self) {
+        for (k, v) in &self.saved {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+    }
+}
+
+#[test]
+fn a_day_whose_every_send_failed_still_gets_its_recap_at_rollover() {
+    let _env = RolloverEnv::new();
+    let conn = open_memory().unwrap();
+    ready_line(&conn, DAY, "A-1");
+    tick(&conn, local(6, 17, 0), true, unreachable);
+    assert_eq!(recap::latest(&conn).unwrap(), None);
+    tick(&conn, local(7, 0, 0), true, unreachable);
+    let built = recap::latest(&conn).unwrap().map(|r| r.day);
+    // catches: no rollover recap (None), building for the new day instead of the finished one
+    assert_eq!(built.as_deref(), Some(DAY));
+    let stamp = column_meta(&conn);
+    tick(&conn, local(7, 0, 15), true, unreachable);
+    // catches: rebuilding every tick (RECAP_KEY not advanced to the finished day)
+    assert_eq!(column_meta(&conn), stamp);
+}
+
+#[test]
+fn an_upstream_error_body_is_never_stored() {
+    let conn = open_memory().unwrap();
+    ready_line(&conn, DAY, "A-1");
+    let mut send = |_: &Connection, _: &TempoLineKey| -> Result<Vec<SyncResult>> {
+        Err(
+            anyhow::Error::new(crate::tempo_hub_contract::HubError::Upstream {
+                service: "Tempo",
+                status: 502,
+                body: "<html>GET /4/worklogs?token=abc123</html>".into(),
+            })
+            .context("tempo GET http://tempo.example/4/worklogs"),
+        )
+    };
+    run_if_due(&conn, local(6, 17, 0), true, &mut send).unwrap();
+    let stored = column(&conn, DAY, "A-1", "send_error").unwrap();
+    // catches: storing the root cause's Display, which carries the upstream body verbatim
+    assert!(
+        !stored.contains("html") && !stored.contains("token") && stored.contains("502"),
+        "{stored}"
+    );
+}
+
+#[test]
+fn a_day_already_recapped_is_not_rebuilt_at_rollover() {
+    let _env = RolloverEnv::new();
+    let conn = open_memory().unwrap();
+    ready_line(&conn, DAY, "A-1");
+    tick(&conn, local(6, 17, 0), true, unreachable);
+    tick(&conn, local(7, 0, 0), true, unreachable);
+    conn.execute("UPDATE recaps SET built_at = 'first' WHERE day = ?1", [DAY])
+        .unwrap();
+    meta_set(&conn, PLAN_KEY, &format!("{DAY}|A-1")).unwrap();
+    tick(&conn, local(7, 0, 15), true, unreachable);
+    // catches: dropping the RECAP_KEY guard, so a recapped day is rebuilt on every rollover
+    assert_eq!(column_meta(&conn).as_deref(), Some("first"));
+}
+
+#[test]
+fn a_non_reqwest_failure_never_carries_the_request_url_or_body() {
+    let conn = open_memory().unwrap();
+    ready_line(&conn, DAY, "A-1");
+    let url = "http://tempo.example/rest/secret?token=abc123";
+    let mut send = |_: &Connection, _: &TempoLineKey| -> Result<Vec<SyncResult>> {
+        let bad = serde_json::from_str::<u32>("<html>").unwrap_err();
+        Err(anyhow::Error::new(bad).context(format!("decode tempo response from {url}: <html>")))
+    };
+    run_if_due(&conn, local(6, 17, 0), true, &mut send).unwrap();
+    let stored = column(&conn, DAY, "A-1", "send_error").unwrap();
+    // catches: falling back to e.to_string(), the outermost context with URL and body
+    assert!(
+        !stored.contains("http") && !stored.contains("<html>"),
+        "{stored}"
+    );
+}
+
+#[test]
+fn a_root_cause_with_a_url_or_body_is_never_stored() {
+    let conn = open_memory().unwrap();
+    ready_line(&conn, DAY, "A-1");
+    let mut send = |_: &Connection, _: &TempoLineKey| -> Result<Vec<SyncResult>> {
+        Err(anyhow::anyhow!(
+            "returned HTTP 500 \u{2014} <html>http://t.example/x?token=abc123</html>"
+        ))
+    };
+    run_if_due(&conn, local(6, 17, 0), true, &mut send).unwrap();
+    let stored = column(&conn, DAY, "A-1", "send_error").unwrap();
+    // catches: falling back to root_cause().to_string(), which carries any bail! body or URL
+    assert_eq!(stored, "Tempo could not be reached: returned HTTP 500");
+}
+
+#[test]
+fn a_root_cause_that_embeds_a_url_is_reduced_to_a_generic_reason() {
+    let conn = open_memory().unwrap();
+    ready_line(&conn, DAY, "A-1");
+    let mut send = |_: &Connection, _: &TempoLineKey| -> Result<Vec<SyncResult>> {
+        Err(anyhow::Error::new(std::io::Error::other(
+            "open http://t.example/rest?token=abc123 failed",
+        ))
+        .context("tempo GET"))
+    };
+    run_if_due(&conn, local(6, 17, 0), true, &mut send).unwrap();
+    let stored = column(&conn, DAY, "A-1", "send_error").unwrap();
+    // catches: a root cause that names a URL or query string reaching the stored error
+    assert!(
+        !stored.contains("token") && !stored.contains("://"),
+        "{stored}"
+    );
+}
+
+#[test]
+fn a_failed_rollover_recap_leaves_the_plan_so_the_next_tick_retries() {
+    let _env = RolloverEnv::new();
+    let conn = open_memory().unwrap();
+    ready_line(&conn, DAY, "A-1");
+    tick(&conn, local(6, 17, 0), true, unreachable);
+    conn.execute("ALTER TABLE recaps RENAME TO recaps_off", [])
+        .unwrap();
+    let mut send = |_: &Connection, _: &TempoLineKey| unreachable("");
+    run_if_due(&conn, local(7, 0, 0), true, &mut send).unwrap();
+    // catches: clearing the plan before the recap is built, losing the day's recap
+    assert!(meta_get(&conn, PLAN_KEY).unwrap().unwrap().starts_with(DAY));
+    conn.execute("ALTER TABLE recaps_off RENAME TO recaps", [])
+        .unwrap();
+    tick(&conn, local(7, 0, 15), true, unreachable);
+    let built = recap::latest(&conn).unwrap().map(|r| r.day);
+    assert_eq!(built.as_deref(), Some(DAY));
+}
+
+#[test]
+fn a_failed_rollover_recap_does_not_stop_the_days_sending() {
+    let _env = RolloverEnv::new();
+    let conn = open_memory().unwrap();
+    ready_line(&conn, DAY, "A-1");
+    tick(&conn, local(6, 17, 0), true, unreachable);
+    ready_line(&conn, "2026-10-07", "B-1");
+    conn.execute("ALTER TABLE recaps RENAME TO recaps_off", [])
+        .unwrap();
+    let tried = tick(&conn, local(7, 17, 0), true, unreachable);
+    // catches: propagating the recap error, which skips today's sends
+    assert_eq!(tried, vec!["2026-10-07/B-1".to_owned()]);
+}
+
+fn column_meta(conn: &Connection) -> Option<String> {
+    conn.query_row("SELECT built_at FROM recaps WHERE day = ?1", [DAY], |r| {
+        r.get(0)
+    })
+    .ok()
 }
 
 #[test]
@@ -409,6 +632,86 @@ fn a_rejected_line_records_tempos_message_and_the_others_still_go() {
     assert_eq!(column(&conn, DAY, "A-BAD", "auto_sent_at"), None);
     assert!(column(&conn, DAY, "B-GOOD", "auto_sent_at").is_some());
     assert_eq!(column(&conn, DAY, "B-GOOD", "send_error"), None);
+}
+
+fn skipped(why: &str) -> SyncResult {
+    SyncResult {
+        status: "skipped",
+        reason: Some(why.into()),
+        tempo_id: None,
+        http_status: None,
+        ..ok()
+    }
+}
+
+#[test]
+fn a_send_that_errors_does_not_stop_the_next_ticket() {
+    let conn = open_memory().unwrap();
+    ready_line(&conn, DAY, "A-ERR");
+    ready_line(&conn, DAY, "B-GOOD");
+    let tried = tick(&conn, local(6, 17, 0), true, |issue| {
+        if issue == "A-ERR" {
+            unreachable(issue)
+        } else {
+            accepts(issue)
+        }
+    });
+    // catches: returning at the first failing ticket, and marking the unreachable ticket sent
+    assert_eq!(tried.len(), 2);
+    assert!(column(&conn, DAY, "B-GOOD", "auto_sent_at").is_some());
+    assert_eq!(column(&conn, DAY, "A-ERR", "auto_sent_at"), None);
+    // catches: swallowing the error so the line shows nothing in Review the same day
+    assert_eq!(
+        column(&conn, DAY, "A-ERR", "send_error").as_deref(),
+        Some("Tempo could not be reached: connection refused")
+    );
+    let retry = tick(&conn, local(6, 17, 15), true, accepts);
+    // catches: dropping the failed ticket from the plan instead of retrying it
+    assert_eq!(retry, vec![format!("{DAY}/A-ERR")]);
+}
+
+#[test]
+fn a_skipped_line_is_not_sent_and_keeps_the_sync_reason() {
+    for (issue, why) in [
+        ("A-1", "no jira_issue — assign one in the UI"),
+        (
+            "A-2",
+            "rounds to 0h — 600s of tracked work is under the 0.5h minimum",
+        ),
+    ] {
+        let conn = open_memory().unwrap();
+        ready_line(&conn, DAY, issue);
+        tick(&conn, local(6, 17, 0), true, |_| Ok(vec![skipped(why)]));
+        // catches: a skip recorded as sent, the reason replaced by a generic text
+        assert_eq!(
+            column(&conn, DAY, issue, "send_error").as_deref(),
+            Some(why)
+        );
+        assert_eq!(column(&conn, DAY, issue, "auto_sent_at"), None);
+    }
+}
+
+#[test]
+fn a_line_already_in_tempo_stays_sent() {
+    let conn = open_memory().unwrap();
+    ready_line(&conn, DAY, "A-1");
+    tick(&conn, local(6, 17, 0), true, |_| {
+        Ok(vec![skipped("already in Tempo")])
+    });
+    // catches: treating every skip as a failure
+    assert!(column(&conn, DAY, "A-1", "auto_sent_at").is_some());
+    assert_eq!(column(&conn, DAY, "A-1", "send_error"), None);
+}
+
+#[test]
+fn review_lists_todays_not_sent_lines_but_not_todays_sent_ones() {
+    let conn = open_memory().unwrap();
+    failed(&conn, DAY, "FAIL-1");
+    sent(&conn, DAY, "SENT-1");
+    let lines = review_lines(&conn, DAY).unwrap();
+    // catches: `<` for `<=` on the day, or listing today's sent lines
+    let issues: Vec<_> = lines.iter().map(|l| l.jira_issue.as_str()).collect();
+    assert_eq!(issues, ["FAIL-1"]);
 }
 
 // ───────────────────────── review and confirm (FR-29..FR-33) ─────────────────────────

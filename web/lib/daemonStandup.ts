@@ -6,7 +6,11 @@
 import type { ActionResult } from "@/app/actions";
 import { call, loadSettings } from "./daemon";
 import type { PostOutcome, StandupDraft } from "./daily_helpers_contract";
+import type { FocusSummary } from "./time_leaks_contract";
 import type { SettingsView } from "./types";
+
+/** `POST /standup/draft`: the answers with yesterday's focus beside them (never in the posted text). */
+export type DraftResult = StandupDraft & { focus?: FocusSummary | null };
 
 async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
   try {
@@ -16,7 +20,7 @@ async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
   }
 }
 
-export async function draftStandup(): Promise<ActionResult<StandupDraft>> {
+export async function draftStandup(): Promise<ActionResult<DraftResult>> {
   return run(() => call("POST", "/standup/draft", {}));
 }
 

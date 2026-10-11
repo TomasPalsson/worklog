@@ -13,14 +13,14 @@
 //!   starved by sqlite syscalls and blocking reqwest clients drop cleanly.
 //!
 //! Endpoints (all JSON):
-//! * `GET  /health`                      — liveness
+//! * `GET  /health`                      — { ok, version, pid, started_at }; `daemon_service install` uses pid to prove a new daemon answered
 //! * `GET  /blocks/:day`                 — list blocks for a YYYY-MM-DD day
 //! * `POST /blocks/:id/ticket`           — { "jira_issue": "PROJ-1" | null }
 //! * `POST /blocks/:id/duration`         — { "minutes": 45 }
 //! * `POST /blocks/:id/description`      — { "description": "text" }
 //! * `POST /blocks/:id/delete`           — no body
 //! * `POST /blocks/:id/personal`         — { "is_personal": true }
-//! * `POST /blocks/:id/ignore`           — { "ignored": true }
+//! * `POST /blocks/:id/ignore`           — { "ignored": true, "reason"?: "noise"|"duplicate" }
 //! * `POST /blocks/:id/split`            — { "first_minutes": 20 }
 //! * `POST /blocks/merge`                — { "primary": 1, "absorb": [2,3] }
 //! * `POST /blocks/auto-merge`           — { "day": "YYYY-MM-DD" }
@@ -65,6 +65,8 @@
 //! * `GET  /nudges`                      — footer nudges → `Vec<Nudge>`
 //! * `GET  /preflight?from=&to=`         — pre-send checklist rows for the day range → `Vec<PreflightRow>`
 //! * `GET  /preflight/read-back?day=`    — Tempo read-back row for one day → `PreflightRow`
+//! * `GET  /loose-ends`                  — ticketed, non-personal, non-ignored blocks in the current billing cycle missing a Tempo id or an export date → { cycle_start, cycle_end, items } (each item has `missing`)
+//! * `GET  /blocks/:id/deild-suggestion` — suggested billing deild for a block
 //!
 //! Unix-socket file perms default to `0666` so the containerised UI can
 //! connect across Docker Desktop's VM (same user, same host — the data
@@ -76,7 +78,7 @@
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result};
 use axum::extract::{Path as AxumPath, State};
@@ -171,7 +173,10 @@ pub struct AppState {
 
 pub type Shared = Arc<AppState>;
 
+static STARTED_AT: OnceLock<String> = OnceLock::new();
+
 pub fn router(state: Shared) -> Router {
+    STARTED_AT.get_or_init(|| Utc::now().to_rfc3339());
     Router::new()
         .route("/health", get(health))
         .route("/blocks/:day", get(list_blocks))
@@ -282,6 +287,10 @@ pub fn router(state: Shared) -> Router {
             get(daemon_tenants::customer_slices),
         )
         .route(
+            "/blocks/:id/deild-suggestion",
+            get(daemon_tenants::deild_suggestion_for_block),
+        )
+        .route(
             "/blocks/:id/customer-shares",
             post(daemon_tenants::save_customer_shares),
         )
@@ -326,6 +335,7 @@ pub fn router(state: Shared) -> Router {
         .route("/standup/draft", post(crate::daemon_standup::draft))
         .route("/standup/post", post(crate::daemon_standup::post))
         .route("/nudges", get(crate::daemon_nudges::get_nudges))
+        .route("/loose-ends", get(loose_ends_route))
         .route("/preflight", get(crate::daemon_preflight::get_preflight))
         .route(
             "/preflight/read-back",
@@ -764,7 +774,12 @@ impl IntoResponse for ApiError {
 }
 
 async fn health() -> Json<Value> {
-    Json(json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") }))
+    Json(json!({
+        "ok": true,
+        "version": env!("CARGO_PKG_VERSION"),
+        "pid": std::process::id(),
+        "started_at": STARTED_AT.get(),
+    }))
 }
 
 async fn list_blocks(
@@ -1539,6 +1554,8 @@ async fn set_personal(
 #[derive(Deserialize)]
 pub struct IgnoreBody {
     pub ignored: bool,
+    #[serde(default)]
+    pub reason: Option<crate::time_leaks_contract::IgnoreReason>,
 }
 
 /// Ignore / restore a block. See [`block_service::set_ignored`].
@@ -1547,12 +1564,12 @@ async fn set_ignored(
     AxumPath(id): AxumPath<i64>,
     Json(body): Json<IgnoreBody>,
 ) -> Result<Json<Block>, ApiError> {
-    let ignored = body.ignored;
+    let IgnoreBody { ignored, reason } = body;
     // Inner Result: set_ignored's failures are user-facing (missing block,
     // already synced/exported), not 500s.
     let missing = format!("block {id} not found");
     let block = with_conn(state, move |c| {
-        Ok(block_service::set_ignored(c, id, ignored))
+        Ok(block_service::set_ignored(c, id, ignored, reason))
     })
     .await?
     .map_err(|e| {
@@ -2118,27 +2135,58 @@ async fn day_progress(
     AxumPath(day): AxumPath<String>,
     axum::extract::Query(q): axum::extract::Query<ProgressQuery>,
 ) -> Result<Json<crate::estimate_progress_contract::DayProgress>, ApiError> {
+    day_progress_with(state, day, q.refresh, progress_inputs).await
+}
+
+struct ProgressInputs {
+    client: reqwest::blocking::Client,
+    auth: Option<jira::JiraAuth>,
+    tempo: Option<tempo::TempoAuth>,
+    me: Option<String>,
+}
+
+fn progress_inputs() -> Result<ProgressInputs> {
+    let client = crate::http::client()?;
+    let auth = jira::JiraAuth::from_secrets().ok();
+    let me = auth.as_ref().and_then(|a| {
+        secrets::get("jira_account_id")
+            .ok()
+            .flatten()
+            .filter(|v| !v.is_empty())
+            .or_else(|| tempo::resolve_account_id(&a.email, &client).ok())
+    });
+    Ok(ProgressInputs {
+        client,
+        auth,
+        tempo: tempo::TempoAuth::from_secrets().ok(),
+        me,
+    })
+}
+
+async fn day_progress_with<R>(
+    state: Shared,
+    day: String,
+    refresh: Option<String>,
+    resolve: R,
+) -> Result<Json<crate::estimate_progress_contract::DayProgress>, ApiError>
+where
+    R: FnOnce() -> Result<ProgressInputs> + Send + 'static,
+{
     let day = NaiveDate::parse_from_str(&day, "%Y-%m-%d")
         .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{day}`: {e}")))?;
+    let i = tokio::task::spawn_blocking(resolve)
+        .await
+        .context("spawn_blocking")??;
     Ok(Json(
         with_conn(state, move |c| {
-            let client = crate::http::client()?;
-            let auth = jira::JiraAuth::from_secrets().ok();
-            let me = auth.as_ref().and_then(|a| {
-                secrets::get("jira_account_id")
-                    .ok()
-                    .flatten()
-                    .filter(|v| !v.is_empty())
-                    .or_else(|| tempo::resolve_account_id(&a.email, &client).ok())
-            });
             crate::daemon_progress::progress_with(
                 c,
                 day,
-                q.refresh.as_deref(),
-                auth.as_ref(),
-                tempo::TempoAuth::from_secrets().ok().as_ref(),
-                me.as_deref(),
-                &client,
+                refresh.as_deref(),
+                i.auth.as_ref(),
+                i.tempo.as_ref(),
+                i.me.as_deref(),
+                &i.client,
                 Utc::now(),
             )
         })
@@ -2158,17 +2206,20 @@ async fn run_sync(
     let auth = tempo::TempoAuth::from_secrets().map_err(ApiError::from)?;
     let dry_run = body.dry_run;
     let only_issue = body.jira_issue.clone();
-    // Same invoker dance as the CLI: construct an LLM provider for
-    // multi-block ticket-day description summaries. We do this inside
-    // `with_conn` so the (non-Send) reqwest client lives on the
-    // spawn_blocking thread alongside the sqlite Connection.
-    let (report, results) = with_conn(state, move |c| {
+    // Same invoker dance as the CLI: an LLM provider for multi-block
+    // ticket-day description summaries. Blocking clients must be built
+    // off the async runtime thread, but before `with_conn` holds the lock.
+    let (provider, http_client) = tokio::task::spawn_blocking(move || -> Result<_> {
         let provider = if dry_run {
             None
         } else {
             estimate::resolve_provider().ok()
         };
-        let http_client = crate::http::client()?;
+        Ok((provider, crate::http::client()?))
+    })
+    .await
+    .context("spawn_blocking")??;
+    let (report, results) = with_conn(state, move |c| {
         let claude = estimate::ClaudeSubprocess::default();
         let invoker: Option<&dyn estimate::ModelInvoker> = match provider.as_ref() {
             Some(estimate::ProviderChoice::ClaudeSubprocess) => Some(&claude),
@@ -3116,6 +3167,15 @@ async fn recap_today(
     Ok(Json(recap.filter(|r| r.day == today)))
 }
 
+async fn loose_ends_route(
+    State(state): State<Shared>,
+) -> Result<Json<crate::time_leaks_contract::LooseEnds>, ApiError> {
+    let today = local_today();
+    Ok(Json(
+        with_conn(state, move |c| crate::loose_ends::for_cycle(c, &today)).await?,
+    ))
+}
+
 #[derive(Deserialize)]
 struct RecapGapBody {
     day: String,
@@ -3472,6 +3532,16 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let v = read_json(resp).await;
         assert_eq!(v["ok"], true);
+        assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(v["pid"], std::process::id()); // catches a missing or hardcoded pid
+        let first = v["started_at"].as_str().expect("started_at is a string");
+        let t = DateTime::parse_from_rfc3339(first).expect("started_at is RFC 3339");
+        assert!(t <= Utc::now()); // catches a stamp taken in the future
+        let again = router(state_with_block())
+            .oneshot(Request::get("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(read_json(again).await["started_at"], first); // catches a stamp taken per request
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3609,6 +3679,59 @@ mod tests {
             .await
             .unwrap();
         // catches: /nudges missing (404) or registered as POST
+        assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn progress_resolves_secrets_before_taking_the_db_lock() {
+        let state = state_from_conn(open_memory().unwrap());
+        let probe = state.clone();
+        let resolve = move || {
+            // catches: keychain/network work done while holding the DB mutex
+            assert!(
+                probe.conn.try_lock().is_ok(),
+                "DB mutex held during resolve"
+            );
+            Ok(ProgressInputs {
+                client: crate::http::client()?,
+                auth: None,
+                tempo: None,
+                me: None,
+            })
+        };
+        let out = day_progress_with(state, "2026-10-11".into(), None, resolve).await;
+        assert!(out.is_ok());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn loose_ends_route_lists_todays_unsynced_block_and_is_get_only() {
+        let conn = open_memory().unwrap();
+        let today = local_today();
+        conn.execute(
+            "INSERT INTO blocks (day, jira_issue, started_at, ended_at, duration_seconds)
+             VALUES (?1, 'GENAI-9', ?2, ?2, 1800)",
+            params![today, format!("{today}T09:00:00+00:00")],
+        )
+        .unwrap();
+        let state = state_from_conn(conn);
+        let resp = router(state.clone())
+            .oneshot(Request::get("/loose-ends").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        // catches: route missing (404) or handler erroring on a plain database
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        // catches: a handler that ignores the db / uses the wrong "today" and returns an empty cycle
+        assert_eq!(v["items"].as_array().unwrap().len(), 1);
+        // catches: missing reasons dropped or serialised in a different case
+        assert_eq!(v["items"][0]["missing"], json!(["tempo", "export"]));
+        assert_eq!(v["items"][0]["jira_issue"], "GENAI-9");
+        let post = router(state)
+            .oneshot(Request::post("/loose-ends").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        // catches: a read-only list registered as POST
         assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 
@@ -6275,6 +6398,50 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    async fn post_ignore(app: &Router, body: &str) -> (StatusCode, Value) {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/blocks/1/ignore")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ignore_endpoint_stores_and_returns_reason() {
+        let app = router(state_with_block());
+        // Catches: reason dropped by the route (always None).
+        let (st, v) = post_ignore(&app, r#"{"ignored":true,"reason":"noise"}"#).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(v["ignore_reason"], "noise");
+        // Catches: hardcoding noise / not mapping each variant.
+        let (_, v) = post_ignore(&app, r#"{"ignored":true,"reason":"duplicate"}"#).await;
+        assert_eq!(v["ignore_reason"], "duplicate");
+        // Catches: old body (FR-07) rejected or leaving a stale reason.
+        let (st, v) = post_ignore(&app, r#"{"ignored":true}"#).await;
+        assert_eq!(st, StatusCode::OK);
+        assert!(v["ignore_reason"].is_null());
+        // Catches: restore keeping the reason when one is sent.
+        post_ignore(&app, r#"{"ignored":true,"reason":"noise"}"#).await;
+        let (_, v) = post_ignore(&app, r#"{"ignored":false,"reason":"noise"}"#).await;
+        assert!(v["ignore_reason"].is_null());
+        // Catches: unknown reason silently accepted as None.
+        let (st, _) = post_ignore(&app, r#"{"ignored":true,"reason":"bogus"}"#).await;
+        assert!(st.is_client_error(), "got {st}");
     }
 
     #[tokio::test(flavor = "current_thread")]

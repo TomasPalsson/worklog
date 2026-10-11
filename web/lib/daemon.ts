@@ -119,8 +119,8 @@ export async function setPersonal(blockId: number, isPersonal: boolean) {
 
 /** Ignore (or restore) a block — hides it from the day, billing and Tempo,
  * and survives Rebuild. The daemon refuses synced/exported blocks. */
-export async function setIgnored(blockId: number, ignored: boolean) {
-  return call("POST", `/blocks/${blockId}/ignore`, { ignored });
+export async function setIgnored(blockId: number, ignored: boolean, reason?: IgnoreReason) {
+  return call("POST", `/blocks/${blockId}/ignore`, { ignored, reason });
 }
 
 export async function runInfer(day: string) {
@@ -186,6 +186,7 @@ export async function estimateBlock(blockId: number): Promise<{
 import type { ChangeFeed, Deild } from "./deildir";
 import type { NoiseHosts } from "./topics_contract";
 import type { ReviewLine, VerdictState, VerdictStatus } from "./verdict_contract";
+import type { IgnoreReason } from "./time_leaks_contract";
 import type {
   BillingCustomer,
   BillingFolderMap,

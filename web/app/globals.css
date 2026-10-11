@@ -2590,6 +2590,31 @@ button {
   gap: 4px;
   align-items: center;
   padding-top: 2px;
+  position: relative;
+}
+
+.ignore-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  min-width: 120px;
+  padding: 4px;
+  background: var(--bg-elevated, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.ignore-menu button {
+  padding: 6px 10px;
+  text-align: left;
+  border-radius: var(--radius-sm);
+}
+
+.ignore-menu button:hover {
+  background: var(--bg-hover, rgba(127, 127, 127, 0.15));
 }
 
 .icon-btn {

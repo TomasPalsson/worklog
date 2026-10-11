@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 
 use anyhow::{Context, Result};
-use chrono::{Duration, NaiveDate};
+use chrono::{DateTime, Duration, NaiveDate};
 use rusqlite::Connection;
 use serde_json::{json, Value};
 
@@ -13,6 +13,8 @@ use crate::clues_contract::RawRecord;
 use crate::daily_helpers_contract::StandupDraft;
 use crate::estimate::ModelInvoker;
 use crate::line_text::LINE_TEXT_MODEL;
+use crate::models::Block;
+use crate::time_leaks_contract::{FocusRun, FocusSummary, FOCUS_MAX_GAP_SECONDS};
 use crate::{repo, scrub, ticket_activity};
 
 const PROMPT_CHARS: usize = 300;
@@ -121,6 +123,87 @@ fn block_lines(conn: &Connection, day: NaiveDate) -> Result<Vec<String>> {
             scrub::scrub_secrets(&format!("{ticket}: {text}"))
         })
         .collect())
+}
+
+/// Yesterday's focus line for the local draft; `None` when there is nothing to show.
+pub fn yesterday_focus(conn: &Connection, today: NaiveDate) -> Result<Option<FocusSummary>> {
+    let day = (today - Duration::days(1)).to_string();
+    let summary = focus_summary(&day, &repo::list_blocks_for_day(conn, &day)?);
+    Ok((summary.switches > 0 || summary.longest.is_some()).then_some(summary))
+}
+
+/// Like `yesterday_focus`, but a read failure is logged and shows no focus, so
+/// it never fails the draft.
+pub fn yesterday_focus_or_none(conn: &Connection, today: NaiveDate) -> Option<FocusSummary> {
+    yesterday_focus(conn, today).unwrap_or_else(|e| {
+        tracing::warn!("yesterday's focus unavailable: {e:#}");
+        None
+    })
+}
+
+/// The block's ticket, with an empty string counted as unassigned.
+fn ticket(b: &Block) -> Option<&str> {
+    b.jira_issue.as_deref().filter(|t| !t.is_empty())
+}
+
+pub fn focus_summary(day: &str, blocks: &[Block]) -> FocusSummary {
+    let mut counted: Vec<&Block> = blocks
+        .iter()
+        .filter(|b| !b.is_personal && b.ignored_at.is_none())
+        .collect();
+    counted.sort_by(|a, b| a.started_at.cmp(&b.started_at));
+    let switches = counted
+        .windows(2)
+        .filter(|w| ticket(w[0]) != ticket(w[1]))
+        .count() as u32;
+    let mut longest: Option<FocusRun> = None;
+    let mut run: Option<FocusRun> = None;
+    for b in counted {
+        let extends = run.as_ref().is_some_and(|r| {
+            Some(&r.jira_issue) == b.jira_issue.as_ref()
+                && gap_seconds(&r.ended_at, &b.started_at) <= FOCUS_MAX_GAP_SECONDS
+        });
+        if extends {
+            let r = run.as_mut().expect("extends implies a run");
+            if gap_seconds(&r.ended_at, &b.ended_at) > 0 {
+                r.ended_at = b.ended_at.clone();
+            }
+            r.seconds += b.duration_seconds;
+        } else {
+            run = b
+                .jira_issue
+                .clone()
+                .filter(|t| !t.is_empty())
+                .map(|jira_issue| FocusRun {
+                    jira_issue,
+                    started_at: b.started_at.clone(),
+                    ended_at: b.ended_at.clone(),
+                    seconds: b.duration_seconds,
+                });
+        }
+        if let Some(r) = run
+            .as_ref()
+            .filter(|r| longest.as_ref().is_none_or(|l| r.seconds > l.seconds))
+        {
+            longest = Some(r.clone());
+        }
+    }
+    FocusSummary {
+        day: day.to_string(),
+        switches,
+        longest,
+    }
+}
+
+/// Seconds from `from` to `to`; an unparseable stamp is an infinite gap.
+fn gap_seconds(from: &str, to: &str) -> i64 {
+    match (
+        DateTime::parse_from_rfc3339(from),
+        DateTime::parse_from_rfc3339(to),
+    ) {
+        (Ok(a), Ok(b)) => (b - a).num_seconds(),
+        _ => i64::MAX,
+    }
 }
 
 fn merged_prs(conn: &Connection, yesterday: NaiveDate, today: NaiveDate) -> Result<Vec<String>> {

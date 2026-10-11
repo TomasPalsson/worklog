@@ -225,21 +225,78 @@ pub fn run_from_stdin() -> Result<()> {
         );
         return Ok(());
     }
-    let payload: Value = match serde_json::from_str(&buf) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("worklog hook: invalid JSON on stdin: {e}");
-            return Ok(());
-        }
-    };
+    run_with(&buf, || {
+        let paths = crate::paths::Paths::resolve()?;
+        paths.ensure()?;
+        crate::db::open(&paths.db)
+    })
+}
 
-    let paths = crate::paths::Paths::resolve()?;
-    paths.ensure()?;
-    let conn = crate::db::open(&paths.db)?;
-    if let Err(e) = handle(&conn, &payload, Utc::now()) {
-        eprintln!("worklog hook: {e}");
+fn parse_payload(input: &str) -> std::result::Result<Value, String> {
+    serde_json::from_str::<Value>(input).map_err(|e| format!("invalid JSON on stdin: {e}"))
+}
+
+/// Parses first (invalid JSON is reported to stderr even if the DB cannot
+/// open), then opens the DB. An open failure reports to stderr and returns
+/// Ok so Claude is never blocked.
+fn run_with(input: &str, open: impl FnOnce() -> Result<Connection>) -> Result<()> {
+    let parsed = parse_payload(input);
+    if let Err(msg) = &parsed {
+        eprintln!("worklog hook: {msg}");
+    }
+    match open() {
+        Ok(conn) => finish(&conn, parsed, Utc::now()),
+        Err(e) => {
+            eprintln!("worklog hook: cannot open db: {e:#}");
+            Ok(())
+        }
+    }
+}
+
+/// Parse and handle one raw payload. A failure goes to stderr and into the
+/// `claude` source health, never out as an error.
+pub fn handle_input(conn: &Connection, input: &str, now: DateTime<Utc>) -> Result<()> {
+    let parsed = parse_payload(input);
+    if let Err(msg) = &parsed {
+        eprintln!("worklog hook: {msg}");
+    }
+    finish(conn, parsed, now)
+}
+
+fn finish(
+    conn: &Connection,
+    parsed: std::result::Result<Value, String>,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    let outcome = match parsed {
+        Ok(p) => handle(conn, &p, now).map_err(|e| {
+            let msg = format!("{e:#}");
+            eprintln!("worklog hook: {msg}");
+            msg
+        }),
+        Err(m) => Err(m),
+    };
+    let health = outcome.as_ref().map(|_| ()).map_err(|m| m.as_str());
+    if health.is_ok() && last_ok_is_fresh(conn, now) {
+        return Ok(());
+    }
+    if let Err(e) = crate::collect_health::record(conn, "claude", health) {
+        eprintln!("worklog hook: recording failed: {e}");
     }
     Ok(())
+}
+
+const LAST_OK_MIN_AGE_SECS: i64 = 60;
+
+fn last_ok_is_fresh(conn: &Connection, now: DateTime<Utc>) -> bool {
+    crate::purge::meta_get(conn, &crate::time_leaks_contract::collect_ok_key("claude"))
+        .ok()
+        .flatten()
+        .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+        .is_some_and(|t| {
+            let age = (now - t.with_timezone(&Utc)).num_seconds();
+            (0..LAST_OK_MIN_AGE_SECS).contains(&age)
+        })
 }
 
 // Tests live in hook_run_test.rs (same module, split file for line budget).

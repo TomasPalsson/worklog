@@ -11,6 +11,7 @@ use crate::clues_contract::LineTextOrigin;
 use crate::collectors::tempo::SyncResult;
 use crate::purge::{meta_get, meta_set};
 use crate::routing_contract::{DEFAULT_WORK_HOURS, WORK_HOURS_KEY};
+use crate::tempo_hub_contract::HubError;
 use crate::tempo_line_contract::{TempoLine, TempoLineKey, TicketOrigin};
 use crate::tempo_lines;
 use crate::verdict_contract::{
@@ -23,6 +24,8 @@ use crate::{envfile, recap};
 /// committed to. Retries use it, so a line that turns ready later is not sent.
 const PLAN_KEY: &str = "auto_send_plan";
 const UNREACHABLE: &str = "Tempo could not be reached";
+/// The sync's skip reason for a line Tempo already holds; the one skip that counts as sent.
+const ALREADY_IN_TEMPO_REASON: &str = "already in Tempo";
 /// `meta` key holding the day the recap was last built for, so later ticks keep it.
 const RECAP_KEY: &str = "recap_built_for";
 
@@ -92,9 +95,10 @@ pub fn ready_lines(conn: &Connection, day: &str) -> Result<Vec<TempoLine>> {
 fn pending(conn: &Connection, day: &str, issue: &str) -> Result<bool> {
     let open = conn
         .query_row(
-            "SELECT auto_sent_at IS NULL AND send_error IS NULL FROM tempo_line_texts
+            "SELECT auto_sent_at IS NULL
+                    AND (send_error IS NULL OR send_error LIKE ?3 || '%') FROM tempo_line_texts
               WHERE day = ?1 AND jira_issue = ?2",
-            params![day, issue],
+            params![day, issue, UNREACHABLE],
             |r| r.get(0),
         )
         .optional()?;
@@ -123,9 +127,42 @@ fn plan(conn: &Connection) -> Result<Option<(String, Vec<String>)>> {
     }))
 }
 
+fn build_recap(conn: &Connection, day: &str) -> Result<()> {
+    let hours = envfile::read(WORK_HOURS_KEY).unwrap_or_else(|| DEFAULT_WORK_HOURS.to_owned());
+    recap::build_and_store(conn, day, &hours)?;
+    meta_set(conn, RECAP_KEY, day)
+}
+
+/// A short cause for the stored error: a reqwest failure's text carries the
+/// request URL, so it is reduced to its kind.
+fn reason(e: &anyhow::Error) -> String {
+    match e.chain().find_map(|c| c.downcast_ref::<reqwest::Error>()) {
+        Some(r) if r.is_timeout() => "timed out".to_owned(),
+        Some(r) if r.is_connect() => "connection failed".to_owned(),
+        Some(r) => r.status().map_or("request failed".to_owned(), |s| {
+            format!("HTTP {}", s.as_u16())
+        }),
+        None => match e.root_cause().downcast_ref::<HubError>() {
+            Some(HubError::Upstream {
+                service, status, ..
+            }) => format!("{service} said {status}"),
+            // Tempo's `bail!` sites append the response body after " — ".
+            _ => {
+                let cause = e.root_cause().to_string();
+                let head = cause.split(" \u{2014} ").next().unwrap_or_default();
+                if head.contains("://") || head.contains('?') {
+                    "request failed".to_owned()
+                } else {
+                    head.to_owned()
+                }
+            }
+        },
+    }
+}
+
 /// One 15-minute tick. Plans the day's run at the first tick from 17:00, then
-/// sends each planned line through `send`; an unreachable Tempo leaves the
-/// rest for the next tick. Lines still unsent when the day is over are marked
+/// sends each planned line through `send`; an unreachable Tempo stores its
+/// error on the line and leaves it for the next tick. Lines still unsent when the day is over are marked
 /// Not sent (FR-27b).
 pub fn run_if_due(
     conn: &Connection,
@@ -142,10 +179,26 @@ pub fn run_if_due(
                     day: day.clone(),
                     jira_issue: issue,
                 };
-                set_outcome(conn, &key, Some(UNREACHABLE))?;
+                conn.execute(
+                    "UPDATE tempo_line_texts SET send_error = COALESCE(send_error, ?3)
+                      WHERE day = ?1 AND jira_issue = ?2",
+                    params![key.day, key.jira_issue, UNREACHABLE],
+                )?;
             }
         }
-        meta_set(conn, PLAN_KEY, "")?;
+        let recapped = if enabled && meta_get(conn, RECAP_KEY)?.as_deref() != Some(day.as_str()) {
+            build_recap(conn, &day)
+                .inspect_err(|e| tracing::warn!("auto-send rollover recap {day}: {e:#}"))
+                .is_ok()
+        } else {
+            true
+        };
+        // A failed recap keeps the plan, so the rollover recap is retried on each
+        // tick until the first tick from 17:00, which plans the new day and ends
+        // the retries.
+        if recapped {
+            meta_set(conn, PLAN_KEY, "")?;
+        }
     }
     if !enabled || local.hour() < AUTO_SEND_HOUR {
         return Ok(());
@@ -161,6 +214,7 @@ pub fn run_if_due(
             issues
         }
     };
+    let mut unreachable = false;
     for issue in issues {
         if !pending(conn, &today, &issue)? {
             continue;
@@ -173,28 +227,32 @@ pub fn run_if_due(
             Ok(results) => results,
             Err(e) => {
                 tracing::warn!("auto-send {}: {e:#}", key.jira_issue);
-                return Ok(());
+                set_outcome(conn, &key, Some(&format!("{UNREACHABLE}: {}", reason(&e))))?;
+                unreachable = true;
+                continue;
             }
         };
-        let rejected = results.iter().find(|r| r.status == "error");
+        let rejected = results.iter().find(|r| {
+            r.status == "error"
+                || (r.status == "skipped" && r.reason.as_deref() != Some(ALREADY_IN_TEMPO_REASON))
+        });
         let reason = rejected.map(|r| r.reason.as_deref().unwrap_or("Tempo rejected the line"));
         set_outcome(conn, &key, reason)?;
     }
-    if meta_get(conn, RECAP_KEY)?.as_deref() != Some(today.as_str()) {
-        let hours = envfile::read(WORK_HOURS_KEY).unwrap_or_else(|| DEFAULT_WORK_HOURS.to_owned());
-        recap::build_and_store(conn, &today, &hours)?;
-        meta_set(conn, RECAP_KEY, &today)?;
+    // An unreachable Tempo defers the recap to the tick that finishes sending.
+    if !unreachable && meta_get(conn, RECAP_KEY)?.as_deref() != Some(today.as_str()) {
+        build_recap(conn, &today)?;
     }
     Ok(())
 }
 
 /// Earlier days' lines that went out (or failed) and are not confirmed yet,
-/// newest day first (FR-29, FR-32).
+/// plus today's failed ones, newest day first (FR-29, FR-32).
 pub fn review_lines(conn: &Connection, today: &str) -> Result<Vec<ReviewLine>> {
     let mut stmt = conn.prepare(
         "SELECT day, jira_issue, send_error FROM tempo_line_texts
-          WHERE day < ?1 AND confirmed_at IS NULL
-            AND (auto_sent_at IS NOT NULL OR send_error IS NOT NULL)
+          WHERE day <= ?1 AND confirmed_at IS NULL
+            AND (send_error IS NOT NULL OR (day < ?1 AND auto_sent_at IS NOT NULL))
           ORDER BY day DESC, jira_issue",
     )?;
     let rows = stmt

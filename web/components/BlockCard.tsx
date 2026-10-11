@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState, useTransition } from "react";
-import { Check, Coffee, EyeOff, FolderGit2, Sparkles } from "lucide-react";
+import { Check, Coffee, FolderGit2, Sparkles } from "lucide-react";
 import { BlockDetailsLink } from "./BlockDetailsLink";
 import type { Block, JiraTicket, SourceCount } from "@/lib/types";
 import { formatDuration, formatProjectPath, formatRange } from "@/lib/format";
@@ -9,7 +9,6 @@ import {
   describeBlock,
   setDescription,
   setDuration,
-  setIgnored,
   setPersonal,
   undoLastChange,
 } from "@/app/actions";
@@ -21,6 +20,8 @@ import { EstBadge } from "./EstBadge";
 import { TicketCombobox } from "./TicketCombobox";
 import { EventList } from "./EventList";
 import { CommitList } from "./CommitList";
+import { IgnoreMenu } from "./IgnoreMenu";
+import { useMenuDismiss } from "./useMenuDismiss";
 import { isAutoTicket } from "@/lib/tempo_line_contract";
 
 interface Props {
@@ -34,6 +35,8 @@ interface Props {
    * else (description, duration, personal, delete) stays editable.
    */
   hideTicketing?: boolean;
+  /** The day's blocks; Duplicate merges into the nearest same-ticket one. */
+  dayBlocks?: Block[];
   /**
    * True when this block is the sole survivor of its ticket group.
    * Drives the Sparkles "Describe with Claude" button — see
@@ -57,9 +60,13 @@ export function BlockCard({
   tickets,
   day,
   hideTicketing = false,
+  dayBlocks = [],
   isSoleInGroup = false,
 }: Props) {
   const [editingDur, setEditingDur] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const pickRef = useRef<HTMLSpanElement>(null);
+  useMenuDismiss(picking, pickRef, () => setPicking(false));
   const [durVal, setDurVal] = useState(Math.round(block.duration_seconds / 60));
   const [isPending, start] = useTransition();
   const descRef = useRef<HTMLDivElement>(null);
@@ -162,20 +169,6 @@ export function BlockCard({
     });
   };
 
-  const exported = !!block.exported_at;
-  const ignoreLocked = synced || exported;
-
-  const onIgnore = () => {
-    start(async () => {
-      const r = await setIgnored(block.id, true, day);
-      if (!r.ok) {
-        toast.error(`Ignore failed — ${r.error}`);
-        return;
-      }
-      toast.undoable(`Ignored ${timeRangeLabel}`, () => undoLastChange(day));
-    });
-  };
-
   const onDescribe = () => {
     start(async () => {
       const r = await describeBlock(block.id, day);
@@ -252,13 +245,18 @@ export function BlockCard({
         {block.sources.length > 0 && <p className="block-clue-line">{clueLine(block.sources)}</p>}
 
         <div className="block-title-row">
-          {!hideTicketing && (
-            <TicketCombobox
-              blockId={block.id}
-              current={block.jira_issue}
-              tickets={tickets}
-              day={day}
-            />
+          {(!hideTicketing || picking) && (
+            <span ref={pickRef} style={{ display: "contents" }}>
+              <TicketCombobox
+                key={String(picking)}
+                defaultOpen={picking}
+                blockId={block.id}
+                current={block.jira_issue}
+                tickets={tickets}
+                day={day}
+                onAssigned={(ok) => ok && setPicking(false)}
+              />
+            </span>
           )}
           {!hideTicketing && isAutoTicket(block.jira_issue, block.ticket_origin) && (
             <span className="auto-tag" title="Ticket picked automatically">
@@ -351,23 +349,7 @@ export function BlockCard({
         >
           <Coffee />
         </button>
-        <button
-          type="button"
-          className="icon-btn"
-          title={
-            synced
-              ? "Already synced to Tempo — remove the worklog there first"
-              : exported
-                ? "Already exported for billing"
-                : "Ignore — hide from the day, billing and Tempo. Survives Rebuild."
-          }
-          aria-label={`ignore ${timeRangeLabel} block`}
-          aria-busy={isPending || undefined}
-          disabled={ignoreLocked}
-          onClick={onIgnore}
-        >
-          <EyeOff />
-        </button>
+        <IgnoreMenu block={block} day={day} dayBlocks={dayBlocks} onInternal={() => setPicking(true)} />
       </div>
     </article>
   );

@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::schedule::{Platform, ENV_SCHEDULE_HOME};
+use crate::schedule::{check_output, service_tool, Platform, ENV_SCHEDULE_HOME};
 
 /// launchd label + systemd unit stem. Stable across worklog versions so
 /// reinstalls never leave orphaned units behind.
@@ -40,11 +40,95 @@ pub struct DaemonServiceStatus {
 
 // ───────────────────────── public API ─────────────────────────
 
+const HEALTH_ADDR: &str = "127.0.0.1:9323";
+
 pub fn install(command: &str) -> Result<DaemonServiceStatus> {
-    match Platform::current() {
-        Platform::MacOS => macos::install(command),
-        Platform::Linux => linux::install(command),
-        Platform::Unsupported => Ok(unsupported_status()),
+    install_at(
+        command,
+        HEALTH_ADDR,
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(200),
+    )
+}
+
+fn install_at(
+    command: &str,
+    tcp: &str,
+    budget: std::time::Duration,
+    step: std::time::Duration,
+) -> Result<DaemonServiceStatus> {
+    install_probing(
+        command,
+        tcp,
+        budget,
+        step,
+        std::time::Duration::from_millis(200),
+    )
+}
+
+/// `probe` is the per-request /health timeout; tests that need a slow
+/// answer to still count as an answer pass a longer one.
+fn install_probing(
+    command: &str,
+    tcp: &str,
+    budget: std::time::Duration,
+    step: std::time::Duration,
+    probe: std::time::Duration,
+) -> Result<DaemonServiceStatus> {
+    let tool = match Platform::current() {
+        Platform::MacOS => "launchctl",
+        Platform::Linux => "systemctl",
+        Platform::Unsupported => return Ok(unsupported_status()),
+    };
+    let before = service_tool(tool).and_then(|_| pre_install_pid(tcp, probe));
+    let mut old_gone = Ok(());
+    if let Some(old) = before {
+        // A timed-out probe still means something holds the port, so stop either way.
+        match Platform::current() {
+            Platform::MacOS => macos::stop(),
+            _ => linux::stop(),
+        }
+        old_gone = await_healthy(tcp, |a| old_daemon_gone(a, old, probe), budget, step)
+            .with_context(|| {
+                format!(
+                    "old daemon did not answer the stop request: /health on {tcp} still answered; \
+                 a daemon started outside the service (e.g. `worklog daemon` in a terminal) \
+                 must be stopped by hand, then re-run install"
+                )
+            });
+    }
+    let status = match Platform::current() {
+        Platform::MacOS => macos::install(command)?,
+        _ => linux::install(command)?,
+    };
+    old_gone?;
+    if service_tool(tool).is_some() {
+        let old = before.flatten();
+        await_healthy(
+            tcp,
+            |a| health_pid(a, probe).is_some_and(|p| Some(p) != old),
+            budget,
+            step,
+        )?;
+    }
+    Ok(status)
+}
+
+fn await_healthy(
+    tcp: &str,
+    probe: impl Fn(&str) -> bool,
+    budget: std::time::Duration,
+    step: std::time::Duration,
+) -> Result<()> {
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        if probe(tcp) {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            anyhow::bail!("daemon did not answer /health within {budget:?} on {tcp}");
+        }
+        std::thread::sleep(step);
     }
 }
 
@@ -201,14 +285,56 @@ fn get_uid() -> String {
 /// (connect refused, slow, wrong status, whatever). No retries — callers
 /// own the retry loop.
 pub fn is_running(tcp: &str, timeout: std::time::Duration) -> bool {
-    let Ok(client) = reqwest::blocking::Client::builder()
+    health_body(tcp, timeout).is_some()
+}
+
+fn get_health(
+    tcp: &str,
+    timeout: std::time::Duration,
+) -> reqwest::Result<reqwest::blocking::Response> {
+    reqwest::blocking::Client::builder()
         .timeout(timeout)
-        .build()
-    else {
-        return false;
-    };
-    let url = format!("http://{tcp}/health");
-    matches!(client.get(&url).send(), Ok(r) if r.status().is_success())
+        .build()?
+        .get(format!("http://{tcp}/health"))
+        .send()
+}
+
+/// `/health` response body on HTTP 2xx, `None` otherwise.
+fn health_body(tcp: &str, timeout: std::time::Duration) -> Option<String> {
+    let r = get_health(tcp, timeout).ok()?;
+    r.status()
+        .is_success()
+        .then(|| r.text().unwrap_or_default())
+}
+
+/// The `pid` in a 2xx `/health` body; the outer `Option` is "answered".
+fn pid_of(r: reqwest::blocking::Response) -> Option<Option<u64>> {
+    r.status().is_success().then(|| {
+        let v: serde_json::Value = serde_json::from_str(&r.text().unwrap_or_default()).ok()?;
+        v["pid"].as_u64()
+    })
+}
+
+fn health_pid(tcp: &str, timeout: std::time::Duration) -> Option<u64> {
+    pid_of(get_health(tcp, timeout).ok()?)?
+}
+
+/// `Some(pid)` when something holds the port: it answered (with its pid, if
+/// it reports one) or timed out (`None`). `None` when nothing is there.
+fn pre_install_pid(tcp: &str, timeout: std::time::Duration) -> Option<Option<u64>> {
+    match get_health(tcp, timeout) {
+        Err(e) => e.is_timeout().then_some(None),
+        Ok(r) => pid_of(r),
+    }
+}
+
+/// A timeout is not proof: a loaded old daemon is slow, not gone. With no
+/// known old pid, any successful answer could be the old daemon.
+fn old_daemon_gone(tcp: &str, old: Option<u64>, timeout: std::time::Duration) -> bool {
+    match get_health(tcp, timeout) {
+        Err(e) => !e.is_timeout(),
+        Ok(r) => pid_of(r).is_none_or(|p| old.is_some() && p != old),
+    }
 }
 
 /// Probe /health; if the daemon isn't up, install the service unit (if
@@ -220,34 +346,41 @@ pub fn is_running(tcp: &str, timeout: std::time::Duration) -> bool {
 /// invocation is cheap — the plist write + rename is a no-op when the
 /// file content matches.
 pub fn ensure_running(tcp: &str) -> Result<DaemonEnsureOutcome> {
+    ensure_running_at(
+        tcp,
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(200),
+    )
+}
+
+fn ensure_running_at(
+    tcp: &str,
+    budget: std::time::Duration,
+    step: std::time::Duration,
+) -> Result<DaemonEnsureOutcome> {
     if is_running(tcp, std::time::Duration::from_millis(500)) {
         return Ok(DaemonEnsureOutcome::AlreadyUp);
     }
-    let s = status()?;
-    let did_install = if !s.installed {
-        install(&default_command())?;
-        true
-    } else {
-        // Already installed but not responding — launchd / systemd should
-        // already be trying to keep it alive. Fall through to the polling
-        // loop; if it stays down, surface the error.
-        false
-    };
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while std::time::Instant::now() < deadline {
-        if is_running(tcp, std::time::Duration::from_millis(200)) {
-            return Ok(if did_install {
-                DaemonEnsureOutcome::Installed
-            } else {
-                DaemonEnsureOutcome::Restarted
-            });
-        }
-        std::thread::sleep(std::time::Duration::from_millis(200));
+    if !status()?.installed {
+        install_at(&default_command(), tcp, budget, step)?;
+        // install_at skips its own wait with no service tool; a no-op when it ran.
+        await_healthy(
+            tcp,
+            |a| is_running(a, std::time::Duration::from_millis(200)),
+            budget,
+            step,
+        )?;
+        return Ok(DaemonEnsureOutcome::Installed);
     }
-    anyhow::bail!(
-        "daemon did not come up within 5s on {tcp} — try `worklog daemon status` to diagnose"
-    )
+    // Installed but not responding — launchd / systemd should already be
+    // restarting it; wait, and surface the error if it stays down.
+    await_healthy(
+        tcp,
+        |a| is_running(a, std::time::Duration::from_millis(200)),
+        budget,
+        step,
+    )?;
+    Ok(DaemonEnsureOutcome::Restarted)
 }
 
 /// What `ensure_running` actually did. Drives the spinner / log line the
@@ -305,6 +438,14 @@ mod macos {
         Ok((dir.join("daemon.out.log"), dir.join("daemon.err.log")))
     }
 
+    pub fn stop() {
+        if let (Some(tool), Ok(path)) = (service_tool("launchctl"), plist_path()) {
+            let _ = std::process::Command::new(tool)
+                .args(["unload", path.to_string_lossy().as_ref()])
+                .output();
+        }
+    }
+
     pub fn install(command: &str) -> Result<DaemonServiceStatus> {
         let path = plist_path()?;
         let (stdout, stderr) = log_paths()?;
@@ -320,13 +461,16 @@ mod macos {
         // launchctl complains when unload targets a service that wasn't
         // loaded yet, but that's expected on a fresh install and users
         // shouldn't see the noise.
-        if std::env::var_os(ENV_SCHEDULE_HOME).is_none() {
-            let _ = std::process::Command::new("launchctl")
+        if let Some(tool) = service_tool("launchctl") {
+            let _ = std::process::Command::new(&tool)
                 .args(["unload", path.to_string_lossy().as_ref()])
                 .output();
-            let _ = std::process::Command::new("launchctl")
-                .args(["load", "-w", path.to_string_lossy().as_ref()])
-                .output();
+            check_output(
+                "launchctl load",
+                std::process::Command::new(&tool)
+                    .args(["load", "-w", path.to_string_lossy().as_ref()])
+                    .output(),
+            )?;
         }
 
         Ok(DaemonServiceStatus {
@@ -501,17 +645,28 @@ mod linux {
         Ok(unit_dir()?.join("worklog-daemon.service"))
     }
 
+    pub fn stop() {
+        if let Some(tool) = service_tool("systemctl") {
+            let _ = std::process::Command::new(tool)
+                .args(["--user", "stop", "worklog-daemon.service"])
+                .output();
+        }
+    }
+
     pub fn install(command: &str) -> Result<DaemonServiceStatus> {
         let svc = service_path()?;
         atomic_write(&svc, &service_unit(command))?;
 
-        if std::env::var_os(ENV_SCHEDULE_HOME).is_none() {
-            let _ = std::process::Command::new("systemctl")
+        if let Some(tool) = service_tool("systemctl") {
+            let _ = std::process::Command::new(&tool)
                 .args(["--user", "daemon-reload"])
                 .status();
-            let _ = std::process::Command::new("systemctl")
-                .args(["--user", "enable", "--now", "worklog-daemon.service"])
-                .status();
+            check_output(
+                "systemctl enable",
+                std::process::Command::new(&tool)
+                    .args(["--user", "enable", "--now", "worklog-daemon.service"])
+                    .output(),
+            )?;
         }
 
         Ok(DaemonServiceStatus {
@@ -590,253 +745,6 @@ mod linux {
     }
 }
 
+#[path = "daemon_service_test.rs"]
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn service_env_path_includes_the_user_bin_dir_that_holds_claude() {
-        // Regression: the unit hardcoded a system-only PATH, so the daemon
-        // could not spawn `claude` (installed to ~/.local/bin). Every
-        // estimate started from the web UI failed with "spawning `claude`"
-        // while the same command worked in a terminal.
-        let path = service_env_path();
-        let home = dirs::home_dir().unwrap().to_string_lossy().into_owned();
-        let local_bin = format!("{home}/.local/bin");
-        assert!(
-            path.split(':').any(|p| p == local_bin),
-            "~/.local/bin must be on the service PATH; got {path}"
-        );
-        // System dirs are still there, and user dirs come first so a local
-        // install wins like it would in a login shell.
-        assert!(path.split(':').any(|p| p == "/usr/bin"), "got {path}");
-        let first_sys = path.split(':').position(|p| p == "/usr/bin").unwrap();
-        let user = path.split(':').position(|p| p == local_bin).unwrap();
-        assert!(
-            user < first_sys,
-            "user bin dirs must precede system: {path}"
-        );
-    }
-    use std::sync::Mutex;
-    use tempfile::tempdir;
-
-    // Shared between schedule.rs tests and these — both redirect the same
-    // env var. Avoiding interleaving keeps platform probes stable.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn redirect(dir: &Path) -> std::sync::MutexGuard<'static, ()> {
-        let g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        std::env::set_var(ENV_SCHEDULE_HOME, dir);
-        g
-    }
-
-    fn restore() {
-        std::env::remove_var(ENV_SCHEDULE_HOME);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn macos_install_writes_plist_with_keepalive() {
-        // B11: macOS install produces a plist with KeepAlive=true,
-        // RunAtLoad=true, and ProgramArguments pointing at the worklog
-        // binary + `daemon`. These are the flags launchd needs to treat
-        // this as a long-running supervised process (unlike the schedule
-        // plist which is a periodic one-shot).
-        let tmp = tempdir().unwrap();
-        let _g = redirect(tmp.path());
-        let status = install("/usr/local/bin/worklog daemon").unwrap();
-        assert!(status.installed);
-        let plist = status.unit_path.clone().unwrap();
-        assert!(plist.is_file(), "plist should exist at {}", plist.display());
-        let body = std::fs::read_to_string(&plist).unwrap();
-        assert!(body.contains("<key>KeepAlive</key>"), "missing KeepAlive");
-        assert!(body.contains("<true/>"));
-        assert!(body.contains("<key>RunAtLoad</key>"), "missing RunAtLoad");
-        assert!(body.contains("/usr/local/bin/worklog daemon"));
-        restore();
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn linux_install_writes_service_unit_with_restart() {
-        // B12: linux install produces a systemd user unit with
-        // Restart=on-failure and WantedBy=default.target. Note: NO
-        // timer — the daemon is long-lived, not periodic.
-        let tmp = tempdir().unwrap();
-        let _g = redirect(tmp.path());
-        let status = install("/usr/local/bin/worklog daemon").unwrap();
-        assert!(status.installed);
-        let unit = status.unit_path.clone().unwrap();
-        assert!(unit.is_file());
-        let body = std::fs::read_to_string(&unit).unwrap();
-        assert!(body.contains("Restart=on-failure"), "missing Restart line");
-        assert!(body.contains("WantedBy=default.target"), "wrong target");
-        assert!(body.contains("ExecStart=/usr/local/bin/worklog daemon"));
-        restore();
-    }
-
-    #[test]
-    fn install_is_idempotent() {
-        // B13: calling install() twice is safe — the second call
-        // atomic-overwrites and returns installed=true, no orphan unit.
-        let tmp = tempdir().unwrap();
-        let _g = redirect(tmp.path());
-        let first = install("worklog daemon").unwrap();
-        let second = install("worklog daemon").unwrap();
-        assert!(first.installed && second.installed);
-        assert_eq!(first.unit_path, second.unit_path);
-        restore();
-    }
-
-    #[test]
-    fn uninstall_removes_unit_file() {
-        // B14: after uninstall, the unit file is gone and status reports
-        // installed=false.
-        let tmp = tempdir().unwrap();
-        let _g = redirect(tmp.path());
-        let _ = install("worklog daemon").unwrap();
-        let status = uninstall().unwrap();
-        assert!(!status.installed);
-        if let Some(p) = status.unit_path {
-            assert!(!p.exists(), "unit file should be gone after uninstall");
-        }
-        restore();
-    }
-
-    #[test]
-    fn status_reports_installed_when_unit_exists() {
-        let tmp = tempdir().unwrap();
-        let _g = redirect(tmp.path());
-        let _ = install("worklog daemon").unwrap();
-        let st = status().unwrap();
-        assert!(st.installed);
-        restore();
-    }
-
-    #[test]
-    fn status_reports_not_installed_on_fresh_home() {
-        let tmp = tempdir().unwrap();
-        let _g = redirect(tmp.path());
-        let st = status().unwrap();
-        assert!(!st.installed);
-        restore();
-    }
-
-    #[test]
-    fn default_command_is_stable_string() {
-        // Regardless of whether `worklog` is on PATH, the command must
-        // end in `" daemon"` so the service unit gets the right target.
-        let cmd = default_command();
-        assert!(cmd.ends_with(" daemon"), "got: {cmd}");
-    }
-
-    // ─────────────────── post-upgrade restart (v0.6) ───────────────────
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn restart_skips_when_service_not_installed() {
-        // B18: fresh home, no service unit → NotInstalled. Nothing to
-        // cycle, no error.
-        let tmp = tempdir().unwrap();
-        let _g = redirect(tmp.path());
-        let kicked = std::sync::atomic::AtomicBool::new(false);
-        let outcome = restart_if_running_with(
-            "127.0.0.1:9999",
-            |_| true, // probe would say "running" — but status() fails first
-            || {
-                kicked.store(true, std::sync::atomic::Ordering::SeqCst);
-                Ok(())
-            },
-        )
-        .unwrap();
-        assert_eq!(outcome, RestartOutcome::NotInstalled);
-        assert!(
-            !kicked.load(std::sync::atomic::Ordering::SeqCst),
-            "must not kick when service not installed"
-        );
-        restore();
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn restart_skips_when_service_not_running() {
-        // B17: installed but not running (user stopped it manually). We
-        // shouldn't surprise them by starting it — just report the state.
-        let tmp = tempdir().unwrap();
-        let _g = redirect(tmp.path());
-        install("worklog daemon").unwrap();
-        let kicked = std::sync::atomic::AtomicBool::new(false);
-        let outcome = restart_if_running_with(
-            "127.0.0.1:9999",
-            |_| false, // probe says not running
-            || {
-                kicked.store(true, std::sync::atomic::Ordering::SeqCst);
-                Ok(())
-            },
-        )
-        .unwrap();
-        assert_eq!(outcome, RestartOutcome::NotRunning);
-        assert!(
-            !kicked.load(std::sync::atomic::Ordering::SeqCst),
-            "must not kick when probe says not running"
-        );
-        restore();
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn restart_kicks_when_installed_and_running() {
-        // B16: installed AND responding to /health → Restarted, and the
-        // kick function is actually invoked.
-        let tmp = tempdir().unwrap();
-        let _g = redirect(tmp.path());
-        install("worklog daemon").unwrap();
-        let kicked = std::sync::atomic::AtomicBool::new(false);
-        let outcome = restart_if_running_with(
-            "127.0.0.1:9999",
-            |_| true,
-            || {
-                kicked.store(true, std::sync::atomic::Ordering::SeqCst);
-                Ok(())
-            },
-        )
-        .unwrap();
-        assert_eq!(outcome, RestartOutcome::Restarted);
-        assert!(
-            kicked.load(std::sync::atomic::Ordering::SeqCst),
-            "kick function must be called when service is up"
-        );
-        restore();
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn restart_propagates_kick_errors() {
-        // Kick failures surface to the caller — `worklog upgrade` will
-        // swallow them (binary swap was still successful), but they
-        // need to reach the caller first so the log line can be honest.
-        let tmp = tempdir().unwrap();
-        let _g = redirect(tmp.path());
-        install("worklog daemon").unwrap();
-        let err = restart_if_running_with(
-            "127.0.0.1:9999",
-            |_| true,
-            || anyhow::bail!("kickstart exited 5: simulated"),
-        );
-        assert!(err.is_err(), "kick error must propagate");
-        restore();
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn kick_platform_is_noop_under_env_override() {
-        // B19: ENV_SCHEDULE_HOME set → never call real launchctl /
-        // systemctl. The function returns Ok(()) so CI tests are
-        // hermetic. We can't directly assert "no subprocess was
-        // spawned" — but we assert we return instantly with Ok.
-        let tmp = tempdir().unwrap();
-        let _g = redirect(tmp.path());
-        kick_platform().unwrap();
-        restore();
-    }
-}
+mod tests;

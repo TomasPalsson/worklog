@@ -57,9 +57,12 @@ rsync -a --delete --exclude node_modules --exclude .next \
 # Stamp the cache as current for this binary so a later `worklog web up`
 # serves it instead of auto-fetching the tagged tree from GitHub.
 printf '%s\n%s\n' "$ver" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$data/web/.fetched-version"
-"$bin" web down >/dev/null 2>&1
+"$bin" web down >/dev/null
 # A next-server that outlived its pid file would keep serving the old build.
-lsof -ti tcp:3333 -sTCP:LISTEN | xargs kill 2>/dev/null || true
+stale=$(lsof -ti tcp:3333 -sTCP:LISTEN || true)
+if [ -n "$stale" ]; then
+  kill $stale || printf '\033[1;33m!\033[0m could not kill listener on :3333 (pid %s); continuing\n' "$stale" >&2
+fi
 WORKLOG_WEB_DIR="$data/web" "$bin" web up --no-open --no-daemon >/dev/null
 curl -fsS -o /dev/null http://127.0.0.1:3333/
 

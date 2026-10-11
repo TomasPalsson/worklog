@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { draftStandup, postStandup, standupChannelSet } from "@/lib/daemonStandup";
+import type { FocusSummary } from "@/lib/time_leaks_contract";
+import { formatDuration, formatRange } from "@/lib/format";
 import type { PostOutcome, StandupDraft } from "@/lib/daily_helpers_contract";
 
 /** Mirrors `StandupDraft::to_text` in the Rust contract. */
@@ -10,6 +12,13 @@ function draftText(d: StandupDraft): string {
   return [d.today, d.next, d.blockers]
     .map((answers, i) => `${i + 1}. ${answers.length ? answers.join(" ") : "Nothing."}\n`)
     .join("");
+}
+
+function focusLine(f: FocusSummary): string {
+  const r = f.longest;
+  const switches = f.switches === 1 ? "1 switch" : `${f.switches} switches`;
+  if (!r) return `yesterday: ${switches}, no focus run`;
+  return `yesterday: ${switches}, longest focus ${formatDuration(r.seconds)} on ${r.jira_issue} (${formatRange(r.started_at, r.ended_at)})`;
 }
 
 function failure(o: PostOutcome): string | null {
@@ -27,6 +36,7 @@ function failure(o: PostOutcome): string | null {
 
 function Preview(p: {
   text: string;
+  focus: string | null;
   onText: (t: string) => void;
   canPost: boolean;
   channelSet: boolean;
@@ -46,6 +56,7 @@ function Preview(p: {
         spellCheck={false}
         onChange={(e) => p.onText(e.target.value)}
       />
+      {p.focus && <p className="standup-note">{p.focus}</p>}
       {!p.channelSet && (
         <p role="status" className="standup-note">
           No Daily channel is set, so Post is off. Set one in Settings, or copy the text.
@@ -86,6 +97,7 @@ function useStandup() {
   const [copied, setCopied] = useState(false);
   const [text, setText] = useState<string | null>(null);
   const [channelSet, setChannelSet] = useState(true);
+  const [focus, setFocus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [permalink, setPermalink] = useState<string | null>(null);
 
@@ -102,6 +114,7 @@ function useStandup() {
     }
     setChannelSet(c.ok ? c.data : true);
     setText(draftText(d.data));
+    setFocus(d.data.focus ? focusLine(d.data.focus) : null);
     return true;
   };
 
@@ -126,7 +139,7 @@ function useStandup() {
     }
   };
 
-  return { busy, copied, text, setText, setCopied, setPermalink, channelSet, error, permalink, start, post, copy };
+  return { busy, copied, text, focus, setText, setCopied, setPermalink, channelSet, error, permalink, start, post, copy };
 }
 
 /** Opens the native modal when `open`, closes it otherwise. Falls back to the
@@ -178,6 +191,7 @@ function StandupDialog(p: {
         )}
         <Preview
           text={s.text ?? ""}
+          focus={s.focus}
           onText={(t) => {
             s.setText(t);
             s.setCopied(false);

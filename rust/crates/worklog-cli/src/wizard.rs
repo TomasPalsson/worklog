@@ -449,9 +449,25 @@ fn configure_daemon_service(theme: &ColorfulTheme, notes: &mut Vec<String>) -> R
         return Ok(());
     }
     let cmd = daemon_service::default_command();
-    let s = daemon_service::install(&cmd)?;
-    println!("  {} installed ({})", style("✓").green().bold(), s.platform);
+    report_daemon_install(daemon_service::install(&cmd), &mut io::stderr());
     Ok(())
+}
+
+/// install can fail after the unit is already written and loaded (the new
+/// daemon never answered /health) — warn and let the wizard carry on.
+fn report_daemon_install<W: Write>(
+    result: Result<daemon_service::DaemonServiceStatus>,
+    err_out: &mut W,
+) {
+    match result {
+        Ok(s) => println!("  {} installed ({})", style("✓").green().bold(), s.platform),
+        Err(e) => {
+            let _ = writeln!(
+                err_out,
+                "  warning: daemon install did not complete: {e:#} — run `worklog status` to check"
+            );
+        }
+    }
 }
 
 // ───────────────────────── preflight ─────────────────────────
@@ -781,6 +797,21 @@ mod tests {
     // Parallel runs would stomp each other. Serialise any test that
     // calls run() or touches WORKLOG_HOME / WORKLOG_SECRETS_FILE.
     static WIZARD_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn failed_daemon_install_warns_on_stderr_and_does_not_abort() {
+        let mut err = Vec::new();
+        report_daemon_install(Err(anyhow::anyhow!("no new pid within 5s")), &mut err);
+        let msg = String::from_utf8(err).unwrap();
+        assert!(
+            msg.contains("no new pid within 5s"),
+            "names the error: {msg}"
+        );
+        assert!(
+            msg.contains("worklog status"),
+            "names the check command: {msg}"
+        );
+    }
 
     #[test]
     fn validate_rejects_obvious_garbage() {

@@ -187,7 +187,19 @@ pub fn bun_down(paths: &Paths) -> Result<()> {
         }
         if pid_alive(pid) {
             let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+            for _ in 0..20 {
+                if !pid_alive(pid) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
         }
+    }
+    if pid_alive(pid) {
+        anyhow::bail!(
+            "bun (pid {pid}) is still running after SIGKILL; keeping {}",
+            bun_pid_path(paths).display()
+        );
     }
     let _ = std::fs::remove_file(bun_pid_path(paths));
     Ok(())
@@ -589,6 +601,43 @@ mod tests {
             releases: root.join("releases"),
             log_dir: root.join("log"),
         }
+    }
+
+    fn write_pid(paths: &Paths, pid: u32) {
+        std::fs::create_dir_all(&paths.data_dir).unwrap();
+        std::fs::write(bun_pid_path(paths), pid.to_string()).unwrap();
+    }
+
+    #[test]
+    fn bun_down_removes_pid_file_once_process_is_gone() {
+        let dir = TempDir::new().unwrap();
+        let paths = paths_in(&dir);
+        // Backgrounded by a short-lived shell so init reaps it after the kill.
+        let out = Command::new("sh")
+            .args(["-c", "sleep 60 >/dev/null 2>&1 & echo $!"])
+            .output()
+            .unwrap();
+        let pid: u32 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
+        write_pid(&paths, pid);
+        bun_down(&paths).unwrap();
+        assert!(!pid_alive(pid));
+        // Catches: leaving the file behind on success.
+        assert!(!bun_pid_path(&paths).exists());
+    }
+
+    #[test]
+    fn bun_down_keeps_pid_file_and_errs_when_process_survives_kill() {
+        let dir = TempDir::new().unwrap();
+        let paths = paths_in(&dir);
+        // An unreaped child stays a zombie: `kill -0` still succeeds after SIGKILL.
+        let mut child = Command::new("sleep").arg("60").spawn().unwrap();
+        write_pid(&paths, child.id());
+        let res = bun_down(&paths);
+        // Catches: swallowing the failure and returning Ok.
+        assert!(res.is_err());
+        // Catches: removing the pid file unconditionally.
+        assert!(bun_pid_path(&paths).exists());
+        child.wait().unwrap();
     }
 
     #[test]

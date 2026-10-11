@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::note_block_contract::DescriptionOrigin;
 use crate::tempo_line_contract::TicketOrigin;
+use crate::time_leaks_contract::IgnoreReason;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Event {
@@ -92,6 +93,8 @@ pub struct Block {
     pub rough_note: Option<String>,
     #[serde(default)]
     pub description_origin: Option<DescriptionOrigin>,
+    #[serde(default)]
+    pub ignore_reason: Option<IgnoreReason>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

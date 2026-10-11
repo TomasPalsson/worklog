@@ -49,9 +49,9 @@ fn clap_styles() -> clap::builder::Styles {
 /// would need lifetime gymnastics in the derive attribute.
 const HELP_OVERVIEW: &str = "\x1b[1;36m\
 commands by area\x1b[0m
-  daily workflow       \x1b[32mday  summary  week  eval  export  block  sync\x1b[0m
+  daily workflow       \x1b[32mday  summary  week  export  block  sync\x1b[0m
   data collection      \x1b[32mcollect  infer  estimate  hook\x1b[0m
-  review UI            \x1b[32mweb  serve\x1b[0m
+  review UI            \x1b[32mweb\x1b[0m
   setup & diagnostics  \x1b[32msetup  status  doctor  db  secret  completions  version\x1b[0m
   daemon & schedule    \x1b[32mdaemon  schedule  verdict\x1b[0m
   release ops          \x1b[32mself-update  upgrade  dev\x1b[0m
@@ -261,6 +261,7 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
     /// `worklog verdict serve` running. With `--replay`, instead replay the
     /// last 30 days of Verdict's project and ticket decisions and print how
     /// many it got right, wrong or was unsure of.
+    #[command(hide = true)]
     Eval {
         /// What the work was about, in plain words.
         #[arg(required_unless_present = "replay", conflicts_with = "replay")]
@@ -413,6 +414,7 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
 
     /// Bring up the review UI. Convenience alias for `web up` — kept so
     /// muscle memory from the Python era (`worklog serve`) keeps working.
+    #[command(hide = true)]
     Serve {
         /// Host port the container binds. Default: 3333.
         #[arg(long, default_value_t = 3333)]
@@ -1653,6 +1655,27 @@ enum CollectOutcome {
     },
 }
 
+/// Leave the outcome's health record (`collect.<source>.last_ok|last_err`).
+/// Skip and Warn both count as errors: either way the source collected nothing.
+/// The transcripts collector records its own health, so it is left out here.
+fn record_outcome(
+    outcome: &CollectOutcome,
+    record: impl FnOnce(&str, std::result::Result<(), &str>) -> Result<()>,
+) -> Result<()> {
+    let (target, health) = match outcome {
+        CollectOutcome::Ok(s, _) => (Some(*s), Ok(())),
+        CollectOutcome::Warn { source, message } | CollectOutcome::Skip { source, message } => {
+            (Some(*source), Err(message.as_str()))
+        }
+        CollectOutcome::RoutingFailed { message, .. } => (None, Err(message.as_str())),
+    };
+    match target {
+        Some(CollectTarget::ClaudeTranscripts) => Ok(()),
+        Some(s) => record(source_label(s), health),
+        None => record("routing", health),
+    }
+}
+
 /// Collect every source `target` wants — jira, github, gcal, slack, shell,
 /// reflog, transcripts — over `[since, until)`, then, for the umbrella `all`
 /// target, route + absorb each day in that range. Shared by `collect all`
@@ -1669,12 +1692,14 @@ fn collect_targets(
     paths.ensure()?;
     let conn = db::open(&paths.db)?;
     let client = http::client()?;
-
-    let mut outcomes = Vec::new();
-    for source in collect_target_list(target) {
-        let label = source_label(source);
-        let pb = style::spinner(&format!("{label} …"));
-        let result = match source {
+    let mut err = io::stderr();
+    collect_targets_with(
+        &conn,
+        target,
+        since,
+        until,
+        &mut err,
+        |source| match source {
             CollectTarget::Jira => match jira_col::JiraAuth::from_secrets() {
                 Ok(auth) => jira_col::fetch_open_tickets_with(&conn, &auth, &client)
                     .map_err(|e| format!("fetch: {e}")),
@@ -1713,9 +1738,34 @@ fn collect_targets(
                     .map_err(|e| format!("fetch: {e}"))
             }
             CollectTarget::All => unreachable!("collect_target_list only yields concrete sources"),
-        };
+        },
+    )
+}
+
+fn collect_targets_with(
+    conn: &rusqlite::Connection,
+    target: CollectTarget,
+    since: chrono::NaiveDate,
+    until: chrono::NaiveDate,
+    err: &mut impl Write,
+    run: impl Fn(CollectTarget) -> std::result::Result<worklog_core::collectors::CollectReport, String>,
+) -> Result<Vec<CollectOutcome>> {
+    let mut report_failure = |r: Result<()>| {
+        if let Err(e) = r {
+            let _ = writeln!(err, "worklog: recording collect health failed: {e}");
+        }
+    };
+    let record = |s: &str, h: std::result::Result<(), &str>| {
+        worklog_core::collect_health::record(conn, s, h)
+    };
+
+    let mut outcomes = Vec::new();
+    for source in collect_target_list(target) {
+        let label = source_label(source);
+        let pb = style::spinner(&format!("{label} …"));
+        let result = run(source);
         pb.finish_and_clear();
-        outcomes.push(match result {
+        let outcome = match result {
             Ok(r) => CollectOutcome::Ok(source, r),
             Err(msg) => match msg.strip_prefix("skipped: ") {
                 Some(reason) => CollectOutcome::Skip {
@@ -1727,7 +1777,9 @@ fn collect_targets(
                     message: msg.strip_prefix("fetch: ").unwrap_or(&msg).to_string(),
                 },
             },
-        });
+        };
+        report_failure(record_outcome(&outcome, record));
+        outcomes.push(outcome);
     }
 
     if matches!(target, CollectTarget::All) {
@@ -1735,13 +1787,18 @@ fn collect_targets(
         let rule = daemon_mod::configured_route_rule();
         let mut d = since;
         while d < until {
-            let routed = routing::route_day(&conn, d, &classifier, rule)
-                .and_then(|_| routing_absorb::absorb_and_noise(&conn, d));
-            if let Err(e) = routed {
-                outcomes.push(CollectOutcome::RoutingFailed {
-                    day: d,
-                    message: e.to_string(),
-                });
+            let routed = routing::route_day(conn, d, &classifier, rule)
+                .and_then(|_| routing_absorb::absorb_and_noise(conn, d));
+            match routed {
+                Ok(_) => report_failure(record("routing", Ok(()))),
+                Err(e) => {
+                    let outcome = CollectOutcome::RoutingFailed {
+                        day: d,
+                        message: e.to_string(),
+                    };
+                    report_failure(record_outcome(&outcome, record));
+                    outcomes.push(outcome);
+                }
             }
             d += chrono::Duration::days(1);
         }
@@ -2171,6 +2228,7 @@ fn cmd_block_list<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Res
         writeln!(out, "{}", serde_json::to_string_pretty(&summary)?)?;
         return Ok(());
     }
+    let decoded = decode_day_blocks(&day, &summary)?;
     let blocks = summary["blocks"].as_array().cloned().unwrap_or_default();
     if blocks.is_empty() {
         style::info(
@@ -2200,9 +2258,6 @@ fn cmd_block_list<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Res
         ]);
     }
     writeln!(out, "{t}")?;
-    // Decode to typed blocks for the union total + overlap check.
-    let decoded: Vec<worklog_core::models::Block> =
-        serde_json::from_value(summary["blocks"].clone()).unwrap_or_default();
     let agg = aggregate_day(&day, &decoded);
     writeln!(
         out,
@@ -2469,20 +2524,23 @@ struct TicketRow {
 /// Every time figure is the length of the *union* of the underlying
 /// blocks' wall-clock intervals: overlapping blocks are counted once, so
 /// the hours reported are real hours, never a sum that double-bills
-/// concurrent work. `overlap_secs` records how much double-counting the
-/// union removed (raw block-duration sum minus the union length).
+/// concurrent work. [`DayAgg::class_overlap_secs`] is the overlap the
+/// user sees.
 struct DayAgg {
     day: String,
     total_secs: i64,
     work_secs: i64,
     personal_secs: i64,
+    ignored_secs: i64,
     unassigned_secs: i64,
-    overlap_secs: i64,
     block_count: i64,
     dirty: i64,
     gap: i64,
+    /// Time booked twice inside one class: per class, raw sum minus union.
+    double_booked_secs: i64,
     unassigned_n: i64,
     personal_n: i64,
+    ignored_n: usize,
     /// Per-ticket rows, biggest first.
     tickets: Vec<TicketRow>,
 }
@@ -2520,6 +2578,14 @@ fn union_seconds(mut intervals: Vec<(i64, i64)>) -> i64 {
     total
 }
 
+impl DayAgg {
+    /// Class buckets are unions, so this is the part of work + personal +
+    /// ignored that the day total counts once (zero for same-class overlap).
+    fn class_overlap_secs(&self) -> i64 {
+        self.work_secs + self.personal_secs + self.ignored_secs - self.total_secs
+    }
+}
+
 /// Pairs of block ids whose wall-clock intervals overlap. Used to flag
 /// double-booked time the user should merge / split / delete.
 fn overlapping_pairs(blocks: &[worklog_core::models::Block]) -> Vec<(i64, i64)> {
@@ -2555,16 +2621,21 @@ fn aggregate_day(day: &str, blocks: &[worklog_core::models::Block]) -> DayAgg {
     // intervals + block count + distinct descriptions, keyed by ticket.
     let mut tickets: BTreeMap<String, TicketAcc> = BTreeMap::new();
     let mut personal_iv: Vec<(i64, i64)> = Vec::new();
+    let mut ignored_iv: Vec<(i64, i64)> = Vec::new();
     let mut unassigned_iv: Vec<(i64, i64)> = Vec::new();
     let mut work_iv: Vec<(i64, i64)> = Vec::new();
     let mut all_iv: Vec<(i64, i64)> = Vec::new();
     let (mut personal_n, mut unassigned_n) = (0_i64, 0_i64);
+    let mut ignored_n = 0_usize;
     let (mut dirty, mut gap) = (0_i64, 0_i64);
-    let mut raw_sum = 0_i64;
     for b in blocks {
         let iv = block_interval(b);
         all_iv.push(iv);
-        raw_sum += b.duration_seconds.max(0);
+        if b.ignored_at.is_some() {
+            ignored_iv.push(iv);
+            ignored_n += 1;
+            continue;
+        }
         if b.dirty {
             dirty += 1;
         }
@@ -2612,18 +2683,24 @@ fn aggregate_day(day: &str, blocks: &[worklog_core::models::Block]) -> DayAgg {
         .collect();
     rows.sort_by_key(|r| -r.secs);
     let total_secs = union_seconds(all_iv);
+    let double_booked_secs = [&work_iv, &personal_iv, &ignored_iv]
+        .into_iter()
+        .map(|iv| iv.iter().map(|&(s, e)| e - s).sum::<i64>() - union_seconds(iv.clone()))
+        .sum();
     DayAgg {
         day: day.to_owned(),
         total_secs,
         work_secs: union_seconds(work_iv),
         personal_secs: union_seconds(personal_iv),
+        ignored_secs: union_seconds(ignored_iv),
         unassigned_secs: union_seconds(unassigned_iv),
-        overlap_secs: (raw_sum - total_secs).max(0),
         block_count: blocks.len() as i64,
         dirty,
         gap,
+        double_booked_secs,
         unassigned_n,
         personal_n,
+        ignored_n,
         tickets: rows,
     }
 }
@@ -2633,7 +2710,17 @@ fn aggregate_day(day: &str, blocks: &[worklog_core::models::Block]) -> DayAgg {
 /// serde drops them since `Block` doesn't deny unknown fields.
 fn fetch_day_blocks(day: &str) -> Result<Vec<worklog_core::models::Block>> {
     let summary: serde_json::Value = crate::daemon_client::get(&format!("/days/{day}"))?;
-    Ok(serde_json::from_value(summary["blocks"].clone()).unwrap_or_default())
+    decode_day_blocks(day, &summary)
+}
+
+/// A response that does not decode is an error naming the day, never an
+/// empty day — an empty day reads as "nothing tracked".
+fn decode_day_blocks(
+    day: &str,
+    summary: &serde_json::Value,
+) -> Result<Vec<worklog_core::models::Block>> {
+    serde_json::from_value(summary["blocks"].clone())
+        .map_err(|e| anyhow::anyhow!("could not decode blocks for {day}: {e}"))
 }
 
 /// Empty-day footer for `worklog day`. The pipeline has just run, so a
@@ -2762,13 +2849,24 @@ fn print_day_summary<W: Write>(out: &mut W, agg: &DayAgg) -> Result<()> {
             format!("{} {}", agg.personal_n, plural(agg.personal_n)),
         ]);
     }
+    if agg.ignored_n > 0 {
+        t.add_row(vec![
+            "ignored".to_owned(),
+            human_dur(agg.ignored_secs),
+            format!("{} {}", agg.ignored_n, plural(agg.ignored_n as i64)),
+        ]);
+    }
     writeln!(out, "{t}")?;
     writeln!(
         out,
-        "{} work · {} personal",
+        "{} work · {} personal · {} ignored",
         human_dur(agg.work_secs),
         human_dur(agg.personal_secs),
+        human_dur(agg.ignored_secs),
     )?;
+    if agg.class_overlap_secs() > 0 {
+        writeln!(out, "overlap {}", human_dur(agg.class_overlap_secs()))?;
+    }
     print_day_hints(out, agg)?;
     Ok(())
 }
@@ -2809,13 +2907,23 @@ fn print_day_hints<W: Write>(out: &mut W, agg: &DayAgg) -> Result<()> {
         )?;
     }
     // Only flag overlaps worth acting on — sub-minute slivers are noise.
-    if agg.overlap_secs >= 60 {
+    if agg.class_overlap_secs() >= 60 {
         style::warn(
             out,
             &format!(
                 "blocks overlap by {} — times above already count it once; \
                  `worklog block list --day {}` shows which to merge/split",
-                human_dur(agg.overlap_secs),
+                human_dur(agg.class_overlap_secs()),
+                agg.day,
+            ),
+        )?;
+    }
+    if agg.double_booked_secs > 0 {
+        style::warn(
+            out,
+            &format!(
+                "{} double-booked inside one class — `worklog block list --day {}`",
+                human_dur(agg.double_booked_secs),
                 agg.day,
             ),
         )?;
@@ -2830,8 +2938,9 @@ fn day_agg_json(agg: &DayAgg) -> serde_json::Value {
         "total_seconds": agg.total_secs,
         "work_seconds": agg.work_secs,
         "personal_seconds": agg.personal_secs,
+        "ignored_secs": agg.ignored_secs,
         "unassigned_seconds": agg.unassigned_secs,
-        "overlap_seconds": agg.overlap_secs,
+        "overlap_seconds": agg.class_overlap_secs(),
         "blocks": agg.block_count,
         "dirty": agg.dirty,
         "gap": agg.gap,
@@ -2870,7 +2979,6 @@ fn cmd_summary<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result
 }
 
 fn cmd_week<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()> {
-    use std::collections::BTreeMap;
     ensure_daemon_running(&mut io::stderr())?;
     // The window is the 7 days ending on `--day` (default: today).
     let end = parse_local_day(day.as_deref())?;
@@ -2881,10 +2989,20 @@ fn cmd_week<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()
             fetch_day_blocks(&d).map(|b| aggregate_day(&d, &b))
         })
         .collect::<Result<_>>()?;
+    print_week(out, start, end, &days, json)
+}
 
+fn print_week<W: Write>(
+    out: &mut W,
+    start: chrono::NaiveDate,
+    end: chrono::NaiveDate,
+    days: &[DayAgg],
+    json: bool,
+) -> Result<()> {
+    use std::collections::BTreeMap;
     // Roll the per-ticket totals up across the whole window.
     let mut ticket_totals: BTreeMap<String, i64> = BTreeMap::new();
-    for d in &days {
+    for d in days {
         for r in &d.tickets {
             *ticket_totals.entry(r.ticket.clone()).or_insert(0) += r.secs;
         }
@@ -2895,9 +3013,10 @@ fn cmd_week<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()
     let total: i64 = days.iter().map(|d| d.total_secs).sum();
     let work: i64 = days.iter().map(|d| d.work_secs).sum();
     let personal: i64 = days.iter().map(|d| d.personal_secs).sum();
+    let ignored: i64 = days.iter().map(|d| d.ignored_secs).sum();
     let dirty: i64 = days.iter().map(|d| d.dirty).sum();
     let unassigned: i64 = days.iter().map(|d| d.unassigned_n).sum();
-    let overlap: i64 = days.iter().map(|d| d.overlap_secs).sum();
+    let overlap: i64 = days.iter().map(DayAgg::class_overlap_secs).sum();
 
     if json {
         writeln!(
@@ -2909,6 +3028,7 @@ fn cmd_week<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()
                 "total_seconds": total,
                 "work_seconds": work,
                 "personal_seconds": personal,
+                "ignored_secs": ignored,
                 "overlap_seconds": overlap,
                 "dirty": dirty,
                 "unassigned": unassigned,
@@ -2931,7 +3051,9 @@ fn cmd_week<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()
 
     // One row per day.
     let mut by_day = style::table();
-    by_day.set_header(vec!["day", "total", "work", "personal", "blocks"]);
+    by_day.set_header(vec![
+        "day", "total", "work", "personal", "ignored", "blocks",
+    ]);
     for (i, d) in days.iter().enumerate() {
         let date = start + chrono::Duration::days(i as i64);
         by_day.add_row(vec![
@@ -2939,6 +3061,7 @@ fn cmd_week<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()
             human_dur(d.total_secs),
             human_dur(d.work_secs),
             human_dur(d.personal_secs),
+            human_dur(d.ignored_secs),
             d.block_count.to_string(),
         ]);
     }
@@ -2947,9 +3070,13 @@ fn cmd_week<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()
         human_dur(total),
         human_dur(work),
         human_dur(personal),
+        human_dur(ignored),
         days.iter().map(|d| d.block_count).sum::<i64>().to_string(),
     ]);
     writeln!(out, "{by_day}")?;
+    if overlap > 0 {
+        writeln!(out, "overlap {}", human_dur(overlap))?;
+    }
 
     // Per-ticket roll-up for the week.
     if !ranked.is_empty() {
@@ -3012,17 +3139,282 @@ fn last_prune_line(lp: Option<&worklog_core::purge::LastPrune>) -> String {
     }
 }
 
+/// A probe's table cell: its plain wording, or "check failed (reason)"
+/// when the probe itself errored — an error is not "not installed".
+fn probe_cell(probe: Result<bool, &anyhow::Error>, yes: &str, no: &str) -> String {
+    match probe {
+        Ok(true) => yes.to_owned(),
+        Ok(false) => no.to_owned(),
+        Err(e) => format!("check failed ({e})"),
+    }
+}
+
+/// A probe's JSON form: `installed` stays false on error, but `error`
+/// carries the reason so a failed check is not read as "not installed".
+fn probe_json(probe: Result<bool, &anyhow::Error>) -> serde_json::Value {
+    serde_json::json!({
+        "installed": probe.as_ref().is_ok_and(|on| *on),
+        "error": probe.err().map(|e| e.to_string()),
+    })
+}
+
+/// The fix for a daemon that is not answering: restart the installed
+/// service, or install it when there is none.
+fn daemon_hint(service_installed: bool) -> &'static str {
+    if !service_installed {
+        "worklog daemon install"
+    } else if cfg!(target_os = "macos") {
+        "launchctl kickstart -k gui/$(id -u)/is.p5.worklog.daemon"
+    } else {
+        "systemctl --user restart worklog-daemon.service"
+    }
+}
+
+/// Fix commands for whatever is down. `schedule` is `None` when its
+/// probe errored: unknown is not down, so it gets no hint.
+fn status_hints(
+    daemon_up: bool,
+    daemon_service_installed: bool,
+    schedule: Option<bool>,
+    web_up: bool,
+) -> Vec<&'static str> {
+    let mut hints = Vec::new();
+    if !daemon_up {
+        hints.push(daemon_hint(daemon_service_installed));
+    }
+    if schedule == Some(false) {
+        hints.push("worklog schedule install");
+    }
+    if !web_up {
+        hints.push("worklog web up");
+    }
+    hints
+}
+
+/// The instant a health value starts with (`last_err` is `"<stamp> <msg>"`).
+fn health_stamp(s: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    chrono::DateTime::parse_from_rfc3339(s.split_whitespace().next()?).ok()
+}
+
+/// The later of two health values; keeps `a` when neither stamp orders them.
+fn latest_stamp(a: Option<String>, b: Option<String>) -> Option<String> {
+    match (a, b) {
+        (Some(a), Some(b)) if health_stamp(&b) > health_stamp(&a) => Some(b),
+        (a, b) => a.or(b),
+    }
+}
+
+/// Events are stored under finer names than the collectors record health
+/// under (`github_commit`, `git_reflog`, `claude_turn`); fold them onto the
+/// collector's row so a healthy source doesn't read as never-run.
+fn fold_event_sources(
+    rows: Vec<worklog_core::time_leaks_contract::SourceHealth>,
+) -> Vec<worklog_core::time_leaks_contract::SourceHealth> {
+    use worklog_core::time_leaks_contract::SourceHealth;
+    let mut folded: std::collections::BTreeMap<String, SourceHealth> = Default::default();
+    for r in rows {
+        let name = match r.source.as_str() {
+            "github_commit" | "github_pr" => "github",
+            "git_reflog" => "reflog",
+            s if s.starts_with("claude_") => "claude_transcripts",
+            s => s,
+        }
+        .to_string();
+        let e = folded.entry(name.clone()).or_insert_with(|| SourceHealth {
+            source: name,
+            last_ok: None,
+            last_err: None,
+            events_24h: 0,
+        });
+        e.last_ok = latest_stamp(e.last_ok.take(), r.last_ok);
+        e.last_err = latest_stamp(e.last_err.take(), r.last_err);
+        e.events_24h += r.events_24h;
+    }
+    folded.into_values().collect()
+}
+
+/// Source health for `worklog status`; a failed read goes to stderr rather
+/// than silently showing no sources.
+fn status_sources(
+    read: Option<Result<Vec<worklog_core::time_leaks_contract::SourceHealth>>>,
+) -> Vec<worklog_core::time_leaks_contract::SourceHealth> {
+    let Some(read) = read else {
+        return Vec::new();
+    };
+    match read {
+        Ok(rows) => fold_event_sources(rows),
+        Err(e) => {
+            eprintln!("worklog: reading source health failed: {e}");
+            Vec::new()
+        }
+    }
+}
+
+fn sources_from_db(
+    conn: Option<&rusqlite::Connection>,
+) -> Vec<worklog_core::time_leaks_contract::SourceHealth> {
+    status_sources(conn.map(|c| worklog_core::collect_health::all(c, chrono::Utc::now())))
+}
+
+/// A failure that a later success superseded is no longer news, so
+/// `last_err` shows only when it is newer than `last_ok` (or unorderable).
+fn source_health_line(h: &worklog_core::time_leaks_contract::SourceHealth) -> String {
+    let err = h.last_err.as_deref().filter(|e| {
+        let ok = h.last_ok.as_deref().and_then(health_stamp);
+        health_stamp(e).is_none() || health_stamp(e) > ok
+    });
+    format!(
+        "ok {} · err {} · {} events/24h",
+        h.last_ok.as_deref().unwrap_or("never"),
+        err.unwrap_or("never"),
+        h.events_24h
+    )
+}
+
+fn source_row_label(source: &str) -> String {
+    match source {
+        "claude_transcripts" => "claude transcripts".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
+fn status_dot(on: bool) -> &'static str {
+    if on {
+        "●"
+    } else {
+        "○"
+    }
+}
+
+fn schedule_cell(probe: Result<(bool, Option<u32>), &anyhow::Error>) -> String {
+    if let Ok((true, Some(secs))) = probe {
+        return format!(
+            "{} installed · {}",
+            status_dot(true),
+            schedule::Interval::parse(&secs.to_string())
+                .map(|i| i.human())
+                .unwrap_or_else(|_| format!("{secs}s")),
+        );
+    }
+    let on = matches!(probe, Ok((true, _)));
+    let cell = probe_cell(probe.map(|(on, _)| on), "installed", "not installed");
+    format!("{} {cell}", status_dot(on))
+}
+
+fn database_cell(db: Option<&Result<worklog_core::db::DbSummary>>) -> String {
+    match db {
+        None => "not initialized — run `worklog setup`".to_owned(),
+        Some(Ok(d)) => format!(
+            "schema v{} · {} events · {} blocks",
+            d.schema_version, d.events, d.blocks
+        ),
+        Some(Err(e)) => format!("check failed ({e})"),
+    }
+}
+
+fn last_prune_cell(lp: Option<&Result<Option<worklog_core::purge::LastPrune>>>) -> String {
+    match lp {
+        Some(Err(e)) => format!("check failed ({e})"),
+        Some(Ok(lp)) => last_prune_line(lp.as_ref()),
+        None => last_prune_line(None),
+    }
+}
+
+fn today_line(today: &Result<DayAgg>) -> String {
+    let agg = match today {
+        Ok(agg) => agg,
+        Err(e) => return format!("today  check failed ({e})"),
+    };
+    let mut line = format!(
+        "today  {} across {} {}",
+        human_dur(agg.total_secs),
+        agg.block_count,
+        plural(agg.block_count),
+    );
+    if agg.unassigned_n > 0 {
+        line.push_str(&format!(
+            " · {} {} need a ticket",
+            agg.unassigned_n,
+            plural(agg.unassigned_n)
+        ));
+    }
+    line
+}
+
+/// Run a database probe on the (possibly missing) connection: `None` when
+/// there is no db file, the open error when it would not open.
+fn db_probe<T>(
+    open: &Option<Result<rusqlite::Connection>>,
+    probe: impl FnOnce(&rusqlite::Connection) -> Result<T>,
+) -> Option<Result<T>> {
+    match open {
+        None => None,
+        Some(Ok(conn)) => Some(probe(conn)),
+        Some(Err(e)) => Some(Err(anyhow::anyhow!("{e:#}"))),
+    }
+}
+
+/// A probe's `--json` value in the `schedule.error` shape: its data with
+/// `error: null` when it ran, `{"error": text}` when it failed, null when
+/// it never ran or had nothing to report.
+fn probe_value<T>(
+    probe: &Option<Result<T>>,
+    data: impl FnOnce(&T) -> Option<serde_json::Value>,
+) -> serde_json::Value {
+    match probe {
+        None => serde_json::Value::Null,
+        Some(Err(e)) => serde_json::json!({ "error": e.to_string() }),
+        Some(Ok(t)) => data(t).map_or(serde_json::Value::Null, |mut v| {
+            v["error"] = serde_json::Value::Null;
+            v
+        }),
+    }
+}
+
+fn database_json(probe: &Option<Result<db::DbSummary>>) -> serde_json::Value {
+    probe_value(probe, |d| {
+        Some(serde_json::json!({
+            "schema_version": d.schema_version,
+            "events": d.events,
+            "blocks": d.blocks,
+        }))
+    })
+}
+
+fn last_prune_json(
+    probe: &Option<Result<Option<worklog_core::purge::LastPrune>>>,
+) -> serde_json::Value {
+    probe_value(probe, |lp| {
+        lp.as_ref().map(|lp| {
+            serde_json::json!({
+                "cutoff": lp.report.cutoff_date,
+                "blocks_carded": lp.report.blocks_carded,
+                "blocks_deleted": lp.report.blocks_deleted,
+                "blocks_deleted_unbilled": lp.report.blocks_deleted_unbilled,
+                "events_deleted": lp.report.events_deleted,
+                "sessions_deleted": lp.report.sessions_deleted,
+                "tickets_deleted": lp.report.tickets_deleted,
+                "ran_at": lp.ran_at,
+            })
+        })
+    })
+}
+
+fn today_json(probe: &Option<Result<DayAgg>>) -> serde_json::Value {
+    probe_value(probe, |agg| Some(day_agg_json(agg)))
+}
+
 /// `worklog status` — one screen folding the daemon / hook / schedule /
 /// web / database / secrets health checks (previously five separate
 /// `*-status` commands) plus today's tracked time. Read-only and fast.
 fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
     let daemon_up = daemon_tcp_reachable("127.0.0.1:9323");
-    let daemon_svc = worklog_core::daemon_service::status().ok();
-    let daemon_svc_on = daemon_svc.as_ref().is_some_and(|s| s.installed);
-    let hook = hook::status().ok();
-    let hook_on = hook.as_ref().is_some_and(|h| h.installed);
-    let sched = schedule::status().ok();
-    let sched_on = sched.as_ref().is_some_and(|s| s.installed);
+    let daemon_svc = worklog_core::daemon_service::status();
+    let daemon_svc_on = daemon_svc.as_ref().is_ok_and(|s| s.installed);
+    let hook = hook::status();
+    let hook_on = hook.as_ref().is_ok_and(|h| h.installed);
+    let sched = schedule::status();
+    let sched_on = sched.as_ref().is_ok_and(|s| s.installed);
 
     let audit = secrets::audit();
     let secrets_set = audit.iter().filter(|s| s.present).count();
@@ -3039,62 +3431,40 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
     // UI — which is exactly how a leftover `worklog-web` container went
     // unnoticed while it squatted the port for days.
     let web_on = web_mod::bun_status(&paths).running;
-    let db_conn = if paths.db_exists() {
-        db::open(&paths.db).ok()
-    } else {
-        None
-    };
-    let db_summary = db_conn.as_ref().and_then(|c| db::summarize(c).ok());
-    let last_prune = db_conn
-        .as_ref()
-        .and_then(|c| worklog_core::purge::last_prune(c).ok())
-        .flatten();
+    let db_open = paths.db_exists().then(|| db::open(&paths.db));
+    let db_summary = db_probe(&db_open, db::summarize);
+    let last_prune = db_probe(&db_open, worklog_core::purge::last_prune);
+    let sources = sources_from_db(db_open.as_ref().and_then(|r| r.as_ref().ok()));
 
     // Today's tracked time — only reachable when the daemon is up.
     let today = worklog_core::tz::local_date(chrono::Utc::now()).to_string();
-    let today_agg = if daemon_up {
-        fetch_day_blocks(&today)
-            .ok()
-            .map(|b| aggregate_day(&today, &b))
-    } else {
-        None
-    };
+    let today_agg = daemon_up.then(|| fetch_day_blocks(&today).map(|b| aggregate_day(&today, &b)));
 
     if json {
-        writeln!(
-            out,
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "daemon": { "running": daemon_up, "service_installed": daemon_svc_on },
-                "hook": { "installed": hook_on },
+        let status = serde_json::json!({
+                "daemon": {
+                    "running": daemon_up,
+                    "service_installed": daemon_svc_on,
+                    "service_error": daemon_svc.as_ref().err().map(|e| e.to_string()),
+                },
+                "hook": probe_json(hook.as_ref().map(|h| h.installed)),
                 "schedule": {
                     "installed": sched_on,
-                    "interval_secs": sched.as_ref().and_then(|s| s.interval_secs),
+                    "error": sched.as_ref().err().map(|e| e.to_string()),
+                    "interval_secs": sched.as_ref().ok().and_then(|s| s.interval_secs),
                 },
                 "web": { "running": web_on },
-                "database": db_summary.as_ref().map(|d| serde_json::json!({
-                    "schema_version": d.schema_version,
-                    "events": d.events,
-                    "blocks": d.blocks,
-                })),
-                "last_prune": last_prune.as_ref().map(|lp| serde_json::json!({
-                    "cutoff": lp.report.cutoff_date,
-                    "blocks_carded": lp.report.blocks_carded,
-                    "blocks_deleted": lp.report.blocks_deleted,
-                    "blocks_deleted_unbilled": lp.report.blocks_deleted_unbilled,
-                    "events_deleted": lp.report.events_deleted,
-                    "sessions_deleted": lp.report.sessions_deleted,
-                    "tickets_deleted": lp.report.tickets_deleted,
-                    "ran_at": lp.ran_at,
-                })),
+                "database": database_json(&db_summary),
+                "last_prune": last_prune_json(&last_prune),
                 "secrets": { "set": secrets_set, "total": secrets_total, "missing": secrets_missing },
-                "today": today_agg.as_ref().map(day_agg_json),
-            }))?
-        )?;
+                "sources": sources,
+                "today": today_json(&today_agg),
+        });
+        writeln!(out, "{}", serde_json::to_string_pretty(&status)?)?;
         return Ok(());
     }
 
-    let dot = |on: bool| if on { "●" } else { "○" };
+    let dot = status_dot;
     writeln!(out)?;
     writeln!(out, "{}", console::style("worklog status").bold())?;
     writeln!(out)?;
@@ -3106,37 +3476,28 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
             "{} {} · service {}",
             dot(daemon_up),
             if daemon_up { "running" } else { "not running" },
-            if daemon_svc_on {
-                "installed"
-            } else {
+            probe_cell(
+                daemon_svc.as_ref().map(|s| s.installed),
+                "installed",
                 "not installed"
-            },
+            ),
         ),
     ]);
     t.add_row(vec![
-        "hook".to_owned(),
+        "claude hook".to_owned(),
         format!(
             "{} {}",
             dot(hook_on),
-            if hook_on {
-                "installed"
-            } else {
+            probe_cell(
+                hook.as_ref().map(|h| h.installed),
+                "installed",
                 "not installed"
-            },
+            ),
         ),
     ]);
     t.add_row(vec![
         "schedule".to_owned(),
-        match sched.as_ref().and_then(|s| s.interval_secs) {
-            Some(secs) if sched_on => format!(
-                "{} installed · {}",
-                dot(true),
-                schedule::Interval::parse(&secs.to_string())
-                    .map(|i| i.human())
-                    .unwrap_or_else(|_| format!("{secs}s")),
-            ),
-            _ => format!("{} not installed", dot(false)),
-        },
+        schedule_cell(sched.as_ref().map(|s| (s.installed, s.interval_secs))),
     ]);
     t.add_row(vec![
         "web UI".to_owned(),
@@ -3148,17 +3509,11 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
     ]);
     t.add_row(vec![
         "database".to_owned(),
-        match &db_summary {
-            Some(d) => format!(
-                "schema v{} · {} events · {} blocks",
-                d.schema_version, d.events, d.blocks
-            ),
-            None => "not initialized — run `worklog setup`".to_owned(),
-        },
+        database_cell(db_summary.as_ref()),
     ]);
     t.add_row(vec![
         "last prune".to_owned(),
-        last_prune_line(last_prune.as_ref()),
+        last_prune_cell(last_prune.as_ref()),
     ]);
     t.add_row(vec![
         "secrets".to_owned(),
@@ -3171,30 +3526,34 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
             )
         },
     ]);
+    for h in &sources {
+        t.add_row(vec![source_row_label(&h.source), source_health_line(h)]);
+    }
     writeln!(out, "{t}")?;
 
-    if let Some(agg) = &today_agg {
-        let mut line = format!(
-            "today  {} across {} {}",
-            human_dur(agg.total_secs),
-            agg.block_count,
-            plural(agg.block_count),
-        );
-        if agg.unassigned_n > 0 {
-            line.push_str(&format!(
-                " · {} {} need a ticket",
-                agg.unassigned_n,
-                plural(agg.unassigned_n)
-            ));
-        }
-        writeln!(out, "{line}")?;
+    let hints = status_hints(
+        daemon_up,
+        daemon_svc_on,
+        sched.as_ref().ok().map(|s| s.installed),
+        web_on,
+    );
+    if !hints.is_empty() {
+        writeln!(out, "fix: {}", hints.join(" · "))?;
+        writeln!(out)?;
+    }
+
+    if let Some(today) = &today_agg {
+        writeln!(out, "{}", today_line(today))?;
     }
 
     // Actionable nudges for anything that's off.
     if !daemon_up {
         style::warn(
             out,
-            "daemon not running — `worklog daemon install` (writes + queries need it)",
+            &format!(
+                "daemon not running — `{}` (writes + queries need it)",
+                daemon_hint(daemon_svc_on)
+            ),
         )?;
     }
     if !hook_on {
@@ -4602,6 +4961,21 @@ mod tests {
     use super::*;
     use worklog_core::models::Block;
 
+    #[test]
+    fn serve_and_eval_are_hidden_from_help_but_still_parse() {
+        let help = Cli::command().render_help().to_string();
+        let listed = |name: &str| {
+            // word match covers the banner (ANSI-wrapped) and the command list
+            help.split(|c: char| !c.is_alphanumeric() && c != '-')
+                .any(|w| w == name)
+        };
+        assert!(!listed("serve"), "serve listed in help");
+        assert!(!listed("eval"), "eval listed in help");
+        assert!(listed("collect"), "help listing sanity check");
+        assert!(Cli::try_parse_from(["worklog", "serve"]).is_ok());
+        assert!(Cli::try_parse_from(["worklog", "eval", "x"]).is_ok());
+    }
+
     fn seeded_db() -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("w.db");
@@ -4834,6 +5208,7 @@ mod tests {
             dirty: false,
             exported_at: None,
             ignored_at: None,
+            ignore_reason: None,
             ticket_origin: None,
             rough_note: None,
             description_origin: None,
@@ -4947,7 +5322,7 @@ mod tests {
         assert_eq!(agg.tickets.len(), 1);
         assert_eq!(agg.tickets[0].secs, 5400, "union of the two intervals");
         assert_eq!(agg.total_secs, 5400);
-        assert_eq!(agg.overlap_secs, 1800, "30m was double-booked");
+        assert_eq!(agg.double_booked_secs, 1800, "30m was double-booked");
     }
 
     #[test]
@@ -4957,8 +5332,169 @@ mod tests {
             block(2, "2026-05-16T10:00:00+00:00", 1800, Some("GOJ-2")),
         ];
         let agg = aggregate_day("2026-05-16", &blocks);
-        assert_eq!(agg.overlap_secs, 0);
         assert_eq!(agg.total_secs, 5400);
+        assert_eq!(agg.double_booked_secs, 0, "raw sum minus union");
+    }
+
+    fn ignored_block(id: i64, start: &str, dur_secs: i64, ticket: Option<&str>) -> Block {
+        let mut b = block(id, start, dur_secs, ticket);
+        b.ignored_at = Some("2026-05-16T12:00:00+00:00".into());
+        b.is_personal = true; // ignore keeps the hidden personal flag
+        b
+    }
+
+    #[test]
+    fn aggregate_day_ignored_block_is_not_personal() {
+        let blocks = vec![
+            ignored_block(1, "2026-05-16T09:00:00+00:00", 3600, Some("GOJ-1")),
+            block(2, "2026-05-16T11:00:00+00:00", 1800, Some("GOJ-2")),
+        ];
+        let mut p = block(3, "2026-05-16T13:00:00+00:00", 900, None);
+        p.is_personal = true;
+        let blocks = [blocks, vec![p]].concat();
+        let agg = aggregate_day("2026-05-16", &blocks);
+        assert_eq!(agg.ignored_secs, 3600); // personal-first check would give 0
+        assert_eq!(agg.ignored_n, 1);
+        assert_eq!(agg.personal_secs, 900); // ignored must not leak into personal
+        assert_eq!(agg.personal_n, 1);
+        assert_eq!(agg.work_secs, 1800); // ignored must not count as work
+        assert_eq!(agg.tickets.len(), 1); // ignored ticket stays off the ticket rows
+        assert_eq!(agg.total_secs, 6300); // == raw sum, so no overlap
+    }
+
+    #[test]
+    fn aggregate_day_overlap_of_work_and_ignored_adds_up() {
+        let blocks = vec![
+            block(1, "2026-05-16T09:00:00+00:00", 3600, Some("GOJ-1")),
+            ignored_block(2, "2026-05-16T09:30:00+00:00", 3600, None),
+        ];
+        let agg = aggregate_day("2026-05-16", &blocks);
+        assert_eq!(agg.total_secs, 5400); // raw sum 7200, so 30m overlap
+        assert_eq!(agg.work_secs, 3600); // ignored must not merge into work
+        assert_eq!(agg.ignored_secs, 3600);
+        assert_eq!(agg.personal_secs, 0);
+        assert_eq!(agg.class_overlap_secs(), 1800); // hand-computed 3600+3600-5400
+    }
+
+    fn week_fixture() -> (chrono::NaiveDate, chrono::NaiveDate, Vec<DayAgg>) {
+        let d1 = vec![
+            block(1, "2026-05-15T09:00:00+00:00", 3600, Some("GOJ-1")),
+            ignored_block(2, "2026-05-15T09:30:00+00:00", 3600, None),
+        ];
+        let mut p = block(3, "2026-05-16T09:00:00+00:00", 900, None);
+        p.is_personal = true;
+        let d2 = vec![ignored_block(4, "2026-05-16T11:00:00+00:00", 1800, None), p];
+        let start = chrono::NaiveDate::from_ymd_opt(2026, 5, 15).unwrap();
+        let end = start + chrono::Duration::days(1);
+        (
+            start,
+            end,
+            vec![
+                aggregate_day("2026-05-15", &d1),
+                aggregate_day("2026-05-16", &d2),
+            ],
+        )
+    }
+
+    #[test]
+    fn print_week_json_sums_ignored_and_keeps_it_apart_from_personal() {
+        let (s, e, days) = week_fixture();
+        let mut out = Vec::new();
+        print_week(&mut out, s, e, &days, true).unwrap();
+        let j: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(j["ignored_secs"], 5400); // 3600 + 1800
+        assert_eq!(j["personal_seconds"], 900);
+        assert_eq!(j["work_seconds"], 3600);
+        assert_eq!(j["days"][1]["ignored_secs"], 1800);
+    }
+
+    #[test]
+    fn print_week_table_has_ignored_column_total_and_overlap_line() {
+        let (s, e, days) = week_fixture();
+        let mut out = Vec::new();
+        print_week(&mut out, s, e, &days, false).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let header = text.lines().find(|l| l.contains("personal")).unwrap();
+        let cols: Vec<&str> = header
+            .split(['│', '┆'])
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .collect();
+        assert_eq!(
+            cols,
+            ["day", "total", "work", "personal", "ignored", "blocks"],
+            "{text}"
+        );
+        let total = text.lines().find(|l| l.starts_with("│ total")).unwrap();
+        let cells: Vec<&str> = total
+            .split(['│', '┆'])
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .collect();
+        // total 2h15m, work 1h, personal 15m, ignored 1h30m, 4 blocks
+        assert_eq!(cells[3], "15m", "{text}");
+        assert_eq!(cells[4], "1h 30m", "{text}");
+        assert!(text.contains("overlap 30m"), "{text}");
+    }
+
+    #[test]
+    fn printed_overlap_is_zero_for_same_class_overlap() {
+        // Work 09:00-10:00 + 09:30-10:30: work is a union (1h30m) = total,
+        // so the identity needs overlap 0; a raw-sum overlap prints 30m.
+        let blocks = vec![
+            block(1, "2026-05-16T09:00:00+00:00", 3600, Some("GOJ-1")),
+            block(2, "2026-05-16T09:30:00+00:00", 3600, Some("GOJ-1")),
+        ];
+        let agg = aggregate_day("2026-05-16", &blocks);
+        assert_eq!(agg.class_overlap_secs(), 0);
+        let mut out = Vec::new();
+        print_day_summary(&mut out, &agg).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(!text.contains("\noverlap "), "{text}");
+        // the hint and JSON must agree with the table (raw 30m would leak here)
+        assert!(!text.contains("blocks overlap by"), "{text}");
+        assert_eq!(day_agg_json(&agg)["overlap_seconds"], 0);
+    }
+
+    #[test]
+    fn aggregate_day_only_ignored_has_zero_work_and_personal() {
+        let blocks = vec![ignored_block(1, "2026-05-16T09:00:00+00:00", 3600, None)];
+        let agg = aggregate_day("2026-05-16", &blocks);
+        assert_eq!(agg.work_secs, 0);
+        assert_eq!(agg.personal_secs, 0);
+        assert_eq!(agg.ignored_secs, 3600);
+        assert_eq!(agg.unassigned_n, 0); // ignored is not "needs a ticket"
+    }
+
+    #[test]
+    fn day_agg_json_has_ignored_secs() {
+        let blocks = vec![ignored_block(1, "2026-05-16T09:00:00+00:00", 3600, None)];
+        let j = day_agg_json(&aggregate_day("2026-05-16", &blocks));
+        assert_eq!(j["ignored_secs"], 3600);
+        assert_eq!(j["personal_seconds"], 0);
+    }
+
+    #[test]
+    fn day_summary_shows_ignored_row_and_overlap_line() {
+        let blocks = vec![
+            block(1, "2026-05-16T09:00:00+00:00", 3600, Some("GOJ-1")),
+            ignored_block(2, "2026-05-16T09:30:00+00:00", 3600, None),
+        ];
+        let mut out = Vec::new();
+        print_day_summary(&mut out, &aggregate_day("2026-05-16", &blocks)).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("ignored"), "{text}");
+        assert!(text.contains("1h 00m ignored"), "{text}");
+        assert!(text.contains("overlap 30m"), "{text}");
+        assert!(!text.contains("1h 00m personal"), "{text}");
+    }
+
+    #[test]
+    fn day_summary_omits_overlap_line_without_overlap() {
+        let blocks = vec![block(1, "2026-05-16T09:00:00+00:00", 3600, Some("GOJ-1"))];
+        let mut out = Vec::new();
+        print_day_summary(&mut out, &aggregate_day("2026-05-16", &blocks)).unwrap();
+        assert!(!String::from_utf8(out).unwrap().contains("overlap"));
     }
 
     /// Builds a `LastPrune` with round, easy-to-spot counts for
@@ -5010,6 +5546,640 @@ mod tests {
             !line.chars().any(|c| c.is_ascii_digit()),
             "must contain no digits that look like a date: {line}"
         );
+    }
+
+    /// FR-14: a probe that errors says "check failed (reason)" — never
+    /// the "not installed" a swallowed error would have produced.
+    #[test]
+    fn status_probe_cell_error_says_check_failed_with_reason() {
+        let cell = probe_cell(Err(&anyhow::anyhow!("boom")), "installed", "not installed");
+        assert_eq!(cell, "check failed (boom)");
+    }
+
+    /// FR-14: a failed probe's JSON keeps `installed: false` but carries
+    /// the error reason; a healthy probe has a null `error`.
+    #[test]
+    fn status_probe_json_reports_error_reason() {
+        // swallowing the error (installed:false, no reason) fails this
+        let v = probe_json(Err(&anyhow::anyhow!("boom")));
+        assert_eq!(v["installed"], false);
+        assert_eq!(v["error"], "boom");
+        let ok = probe_json(Ok(true));
+        assert_eq!(ok["installed"], true);
+        assert!(ok["error"].is_null());
+    }
+
+    /// FR-14: a healthy probe keeps its plain wording for both answers.
+    #[test]
+    fn status_probe_cell_ok_keeps_plain_wording() {
+        assert_eq!(
+            probe_cell(Ok(true), "installed", "not installed"),
+            "installed"
+        );
+        assert_eq!(
+            probe_cell(Ok(false), "installed", "not installed"),
+            "not installed"
+        );
+    }
+
+    fn health_of(
+        outcome: CollectOutcome,
+        source: &str,
+    ) -> worklog_core::time_leaks_contract::SourceHealth {
+        let conn = db::open_memory().unwrap();
+        record_outcome(&outcome, |s, h| {
+            worklog_core::collect_health::record(&conn, s, h)
+        })
+        .unwrap();
+        let rows = worklog_core::collect_health::all(&conn, chrono::Utc::now()).unwrap();
+        rows.into_iter().find(|r| r.source == source).unwrap()
+    }
+
+    /// FR-16: an Ok run leaves last_ok and no error.
+    #[test]
+    fn collect_health_ok_outcome_records_last_ok_only() {
+        let report = worklog_core::collectors::CollectReport::default();
+        let h = health_of(CollectOutcome::Ok(CollectTarget::Jira, report), "jira");
+        assert!(h.last_ok.is_some());
+        assert_eq!(h.last_err, None); // catches recording errors for Ok
+    }
+
+    /// FR-16: a Warn (fetch failure) leaves the error text, never last_ok.
+    #[test]
+    fn collect_health_warn_outcome_records_error_text() {
+        let o = CollectOutcome::Warn {
+            source: CollectTarget::Github,
+            message: "rate limited".into(),
+        };
+        let h = health_of(o, "github");
+        assert!(h.last_err.unwrap().contains("rate limited")); // catches swallowing Warn
+        assert_eq!(h.last_ok, None);
+    }
+
+    /// FR-16: a Skip (missing credentials) is recorded as an error too.
+    #[test]
+    fn collect_health_skip_outcome_records_reason() {
+        let o = CollectOutcome::Skip {
+            source: CollectTarget::Slack,
+            message: "no token".into(),
+        };
+        let h = health_of(o, "slack");
+        assert!(h.last_err.unwrap().contains("no token")); // catches dropping Skip
+        assert_eq!(h.last_ok, None);
+    }
+
+    /// FR-16: a failed routing day is recorded under "routing".
+    #[test]
+    fn collect_health_routing_failure_records_under_routing() {
+        let o = CollectOutcome::RoutingFailed {
+            day: chrono::NaiveDate::from_ymd_opt(2026, 10, 11).unwrap(),
+            message: "disk full".into(),
+        };
+        assert!(health_of(o, "routing")
+            .last_err
+            .unwrap()
+            .contains("disk full"));
+    }
+
+    /// FR-16: the transcripts collector records its own health, so the CLI
+    /// must not record a second time (Ok or Warn) — catches the duplicate.
+    #[test]
+    fn collect_health_transcripts_left_to_the_collector() {
+        let report = worklog_core::collectors::CollectReport::default();
+        let ok = CollectOutcome::Ok(CollectTarget::ClaudeTranscripts, report);
+        let warn = CollectOutcome::Warn {
+            source: CollectTarget::ClaudeTranscripts,
+            message: "boom".into(),
+        };
+        for o in [ok, warn] {
+            record_outcome(&o, |s, _| panic!("CLI recorded {s}")).unwrap();
+        }
+    }
+
+    /// FR-17: events stored as github_commit / git_reflog / claude_turn count
+    /// toward the collector's row, which carries last_ok.
+    #[test]
+    fn status_sources_fold_event_names_onto_collector_rows() {
+        let conn = db::open_memory().unwrap();
+        let now = chrono::Utc::now();
+        for (src, id) in [
+            ("github_commit", "a"),
+            ("github_pr", "b"),
+            ("git_reflog", "c"),
+            ("claude_turn", "d"),
+        ] {
+            conn.execute(
+                "INSERT INTO events (source, source_id, started_at, title) VALUES (?1, ?2, ?3, 't')",
+                rusqlite::params![src, id, now.to_rfc3339()],
+            )
+            .unwrap();
+        }
+        for s in ["github", "reflog", "claude_transcripts"] {
+            worklog_core::collect_health::record(&conn, s, Ok(())).unwrap();
+        }
+        let rows = status_sources(Some(worklog_core::collect_health::all(&conn, now)));
+        let get = |n: &str| rows.iter().find(|r| r.source == n).unwrap().clone();
+        assert_eq!(get("github").events_24h, 2); // catches no folding
+        assert!(get("github").last_ok.is_some());
+        assert_eq!(get("reflog").events_24h, 1);
+        assert_eq!(get("claude_transcripts").events_24h, 1);
+        assert_eq!(rows.len(), 3); // no stray event-named rows
+    }
+
+    fn day_range() -> (chrono::NaiveDate, chrono::NaiveDate) {
+        let d = chrono::Utc::now().date_naive();
+        (d, d + chrono::Duration::days(1))
+    }
+
+    /// FR-16 at the call site: every runner outcome (Ok, Warn, Skip) lands in
+    /// collect_health; catches dropping record_health from the per-source loop.
+    #[test]
+    fn collect_targets_with_records_each_source_outcome() {
+        let conn = db::open_memory().unwrap();
+        let (since, until) = day_range();
+        let out = collect_targets_with(
+            &conn,
+            CollectTarget::All,
+            since,
+            until,
+            &mut io::sink(),
+            |s| match s {
+                CollectTarget::Jira => Err("fetch: boom".to_string()),
+                CollectTarget::Slack => Err("skipped: no token".to_string()),
+                _ => Ok(worklog_core::collectors::CollectReport::default()),
+            },
+        )
+        .unwrap();
+        assert!(!out.is_empty());
+        let rows = worklog_core::collect_health::all(&conn, chrono::Utc::now()).unwrap();
+        let get = |n: &str| rows.iter().find(|r| r.source == n).unwrap().clone();
+        assert!(get("jira").last_err.unwrap().contains("boom"));
+        assert!(get("slack").last_err.unwrap().contains("no token"));
+        assert!(get("github").last_ok.is_some());
+        assert!(rows.iter().all(|r| r.source != "claude_transcripts"));
+    }
+
+    /// A healthy routing pass records routing last_ok; catches dropping
+    /// that success record from the `all` branch.
+    #[test]
+    fn collect_targets_with_records_routing_ok() {
+        let conn = db::open_memory().unwrap();
+        let (since, until) = day_range();
+        collect_targets_with(
+            &conn,
+            CollectTarget::All,
+            since,
+            until,
+            &mut io::sink(),
+            |_| Ok(worklog_core::collectors::CollectReport::default()),
+        )
+        .unwrap();
+        let rows = worklog_core::collect_health::all(&conn, chrono::Utc::now()).unwrap();
+        let r = rows.iter().find(|r| r.source == "routing").unwrap();
+        assert!(r.last_ok.is_some());
+    }
+
+    /// A healthy routing pass leaves a routing last_ok and no last_err, and
+    /// adds no outcome of its own (the only message on that path is the
+    /// record-failure one). Catches recording the success as an error and
+    /// pushing an outcome per routed day.
+    #[test]
+    fn collect_targets_with_routing_success_leaves_only_last_ok() {
+        let conn = db::open_memory().unwrap();
+        let (since, until) = day_range();
+        let out = collect_targets_with(
+            &conn,
+            CollectTarget::All,
+            since,
+            until,
+            &mut io::sink(),
+            |_| Ok(worklog_core::collectors::CollectReport::default()),
+        )
+        .unwrap();
+        assert!(out
+            .iter()
+            .all(|o| !matches!(o, CollectOutcome::RoutingFailed { .. })));
+        let rows = worklog_core::collect_health::all(&conn, chrono::Utc::now()).unwrap();
+        let r = rows.iter().find(|r| r.source == "routing").unwrap();
+        assert!(r.last_ok.is_some());
+        assert!(r.last_err.is_none());
+    }
+
+    /// With collect_health::record failing, each record attempt prints the
+    /// failure exactly once: 6 recorded sources (transcripts records its own)
+    /// plus one routing success per routed day. Catches the routing success
+    /// path printing its own copy beside report_failure's, and swallowing it.
+    #[test]
+    fn collect_targets_with_prints_one_record_failure_per_outcome() {
+        let conn = db::open_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER no_meta BEFORE INSERT ON meta
+             BEGIN SELECT RAISE(ABORT, 'meta is read-only'); END;",
+        )
+        .unwrap();
+        let since = chrono::Utc::now().date_naive();
+        let until = since + chrono::Duration::days(2);
+        let mut err = Vec::new();
+        let out = collect_targets_with(&conn, CollectTarget::All, since, until, &mut err, |_| {
+            Ok(worklog_core::collectors::CollectReport::default())
+        })
+        .unwrap();
+        assert!(out
+            .iter()
+            .all(|o| !matches!(o, CollectOutcome::RoutingFailed { .. })));
+        let err = String::from_utf8(err).unwrap();
+        let lines: Vec<&str> = err.lines().collect();
+        assert_eq!(lines.len(), 6 + 2, "{err}");
+        assert!(lines
+            .iter()
+            .all(|l| *l == "worklog: recording collect health failed: writing meta"));
+    }
+
+    /// A single-source collect does not touch routing health.
+    #[test]
+    fn collect_targets_with_single_target_skips_routing() {
+        let conn = db::open_memory().unwrap();
+        let (since, until) = day_range();
+        collect_targets_with(
+            &conn,
+            CollectTarget::Jira,
+            since,
+            until,
+            &mut io::sink(),
+            |_| Ok(worklog_core::collectors::CollectReport::default()),
+        )
+        .unwrap();
+        let rows = worklog_core::collect_health::all(&conn, chrono::Utc::now()).unwrap();
+        assert!(rows.iter().all(|r| r.source != "routing"));
+        assert!(rows.iter().any(|r| r.source == "jira"));
+    }
+
+    /// A failed probe's text sits under that probe's own `error` key, like
+    /// `schedule.error`; ok probes carry `error: null` beside their data and
+    /// never-ran probes stay null. Each builder takes its own probe type, so
+    /// cmd_status cannot hand one probe to another's slot. Catches flat
+    /// top-level keys, swallowing the error, dropping the data of an ok
+    /// probe, and reporting "never ran" (None) as an error.
+    #[test]
+    fn status_json_nests_probe_errors_under_each_probe() {
+        fn failed<T>() -> Option<Result<T>> {
+            Some(Err(anyhow::anyhow!("disk I/O error")))
+        }
+        let conn = db::open_memory().unwrap();
+        let db_ok = Some(db::summarize(&conn));
+        let prune_ok = Some(Ok(Some(worklog_core::purge::LastPrune {
+            report: worklog_core::purge::PurgeReport {
+                cutoff_date: "2026-01-01".into(),
+                ..Default::default()
+            },
+            ran_at: "2026-01-02T00:00:00Z".into(),
+        })));
+        let today_ok = Some(Ok(aggregate_day("2026-10-11", &[])));
+
+        let err = serde_json::json!({ "error": "disk I/O error" });
+        assert_eq!(database_json(&failed()), err); // swallowed / flat key
+        assert_eq!(last_prune_json(&failed()), err);
+        assert_eq!(today_json(&failed()), err);
+
+        let v = database_json(&db_ok);
+        assert!(v["error"].is_null() && v.get("error").is_some()); // no error key
+        assert!(v["schema_version"].as_i64().unwrap() > 0); // data dropped
+        let v = last_prune_json(&prune_ok);
+        assert!(v["error"].is_null() && v.get("error").is_some());
+        assert_eq!(v["cutoff"], "2026-01-01");
+        assert!(last_prune_json(&Some(Ok(None))).is_null()); // never pruned
+        let v = today_json(&today_ok);
+        assert!(v["error"].is_null() && v.get("error").is_some());
+        assert_eq!(v["day"], "2026-10-11");
+
+        assert!(database_json(&None).is_null()); // never ran is not an error
+        assert!(last_prune_json(&None).is_null());
+        assert!(today_json(&None).is_null());
+    }
+
+    /// FR-17 at the call site: cmd_status reads health through sources_from_db.
+    #[test]
+    fn sources_from_db_lists_recorded_sources() {
+        let conn = db::open_memory().unwrap();
+        worklog_core::collect_health::record(&conn, "jira", Ok(())).unwrap();
+        let rows = sources_from_db(Some(&conn));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].source, "jira");
+        assert!(sources_from_db(None).is_empty());
+    }
+
+    /// FR-17: no database means no rows, not a panic.
+    #[test]
+    fn status_sources_without_db_is_empty() {
+        assert!(status_sources(None).is_empty());
+    }
+
+    /// FR-17: a row shows last ok, last error and the 24 h count; a missing
+    /// time reads "never", not an empty cell.
+    #[test]
+    fn status_source_line_shows_ok_err_and_count() {
+        use worklog_core::time_leaks_contract::SourceHealth;
+        let h = SourceHealth {
+            source: "github".into(),
+            last_ok: Some("2026-10-11T10:00:00+00:00".into()),
+            last_err: Some("2026-10-11T11:00:00+00:00 rate limited".into()),
+            events_24h: 7,
+        };
+        assert_eq!(
+            source_health_line(&h),
+            "ok 2026-10-11T10:00:00+00:00 · err 2026-10-11T11:00:00+00:00 rate limited · 7 events/24h"
+        );
+        let quiet = SourceHealth {
+            source: "shell".into(),
+            last_ok: None,
+            last_err: None,
+            events_24h: 0,
+        };
+        assert_eq!(
+            source_health_line(&quiet),
+            "ok never · err never · 0 events/24h"
+        );
+    }
+
+    /// FR-15: each down component prints its own fix command.
+    #[test]
+    fn status_hints_name_the_command_for_each_down_component() {
+        assert_eq!(
+            status_hints(false, false, Some(false), false),
+            vec![
+                "worklog daemon install",
+                "worklog schedule install",
+                "worklog web up"
+            ]
+        );
+    }
+
+    /// FR-15: nothing down prints nothing; one down prints only its own.
+    #[test]
+    fn status_hints_only_for_what_is_down() {
+        assert!(status_hints(true, false, Some(true), true).is_empty());
+        assert_eq!(
+            status_hints(true, false, Some(true), false),
+            vec!["worklog web up"]
+        );
+        assert_eq!(
+            status_hints(false, false, Some(true), true),
+            vec!["worklog daemon install"]
+        );
+    }
+
+    /// FR-15: a schedule probe that failed is unknown, not down, so no
+    /// install hint is printed for it.
+    #[test]
+    fn status_hints_skip_schedule_when_probe_failed() {
+        assert!(status_hints(true, false, None, true).is_empty());
+    }
+
+    #[test]
+    fn aggregate_day_ignored_block_is_not_dirty_or_gap() {
+        // counting before the ignored `continue` prints a failed-estimation
+        // warning for a block the user already dismissed
+        let mut ig = ignored_block(1, "2026-05-16T09:00:00+00:00", 600, None);
+        ig.dirty = true;
+        ig.estimated_by = Some("gap".into());
+        let agg = aggregate_day("2026-05-16", &[ig]);
+        assert_eq!((agg.dirty, agg.gap), (0, 0));
+        let mut out = Vec::new();
+        print_day_summary(&mut out, &agg).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(!text.contains("failed estimation"), "{text}");
+        assert!(!text.contains("edited since last sync"), "{text}");
+    }
+
+    #[test]
+    fn aggregate_day_still_counts_dirty_and_gap_for_personal_and_work() {
+        // moving the count past the personal `continue` would drop these
+        let mut personal = block(1, "2026-05-16T09:00:00+00:00", 600, None);
+        personal.is_personal = true;
+        personal.dirty = true;
+        personal.estimated_by = Some("gap".into());
+        let mut work = block(2, "2026-05-16T10:00:00+00:00", 600, Some("GOJ-1"));
+        work.estimated_by = Some("gap".into());
+        let agg = aggregate_day("2026-05-16", &[personal, work]);
+        assert_eq!((agg.dirty, agg.gap), (1, 2));
+    }
+
+    #[test]
+    fn decode_day_blocks_error_names_the_day() {
+        // unwrap_or_default would return an empty day instead of an error
+        for bad in [
+            serde_json::json!({ "blocks": "nope" }),
+            serde_json::json!({ "blocks": [{ "id": "x" }] }),
+            serde_json::json!({}),
+        ] {
+            let err = decode_day_blocks("2026-05-16", &bad).unwrap_err();
+            assert!(err.to_string().contains("2026-05-16"), "{err}");
+        }
+    }
+
+    #[test]
+    fn decode_day_blocks_keeps_valid_and_empty_days() {
+        let empty = decode_day_blocks("2026-05-16", &serde_json::json!({ "blocks": [] }));
+        assert!(empty.unwrap().is_empty());
+        let b = block(7, "2026-05-16T09:00:00+00:00", 600, Some("GOJ-1"));
+        let summary = serde_json::json!({ "blocks": [b] });
+        let got = decode_day_blocks("2026-05-16", &summary).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].id, 7);
+    }
+
+    fn day_summary_text(blocks: &[Block]) -> String {
+        let mut out = Vec::new();
+        print_day_summary(&mut out, &aggregate_day("2026-05-16", blocks)).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn same_class_double_booking_warns_with_the_hours() {
+        let blocks = [
+            block(1, "2026-05-16T09:00:00+00:00", 3600, Some("GOJ-1")),
+            block(2, "2026-05-16T09:30:00+00:00", 3600, Some("GOJ-1")),
+        ];
+        let text = day_summary_text(&blocks);
+        assert!(
+            text.contains("30m double-booked inside one class — `worklog block list"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn double_booking_is_summed_across_classes_not_cross_class() {
+        // work 30m + personal 15m double-booked = 45m; the work/ignored
+        // overlap below is cross-class and must not count
+        let mut personal_a = block(3, "2026-05-16T12:00:00+00:00", 3600, None);
+        personal_a.is_personal = true;
+        let mut personal_b = block(4, "2026-05-16T12:45:00+00:00", 3600, None);
+        personal_b.is_personal = true;
+        let blocks = [
+            block(1, "2026-05-16T09:00:00+00:00", 3600, Some("GOJ-1")),
+            block(2, "2026-05-16T09:30:00+00:00", 3600, Some("GOJ-1")),
+            personal_a,
+            personal_b,
+            ignored_block(5, "2026-05-16T15:00:00+00:00", 3600, None),
+            block(6, "2026-05-16T15:30:00+00:00", 3600, Some("GOJ-2")),
+        ];
+        let agg = aggregate_day("2026-05-16", &blocks);
+        assert_eq!(agg.double_booked_secs, 1800 + 900);
+        assert!(day_summary_text(&blocks).contains("45m double-booked"));
+    }
+
+    #[test]
+    fn cross_class_overlap_alone_is_not_double_booking() {
+        // raw sum - total would flag this; only the `overlap` line applies
+        let blocks = [
+            block(1, "2026-05-16T09:00:00+00:00", 3600, Some("GOJ-1")),
+            ignored_block(2, "2026-05-16T09:30:00+00:00", 3600, None),
+        ];
+        let agg = aggregate_day("2026-05-16", &blocks);
+        assert_eq!(agg.double_booked_secs, 0);
+        assert_eq!(agg.class_overlap_secs(), 1800);
+        assert!(!day_summary_text(&blocks).contains("double-booked"));
+    }
+
+    #[test]
+    fn touching_blocks_are_not_double_booked() {
+        // `>=` boundary: 09:00-10:00 then 10:00-11:00 share no time
+        let blocks = [
+            block(1, "2026-05-16T09:00:00+00:00", 3600, Some("GOJ-1")),
+            block(2, "2026-05-16T10:00:00+00:00", 3600, Some("GOJ-1")),
+        ];
+        assert_eq!(aggregate_day("2026-05-16", &blocks).double_booked_secs, 0);
+    }
+
+    #[test]
+    fn database_cell_shows_check_failed_not_uninitialized() {
+        assert_eq!(
+            database_cell(Some(&Err(anyhow::anyhow!("locked")))),
+            "check failed (locked)"
+        );
+        assert_eq!(database_cell(None), "not initialized — run `worklog setup`");
+        let conn = db::open_memory().unwrap();
+        let cell = database_cell(Some(&Ok(db::summarize(&conn).unwrap())));
+        assert!(cell.starts_with("schema v"), "{cell}");
+    }
+
+    #[test]
+    fn last_prune_cell_shows_check_failed_not_never_run() {
+        assert_eq!(
+            last_prune_cell(Some(&Err(anyhow::anyhow!("locked")))),
+            "check failed (locked)"
+        );
+        assert_eq!(last_prune_cell(Some(&Ok(None))), "never run");
+        assert_eq!(last_prune_cell(None), "never run");
+        let lp = last_prune("2026-07-20", "2026-07-24T06:00:12+00:00");
+        assert!(last_prune_cell(Some(&Ok(Some(lp)))).contains("2026-07-20"));
+    }
+
+    #[test]
+    fn today_line_shows_check_failed_when_blocks_unreadable() {
+        let line = today_line(&Err(anyhow::anyhow!("daemon 500")));
+        assert_eq!(line, "today  check failed (daemon 500)");
+        let blocks = [block(1, "2026-05-16T09:00:00+00:00", 3600, None)];
+        let agg = aggregate_day("2026-05-16", &blocks);
+        assert_eq!(
+            today_line(&Ok(agg)),
+            "today  1h 00m across 1 block · 1 block need a ticket"
+        );
+    }
+
+    #[test]
+    fn status_hints_restart_an_installed_daemon_service() {
+        // installed service + dead port: re-installing is the wrong fix
+        let restart = if cfg!(target_os = "macos") {
+            "launchctl kickstart -k gui/$(id -u)/is.p5.worklog.daemon"
+        } else {
+            "systemctl --user restart worklog-daemon.service"
+        };
+        assert_eq!(status_hints(false, true, Some(true), true), vec![restart]);
+        assert_eq!(
+            status_hints(false, false, Some(true), true),
+            vec!["worklog daemon install"]
+        );
+        assert!(status_hints(true, true, Some(true), true).is_empty());
+    }
+
+    #[test]
+    fn schedule_cell_installed_without_interval_is_green_installed() {
+        assert_eq!(schedule_cell(Ok((true, None))), "● installed");
+        let with = schedule_cell(Ok((true, Some(900))));
+        assert!(with.starts_with("● installed · "), "{with}");
+        assert_eq!(schedule_cell(Ok((false, None))), "○ not installed");
+        assert_eq!(
+            schedule_cell(Err(&anyhow::anyhow!("boom"))),
+            "○ check failed (boom)"
+        );
+    }
+
+    fn health(
+        ok: Option<&str>,
+        err: Option<&str>,
+    ) -> worklog_core::time_leaks_contract::SourceHealth {
+        worklog_core::time_leaks_contract::SourceHealth {
+            source: "github".into(),
+            last_ok: ok.map(str::to_owned),
+            last_err: err.map(str::to_owned),
+            events_24h: 0,
+        }
+    }
+
+    #[test]
+    fn source_line_hides_an_error_older_than_the_last_ok() {
+        let older = health(
+            Some("2026-10-11T10:00:00+00:00"),
+            Some("2026-10-11T09:00:00+00:00 rate limited"),
+        );
+        assert_eq!(
+            source_health_line(&older),
+            "ok 2026-10-11T10:00:00+00:00 · err never · 0 events/24h"
+        );
+        // 11:00+02:00 is 09:00Z: older, though it sorts after "10:00" as text
+        let offset = health(
+            Some("2026-10-11T10:00:00+00:00"),
+            Some("2026-10-11T11:00:00+02:00 stale"),
+        );
+        assert!(source_health_line(&offset).contains("err never"));
+    }
+
+    #[test]
+    fn source_line_keeps_an_error_with_no_ok_or_unparsable_stamp() {
+        let no_ok = health(None, Some("2026-10-11T09:00:00+00:00 boom"));
+        assert!(source_health_line(&no_ok).contains("boom"));
+        let odd = health(Some("2026-10-11T10:00:00+00:00"), Some("garbled"));
+        assert!(source_health_line(&odd).contains("garbled"));
+    }
+
+    #[test]
+    fn fold_event_sources_keeps_the_latest_stamps() {
+        let mut a = health(
+            Some("2026-10-11T10:00:00+00:00"),
+            Some("2026-10-11T08:00:00+00:00 old"),
+        );
+        a.source = "github_commit".into();
+        let mut b = health(
+            Some("2026-10-11T12:00:00+00:00"),
+            Some("2026-10-11T07:00:00+00:00 older"),
+        );
+        b.source = "github_pr".into();
+        for rows in [vec![a.clone(), b.clone()], vec![b, a]] {
+            let got = fold_event_sources(rows);
+            assert_eq!(got.len(), 1);
+            assert_eq!(got[0].last_ok.as_deref(), Some("2026-10-11T12:00:00+00:00"));
+            assert_eq!(
+                got[0].last_err.as_deref(),
+                Some("2026-10-11T08:00:00+00:00 old")
+            );
+        }
+    }
+
+    #[test]
+    fn source_row_label_separates_transcripts_from_the_hook() {
+        assert_eq!(source_row_label("claude_transcripts"), "claude transcripts");
+        assert_eq!(source_row_label("github"), "github");
     }
 
     /// B36: no user-facing text anywhere in this crate or in the shipped

@@ -90,6 +90,22 @@ worklog day --no-serve
 | `worklog version` | Print the embedded version |
 | `worklog setup` | Preflight + secrets capture + db migrate |
 | `worklog doctor` | Environment, DB, secrets sanity report |
+| `worklog status` | One-screen health dashboard plus today's tracked time |
+| `worklog completions <shell>` | Shell completion script |
+| `worklog skill` | Install / refresh / remove the Claude Code skill |
+| `worklog summary` | Today's hours and per-ticket breakdown (alias: `today`) |
+| `worklog week [--day]` | Per-ticket breakdown for the 7 days ending on `--day` |
+| `worklog undo` | Reverse your newest block change |
+| `worklog ask <query>` | Search saved blocks and Claude prompts |
+| `worklog standup` | Draft today's standup and post it to Slack |
+| `worklog report` | One customer's hours for a month, grouped by deild |
+| `worklog export [--day]` | Billing line items as text, CSV or JSON |
+| `worklog ticket` | Jira assistant: get, start, find, move, create |
+| `worklog account` | Billing accounts: allowed, suggest, relearn |
+| `worklog block` | List and edit individual time blocks |
+| `worklog tag` | Personal/work classification rules |
+| `worklog pin` | Pin a customer to a Claude Code session |
+| `worklog verdict` | Optional project classifier helper |
 | `worklog day [--day] [--no-serve] [--model]` | Full daily pipeline: collect → infer → estimate → web UI |
 | `worklog collect [all\|jira\|github\|gcal] [--days]` | Pull remote activity |
 | `worklog collect gcal --auth` | Log in to Google Calendar (browser consent) |
@@ -103,8 +119,7 @@ worklog day --no-serve
 | `worklog schedule [install\|uninstall\|status]` | Scheduled collection (launchd / systemd --user) |
 | `worklog secret [set\|get\|rm\|list]` | Credentials in the OS keychain |
 | `worklog db [migrate\|info\|path]` | DB operations |
-| `worklog upgrade` | Signed self-update |
-| `worklog self-update [--check\|--dry-run\|--force]` | Lower-level alias for `upgrade` |
+| `worklog self-update [--check\|--dry-run\|--force]` | Signed self-update (alias: `upgrade`) |
 | `worklog dev [keygen\|sign\|make-patch\|apply-patch]` | Maintainer tooling |
 
 Every subcommand accepts `--json` for structured output.

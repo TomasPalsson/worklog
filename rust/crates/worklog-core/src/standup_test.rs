@@ -360,3 +360,192 @@ fn regenerate_sends_previous_draft_and_a_rewording_instruction() {
     // catches: an edited previous draft bypassing the secret scrub
     assert!(!input.contains(&api_key()));
 }
+
+fn span(conn: &Connection, ticket: Option<&str>, from: &str, to: &str, flags: (bool, bool)) {
+    let at =
+        |t: &str| chrono::DateTime::parse_from_rfc3339(&format!("{YESTERDAY}T{t}+00:00")).unwrap();
+    let secs = (at(to) - at(from)).num_seconds();
+    conn.execute(
+        "INSERT INTO blocks (day, started_at, ended_at, duration_seconds, jira_issue, is_personal, ignored_at)
+         VALUES (?1, ?1 || 'T' || ?2 || '+00:00', ?1 || 'T' || ?3 || '+00:00', ?4, ?5, ?6,
+                 CASE WHEN ?7 THEN '2026-10-05T12:00:00+00:00' END)",
+        params![YESTERDAY, from, to, secs, ticket, flags.0, flags.1],
+    )
+    .unwrap();
+}
+
+fn work(conn: &Connection, ticket: Option<&str>, from: &str, to: &str) {
+    span(conn, ticket, from, to, (false, false));
+}
+
+fn focus(conn: &Connection) -> FocusSummary {
+    focus_summary(
+        YESTERDAY,
+        &repo::list_blocks_for_day(conn, YESTERDAY).unwrap(),
+    )
+}
+
+#[test]
+fn no_blocks_gives_zero_switches_and_no_longest() {
+    let conn = db::open_memory().unwrap();
+    let f = focus(&conn);
+    assert_eq!(
+        (f.day.as_str(), f.switches, f.longest),
+        (YESTERDAY, 0, None)
+    );
+}
+
+#[test]
+fn a_switch_is_a_ticket_change_and_no_ticket_is_its_own_value() {
+    let conn = db::open_memory().unwrap();
+    work(&conn, Some("A-1"), "09:00:00", "09:30:00");
+    work(&conn, Some("A-1"), "09:30:00", "10:00:00");
+    work(&conn, Some("B-2"), "10:00:00", "10:30:00");
+    work(&conn, None, "10:30:00", "11:00:00");
+    work(&conn, Some("A-1"), "11:00:00", "11:30:00");
+    // catches: counting every block (4), or skipping None blocks (2)
+    assert_eq!(focus(&conn).switches, 3);
+}
+
+#[test]
+fn a_gap_of_exactly_fifteen_minutes_keeps_the_run_and_sixteen_ends_it() {
+    let conn = db::open_memory().unwrap();
+    work(&conn, Some("A-1"), "09:00:00", "09:30:00");
+    work(&conn, Some("A-1"), "09:45:00", "10:15:00");
+    work(&conn, Some("A-1"), "10:31:00", "10:41:00");
+    let run = focus(&conn).longest.unwrap();
+    // catches: < instead of <= (1800), no gap limit (4200), span instead of sum
+    assert_eq!(run.seconds, 3600);
+    assert_eq!(run.jira_issue, "A-1");
+    assert_eq!(run.started_at, format!("{YESTERDAY}T09:00:00+00:00"));
+    assert_eq!(run.ended_at, format!("{YESTERDAY}T10:15:00+00:00"));
+}
+
+#[test]
+fn a_run_sums_block_seconds_and_does_not_count_the_gaps() {
+    let conn = db::open_memory().unwrap();
+    work(&conn, Some("A-1"), "09:00:00", "09:30:00");
+    work(&conn, Some("A-1"), "09:40:00", "10:00:00");
+    // catches: ended_at - started_at (3600)
+    assert_eq!(focus(&conn).longest.unwrap().seconds, 3000);
+}
+
+#[test]
+fn another_ticket_between_blocks_ends_the_run_even_with_no_gap() {
+    let conn = db::open_memory().unwrap();
+    work(&conn, Some("A-1"), "09:00:00", "09:30:00");
+    work(&conn, Some("B-2"), "09:30:00", "10:00:00");
+    work(&conn, Some("A-1"), "10:00:00", "10:30:00");
+    // catches: summing all blocks of a ticket across the day (3600)
+    assert_eq!(focus(&conn).longest.unwrap().seconds, 1800);
+}
+
+#[test]
+fn the_longest_run_wins_over_the_first_and_the_last() {
+    let conn = db::open_memory().unwrap();
+    work(&conn, Some("A-1"), "09:00:00", "09:20:00");
+    work(&conn, Some("B-2"), "09:20:00", "10:20:00");
+    work(&conn, Some("A-1"), "10:20:00", "10:40:00");
+    let run = focus(&conn).longest.unwrap();
+    assert_eq!((run.jira_issue.as_str(), run.seconds), ("B-2", 3600));
+}
+
+#[test]
+fn blocks_with_no_ticket_never_count_as_focus() {
+    let conn = db::open_memory().unwrap();
+    work(&conn, None, "09:00:00", "12:00:00");
+    work(&conn, Some("A-1"), "12:00:00", "12:10:00");
+    // catches: None winning with the longest run
+    assert_eq!(focus(&conn).longest.unwrap().jira_issue, "A-1");
+    let conn = db::open_memory().unwrap();
+    work(&conn, None, "09:00:00", "12:00:00");
+    assert_eq!(focus(&conn).longest, None);
+}
+
+#[test]
+fn personal_and_ignored_blocks_are_skipped_entirely() {
+    let conn = db::open_memory().unwrap();
+    work(&conn, Some("A-1"), "09:00:00", "09:30:00");
+    span(&conn, Some("B-2"), "09:30:00", "09:35:00", (true, false));
+    span(&conn, Some("C-3"), "09:35:00", "09:40:00", (false, true));
+    work(&conn, Some("A-1"), "09:40:00", "10:10:00");
+    let f = focus(&conn);
+    // catches: counting skipped blocks as switches or as run breakers (1800)
+    assert_eq!(f.switches, 0);
+    assert_eq!(f.longest.unwrap().seconds, 3600);
+}
+
+#[test]
+fn blocks_are_ordered_by_start_before_counting() {
+    let conn = db::open_memory().unwrap();
+    work(&conn, Some("A-1"), "09:00:00", "09:30:00");
+    work(&conn, Some("A-1"), "09:30:00", "10:00:00");
+    work(&conn, Some("B-2"), "10:00:00", "10:10:00");
+    let mut blocks = repo::list_blocks_for_day(&conn, YESTERDAY).unwrap();
+    blocks.swap(0, 2);
+    // catches: trusting input order (B,A,A would count 1 switch but a 1800 s run)
+    let f = focus_summary(YESTERDAY, &blocks);
+    assert_eq!((f.switches, f.longest.unwrap().seconds), (1, 3600));
+}
+
+#[test]
+fn the_model_never_sees_the_focus_summary() {
+    let conn = db::open_memory().unwrap();
+    work(&conn, Some("A-1"), "09:00:00", "10:00:00");
+    // catches: the summary leaking into the text that becomes the posted answers
+    assert!(!run(&conn).contains("switches"));
+}
+
+#[test]
+fn yesterday_focus_reads_yesterdays_blocks_and_is_none_when_there_is_nothing() {
+    let conn = db::open_memory().unwrap();
+    assert_eq!(yesterday_focus(&conn, today()).unwrap(), None);
+    work(&conn, Some("A-1"), "09:00:00", "10:00:00");
+    let f = yesterday_focus(&conn, today()).unwrap().unwrap();
+    // catches: today's date used as the day
+    assert_eq!(
+        (f.day.as_str(), f.longest.unwrap().seconds),
+        (YESTERDAY, 3600)
+    );
+}
+
+#[test]
+fn a_block_nested_in_the_run_does_not_pull_its_end_back() {
+    let conn = db::open_memory().unwrap();
+    work(&conn, Some("A-1"), "09:00:00", "11:00:00");
+    work(&conn, Some("A-1"), "09:10:00", "09:20:00");
+    let run = focus(&conn).longest.unwrap();
+    // catches: ended_at taken from the last block (09:20) instead of the max
+    assert_eq!(run.ended_at, format!("{YESTERDAY}T11:00:00+00:00"));
+}
+
+#[test]
+fn an_empty_ticket_is_unassigned_and_never_a_focus_run() {
+    let conn = db::open_memory().unwrap();
+    work(&conn, Some(""), "09:00:00", "12:00:00");
+    // catches: "" treated as a ticket, so the run is named ""
+    assert_eq!(focus(&conn).longest, None);
+    work(&conn, Some("A-1"), "12:00:00", "12:10:00");
+    // catches: the empty-ticket run winning on length
+    assert_eq!(focus(&conn).longest.unwrap().jira_issue, "A-1");
+}
+
+#[test]
+fn an_empty_ticket_and_no_ticket_are_not_a_switch() {
+    let conn = db::open_memory().unwrap();
+    work(&conn, Some(""), "09:00:00", "10:00:00");
+    work(&conn, None, "10:00:00", "11:00:00");
+    // catches: comparing raw Option<String>, counting "" -> None as a switch
+    assert_eq!(focus(&conn).switches, 0);
+    work(&conn, Some("A-1"), "11:00:00", "12:00:00");
+    // catches: over-normalising so unassigned -> A-1 stops counting
+    assert_eq!(focus(&conn).switches, 1);
+}
+
+#[test]
+fn a_failing_focus_read_is_no_focus_not_an_error() {
+    let conn = db::open_memory().unwrap();
+    conn.execute_batch("DROP TABLE blocks").unwrap();
+    // catches: propagating the error and failing the whole draft
+    assert_eq!(yesterday_focus_or_none(&conn, today()), None);
+}

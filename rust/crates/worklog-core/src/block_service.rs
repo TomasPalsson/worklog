@@ -15,6 +15,7 @@ use crate::daily_helpers_contract::BlockChange;
 use crate::deild_contract::ChangeSource;
 use crate::models::Block;
 use crate::repo;
+use crate::time_leaks_contract::IgnoreReason;
 use crate::undo;
 
 /// `dirty = CASE WHEN tempo_worklog_id IS ... THEN 1 ELSE dirty END` — set
@@ -172,9 +173,15 @@ pub fn set_personal(conn: &Connection, block_id: i64, is_personal: bool) -> Resu
 /// and estimation, and keep it hidden across "Rebuild blocks" (see the
 /// carry rule in `infer::persist_blocks`). Implemented as `is_personal = 1`
 /// plus an `ignored_at` marker so every existing personal exclusion applies.
+/// `reason` is stored in `ignore_reason`; un-ignoring clears it with `ignored_at`.
 /// Refuses blocks already synced to Tempo or exported for billing; never
 /// clears `tempo_worklog_id` / `exported_at`.
-pub fn set_ignored(conn: &Connection, block_id: i64, ignored: bool) -> Result<Block> {
+pub fn set_ignored(
+    conn: &Connection,
+    block_id: i64,
+    ignored: bool,
+    reason: Option<IgnoreReason>,
+) -> Result<Block> {
     let block = repo::get_block(conn, block_id)?
         .ok_or_else(|| anyhow::anyhow!("block {block_id} not found"))?;
     let tx = conn.unchecked_transaction()?;
@@ -189,14 +196,15 @@ pub fn set_ignored(conn: &Connection, block_id: i64, ignored: bool) -> Result<Bl
         }
         tx.execute(
             "UPDATE blocks SET ignored_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
-                    is_personal = 1 WHERE id = ?1",
-            params![block_id],
+                    is_personal = 1,
+                    ignore_reason = ?2 WHERE id = ?1",
+            params![block_id, reason.map(IgnoreReason::as_str)],
         )
     } else {
         // ponytail: restore assumes the block was work before; store prior
         // is_personal if that ever matters.
         tx.execute(
-            "UPDATE blocks SET ignored_at = NULL, is_personal = 0 WHERE id = ?1",
+            "UPDATE blocks SET ignored_at = NULL, ignore_reason = NULL, is_personal = 0 WHERE id = ?1",
             params![block_id],
         )
     }
@@ -498,12 +506,39 @@ mod tests {
     fn set_ignored_sets_and_clears_both_flags() {
         let conn = open_memory().unwrap();
         let id = seed(&conn);
-        let got = set_ignored(&conn, id, true).unwrap();
+        let got = set_ignored(&conn, id, true, None).unwrap();
         assert!(got.ignored_at.is_some());
         assert!(got.is_personal);
-        let got = set_ignored(&conn, id, false).unwrap();
+        let got = set_ignored(&conn, id, false, None).unwrap();
         assert!(got.ignored_at.is_none());
         assert!(!got.is_personal);
+    }
+
+    #[test]
+    fn set_ignored_stores_replaces_and_clears_reason() {
+        let conn = open_memory().unwrap();
+        let id = seed(&conn);
+        let got = set_ignored(&conn, id, true, Some(IgnoreReason::Noise)).unwrap();
+        assert_eq!(got.ignore_reason, Some(IgnoreReason::Noise));
+        // re-ignoring with a different reason replaces it
+        let got = set_ignored(&conn, id, true, Some(IgnoreReason::Duplicate)).unwrap();
+        assert_eq!(got.ignore_reason, Some(IgnoreReason::Duplicate));
+        // reads back through the public getter too (SELECT lists the column)
+        let got = repo::get_block(&conn, id).unwrap().unwrap();
+        assert_eq!(got.ignore_reason, Some(IgnoreReason::Duplicate));
+        // forgets to clear on un-ignore
+        let got = set_ignored(&conn, id, false, None).unwrap();
+        assert_eq!(got.ignore_reason, None);
+        // un-ignore with a reason passed must still clear it
+        set_ignored(&conn, id, true, Some(IgnoreReason::Noise)).unwrap();
+        let got = set_ignored(&conn, id, false, Some(IgnoreReason::Noise)).unwrap();
+        assert_eq!(got.ignore_reason, None);
+        // ignoring with None leaves it NULL, not a stale or default value
+        let got = set_ignored(&conn, id, true, None).unwrap();
+        assert!(got.ignored_at.is_some());
+        assert_eq!(got.ignore_reason, None);
+        let listed = repo::list_blocks_for_day(&conn, "2026-04-18").unwrap();
+        assert_eq!(listed[0].ignore_reason, None);
     }
 
     #[test]
@@ -515,11 +550,15 @@ mod tests {
             params![synced],
         )
         .unwrap();
-        let err = set_ignored(&conn, synced, true).unwrap_err().to_string();
+        let err = set_ignored(&conn, synced, true, None)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("Tempo"), "{err}");
         let exported = seed(&conn);
         mark_exported(&conn, "2026-04-18").unwrap();
-        let err = set_ignored(&conn, exported, true).unwrap_err().to_string();
+        let err = set_ignored(&conn, exported, true, None)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("exported"), "{err}");
         let got = repo::get_block(&conn, synced).unwrap().unwrap();
         assert_eq!(got.tempo_worklog_id.as_deref(), Some("TW-1"));
@@ -535,8 +574,10 @@ mod tests {
             params![id],
         )
         .unwrap();
-        assert!(set_ignored(&conn, id, true).is_ok());
-        let err = set_ignored(&conn, 9999, true).unwrap_err().to_string();
+        assert!(set_ignored(&conn, id, true, None).is_ok());
+        let err = set_ignored(&conn, 9999, true, None)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("not found"), "{err}");
     }
 

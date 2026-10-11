@@ -12,6 +12,7 @@ use crate::raw_json::{decode_raw_json, encode_raw_json};
 use crate::scrub;
 use crate::tempo_hub_contract::StatusCategory;
 use crate::tempo_line_contract::TicketOrigin;
+use crate::time_leaks_contract::IgnoreReason;
 
 // ───────────────────────── events ─────────────────────────
 
@@ -155,7 +156,7 @@ pub fn list_blocks_for_day(conn: &Connection, day: &str) -> Result<Vec<Block>> {
     let mut stmt = conn.prepare(
         "SELECT id, day, jira_issue, started_at, ended_at, duration_seconds,
                 description, estimated_by, flagged, tempo_worklog_id, is_personal, dirty,
-                exported_at, ignored_at, ticket_origin, rough_note, description_origin
+                exported_at, ignored_at, ticket_origin, rough_note, description_origin, ignore_reason
            FROM blocks
           WHERE day = ?1
           ORDER BY started_at",
@@ -185,6 +186,10 @@ pub fn list_blocks_for_day(conn: &Connection, day: &str) -> Result<Vec<Block>> {
                 .get::<_, Option<String>>(16)?
                 .as_deref()
                 .and_then(DescriptionOrigin::parse),
+            ignore_reason: r
+                .get::<_, Option<String>>(17)?
+                .as_deref()
+                .and_then(IgnoreReason::parse),
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -230,7 +235,7 @@ pub fn get_block(conn: &Connection, id: i64) -> Result<Option<Block>> {
         .query_row(
             "SELECT id, day, jira_issue, started_at, ended_at, duration_seconds,
                     description, estimated_by, flagged, tempo_worklog_id, is_personal, dirty,
-                    exported_at, ignored_at, ticket_origin, rough_note, description_origin
+                    exported_at, ignored_at, ticket_origin, rough_note, description_origin, ignore_reason
                FROM blocks WHERE id = ?1",
             params![id],
             |r| {
@@ -258,6 +263,10 @@ pub fn get_block(conn: &Connection, id: i64) -> Result<Option<Block>> {
                         .get::<_, Option<String>>(16)?
                         .as_deref()
                         .and_then(DescriptionOrigin::parse),
+                    ignore_reason: r
+                        .get::<_, Option<String>>(17)?
+                        .as_deref()
+                        .and_then(IgnoreReason::parse),
                 })
             },
         )

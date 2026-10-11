@@ -23,7 +23,7 @@ type ReviewState = {
   error: string | undefined
 }
 
-const USAGE = 'usage: /wl today|week|review|ask <question>'
+const USAGE = 'usage: /wl today|week|review|install|ask <question>'
 
 const review = atom(
   { plugin: 'worklog', key: 'review' } as const,
@@ -96,6 +96,35 @@ async function ask(io: Io, question: string): Promise<string> {
   return hits.value
     .map(hit => `${hit.day}  ${hit.started_at.slice(11, 16)}–${hit.ended_at.slice(11, 16)}  ${hit.jira_issue ?? '—'}`)
     .join('\n')
+}
+
+const WORKLOG_ORIGIN_RE = /^(https:\/\/|ssh:\/\/git@|git@)github\.com[:/]TomasPalsson\/worklog(\.git)?\/?$/
+
+const tail = (text: string): string => text.trim().split('\n').slice(-10).join('\n')
+
+async function install($: EngineInterface, cwd: string | undefined): Promise<string> {
+  const refused = 'worklog install: run /wl install from inside the worklog repo'
+  if (cwd === undefined) return refused
+  const git = async (...argv: string[]) => {
+    const result = await $.process.run(['git', ...argv], { cwd })
+    return result.exitCode === 0 ? result.stdout.trim() : undefined
+  }
+  let root: string | undefined
+  try {
+    root = await git('rev-parse', '--show-toplevel')
+    if (root === undefined || !WORKLOG_ORIGIN_RE.test((await git('remote', 'get-url', 'origin')) ?? '')) {
+      return refused
+    }
+  } catch (error) {
+    return `worklog install failed: ${error instanceof Error ? error.message : String(error)}`
+  }
+  const result = await $.process
+    .run(['bash', 'scripts/install-local.sh'], { cwd: root })
+    .catch((error: unknown) => `worklog install failed: ${error instanceof Error ? error.message : String(error)}`)
+  if (typeof result === 'string') return result
+  return result.exitCode === 0
+    ? `worklog install: ok\n${tail(result.stdout)}`
+    : `worklog install failed (exit ${result.exitCode})\n${tail(result.stderr || result.stdout)}`
 }
 
 function typedAction(editing: 'ticket' | 'description', value: string): ReviewAction {
@@ -181,11 +210,14 @@ async function reviewPane($: EngineInterface, event: RenderInput<'Pane'>) {
 }
 
 export function registerCommand(on: On): void {
+  let sessionCwd: string | undefined
+
   on('session.start', { isInteractive: true }, async ($, event, next) => {
+    sessionCwd = event.cwd
     await $.command.register({
       name: 'wl',
-      description: 'Show logged hours, or review today in a pane',
-      argumentHint: 'today|week|review|ask',
+      description: 'Show logged hours, review today in a pane, or install origin/main',
+      argumentHint: 'today|week|review|install|ask',
     })
     return next(event)
   })
@@ -194,6 +226,7 @@ export function registerCommand(on: On): void {
     const argument = event.args.trim()
     const question = /^ask\s+(\S[\s\S]*)$/.exec(argument)?.[1]
     if (question !== undefined) return { text: await ask(await makeIo($), question) }
+    if (argument === 'install') return { text: await install($, sessionCwd) }
     if (argument !== 'today' && argument !== 'week' && argument !== 'review') {
       return { text: USAGE }
     }

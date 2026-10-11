@@ -463,3 +463,266 @@ fn records_merged_at() {
     assert_eq!(merged_at("1001"), None);
     assert_eq!(merged_at("2002").as_deref(), Some("2026-04-18T11:00:00Z"));
 }
+
+fn commit_items(prefix: &str, n: usize) -> serde_json::Value {
+    let items: Vec<_> = (0..n)
+        .map(|i| {
+            json!({"sha": format!("{prefix}{i}"), "repository": {"full_name": "org/repo"},
+                   "commit": {"author": {"date": "2026-04-18T09:00:00Z"}, "message": "work"}})
+        })
+        .collect();
+    json!({ "items": items })
+}
+
+fn pr_items(first_id: i64, n: usize) -> serde_json::Value {
+    let items: Vec<_> = (0..n as i64)
+        .map(|i| {
+            json!({"id": first_id + i, "number": first_id + i, "title": "pr", "body": null,
+                   "created_at": "2026-04-18T10:00:00Z", "closed_at": null,
+                   "repository_url": "https://api.github.com/repos/org/repo"})
+        })
+        .collect();
+    json!({ "items": items })
+}
+
+fn empty_issues(server: &MockServer) {
+    server.mock(|when, then| {
+        when.method(GET).path("/search/issues");
+        then.status(200).json_body(json!({"items": []}));
+    });
+}
+
+#[test]
+fn commits_page_through_every_page() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/search/commits")
+            .query_param("page", "1");
+        then.status(200).json_body(commit_items("a", 100));
+    });
+    let p2 = server.mock(|when, then| {
+        when.method(GET)
+            .path("/search/commits")
+            .query_param("page", "2");
+        then.status(200).json_body(commit_items("b", 1));
+    });
+    empty_issues(&server);
+
+    let (_conn, report, events) = run(server.base_url());
+    // single-page fetch stores 100
+    assert_eq!(report.events_written, 101);
+    assert_eq!(events.len(), 101);
+    // a short page 2 must end the loop: no page 3 request
+    assert_eq!(p2.hits(), 1);
+}
+
+#[test]
+fn short_first_page_requests_no_second_page() {
+    let server = MockServer::start();
+    let any = server.mock(|when, then| {
+        when.method(GET).path("/search/commits");
+        then.status(200).json_body(commit_items("a", 99));
+    });
+    empty_issues(&server);
+
+    let (_conn, report, _events) = run(server.base_url());
+    assert_eq!(report.events_written, 99);
+    // always-fetch-next would hit more than once
+    assert_eq!(any.hits(), 1);
+}
+
+#[test]
+fn commit_paging_stops_at_github_max_pages() {
+    let server = MockServer::start();
+    let any = server.mock(|when, then| {
+        when.method(GET).path("/search/commits");
+        then.status(200).json_body(commit_items("a", 100));
+    });
+    empty_issues(&server);
+
+    let _ = run(server.base_url());
+    // unbounded loop never ends; `>` for `>=` would make 11
+    assert_eq!(
+        any.hits(),
+        crate::time_leaks_contract::GITHUB_MAX_PAGES as usize
+    );
+}
+
+#[test]
+fn prs_page_through_every_page() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/search/commits");
+        then.status(200).json_body(json!({"items": []}));
+    });
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/search/issues")
+            .query_param("page", "1");
+        then.status(200).json_body(pr_items(1, 100));
+    });
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/search/issues")
+            .query_param("page", "2");
+        then.status(200).json_body(pr_items(101, 1));
+    });
+
+    let (_conn, report, events) = run(server.base_url());
+    // first-page-only PR fetch stores 100; created+merged return the same set, deduped to 101
+    assert_eq!(report.events_written, 101);
+    assert_eq!(events.len(), 101);
+}
+
+#[test]
+fn page_two_error_fails_the_collect() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/search/commits")
+            .query_param("page", "1");
+        then.status(200).json_body(commit_items("a", 100));
+    });
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/search/commits")
+            .query_param("page", "2");
+        then.status(403).body("rate limited");
+    });
+    empty_issues(&server);
+    let conn = open_memory().unwrap();
+    let err = format!(
+        "{:#}",
+        collect_with(
+            &conn,
+            &auth(server.base_url()),
+            NaiveDate::from_ymd_opt(2026, 4, 18).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 4, 19).unwrap(),
+            &http::client().unwrap(),
+        )
+        .unwrap_err()
+    );
+    // swallowing the page-2 error would return Ok with 100 events
+    assert!(err.contains("HTTP 403"), "err = {err}");
+}
+
+const COMMITS_Q: &str = "author:TomasPalsson author-date:2026-04-18..2026-04-19";
+
+fn mock_commit_page(server: &MockServer, page: u32, body: serde_json::Value) {
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/search/commits")
+            .query_param("q", COMMITS_Q)
+            .query_param("page", page.to_string());
+        then.status(200).json_body(body);
+    });
+}
+
+#[test]
+fn full_last_page_at_cap_warns_naming_query_and_cap() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/search/commits");
+        then.status(200).json_body(commit_items("a", 100));
+    });
+    empty_issues(&server);
+
+    let (_conn, report, _events) = run(server.base_url());
+    // silently dropping the truncated tail leaves errors empty
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert!(report.errors[0].contains(COMMITS_Q), "{:?}", report.errors);
+    assert!(report.errors[0].contains("10"), "{:?}", report.errors);
+}
+
+#[test]
+fn short_page_exactly_at_cap_does_not_warn() {
+    let server = MockServer::start();
+    for page in 1..=9 {
+        mock_commit_page(&server, page, commit_items(&format!("p{page}-"), 100));
+    }
+    mock_commit_page(&server, 10, commit_items("last", 99));
+    empty_issues(&server);
+
+    let (_conn, report, _events) = run(server.base_url());
+    // warning on page == cap regardless of fullness would flag this
+    assert_eq!(report.events_written, 999);
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+}
+
+#[test]
+fn full_page_before_cap_does_not_warn() {
+    let server = MockServer::start();
+    mock_commit_page(&server, 1, commit_items("a", 100));
+    mock_commit_page(&server, 2, commit_items("b", 1));
+    empty_issues(&server);
+
+    let (_conn, report, _events) = run(server.base_url());
+    // warning on any full page would flag this
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+}
+
+#[test]
+fn incomplete_results_true_warns_even_on_short_page() {
+    let server = MockServer::start();
+    let mut body = commit_items("a", 3);
+    body["incomplete_results"] = json!(true);
+    mock_commit_page(&server, 1, body);
+    empty_issues(&server);
+
+    let (_conn, report, _events) = run(server.base_url());
+    // ignoring the flag leaves errors empty
+    assert_eq!(report.events_written, 3);
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert!(report.errors[0].contains(COMMITS_Q), "{:?}", report.errors);
+    assert!(
+        report.errors[0].contains("incomplete"),
+        "{:?}",
+        report.errors
+    );
+}
+
+#[test]
+fn incomplete_results_false_does_not_warn() {
+    let server = MockServer::start();
+    let mut body = commit_items("a", 3);
+    body["incomplete_results"] = json!(false);
+    mock_commit_page(&server, 1, body);
+    empty_issues(&server);
+
+    let (_conn, report, _events) = run(server.base_url());
+    // warning whenever the field is present would flag this
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+}
+
+#[test]
+fn pr_search_at_cap_warns_naming_its_query() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/search/commits");
+        then.status(200).json_body(json!({"items": []}));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/search/issues").query_param(
+            "q",
+            "author:TomasPalsson type:pr created:2026-04-18..2026-04-19",
+        );
+        then.status(200).json_body(pr_items(1, 100));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/search/issues").query_param(
+            "q",
+            "author:TomasPalsson type:pr merged:2026-04-18..2026-04-19",
+        );
+        then.status(200).json_body(pr_items(1, 1));
+    });
+
+    let (_conn, report, _events) = run(server.base_url());
+    // only the commit search warning path wired up would leave errors empty
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert!(
+        report.errors[0].contains("type:pr created:"),
+        "{:?}",
+        report.errors
+    );
+}

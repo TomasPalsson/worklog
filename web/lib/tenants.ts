@@ -2,6 +2,7 @@
 // calls behind the Billing panel's tenant list + link editor (spec 005).
 
 import { call } from "./daemon";
+import type { DeildSuggestion } from "./time_leaks_contract";
 
 /** How a tenant got its customer (`tenant_contract::TenantOrigin`). */
 export type TenantOrigin = "alias" | "link" | "unmatched" | "ignored";
@@ -48,16 +49,13 @@ export async function getCustomerSlices(blockId: number): Promise<CustomerSlice[
   return call<CustomerSlice[]>("GET", `/blocks/${blockId}/customer-slices`);
 }
 
-/** Save the Owner's hand-set split. `shares` are fractions in `(0, 1]`
- * summing to 1 — the daemon rejects anything else with a 400. */
-export async function saveCustomerShares(
-  blockId: number,
-  shares: Record<string, number>,
-): Promise<{ ok: true }> {
-  return call("POST", `/blocks/${blockId}/customer-shares`, { shares });
-}
-
 /** Drop a hand-set split — the block goes back to the automatic split. */
 export async function clearCustomerShares(blockId: number): Promise<{ ok: true }> {
   return call("POST", `/blocks/${blockId}/customer-shares/clear`);
+}
+
+/** The deild the Owner saved most often for the block's customer; `null`
+ * when the block has no customer or already carries a deild. */
+export async function fetchDeildSuggestion(blockId: number): Promise<DeildSuggestion | null> {
+  return call<DeildSuggestion | null>("GET", `/blocks/${blockId}/deild-suggestion`);
 }

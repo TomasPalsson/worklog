@@ -172,6 +172,7 @@ mod tests {
             ticket_origin: None,
             rough_note: None,
             description_origin: None,
+            ignore_reason: None,
         }
     }
 
