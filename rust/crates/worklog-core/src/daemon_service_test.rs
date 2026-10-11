@@ -94,9 +94,13 @@ fn serve_versions() -> String {
         use std::io::{Read, Write};
         for (i, mut c) in l.incoming().flatten().enumerate() {
             let _ = c.read(&mut [0u8; 1024]);
-            let body = if i == 0 { "old" } else { "new" };
+            let body = if i == 0 {
+                r#"{"pid":1}"#
+            } else {
+                r#"{"pid":2}"#
+            };
             let _ = c.write_all(
-                format!("HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\n{body}")
+                format!("HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\n{body}")
                     .as_bytes(),
             );
         }
@@ -213,12 +217,16 @@ fn serve_restartable(flag: PathBuf) -> String {
     let addr = l.local_addr().unwrap().to_string();
     std::thread::spawn(move || {
         use std::io::{Read, Write};
+        let mut restarted = false;
         for mut c in l.incoming().flatten() {
             let _ = c.read(&mut [0u8; 1024]);
+            restarted |= flag.exists();
             let resp: &[u8] = if flag.exists() {
                 b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            } else if restarted {
+                b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\n{\"pid\":2}"
             } else {
-                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nv1"
+                b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\n{\"pid\":1}"
             };
             let _ = c.write_all(resp);
         }
@@ -238,7 +246,7 @@ fn fake_restartable_tool(home: &Path, flag: &Path) {
     let f = bin.join(name);
     let flag = flag.display();
     let script = format!(
-        "#!/bin/sh\ncase \"$*\" in\n*unload*|*stop*) touch {flag};;\n*load*|*enable*) rm -f {flag};;\nesac\n"
+        "#!/bin/sh\necho \"$*\" >> {flag}.log\ncase \"$*\" in\n*unload*|*stop*) touch {flag};;\n*load*|*enable*) rm -f {flag};;\nesac\n"
     );
     std::fs::write(&f, script).unwrap();
     std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -290,8 +298,9 @@ fn serve_v1_with_a_slow_second_answer() -> String {
             if i == 1 {
                 std::thread::sleep(Duration::from_millis(400));
             }
-            let _ =
-                c.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nv1");
+            let _ = c.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\n{\"pid\":1}",
+            );
         }
     });
     addr
@@ -314,6 +323,129 @@ fn install_does_not_take_a_timed_out_probe_as_the_old_daemon_gone() {
     restore();
     let e = r.unwrap_err().to_string();
     assert!(e.contains("did not answer the stop request"), "{e}");
+}
+
+const PID_REPLY: &str = "HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\n";
+
+fn serve_fixed_pid_with_a_down_window(flag: PathBuf) -> String {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap().to_string();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for mut c in l.incoming().flatten() {
+            let _ = c.read(&mut [0u8; 1024]);
+            let resp = if flag.exists() {
+                "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    .to_string()
+            } else {
+                format!("{PID_REPLY}{{\"pid\":7}}")
+            };
+            let _ = c.write_all(resp.as_bytes());
+        }
+    });
+    addr
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn install_fails_when_the_daemon_after_load_still_has_the_old_pid() {
+    // catches: accepting any 2xx /health after load (the old process came back or never left)
+    let tmp = tempdir().unwrap();
+    let _g = redirect(tmp.path());
+    let flag = tmp.path().join("stopped");
+    fake_restartable_tool(tmp.path(), &flag);
+    let tcp = serve_fixed_pid_with_a_down_window(flag);
+    let r = install_at("worklog daemon", &tcp, SHORT, Duration::from_millis(1));
+    restore();
+    let e = r.unwrap_err().to_string();
+    assert!(e.contains("did not answer"), "{e}");
+}
+
+fn serve_slow_first_then_pid_two(flag: PathBuf) -> String {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap().to_string();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for (i, mut c) in l.incoming().flatten().enumerate() {
+            let _ = c.read(&mut [0u8; 1024]);
+            if i == 0 {
+                std::thread::sleep(Duration::from_millis(400));
+            }
+            let resp = if flag.exists() {
+                "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    .to_string()
+            } else {
+                format!("{PID_REPLY}{{\"pid\":2}}")
+            };
+            let _ = c.write_all(resp.as_bytes());
+        }
+    });
+    addr
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn install_stops_the_service_when_the_pre_probe_times_out() {
+    // catches: reading a timed-out pre-probe as "nothing running" and skipping the stop
+    let tmp = tempdir().unwrap();
+    let _g = redirect(tmp.path());
+    let flag = tmp.path().join("stopped");
+    fake_restartable_tool(tmp.path(), &flag);
+    let tcp = serve_slow_first_then_pid_two(flag.clone());
+    let r = install_at(
+        "worklog daemon",
+        &tcp,
+        Duration::from_secs(5),
+        Duration::from_millis(1),
+    );
+    restore();
+    let log = std::fs::read_to_string(format!("{}.log", flag.display())).unwrap_or_default();
+    // launchd's install() unloads on its own, so the pre-install stop is the second one
+    let stops = log
+        .lines()
+        .filter(|l| l.contains("unload") || l.contains("stop"))
+        .count();
+    assert_eq!(
+        stops,
+        if cfg!(target_os = "macos") { 2 } else { 1 },
+        "{log}"
+    );
+    assert!(r.unwrap().installed);
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn install_with_nothing_running_passes_on_the_first_pid_it_sees() {
+    // catches: demanding a pid different from a pre-install pid that never existed
+    let tmp = tempdir().unwrap();
+    let _g = redirect(tmp.path());
+    let flag = tmp.path().join("stopped");
+    fake_restartable_tool(tmp.path(), &flag);
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let tcp = probe.local_addr().unwrap().to_string();
+    drop(probe);
+    let log = PathBuf::from(format!("{}.log", flag.display()));
+    let addr = tcp.clone();
+    std::thread::spawn(move || {
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        while !log.exists() && std::time::Instant::now() < until {
+            std::thread::yield_now();
+        }
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind(&addr).unwrap();
+        for mut c in l.incoming().flatten() {
+            let _ = c.read(&mut [0u8; 1024]);
+            let _ = c.write_all(format!("{PID_REPLY}{{\"pid\":5}}").as_bytes());
+        }
+    });
+    let r = install_at(
+        "worklog daemon",
+        &tcp,
+        Duration::from_secs(5),
+        Duration::from_millis(1),
+    );
+    restore();
+    assert!(r.unwrap().installed);
 }
 
 #[cfg(target_os = "macos")]

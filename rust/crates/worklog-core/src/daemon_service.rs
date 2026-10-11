@@ -63,11 +63,10 @@ fn install_at(
         Platform::Unsupported => return Ok(unsupported_status()),
     };
     let probe = std::time::Duration::from_millis(200);
-    let before = service_tool(tool).and_then(|_| health_body(tcp, probe));
+    let before = service_tool(tool).and_then(|_| pre_install_pid(tcp, probe));
     let mut old_gone = Ok(());
-    if let Some(old) = &before {
-        // /health carries no pid, so the new daemon is only provable once
-        // the old one is seen gone (down, or answering a different body).
+    if let Some(old) = before {
+        // A timed-out probe still means something holds the port, so stop either way.
         match Platform::current() {
             Platform::MacOS => macos::stop(),
             _ => linux::stop(),
@@ -87,8 +86,13 @@ fn install_at(
     };
     old_gone?;
     if service_tool(tool).is_some() {
-        // The old daemon was proven gone above, so any answer now is the new one.
-        await_healthy(tcp, |a| health_body(a, probe).is_some(), budget, step)?;
+        let old = before.flatten();
+        await_healthy(
+            tcp,
+            |a| health_pid(a, probe).is_some_and(|p| Some(p) != old),
+            budget,
+            step,
+        )?;
     }
     Ok(status)
 }
@@ -286,11 +290,32 @@ fn health_body(tcp: &str, timeout: std::time::Duration) -> Option<String> {
         .then(|| r.text().unwrap_or_default())
 }
 
+/// The `pid` in a 2xx `/health` body; the outer `Option` is "answered".
+fn pid_of(r: reqwest::blocking::Response) -> Option<Option<u64>> {
+    r.status().is_success().then(|| {
+        let v: serde_json::Value = serde_json::from_str(&r.text().unwrap_or_default()).ok()?;
+        v["pid"].as_u64()
+    })
+}
+
+fn health_pid(tcp: &str, timeout: std::time::Duration) -> Option<u64> {
+    pid_of(get_health(tcp, timeout).ok()?)?
+}
+
+/// `Some(pid)` when something holds the port: it answered (with its pid, if
+/// it reports one) or timed out (`None`). `None` when nothing is there.
+fn pre_install_pid(tcp: &str, timeout: std::time::Duration) -> Option<Option<u64>> {
+    match get_health(tcp, timeout) {
+        Err(e) => e.is_timeout().then_some(None),
+        Ok(r) => pid_of(r),
+    }
+}
+
 /// A timeout is not proof: a loaded old daemon is slow, not gone.
-fn old_daemon_gone(tcp: &str, old: &str, timeout: std::time::Duration) -> bool {
+fn old_daemon_gone(tcp: &str, old: Option<u64>, timeout: std::time::Duration) -> bool {
     match get_health(tcp, timeout) {
         Err(e) => !e.is_timeout(),
-        Ok(r) => !r.status().is_success() || r.text().unwrap_or_default() != old,
+        Ok(r) => pid_of(r).is_none_or(|p| p != old),
     }
 }
 
