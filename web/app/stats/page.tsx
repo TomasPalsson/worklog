@@ -1,7 +1,7 @@
 // Statistics: "Wrapped" for the workday. Every number comes from the daemon's
 // GET /stats; this page only lays the story out.
 
-import type { ReactNode } from "react";
+import { Suspense, type ReactNode } from "react";
 
 import { DayFlow } from "@/components/art/DayFlow";
 import { ActivityStream } from "@/components/stats/ActivityStream";
@@ -54,7 +54,12 @@ const TICKET_ORIGIN: Record<string, string> = { event: "from activity", auto: "a
 const friendly = (rows: Ranked[], names: Record<string, string>) =>
   rows.map((x) => ({ ...x, label: names[x.label] ?? x.label }));
 
-function Story({ r, topics }: { r: StatsReport; topics: TopicsReport | null }) {
+// Streams in after the rest of the page: the helper may take up to 90s to embed.
+async function Topics({ topics }: { topics: Promise<TopicsReport | null> }) {
+  return <TopicsSection report={await topics} />;
+}
+
+function Story({ r, topics }: { r: StatsReport; topics: Promise<TopicsReport | null> }) {
   return (
     <>
       <StatsHero report={r} />
@@ -109,7 +114,9 @@ function Story({ r, topics }: { r: StatsReport; topics: TopicsReport | null }) {
         <TicketTimeline tickets={r.tickets} from={r.from} to={r.to} today={r.today} totalWork={r.totals.work_seconds} />
       </Section>
       <Section title="Topics">
-        <TopicsSection report={topics} />
+        <Suspense fallback={<p>Loading topics…</p>}>
+          <Topics topics={topics} />
+        </Suspense>
       </Section>
       <Section title="Housekeeping">
         <div className="stats-three">
@@ -138,7 +145,7 @@ export default async function StatsPage({ searchParams }: Props) {
 
   let report: StatsReport | null = null;
   let loadError: string | null = null;
-  const topics = await getTopics(from, to).catch(() => null);
+  const topics = getTopics(from, to).catch(() => null);
   try {
     report = await getStats(from, to);
   } catch (e) {
