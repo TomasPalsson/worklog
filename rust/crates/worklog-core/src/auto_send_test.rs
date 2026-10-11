@@ -603,7 +603,7 @@ fn a_failed_rollover_recap_does_not_stop_the_days_sending() {
     ready_line(&conn, "2026-10-07", "B-1");
     conn.execute("ALTER TABLE recaps RENAME TO recaps_off", [])
         .unwrap();
-    let tried = tick(&conn, local(7, 17, 0), true, accepts);
+    let tried = tick(&conn, local(7, 17, 0), true, unreachable);
     // catches: propagating the recap error, which skips today's sends
     assert_eq!(tried, vec!["2026-10-07/B-1".to_owned()]);
     for (k, v) in saved {
