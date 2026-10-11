@@ -3345,36 +3345,28 @@ fn db_probe<T>(
     }
 }
 
-/// The error text of each failed database probe, `null` when the probe
-/// succeeded or never ran — the `--json` analog of `daemon.service_error`.
-fn probe_errors_json<A, B, C>(
-    database: &Option<Result<A>>,
-    last_prune: &Option<Result<B>>,
-    today: &Option<Result<C>>,
-) -> serde_json::Value {
-    fn text<T>(p: &Option<Result<T>>) -> Option<String> {
-        p.as_ref()
-            .and_then(|r| r.as_ref().err())
-            .map(|e| e.to_string())
-    }
-    serde_json::json!({
-        "database_error": text(database),
-        "last_prune_error": text(last_prune),
-        "today_error": text(today),
-    })
-}
-
-/// `status` with the three probe-error fields merged in.
+/// Put each failed probe's error text under that probe's own `error` key
+/// (the `schedule.error` shape); ok probes get `error: null` beside their
+/// data, probes that never ran stay null.
 fn with_probe_errors<A, B, C>(
     mut status: serde_json::Value,
     database: &Option<Result<A>>,
     last_prune: &Option<Result<B>>,
     today: &Option<Result<C>>,
 ) -> serde_json::Value {
-    let errs = probe_errors_json(database, last_prune, today);
-    for k in ["database_error", "last_prune_error", "today_error"] {
-        status[k] = errs[k].clone();
+    fn put<T>(status: &mut serde_json::Value, key: &str, p: &Option<Result<T>>) {
+        match p.as_ref().and_then(|r| r.as_ref().err()) {
+            Some(e) => status[key] = serde_json::json!({ "error": e.to_string() }),
+            None => {
+                if let Some(o) = status[key].as_object_mut() {
+                    o.insert("error".into(), serde_json::Value::Null);
+                }
+            }
+        }
     }
+    put(&mut status, "database", database);
+    put(&mut status, "last_prune", last_prune);
+    put(&mut status, "today", today);
     status
 }
 
@@ -5734,38 +5726,32 @@ mod tests {
         assert!(rows.iter().any(|r| r.source == "jira"));
     }
 
-    /// A failed database / last-prune / today probe puts its text in the
-    /// status JSON; ok and never-ran probes stay null. Catches swallowing
-    /// the error (null for Err) and reporting "never ran" (None) as an error.
+    /// A failed probe's text sits under that probe's own `error` key, like
+    /// `schedule.error`; ok probes carry `error: null` beside their data and
+    /// never-ran probes stay null. Catches flat top-level keys, swallowing
+    /// the error, and reporting "never ran" (None) as an error.
     #[test]
-    fn probe_errors_json_carries_failed_probe_text() {
+    fn status_json_nests_probe_errors_under_each_probe() {
         let failed: Option<Result<u8>> = Some(Err(anyhow::anyhow!("disk I/O error")));
         let ok: Option<Result<u8>> = Some(Ok(1));
         let never: Option<Result<u8>> = None;
-        let v = probe_errors_json(&failed, &ok, &never);
-        assert_eq!(v["database_error"], "disk I/O error");
-        assert!(v["last_prune_error"].is_null());
-        assert!(v["today_error"].is_null());
-        let v = probe_errors_json(&ok, &never, &failed);
-        assert!(v["database_error"].is_null());
-        assert!(v["last_prune_error"].is_null());
-        assert_eq!(v["today_error"], "disk I/O error");
-        let v = probe_errors_json(&never, &failed, &ok);
-        assert_eq!(v["last_prune_error"], "disk I/O error");
-    }
-
-    /// The status document itself carries the failed-probe text, beside
-    /// the fields already there. Catches a merge that is dropped or skipped.
-    #[test]
-    fn status_json_with_probe_errors_carries_failed_probe_text() {
-        let failed: Option<Result<u8>> = Some(Err(anyhow::anyhow!("disk I/O error")));
-        let ok: Option<Result<u8>> = Some(Ok(1));
-        let base = serde_json::json!({ "web": { "running": true } });
-        let v = with_probe_errors(base, &failed, &ok, &failed);
-        assert_eq!(v["database_error"], "disk I/O error");
-        assert!(v["last_prune_error"].is_null());
-        assert_eq!(v["today_error"], "disk I/O error");
+        let base = serde_json::json!({
+            "web": { "running": true },
+            "database": null,
+            "last_prune": { "cutoff": "2026-01-01" },
+            "today": null,
+        });
+        let v = with_probe_errors(base.clone(), &failed, &ok, &failed);
+        assert_eq!(v["database"]["error"], "disk I/O error");
+        assert!(v["last_prune"]["error"].is_null());
+        assert_eq!(v["last_prune"]["cutoff"], "2026-01-01");
+        assert_eq!(v["today"]["error"], "disk I/O error");
         assert_eq!(v["web"]["running"], true);
+        assert!(v.get("database_error").is_none());
+        let v = with_probe_errors(base.clone(), &never, &failed, &never);
+        assert!(v["database"].is_null());
+        assert_eq!(v["last_prune"]["error"], "disk I/O error");
+        assert!(v["today"].is_null());
     }
 
     /// FR-17 at the call site: cmd_status reads health through sources_from_db.
