@@ -178,7 +178,7 @@ fn operator_characters_are_text_not_syntax() {
     ] {
         assert!(search(&conn, q).is_ok(), "query {q:?} errored");
     }
-    assert_eq!(ask(&conn, "invoice AND").len(), 0); // AND must be a literal word
+    assert_eq!(ask(&conn, "AND").len(), 0); // lone operator word stays a literal, not syntax
     assert_eq!(ask(&conn, "\"refactor\" invoice").len(), 1);
 }
 
@@ -301,4 +301,58 @@ fn sync_batch_drops_rows_of_deleted_blocks() {
     sync_batch(&conn, 10).unwrap();
     // catches: orphan rows kept when only a batch runs
     assert!(!indexed_ids(&conn).contains(&gone));
+}
+
+fn query(text: &str) -> Option<String> {
+    to_match_query(text)
+}
+
+#[test]
+fn query_joins_words_with_or_and_drops_stopwords() {
+    // catches: words still joined by a space (implicit AND)
+    assert_eq!(
+        query("geitin vís").as_deref(),
+        Some("\"geitin\" OR \"vís\"")
+    );
+    // catches: stopwords kept (English and Icelandic)
+    assert_eq!(
+        query("geitin access for vís").as_deref(),
+        Some("\"geitin\" OR \"access\" OR \"vís\"")
+    );
+    // catches: case-sensitive stopword compare
+    assert_eq!(query("The Geitin").as_deref(), Some("\"Geitin\""));
+    // catches: no trimming of .,:;() before compare
+    assert_eq!(query("(the) geitin,").as_deref(), Some("\"geitin,\""));
+    // catches: all-stopword query dropped to nothing instead of kept
+    assert_eq!(query("the og").as_deref(), Some("\"the\" OR \"og\""));
+    // catches: blank query returning Some
+    assert_eq!(query("  "), None);
+}
+
+#[test]
+fn matches_any_word_and_ranks_best_first() {
+    let conn = open_memory().unwrap();
+    // Newest block matches one word; the older block matches both.
+    let both = block(&conn, "2026-04-01", 9, None, "geitin access review");
+    let one = block(&conn, "2026-04-09", 9, None, "geitin cleanup");
+    block(&conn, "2026-04-10", 9, None, "unrelated words");
+    sync(&conn).unwrap();
+    let ids: Vec<i64> = ask(&conn, "geitin access for vís")
+        .iter()
+        .map(|h| h.block_id)
+        .collect();
+    // catches: implicit AND (one word missing from the index -> nothing), ordering
+    // by recency alone (newest single-word match first), stopword "for" matching
+    assert_eq!(ids, vec![both, one]);
+}
+
+#[test]
+fn equal_rank_ties_break_newest_first() {
+    let conn = open_memory().unwrap();
+    let old = block(&conn, "2026-04-01", 9, None, "invoice");
+    let new = block(&conn, "2026-04-02", 9, None, "invoice");
+    sync(&conn).unwrap();
+    // catches: dropping the started_at tiebreak after rank
+    let ids: Vec<i64> = ask(&conn, "invoice").iter().map(|h| h.block_id).collect();
+    assert_eq!(ids, vec![new, old]);
 }

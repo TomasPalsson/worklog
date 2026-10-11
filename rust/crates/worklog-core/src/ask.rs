@@ -123,14 +123,29 @@ pub fn sync_batch(conn: &Connection, limit: usize) -> Result<usize> {
     Ok(left as usize)
 }
 
+const STOPWORDS: &[&str] = &[
+    "a", "an", "the", "to", "of", "in", "on", "for", "and", "or", "with", "by", "at", "is", "are",
+    "was", "be", "from", "as", "it", "this", "that", "i", "my", "me", "we", "our", "og", "í", "á",
+    "að", "við", "fyrir", "með", "um", "sem", "er", "var", "til", "af",
+];
+
+fn is_stopword(word: &str) -> bool {
+    let bare = word.trim_matches(|c| ".,:;()".contains(c)).to_lowercase();
+    STOPWORDS.contains(&bare.as_str())
+}
+
 /// Each word becomes a quoted FTS5 string, so quotes and operators are text.
+/// Words are OR-joined; stopwords are dropped unless nothing else is left.
 /// `None` when the query holds no words.
 pub fn to_match_query(query: &str) -> Option<String> {
-    let words: Vec<String> = query
-        .split_whitespace()
+    let all: Vec<&str> = query.split_whitespace().collect();
+    let kept: Vec<&str> = all.iter().copied().filter(|w| !is_stopword(w)).collect();
+    let words = if kept.is_empty() { all } else { kept };
+    let quoted: Vec<String> = words
+        .iter()
         .map(|w| format!("\"{}\"", w.replace('"', "\"\"")))
         .collect();
-    (!words.is_empty()).then(|| words.join(" "))
+    (!quoted.is_empty()).then(|| quoted.join(" OR "))
 }
 
 pub fn search(conn: &Connection, query: &str) -> Result<Vec<Hit>> {
@@ -141,7 +156,7 @@ pub fn search(conn: &Connection, query: &str) -> Result<Vec<Hit>> {
         "SELECT b.id, b.day, b.started_at, b.ended_at, b.jira_issue
            FROM ask_index JOIN blocks b ON b.id = ask_index.block_id
           WHERE ask_index MATCH ?1
-          ORDER BY b.started_at DESC, b.id DESC
+          ORDER BY rank, b.started_at DESC, b.id DESC
           LIMIT ?2",
     )?;
     let hits = st
