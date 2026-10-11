@@ -95,7 +95,8 @@ fn deild_suggestion(c: &Connection, customer: &str) -> anyhow::Result<Option<Dei
     let mut tally: HashMap<String, (u32, usize)> = HashMap::new();
     for (i, (rows_json, shares)) in saved.iter().enumerate() {
         for row in tenant_shares::parse_rows(rows_json.as_deref(), shares) {
-            if let (true, Some(deild)) = (row.customer == customer, row.deild) {
+            let deild = row.deild.filter(|d| !d.trim().is_empty());
+            if let (true, Some(deild)) = (row.customer == customer, deild) {
                 let t = tally.entry(deild).or_default();
                 *t = (t.0 + 1, i);
             }

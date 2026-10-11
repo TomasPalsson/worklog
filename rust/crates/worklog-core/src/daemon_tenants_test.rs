@@ -871,6 +871,18 @@ async fn deild_suggestion_does_not_count_rows_without_a_deild() {
     assert_eq!(v["deild"], "Rekstur");
 }
 
+/// A blank saved deild is not a pick (catches suggesting an empty chip).
+#[tokio::test(flavor = "current_thread")]
+async fn deild_suggestion_does_not_count_blank_deilds() {
+    let (state, block_id) = seed_target().await;
+    for hour in 10..13 {
+        save_history(&state, hour, &rows("Acme", Some(" "))).await;
+    }
+    save_history(&state, 13, &rows("Acme", Some("Rekstur"))).await;
+    let (_, v) = suggestion(&state, block_id).await;
+    assert_eq!(v["deild"], "Rekstur");
+}
+
 /// No saved deild anywhere for the customer → null (catches an error or
 /// an invented default).
 #[tokio::test(flavor = "current_thread")]
