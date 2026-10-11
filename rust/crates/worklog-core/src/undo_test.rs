@@ -145,7 +145,7 @@ fn undo_ignored_restores_both_flags() {
     let mut conn = open_memory().unwrap();
     let id = seed30(&conn);
     let before = dump(&conn);
-    bs::set_ignored(&conn, id, true).unwrap();
+    bs::set_ignored(&conn, id, true, None).unwrap();
     assert_eq!(
         undo_last(&mut conn).unwrap(),
         restored(BlockChange::Ignored, &[id])

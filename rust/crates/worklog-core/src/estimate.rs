@@ -2421,7 +2421,7 @@ mod tests {
         )
         .unwrap();
         let bid = conn.last_insert_rowid();
-        crate::block_service::set_ignored(&conn, bid, true).unwrap();
+        crate::block_service::set_ignored(&conn, bid, true, None).unwrap();
         let invoker = FixedInvoker(json!({"jira_issue": null, "minutes": 30, "description": "no"}));
         let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
         let stats = estimate_day_with(&conn, day, "m", &invoker).unwrap();

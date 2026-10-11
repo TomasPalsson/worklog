@@ -1548,7 +1548,7 @@ async fn set_ignored(
     // already synced/exported), not 500s.
     let missing = format!("block {id} not found");
     let block = with_conn(state, move |c| {
-        Ok(block_service::set_ignored(c, id, ignored))
+        Ok(block_service::set_ignored(c, id, ignored, None))
     })
     .await?
     .map_err(|e| {
