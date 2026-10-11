@@ -15,12 +15,16 @@ Binds 127.0.0.1 only. Endpoints:
   POST /pick      -> body {"text": <str>, "options": [{"id": <ticket key>, "description": <summary>}, ...]}
                      response same shape as /classify (choice is an option id)
                      blank text or fewer than 2 options -> 400
+  POST /embed     -> body {"texts": [<str>, ...]}  (1..64 texts)
+                     response {"vectors": [[<768 floats>], ...]}, L2-normalised, one per text
+                     empty or more than 64 texts -> 400
 
 The callers send at most 6 options, so no grouping is needed. `--self-test`
 runs on fakes with the system python3 — it never imports rlcd.
 """
 import functools
 import json
+import math
 import os
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -39,7 +43,13 @@ QUESTION = "Which project folder does this work activity belong to? Links, repo 
 
 PICK_QUESTION = "Which Jira ticket is this coding session working on? Ticket keys, branch names and the request's own words are the strongest evidence."
 
+EMBED_MAX = 64
+EMBED_REPO = "google/embeddinggemma-2"
+EMBED_REVISION = "914f7f89142e33e77833254d9c9b90c3cef7303b"
+EMBED_PREFIX = "task: clustering | query: "
+
 ENGINE = None
+EMBEDDER = None
 
 
 def _load_engine():
@@ -61,6 +71,31 @@ def _load_engine():
         ],
     )
     return DecisionEngine(model_name_or_path=model_dir, device="cpu")
+
+
+def _encode(prefixed):
+    global EMBEDDER
+    if EMBEDDER is None:
+        import torch
+        from sentence_transformers import SentenceTransformer
+
+        # The vision/audio configs are nulled because the text path never uses them.
+        EMBEDDER = SentenceTransformer(
+            EMBED_REPO,
+            revision=EMBED_REVISION,
+            model_kwargs={"torch_dtype": torch.bfloat16},
+            config_kwargs={"vision_config": None, "audio_config": None},
+        )
+    return EMBEDDER.encode(prefixed, convert_to_tensor=True).float().cpu().tolist()
+
+
+def embed(texts):
+    return [_unit(vector) for vector in _encode([EMBED_PREFIX + text for text in texts])]
+
+
+def _unit(vector):
+    norm = math.sqrt(sum(x * x for x in vector))
+    return [x / norm for x in vector] if norm else vector
 
 
 def classify(state, options, examples=None):
@@ -206,7 +241,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
-        if self.path not in ("/classify", "/match", "/pick"):
+        if self.path not in ("/classify", "/match", "/pick", "/embed"):
             self.send_response(404)
             self.end_headers()
             return
@@ -219,6 +254,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
             self._send_json({"matches": match(query, body.get("states", []))})
+            return
+        if self.path == "/embed":
+            texts = body.get("texts", [])
+            if not 0 < len(texts) <= EMBED_MAX:
+                self.send_response(400)
+                self.end_headers()
+                return
+            self._send_json({"vectors": embed([str(text) for text in texts])})
             return
         if self.path == "/pick":
             text = str(body.get("text", "")).strip()
@@ -326,6 +369,7 @@ def self_test():
 
     _event_text_room()
     _http_round_trip()
+    _embed_checks()
     print("verdict_server self-test OK")
 
 
@@ -374,6 +418,52 @@ def _http_round_trip():
     finally:
         server.shutdown()
         _probabilities = real
+
+
+def _embed_checks():
+    import threading
+    import urllib.error
+    import urllib.request
+
+    global _encode
+    seen = []
+    real = _encode
+    _encode = lambda prefixed: seen.append(prefixed) or [[3.0, 4.0] for _ in prefixed]
+    server = HTTPServer((HOST, 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def post(texts):
+        request = urllib.request.Request(f"http://{HOST}:{server.server_port}/embed", json.dumps({"texts": texts}).encode())
+        return urllib.request.urlopen(request)
+
+    def status(texts):
+        try:
+            post(texts)
+        except urllib.error.HTTPError as error:
+            return error.code
+        return 200
+
+    try:
+        reply = json.load(post(["fix sso login", "b"]))
+        # unit length (catches returning raw vectors), one per text in order
+        assert reply == {"vectors": [[0.6, 0.8], [0.6, 0.8]]}
+        # every text carries the clustering prefix (catches sending raw text)
+        assert seen == [["task: clustering | query: fix sso login", "task: clustering | query: b"]]
+        # exactly 64 accepted, 65 rejected (catches > vs >=), empty rejected
+        assert status(["t"] * EMBED_MAX) == 200
+        assert status(["t"] * (EMBED_MAX + 1)) == 400
+        assert status([]) == 400
+        # the encoder is not called for a rejected request (catches validate-after-encode)
+        before = len(seen)
+        status([])
+        status(["t"] * (EMBED_MAX + 1))
+        assert len(seen) == before
+        # a zero vector stays finite (catches divide by zero)
+        _encode = lambda prefixed: [[0.0, 0.0] for _ in prefixed]
+        assert json.load(post(["z"])) == {"vectors": [[0.0, 0.0]]}
+    finally:
+        server.shutdown()
+        _encode = real
 
 
 def main():
