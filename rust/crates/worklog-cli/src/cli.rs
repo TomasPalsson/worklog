@@ -1689,9 +1689,52 @@ fn collect_targets(
     paths.ensure()?;
     let conn = db::open(&paths.db)?;
     let client = http::client()?;
+    collect_targets_with(&conn, target, since, until, |source| match source {
+        CollectTarget::Jira => match jira_col::JiraAuth::from_secrets() {
+            Ok(auth) => jira_col::fetch_open_tickets_with(&conn, &auth, &client)
+                .map_err(|e| format!("fetch: {e}")),
+            Err(e) => Err(format!("skipped: {e}")),
+        },
+        CollectTarget::Github => match gh::GitHubAuth::from_secrets() {
+            Ok(auth) => gh::collect_with(&conn, &auth, since, until, &client)
+                .map_err(|e| format!("fetch: {e}")),
+            Err(e) => Err(format!("skipped: {e}")),
+        },
+        CollectTarget::Gcal => match gcal_col::GcalAuth::from_paths() {
+            Ok(auth) => gcal_col::collect_with(&conn, &auth, since, until, &client)
+                .map_err(|e| format!("fetch: {e}")),
+            Err(e) => Err(format!("skipped: {e}")),
+        },
+        CollectTarget::Slack => match slack_col::SlackAuth::from_secrets() {
+            Ok(auth) => {
+                slack_col::collect_with(&conn, &auth, since, until, &client, slack_col::SLACK_API)
+                    .map_err(|e| format!("fetch: {e}"))
+            }
+            Err(e) => Err(format!("skipped: {e}")),
+        },
+        CollectTarget::Shell => {
+            fish_col::collect(&conn, since, until).map_err(|e| format!("fetch: {e}"))
+        }
+        CollectTarget::Reflog => {
+            reflog_col::collect(&conn, since, until).map_err(|e| format!("fetch: {e}"))
+        }
+        CollectTarget::ClaudeTranscripts => {
+            claude_transcripts_col::collect(&conn, since, until).map_err(|e| format!("fetch: {e}"))
+        }
+        CollectTarget::All => unreachable!("collect_target_list only yields concrete sources"),
+    })
+}
+
+fn collect_targets_with(
+    conn: &rusqlite::Connection,
+    target: CollectTarget,
+    since: chrono::NaiveDate,
+    until: chrono::NaiveDate,
+    run: impl Fn(CollectTarget) -> std::result::Result<worklog_core::collectors::CollectReport, String>,
+) -> Result<Vec<CollectOutcome>> {
     let record_health = |outcome: &CollectOutcome| {
         let r = record_outcome(outcome, |s, h| {
-            worklog_core::collect_health::record(&conn, s, h)
+            worklog_core::collect_health::record(conn, s, h)
         });
         if let Err(e) = r {
             eprintln!("worklog: recording collect health failed: {e}");
@@ -1702,46 +1745,7 @@ fn collect_targets(
     for source in collect_target_list(target) {
         let label = source_label(source);
         let pb = style::spinner(&format!("{label} …"));
-        let result = match source {
-            CollectTarget::Jira => match jira_col::JiraAuth::from_secrets() {
-                Ok(auth) => jira_col::fetch_open_tickets_with(&conn, &auth, &client)
-                    .map_err(|e| format!("fetch: {e}")),
-                Err(e) => Err(format!("skipped: {e}")),
-            },
-            CollectTarget::Github => match gh::GitHubAuth::from_secrets() {
-                Ok(auth) => gh::collect_with(&conn, &auth, since, until, &client)
-                    .map_err(|e| format!("fetch: {e}")),
-                Err(e) => Err(format!("skipped: {e}")),
-            },
-            CollectTarget::Gcal => match gcal_col::GcalAuth::from_paths() {
-                Ok(auth) => gcal_col::collect_with(&conn, &auth, since, until, &client)
-                    .map_err(|e| format!("fetch: {e}")),
-                Err(e) => Err(format!("skipped: {e}")),
-            },
-            CollectTarget::Slack => match slack_col::SlackAuth::from_secrets() {
-                Ok(auth) => slack_col::collect_with(
-                    &conn,
-                    &auth,
-                    since,
-                    until,
-                    &client,
-                    slack_col::SLACK_API,
-                )
-                .map_err(|e| format!("fetch: {e}")),
-                Err(e) => Err(format!("skipped: {e}")),
-            },
-            CollectTarget::Shell => {
-                fish_col::collect(&conn, since, until).map_err(|e| format!("fetch: {e}"))
-            }
-            CollectTarget::Reflog => {
-                reflog_col::collect(&conn, since, until).map_err(|e| format!("fetch: {e}"))
-            }
-            CollectTarget::ClaudeTranscripts => {
-                claude_transcripts_col::collect(&conn, since, until)
-                    .map_err(|e| format!("fetch: {e}"))
-            }
-            CollectTarget::All => unreachable!("collect_target_list only yields concrete sources"),
-        };
+        let result = run(source);
         pb.finish_and_clear();
         let outcome = match result {
             Ok(r) => CollectOutcome::Ok(source, r),
@@ -1765,15 +1769,22 @@ fn collect_targets(
         let rule = daemon_mod::configured_route_rule();
         let mut d = since;
         while d < until {
-            let routed = routing::route_day(&conn, d, &classifier, rule)
-                .and_then(|_| routing_absorb::absorb_and_noise(&conn, d));
-            if let Err(e) = routed {
-                let outcome = CollectOutcome::RoutingFailed {
-                    day: d,
-                    message: e.to_string(),
-                };
-                record_health(&outcome);
-                outcomes.push(outcome);
+            let routed = routing::route_day(conn, d, &classifier, rule)
+                .and_then(|_| routing_absorb::absorb_and_noise(conn, d));
+            match routed {
+                Ok(_) => {
+                    if let Err(e) = worklog_core::collect_health::record(conn, "routing", Ok(())) {
+                        eprintln!("worklog: recording collect health failed: {e}");
+                    }
+                }
+                Err(e) => {
+                    let outcome = CollectOutcome::RoutingFailed {
+                        day: d,
+                        message: e.to_string(),
+                    };
+                    record_health(&outcome);
+                    outcomes.push(outcome);
+                }
             }
             d += chrono::Duration::days(1);
         }
@@ -3171,6 +3182,12 @@ fn status_sources(
     }
 }
 
+fn sources_from_db(
+    conn: Option<&rusqlite::Connection>,
+) -> Vec<worklog_core::time_leaks_contract::SourceHealth> {
+    status_sources(conn.map(|c| worklog_core::collect_health::all(c, chrono::Utc::now())))
+}
+
 fn source_health_line(h: &worklog_core::time_leaks_contract::SourceHealth) -> String {
     format!(
         "ok {} · err {} · {} events/24h",
@@ -3218,11 +3235,7 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
         .and_then(|c| worklog_core::purge::last_prune(c).ok())
         .flatten();
 
-    let sources = status_sources(
-        db_conn
-            .as_ref()
-            .map(|c| worklog_core::collect_health::all(c, chrono::Utc::now())),
-    );
+    let sources = sources_from_db(db_conn.as_ref());
 
     // Today's tracked time — only reachable when the daemon is up.
     let today = worklog_core::tz::local_date(chrono::Utc::now()).to_string();
@@ -5497,6 +5510,72 @@ mod tests {
         assert_eq!(get("reflog").events_24h, 1);
         assert_eq!(get("claude_transcripts").events_24h, 1);
         assert_eq!(rows.len(), 3); // no stray event-named rows
+    }
+
+    fn day_range() -> (chrono::NaiveDate, chrono::NaiveDate) {
+        let d = chrono::Utc::now().date_naive();
+        (d, d + chrono::Duration::days(1))
+    }
+
+    /// FR-16 at the call site: every runner outcome (Ok, Warn, Skip) lands in
+    /// collect_health; catches dropping record_health from the per-source loop.
+    #[test]
+    fn collect_targets_with_records_each_source_outcome() {
+        let conn = db::open_memory().unwrap();
+        let (since, until) = day_range();
+        let out = collect_targets_with(&conn, CollectTarget::All, since, until, |s| match s {
+            CollectTarget::Jira => Err("fetch: boom".to_string()),
+            CollectTarget::Slack => Err("skipped: no token".to_string()),
+            _ => Ok(worklog_core::collectors::CollectReport::default()),
+        })
+        .unwrap();
+        assert!(!out.is_empty());
+        let rows = worklog_core::collect_health::all(&conn, chrono::Utc::now()).unwrap();
+        let get = |n: &str| rows.iter().find(|r| r.source == n).unwrap().clone();
+        assert!(get("jira").last_err.unwrap().contains("boom"));
+        assert!(get("slack").last_err.unwrap().contains("no token"));
+        assert!(get("github").last_ok.is_some());
+        assert!(get("claude_transcripts").last_ok.is_some());
+    }
+
+    /// A healthy routing pass writes routing last_ok, so a fixed failure
+    /// stops showing as a standing error; catches only recording failures.
+    #[test]
+    fn collect_targets_with_records_routing_ok() {
+        let conn = db::open_memory().unwrap();
+        let (since, until) = day_range();
+        collect_targets_with(&conn, CollectTarget::All, since, until, |_| {
+            Ok(worklog_core::collectors::CollectReport::default())
+        })
+        .unwrap();
+        let rows = worklog_core::collect_health::all(&conn, chrono::Utc::now()).unwrap();
+        let r = rows.iter().find(|r| r.source == "routing").unwrap();
+        assert!(r.last_ok.is_some());
+    }
+
+    /// A single-source collect does not touch routing health.
+    #[test]
+    fn collect_targets_with_single_target_skips_routing() {
+        let conn = db::open_memory().unwrap();
+        let (since, until) = day_range();
+        collect_targets_with(&conn, CollectTarget::Jira, since, until, |_| {
+            Ok(worklog_core::collectors::CollectReport::default())
+        })
+        .unwrap();
+        let rows = worklog_core::collect_health::all(&conn, chrono::Utc::now()).unwrap();
+        assert!(rows.iter().all(|r| r.source != "routing"));
+        assert!(rows.iter().any(|r| r.source == "jira"));
+    }
+
+    /// FR-17 at the call site: cmd_status reads health through sources_from_db.
+    #[test]
+    fn sources_from_db_lists_recorded_sources() {
+        let conn = db::open_memory().unwrap();
+        worklog_core::collect_health::record(&conn, "jira", Ok(())).unwrap();
+        let rows = sources_from_db(Some(&conn));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].source, "jira");
+        assert!(sources_from_db(None).is_empty());
     }
 
     /// FR-17: no database means no rows, not a panic.
