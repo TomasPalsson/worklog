@@ -65,6 +65,21 @@ fn production_embed_timeout_is_thirty_seconds() {
 }
 
 #[test]
+fn prompts_query_starts_from_the_blocks_own_events() {
+    let conn = open_memory().unwrap();
+    let mut stmt = conn
+        .prepare(&format!("EXPLAIN QUERY PLAN {PROMPTS_SQL}"))
+        .unwrap();
+    let plan: Vec<String> = stmt
+        .query_map(params![1, 5], |r| r.get::<_, String>(3))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    let first = plan.iter().find(|d| d.starts_with("SEARCH")).unwrap();
+    assert!(first.contains("block_events"), "plan: {plan:?}");
+}
+
+#[test]
 fn text_strips_jira_keys_from_description_and_prompts() {
     let conn = open_memory().unwrap();
     let b = block(&conn, Some("PROJ-12 fix login"));

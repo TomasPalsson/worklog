@@ -91,6 +91,11 @@ fn strip_keys(s: &str) -> String {
         .into_owned()
 }
 
+pub(crate) const PROMPTS_SQL: &str = "SELECT e.details FROM block_events be JOIN events e ON e.id = be.event_id
+         WHERE be.block_id = ?1 AND e.source = 'claude'
+           AND e.title LIKE 'UserPromptSubmit%' AND length(e.details) > 20
+         ORDER BY e.started_at, e.id LIMIT ?2";
+
 /// What a block says: its description plus its first prompts, Jira keys removed.
 pub fn block_text(conn: &Connection, block_id: i64) -> Result<Option<String>> {
     let Some(description) = conn
@@ -104,12 +109,7 @@ pub fn block_text(conn: &Connection, block_id: i64) -> Result<Option<String>> {
         return Ok(None);
     };
     let mut parts = vec![strip_keys(&description.unwrap_or_default())];
-    let mut stmt = conn.prepare(
-        "SELECT e.details FROM block_events be JOIN events e ON e.id = be.event_id
-         WHERE be.block_id = ?1 AND e.source = 'claude'
-           AND e.title LIKE 'UserPromptSubmit%' AND length(e.details) > 20
-         ORDER BY e.started_at, e.id LIMIT ?2",
-    )?;
+    let mut stmt = conn.prepare(PROMPTS_SQL)?;
     let prompts = stmt.query_map(params![block_id, PROMPTS_PER_BLOCK as i64], |r| {
         r.get::<_, String>(0)
     })?;
