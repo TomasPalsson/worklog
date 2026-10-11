@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
 import { cleanup, render } from "@testing-library/react";
 import type { DayRow, Topic, TopicsReport } from "@/lib/topics_contract";
 import { parseTip } from "./tip";
@@ -176,5 +177,32 @@ describe("TopicHeartbeats", () => {
     const { container } = render(<TopicHeartbeats report={report({ topics: [topic({ description: null, top_tickets: [] })] })} />);
     expect(container.textContent).toContain("How: Ticks show hours per day in this topic.");
     expect(container.innerHTML).not.toMatch(/NaN|undefined|null/);
+  });
+  it("every row is the same three-column template, whatever the description length", () => {
+    const long = "A very long description that goes on and on about invoice lines, rounding and everything else. ".repeat(4);
+    const topics = [topic({ description: long }), topic({ id: 1, description: "Short" }), topic({ id: 2, description: null, top_tickets: [] })];
+    const { container } = render(<TopicHeartbeats report={report({ topics })} />);
+    const rows = Array.from(container.querySelectorAll("[data-heartbeat-row]"));
+    expect(rows.length).toBe(3);
+    for (const row of rows) {
+      // catches a row whose optional children become extra grid cells
+      expect(Array.from(row.children).map((c) => c.className)).toEqual(["hb-id", "hb-about", "hb-data"]);
+      // catches per-row inline width overrides
+      expect((row as HTMLElement).getAttribute("style")).not.toMatch(/width|grid-template/);
+      expect(row.querySelector(".hb-data .hb-raster")).not.toBeNull();
+      expect(row.querySelector(".hb-data .hb-track")).not.toBeNull();
+    }
+  });
+  it("raster, bar and tickets sit in the third column, badge and name in the first", () => {
+    const { container } = render(<TopicHeartbeats report={report()} />);
+    const row = container.querySelector("[data-heartbeat-row]")!;
+    expect(row.querySelector(".hb-id .hb-name")).not.toBeNull();
+    expect(row.querySelector(".hb-id .hb-badge")).not.toBeNull();
+    expect(row.querySelector(".hb-data .hb-tickets")).not.toBeNull();
+  });
+  it("css fixes the row template at desktop width and stacks below 800px", () => {
+    const css = readFileSync(new URL("../../app/stats/heartbeats.css", import.meta.url), "utf8");
+    expect(css).toContain("grid-template-columns: minmax(150px, 220px) minmax(0, 1fr) 360px;");
+    expect(css).toMatch(/@media \(max-width: 799px\)\s*{\s*\.hb-row { grid-template-columns: minmax\(0, 1fr\);/);
   });
 });

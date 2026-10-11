@@ -71,10 +71,18 @@ function HeartbeatRow({ topic, index, topicCount, river, totalSeconds, maxTopicS
       aria-label={`${topic.name}: ${formatDuration(topic.seconds)}`}
       {...tipProps(tip)}
     >
-      <span className="hb-swatch" aria-hidden="true" />
-      <span className="hb-name" data-keywords={topic.named_by === "keywords" || undefined}>
-        {topic.name}
-      </span>
+      <div className="hb-id">
+        <span className="hb-swatch" aria-hidden="true" />
+        <span className="hb-name" data-keywords={topic.named_by === "keywords" || undefined}>
+          {topic.name}
+        </span>
+        {rhythm && (
+          <span className="hb-badge">
+            <RhythmIcon kind={rhythm} />
+            {LABEL[rhythm]}
+          </span>
+        )}
+      </div>
       <div className="hb-about">
         {topic.description && <p className="hb-description">{topic.description}</p>}
         <ul className="hb-chips">
@@ -85,27 +93,23 @@ function HeartbeatRow({ topic, index, topicCount, river, totalSeconds, maxTopicS
           ))}
         </ul>
       </div>
-      <div className="hb-raster" aria-hidden="true">
-        {river.map((bin) => (
-          <span
-            key={bin.start}
-            className="hb-tick"
-            data-tick
-            style={{ height: `${maxBinSeconds > 0 ? ((bin.seconds[index] ?? 0) / maxBinSeconds) * 100 : 0}%` }}
-          />
-        ))}
-      </div>
-      <span className="hb-hours sr-value">{formatDuration(topic.seconds)}</span>
-      <span className="sr-track hb-track" aria-hidden="true">
-        <span className="sr-fill hb-fill" style={{ display: "block", width: `${maxTopicSeconds > 0 ? (topic.seconds / maxTopicSeconds) * 100 : 0}%` }} />
-      </span>
-      {rhythm && (
-        <span className="hb-badge">
-          <RhythmIcon kind={rhythm} />
-          {LABEL[rhythm]}
+      <div className="hb-data">
+        <div className="hb-raster" aria-hidden="true">
+          {river.map((bin) => (
+            <span
+              key={bin.start}
+              className="hb-tick"
+              data-tick
+              style={{ height: `${maxBinSeconds > 0 ? ((bin.seconds[index] ?? 0) / maxBinSeconds) * 100 : 0}%` }}
+            />
+          ))}
+        </div>
+        <span className="hb-hours sr-value">{formatDuration(topic.seconds)}</span>
+        <span className="sr-track hb-track" aria-hidden="true">
+          <span className="sr-fill hb-fill" style={{ display: "block", width: `${maxTopicSeconds > 0 ? (topic.seconds / maxTopicSeconds) * 100 : 0}%` }} />
         </span>
-      )}
-      {topic.top_tickets.length > 0 && <span className="hb-tickets">{topic.top_tickets.map((ticket) => ticket.label).join(" ")}</span>}
+        {topic.top_tickets.length > 0 && <span className="hb-tickets">{topic.top_tickets.map((ticket) => ticket.label).join(" ")}</span>}
+      </div>
     </li>
   );
 }
