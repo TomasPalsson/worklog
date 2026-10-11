@@ -1,3 +1,4 @@
+Verified: 2026-10-11 by user (pre-approved: /flow:next --finish)
 Approved: 2026-10-11 by user (pre-approved: /flow:next --finish)
 # Tasks — Topic stats and search fixes
 Spec: spec.md · Design: design.md · Base: 8148ed7 · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && (cd web && bun test)`
@@ -38,6 +39,6 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core st
 - [x] T013 [P] Helper self-test asserts 768-length unit vectors (FR-08) — files: rust/crates/worklog-core/templates/verdict_server.py — verify: `python3 rust/crates/worklog-core/templates/verdict_server.py --self-test` — after: T009 — done: 43151e7
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `flow check --fix --since 8148ed7`
-- [ ] G002 branch review clean — files: . — verify: `flow pass`
-- [ ] G003 verification evidence exists — files: . — verify: `test -s verify/`
+- [x] G001 project gates clean — files: . — verify: `flow check --fix --since 8148ed7` — done: 5783062
+- [x] G002 branch review clean — files: . — verify: `flow pass` — done: 5783062
+- [x] G003 verification evidence exists — files: . — verify: `test -s verify/` — done: 5783062
