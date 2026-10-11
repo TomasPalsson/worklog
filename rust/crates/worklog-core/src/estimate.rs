@@ -4039,3 +4039,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "estimate_catch_all_test.rs"]
+mod catch_all_tests;
