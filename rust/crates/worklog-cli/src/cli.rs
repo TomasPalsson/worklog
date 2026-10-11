@@ -2476,6 +2476,7 @@ struct DayAgg {
     total_secs: i64,
     work_secs: i64,
     personal_secs: i64,
+    ignored_secs: i64,
     unassigned_secs: i64,
     overlap_secs: i64,
     block_count: i64,
@@ -2483,6 +2484,7 @@ struct DayAgg {
     gap: i64,
     unassigned_n: i64,
     personal_n: i64,
+    ignored_n: usize,
     /// Per-ticket rows, biggest first.
     tickets: Vec<TicketRow>,
 }
@@ -2555,10 +2557,12 @@ fn aggregate_day(day: &str, blocks: &[worklog_core::models::Block]) -> DayAgg {
     // intervals + block count + distinct descriptions, keyed by ticket.
     let mut tickets: BTreeMap<String, TicketAcc> = BTreeMap::new();
     let mut personal_iv: Vec<(i64, i64)> = Vec::new();
+    let mut ignored_iv: Vec<(i64, i64)> = Vec::new();
     let mut unassigned_iv: Vec<(i64, i64)> = Vec::new();
     let mut work_iv: Vec<(i64, i64)> = Vec::new();
     let mut all_iv: Vec<(i64, i64)> = Vec::new();
     let (mut personal_n, mut unassigned_n) = (0_i64, 0_i64);
+    let mut ignored_n = 0_usize;
     let (mut dirty, mut gap) = (0_i64, 0_i64);
     let mut raw_sum = 0_i64;
     for b in blocks {
@@ -2570,6 +2574,11 @@ fn aggregate_day(day: &str, blocks: &[worklog_core::models::Block]) -> DayAgg {
         }
         if b.estimated_by.as_deref() == Some("gap") {
             gap += 1;
+        }
+        if b.ignored_at.is_some() {
+            ignored_iv.push(iv);
+            ignored_n += 1;
+            continue;
         }
         if b.is_personal {
             personal_iv.push(iv);
@@ -2617,6 +2626,7 @@ fn aggregate_day(day: &str, blocks: &[worklog_core::models::Block]) -> DayAgg {
         total_secs,
         work_secs: union_seconds(work_iv),
         personal_secs: union_seconds(personal_iv),
+        ignored_secs: union_seconds(ignored_iv),
         unassigned_secs: union_seconds(unassigned_iv),
         overlap_secs: (raw_sum - total_secs).max(0),
         block_count: blocks.len() as i64,
@@ -2624,6 +2634,7 @@ fn aggregate_day(day: &str, blocks: &[worklog_core::models::Block]) -> DayAgg {
         gap,
         unassigned_n,
         personal_n,
+        ignored_n,
         tickets: rows,
     }
 }
@@ -2762,13 +2773,24 @@ fn print_day_summary<W: Write>(out: &mut W, agg: &DayAgg) -> Result<()> {
             format!("{} {}", agg.personal_n, plural(agg.personal_n)),
         ]);
     }
+    if agg.ignored_n > 0 {
+        t.add_row(vec![
+            "ignored".to_owned(),
+            human_dur(agg.ignored_secs),
+            format!("{} {}", agg.ignored_n, plural(agg.ignored_n as i64)),
+        ]);
+    }
     writeln!(out, "{t}")?;
     writeln!(
         out,
-        "{} work · {} personal",
+        "{} work · {} personal · {} ignored",
         human_dur(agg.work_secs),
         human_dur(agg.personal_secs),
+        human_dur(agg.ignored_secs),
     )?;
+    if agg.overlap_secs > 0 {
+        writeln!(out, "overlap {}", human_dur(agg.overlap_secs))?;
+    }
     print_day_hints(out, agg)?;
     Ok(())
 }
@@ -2830,6 +2852,7 @@ fn day_agg_json(agg: &DayAgg) -> serde_json::Value {
         "total_seconds": agg.total_secs,
         "work_seconds": agg.work_secs,
         "personal_seconds": agg.personal_secs,
+        "ignored_secs": agg.ignored_secs,
         "unassigned_seconds": agg.unassigned_secs,
         "overlap_seconds": agg.overlap_secs,
         "blocks": agg.block_count,
@@ -2895,6 +2918,7 @@ fn cmd_week<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()
     let total: i64 = days.iter().map(|d| d.total_secs).sum();
     let work: i64 = days.iter().map(|d| d.work_secs).sum();
     let personal: i64 = days.iter().map(|d| d.personal_secs).sum();
+    let ignored: i64 = days.iter().map(|d| d.ignored_secs).sum();
     let dirty: i64 = days.iter().map(|d| d.dirty).sum();
     let unassigned: i64 = days.iter().map(|d| d.unassigned_n).sum();
     let overlap: i64 = days.iter().map(|d| d.overlap_secs).sum();
@@ -2909,6 +2933,7 @@ fn cmd_week<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()
                 "total_seconds": total,
                 "work_seconds": work,
                 "personal_seconds": personal,
+                "ignored_secs": ignored,
                 "overlap_seconds": overlap,
                 "dirty": dirty,
                 "unassigned": unassigned,
@@ -2931,7 +2956,9 @@ fn cmd_week<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()
 
     // One row per day.
     let mut by_day = style::table();
-    by_day.set_header(vec!["day", "total", "work", "personal", "blocks"]);
+    by_day.set_header(vec![
+        "day", "total", "work", "personal", "ignored", "blocks",
+    ]);
     for (i, d) in days.iter().enumerate() {
         let date = start + chrono::Duration::days(i as i64);
         by_day.add_row(vec![
@@ -2939,6 +2966,7 @@ fn cmd_week<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()
             human_dur(d.total_secs),
             human_dur(d.work_secs),
             human_dur(d.personal_secs),
+            human_dur(d.ignored_secs),
             d.block_count.to_string(),
         ]);
     }
@@ -2947,9 +2975,13 @@ fn cmd_week<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()
         human_dur(total),
         human_dur(work),
         human_dur(personal),
+        human_dur(ignored),
         days.iter().map(|d| d.block_count).sum::<i64>().to_string(),
     ]);
     writeln!(out, "{by_day}")?;
+    if overlap > 0 {
+        writeln!(out, "overlap {}", human_dur(overlap))?;
+    }
 
     // Per-ticket roll-up for the week.
     if !ranked.is_empty() {
@@ -4959,6 +4991,89 @@ mod tests {
         let agg = aggregate_day("2026-05-16", &blocks);
         assert_eq!(agg.overlap_secs, 0);
         assert_eq!(agg.total_secs, 5400);
+    }
+
+    fn ignored_block(id: i64, start: &str, dur_secs: i64, ticket: Option<&str>) -> Block {
+        let mut b = block(id, start, dur_secs, ticket);
+        b.ignored_at = Some("2026-05-16T12:00:00+00:00".into());
+        b.is_personal = true; // ignore keeps the hidden personal flag
+        b
+    }
+
+    #[test]
+    fn aggregate_day_ignored_block_is_not_personal() {
+        let blocks = vec![
+            ignored_block(1, "2026-05-16T09:00:00+00:00", 3600, Some("GOJ-1")),
+            block(2, "2026-05-16T11:00:00+00:00", 1800, Some("GOJ-2")),
+        ];
+        let mut p = block(3, "2026-05-16T13:00:00+00:00", 900, None);
+        p.is_personal = true;
+        let blocks = [blocks, vec![p]].concat();
+        let agg = aggregate_day("2026-05-16", &blocks);
+        assert_eq!(agg.ignored_secs, 3600); // personal-first check would give 0
+        assert_eq!(agg.ignored_n, 1);
+        assert_eq!(agg.personal_secs, 900); // ignored must not leak into personal
+        assert_eq!(agg.personal_n, 1);
+        assert_eq!(agg.work_secs, 1800); // ignored must not count as work
+        assert_eq!(agg.tickets.len(), 1); // ignored ticket stays off the ticket rows
+        assert_eq!(agg.total_secs, 6300);
+        assert_eq!(agg.overlap_secs, 0);
+    }
+
+    #[test]
+    fn aggregate_day_overlap_of_work_and_ignored_adds_up() {
+        let blocks = vec![
+            block(1, "2026-05-16T09:00:00+00:00", 3600, Some("GOJ-1")),
+            ignored_block(2, "2026-05-16T09:30:00+00:00", 3600, None),
+        ];
+        let agg = aggregate_day("2026-05-16", &blocks);
+        assert_eq!(agg.total_secs, 5400);
+        assert_eq!(agg.overlap_secs, 1800);
+        assert_eq!(
+            agg.work_secs + agg.personal_secs + agg.ignored_secs - agg.overlap_secs,
+            agg.total_secs
+        ); // a running sum without the overlap line would not add up
+    }
+
+    #[test]
+    fn aggregate_day_only_ignored_has_zero_work_and_personal() {
+        let blocks = vec![ignored_block(1, "2026-05-16T09:00:00+00:00", 3600, None)];
+        let agg = aggregate_day("2026-05-16", &blocks);
+        assert_eq!(agg.work_secs, 0);
+        assert_eq!(agg.personal_secs, 0);
+        assert_eq!(agg.ignored_secs, 3600);
+        assert_eq!(agg.unassigned_n, 0); // ignored is not "needs a ticket"
+    }
+
+    #[test]
+    fn day_agg_json_has_ignored_secs() {
+        let blocks = vec![ignored_block(1, "2026-05-16T09:00:00+00:00", 3600, None)];
+        let j = day_agg_json(&aggregate_day("2026-05-16", &blocks));
+        assert_eq!(j["ignored_secs"], 3600);
+        assert_eq!(j["personal_seconds"], 0);
+    }
+
+    #[test]
+    fn day_summary_shows_ignored_row_and_overlap_line() {
+        let blocks = vec![
+            block(1, "2026-05-16T09:00:00+00:00", 3600, Some("GOJ-1")),
+            ignored_block(2, "2026-05-16T09:30:00+00:00", 3600, None),
+        ];
+        let mut out = Vec::new();
+        print_day_summary(&mut out, &aggregate_day("2026-05-16", &blocks)).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("ignored"), "{text}");
+        assert!(text.contains("1h 00m ignored"), "{text}");
+        assert!(text.contains("overlap 30m"), "{text}");
+        assert!(!text.contains("1h 00m personal"), "{text}");
+    }
+
+    #[test]
+    fn day_summary_omits_overlap_line_without_overlap() {
+        let blocks = vec![block(1, "2026-05-16T09:00:00+00:00", 3600, Some("GOJ-1"))];
+        let mut out = Vec::new();
+        print_day_summary(&mut out, &aggregate_day("2026-05-16", &blocks)).unwrap();
+        assert!(!String::from_utf8(out).unwrap().contains("overlap"));
     }
 
     /// Builds a `LastPrune` with round, easy-to-spot counts for
