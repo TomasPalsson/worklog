@@ -1,3 +1,4 @@
+import "@/app/stats/charts-ranked.css";
 import "@/app/stats/compass.css";
 import { formatDuration, shortMonthDay, shortWeekday } from "@/lib/format";
 import type { DayRow, TopicsReport } from "@/lib/topics_contract";
@@ -11,7 +12,7 @@ const MAX_RADIUS = 12;
 const LEADER_X = 20;
 const LEADER_Y = 18;
 const CHAR_W = 6.2;
-const EDGE = 8;
+const EDGE = 20;
 const LABEL_H = 10;
 const LABEL_TOP = 24;
 const LABEL_BOTTOM = 296;
@@ -113,14 +114,24 @@ export function compassTip(day: DayRow): Tip {
   };
 }
 
+const KEY_MAX = 5;
+
 export function DayCompass({ report }: { report: TopicsReport }) {
   const { plotted, skipped, medianX, medianY } = compassLayout(report);
   if (plotted.length === 0) return null;
   const dayRows = new Map(report.days.map((d) => [d.day, d]));
+  const daysByTopic = new Map<number, number>();
+  for (const dot of plotted) daysByTopic.set(dot.topTopic, (daysByTopic.get(dot.topTopic) ?? 0) + 1);
+  const keyed = [...daysByTopic].sort((a, b) => b[1] - a[1] || a[0] - b[0]).slice(0, KEY_MAX);
+  const plottedRows = plotted.map((dot) => dayRows.get(dot.day)!);
+  const best = (value: (d: DayRow) => number) => plottedRows.reduce((a, b) => (value(b) > value(a) ? b : a));
 
   return (
-    <section className="sx-cmp">
-      <h3 className="sx-cmp-title">Day compass</h3>
+    <section className="sr-card sx-cmp">
+      <h3 className="sr-title">Day compass</h3>
+      <p className="sx-cmp-callout">
+        Most focused: {dayName(best((d) => d.focus!).day)} · Most new ground: {dayName(best((d) => d.novelty).day)}
+      </p>
       <svg className="sx-cmp-svg" viewBox={`0 0 ${WIDTH} ${HEIGHT}`} role="img" aria-label="Focus against novelty, one dot per day">
         <line className="sx-cmp-cross" x1={medianX} x2={medianX} y1={PAD_Y / 2} y2={HEIGHT - PAD_Y / 2} />
         <line className="sx-cmp-cross" x1={PAD_X / 2} x2={WIDTH - PAD_X / 2} y1={medianY} y2={medianY} />
@@ -129,6 +140,12 @@ export function DayCompass({ report }: { report: TopicsReport }) {
             {c.text}
           </text>
         ))}
+        <text className="art-label sx-cmp-axis" x={WIDTH / 2} y={HEIGHT - 8} textAnchor="middle">
+          scattered ← → focused
+        </text>
+        <text className="art-label sx-cmp-axis" transform={`translate(12 ${HEIGHT / 2}) rotate(-90)`} textAnchor="middle">
+          familiar ↓ ↑ new ground
+        </text>
         {plotted.map((dot) => (
           <circle
             key={dot.day}
@@ -156,10 +173,23 @@ export function DayCompass({ report }: { report: TopicsReport }) {
             );
           })}
       </svg>
-      {skipped.length > 0 && <p className="sx-cmp-skipped">single-block days: {skipped.map(shortMonthDay).join(", ")}</p>}
-      <p className="sx-cmp-how">
-        How: Focus = how alike that day&apos;s blocks are (hours-weighted mean pairwise cosine). Novelty = how unlike anything you did before (1 − nearest earlier block). Lines are your medians.
+      <p className="sx-cmp-key">
+        dot colour = that day&apos;s main topic
+        {keyed.map(([id]) => (
+          <span key={id} className="sx-cmp-key-item">
+            <span className="sx-cmp-key-swatch" style={{ "--h": topicHue(report, id) } as React.CSSProperties} />
+            {report.topics.find((t) => t.id === id)?.name ?? ""}
+          </span>
+        ))}
       </p>
+      {skipped.length > 0 && <p className="sx-cmp-skipped">single-block days: {skipped.map(shortMonthDay).join(", ")}</p>}
+      <div className="sx-cmp-how">
+        How it works: Focus is how alike a day&apos;s blocks are. Novelty is how unlike anything earlier they are. Dashed lines are your medians.
+        <details>
+          <summary>Method</summary>
+          Focus = how alike that day&apos;s blocks are (hours-weighted mean pairwise cosine). Novelty = how unlike anything you did before (1 − nearest earlier block).
+        </details>
+      </div>
     </section>
   );
 }

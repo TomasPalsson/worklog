@@ -1,3 +1,4 @@
+import "@/app/stats/charts-ranked.css";
 import "@/app/stats/mirror.css";
 import { formatDuration, shortMonthDay } from "@/lib/format";
 import type { TopicsReport } from "@/lib/topics_contract";
@@ -9,7 +10,7 @@ const CARD_PX = 520; // .stats-two half width, when the real width is unknown
 const PAD_PX = 32;
 const GAP_PX = 2;
 const LABEL_PX = 23;
-const COMPACT_PX = 22;
+const COMPACT_PX = 44;
 
 const signed = (similarity: number) => `${similarity < 0 ? MINUS : "+"}${Math.abs(similarity).toFixed(2)}`;
 
@@ -48,9 +49,18 @@ export function DayMirror({ report }: { report: TopicsReport }) {
   if (size < MIN_DAYS) return null;
   const days = report.days.slice(-size);
   let largest = 0;
+  let alike: [number, number] = [0, 1];
+  let opposite: [number, number] = [0, 1];
   for (let row = 0; row < size; row++) {
-    for (let column = row + 1; column < size; column++) largest = Math.max(largest, Math.abs(report.day_similarity[row][column]));
+    for (let column = row + 1; column < size; column++) {
+      const similarity = report.day_similarity[row][column];
+      largest = Math.max(largest, Math.abs(similarity));
+      if (similarity > report.day_similarity[alike[0]][alike[1]]) alike = [row, column];
+      if (similarity < report.day_similarity[opposite[0]][opposite[1]]) opposite = [row, column];
+    }
   }
+  const pair = ([row, column]: [number, number]) =>
+    `${shortMonthDay(days[row].day)} & ${shortMonthDay(days[column].day)} (${signed(report.day_similarity[row][column])})`;
 
   const cellPx = (CARD_PX - PAD_PX - GAP_PX * (size - 1)) / size;
   const compact = cellPx < COMPACT_PX;
@@ -96,13 +106,31 @@ export function DayMirror({ report }: { report: TopicsReport }) {
   }
 
   return (
-    <section className="sx-mir">
-      <h3 className="sx-mir-title">Day mirror</h3>
+    <section className="sr-card sx-mir">
+      <h3 className="sr-title">Day mirror</h3>
+      <div className="sx-mir-legend">
+        alike <span className="sx-mir-swatch sx-mir-pos" style={{ "--p": 100 } as React.CSSProperties} /> · opposite{" "}
+        <span className="sx-mir-swatch sx-mir-neg" style={{ "--p": 100 } as React.CSSProperties} />
+        <span className="sx-mir-strip">
+          {[33, 66, 100].map((p) => (
+            <span key={p} className="sx-mir-step" style={{ "--p": p } as React.CSSProperties} />
+          ))}
+        </span>
+      </div>
+      <p className="sx-mir-callout">
+        Most alike days: {pair(alike)} · Most opposite: {pair(opposite)}
+      </p>
       <div className="sx-mir-grid" data-k={step}
         style={{ gridTemplateColumns: `${compact ? "auto " : ""}repeat(${size}, minmax(0, 1fr))` }}>
         {cells}
       </div>
-      <p className="sx-mir-how">How: Cosine similarity of each day&apos;s hours-weighted average vector, centered so ordinary days score near 0.</p>
+      <div className="sx-mir-how">
+        How it works: Each day&apos;s typical work is compared with every other day&apos;s. Warm cells are alike, cool cells are opposite, and ordinary days sit near 0.
+        <details>
+          <summary>Method</summary>
+          Cosine similarity of each day&apos;s hours-weighted average vector, centered so ordinary days score near 0.
+        </details>
+      </div>
     </section>
   );
 }

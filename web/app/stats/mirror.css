@@ -1,15 +1,21 @@
 /* DayMirror: upper-triangle self-similarity staircase. Tokens only; resting state = finished state. */
-.sx-mir { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 12px; padding: 16px; min-width: 0; --mir-pos: var(--amber); --mir-neg: var(--slate); }
+.sx-mir { --mir-pos: var(--amber); --mir-neg: var(--slate); }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) .sx-mir { --mir-pos: color-mix(in oklch, var(--amber), white 12%); --mir-neg: color-mix(in oklch, var(--slate), white 12%); }
 }
 :root[data-theme="dark"] .sx-mir { --mir-pos: color-mix(in oklch, var(--amber), white 12%); --mir-neg: color-mix(in oklch, var(--slate), white 12%); }
-.sx-mir-title { margin: 0 0 10px; font-size: 15px; line-height: 1.35; color: var(--fg); }
+.sx-mir-legend { display: flex; align-items: center; gap: 6px; margin: 4px 0 6px; font-size: 12px; color: var(--fg-muted); }
+.sx-mir-swatch, .sx-mir-step { display: inline-block; width: 12px; height: 12px; border-radius: 3px; }
+.sx-mir-strip { display: inline-flex; gap: 2px; margin-left: 8px; }
+.sx-mir-step { background: color-mix(in oklch, var(--mir-pos) calc(var(--p) * 0.85%), var(--bg-sunk)); }
+.sx-mir-callout { margin: 0 0 10px; font-size: 12px; line-height: 1.4; color: var(--fg); max-width: 70ch; }
 .sx-mir-grid { display: grid; gap: 2px; }
 .sx-mir-cell { aspect-ratio: 1; min-width: 0; border-radius: 3px; animation-delay: calc(var(--i) * 30ms); }
-.sx-mir-pos { background: color-mix(in oklch, var(--mir-pos) calc(var(--p) * 1%), var(--bg-sunk)); }
-.sx-mir-neg { background: color-mix(in oklch, var(--mir-neg) calc(var(--p) * 1%), var(--bg-sunk)); }
+.sx-mir-pos { background: color-mix(in oklch, var(--mir-pos) calc(var(--p) * 0.85%), var(--bg-sunk)); }
+.sx-mir-neg { background: color-mix(in oklch, var(--mir-neg) calc(var(--p) * 0.85%), var(--bg-sunk)); }
 .sx-mir-diag { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; background: var(--bg-sunk); }
 .sx-mir-chip { width: 10px; height: 10px; border-radius: 3px; background: oklch(var(--project-l) var(--project-c) calc(var(--h))); }
-.sx-mir-how { margin: 10px 0 0; font-size: 12px; color: var(--fg-muted); line-height: 1.4; }
-.sx-mir-rowlabel { align-self: center; padding-right: 6px; font-size: 10px; line-height: 1; white-space: nowrap; color: var(--fg-muted); }
+.sx-mir-how { margin: 10px 0 0; font-size: 12px; color: var(--fg-muted); line-height: 1.4; max-width: 70ch; }
+.sx-mir-how summary { cursor: pointer; letter-spacing: 0.06em; font-variant-caps: all-small-caps; }
+.sx-mir-rowlabel { align-self: center; padding-right: 6px; font-size: 12px; line-height: 1; white-space: nowrap; color: var(--fg-muted); }
+.sx-mir .art-label { font-size: 12px; white-space: nowrap; }

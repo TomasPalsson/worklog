@@ -152,11 +152,47 @@ describe("DayCompass", () => {
     const html = render(<DayCompass report={week} />).container.innerHTML;
     for (const bad of ["NaN", "undefined", "null"]) expect(html).not.toContain(bad);
   });
-  it("shows the How line", () => {
+  it("shows the plain How line, keeps jargon in a Method details", () => {
     const { container } = render(<DayCompass report={week} />);
-    expect(container.textContent).toContain(
-      "How: Focus = how alike that day's blocks are (hours-weighted mean pairwise cosine). Novelty = how unlike anything you did before (1 − nearest earlier block). Lines are your medians.",
-    );
+    const how = container.querySelector(".sx-cmp-how")!;
+    expect(how.textContent).toContain("How it works:");
+    expect(how.textContent).not.toContain("How:");
+    const visible = how.cloneNode(true) as HTMLElement;
+    visible.querySelector("details")!.remove();
+    // catches: jargon left in the visible caption
+    expect(visible.textContent!.toLowerCase()).not.toContain("cosine");
+    expect(how.querySelector("summary")!.textContent).toBe("Method");
+    expect(how.querySelector("details")!.textContent).toContain("hours-weighted mean pairwise cosine");
+  });
+  it("uses the shared atlas card and small-caps title", () => {
+    const { container } = render(<DayCompass report={week} />);
+    expect(container.querySelector("section.sr-card.sx-cmp")).toBeTruthy();
+    expect(container.querySelector("h3.sr-title")!.textContent).toBe("Day compass");
+  });
+  it("has plain axis titles", () => {
+    const axes = [...render(<DayCompass report={week} />).container.querySelectorAll(".sx-cmp-axis")].map((el) => el.textContent);
+    expect(axes).toEqual(["scattered ← → focused", "familiar ↓ ↑ new ground"]);
+  });
+  it("keys only topics that are some plotted day's top topic, most days first, at most 5", () => {
+    const topics = Array.from({ length: 8 }, (_, i) => topic(i, `Topic ${i}`));
+    const top = (day: string, id: number, focus: number | null = 0.5) => ({ ...dayRow(day, focus, 0.5), top_topic: id });
+    const many = {
+      ...report([]),
+      topics,
+      // Topic 3 wins twice; 0,1,2,4,5 once each; 6 only on the unplotted day; 7 never.
+      days: [top("2026-10-01", 3), top("2026-10-02", 3), top("2026-10-03", 0), top("2026-10-04", 1), top("2026-10-05", 2), top("2026-10-06", 4), top("2026-10-07", 5), top("2026-10-08", 6, null)],
+    };
+    const key = render(<DayCompass report={many} />).container.querySelector(".sx-cmp-key")!;
+    expect(key.textContent).toContain("dot colour = that day's main topic");
+    const names = [...key.querySelectorAll(".sx-cmp-key-item")].map((el) => el.textContent);
+    // catches: listing every topic, or topics only seen on unplotted days, or no cap
+    expect(names).toEqual(["Topic 3", "Topic 0", "Topic 1", "Topic 2", "Topic 4"]);
+    expect(key.querySelectorAll(".sx-cmp-key-swatch").length).toBe(5);
+  });
+  it("names the most focused and the most new-ground day in a callout, ignoring unplotted days", () => {
+    // week: max focus Oct 5 (0.5); max novelty among plotted is Oct 3 (0.7), the unplotted Oct 6 (0.9) must not win
+    const callout = render(<DayCompass report={week} />).container.querySelector(".sx-cmp-callout")!;
+    expect(callout.textContent).toBe("Most focused: Mon Oct 5 · Most new ground: Sat Oct 3");
   });
   // catches: labels placed at a fixed offset with no edge flip, clamp or caption avoidance
   it("keeps every leader label box inside the plot and clear of the captions", () => {

@@ -103,9 +103,51 @@ describe("DayMirror", () => {
     const html = render(<DayMirror report={flat} />).container.innerHTML;
     for (const bad of ["NaN", "undefined", "null"]) expect(html).not.toContain(bad);
   });
-  it("shows the How line", () => {
+  it("shows the plain How line, keeps jargon in a Method details, and caps the line length", () => {
     const { container } = render(<DayMirror report={full} />);
-    expect(container.textContent).toContain("How: Cosine similarity of each day's hours-weighted average vector, centered so ordinary days score near 0.");
+    const how = container.querySelector(".sx-mir-how")!;
+    expect(how.textContent).toContain("How it works:");
+    expect(how.textContent).not.toContain("How:");
+    // catches: jargon left in the visible caption
+    const visible = how.cloneNode(true) as HTMLElement;
+    visible.querySelector("details")!.remove();
+    expect(visible.textContent!.toLowerCase()).not.toContain("cosine");
+    const details = how.querySelector("details")!;
+    expect(details.querySelector("summary")!.textContent).toBe("Method");
+    expect(details.textContent).toContain("Cosine similarity of each day's hours-weighted average vector");
+  });
+  it("uses the shared atlas card and small-caps title", () => {
+    const { container } = render(<DayMirror report={full} />);
+    expect(container.querySelector("section.sr-card.sx-mir")).toBeTruthy();
+    expect(container.querySelector("h3.sr-title")!.textContent).toBe("Day mirror");
+  });
+  it("shows a legend with both swatches and a 3-step strip", () => {
+    const { container } = render(<DayMirror report={full} />);
+    const legend = container.querySelector(".sx-mir-legend")!;
+    expect(legend.textContent).toContain("alike");
+    expect(legend.textContent).toContain("opposite");
+    expect(legend.querySelector(".sx-mir-swatch.sx-mir-pos")).toBeTruthy();
+    expect(legend.querySelector(".sx-mir-swatch.sx-mir-neg")).toBeTruthy();
+    expect(legend.querySelectorAll(".sx-mir-step").length).toBe(3);
+    // catches: legend swatches counted as matrix cells
+    expect(container.querySelectorAll(".sx-mir-cell").length).toBe(6);
+  });
+  it("names the most alike and most opposite pair from the off-diagonal only", () => {
+    // catches: taking the diagonal 1 as max, or the largest |value| as the most alike
+    const four = report(
+      [[1, 0.2, -0.1, 0.6], [0.2, 1, -0.7, 0.1], [-0.1, -0.7, 1, 0.3], [0.6, 0.1, 0.3, 1]],
+      days,
+    );
+    const callout = render(<DayMirror report={four} />).container.querySelector(".sx-mir-callout")!;
+    expect(callout.textContent).toBe("Most alike days: Oct 4 & Oct 7 (+0.60) · Most opposite: Oct 5 & Oct 6 (−0.70)");
+  });
+  it("uses row-header labels, not diagonal labels, once a cell is under 44px", () => {
+    // 11 days -> cell 43.3px; 10 days -> 47.2px
+    // catches: > for >= / the old 22px threshold
+    const some = (n: number) => render(<DayMirror report={wide(n)} />).container;
+    expect(some(11).querySelectorAll(".sx-mir-diag .art-label").length).toBe(0);
+    cleanup();
+    expect(some(10).querySelectorAll(".sx-mir-diag .art-label").length).toBe(10);
   });
 });
 
