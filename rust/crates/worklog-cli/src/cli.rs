@@ -3125,6 +3125,52 @@ fn status_hints(daemon_up: bool, schedule: Option<bool>, web_up: bool) -> Vec<&'
     hints
 }
 
+/// Events are stored under finer names than the collectors record health
+/// under (`github_commit`, `git_reflog`, `claude_turn`); fold them onto the
+/// collector's row so a healthy source doesn't read as never-run.
+fn fold_event_sources(
+    rows: Vec<worklog_core::time_leaks_contract::SourceHealth>,
+) -> Vec<worklog_core::time_leaks_contract::SourceHealth> {
+    use worklog_core::time_leaks_contract::SourceHealth;
+    let mut folded: std::collections::BTreeMap<String, SourceHealth> = Default::default();
+    for r in rows {
+        let name = match r.source.as_str() {
+            "github_commit" | "github_pr" => "github",
+            "git_reflog" => "reflog",
+            s if s.starts_with("claude_") => "claude_transcripts",
+            s => s,
+        }
+        .to_string();
+        let e = folded.entry(name.clone()).or_insert_with(|| SourceHealth {
+            source: name,
+            last_ok: None,
+            last_err: None,
+            events_24h: 0,
+        });
+        e.last_ok = e.last_ok.take().or(r.last_ok);
+        e.last_err = e.last_err.take().or(r.last_err);
+        e.events_24h += r.events_24h;
+    }
+    folded.into_values().collect()
+}
+
+/// Source health for `worklog status`; a failed read goes to stderr rather
+/// than silently showing no sources.
+fn status_sources(
+    read: Option<Result<Vec<worklog_core::time_leaks_contract::SourceHealth>>>,
+) -> Vec<worklog_core::time_leaks_contract::SourceHealth> {
+    let Some(read) = read else {
+        return Vec::new();
+    };
+    match read {
+        Ok(rows) => fold_event_sources(rows),
+        Err(e) => {
+            eprintln!("worklog: reading source health failed: {e}");
+            Vec::new()
+        }
+    }
+}
+
 fn source_health_line(h: &worklog_core::time_leaks_contract::SourceHealth) -> String {
     format!(
         "ok {} · err {} · {} events/24h",
@@ -3172,10 +3218,11 @@ fn cmd_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
         .and_then(|c| worklog_core::purge::last_prune(c).ok())
         .flatten();
 
-    let sources = db_conn
-        .as_ref()
-        .and_then(|c| worklog_core::collect_health::all(c, chrono::Utc::now()).ok())
-        .unwrap_or_default();
+    let sources = status_sources(
+        db_conn
+            .as_ref()
+            .map(|c| worklog_core::collect_health::all(c, chrono::Utc::now())),
+    );
 
     // Today's tracked time — only reachable when the daemon is up.
     let today = worklog_core::tz::local_date(chrono::Utc::now()).to_string();
@@ -5420,6 +5467,42 @@ mod tests {
         let report = worklog_core::collectors::CollectReport::default();
         let o = CollectOutcome::Ok(CollectTarget::ClaudeTranscripts, report);
         assert!(health_of(o, "claude_transcripts").last_ok.is_some());
+    }
+
+    /// FR-17: events stored as github_commit / git_reflog / claude_turn count
+    /// toward the collector's row, which carries last_ok.
+    #[test]
+    fn status_sources_fold_event_names_onto_collector_rows() {
+        let conn = db::open_memory().unwrap();
+        let now = chrono::Utc::now();
+        for (src, id) in [
+            ("github_commit", "a"),
+            ("github_pr", "b"),
+            ("git_reflog", "c"),
+            ("claude_turn", "d"),
+        ] {
+            conn.execute(
+                "INSERT INTO events (source, source_id, started_at, title) VALUES (?1, ?2, ?3, 't')",
+                rusqlite::params![src, id, now.to_rfc3339()],
+            )
+            .unwrap();
+        }
+        for s in ["github", "reflog", "claude_transcripts"] {
+            worklog_core::collect_health::record(&conn, s, Ok(())).unwrap();
+        }
+        let rows = status_sources(Some(worklog_core::collect_health::all(&conn, now)));
+        let get = |n: &str| rows.iter().find(|r| r.source == n).unwrap().clone();
+        assert_eq!(get("github").events_24h, 2); // catches no folding
+        assert!(get("github").last_ok.is_some());
+        assert_eq!(get("reflog").events_24h, 1);
+        assert_eq!(get("claude_transcripts").events_24h, 1);
+        assert_eq!(rows.len(), 3); // no stray event-named rows
+    }
+
+    /// FR-17: no database means no rows, not a panic.
+    #[test]
+    fn status_sources_without_db_is_empty() {
+        assert!(status_sources(None).is_empty());
     }
 
     /// FR-17: a row shows last ok, last error and the 24 h count; a missing
