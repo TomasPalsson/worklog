@@ -15,6 +15,8 @@ use crate::updater::crypto::sha256_hex;
 
 const SCAN_ROWS: i64 = 200;
 const FALLBACK_KEYWORDS: usize = 3;
+const NAME_MAX_CHARS: usize = 40;
+const DESCRIPTION_MAX_CHARS: usize = 200;
 /// Topics per model call: a bigger prompt outruns the claude -p timeout.
 pub const BATCH: usize = 4;
 
@@ -247,7 +249,27 @@ fn strip_fence(s: &str) -> &str {
     rest.strip_suffix("```").unwrap_or(rest).trim()
 }
 
-/// `(id, name, description)` for each requested id the reply names; errors when none.
+/// At most `DESCRIPTION_MAX_CHARS` chars, cut at a word boundary with "…".
+fn clip_description(d: &str) -> String {
+    if d.chars().count() <= DESCRIPTION_MAX_CHARS {
+        return d.to_string();
+    }
+    let head: String = d.chars().take(DESCRIPTION_MAX_CHARS - 1).collect();
+    let whole_word = d
+        .chars()
+        .nth(DESCRIPTION_MAX_CHARS - 1)
+        .is_some_and(char::is_whitespace);
+    let cut = if whole_word {
+        &head
+    } else {
+        head.rfind(char::is_whitespace)
+            .map_or(head.as_str(), |i| &head[..i])
+    };
+    format!("{}…", cut.trim_end())
+}
+
+/// `(id, name, description)` for each requested id the reply names with a
+/// name of at most `NAME_MAX_CHARS`; errors when none.
 pub fn parse_reply(reply: &Value, wanted: &[usize]) -> Result<Vec<(usize, String, String)>> {
     let parsed;
     let reply = match reply {
@@ -269,8 +291,8 @@ pub fn parse_reply(reply: &Value, wanted: &[usize]) -> Result<Vec<(usize, String
             let id = usize::try_from(v.get("id")?.as_u64()?).ok()?;
             let name = v.get("name")?.as_str()?.trim();
             let description = v.get("description")?.as_str()?.trim();
-            (wanted.contains(&id) && !name.is_empty())
-                .then(|| (id, name.to_string(), description.to_string()))
+            (wanted.contains(&id) && !name.is_empty() && name.chars().count() <= NAME_MAX_CHARS)
+                .then(|| (id, name.to_string(), clip_description(description)))
         })
         .collect();
     if named.is_empty() {

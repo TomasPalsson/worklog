@@ -1,13 +1,11 @@
 //! GET /stats?from&to — the stats page's one payload. Child module of
 //! `daemon.rs` (via `#[path]`) so it reuses its private `with_conn`/`ApiError`.
 
-use std::collections::{HashMap, HashSet};
-
 use anyhow::{anyhow, Result};
 use axum::extract::{Query, State};
 use axum::Json;
 use chrono::{Datelike, Duration, NaiveDate, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection};
 use serde::Deserialize;
 
 const STATS_MAX_RANGE_DAYS: i64 = 366 * 30;
@@ -113,8 +111,17 @@ pub async fn get_topics(
     })
     .await
     .map_err(|e| anyhow!("embed task: {e}"))?;
+    let loaded = with_conn(state.clone(), move |c| topics_load(c, prep, embedded)).await?;
+    let (report, inputs) = match loaded {
+        Loaded::Done(report) => (report, vec![]),
+        Loaded::Compute(input, skipped) => {
+            tokio::task::spawn_blocking(move || topics_compute(input, skipped))
+                .await
+                .map_err(|e| anyhow!("topics task: {e}"))?
+        }
+    };
     let (mut report, pending) =
-        with_conn(state.clone(), move |c| topics_finish(c, prep, embedded)).await?;
+        with_conn(state.clone(), move |c| topics_name(c, report, inputs)).await?;
     name_in_background(&state, &mut report, pending, real_invoker, BACKOFF).await;
     Ok(Json(report))
 }
@@ -198,6 +205,12 @@ async fn name_batch(
         topic_names::parse_reply(&reply, &ids)
     })
     .await??;
+    let omitted: Vec<TopicInput> = batch
+        .iter()
+        .filter(|i| !names.iter().any(|(id, ..)| *id == i.id))
+        .cloned()
+        .collect();
+    topic_names::record_failure(&omitted);
     with_conn(state.clone(), move |c| {
         topic_names::store(c, &batch, &names, estimate::DEFAULT_MODEL)
     })
@@ -264,11 +277,17 @@ pub(super) fn topics_report(
     topics_finish(conn, prep, embedded).map(|(report, _)| report)
 }
 
-fn topics_finish(
+/// Phase 1 of finishing: the DB reads/writes that need the connection.
+enum Loaded {
+    Done(TopicsReport),
+    Compute(TopicsInput, i64),
+}
+
+fn topics_load(
     conn: &Connection,
     prep: TopicsPrep,
     embedded: Option<Vec<Vec<f32>>>,
-) -> Result<(TopicsReport, Vec<TopicInput>)> {
+) -> Result<Loaded> {
     let TopicsPrep {
         from,
         to,
@@ -277,10 +296,11 @@ fn topics_finish(
     } = prep;
     let (from_s, to_s) = (from.to_string(), to.to_string());
     let Some(new_vectors) = embedded else {
-        return Ok((
-            TopicsReport::empty(TopicsStatus::HelperDown, &from_s, &to_s),
-            vec![],
-        ));
+        return Ok(Loaded::Done(TopicsReport::empty(
+            TopicsStatus::HelperDown,
+            &from_s,
+            &to_s,
+        )));
     };
     embed::store(conn, &pending, &new_vectors)?;
     let ids: Vec<i64> = all.iter().map(|p| p.id).collect();
@@ -291,7 +311,6 @@ fn topics_finish(
         to: to_s.clone(),
         now: vec![],
         history: vec![],
-        ticket_summaries: HashMap::new(),
     };
     let mut skipped = 0;
     for mut p in all {
@@ -309,29 +328,29 @@ fn topics_finish(
             }
         }
     }
-    let tickets: HashSet<&str> = input
-        .now
-        .iter()
-        .filter_map(|p| p.ticket.as_deref())
-        .collect();
-    for t in tickets {
-        if let Some(summary) = conn
-            .query_row(
-                "SELECT summary FROM jira_tickets WHERE key = ?1",
-                [t],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()?
-        {
-            input.ticket_summaries.insert(t.to_string(), summary);
-        }
-    }
+    Ok(Loaded::Compute(input, skipped))
+}
+
+/// Phase 2: pure maths (clustering, keywords, map layout); holds no connection.
+fn topics_compute(input: TopicsInput, skipped: i64) -> (TopicsReport, Vec<TopicInput>) {
     let (mut report, assigned) = stats_topics::build_with_assignments(&input);
     report.skipped_blocks = skipped;
     if report.status != TopicsStatus::Ready {
-        return Ok((report, vec![]));
+        return (report, vec![]);
     }
     let inputs = atlas(&mut report, &input, &assigned);
+    (report, inputs)
+}
+
+/// Phase 3: the name cache; returns the topics still unnamed.
+fn topics_name(
+    conn: &Connection,
+    mut report: TopicsReport,
+    inputs: Vec<TopicInput>,
+) -> Result<(TopicsReport, Vec<TopicInput>)> {
+    if report.status != TopicsStatus::Ready {
+        return Ok((report, vec![]));
+    }
     let pending = topic_names::resolve(conn, &mut report, &inputs)?.pending;
     report.naming = if pending.is_empty() {
         Naming::Ai
@@ -339,6 +358,21 @@ fn topics_finish(
         Naming::Pending
     };
     Ok((report, pending))
+}
+
+#[cfg(test)]
+fn topics_finish(
+    conn: &Connection,
+    prep: TopicsPrep,
+    embedded: Option<Vec<Vec<f32>>>,
+) -> Result<(TopicsReport, Vec<TopicInput>)> {
+    match topics_load(conn, prep, embedded)? {
+        Loaded::Done(report) => Ok((report, vec![])),
+        Loaded::Compute(input, skipped) => {
+            let (report, inputs) = topics_compute(input, skipped);
+            topics_name(conn, report, inputs)
+        }
+    }
 }
 
 /// Keywords, map points and naming inputs for a Ready report, using the

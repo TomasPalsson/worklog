@@ -30,7 +30,6 @@ pub struct TopicsInput {
     pub to: String,
     pub now: Vec<BlockPoint>,
     pub history: Vec<BlockPoint>,
-    pub ticket_summaries: HashMap<String, String>,
 }
 
 /// Average-linkage agglomerative clustering on cosine distance; returns each

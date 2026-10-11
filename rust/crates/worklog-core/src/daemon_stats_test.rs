@@ -695,3 +695,48 @@ async fn a_failed_topic_is_not_retried_until_the_window_passes() {
     wait_for("the retry", || CALLS.load(Ordering::SeqCst) == 2).await;
     assert_eq!(third.naming, Naming::Pending);
 }
+
+fn four_topics_reply(long_name: bool) -> fn() -> anyhow::Result<Box<dyn ModelInvoker>> {
+    if long_name {
+        || Ok(Box::new(crate::estimate::FixedInvoker(json!([
+            {"id": 0, "name": "A", "description": "d"},
+            {"id": 1, "name": "B", "description": "d"},
+            {"id": 2, "name": "n".repeat(40), "description": "d"},
+            {"id": 3, "name": "n".repeat(41), "description": "d"},
+        ]))))
+    } else {
+        || Ok(Box::new(crate::estimate::FixedInvoker(json!([
+            {"id": 0, "name": "A", "description": "d"},
+            {"id": 1, "name": "B", "description": "d"},
+            {"id": 2, "name": "C", "description": "d"},
+        ]))))
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_topic_the_reply_omits_is_stored_for_the_others_and_backed_off() {
+    let state = state_from_conn(open_memory().unwrap());
+    let inputs = batch_inputs(8300)[..4].to_vec();
+    name_in_background(&state, &mut blank_report(), inputs.clone(), four_topics_reply(false), BACKOFF).await;
+    wait_for("the omitted topic to be backed off", || topic_names::backed_off(&inputs[3], BACKOFF)).await;
+    // catches: dropping the omitted id silently (stored 3, never backed off).
+    assert_eq!(names_rows(&*state.conn.lock().await), 3);
+    // catches: backing off the topics that were named.
+    assert!(!topic_names::backed_off(&inputs[0], BACKOFF));
+    assert!(!topic_names::backed_off(&inputs[2], BACKOFF));
+    // catches: re-asking the model on the next GET for the omitted topic.
+    let mut second = blank_report();
+    name_in_background(&state, &mut second, vec![inputs[3].clone()], four_topics_reply(false), BACKOFF).await;
+    assert_eq!(second.naming, Naming::Off);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_forty_one_char_name_is_not_stored_and_backs_the_topic_off() {
+    let state = state_from_conn(open_memory().unwrap());
+    let inputs = batch_inputs(8400)[..4].to_vec();
+    name_in_background(&state, &mut blank_report(), inputs.clone(), four_topics_reply(true), BACKOFF).await;
+    wait_for("the long-named topic to be backed off", || topic_names::backed_off(&inputs[3], BACKOFF)).await;
+    // catches: `>=` rejecting the 40-char name (would store 2) or no limit (would store 4).
+    assert_eq!(names_rows(&*state.conn.lock().await), 3);
+    assert!(!topic_names::backed_off(&inputs[2], BACKOFF));
+}

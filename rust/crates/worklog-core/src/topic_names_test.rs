@@ -276,3 +276,62 @@ fn backoff_holds_inside_the_window_and_lifts_at_its_end() {
     // catches: `<=` instead of `<` — a zero window must never hold.
     assert!(!backed_off(&a, std::time::Duration::ZERO));
 }
+
+fn reply_with(name: &str, description: &str) -> serde_json::Value {
+    json!([
+        {"id": 0, "name": "Kept", "description": "d"},
+        {"id": 1, "name": name, "description": description},
+    ])
+}
+
+#[test]
+fn parse_reply_accepts_a_forty_char_name_and_drops_a_forty_one_char_one() {
+    let at = "n".repeat(40);
+    // catches: `>=` instead of `>` rejecting a name exactly at the limit.
+    let got = parse_reply(&reply_with(&at, "d"), &[0, 1]).unwrap();
+    assert_eq!(got.len(), 2);
+    assert_eq!(got[1].1, at);
+    // catches: no length limit, or a limit that counts bytes not chars.
+    let past = "n".repeat(41);
+    let got = parse_reply(&reply_with(&past, "d"), &[0, 1]).unwrap();
+    assert_eq!(got, vec![(0, "Kept".to_string(), "d".to_string())]);
+    let wide = "é".repeat(40);
+    assert_eq!(
+        parse_reply(&reply_with(&wide, "d"), &[0, 1]).unwrap().len(),
+        2
+    );
+    // catches: measuring before trim (a padded 40-char name is still 40).
+    let padded = format!("  {at}  ");
+    assert_eq!(
+        parse_reply(&reply_with(&padded, "d"), &[0, 1])
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn parse_reply_truncates_a_long_description_at_a_word_boundary_to_200() {
+    let at = "aaaa ".repeat(40).trim().to_string();
+    assert_eq!(at.chars().count(), 199);
+    let exact = format!("{at}x");
+    assert_eq!(exact.chars().count(), 200);
+    // catches: truncating a description already at the limit.
+    assert_eq!(
+        parse_reply(&reply_with("N", &exact), &[0, 1]).unwrap()[1].2,
+        exact
+    );
+    // catches: result of 201 (limit applied before adding the ellipsis); a complete word at 199 is kept.
+    let long = "aaaa ".repeat(50);
+    let got = parse_reply(&reply_with("N", &long), &[0, 1]).unwrap()[1]
+        .2
+        .clone();
+    assert_eq!(got, format!("{at}…"));
+    assert_eq!(got.chars().count(), 200);
+    // catches: a hard cut that splits the last word.
+    let split = format!("{}{}", "a ".repeat(95), "b".repeat(60));
+    let got = parse_reply(&reply_with("N", &split), &[0, 1]).unwrap()[1]
+        .2
+        .clone();
+    assert_eq!(got, format!("{}a…", "a ".repeat(94)));
+}

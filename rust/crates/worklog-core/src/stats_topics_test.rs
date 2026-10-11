@@ -23,7 +23,6 @@ fn input(now: Vec<BlockPoint>) -> TopicsInput {
         to: "2026-10-11".into(),
         now,
         history: vec![],
-        ticket_summaries: HashMap::new(),
     }
 }
 
