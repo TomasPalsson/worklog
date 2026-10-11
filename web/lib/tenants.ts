@@ -1,7 +1,10 @@
 // Types mirror rust/crates/worklog-core/src/tenant_contract.rs; daemon
 // calls behind the Billing panel's tenant list + link editor (spec 005).
 
+"use server";
+
 import { call } from "./daemon";
+import type { DeildSuggestion } from "./time_leaks_contract";
 
 /** How a tenant got its customer (`tenant_contract::TenantOrigin`). */
 export type TenantOrigin = "alias" | "link" | "unmatched" | "ignored";
@@ -60,4 +63,10 @@ export async function saveCustomerShares(
 /** Drop a hand-set split — the block goes back to the automatic split. */
 export async function clearCustomerShares(blockId: number): Promise<{ ok: true }> {
   return call("POST", `/blocks/${blockId}/customer-shares/clear`);
+}
+
+/** The deild the Owner saved most often for the block's customer; `null`
+ * when the block has no customer or already carries a deild. */
+export async function fetchDeildSuggestion(blockId: number): Promise<DeildSuggestion | null> {
+  return call<DeildSuggestion | null>("GET", `/blocks/${blockId}/deild-suggestion`);
 }

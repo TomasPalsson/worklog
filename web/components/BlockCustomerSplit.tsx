@@ -6,7 +6,11 @@
 // empty or failed slices fetch just means nothing to show yet. Fetched
 // lazily on mount so the day's card list never waits.
 
-import type { SplitOrigin } from "@/lib/tenants";
+import { useEffect, useState } from "react";
+import { saveCustomerShares } from "@/app/tenant-actions";
+import type { BillingSlice } from "@/lib/deildir";
+import { fetchDeildSuggestion, type SplitOrigin } from "@/lib/tenants";
+import type { DeildSuggestion } from "@/lib/time_leaks_contract";
 import {
   type CustomerOptions,
   type Part,
@@ -229,7 +233,62 @@ function SplitEditor({
   );
 }
 
+/** FR-21: nothing is saved until the Owner clicks; the click saves through
+ * the same `saveCustomerShares` action as the editor. Fractions come from
+ * the slices' durations so they sum to exactly 1 (rounded percents can't). */
+function DeildChip({
+  blockId,
+  slices,
+  onSaved,
+}: {
+  blockId: number;
+  slices: BillingSlice[];
+  onSaved: () => void;
+}) {
+  const [suggestion, setSuggestion] = useState<DeildSuggestion | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    fetchDeildSuggestion(blockId).then((r) => {
+      if (alive) setSuggestion(r);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [blockId]);
+
+  if (!suggestion) return null;
+
+  async function apply(sg: DeildSuggestion) {
+    const seconds = slices.map((sl) => totalSeconds([sl]));
+    const total = seconds.reduce((a, b) => a + b, 0);
+    const res = await saveCustomerShares(
+      blockId,
+      slices.map((sl, i) => ({
+        customer: sl.customer ?? "",
+        deild: sl.customer === sg.customer ? sg.deild : null,
+        fraction: seconds[i] / total,
+      })),
+    );
+    if (res.ok) onSaved();
+    else setError(res.error);
+  }
+  return (
+    <>
+      <button type="button" className="action-btn" onClick={() => apply(suggestion)}>
+        {suggestion.deild}
+      </button>
+      {error && <p className="export-error split-error" role="alert">{error}</p>}
+    </>
+  );
+}
+
 export function BlockCustomerSplit({ blockId }: { blockId: number }) {
+  const [version, setVersion] = useState(0);
+  return <SplitCard key={version} blockId={blockId} onSaved={() => setVersion((v) => v + 1)} />;
+}
+
+function SplitCard({ blockId, onSaved }: { blockId: number; onSaved: () => void }) {
   const s = useCustomerSplit(blockId);
 
   if (s.slices === null || s.slices.length === 0) return null;
@@ -238,7 +297,12 @@ export function BlockCustomerSplit({ blockId }: { blockId: number }) {
   const origin = s.slices[0].origin;
 
   if (!s.editing) {
-    return <SplitDisplay parts={parts} origin={origin} onChange={() => s.openEditor(parts)} />;
+    return (
+      <>
+        <SplitDisplay parts={parts} origin={origin} onChange={() => s.openEditor(parts)} />
+        <DeildChip blockId={blockId} slices={s.slices} onSaved={onSaved} />
+      </>
+    );
   }
 
   return (
