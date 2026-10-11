@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { formatDuration } from "@/lib/format";
+import { formatDuration, formatRange } from "@/lib/format";
 import type { LooseEndMissing, LooseEnds as LooseEndsData } from "@/lib/time_leaks_contract";
 
 const MISSING_LABEL: Record<LooseEndMissing, string> = { tempo: "Tempo id", export: "export date" };
@@ -23,7 +23,9 @@ export function LooseEnds({ data }: { data: LooseEndsData | null }) {
         <ul>
           {data.items.map((e) => (
             <li key={e.block_id}>
-              <Link href={`/${e.day}`}>{e.day}</Link> {e.jira_issue} {formatDuration(e.seconds)} — missing{" "}
+              <Link href={`/${e.day}`}>{e.day}</Link> · {e.jira_issue} · {formatDuration(e.seconds)} ·{" "}
+              {formatRange(e.started_at, e.ended_at)}
+              {e.description ? ` · ${e.description}` : ""} — missing{" "}
               {e.missing.map((m) => MISSING_LABEL[m]).join(" and ")}
             </li>
           ))}

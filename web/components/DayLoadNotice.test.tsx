@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { cleanup, render, screen } from "@testing-library/react";
 import { DayLoadNotice, sectionLoader } from "./DayLoadNotice";
 
@@ -68,5 +68,40 @@ describe("sectionLoader", () => {
     ]);
     expect([a, b, c]).toEqual([[], "ok", 7]);
     expect(failed).toEqual(["Elsewhere items"]);
+  });
+
+  it("logs each rejection cause with its section name", async () => {
+    // catches: swallowing the error so the cause is lost
+    const spy = spyOn(console, "error").mockImplementation(() => {});
+    const boom = new Error("boom");
+    const load = sectionLoader([]);
+    await load("Recap", Promise.reject(boom), null);
+    expect(spy.mock.calls).toHaveLength(1);
+    expect(spy.mock.calls[0]).toContain(boom);
+    expect(String(spy.mock.calls[0][0])).toContain("Recap");
+    spy.mockRestore();
+  });
+
+  it("does not log when every section resolves", async () => {
+    // catches: logging on success
+    const spy = spyOn(console, "error").mockImplementation(() => {});
+    await sectionLoader([])("Recap", Promise.resolve(1), 0);
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it("lists failed names in declaration order, not settle order", async () => {
+    // catches: pushing in settle order, so a fast failure jumps the queue
+    const spy = spyOn(console, "error").mockImplementation(() => {});
+    const failed: string[] = [];
+    const load = sectionLoader(failed);
+    const slow = new Promise((_, rej) => setTimeout(() => rej(new Error("slow")), 20));
+    await Promise.all([
+      load("First", slow, null),
+      load("Second", Promise.reject(new Error("fast")), null),
+      load("Third", Promise.resolve(1), 0),
+    ]);
+    expect(failed).toEqual(["First", "Second"]);
+    spy.mockRestore();
   });
 });

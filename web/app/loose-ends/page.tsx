@@ -8,7 +8,10 @@ export const metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function LooseEndsPage() {
-  const data = await fetchLooseEnds().catch(() => null);
+  const data = await fetchLooseEnds().catch((err) => {
+    console.error("Loose ends: fetch failed", err);
+    return null;
+  });
   return (
     <main className="reg-page">
       <h1>Loose ends</h1>

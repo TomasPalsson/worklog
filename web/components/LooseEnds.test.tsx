@@ -78,4 +78,28 @@ describe("LooseEnds", () => {
     expect(document.body.textContent).toContain("2026-09-20");
     expect(document.body.textContent).toContain("2026-10-19");
   });
+
+  const local = (h: number, m: number) => new Date(2026, 9, 5, h, m).toISOString();
+
+  it("renders day, ticket, duration, time range, description in order", () => {
+    // catches: omitting the range or description, or reordering/merging the fields
+    render(
+      <LooseEnds
+        data={data([
+          item({ started_at: local(9, 0), ended_at: local(10, 30), description: "Fix login", missing: ["tempo"] }),
+        ])}
+      />,
+    );
+    expect(screen.getByRole("listitem").textContent).toBe(
+      "2026-10-05 · ABC-1 · 1h 30m · 09:00–10:30 · Fix login — missing Tempo id",
+    );
+  });
+
+  it("omits the description segment when there is none", () => {
+    // catches: rendering "null" or a dangling separator
+    render(<LooseEnds data={data([item({ started_at: local(9, 0), ended_at: local(10, 30), description: null })])} />);
+    expect(screen.getByRole("listitem").textContent).toBe(
+      "2026-10-05 · ABC-1 · 1h 30m · 09:00–10:30 — missing Tempo id",
+    );
+  });
 });
