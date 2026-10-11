@@ -19,6 +19,8 @@ export function timeoutMs(path: string): number {
   // `worklog estimate` in a terminal, which has no HTTP timeout.
   if (path.includes("/estimate")) return 600_000;
   if (path.startsWith("/sync")) return 30_000;
+  // Topic stats wait on the local helper embedding un-embedded blocks.
+  if (path.startsWith("/stats/topics")) return 90_000;
   // Statistics scans every event in the range.
   if (path.startsWith("/stats")) return 30_000;
   if (path.startsWith("/jira/refresh")) return 30_000;
