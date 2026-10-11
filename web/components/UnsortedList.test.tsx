@@ -88,6 +88,7 @@ let UnsortedList: (props: {
   day: string;
   events: RoutedEvent[];
   folderOptions: string[];
+  noiseHosts?: Array<{ host: string; dismissed_before: number }>;
 }) => React.JSX.Element | null;
 
 beforeAll(async () => {
@@ -470,5 +471,100 @@ describe("Verdict one-tap choices", () => {
     expect(
       within(rowFor("sjukra")).getByRole("button", { name: /project for sjukra/i }),
     ).toBeTruthy();
+  });
+});
+
+describe("noise groups", () => {
+  const ff = (id: number, details: string | null, source = "firefox"): RoutedEvent => ({
+    ...firefox1,
+    id,
+    source,
+    details,
+    title: "t",
+  });
+  const noisy1 = ff(10, "https://News.Example.com/a");
+  const noisy2 = ff(11, "https://news.example.com/b");
+  const noisy3 = ff(12, "https://feed.example.org/x");
+  const other = ff(13, "https://docs.example.com/y");
+  const hosts = [
+    { host: "news.example.com", dismissed_before: 4 },
+    { host: "feed.example.org", dismissed_before: 2 },
+  ];
+  const renderNoise = (events: RoutedEvent[], noiseHosts = hosts) =>
+    render(
+      <UnsortedList day="2026-07-25" events={events} folderOptions={[]} noiseHosts={noiseHosts} />,
+    );
+
+  it("tags a group whose host is listed, with its count (case-insensitive host)", () => {
+    renderNoise([noisy1, noisy2, other]);
+    expect(within(rowFor("news.example.com")).getByText("dismissed 4× before")).toBeTruthy();
+  });
+
+  it("does not tag a sibling or parent host (catches endsWith/includes matching)", () => {
+    renderNoise([other, noisy1], [{ host: "example.com", dismissed_before: 9 }]);
+    expect(screen.queryByText(/dismissed \d+× before/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /noise group/ })).toBeNull();
+  });
+
+  it("does not tag non-firefox groups even when details parse to a listed host", () => {
+    renderNoise([ff(20, "https://news.example.com/a", "slack")]);
+    expect(screen.queryByText(/dismissed \d+× before/)).toBeNull();
+  });
+
+  it("unparseable details do not throw and are not tagged", () => {
+    renderNoise([ff(21, "not a url"), ff(22, null), noisy1]);
+    expect(screen.getAllByText(/dismissed \d+× before/).length).toBe(1);
+  });
+
+  it("no button when nothing is tagged (empty host list)", () => {
+    renderNoise([noisy1, other], []);
+    expect(screen.queryByRole("button", { name: /noise group/ })).toBeNull();
+  });
+
+  it("singular/plural count: one tagged group says 1, two say 2", () => {
+    renderNoise([noisy1, other]);
+    expect(screen.getByRole("button", { name: "Dismiss 1 noise groups" })).toBeTruthy();
+    cleanup();
+    renderNoise([noisy1, noisy3, other]);
+    expect(screen.getByRole("button", { name: "Dismiss 2 noise groups" })).toBeTruthy();
+  });
+
+  it("confirms first, then dismisses only tagged groups' events with no rule kind", async () => {
+    renderNoise([noisy1, noisy2, noisy3, other]);
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss 2 noise groups" }));
+    expect(dismissEventCalls.length).toBe(0);
+    fireEvent.click(screen.getAllByRole("button", { name: "Yes" })[0]);
+    await waitFor(() => expect(dismissEventCalls.length).toBe(3));
+    expect(dismissEventCalls.map((c) => c[0]).sort()).toEqual([10, 11, 12]);
+    expect(dismissEventCalls.every((c) => c[1] === null && c[2] === "2026-07-25")).toBe(true);
+    await waitFor(() => expect(screen.queryByText("feed.example.org")).toBeNull());
+    expect(screen.getByText("docs.example.com")).toBeTruthy();
+  });
+
+  it("Cancel backs out without dismissing", () => {
+    renderNoise([noisy1, other]);
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss 1 noise groups" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Cancel" })[0]);
+    expect(screen.getByRole("button", { name: "Dismiss 1 noise groups" })).toBeTruthy();
+    expect(dismissEventCalls.length).toBe(0);
+  });
+
+  it("stops at the first failure and only removes what was dismissed", async () => {
+    dismissEventImpl.mockImplementationOnce(async (id, ruleKind, day) => {
+      dismissEventCalls.push([id, ruleKind, day]);
+      return { ok: true as const, data: { ...noisy1, id, details: null, label_origin: "dismissed" as const } };
+    });
+    dismissEventImpl.mockImplementationOnce(async (id, ruleKind, day) => {
+      dismissEventCalls.push([id, ruleKind, day]);
+      return { ok: false as const, error: "boom" } as never;
+    });
+    renderNoise([noisy1, noisy2, noisy3, other]);
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss 2 noise groups" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Yes" })[0]);
+    await waitFor(() => expect(dismissEventCalls.length).toBe(2));
+    // third call never happens (stop on first failure)
+    await new Promise((r) => setTimeout(r, 50));
+    expect(dismissEventCalls.length).toBe(2);
+    expect(screen.getByText("feed.example.org")).toBeTruthy();
   });
 });
