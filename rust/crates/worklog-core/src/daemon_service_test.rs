@@ -355,7 +355,14 @@ fn install_fails_when_the_daemon_after_load_still_has_the_old_pid() {
     let flag = tmp.path().join("stopped");
     fake_restartable_tool(tmp.path(), &flag);
     let tcp = serve_fixed_pid_with_a_down_window(flag);
-    let r = install_at("worklog daemon", &tcp, SHORT, Duration::from_millis(1));
+    // a generous probe timeout keeps the pre-probe an answer, not a timeout, under load
+    let r = install_probing(
+        "worklog daemon",
+        &tcp,
+        SHORT,
+        Duration::from_millis(1),
+        Duration::from_secs(5),
+    );
     restore();
     let e = r.unwrap_err().to_string();
     assert!(e.contains("did not answer"), "{e}");

@@ -57,12 +57,29 @@ fn install_at(
     budget: std::time::Duration,
     step: std::time::Duration,
 ) -> Result<DaemonServiceStatus> {
+    install_probing(
+        command,
+        tcp,
+        budget,
+        step,
+        std::time::Duration::from_millis(200),
+    )
+}
+
+/// `probe` is the per-request /health timeout; tests that need a slow
+/// answer to still count as an answer pass a longer one.
+fn install_probing(
+    command: &str,
+    tcp: &str,
+    budget: std::time::Duration,
+    step: std::time::Duration,
+    probe: std::time::Duration,
+) -> Result<DaemonServiceStatus> {
     let tool = match Platform::current() {
         Platform::MacOS => "launchctl",
         Platform::Linux => "systemctl",
         Platform::Unsupported => return Ok(unsupported_status()),
     };
-    let probe = std::time::Duration::from_millis(200);
     let before = service_tool(tool).and_then(|_| pre_install_pid(tcp, probe));
     let mut old_gone = Ok(());
     if let Some(old) = before {
