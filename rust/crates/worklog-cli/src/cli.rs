@@ -5332,6 +5332,7 @@ mod tests {
             block(2, "2026-05-16T10:00:00+00:00", 1800, Some("GOJ-2")),
         ];
         let agg = aggregate_day("2026-05-16", &blocks);
+        assert_eq!(agg.total_secs, 5400);
         assert_eq!(agg.double_booked_secs, 0, "raw sum minus union");
     }
 

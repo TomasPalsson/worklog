@@ -193,7 +193,9 @@ pub fn run_if_due(
         } else {
             true
         };
-        // A failed recap keeps the plan, so the ticks before 17:00 retry it.
+        // A failed recap keeps the plan, so the rollover recap is retried on each
+        // tick until the first tick from 17:00, which plans the new day and ends
+        // the retries.
         if recapped {
             meta_set(conn, PLAN_KEY, "")?;
         }

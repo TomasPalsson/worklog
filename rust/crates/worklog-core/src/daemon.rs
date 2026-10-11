@@ -13,7 +13,7 @@
 //!   starved by sqlite syscalls and blocking reqwest clients drop cleanly.
 //!
 //! Endpoints (all JSON):
-//! * `GET  /health`                      — liveness
+//! * `GET  /health`                      — { ok, version, pid, started_at }; `daemon_service install` uses pid to prove a new daemon answered
 //! * `GET  /blocks/:day`                 — list blocks for a YYYY-MM-DD day
 //! * `POST /blocks/:id/ticket`           — { "jira_issue": "PROJ-1" | null }
 //! * `POST /blocks/:id/duration`         — { "minutes": 45 }
@@ -65,7 +65,7 @@
 //! * `GET  /nudges`                      — footer nudges → `Vec<Nudge>`
 //! * `GET  /preflight?from=&to=`         — pre-send checklist rows for the day range → `Vec<PreflightRow>`
 //! * `GET  /preflight/read-back?day=`    — Tempo read-back row for one day → `PreflightRow`
-//! * `GET  /loose-ends`                  — today's unsynced blocks
+//! * `GET  /loose-ends`                  — ticketed, non-personal, non-ignored blocks in the current billing cycle missing a Tempo id or an export date → { cycle_start, cycle_end, items } (each item has `missing`)
 //! * `GET  /blocks/:id/deild-suggestion` — suggested billing deild for a block
 //!
 //! Unix-socket file perms default to `0666` so the containerised UI can
