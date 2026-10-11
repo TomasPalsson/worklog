@@ -552,7 +552,7 @@ describe("noise groups", () => {
   it("stops at the first failure and only removes what was dismissed", async () => {
     dismissEventImpl.mockImplementationOnce(async (id, ruleKind, day) => {
       dismissEventCalls.push([id, ruleKind, day]);
-      return { ok: true as const, data: { ...noisy1, id, details: null, label_origin: "dismissed" as const } };
+      return { ok: true as const, data: { ...noisy1, id, label_origin: "dismissed" as const } } as never;
     });
     dismissEventImpl.mockImplementationOnce(async (id, ruleKind, day) => {
       dismissEventCalls.push([id, ruleKind, day]);
