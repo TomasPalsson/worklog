@@ -2469,8 +2469,8 @@ struct TicketRow {
 /// Every time figure is the length of the *union* of the underlying
 /// blocks' wall-clock intervals: overlapping blocks are counted once, so
 /// the hours reported are real hours, never a sum that double-bills
-/// concurrent work. `overlap_secs` records how much double-counting the
-/// union removed (raw block-duration sum minus the union length).
+/// concurrent work. [`DayAgg::class_overlap_secs`] is the overlap the
+/// user sees.
 struct DayAgg {
     day: String,
     total_secs: i64,
@@ -2478,7 +2478,6 @@ struct DayAgg {
     personal_secs: i64,
     ignored_secs: i64,
     unassigned_secs: i64,
-    overlap_secs: i64,
     block_count: i64,
     dirty: i64,
     gap: i64,
@@ -2572,11 +2571,9 @@ fn aggregate_day(day: &str, blocks: &[worklog_core::models::Block]) -> DayAgg {
     let (mut personal_n, mut unassigned_n) = (0_i64, 0_i64);
     let mut ignored_n = 0_usize;
     let (mut dirty, mut gap) = (0_i64, 0_i64);
-    let mut raw_sum = 0_i64;
     for b in blocks {
         let iv = block_interval(b);
         all_iv.push(iv);
-        raw_sum += b.duration_seconds.max(0);
         if b.dirty {
             dirty += 1;
         }
@@ -2636,7 +2633,6 @@ fn aggregate_day(day: &str, blocks: &[worklog_core::models::Block]) -> DayAgg {
         personal_secs: union_seconds(personal_iv),
         ignored_secs: union_seconds(ignored_iv),
         unassigned_secs: union_seconds(unassigned_iv),
-        overlap_secs: (raw_sum - total_secs).max(0),
         block_count: blocks.len() as i64,
         dirty,
         gap,
@@ -4998,7 +4994,7 @@ mod tests {
         assert_eq!(agg.tickets.len(), 1);
         assert_eq!(agg.tickets[0].secs, 5400, "union of the two intervals");
         assert_eq!(agg.total_secs, 5400);
-        assert_eq!(agg.overlap_secs, 1800, "30m was double-booked");
+        assert_eq!(7200 - agg.total_secs, 1800, "30m was double-booked");
     }
 
     #[test]
@@ -5008,8 +5004,7 @@ mod tests {
             block(2, "2026-05-16T10:00:00+00:00", 1800, Some("GOJ-2")),
         ];
         let agg = aggregate_day("2026-05-16", &blocks);
-        assert_eq!(agg.overlap_secs, 0);
-        assert_eq!(agg.total_secs, 5400);
+        assert_eq!(5400 - agg.total_secs, 0, "raw sum minus union");
     }
 
     fn ignored_block(id: i64, start: &str, dur_secs: i64, ticket: Option<&str>) -> Block {
@@ -5035,8 +5030,7 @@ mod tests {
         assert_eq!(agg.personal_n, 1);
         assert_eq!(agg.work_secs, 1800); // ignored must not count as work
         assert_eq!(agg.tickets.len(), 1); // ignored ticket stays off the ticket rows
-        assert_eq!(agg.total_secs, 6300);
-        assert_eq!(agg.overlap_secs, 0);
+        assert_eq!(agg.total_secs, 6300); // == raw sum, so no overlap
     }
 
     #[test]
@@ -5046,8 +5040,7 @@ mod tests {
             ignored_block(2, "2026-05-16T09:30:00+00:00", 3600, None),
         ];
         let agg = aggregate_day("2026-05-16", &blocks);
-        assert_eq!(agg.total_secs, 5400);
-        assert_eq!(agg.overlap_secs, 1800);
+        assert_eq!(agg.total_secs, 5400); // raw sum 7200, so 30m overlap
         assert_eq!(agg.work_secs, 3600); // ignored must not merge into work
         assert_eq!(agg.ignored_secs, 3600);
         assert_eq!(agg.personal_secs, 0);
