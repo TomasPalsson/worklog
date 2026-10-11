@@ -232,3 +232,7 @@ pub(crate) fn record_swap(
 #[cfg(test)]
 #[path = "ticket_verdict_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "ticket_verdict_catch_all_test.rs"]
+mod catch_all_tests;
