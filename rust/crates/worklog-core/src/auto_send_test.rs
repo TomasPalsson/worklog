@@ -462,6 +462,52 @@ fn a_day_whose_every_send_failed_still_gets_its_recap_at_rollover() {
 }
 
 #[test]
+fn an_upstream_error_body_is_never_stored() {
+    let conn = open_memory().unwrap();
+    ready_line(&conn, DAY, "A-1");
+    let mut send = |_: &Connection, _: &TempoLineKey| -> Result<Vec<SyncResult>> {
+        Err(anyhow::Error::new(crate::tempo_hub_contract::HubError::Upstream {
+            service: "Tempo",
+            status: 502,
+            body: "<html>GET /4/worklogs?token=abc123</html>".into(),
+        })
+        .context("tempo GET http://tempo.example/4/worklogs"))
+    };
+    run_if_due(&conn, local(6, 17, 0), true, &mut send).unwrap();
+    let stored = column(&conn, DAY, "A-1", "send_error").unwrap();
+    // catches: storing the root cause's Display, which carries the upstream body verbatim
+    assert!(
+        !stored.contains("html") && !stored.contains("token") && stored.contains("502"),
+        "{stored}"
+    );
+}
+
+#[test]
+fn a_day_already_recapped_is_not_rebuilt_at_rollover() {
+    let _g = crate::tz::test_env_lock();
+    let _e = crate::envfile::ENV_TEST_LOCK.blocking_lock();
+    let saved = ["WORKLOG_TZ", "WORKLOG_ENV_FILE"].map(|k| (k, std::env::var_os(k)));
+    std::env::remove_var("WORKLOG_TZ");
+    std::env::set_var("WORKLOG_ENV_FILE", "/nonexistent/worklog.env");
+    let conn = open_memory().unwrap();
+    ready_line(&conn, DAY, "A-1");
+    tick(&conn, local(6, 17, 0), true, unreachable);
+    tick(&conn, local(7, 0, 0), true, unreachable);
+    conn.execute("UPDATE recaps SET built_at = 'first' WHERE day = ?1", [DAY])
+        .unwrap();
+    meta_set(&conn, PLAN_KEY, &format!("{DAY}|A-1")).unwrap();
+    tick(&conn, local(7, 0, 15), true, unreachable);
+    // catches: dropping the RECAP_KEY guard, so a recapped day is rebuilt on every rollover
+    assert_eq!(column_meta(&conn).as_deref(), Some("first"));
+    for (k, v) in saved {
+        match v {
+            Some(v) => std::env::set_var(k, v),
+            None => std::env::remove_var(k),
+        }
+    }
+}
+
+#[test]
 fn a_non_reqwest_failure_never_carries_the_request_url_or_body() {
     let conn = open_memory().unwrap();
     ready_line(&conn, DAY, "A-1");

@@ -11,6 +11,7 @@ use crate::clues_contract::LineTextOrigin;
 use crate::collectors::tempo::SyncResult;
 use crate::purge::{meta_get, meta_set};
 use crate::routing_contract::{DEFAULT_WORK_HOURS, WORK_HOURS_KEY};
+use crate::tempo_hub_contract::HubError;
 use crate::tempo_line_contract::{TempoLine, TempoLineKey, TicketOrigin};
 use crate::tempo_lines;
 use crate::verdict_contract::{
@@ -141,7 +142,12 @@ fn reason(e: &anyhow::Error) -> String {
         Some(r) => r.status().map_or("request failed".to_owned(), |s| {
             format!("HTTP {}", s.as_u16())
         }),
-        None => e.root_cause().to_string(),
+        None => match e.root_cause().downcast_ref::<HubError>() {
+            Some(HubError::Upstream {
+                service, status, ..
+            }) => format!("{service} said {status}"),
+            _ => e.root_cause().to_string(),
+        },
     }
 }
 
