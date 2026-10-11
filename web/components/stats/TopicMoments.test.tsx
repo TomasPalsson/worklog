@@ -128,14 +128,19 @@ describe("TopicMoments", () => {
     expect(labels("first_time")).toEqual(["Merge billing view", "Second"]);
     expect(labels("oddball")).toEqual(["Typed state rows", "Other"]);
   });
+  // catches: a leftover synonym anywhere in the rendered markup, tips included
+  it("renders none of the retired names", () => {
+    const { container } = render(<TopicMoments report={report()} />);
+    for (const old of ["New ground", "Unlike anything else", "Novelty"]) expect(container.innerHTML).not.toContain(old);
+  });
   // catches: number-first card, wrong word on a card, or the number dropped
   it("each card leads with a badge word, then the small number", () => {
     const { container } = render(<TopicMoments report={report()} />);
     const first = container.querySelector('[data-moment="first_time"]')!;
     const odd = container.querySelector('[data-moment="oddball"]')!;
-    expect(first.querySelector(".tm-badge")!.textContent).toBe("New ground");
+    expect(first.querySelector(".tm-badge")!.textContent).toBe("First time");
     expect(first.querySelector(".tm-num")!.textContent).toBe("85% new");
-    expect(odd.querySelector(".tm-badge")!.textContent).toBe("Unlike anything else");
+    expect(odd.querySelector(".tm-badge")!.textContent).toBe("Oddball");
     expect(odd.querySelector(".tm-num")!.textContent).toBe("closest match 23% · your usual 57%");
     for (const card of [first, odd]) {
       expect(card.querySelector(".tm-badge")!.compareDocumentPosition(card.querySelector(".tm-num")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

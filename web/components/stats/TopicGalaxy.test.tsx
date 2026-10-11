@@ -293,6 +293,12 @@ describe("galaxyLayout labels", () => {
 });
 
 describe("tips", () => {
+  // catches: a leftover synonym anywhere in the rendered markup, tips included
+  it("renders none of the retired names", () => {
+    const { container } = render(<TopicGalaxy report={report({ topics: [topic(0)], points: [point(1)] })} />);
+    for (const old of ["New ground", "Unlike anything else", "Novelty"]) expect(container.innerHTML).not.toContain(old);
+  });
+
   it("dot tip has exact title and rows", () => {
     const p = point(1, { label: "Fix login", day: "2026-10-03", seconds: 5400, ticket: "ABC-1", novelty: 0.426 });
     expect(galaxyTipDot(p, "auth")).toEqual({
@@ -302,7 +308,7 @@ describe("tips", () => {
         ["Hours", "1h 30m"],
         ["Ticket", "ABC-1"],
         ["Topic", "auth"],
-        ["Novelty", "43%"],
+        ["Newness", "43%"],
       ],
     });
   });

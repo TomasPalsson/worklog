@@ -159,7 +159,7 @@ export function galaxyTipDot(p: MapPoint, topicName: string): Tip {
       ["Hours", formatDuration(p.seconds)],
       ["Ticket", p.ticket ?? "none"],
       ["Topic", topicName],
-      ["Novelty", `${Math.round(p.novelty * 100)}%`],
+      ["Newness", `${Math.round(p.novelty * 100)}%`],
     ],
   };
 }

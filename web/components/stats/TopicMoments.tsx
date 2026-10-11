@@ -51,7 +51,7 @@ function MomentCard({ item, kind, topics, from, to, median }: CardProps) {
       aria-label={`${item.label}: ${num}`}
       {...tipProps(momentTip(item, kind, topicName, median))}
     >
-      <span className="tm-badge">{kind === "first_time" ? "New ground" : "Unlike anything else"}</span>
+      <span className="tm-badge">{kind === "first_time" ? "First time" : "Oddball"}</span>
       <span className="tm-num">{num}</span>
       <span className="tm-label">
         {kind === "first_time" ? <FirstTimeMark /> : <OddballMark />}
