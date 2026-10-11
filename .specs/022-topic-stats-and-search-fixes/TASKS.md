@@ -34,6 +34,8 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core st
 - [x] T009 Helper pins a sentence-transformers that can load the model (B3) — files: rust/crates/worklog-core/src/verdict_supervisor.rs, rust/crates/worklog-core/src/verdict_supervisor_test.rs, rust/crates/worklog-cli/src/cli.rs — verify: `cargo test --manifest-path rust/Cargo.toml uv_args` — after: T004 — done: 54e10e9
 - [x] T010 Warm /stats/topics under 2 s: block text query starts from the block's events (B3) — files: rust/crates/worklog-core/src/embed.rs, rust/crates/worklog-core/src/embed_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core embed` — after: T007 — done: 16105f3
 - [x] T011 Topics route test takes the shared env-file test lock (B3) — files: rust/crates/worklog-core/src/daemon_stats_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core` — after: T007 — done: 08d3935
+- [x] T012 [P] Topics computation writes only block_embeddings — table-snapshot test (FR-16) — files: rust/crates/worklog-core/src/daemon_stats_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core topics_report_writes_only_block_embeddings` — after: T011 — done: 3cbb280
+- [x] T013 [P] Helper self-test asserts 768-length unit vectors (FR-08) — files: rust/crates/worklog-core/templates/verdict_server.py — verify: `python3 rust/crates/worklog-core/templates/verdict_server.py --self-test` — after: T009 — done: 43151e7
 
 ## Gates
 - [ ] G001 project gates clean — files: . — verify: `flow check --fix --since 8148ed7`
