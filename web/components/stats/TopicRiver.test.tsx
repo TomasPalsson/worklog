@@ -148,12 +148,12 @@ describe("river trimming and labels", () => {
     r.topics[id].name = "N".repeat(20);
     return buildRiver(r)!.layers.find((l) => l.topic.id === id)!;
   };
-  // catches: clamping to w/2 (text-anchor middle crosses the plot edge) or 6.6px/char estimate
+  // catches: clamping to w/2 (text-anchor middle crosses the plot edge) or a 7.2px/char (12px) estimate
   it("a topic peaking in the first bin keeps its label box inside x >= 8", () => {
     const l = named(edgeRows(40), 0);
     expect(l.labelled).toBe(true);
     expect(labelBox(l).x).toBeGreaterThanOrEqual(8);
-    expect(labelBox(l).w).toBeCloseTo(144, 6);
+    expect(labelBox(l).w).toBeCloseTo(156, 6);
   });
   // catches: clamping only the left edge
   it("a topic peaking in the last bin keeps its label box inside x + w <= W - 8", () => {
@@ -210,10 +210,10 @@ describe("river design pass", () => {
     const { container } = render(<TopicRiver report={report(days(9), "week")} />);
     expect([...container.querySelectorAll("text.sx-river-tick-label")].map((t) => t.textContent)).toEqual(["Oct 5", "Oct 9", "Oct 13"]);
   });
-  // catches: GUTTER left at 48, clipping the scale label
-  it("viewBox reserves a 60px gutter right of the 1000px plot", () => {
+  // catches: GUTTER left at 60, clipping the 13px scale label
+  it("viewBox reserves a 96px gutter right of the 1000px plot", () => {
     const { container } = render(<TopicRiver report={report([[H], [H]])} />);
-    expect(container.querySelector("svg")!.getAttribute("viewBox")).toBe("0 0 1060 240");
+    expect(container.querySelector("svg")!.getAttribute("viewBox")).toBe("0 0 1096 240");
   });
   // catches: scale label from the summed total, the first bin or a per-layer peak
   it("scale label equals the tallest stack's hours and the bracket spans it", () => {
@@ -224,6 +224,27 @@ describe("river design pass", () => {
   it("scale label keeps a fractional hour", () => {
     const { container } = render(<TopicRiver report={report([[H, H / 2], [H, 0]])} />);
     expect(container.querySelector("text.sx-river-scale")!.textContent).toBe("1.5h / day");
+  });
+  const css = () => readFileSync(new URL("../../app/stats/river.css", import.meta.url), "utf8");
+  // catches: outline suppressed with only an opacity change as the focus cue
+  it("focus-visible keeps its outline and gains a stroke", () => {
+    const rule = css().match(/\.sx-river-band:focus-visible\s*\{([^}]*)\}/)![1];
+    expect(rule).not.toMatch(/outline:\s*none/);
+    expect(rule).toMatch(/stroke:\s*var\(--fg\)/);
+    expect(rule).toMatch(/stroke-width:\s*2/);
+    expect(rule).toMatch(/fill-opacity:\s*1/);
+  });
+  // catches: a leftover 12px rule
+  it("river.css has no font-size under 13px", () => {
+    const sizes = [...css().matchAll(/font-size:\s*([\d.]+)px/g)].map((m) => Number(m[1]));
+    expect(sizes.length).toBe(2);
+    expect(Math.min(...sizes)).toBeGreaterThanOrEqual(13);
+  });
+  // catches: char width left at the 12px value so 13px labels overlap undetected
+  it("label box width uses 13px text (0.6em per char)", () => {
+    const l = buildRiver(report([[H], [H]]))!.layers[0];
+    expect(labelBox(l).w).toBeCloseTo(l.topic.name.length * 7.8, 6);
+    expect(labelBox(l).h).toBe(13);
   });
   // catches: horizontal scroll floor left at 600
   it("svg scrolls horizontally from 720px", () => {

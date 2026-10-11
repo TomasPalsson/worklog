@@ -1,8 +1,9 @@
 .sx-river-band { fill-opacity: 0.85; stroke: var(--bg); stroke-width: 1; }
-.sx-river-band:hover, .sx-river-band:focus-visible { fill-opacity: 1; outline: none; }
-.sx-river-name { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; fill: var(--fg); paint-order: stroke; stroke: var(--bg); stroke-width: 3px; pointer-events: none; }
+.sx-river-band:hover { fill-opacity: 1; }
+.sx-river-band:focus-visible { fill-opacity: 1; stroke: var(--fg); stroke-width: 2; }
+.sx-river-name { font-family: var(--font-mono); font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; fill: var(--fg); paint-order: stroke; stroke: var(--bg); stroke-width: 3px; pointer-events: none; }
 .sx-river-col { fill: transparent; }
 .sx-river-col:hover { fill: var(--fg); fill-opacity: 0.05; }
-.sx-river .st-svg .art-label { font-size: 12px; }
+.sx-river .st-svg .art-label { font-size: 13px; }
 .sx-river-axis, .sx-river-tick, .sx-river-bracket { stroke: var(--fg-muted); stroke-opacity: 0.5; stroke-width: 1; fill: none; }
 .sx-river .st-caption { max-width: 70ch; }

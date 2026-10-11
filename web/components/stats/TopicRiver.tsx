@@ -9,13 +9,13 @@ import { topicColor } from "./topicColor";
 const W = 1000;
 const H = 240;
 const PAD = 6;
-const GUTTER = 60;
+const GUTTER = 96;
 const WEEK_TICK_EVERY = 4;
 const MIN_LABEL_PX = 18;
 const EDGE = 8;
 const COL_TIP_ROWS = 4;
-const CHAR_PX = 7.2;
-const LABEL_H = 12;
+const CHAR_PX = 7.8;
+const LABEL_H = 13;
 const LABEL_PAD = 4;
 
 type Pt = [number, number];
