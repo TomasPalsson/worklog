@@ -59,4 +59,7 @@
 - Discovered: web/components/BlockCustomerSplit.tsx:~139 — two blank-deild rows for the same customer share an aria-label — defer
 - Phase 4 independent test (2026-10-11): `-p worklog-core loose_ends` exit 0 (10 passed); `bun test components/LooseEnds.test.tsx` exit 0 (8 pass)
 - Phase 5 independent test (2026-10-11): `-p worklog-core -- daemon_service web:: schedule` exit 0 (59 passed)
+- Discovered: unsigned debug builds (`rust/target/debug/worklog`) block on a macOS keychain prompt in `status` and in the daemon's nudge loop — the nudge loop holds the DB connection while waiting, so every daemon request hangs. Live checks for CHK001/CHK002 were limited by it — note only
+- Discovered: web — `bun test components/BlockCard.test.tsx components/BlockCustomerSplit.test.tsx` (with DayLoadNotice + LooseEnds) fails 5 B17 BlockCustomerSplit tests when run together, while each file and the full `bun test` (1579) pass — cross-file mock.module leak — defer
+- Discovered: the real daemon restarted at 2026-10-11T11:38:58Z (same minute as the collect plist clobber) and wrote its normal startup `worklog.db.preprune` snapshot; no prune ran — note only
 - Discovered: `worklog status` shows both a "claude" (hook) and a "claude_transcripts" row — distinct sources, confusable names — defer
