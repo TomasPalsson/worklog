@@ -6,7 +6,7 @@ use crate::daemon::daemon_stats::topics_report;
 use crate::daemon::{router, state_from_conn};
 use crate::db::open_memory;
 use crate::embed::EmbedClient;
-use crate::topics_contract::{TopicsStatus, EMBED_DIM};
+use crate::topics_contract::{NamedBy, Naming, TopicsStatus, EMBED_DIM};
 use chrono::NaiveDate;
 use httpmock::prelude::*;
 use rusqlite::{params, Connection};
@@ -306,4 +306,245 @@ fn topics_report_writes_only_block_embeddings() {
     assert_eq!(before["block_embeddings"].0, 0);
     assert_eq!(after["block_embeddings"].0, 6);
     assert_eq!(after.keys().collect::<Vec<_>>(), before.keys().collect::<Vec<_>>());
+}
+
+/// Six embedded blocks in two clear themes: ids 1-3 "alpha" (3600 s each,
+/// topic 0), ids 4-6 "beta" (1800 s each, topic 1).
+fn seed_two_themes(conn: &Connection) {
+    for d in ["2026-10-05", "2026-10-06", "2026-10-07"] {
+        block(conn, d, 3600, Some("alpha onboarding flow"), 0, None);
+    }
+    for d in ["2026-10-08", "2026-10-09", "2026-10-10"] {
+        block(conn, d, 1800, Some("beta invoice export"), 0, None);
+    }
+}
+
+fn store_vectors(conn: &Connection, vectors: Vec<Vec<f32>>) {
+    let ids: Vec<i64> = (1..=vectors.len() as i64).collect();
+    let pending = crate::embed::pending(conn, &ids).unwrap();
+    crate::embed::store(conn, &pending, &vectors).unwrap();
+}
+
+fn two_theme_vectors() -> Vec<Vec<f32>> {
+    vec![unit(0), unit(0), unit(0), unit(1), unit(1), unit(1)]
+}
+
+fn cache_name(conn: &Connection, members: &[i64], name: &str) {
+    conn.execute(
+        "INSERT INTO topic_names VALUES (?1, ?2, ?3, 'Described.', 'm', '2026-10-01T00:00:00Z')",
+        params![
+            crate::topic_names::member_hash(members),
+            crate::topic_names::join_ids(members),
+            name
+        ],
+    )
+    .unwrap();
+}
+
+fn names_rows(conn: &Connection) -> i64 {
+    conn.query_row("SELECT COUNT(*) FROM topic_names", [], |r| r.get(0))
+        .unwrap()
+}
+
+fn range_report(conn: &Connection) -> crate::topics_contract::TopicsReport {
+    let server = MockServer::start();
+    serve(&server, 200, vec![]);
+    topics_report(conn, &client(&server), day("2026-10-05"), day("2026-10-11")).unwrap()
+}
+
+#[test]
+fn naming_fully_cached_topics_get_ai_names_and_naming_is_ai() {
+    let conn = open_memory().unwrap();
+    seed_two_themes(&conn);
+    store_vectors(&conn, two_theme_vectors());
+    cache_name(&conn, &[1, 2, 3], "Alpha Cached");
+    cache_name(&conn, &[4, 5, 6], "Beta Cached");
+
+    let r = range_report(&conn);
+
+    assert_eq!(r.naming, Naming::Ai);
+    assert_eq!(r.topics[0].name, "Alpha Cached");
+    assert_eq!(r.topics[0].description.as_deref(), Some("Described."));
+    assert_eq!(r.topics[0].named_by, NamedBy::Ai);
+    assert_eq!(r.topics[1].name, "Beta Cached");
+    // catches: keywords skipped when a cached name exists.
+    assert!(r.topics[0].keywords.contains(&"alpha".to_string()), "{:?}", r.topics[0].keywords);
+    assert!(!r.topics[0].keywords.contains(&"beta".to_string()));
+}
+
+#[test]
+fn naming_one_uncached_topic_is_pending_with_a_keyword_name() {
+    let conn = open_memory().unwrap();
+    seed_two_themes(&conn);
+    store_vectors(&conn, two_theme_vectors());
+    cache_name(&conn, &[1, 2, 3], "Alpha Cached");
+
+    let r = range_report(&conn);
+
+    // catches: reporting Ai as soon as any topic is named.
+    assert_eq!(r.naming, Naming::Pending);
+    assert_eq!(r.topics[0].named_by, NamedBy::Ai);
+    assert_eq!(r.topics[1].named_by, NamedBy::Keywords);
+    assert!(r.topics[1].name.contains("beta"), "{}", r.topics[1].name);
+    assert_eq!(r.topics[1].description, None);
+    // Computing the report never writes a name.
+    assert_eq!(names_rows(&conn), 1);
+}
+
+#[test]
+fn naming_helper_down_writes_no_names() {
+    let conn = open_memory().unwrap();
+    seed_two_themes(&conn);
+    let server = MockServer::start();
+    serve(&server, 500, vec![]);
+
+    let r = topics_report(&conn, &client(&server), day("2026-10-05"), day("2026-10-11")).unwrap();
+
+    assert_eq!(r.status, TopicsStatus::HelperDown);
+    assert_eq!(names_rows(&conn), 0);
+}
+
+#[test]
+fn naming_without_an_invoker_is_off_and_keeps_keyword_names() {
+    let conn = open_memory().unwrap();
+    seed_two_themes(&conn);
+    store_vectors(&conn, two_theme_vectors());
+    // Built before the runtime: the blocking http client cannot live inside one.
+    let mut r = range_report(&conn);
+    let pending = r.topics.iter().map(|t| pending_input(t.id)).collect();
+    let state = state_from_conn(conn);
+
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(crate::daemon::daemon_stats::name_in_background(
+            &state,
+            &mut r,
+            pending,
+            || Err(anyhow::anyhow!("no model configured")),
+        ));
+
+    // catches: leaving Pending forever when the invoker cannot be built.
+    assert_eq!(r.naming, Naming::Off);
+    assert_eq!(r.topics[0].named_by, NamedBy::Keywords);
+    assert_eq!(names_rows(&state.conn.blocking_lock()), 0);
+}
+
+fn pending_input(id: usize) -> crate::topic_names::TopicInput {
+    crate::topic_names::TopicInput {
+        id,
+        members: vec![id as i64 + 500],
+        keywords: vec![],
+        examples: vec![],
+        blocks: 1,
+        seconds: 60,
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn naming_route_is_pending_first_then_ai_once_the_job_lands() {
+    let _env = crate::envfile::ENV_TEST_LOCK.lock().await;
+    {
+        let _g = crate::tz::test_env_lock();
+        std::env::set_var("WORKLOG_ENV_FILE", "/nonexistent/worklog.env");
+    }
+    let conn = open_memory().unwrap();
+    seed_two_themes(&conn);
+    store_vectors(&conn, two_theme_vectors());
+    let state = state_from_conn(conn);
+    *crate::topic_names::TEST_REPLY.lock().unwrap() = Some(json!({"topics": [
+        {"id": 0, "name": "Alpha Onboarding", "description": "Onboarding work."},
+        {"id": 1, "name": "Beta Invoicing", "description": "Invoice exports."},
+    ]}));
+    let get = || async {
+        let response = router(state.clone())
+            .oneshot(
+                Request::get("/stats/topics?from=2026-10-05&to=2026-10-11")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+    };
+
+    let first = get().await;
+    assert_eq!(first["status"], "ready");
+    // catches: blocking the page on the model call, or reporting ai before names exist.
+    assert_eq!(first["naming"], "pending");
+    assert_eq!(first["topics"][0]["named_by"], "keywords");
+
+    let mut last = first;
+    for _ in 0..250 {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        last = get().await;
+        if last["naming"] == "ai" {
+            break;
+        }
+    }
+    *crate::topic_names::TEST_REPLY.lock().unwrap() = None;
+
+    assert_eq!(last["naming"], "ai", "naming job never landed: {last}");
+    assert_eq!(last["topics"][0]["name"], "Alpha Onboarding");
+    assert_eq!(last["topics"][1]["description"], "Invoice exports.");
+}
+
+fn map_blocks(conn: &Connection, n: usize) {
+    for i in 0..n {
+        let desc = if i == 0 { "x".repeat(120) } else { format!("map block {i}") };
+        block(conn, &format!("2026-10-{:02}", i + 1), 600, Some(&desc), 0, None);
+    }
+}
+
+fn map_vectors(n: usize) -> Vec<Vec<f32>> {
+    (0..n)
+        .map(|i| {
+            // Block 9 sits alone on its own axis; the rest are three loose groups.
+            let mut v = if i == 9 { unit(5) } else { unit(i % 3) };
+            v[10 + i] = 0.1;
+            v
+        })
+        .collect()
+}
+
+fn map_report(n: usize) -> crate::topics_contract::TopicsReport {
+    let conn = open_memory().unwrap();
+    map_blocks(&conn, n);
+    store_vectors(&conn, map_vectors(n));
+    let server = MockServer::start();
+    serve(&server, 200, vec![]);
+    topics_report(&conn, &client(&server), day("2026-10-01"), day("2026-10-11")).unwrap()
+}
+
+#[test]
+fn map_points_are_withheld_below_ten_blocks_and_present_at_ten() {
+    // catches: `>` instead of `>=` on MAP_MIN_POINTS.
+    let nine = map_report(9);
+    assert_eq!(nine.status, TopicsStatus::Ready);
+    assert!(nine.points.is_empty());
+    let ten = map_report(10);
+    assert_eq!(ten.points.len(), 10);
+}
+
+#[test]
+fn map_points_carry_label_topic_novelty_and_oddball_from_the_blocks() {
+    let r = map_report(10);
+    let by_id = |id: i64| r.points.iter().find(|p| p.block_id == id).unwrap();
+
+    // catches: an untruncated label.
+    assert_eq!(by_id(1).label.chars().count(), 90);
+    assert_eq!(by_id(2).label, "map block 1");
+    assert_eq!(by_id(2).day, "2026-10-02");
+    assert_eq!(by_id(2).seconds, 600);
+    for p in &r.points {
+        assert!(p.topic_id < r.topics.len());
+        assert!((0.0..=1.0).contains(&p.x) && (0.0..=1.0).contains(&p.y), "{p:?}");
+    }
+    // The earliest block has nothing before it; block 4 repeats block 1's group.
+    assert_eq!(by_id(1).novelty, 1.0);
+    assert!(by_id(4).novelty < 0.5, "{}", by_id(4).novelty);
+    // catches: oddball hardcoded or inverted.
+    assert!(by_id(10).oddball);
+    assert!(!by_id(1).oddball);
 }

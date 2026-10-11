@@ -14,11 +14,18 @@ const STATS_MAX_RANGE_DAYS: i64 = 366 * 30;
 const TOPICS_HISTORY_DAYS: i64 = 60;
 
 use crate::embed::{self, EmbedClient};
+use crate::estimate::{self, ModelInvoker};
 use crate::stats_contract::StatsReport;
 use crate::stats_topics::{self, BlockPoint, TopicsInput};
-use crate::topics_contract::{TopicsReport, TopicsStatus};
+use crate::topic_metrics::{center_with, mean, nearest_cos, novelty};
+use crate::topic_names::{self, TopicInput};
+use crate::topic_terms::{keywords, representatives, tokenize};
+use crate::topics_contract::{
+    MapPoint, Naming, TopicsReport, TopicsStatus, MAP_MIN_POINTS, MAX_TOPICS, MIN_TOPICS,
+    NAMING_EXAMPLES, TOPIC_KEYWORDS,
+};
 use crate::verdict_contract::VERDICT_ENABLED_KEY;
-use crate::{stats, tz};
+use crate::{stats, topic_map, tz};
 
 use super::{with_conn, ApiError, Shared};
 
@@ -108,9 +115,73 @@ pub async fn get_topics(
     })
     .await
     .map_err(|e| anyhow!("embed task: {e}"))?;
-    Ok(Json(
-        with_conn(state, move |c| topics_finish(c, prep, embedded)).await?,
-    ))
+    let (mut report, pending) =
+        with_conn(state.clone(), move |c| topics_finish(c, prep, embedded)).await?;
+    name_in_background(&state, &mut report, pending, real_invoker).await;
+    Ok(Json(report))
+}
+
+type MakeInvoker = fn() -> Result<Box<dyn ModelInvoker>>;
+
+fn real_invoker() -> Result<Box<dyn ModelInvoker>> {
+    #[cfg(test)]
+    if let Some(reply) = crate::topic_names::TEST_REPLY.lock().unwrap().clone() {
+        return Ok(Box::new(estimate::FixedInvoker(reply)));
+    }
+    estimate::build_invoker()
+}
+
+/// `Off` when no model can be built; otherwise one background job names
+/// `pending` and the keyword names stay until a later request.
+pub(super) async fn name_in_background(
+    state: &Shared,
+    report: &mut TopicsReport,
+    pending: Vec<TopicInput>,
+    make_invoker: MakeInvoker,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    // The probe builds a throwaway invoker: the real one is not Send, so the
+    // job builds its own inside its blocking task.
+    let usable = tokio::task::spawn_blocking(move || make_invoker().is_ok())
+        .await
+        .unwrap_or(false);
+    if !usable {
+        report.naming = Naming::Off;
+        return;
+    }
+    let claimed = topic_names::claim(&pending);
+    if !claimed.is_empty() {
+        tokio::spawn(run_naming_job(state.clone(), claimed, make_invoker));
+    }
+}
+
+async fn run_naming_job(state: Shared, inputs: Vec<TopicInput>, make_invoker: MakeInvoker) {
+    let result: Result<()> = async {
+        let for_call = inputs.clone();
+        let ids: Vec<usize> = inputs.iter().map(|i| i.id).collect();
+        let names = tokio::task::spawn_blocking(move || {
+            let reply = make_invoker()?.invoke(
+                topic_names::SYSTEM_PROMPT,
+                &topic_names::prompt(&for_call),
+                &topic_names::schema(),
+                estimate::DEFAULT_MODEL,
+            )?;
+            topic_names::parse_reply(&reply, &ids)
+        })
+        .await??;
+        let to_store = inputs.clone();
+        with_conn(state, move |c| {
+            topic_names::store(c, &to_store, &names, estimate::DEFAULT_MODEL)
+        })
+        .await
+    }
+    .await;
+    topic_names::release(&inputs);
+    if let Err(e) = result {
+        eprintln!("topic naming failed: {e:#}");
+    }
 }
 
 fn load_points(conn: &Connection, lo: NaiveDate, hi: NaiveDate) -> Result<Vec<BlockPoint>> {
@@ -170,14 +241,14 @@ pub(super) fn topics_report(
 ) -> Result<TopicsReport> {
     let prep = topics_prepare(conn, from, to)?;
     let embedded = embed_pending(client, &prep.pending);
-    topics_finish(conn, prep, embedded)
+    topics_finish(conn, prep, embedded).map(|(report, _)| report)
 }
 
 fn topics_finish(
     conn: &Connection,
     prep: TopicsPrep,
     embedded: Option<Vec<Vec<f32>>>,
-) -> Result<TopicsReport> {
+) -> Result<(TopicsReport, Vec<TopicInput>)> {
     let TopicsPrep {
         from,
         to,
@@ -186,10 +257,9 @@ fn topics_finish(
     } = prep;
     let (from_s, to_s) = (from.to_string(), to.to_string());
     let Some(new_vectors) = embedded else {
-        return Ok(TopicsReport::empty(
-            TopicsStatus::HelperDown,
-            &from_s,
-            &to_s,
+        return Ok((
+            TopicsReport::empty(TopicsStatus::HelperDown, &from_s, &to_s),
+            vec![],
         ));
     };
     embed::store(conn, &pending, &new_vectors)?;
@@ -238,5 +308,94 @@ fn topics_finish(
     }
     let mut report = stats_topics::build(&input);
     report.skipped_blocks = skipped;
-    Ok(report)
+    if report.status != TopicsStatus::Ready {
+        return Ok((report, vec![]));
+    }
+    let inputs = atlas(&mut report, &input);
+    let pending = topic_names::resolve(conn, &mut report, &inputs)?.pending;
+    report.naming = if pending.is_empty() {
+        Naming::Ai
+    } else {
+        Naming::Pending
+    };
+    Ok((report, pending))
+}
+
+/// Keywords, map points and naming inputs for a Ready report. Regroups the
+/// blocks exactly as `stats_topics::build` did (same centering, `k`, linkage
+/// and seconds ordering) because `build` does not expose membership.
+fn atlas(report: &mut TopicsReport, input: &TopicsInput) -> Vec<TopicInput> {
+    let mut pts: Vec<&BlockPoint> = input.now.iter().collect();
+    pts.sort_by_key(|p| p.id);
+    let raw: Vec<Vec<f32>> = pts.iter().map(|p| p.vec.clone()).collect();
+    let now_mean = mean(&raw);
+    let centered = center_with(&raw, &now_mean);
+    let k = ((pts.len() as f64 / 2.0).sqrt().round() as usize).clamp(MIN_TOPICS, MAX_TOPICS);
+    let labels = stats_topics::cluster(&centered, k);
+    let mut groups: Vec<Vec<usize>> = vec![vec![]; labels.iter().max().map_or(0, |m| m + 1)];
+    for (i, &l) in labels.iter().enumerate() {
+        groups[l].push(i);
+    }
+    groups.sort_by_key(|g| -g.iter().map(|&i| pts[i].seconds).sum::<i64>());
+
+    let text = |i: usize| pts[i].description.clone().unwrap_or_default();
+    let docs: Vec<Vec<String>> = groups
+        .iter()
+        .map(|g| g.iter().flat_map(|&i| tokenize(&text(i))).collect())
+        .collect();
+    let mut topic_of = vec![0; pts.len()];
+    let mut inputs = Vec::new();
+    for (id, (g, terms)) in groups
+        .iter()
+        .zip(keywords(&docs, TOPIC_KEYWORDS))
+        .enumerate()
+    {
+        let vecs: Vec<Vec<f32>> = g.iter().map(|&i| centered[i].clone()).collect();
+        let descriptions: Vec<String> = g.iter().map(|&i| text(i)).collect();
+        for &i in g {
+            topic_of[i] = id;
+        }
+        report.topics[id].keywords = terms.clone();
+        inputs.push(TopicInput {
+            id,
+            members: g.iter().map(|&i| pts[i].id).collect(),
+            keywords: terms,
+            examples: representatives(&vecs, &descriptions, NAMING_EXAMPLES)
+                .into_iter()
+                .map(|j| descriptions[j].clone())
+                .filter(|d| !d.is_empty())
+                .collect(),
+            blocks: report.topics[id].blocks,
+            seconds: report.topics[id].seconds,
+        });
+    }
+
+    if pts.len() >= MAP_MIN_POINTS {
+        let history_raw: Vec<Vec<f32>> = input.history.iter().map(|p| p.vec.clone()).collect();
+        let now_points: Vec<BlockPoint> = pts.iter().map(|p| (*p).clone()).collect();
+        let novel = novelty(
+            &now_points,
+            &centered,
+            &input.history,
+            &center_with(&history_raw, &now_mean),
+        );
+        let nearest = nearest_cos(&centered);
+        report.points = topic_map::layout(&centered)
+            .into_iter()
+            .enumerate()
+            .map(|(i, [x, y])| MapPoint {
+                block_id: pts[i].id,
+                x,
+                y,
+                topic_id: topic_of[i],
+                day: pts[i].day.clone(),
+                seconds: pts[i].seconds,
+                label: text(i).chars().take(90).collect(),
+                ticket: pts[i].ticket.clone(),
+                novelty: novel[i] as f32,
+                oddball: stats_topics::is_oddball(nearest[i]),
+            })
+            .collect();
+    }
+    inputs
 }
