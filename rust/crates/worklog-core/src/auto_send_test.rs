@@ -433,9 +433,13 @@ fn a_send_that_errors_does_not_stop_the_next_ticket() {
             accepts(issue)
         }
     });
-    // catches: returning at the first failing ticket
+    // catches: returning at the first failing ticket, and marking the unreachable ticket sent
     assert_eq!(tried.len(), 2);
     assert!(column(&conn, DAY, "B-GOOD", "auto_sent_at").is_some());
+    assert_eq!(column(&conn, DAY, "A-ERR", "auto_sent_at"), None);
+    let retry = tick(&conn, local(6, 17, 15), true, accepts);
+    // catches: dropping the failed ticket from the plan instead of retrying it
+    assert_eq!(retry, vec![format!("{DAY}/A-ERR")]);
 }
 
 #[test]
