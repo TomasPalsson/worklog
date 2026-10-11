@@ -269,12 +269,24 @@ pub fn reclassify_blocks(conn: &Connection, day_filter: Option<&str>) -> Result<
         // definition work. Assignment beats the path heuristic — if you
         // (or the estimator) committed to a ticket, that's a clearer
         // signal than what folder the events came from.
-        let (current_personal, has_ticket): (i64, bool) = conn.query_row(
-            "SELECT is_personal, jira_issue IS NOT NULL AND jira_issue != ''
+        let (current_personal, has_ticket, ignored): (i64, bool, bool) = conn.query_row(
+            "SELECT is_personal, jira_issue IS NOT NULL AND jira_issue != '',
+                    ignored_at IS NOT NULL
                FROM blocks WHERE id = ?1",
             [id],
-            |r| Ok((r.get(0)?, r.get::<_, i64>(1)? != 0)),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get::<_, i64>(1)? != 0,
+                    r.get::<_, i64>(2)? != 0,
+                ))
+            },
         )?;
+        // An ignored block stays personal-flagged whatever its path or ticket.
+        if ignored {
+            stats.unchanged += 1;
+            continue;
+        }
         let new_personal = path_personal && !has_ticket;
         let was_personal = current_personal != 0;
         if was_personal == new_personal {
@@ -435,6 +447,52 @@ mod tests {
         assert!(path_starts_with("/foo/bar", "/foo"));
         assert!(path_starts_with("/foo", "/foo"));
         assert!(!path_starts_with("/foobar", "/foo"));
+    }
+
+    fn block_with(conn: &Connection, personal: i64, ignored: bool, ticket: Option<&str>) -> i64 {
+        conn.execute(
+            "INSERT INTO blocks (day, started_at, ended_at, duration_seconds, is_personal,
+                                 ignored_at, jira_issue)
+             VALUES ('2026-04-18','2026-04-18T09:00:00+00:00','2026-04-18T09:30:00+00:00',1800,
+                     ?1, ?2, ?3)",
+            rusqlite::params![
+                personal,
+                ignored.then_some("2026-04-18T10:00:00+00:00"),
+                ticket
+            ],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn is_personal(conn: &Connection, id: i64) -> i64 {
+        conn.query_row("SELECT is_personal FROM blocks WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn reclassify_leaves_ignored_block_personal() {
+        let conn = crate::db::open_memory().unwrap();
+        // no project path classifies as work; a naive pass flips it to work
+        let plain = block_with(&conn, 1, true, None);
+        // a ticket also forces work; a naive pass flips this one too
+        let ticketed = block_with(&conn, 1, true, Some("ABC-1"));
+        let stats = reclassify_blocks(&conn, None).unwrap();
+        assert_eq!(is_personal(&conn, plain), 1);
+        assert_eq!(is_personal(&conn, ticketed), 1);
+        assert_eq!(stats.changed_to_work, 0);
+        assert_eq!(stats.unchanged, 2);
+    }
+
+    #[test]
+    fn reclassify_still_flips_non_ignored_personal_block() {
+        let conn = crate::db::open_memory().unwrap();
+        let id = block_with(&conn, 1, false, None);
+        let stats = reclassify_blocks(&conn, None).unwrap();
+        assert_eq!(is_personal(&conn, id), 0);
+        assert_eq!(stats.changed_to_work, 1);
     }
 }
 
