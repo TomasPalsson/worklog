@@ -8,6 +8,11 @@ import { call, loadSettings } from "./daemon";
 import type { PostOutcome, StandupDraft } from "./daily_helpers_contract";
 import type { SettingsView } from "./types";
 
+export type FocusRun = { jira_issue: string; started_at: string; ended_at: string; seconds: number };
+export type FocusSummary = { day: string; switches: number; longest: FocusRun | null };
+/** `POST /standup/draft`: the answers with yesterday's focus beside them (never in the posted text). */
+export type DraftResult = StandupDraft & { focus?: FocusSummary | null };
+
 async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
   try {
     return { ok: true, data: await fn() };
@@ -16,7 +21,7 @@ async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
   }
 }
 
-export async function draftStandup(): Promise<ActionResult<StandupDraft>> {
+export async function draftStandup(): Promise<ActionResult<DraftResult>> {
   return run(() => call("POST", "/standup/draft", {}));
 }
 
