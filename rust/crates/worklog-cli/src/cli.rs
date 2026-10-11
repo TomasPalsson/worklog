@@ -2522,6 +2522,14 @@ fn union_seconds(mut intervals: Vec<(i64, i64)>) -> i64 {
     total
 }
 
+impl DayAgg {
+    /// Class buckets are unions, so this is the part of work + personal +
+    /// ignored that the day total counts once (zero for same-class overlap).
+    fn class_overlap_secs(&self) -> i64 {
+        self.work_secs + self.personal_secs + self.ignored_secs - self.total_secs
+    }
+}
+
 /// Pairs of block ids whose wall-clock intervals overlap. Used to flag
 /// double-booked time the user should merge / split / delete.
 fn overlapping_pairs(blocks: &[worklog_core::models::Block]) -> Vec<(i64, i64)> {
@@ -2788,8 +2796,8 @@ fn print_day_summary<W: Write>(out: &mut W, agg: &DayAgg) -> Result<()> {
         human_dur(agg.personal_secs),
         human_dur(agg.ignored_secs),
     )?;
-    if agg.overlap_secs > 0 {
-        writeln!(out, "overlap {}", human_dur(agg.overlap_secs))?;
+    if agg.class_overlap_secs() > 0 {
+        writeln!(out, "overlap {}", human_dur(agg.class_overlap_secs()))?;
     }
     print_day_hints(out, agg)?;
     Ok(())
@@ -2979,8 +2987,9 @@ fn cmd_week<W: Write>(day: Option<String>, out: &mut W, json: bool) -> Result<()
         days.iter().map(|d| d.block_count).sum::<i64>().to_string(),
     ]);
     writeln!(out, "{by_day}")?;
-    if overlap > 0 {
-        writeln!(out, "overlap {}", human_dur(overlap))?;
+    let class_overlap: i64 = days.iter().map(DayAgg::class_overlap_secs).sum();
+    if class_overlap > 0 {
+        writeln!(out, "overlap {}", human_dur(class_overlap))?;
     }
 
     // Per-ticket roll-up for the week.
@@ -5031,9 +5040,24 @@ mod tests {
         assert_eq!(agg.total_secs, 5400);
         assert_eq!(agg.overlap_secs, 1800);
         assert_eq!(
-            agg.work_secs + agg.personal_secs + agg.ignored_secs - agg.overlap_secs,
+            agg.work_secs + agg.personal_secs + agg.ignored_secs - agg.class_overlap_secs(),
             agg.total_secs
         ); // a running sum without the overlap line would not add up
+    }
+
+    #[test]
+    fn printed_overlap_is_zero_for_same_class_overlap() {
+        // Work 09:00-10:00 + 09:30-10:30: work is a union (1h30m) = total,
+        // so the identity needs overlap 0; a raw-sum overlap prints 30m.
+        let blocks = vec![
+            block(1, "2026-05-16T09:00:00+00:00", 3600, Some("GOJ-1")),
+            block(2, "2026-05-16T09:30:00+00:00", 3600, Some("GOJ-1")),
+        ];
+        let agg = aggregate_day("2026-05-16", &blocks);
+        assert_eq!(agg.class_overlap_secs(), 0);
+        let mut out = Vec::new();
+        print_day_summary(&mut out, &agg).unwrap();
+        assert!(!String::from_utf8(out).unwrap().contains("\noverlap "));
     }
 
     #[test]
