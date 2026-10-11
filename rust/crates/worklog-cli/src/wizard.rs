@@ -803,8 +803,14 @@ mod tests {
         let mut err = Vec::new();
         report_daemon_install(Err(anyhow::anyhow!("no new pid within 5s")), &mut err);
         let msg = String::from_utf8(err).unwrap();
-        assert!(msg.contains("no new pid within 5s"), "names the error: {msg}");
-        assert!(msg.contains("worklog status"), "names the check command: {msg}");
+        assert!(
+            msg.contains("no new pid within 5s"),
+            "names the error: {msg}"
+        );
+        assert!(
+            msg.contains("worklog status"),
+            "names the check command: {msg}"
+        );
     }
 
     #[test]
