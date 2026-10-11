@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { EyeOff } from "lucide-react";
 import type { Block } from "@/lib/types";
 import { formatRange } from "@/lib/format";
@@ -20,10 +20,25 @@ interface Props {
 /** The ignore button and its Noise / Duplicate / Internal menu (FR-06). */
 export function IgnoreMenu({ block, day, dayBlocks, onInternal }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const rootRef = useRef<HTMLSpanElement>(null);
   const [isPending, start] = useTransition();
   const synced = !!block.tempo_worklog_id;
   const exported = !!block.exported_at;
   const timeRangeLabel = formatRange(block.started_at, block.ended_at);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setMenuOpen(false);
+    const onDown = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("mousedown", onDown);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("mousedown", onDown);
+    };
+  }, [menuOpen]);
 
   const onIgnore = (reason: IgnoreReason) => {
     setMenuOpen(false);
@@ -50,7 +65,7 @@ export function IgnoreMenu({ block, day, dayBlocks, onInternal }: Props) {
   };
 
   return (
-    <>
+    <span ref={rootRef} style={{ display: "contents" }}>
       <button
         type="button"
         className="icon-btn"
@@ -75,7 +90,7 @@ export function IgnoreMenu({ block, day, dayBlocks, onInternal }: Props) {
           ))}
         </div>
       )}
-    </>
+    </span>
   );
 }
 

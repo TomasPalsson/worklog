@@ -243,14 +243,20 @@ export function BlockCard({
 
         <div className="block-title-row">
           {(!hideTicketing || picking) && (
-            <TicketCombobox
-              key={String(picking)}
-              defaultOpen={picking}
-              blockId={block.id}
-              current={block.jira_issue}
-              tickets={tickets}
-              day={day}
-            />
+            <span
+              style={{ display: "contents" }}
+              onKeyDown={(e) => e.key === "Escape" && setPicking(false)}
+            >
+              <TicketCombobox
+                key={String(picking)}
+                defaultOpen={picking}
+                blockId={block.id}
+                current={block.jira_issue}
+                tickets={tickets}
+                day={day}
+                onAssigned={(ok) => ok && setPicking(false)}
+              />
+            </span>
           )}
           {!hideTicketing && isAutoTicket(block.jira_issue, block.ticket_origin) && (
             <span className="auto-tag" title="Ticket picked automatically">

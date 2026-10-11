@@ -8,7 +8,7 @@
 
 import { useEffect, useState } from "react";
 import { saveCustomerShares } from "@/app/tenant-actions";
-import type { BillingSlice } from "@/lib/deildir";
+import { SHARE_TOLERANCE_PERCENT, type BillingSlice } from "@/lib/deildir";
 import { fetchDeildSuggestion, type SplitOrigin } from "@/lib/tenants";
 import type { DeildSuggestion } from "@/lib/time_leaks_contract";
 import {
@@ -67,12 +67,15 @@ function SplitEditorRow({
   customerOptions,
   deildOptions,
   approxSeconds,
+  ordinal,
   onSetCustomer,
   onSetDeild,
   onPercent,
   onRemove,
 }: {
   row: Row;
+  /** 1-based position among rows with the same customer and deild; set only when that is ambiguous. */
+  ordinal?: number;
   customerOptions: string[];
   deildOptions: string[];
   approxSeconds: number;
@@ -82,10 +85,9 @@ function SplitEditorRow({
   onRemove: () => void;
 }) {
   const label = row.customer || "unresolved customer";
-  // Distinguishes a repeated customer's rows (FR-04) as long as their
-  // deildir differ; two blank-deild rows for the same customer share a
-  // label — an edge case the Owner resolves by picking a deild first.
-  const rowLabel = row.deild ? `${label} · ${row.deild}` : label;
+  // Distinguishes a repeated customer's rows (FR-04): by deild, and by
+  // position when customer and deild are both identical.
+  const rowLabel = [label, row.deild && ` · ${row.deild}`, ordinal && ` #${ordinal}`].filter(Boolean).join("");
   return (
     <div className="split-row">
       {row.customer ? (
@@ -171,8 +173,11 @@ function SplitEditor({
   onCancel,
   onSave,
 }: EditorProps) {
-  const total = rows.reduce((sum, r) => sum + r.percent, 0);
-  const canSave = rows.length > 0 && rows.every((r) => r.customer !== "") && total === 100;
+  const rawTotal = rows.reduce((sum, r) => sum + r.percent, 0);
+  const balanced = Math.abs(rawTotal - 100) <= SHARE_TOLERANCE_PERCENT;
+  const total = balanced ? 100 : Math.round(rawTotal * 100) / 100;
+  const canSave = rows.length > 0 && rows.every((r) => r.customer !== "") && balanced;
+  const sameKey = (a: Row, b: Row) => a.customer === b.customer && a.deild === b.deild;
 
   return (
     <div
@@ -188,19 +193,23 @@ function SplitEditor({
         <span className="split-head-num">Time</span>
         <span />
       </div>
-      {rows.map((row, i) => (
-        <SplitEditorRow
-          key={i}
-          row={row}
-          customerOptions={customerOptions.customers}
-          deildOptions={customerOptions.deildirByCustomer[row.customer] ?? []}
-          approxSeconds={totalDurationSeconds}
-          onSetCustomer={(customer) => onSetRowCustomer(i, customer)}
-          onSetDeild={(deild) => onSetRowDeild(i, deild)}
-          onPercent={(percent) => onUpdateRow(i, percent)}
-          onRemove={() => onRemoveRow(i)}
-        />
-      ))}
+      {rows.map((row, i) => {
+        const twins = rows.filter((o) => sameKey(o, row));
+        return (
+          <SplitEditorRow
+            key={i}
+            row={row}
+            ordinal={twins.length > 1 ? rows.slice(0, i + 1).filter((o) => sameKey(o, row)).length : undefined}
+            customerOptions={customerOptions.customers}
+            deildOptions={customerOptions.deildirByCustomer[row.customer] ?? []}
+            approxSeconds={totalDurationSeconds}
+            onSetCustomer={(customer) => onSetRowCustomer(i, customer)}
+            onSetDeild={(deild) => onSetRowDeild(i, deild)}
+            onPercent={(percent) => onUpdateRow(i, percent)}
+            onRemove={() => onRemoveRow(i)}
+          />
+        );
+      })}
 
       <select
         className="reg-input split-add-select"
@@ -215,9 +224,9 @@ function SplitEditor({
       </select>
 
       <div className="split-editor-footer">
-        <span className={total === 100 ? "split-total" : "split-total is-off"}>
+        <span className={balanced ? "split-total" : "split-total is-off"}>
           <span>Total: {total}%</span>
-          {total !== 100 && <span role="alert">Shares must add up to 100%</span>}
+          {!balanced && <span role="alert">Shares must add up to 100%</span>}
         </span>
         <div className="reg-actions">
           <button type="button" className="action-btn" onClick={onSplitEvenly}>Split evenly</button>
@@ -286,6 +295,19 @@ function DeildChip({
   );
 }
 
+/** Editor rows at 2-decimal precision, in display order, so an even three-way
+ * split opens as 33.33 x3 (within the daemon's tolerance) rather than 33 x3. */
+function exactParts(slices: BillingSlice[]): Part[] {
+  const total = totalSeconds(slices);
+  return slices
+    .map((s) => ({
+      customer: s.customer,
+      deild: s.deild,
+      percent: total > 0 ? Math.round((totalSeconds([s]) / total) * 10000) / 100 : 0,
+    }))
+    .sort((a, b) => b.percent - a.percent);
+}
+
 export function BlockCustomerSplit({ blockId }: { blockId: number }) {
   const [version, setVersion] = useState(0);
   return <SplitCard key={version} blockId={blockId} onSaved={() => setVersion((v) => v + 1)} />;
@@ -294,16 +316,17 @@ export function BlockCustomerSplit({ blockId }: { blockId: number }) {
 function SplitCard({ blockId, onSaved }: { blockId: number; onSaved: () => void }) {
   const s = useCustomerSplit(blockId);
 
-  if (s.slices === null || s.slices.length === 0) return null;
+  const slices = s.slices;
+  if (slices === null || slices.length === 0) return null;
 
-  const parts = sliceParts(s.slices);
-  const origin = s.slices[0].origin;
+  const parts = sliceParts(slices);
+  const origin = slices[0].origin;
 
   if (!s.editing) {
     return (
       <>
-        <SplitDisplay parts={parts} origin={origin} onChange={() => s.openEditor(parts)} />
-        <DeildChip blockId={blockId} slices={s.slices} onSaved={onSaved} />
+        <SplitDisplay parts={parts} origin={origin} onChange={() => s.openEditor(exactParts(slices))} />
+        <DeildChip blockId={blockId} slices={slices} onSaved={onSaved} />
       </>
     );
   }
@@ -312,7 +335,7 @@ function SplitCard({ blockId, onSaved }: { blockId: number; onSaved: () => void 
     <SplitEditor
       rows={s.rows}
       customerOptions={s.customerOptions}
-      totalDurationSeconds={totalSeconds(s.slices)}
+      totalDurationSeconds={totalSeconds(slices)}
       origin={origin}
       error={s.error}
       isPending={s.isPending}

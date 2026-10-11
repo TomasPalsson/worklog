@@ -5,7 +5,7 @@
 // just means nothing to show yet, not "not multi-tenant". Fetched lazily on
 // mount so the day's card list never waits.
 
-import { afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { BillingSlice, ShareRow } from "@/lib/deildir";
 import type { BillingCustomer } from "@/lib/types";
@@ -72,15 +72,26 @@ mock.module("@/app/tenant-actions", () => ({
 mock.module("@/lib/tenants", () => ({
   fetchDeildSuggestion: (blockId: number) => fetchDeildSuggestionImpl(blockId),
 }));
-mock.module("@/app/actions", () => ({
-  fetchBillingRegistry: () => fetchBillingRegistryImpl(),
-}));
+// Registered for this file's run only: BlockCard.test mocks the same
+// specifier without fetchBillingRegistry, and the last registration wins.
+// A module already linked through BlockCard's tree keeps that mock, so the
+// registry fetch also goes through the hook BlockCard.test's mock calls.
+const otherActions = { ...(await import("@/app/actions")) };
+(globalThis as { __fetchBillingRegistry?: unknown }).__fetchBillingRegistry = fetchBillingRegistryImpl;
 
 let BlockCustomerSplit: (props: { blockId: number }) => React.JSX.Element | null;
 
 beforeAll(async () => {
+  mock.module("@/app/actions", () => ({
+    ...otherActions,
+    fetchBillingRegistry: () => fetchBillingRegistryImpl(),
+  }));
   const mod = await import("./BlockCustomerSplit");
   BlockCustomerSplit = mod.BlockCustomerSplit;
+});
+
+afterAll(() => {
+  mock.module("@/app/actions", () => otherActions);
 });
 
 afterEach(() => {
@@ -189,6 +200,58 @@ describe("BlockCustomerSplit (B17)", () => {
     await screen.findByText("Shares must add up to 100%");
     expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
     expect(saveCustomerSharesCalls.length).toBe(0);
+  });
+
+  it("saves an even three-way split (catches an exact-100 gate on rounded 33/33/33)", async () => {
+    currentSlices = [
+      { customer: "Sjúkra", deild: null, intervals: [[0, 1200]], origin: "clues", deild_origin: "blank" },
+      { customer: "MMS", deild: null, intervals: [[1200, 2400]], origin: "clues", deild_origin: "blank" },
+      { customer: "Byko", deild: null, intervals: [[2400, 3600]], origin: "clues", deild_origin: "blank" },
+    ];
+    render(<BlockCustomerSplit blockId={303} />);
+    await screen.findByRole("button", { name: "Change" });
+    fireEvent.click(screen.getByRole("button", { name: "Change" }));
+    await screen.findByLabelText("Sjúkra share percent");
+
+    expect(screen.getByText("Total: 100%")).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(saveCustomerSharesCalls.length).toBe(1));
+    const fractions = saveCustomerSharesCalls[0][1].map((r) => r.fraction);
+    for (const f of fractions) expect(f).toBeCloseTo(1 / 3, 3);
+    expect(Math.abs(fractions.reduce((a, b) => a + b, 0) - 1)).toBeLessThanOrEqual(0.001);
+  });
+
+  it("gates Save at the daemon's 0.1% share tolerance: 99.91% saves, 99.86% does not (catches a 0.5% or exact gate)", async () => {
+    currentSlices = [
+      { customer: "Sjúkra", deild: null, intervals: [[0, 1200]], origin: "clues", deild_origin: "blank" },
+      { customer: "MMS", deild: null, intervals: [[1200, 2400]], origin: "clues", deild_origin: "blank" },
+      { customer: "Byko", deild: null, intervals: [[2400, 3600]], origin: "clues", deild_origin: "blank" },
+    ];
+    render(<BlockCustomerSplit blockId={303} />);
+    await screen.findByRole("button", { name: "Change" });
+    fireEvent.click(screen.getByRole("button", { name: "Change" }));
+    const byko = await screen.findByLabelText("Byko share percent");
+    const save = () => (screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled;
+
+    fireEvent.change(byko, { target: { value: "33.25" } });
+    expect(save()).toBe(false);
+    fireEvent.change(byko, { target: { value: "33.2" } });
+    expect(save()).toBe(true);
+  });
+
+  it("gives two blank-deild rows of one customer distinct labels (catches a shared aria-label)", async () => {
+    currentSlices = [
+      { customer: "Sjúkra", deild: null, intervals: [[0, 1800]], origin: "clues", deild_origin: "blank" },
+      { customer: "Sjúkra", deild: null, intervals: [[1800, 3600]], origin: "clues", deild_origin: "blank" },
+    ];
+    render(<BlockCustomerSplit blockId={404} />);
+    await screen.findByRole("button", { name: "Change" });
+    fireEvent.click(screen.getByRole("button", { name: "Change" }));
+
+    expect(await screen.findByLabelText("Sjúkra #1 share percent")).not.toBeNull();
+    expect(screen.getByLabelText("Sjúkra #2 share percent")).not.toBeNull();
+    expect(screen.getByLabelText("Sjúkra #2 deild")).not.toBeNull();
   });
 
   it("renders nothing when there are no slices to show", async () => {
