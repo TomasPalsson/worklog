@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "bun:test";
 import { cleanup, render } from "@testing-library/react";
 import type { MapPoint, Topic, TopicsReport } from "@/lib/topics_contract";
@@ -381,9 +382,27 @@ describe("TopicGalaxy markup", () => {
     expect(rows[0].textContent).toContain("1.0h");
   });
 
-  it("map is wrapped in a scroll container and the caption has no jargon outside details", () => {
+  it("map svg fits its width: meet aspect ratio, no scroll or min-width container", () => {
     const { container } = render(<TopicGalaxy report={full} />);
-    expect(container.querySelector(".sx-gal-scroll svg.sx-gal-svg")).not.toBeNull();
+    const svg = container.querySelector(".sx-gal-map > svg.sx-gal-svg")!;
+    expect(svg.getAttribute("preserveAspectRatio")).toBe("xMidYMid meet"); // catches an absent attribute
+    expect(container.querySelector(".sx-gal-scroll")).toBeNull(); // catches the old scroll wrapper
+    const css = readFileSync(`${import.meta.dir}/../../app/stats/galaxy.css`, "utf8");
+    expect(css).not.toMatch(/min-width:\s*720/); // catches the retained forced min-width
+    expect(css).not.toMatch(/overflow-x:\s*(auto|scroll)/); // catches retained horizontal scroll
+  });
+
+  it("below 600px the css hides on-map labels, shows the list and enlarges dots 1.6x", () => {
+    const css = readFileSync(`${import.meta.dir}/../../app/stats/galaxy.css`, "utf8");
+    const blocks = [...css.matchAll(/@media \(max-width: 599px\) \{([^@]*)\}\s*(?=\n|$)/g)].map((m) => m[1]).join("\n");
+    expect(blocks).toMatch(/\.sx-gal-label\s*\{[^}]*display:\s*none/); // catches labels left visible on phone
+    expect(blocks).toMatch(/\.sx-gal-list\s*\{[^}]*display:\s*block/); // catches list hidden on phone
+    expect(blocks).toMatch(/\.sx-gal-dot[^{]*\{[^}]*transform:\s*scale\(1\.6\)/); // catches missing dot enlargement
+    expect(css).toMatch(/\.sx-gal-list\s*\{[^}]*display:\s*none/); // catches list shown on desktop
+  });
+
+  it("the caption has no jargon outside details", () => {
+    const { container } = render(<TopicGalaxy report={full} />);
     const p = container.querySelector(".sx-gal-how")!;
     expect(p.textContent).not.toMatch(/t-SNE|cosine|perplexity|average-linkage/);
     const det = container.querySelector("details")!;

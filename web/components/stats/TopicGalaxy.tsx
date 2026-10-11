@@ -250,7 +250,7 @@ function GalaxyMap({ report, layout }: { report: TopicsReport; layout: GalaxyLay
     .flat()
     .join("");
   return (
-    <svg className="sx-gal-svg" viewBox={`0 0 ${GAL_W} ${height}`} role="group" aria-label="Topic map of your work blocks">
+    <svg className="sx-gal-svg" preserveAspectRatio="xMidYMid meet" viewBox={`0 0 ${GAL_W} ${height}`} role="group" aria-label="Topic map of your work blocks">
       <style>{hover}</style>
       <defs>
         <radialGradient id={`${uid}-bg`} cx="50%" cy="50%" r="70%">
@@ -336,7 +336,7 @@ export function TopicGalaxy({ report }: { report: TopicsReport }) {
         </div>
       ) : (
         <>
-          <div className="sx-gal-scroll">
+          <div className="sx-gal-map">
             <GalaxyMap report={report} layout={layout} />
           </div>
           <Legend />

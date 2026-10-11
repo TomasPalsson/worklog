@@ -1,7 +1,6 @@
 /* Topic galaxy: star map of the work blocks (components/stats/TopicGalaxy.tsx). */
-.sx-gal-scroll { background: var(--bg-sunk); border-radius: var(--radius-md); overflow-x: auto; }
+.sx-gal-map { background: var(--bg-sunk); border-radius: var(--radius-md); }
 .sx-gal-svg { display: block; width: 100%; height: auto; }
-@media (max-width: 599px) { .sx-gal-svg { min-width: 720px; } }
 .sx-gal-bg-in { stop-color: var(--bg-sunk); }
 .sx-gal-bg-out { stop-color: color-mix(in oklch, var(--bg-sunk) 70%, var(--bg)); }
 .sx-gal-dot { stroke: var(--bg); stroke-width: 1; transition: opacity 120ms var(--art-ease); }
@@ -16,7 +15,7 @@
 .sx-gal-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 8px 2px 0; font-size: 12px; color: var(--fg-muted); }
 .sx-gal-key { display: inline-flex; align-items: center; gap: 6px; }
 .sx-gal-list { display: none; list-style: none; margin: 8px 0 0; padding: 0; }
-@media (max-width: 599px) { .sx-gal-list { display: block; } }
+@media (max-width: 599px) { .sx-gal-list { display: block; } .sx-gal-label { display: none; } .sx-gal-dot { transform-box: fill-box; transform-origin: center; transform: scale(1.6); } }
 .sx-gal-list li { display: flex; align-items: center; gap: 8px; padding: 6px 2px; font-size: 13px; cursor: help; }
 .sx-gal-swatch { width: 10px; height: 10px; border-radius: 50%; flex: none; }
 .sx-gal-list-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
