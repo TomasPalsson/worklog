@@ -1,5 +1,5 @@
 /* DayCompass: focus x novelty quadrant. Tokens only. */
-.sx-cmp { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 12px; padding: 16px; min-width: 0; }
+.sx-cmp { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 12px; padding: 16px; min-width: 0; align-self: start; }
 .sx-cmp-title { margin: 0 0 10px; font-size: 15px; line-height: 1.35; color: var(--fg); }
 .sx-cmp-svg { display: block; width: 100%; height: auto; }
 .sx-cmp-cross { stroke: var(--border); stroke-width: 1; stroke-dasharray: 4 3; }
