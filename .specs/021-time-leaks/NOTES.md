@@ -21,3 +21,15 @@
 - Discovered: mods/worklog/hooks/command.tsx:116 — installer process.run has no .catch and no timeout; a spawn failure throws instead of returning "failed" text — defer
 - Discovered: rust/crates/worklog-core/src/personal.rs:~272 — "Strong override" comment now sits above the ignored early-continue; dominant_project_path_for_block still runs for ignored blocks — defer
 - Discovered: rust/crates/worklog-core/src/auto_send.rs:177-181 — unreachable send_error stores the raw reqwest text (may include the request URL) and shows it in Review — defer
+- Phase 1 independent test (2026-10-11): `-p worklog-core auto_send` exit 0 (20 passed); `-p worklog-cli aggregate` exit 0 (5 passed)
+- Discovered: rust/crates/worklog-core/src/collectors/claude_transcripts.rs:115 — health key `claude_transcripts` (per design §T009) matches no event source (`claude_turn`), so status may show one row with events and no run, and another with a run and 0 events — defer (T008 lists sources; check there)
+- Discovered: rust/crates/worklog-cli/src/cli.rs ~3126-3135 — cmd_status still turns db::open/summarize/last_prune/fetch_day_blocks errors into silent absence; FR-14 covered only daemon/hook/schedule — defer
+- Discovered: rust/crates/worklog-cli/src/helpers_cmd.rs:63, rust/crates/worklog-core/src/daemon_standup.rs:76 — `yesterday_focus(..)?` fails the whole draft if the optional focus query errors (post route unaffected) — defer
+- Discovered: rust/crates/worklog-core/src/hook_run.rs:199,228 — doc says "Always returns Ok" but Paths/ensure/db::open `?` still propagate (pre-existing); DB now opened before JSON parse — defer
+- Discovered: rust/crates/worklog-core/src/hook_run.rs:~239 — `e.to_string()` drops the anyhow chain; transcripts use `{e:#}` — defer
+- Discovered: rust/crates/worklog-core/src/hook_run.rs:~245 — a meta write on every hook call (hot path) — defer
+- Discovered: rust/crates/worklog-cli/src/cli.rs ~5287 — doc on status_probe_json_reports_error_reason describes the next test — defer
+- Discovered: rust/crates/worklog-cli/src/helpers_cmd.rs:~137, web/components/StandupButton.tsx:19 — "1 switches" not pluralised — defer
+- Discovered: rust/crates/worklog-cli/src/helpers_cmd.rs:~127 vs web/lib/format.ts:36 — CLI truncates minutes, web rounds (2h 15m vs 2h 16m) — defer
+- Discovered: web/components/StandupButton.test.tsx:~66 — expected window built with the same formatRange the component uses — defer
+- Discovered: rust/crates/worklog-cli/src/cli.rs ~3272 — status_hints suggests `worklog daemon install` when the service is installed but the port is down — defer
