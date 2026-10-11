@@ -1,0 +1,12 @@
+/* DayCompass: focus x novelty quadrant. Tokens only. */
+.sx-cmp { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 12px; padding: 16px; min-width: 0; }
+.sx-cmp-title { margin: 0 0 10px; font-size: 15px; line-height: 1.35; color: var(--fg); }
+.sx-cmp-svg { display: block; width: 100%; height: auto; }
+.sx-cmp-cross { stroke: var(--border); stroke-width: 1; stroke-dasharray: 4 3; }
+.sx-cmp-caption { fill: var(--fg-muted); font-size: 11px; }
+.sx-cmp-dot { fill: oklch(var(--project-l) var(--project-c) calc(var(--h))); fill-opacity: 0.85; stroke: var(--bg-raised); stroke-width: 1; cursor: help; }
+.sx-cmp-dot:hover, .sx-cmp-dot:focus-visible { fill-opacity: 1; stroke: var(--fg); }
+.sx-cmp-leader { stroke: var(--fg-muted); stroke-width: 1; }
+.sx-cmp-leader-label { fill: var(--fg); font-size: 11px; stroke: var(--bg-raised); stroke-width: 3px; paint-order: stroke; stroke-linejoin: round; }
+.sx-cmp-skipped { margin: 8px 0 0; font-size: 12px; color: var(--fg-muted); }
+.sx-cmp-how { margin: 10px 0 0; font-size: 12px; color: var(--fg-muted); line-height: 1.4; }

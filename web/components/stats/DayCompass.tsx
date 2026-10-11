@@ -1,0 +1,151 @@
+import "@/app/stats/compass.css";
+import { formatDuration, shortMonthDay, shortWeekday } from "@/lib/format";
+import type { DayRow, TopicsReport } from "@/lib/topics_contract";
+import { tipProps, type Tip } from "./tip";
+
+const WIDTH = 480;
+const HEIGHT = 320;
+const PAD_X = 64;
+const PAD_Y = 40;
+const MAX_RADIUS = 12;
+const LEADER_X = 20;
+const LEADER_Y = 18;
+
+type Quadrant = "deep-new" | "deep-familiar" | "scattered-exploring" | "scattered-routine";
+
+const CAPTIONS: { quadrant: Quadrant; text: string; x: number; y: number; anchor: "start" | "end" }[] = [
+  { quadrant: "scattered-exploring", text: "Scattered · exploring", x: 8, y: 16, anchor: "start" },
+  { quadrant: "deep-new", text: "Deep · new ground", x: WIDTH - 8, y: 16, anchor: "end" },
+  { quadrant: "scattered-routine", text: "Scattered · routine", x: 8, y: HEIGHT - 8, anchor: "start" },
+  { quadrant: "deep-familiar", text: "Deep · familiar", x: WIDTH - 8, y: HEIGHT - 8, anchor: "end" },
+];
+
+export interface CompassDot {
+  day: string;
+  x: number;
+  y: number;
+  radius: number;
+  quadrant: Quadrant;
+  labelled: boolean;
+  topTopic: number;
+}
+
+const median = (values: number[]) => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+};
+
+const topicHue = (report: TopicsReport, topicId: number) => 25 + topicId * (360 / report.topics.length);
+
+export function compassLayout(report: TopicsReport) {
+  const plottedDays = report.days.filter((d): d is DayRow & { focus: number } => d.focus !== null);
+  const skipped = report.days.filter((d) => d.focus === null).map((d) => d.day);
+  const focusValues = plottedDays.map((d) => d.focus);
+  const noveltyValues = plottedDays.map((d) => d.novelty);
+  const range = (values: number[]) => [Math.min(...values), Math.max(...values)];
+  const [focusLow, focusHigh] = range(focusValues);
+  const [noveltyLow, noveltyHigh] = range(noveltyValues);
+  const plotWidth = WIDTH - 2 * PAD_X;
+  const plotHeight = HEIGHT - 2 * PAD_Y;
+  const scaleX = (focus: number) => PAD_X + (focusHigh > focusLow ? ((focus - focusLow) / (focusHigh - focusLow)) * plotWidth : plotWidth / 2);
+  const scaleY = (novelty: number) =>
+    HEIGHT - PAD_Y - (noveltyHigh > noveltyLow ? ((novelty - noveltyLow) / (noveltyHigh - noveltyLow)) * plotHeight : plotHeight / 2);
+  const medianFocus = plottedDays.length ? median(focusValues) : 0;
+  const medianNovelty = plottedDays.length ? median(noveltyValues) : 0;
+  const medianX = scaleX(medianFocus);
+  const medianY = scaleY(medianNovelty);
+  const mostSeconds = Math.max(0, ...plottedDays.map((d) => d.work_seconds));
+
+  const plotted: CompassDot[] = plottedDays.map((d) => {
+    const deep = d.focus >= medianFocus;
+    const fresh = d.novelty >= medianNovelty;
+    return {
+      day: d.day,
+      x: scaleX(d.focus),
+      y: scaleY(d.novelty),
+      radius: mostSeconds > 0 ? MAX_RADIUS * Math.sqrt(d.work_seconds / mostSeconds) : 0,
+      quadrant: deep ? (fresh ? "deep-new" : "deep-familiar") : fresh ? "scattered-exploring" : "scattered-routine",
+      labelled: false,
+      topTopic: d.top_topic,
+    };
+  });
+  const reach = (dot: CompassDot) => Math.hypot((dot.x - medianX) / plotWidth, (dot.y - medianY) / plotHeight);
+  const farthest = new Map<Quadrant, CompassDot>();
+  for (const dot of plotted) {
+    const best = farthest.get(dot.quadrant);
+    if (!best || reach(dot) > reach(best)) farthest.set(dot.quadrant, dot);
+  }
+  for (const dot of farthest.values()) dot.labelled = true;
+  return { plotted, skipped, medianX, medianY };
+}
+
+const dayName = (day: string) => `${shortWeekday(day)} ${shortMonthDay(day)}`;
+
+export function compassTip(day: DayRow): Tip {
+  return {
+    title: dayName(day.day),
+    rows: [
+      ["Hours", formatDuration(day.work_seconds)],
+      ["Focus", day.focus === null ? "–" : day.focus.toFixed(2)],
+      ["Novelty", day.novelty.toFixed(2)],
+      ["Switches", String(day.switches)],
+      ["Longest run", formatDuration(day.longest_run_seconds)],
+      ["Topics touched", String(day.topics_touched)],
+    ],
+  };
+}
+
+export function DayCompass({ report }: { report: TopicsReport }) {
+  const { plotted, skipped, medianX, medianY } = compassLayout(report);
+  if (plotted.length === 0) return null;
+  const dayRows = new Map(report.days.map((d) => [d.day, d]));
+
+  return (
+    <section className="sx-cmp">
+      <h3 className="sx-cmp-title">Day compass</h3>
+      <svg className="sx-cmp-svg" viewBox={`0 0 ${WIDTH} ${HEIGHT}`} role="img" aria-label="Focus against novelty, one dot per day">
+        <line className="sx-cmp-cross" x1={medianX} x2={medianX} y1={PAD_Y / 2} y2={HEIGHT - PAD_Y / 2} />
+        <line className="sx-cmp-cross" x1={PAD_X / 2} x2={WIDTH - PAD_X / 2} y1={medianY} y2={medianY} />
+        {CAPTIONS.map((c) => (
+          <text key={c.quadrant} className="art-label sx-cmp-caption" x={c.x} y={c.y} textAnchor={c.anchor}>
+            {c.text}
+          </text>
+        ))}
+        {plotted.map((dot) => (
+          <circle
+            key={dot.day}
+            className="sx-cmp-dot"
+            cx={dot.x}
+            cy={dot.y}
+            r={dot.radius}
+            style={{ "--h": topicHue(report, dot.topTopic) } as React.CSSProperties}
+            tabIndex={0}
+            aria-label={dayName(dot.day)}
+            {...tipProps(compassTip(dayRows.get(dot.day)!))}
+          />
+        ))}
+        {plotted
+          .filter((dot) => dot.labelled)
+          .map((dot) => {
+            const sideX = dot.quadrant.startsWith("deep") ? 1 : -1;
+            const sideY = dot.quadrant.endsWith("new") || dot.quadrant.endsWith("exploring") ? -1 : 1;
+            const endX = dot.x + sideX * LEADER_X;
+            const endY = dot.y + sideY * LEADER_Y;
+            return (
+              <g key={dot.day}>
+                <line className="sx-cmp-leader" x1={dot.x} y1={dot.y} x2={endX} y2={endY} />
+                <text className="art-label sx-cmp-leader-label" x={endX + sideX * 3} y={endY + (sideY < 0 ? 0 : 10)} textAnchor={sideX > 0 ? "start" : "end"}>
+                  {dayName(dot.day)}
+                </text>
+              </g>
+            );
+          })}
+      </svg>
+      {skipped.length > 0 && <p className="sx-cmp-skipped">single-block days: {skipped.map(shortMonthDay).join(", ")}</p>}
+      <p className="sx-cmp-how">
+        How: Focus = how alike that day&apos;s blocks are (hours-weighted mean pairwise cosine). Novelty = how unlike anything you did before (1 − nearest earlier block). Lines are your medians.
+      </p>
+    </section>
+  );
+}
