@@ -1,3 +1,4 @@
+Verified: 2026-10-11 by user (pre-approved: /goal directive, /flow:next --finish)
 Approved: 2026-10-11 by user (pre-approved: /goal directive, /flow:next --finish)
 # Tasks — Topic atlas
 Spec: spec.md · Design: design.md · Base: 9f27bd4 · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && (cd web && bun test)`
@@ -59,6 +60,6 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core to
 - [x] T043 [P] Namer is told the 40-char name limit (B2) — files: rust/crates/worklog-core/src/topic_names.rs, rust/crates/worklog-core/src/topic_names_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core topic_names` — after: T039 — done: 45a5eb6
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `cargo fmt --manifest-path rust/Cargo.toml --all -- --check && cargo clippy --manifest-path rust/Cargo.toml --all-targets --all-features -- -D warnings && cargo test --manifest-path rust/Cargo.toml && (cd web && bun test && bun run typecheck && bun run build)`
-- [ ] G002 branch review clean — files: . — verify: `flow pass`
-- [ ] G003 verification evidence exists — files: . — verify: `test -s .specs/023-topic-atlas/verify/acceptance.md`
+- [x] G001 project gates clean — files: . — verify: `cargo fmt --manifest-path rust/Cargo.toml --all -- --check && cargo clippy --manifest-path rust/Cargo.toml --all-targets --all-features -- -D warnings && cargo test --manifest-path rust/Cargo.toml && (cd web && bun test && bun run typecheck && bun run build)` — done: 0a22a6a
+- [x] G002 branch review clean — files: . — verify: `flow pass` — done: 0a22a6a
+- [x] G003 verification evidence exists — files: . — verify: `test -s .specs/023-topic-atlas/verify/acceptance.md` — done: 0a22a6a
