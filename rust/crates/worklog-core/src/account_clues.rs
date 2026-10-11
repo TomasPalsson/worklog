@@ -51,7 +51,7 @@ const BUMP_TICKETS: &str = "INSERT INTO account_ticket_counts (account_id, accou
      ON CONFLICT(account_id) DO UPDATE SET tickets = tickets + 1, account_name = excluded.account_name";
 
 pub fn relearn(conn: &Connection, tickets: &[(String, AllowedAccount)]) -> Result<RelearnReport> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::write_tx(conn)?;
     let decisions = {
         let mut stmt = tx.prepare(
             "SELECT d.picked_id, c.account_name, d.clues FROM account_decisions d
@@ -150,7 +150,7 @@ pub fn record_decision(
     guessed_id: Option<&str>,
     clues: &[String],
 ) -> Result<()> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::write_tx(conn)?;
     let correct = guessed_id == Some(picked.id.as_str());
     tx.execute(
         "INSERT INTO account_decisions (decided_at, summary, picked_id, guessed_id, correct, clues)

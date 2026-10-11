@@ -166,7 +166,7 @@ pub fn store(conn: &Connection, items: &[PendingText], vectors: &[Vec<f32>]) -> 
             items.len()
         );
     }
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::write_tx(conn)?;
     for (p, v) in items.iter().zip(vectors) {
         tx.execute(
             "INSERT INTO block_embeddings (block_id, model, text_hash, vec)

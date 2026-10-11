@@ -249,7 +249,7 @@ pub fn purge_rows(conn: &Connection, horizon: NaiveDate, dry_run: bool) -> Resul
     // a card has not captured. Dropping `tx` on any error rolls it all back,
     // and a dry run rolls back on purpose — so its counts are the real
     // run's. `execute()`'s rows-changed return value IS the count.
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::write_tx(conn)?;
     let cards = card_old_blocks(&tx, &horizon_iso)?;
     let freelist_before = pragma_i64(&tx, "freelist_count")?;
     let events_deleted = tx

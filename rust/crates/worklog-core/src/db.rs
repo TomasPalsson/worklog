@@ -42,6 +42,14 @@ pub fn open(path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
+/// A write transaction that takes the write lock up front (`BEGIN IMMEDIATE`).
+/// The CLI, the hook and the daemon write the same WAL database: a deferred
+/// transaction that reads, then writes, fails with SQLITE_BUSY_SNAPSHOT (517)
+/// when another process committed in between, and busy_timeout cannot retry it.
+pub fn write_tx(conn: &Connection) -> rusqlite::Result<rusqlite::Transaction<'_>> {
+    rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+}
+
 /// Open an in-memory connection for tests.
 pub fn open_memory() -> Result<Connection> {
     let conn = Connection::open_in_memory().context("opening in-memory sqlite")?;
