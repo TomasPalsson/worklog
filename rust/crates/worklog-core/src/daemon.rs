@@ -65,6 +65,8 @@
 //! * `GET  /nudges`                      — footer nudges → `Vec<Nudge>`
 //! * `GET  /preflight?from=&to=`         — pre-send checklist rows for the day range → `Vec<PreflightRow>`
 //! * `GET  /preflight/read-back?day=`    — Tempo read-back row for one day → `PreflightRow`
+//! * `GET  /loose-ends`                  — today's unsynced blocks
+//! * `GET  /blocks/:id/deild-suggestion` — suggested billing deild for a block
 //!
 //! Unix-socket file perms default to `0666` so the containerised UI can
 //! connect across Docker Desktop's VM (same user, same host — the data
@@ -2121,27 +2123,58 @@ async fn day_progress(
     AxumPath(day): AxumPath<String>,
     axum::extract::Query(q): axum::extract::Query<ProgressQuery>,
 ) -> Result<Json<crate::estimate_progress_contract::DayProgress>, ApiError> {
+    day_progress_with(state, day, q.refresh, progress_inputs).await
+}
+
+struct ProgressInputs {
+    client: reqwest::blocking::Client,
+    auth: Option<jira::JiraAuth>,
+    tempo: Option<tempo::TempoAuth>,
+    me: Option<String>,
+}
+
+fn progress_inputs() -> Result<ProgressInputs> {
+    let client = crate::http::client()?;
+    let auth = jira::JiraAuth::from_secrets().ok();
+    let me = auth.as_ref().and_then(|a| {
+        secrets::get("jira_account_id")
+            .ok()
+            .flatten()
+            .filter(|v| !v.is_empty())
+            .or_else(|| tempo::resolve_account_id(&a.email, &client).ok())
+    });
+    Ok(ProgressInputs {
+        client,
+        auth,
+        tempo: tempo::TempoAuth::from_secrets().ok(),
+        me,
+    })
+}
+
+async fn day_progress_with<R>(
+    state: Shared,
+    day: String,
+    refresh: Option<String>,
+    resolve: R,
+) -> Result<Json<crate::estimate_progress_contract::DayProgress>, ApiError>
+where
+    R: FnOnce() -> Result<ProgressInputs> + Send + 'static,
+{
     let day = NaiveDate::parse_from_str(&day, "%Y-%m-%d")
         .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{day}`: {e}")))?;
+    let i = tokio::task::spawn_blocking(resolve)
+        .await
+        .context("spawn_blocking")??;
     Ok(Json(
         with_conn(state, move |c| {
-            let client = crate::http::client()?;
-            let auth = jira::JiraAuth::from_secrets().ok();
-            let me = auth.as_ref().and_then(|a| {
-                secrets::get("jira_account_id")
-                    .ok()
-                    .flatten()
-                    .filter(|v| !v.is_empty())
-                    .or_else(|| tempo::resolve_account_id(&a.email, &client).ok())
-            });
             crate::daemon_progress::progress_with(
                 c,
                 day,
-                q.refresh.as_deref(),
-                auth.as_ref(),
-                tempo::TempoAuth::from_secrets().ok().as_ref(),
-                me.as_deref(),
-                &client,
+                refresh.as_deref(),
+                i.auth.as_ref(),
+                i.tempo.as_ref(),
+                i.me.as_deref(),
+                &i.client,
                 Utc::now(),
             )
         })
@@ -3612,6 +3645,27 @@ mod tests {
             .unwrap();
         // catches: /nudges missing (404) or registered as POST
         assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn progress_resolves_secrets_before_taking_the_db_lock() {
+        let state = state_from_conn(open_memory().unwrap());
+        let probe = state.clone();
+        let resolve = move || {
+            // catches: keychain/network work done while holding the DB mutex
+            assert!(
+                probe.conn.try_lock().is_ok(),
+                "DB mutex held during resolve"
+            );
+            Ok(ProgressInputs {
+                client: crate::http::client()?,
+                auth: None,
+                tempo: None,
+                me: None,
+            })
+        };
+        let out = day_progress_with(state, "2026-10-11".into(), None, resolve).await;
+        assert!(out.is_ok());
     }
 
     #[tokio::test(flavor = "current_thread")]
