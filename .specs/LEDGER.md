@@ -19,3 +19,4 @@
 2026-10-09 · 014-no-tempo-daily-log-overview · verified, PASS b2934dc; archived after the fact · Logged — see what's really in Tempo, and one home for Jira/Tempo
 2026-10-09 · loose-docs · DATA-SOURCES, TIMELINE-REPORT, USER-STORIES, ZERO-TOUCH + timeline screenshot moved to archive · background docs, no spec
 2026-10-09 · 019-google-calendar-3lo-login · verified, PASS c79ffcb; merged #135 · Google Calendar login (worklog collect gcal --auth)
+2026-10-11 · 021-time-leaks · verified, PASS fb7801b; merged #158, follow-up #161 · Time leaks — honest totals, loud failures, ignore reasons, loose ends, tidy-up
