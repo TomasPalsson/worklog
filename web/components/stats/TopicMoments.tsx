@@ -3,6 +3,7 @@ import "@/app/stats/moments.css";
 import { formatDuration, shortMonthDay } from "@/lib/format";
 import { ODDBALL_MAX_COS, type Highlight, type Topic, type TopicsReport } from "@/lib/topics_contract";
 import { FirstTimeMark, OddballMark } from "./AtlasArt";
+import { pct } from "./chart-tip-utils";
 import { tipProps, type Tip } from "./tip";
 
 type Kind = "first_time" | "oddball";
@@ -50,7 +51,7 @@ function MomentCard({ item, kind, topics, from, to, median }: CardProps) {
       {...tipProps(momentTip(item, kind, topicName, median))}
     >
       <span className="tm-badge">{kind === "first_time" ? "New ground" : "Unlike anything else"}</span>
-      <span className="tm-num">{kind === "first_time" ? score(item.score) : `closest ${score(item.score)} · usual ${score(median)}`}</span>
+      <span className="tm-num">{kind === "first_time" ? `${pct(item.score)} new` : `closest match ${pct(item.score)} · your usual ${pct(median)}`}</span>
       <span className="tm-label">
         {kind === "first_time" ? <FirstTimeMark /> : <OddballMark />}
         <span className="tm-clamp">{item.label}</span>

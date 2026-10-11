@@ -109,9 +109,9 @@ describe("TopicMoments", () => {
     const first = container.querySelector('[data-moment="first_time"]')!;
     const odd = container.querySelector('[data-moment="oddball"]')!;
     expect(first.querySelector(".tm-badge")!.textContent).toBe("New ground");
-    expect(first.querySelector(".tm-num")!.textContent).toBe("0.85");
+    expect(first.querySelector(".tm-num")!.textContent).toBe("85% new");
     expect(odd.querySelector(".tm-badge")!.textContent).toBe("Unlike anything else");
-    expect(odd.querySelector(".tm-num")!.textContent).toBe("closest 0.23 · usual 0.57");
+    expect(odd.querySelector(".tm-num")!.textContent).toBe("closest match 23% · your usual 57%");
     for (const card of [first, odd]) {
       expect(card.querySelector(".tm-badge")!.compareDocumentPosition(card.querySelector(".tm-num")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }

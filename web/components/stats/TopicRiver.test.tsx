@@ -204,6 +204,11 @@ describe("river design pass", () => {
     const { container } = render(<TopicRiver report={report(days(9), "week")} />);
     expect([...container.querySelectorAll("text.sx-river-tick-label")].map((t) => t.textContent)).toEqual(["Oct 5", "Oct 9", "Oct 13"]);
   });
+  // catches: GUTTER left at 48, clipping the scale label
+  it("viewBox reserves a 60px gutter right of the 1000px plot", () => {
+    const { container } = render(<TopicRiver report={report([[H], [H]])} />);
+    expect(container.querySelector("svg")!.getAttribute("viewBox")).toBe("0 0 1060 240");
+  });
   // catches: scale label from the summed total, the first bin or a per-layer peak
   it("scale label equals the tallest stack's hours and the bracket spans it", () => {
     const { container } = render(<TopicRiver report={report([[2 * H, 1 * H], [4 * H, 4 * H], [H, 0]])} />);

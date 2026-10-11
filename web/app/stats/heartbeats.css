@@ -26,6 +26,7 @@
 .hb-fill { background: var(--hb-color); }
 .hb-badge { grid-column: 2; display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--fg-muted); }
 .hb-tickets { font-family: var(--font-mono); font-size: 13px; color: var(--fg-muted); text-align: right; }
+.hb-ticket { white-space: nowrap; }
 .hb-how { margin: 0; max-width: 70ch; font-size: 13px; color: var(--fg-muted); }
 
 @media (max-width: 799px) {

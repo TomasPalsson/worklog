@@ -10,7 +10,7 @@ export type Rhythm = "always" | "sprint" | "one_off";
 
 const MAX_CHIPS = 4;
 const GENERIC = new Set(
-  "tool tools code block blocks pull enable enabled page pages chat chats project projects update fix issue issues test tests config configuration setup work".split(" "),
+  "tool tools code block blocks pull enable enabled page pages chat chats project projects update fix issue issues test tests config configuration setup work pptx prs pr file files boost thinking binding multi base revise pdf".split(" "),
 );
 const SPRINT_MAX_SPAN_DAYS = 6;
 const SPRINT_MIN_DAYS = 3;
@@ -120,7 +120,17 @@ function HeartbeatRow({ topic, index, topicCount, river, totalSeconds, maxTopicS
         <span className="sr-track hb-track" aria-hidden="true">
           <span className="sr-fill hb-fill" style={{ display: "block", width: `${maxTopicSeconds > 0 ? (topic.seconds / maxTopicSeconds) * 100 : 0}%` }} />
         </span>
-        {topic.top_tickets.length > 0 && <span className="hb-tickets">{topic.top_tickets.map((ticket) => ticket.label).join(" ")}</span>}
+        {topic.top_tickets.length > 0 && (
+          <span className="hb-tickets">
+            Tickets:{" "}
+            {topic.top_tickets.map((ticket, i) => (
+              <span key={ticket.label}>
+                {i > 0 && " "}
+                <span className="hb-ticket">{ticket.label}</span>
+              </span>
+            ))}
+          </span>
+        )}
       </div>
     </li>
   );

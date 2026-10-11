@@ -151,7 +151,7 @@ describe("TopicHeartbeats", () => {
   it("generic dev words are dropped from chips, case-insensitively (catches no filter, exact-case filter)", () => {
     const keywords = ["code", "librechat", "tool", "pptx", "Pages"];
     const { container } = render(<TopicHeartbeats report={report({ topics: [topic({ keywords })] })} />);
-    expect(Array.from(container.querySelectorAll(".hb-chip")).map((c) => c.textContent)).toEqual(["librechat", "pptx"]);
+    expect(Array.from(container.querySelectorAll(".hb-chip")).map((c) => c.textContent)).toEqual(["librechat"]);
   });
   it("generic words do not use up the cap (catches slice-then-filter)", () => {
     const keywords = ["code", "tool", "block", "pull", "alpha", "beta", "gamma", "delta", "eps"];
@@ -185,7 +185,32 @@ describe("TopicHeartbeats", () => {
   });
   it("ticket keys appear without hours", () => {
     const { container } = render(<TopicHeartbeats report={report()} />);
-    expect(container.querySelector(".hb-tickets")!.textContent).toBe("ABC-1");
+    expect(container.querySelector(".hb-tickets")!.textContent).toBe("Tickets: ABC-1");
+  });
+  // catches: keys joined in one text node, so a key can wrap mid-token
+  it("each ticket key is its own nowrap span", () => {
+    const top_tickets = [{ label: "ABC-1", value: 2 }, { label: "XYZ-22", value: 1 }];
+    const { container } = render(<TopicHeartbeats report={report({ topics: [topic({ top_tickets })] })} />);
+    expect(Array.from(container.querySelectorAll(".hb-tickets .hb-ticket")).map((s) => s.textContent)).toEqual(["ABC-1", "XYZ-22"]);
+    const css = readFileSync(new URL("../../app/stats/heartbeats.css", import.meta.url), "utf8");
+    expect(css).toMatch(/\.hb-ticket {[^}]*white-space: nowrap/);
+  });
+  it("newly generic words are dropped from chips", () => {
+    const keywords = "pptx prs pr file files boost thinking binding multi base revise pdf keep".split(" ");
+    const { container } = render(<TopicHeartbeats report={report({ topics: [topic({ keywords })] })} />);
+    expect(Array.from(container.querySelectorAll(".hb-chip")).map((c) => c.textContent)).toEqual(["keep"]);
+  });
+  it("light-mode marks use project lightness 0.60, never under an OS-dark or dark-theme selector", () => {
+    const css = readFileSync(new URL("../../app/stats/galaxy.css", import.meta.url), "utf8");
+    const marks = [".sx-gal", ".sx-river", ".hb-row", ".sx-cmp"];
+    const light = css.match(/@media \(prefers-color-scheme: light\)\s*{([^]*?)}\s*}/);
+    expect(light).not.toBeNull(); // catches the rule applying under OS dark with no data-theme
+    for (const c of marks) {
+      expect(light![1]).toContain(`:root:not([data-theme="dark"]) ${c}`);
+      expect(css).toContain(`:root[data-theme="light"] ${c}`); // catches OS-dark + explicit light being skipped
+    }
+    expect(light![1]).toMatch(/--project-l: 0\.60;/);
+    expect(css).not.toMatch(/:root\[data-theme="dark"\][^{]*{[^}]*--project-l/);
   });
   it("shows the How line and no NaN, undefined or null", () => {
     const { container } = render(<TopicHeartbeats report={report({ topics: [topic({ description: null, top_tickets: [] })] })} />);

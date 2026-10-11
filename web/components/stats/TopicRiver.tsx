@@ -8,7 +8,7 @@ import { tipProps, type Tip } from "./tip";
 const W = 1000;
 const H = 240;
 const PAD = 6;
-const GUTTER = 48;
+const GUTTER = 60;
 const WEEK_TICK_EVERY = 4;
 const MIN_LABEL_PX = 18;
 const EDGE = 8;

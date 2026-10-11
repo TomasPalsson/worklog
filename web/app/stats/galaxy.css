@@ -26,3 +26,7 @@
 .sx-gal-method summary { cursor: pointer; }
 .sx-gal-method p { margin: 4px 0 0; line-height: 1.45; }
 .sx-gal-label:focus-visible { outline: 2px solid var(--fg-muted); outline-offset: 2px; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) .sx-gal, :root:not([data-theme="dark"]) .sx-river, :root:not([data-theme="dark"]) .hb-row, :root:not([data-theme="dark"]) .sx-cmp { --project-l: 0.60; }
+}
+:root[data-theme="light"] .sx-gal, :root[data-theme="light"] .sx-river, :root[data-theme="light"] .hb-row, :root[data-theme="light"] .sx-cmp { --project-l: 0.60; }
