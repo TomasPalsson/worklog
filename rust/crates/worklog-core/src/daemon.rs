@@ -322,6 +322,7 @@ pub fn router(state: Shared) -> Router {
         .route("/standup/draft", post(crate::daemon_standup::draft))
         .route("/standup/post", post(crate::daemon_standup::post))
         .route("/nudges", get(crate::daemon_nudges::get_nudges))
+        .route("/loose-ends", get(loose_ends_route))
         .route("/preflight", get(crate::daemon_preflight::get_preflight))
         .route(
             "/preflight/read-back",
@@ -3104,6 +3105,15 @@ async fn recap_today(
     Ok(Json(recap.filter(|r| r.day == today)))
 }
 
+async fn loose_ends_route(
+    State(state): State<Shared>,
+) -> Result<Json<crate::time_leaks_contract::LooseEnds>, ApiError> {
+    let today = local_today();
+    Ok(Json(
+        with_conn(state, move |c| crate::loose_ends::for_cycle(c, &today)).await?,
+    ))
+}
+
 #[derive(Deserialize)]
 struct RecapGapBody {
     day: String,
@@ -3597,6 +3607,38 @@ mod tests {
             .await
             .unwrap();
         // catches: /nudges missing (404) or registered as POST
+        assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn loose_ends_route_lists_todays_unsynced_block_and_is_get_only() {
+        let conn = open_memory().unwrap();
+        let today = local_today();
+        conn.execute(
+            "INSERT INTO blocks (day, jira_issue, started_at, ended_at, duration_seconds)
+             VALUES (?1, 'GENAI-9', ?2, ?2, 1800)",
+            params![today, format!("{today}T09:00:00+00:00")],
+        )
+        .unwrap();
+        let state = state_from_conn(conn);
+        let resp = router(state.clone())
+            .oneshot(Request::get("/loose-ends").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        // catches: route missing (404) or handler erroring on a plain database
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        // catches: a handler that ignores the db / uses the wrong "today" and returns an empty cycle
+        assert_eq!(v["items"].as_array().unwrap().len(), 1);
+        // catches: missing reasons dropped or serialised in a different case
+        assert_eq!(v["items"][0]["missing"], json!(["tempo", "export"]));
+        assert_eq!(v["items"][0]["jira_issue"], "GENAI-9");
+        let post = router(state)
+            .oneshot(Request::post("/loose-ends").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        // catches: a read-only list registered as POST
         assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 
