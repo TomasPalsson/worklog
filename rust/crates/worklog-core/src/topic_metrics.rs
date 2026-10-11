@@ -11,6 +11,9 @@ use crate::topics_contract::{Bin, DayRow, RiverBin, MIRROR_MAX_DAYS, RIVER_WEEK_
 
 const MIN_NORM: f64 = 1e-9;
 
+/// A block needs this many earlier blocks (history or range) before its novelty means anything.
+pub const NOVELTY_WARMUP_BLOCKS: usize = 20;
+
 pub(crate) fn cosine<A: Copy + Into<f64>, B: Copy + Into<f64>>(a: &[A], b: &[B]) -> f64 {
     let (mut dot, mut na, mut nb) = (0.0, 0.0, 0.0);
     for (x, y) in a.iter().zip(b) {
@@ -101,6 +104,16 @@ pub fn novelty(
         .collect()
 }
 
+/// Per block of `now`: true while fewer than NOVELTY_WARMUP_BLOCKS blocks
+/// (history or range) started strictly earlier.
+pub fn warmup(now: &[BlockPoint], history: &[BlockPoint]) -> Vec<bool> {
+    let mut starts: Vec<i64> = history.iter().chain(now).map(started_ts).collect();
+    starts.sort_unstable();
+    now.iter()
+        .map(|p| starts.partition_point(|&t| t < started_ts(p)) < NOVELTY_WARMUP_BLOCKS)
+        .collect()
+}
+
 /// Per block, the highest cosine to any other block in `centered`.
 pub fn nearest_cos(centered: &[Vec<f32>]) -> Vec<f64> {
     (0..centered.len())
@@ -173,13 +186,16 @@ pub fn day_rows(
     pts: &[&BlockPoint],
     centered: &[Vec<f32>],
     novelty: &[f64],
+    warm: &[bool],
     topic_of: &[usize],
 ) -> Vec<DayRow> {
-    by_day(pts)
+    let mut rows: Vec<(DayRow, bool)> = by_day(pts)
         .into_iter()
         .map(|(day, members)| {
             let work_seconds: i64 = members.iter().map(|&i| pts[i].seconds).sum();
-            let weighted_novelty: f64 = members
+            let judged: Vec<usize> = members.iter().copied().filter(|&i| !warm[i]).collect();
+            let judged_seconds: i64 = judged.iter().map(|&i| pts[i].seconds).sum();
+            let weighted_novelty: f64 = judged
                 .iter()
                 .map(|&i| novelty[i] * pts[i].seconds as f64)
                 .sum();
@@ -202,22 +218,38 @@ pub fn day_rows(
                 )
                 .0;
             let (changes, longest_run_seconds) = switches(&members, pts, topic_of);
-            DayRow {
+            let day_novelty = if judged_seconds > 0 {
+                weighted_novelty / judged_seconds as f64
+            } else {
+                0.0
+            };
+            let row = DayRow {
                 day,
                 work_seconds,
                 focus: focus(&members, pts, centered),
-                novelty: if work_seconds > 0 {
-                    weighted_novelty / work_seconds as f64
-                } else {
-                    0.0
-                },
+                novelty: day_novelty,
                 switches: changes,
                 longest_run_seconds,
                 top_topic,
                 topics_touched: per_topic.len() as i64,
-            }
+            };
+            (row, judged_seconds == 0)
         })
-        .collect()
+        .collect();
+    // A day made only of warm-up blocks has no novelty of its own; the median of the
+    // other days keeps it neutral on the plot.
+    let others: Vec<f64> = rows
+        .iter()
+        .filter(|(_, w)| !w)
+        .map(|(r, _)| r.novelty)
+        .collect();
+    let neutral = median(&others);
+    for (row, all_warm) in &mut rows {
+        if *all_warm {
+            row.novelty = neutral;
+        }
+    }
+    rows.into_iter().map(|(r, _)| r).collect()
 }
 
 /// Cosine between hours-weighted day centroids of the last MIRROR_MAX_DAYS days

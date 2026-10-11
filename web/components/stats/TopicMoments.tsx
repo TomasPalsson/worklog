@@ -93,7 +93,7 @@ export function TopicMoments({ report }: { report: TopicsReport }) {
         {column("oddball", "Oddballs", report.oddballs)}
       </div>
       <p className="sr-caption tm-how">
-        How: First time = lowest similarity to any earlier block, including the 60 days before the range. Oddball = its closest block in this range is
+        How: First time = lowest similarity to any earlier block, including the 60 days before the range. Your first 20 blocks are skipped — they have nothing earlier to compare with. Oddball = its closest block in this range is
         under {ODDBALL_MAX_COS.toFixed(2)} cosine; your median block&apos;s closest is {score(median)}.
       </p>
     </div>

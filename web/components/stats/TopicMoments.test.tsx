@@ -148,7 +148,7 @@ describe("TopicMoments", () => {
   it("How line carries the median to two decimals", () => {
     const { container } = render(<TopicMoments report={report()} />);
     expect(container.querySelector(".tm-how")!.textContent).toBe(
-      "How: First time = lowest similarity to any earlier block, including the 60 days before the range. Oddball = its closest block in this range is under 0.30 cosine; your median block's closest is 0.57.",
+      "How: First time = lowest similarity to any earlier block, including the 60 days before the range. Your first 20 blocks are skipped — they have nothing earlier to compare with. Oddball = its closest block in this range is under 0.30 cosine; your median block's closest is 0.57.",
     );
   });
   it("marks are drawn and nothing renders NaN, undefined or null", () => {

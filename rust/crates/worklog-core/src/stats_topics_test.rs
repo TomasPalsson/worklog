@@ -1,4 +1,5 @@
 use super::*;
+use crate::topic_metrics::NOVELTY_WARMUP_BLOCKS;
 use crate::topics_contract::{TopicsStatus, MAX_TOPICS, MIN_BLOCKS, ODDBALL_MAX_COS};
 
 const A: [f32; 2] = [1.0, 0.0];
@@ -185,21 +186,28 @@ fn first_block_has_novelty_one_and_repeats_have_none() {
         pt(5, "2026-10-07", "10:00", 600, None, A),
         pt(6, "2026-10-07", "11:00", 600, None, B),
     ];
-    let r = ready(&input(now));
-    assert_eq!(r.days[0].novelty, 1.0);
+    let mut i = input(now);
+    i.history = (0..NOVELTY_WARMUP_BLOCKS as i64)
+        .map(|k| pt(100 + k, "2026-09-01", &format!("09:{k:02}"), 600, None, B))
+        .collect();
+    let r = ready(&i);
+    assert!(r.days[0].novelty > 0.5); // block 1 is new against a history of B
     assert!(r.days[2].novelty.abs() < 1e-6); // every block that day repeats an earlier one
-    assert!(r
-        .first_times
-        .iter()
-        .any(|h| h.block_id == 1 && h.score == 1.0));
+    assert!(r.first_times.iter().any(|h| h.block_id == 1));
 }
 
 #[test]
 fn history_lowers_novelty_of_a_repeated_theme() {
     // catches: build ignoring `history`.
+    let warmed = |v: [f32; 2]| -> Vec<BlockPoint> {
+        (0..NOVELTY_WARMUP_BLOCKS as i64)
+            .map(|k| pt(100 + k, "2026-09-01", &format!("09:{k:02}"), 600, None, v))
+            .collect()
+    };
     let mut i = input(two_groups());
+    i.history = warmed(B);
     let alone = ready(&i).days[0].novelty;
-    i.history = vec![pt(100, "2026-09-01", "09:00", 600, None, A)];
+    i.history = warmed(A);
     assert!(ready(&i).days[0].novelty < alone);
 }
 
@@ -353,4 +361,33 @@ fn assignments_are_empty_when_too_few_blocks() {
     // catches: panicking or stale data below the minimum.
     let (_, a) = build_with_assignments(&input(fan(MIN_BLOCKS - 1)));
     assert!(a.block_ids.is_empty() && a.topic_of.is_empty());
+}
+
+/// 25 blocks a minute apart: ids 1..=25, all A except block 21 which is B.
+fn warmup_set() -> Vec<BlockPoint> {
+    (0..25)
+        .map(|k| {
+            let day = if k < 20 { "2026-10-05" } else { "2026-10-06" };
+            let v = if k == 20 { B } else { A };
+            pt(k + 1, day, &format!("09:{k:02}"), 600, None, v)
+        })
+        .collect()
+}
+
+#[test]
+fn first_times_skip_the_warmup_blocks_but_not_block_21() {
+    // catches: no warm-up mask (block 1, novelty 1.0, would lead), `<=` off by one (block 21 lost).
+    let r = ready(&input(warmup_set()));
+    let ids: Vec<i64> = r.first_times.iter().map(|h| h.block_id).collect();
+    assert!(ids.iter().all(|&id| id > 20), "{ids:?}");
+    assert_eq!(ids[0], 21);
+}
+
+#[test]
+fn warmup_blocks_have_zero_assignment_novelty_and_their_day_takes_the_median() {
+    // catches: raw novelty leaking to map points; an all-warm day plotting 0 or 1.
+    let (r, a) = build_with_assignments(&input(warmup_set()));
+    assert!(a.novelty[..20].iter().all(|&v| v == 0.0));
+    assert!(a.novelty[20] > 0.5);
+    assert_eq!(r.days[0].novelty, r.days[1].novelty);
 }

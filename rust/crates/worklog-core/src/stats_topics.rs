@@ -6,6 +6,7 @@ use std::collections::{BTreeSet, HashMap};
 use crate::stats::{bump, ranked};
 use crate::topic_metrics::{
     center_with, cosine, day_rows, day_similarity, mean, median, nearest_cos, novelty, river,
+    warmup,
 };
 use crate::topics_contract::{
     Highlight, NamedBy, Naming, Topic, TopicsReport, TopicsStatus, HIGHLIGHTS_TOP, MAX_TOPICS,
@@ -199,10 +200,11 @@ pub fn build_with_assignments(input: &TopicsInput) -> (TopicsReport, Assignments
 
     let now_points: Vec<BlockPoint> = pts.iter().map(|p| (*p).clone()).collect();
     let novelty = novelty(&now_points, &centered, &input.history, &history_centered);
+    let warm = warmup(&now_points, &input.history);
     let nearest = nearest_cos(&centered);
     let oddball: Vec<bool> = nearest.iter().map(|&c| is_oddball(c)).collect();
     let oddball_ids = (0..n).filter(|&i| oddball[i]).collect();
-    let days = day_rows(&pts, &centered, &novelty, &topic_of);
+    let days = day_rows(&pts, &centered, &novelty, &warm, &topic_of);
     let (bin, river) = river(&pts, &topic_of, topics.len(), &input.from, &input.to);
 
     let report = TopicsReport {
@@ -211,7 +213,13 @@ pub fn build_with_assignments(input: &TopicsInput) -> (TopicsReport, Assignments
         to: input.to.clone(),
         naming: Naming::Off,
         day_similarity: day_similarity(&pts, &centered, &days),
-        first_times: highlights((0..n).collect(), &pts, &topic_of, &novelty, true),
+        first_times: highlights(
+            (0..n).filter(|&i| !warm[i]).collect(),
+            &pts,
+            &topic_of,
+            &novelty,
+            true,
+        ),
         oddballs: highlights(oddball_ids, &pts, &topic_of, &nearest, false),
         oddball_median: median(&nearest),
         topics,
@@ -226,7 +234,11 @@ pub fn build_with_assignments(input: &TopicsInput) -> (TopicsReport, Assignments
         block_ids: pts.iter().map(|p| p.id).collect(),
         topic_of,
         centered,
-        novelty,
+        novelty: novelty
+            .iter()
+            .zip(&warm)
+            .map(|(&v, &w)| if w { 0.0 } else { v })
+            .collect(),
         oddball,
     };
     (report, assignments)

@@ -122,7 +122,13 @@ fn day_focus_is_none_for_one_block_and_hours_weighted_otherwise() {
         block(3, "2026-10-06", "10:00", 3600, [1.0, 0.0]),
         block(4, "2026-10-06", "11:00", 3600, [0.0, 1.0]),
     ];
-    let rows = day_rows(&refs(&pts), &vecs(&pts), &[1.0; 4], &[0, 0, 0, 0]);
+    let rows = day_rows(
+        &refs(&pts),
+        &vecs(&pts),
+        &[1.0; 4],
+        &[false; 4],
+        &[0, 0, 0, 0],
+    );
     assert_eq!(rows[0].day, "2026-10-05");
     assert_eq!(rows[0].focus, None);
     // pair weights 2h*1h=2 (cos 1), 2h*1h=2 (cos 0), 1h*1h=1 (cos 0) -> 2/5.
@@ -137,7 +143,13 @@ fn day_novelty_is_hours_weighted() {
         block(2, "2026-10-06", "10:00", 3600, [1.0, 0.0]),
         block(3, "2026-10-06", "11:00", 7200, [1.0, 0.0]),
     ];
-    let rows = day_rows(&refs(&pts), &vecs(&pts), &[1.0, 1.0, 0.0], &[0, 0, 0]);
+    let rows = day_rows(
+        &refs(&pts),
+        &vecs(&pts),
+        &[1.0, 1.0, 0.0],
+        &[false; 3],
+        &[0, 0, 0],
+    );
     close(rows[0].novelty, 0.5);
 }
 
@@ -152,7 +164,7 @@ fn day_switches_follow_started_order_and_longest_run_is_wall_clock() {
         block(5, "2026-10-06", "13:00", 600, [1.0, 0.0]),
     ];
     let topic_of = [0, 0, 0, 1, 0];
-    let rows = day_rows(&refs(&pts), &vecs(&pts), &[0.0; 5], &topic_of);
+    let rows = day_rows(&refs(&pts), &vecs(&pts), &[0.0; 5], &[false; 5], &topic_of);
     assert_eq!(rows[0].switches, 2); // 0 0 0 | 1 | 0
     assert_eq!(rows[0].work_seconds, 5400);
     // 09:00 .. 11:10 = 7800s; summed seconds would be 4200.
@@ -170,7 +182,13 @@ fn day_top_topic_is_by_seconds_with_lowest_id_on_ties() {
         block(5, "2026-10-07", "10:00", 900, [0.0, 1.0]),
         block(6, "2026-10-07", "11:00", 900, [0.0, 1.0]),
     ];
-    let rows = day_rows(&refs(&pts), &vecs(&pts), &[0.0; 6], &[0, 0, 1, 0, 1, 1]);
+    let rows = day_rows(
+        &refs(&pts),
+        &vecs(&pts),
+        &[0.0; 6],
+        &[false; 6],
+        &[0, 0, 1, 0, 1, 1],
+    );
     assert_eq!((rows[0].top_topic, rows[0].topics_touched), (0, 2)); // 1200 vs 1200 tie
     assert_eq!((rows[1].top_topic, rows[1].topics_touched), (1, 2));
 }
@@ -190,6 +208,7 @@ fn similarity_of(pts: &[BlockPoint]) -> Vec<Vec<f64>> {
         &refs(pts),
         &vecs(pts),
         &vec![0.0; pts.len()],
+        &vec![false; pts.len()],
         &vec![0; pts.len()],
     );
     day_similarity(&refs(pts), &vecs(pts), &rows)
@@ -296,4 +315,78 @@ fn river_weeks_start_on_monday_and_sum_blocks_per_week() {
     assert_eq!(bins[2].seconds, vec![40]);
     let total: i64 = bins.iter().map(|b| b.seconds[0]).sum();
     assert_eq!(total, 70);
+}
+
+/// n blocks one minute apart starting at 09:00 on 2026-10-05, ids from `first_id`.
+fn minutes(first_id: i64, n: usize, day: &str) -> Vec<BlockPoint> {
+    (0..n)
+        .map(|i| {
+            block(
+                first_id + i as i64,
+                day,
+                &format!("09:{i:02}"),
+                60,
+                [1.0, 0.0],
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn warmup_lasts_until_twenty_blocks_precede() {
+    // catches: `<=` for `<` (block 21 skipped), a warm-up of 19 (block 20 judged).
+    let now = minutes(1, 22, "2026-10-05");
+    let w = warmup(&now, &[]);
+    assert!(w[..20].iter().all(|&x| x), "first 20 are warm: {w:?}");
+    assert!(!w[20] && !w[21], "block 21 onwards is judged: {w:?}");
+}
+
+#[test]
+fn warmup_counts_history_before_the_range() {
+    // catches: counting only the range, counting later history.
+    let one = minutes(100, 1, "2026-10-06");
+    let mut past = minutes(1, 19, "2026-10-05");
+    assert_eq!(warmup(&one, &past), vec![true]); // 19 precede
+    past.extend(minutes(50, 1, "2026-10-05"));
+    past[19].started_at = "2026-10-05T12:00:00+00:00".into();
+    assert_eq!(warmup(&one, &past), vec![false]); // 20 precede
+    let future = minutes(1, 25, "2026-10-07");
+    assert_eq!(warmup(&one, &future), vec![true]); // later blocks never count
+}
+
+#[test]
+fn warmup_ignores_blocks_that_start_at_the_same_time() {
+    // catches: `<=` in the comparison (same-instant blocks counted as earlier).
+    let mut now = minutes(1, 21, "2026-10-05");
+    for p in &mut now {
+        p.started_at = "2026-10-05T09:00:00+00:00".into();
+    }
+    assert!(warmup(&now, &[]).iter().all(|&x| x));
+}
+
+#[test]
+fn day_of_only_warmup_blocks_gets_the_median_of_the_other_days() {
+    // catches: 0.0 or the raw novelty for an all-warm day; warm blocks leaking into a mixed day.
+    let pts = vec![
+        block(1, "2026-10-05", "09:00", 3600, [1.0, 0.0]),
+        block(2, "2026-10-06", "09:00", 3600, [1.0, 0.0]),
+        block(3, "2026-10-07", "09:00", 3600, [1.0, 0.0]),
+        block(4, "2026-10-08", "09:00", 3600, [1.0, 0.0]),
+        block(5, "2026-10-08", "10:00", 3600, [1.0, 0.0]),
+    ];
+    let nov = [0.9, 0.2, 0.6, 0.4, 0.99];
+    let warm = [true, false, false, false, true];
+    let rows = day_rows(&refs(&pts), &vecs(&pts), &nov, &warm, &[0; 5]);
+    close(rows[1].novelty, 0.2);
+    close(rows[2].novelty, 0.6);
+    close(rows[3].novelty, 0.4); // the warm 0.99 block is not averaged in
+    close(rows[0].novelty, 0.4); // median of 0.2, 0.6, 0.4
+}
+
+#[test]
+fn every_day_warm_leaves_novelty_zero() {
+    // catches: panic on an empty median.
+    let pts = vec![block(1, "2026-10-05", "09:00", 60, [1.0, 0.0])];
+    let rows = day_rows(&refs(&pts), &vecs(&pts), &[1.0], &[true], &[0]);
+    close(rows[0].novelty, 0.0);
 }
