@@ -20,7 +20,7 @@
 //! * `POST /blocks/:id/description`      — { "description": "text" }
 //! * `POST /blocks/:id/delete`           — no body
 //! * `POST /blocks/:id/personal`         — { "is_personal": true }
-//! * `POST /blocks/:id/ignore`           — { "ignored": true }
+//! * `POST /blocks/:id/ignore`           — { "ignored": true, "reason"?: "noise"|"duplicate" }
 //! * `POST /blocks/:id/split`            — { "first_minutes": 20 }
 //! * `POST /blocks/merge`                — { "primary": 1, "absorb": [2,3] }
 //! * `POST /blocks/auto-merge`           — { "day": "YYYY-MM-DD" }
@@ -1535,6 +1535,8 @@ async fn set_personal(
 #[derive(Deserialize)]
 pub struct IgnoreBody {
     pub ignored: bool,
+    #[serde(default)]
+    pub reason: Option<crate::time_leaks_contract::IgnoreReason>,
 }
 
 /// Ignore / restore a block. See [`block_service::set_ignored`].
@@ -1543,12 +1545,12 @@ async fn set_ignored(
     AxumPath(id): AxumPath<i64>,
     Json(body): Json<IgnoreBody>,
 ) -> Result<Json<Block>, ApiError> {
-    let ignored = body.ignored;
+    let IgnoreBody { ignored, reason } = body;
     // Inner Result: set_ignored's failures are user-facing (missing block,
     // already synced/exported), not 500s.
     let missing = format!("block {id} not found");
     let block = with_conn(state, move |c| {
-        Ok(block_service::set_ignored(c, id, ignored, None))
+        Ok(block_service::set_ignored(c, id, ignored, reason))
     })
     .await?
     .map_err(|e| {
@@ -6261,6 +6263,50 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    async fn post_ignore(app: &Router, body: &str) -> (StatusCode, Value) {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/blocks/1/ignore")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ignore_endpoint_stores_and_returns_reason() {
+        let app = router(state_with_block());
+        // Catches: reason dropped by the route (always None).
+        let (st, v) = post_ignore(&app, r#"{"ignored":true,"reason":"noise"}"#).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(v["ignore_reason"], "noise");
+        // Catches: hardcoding noise / not mapping each variant.
+        let (_, v) = post_ignore(&app, r#"{"ignored":true,"reason":"duplicate"}"#).await;
+        assert_eq!(v["ignore_reason"], "duplicate");
+        // Catches: old body (FR-07) rejected or leaving a stale reason.
+        let (st, v) = post_ignore(&app, r#"{"ignored":true}"#).await;
+        assert_eq!(st, StatusCode::OK);
+        assert!(v["ignore_reason"].is_null());
+        // Catches: restore keeping the reason when one is sent.
+        post_ignore(&app, r#"{"ignored":true,"reason":"noise"}"#).await;
+        let (_, v) = post_ignore(&app, r#"{"ignored":false,"reason":"noise"}"#).await;
+        assert!(v["ignore_reason"].is_null());
+        // Catches: unknown reason silently accepted as None.
+        let (st, _) = post_ignore(&app, r#"{"ignored":true,"reason":"bogus"}"#).await;
+        assert!(st.is_client_error(), "got {st}");
     }
 
     #[tokio::test(flavor = "current_thread")]
