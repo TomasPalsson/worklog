@@ -72,19 +72,14 @@ fn install_at(
             Platform::MacOS => macos::stop(),
             _ => linux::stop(),
         }
-        old_gone = await_healthy(
-            tcp,
-            |a| health_body(a, probe).is_none_or(|b| b != *old),
-            budget,
-            step,
-        )
-        .with_context(|| {
-            format!(
-                "old daemon did not answer the stop request: /health on {tcp} still answered; \
+        old_gone = await_healthy(tcp, |a| old_daemon_gone(a, old, probe), budget, step)
+            .with_context(|| {
+                format!(
+                    "old daemon did not answer the stop request: /health on {tcp} still answered; \
                  a daemon started outside the service (e.g. `worklog daemon` in a terminal) \
                  must be stopped by hand, then re-run install"
-            )
-        });
+                )
+            });
     }
     let status = match Platform::current() {
         Platform::MacOS => macos::install(command)?,
@@ -295,16 +290,31 @@ pub fn is_running(tcp: &str, timeout: std::time::Duration) -> bool {
     health_body(tcp, timeout).is_some()
 }
 
+fn get_health(
+    tcp: &str,
+    timeout: std::time::Duration,
+) -> reqwest::Result<reqwest::blocking::Response> {
+    reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .build()?
+        .get(format!("http://{tcp}/health"))
+        .send()
+}
+
 /// `/health` response body on HTTP 2xx, `None` otherwise.
 fn health_body(tcp: &str, timeout: std::time::Duration) -> Option<String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        .build()
-        .ok()?;
-    let r = client.get(format!("http://{tcp}/health")).send().ok()?;
+    let r = get_health(tcp, timeout).ok()?;
     r.status()
         .is_success()
         .then(|| r.text().unwrap_or_default())
+}
+
+/// A timeout is not proof: a loaded old daemon is slow, not gone.
+fn old_daemon_gone(tcp: &str, old: &str, timeout: std::time::Duration) -> bool {
+    match get_health(tcp, timeout) {
+        Err(e) => !e.is_timeout(),
+        Ok(r) => !r.status().is_success() || r.text().unwrap_or_default() != old,
+    }
 }
 
 /// Probe /health; if the daemon isn't up, install the service unit (if
@@ -1000,6 +1010,43 @@ mod tests {
         assert!(e.contains("did not answer the stop request"), "{e}");
         assert!(e.contains(&tcp), "{e}");
         assert!(e.contains("started outside"), "{e}");
+    }
+
+    fn serve_v1_with_a_slow_second_answer() -> String {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap().to_string();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for (i, mut c) in l.incoming().flatten().enumerate() {
+                let _ = c.read(&mut [0u8; 1024]);
+                if i == 1 {
+                    std::thread::sleep(Duration::from_millis(400));
+                }
+                let _ = c.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nv1",
+                );
+            }
+        });
+        addr
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn install_does_not_take_a_timed_out_probe_as_the_old_daemon_gone() {
+        // catches: treating a probe timeout (old daemon slow under load) as proof the stop worked
+        let tmp = tempdir().unwrap();
+        let _g = redirect(tmp.path());
+        crate::schedule::fake_tool(tmp.path(), 0);
+        let tcp = serve_v1_with_a_slow_second_answer();
+        let r = install_at(
+            "worklog daemon",
+            &tcp,
+            Duration::from_secs(1),
+            Duration::from_millis(1),
+        );
+        restore();
+        let e = r.unwrap_err().to_string();
+        assert!(e.contains("did not answer the stop request"), "{e}");
     }
 
     fn replaced(before: Option<&str>, seq: &[Option<&str>]) -> bool {
