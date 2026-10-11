@@ -112,7 +112,9 @@ use crate::routing_absorb;
 use crate::routing_contract;
 use crate::routing_contract::RouteRule;
 use crate::routing_dismiss;
+use crate::routing_noise;
 use crate::secrets;
+use crate::topics_contract::NoiseHosts;
 use crate::verdict::VerdictClassifier;
 use crate::verdict_contract::{VerdictState, VerdictStatus};
 use crate::{
@@ -302,6 +304,7 @@ pub fn router(state: Shared) -> Router {
             post(set_browser_recording).options(browser_heartbeat_preflight),
         )
         .route("/days/:day/routed", get(routed_events))
+        .route("/days/:day/noise-hosts", get(noise_hosts))
         .route("/events/:id/label", post(set_event_label))
         .route("/events/:id/dismiss", post(dismiss_event_handler))
         .route("/routing/rules", get(routing_rules_list))
@@ -2849,6 +2852,16 @@ async fn routed_events(
     })
     .await?;
     Ok(Json(events))
+}
+
+async fn noise_hosts(
+    State(state): State<Shared>,
+    AxumPath(day): AxumPath<String>,
+) -> Result<Json<NoiseHosts>, ApiError> {
+    NaiveDate::parse_from_str(&day, "%Y-%m-%d")
+        .map_err(|e| ApiError::bad_request(anyhow::anyhow!("invalid day `{}`: {e}", day)))?;
+    let hosts = with_conn(state, move |c| routing_noise::noise_hosts(c, &day)).await?;
+    Ok(Json(NoiseHosts { hosts }))
 }
 
 async fn set_event_label(
@@ -6899,6 +6912,47 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn noise_hosts_route_returns_contract_shape_and_rejects_bad_day() {
+        let conn = open_memory().unwrap();
+        for i in 0..2 {
+            let mut e = Event::minimal(
+                routing_contract::SOURCE_FIREFOX,
+                format!("n{i}"),
+                "2026-10-01T10:00:00+00:00",
+                "yt",
+            );
+            e.details = Some("https://www.youtube.com/watch".into());
+            let id = repo::upsert_event(&conn, &e).unwrap();
+            routing_dismiss::dismiss_event(&conn, id, None).unwrap();
+        }
+        let app = router(state_from_conn(conn));
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::get("/days/2026-10-10/noise-hosts")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(
+            v,
+            json!({"hosts": [{"host": "www.youtube.com", "dismissed_before": 2}]})
+        );
+        let resp = app
+            .oneshot(
+                Request::get("/days/not-a-day/noise-hosts")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test(flavor = "current_thread")]
