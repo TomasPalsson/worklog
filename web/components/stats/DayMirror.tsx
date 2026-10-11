@@ -12,7 +12,7 @@ const PAD_PX = 32;
 const GAP_PX = 2;
 const LABEL_PX = 23;
 const COMPACT_PX = 44;
-const MAX_ALL_COLUMN_LABELS = 31;
+const COL_LABEL_PX = 18;
 
 const signed = (similarity: number) => `${similarity < 0 ? MINUS : "+"}${Math.abs(similarity).toFixed(2)}`;
 
@@ -67,7 +67,7 @@ export function DayMirror({ report }: { report: TopicsReport }) {
   const step = Math.max(1, Math.ceil(LABEL_PX / (compact ? (CARD_PX - PAD_PX - GAP_PX * (size - 1)) / size : cellPx)));
   const offset = compact ? 2 : 1;
   const cells = [];
-  const colStep = size <= MAX_ALL_COLUMN_LABELS ? 1 : 2;
+  const colStep = Math.max(1, Math.ceil(COL_LABEL_PX / (cellPx + GAP_PX)));
   for (let column = 0; column < size; column += colStep) {
     cells.push(
       <span key={`col-${column}`} className="sx-mir-collabel" aria-hidden="true" style={{ gridRow: 1, gridColumn: column + offset }}>

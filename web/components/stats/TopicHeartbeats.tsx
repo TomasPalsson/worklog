@@ -65,8 +65,6 @@ interface RowProps {
 
 function HeartbeatRow({ topic, index, topicCount, river, totalSeconds, maxTopicSeconds, maxBinSeconds, workDays }: RowProps) {
   const rhythm = rhythmOf(topic, workDays);
-  const activeBins = river.filter((bin) => (bin.seconds[index] ?? 0) > 0);
-  const dates = activeBins.length > 0 ? [activeBins[0].start, activeBins[activeBins.length - 1].start] : undefined;
   const color = topicColor(topic.id, topicCount);
   const tip = { ...heartbeatTip(topic, totalSeconds, workDays, rhythm), accent: color };
   return (
@@ -75,7 +73,7 @@ function HeartbeatRow({ topic, index, topicCount, river, totalSeconds, maxTopicS
       data-heartbeat-row
       style={{ ["--h" as string]: topicHue(topic.id, topicCount), ["--hb-color" as string]: color, ["--i" as string]: index }}
       tabIndex={0}
-      aria-label={`${topic.name}: ${formatDuration(topic.seconds)}${topic.description ? `. ${topic.description}` : ""}`}
+      aria-label={`${topic.name}: ${formatDuration(topic.seconds)}${topic.description ? `. ${topic.description}` : ""}${topic.top_tickets.length > 0 ? `. Tickets: ${topic.top_tickets.map((t) => t.label).join(", ")}` : ""}`}
       {...tipProps(tip)}
     >
       <div className="hb-id">
@@ -111,14 +109,12 @@ function HeartbeatRow({ topic, index, topicCount, river, totalSeconds, maxTopicS
             />
           ))}
         </div>
-        {dates && (
-          <div className="hb-dates">
-            <span>
-              active {shortMonthDay(dates[0])}
-              {dates[0] !== dates[1] && ` – ${shortMonthDay(dates[1])}`}
-            </span>
-          </div>
-        )}
+        <div className="hb-dates">
+          <span>
+            active {shortMonthDay(topic.first_day)}
+            {topic.first_day !== topic.last_day && ` – ${shortMonthDay(topic.last_day)}`}
+          </span>
+        </div>
         <span className="hb-hours sr-value">{formatDuration(topic.seconds)}</span>
         <span className="sr-track hb-track" aria-hidden="true">
           <span className="sr-fill hb-fill" style={{ display: "block", width: `${maxTopicSeconds > 0 ? (topic.seconds / maxTopicSeconds) * 100 : 0}%` }} />

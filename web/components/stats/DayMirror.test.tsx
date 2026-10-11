@@ -256,11 +256,20 @@ describe("DayMirror column labels", () => {
     // catches: tabIndex added to labels (10 diagonal chips + 2 rings)
     expect(c.querySelectorAll("[tabindex]").length).toBe(10 + 2);
   });
-  it("labels every column at exactly 31 days and every other column at 32", () => {
-    // catches: > for >= on the 31-day limit
-    expect(labels(31).length).toBe(31);
+  it("31 days no longer labels all 31 columns: that overprinted 13px two-digit labels (catches colStep 1 up to 31)", () => {
+    expect(labels(31).length).toBe(16);
     cleanup();
     expect(labels(32).length).toBe(16);
+  });
+  it("labelled columns are at least 18px apart at the card width; 10 days stay fully labelled", () => {
+    // catches a colStep that ignores cell width
+    for (const n of [11, 20, 31, 32, 40, 60]) {
+      const cols = [...render(<DayMirror report={wide(n)} />).container.querySelectorAll<HTMLElement>(".sx-mir-collabel")].map((l) => Number(l.style.gridColumn));
+      cleanup();
+      const cellPx = (520 - 32 - 2 * (n - 1)) / n;
+      expect((cols[1] - cols[0]) * (cellPx + 2)).toBeGreaterThanOrEqual(18);
+    }
+    expect(labels(10).length).toBe(10);
   });
   it("labels every other column at 40 days", () => {
     // catches: labelling all columns past the limit

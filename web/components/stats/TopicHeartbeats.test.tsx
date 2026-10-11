@@ -137,7 +137,7 @@ describe("TopicHeartbeats", () => {
     const { container } = render(<TopicHeartbeats report={report()} />);
     const row = container.querySelector("[data-heartbeat-row]")!;
     expect(row.getAttribute("tabindex")).toBe("0");
-    expect(row.getAttribute("aria-label")).toBe("Billing export: 2h. Invoice lines and rounding");
+    expect(row.getAttribute("aria-label")).toBe("Billing export: 2h. Invoice lines and rounding. Tickets: ABC-1");
     const tip = parseTip(row.getAttribute("data-stip"));
     expect(tip!.rows![2]).toEqual(["Days active", "3 of 5 work days"]);
   });
@@ -197,6 +197,13 @@ describe("TopicHeartbeats", () => {
     expect(container.textContent).not.toContain("ABC-1");
     const tip = parseTip(container.querySelector("[data-heartbeat-row]")!.getAttribute("data-stip"));
     expect(tip!.rows).toContainEqual(["Tickets", "ABC-1, XYZ-22"]);
+  });
+  it("row aria-label ends with the tickets when there are any, and has none otherwise (catches tickets only in the tooltip)", () => {
+    const top_tickets = [{ label: "ABC-1", value: 2 }, { label: "XYZ-22", value: 1 }];
+    const label = (t: Topic) => render(<TopicHeartbeats report={report({ topics: [t] })} />).container.querySelector("[data-heartbeat-row]")!.getAttribute("aria-label")!;
+    expect(label(topic({ top_tickets }))).toEndWith(". Tickets: ABC-1, XYZ-22");
+    cleanup();
+    expect(label(topic({ top_tickets: [] }))).not.toContain("Tickets");
   });
   it("description is one clamped line with the full text in title and aria-label", () => {
     const { container } = render(<TopicHeartbeats report={report()} />);
@@ -279,25 +286,20 @@ describe("TopicHeartbeats", () => {
       expect((t as HTMLElement).getAttribute("style")).not.toMatch(/max-width/);
     }
   });
-  it("every row has its own caption: that topic's first and last non-zero bins (catches first-row-only or river-wide dates)", () => {
+  it("caption uses the topic's true first and last day, not week-bin Mondays (catches reading river bin starts)", () => {
     const river = [
-      { start: "2026-09-23", seconds: [3600, 0] },
-      { start: "2026-09-24", seconds: [1800, 0] },
-      { start: "2026-10-10", seconds: [0, 1800] },
-      { start: "2026-10-11", seconds: [0, 0] },
+      { start: "2026-09-28", seconds: [3600, 0] },
+      { start: "2026-10-05", seconds: [0, 1800] },
     ];
-    const { container } = render(<TopicHeartbeats report={report({ river })} />);
+    const topics = [
+      topic({ first_day: "2026-10-01", last_day: "2026-10-03" }),
+      topic({ id: 1, first_day: "2026-10-01", last_day: "2026-10-01" }),
+    ];
+    const { container } = render(<TopicHeartbeats report={report({ river, topics, bin: "week" })} />);
     const rows = Array.from(container.querySelectorAll("[data-heartbeat-row]"));
     const text = (row: Element) => row.querySelector(".hb-dates")!.textContent;
-    expect(text(rows[0])).toBe("active Sep 23 – Sep 24");
-    expect(text(rows[1])).toBe("active Oct 10"); // catches "Oct 10 – Oct 10" for a single-day topic
-  });
-  it("a topic with no active bin gets no caption while others keep theirs", () => {
-    const river = [{ start: "2026-10-05", seconds: [3600, 0] }];
-    const { container } = render(<TopicHeartbeats report={report({ river })} />);
-    const rows = container.querySelectorAll("[data-heartbeat-row]");
-    expect(rows[0].querySelector(".hb-dates")).not.toBeNull();
-    expect(rows[1].querySelector(".hb-dates")).toBeNull();
+    expect(text(rows[0])).toBe("active Oct 1 – Oct 3");
+    expect(text(rows[1])).toBe("active Oct 1"); // catches "Oct 1 – Oct 1" for a single-day topic
   });
   it("date caption is one left-aligned span reading 'active A – B', hours outside it", () => {
     const { container } = render(<TopicHeartbeats report={report()} />);
@@ -305,11 +307,6 @@ describe("TopicHeartbeats", () => {
     expect(kids.map((c) => c.tagName)).toEqual(["SPAN"]); // catches pinned separate end spans
     expect(kids[0].textContent).toMatch(/^active \w{3} \d+ – \w{3} \d+$/); // catches a hyphen or missing prefix
     expect(container.querySelector(".hb-dates .hb-hours")).toBeNull(); // catches hours jammed into the caption
-  });
-  it("no date caption when no bin has time (catches reading an undefined bin)", () => {
-    const river = [{ start: "2026-10-05", seconds: [0, 0] }];
-    const { container } = render(<TopicHeartbeats report={report({ river })} />);
-    expect(container.querySelector(".hb-dates")).toBeNull();
   });
   it("css: no tick max-width, raster is gapped, no text under 13px", () => {
     const css = readFileSync(new URL("../../app/stats/heartbeats.css", import.meta.url), "utf8");
