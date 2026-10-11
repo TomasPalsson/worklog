@@ -114,6 +114,7 @@ pub mod tenant_clues;
 pub mod tenant_contract;
 pub mod tenant_shares;
 pub mod tenant_split;
+pub mod time_leaks_contract;
 pub mod tenants;
 pub mod ticket_activity;
 pub mod ticket_assist;
