@@ -61,7 +61,7 @@ printf '%s\n%s\n' "$ver" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$data/web/.fetched-v
 # A next-server that outlived its pid file would keep serving the old build.
 stale=$(lsof -ti tcp:3333 -sTCP:LISTEN || true)
 if [ -n "$stale" ]; then
-  kill $stale
+  kill $stale || printf '\033[1;33m!\033[0m could not kill listener on :3333 (pid %s); continuing\n' "$stale" >&2
 fi
 WORKLOG_WEB_DIR="$data/web" "$bin" web up --no-open --no-daemon >/dev/null
 curl -fsS -o /dev/null http://127.0.0.1:3333/
