@@ -98,7 +98,7 @@ function world(on: On, options: Options = {}) {
       return { value: { exitCode: 0, stdout: `${options.origin}\n`, stderr: '' } }
     }
     if (event.argv[0] === 'bash') {
-      installs.push({ argv: event.argv, cwd: event.cwd })
+      installs.push({ argv: event.argv, cwd: event.init?.cwd })
       return { value: options.install ?? { exitCode: 0, stdout: '', stderr: '' } }
     }
     return { value: { exitCode: 1, stdout: '', stderr: '' } }
