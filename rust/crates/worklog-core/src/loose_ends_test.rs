@@ -206,3 +206,20 @@ fn row_carries_the_block_fields_in_start_order() {
     assert_eq!(first.seconds, 1800);
     assert_eq!(first.description.as_deref(), Some("did it"));
 }
+
+// spec s5: < 200 ms on a 2,000-block fixture; catches a full-scan or per-row query regression
+#[test]
+fn query_over_2000_blocks_takes_under_200ms() {
+    let conn = open_memory().unwrap();
+    conn.execute_batch("BEGIN").unwrap();
+    for i in 0..2000 {
+        let day = format!("2026-{:02}-{:02}", 1 + (i / 28) % 12, 1 + i % 28);
+        seed(&conn, open(&day));
+    }
+    conn.execute_batch("COMMIT").unwrap();
+    let t = std::time::Instant::now();
+    let le = for_cycle_with(&conn, TODAY, START).unwrap();
+    let took = t.elapsed();
+    assert!(!le.items.is_empty());
+    assert!(took.as_millis() < 200, "took {took:?}");
+}
