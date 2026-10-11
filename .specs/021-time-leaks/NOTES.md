@@ -44,4 +44,11 @@
 - Discovered: rust/crates/worklog-cli/src/cli.rs ~3170 — fold_event_sources keeps the first last_ok, not the latest (no live bug today) — defer
 - Discovered: rust/crates/worklog-core/src/daemon.rs ~65 — module doc route list omits GET /loose-ends — defer
 - Discovered: web/components/IgnoreMenu.tsx — no Escape / outside-click close; BlockCard `picking` never resets after an Internal pick — defer
+- Ruling: T017 blank-deild fix by orchestrator — a saved `Some(" ")` deild could win the tally and render an empty chip; red test first, then a non-blank filter in daemon_tenants::deild_suggestion.
+- Ruling: T016 also edited web/components/AppNav.test.tsx (outside files:) — the nav order expectation gains "Loose ends".
+- Discovered: rust/crates/worklog-core/src/billing_tenant_test.rs:387 rows_for_day_with_deildir_under_200ms fails under full-suite load (seen once in wave 4, 3/3 pass alone; billing*.rs untouched by 021; same flake as spec 017's ruling) — defer
+- Discovered: rust/crates/worklog-core/src/daemon_tenants.rs ~97 — recency order is text `ORDER BY day, started_at`; mixed `Z`/`+00:00` formats would misorder ties — defer
+- Discovered: rust/crates/worklog-core/src/daemon_tenants_test.rs ~907 — pins unknown block → 500 (personal → 400), locking in an inconsistent error contract — defer
+- Discovered: web/components/LooseEnds.tsx:23 — description and times fetched but not rendered; row text runs together; tests only `toContain` — defer
+- Discovered: web/app/loose-ends/page.tsx:11 — `.catch(() => null)` drops the cause (alert still shows) — defer
 - Discovered: `worklog status` shows both a "claude" (hook) and a "claude_transcripts" row — distinct sources, confusable names — defer
