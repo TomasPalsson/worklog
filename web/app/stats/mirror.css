@@ -21,3 +21,4 @@
 .sx-mir-how summary { cursor: pointer; letter-spacing: 0.06em; font-variant-caps: all-small-caps; }
 .sx-mir-rowlabel { align-self: center; padding-right: 6px; font-size: 13px; line-height: 1; white-space: nowrap; color: var(--fg-muted); }
 .sx-mir .art-label { font-size: 13px; white-space: nowrap; }
+.sx-mir-collabel { align-self: end; text-align: center; font-family: var(--font-mono, monospace); font-size: 13px; line-height: 1; color: var(--fg-muted); }

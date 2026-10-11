@@ -110,15 +110,13 @@ export function compassTip(day: DayRow): Tip {
   };
 }
 
-const KEY_MAX = 5;
-
 export function DayCompass({ report }: { report: TopicsReport }) {
   const { plotted, skipped, medianX, medianY } = compassLayout(report);
   if (plotted.length === 0) return null;
   const dayRows = new Map(report.days.map((d) => [d.day, d]));
   const daysByTopic = new Map<number, number>();
   for (const dot of plotted) daysByTopic.set(dot.topTopic, (daysByTopic.get(dot.topTopic) ?? 0) + 1);
-  const keyed = [...daysByTopic].sort((a, b) => b[1] - a[1] || a[0] - b[0]).slice(0, KEY_MAX);
+  const keyed = [...daysByTopic].sort((a, b) => b[1] - a[1] || a[0] - b[0]);
   const plottedRows = plotted.map((dot) => dayRows.get(dot.day)!);
   const best = (value: (d: DayRow) => number) => plottedRows.reduce((a, b) => (value(b) > value(a) ? b : a));
 
@@ -186,6 +184,7 @@ export function DayCompass({ report }: { report: TopicsReport }) {
             {report.topics.find((t) => t.id === id)?.name ?? ""}
           </span>
         ))}
+        <span className="sx-cmp-key-item">dot area = hours that day</span>
       </p>
       {skipped.length > 0 && <p className="sx-cmp-skipped">single-block days: {skipped.map(shortMonthDay).join(", ")}</p>}
       <div className="sx-cmp-how">

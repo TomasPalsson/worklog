@@ -191,21 +191,26 @@ describe("DayCompass", () => {
     const ends = [...render(<DayCompass report={week} />).container.querySelectorAll(".sx-cmp-end")].map((el) => el.textContent);
     expect(ends).toEqual(["scattered", "focused", "familiar", "new ground"]);
   });
-  it("keys only topics that are some plotted day's top topic, most days first, at most 5", () => {
+  it("keys every topic that is some plotted day's top topic, most days first", () => {
     const topics = Array.from({ length: 8 }, (_, i) => topic(i, `Topic ${i}`));
     const top = (day: string, id: number, focus: number | null = 0.5) => ({ ...dayRow(day, focus, 0.5), top_topic: id });
     const many = {
       ...report([]),
       topics,
-      // Topic 3 wins twice; 0,1,2,4,5 once each; 6 only on the unplotted day; 7 never.
-      days: [top("2026-10-01", 3), top("2026-10-02", 3), top("2026-10-03", 0), top("2026-10-04", 1), top("2026-10-05", 2), top("2026-10-06", 4), top("2026-10-07", 5), top("2026-10-08", 6, null)],
+      // Topic 3 wins twice; 0,1,2,4,5,7 once each; 6 only on the unplotted day.
+      days: [top("2026-10-01", 3), top("2026-10-02", 3), top("2026-10-09", 7), top("2026-10-03", 0), top("2026-10-04", 1), top("2026-10-05", 2), top("2026-10-06", 4), top("2026-10-07", 5), top("2026-10-08", 6, null)],
     };
     const key = render(<DayCompass report={many} />).container.querySelector(".sx-cmp-key")!;
     expect(key.textContent).toContain("dot colour = that day's main topic");
     const names = [...key.querySelectorAll(".sx-cmp-key-item")].map((el) => el.textContent);
-    // catches: listing every topic, or topics only seen on unplotted days, or no cap
-    expect(names).toEqual(["Topic 3", "Topic 0", "Topic 1", "Topic 2", "Topic 4"]);
-    expect(key.querySelectorAll(".sx-cmp-key-swatch").length).toBe(5);
+    // catches: listing unplotted-only or never-top topics, or a cap that drops the 6th
+    expect(names.slice(0, 6)).toEqual(["Topic 3", "Topic 0", "Topic 1", "Topic 2", "Topic 4", "Topic 5"]);
+    expect(key.querySelectorAll(".sx-cmp-key-swatch").length).toBe(7);
+  });
+  it("explains dot size as hours, matching the sqrt-area radius", () => {
+    const key = render(<DayCompass report={week} />).container.querySelector(".sx-cmp-key")!;
+    // catches: size note missing or claiming radius (not area) is proportional
+    expect(key.textContent).toContain("dot area = hours that day");
   });
   it("names the most focused and the most new-ground day in a callout, ignoring unplotted days", () => {
     // week: max focus Oct 5 (0.5); max novelty among plotted is Oct 3 (0.7), the unplotted Oct 6 (0.9) must not win

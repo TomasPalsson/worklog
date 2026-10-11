@@ -242,3 +242,39 @@ describe("DayMirror at 30 days", () => {
     expect(chip.getAttribute("aria-label")).toContain("Most like:");
   });
 });
+
+describe("DayMirror column labels", () => {
+  const labels = (n: number) => [...render(<DayMirror report={wide(n)} />).container.querySelectorAll(".sx-mir-collabel")];
+  it("labels every column with its day of month at 10 days, without adding tab stops", () => {
+    const c = render(<DayMirror report={wide(10)} />).container;
+    const cols = [...c.querySelectorAll<HTMLElement>(".sx-mir-collabel")];
+    // catches: no labels, or a month-day string instead of the bare day number
+    expect(cols.map((l) => l.textContent)).toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]);
+    expect(cols.every((l) => l.getAttribute("aria-hidden") === "true" && l.style.gridRow === "1")).toBe(true);
+    // 10 days are not compact: no row-label column, so columns start at 1
+    expect(cols.map((l) => l.style.gridColumn)).toEqual(Array.from({ length: 10 }, (_, i) => String(i + 1)));
+    // catches: tabIndex added to labels (10 diagonal chips + 2 rings)
+    expect(c.querySelectorAll("[tabindex]").length).toBe(10 + 2);
+  });
+  it("labels every column at exactly 31 days and every other column at 32", () => {
+    // catches: > for >= on the 31-day limit
+    expect(labels(31).length).toBe(31);
+    cleanup();
+    expect(labels(32).length).toBe(16);
+  });
+  it("labels every other column at 40 days", () => {
+    // catches: labelling all columns past the limit
+    const l = labels(40);
+    expect(l.length).toBe(20);
+    expect(l.slice(0, 3).map((x) => x.textContent)).toEqual(["1", "3", "5"]);
+  });
+  it("shifts the matrix down one row so labels have their own row", () => {
+    const c = render(<DayMirror report={full} />).container;
+    const rows = [...c.querySelectorAll<HTMLElement>(".sx-mir-cell")].map((e) => Number(e.style.gridRow));
+    expect(Math.min(...rows)).toBe(2);
+  });
+  it("styles the label in mirror.css", () => {
+    const css = readFileSync(new URL("../../app/stats/mirror.css", import.meta.url), "utf8");
+    expect(css).toMatch(/\.sx-mir-collabel\s*{[^}]*text-align:\s*center/);
+  });
+});
