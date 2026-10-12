@@ -9,7 +9,7 @@ export type StatusTone = "sage" | "muted" | "amber";
 export const STATUS_META: Record<StatusKind, { label: string; hint: string; tone: StatusTone }> = {
   billable: { label: "billable", hint: "Billed to the customer", tone: "sage" },
   included: { label: "covered by contract", hint: "Covered by the contract's included hours; counts toward the 70% goal", tone: "sage" },
-  fixed: { label: "fixed price", hint: "Not billed by the hour", tone: "muted" },
+  fixed: { label: "fixed price", hint: "Not billed by the hour; counts toward the 70% goal", tone: "muted" },
   internal: { label: "internal", hint: "Internal work, not billed", tone: "muted" },
   missing: { label: "contract missing", hint: "Mirres has no usable contract for this project; counted as billable until it's fixed", tone: "amber" },
   not_billable: { label: "not billable", hint: "Not billed", tone: "muted" },
@@ -29,6 +29,9 @@ export function statusKind(b: StatusInput): StatusKind {
   if (t.includes("(Apró)")) return "internal";
   return "not_billable";
 }
+
+/** Counts toward billable % and the 70% goal: everything except internal (Apró) work. */
+export const countsAsBilled = (b: StatusInput): boolean => statusKind(b) !== "internal";
 
 /** Status meta for a row; a subscription ("Innifalið") is a fixed kind labelled as such. */
 export function statusMeta(b: StatusInput) {

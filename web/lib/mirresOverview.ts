@@ -2,7 +2,7 @@
 // project account, and per-day match / billable summaries.
 
 import { billablePercent } from "./tempo_line_contract";
-import { statusKind } from "./mirresStatus";
+import { countsAsBilled, statusKind } from "./mirresStatus";
 import type { StatusKind } from "./mirresStatus";
 import type { BillingClass, MirresDay, MirresDetails } from "./tempo_line_contract";
 
@@ -83,7 +83,7 @@ export function totals(days: MirresDay[]) {
     billablePercent: billablePercent(days.flatMap((d) => d.lines)),
     billedSeconds: days.reduce(
       (a, d) =>
-        a + d.lines.reduce((b, l) => (l.billing && l.billing.class !== "not_billable" ? b + l.effective_seconds : b), 0),
+        a + d.lines.reduce((b, l) => (l.billing && countsAsBilled(l.billing) ? b + l.effective_seconds : b), 0),
       0,
     ),
   };

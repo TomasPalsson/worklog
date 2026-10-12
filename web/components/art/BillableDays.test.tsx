@@ -5,7 +5,7 @@ import type { BillingClass, MirresDay, TempoLine } from "@/lib/tempo_line_contra
 
 afterEach(cleanup);
 
-const line = (secs: number, cls: BillingClass | null): TempoLine => ({
+const line = (secs: number, cls: BillingClass | null, projectType: string | null = null): TempoLine => ({
   day: "2026-10-06",
   jira_issue: "X-1",
   text: null,
@@ -17,7 +17,7 @@ const line = (secs: number, cls: BillingClass | null): TempoLine => ({
   billing: cls && {
     account_key: "A",
     project: null,
-    project_type: null,
+    project_type: projectType,
     class: cls,
     warning: null,
     customer: null,
@@ -33,6 +33,11 @@ describe("daySplit", () => {
     expect(s.map((x) => Math.round(x.share * 100))).toEqual([50, 25, 25]);
   });
 
+  it("stacks fixed price as billable; internal Apró stays not billable", () => {
+    const s = daySplit(day("2026-10-06", [line(1800, "not_billable", "Fast verð"), line(1800, "not_billable", "Innri vinna (Apró)")]));
+    expect(s.map((x) => [x.kind, x.share])).toEqual([["billable", 0.5], ["not_billable", 0.5]]);
+  });
+
   it("is empty for a day with no hours", () => {
     expect(daySplit(day("2026-10-06", []))).toEqual([]);
   });
@@ -41,7 +46,7 @@ describe("daySplit", () => {
 describe("BillableDays", () => {
   it("one linked column per day, labelled, with the 70% target", () => {
     const { container } = render(
-      <BillableDays days={[day("2026-10-06", [line(3600, "billable")]), day("2026-10-07", [line(3600, "not_billable")])]} />,
+      <BillableDays days={[day("2026-10-06", [line(3600, "billable")]), day("2026-10-07", [line(3600, "not_billable", "Innri vinna (Apró)")])]} />,
     );
     expect(container.querySelectorAll("a").length).toBe(2);
     expect(container.querySelector("a")?.getAttribute("href")).toBe("#mirres-day-2026-10-06");

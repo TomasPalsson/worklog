@@ -1,6 +1,7 @@
 import { useId } from "react";
 import type { MirresDay } from "@/lib/tempo_line_contract";
 import { daySummary } from "@/lib/mirresOverview";
+import { countsAsBilled } from "@/lib/mirresStatus";
 
 export type DayKind = "billable" | "included" | "missing" | "not_billable";
 /** Stack order, bottom to top. */
@@ -9,7 +10,12 @@ export const DAY_KINDS: DayKind[] = ["billable", "included", "missing", "not_bil
 /** Share (0..1) of a day's hours per billing class; lines Mirres has no row for are "missing". */
 export function daySplit(day: MirresDay): { kind: DayKind; share: number }[] {
   const secs: Record<DayKind, number> = { billable: 0, included: 0, missing: 0, not_billable: 0 };
-  for (const l of day.lines) secs[l.billing ? l.billing.class : "missing"] += l.effective_seconds;
+  for (const l of day.lines) {
+    const b = l.billing;
+    // Fixed price / subscription stack as billable, matching the % above the column.
+    const kind = !b ? "missing" : b.class === "not_billable" && countsAsBilled(b) ? "billable" : b.class;
+    secs[kind] += l.effective_seconds;
+  }
   const total = DAY_KINDS.reduce((a, k) => a + secs[k], 0);
   if (total <= 0) return [];
   return DAY_KINDS.filter((k) => secs[k] > 0).map((k) => ({ kind: k, share: secs[k] / total }));
