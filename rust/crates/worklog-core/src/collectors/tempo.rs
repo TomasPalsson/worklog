@@ -528,7 +528,7 @@ fn sync_group_aggregated(
         .min()
         .unwrap_or("");
     let description = match line.text {
-        Some(text) => cap_description(&text),
+        Some(text) => text,
         None if dry_run => line.fallback_text,
         None => {
             let (_, _, source_hash) = tempo_lines::pending_generation(conn, &day_str, Some(&key))?
@@ -833,20 +833,6 @@ fn sync_block_legacy(
     Ok(())
 }
 
-const SUMMARY_MAX_CHARS: usize = 250;
-
-/// Hard cap on the worklog description sent to Tempo. Truncates on a
-/// char boundary and appends `…` to make the cut visible.
-pub(crate) fn cap_description(s: &str) -> String {
-    if s.chars().count() <= SUMMARY_MAX_CHARS {
-        s.to_owned()
-    } else {
-        let mut out: String = s.chars().take(SUMMARY_MAX_CHARS - 1).collect();
-        out.push('…');
-        out
-    }
-}
-
 const DESCRIPTION_SYSTEM_PROMPT: &str =
     "You are a Tempo worklog assistant. Given a Jira issue key and a list of \
 per-block descriptions of work done on that issue throughout one day, \
@@ -903,7 +889,7 @@ pub(crate) fn distinct_descriptions(descriptions: &[String]) -> Vec<String> {
 }
 
 fn joined_descriptions(descriptions: &[String]) -> String {
-    cap_description(&distinct_descriptions(descriptions).join("; "))
+    distinct_descriptions(descriptions).join("; ")
 }
 
 /// Like `summarize_descriptions`, but `None` when the invoker was called and
@@ -922,10 +908,10 @@ pub(crate) fn try_summarize_descriptions(
         return Some(format!("Work on {issue}"));
     }
     if unique.len() == 1 {
-        return Some(cap_description(&unique[0]));
+        return Some(unique[0].clone());
     }
 
-    let joined_fallback = || Some(cap_description(&unique.join("; ")));
+    let joined_fallback = || Some(unique.join("; "));
 
     if dry_run {
         return joined_fallback();
@@ -959,7 +945,7 @@ pub(crate) fn ask_model(
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(cap_description)
+        .map(str::to_owned)
         .ok_or_else(|| anyhow::anyhow!("the AI returned no text"))
 }
 
@@ -1436,15 +1422,13 @@ mod tests {
     }
 
     #[test]
-    fn sync_caps_long_stored_line_text() {
+    fn sync_sends_long_stored_line_text_in_full() {
         let long_text = "x".repeat(300);
-        let capped = cap_description(&long_text);
-        assert!(capped.chars().count() <= 250);
         let server = MockServer::start();
         let post = server.mock(|when, then| {
             when.method(POST)
                 .path("/worklogs")
-                .json_body_partial(json!({ "description": capped }).to_string());
+                .json_body_partial(json!({ "description": long_text }).to_string());
             then.status(200).json_body(json!({"tempoWorklogId": 9}));
         });
         let conn = open_memory().unwrap();
