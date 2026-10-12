@@ -120,8 +120,14 @@ fn day_answer(tempo: &TempoSide, day: String, blocks: &[Blk]) -> UnbilledDay {
             .collect()
     };
     let unexported = union(blocks.iter().filter(|b| !b.jira.is_empty() && !b.exported));
+    // A ticket only matters for Tempo; a dismissed day was handled outside it.
+    let ticketless = if dismissed.is_some() {
+        0
+    } else {
+        union(blocks.iter().filter(|b| b.jira.is_empty()))
+    };
     UnbilledDay {
-        ticketless_seconds: union(blocks.iter().filter(|b| b.jira.is_empty())),
+        ticketless_seconds: ticketless,
         export: (unexported > 0).then_some(ExportGap {
             seconds: unexported,
         }),

@@ -242,7 +242,7 @@ function CycleStrip({ cycle, today }: { cycle: CycleDay[]; today: string }) {
             return (
               <li key={c.day} className="ub-cell" data-state={c.state} data-today={c.day === today || undefined}>
                 {target ? (
-                  <a href={`#${target}-${c.day}`} aria-label={label} title={label}>
+                  <a href={target === "bill" ? `/billing?from=${c.day}` : `#${target}-${c.day}`} aria-label={label} title={label}>
                     {body}
                   </a>
                 ) : (
@@ -278,7 +278,8 @@ function DayHeading({ day, today }: { day: string; today: string }) {
 
 function reasonWords(t: TicketGap): string {
   if (t.reason === "short") return `only ${formatDuration(t.inTempo)} in Tempo`;
-  return t.reason === "deleted" ? "deleted in Tempo" : "not sent";
+  if (t.reason === "deleted") return t.inTempo > 0 ? `deleted in Tempo, ${formatDuration(t.inTempo)} left` : "deleted in Tempo";
+  return "not sent";
 }
 
 function TempoRow({ d, today }: { d: DayWork; today: string }) {

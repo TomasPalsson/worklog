@@ -32,7 +32,7 @@ describe("summarise", () => {
   });
 
   it("a ticket's missing hours are the whole line unless Tempo is short", () => {
-    // catches: subtracting Tempo's hours for not_sent/deleted, or not subtracting them for short
+    // catches: subtracting Tempo hours for not_sent, or counting a whole deleted line when Tempo still holds part of it
     const s = summarise(
       data([
         day({
@@ -49,11 +49,11 @@ describe("summarise", () => {
     const d = s.days[0];
     expect(d.tempo.state).toBe("needs");
     expect(d.tempo.tickets.map((t) => [t.key, t.missing, t.reason])).toEqual([
-      ["B-2", 4920, "deleted"],
       ["A-1", 1800, "short"],
+      ["B-2", 1320, "deleted"], // Tempo still holds 3600s someone logged by hand
       ["C-3", 600, "not_sent"],
     ]);
-    expect(d.tempo.seconds).toBe(7320);
+    expect(d.tempo.seconds).toBe(3720);
   });
 
   it("a day with no Tempo gap shows that step done", () => {

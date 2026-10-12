@@ -42,7 +42,8 @@ function dayWork(d: UnbilledDay, today: string, hourNow: number): DayWork {
   const tickets = d.tempo
     .map((g) => ({
       key: g.jira_issue,
-      missing: g.reason === "short" ? g.seconds - g.in_tempo_seconds : g.seconds,
+      // what Tempo lacks: a deleted entry may have been replaced by hand (in_tempo_seconds)
+      missing: g.reason === "not_sent" ? g.seconds : Math.max(g.seconds - g.in_tempo_seconds, 0),
       inTempo: g.in_tempo_seconds,
       reason: g.reason,
     }))

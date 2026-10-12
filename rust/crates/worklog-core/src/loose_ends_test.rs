@@ -219,6 +219,21 @@ fn dismissed_day_has_no_tempo_gap_and_carries_the_reason() {
     assert_eq!(d.export, Some(ExportGap { seconds: 1800 }));
 }
 
+// catches: asking for tickets on a day the Owner logged outside Tempo (e.g. "Logged in mirres")
+#[test]
+fn dismissed_day_does_not_ask_for_tickets() {
+    let conn = open_memory().unwrap();
+    seed(
+        &conn,
+        Row {
+            jira: None,
+            ..open("2026-10-01")
+        },
+    );
+    dismiss(&conn, "2026-10-01", "Logged in mirres");
+    assert!(run(&conn).days.is_empty());
+}
+
 // catches: a dismissed day with nothing else open still listed
 #[test]
 fn dismissed_day_with_nothing_else_is_left_out() {

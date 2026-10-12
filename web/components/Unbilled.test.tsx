@@ -67,8 +67,8 @@ describe("Unbilled", () => {
     expect(row.id).toBe("day-2026-10-05");
     expect(row.dataset.state).toBe("tempo");
     const chips = [...row.querySelectorAll(".ub-tickets li")].map((li) => li.textContent);
-    expect(chips).toEqual(["B-2 1h 22m · deleted in Tempo", "A-1 30m · only 30m in Tempo", "C-3 10m · not sent"]);
-    expect(row.querySelector(".ub-row-hours")!.textContent).toBe("2h 2m");
+    expect(chips).toEqual(["A-1 30m · only 30m in Tempo", "B-2 22m · deleted in Tempo, 1h left", "C-3 10m · not sent"]);
+    expect(row.querySelector(".ub-row-hours")!.textContent).toBe("1h 2m");
     expect(within(row).getAllByRole("link").map((a) => [a.textContent, a.getAttribute("href")])).toEqual([["Fix Tempo line", "/2026-10-05"]]);
   });
 
@@ -148,7 +148,7 @@ describe("Unbilled", () => {
   it("the cycle strip names each day's state for screen readers and links open days", () => {
     // catches: a colour-only strip, or cells that do not jump to their row
     page(data([day({ export: { seconds: 60 } }), day({ day: "2026-10-06", tempo: [gap({})] })]));
-    expect(screen.getByLabelText("Mon 5 Oct: not exported to the invoice form").getAttribute("href")).toBe("#bill-2026-10-05");
+    expect(screen.getByLabelText("Mon 5 Oct: not exported to the invoice form").getAttribute("href")).toBe("/billing?from=2026-10-05");
     expect(screen.getByLabelText("Tue 6 Oct: not in Tempo yet").getAttribute("href")).toBe("#day-2026-10-06");
     expect(screen.getByLabelText(/^Sun 20 Sept?: no open work$/).tagName).toBe("SPAN");
     expect(screen.getByLabelText("Tue 13 Oct: not yet").tagName).toBe("SPAN");
