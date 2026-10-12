@@ -302,6 +302,72 @@ fn pull_before_the_day_ended_is_not_deleted() {
     assert!(run(&conn).days.is_empty());
 }
 
+// catches: the end-of-day send-time fallback calling a line deleted when it was sent by hand
+// after the day's last pull (its fresh id is larger than anything that pull stored)
+#[test]
+fn line_sent_after_the_last_pull_is_not_deleted() {
+    let conn = open_memory().unwrap();
+    seed_synced_4920(&conn);
+    remote(
+        &conn,
+        "250500",
+        "2026-10-02",
+        "ABC-2",
+        1800,
+        "2026-10-03T08:00:00Z",
+    );
+    assert!(run(&conn).days.is_empty());
+}
+
+// catches: a range pull that found nothing for the day (tempo_required_days only) taken as
+// proof, when the only larger id comes from a pull made after it
+#[test]
+fn larger_id_from_a_later_pull_is_no_proof_of_deletion() {
+    let conn = open_memory().unwrap();
+    seed_synced_4920(&conn);
+    conn.execute(
+        "INSERT INTO tempo_required_days (day, required_seconds, pulled_at)
+         VALUES ('2026-10-02', 28800, '2026-10-12T08:00:00Z')",
+        [],
+    )
+    .unwrap();
+    remote(
+        &conn,
+        "250400",
+        "2026-10-01",
+        "ABC-2",
+        60,
+        "2026-10-12T08:00:00Z",
+    );
+    remote(
+        &conn,
+        "250600",
+        "2026-10-05",
+        "ABC-2",
+        60,
+        "2026-10-12T09:00:00Z",
+    );
+    assert!(run(&conn).days.is_empty());
+}
+
+// catches: the larger-id proof read only from the same day's rows
+#[test]
+fn larger_id_on_another_day_of_the_same_pull_proves_deletion() {
+    let conn = open_memory().unwrap();
+    seed_synced_4920(&conn);
+    conn.execute(
+        "INSERT INTO tempo_required_days (day, required_seconds, pulled_at)
+         VALUES ('2026-10-02', 28800, ?1)",
+        [PULLED],
+    )
+    .unwrap();
+    remote(&conn, "250600", "2026-10-05", "ABC-2", 60, PULLED);
+    assert_eq!(
+        run(&conn).days[0].tempo,
+        [gap("ABC-1", 4920, 0, TempoGapReason::Deleted)]
+    );
+}
+
 // catches: a partial Tempo line reported as not sent
 #[test]
 fn partial_tempo_is_short() {
@@ -340,7 +406,8 @@ fn nothing_anywhere_is_not_sent_including_empty_string_ids() {
     assert_eq!(d.ticketless_seconds, 0);
 }
 
-// catches: one synced block hiding its unsynced sibling on the same line
+// catches: one synced block hiding its unsynced sibling on the same line, and (Tempo not
+// pulled since the send) the sent block reported as missing too — the Owner would log it twice
 #[test]
 fn line_with_one_unsynced_block_is_a_gap() {
     let conn = open_memory().unwrap();
@@ -357,7 +424,29 @@ fn line_with_one_unsynced_block_is_a_gap() {
     }
     assert_eq!(
         only_day(&conn).tempo,
-        [gap("ABC-1", 3600, 0, TempoGapReason::NotSent)]
+        [gap("ABC-1", 3600, 1800, TempoGapReason::Short)]
+    );
+}
+
+// catches: counting a sent-but-not-yet-pulled block on top of a pull that already holds it
+#[test]
+fn sent_block_already_in_the_pull_is_not_counted_twice() {
+    let conn = open_memory().unwrap();
+    for (start, tempo) in [("09:00", Some("1")), ("11:00", None)] {
+        seed(
+            &conn,
+            Row {
+                start,
+                tempo,
+                exported: Some("x"),
+                ..open("2026-10-03")
+            },
+        );
+    }
+    remote(&conn, "1", "2026-10-03", "ABC-1", 1800, PULLED);
+    assert_eq!(
+        only_day(&conn).tempo,
+        [gap("ABC-1", 3600, 1800, TempoGapReason::Short)]
     );
 }
 

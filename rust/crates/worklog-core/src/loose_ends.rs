@@ -16,6 +16,15 @@
 //! the 17:00 auto-send recorded one, else the end of the local day (a line is
 //! never sent before its day is over except by hand, which leaves no trace).
 //! A day never pulled is never "deleted": Tempo may simply be stale.
+//! That send time is a guess for hand sends, so "deleted" also needs the
+//! id itself to predate the pull: Tempo worklog ids only grow, so an id
+//! below the largest id held by a pull made no later than the day's latest
+//! pull existed when that pull ran. A line sent after the pull has a larger
+//! id and is "sent, Tempo not pulled since", not deleted.
+//!
+//! Blocks sent by the app but absent from the pull (and not proven deleted)
+//! count as in Tempo: `in_tempo_seconds` is the pulled seconds plus their
+//! union, so a partly sent line reports only what is really missing.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -130,6 +139,8 @@ struct TempoSide {
     ids: HashSet<String>,
     /// day → that day's latest pull.
     pulled: HashMap<String, DateTime<Utc>>,
+    /// day → largest numeric remote id held by a pull no later than the day's latest pull.
+    known_max: HashMap<String, i64>,
     /// (day, jira_issue) → recorded auto-send time.
     sent: HashMap<(String, String), DateTime<Utc>>,
     dismissed: HashMap<String, String>,
@@ -147,22 +158,33 @@ impl TempoSide {
                 .filter_map(|(d, j, t)| Some(((d, j), parse_utc(&t)?)))
                 .collect()
         };
+        let pulled: HashMap<String, DateTime<Utc>> = pairs(
+            "SELECT day, MAX(pulled_at) FROM (
+                SELECT day, pulled_at FROM tempo_remote_worklogs WHERE day BETWEEN ?1 AND ?2
+                UNION ALL
+                SELECT day, pulled_at FROM tempo_required_days WHERE day BETWEEN ?1 AND ?2)
+             GROUP BY day",
+        )?
+        .into_iter()
+        .filter_map(|(d, t)| Some((d, parse_utc(&t)?)))
+        .collect();
+        let (ids, numbered) = remote_ids(conn)?;
+        let known_max = pulled
+            .iter()
+            .filter_map(|(day, at)| {
+                let max = numbered
+                    .iter()
+                    .filter(|(t, _)| t <= at)
+                    .map(|(_, id)| *id)
+                    .max()?;
+                Some((day.clone(), max))
+            })
+            .collect();
         Ok(TempoSide {
             remote: remote_sums(conn, from, to)?,
-            ids: conn
-                .prepare("SELECT tempo_worklog_id FROM tempo_remote_worklogs")?
-                .query_map([], |r| r.get(0))?
-                .collect::<rusqlite::Result<_>>()?,
-            pulled: pairs(
-                "SELECT day, MAX(pulled_at) FROM (
-                    SELECT day, pulled_at FROM tempo_remote_worklogs WHERE day BETWEEN ?1 AND ?2
-                    UNION ALL
-                    SELECT day, pulled_at FROM tempo_required_days WHERE day BETWEEN ?1 AND ?2)
-                 GROUP BY day",
-            )?
-            .into_iter()
-            .filter_map(|(d, t)| Some((d, parse_utc(&t)?)))
-            .collect(),
+            ids,
+            pulled,
+            known_max,
             sent: keyed_time(triples(
                 conn,
                 "SELECT day, jira_issue, auto_sent_at FROM tempo_line_texts
@@ -181,29 +203,47 @@ impl TempoSide {
     fn gap(&self, day: &str, jira: &str, line: &[&Blk]) -> Option<TempoGap> {
         let seconds = union(line.iter().copied());
         let key = (day.to_string(), jira.to_string());
-        let in_tempo = self.remote.get(&key).copied().unwrap_or(0);
-        if in_tempo >= seconds {
+        let remote = self.remote.get(&key).copied().unwrap_or(0);
+        if remote >= seconds {
             return None;
         }
-        let lost = line
+        // Sent by the app but not in the stored pull: deleted, or sent after the pull.
+        let unseen: Vec<&Blk> = line
             .iter()
-            .filter_map(|b| b.tempo_id.as_ref())
-            .any(|id| !self.ids.contains(id));
-        let reason = if lost && self.pulled_after_send(&key) {
-            TempoGapReason::Deleted
-        } else if line.iter().all(|b| b.tempo_id.is_some()) {
-            return None;
-        } else if in_tempo > 0 {
-            TempoGapReason::Short
-        } else {
-            TempoGapReason::NotSent
-        };
-        Some(TempoGap {
+            .copied()
+            .filter(|b| b.tempo_id.as_ref().is_some_and(|id| !self.ids.contains(id)))
+            .collect();
+        let gap = |in_tempo_seconds, reason| TempoGap {
             jira_issue: jira.to_string(),
             seconds,
-            in_tempo_seconds: in_tempo,
+            in_tempo_seconds,
             reason,
-        })
+        };
+        let mut unseen_ids = unseen.iter().filter_map(|b| b.tempo_id.as_deref());
+        if self.pulled_after_send(&key) && unseen_ids.any(|id| self.predates_pull(day, id)) {
+            return Some(gap(remote, TempoGapReason::Deleted));
+        }
+        let in_tempo = remote + union(unseen.into_iter());
+        if line.iter().all(|b| b.tempo_id.is_some()) || in_tempo >= seconds {
+            return None;
+        }
+        Some(gap(
+            in_tempo,
+            if in_tempo > 0 {
+                TempoGapReason::Short
+            } else {
+                TempoGapReason::NotSent
+            },
+        ))
+    }
+
+    /// See the module doc: the id is below one a pull covering the day already held.
+    fn predates_pull(&self, day: &str, id: &str) -> bool {
+        let max = self.known_max.get(day);
+        id.parse::<i64>()
+            .ok()
+            .zip(max)
+            .is_some_and(|(id, max)| id < *max)
     }
 
     /// See the module doc: the day's latest pull is later than the line's send.
@@ -217,6 +257,24 @@ impl TempoSide {
         });
         sent.is_some_and(|sent| *pulled > sent)
     }
+}
+
+/// (pull time, numeric remote worklog id).
+type Numbered = Vec<(DateTime<Utc>, i64)>;
+
+/// Every stored remote id, plus the numeric ones with the pull that stored them.
+fn remote_ids(conn: &Connection) -> Result<(HashSet<String>, Numbered)> {
+    let mut stmt = conn.prepare("SELECT tempo_worklog_id, pulled_at FROM tempo_remote_worklogs")?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    let (mut ids, mut numbered) = (HashSet::new(), Vec::new());
+    for row in rows {
+        let (id, at) = row.context("listing Tempo worklog ids")?;
+        if let (Ok(n), Some(at)) = (id.parse::<i64>(), parse_utc(&at)) {
+            numbered.push((at, n));
+        }
+        ids.insert(id);
+    }
+    Ok((ids, numbered))
 }
 
 fn remote_sums(conn: &Connection, from: &str, to: &str) -> Result<HashMap<(String, String), i64>> {

@@ -37,7 +37,8 @@ pub enum TempoGapReason {
     NotSent,
     /// Tempo has some of the line, less than the blocks' union.
     Short,
-    /// A block's Tempo worklog id is gone from a pull made after it was sent.
+    /// A block's Tempo worklog id is gone from a pull made after it was sent (its id
+    /// is below one that pull already held; Tempo ids only grow).
     Deleted,
 }
 
@@ -47,7 +48,8 @@ pub struct TempoGap {
     pub jira_issue: String,
     /// Union of the line's block intervals.
     pub seconds: i64,
-    /// Sum of the pulled Tempo worklogs for (day, jira_issue).
+    /// Sum of the pulled Tempo worklogs for (day, jira_issue), plus the union of blocks
+    /// the app sent that the pull does not hold yet (not for `Deleted`: pulled only).
     pub in_tempo_seconds: i64,
     pub reason: TempoGapReason,
 }
