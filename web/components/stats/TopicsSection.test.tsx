@@ -5,30 +5,80 @@ import { timeoutMs } from "@/lib/daemonTimeout";
 import type { TopicsReport } from "@/lib/topics_contract";
 import { TopicsSection } from "./TopicsSection";
 
-afterEach(cleanup);
+const refresh = mock(() => {});
+const router = { refresh };
+mock.module("next/navigation", () => ({ useRouter: () => router }));
+
+const realSetInterval = globalThis.setInterval;
+const realClearInterval = globalThis.clearInterval;
+
+// bun 1.2 has no jest.advanceTimersByTime; fake only the interval clock.
+function fakeIntervals() {
+  let now = 0;
+  let next = 1;
+  const live = new Map<number, { every: number; due: number; fn: () => void }>();
+  globalThis.setInterval = ((fn: () => void, every: number) => {
+    live.set(next, { every, due: now + every, fn });
+    return next++;
+  }) as unknown as typeof setInterval;
+  globalThis.clearInterval = ((id: number) => void live.delete(id)) as unknown as typeof clearInterval;
+  return (ms: number) => {
+    const end = now + ms;
+    for (;;) {
+      const [id, t] = [...live].filter(([, v]) => v.due <= end).sort((a, b) => a[1].due - b[1].due)[0] ?? [];
+      if (id === undefined || !t) break;
+      now = t.due;
+      t.due += t.every;
+      t.fn();
+    }
+    now = end;
+  };
+}
+
+afterEach(() => {
+  cleanup();
+  globalThis.setInterval = realSetInterval;
+  globalThis.clearInterval = realClearInterval;
+  refresh.mockClear();
+});
 
 const DOWN = "Topic stats need the local helper (`worklog verdict`).";
 const FEW = "Not enough described work in this range yet.";
 
+const topic = (id: number, name: string) => ({
+  id, name, description: null, named_by: "keywords" as const, keywords: [], seconds: 7200 - id * 3600,
+  blocks: 2, days_active: 3, first_day: "2026-10-01", last_day: "2026-10-03", top_tickets: [],
+});
+const day = (d: string, focus: number | null) => ({
+  day: d, work_seconds: 7200, focus, novelty: 0.4, switches: 2, longest_run_seconds: 3600, top_topic: 0, topics_touched: 2,
+});
+const hl = { block_id: 1, day: "2026-10-02", label: "Fix login", ticket: "ABC-1", topic_id: 0, seconds: 1800, score: 0.5 };
+
 const base: TopicsReport = {
   status: "ready",
   from: "2026-10-01",
-  to: "2026-10-07",
-  topics: [
-    { id: 0, name: "Fix login", name_ticket: "ABC-1", seconds: 7200, blocks: 4, top_tickets: [] },
-    { id: 1, name: "Billing export", name_ticket: null, seconds: 3600, blocks: 2, top_tickets: [] },
+  to: "2026-10-03",
+  naming: "ai",
+  topics: [topic(0, "Fix login"), topic(1, "Billing export")],
+  points: [],
+  bin: "day",
+  river: [
+    { start: "2026-10-01", seconds: [3600, 0] },
+    { start: "2026-10-02", seconds: [1800, 1800] },
+    { start: "2026-10-03", seconds: [0, 3600] },
   ],
-  switches: [{ day: "2026-10-02", switches: 5, work_seconds: 18000, longest_run_seconds: 5400 }],
-  drift: [{ topic_id: 0, name: "Fix login", seconds_now: 7200, seconds_before: 1800 }],
-  sprawl: [{ ticket: "ABC-9", summary: "Misc chores", blocks: 6, spread: 0.42 }],
-  similar_days: [
-    { day: "2026-09-20", similarity: 0.87, work_seconds: 14400, top_tickets: [{ label: "ABC-1", value: 3600 }] },
-  ],
+  days: [day("2026-10-01", 0.6), day("2026-10-02", 0.7), day("2026-10-03", 0.8)],
+  day_similarity: [[1, 0.5, 0.2], [0.5, 1, 0.4], [0.2, 0.4, 1]],
+  first_times: [hl],
+  oddballs: [hl],
+  oddball_median: 0.6,
   embedded_blocks: 6,
   skipped_blocks: 0,
 };
 
 const text = (r: TopicsReport) => render(<TopicsSection report={r} />).container.textContent ?? "";
+
+const ROOTS = [".sx-gal", ".hb-rows", ".sx-river", ".sx-mir", ".sx-cmp", ".tm-wrap"];
 
 describe("timeoutMs", () => {
   it("topics route gets 90s; plain /stats stays 30s", () => {
@@ -61,65 +111,95 @@ describe("getTopics", () => {
 });
 
 describe("TopicsSection", () => {
-  it("null report and helper_down show the helper message only", () => {
+  // catches: null falling through to the ready branch, or a missing telescope art
+  it("null report and helper_down show the telescope and helper message only", () => {
     for (const report of [null, { ...base, status: "helper_down" as const }]) {
-      const { getByText, container } = render(<TopicsSection report={report} />);
+      const { getByText, getByRole, container } = render(<TopicsSection report={report} />);
       expect(getByText(DOWN)).toBeTruthy();
+      expect(getByRole("img").getAttribute("aria-label")).toContain("telescope");
       expect(container.textContent).not.toContain("Fix login");
       cleanup();
     }
   });
 
-  it("too_few_blocks shows the not-enough message, not the helper one", () => {
-    const { getByText, container } = render(<TopicsSection report={{ ...base, status: "too_few_blocks" }} />);
+  // catches: too_few sharing the helper_down message or art
+  it("too_few_blocks shows the sparse chart and not-enough message, not the helper one", () => {
+    const { getByText, getByRole, container } = render(<TopicsSection report={{ ...base, status: "too_few_blocks" }} />);
     expect(getByText(FEW)).toBeTruthy();
+    expect(getByRole("img").getAttribute("aria-label")).toContain("nearly empty");
     expect(container.textContent).not.toContain(DOWN);
   });
 
-  it("ready renders topics with hours", () => {
+  // catches: a module dropped or the order shuffled
+  it("ready renders all six module roots in order", () => {
+    const { container } = render(<TopicsSection report={base} />);
+    const all = Array.from(container.querySelectorAll("*"));
+    const idx = ROOTS.map((sel) => {
+      const el = container.querySelector(sel);
+      expect(el).not.toBeNull();
+      return all.indexOf(el!);
+    });
+    expect(idx).toEqual([...idx].sort((a, b) => a - b));
+  });
+
+  // catches: empty states leaking into the ready layout
+  it("ready omits the empty states", () => {
     const t = text(base);
-    expect(t).toContain("Fix login");
-    expect(t).toContain("2h");
-    expect(t).toContain("Billing export");
-    expect(t).toContain("1h");
+    expect(t).not.toContain(DOWN);
+    expect(t).not.toContain(FEW);
   });
 
-  it("ready renders switches with longest run", () => {
-    const t = text(base);
-    expect(t).toContain("2026-10-02");
-    expect(t).toContain("5 switches");
-    expect(t).toContain("1h 30m");
+  // catches: refresh timer always on, or keyed on the wrong naming value
+  it("naming pending renders the refresh timer; ai and off do not", () => {
+    const has = (naming: TopicsReport["naming"]) => {
+      const { container } = render(<TopicsSection report={{ ...base, naming }} />);
+      const found = container.querySelector("[data-refresh-soon]") !== null;
+      cleanup();
+      return found;
+    };
+    expect([has("pending"), has("ai"), has("off")]).toEqual([true, false, false]);
   });
 
-  it("ready renders drift now vs before", () => {
-    const t = text(base);
-    expect(t).toContain("now 2h");
-    expect(t).toContain("before 30m");
+  // catches: old Card sections surviving the rewrite
+  it("output carries no retired drift/sprawl/similar-days cards", () => {
+    const { container } = render(<TopicsSection report={base} />);
+    const t = (container.textContent ?? "").toLowerCase();
+    for (const w of ["drift", "sprawl", "similar_days", "catch-all"]) expect(t).not.toContain(w);
+    const titles = [...container.querySelectorAll("h2, h3, .sr-title")].map((e) => (e.textContent ?? "").trim().toLowerCase());
+    for (const w of ["switches per day", "drift", "catch-all tickets", "similar days"]) expect(titles).not.toContain(w);
   });
 
-  it("ready renders catch-all tickets with key, summary and spread", () => {
-    const t = text(base);
-    expect(t).toContain("ABC-9");
-    expect(t).toContain("Misc chores");
-    expect(t).toContain("0.42");
-  });
+  describe("refresh cadence while naming is pending", () => {
+    const pending = { ...base, naming: "pending" as const };
 
-  it("sprawl summary null falls back to key only, no 'null'", () => {
-    const t = text({ ...base, sprawl: [{ ...base.sprawl[0], summary: null }] });
-    expect(t).toContain("ABC-9");
-    expect(t).not.toContain("null");
-  });
+    // catches: the old single 25 s timer (no repeat), or an initial delay other than 20 s
+    it("refreshes nothing before 20 s and exactly once at 20 s", () => {
+      const at = fakeIntervals();
+      render(<TopicsSection report={pending} />);
+      at(19_999);
+      expect(refresh).toHaveBeenCalledTimes(0);
+      at(1);
+      expect(refresh).toHaveBeenCalledTimes(1);
+    });
 
-  it("ready renders similar days with rounded percent and top tickets", () => {
-    const t = text(base);
-    expect(t).toContain("2026-09-20");
-    expect(t).toContain("87%");
-    expect(t).toContain("ABC-1");
-  });
+    // catches: no cap (7th call), cap off by one (5 calls), or a non-repeating timer
+    it("refreshes 6 times by 120 s and never a 7th", () => {
+      const at = fakeIntervals();
+      render(<TopicsSection report={pending} />);
+      at(120_000);
+      expect(refresh).toHaveBeenCalledTimes(6);
+      at(600_000);
+      expect(refresh).toHaveBeenCalledTimes(6);
+    });
 
-  it("ready with empty lists has no NaN/undefined", () => {
-    const t = text({ ...base, topics: [], switches: [], drift: [], sprawl: [], similar_days: [] });
-    expect(t).not.toContain("NaN");
-    expect(t).not.toContain("undefined");
+    // catches: interval left running after unmount
+    it("makes no call after unmount", () => {
+      const at = fakeIntervals();
+      const { unmount } = render(<TopicsSection report={pending} />);
+      at(20_000);
+      unmount();
+      at(600_000);
+      expect(refresh).toHaveBeenCalledTimes(1);
+    });
   });
 });

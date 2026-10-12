@@ -1,14 +1,16 @@
 //! Display-only topic stats over block vectors (GET /stats/topics).
 //! Contract: `topics_contract::TopicsReport`. Writes nothing.
 
-use std::collections::{BTreeMap, HashMap};
-
-use chrono::DateTime;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::stats::{bump, ranked};
+use crate::topic_metrics::{
+    center_with, cosine, day_rows, day_similarity, mean, median, nearest_cos, novelty, river,
+    warmup,
+};
 use crate::topics_contract::{
-    DaySwitches, SimilarDay, TicketSprawl, Topic, TopicDrift, TopicsReport, TopicsStatus,
-    MAX_TOPICS, MIN_BLOCKS, MIN_TOPICS, SIMILAR_DAYS_TOP, SPRAWL_MIN_BLOCKS, SPRAWL_TOP,
+    Highlight, NamedBy, Naming, Topic, TopicsReport, TopicsStatus, HIGHLIGHTS_TOP, MAX_TOPICS,
+    MIN_BLOCKS, MIN_TOPICS, ODDBALL_MAX_COS,
 };
 
 #[derive(Debug, Clone)]
@@ -27,50 +29,18 @@ pub struct TopicsInput {
     pub from: String,
     pub to: String,
     pub now: Vec<BlockPoint>,
-    pub before: Vec<BlockPoint>,
     pub history: Vec<BlockPoint>,
-    pub ticket_summaries: HashMap<String, String>,
 }
 
-fn cosine<A: Copy + Into<f64>, B: Copy + Into<f64>>(a: &[A], b: &[B]) -> f64 {
-    let (mut dot, mut na, mut nb) = (0.0, 0.0, 0.0);
-    for (x, y) in a.iter().zip(b) {
-        let (x, y): (f64, f64) = ((*x).into(), (*y).into());
-        dot += x * y;
-        na += x * x;
-        nb += y * y;
-    }
-    if na == 0.0 || nb == 0.0 {
-        0.0
-    } else {
-        dot / (na.sqrt() * nb.sqrt())
-    }
-}
-
-fn add_weighted(acc: &mut Vec<f64>, v: &[f32], weight: f64) {
-    if acc.is_empty() {
-        acc.resize(v.len(), 0.0);
-    }
-    for (a, x) in acc.iter_mut().zip(v) {
-        *a += weight * f64::from(*x);
-    }
-}
-
-fn started_ts(p: &BlockPoint) -> i64 {
-    DateTime::parse_from_rfc3339(&p.started_at)
-        .map(|t| t.timestamp())
-        .unwrap_or(0)
-}
-
-/// Average-linkage agglomerative clustering on cosine distance. `pts` must
-/// be sorted by id: clusters then stay ordered by lowest member, so exact
-/// ties merge the lower-id pair first.
-fn cluster(pts: &[&BlockPoint], k: usize) -> Vec<Vec<usize>> {
-    let n = pts.len();
+/// Average-linkage agglomerative clustering on cosine distance; returns each
+/// vector's cluster label. Labels are numbered by lowest member, and callers pass
+/// vectors sorted by id, so exact ties merge the lower-id pair first.
+pub fn cluster(vectors: &[Vec<f32>], k: usize) -> Vec<usize> {
+    let n = vectors.len();
     let mut dist = vec![vec![0.0; n]; n];
     for i in 0..n {
         for j in i + 1..n {
-            dist[i][j] = 1.0 - cosine(&pts[i].vec, &pts[j].vec);
+            dist[i][j] = 1.0 - cosine(&vectors[i], &vectors[j]);
             dist[j][i] = dist[i][j];
         }
     }
@@ -100,224 +70,177 @@ fn cluster(pts: &[&BlockPoint], k: usize) -> Vec<Vec<usize>> {
         let merged = cl.remove(bj);
         cl[bi].extend(merged);
     }
-    cl
-}
-
-fn topic_name(
-    members: &[&BlockPoint],
-    tickets: HashMap<String, i64>,
-    summaries: &HashMap<String, String>,
-) -> (String, Option<String>) {
-    if let Some(top) = ranked(tickets, 1).first() {
-        if let Some(s) = summaries.get(&top.label) {
-            return (s.clone(), Some(top.label.clone()));
+    let mut labels = vec![0; n];
+    for (label, members) in cl.iter().enumerate() {
+        for &i in members {
+            labels[i] = label;
         }
     }
-    let longest = members
-        .iter()
-        .min_by_key(|p| (-p.seconds, p.id))
-        .and_then(|p| p.description.clone());
-    (longest.unwrap_or_else(|| "Untitled".into()), None)
+    labels
 }
 
-fn day_switches(day: &str, pts: &[(&BlockPoint, usize)]) -> DaySwitches {
-    let mut sorted = pts.to_vec();
-    sorted.sort_by(|a, b| (&a.0.started_at, a.0.id).cmp(&(&b.0.started_at, b.0.id)));
-    let (mut switches, mut longest) = (0, 0);
-    let mut run: Option<(usize, i64, i64)> = None; // topic, start, end
-    for (p, topic) in &sorted {
-        let (start, end) = (started_ts(p), started_ts(p) + p.seconds);
-        run = match run {
-            Some((t, s, e)) if t == *topic => Some((t, s, e.max(end))),
-            prev => {
-                if prev.is_some() {
-                    switches += 1;
+pub(crate) fn is_oddball(nearest_cos: f64) -> bool {
+    nearest_cos < ODDBALL_MAX_COS
+}
+
+/// Topics ordered by seconds (ties: lowest member), plus every point's topic id.
+fn topics_of(pts: &[&BlockPoint], labels: &[usize]) -> (Vec<Topic>, Vec<usize>) {
+    let count = labels.iter().max().map_or(0, |m| m + 1);
+    let mut members: Vec<Vec<usize>> = vec![vec![]; count];
+    for (i, &l) in labels.iter().enumerate() {
+        members[l].push(i);
+    }
+    let seconds_of = |m: &Vec<usize>| m.iter().map(|&i| pts[i].seconds).sum::<i64>();
+    // Stable sort: equal seconds keep lowest-member-first order.
+    members.sort_by_key(|m| -seconds_of(m));
+    let mut topic_of = vec![0; pts.len()];
+    let topics = members
+        .iter()
+        .enumerate()
+        .map(|(id, m)| {
+            let mut tickets = HashMap::new();
+            let mut days = BTreeSet::new();
+            for &i in m {
+                topic_of[i] = id;
+                days.insert(pts[i].day.as_str());
+                if let Some(t) = &pts[i].ticket {
+                    bump(&mut tickets, t.as_str(), pts[i].seconds);
                 }
-                Some((*topic, start, end))
             }
+            Topic {
+                id,
+                name: String::new(),
+                description: None,
+                named_by: NamedBy::Keywords,
+                keywords: vec![],
+                seconds: seconds_of(m),
+                blocks: m.len() as i64,
+                days_active: days.len() as i64,
+                first_day: days.first().map(|d| d.to_string()).unwrap_or_default(),
+                last_day: days.last().map(|d| d.to_string()).unwrap_or_default(),
+                top_tickets: ranked(tickets, 3),
+            }
+        })
+        .collect();
+    (topics, topic_of)
+}
+
+/// Up to HIGHLIGHTS_TOP of `candidates`, best `order` first (ties: lowest block id).
+fn highlights(
+    candidates: Vec<usize>,
+    pts: &[&BlockPoint],
+    topic_of: &[usize],
+    score: &[f64],
+    higher_first: bool,
+) -> Vec<Highlight> {
+    let mut sorted = candidates;
+    sorted.sort_by(|&a, &b| {
+        let by_score = score[a].total_cmp(&score[b]);
+        let by_score = if higher_first {
+            by_score.reverse()
+        } else {
+            by_score
         };
-        if let Some((_, s, e)) = run {
-            longest = longest.max(e - s);
-        }
-    }
-    DaySwitches {
-        day: day.to_string(),
-        switches,
-        work_seconds: sorted.iter().map(|(p, _)| p.seconds).sum(),
-        longest_run_seconds: longest,
-    }
-}
-
-fn sprawl(now: &[BlockPoint], summaries: &HashMap<String, String>) -> Vec<TicketSprawl> {
-    let mut by_ticket: BTreeMap<&str, Vec<&BlockPoint>> = BTreeMap::new();
-    for p in now {
-        if let Some(t) = &p.ticket {
-            by_ticket.entry(t).or_default().push(p);
-        }
-    }
-    let mut out: Vec<TicketSprawl> = by_ticket
-        .into_iter()
-        .filter(|(_, v)| v.len() >= SPRAWL_MIN_BLOCKS)
-        .map(|(t, v)| {
-            let mut sum = 0.0;
-            let mut pairs = 0;
-            for i in 0..v.len() {
-                for j in i + 1..v.len() {
-                    sum += cosine(&v[i].vec, &v[j].vec);
-                    pairs += 1;
-                }
-            }
-            TicketSprawl {
-                ticket: t.to_string(),
-                summary: summaries.get(t).cloned(),
-                blocks: v.len() as i64,
-                spread: 1.0 - sum / pairs as f64,
-            }
-        })
-        .collect();
-    out.sort_by(|a, b| {
-        b.spread
-            .total_cmp(&a.spread)
-            .then_with(|| a.ticket.cmp(&b.ticket))
+        by_score.then_with(|| pts[a].id.cmp(&pts[b].id))
     });
-    out.truncate(SPRAWL_TOP);
-    out
-}
-
-#[derive(Default)]
-struct DayAcc {
-    centroid: Vec<f64>,
-    seconds: i64,
-    tickets: HashMap<String, i64>,
-}
-
-fn similar_days(input: &TopicsInput) -> Vec<SimilarDay> {
-    let mut days: BTreeMap<&str, DayAcc> = BTreeMap::new();
-    for p in input.history.iter().chain(&input.now) {
-        let d = days.entry(&p.day).or_default();
-        add_weighted(&mut d.centroid, &p.vec, p.seconds as f64);
-        d.seconds += p.seconds;
-        if let Some(t) = &p.ticket {
-            bump(&mut d.tickets, t.as_str(), p.seconds);
-        }
-    }
-    let target = if days.contains_key(input.to.as_str()) {
-        input.to.as_str()
-    } else {
-        match input.now.iter().map(|p| p.day.as_str()).max() {
-            Some(d) => d,
-            None => return vec![],
-        }
-    };
-    let target_centroid = days[target].centroid.clone();
-    let mut out: Vec<SimilarDay> = days
+    sorted
         .into_iter()
-        .filter(|(day, _)| *day < target)
-        .map(|(day, acc)| SimilarDay {
-            day: day.to_string(),
-            similarity: cosine(&acc.centroid, &target_centroid),
-            work_seconds: acc.seconds,
-            top_tickets: ranked(acc.tickets, 3),
-        })
-        .collect();
-    out.sort_by(|a, b| {
-        b.similarity
-            .total_cmp(&a.similarity)
-            .then_with(|| a.day.cmp(&b.day))
-    });
-    out.truncate(SIMILAR_DAYS_TOP);
-    out
-}
-
-fn drift(before: &[BlockPoint], topics: &[Topic], centroids: &[Vec<f64>]) -> Vec<TopicDrift> {
-    let mut secs = vec![0; topics.len()];
-    for p in before {
-        let mut best = (0, f64::NEG_INFINITY);
-        for (id, c) in centroids.iter().enumerate() {
-            let sim = cosine(&p.vec, c);
-            if sim > best.1 {
-                best = (id, sim);
-            }
-        }
-        secs[best.0] += p.seconds;
-    }
-    topics
-        .iter()
-        .map(|t| TopicDrift {
-            topic_id: t.id,
-            name: t.name.clone(),
-            seconds_now: t.seconds,
-            seconds_before: secs[t.id],
+        .take(HIGHLIGHTS_TOP)
+        .map(|i| Highlight {
+            block_id: pts[i].id,
+            day: pts[i].day.clone(),
+            label: pts[i]
+                .description
+                .as_deref()
+                .unwrap_or("")
+                .chars()
+                .take(90)
+                .collect(),
+            ticket: pts[i].ticket.clone(),
+            topic_id: topic_of[i],
+            seconds: pts[i].seconds,
+            score: score[i],
         })
         .collect()
 }
 
-/// Topics ordered by seconds, each cluster's centroid, and every point's topic id.
-fn topics_of(
-    pts: &[&BlockPoint],
-    k: usize,
-    summaries: &HashMap<String, String>,
-) -> (Vec<Topic>, Vec<Vec<f64>>, Vec<usize>) {
-    let mut clusters = cluster(pts, k);
-    let seconds_of = |c: &Vec<usize>| c.iter().map(|&i| pts[i].seconds).sum::<i64>();
-    // Stable sort: equal seconds keep lowest-member-first order.
-    clusters.sort_by_key(|c| -seconds_of(c));
-    let mut topic_of = vec![0; pts.len()];
-    let (mut centroids, mut topics) = (vec![], vec![]);
-    for (id, c) in clusters.iter().enumerate() {
-        let members: Vec<&BlockPoint> = c.iter().map(|&i| pts[i]).collect();
-        let mut centroid = vec![];
-        let mut tickets = HashMap::new();
-        for (&i, p) in c.iter().zip(&members) {
-            topic_of[i] = id;
-            add_weighted(&mut centroid, &p.vec, 1.0);
-            if let Some(t) = &p.ticket {
-                bump(&mut tickets, t.as_str(), p.seconds);
-            }
-        }
-        let top_tickets = ranked(tickets.clone(), 3);
-        let (name, name_ticket) = topic_name(&members, tickets, summaries);
-        centroids.push(centroid);
-        topics.push(Topic {
-            id,
-            name,
-            name_ticket,
-            seconds: seconds_of(c),
-            blocks: c.len() as i64,
-            top_tickets,
-        });
-    }
-    (topics, centroids, topic_of)
+/// Per-block results of one `build`, parallel to `block_ids` (ascending id).
+#[derive(Debug, Default)]
+pub struct Assignments {
+    pub block_ids: Vec<i64>,
+    pub topic_of: Vec<usize>,
+    pub centered: Vec<Vec<f32>>,
+    pub novelty: Vec<f64>,
+    pub oddball: Vec<bool>,
 }
 
 pub fn build(input: &TopicsInput) -> TopicsReport {
+    build_with_assignments(input).0
+}
+
+pub fn build_with_assignments(input: &TopicsInput) -> (TopicsReport, Assignments) {
     let n = input.now.len();
     if n < MIN_BLOCKS {
-        return TopicsReport::empty(TopicsStatus::TooFewBlocks, &input.from, &input.to);
+        return (
+            TopicsReport::empty(TopicsStatus::TooFewBlocks, &input.from, &input.to),
+            Assignments::default(),
+        );
     }
     let mut pts: Vec<&BlockPoint> = input.now.iter().collect();
     pts.sort_by_key(|p| p.id);
+    let raw: Vec<Vec<f32>> = pts.iter().map(|p| p.vec.clone()).collect();
+    let now_mean = mean(&raw);
+    let centered = center_with(&raw, &now_mean);
+    let history_raw: Vec<Vec<f32>> = input.history.iter().map(|p| p.vec.clone()).collect();
+    let history_centered = center_with(&history_raw, &now_mean);
+
     let k = ((n as f64 / 2.0).sqrt().round() as usize).clamp(MIN_TOPICS, MAX_TOPICS);
-    let (topics, centroids, topic_of) = topics_of(&pts, k, &input.ticket_summaries);
+    let (topics, topic_of) = topics_of(&pts, &cluster(&centered, k));
 
-    let mut by_day: BTreeMap<&str, Vec<(&BlockPoint, usize)>> = BTreeMap::new();
-    for (i, p) in pts.iter().enumerate() {
-        by_day.entry(&p.day).or_default().push((p, topic_of[i]));
-    }
-    let switches = by_day.iter().map(|(d, v)| day_switches(d, v)).collect();
+    let now_points: Vec<BlockPoint> = pts.iter().map(|p| (*p).clone()).collect();
+    let novelty = novelty(&now_points, &centered, &input.history, &history_centered);
+    let warm = warmup(&now_points, &input.history);
+    let nearest = nearest_cos(&centered);
+    let oddball: Vec<bool> = nearest.iter().map(|&c| is_oddball(c)).collect();
+    let oddball_ids = (0..n).filter(|&i| oddball[i]).collect();
+    let days = day_rows(&pts, &centered, &novelty, &warm, &topic_of);
+    let (bin, river) = river(&pts, &topic_of, topics.len(), &input.from, &input.to);
 
-    TopicsReport {
+    let report = TopicsReport {
         status: TopicsStatus::Ready,
         from: input.from.clone(),
         to: input.to.clone(),
-        drift: drift(&input.before, &topics, &centroids),
+        naming: Naming::Off,
+        day_similarity: day_similarity(&pts, &centered, &days),
+        first_times: highlights(
+            (0..n).filter(|&i| !warm[i]).collect(),
+            &pts,
+            &topic_of,
+            &novelty,
+            true,
+        ),
+        oddballs: highlights(oddball_ids, &pts, &topic_of, &nearest, false),
+        oddball_median: median(&nearest),
         topics,
-        switches,
-        sprawl: sprawl(&input.now, &input.ticket_summaries),
-        similar_days: similar_days(input),
+        points: vec![],
+        bin,
+        river,
+        days,
         embedded_blocks: n as i64,
         skipped_blocks: 0,
-    }
+    };
+    let assignments = Assignments {
+        block_ids: pts.iter().map(|p| p.id).collect(),
+        topic_of,
+        centered,
+        novelty: novelty
+            .iter()
+            .zip(&warm)
+            .map(|(&v, &w)| if w { 0.0 } else { v })
+            .collect(),
+        oddball,
+    };
+    (report, assignments)
 }
 
 #[cfg(test)]

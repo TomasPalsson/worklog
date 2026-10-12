@@ -1,0 +1,98 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (rust/target/debug/deps/worklog_core-5f98b59a3618f7a2)
+
+running 17 tests
+test topic_names::tests::batch_size_is_four ... ok
+test topic_names::tests::parse_reply_strips_a_json_fence_from_a_string_reply ... ok
+test topic_names::tests::member_hash_is_sha256_of_the_sorted_comma_joined_ids ... ok
+test topic_names::tests::parse_reply_accepts_the_schema_object_and_a_bare_array ... ok
+test topic_names::tests::parse_reply_drops_unknown_ids_and_blank_names_and_errors_when_nothing_is_left ... ok
+test topic_names::tests::backoff_holds_inside_the_window_and_lifts_at_its_end ... ok
+test topic_names::tests::claim_blocks_a_second_job_for_the_same_hashes_until_released ... ok
+test topic_names::tests::parse_reply_accepts_a_forty_char_name_and_drops_a_forty_one_char_one ... ok
+test topic_names::tests::prompt_lists_every_theme_and_carries_the_odds_and_ends_rule ... ok
+test topic_names::tests::parse_reply_truncates_a_long_description_at_a_word_boundary_to_200 ... ok
+test topic_names::tests::exact_hash_hit_names_the_topic_and_needs_no_ai ... ok
+test topic_names::tests::best_overlap_wins_among_cached_rows ... ok
+test topic_names::tests::keyword_fallback_uses_up_to_three_keywords_then_a_numbered_name ... ok
+test topic_names::tests::store_makes_the_next_resolve_an_ai_hit ... ok
+test topic_names::tests::jaccard_at_the_threshold_reuses_the_name_and_caches_the_new_hash ... ok
+test topic_names::tests::jaccard_below_the_threshold_falls_back_to_keywords_and_stays_pending ... ok
+test topic_names::tests::only_the_newest_200_rows_are_scanned_for_reuse ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 2069 filtered out; finished in 0.17s
+
+     Running tests/env_fallback.rs (rust/target/debug/deps/env_fallback-47156b92c77a69b4)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (rust/target/debug/deps/worklog_core-5f98b59a3618f7a2)
+
+running 22 tests
+test daemon::tests::daemon_stats::naming_one_uncached_topic_is_pending_with_a_keyword_name ... ok
+test daemon::tests::daemon_stats::stats_returns_the_contract_keys ... ok
+test daemon::tests::daemon_stats::stats_defaults_to_an_empty_one_day_range ... ok
+test daemon::tests::daemon_stats::a_failing_second_batch_keeps_the_first_batchs_names_and_stops ... ok
+test daemon::tests::daemon_stats::naming_fully_cached_topics_get_ai_names_and_naming_is_ai ... ok
+test daemon::tests::daemon_stats::a_topic_the_reply_omits_is_stored_for_the_others_and_backed_off ... ok
+test daemon::tests::daemon_stats::a_forty_one_char_name_is_not_stored_and_backs_the_topic_off ... ok
+test daemon::tests::daemon_stats::ten_topics_are_named_in_batches_of_four_four_two ... ok
+test daemon::tests::daemon_stats::naming_helper_down_writes_no_names ... ok
+test daemon::tests::daemon_stats::naming_without_an_invoker_is_off_and_keeps_keyword_names ... ok
+test daemon::tests::daemon_stats::a_failed_topic_is_not_retried_until_the_window_passes ... ok
+test daemon::tests::daemon_stats::naming_route_is_pending_first_then_ai_once_the_job_lands ... ok
+test daemon::tests::daemon_stats::map_points_carry_label_topic_novelty_and_oddball_from_the_blocks ... ok
+test daemon::tests::daemon_stats::topics_report_loads_exactly_the_right_blocks_and_counts_skipped ... ok
+test daemon::tests::daemon_stats::topics_report_propagates_a_db_error_instead_of_helper_down ... ok
+test daemon::tests::daemon_stats::topics_report_maps_a_helper_error_to_helper_down ... ok
+test daemon::tests::daemon_stats::topics_route_with_no_blocks_is_too_few_not_an_error ... ok
+test daemon::tests::daemon_stats::topics_report_writes_only_block_embeddings ... ok
+test daemon::tests::daemon_stats::topics_report_stores_nothing_when_a_later_batch_is_bad ... ok
+test daemon::tests::daemon_stats::map_points_are_withheld_below_ten_blocks_and_present_at_ten ... ok
+test daemon::tests::daemon_stats::topics_route_rejects_bad_ranges_and_dates ... ok
+test daemon::tests::daemon_stats::stats_rejects_bad_ranges_and_dates ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 2064 filtered out; finished in 0.52s
+
+     Running tests/env_fallback.rs (rust/target/debug/deps/env_fallback-47156b92c77a69b4)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (rust/target/debug/deps/worklog_core-5f98b59a3618f7a2)
+
+running 20 tests
+test stats_topics::tests::assignments_are_empty_when_too_few_blocks ... ok
+test stats_topics::tests::oddball_threshold_is_strictly_below ... ok
+test stats_topics::tests::too_few_blocks_just_below_min_and_ready_at_min ... ok
+test stats_topics::tests::report_has_days_river_and_similarity ... ok
+test stats_topics::tests::clusters_by_direction_ordered_by_seconds_with_totals ... ok
+test stats_topics::tests::first_block_has_novelty_one_and_repeats_have_none ... ok
+test stats_topics::tests::oddball_is_the_block_far_from_all_others ... ok
+test stats_topics::tests::assignments_match_the_reports_topics_block_for_block ... ok
+test stats_topics::tests::equidistant_cluster_pairs_merge_lower_id_first ... ok
+test stats_topics::tests::build_is_deterministic_under_input_order ... ok
+test stats_topics::tests::cluster_splits_anisotropic_groups_after_centering ... ok
+test stats_topics::tests::history_lowers_novelty_of_a_repeated_theme ... ok
+test stats_topics::tests::assignments_carry_novelty_and_oddball_per_block_in_id_order ... ok
+test stats_topics::tests::first_times_skip_the_warmup_blocks_but_not_block_21 ... ok
+test stats_topics::tests::topic_days_active_counts_distinct_days ... ok
+test stats_topics::tests::topic_days_and_tickets ... ok
+test stats_topics::tests::equal_seconds_topics_order_by_lowest_member_id ... ok
+test stats_topics::tests::highlights_are_capped_and_ordered ... ok
+test stats_topics::tests::warmup_blocks_have_zero_assignment_novelty_and_their_day_takes_the_median ... ok
+test stats_topics::tests::topic_count_follows_rounded_sqrt_and_clamps ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 2066 filtered out; finished in 0.03s
+
+     Running tests/env_fallback.rs (rust/target/debug/deps/env_fallback-47156b92c77a69b4)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+

@@ -1,0 +1,31 @@
+bun test v1.2.4 (fd9a5ea6)
+
+components/stats/TopicRiver.test.tsx:
+(pass) buildRiver > band thickness per bin equals bin seconds times one shared scale [0.66ms]
+(pass) buildRiver > is centred: each bin's stack is symmetric about the midline [0.14ms]
+(pass) buildRiver > orders layers by first active bin, ties by id [0.15ms]
+(pass) buildRiver > drops topics with zero total [0.05ms]
+(pass) buildRiver > has no NaN with an all-zero bin [0.10ms]
+(pass) buildRiver > returns null when every bin is zero [0.03ms]
+(pass) buildRiver > returns null for fewer than 2 bins, builds at exactly 2 [0.11ms]
+(pass) buildRiver > labels a band exactly at 14px and not just under [0.14ms]
+(pass) buildRiver > measures thickness at the layer's own widest bin [0.05ms]
+(pass) river trimming and labels > trims leading and trailing zero bins [0.05ms]
+(pass) river trimming and labels > keeps interior zero bins [0.04ms]
+(pass) river trimming and labels > returns null when only one bin has data [0.02ms]
+(pass) river trimming and labels > axis labels show the first and last non-zero bin [12.20ms]
+(pass) river trimming and labels > placed label boxes are pairwise disjoint with a 4px pad, and some are dropped [0.41ms]
+(pass) river trimming and labels > the largest topic keeps its label [0.20ms]
+(pass) river trimming and labels > skips a label wider than the viewBox and keeps one that fits [0.04ms]
+(pass) river trimming and labels > every topic appears inline or in the legend [5.27ms]
+(pass) river trimming and labels > renders no legend when every topic is labelled inline [1.47ms]
+(pass) TopicRiver > renders one band per layer with a band tip [1.48ms]
+(pass) TopicRiver > column tip shows the bin's top 4 topics by hours [1.47ms]
+(pass) TopicRiver > paints the column rects before the bands so bands receive the pointer [1.34ms]
+(pass) TopicRiver > shows axis labels in .art-label and the How line [1.94ms]
+(pass) TopicRiver > renders nothing for fewer than 2 bins [0.07ms]
+
+ 23 pass
+ 0 fail
+ 50 expect() calls
+Ran 23 tests across 1 files. [187.00ms]

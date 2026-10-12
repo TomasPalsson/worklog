@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 90" width="120" height="90" role="img">
+  <title>A star chart with a few dots and a dotted outline where the map will appear</title>
+  <rect x="4" y="4" width="112" height="82" rx="8" style="fill: var(--bg-sunk)"/>
+  <g style="fill: var(--fg-subtle)" opacity=".3"><circle cx="24" cy="22" r=".9"/><circle cx="24" cy="45" r=".9"/><circle cx="24" cy="68" r=".9"/><circle cx="48" cy="22" r=".9"/><circle cx="48" cy="45" r=".9"/><circle cx="48" cy="68" r=".9"/><circle cx="72" cy="22" r=".9"/><circle cx="72" cy="45" r=".9"/><circle cx="72" cy="68" r=".9"/><circle cx="96" cy="22" r=".9"/><circle cx="96" cy="45" r=".9"/><circle cx="96" cy="68" r=".9"/></g>
+  <g style="fill: var(--fg-subtle)"><circle cx="94.0" cy="46.0" r="1.4"/><circle cx="92.6" cy="52.2" r="1.4"/><circle cx="88.6" cy="57.9" r="1.4"/><circle cx="82.3" cy="62.6" r="1.4"/><circle cx="74.1" cy="66.0" r="1.4"/><circle cx="64.8" cy="67.8" r="1.4"/><circle cx="55.2" cy="67.8" r="1.4"/><circle cx="45.9" cy="66.0" r="1.4"/><circle cx="37.7" cy="62.6" r="1.4"/><circle cx="31.4" cy="57.9" r="1.4"/><circle cx="27.4" cy="52.2" r="1.4"/><circle cx="26.0" cy="46.0" r="1.4"/><circle cx="27.4" cy="39.8" r="1.4"/><circle cx="31.4" cy="34.1" r="1.4"/><circle cx="37.7" cy="29.4" r="1.4"/><circle cx="45.9" cy="26.0" r="1.4"/><circle cx="55.2" cy="24.2" r="1.4"/><circle cx="64.8" cy="24.2" r="1.4"/><circle cx="74.1" cy="26.0" r="1.4"/><circle cx="82.3" cy="29.4" r="1.4"/><circle cx="88.6" cy="34.1" r="1.4"/><circle cx="92.6" cy="39.8" r="1.4"/></g>
+  <circle cx="46" cy="40" r="2.6" style="fill: var(--fg-muted)"/>
+  <circle cx="55" cy="52" r="2" style="fill: var(--fg-muted)" opacity=".55"/>
+  <circle cx="70" cy="38" r="3" style="fill: var(--amber)"/>
+  <circle cx="78" cy="54" r="1.8" style="fill: var(--fg-muted)" opacity=".55"/>
+</svg>

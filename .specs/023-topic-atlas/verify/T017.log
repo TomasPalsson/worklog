@@ -1,0 +1,22 @@
+bun test v1.2.4 (fd9a5ea6)
+
+components/stats/DayMirror.test.tsx:
+(pass) mirrorTip > builds the exact tip for a pair [8.71ms]
+(pass) mirrorTip > signs a positive similarity with + [0.65ms]
+(pass) DayMirror > renders D(D+1)/2 cells over the last D days [15.75ms]
+(pass) DayMirror > positive is amber family, negative slate family, scaled by the largest off-diagonal [8.12ms]
+(pass) DayMirror > is omitted below 3 days and shown at exactly 3 [6.35ms]
+(pass) DayMirror > renders no NaN, undefined or null, even when every pair is 0 [6.20ms]
+(pass) DayMirror > shows the How line [5.43ms]
+(pass) diagTip > names the most and least similar other day and the top topic
+(pass) diagTip > reads the column for a later day (symmetric matrix) [0.86ms]
+(pass) DayMirror at 30 days > has exactly one tab stop per day [247.61ms]
+(pass) DayMirror at 30 days > similarity cells carry no tabindex or aria-label but keep data-stip [244.26ms]
+(pass) DayMirror at 30 days > thins labels to every k-th day, keeps first and last, and puts them outside the matrix [239.18ms]
+(pass) DayMirror at 30 days > labels every day on the diagonal when cells are large [5.02ms]
+(pass) DayMirror at 30 days > diagonal chip has an aria-label with the tip text [236.97ms]
+
+ 14 pass
+ 0 fail
+ 33 expect() calls
+Ran 14 tests across 1 files. [1166.00ms]

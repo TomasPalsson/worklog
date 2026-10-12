@@ -1,0 +1,21 @@
+bun test v1.2.4 (fd9a5ea6)
+
+components/stats/AtlasArt.test.tsx:
+(pass) AtlasArt > RhythmIcon always renders an svg of the delivered size with no hex colours [11.19ms]
+(pass) AtlasArt > RhythmIcon sprint renders an svg of the delivered size with no hex colours [1.53ms]
+(pass) AtlasArt > RhythmIcon one_off renders an svg of the delivered size with no hex colours [0.80ms]
+(pass) AtlasArt > FirstTimeMark renders an svg of the delivered size with no hex colours [0.61ms]
+(pass) AtlasArt > OddballMark renders an svg of the delivered size with no hex colours [0.52ms]
+(pass) AtlasArt > AtlasEmpty helper_down renders an svg of the delivered size with no hex colours [1.97ms]
+(pass) AtlasArt > AtlasEmpty too_few renders an svg of the delivered size with no hex colours [1.29ms]
+(pass) AtlasArt > AtlasEmpty no_map renders an svg of the delivered size with no hex colours [1.60ms]
+(pass) AtlasArt > icons and marks are aria-hidden; they are paired with text [1.28ms]
+(pass) AtlasArt > rhythm kinds draw different art [1.27ms]
+(pass) AtlasArt > AtlasEmpty helper_down is role=img with its alt text [0.69ms]
+(pass) AtlasArt > AtlasEmpty too_few is role=img with its alt text [0.56ms]
+(pass) AtlasArt > AtlasEmpty no_map is role=img with its alt text [1.01ms]
+
+ 13 pass
+ 0 fail
+ 34 expect() calls
+Ran 13 tests across 1 files. [196.00ms]

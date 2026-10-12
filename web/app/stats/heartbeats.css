@@ -1,0 +1,33 @@
+/* Topic heartbeats ledger. Tokens only; prefix hb-. */
+.hb-rows { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 14px; }
+.hb-row {
+  --hb-color: oklch(var(--project-l) var(--project-c) calc(var(--h)));
+  display: grid;
+  grid-template-columns: minmax(150px, 220px) minmax(0, 1fr) 360px;
+  gap: 6px 16px;
+  align-items: start;
+  padding: 6px 10px;
+  border-radius: 6px;
+}
+.hb-row:hover, .hb-row:focus-visible { background: var(--bg-sunk); }
+.hb-id { min-width: 0; display: grid; grid-template-columns: 12px minmax(0, 1fr); gap: 4px 8px; align-items: center; }
+.hb-swatch { width: 12px; height: 12px; border-radius: 3px; background: var(--hb-color); }
+.hb-name { font-family: inherit; font-size: 15px; font-weight: 600; line-height: 1.25; color: var(--fg); overflow-wrap: anywhere; }
+.hb-name[data-keywords] { color: var(--fg-muted); font-style: italic; }
+.hb-about { min-width: 0; display: grid; gap: 4px; }
+.hb-description { margin: 0; font-size: 13.5px; color: var(--fg-muted); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; }
+.hb-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px; }
+.hb-chip { font-family: var(--font-mono); font-size: 13px; color: var(--fg-muted); background: var(--bg-sunk); border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; }
+.hb-raster { display: grid; align-items: end; gap: 1px; height: 28px; min-width: 0; border-bottom: 1px solid var(--border); }
+.hb-tick { background: var(--hb-color); border-radius: 1px 1px 0 0; min-height: 1px; }
+.hb-data { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px 10px; align-items: center; }
+.hb-data > .hb-raster, .hb-data > .hb-dates, .hb-data > .hb-track, .hb-data > .hb-hours { grid-column: 1 / -1; }
+.hb-dates { display: flex; justify-content: flex-start; margin-top: 4px; font-size: 13px; color: var(--fg-muted); }
+.hb-hours { text-align: right; }
+.hb-fill { background: var(--hb-color); }
+.hb-badge { grid-column: 2; display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--fg-muted); }
+.hb-how { margin: 0; max-width: 70ch; font-size: 13px; color: var(--fg-muted); }
+
+@media (max-width: 799px) {
+  .hb-row { grid-template-columns: minmax(0, 1fr); }
+}

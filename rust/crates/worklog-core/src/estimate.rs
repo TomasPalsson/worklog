@@ -233,6 +233,17 @@ pub fn build_invoker() -> Result<Box<dyn ModelInvoker>> {
     })
 }
 
+/// [`build_invoker`] for the topic-naming job: a `claude -p` invoker gets
+/// 180s instead of the 60s default (LiteLLM path unchanged).
+pub fn build_naming_invoker() -> Result<Box<dyn ModelInvoker>> {
+    Ok(match resolve_provider()? {
+        ProviderChoice::ClaudeSubprocess => Box::new(ClaudeSubprocess::with_timeout(
+            crate::claude_subprocess::THINKING_TIMEOUT_SECS,
+        )),
+        ProviderChoice::LiteLLM(inv) => Box::new(inv),
+    })
+}
+
 /// [`build_invoker`], but with a thinking budget for a `claude -p`
 /// invoker (line texts want `claude` to reason before answering; a
 /// LiteLLM proxy has no such concept, so that path is unchanged).

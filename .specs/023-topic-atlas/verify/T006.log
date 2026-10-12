@@ -1,0 +1,31 @@
+bun test v1.2.4 (fd9a5ea6)
+
+components/stats/TopicGalaxy.test.tsx:
+(pass) galaxyLayout dots > maps x/y in [0,1] to the padded viewBox [0.13ms]
+(pass) galaxyLayout dots > radius is 2.5 + 6*sqrt(seconds/max): max gives 8.5, quarter gives 5.5, zero gives 2.5
+(pass) galaxyLayout dots > rank is chronological by day then block id; delay is min(rank*3, 1200) ms
+(pass) galaxyLayout dots > delay caps at 1200ms exactly at rank 400 and stays there past it [1.27ms]
+(pass) galaxyLayout dots > drops points whose topic is unknown instead of drawing NaN [0.08ms]
+(pass) galaxyLayout labels > font size is 11 + 9*sqrt(share): whole share 20, quarter share 15.5 [0.09ms]
+(pass) galaxyLayout labels > sits at the hours-weighted median, not the mean or first member [0.13ms]
+(pass) galaxyLayout labels > a topic with no points gets no label [0.05ms]
+(pass) galaxyLayout labels > labels do not overlap after nudging a crowded fixture [0.18ms]
+(pass) galaxyLayout labels > labels far apart horizontally are left where they are [0.11ms]
+(pass) tips > dot tip has exact title and rows
+(pass) tips > dot tip says none for a missing ticket [0.10ms]
+(pass) tips > label tip carries description, keywords, hours and blocks [0.06ms]
+(pass) tips > label tip omits sub without a description [0.01ms]
+(pass) TopicGalaxy markup > every dot has tabIndex 0 and an aria-label [19.03ms]
+(pass) TopicGalaxy markup > every label is focusable with a tip [3.80ms]
+(pass) TopicGalaxy markup > markup never contains NaN, undefined or null [2.84ms]
+(pass) TopicGalaxy markup > draws a dashed ring at r+5 only for oddballs [3.12ms]
+(pass) TopicGalaxy markup > pending chip shows only when naming is pending [5.82ms]
+(pass) TopicGalaxy markup > emits one hover isolation rule per topic [2.11ms]
+(pass) TopicGalaxy markup > shows the How line [2.17ms]
+(pass) TopicGalaxy markup > no points shows the empty state and message, with no svg map [2.24ms]
+(pass) TopicGalaxy markup > contains no hard-coded hex colours [2.36ms]
+
+ 23 pass
+ 0 fail
+ 62 expect() calls
+Ran 23 tests across 1 files. [251.00ms]

@@ -1,0 +1,19 @@
+bun test v1.2.4 (fd9a5ea6)
+
+components/stats/TopicsSection.test.tsx:
+(pass) timeoutMs > topics route gets 90s; plain /stats stays 30s [0.71ms]
+(pass) getTopics > GETs /stats/topics with from/to and omits absent params [0.33ms]
+(pass) TopicsSection > refresh cadence while naming is pending > refreshes nothing before 20 s and exactly once at 20 s [35.45ms]
+(pass) TopicsSection > refresh cadence while naming is pending > refreshes 6 times by 120 s and never a 7th [14.86ms]
+(pass) TopicsSection > refresh cadence while naming is pending > makes no call after unmount [12.81ms]
+(pass) TopicsSection > null report and helper_down show the telescope and helper message only [6.15ms]
+(pass) TopicsSection > too_few_blocks shows the sparse chart and not-enough message, not the helper one [1.49ms]
+(pass) TopicsSection > ready renders all six module roots in order [14.35ms]
+(pass) TopicsSection > ready omits the empty states [15.32ms]
+(pass) TopicsSection > naming pending renders the refresh timer; ai and off do not [36.19ms]
+(pass) TopicsSection > output carries no retired drift/sprawl/similar-days text [12.04ms]
+
+ 11 pass
+ 0 fail
+ 33 expect() calls
+Ran 11 tests across 1 files. [315.00ms]

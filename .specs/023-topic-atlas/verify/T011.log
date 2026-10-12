@@ -1,0 +1,28 @@
+bun test v1.2.4 (fd9a5ea6)
+
+components/stats/TopicMoments.test.tsx:
+(pass) stripFraction > first day of the range is 0 (catches a +1 offset) [2.52ms]
+(pass) stripFraction > last day of the range is 1 (catches dividing by day count instead of span)
+(pass) stripFraction > middle is exact (catches index-based rather than date-based position)
+(pass) stripFraction > measures across a month end (catches day-of-month subtraction)
+(pass) stripFraction > a day outside the range clamps to 0 or 1 (catches overflowing the strip)
+(pass) stripFraction > a one-day range is centred, not NaN (catches 0/0)
+(pass) momentTip > first time: exact title and rows [9.22ms]
+(pass) momentTip > oddball: nearest score beside the median [0.23ms]
+(pass) momentTip > missing topic drops the Topic row [0.22ms]
+(pass) TopicMoments > keeps the server order in both lists (catches re-sorting by score) [16.99ms]
+(pass) TopicMoments > score is shown with two decimals [5.25ms]
+(pass) TopicMoments > oddball card says nearest anything against the median; first-time card does not [3.53ms]
+(pass) TopicMoments > shows day, hours and the topic chip [3.44ms]
+(pass) TopicMoments > a topic id with no topic renders no chip [2.23ms]
+(pass) TopicMoments > strip marker sits at the exact fraction of the range [2.64ms]
+(pass) TopicMoments > cards are focusable, labelled and carry a tip [2.63ms]
+(pass) TopicMoments > empty lists render one empty line each and no cards [0.58ms]
+(pass) TopicMoments > only the empty list gets the empty line [1.46ms]
+(pass) TopicMoments > How line carries the median to two decimals [2.48ms]
+(pass) TopicMoments > marks are drawn and nothing renders NaN, undefined or null [2.64ms]
+
+ 20 pass
+ 0 fail
+ 34 expect() calls
+Ran 20 tests across 1 files. [201.00ms]

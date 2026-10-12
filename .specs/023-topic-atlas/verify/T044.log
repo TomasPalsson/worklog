@@ -1,0 +1,527 @@
+bun test v1.2.4 (fd9a5ea6)
+
+components/stats/TicketTimeline.test.tsx:
+(pass) helpers > formats hours [0.70ms]
+(pass) helpers > legend switches to minutes when the busiest ticket-day is under an hour
+(pass) helpers > buckets shades by the max
+(pass) helpers > falls back for old daemons
+(pass) helpers > sorts by hours and by start
+(pass) helpers > builds columns with weekends, mondays, months and today
+(pass) helpers > writes tips and headline
+(pass) TicketTimeline > shows 12 rows then reveals all [20.28ms]
+(pass) TicketTimeline > cells carry tips with the right numbers [2.48ms]
+(pass) TicketTimeline > toggles sort order [2.97ms]
+(pass) TicketTimeline > shows a calm empty state [0.20ms]
+
+components/stats/WorkdayCity.test.tsx:
+(pass) helpers > height scales to 9 with a visible minimum
+(pass) helpers > windows are capped to what fits
+(pass) helpers > window slots alternate faces and climb
+(pass) helpers > garden share [0.20ms]
+(pass) layoutCity > grids by weekday and week
+(pass) layoutCity > classifies weekend park vs weekday lot
+(pass) layoutCity > keeps only the latest 13 weeks [0.25ms]
+(pass) layoutCity > headline and title use exact numbers [0.01ms]
+(pass) WorkdayCity > renders aria and no NaN [4.96ms]
+(pass) WorkdayCity > empty state [0.42ms]
+(pass) WorkdayCity > no-work days are an empty city [0.85ms]
+(pass) WorkdayCity > single huge day [1.27ms]
+(pass) plotTip > busiest tower: exact rows, rank, bar, note
+(pass) plotTip > other towers: rank, prompts and early-bird notes, today
+(pass) plotTip > single tower and huge values stay sane
+(pass) plotTip > park with a little activity, empty park, empty lot
+(pass) plotTip > notes agree with rows for personal-only, slack-only and tool-call-only days
+(pass) plotTip > flag and crane
+(pass) tips in the DOM > towers link to the day, carry data-stip, and no <title> remains [1.97ms]
+
+components/stats/TopicMoments.test.tsx:
+(pass) stripFraction > first day of the range is 0 (catches a +1 offset)
+(pass) stripFraction > last day of the range is 1 (catches dividing by day count instead of span)
+(pass) stripFraction > middle is exact (catches index-based rather than date-based position) [0.18ms]
+(pass) stripFraction > measures across a month end (catches day-of-month subtraction)
+(pass) stripFraction > a day outside the range clamps to 0 or 1 (catches overflowing the strip) [0.01ms]
+(pass) stripFraction > a one-day range is centred, not NaN (catches 0/0)
+(pass) momentTip > first time: exact title and rows [0.43ms]
+(pass) momentTip > oddball: nearest score beside the median
+(pass) momentTip > clamps: novelty 1.5 -> 100%, cosine -0.5 -> 0%, median -0.1 -> 0%
+(pass) momentTip > missing topic drops the Topic row
+(pass) TopicMoments > novelty 1.5 shows 100% new on card, aria-label and tip [3.30ms]
+(pass) TopicMoments > cosine -0.5 and median -0.1 show 0% on card, aria-label, tip rows and How line [1.78ms]
+(pass) TopicMoments > keeps the server order in both lists (catches re-sorting by score) [1.92ms]
+(pass) TopicMoments > each card leads with a badge word, then the small number [2.07ms]
+(pass) TopicMoments > no cosine, novelty or Nearest anything in visible text or tips [2.53ms]
+(pass) TopicMoments > shows day, hours and the topic chip [1.72ms]
+(pass) TopicMoments > a topic id with no topic renders no chip [1.49ms]
+(pass) TopicMoments > strip marker sits at the exact fraction of the range [1.97ms]
+(pass) TopicMoments > cards are focusable, labelled and carry a tip [1.64ms]
+(pass) TopicMoments > empty lists render one empty line each and no cards
+(pass) TopicMoments > only the empty list gets the empty line [0.83ms]
+(pass) TopicMoments > How line carries the median and threshold as percentages and says similarity, not cosine [2.06ms]
+(pass) TopicMoments > cosine lives in a Method disclosure [1.80ms]
+(pass) TopicMoments > each card title carries its reading direction [1.89ms]
+(pass) TopicMoments > exactly one range caption per column, under the heading [1.81ms]
+(pass) TopicMoments > the caption stays when a column is empty [1.19ms]
+(pass) TopicMoments > no font-size under 13px in moments.css or compass.css [0.26ms]
+(pass) TopicMoments > label carries the two-line clamp class and is the .tm-label element [1.80ms]
+(pass) TopicMoments > marks are drawn and nothing renders NaN, undefined or null [1.46ms]
+
+components/stats/DailyStack.tip.test.tsx:
+(pass) dayTip > over target
+(pass) dayTip > under target uses the average worked day
+(pass) dayTip > empty day
+(pass) DailyStack tips > tips every day, drops native titles, focuses non-empty days only [1.47ms]
+
+components/stats/WorkdaySpans.test.tsx:
+(pass) median > handles odd, even and empty
+(pass) WorkdaySpans > skips null days
+(pass) WorkdaySpans > states median start and stop [1.53ms]
+(pass) WorkdaySpans > empty state when no spans [0.46ms]
+(pass) WorkdaySpans > single day works [0.66ms]
+(pass) span tips > ordinal
+(pass) span tips > candle tip
+(pass) span tips > zero-length weekend candle, huge prompts, single day [0.10ms]
+(pass) span tips > median tip [0.01ms]
+(pass) span tips > renders tips and drops native titles [0.63ms]
+
+components/stats/WeekTerrain.test.tsx:
+(pass) peakOf / shares > finds the peak, first wins ties [0.22ms]
+(pass) peakOf / shares > empty and ragged grids [0.09ms]
+(pass) peakOf / shares > night and early percentages [0.05ms]
+(pass) layout helpers > heightOf: sqrt, capped, zero-safe [0.02ms]
+(pass) layout helpers > rampColor spans slate to amber [0.04ms]
+(pass) layout helpers > labelPlate stays inside the viewBox
+(pass) WeekTerrain > headline, aria and peak label [5.43ms]
+(pass) WeekTerrain > single event and huge values [6.71ms]
+(pass) WeekTerrain > empty state [2.23ms]
+(pass) terrain tips > peak slot [0.10ms]
+(pass) terrain tips > quietest active slot and mid slot [0.04ms]
+(pass) terrain tips > empty slot and midnight wrap
+(pass) terrain tips > single event, huge value, empty grid
+(pass) terrain tips > weekday and band tips [0.15ms]
+(pass) terrain tips > renders tips on marks and drops native titles [3.63ms]
+
+components/stats/RangeChips.test.tsx:
+(pass) rangeDates > all sends no bounds
+(pass) rangeDates > 7d is today and the six days before
+(pass) rangeDates > crosses month and year ends
+(pass) parseRange > falls back to all
+(pass) RangeChips > links each range and marks only the current one [3.96ms]
+
+components/stats/CalendarHeatmap.tip.test.tsx:
+(pass) cellTip > busiest day
+(pass) cellTip > lighter day compares with the worked-day average
+(pass) cellTip > zero days: personal-only and empty
+
+components/stats/TopicsSection.test.tsx:
+(pass) timeoutMs > topics route gets 90s; plain /stats stays 30s
+(pass) getTopics > GETs /stats/topics with from/to and omits absent params
+(pass) TopicsSection > refresh cadence while naming is pending > refreshes nothing before 20 s and exactly once at 20 s [12.39ms]
+(pass) TopicsSection > refresh cadence while naming is pending > refreshes 6 times by 120 s and never a 7th [9.04ms]
+(pass) TopicsSection > refresh cadence while naming is pending > makes no call after unmount [9.43ms]
+(pass) TopicsSection > null report and helper_down show the telescope and helper message only [1.17ms]
+(pass) TopicsSection > too_few_blocks shows the sparse chart and not-enough message, not the helper one [0.33ms]
+(pass) TopicsSection > ready renders all six module roots in order [9.22ms]
+(pass) TopicsSection > ready omits the empty states [8.52ms]
+(pass) TopicsSection > naming pending renders the refresh timer; ai and off do not [27.14ms]
+(pass) TopicsSection > output carries no retired drift/sprawl/similar-days cards [8.99ms]
+
+components/stats/CalendarHeatmap.test.tsx:
+(pass) level > buckets into 5 steps [1.08ms]
+(pass) layout > puts Mon on row 0 and starts a new column each Monday
+(pass) CalendarHeatmap > tips cells (no native title), focusable only when worked, and outlines today [1.27ms]
+(pass) CalendarHeatmap > empty state for zeros and empty array [0.18ms]
+(pass) heatZoom > grows short ranges up to 3x and leaves a year at 1x
+
+components/stats/PoliteBot.test.tsx:
+(pass) moodOf > no signal is neutral
+(pass) moodOf > walks the five moods
+(pass) moodOf > interrupts count a fifth
+(pass) moodOf > antenna colours
+(pass) headline > quotes the counts
+(pass) headline > quotes swears when they outweigh interrupts/5
+(pass) headline > empty
+(pass) bubbles > drops zero counts and quotes the real ones [0.45ms]
+(pass) bubbles > splits long labels
+(pass) bubbles > never overlaps, stays in its column, bigger count is bigger
+(pass) bubbles > huge values stay finite and inside the column [0.20ms]
+(pass) tape maths > niceStep [0.03ms]
+(pass) tape maths > share is clamped
+(pass) PoliteBot > draws with an aria label and tooltips [2.47ms]
+(pass) PoliteBot > empty state [0.14ms]
+(pass) PoliteBot > single bubble, zero length, no openers [1.22ms]
+(pass) PoliteBot > all-zero counts with prompts [0.54ms]
+(pass) headline wording > quotes interruptions when they drive the mood [0.50ms]
+(pass) headline wording > singular
+(pass) arms and tape > both arms show, lifted or not [0.72ms]
+(pass) arms and tape > prompt length caption sits below the avg label row [1.28ms]
+(pass) bot tips > please bubble
+(pass) bot tips > swears and interrupts bubbles [0.49ms]
+(pass) bot tips > bot tip explains the mood [0.02ms]
+(pass) bot tips > tape tip
+(pass) bot tips > opener tips
+(pass) bot tips > marks carry data-stip, no native <title>, keyboard reachable [1.67ms]
+
+components/stats/DayMirror.test.tsx:
+(pass) mirrorTip > builds the exact tip for a pair [0.41ms]
+(pass) mirrorTip > signs a positive similarity with +
+(pass) DayMirror > renders D(D+1)/2 cells over the last D days [3.91ms]
+(pass) DayMirror > positive is amber family, negative slate family, scaled by the largest off-diagonal [4.30ms]
+(pass) DayMirror > is omitted below 3 days and shown at exactly 3 [3.72ms]
+(pass) DayMirror > renders no NaN, undefined or null, even when every pair is 0 [3.74ms]
+(pass) DayMirror > shows the plain How line, keeps jargon in a Method details, and caps the line length [4.23ms]
+(pass) DayMirror > uses the shared atlas card and small-caps title [3.49ms]
+(pass) DayMirror > shows a legend with both swatches and a 3-step strip [3.93ms]
+(pass) DayMirror > names the most alike and most opposite pair from the off-diagonal only [5.36ms]
+(pass) DayMirror > uses row-header labels, not diagonal labels, once a cell is under 44px [46.18ms]
+(pass) diagTip > names the most and least similar other day and the top topic
+(pass) diagTip > reads the column for a later day (symmetric matrix) [0.41ms]
+(pass) DayMirror cells > ringed cells' aria-label names both days, the strength and alike or opposite [2.40ms]
+(pass) DayMirror cells > a zero similarity reads alike, not opposite [3.49ms]
+(pass) DayMirror cells > rings the most alike cell solid and the most opposite cell dashed, exactly once each [2.55ms]
+(pass) DayMirror at 30 days > has one tab stop per day plus the two ringed cells (D + 2), never every cell [153.39ms]
+(pass) DayMirror at 30 days > only the two ringed off-diagonal cells are tabbable and labelled; all keep data-stip [155.47ms]
+(pass) DayMirror at 30 days > mirror.css has no font-size under 13px [1.98ms]
+(pass) DayMirror at 30 days > thins labels to every k-th day, keeps first and last, and puts them outside the matrix [153.41ms]
+(pass) DayMirror at 30 days > labels every day on the diagonal when cells are large [3.80ms]
+(pass) DayMirror at 30 days > diagonal chip has an aria-label with the tip text [153.06ms]
+
+components/stats/ProjectPodium.test.tsx:
+(pass) ProjectPodium helpers > names the no-folder bucket
+(pass) ProjectPodium helpers > scales runway height to hours with a floor
+(pass) ProjectPodium helpers > lays out podium by rank and runway 4.. [0.11ms]
+(pass) ProjectPodium helpers > confetti is deterministic [0.10ms]
+(pass) ProjectPodium helpers > builds a winner tip with exact strings [0.08ms]
+(pass) ProjectPodium helpers > builds a chaser tip, close gap and big gap [0.09ms]
+(pass) ProjectPodium helpers > handles a single project and zero total
+(pass) ProjectPodium render > tips every mark and leaves no native <title> [1.97ms]
+(pass) ProjectPodium render > shows an empty state [0.16ms]
+(pass) podiumTip honesty and ties > no project count when the list is truncated
+(pass) podiumTip honesty and ties > ties and near-ties
+
+components/stats/TopicHeartbeats.test.tsx:
+(pass) rhythmOf > always: exactly half the work days qualifies (catches > for >=)
+(pass) rhythmOf > always: one day short of half does not (catches >= off by one)
+(pass) rhythmOf > always: half of an odd count is not rounded down (catches Math.floor) [0.66ms]
+(pass) rhythmOf > sprint: a 6-day span with 3 active days qualifies (catches < for <=) [0.03ms]
+(pass) rhythmOf > sprint: a 7-day span does not (catches span <= 7)
+(pass) rhythmOf > sprint: 2 active days in a 6-day span does not (catches days_active >= 2)
+(pass) rhythmOf > sprint: spans are measured in days across a month end (catches day-of-month subtraction)
+(pass) rhythmOf > one_off: exactly one active day
+(pass) rhythmOf > one_off: two active days is not one-off (catches <= 2)
+(pass) rhythmOf > one_off: zero active days is not one-off (catches <= 1)
+(pass) heartbeatTip > exact values: duration, share of all topics, days, blocks, rhythm note
+(pass) heartbeatTip > no rhythm means no note; no description means no sub [0.03ms]
+(pass) heartbeatTip > zero total seconds does not divide by zero
+(pass) TopicHeartbeats > renders one row per topic [1.02ms]
+(pass) TopicHeartbeats > rows are keyboard focusable, labelled and carry the tip [1.54ms]
+(pass) TopicHeartbeats > one tick per river bin per topic, heights proportional to hours against the largest bin [1.06ms]
+(pass) TopicHeartbeats > caps keyword chips at 4 (catches the old cap of 5) [0.57ms]
+(pass) TopicHeartbeats > generic dev words are dropped from chips, case-insensitively (catches no filter, exact-case filter) [0.45ms]
+(pass) TopicHeartbeats > generic words do not use up the cap (catches slice-then-filter) [0.52ms]
+(pass) TopicHeartbeats > a word that merely contains a generic word stays (catches substring match) [0.46ms]
+(pass) TopicHeartbeats > keyword-named topics are marked for muted italic; AI-named are not [0.88ms]
+(pass) TopicHeartbeats > badge shows the rhythm text; none when no rhythm applies [0.86ms]
+(pass) TopicHeartbeats > work days count only days with work
+(pass) TopicHeartbeats > ticket keys appear without hours [1.67ms]
+(pass) TopicHeartbeats > each ticket key is its own nowrap span [0.67ms]
+(pass) TopicHeartbeats > newly generic words are dropped from chips [0.44ms]
+(pass) TopicHeartbeats > light-mode marks use project lightness 0.60, never under an OS-dark or dark-theme selector
+(pass) TopicHeartbeats > shows the How line and no NaN, undefined or null
+(pass) TopicHeartbeats > every row is the same three-column template, whatever the description length [1.78ms]
+(pass) TopicHeartbeats > raster, bar and tickets sit in the third column, badge and name in the first [0.21ms]
+(pass) TopicHeartbeats > css fixes the row template at desktop width and stacks below 800px [0.04ms]
+(pass) TopicHeartbeats > raster is a grid of one equal column per river bin, full width (catches flex or a fixed column count) [0.89ms]
+(pass) TopicHeartbeats > ticks carry no inline max-width (catches a width cap that breaks the shared edge) [0.91ms]
+(pass) TopicHeartbeats > every row has its own caption: that topic's first and last non-zero bins (catches first-row-only or river-wide dates) [0.93ms]
+(pass) TopicHeartbeats > a topic with no active bin gets no caption while others keep theirs [0.70ms]
+(pass) TopicHeartbeats > date caption: en dash separator is aria-hidden between two date spans; hours sit outside it [1.16ms]
+(pass) TopicHeartbeats > no date caption when no bin has time (catches reading an undefined bin) [0.52ms]
+(pass) TopicHeartbeats > css: no tick max-width, raster is gapped, no text under 13px, ticket keys use --fg-muted
+
+components/stats/ActivityStream.test.tsx:
+(pass) bandPath > is a closed path without NaN for flat and spiky data [0.29ms]
+(pass) buildLayers > drops all-zero series and records totals and peaks [0.63ms]
+(pass) buildLayers > supports a single day
+(pass) ActivityStream > renders legend totals, aria and the caption [1.18ms]
+(pass) ActivityStream > empty state [0.08ms]
+
+components/stats/ToolWarehouse.test.tsx:
+(pass) shortTool > shortens mcp names [0.01ms]
+(pass) stacking > niceUnit keeps the biggest stack within 24 crates
+(pass) stacking > fills 2x2 then climbs, with a half-height remainder [0.13ms]
+(pass) stacking > pegCount: one per 1,000, min 1, capped
+(pass) stacking > row gap keeps back-row name plates clear of the tallest front stack [0.28ms]
+(pass) stacking > layout caps at 8 tools and has finite bounds [0.11ms]
+(pass) ToolWarehouse > headline, legend, aria [5.34ms]
+(pass) ToolWarehouse > uses the report totals when the ranked rows are truncated [3.87ms]
+(pass) ToolWarehouse > empty state [0.34ms]
+(pass) ToolWarehouse > single tool, no helpers, huge value [2.42ms]
+(pass) warehouse tips > top pallet
+(pass) warehouse tips > middle and last pallets, no days
+(pass) warehouse tips > close race, single tool, tiny share [0.52ms]
+(pass) warehouse tips > forklift, pegs, door
+(pass) warehouse tips > marks carry data-stip, no native <title>, keyboard reachable [3.99ms]
+
+components/stats/DailyStack.test.tsx:
+(pass) scale > always reaches the target and rounds up [0.36ms]
+(pass) scale > keeps a tick step of at least one hour
+(pass) DailyStack > renders aria numbers and counts days over target [0.92ms]
+(pass) DailyStack > empty state
+(pass) DailyStack > handles huge values [0.27ms]
+
+components/stats/SplitDonut.tip.test.tsx:
+(pass) segTip ties > equal slices say level
+(pass) segTip > majority slice
+(pass) segTip > minor, hatched and zero slices
+(pass) segTip > single slice owns the ring
+(pass) SplitDonut tips > tips segments (one tab stop each) and legend rows, no native titles [1.29ms]
+
+components/stats/RankedBars.tip.test.tsx:
+(pass) rowTip > tied leaders are not 'in front' [0.48ms]
+(pass) rowTip > leader [0.07ms]
+(pass) rowTip > ties share a rank; trailing rows compare to the leader
+(pass) rowTip > zero row, durations, full label and lone rows [0.14ms]
+(pass) RankedBars tips > tips each row with the untruncated label and no native title
+
+components/stats/PeriodReceipt.test.tsx:
+(pass) helpers > formats
+(pass) helpers > lines include top tool
+(pass) helpers > barcode is deterministic
+(pass) helpers > insight and aria [0.01ms]
+(pass) PeriodReceipt > renders PAID [4.17ms]
+(pass) PeriodReceipt > renders UNPAID with hours [3.91ms]
+(pass) PeriodReceipt > empty state [0.27ms]
+(pass) PeriodReceipt > huge values [3.66ms]
+(pass) tips > receipt line: exact rows, best day, fun note [0.85ms]
+(pass) tips > time lines show durations; browser scales minutes [1.95ms]
+(pass) tips > zero and missing daily do not break
+(pass) tips > tax/discount note is relative to work time
+(pass) tips > totals, stamp, barcode [2.01ms]
+(pass) tips > renders data-stip on lines, stamp, barcode and no title [4.04ms]
+
+components/stats/SplitDonut.test.tsx:
+(pass) SplitDonut > shows biggest share, legend percentages and aria [1.89ms]
+(pass) SplitDonut > a single 100% row still draws a full ring [0.11ms]
+(pass) SplitDonut > zero total and empty rows render no data, no NaN [0.90ms]
+(pass) SplitDonut > a tiny share never draws its arc backwards [0.27ms]
+(pass) SplitDonut > arcPath uses the large-arc flag past 180 degrees [0.44ms]
+
+components/stats/toolName.test.ts:
+(pass) shortTool > shortens known MCP names
+(pass) shortTool > leaves other names and malformed MCP names alone
+(pass) shortTool > keeps a tool that equals the server prefix
+
+components/stats/TopicGalaxy.test.tsx:
+(pass) galaxyLayout dots > maps x/y in [0,1] to the padded viewBox
+(pass) galaxyLayout dots > radius is 2.5 + 6*sqrt(seconds/max): max gives 8.5, quarter gives 5.5, zero gives 2.5
+(pass) galaxyLayout dots > rank is chronological by day then block id; delay is min(rank*3, 1200) ms
+(pass) galaxyLayout dots > delay caps at 1200ms exactly at rank 400 and stays there past it [0.91ms]
+(pass) galaxyLayout dots > drops points whose topic is unknown instead of drawing NaN [0.05ms]
+(pass) galaxyLayout labels > font size is 11 + 9*sqrt(share): whole share 20, quarter share 15.5 [0.03ms]
+(pass) galaxyLayout labels > sits at the hours-weighted median, not the mean or first member
+(pass) galaxyLayout labels > a topic with no points gets no label
+(pass) galaxyLayout labels > labels do not overlap after nudging a crowded fixture [0.19ms]
+(pass) galaxyLayout labels > a long-named label on an island at x=1 ends fully inside [8, 992] [0.02ms]
+(pass) galaxyLayout labels > a long-named label at the right edge is clamped to x1 <= 992
+(pass) galaxyLayout labels > a name wider than the map shrinks to the 11px floor, then truncates with an ellipsis within bounds [0.03ms]
+(pass) galaxyLayout labels > a name that fits only after shrinking is not truncated [0.02ms]
+(pass) galaxyLayout labels > six labels crowded at the right edge stay inside the map and never overlap [0.06ms]
+(pass) galaxyLayout labels > hue comes from the topic id, not array position: id 3 of K=10 is 133
+(pass) galaxyLayout labels > labels far apart horizontally are left where they are
+(pass) tips > dot tip has exact title and rows
+(pass) tips > dot tip says none for a missing ticket
+(pass) tips > label tip carries description, keywords, hours and blocks
+(pass) tips > label tip omits sub without a description
+(pass) TopicGalaxy markup > dots are pointer-only (tabindex -1, still tipped) and labels are the tab stops [1.63ms]
+(pass) TopicGalaxy markup > every label is focusable with a tip [0.94ms]
+(pass) TopicGalaxy markup > markup never contains NaN, undefined or null [0.52ms]
+(pass) TopicGalaxy markup > draws a dashed ring at r+5 only for oddballs
+(pass) TopicGalaxy markup > pending chip shows only when naming is pending [2.27ms]
+(pass) TopicGalaxy markup > emits one hover isolation rule per topic [1.27ms]
+(pass) TopicGalaxy markup > isolation also triggers on keyboard focus (focus-visible and focus-within) [0.59ms]
+(pass) TopicGalaxy markup > shows the How line [0.71ms]
+(pass) TopicGalaxy markup > viewBox height follows the y extent but never drops below 360 (y 0.2-0.6 gives 360, not 620) [0.37ms]
+(pass) TopicGalaxy markup > viewBox height grows with the range: y 0-0.8 gives 0.8*540+80 = 512
+(pass) TopicGalaxy markup > full y range keeps 620
+(pass) TopicGalaxy markup > legend row has both marks and the plain-words text [0.97ms]
+(pass) TopicGalaxy markup > topic name fill is the topic hue lifted toward --fg [0.34ms]
+(pass) TopicGalaxy markup > every dot has a sibling hit circle r=12 behind it [0.71ms]
+(pass) TopicGalaxy markup > topic list has one focusable tipped row per topic with name and hours [1.06ms]
+(pass) TopicGalaxy markup > map svg fits its width: meet aspect ratio, no scroll or min-width container [0.73ms]
+(pass) TopicGalaxy markup > below 600px the css hides on-map labels, shows the list and enlarges dots 1.6x
+(pass) TopicGalaxy markup > the caption has no jargon outside details [0.97ms]
+(pass) TopicGalaxy markup > no points shows the empty state and message, with no svg map [0.22ms]
+(pass) TopicGalaxy markup > contains no hard-coded hex colours [0.43ms]
+(pass) phone tap targets and spacing > below 600px the hit circle is scaled x3 about its centre
+(pass) phone tap targets and spacing > below 600px the map container is at least 260px tall
+(pass) phone tap targets and spacing > two labels at the same median y end at least 8px apart including the hours line
+(pass) phone tap targets and spacing > every caption and legend font rule is at least 13px
+
+components/stats/ActivityStream.tip.test.tsx:
+(pass) activity tips > layerTip [0.38ms]
+(pass) activity tips > columnTip lists every series and the peaks [0.34ms]
+(pass) activity tips > renders a column per day and tipped layers without native titles [0.54ms]
+(pass) activity tips > single day still gets one column [0.34ms]
+
+components/stats/TabGarden.test.tsx:
+(pass) layout > ranks by minutes, caps at 10, drops zeros, sqrt heights [0.40ms]
+(pass) layout > empty and single
+(pass) plantTip > leader: exact strings [0.19ms]
+(pass) plantTip > ties are not ranked as a lead [0.04ms]
+(pass) plantTip > localhost runner-up
+(pass) plantTip > localhost as favourite
+(pass) plantTip > edge: single site, dominant site, tiny share
+(pass) TabGarden render > tips each plant, no <title>, keyboard reachable [1.83ms]
+(pass) TabGarden render > empty state
+
+components/stats/RankedBars.test.tsx:
+(pass) formatValue > formats per unit and survives junk
+(pass) RankedBars > scales to the top row, highlights it, writes caption and aria [0.85ms]
+(pass) RankedBars > empty and all-zero rows show the calm state, no NaN
+
+components/stats/StatsHero.test.tsx:
+(pass) sparkPoints / bucket > all zero is a flat line, not NaN [0.05ms]
+(pass) sparkPoints / bucket > empty is empty; single value is finite
+(pass) sparkPoints / bucket > peak sits at the top
+(pass) sparkPoints / bucket > buckets long series by summing and conserves the total [0.13ms]
+(pass) StatsHero > shows big numbers with thousands separators and per-day captions [4.46ms]
+(pass) StatsHero > zero everything stays calm [0.39ms]
+(pass) StatsHero > single day draws a dot, not a line [1.88ms]
+(pass) hero tips > sparkTips: exact strings for a fixture [0.91ms]
+(pass) hero tips > sparkTips: all zero and single day do not NaN [0.33ms]
+(pass) hero tips > sparkTips: long series are bucketed and cover every day [16.76ms]
+(pass) hero tips > tileTip: total, per worked day, best and quietest day
+(pass) hero tips > tileTip: no series and zero days stay calm [1.65ms]
+(pass) hero tips > renders data-stip on numbers and sparkline hit areas, no <title> [3.80ms]
+
+components/stats/DayCompass.test.tsx:
+(pass) compassLayout > puts the crosshairs at the medians of the plotted days only [0.64ms]
+(pass) compassLayout > uses the mean of the two middle values for an even count
+(pass) compassLayout > assigns quadrants, with a value equal to the median counting as deep / new [0.19ms]
+(pass) compassLayout > flags the day farthest from the crosshairs per quadrant, normalised by axis span [0.05ms]
+(pass) compassLayout > lists None-focus days as skipped and never plots them [0.02ms]
+(pass) compassLayout > scales radius with the square root of hours
+(pass) compassLayout > keeps every coordinate finite with one plotted day, none, or zero hours
+(pass) compassTip > lists day, hours, focus, novelty, switches, longest run and topics touched [0.51ms]
+(pass) DayCompass > draws one dot per plotted day with a tip, plus two crosshair lines and no quadrant captions [4.30ms]
+(pass) DayCompass > every dot has a 1.5px raised-background stroke [3.70ms]
+(pass) DayCompass > labels the extreme day of each quadrant with weekday and date [3.38ms]
+(pass) DayCompass > lists the None-focus days under the chart [2.01ms]
+(pass) DayCompass > omits the skipped line when every day has a focus [3.08ms]
+(pass) DayCompass > renders nothing when no day can be plotted
+(pass) DayCompass > renders no NaN, undefined or null [4.03ms]
+(pass) DayCompass > shows the plain How line, keeps jargon in a Method details [4.27ms]
+(pass) DayCompass > uses the shared atlas card and small-caps title [2.95ms]
+(pass) DayCompass > has plain axis titles [4.46ms]
+(pass) DayCompass > has small end labels at each axis end [4.07ms]
+(pass) DayCompass > keys only topics that are some plotted day's top topic, most days first, at most 5 [3.98ms]
+(pass) DayCompass > names the most focused and the most new-ground day in a callout, ignoring unplotted days [3.22ms]
+(pass) DayCompass > labels min(5, plotted) days, the fifth being the most-hours day not already labelled [10.62ms]
+(pass) DayCompass > vertical end labels are horizontal, new ground top-left and familiar bottom-left [3.77ms]
+(pass) DayCompass > keeps every leader label box inside the plot and clear of the captions [3.17ms]
+
+components/stats/AtlasArt.test.tsx:
+(pass) AtlasArt > RhythmIcon always renders an svg of the delivered size with no hex colours [0.74ms]
+(pass) AtlasArt > RhythmIcon sprint renders an svg of the delivered size with no hex colours
+(pass) AtlasArt > RhythmIcon one_off renders an svg of the delivered size with no hex colours
+(pass) AtlasArt > FirstTimeMark renders an svg of the delivered size with no hex colours
+(pass) AtlasArt > OddballMark renders an svg of the delivered size with no hex colours
+(pass) AtlasArt > AtlasEmpty helper_down renders an svg of the delivered size with no hex colours [0.67ms]
+(pass) AtlasArt > AtlasEmpty too_few renders an svg of the delivered size with no hex colours [0.22ms]
+(pass) AtlasArt > AtlasEmpty no_map renders an svg of the delivered size with no hex colours [0.29ms]
+(pass) AtlasArt > icons and marks are aria-hidden; they are paired with text [0.23ms]
+(pass) AtlasArt > rhythm kinds draw different art [0.30ms]
+(pass) AtlasArt > AtlasEmpty helper_down is role=img with its alt text [0.28ms]
+(pass) AtlasArt > AtlasEmpty too_few is role=img with its alt text [0.10ms]
+(pass) AtlasArt > AtlasEmpty no_map is role=img with its alt text [0.31ms]
+
+components/stats/StatTip.test.tsx:
+(pass) StatTip > uses its own attribute, not the app's plain data-tip tooltips
+(pass) StatTip > round-trips a tip through the data attribute
+(pass) StatTip > keeps the card inside the viewport [0.01ms]
+(pass) StatTip > the client module exports only TipLayer (server components call tipProps from ./tip)
+(pass) StatTip > a scroll event that didn't move the page keeps the card; a real scroll closes it [1.40ms]
+(pass) StatTip > nested layers open only the innermost card [0.53ms]
+(pass) StatTip > shows the nearest tip on hover and focus, hides on leave and Escape [1.20ms]
+
+components/stats/DayFlowTitle.test.tsx:
+(pass) title replaces the summary text; the default is unchanged [0.59ms]
+
+components/stats/ShellKeycaps.test.tsx:
+(pass) ShellKeycaps helpers > ellipsizes
+(pass) ShellKeycaps helpers > height scales with count, never below the floor
+(pass) ShellKeycaps helpers > colours by rank band
+(pass) ShellKeycaps helpers > sorts, drops zeros, double-width pressed #1, caps at 12
+(pass) keyTip > spacebar tip [0.57ms]
+(pass) keyTip > lower key compares to the top
+(pass) keyTip > edge cases: single key, tiny share, ratio note [0.09ms]
+(pass) ShellKeycaps render > headline, data-stip on every key, no <title> [1.05ms]
+(pass) ShellKeycaps render > empty state [0.29ms]
+(pass) ShellKeycaps render > ties and near-ties never claim 'less pressed' [0.09ms]
+(pass) ShellKeycaps render > rank denominator uses the caller's count [0.02ms]
+
+components/stats/topicColor.test.ts:
+(pass) topicColor > hue for id 3 of 10 is 133
+(pass) topicColor > even ids carry no lightness offset
+(pass) topicColor > odd ids are 0.08 darker
+(pass) topicColor > k of 0 does not divide by zero
+(pass) topicColor > TopicGalaxy defines no hue helper of its own
+(pass) topicColor > TopicHeartbeats defines no hue helper of its own
+(pass) topicColor > TopicRiver defines no hue helper of its own
+(pass) topicColor > DayMirror defines no hue helper of its own
+(pass) topicColor > DayCompass defines no hue helper of its own
+(pass) topicColor > TopicMoments defines no hue helper of its own
+
+components/stats/FunFacts.test.tsx:
+(pass) FunFacts > formats values and links days to the day page [3.15ms]
+(pass) FunFacts > flames only for streaks of 3 or more [3.32ms]
+(pass) FunFacts > no data: dashes, no links, no NaN [0.49ms]
+(pass) FunFacts > singular day
+(pass) FunFacts tips > streakRuns finds consecutive worked days
+(pass) FunFacts tips > busiest day: breakdown and multiple of the average (exact strings) [1.42ms]
+(pass) FunFacts tips > prompts: share and average [1.52ms]
+(pass) FunFacts tips > earliest start compares only worked days (a 06:00 Slack check on a day off doesn't count) [1.55ms]
+(pass) FunFacts tips > streak tips carry start/end dates [1.69ms]
+(pass) FunFacts tips > works without daily, and with no data
+(pass) FunFacts tips > renders a data-stip on every card, tab-reachable, no <title> [3.04ms]
+
+components/stats/TopicRiver.test.tsx:
+(pass) buildRiver > band thickness per bin equals bin seconds times one shared scale [0.41ms]
+(pass) buildRiver > is centred: each bin's stack is symmetric about the midline [0.17ms]
+(pass) buildRiver > orders layers by first active bin, ties by id [0.11ms]
+(pass) buildRiver > drops topics with zero total
+(pass) buildRiver > has no NaN with an all-zero bin
+(pass) buildRiver > returns null when every bin is zero
+(pass) buildRiver > returns null for fewer than 2 bins, builds at exactly 2
+(pass) buildRiver > labels a band exactly at 18px and not just under [0.18ms]
+(pass) buildRiver > measures thickness at the layer's own widest bin
+(pass) river trimming and labels > trims leading and trailing zero bins
+(pass) river trimming and labels > keeps interior zero bins
+(pass) river trimming and labels > returns null when only one bin has data
+(pass) river trimming and labels > axis ticks follow the trimmed bins [1.22ms]
+(pass) river trimming and labels > placed label boxes are pairwise disjoint with a 4px pad, and some are dropped [0.37ms]
+(pass) river trimming and labels > the largest topic keeps its label [0.12ms]
+(pass) river trimming and labels > a topic peaking in the first bin keeps its label box inside x >= 8
+(pass) river trimming and labels > a topic peaking in the last bin keeps its label box inside x + w <= W - 8 [0.09ms]
+(pass) river trimming and labels > drops a label whose band is under 18px at the clamped x [0.03ms]
+(pass) river trimming and labels > skips a label wider than the viewBox and keeps one that fits [0.04ms]
+(pass) river trimming and labels > legend lists every topic, labelled inline or not [0.76ms]
+(pass) river trimming and labels > legend still renders when every topic is labelled inline
+(pass) river design pass > one tick and label per Monday in 3 weeks of day bins [1.48ms]
+(pass) river design pass > week bins tick every 4th bin (fixture bins are consecutive days) [0.59ms]
+(pass) river design pass > viewBox reserves a 60px gutter right of the 1000px plot [0.39ms]
+(pass) river design pass > scale label equals the tallest stack's hours and the bracket spans it [0.39ms]
+(pass) river design pass > scale label keeps a fractional hour [0.35ms]
+(pass) river design pass > svg scrolls horizontally from 720px [0.32ms]
+(pass) river design pass > is an sr-card titled Topic river [0.34ms]
+(pass) TopicRiver > renders one band per layer with a band tip [0.31ms]
+(pass) TopicRiver > column tip shows the bin's top 4 topics by hours [0.76ms]
+(pass) TopicRiver > paints the column rects before the bands so bands receive the pointer [0.45ms]
+(pass) TopicRiver > shows the How it works line [0.06ms]
+(pass) TopicRiver > renders nothing for fewer than 2 bins
+
+ 450 pass
+ 0 fail
+ 1431 expect() calls
+Ran 450 tests across 35 files. [1306.00ms]
+$ tsc --noEmit

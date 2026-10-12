@@ -551,3 +551,14 @@ CREATE TABLE IF NOT EXISTS block_embeddings (
     text_hash TEXT NOT NULL,
     vec BLOB NOT NULL
 );
+
+-- AI topic names (spec 023), keyed by the sha256 of a topic's sorted block ids.
+-- members = the same ids comma-joined, for Jaccard reuse when a topic gains blocks.
+CREATE TABLE IF NOT EXISTS topic_names (
+    member_hash TEXT PRIMARY KEY,
+    members TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    model TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);

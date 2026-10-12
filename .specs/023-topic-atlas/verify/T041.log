@@ -1,0 +1,74 @@
+bun test v1.2.4 (fd9a5ea6)
+
+components/stats/AtlasArt.test.tsx:
+(pass) AtlasArt > RhythmIcon always renders an svg of the delivered size with no hex colours [7.33ms]
+(pass) AtlasArt > RhythmIcon sprint renders an svg of the delivered size with no hex colours [0.65ms]
+(pass) AtlasArt > RhythmIcon one_off renders an svg of the delivered size with no hex colours [0.69ms]
+(pass) AtlasArt > FirstTimeMark renders an svg of the delivered size with no hex colours [0.39ms]
+(pass) AtlasArt > OddballMark renders an svg of the delivered size with no hex colours [0.22ms]
+(pass) AtlasArt > AtlasEmpty helper_down renders an svg of the delivered size with no hex colours [1.48ms]
+(pass) AtlasArt > AtlasEmpty too_few renders an svg of the delivered size with no hex colours [1.07ms]
+(pass) AtlasArt > AtlasEmpty no_map renders an svg of the delivered size with no hex colours [1.08ms]
+(pass) AtlasArt > icons and marks are aria-hidden; they are paired with text [0.95ms]
+(pass) AtlasArt > rhythm kinds draw different art [0.76ms]
+(pass) AtlasArt > AtlasEmpty helper_down is role=img with its alt text [0.43ms]
+(pass) AtlasArt > AtlasEmpty too_few is role=img with its alt text [0.31ms]
+(pass) AtlasArt > AtlasEmpty no_map is role=img with its alt text [0.80ms]
+
+ 13 pass
+ 0 fail
+ 34 expect() calls
+Ran 13 tests across 1 files. [113.00ms]
+$ next build
+   ▲ Next.js 15.5.15
+   - Experiments (use with caution):
+     · serverActions
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully in 891ms
+   Linting and checking validity of types ...
+
+./components/ChangeNotices.tsx
+207:77  Warning: React Hook useMemo has a missing dependency: 'shown'. Either include it or remove the dependency array.  react-hooks/exhaustive-deps
+208:78  Warning: React Hook useMemo has a missing dependency: 'shown'. Either include it or remove the dependency array.  react-hooks/exhaustive-deps
+
+./components/TaskCard.tsx
+85:6  Warning: React Hook useEffect has a missing dependency: 'hold'. Either include it or remove the dependency array.  react-hooks/exhaustive-deps
+
+info  - Need to disable some ESLint rules? Learn more here: https://nextjs.org/docs/app/api-reference/config/eslint#disabling-rules
+   Collecting page data ...
+   Generating static pages (0/9) ...
+   Generating static pages (2/9) 
+   Generating static pages (4/9) 
+   Generating static pages (6/9) 
+ ✓ Generating static pages (9/9)
+   Finalizing page optimization ...
+   Collecting build traces ...
+
+Route (app)                                 Size  First Load JS
+┌ ƒ /                                      128 B         102 kB
+├ ƒ /_not-found                            999 B         103 kB
+├ ƒ /[day]                               42.7 kB         162 kB
+├ ƒ /[day]/block/[id]                      12 kB         118 kB
+├ ○ /apple-icon.png                          0 B            0 B
+├ ƒ /billing                             11.7 kB         117 kB
+├ ○ /icon.svg                                0 B            0 B
+├ ƒ /logged                                128 B         102 kB
+├ ƒ /logged/day/[day]                    2.32 kB         110 kB
+├ ƒ /logged/month/[month]                2.43 kB         108 kB
+├ ƒ /logged/week/[monday]                2.32 kB         110 kB
+├ ƒ /mirres                              3.26 kB         112 kB
+├ ƒ /settings                            16.7 kB         122 kB
+├ ƒ /stats                               4.17 kB         114 kB
+├ ƒ /tasks                               23.8 kB         135 kB
+├ ƒ /week                                  128 B         102 kB
+└ ƒ /week/[monday]                       3.61 kB         112 kB
++ First Load JS shared by all             102 kB
+  ├ chunks/255-4f212684648fcab9.js         46 kB
+  ├ chunks/4bd1b696-c023c6e3521b1417.js  54.2 kB
+  └ other shared chunks (total)          1.98 kB
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+

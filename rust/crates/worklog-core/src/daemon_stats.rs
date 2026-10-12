@@ -1,24 +1,27 @@
 //! GET /stats?from&to — the stats page's one payload. Child module of
 //! `daemon.rs` (via `#[path]`) so it reuses its private `with_conn`/`ApiError`.
 
-use std::collections::{HashMap, HashSet};
-
 use anyhow::{anyhow, Result};
 use axum::extract::{Query, State};
 use axum::Json;
 use chrono::{Datelike, Duration, NaiveDate, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection};
 use serde::Deserialize;
 
 const STATS_MAX_RANGE_DAYS: i64 = 366 * 30;
 const TOPICS_HISTORY_DAYS: i64 = 60;
 
 use crate::embed::{self, EmbedClient};
+use crate::estimate::{self, ModelInvoker};
 use crate::stats_contract::StatsReport;
-use crate::stats_topics::{self, BlockPoint, TopicsInput};
-use crate::topics_contract::{TopicsReport, TopicsStatus};
+use crate::stats_topics::{self, Assignments, BlockPoint, TopicsInput};
+use crate::topic_names::{self, TopicInput};
+use crate::topic_terms::{keywords, representatives, tokenize};
+use crate::topics_contract::{
+    MapPoint, Naming, TopicsReport, TopicsStatus, MAP_MIN_POINTS, NAMING_EXAMPLES, TOPIC_KEYWORDS,
+};
 use crate::verdict_contract::VERDICT_ENABLED_KEY;
-use crate::{stats, tz};
+use crate::{stats, topic_map, tz};
 
 use super::{with_conn, ApiError, Shared};
 
@@ -108,9 +111,110 @@ pub async fn get_topics(
     })
     .await
     .map_err(|e| anyhow!("embed task: {e}"))?;
-    Ok(Json(
-        with_conn(state, move |c| topics_finish(c, prep, embedded)).await?,
-    ))
+    let loaded = with_conn(state.clone(), move |c| topics_load(c, prep, embedded)).await?;
+    let (report, inputs) = match loaded {
+        Loaded::Done(report) => (report, vec![]),
+        Loaded::Compute(input, skipped) => {
+            tokio::task::spawn_blocking(move || topics_compute(input, skipped))
+                .await
+                .map_err(|e| anyhow!("topics task: {e}"))?
+        }
+    };
+    let (mut report, pending) =
+        with_conn(state.clone(), move |c| topics_name(c, report, inputs)).await?;
+    name_in_background(&state, &mut report, pending, real_invoker, BACKOFF).await;
+    Ok(Json(report))
+}
+
+type MakeInvoker = fn() -> Result<Box<dyn ModelInvoker>>;
+
+fn real_invoker() -> Result<Box<dyn ModelInvoker>> {
+    #[cfg(test)]
+    if let Some(reply) = crate::topic_names::TEST_REPLY.lock().unwrap().clone() {
+        return Ok(Box::new(estimate::FixedInvoker(reply)));
+    }
+    estimate::build_naming_invoker()
+}
+
+/// How long a topic that failed naming is left alone.
+pub(super) const BACKOFF: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// `Off` when no model can be built or every pending topic failed within
+/// `backoff`; otherwise one background job names the rest and the keyword
+/// names stay until a later request.
+pub(super) async fn name_in_background(
+    state: &Shared,
+    report: &mut TopicsReport,
+    pending: Vec<TopicInput>,
+    make_invoker: MakeInvoker,
+    backoff: std::time::Duration,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    let pending: Vec<TopicInput> = pending
+        .into_iter()
+        .filter(|i| !topic_names::backed_off(i, backoff))
+        .collect();
+    if pending.is_empty() {
+        report.naming = Naming::Off;
+        return;
+    }
+    // The probe builds a throwaway invoker: the real one is not Send, so the
+    // job builds its own inside its blocking task.
+    let usable = tokio::task::spawn_blocking(move || make_invoker().is_ok())
+        .await
+        .unwrap_or(false);
+    if !usable {
+        report.naming = Naming::Off;
+        return;
+    }
+    let claimed = topic_names::claim(&pending);
+    if !claimed.is_empty() {
+        tokio::spawn(run_naming_job(state.clone(), claimed, make_invoker));
+    }
+}
+
+/// Batches run in order and each is stored as it lands; the first failure
+/// stops the job and backs off every topic not yet named.
+async fn run_naming_job(state: Shared, inputs: Vec<TopicInput>, make_invoker: MakeInvoker) {
+    for (n, batch) in inputs.chunks(topic_names::BATCH).enumerate() {
+        if let Err(e) = name_batch(&state, batch.to_vec(), make_invoker).await {
+            topic_names::record_failure(&inputs[n * topic_names::BATCH..]);
+            eprintln!("topic naming failed: {e:#}");
+            break;
+        }
+    }
+    topic_names::release(&inputs);
+}
+
+async fn name_batch(
+    state: &Shared,
+    batch: Vec<TopicInput>,
+    make_invoker: MakeInvoker,
+) -> Result<()> {
+    let for_call = batch.clone();
+    let ids: Vec<usize> = batch.iter().map(|i| i.id).collect();
+    let names = tokio::task::spawn_blocking(move || {
+        let reply = make_invoker()?.invoke(
+            topic_names::SYSTEM_PROMPT,
+            &topic_names::prompt(&for_call),
+            &topic_names::schema(),
+            estimate::DEFAULT_MODEL,
+        )?;
+        topic_names::parse_reply(&reply, &ids)
+    })
+    .await??;
+    let omitted: Vec<TopicInput> = batch
+        .iter()
+        .filter(|i| !names.iter().any(|(id, ..)| *id == i.id))
+        .cloned()
+        .collect();
+    topic_names::record_failure(&omitted);
+    with_conn(state.clone(), move |c| {
+        topic_names::store(c, &batch, &names, estimate::DEFAULT_MODEL)
+    })
+    .await
 }
 
 fn load_points(conn: &Connection, lo: NaiveDate, hi: NaiveDate) -> Result<Vec<BlockPoint>> {
@@ -149,9 +253,7 @@ fn embed_pending(client: &EmbedClient, pending: &[embed::PendingText]) -> Option
 }
 
 fn topics_prepare(conn: &Connection, from: NaiveDate, to: NaiveDate) -> Result<TopicsPrep> {
-    let len = (to - from).num_days() + 1;
-    let before_from = from - Duration::days(len);
-    let lo = before_from.min(from - Duration::days(TOPICS_HISTORY_DAYS));
+    let lo = from - Duration::days(TOPICS_HISTORY_DAYS);
     let all = load_points(conn, lo, to)?;
     let ids: Vec<i64> = all.iter().map(|p| p.id).collect();
     let pending = embed::pending(conn, &ids)?;
@@ -172,14 +274,20 @@ pub(super) fn topics_report(
 ) -> Result<TopicsReport> {
     let prep = topics_prepare(conn, from, to)?;
     let embedded = embed_pending(client, &prep.pending);
-    topics_finish(conn, prep, embedded)
+    topics_finish(conn, prep, embedded).map(|(report, _)| report)
 }
 
-fn topics_finish(
+/// Phase 1 of finishing: the DB reads/writes that need the connection.
+enum Loaded {
+    Done(TopicsReport),
+    Compute(TopicsInput, i64),
+}
+
+fn topics_load(
     conn: &Connection,
     prep: TopicsPrep,
     embedded: Option<Vec<Vec<f32>>>,
-) -> Result<TopicsReport> {
+) -> Result<Loaded> {
     let TopicsPrep {
         from,
         to,
@@ -187,14 +295,12 @@ fn topics_finish(
         pending,
     } = prep;
     let (from_s, to_s) = (from.to_string(), to.to_string());
-    let len = (to - from).num_days() + 1;
-    let before_from = from - Duration::days(len);
     let Some(new_vectors) = embedded else {
-        return Ok(TopicsReport::empty(
+        return Ok(Loaded::Done(TopicsReport::empty(
             TopicsStatus::HelperDown,
             &from_s,
             &to_s,
-        ));
+        )));
     };
     embed::store(conn, &pending, &new_vectors)?;
     let ids: Vec<i64> = all.iter().map(|p| p.id).collect();
@@ -204,9 +310,7 @@ fn topics_finish(
         from: from_s.clone(),
         to: to_s.clone(),
         now: vec![],
-        before: vec![],
         history: vec![],
-        ticket_summaries: HashMap::new(),
     };
     let mut skipped = 0;
     for mut p in all {
@@ -219,32 +323,114 @@ fn topics_finish(
         if in_now {
             input.now.push(p.clone());
         } else {
-            if p.day >= before_from.to_string() {
-                input.before.push(p.clone());
-            }
             if p.day >= (from - Duration::days(TOPICS_HISTORY_DAYS)).to_string() {
                 input.history.push(p);
             }
         }
     }
-    let tickets: HashSet<&str> = input
-        .now
-        .iter()
-        .filter_map(|p| p.ticket.as_deref())
-        .collect();
-    for t in tickets {
-        if let Some(summary) = conn
-            .query_row(
-                "SELECT summary FROM jira_tickets WHERE key = ?1",
-                [t],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()?
-        {
-            input.ticket_summaries.insert(t.to_string(), summary);
+    Ok(Loaded::Compute(input, skipped))
+}
+
+/// Phase 2: pure maths (clustering, keywords, map layout); holds no connection.
+fn topics_compute(input: TopicsInput, skipped: i64) -> (TopicsReport, Vec<TopicInput>) {
+    let (mut report, assigned) = stats_topics::build_with_assignments(&input);
+    report.skipped_blocks = skipped;
+    if report.status != TopicsStatus::Ready {
+        return (report, vec![]);
+    }
+    let inputs = atlas(&mut report, &input, &assigned);
+    (report, inputs)
+}
+
+/// Phase 3: the name cache; returns the topics still unnamed.
+fn topics_name(
+    conn: &Connection,
+    mut report: TopicsReport,
+    inputs: Vec<TopicInput>,
+) -> Result<(TopicsReport, Vec<TopicInput>)> {
+    if report.status != TopicsStatus::Ready {
+        return Ok((report, vec![]));
+    }
+    let pending = topic_names::resolve(conn, &mut report, &inputs)?.pending;
+    report.naming = if pending.is_empty() {
+        Naming::Ai
+    } else {
+        Naming::Pending
+    };
+    Ok((report, pending))
+}
+
+#[cfg(test)]
+fn topics_finish(
+    conn: &Connection,
+    prep: TopicsPrep,
+    embedded: Option<Vec<Vec<f32>>>,
+) -> Result<(TopicsReport, Vec<TopicInput>)> {
+    match topics_load(conn, prep, embedded)? {
+        Loaded::Done(report) => Ok((report, vec![])),
+        Loaded::Compute(input, skipped) => {
+            let (report, inputs) = topics_compute(input, skipped);
+            topics_name(conn, report, inputs)
         }
     }
-    let mut report = stats_topics::build(&input);
-    report.skipped_blocks = skipped;
-    Ok(report)
+}
+
+/// Keywords, map points and naming inputs for a Ready report, using the
+/// per-block topic assignment `build` already made.
+fn atlas(report: &mut TopicsReport, input: &TopicsInput, a: &Assignments) -> Vec<TopicInput> {
+    let mut pts: Vec<&BlockPoint> = input.now.iter().collect();
+    pts.sort_by_key(|p| p.id);
+    let centered = &a.centered;
+    let mut groups: Vec<Vec<usize>> = vec![vec![]; report.topics.len()];
+    for (i, &t) in a.topic_of.iter().enumerate() {
+        groups[t].push(i);
+    }
+
+    let text = |i: usize| pts[i].description.clone().unwrap_or_default();
+    let docs: Vec<Vec<String>> = groups
+        .iter()
+        .map(|g| g.iter().flat_map(|&i| tokenize(&text(i))).collect())
+        .collect();
+    let mut inputs = Vec::new();
+    for (id, (g, terms)) in groups
+        .iter()
+        .zip(keywords(&docs, TOPIC_KEYWORDS))
+        .enumerate()
+    {
+        let vecs: Vec<Vec<f32>> = g.iter().map(|&i| centered[i].clone()).collect();
+        let descriptions: Vec<String> = g.iter().map(|&i| text(i)).collect();
+        report.topics[id].keywords = terms.clone();
+        inputs.push(TopicInput {
+            id,
+            members: g.iter().map(|&i| pts[i].id).collect(),
+            keywords: terms,
+            examples: representatives(&vecs, &descriptions, NAMING_EXAMPLES)
+                .into_iter()
+                .map(|j| descriptions[j].clone())
+                .filter(|d| !d.is_empty())
+                .collect(),
+            blocks: report.topics[id].blocks,
+            seconds: report.topics[id].seconds,
+        });
+    }
+
+    if pts.len() >= MAP_MIN_POINTS {
+        report.points = topic_map::layout(centered)
+            .into_iter()
+            .enumerate()
+            .map(|(i, [x, y])| MapPoint {
+                block_id: pts[i].id,
+                x,
+                y,
+                topic_id: a.topic_of[i],
+                day: pts[i].day.clone(),
+                seconds: pts[i].seconds,
+                label: text(i).chars().take(90).collect(),
+                ticket: pts[i].ticket.clone(),
+                novelty: a.novelty[i] as f32,
+                oddball: a.oddball[i],
+            })
+            .collect();
+    }
+    inputs
 }

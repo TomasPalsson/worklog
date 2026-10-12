@@ -1,0 +1,31 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (rust/target/debug/deps/worklog_core-5f98b59a3618f7a2)
+
+running 18 tests
+test topic_names::tests::batch_size_is_four ... ok
+test topic_names::tests::prompt_lists_every_theme_and_carries_the_odds_and_ends_rule ... ok
+test topic_names::tests::parse_reply_strips_a_json_fence_from_a_string_reply ... ok
+test topic_names::tests::member_hash_is_sha256_of_the_sorted_comma_joined_ids ... ok
+test topic_names::tests::parse_reply_accepts_a_forty_char_name_and_drops_a_forty_one_char_one ... ok
+test topic_names::tests::backoff_holds_inside_the_window_and_lifts_at_its_end ... ok
+test topic_names::tests::claim_blocks_a_second_job_for_the_same_hashes_until_released ... ok
+test topic_names::tests::parse_reply_accepts_the_schema_object_and_a_bare_array ... ok
+test topic_names::tests::parse_reply_drops_unknown_ids_and_blank_names_and_errors_when_nothing_is_left ... ok
+test topic_names::tests::schema_and_prompt_state_the_name_and_description_limits ... ok
+test topic_names::tests::parse_reply_truncates_a_long_description_at_a_word_boundary_to_200 ... ok
+test topic_names::tests::best_overlap_wins_among_cached_rows ... ok
+test topic_names::tests::jaccard_at_the_threshold_reuses_the_name_and_caches_the_new_hash ... ok
+test topic_names::tests::store_makes_the_next_resolve_an_ai_hit ... ok
+test topic_names::tests::keyword_fallback_uses_up_to_three_keywords_then_a_numbered_name ... ok
+test topic_names::tests::jaccard_below_the_threshold_falls_back_to_keywords_and_stays_pending ... ok
+test topic_names::tests::exact_hash_hit_names_the_topic_and_needs_no_ai ... ok
+test topic_names::tests::only_the_newest_200_rows_are_scanned_for_reuse ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 2069 filtered out; finished in 0.14s
+
+     Running tests/env_fallback.rs (rust/target/debug/deps/env_fallback-47156b92c77a69b4)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+

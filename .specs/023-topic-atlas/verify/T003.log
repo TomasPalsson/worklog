@@ -1,0 +1,21 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
+     Running unittests src/lib.rs (rust/target/debug/deps/worklog_core-5f98b59a3618f7a2)
+
+running 8 tests
+test topic_terms::tests::mmr_penalises_redundancy ... ok
+test topic_terms::tests::mmr_never_returns_equal_descriptions ... ok
+test topic_terms::tests::unique_term_outranks_common_term ... ok
+test topic_terms::tests::mmr_returns_at_most_n_and_first_is_closest_to_centroid ... ok
+test topic_terms::tests::keywords_ties_by_term_asc_top_caps_and_empty_ok ... ok
+test topic_terms::tests::tokenize_keeps_icelandic_intact ... ok
+test topic_terms::tests::tokenize_drops_short_digits_and_stopwords ... ok
+test topic_terms::tests::tokenize_strips_jira_keys_but_not_lookalikes ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 2038 filtered out; finished in 0.00s
+
+     Running tests/env_fallback.rs (rust/target/debug/deps/env_fallback-47156b92c77a69b4)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+

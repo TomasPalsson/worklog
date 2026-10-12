@@ -1,0 +1,24 @@
+/* First times & oddballs cards. Tokens only; prefix tm-. */
+.tm-wrap { display: grid; gap: 12px; }
+.tm-cards { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.tm-card {
+  display: grid;
+  gap: 4px;
+  align-items: baseline;
+  padding: 8px 10px;
+  border-radius: 6px;
+}
+.tm-card:hover, .tm-card:focus-visible { background: var(--bg-sunk); }
+.tm-badge { justify-self: start; font-size: 13px; font-weight: 600; color: var(--fg); background: var(--bg-sunk); border: 1px solid var(--border); border-radius: 999px; padding: 1px 9px; }
+.tm-num { font-family: var(--font-mono); font-size: 13px; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+.tm-label { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 500; color: var(--fg); min-width: 0; overflow-wrap: anywhere; }
+.tm-clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.tm-when { font-family: var(--font-mono); font-size: 13px; color: var(--fg-muted); }
+.tm-chip { justify-self: start; font-family: var(--font-mono); font-size: 13px; color: var(--fg-muted); background: var(--bg-sunk); border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; }
+.tm-strip { position: relative; height: 6px; margin-top: 4px; border-bottom: 1px solid var(--border); }
+.tm-marker { position: absolute; bottom: -3px; width: 6px; height: 6px; margin-left: -3px; border-radius: 50%; background: var(--fg); }
+.tm-range { margin: 0 0 8px; font-family: var(--font-mono); font-size: 13px; color: var(--fg-muted); }
+.tm-sub { margin: 0 0 8px; font-size: 13px; color: var(--fg-muted); }
+.tm-how .sr-caption { max-width: 70ch; margin: 0 0 6px; }
+.tm-how details { max-width: 70ch; font-size: 13px; color: var(--fg-muted); }
+.tm-how summary { cursor: pointer; text-transform: uppercase; letter-spacing: 0.06em; }

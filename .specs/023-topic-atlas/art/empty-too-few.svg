@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 90" width="120" height="90" role="img">
+  <title>A nearly empty star chart with only three faint stars</title>
+  <rect x="4" y="4" width="112" height="82" rx="8" style="fill: var(--bg-sunk)"/>
+  <!-- chart grid of tiny dots -->
+  <g style="fill: var(--fg-subtle)" opacity=".55">
+    <circle cx="24" cy="22" r=".9"/><circle cx="48" cy="22" r=".9"/><circle cx="72" cy="22" r=".9"/><circle cx="96" cy="22" r=".9"/>
+    <circle cx="24" cy="45" r=".9"/><circle cx="48" cy="45" r=".9"/><circle cx="72" cy="45" r=".9"/><circle cx="96" cy="45" r=".9"/>
+    <circle cx="24" cy="68" r=".9"/><circle cx="48" cy="68" r=".9"/><circle cx="72" cy="68" r=".9"/><circle cx="96" cy="68" r=".9"/>
+  </g>
+  <!-- three lone stars, one brighter -->
+  <polygon points="40,31 42,36.5 47.5,38 42,39.5 40,45 38,39.5 32.5,38 38,36.5" style="fill: var(--fg-muted)"/>
+  <polygon points="80,52 81.4,55.6 85,57 81.4,58.4 80,62 78.6,58.4 75,57 78.6,55.6" style="fill: var(--fg-muted)" opacity=".55"/>
+  <polygon points="64,20 65.8,25 71,27 65.8,29 64,34 62.2,29 57,27 62.2,25" style="fill: var(--amber)"/>
+</svg>
