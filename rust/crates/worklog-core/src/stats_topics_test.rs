@@ -75,12 +75,19 @@ fn too_few_blocks_just_below_min_and_ready_at_min() {
 }
 
 #[test]
-fn topic_count_follows_rounded_sqrt_and_clamps() {
+fn fallback_topic_count_follows_rounded_sqrt_and_clamps_and_silhouette_k_stays_in_range() {
     // catches: floor/ceil instead of round, missing MIN clamp, missing MAX clamp.
+    // The silhouette rule legitimately replaces sqrt(n/2) above ten blocks, so the
+    // sqrt rule is checked directly and through the n < 10 fallback.
     assert_eq!(ready(&input(fan(6))).topics.len(), 2); // sqrt(3)=1.73 -> 2
-    assert_eq!(ready(&input(fan(10))).topics.len(), 2); // sqrt(5)=2.24: ceil would give 3
-    assert_eq!(ready(&input(fan(14))).topics.len(), 3); // sqrt(7)=2.65: floor would give 2
-    assert_eq!(ready(&input(fan(200))).topics.len(), MAX_TOPICS); // sqrt(100)=10 -> 8
+    assert_eq!(old_k(10), 2); // sqrt(5)=2.24: ceil would give 3
+    assert_eq!(old_k(14), 3); // sqrt(7)=2.65: floor would give 2
+    assert_eq!(old_k(2000), MAX_TOPICS); // sqrt(1000)=31.6 clamps down
+    assert_eq!(old_k(2), MIN_TOPICS);
+    // n=14: n/5 = 2, so only k=2 is searched.
+    assert_eq!(ready(&input(fan(14))).topics.len(), 2);
+    let k = ready(&input(fan(200))).topics.len();
+    assert!((MIN_TOPICS..=MAX_TOPICS).contains(&k), "{k}");
 }
 
 #[test]
@@ -389,4 +396,136 @@ fn warmup_blocks_have_zero_assignment_novelty_and_their_day_takes_the_median() {
     assert!(a.novelty[..20].iter().all(|&v| v == 0.0));
     assert!(a.novelty[20] > 0.5);
     assert_eq!(r.days[0].novelty, r.days[1].novelty);
+}
+
+/// One blob per size, each along its own axis with a small deterministic wobble
+/// on the next axis.
+fn blobs(sizes: &[usize]) -> Vec<Vec<f32>> {
+    let dim = sizes.len() + 1;
+    let mut out = vec![];
+    for (g, &sz) in sizes.iter().enumerate() {
+        for i in 0..sz {
+            let mut v = vec![0.0; dim];
+            v[g] = 1.0;
+            v[g + 1] = 0.02 * (i as f32 + 1.0);
+            out.push(v);
+        }
+    }
+    out
+}
+
+fn chosen(v: &[Vec<f32>]) -> usize {
+    choose_k(v, &merge_history(v))
+}
+
+#[test]
+fn choose_k_finds_thirteen_blobs_where_the_sqrt_rule_gives_ten() {
+    // catches: keeping the sqrt rule (10), a MAX_TOPICS cap below 13, n/5 range too small.
+    let v = blobs(&[15; 13]);
+    assert_eq!(v.len(), 195);
+    assert_eq!(old_k(v.len()), 10);
+    assert_eq!(chosen(&v), 13);
+}
+
+#[test]
+fn choose_k_never_picks_a_partition_with_a_two_block_topic() {
+    // catches: no MIN_TOPIC_BLOCKS filter (k=5 isolates the 2-point blob).
+    let v = blobs(&[15, 15, 15, 15, 2]);
+    assert_eq!(chosen(&v), 4);
+}
+
+#[test]
+fn choose_k_accepts_a_topic_of_exactly_min_blocks() {
+    // catches: `<=` instead of `<` on the size filter (3-point blob wrongly rejected).
+    let v = blobs(&[15, 15, 15, 15, 3]);
+    assert_eq!(chosen(&v), 5);
+}
+
+#[test]
+fn best_k_breaks_ties_toward_the_smaller_k() {
+    // catches: `>=` (last tie wins), picking the largest k.
+    assert_eq!(best_k([(2, 0.5), (3, 0.5), (4, 0.5)]), Some(2));
+    assert_eq!(best_k([(2, 0.4), (3, 0.5), (4, 0.5)]), Some(3));
+    assert_eq!(best_k([]), None);
+}
+
+#[test]
+fn choose_k_falls_back_to_the_sqrt_rule_below_ten_blocks() {
+    // catches: panic or empty range when n/5 < MIN_TOPICS (n=8, 9).
+    for n in [8usize, 9] {
+        let v = blobs(&[n]);
+        assert_eq!(chosen(&v), old_k(n));
+    }
+    assert_eq!(chosen(&[]), MIN_TOPICS);
+}
+
+#[test]
+fn choose_k_falls_back_when_no_cut_has_three_blocks_per_topic() {
+    // catches: returning MIN_TOPICS or an unfiltered k when every candidate is rejected.
+    let v = blobs(&[1; 10]);
+    assert_eq!(chosen(&v), old_k(10));
+}
+
+#[test]
+fn choose_k_is_deterministic() {
+    // catches: iteration-order leakage into the history, k or labels.
+    let v = blobs(&[15, 15, 15, 15, 2]);
+    let m = merge_history(&v);
+    assert_eq!(m, merge_history(&v));
+    assert_eq!(choose_k(&v, &m), choose_k(&v, &merge_history(&v)));
+    assert_eq!(cut(&m, v.len(), 4), cut(&merge_history(&v), v.len(), 4));
+}
+
+#[test]
+fn cut_numbers_labels_by_lowest_member_and_cluster_is_a_cut() {
+    // catches: labels numbered by merge order or union-find root, off-by-one in n - k.
+    for n in [6usize, 14, 40, 200] {
+        let v: Vec<Vec<f32>> = fan(n).into_iter().map(|p| p.vec).collect();
+        let m = merge_history(&v);
+        assert_eq!(m.0.len(), n - 1);
+        for k in [1, 2, 3, n] {
+            let got = cut(&m, n, k);
+            let mut seen = vec![];
+            for &l in &got {
+                if !seen.contains(&l) {
+                    seen.push(l);
+                }
+            }
+            assert_eq!(seen, (0..k).collect::<Vec<_>>(), "n={n} k={k}");
+        }
+        assert_eq!(cluster(&v, 5), cut(&m, n, 5));
+    }
+}
+
+#[test]
+fn cut_replays_hand_computed_average_linkage() {
+    // 0,1 are nearest; 2 joins them next; 3 is orthogonal: k=2 -> {0,1,2} {3}.
+    let v = vec![
+        vec![1.0, 0.0],
+        vec![0.99, 0.1],
+        vec![0.9, 0.4],
+        vec![0.0, 1.0],
+    ];
+    let m = merge_history(&v);
+    assert_eq!((m.0[0].0, m.0[0].1), (0, 1));
+    assert_eq!((m.0[1].0, m.0[1].1), (0, 2));
+    assert_eq!(cut(&m, 4, 2), vec![0, 0, 0, 1]);
+    assert_eq!(cut(&m, 4, 4), vec![0, 1, 2, 3]);
+    assert_eq!(cut(&m, 4, 1), vec![0, 0, 0, 0]);
+}
+
+#[test]
+#[ignore]
+fn bench_merge_history_and_choose_k_at_2000() {
+    let v = blobs(&[100; 20]);
+    let t = std::time::Instant::now();
+    let m = merge_history(&v);
+    let merge_ms = t.elapsed().as_millis();
+    let t = std::time::Instant::now();
+    let k = choose_k(&v, &m);
+    let ms = t.elapsed().as_millis();
+    println!(
+        "n={} merge_history {merge_ms} ms, choose_k {ms} ms (k={k})",
+        v.len()
+    );
 }

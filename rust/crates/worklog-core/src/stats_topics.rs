@@ -10,7 +10,7 @@ use crate::topic_metrics::{
 };
 use crate::topics_contract::{
     Highlight, NamedBy, Naming, Topic, TopicsReport, TopicsStatus, HIGHLIGHTS_TOP, MAX_TOPICS,
-    MIN_BLOCKS, MIN_TOPICS, ODDBALL_MAX_COS,
+    MIN_BLOCKS, MIN_TOPICS, MIN_TOPIC_BLOCKS, ODDBALL_MAX_COS,
 };
 
 #[derive(Debug, Clone)]
@@ -32,10 +32,15 @@ pub struct TopicsInput {
     pub history: Vec<BlockPoint>,
 }
 
-/// Average-linkage agglomerative clustering on cosine distance; returns each
-/// vector's cluster label. Labels are numbered by lowest member, and callers pass
-/// vectors sorted by id, so exact ties merge the lower-id pair first.
-pub fn cluster(vectors: &[Vec<f32>], k: usize) -> Vec<usize> {
+/// Merge history of one average-linkage run: (lowest member of each merged
+/// cluster, lower first, merge distance), in merge order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Merges(pub Vec<(usize, usize, f32)>);
+
+/// Average-linkage agglomerative clustering on cosine distance, run down to one
+/// cluster. Callers pass vectors sorted by id, so exact ties merge the lower-id
+/// pair first.
+pub fn merge_history(vectors: &[Vec<f32>]) -> Merges {
     let n = vectors.len();
     let mut dist = vec![vec![0.0; n]; n];
     for i in 0..n {
@@ -44,14 +49,17 @@ pub fn cluster(vectors: &[Vec<f32>], k: usize) -> Vec<usize> {
             dist[j][i] = dist[i][j];
         }
     }
-    let mut cl: Vec<Vec<usize>> = (0..n).map(|i| vec![i]).collect();
+    // `lowest[i]` is the lowest member of cluster i; clusters stay ordered by it.
+    let mut lowest: Vec<usize> = (0..n).collect();
+    let mut size = vec![1usize; n];
     // `slot[i]` is the row of `dist` holding cluster i; rows are updated in
     // place with the average-linkage (UPGMA) recurrence, so a step is O(m^2).
     let mut slot: Vec<usize> = (0..n).collect();
-    while cl.len() > k {
+    let mut merges = Vec::with_capacity(n.saturating_sub(1));
+    while slot.len() > 1 {
         let (mut bi, mut bj, mut best) = (0, 1, f64::INFINITY);
-        for i in 0..cl.len() {
-            for j in i + 1..cl.len() {
+        for i in 0..slot.len() {
+            for j in i + 1..slot.len() {
                 let avg = dist[slot[i]][slot[j]];
                 // 1e-12: float noise must not break a tie toward the later pair.
                 if avg < best - 1e-12 {
@@ -60,23 +68,122 @@ pub fn cluster(vectors: &[Vec<f32>], k: usize) -> Vec<usize> {
             }
         }
         let (a, b) = (slot[bi], slot[bj]);
-        let (na, nb) = (cl[bi].len() as f64, cl[bj].len() as f64);
+        let (na, nb) = (size[bi] as f64, size[bj] as f64);
         for &c in &slot {
             let d = (na * dist[a][c] + nb * dist[b][c]) / (na + nb);
             dist[a][c] = d;
             dist[c][a] = d;
         }
+        merges.push((lowest[bi], lowest[bj], best as f32));
         slot.remove(bj);
-        let merged = cl.remove(bj);
-        cl[bi].extend(merged);
+        lowest.remove(bj);
+        size[bi] += size.remove(bj);
     }
-    let mut labels = vec![0; n];
-    for (label, members) in cl.iter().enumerate() {
-        for &i in members {
-            labels[i] = label;
+    Merges(merges)
+}
+
+/// Labels after replaying the first `n - k` merges, numbered by lowest member.
+pub fn cut(m: &Merges, n: usize, k: usize) -> Vec<usize> {
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+    for &(a, b, _) in m.0.iter().take(n.saturating_sub(k)) {
+        let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
+        // a < b are lowest members, so the lower root stays the lowest member.
+        parent[ra.max(rb)] = ra.min(rb);
+    }
+    let mut label_of = vec![usize::MAX; n];
+    let mut next = 0;
+    (0..n)
+        .map(|i| {
+            let r = find(&mut parent, i);
+            if label_of[r] == usize::MAX {
+                label_of[r] = next;
+                next += 1;
+            }
+            label_of[r]
+        })
+        .collect()
+}
+
+pub fn cluster(vectors: &[Vec<f32>], k: usize) -> Vec<usize> {
+    cut(&merge_history(vectors), vectors.len(), k)
+}
+
+fn old_k(n: usize) -> usize {
+    ((n as f64 / 2.0).sqrt().round() as usize).clamp(MIN_TOPICS, MAX_TOPICS)
+}
+
+/// Mean silhouette of `labels` (singletons score 0) over the distance matrix.
+fn silhouette(dist: &[Vec<f64>], labels: &[usize], k: usize) -> f64 {
+    let n = labels.len();
+    let mut sizes = vec![0usize; k];
+    for &l in labels {
+        sizes[l] += 1;
+    }
+    let mut total = 0.0;
+    for i in 0..n {
+        if sizes[labels[i]] < 2 {
+            continue;
+        }
+        let mut sums = vec![0.0; k];
+        for j in 0..n {
+            if j != i {
+                sums[labels[j]] += dist[i][j];
+            }
+        }
+        let a = sums[labels[i]] / (sizes[labels[i]] - 1) as f64;
+        let b = (0..k)
+            .filter(|&c| c != labels[i])
+            .map(|c| sums[c] / sizes[c] as f64)
+            .fold(f64::INFINITY, f64::min);
+        let top = a.max(b);
+        if top > 0.0 {
+            total += (b - a) / top;
         }
     }
-    labels
+    total / n as f64
+}
+
+/// First best score wins, so ties go to the smaller k.
+fn best_k(scored: impl IntoIterator<Item = (usize, f64)>) -> Option<usize> {
+    let mut best: Option<(usize, f64)> = None;
+    for (k, s) in scored {
+        if best.is_none_or(|(_, b)| s > b) {
+            best = Some((k, s));
+        }
+    }
+    best.map(|(k, _)| k)
+}
+
+/// Topic count with the best mean silhouette among cuts whose topics all hold
+/// MIN_TOPIC_BLOCKS blocks; the old sqrt rule when none qualifies.
+pub fn choose_k(centered: &[Vec<f32>], m: &Merges) -> usize {
+    let n = centered.len();
+    let dist: Vec<Vec<f64>> = (0..n)
+        .map(|i| {
+            (0..n)
+                .map(|j| 1.0 - cosine(&centered[i], &centered[j]))
+                .collect()
+        })
+        .collect();
+    let scored = (MIN_TOPICS..=MAX_TOPICS.min(n / 5)).filter_map(|k| {
+        let labels = cut(m, n, k);
+        let mut sizes = vec![0usize; k];
+        for &l in &labels {
+            sizes[l] += 1;
+        }
+        sizes
+            .iter()
+            .all(|&s| s >= MIN_TOPIC_BLOCKS)
+            .then(|| (k, silhouette(&dist, &labels, k)))
+    });
+    best_k(scored).unwrap_or_else(|| old_k(n))
 }
 
 pub(crate) fn is_oddball(nearest_cos: f64) -> bool {
@@ -194,8 +301,9 @@ pub fn build_with_assignments(input: &TopicsInput) -> (TopicsReport, Assignments
     let history_raw: Vec<Vec<f32>> = input.history.iter().map(|p| p.vec.clone()).collect();
     let history_centered = center_with(&history_raw, &now_mean);
 
-    let k = ((n as f64 / 2.0).sqrt().round() as usize).clamp(MIN_TOPICS, MAX_TOPICS);
-    let (topics, topic_of) = topics_of(&pts, &cluster(&centered, k));
+    let merges = merge_history(&centered);
+    let k = choose_k(&centered, &merges);
+    let (topics, topic_of) = topics_of(&pts, &cut(&merges, n, k));
 
     let now_points: Vec<BlockPoint> = pts.iter().map(|p| (*p).clone()).collect();
     let novelty = novelty(&now_points, &centered, &input.history, &history_centered);
