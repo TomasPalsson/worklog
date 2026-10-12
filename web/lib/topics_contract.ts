@@ -34,8 +34,13 @@ export interface Topic {
 /** One block on the 2-D semantic map, x/y in [0,1]. */
 export interface MapPoint {
   block_id: number;
+  /** Flat map position in [0,1]². */
   x: number;
   y: number;
+  /** Star field position in [0,1]³. */
+  sx: number;
+  sy: number;
+  sz: number;
   topic_id: number;
   day: string;
   seconds: number;

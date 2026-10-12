@@ -23,9 +23,11 @@ pub const PROMPTS_PER_BLOCK: usize = 5;
 pub const PROMPT_CHARS: usize = 300;
 /// Fewer embedded work blocks than this in range → `TooFewBlocks`.
 pub const MIN_BLOCKS: usize = 6;
-/// Topic count bounds; k = clamp(round(sqrt(n / 2)), MIN_TOPICS, MAX_TOPICS).
+/// Topic count bounds; k = best-silhouette cut in [MIN_TOPICS, min(MAX_TOPICS, n/5)]
+/// with no topic under MIN_TOPIC_BLOCKS, else clamp(round(sqrt(n / 2)), ..).
 pub const MIN_TOPICS: usize = 2;
-pub const MAX_TOPICS: usize = 10;
+pub const MAX_TOPICS: usize = 20;
+pub const MIN_TOPIC_BLOCKS: usize = 3;
 /// Fewer embedded blocks than this in range → `points` is empty (no map).
 pub const MAP_MIN_POINTS: usize = 10;
 /// A block is an oddball when its closest other block in range is below this
@@ -114,12 +116,17 @@ pub struct Topic {
     pub top_tickets: Vec<Ranked>,
 }
 
-/// One block on the 2-D semantic map (t-SNE of centered vectors, in [0,1]²).
+/// One block on the semantic map (t-SNE of centered vectors with topic
+/// gravity): `x, y` in [0,1]² for the flat map, `sx, sy, sz` in [0,1]³ for
+/// the star field.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct MapPoint {
     pub block_id: i64,
     pub x: f32,
     pub y: f32,
+    pub sx: f32,
+    pub sy: f32,
+    pub sz: f32,
     pub topic_id: usize,
     pub day: String,
     pub seconds: i64,
