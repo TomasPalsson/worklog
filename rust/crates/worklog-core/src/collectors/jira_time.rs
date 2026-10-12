@@ -10,8 +10,22 @@ use crate::estimate_progress_contract::RawWorklog;
 use crate::tempo_hub_contract::TEMPO_PAGE_LIMIT;
 use crate::tz;
 
-/// Original estimate in seconds per requested key. A key Jira does not
-/// return, or one without an estimate, maps to `None`, never 0.
+/// The ticket's budget in seconds: time spent + remaining while Jira has
+/// remaining time, so a hand-lowered (or raised) remaining estimate counts.
+/// Jira floors remaining at 0, so at 0 the original estimate caps the budget
+/// and an overrun still shows as over.
+fn budget_seconds(timetracking: &serde_json::Value) -> Option<i64> {
+    let original = timetracking["originalEstimateSeconds"].as_i64();
+    let spent = timetracking["timeSpentSeconds"].as_i64().unwrap_or(0);
+    match timetracking["remainingEstimateSeconds"].as_i64() {
+        Some(r) if r > 0 => Some(spent + r),
+        Some(_) => original.map(|o| o.min(spent)),
+        None => original,
+    }
+}
+
+/// Budget in seconds per requested key (see [`budget_seconds`]). A key Jira
+/// does not return, or one without an estimate, maps to `None`, never 0.
 pub fn fetch_estimates_with(
     auth: &JiraAuth,
     keys: &[String],
@@ -40,10 +54,7 @@ pub fn fetch_estimates_with(
     let mut out: HashMap<String, Option<i64>> = keys.iter().map(|k| (k.clone(), None)).collect();
     for issue in body["issues"].as_array().into_iter().flatten() {
         if let Some(key) = str_at(issue, &["key"]) {
-            out.insert(
-                key,
-                issue["fields"]["timetracking"]["originalEstimateSeconds"].as_i64(),
-            );
+            out.insert(key, budget_seconds(&issue["fields"]["timetracking"]));
         }
     }
     Ok(out)
