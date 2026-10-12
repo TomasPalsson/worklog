@@ -135,17 +135,17 @@ export function registerTicket(on: On): void {
   })
 
   // The first prompt (and the first after /clear) picks or asks the ticket before it enters.
+  // The hand-off rides on each prompt: prompt.context is computed once and cached, so it would never carry it.
   on('prompt.submit', async ($, event, next) => {
     if (state.askable && state.cwd !== undefined) await askTicket($, state.cwd, state, event.text).catch(() => undefined)
-    return next(event)
+    return next(state.handoff === undefined ? event : { ...event, context: [...(event.context ?? []), state.handoff] })
   })
 
   on('prompt.context', async ($, event, next) => {
     const result = await next(event)
     const ticket = state.recorded ?? state.ticket
     const text = state.recorded === undefined ? `Current branch ticket: ${ticket}` : `Session ticket: ${ticket}`
-    const lines = [ticket === undefined ? undefined : text, state.handoff].filter(l => l !== undefined)
-    return lines.length === 0 ? result : { ...result, blocks: [...result.blocks, { name: 'worklog', text: lines.join('\n') }] }
+    return ticket === undefined ? result : { ...result, blocks: [...result.blocks, { name: 'worklog', text }] }
   })
 
   for (const kind of ['commit', 'pr'] as const) {

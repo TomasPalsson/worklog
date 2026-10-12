@@ -55,7 +55,7 @@ const seat = (on: On, branch: { current: string | undefined }, world: World = {}
   })
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('prompt.context', (_$, e) => ({ blocks: e.blocks }))
-  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  on('prompt.submit', (_$, e) => ({ text: e.text, context: e.context }))
   const clock = mock.clock(on)
   on('attribution.text', (_$, e) => ({ text: e.text }))
   on('turn.complete', (_$, e) => ({ text: e.answer }))
@@ -342,31 +342,43 @@ const BRANCH_BLOCK = { name: 'worklog', text: 'Current branch ticket: GENAI-9' }
 const PROMPT = { text: 'hi', wait: false, origin: { kind: 'composer' as const } }
 const blocksOf = async ($: Parameters<Parameters<typeof test>[1]>[0]) => (await $.prompt.context(OTHER)).blocks
 
-test('Create hands off on every prompt, not just the first (create a ticket)', async ($, on) => {
-  await asked({ answer: 'Create a new ticket' })($, on)
-  const expected = [...OTHER.blocks, { name: 'worklog', text: `${BRANCH_BLOCK.text}\n${CREATE(SESSION_ID)}` }]
-  expect(await blocksOf($)).toEqual(expected)
-  expect(await blocksOf($)).toEqual(expected)
+const sent = async ($: Parameters<Parameters<typeof test>[1]>[0], on: On, world: World, branch = 'GENAI-9-fix') => {
+  const { seen } = seat(on, { current: branch }, world)
+  await $.session.start(start(WORK_CWD))
+  const first = await $.prompt.submit(PROMPT)
+  const second = await $.prompt.submit(PROMPT)
+  return { seen, contexts: [first, second].map(r => ('context' in r ? r.context : undefined)) }
+}
+
+test('Create hands off with the asking prompt and every one after (create a ticket)', async ($, on) => {
+  const { contexts } = await sent($, on, { answer: 'Create a new ticket' })
+  expect(contexts).toEqual([[CREATE(SESSION_ID)], [CREATE(SESSION_ID)]])
 })
 
-test('Create hands off even with no branch ticket (hand-off hidden behind the branch guard)', async ($, on) => {
-  await asked({ answer: 'Create a new ticket' }, WORK_CWD, 'main')($, on)
-  expect(await blocksOf($)).toEqual([...OTHER.blocks, { name: 'worklog', text: CREATE(SESSION_ID) }])
+test('Create hands off even with no branch ticket', async ($, on) => {
+  const { contexts } = await sent($, on, { answer: 'Create a new ticket' }, 'main')
+  expect(contexts).toEqual([[CREATE(SESSION_ID)], [CREATE(SESSION_ID)]])
+})
+
+test('the hand-off rides on the prompt, not the once-per-conversation context block', async ($, on) => {
+  await asked({ answer: 'Create a new ticket' })($, on)
+  expect(await blocksOf($)).toEqual([...OTHER.blocks, BRANCH_BLOCK])
 })
 
 test('Skip adds no hand-off', async ($, on) => {
-  await asked({ answer: 'Skip' })($, on)
+  const { contexts } = await sent($, on, { answer: 'Skip' })
+  expect(contexts).toEqual([undefined, undefined])
   expect(await blocksOf($)).toEqual([...OTHER.blocks, BRANCH_BLOCK])
 })
 
 test('non-key Other text hands off find with that text', async ($, on) => {
-  await asked({ answer: 'the login bug' })($, on)
-  expect(await blocksOf($)).toEqual([...OTHER.blocks, { name: 'worklog', text: `${BRANCH_BLOCK.text}\n${FIND('the login bug', SESSION_ID)}` }])
+  const { contexts } = await sent($, on, { answer: 'the login bug' })
+  expect(contexts[0]).toEqual([FIND('the login bug', SESSION_ID)])
 })
 
 test('a key plus words under Other is find text, not a recorded key', async ($, on) => {
-  await asked({ answer: 'ABC-123 and more' })($, on)
-  expect((await blocksOf($)).at(-1)).toEqual({ name: 'worklog', text: `${BRANCH_BLOCK.text}\n${FIND('ABC-123 and more', SESSION_ID)}` })
+  const { contexts } = await sent($, on, { answer: 'ABC-123 and more' })
+  expect(contexts[0]).toEqual([FIND('ABC-123 and more', SESSION_ID)])
 })
 
 test('a recorded key replaces the branch ticket in context and attribution, with no hand-off', async ($, on) => {
@@ -438,12 +450,16 @@ const claudeRuns = async (command: string, world: World = {}, id = SESSION_ID) =
   return async ($: Parameters<Parameters<typeof test>[1]>[0], on: On) => {
     await asked({ answer: 'Create a new ticket', bash })($, on)
     await $.tool.call({ tool: 'Bash', command: command.replace('$ID', id) })
-    return blocksOf($)
+    return afterwards($)
   }
 }
+const afterwards = async ($: Parameters<Parameters<typeof test>[1]>[0]) => {
+  const next = await $.prompt.submit(PROMPT)
+  return { blocks: await blocksOf($), context: 'context' in next ? next.context : undefined }
+}
 const USE = (key: string, id: string) => `worklog ticket use ${key} --session ${id}`
-const STILL_CREATE = (id: string) => [...OTHER.blocks, { name: 'worklog', text: `${BRANCH_BLOCK.text}\n${CREATE(id)}` }]
-const RECORDED = [...OTHER.blocks, { name: 'worklog', text: 'Session ticket: ABC-123' }]
+const STILL_CREATE = (id: string) => ({ blocks: [...OTHER.blocks, BRANCH_BLOCK], context: [CREATE(id)] })
+const RECORDED = { blocks: [...OTHER.blocks, { name: 'worklog', text: 'Session ticket: ABC-123' }], context: undefined }
 
 test('Claude running ticket use for this session records the key and ends the hand-off', async ($, on) => {
   expect(await (await claudeRuns(USE('ABC-123', SESSION_ID)))($, on)).toEqual(RECORDED)
@@ -483,7 +499,7 @@ test('a failed ticket use (isError) changes nothing', async ($, on) => {
 test('a ticket use under another tool name changes nothing', async ($, on) => {
   await asked({ answer: 'Create a new ticket' })($, on)
   await $.tool.call({ tool: 'Write', file_path: '/tmp/x', content: USE('ABC-123', SESSION_ID) })
-  expect(await blocksOf($)).toEqual(STILL_CREATE(SESSION_ID))
+  expect(await afterwards($)).toEqual(STILL_CREATE(SESSION_ID))
 })
 
 const SURE = { exitCode: 0, stdout: '{"picked":"GENAI-2","likely":"GENAI-2","confidence":0.9}\n' }
