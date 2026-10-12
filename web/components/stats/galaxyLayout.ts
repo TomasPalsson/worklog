@@ -105,11 +105,26 @@ function placeLabel(topic: Topic, mine: GalaxyDot[], dots: GalaxyDot[], height: 
   const hoursW = hoursLabel(topic.seconds).length * HOURS_FONT * NAME_CHAR_W;
   const w = Math.max(Math.max(...lines.map((t) => t.length)) * fontSize * NAME_CHAR_W, hoursW);
   const h = fontSize * (1 + (lines.length - 1) * NAME_LINE_H) + LABEL_LINE_GAP + HOURS_FONT;
-  const x = weightedMedian(mine.map((d) => ({ v: d.cx, w: d.point.seconds + 1 })));
-  const above = Math.min(...mine.map((d) => d.cy - d.r)) - ISLAND_GAP - h / 2;
-  const below = Math.max(...mine.map((d) => d.cy + d.r)) + ISLAND_GAP + h / 2;
-  const clear = (y: number) => dots.every((d) => !coversDot(x, y, w, h, d));
-  const y = above - h / 2 < 0 || (!clear(above) && below + h / 2 <= height && clear(below)) ? below : above;
+  const mid = weightedMedian(mine.map((d) => ({ v: d.cx, w: d.point.seconds + 1 })));
+  const cy = weightedMedian(mine.map((d) => ({ v: d.cy, w: d.point.seconds + 1 })));
+  const top = Math.min(...mine.map((d) => d.cy - d.r));
+  const bottom = Math.max(...mine.map((d) => d.cy + d.r));
+  const left = Math.min(...mine.map((d) => d.cx - d.r));
+  const right = Math.max(...mine.map((d) => d.cx + d.r));
+  // Candidate spots in order of preference: above, below, right of, left of the island. The first one that is inside
+  // the map and covers no dot wins; if none is clear, the first one inside the map (above, else below).
+  const spots = [
+    { x: mid, y: top - ISLAND_GAP - h / 2 },
+    { x: mid, y: bottom + ISLAND_GAP + h / 2 },
+    { x: right + ISLAND_GAP + w / 2, y: cy },
+    { x: left - ISLAND_GAP - w / 2, y: cy },
+  ];
+  // above/below only need to fit vertically (x is clamped onto the map afterwards); a side spot must fit both ways
+  const inside = (q: { x: number; y: number }, i: number) =>
+    q.y - h / 2 >= 0 && q.y + h / 2 <= height && (i < 2 || (q.x - w / 2 >= LABEL_MIN_X && q.x + w / 2 <= LABEL_MAX_X));
+  const clear = (q: { x: number; y: number }) => dots.every((d) => !coversDot(q.x, q.y, w, h, d));
+  const pick = spots.find((q, i) => inside(q, i) && clear({ x: Math.min(LABEL_MAX_X - w / 2, Math.max(LABEL_MIN_X + w / 2, q.x)), y: q.y })) ?? (spots[0].y - h / 2 >= 0 ? spots[0] : spots[1]);
+  const { x, y } = pick;
   return { topic, lines, x, y, fontSize, w, h };
 }
 

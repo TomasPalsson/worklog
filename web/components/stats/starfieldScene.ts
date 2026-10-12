@@ -20,6 +20,8 @@ const SPREAD_MIN = 0.22;
 export type Vec3 = [number, number, number];
 
 export interface Star {
+  /** The block's id: stable across report refreshes, unlike the array index. */
+  id: number;
   pos: Vec3;
   r: number;
   topic: number;
@@ -80,6 +82,12 @@ function makeDust(): Dust[] {
   });
 }
 
+function residualAxis(axes: Vec3[]): Vec3 {
+  const units: Vec3[] = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  const rest = units.map((u) => axes.reduce((r, a) => add(r, a, -dot(r, a)), u));
+  return rest.reduce((best, r) => (Math.hypot(...r) > Math.hypot(...best) ? r : best));
+}
+
 // Principal axes of a point cloud, largest spread first (power iteration with Gram-Schmidt, fixed starts: deterministic).
 export function principalAxes(pts: Vec3[]): Vec3[] {
   const n = pts.length;
@@ -97,6 +105,9 @@ export function principalAxes(pts: Vec3[]): Vec3[] {
       v = [v[0] / len, v[1] / len, v[2] / len];
     }
     for (const a of axes) v = add(v, a, -dot(v, a));
+    // A flat or straight cloud has no spread left in this direction: v is float noise. Use the unit axis that keeps
+    // the most length once the axes found so far are removed, so the basis stays orthonormal (the turn stays rigid).
+    if (Math.hypot(v[0], v[1], v[2]) < 1e-6) v = residualAxis(axes);
     const len = Math.hypot(v[0], v[1], v[2]) || 1;
     v = [v[0] / len, v[1] / len, v[2] / len];
     const big = v.reduce((b, x, i) => (Math.abs(x) > Math.abs(v[b]) ? i : b), 0);
@@ -116,6 +127,13 @@ function alignToAxes(pts: Vec3[]): Vec3[] {
   });
 }
 
+/** Index of the star for a block id in this scene, or null when the block is gone (or no id). */
+export function starIndexOf(scene: Scene, blockId: number | null): number | null {
+  if (blockId === null) return null;
+  const i = scene.stars.findIndex((s) => s.id === blockId);
+  return i < 0 ? null : i;
+}
+
 /** `align: false` keeps the raw sx/sy/sz mapping (tests of the geometry itself); the view always aligns. */
 export function buildScene(report: TopicsReport, opts: { align?: boolean } = {}): Scene {
   const maxSeconds = Math.max(1, ...report.points.map((p) => p.seconds));
@@ -123,6 +141,7 @@ export function buildScene(report: TopicsReport, opts: { align?: boolean } = {})
   const raw = report.points.map((p): Vec3 => [(p.sx - 0.5) * 2 * R, (p.sy - 0.5) * 2 * R, (p.sz - 0.5) * 2 * R]);
   const placed = opts.align === false ? raw : alignToAxes(raw);
   const stars: Star[] = report.points.map((p, i) => ({
+    id: p.block_id,
     pos: placed[i],
     r: MIN_R + R_RANGE * Math.sqrt(p.seconds / maxSeconds),
     topic: p.topic_id,

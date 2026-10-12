@@ -161,10 +161,19 @@ describe("star field engine", () => {
     expect(s.eng.camera().pos[2]).toBeCloseTo(before, 1); // catches a stuck "w" that keeps flying
   });
 
-  it("starts from a kept camera when one is passed", () => {
-    const kept = { pos: [1, 2, 3] as [number, number, number], yaw: 0.5, pitch: 0.1, fov: Math.PI / 3 };
+  it("starts from a kept camera and stays there: no idle orbit after a refresh (catches the snap-and-circle)", () => {
+    const kept = { pos: [10, 20, -150] as [number, number, number], yaw: 0.3, pitch: 0.1, fov: Math.PI / 3 };
     const s = setup(kept);
     expect(s.eng.camera()).toEqual(kept);
+    s.run(2000);
+    expect(s.eng.camera()).toEqual(kept);
+  });
+
+  it("without a kept camera the field orbits while idle", () => {
+    const s = setup();
+    const before = s.eng.camera().yaw;
+    s.run(2000);
+    expect(s.eng.camera().yaw).not.toBeCloseTo(before, 3);
   });
 
   it("dispose cancels frames and removes every listener", () => {
