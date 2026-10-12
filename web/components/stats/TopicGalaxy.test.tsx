@@ -296,6 +296,71 @@ describe("galaxyLayout labels", () => {
   });
 });
 
+describe("galaxyLayout label anchoring", () => {
+  type Box = { x: number; y: number; w: number; h: number };
+  type Circle = { cx: number; cy: number; r: number };
+  const hits = (l: Box, d: Circle) => {
+    const nx = Math.min(l.x + l.w / 2, Math.max(l.x - l.w / 2, d.cx));
+    const ny = Math.min(l.y + l.h / 2, Math.max(l.y - l.h / 2, d.cy));
+    return (nx - d.cx) ** 2 + (ny - d.cy) ** 2 < d.r ** 2;
+  };
+  // one dot each at the top and bottom edge (own topics, so each label has room) stretch y over 0..1: height 620
+  const frame = [point(90, { topic_id: 9, x: 0, y: 0 }), point(91, { topic_id: 8, x: 0, y: 1 })];
+  const island = (id0: number, topic_id: number, x: number, y: number) =>
+    [0, 1, 2, 3].map((k) => point(id0 + k, { topic_id, x: x + (k % 2) * 0.03, y: y + (k >> 1) * 0.04, seconds: 3600 * (k + 1) }));
+
+  it("sits exactly 6px above its island and covers none of its own dots", () => {
+    // catches the old median-y placement, which draws the label over the dots
+    const lay = galaxyLayout(report({ topics: [topic(0), topic(9), topic(8)], points: [...island(1, 0, 0.5, 0.5), ...frame] }));
+    const l = lay.labels.find((x) => x.topic.id === 0)!;
+    const mine = lay.dots.filter((d) => d.point.topic_id === 0);
+    const minTop = Math.min(...mine.map((d) => d.cy - d.r));
+    expect(l.y + l.h / 2).toBeCloseTo(minTop - 6, 9); // catches a different gap or the bare cy instead of cy - r
+    for (const d of mine) expect(hits(l, d)).toBe(false);
+    expect(l.x).toBeCloseTo(527.6, 9); // weighted median: x=500 holds 14402 of 36004, short of half, so the 0.53 column
+  });
+
+  it("a two-line wrapped name is anchored by its full box height", () => {
+    // catches a one-line height assumption: the second line would dip into the dots
+    const name = "Billing export · invoice · customer";
+    const lay = galaxyLayout(report({ topics: [topic(0, { name }), topic(9), topic(8)], points: [...island(1, 0, 0.5, 0.5), ...frame] }));
+    const l = lay.labels.find((x) => x.topic.id === 0)!;
+    expect(l.lines).toHaveLength(2);
+    const minTop = Math.min(...lay.dots.filter((d) => d.point.topic_id === 0).map((d) => d.cy - d.r));
+    expect(l.y + l.h / 2).toBeCloseTo(minTop - 6, 9);
+  });
+
+  it("an island at the very top gets its label below, 6px under its lowest dot, inside the map", () => {
+    // catches a missing flip: the label would clamp onto the dots at the top edge
+    const lay = galaxyLayout(report({ topics: [topic(0), topic(9), topic(8)], points: [...island(1, 0, 0.5, 0), ...frame] }));
+    const l = lay.labels.find((x) => x.topic.id === 0)!;
+    const mine = lay.dots.filter((d) => d.point.topic_id === 0);
+    const maxBottom = Math.max(...mine.map((d) => d.cy + d.r));
+    expect(l.y - l.h / 2).toBeCloseTo(maxBottom + 6, 9);
+    for (const d of mine) expect(hits(l, d)).toBe(false);
+    expect(l.y + l.h / 2).toBeLessThanOrEqual(lay.height);
+  });
+
+  it("a label pushed off other topics' dots: no label covers any dot or another label", () => {
+    // catches nudging that ignores other topics' dot circles: B sits right where A's label is anchored
+    const topics = [topic(0), topic(1), topic(9), topic(8)];
+    const points = [...island(1, 0, 0.5, 0.6), ...island(11, 1, 0.5, 0.45), ...frame];
+    const { labels, dots, height } = galaxyLayout(report({ topics, points }));
+    for (const l of labels) {
+      for (const d of dots) if (d.point.topic_id < 8 || d.point.topic_id === l.topic.id) expect(hits(l, d)).toBe(false);
+      expect(l.y - l.h / 2).toBeGreaterThanOrEqual(-1e-9);
+      expect(l.y + l.h / 2).toBeLessThanOrEqual(height + 1e-9);
+    }
+    for (let i = 0; i < labels.length; i++)
+      for (let j = i + 1; j < labels.length; j++) expect(overlaps(labels[i], labels[j])).toBe(false);
+  });
+
+  it("is deterministic", () => {
+    const r = report({ topics: [topic(0), topic(1), topic(9), topic(8)], points: [...island(1, 0, 0.5, 0.6), ...island(11, 1, 0.5, 0.45), ...frame] });
+    expect(galaxyLayout(r).labels).toEqual(galaxyLayout(r).labels);
+  });
+});
+
 describe("tips", () => {
   // catches: a leftover synonym anywhere in the rendered markup, tips included
   it("renders none of the retired names", () => {
