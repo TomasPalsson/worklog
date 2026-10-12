@@ -80,11 +80,50 @@ function makeDust(): Dust[] {
   });
 }
 
-export function buildScene(report: TopicsReport): Scene {
+// Principal axes of a point cloud, largest spread first (power iteration with Gram-Schmidt, fixed starts: deterministic).
+export function principalAxes(pts: Vec3[]): Vec3[] {
+  const n = pts.length;
+  const c = pts.reduce<Vec3>((acc, p) => add(acc, p, 1 / Math.max(1, n)), [0, 0, 0]);
+  const cov = [0, 1, 2].map((i) => [0, 1, 2].map((j) => pts.reduce((acc, p) => acc + ((p[i] - c[i]) * (p[j] - c[j])) / Math.max(1, n), 0)));
+  const axes: Vec3[] = [];
+  for (const start of [[1, 0.3, 0.1], [0.2, 1, 0.3], [0.1, 0.2, 1]] as Vec3[]) {
+    let v = start;
+    for (let it = 0; it < 120; it++) {
+      for (const a of axes) v = add(v, a, -dot(v, a));
+      v = [dot(cov[0] as Vec3, v), dot(cov[1] as Vec3, v), dot(cov[2] as Vec3, v)];
+      for (const a of axes) v = add(v, a, -dot(v, a));
+      const len = Math.hypot(v[0], v[1], v[2]);
+      if (len < 1e-12) break;
+      v = [v[0] / len, v[1] / len, v[2] / len];
+    }
+    for (const a of axes) v = add(v, a, -dot(v, a));
+    const len = Math.hypot(v[0], v[1], v[2]) || 1;
+    v = [v[0] / len, v[1] / len, v[2] / len];
+    const big = v.reduce((b, x, i) => (Math.abs(x) > Math.abs(v[b]) ? i : b), 0);
+    axes.push(v[big] < 0 ? [-v[0], -v[1], -v[2]] : v);
+  }
+  return axes;
+}
+
+// Centre the cloud and turn its longest side onto x (the wide side of the canvas), the next onto y.
+function alignToAxes(pts: Vec3[]): Vec3[] {
+  if (pts.length < 3) return pts;
+  const axes = principalAxes(pts);
+  const c = pts.reduce<Vec3>((acc, p) => add(acc, p, 1 / pts.length), [0, 0, 0]);
+  return pts.map((p) => {
+    const d: Vec3 = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+    return [dot(d, axes[0]), dot(d, axes[1]), dot(d, axes[2])];
+  });
+}
+
+/** `align: false` keeps the raw sx/sy/sz mapping (tests of the geometry itself); the view always aligns. */
+export function buildScene(report: TopicsReport, opts: { align?: boolean } = {}): Scene {
   const maxSeconds = Math.max(1, ...report.points.map((p) => p.seconds));
   const first = new Set(report.first_times.map((h) => h.block_id));
-  const stars: Star[] = report.points.map((p) => ({
-    pos: [(p.sx - 0.5) * 2 * R, (p.sy - 0.5) * 2 * R, (p.sz - 0.5) * 2 * R],
+  const raw = report.points.map((p): Vec3 => [(p.sx - 0.5) * 2 * R, (p.sy - 0.5) * 2 * R, (p.sz - 0.5) * 2 * R]);
+  const placed = opts.align === false ? raw : alignToAxes(raw);
+  const stars: Star[] = report.points.map((p, i) => ({
+    pos: placed[i],
     r: MIN_R + R_RANGE * Math.sqrt(p.seconds / maxSeconds),
     topic: p.topic_id,
     firstTime: first.has(p.block_id),
@@ -166,13 +205,19 @@ function boundOf(stars: Star[]): Scene["bound"] {
   return { centre: centroid, radius };
 }
 
-// Camera sits on the line back from the bounding-sphere centre along the view direction. A sphere of radius r
-// seen from distance d spans r/(d*tan(half)) of the half-view, so d = r / (FIT * tan(half)) puts its edge at FIT
-// (75%) of the half-extent of the narrower FOV (vertical, or horizontal for portrait aspect).
+// Camera sits on the line back from the bound centre along +z. A star offset (x, y, z) from the centre, seen from
+// distance d, lands at x / ((d + z) tan(halfX)) of the half-width (same for y), so the smallest d that keeps every star
+// within FIT (75%) of each half-extent is max over stars of |x| / (FIT tan halfX) - z and |y| / (FIT tan halfY) - z.
+// A wide canvas therefore frames the cloud's long (x) side, not a sphere around it. Floored at FLY_MIN's fit.
 export function fitDistance(scene: Scene, aspect = 16 / 9): number {
   const halfY = FOV / 2;
   const halfX = Math.atan(Math.tan(halfY) * aspect);
-  return Math.max(scene.bound.radius, FLY_MIN) / (FIT * Math.tan(Math.min(halfY, halfX)));
+  const c = scene.bound.centre;
+  const need = scene.stars.map((s) => {
+    const [x, y, z] = [s.pos[0] - c[0], s.pos[1] - c[1], s.pos[2] - c[2]];
+    return Math.max(Math.abs(x) / (FIT * Math.tan(halfX)), Math.abs(y) / (FIT * Math.tan(halfY))) - z;
+  });
+  return Math.max(FLY_MIN / (FIT * Math.tan(Math.min(halfY, halfX))), ...need);
 }
 
 export function initialCamera(scene: Scene, aspect = 16 / 9): Camera {

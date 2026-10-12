@@ -98,7 +98,7 @@ describe("initialCamera fit", () => {
 
 describe("island inflation", () => {
   it("a tight 2-star topic is spread to exactly 0.22 x the nearest centroid distance; its centroid is unchanged", () => {
-    const s = buildScene(report([pt(1, 0, -2), pt(2, 0, 2), pt(3, 1, 78), pt(4, 1, 82)]));
+    const s = buildScene(report([pt(1, 0, -2), pt(2, 0, 2), pt(3, 1, 78), pt(4, 1, 82)]), { align: false });
     expect(s.topics[0].spread).toBeCloseTo(0.22 * 80, 9);
     expect(s.topics[1].spread).toBeCloseTo(0.22 * 80, 9);
     expect(s.topics[0].centroid[0]).toBeCloseTo(0, 9);
@@ -107,21 +107,21 @@ describe("island inflation", () => {
   });
 
   it("a spread already above 0.22 x d is left alone (catches always rescaling / min instead of max)", () => {
-    const s = buildScene(report([pt(1, 0, -20), pt(2, 0, 20), pt(3, 1, 80)]));
+    const s = buildScene(report([pt(1, 0, -20), pt(2, 0, 20), pt(3, 1, 80)]), { align: false });
     expect(s.topics[0].spread).toBeCloseTo(20, 9);
     expect(s.stars[0].pos[0]).toBeCloseTo(-20, 9);
   });
 
   it("a 1-star topic is unchanged", () => {
-    const s = buildScene(report([pt(1, 0, -2), pt(2, 0, 2), pt(3, 1, 80)]));
+    const s = buildScene(report([pt(1, 0, -2), pt(2, 0, 2), pt(3, 1, 80)]), { align: false });
     expect(s.stars[2].pos[0]).toBeCloseTo(80, 9);
     expect(s.topics[1].spread).toBe(0);
   });
 
   it("coincident stars stay finite; an empty topic is not a neighbour at the origin", () => {
-    const s = buildScene(report([pt(1, 0, 40), pt(2, 0, 40), pt(3, 1, 80)], 3));
+    const s = buildScene(report([pt(1, 0, 40), pt(2, 0, 40), pt(3, 1, 80)], 3), { align: false });
     for (const st of s.stars) for (const v of st.pos) expect(Number.isFinite(v)).toBe(true);
-    const lone = buildScene(report([pt(1, 0, 78), pt(2, 0, 82)], 2));
+    const lone = buildScene(report([pt(1, 0, 78), pt(2, 0, 82)], 2), { align: false });
     expect(lone.topics[0].spread).toBeCloseTo(2, 9);
   });
 });
@@ -139,7 +139,7 @@ describe("constellation", () => {
   });
 
   it("scene edges are global star indices and never join two topics", () => {
-    const s = buildScene(report([pt(1, 0, -20), pt(2, 1, 60), pt(3, 0, 20), pt(4, 1, 100), pt(5, 1, 80)]));
+    const s = buildScene(report([pt(1, 0, -20), pt(2, 1, 60), pt(3, 0, 20), pt(4, 1, 100), pt(5, 1, 80)]), { align: false });
     expect(s.edges).toHaveLength(1 + 2);
     for (const [a, b] of s.edges) expect(s.stars[a].topic).toBe(s.stars[b].topic);
     expect(sorted(s.edges)).toEqual([[0, 2], [1, 4], [3, 4]]);

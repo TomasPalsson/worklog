@@ -78,7 +78,7 @@ const keys = (...k: string[]) => new Set(k);
 
 describe("buildScene stars", () => {
   it("maps 0.5 to the origin and 1 / 0 to +R / -R per axis", () => {
-    const s = buildScene(report([point(1), point(2, { sx: 1, sy: 1, sz: 1 }), point(3, { sx: 0, sy: 0, sz: 0 })]));
+    const s = buildScene(report([point(1), point(2, { sx: 1, sy: 1, sz: 1 }), point(3, { sx: 0, sy: 0, sz: 0 })]), { align: false });
     expect(s.stars[0].pos).toEqual([0, 0, 0]);
     expect(s.stars[1].pos).toEqual([R, R, R]);
     expect(s.stars[2].pos).toEqual([-R, -R, -R]);
@@ -122,7 +122,7 @@ describe("buildScene topics", () => {
     [point(1, { sx: 1 }), point(2, { sx: 0 }), point(3), point(4, { topic_id: 1, sx: 0.6, sy: 0.5, sz: 0.5 })],
     { topics: [topic(0, 7200), topic(1), topic(2)] },
   );
-  const s = buildScene(rep);
+  const s = buildScene(rep, { align: false });
 
   it("centroid and RMS spread exact on a 3-point fixture", () => {
     expect(s.topics[0].centroid).toEqual([0, 0, 0]);

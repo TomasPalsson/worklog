@@ -88,6 +88,9 @@ export function createEngine(
   };
   const flyTo = (to: Camera) => {
     interrupt(true);
+    // the star under the pointer is about to move away: drop its card
+    v.hover = null;
+    cb.onHover(null);
     // A hidden page gets no animation frames: jump instead of leaving a fly that never ends.
     if (reduced || document.hidden) v.cam = to;
     else v.fly = { from: v.cam, to, t0: null };

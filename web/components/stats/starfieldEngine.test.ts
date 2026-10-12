@@ -128,9 +128,24 @@ describe("star field engine", () => {
     const target = flyTarget(s.eng.camera(), s.scene.topics.find((t) => t.id === 1)!);
     s.eng.flyTopic(1);
     expect(s.eng.camera()).toEqual(target); // no frame ran, the camera is already there
-    const p = s.scene.stars.map((st) => project(target, st.pos, W, H)).find(Boolean)!;
+    hidden = false; // back in view: one frame redraws the hit boxes
+    document.dispatchEvent(new Event("visibilitychange"));
+    s.run(20);
+    const i = s.scene.stars.findIndex((st) => project(target, st.pos, W, H) !== null);
+    const p = project(target, s.scene.stars[i].pos, W, H)!;
     s.move(p.x, p.y);
     expect(s.hovers.at(-1)).not.toBeNull(); // catches the stuck fly that blocked hover in a background tab
+  });
+
+  it("starting a fly drops the hover card (catches a stale card left behind as the star moves away)", () => {
+    const s = setup();
+    s.eng.key("w", false);
+    s.run(50);
+    const p = project(s.eng.camera(), s.scene.stars[0].pos, W, H)!;
+    s.move(p.x, p.y);
+    expect(s.hovers.at(-1)?.i).toBe(0);
+    s.eng.flyTopic(1);
+    expect(s.hovers.at(-1)).toBeNull();
   });
 
   it("held keys are cleared when the page is hidden", () => {
