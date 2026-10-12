@@ -127,7 +127,7 @@
 }
 .ub-cell-wd { font-size: 10.5px; letter-spacing: 0.04em; color: var(--fg-muted); }
 .ub-cell-n { font-size: 12px; font-weight: 500; }
-.ub-cell[data-state="clear"] > * { background: var(--sage-bg); color: var(--sage-ink); }
+.ub-cell[data-state="clear"] > * { background: var(--bg-sunk); color: var(--fg-muted); }
 .ub-cell[data-state="clear"] .ub-cell-wd { color: inherit; opacity: 0.75; }
 .ub-cell[data-state="bill"] > * { background: var(--amber-bg); border-color: var(--amber); color: var(--amber-ink); }
 /* Tempo-pending cells carry a hatched foot so the state differs by texture, not hue alone. */
@@ -177,7 +177,7 @@
 .ub-legend [data-state="tempo"]::before { background: var(--art-hatch-amber), var(--amber-bg); border-color: var(--amber); }
 .ub-legend [data-state="bill"]::before { background: var(--amber-bg); border-color: var(--amber); }
 .ub-legend [data-state="waiting"]::before { background: var(--slate-bg); border-color: var(--slate); }
-.ub-legend [data-state="clear"]::before { background: var(--sage-bg); }
+.ub-legend [data-state="clear"]::before { background: var(--bg-sunk); border-color: var(--border); }
 
 /* ── day rows ───────────────────────────────────────
    One row per day; the swatch is the strip cell's own colour + texture. */

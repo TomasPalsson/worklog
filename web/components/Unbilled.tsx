@@ -30,9 +30,9 @@ function DaemonDown() {
         This list comes from the daemon, and it didn’t answer. Start it with <code>worklog daemon install</code>, then
         reload.
       </p>
-      <a className="ub-btn" href="/unbilled">
+      <Link className="ub-btn" href="/unbilled" prefetch={false}>
         Reload
-      </a>
+      </Link>
     </div>
   );
 }
@@ -94,8 +94,9 @@ function DayLists({ days, today }: { days: DayWork[]; today: string }) {
             Not in Tempo yet <span className="ub-count">{tempo.length}</span>
           </h2>
           <p className="ub-sec-lede">
-            The {TEMPO_SEND_HOUR}:00 send left these tickets out. On the day page, give each one a ticket, hours and a
-            line of text, then send the day to Tempo. Once a day is in Tempo it moves to the billing list below.
+            The {TEMPO_SEND_HOUR}:00 send leaves a ticket out when its Tempo line has no ticket, rounds to zero hours,
+            or has no text. On the day page, fill in what is missing, then send the day to Tempo. Once a day is in Tempo
+            it moves to the billing list below.
           </p>
           <ol className="ub-rows">
             {tempo.map((d) => (
@@ -146,7 +147,7 @@ function Steps({ open, tempo, bill, billReady }: { open: number; tempo: StepTota
         <strong>Marked billed</strong>
         <span>
           {left(bill, "marked")}
-          {bill.days > billReady && ` (${billReady} ready now)`}
+          {bill.days > billReady && ` (${billReady} already in Tempo)`}
         </span>
       </li>
     </ol>
@@ -196,7 +197,7 @@ function CycleStrip({ cycle, today }: { cycle: CycleDay[]; today: string }) {
         <li data-state="tempo">Not in Tempo yet</li>
         <li data-state="bill">In Tempo, not marked billed</li>
         <li data-state="waiting">Sends at {TEMPO_SEND_HOUR}:00</li>
-        <li data-state="clear">No open work</li>
+        <li data-state="clear">No open work (nothing logged, or all done)</li>
       </ul>
     </>
   );
@@ -236,7 +237,7 @@ function DayRow({ d, today }: { d: DayWork; today: string }) {
         )}
         {d.tempo.state === "done" && (
           <Link href={`/billing?from=${d.day}`} className="ub-btn">
-            Check &amp; mark billed
+            Open Billing to mark billed
           </Link>
         )}
       </div>
