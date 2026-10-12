@@ -2,6 +2,7 @@
 // Kept out of web/lib/types.ts, which is already over the 400-line guard.
 
 import type { LineTextOrigin } from "./clues_contract";
+import { countsAsBilled } from "./mirresStatus";
 
 /** Mirrors `tempo_line_contract::HALF_HOUR_SECONDS`. */
 export const HALF_HOUR_SECONDS = 1800;
@@ -75,7 +76,7 @@ export interface MirresDay {
 }
 
 /**
- * Share of the day's line hours that count as billed (billable or included),
+ * Share of the day's line hours that count as billed (all but internal Apró work),
  * 0-100. `null` when no line has Mirres data or there are no hours.
  */
 export function billablePercent(lines: TempoLine[]): number | null {
@@ -84,7 +85,7 @@ export function billablePercent(lines: TempoLine[]): number | null {
   if (total <= 0) return null;
   const billed = lines.reduce(
     (a, l) =>
-      l.billing && l.billing.class !== "not_billable" ? a + l.effective_seconds : a,
+      l.billing && countsAsBilled(l.billing) ? a + l.effective_seconds : a,
     0,
   );
   return Math.round((100 * billed) / total);
