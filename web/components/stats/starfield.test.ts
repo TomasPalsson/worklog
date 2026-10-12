@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { readdirSync } from "node:fs";
 import type { Highlight, MapPoint, Topic, TopicsReport } from "@/lib/topics_contract";
 import {
   buildScene,
@@ -15,7 +16,7 @@ import {
   R,
   right,
   stepCamera,
-} from "./starfield.js";
+} from "./starfieldScene.js";
 
 const topic = (id: number, seconds = 3600): Topic => ({
   id,
@@ -338,5 +339,14 @@ describe("flyTarget / ease", () => {
     expect(m.pos[0]).toBeCloseTo(5 + 5 * 0.875, 9);
     expect(m.yaw).toBeCloseTo(0.4 + 1.0 * 0.875, 9);
     expect(m.pitch).toBeCloseTo(-0.2 + 0.8 * 0.875, 9);
+  });
+});
+
+describe("module names", () => {
+  it("no two modules differ only by case (webpack resolves the wrong one)", () => {
+    const stems = readdirSync(import.meta.dir)
+      .filter((f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f))
+      .map((f) => f.replace(/\.tsx?$/, "").toLowerCase());
+    expect(stems.filter((s) => s === "starfield")).toHaveLength(1);
   });
 });

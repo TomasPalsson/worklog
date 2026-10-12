@@ -19,7 +19,7 @@ import {
   R,
   type Scene,
   stepCamera,
-} from "./starfield.js";
+} from "./starfieldScene.js";
 import { topicColor } from "./topicColor";
 
 const HINT = "Click the field, then W A S D to fly · drag to look · Shift faster · R reset · Esc leave";
