@@ -9,6 +9,10 @@ const EXAGGERATION_ITERS: usize = 250;
 const EXAGGERATION: f64 = 12.0;
 const INIT_STD: f64 = 1e-4;
 const POWER_ITERS: usize = 100;
+// Per-step pull toward the topic centroid is GRAVITY_STEP, independent of the learning rate.
+const GRAVITY_STEP: f64 = 0.6;
+// Points within this fraction of the map span of their centroid feel no pull, so topics keep a spread.
+const GRAVITY_SLACK: f64 = 0.02;
 
 /// Sparse symmetrised affinities: `(i, j, p_ij)` sorted by `(i, j)`, both directions present.
 fn affinities(v: &[Vec<f32>], perplexity: f64) -> Vec<(usize, usize, f64)> {
@@ -73,9 +77,9 @@ fn affinities(v: &[Vec<f32>], perplexity: f64) -> Vec<(usize, usize, f64)> {
     out
 }
 
-/// Top-2 principal components by power iteration from a fixed start vector, scaled so the
+/// Top-`D` principal components by power iteration from a fixed start vector, scaled so the
 /// first axis has std `INIT_STD`.
-fn pca_init(v: &[Vec<f32>]) -> Vec<[f64; 2]> {
+fn pca_init<const D: usize>(v: &[Vec<f32>]) -> Vec<[f64; D]> {
     let n = v.len();
     let d = v[0].len();
     let mut means = vec![0.0; d];
@@ -90,7 +94,7 @@ fn pca_init(v: &[Vec<f32>]) -> Vec<[f64; 2]> {
         .collect();
     let dot = |a: &[f64], b: &[f64]| -> f64 { a.iter().zip(b).map(|(a, b)| a * b).sum() };
     let mut comps: Vec<Vec<f64>> = Vec::new();
-    for c in 0..2 {
+    for c in 0..D {
         let mut u: Vec<f64> = (0..d)
             .map(|k| 1.0 + ((k * 7 + 3 + c * 5) % 11) as f64)
             .collect();
@@ -112,9 +116,9 @@ fn pca_init(v: &[Vec<f32>]) -> Vec<[f64; 2]> {
         }
         comps.push(u);
     }
-    let mut y: Vec<[f64; 2]> = x
+    let mut y: Vec<[f64; D]> = x
         .iter()
-        .map(|r| [dot(r, &comps[0]), dot(r, &comps[1])])
+        .map(|r| std::array::from_fn(|c| dot(r, &comps[c])))
         .collect();
     let var = y.iter().map(|p| p[0] * p[0]).sum::<f64>() / n as f64;
     let scale = if var > 1e-24 {
@@ -122,43 +126,46 @@ fn pca_init(v: &[Vec<f32>]) -> Vec<[f64; 2]> {
     } else {
         0.0
     };
-    y.iter_mut().for_each(|p| *p = [p[0] * scale, p[1] * scale]);
+    y.iter_mut()
+        .for_each(|p| p.iter_mut().for_each(|a| *a *= scale));
     y
 }
 
-fn normalise(y: &[[f64; 2]]) -> Vec<[f32; 2]> {
-    let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+fn normalise<const D: usize>(y: &[[f64; D]]) -> Vec<[f32; D]> {
+    let (mut lo, mut hi) = ([f64::MAX; D], [f64::MIN; D]);
     for p in y {
-        for a in 0..2 {
+        for a in 0..D {
             lo[a] = lo[a].min(p[a]);
             hi[a] = hi[a].max(p[a]);
         }
     }
-    let span = (hi[0] - lo[0]).max(hi[1] - lo[1]);
-    let at = |p: &[f64; 2], a: usize| -> f32 {
+    let span = (0..D).map(|a| hi[a] - lo[a]).fold(0.0, f64::max);
+    let at = |p: &[f64; D], a: usize| -> f32 {
         if span <= 0.0 {
             return 0.5;
         }
         let pad = (span - (hi[a] - lo[a])) / 2.0;
         (((p[a] - lo[a]) + pad) / span).clamp(0.0, 1.0) as f32
     };
-    y.iter().map(|p| [at(p, 0), at(p, 1)]).collect()
+    y.iter()
+        .map(|p| std::array::from_fn(|a| at(p, a)))
+        .collect()
 }
 
-/// 2-D t-SNE coordinates in [0,1]², empty below `MAP_MIN_POINTS`.
-// ponytail: O(n²) per iteration, ~seconds at n=2000; Barnes-Hut if ranges >3k blocks get slow
-pub fn layout(v: &[Vec<f32>]) -> Vec<[f32; 2]> {
+fn embed<const D: usize>(v: &[Vec<f32>], labels: &[usize]) -> Vec<[f64; D]> {
     let n = v.len();
-    if n < MAP_MIN_POINTS {
-        return Vec::new();
-    }
+    debug_assert_eq!(labels.len(), n, "one topic label per vector");
     let perplexity = MAX_PERPLEXITY.min((n - 1) as f64 / 3.0);
     let p = affinities(v, perplexity);
-    let mut y = pca_init(v);
+    let mut y = pca_init::<D>(v);
     let lr = (n as f64 / 12.0).max(50.0);
-    let mut vel = vec![[0.0; 2]; n];
-    let mut gains = vec![[1.0_f64; 2]; n];
-    let mut rep = vec![[0.0; 2]; n];
+    let gravity = GRAVITY_STEP / lr;
+    let topics = labels.iter().max().map_or(0, |&m| m + 1);
+    let mut size = vec![0.0_f64; topics];
+    labels.iter().for_each(|&t| size[t] += 1.0);
+    let mut vel = vec![[0.0; D]; n];
+    let mut gains = vec![[1.0_f64; D]; n];
+    let mut rep = vec![[0.0; D]; n];
     for it in 0..ITERS {
         let exag = if it < EXAGGERATION_ITERS {
             EXAGGERATION
@@ -166,30 +173,53 @@ pub fn layout(v: &[Vec<f32>]) -> Vec<[f32; 2]> {
             1.0
         };
         let momentum = if it < EXAGGERATION_ITERS { 0.5 } else { 0.8 };
-        rep.iter_mut().for_each(|r| *r = [0.0; 2]);
+        rep.iter_mut().for_each(|r| *r = [0.0; D]);
         let mut z = 0.0;
         for i in 0..n {
             for j in (i + 1)..n {
-                let (dx, dy) = (y[i][0] - y[j][0], y[i][1] - y[j][1]);
-                let w = 1.0 / (1.0 + dx * dx + dy * dy);
+                let d: [f64; D] = std::array::from_fn(|a| y[i][a] - y[j][a]);
+                let w = 1.0 / (1.0 + d.iter().map(|x| x * x).sum::<f64>());
                 z += 2.0 * w;
                 let w2 = w * w;
-                rep[i][0] += w2 * dx;
-                rep[i][1] += w2 * dy;
-                rep[j][0] -= w2 * dx;
-                rep[j][1] -= w2 * dy;
+                for a in 0..D {
+                    rep[i][a] += w2 * d[a];
+                    rep[j][a] -= w2 * d[a];
+                }
             }
         }
-        let mut grad: Vec<[f64; 2]> = rep.iter().map(|r| [-r[0] / z, -r[1] / z]).collect();
+        let mut grad: Vec<[f64; D]> = rep.iter().map(|r| r.map(|x| -x / z)).collect();
         for &(i, j, pij) in &p {
-            let (dx, dy) = (y[i][0] - y[j][0], y[i][1] - y[j][1]);
-            let w = 1.0 / (1.0 + dx * dx + dy * dy);
-            grad[i][0] += exag * pij * w * dx;
-            grad[i][1] += exag * pij * w * dy;
+            let d: [f64; D] = std::array::from_fn(|a| y[i][a] - y[j][a]);
+            let w = 1.0 / (1.0 + d.iter().map(|x| x * x).sum::<f64>());
+            for a in 0..D {
+                grad[i][a] += exag * pij * w * d[a];
+            }
         }
+        let mut centroid = vec![[0.0_f64; D]; topics];
+        if it >= EXAGGERATION_ITERS {
+            for (i, &t) in labels.iter().enumerate() {
+                for a in 0..D {
+                    centroid[t][a] += y[i][a] / size[t];
+                }
+            }
+        }
+        let span = (0..D)
+            .map(|a| {
+                let (lo, hi) = y
+                    .iter()
+                    .fold((f64::MAX, f64::MIN), |(l, h), p| (l.min(p[a]), h.max(p[a])));
+                hi - lo
+            })
+            .fold(0.0, f64::max);
+        let slack = GRAVITY_SLACK * span;
         for i in 0..n {
-            for a in 0..2 {
-                let g = 4.0 * grad[i][a];
+            for a in 0..D {
+                let mut g = 4.0 * grad[i][a];
+                if it >= EXAGGERATION_ITERS {
+                    let c = &centroid[labels[i]];
+                    let r = (0..D).map(|b| (y[i][b] - c[b]).powi(2)).sum::<f64>().sqrt();
+                    g += gravity * (y[i][a] - c[a]) * (1.0 - (slack / r.max(1e-12)).min(1.0));
+                }
                 gains[i][a] = if (g > 0.0) == (vel[i][a] > 0.0) {
                     (gains[i][a] * 0.8).max(0.01)
                 } else {
@@ -200,7 +230,24 @@ pub fn layout(v: &[Vec<f32>]) -> Vec<[f32; 2]> {
             }
         }
     }
-    normalise(&y)
+    y
+}
+
+/// 2-D t-SNE coordinates in [0,1]², empty below `MAP_MIN_POINTS`; `labels` pull each topic together.
+// ponytail: O(n²) per iteration, ~seconds at n=2000; Barnes-Hut if ranges >3k blocks get slow
+pub fn layout(v: &[Vec<f32>], labels: &[usize]) -> Vec<[f32; 2]> {
+    if v.len() < MAP_MIN_POINTS {
+        return Vec::new();
+    }
+    normalise(&embed::<2>(v, labels))
+}
+
+/// 3-D counterpart of [`layout`], in [0,1]³.
+pub fn layout3(v: &[Vec<f32>], labels: &[usize]) -> Vec<[f32; 3]> {
+    if v.len() < MAP_MIN_POINTS {
+        return Vec::new();
+    }
+    normalise(&embed::<3>(v, labels))
 }
 
 #[cfg(test)]
