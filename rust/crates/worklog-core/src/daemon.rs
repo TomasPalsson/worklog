@@ -152,6 +152,7 @@ mod daemon_week;
 
 #[path = "daemon_logged.rs"]
 pub(crate) mod daemon_logged;
+pub use daemon_logged::spawn_tempo_pull_loop;
 
 #[path = "daemon_assist.rs"]
 mod daemon_assist;

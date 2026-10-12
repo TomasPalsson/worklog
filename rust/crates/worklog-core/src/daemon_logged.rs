@@ -132,3 +132,90 @@ async fn write_day(
     .await?;
     Ok(Json(range.days.remove(0)))
 }
+
+/// Window the background pull keeps fresh: the current pay cycle, but never
+/// fewer than the last 7 days so the previous cycle's tail stays current.
+pub(crate) fn pull_range_for(today: NaiveDate, cycle_start_day: u32) -> (NaiveDate, NaiveDate) {
+    let cycle = crate::purge::cycle_start_on_or_before(today, cycle_start_day);
+    (cycle.min(today - chrono::Duration::days(7)), today)
+}
+
+/// Keeps `tempo_remote_worklogs` fresh without the Owner pressing pull: first
+/// tick after 60 s, then every 3 h. Read-only against Tempo; the outcome lands
+/// in source health. Missing Tempo credentials skip the tick quietly.
+pub fn spawn_tempo_pull_loop(state: Shared) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut logged_no_auth = false;
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        loop {
+            match tokio::task::spawn_blocking(TempoAuth::from_secrets).await {
+                Ok(Ok(auth)) => {
+                    logged_no_auth = false;
+                    let (from, to) =
+                        pull_range_for(today(), crate::purge::configured_cycle_start_day());
+                    let res = pull_range_with(state.clone(), auth, from, to).await;
+                    let msg = res.err().map(|e| match e {
+                        ApiError::BadRequest(e)
+                        | ApiError::NotFound(e)
+                        | ApiError::Forbidden(e)
+                        | ApiError::Conflict(e)
+                        | ApiError::BadGateway(e)
+                        | ApiError::Internal(e) => format!("{e:#}"),
+                    });
+                    if let Some(m) = &msg {
+                        tracing::warn!("tempo auto-pull failed: {m}");
+                    }
+                    let _ = with_conn(state.clone(), move |c| {
+                        crate::collect_health::record(
+                            c,
+                            "tempo",
+                            msg.as_deref().map_or(Ok(()), Err),
+                        )
+                    })
+                    .await;
+                }
+                Ok(Err(e)) => {
+                    if !logged_no_auth {
+                        tracing::info!("tempo auto-pull skipped: {e:#}");
+                        logged_no_auth = true;
+                    }
+                }
+                Err(e) => tracing::warn!("tempo auto-pull credential task failed: {e}"),
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(3 * 60 * 60)).await;
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn d(s: &str) -> NaiveDate {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn pull_range_mid_cycle() {
+        assert_eq!(
+            pull_range_for(d("2026-10-12"), 20),
+            (d("2026-09-20"), d("2026-10-12"))
+        );
+    }
+
+    #[test]
+    fn pull_range_cycle_just_started_uses_seven_day_floor() {
+        assert_eq!(
+            pull_range_for(d("2026-10-21"), 20),
+            (d("2026-10-14"), d("2026-10-21"))
+        );
+    }
+
+    #[test]
+    fn pull_range_on_start_day() {
+        assert_eq!(
+            pull_range_for(d("2026-10-20"), 20),
+            (d("2026-10-13"), d("2026-10-20"))
+        );
+    }
+}
