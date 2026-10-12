@@ -29,33 +29,56 @@ impl IgnoreReason {
     }
 }
 
-/// FR-11: what a loose end still lacks.
+/// Unbilled page: why a ticket line is not (fully) in Tempo.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum LooseEndMissing {
-    Tempo,
-    Export,
+pub enum TempoGapReason {
+    /// Nothing in Tempo for the line and not every block was sent.
+    NotSent,
+    /// Tempo has some of the line, less than the blocks' union.
+    Short,
+    /// A block's Tempo worklog id is gone from a pull made after it was sent.
+    Deleted,
 }
 
-/// FR-11: one ticketed work block in the cycle that is not in Tempo or not exported.
+/// Unbilled page: one ticket line of a day that Tempo does not cover.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct LooseEnd {
-    pub block_id: i64,
-    pub day: String,
+pub struct TempoGap {
     pub jira_issue: String,
-    pub started_at: String,
-    pub ended_at: String,
+    /// Union of the line's block intervals.
     pub seconds: i64,
-    pub description: Option<String>,
-    pub missing: Vec<LooseEndMissing>,
+    /// Sum of the pulled Tempo worklogs for (day, jira_issue).
+    pub in_tempo_seconds: i64,
+    pub reason: TempoGapReason,
 }
 
-/// FR-11: the current billing cycle's loose ends.
+/// Unbilled page: union seconds of a day's ticketed blocks with `exported_at` unset.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct LooseEnds {
+pub struct ExportGap {
+    pub seconds: i64,
+}
+
+/// Unbilled page: one day of the cycle with something still open.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct UnbilledDay {
+    pub day: String,
+    /// `tempo_day_dismissals.reason`; when set, `tempo` is empty.
+    pub dismissed: Option<String>,
+    pub tempo: Vec<TempoGap>,
+    /// Union seconds of the day's work blocks with a blank `jira_issue`.
+    pub ticketless_seconds: i64,
+    pub export: Option<ExportGap>,
+}
+
+/// Unbilled page: the current billing cycle, day by day (`GET /loose-ends`).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct UnbilledDays {
     pub cycle_start: String,
     pub cycle_end: String,
-    pub items: Vec<LooseEnd>,
+    /// Latest `tempo_remote_worklogs.pulled_at`; `None` = never pulled.
+    pub tempo_pulled_at: Option<String>,
+    /// Only days with something open, oldest first, never after today.
+    pub days: Vec<UnbilledDay>,
 }
 
 /// FR-16: meta key holding a source's last success time (ISO-8601 UTC).

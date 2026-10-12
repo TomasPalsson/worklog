@@ -1,62 +1,252 @@
-//! Spec 021 FR-11: ticketed work in the current billing cycle that never
-//! reached Tempo or an invoice.
+//! Unbilled page (`GET /loose-ends`): per day of the current billing cycle,
+//! what is still open — ticket lines Tempo does not cover, ticketless work,
+//! and ticketed work not yet exported to the invoice form.
+//!
+//! A ticket line is every ticketed, non-personal, non-ignored block of one
+//! (day, jira_issue); its hours are the **union** of the blocks' intervals.
+//! Tempo's side is `tempo_remote_worklogs`, matched on `jira_issue` (or, when
+//! the pull could not name the issue, through `jira_tickets.issue_id`).
+//!
+//! "Deleted" needs proof the day was pulled *after* the line was sent.
+//! Blocks carry no sync timestamp, so the signal is: the day's latest pull
+//! time — `MAX(pulled_at)` over that day's `tempo_remote_worklogs` and
+//! `tempo_required_days` rows (each pull rewrites every day in its range, so
+//! this is when Tempo last answered for that day) — is later than the send
+//! time. The send time is `tempo_line_texts.auto_sent_at` for the line when
+//! the 17:00 auto-send recorded one, else the end of the local day (a line is
+//! never sent before its day is over except by hand, which leaves no trace).
+//! A day never pulled is never "deleted": Tempo may simply be stale.
+
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::{Context, Result};
-use chrono::{Duration, NaiveDate};
-use rusqlite::Connection;
+use chrono::{DateTime, Duration, NaiveDate, Utc};
+use rusqlite::{params, Connection};
 
+use crate::billing::{interval_at, union_seconds};
 use crate::purge::{configured_cycle_start_day, cycle_start_on_or_before};
-use crate::time_leaks_contract::{LooseEnd, LooseEndMissing, LooseEnds};
+use crate::time_leaks_contract::{ExportGap, TempoGap, TempoGapReason, UnbilledDay, UnbilledDays};
 
-pub fn for_cycle(conn: &Connection, today: &str) -> Result<LooseEnds> {
+pub fn for_cycle(conn: &Connection, today: &str) -> Result<UnbilledDays> {
     for_cycle_with(conn, today, configured_cycle_start_day())
 }
 
-fn for_cycle_with(conn: &Connection, today: &str, start_day: u32) -> Result<LooseEnds> {
+fn for_cycle_with(conn: &Connection, today: &str, start_day: u32) -> Result<UnbilledDays> {
     let today: NaiveDate = today
         .parse()
         .with_context(|| format!("parsing today {today:?}"))?;
     let start = cycle_start_on_or_before(today, start_day);
     // 32 days always lands inside the next cycle, whatever the month lengths.
     let end = cycle_start_on_or_before(start + Duration::days(32), start_day) - Duration::days(1);
-    let (start, end) = (start.to_string(), end.to_string());
-    let mut stmt = conn.prepare(
-        "SELECT id, day, jira_issue, started_at, ended_at, duration_seconds, description,
-                COALESCE(tempo_worklog_id, '') = '', COALESCE(exported_at, '') = ''
-         FROM blocks
-         WHERE day BETWEEN ?1 AND ?2
-           AND COALESCE(jira_issue, '') <> ''
-           AND is_personal = 0 AND ignored_at IS NULL
-           AND (COALESCE(tempo_worklog_id, '') = '' OR COALESCE(exported_at, '') = '')
-         ORDER BY started_at, id",
-    )?;
-    let items = stmt
-        .query_map([&start, &end], |r| {
-            let mut missing = Vec::new();
-            if r.get::<_, bool>(7)? {
-                missing.push(LooseEndMissing::Tempo);
-            }
-            if r.get::<_, bool>(8)? {
-                missing.push(LooseEndMissing::Export);
-            }
-            Ok(LooseEnd {
-                block_id: r.get(0)?,
-                day: r.get(1)?,
-                jira_issue: r.get(2)?,
-                started_at: r.get(3)?,
-                ended_at: r.get(4)?,
-                seconds: r.get(5)?,
-                description: r.get(6)?,
-                missing,
-            })
-        })?
-        .collect::<rusqlite::Result<_>>()
-        .context("listing loose ends")?;
-    Ok(LooseEnds {
-        cycle_start: start,
-        cycle_end: end,
-        items,
+    let (from, to) = (start.to_string(), end.min(today).to_string());
+    let tempo = TempoSide::load(conn, &from, &to)?;
+    let mut by_day: BTreeMap<String, Vec<Blk>> = BTreeMap::new();
+    for b in load_blocks(conn, &from, &to)? {
+        by_day.entry(b.day.clone()).or_default().push(b);
+    }
+    let days = by_day
+        .into_iter()
+        .map(|(day, blocks)| day_answer(&tempo, day, &blocks))
+        .filter(|d| !d.tempo.is_empty() || d.ticketless_seconds > 0 || d.export.is_some())
+        .collect();
+    Ok(UnbilledDays {
+        cycle_start: start.to_string(),
+        cycle_end: end.to_string(),
+        tempo_pulled_at: conn
+            .query_row(
+                "SELECT MAX(pulled_at) FROM tempo_remote_worklogs",
+                [],
+                |r| r.get(0),
+            )
+            .context("latest Tempo pull")?,
+        days,
     })
+}
+
+/// One work block, reduced to what the answer needs. `jira` is "" when ticketless.
+struct Blk {
+    day: String,
+    jira: String,
+    interval: (i64, i64),
+    tempo_id: Option<String>,
+    exported: bool,
+}
+
+fn load_blocks(conn: &Connection, from: &str, to: &str) -> Result<Vec<Blk>> {
+    let mut stmt = conn.prepare(
+        "SELECT day, TRIM(COALESCE(jira_issue, '')), started_at, duration_seconds,
+                NULLIF(TRIM(COALESCE(tempo_worklog_id, '')), ''), COALESCE(exported_at, '') <> ''
+         FROM blocks
+         WHERE day BETWEEN ?1 AND ?2 AND is_personal = 0 AND ignored_at IS NULL",
+    )?;
+    let rows = stmt.query_map([from, to], |r| {
+        Ok(Blk {
+            day: r.get(0)?,
+            jira: r.get(1)?,
+            interval: interval_at(&r.get::<_, String>(2)?, r.get(3)?),
+            tempo_id: r.get(4)?,
+            exported: r.get(5)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<_>>()
+        .context("listing unbilled blocks")
+}
+
+fn union<'a>(blocks: impl Iterator<Item = &'a Blk>) -> i64 {
+    union_seconds(blocks.map(|b| b.interval).collect())
+}
+
+fn day_answer(tempo: &TempoSide, day: String, blocks: &[Blk]) -> UnbilledDay {
+    let mut lines: BTreeMap<&str, Vec<&Blk>> = BTreeMap::new();
+    for b in blocks.iter().filter(|b| !b.jira.is_empty()) {
+        lines.entry(&b.jira).or_default().push(b);
+    }
+    let dismissed = tempo.dismissed.get(&day).cloned();
+    let gaps = if dismissed.is_some() {
+        Vec::new()
+    } else {
+        lines
+            .iter()
+            .filter_map(|(jira, line)| tempo.gap(&day, jira, line))
+            .collect()
+    };
+    let unexported = union(blocks.iter().filter(|b| !b.jira.is_empty() && !b.exported));
+    UnbilledDay {
+        ticketless_seconds: union(blocks.iter().filter(|b| b.jira.is_empty())),
+        export: (unexported > 0).then_some(ExportGap {
+            seconds: unexported,
+        }),
+        tempo: gaps,
+        dismissed,
+        day,
+    }
+}
+
+/// Tempo's side of the cycle, loaded once (no per-line queries).
+struct TempoSide {
+    /// (day, jira_issue) → summed remote seconds.
+    remote: HashMap<(String, String), i64>,
+    /// Every stored remote worklog id (a worklog moved to another day is not deleted).
+    ids: HashSet<String>,
+    /// day → that day's latest pull.
+    pulled: HashMap<String, DateTime<Utc>>,
+    /// (day, jira_issue) → recorded auto-send time.
+    sent: HashMap<(String, String), DateTime<Utc>>,
+    dismissed: HashMap<String, String>,
+}
+
+impl TempoSide {
+    fn load(conn: &Connection, from: &str, to: &str) -> Result<TempoSide> {
+        let pairs = |sql: &str| -> Result<Vec<(String, String)>> {
+            let mut stmt = conn.prepare(sql)?;
+            let rows = stmt.query_map(params![from, to], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
+        };
+        let keyed_time = |rows: Vec<(String, String, String)>| {
+            rows.into_iter()
+                .filter_map(|(d, j, t)| Some(((d, j), parse_utc(&t)?)))
+                .collect()
+        };
+        Ok(TempoSide {
+            remote: remote_sums(conn, from, to)?,
+            ids: conn
+                .prepare("SELECT tempo_worklog_id FROM tempo_remote_worklogs")?
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?,
+            pulled: pairs(
+                "SELECT day, MAX(pulled_at) FROM (
+                    SELECT day, pulled_at FROM tempo_remote_worklogs WHERE day BETWEEN ?1 AND ?2
+                    UNION ALL
+                    SELECT day, pulled_at FROM tempo_required_days WHERE day BETWEEN ?1 AND ?2)
+                 GROUP BY day",
+            )?
+            .into_iter()
+            .filter_map(|(d, t)| Some((d, parse_utc(&t)?)))
+            .collect(),
+            sent: keyed_time(triples(
+                conn,
+                "SELECT day, jira_issue, auto_sent_at FROM tempo_line_texts
+                 WHERE day BETWEEN ?1 AND ?2 AND auto_sent_at IS NOT NULL",
+                from,
+                to,
+            )?),
+            dismissed: pairs(
+                "SELECT day, reason FROM tempo_day_dismissals WHERE day BETWEEN ?1 AND ?2",
+            )?
+            .into_iter()
+            .collect(),
+        })
+    }
+
+    fn gap(&self, day: &str, jira: &str, line: &[&Blk]) -> Option<TempoGap> {
+        let seconds = union(line.iter().copied());
+        let key = (day.to_string(), jira.to_string());
+        let in_tempo = self.remote.get(&key).copied().unwrap_or(0);
+        if in_tempo >= seconds {
+            return None;
+        }
+        let lost = line
+            .iter()
+            .filter_map(|b| b.tempo_id.as_ref())
+            .any(|id| !self.ids.contains(id));
+        let reason = if lost && self.pulled_after_send(&key) {
+            TempoGapReason::Deleted
+        } else if line.iter().all(|b| b.tempo_id.is_some()) {
+            return None;
+        } else if in_tempo > 0 {
+            TempoGapReason::Short
+        } else {
+            TempoGapReason::NotSent
+        };
+        Some(TempoGap {
+            jira_issue: jira.to_string(),
+            seconds,
+            in_tempo_seconds: in_tempo,
+            reason,
+        })
+    }
+
+    /// See the module doc: the day's latest pull is later than the line's send.
+    fn pulled_after_send(&self, key: &(String, String)) -> bool {
+        let Some(pulled) = self.pulled.get(&key.0) else {
+            return false;
+        };
+        let sent = self.sent.get(key).copied().or_else(|| {
+            let day: NaiveDate = key.0.parse().ok()?;
+            Some(crate::tz::utc_window_for_local_day(day).1)
+        });
+        sent.is_some_and(|sent| *pulled > sent)
+    }
+}
+
+fn remote_sums(conn: &Connection, from: &str, to: &str) -> Result<HashMap<(String, String), i64>> {
+    let mut stmt = conn.prepare(
+        "SELECT day, key, SUM(seconds) FROM (
+            SELECT day, seconds, COALESCE(NULLIF(jira_issue, ''),
+                (SELECT key FROM jira_tickets WHERE issue_id = CAST(r.issue_id AS TEXT) LIMIT 1)) AS key
+            FROM tempo_remote_worklogs r WHERE day BETWEEN ?1 AND ?2)
+         WHERE key IS NOT NULL GROUP BY day, key",
+    )?;
+    let rows = stmt.query_map([from, to], |r| Ok(((r.get(0)?, r.get(1)?), r.get(2)?)))?;
+    rows.collect::<rusqlite::Result<_>>()
+        .context("summing Tempo worklogs")
+}
+
+fn triples(
+    conn: &Connection,
+    sql: &str,
+    from: &str,
+    to: &str,
+) -> Result<Vec<(String, String, String)>> {
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map([from, to], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+fn parse_utc(s: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.with_timezone(&Utc))
 }
 
 #[cfg(test)]

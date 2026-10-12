@@ -520,10 +520,15 @@ pub(crate) fn block_haystack(conn: &Connection, block: &Block) -> Result<String>
 /// duration)`. Duration — not `ended_at` — is the canonical logged time,
 /// matching `worklog_cli::cli::block_interval`.
 pub(crate) fn block_interval(block: &Block) -> (i64, i64) {
-    let start = chrono::DateTime::parse_from_rfc3339(&block.started_at)
+    interval_at(&block.started_at, block.duration_seconds)
+}
+
+/// [`block_interval`] from the raw columns, for queries that skip `Block`.
+pub(crate) fn interval_at(started_at: &str, duration_seconds: i64) -> (i64, i64) {
+    let start = chrono::DateTime::parse_from_rfc3339(started_at)
         .map(|d| d.timestamp())
         .unwrap_or(0);
-    (start, start + block.duration_seconds.max(0))
+    (start, start + duration_seconds.max(0))
 }
 
 /// Total length of the union of `[start, end)` intervals — stretches
