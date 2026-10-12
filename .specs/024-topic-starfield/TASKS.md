@@ -35,5 +35,5 @@ Independent test: `cd web && bun test components/stats && bun run typecheck`
 - [ ] CHK001 Live-copy check: k, split topics = 0, nearest-same ≥ 0.95 on API output; Star field flown in Chrome (WASD, drag, hover, click, reset), dark + light, 0 console errors — verify: `test -s .specs/024-topic-starfield/verify/CHK001.md`
 
 ## Gates
-- [ ] G001 Full test suite, lint, build — verify: `cargo fmt --manifest-path rust/Cargo.toml --all -- --check && cargo clippy --manifest-path rust/Cargo.toml --all-targets --all-features -- -D warnings && cargo test --manifest-path rust/Cargo.toml && cd web && bun test && bun run typecheck && bun run build`
-- [ ] G002 Branch review, findings fixed — verify: `test -n "$(ls .specs/024-topic-starfield/review/ 2>/dev/null)"`
+- [x] G001 Full test suite, lint, build — verify: `cargo fmt --manifest-path rust/Cargo.toml --all -- --check && cargo clippy --manifest-path rust/Cargo.toml --all-targets --all-features -- -D warnings && cargo test --manifest-path rust/Cargo.toml && cd web && bun test && bun run typecheck && bun run build` — done: 6f7a141
+- [x] G002 Branch review, findings fixed — verify: `test -n "$(ls .specs/024-topic-starfield/review/ 2>/dev/null)"` — done: 6f7a141
