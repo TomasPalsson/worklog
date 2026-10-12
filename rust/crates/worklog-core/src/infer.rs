@@ -637,8 +637,14 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
         .collect();
     let blocks = crate::infer_carry::cut_at_ticket_edges(blocks, &ticketed);
     // Track which fallback rows we've already claimed so two new blocks
-    // can't both inherit the same prior state.
-    let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // can't both inherit the same prior state. A prior row that a new block
+    // matches by exact start is claimed up front, so an earlier overlapping
+    // block can't borrow its ticket and Tempo id first.
+    let mut claimed: std::collections::HashSet<String> = blocks
+        .iter()
+        .map(|b| block_iso(b.started_at))
+        .filter(|k| prior.contains_key(k))
+        .collect();
 
     let tx = crate::db::write_tx(conn)?;
     tx.execute(

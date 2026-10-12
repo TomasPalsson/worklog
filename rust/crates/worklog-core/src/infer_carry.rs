@@ -170,6 +170,58 @@ mod tests {
         assert_eq!((out[0].started_at, out[0].ended_at), (at(13, 0), at(14, 0)));
     }
 
+    /// A new meeting overlapping a later synced block must not borrow that
+    /// block's ticket and Tempo id while the later block still exists
+    /// (exact-start match) — two tickets would share one Tempo worklog.
+    #[test]
+    fn overlap_fallback_skips_prior_rows_with_exact_start_match() {
+        let conn = crate::db::open_memory().unwrap();
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
+        let blk = |source: &str, (h, m): (u32, u32), (eh, em): (u32, u32)| {
+            let mut b = crate::infer::new_block(&crate::infer::InferEvent {
+                ts: at(h, m),
+                source: source.into(),
+                duration_seconds: None,
+                jira_issue: None,
+                event_id: None,
+                project_path: None,
+                session_id: None,
+                title: None,
+                lane_tag: None,
+            });
+            b.ended_at = at(eh, em);
+            b.duration_seconds = (b.ended_at - b.started_at).num_seconds();
+            b
+        };
+        let prep = blk("claude", (12, 50), (13, 8));
+        let coding = blk("claude", (13, 31), (14, 1));
+        crate::infer::persist_blocks(&conn, day, &[prep.clone(), coding.clone()]).unwrap();
+        for (hm, ticket, tempo) in [("T12:50", "T-1", "111"), ("T13:31", "T-2", "222")] {
+            conn.execute(
+                "UPDATE blocks SET jira_issue = ?1, tempo_worklog_id = ?2 WHERE started_at LIKE ?3",
+                rusqlite::params![ticket, tempo, format!("%{hm}%")],
+            )
+            .unwrap();
+        }
+
+        let meeting = blk("gcal", (13, 0), (14, 0));
+        crate::infer::persist_blocks(&conn, day, &[prep, meeting, coding]).unwrap();
+
+        let stored = crate::repo::list_blocks_for_day(&conn, "2026-09-23").unwrap();
+        let get = |hm: &str| stored.iter().find(|b| b.started_at.contains(hm)).unwrap();
+        assert_eq!(get("T13:31").tempo_worklog_id.as_deref(), Some("222"));
+        assert_eq!(
+            get("T13:00").tempo_worklog_id,
+            None,
+            "meeting must not borrow 222"
+        );
+        assert_eq!(
+            get("T13:00").jira_issue,
+            None,
+            "meeting must not borrow T-2"
+        );
+    }
+
     #[test]
     fn grown_block_drops_description() {
         assert!(!super::keeps_description((0, 30), (0, 182), None));
