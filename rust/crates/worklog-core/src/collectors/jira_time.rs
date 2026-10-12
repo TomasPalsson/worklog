@@ -13,14 +13,15 @@ use crate::tz;
 /// The ticket's budget in seconds: time spent + remaining while Jira has
 /// remaining time, so a hand-lowered (or raised) remaining estimate counts.
 /// Jira floors remaining at 0, so at 0 the original estimate caps the budget
-/// and an overrun still shows as over.
+/// and an overrun still shows as over; with nothing logged it stays the
+/// original, never a 0 budget that hides the bar.
 fn budget_seconds(timetracking: &serde_json::Value) -> Option<i64> {
     let original = timetracking["originalEstimateSeconds"].as_i64();
     let spent = timetracking["timeSpentSeconds"].as_i64().unwrap_or(0);
     match timetracking["remainingEstimateSeconds"].as_i64() {
         Some(r) if r > 0 => Some(spent + r),
-        Some(_) => original.map(|o| o.min(spent)),
-        None => original,
+        Some(_) if spent > 0 => original.map(|o| o.min(spent)),
+        _ => original,
     }
 }
 

@@ -47,15 +47,28 @@ fn estimates_follow_remaining_when_jira_has_it() {
             {"key": "G-3", "fields": {"timetracking": {"originalEstimateSeconds": 122400,
                 "remainingEstimateSeconds": 0, "timeSpentSeconds": 144000}}},
             // No remaining field: the estimate as before.
-            {"key": "G-4", "fields": {"timetracking": {"originalEstimateSeconds": 14400}}}
+            {"key": "G-4", "fields": {"timetracking": {"originalEstimateSeconds": 14400}}},
+            // Done early: remaining zeroed after 1h of a 4h estimate.
+            {"key": "G-5", "fields": {"timetracking": {"originalEstimateSeconds": 14400,
+                "remainingEstimateSeconds": 0, "timeSpentSeconds": 3600}}},
+            // Remaining only, no original estimate.
+            {"key": "G-6", "fields": {"timetracking": {"remainingEstimateSeconds": 7200}}},
+            // Remaining zeroed with nothing logged: keep the estimate, not a 0 budget.
+            {"key": "G-7", "fields": {"timetracking": {"originalEstimateSeconds": 14400,
+                "remainingEstimateSeconds": 0}}}
         ]}));
     });
-    let keys: Vec<String> = ["G-1", "G-2", "G-3", "G-4"].map(String::from).to_vec();
+    let keys: Vec<String> = ["G-1", "G-2", "G-3", "G-4", "G-5", "G-6", "G-7"]
+        .map(String::from)
+        .to_vec();
     let got = fetch_estimates_with(&auth(&server), &keys, &http::client().unwrap()).unwrap();
     assert_eq!(got["G-1"], Some(97200)); // wrong: 122400, the bar shows "of 34h"
     assert_eq!(got["G-2"], Some(122400));
     assert_eq!(got["G-3"], Some(122400)); // wrong: 144000 hides the overrun
     assert_eq!(got["G-4"], Some(14400));
+    assert_eq!(got["G-5"], Some(3600));
+    assert_eq!(got["G-6"], Some(7200));
+    assert_eq!(got["G-7"], Some(14400)); // wrong: Some(0) hides the bar
 }
 
 #[test]
