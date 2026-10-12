@@ -159,6 +159,9 @@ mod daemon_assist;
 #[path = "daemon_stats.rs"]
 mod daemon_stats;
 
+#[path = "daemon_topics.rs"]
+mod daemon_topics;
+
 pub struct AppState {
     /// Single shared connection — SQLite + rusqlite is !Send, so we keep
     /// exactly one and serialise access. Cheap compared to the code path
@@ -274,7 +277,7 @@ pub fn router(state: Shared) -> Router {
         .route("/hints", get(daemon_assist::hints))
         .route("/tempo/pull", post(daemon_week::pull))
         .route("/stats", get(daemon_stats::get_stats))
-        .route("/stats/topics", get(daemon_stats::get_topics))
+        .route("/stats/topics", get(daemon_topics::get_topics))
         .route("/logged", get(daemon_logged::get_range))
         .route("/logged/pull", post(daemon_logged::pull_range))
         .route("/logged/dismiss", post(daemon_logged::dismiss_day))
@@ -3385,6 +3388,10 @@ mod tests {
 
     mod daemon_stats {
         include!("daemon_stats_test.rs");
+    }
+
+    mod daemon_topics {
+        include!("daemon_topics_test.rs");
     }
 
     mod daemon_note_block {

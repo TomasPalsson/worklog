@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
-import { afterEach, describe, expect, it } from "bun:test";
-import { cleanup, render } from "@testing-library/react";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import type { MapPoint, Topic, TopicsReport } from "@/lib/topics_contract";
+import { topicColor } from "./topicColor";
 import { galaxyLayout, galaxyTipDot, galaxyTipLabel, TopicGalaxy, wrapName } from "./TopicGalaxy";
 
 afterEach(cleanup);
@@ -25,6 +26,9 @@ const point = (block_id: number, over: Partial<MapPoint> = {}): MapPoint => ({
   block_id,
   x: 0.5,
   y: 0.5,
+  sx: 0.5,
+  sy: 0.5,
+  sz: 0.5,
   topic_id: 0,
   day: "2026-10-01",
   seconds: 3600,
@@ -275,10 +279,10 @@ describe("galaxyLayout labels", () => {
       for (let j = i + 1; j < labels.length; j++) expect(overlaps(labels[i], labels[j])).toBe(false);
   });
 
-  it("hue comes from the topic id, not array position: id 3 of K=10 is 133", () => {
+  it("hue comes from the topic id, not array position: id 3 of K=10", () => {
     const topics = [topic(3), ...Array.from({ length: 9 }, (_, i) => topic(i < 3 ? i : i + 1))];
     const { dots } = galaxyLayout(report({ topics, points: [point(1, { topic_id: 3 })] }));
-    expect(dots[0].fill).toBe("oklch(calc(var(--project-l) + -0.08) var(--project-c) 133)");
+    expect(dots[0].fill).toBe(topicColor(3, 10));
   });
 
   it("labels far apart horizontally are left where they are", () => {
@@ -289,6 +293,71 @@ describe("galaxyLayout labels", () => {
       }),
     );
     expect(labels[0].y).toBe(labels[1].y);
+  });
+});
+
+describe("galaxyLayout label anchoring", () => {
+  type Box = { x: number; y: number; w: number; h: number };
+  type Circle = { cx: number; cy: number; r: number };
+  const hits = (l: Box, d: Circle) => {
+    const nx = Math.min(l.x + l.w / 2, Math.max(l.x - l.w / 2, d.cx));
+    const ny = Math.min(l.y + l.h / 2, Math.max(l.y - l.h / 2, d.cy));
+    return (nx - d.cx) ** 2 + (ny - d.cy) ** 2 < d.r ** 2;
+  };
+  // one dot each at the top and bottom edge (own topics, so each label has room) stretch y over 0..1: height 620
+  const frame = [point(90, { topic_id: 9, x: 0, y: 0 }), point(91, { topic_id: 8, x: 0, y: 1 })];
+  const island = (id0: number, topic_id: number, x: number, y: number) =>
+    [0, 1, 2, 3].map((k) => point(id0 + k, { topic_id, x: x + (k % 2) * 0.03, y: y + (k >> 1) * 0.04, seconds: 3600 * (k + 1) }));
+
+  it("sits exactly 6px above its island and covers none of its own dots", () => {
+    // catches the old median-y placement, which draws the label over the dots
+    const lay = galaxyLayout(report({ topics: [topic(0), topic(9), topic(8)], points: [...island(1, 0, 0.5, 0.5), ...frame] }));
+    const l = lay.labels.find((x) => x.topic.id === 0)!;
+    const mine = lay.dots.filter((d) => d.point.topic_id === 0);
+    const minTop = Math.min(...mine.map((d) => d.cy - d.r));
+    expect(l.y + l.h / 2).toBeCloseTo(minTop - 6, 9); // catches a different gap or the bare cy instead of cy - r
+    for (const d of mine) expect(hits(l, d)).toBe(false);
+    expect(l.x).toBeCloseTo(527.6, 9); // weighted median: x=500 holds 14402 of 36004, short of half, so the 0.53 column
+  });
+
+  it("a two-line wrapped name is anchored by its full box height", () => {
+    // catches a one-line height assumption: the second line would dip into the dots
+    const name = "Billing export · invoice · customer";
+    const lay = galaxyLayout(report({ topics: [topic(0, { name }), topic(9), topic(8)], points: [...island(1, 0, 0.5, 0.5), ...frame] }));
+    const l = lay.labels.find((x) => x.topic.id === 0)!;
+    expect(l.lines).toHaveLength(2);
+    const minTop = Math.min(...lay.dots.filter((d) => d.point.topic_id === 0).map((d) => d.cy - d.r));
+    expect(l.y + l.h / 2).toBeCloseTo(minTop - 6, 9);
+  });
+
+  it("an island at the very top gets its label below, 6px under its lowest dot, inside the map", () => {
+    // catches a missing flip: the label would clamp onto the dots at the top edge
+    const lay = galaxyLayout(report({ topics: [topic(0), topic(9), topic(8)], points: [...island(1, 0, 0.5, 0), ...frame] }));
+    const l = lay.labels.find((x) => x.topic.id === 0)!;
+    const mine = lay.dots.filter((d) => d.point.topic_id === 0);
+    const maxBottom = Math.max(...mine.map((d) => d.cy + d.r));
+    expect(l.y - l.h / 2).toBeCloseTo(maxBottom + 6, 9);
+    for (const d of mine) expect(hits(l, d)).toBe(false);
+    expect(l.y + l.h / 2).toBeLessThanOrEqual(lay.height);
+  });
+
+  it("a label pushed off other topics' dots: no label covers any dot or another label", () => {
+    // catches nudging that ignores other topics' dot circles: B sits right where A's label is anchored
+    const topics = [topic(0), topic(1), topic(9), topic(8)];
+    const points = [...island(1, 0, 0.5, 0.6), ...island(11, 1, 0.5, 0.45), ...frame];
+    const { labels, dots, height } = galaxyLayout(report({ topics, points }));
+    for (const l of labels) {
+      for (const d of dots) if (d.point.topic_id < 8 || d.point.topic_id === l.topic.id) expect(hits(l, d)).toBe(false);
+      expect(l.y - l.h / 2).toBeGreaterThanOrEqual(-1e-9);
+      expect(l.y + l.h / 2).toBeLessThanOrEqual(height + 1e-9);
+    }
+    for (let i = 0; i < labels.length; i++)
+      for (let j = i + 1; j < labels.length; j++) expect(overlaps(labels[i], labels[j])).toBe(false);
+  });
+
+  it("is deterministic", () => {
+    const r = report({ topics: [topic(0), topic(1), topic(9), topic(8)], points: [...island(1, 0, 0.5, 0.6), ...island(11, 1, 0.5, 0.45), ...frame] });
+    expect(galaxyLayout(r).labels).toEqual(galaxyLayout(r).labels);
   });
 });
 
@@ -471,7 +540,7 @@ describe("TopicGalaxy markup", () => {
     const { container } = render(<TopicGalaxy report={slim} />);
     const names = container.querySelectorAll("text.sx-gal-name");
     const fill = (names[1] as SVGElement).getAttribute("style")!;
-    expect(fill).toContain("oklch(calc(var(--project-l) + -0.08) var(--project-c) 205)");
+    expect(fill).toContain(topicColor(1, 2));
     expect(fill).toContain("var(--fg) 35%");
   });
 
@@ -571,5 +640,81 @@ describe("phone tap targets and spacing", () => {
       expect(m).not.toBeNull();
       expect(Number(m![1])).toBeGreaterThanOrEqual(13); // catches a leftover 12px
     }
+  });
+});
+
+describe("Map / Star field toggle", () => {
+  const rep = report({ topics: [topic(0)], points: [point(1), point(2), point(3)] });
+  const btn = (c: HTMLElement, name: string) => [...c.querySelectorAll("button")].find((b) => b.textContent === name)!;
+
+  it("defaults to Map pressed with the map drawn", () => {
+    const { container } = render(<TopicGalaxy report={rep} />);
+    expect(btn(container, "Map").getAttribute("aria-pressed")).toBe("true");
+    expect(btn(container, "Star field").getAttribute("aria-pressed")).toBe("false");
+    expect(btn(container, "Map").getAttribute("type")).toBe("button");
+    expect(container.querySelector(".sx-gal-svg")).not.toBeNull();
+  });
+
+  it("clicking Star field flips aria-pressed, swaps the map + legend, keeps headline/how/method, and persists", () => {
+    const { container } = render(<TopicGalaxy report={rep} />);
+    fireEvent.click(btn(container, "Star field"));
+    expect(btn(container, "Star field").getAttribute("aria-pressed")).toBe("true");
+    expect(btn(container, "Map").getAttribute("aria-pressed")).toBe("false");
+    expect(container.querySelector(".sx-gal-svg")).toBeNull();
+    expect(container.querySelector(".sx-gal-legend")).toBeNull();
+    expect(container.querySelector(".sx-gal-headline")).not.toBeNull();
+    expect(container.querySelector(".sx-gal-how")).not.toBeNull();
+    expect(container.querySelector("details")).not.toBeNull();
+    expect(window.localStorage.getItem("worklog.galaxyView")).toBe("stars");
+    fireEvent.click(btn(container, "Map"));
+    expect(window.localStorage.getItem("worklog.galaxyView")).toBe("map");
+    expect(container.querySelector(".sx-gal-svg")).not.toBeNull();
+  });
+
+  it("restores a stored Star field choice after mount", async () => {
+    window.localStorage.setItem("worklog.galaxyView", "stars");
+    const { container } = render(<TopicGalaxy report={rep} />);
+    await act(async () => {});
+    expect(btn(container, "Star field").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("ignores an unknown stored value", async () => {
+    window.localStorage.setItem("worklog.galaxyView", "bogus");
+    const { container } = render(<TopicGalaxy report={rep} />);
+    await act(async () => {});
+    expect(btn(container, "Map").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("a throwing localStorage neither crashes mount nor blocks the toggle", () => {
+    const get = spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("denied");
+    });
+    const set = spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("denied");
+    });
+    try {
+      const { container } = render(<TopicGalaxy report={rep} />);
+      fireEvent.click(btn(container, "Star field"));
+      expect(btn(container, "Star field").getAttribute("aria-pressed")).toBe("true");
+    } finally {
+      get.mockRestore();
+      set.mockRestore();
+    }
+  });
+
+  it("does not import StarField statically", () => {
+    const src = readFileSync(`${import.meta.dir}/TopicGalaxy.tsx`, "utf8");
+    expect(src).not.toMatch(/import[^;]*from\s+["']\.\/StarField["']/);
+    expect(src).toMatch(/import\(["']\.\/StarField["']\)/);
+  });
+
+  it("toggle buttons show a visible keyboard focus ring", () => {
+    const css = readFileSync(`${import.meta.dir}/../../app/stats/galaxy.css`, "utf8");
+    expect(css).toMatch(/\.sx-gal-view[^{]*:focus-visible\s*\{[^}]*outline/);
+  });
+
+  it("StarField imports use extensionless specifiers so webpack can resolve them", () => {
+    const src = readFileSync(`${import.meta.dir}/StarField.tsx`, "utf8");
+    expect(src).not.toMatch(/from "\.\/[^"]*\.js"/);
   });
 });

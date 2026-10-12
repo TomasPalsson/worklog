@@ -1,0 +1,52 @@
+bun test v1.2.4 (fd9a5ea6)
+
+components/stats/StarField.test.tsx:
+(pass) StarField > shows the fallback text when there is no canvas context [9.63ms]
+(pass) StarField > labels the canvas with block and topic counts [2.51ms]
+(pass) StarField > renders one legend chip per topic with its name [1.57ms]
+(pass) StarField > has a focusable wrapper described by the hint [1.23ms]
+(pass) StarField > keydown w on the wrapper is prevented so the page does not scroll [2.05ms]
+(pass) StarField > leaves keys it does not handle alone (Tab must still move focus) [0.67ms]
+(pass) StarField > keydown on document.body is not prevented [0.86ms]
+(pass) StarField > Escape blurs the wrapper [0.86ms]
+
+components/stats/starfield.test.ts:
+(pass) buildScene stars > maps 0.5 to the origin and 1 / 0 to +R / -R per axis [0.24ms]
+(pass) buildScene stars > uses distinct sx/sy/sz per axis (catches swapped axes) [0.21ms]
+(pass) buildScene stars > radius is 0.8 + 2.6*sqrt(share): max 3.4, quarter 2.1 (not linear), zero 0.8 [0.07ms]
+(pass) buildScene stars > all-zero seconds does not produce NaN radii
+(pass) buildScene stars > firstTime follows block_id membership, not array index; oddball and fields pass through
+(pass) buildScene topics > centroid and RMS spread exact on a 3-point fixture
+(pass) buildScene topics > only counts its own stars; single star has spread 0 at its position
+(pass) buildScene topics > topic without stars stays finite
+(pass) buildScene dust > has 700 points on the 6R sphere with brightness 0.2-0.6 [0.45ms]
+(pass) buildScene dust > is deterministic across builds [0.05ms]
+(pass) camera basis > initialCamera sits behind the origin looking at it, +z forward [0.10ms]
+(pass) camera basis > forward/right are unit and orthogonal; yaw 0 faces +z, yaw pi/2 faces +x
+(pass) stepCamera > W moves +forward by 0.6R*dt, S the opposite
+(pass) stepCamera > Shift triples the speed
+(pass) stepCamera > A/D move along right (perpendicular to forward), D positive
+(pass) stepCamera > E/Q move along world up/down regardless of pitch
+(pass) stepCamera > no keys, or opposing keys, leave the camera put [0.01ms]
+(pass) stepCamera > arrows turn at 1.4 rad/s: right = +yaw, up = +pitch
+(pass) stepCamera > pitch clamps at +-1.45
+(pass) look / dolly / orbit > look turns 0.004 rad per px; dragging down looks down; pitch clamps
+(pass) look / dolly / orbit > dolly moves -deltaY*0.05 along forward
+(pass) look / dolly / orbit > orbit advances 0.06 rad/s keeping distance and height, facing the origin [0.18ms]
+(pass) project > a point straight ahead lands at the canvas centre [0.03ms]
+(pass) project > right is +x px, up is -y px, scale = focal/depth [0.02ms]
+(pass) project > behind the camera is null; depth 0.5 is null, just past it is not [0.01ms]
+(pass) pick > returns the nearest centre
+(pass) pick > empty and outside-radius give null; exactly maxPx is in, just past is out [0.06ms]
+(pass) pick > a star larger than maxPx extends its own radius; custom maxPx is honoured
+(pass) pick > equal distance goes to the nearer depth regardless of array order
+(pass) flyTarget / ease > looks at the centroid from max(2.2*spread, 0.35R) away [0.07ms]
+(pass) flyTarget / ease > small spread falls back to the 0.35R floor
+(pass) flyTarget / ease > ease hits both ends and is cubic ease-out in between [0.05ms]
+(pass) module names > no two modules differ only by case (webpack resolves the wrong one) [0.23ms]
+
+ 41 pass
+ 0 fail
+ 1461 expect() calls
+Ran 41 tests across 2 files. [128.00ms]
+$ tsc --noEmit

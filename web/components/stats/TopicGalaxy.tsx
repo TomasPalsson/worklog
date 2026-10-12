@@ -1,155 +1,35 @@
+"use client";
+
 import "@/app/stats/galaxy.css";
-import { useId } from "react";
+import dynamic from "next/dynamic";
+import { useEffect, useId, useState } from "react";
 import { formatDuration } from "@/lib/format";
 import type { MapPoint, Topic, TopicsReport } from "@/lib/topics_contract";
 import { AtlasEmpty, FirstTimeMark, OddballMark } from "./AtlasArt";
 import { type Tip, tipProps } from "./tip";
 import { topicColor } from "./topicColor";
+import { GAL_H, GAL_W, HOURS_FONT, hoursLabel, LABEL_LINE_GAP, NAME_LINE_H, galaxyLayout, type GalaxyDot, type GalaxyLabel, type GalaxyLayout } from "./galaxyLayout";
+export { GAL_H, GAL_W, galaxyLayout, wrapName, type GalaxyDot, type GalaxyLabel, type GalaxyLayout } from "./galaxyLayout";
 
-export const GAL_W = 1000;
-export const GAL_H = 620;
-const MIN_H = 360;
-const PAD = 40;
 const NEBULA_R = 26;
-const NUDGE_ITERATIONS = 50;
-const MAX_DELAY_MS = 1200;
-const NAME_CHAR_W = 0.62; // mono advance per font-size, including letter-spacing
-const LABEL_MIN_X = 8;
-const LABEL_MAX_X = GAL_W - 8;
-const MIN_FONT = 11;
-const LABEL_GAP = 8; // breathing room kept between nudged labels
-const NAME_LINE_H = 1.1; // second name line step, per font-size
-const LABEL_LINE_GAP = 16; // name-to-hours baseline step; the hours line is part of the label's box
-const HOURS_FONT = 13; // keep equal to .sx-gal-hours font-size in galaxy.css
-const MAX_LABEL_CHARS = 24;
+
+const VIEW_KEY = "worklog.galaxyView";
+const VIEWS = [
+  ["map", "Map"],
+  ["stars", "Star field"],
+] as const;
+type View = (typeof VIEWS)[number][0];
+
+const StarField = dynamic(() => import("./StarField"), {
+  ssr: false,
+  loading: () => <p className="sx-gal-how">Loading star field…</p>,
+});
 
 const HOW =
-  "How it works: Each dot is a work block. Blocks about similar things sit close together, and each cluster is a topic. Names come from AI (Haiku), or from keywords if no model is available. Distance between islands is only roughly meaningful.";
+  "How it works: Each dot is a work block. Blocks about similar things sit close together, and each island is one topic. Names come from your AI model (the one set in worklog setup), or from keywords if none is available. Distance between islands is only roughly meaningful.";
 const METHOD =
-  "The local embedding model turns each block's text into a vector, the vectors are centered, and t-SNE (perplexity 30) lays them out. Topics come from average-linkage clustering on cosine similarity.";
+  "The local embedding model turns each block's text into a vector, the vectors are centered, and t-SNE (perplexity 30) lays them out with a gentle pull toward each topic's centre, so a topic stays one island. Topics come from average-linkage clustering on cosine similarity; the number of topics (up to 20) is the cut with the best silhouette score where every topic has at least 3 blocks.";
 
-const hoursLabel = (sec: number) => `${(sec / 3600).toFixed(1)}h`;
-
-export interface GalaxyDot {
-  point: MapPoint;
-  cx: number;
-  cy: number;
-  r: number;
-  fill: string;
-  rank: number;
-  delayMs: number;
-}
-
-export interface GalaxyLabel {
-  topic: Topic;
-  lines: string[];
-  x: number;
-  y: number;
-  fontSize: number;
-  w: number;
-  h: number;
-}
-
-export interface GalaxyLayout {
-  height: number;
-  dots: GalaxyDot[];
-  labels: GalaxyLabel[];
-}
-
-function weightedMedian(vals: { v: number; w: number }[]): number {
-  const sorted = [...vals].sort((a, b) => a.v - b.v);
-  const half = sorted.reduce((s, e) => s + e.w, 0) / 2;
-  let acc = 0;
-  for (const e of sorted) {
-    acc += e.w;
-    if (acc >= half) return e.v;
-  }
-  return sorted[0].v;
-}
-
-export function wrapName(name: string): string[] {
-  if (name.length <= MAX_LABEL_CHARS) return [name];
-  const space = name.lastIndexOf(" ", MAX_LABEL_CHARS);
-  const at = space > 0 ? space : MAX_LABEL_CHARS;
-  const rest = name.slice(space > 0 ? at + 1 : at);
-  return [name.slice(0, at), rest.length > MAX_LABEL_CHARS ? `${rest.slice(0, MAX_LABEL_CHARS - 1)}…` : rest];
-}
-
-/** Pure placement of dots and labels in a 1000-wide viewBox whose height follows the y extent. */
-export function galaxyLayout(report: Pick<TopicsReport, "topics" | "points">): GalaxyLayout {
-  const { topics } = report;
-  const index = new Set(topics.map((t) => t.id));
-  const points = report.points.filter((p) => index.has(p.topic_id));
-  const maxSec = Math.max(1, ...points.map((p) => p.seconds));
-  const order = [...points].sort((a, b) => a.day.localeCompare(b.day) || a.block_id - b.block_id);
-  const rankOf = new Map(order.map((p, i) => [p.block_id, i]));
-
-  const ys = points.map((p) => p.y);
-  const yMin = Math.min(...ys);
-  const span = (Math.max(...ys) - yMin) * (GAL_H - 2 * PAD);
-  const height = points.length ? Math.max(MIN_H, span + 2 * PAD) : GAL_H;
-  const top = (height - span) / 2;
-
-  const dots = points.map((p) => {
-    const rank = rankOf.get(p.block_id) ?? 0;
-    return {
-      point: p,
-      cx: PAD + p.x * (GAL_W - 2 * PAD),
-      cy: top + (p.y - yMin) * (GAL_H - 2 * PAD),
-      r: 2.5 + 6 * Math.sqrt(p.seconds / maxSec),
-      fill: topicColor(p.topic_id, topics.length),
-      rank,
-      delayMs: Math.min(rank * 3, MAX_DELAY_MS),
-    };
-  });
-
-  const totalSec = topics.reduce((s, t) => s + t.seconds, 0);
-  const labels: GalaxyLabel[] = [];
-  for (const topic of topics) {
-    const mine = dots.filter((d) => d.point.topic_id === topic.id);
-    if (mine.length === 0) continue;
-    const wts = (f: (d: GalaxyDot) => number) => mine.map((d) => ({ v: f(d), w: d.point.seconds + 1 }));
-    const fontSize = MIN_FONT + 9 * Math.sqrt(totalSec > 0 ? topic.seconds / totalSec : 0);
-    const lines = wrapName(topic.name);
-    const hoursW = hoursLabel(topic.seconds).length * HOURS_FONT * NAME_CHAR_W;
-    const w = Math.max(Math.max(...lines.map((t) => t.length)) * fontSize * NAME_CHAR_W, hoursW);
-    labels.push({
-      topic,
-      lines,
-      x: weightedMedian(wts((d) => d.cx)),
-      y: weightedMedian(wts((d) => d.cy)),
-      fontSize,
-      w,
-      h: fontSize * (1 + (lines.length - 1) * NAME_LINE_H) + LABEL_LINE_GAP + HOURS_FONT,
-    });
-  }
-
-  const clamp = (l: GalaxyLabel) => {
-    l.x = Math.min(LABEL_MAX_X - l.w / 2, Math.max(LABEL_MIN_X + l.w / 2, l.x));
-    l.y = Math.min(height - l.h / 2, Math.max(l.h / 2, l.y));
-  };
-  labels.forEach(clamp);
-  for (let it = 0; it < NUDGE_ITERATIONS; it++) {
-    let moved = false;
-    const byY = [...labels].sort((p, q) => p.y - q.y);
-    for (let i = 0; i < byY.length; i++) {
-      for (let j = i + 1; j < byY.length; j++) {
-        const a = byY[i];
-        const b = byY[j];
-        if (Math.abs(a.x - b.x) >= (a.w + b.w) / 2) continue;
-        const need = (a.h + b.h) / 2 + LABEL_GAP - Math.abs(a.y - b.y);
-        if (need <= 1e-9) continue;
-        const dir = a.y <= b.y ? 1 : -1;
-        a.y -= (dir * need) / 2;
-        b.y += (dir * need) / 2;
-        moved = true;
-      }
-    }
-    labels.forEach(clamp);
-    if (!moved) break;
-  }
-  return { height, dots, labels };
-}
 
 export function galaxyTipDot(p: MapPoint, topicName: string): Tip {
   return {
@@ -352,11 +232,44 @@ function TopicList({ report }: { report: TopicsReport }) {
   );
 }
 
+function ViewToggle({ view, onChange }: { view: View; onChange: (v: View) => void }) {
+  return (
+    <div className="view-toggle sx-gal-view" role="group" aria-label="Galaxy view">
+      {VIEWS.map(([id, label]) => (
+        <button
+          key={id}
+          type="button"
+          className={`view-toggle-btn${view === id ? " is-active" : ""}`}
+          aria-pressed={view === id}
+          onClick={() => onChange(id)}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function TopicGalaxy({ report }: { report: TopicsReport }) {
   const layout = galaxyLayout(report);
+  const [view, setView] = useState<View>("map");
+  useEffect(() => {
+    try {
+      if (localStorage.getItem(VIEW_KEY) === "stars") setView("stars");
+    } catch {}
+  }, []);
+  const choose = (v: View) => {
+    setView(v);
+    try {
+      localStorage.setItem(VIEW_KEY, v);
+    } catch {}
+  };
   return (
     <div className="sx-gal sr-card">
-      <h3 className="sr-title">Topic galaxy</h3>
+      <div className="sx-gal-head">
+        <h3 className="sr-title">Topic galaxy</h3>
+        <ViewToggle view={view} onChange={choose} />
+      </div>
       {report.naming === "pending" && <span className="sx-gal-chip">AI is naming topics…</span>}
       {layout.dots.length === 0 ? (
         <div className="sx-gal-empty">
@@ -366,10 +279,16 @@ export function TopicGalaxy({ report }: { report: TopicsReport }) {
       ) : (
         <>
           <p className="sx-gal-headline">{galaxyHeadline(report.topics)}</p>
-          <div className="sx-gal-map">
-            <GalaxyMap report={report} layout={layout} />
-          </div>
-          <Legend />
+          {view === "stars" ? (
+            <StarField report={report} />
+          ) : (
+            <>
+              <div className="sx-gal-map">
+                <GalaxyMap report={report} layout={layout} />
+              </div>
+              <Legend />
+            </>
+          )}
           <TopicList report={report} />
         </>
       )}
