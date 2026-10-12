@@ -3172,7 +3172,7 @@ async fn recap_today(
 
 async fn loose_ends_route(
     State(state): State<Shared>,
-) -> Result<Json<crate::time_leaks_contract::LooseEnds>, ApiError> {
+) -> Result<Json<crate::time_leaks_contract::UnbilledDays>, ApiError> {
     let today = local_today();
     Ok(Json(
         with_conn(state, move |c| crate::loose_ends::for_cycle(c, &today)).await?,
@@ -3711,7 +3711,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn loose_ends_route_lists_todays_unsynced_block_and_is_get_only() {
+    async fn loose_ends_route_returns_unbilled_days_and_is_get_only() {
         let conn = open_memory().unwrap();
         let today = local_today();
         conn.execute(
@@ -3730,10 +3730,18 @@ mod tests {
         let bytes = body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let v: Value = serde_json::from_slice(&bytes).unwrap();
         // catches: a handler that ignores the db / uses the wrong "today" and returns an empty cycle
-        assert_eq!(v["items"].as_array().unwrap().len(), 1);
-        // catches: missing reasons dropped or serialised in a different case
-        assert_eq!(v["items"][0]["missing"], json!(["tempo", "export"]));
-        assert_eq!(v["items"][0]["jira_issue"], "GENAI-9");
+        assert_eq!(v["days"].as_array().unwrap().len(), 1);
+        assert_eq!(v["days"][0]["day"], today);
+        // catches: the old per-block shape, or the reason serialised in a different case
+        assert_eq!(
+            v["days"][0]["tempo"],
+            json!([{"jira_issue": "GENAI-9", "seconds": 1800, "in_tempo_seconds": 0, "reason": "not_sent"}])
+        );
+        assert_eq!(v["days"][0]["export"], json!({"seconds": 1800}));
+        assert_eq!(v["days"][0]["ticketless_seconds"], 0);
+        assert_eq!(v["days"][0]["dismissed"], Value::Null);
+        // catches: the pull time key missing (the web reads it to show Tempo's age)
+        assert_eq!(v["tempo_pulled_at"], Value::Null);
         let post = router(state)
             .oneshot(Request::post("/loose-ends").body(Body::empty()).unwrap())
             .await

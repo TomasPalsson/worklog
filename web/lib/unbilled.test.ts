@@ -1,89 +1,123 @@
 import { describe, expect, it } from "bun:test";
-import type { LooseEnd, LooseEnds } from "./time_leaks_contract";
+import type { TempoGap, UnbilledDay, UnbilledDays } from "./time_leaks_contract";
 import { summarise } from "./unbilled";
 
-const item = (over: Partial<LooseEnd>): LooseEnd => ({
-  block_id: 1,
-  day: "2026-10-05",
+const gap = (over: Partial<TempoGap>): TempoGap => ({
   jira_issue: "ABC-1",
-  started_at: "2026-10-05T09:00:00Z",
-  ended_at: "2026-10-05T10:00:00Z",
   seconds: 3600,
-  description: null,
-  missing: ["export"],
+  in_tempo_seconds: 0,
+  reason: "not_sent",
   ...over,
 });
-const data = (items: LooseEnd[]): LooseEnds => ({ cycle_start: "2026-09-20", cycle_end: "2026-10-19", items });
+const day = (over: Partial<UnbilledDay>): UnbilledDay => ({
+  day: "2026-10-05",
+  dismissed: null,
+  tempo: [],
+  ticketless_seconds: 0,
+  export: null,
+  ...over,
+});
+const data = (days: UnbilledDay[]): UnbilledDays => ({
+  cycle_start: "2026-09-20",
+  cycle_end: "2026-10-19",
+  tempo_pulled_at: "2026-10-12T08:00:00Z",
+  days,
+});
 
 describe("summarise", () => {
-  it("groups blocks into one entry per day, oldest first", () => {
-    // catches: listing blocks instead of days, or newest first
-    const s = summarise(data([item({ day: "2026-10-07" }), item({ day: "2026-10-05" }), item({ day: "2026-10-05", block_id: 2 })]), "2026-10-12", 9);
+  it("keeps the daemon's days, oldest first", () => {
+    // catches: re-sorting newest first, or dropping a day that only has export left
+    const s = summarise(data([day({ day: "2026-10-07", export: { seconds: 60 } }), day({ day: "2026-10-05", ticketless_seconds: 60 })]), "2026-10-12", 9);
     expect(s.days.map((d) => d.day)).toEqual(["2026-10-05", "2026-10-07"]);
-    expect(s.days[0].seconds).toBe(7200);
   });
 
-  it("lists each Tempo-missing ticket once with its hours, biggest first", () => {
-    // catches: one row per block, or losing a ticket's second block
+  it("a ticket's missing hours are the whole line unless Tempo is short", () => {
+    // catches: subtracting Tempo hours for not_sent, or counting a whole deleted line when Tempo still holds part of it
     const s = summarise(
       data([
-        item({ missing: ["tempo"], jira_issue: "A-1", seconds: 600 }),
-        item({ missing: ["tempo", "export"], jira_issue: "B-2", seconds: 1800, block_id: 2 }),
-        item({ missing: ["tempo"], jira_issue: "A-1", seconds: 1800, block_id: 3 }),
-        item({ missing: ["export"], jira_issue: "C-3", seconds: 900, block_id: 4 }),
+        day({
+          tempo: [
+            gap({ jira_issue: "A-1", seconds: 3600, in_tempo_seconds: 1800, reason: "short" }),
+            gap({ jira_issue: "B-2", seconds: 4920, in_tempo_seconds: 3600, reason: "deleted" }),
+            gap({ jira_issue: "C-3", seconds: 600, reason: "not_sent" }),
+          ],
+        }),
       ]),
       "2026-10-12",
       9,
     );
-    const day = s.days[0];
-    expect(day.tempo.state).toBe("needs");
-    expect(day.tempo.tickets).toEqual([
-      { key: "A-1", seconds: 2400 },
-      { key: "B-2", seconds: 1800 },
+    const d = s.days[0];
+    expect(d.tempo.state).toBe("needs");
+    expect(d.tempo.tickets.map((t) => [t.key, t.missing, t.reason])).toEqual([
+      ["A-1", 1800, "short"],
+      ["B-2", 1320, "deleted"], // Tempo still holds 3600s someone logged by hand
+      ["C-3", 600, "not_sent"],
     ]);
+    expect(d.tempo.seconds).toBe(3720);
   });
 
-  it("marks a day billed-pending with the hours not yet marked", () => {
-    // catches: counting Tempo-only blocks as unbilled
-    const s = summarise(data([item({ missing: ["export"], seconds: 900 }), item({ missing: ["tempo"], seconds: 600, block_id: 2 })]), "2026-10-12", 9);
-    expect(s.days[0].bill).toEqual({ state: "needs", seconds: 900 });
-  });
-
-  it("a day with nothing left on one step shows that step done", () => {
-    // catches: showing 'needs' for a step with no missing block
-    const s = summarise(data([item({ missing: ["export"] })]), "2026-10-12", 9);
+  it("a day with no Tempo gap shows that step done", () => {
+    // catches: showing 'needs' for a day whose only open item is ticketless work
+    const s = summarise(data([day({ ticketless_seconds: 900 })]), "2026-10-12", 9);
     expect(s.days[0].tempo.state).toBe("done");
     expect(s.days[0].tempo.tickets).toEqual([]);
+    expect(s.days[0].ticketless).toBe(900);
   });
 
   it("today's Tempo lines wait for the 17:00 send instead of needing action", () => {
     // catches: flagging today's work as a problem before the send ran
     const today = "2026-10-12";
-    expect(summarise(data([item({ day: today, missing: ["tempo"] })]), today, 16).days[0].tempo.state).toBe("waiting");
-    expect(summarise(data([item({ day: today, missing: ["tempo"] })]), today, 17).days[0].tempo.state).toBe("needs");
+    const d = data([day({ day: today, tempo: [gap({})] })]);
+    expect(summarise(d, today, 16).days[0].tempo.state).toBe("waiting");
+    expect(summarise(d, today, 17).days[0].tempo.state).toBe("needs");
   });
 
-  it("totals hours and days per step", () => {
-    // catches: double-counting a block missing both steps in one total
+  it("totals missing Tempo hours, ticketless hours and export hours with their day counts", () => {
+    // catches: adding export hours into the Tempo total, or counting a day without that item
     const s = summarise(
       data([
-        item({ day: "2026-10-05", missing: ["tempo", "export"], seconds: 3600 }),
-        item({ day: "2026-10-06", missing: ["export"], seconds: 1800, block_id: 2 }),
+        day({ day: "2026-10-05", tempo: [gap({ seconds: 3600, in_tempo_seconds: 1200, reason: "short" })], export: { seconds: 3600 } }),
+        day({ day: "2026-10-06", ticketless_seconds: 1800, export: { seconds: 900 } }),
+        day({ day: "2026-10-07", ticketless_seconds: 600 }),
       ]),
       "2026-10-12",
       9,
     );
-    expect(s.tempo).toEqual({ seconds: 3600, days: 1 });
-    expect(s.bill).toEqual({ seconds: 5400, days: 2 });
+    expect(s.tempo).toEqual({ seconds: 2400, days: 1 });
+    expect(s.ticket).toEqual({ seconds: 2400, days: 2 });
+    expect(s.bill).toEqual({ seconds: 4500, days: 2 });
+  });
+
+  it("strip state: tempo beats ticket beats bill beats waiting; dismissed days with nothing open are clear", () => {
+    // catches: the old tempo > waiting > bill order, a missing ticket state, or painting a dismissed day
+    const today = "2026-10-12";
+    const s = summarise(
+      data([
+        day({ day: "2026-10-01", tempo: [gap({})], ticketless_seconds: 60, export: { seconds: 60 } }),
+        day({ day: "2026-10-02", ticketless_seconds: 60, export: { seconds: 60 } }),
+        day({ day: "2026-10-03", export: { seconds: 60 } }),
+        day({ day: "2026-10-04", dismissed: "Left earlier" }),
+        day({ day: "2026-10-05", dismissed: "Klipping", ticketless_seconds: 60 }),
+        day({ day: today, tempo: [gap({})], export: { seconds: 60 } }),
+      ]),
+      today,
+      9,
+    );
+    const at = (d: string) => s.cycle.find((c) => c.day === d)?.state;
+    expect(at("2026-10-01")).toBe("tempo");
+    expect(at("2026-10-02")).toBe("ticket");
+    expect(at("2026-10-03")).toBe("bill");
+    expect(at("2026-10-04")).toBe("clear");
+    expect(at("2026-10-05")).toBe("ticket");
+    expect(at(today)).toBe("bill");
+    expect(summarise(data([day({ day: today, tempo: [gap({})] })]), today, 9).cycle.find((c) => c.day === today)?.state).toBe("waiting");
   });
 
   it("gives every cycle day a state for the strip, future days marked future", () => {
     // catches: a strip that skips days with nothing open, or paints the future
-    const s = summarise(data([item({ day: "2026-10-05", missing: ["tempo"] }), item({ day: "2026-10-06", block_id: 2 })]), "2026-10-12", 9);
+    const s = summarise(data([day({ day: "2026-10-05", tempo: [gap({})] })]), "2026-10-12", 9);
     expect(s.cycle).toHaveLength(30);
     expect(s.cycle[0]).toEqual({ day: "2026-09-20", state: "clear" });
-    expect(s.cycle.find((c) => c.day === "2026-10-05")?.state).toBe("tempo");
-    expect(s.cycle.find((c) => c.day === "2026-10-06")?.state).toBe("bill");
     expect(s.cycle.find((c) => c.day === "2026-10-12")?.state).toBe("clear");
     expect(s.cycle.find((c) => c.day === "2026-10-13")?.state).toBe("future");
   });

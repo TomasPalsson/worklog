@@ -4,26 +4,37 @@
 /** Mirrors `IgnoreReason`. */
 export type IgnoreReason = "noise" | "duplicate";
 
-/** Mirrors `LooseEndMissing`. */
-export type LooseEndMissing = "tempo" | "export";
+/** Mirrors `TempoGapReason`. */
+export type TempoGapReason = "not_sent" | "short" | "deleted";
 
-/** Mirrors `LooseEnd`. */
-export interface LooseEnd {
-  block_id: number;
-  day: string;
+/** Mirrors `TempoGap`. */
+export interface TempoGap {
   jira_issue: string;
-  started_at: string;
-  ended_at: string;
   seconds: number;
-  description: string | null;
-  missing: LooseEndMissing[];
+  in_tempo_seconds: number;
+  reason: TempoGapReason;
 }
 
-/** Mirrors `LooseEnds`. */
-export interface LooseEnds {
+/** Mirrors `ExportGap`. */
+export interface ExportGap {
+  seconds: number;
+}
+
+/** Mirrors `UnbilledDay`. */
+export interface UnbilledDay {
+  day: string;
+  dismissed: string | null;
+  tempo: TempoGap[];
+  ticketless_seconds: number;
+  export: ExportGap | null;
+}
+
+/** Mirrors `UnbilledDays`. */
+export interface UnbilledDays {
   cycle_start: string;
   cycle_end: string;
-  items: LooseEnd[];
+  tempo_pulled_at: string | null;
+  days: UnbilledDay[];
 }
 
 /** Mirrors `SourceHealth`. */
