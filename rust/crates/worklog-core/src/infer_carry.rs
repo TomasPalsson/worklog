@@ -210,8 +210,16 @@ mod tests {
         let stored = crate::repo::list_blocks_for_day(&conn, "2026-09-23").unwrap();
         let get = |hm: &str| stored.iter().find(|b| b.started_at.contains(hm)).unwrap();
         assert_eq!(get("T13:31").tempo_worklog_id.as_deref(), Some("222"));
-        assert_eq!(get("T13:00").tempo_worklog_id, None, "meeting must not borrow 222");
-        assert_eq!(get("T13:00").jira_issue, None, "meeting must not borrow T-2");
+        assert_eq!(
+            get("T13:00").tempo_worklog_id,
+            None,
+            "meeting must not borrow 222"
+        );
+        assert_eq!(
+            get("T13:00").jira_issue,
+            None,
+            "meeting must not borrow T-2"
+        );
     }
 
     #[test]
