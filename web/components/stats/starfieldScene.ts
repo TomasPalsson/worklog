@@ -12,6 +12,10 @@ const MAX_PITCH = 1.45;
 const LOOK_PER_PX = 0.004;
 const ORBIT_RATE = 0.06;
 const FLY_MIN = 0.35 * R;
+const FOV = Math.PI / 3;
+const FIT = 0.75;
+const HOME_PITCH = -0.05;
+const SPREAD_MIN = 0.22;
 
 export type Vec3 = [number, number, number];
 
@@ -41,10 +45,14 @@ export interface Dust {
   b: number;
 }
 
+export type Edge = [number, number];
+
 export interface Scene {
   stars: Star[];
   topics: SceneTopic[];
   dust: Dust[];
+  edges: Edge[];
+  bound: { centre: Vec3; radius: number };
 }
 
 export interface Camera {
@@ -87,17 +95,91 @@ export function buildScene(report: TopicsReport): Scene {
     ticket: p.ticket,
     novelty: p.novelty,
   }));
+  inflate(stars);
   const topics = report.topics.map((t): SceneTopic => {
-    const mine = stars.filter((s) => s.topic === t.id);
-    const n = mine.length || 1;
-    const centroid = mine.reduce<Vec3>((c, s) => add(c, s.pos, 1 / n), [0, 0, 0]);
-    const ms = mine.reduce((acc, s) => acc + (s.pos[0] - centroid[0]) ** 2 + (s.pos[1] - centroid[1]) ** 2 + (s.pos[2] - centroid[2]) ** 2, 0) / n;
-    return { id: t.id, name: t.name, centroid, spread: Math.sqrt(ms), seconds: t.seconds };
+    const { centroid, spread } = spreadOf(stars.filter((s) => s.topic === t.id).map((s) => s.pos));
+    return { id: t.id, name: t.name, centroid, spread, seconds: t.seconds };
   });
-  return { stars, topics, dust: makeDust() };
+  return { stars, topics, dust: makeDust(), edges: edgesOf(stars), bound: boundOf(stars) };
 }
 
-export const initialCamera = (_scene: Scene): Camera => ({ pos: [0, 0.15 * R, -2.6 * R], yaw: 0, pitch: -0.05, fov: Math.PI / 3 });
+function spreadOf(pts: Vec3[]): { centroid: Vec3; spread: number } {
+  const n = pts.length || 1;
+  const centroid = pts.reduce<Vec3>((c, p) => add(c, p, 1 / n), [0, 0, 0]);
+  const ms = pts.reduce((acc, p) => acc + (p[0] - centroid[0]) ** 2 + (p[1] - centroid[1]) ** 2 + (p[2] - centroid[2]) ** 2, 0) / n;
+  return { centroid, spread: Math.sqrt(ms) };
+}
+
+function groupByTopic(stars: Star[]): Map<number, Star[]> {
+  const by = new Map<number, Star[]>();
+  for (const s of stars) by.set(s.topic, [...(by.get(s.topic) ?? []), s]);
+  return by;
+}
+
+// A topic's stars are scaled about their centroid until the RMS spread reaches SPREAD_MIN x the distance to the nearest
+// other populated topic, so the 0.45 x d ceiling can only matter for a spread that was already larger (never shrunk).
+function inflate(stars: Star[]) {
+  const groups = [...groupByTopic(stars).values()].map((g) => ({ g, ...spreadOf(g.map((s) => s.pos)) }));
+  for (const t of groups) {
+    if (t.g.length < 2 || t.spread === 0) continue;
+    const d = Math.min(...groups.filter((o) => o !== t).map((o) => Math.hypot(o.centroid[0] - t.centroid[0], o.centroid[1] - t.centroid[1], o.centroid[2] - t.centroid[2])));
+    if (!Number.isFinite(d)) continue;
+    const k = Math.max(t.spread, SPREAD_MIN * d) / t.spread;
+    for (const s of t.g) s.pos = [t.centroid[0] + (s.pos[0] - t.centroid[0]) * k, t.centroid[1] + (s.pos[1] - t.centroid[1]) * k, t.centroid[2] + (s.pos[2] - t.centroid[2]) * k];
+  }
+}
+
+// Euclidean minimum spanning tree (Prim, O(m^2)); edges are index pairs into `points`.
+export function constellation(points: Vec3[]): Edge[] {
+  const m = points.length;
+  if (m < 2) return [];
+  const d2 = (a: Vec3, b: Vec3) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2;
+  const best = points.map((p) => d2(p, points[0]));
+  const from = points.map(() => 0);
+  const inTree = points.map((_, i) => i === 0);
+  const edges: Edge[] = [];
+  for (let n = 1; n < m; n++) {
+    let j = -1;
+    for (let i = 0; i < m; i++) if (!inTree[i] && (j < 0 || best[i] < best[j])) j = i;
+    inTree[j] = true;
+    edges.push([from[j], j]);
+    for (let i = 0; i < m; i++) {
+      const d = d2(points[i], points[j]);
+      if (!inTree[i] && d < best[i]) {
+        best[i] = d;
+        from[i] = j;
+      }
+    }
+  }
+  return edges;
+}
+
+function edgesOf(stars: Star[]): Edge[] {
+  const idx = new Map<number, number[]>();
+  stars.forEach((s, i) => idx.set(s.topic, [...(idx.get(s.topic) ?? []), i]));
+  return [...idx.values()].flatMap((ids) => constellation(ids.map((i) => stars[i].pos)).map(([a, b]): Edge => [ids[a], ids[b]]));
+}
+
+function boundOf(stars: Star[]): Scene["bound"] {
+  const { centroid } = spreadOf(stars.map((s) => s.pos));
+  const radius = Math.max(0, ...stars.map((s) => Math.hypot(s.pos[0] - centroid[0], s.pos[1] - centroid[1], s.pos[2] - centroid[2])));
+  return { centre: centroid, radius };
+}
+
+// Camera sits on the line back from the bounding-sphere centre along the view direction. A sphere of radius r
+// seen from distance d spans r/(d*tan(half)) of the half-view, so d = r / (FIT * tan(half)) puts its edge at FIT
+// (75%) of the half-extent of the narrower FOV (vertical, or horizontal for portrait aspect).
+export function fitDistance(scene: Scene, aspect = 16 / 9): number {
+  const halfY = FOV / 2;
+  const halfX = Math.atan(Math.tan(halfY) * aspect);
+  return Math.max(scene.bound.radius, FLY_MIN) / (FIT * Math.tan(Math.min(halfY, halfX)));
+}
+
+export function initialCamera(scene: Scene, aspect = 16 / 9): Camera {
+  if (scene.stars.length === 0) return { pos: [0, 0.15 * R, -2.6 * R], yaw: 0, pitch: HOME_PITCH, fov: FOV };
+  const cam: Camera = { pos: [0, 0, 0], yaw: 0, pitch: HOME_PITCH, fov: FOV };
+  return { ...cam, pos: add(scene.bound.centre, forward(cam), -fitDistance(scene, aspect)) };
+}
 
 export const forward = (c: Camera): Vec3 => [Math.cos(c.pitch) * Math.sin(c.yaw), Math.sin(c.pitch), Math.cos(c.pitch) * Math.cos(c.yaw)];
 export const right = (c: Camera): Vec3 => [Math.cos(c.yaw), 0, -Math.sin(c.yaw)];

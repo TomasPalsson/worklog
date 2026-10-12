@@ -56,7 +56,7 @@ export function createEngine(
   const requestFrame = opts.raf ?? ((f) => requestAnimationFrame(f));
   const cancelFrame = opts.caf ?? ((id) => cancelAnimationFrame(id));
   const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
-  const home = initialCamera(scene);
+  const home = initialCamera(scene, canvas.getBoundingClientRect().width / canvas.getBoundingClientRect().height || 16 / 9);
   const v: View = { cam: opts.camera ?? home, keys: new Set(), orbit: !reduced, fly: null, drag: false, w: 0, h: 0, dpr: 1, visible: true, hover: null, pin: null, hits: [], labels: [] };
   let pal = buildPalette(wrap, k);
   let raf = 0;
