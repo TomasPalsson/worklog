@@ -1,0 +1,25 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (rust/target/debug/deps/worklog_core-5f98b59a3618f7a2)
+
+running 12 tests
+test topic_map::tests::bench_n2000 ... ignored
+test topic_map::tests::identical_vectors_yield_finite_points ... ok
+test topic_map::tests::identical_vectors_finite_in_3d ... ok
+test topic_map::tests::below_min_points_is_empty_and_at_min_is_not ... ok
+test topic_map::tests::separated_groups_stay_apart ... ok
+test topic_map::tests::coords_in_unit_square_with_aspect_preserved ... ok
+test topic_map::tests::two_runs_are_bit_identical ... ok
+test topic_map::tests::z_axis_is_not_flat ... ok
+test topic_map::tests::natural_topics_keep_visible_spread ... ok
+test topic_map::tests::natural_blobs_still_separate_by_topic ... ok
+test topic_map::tests::split_topics_stay_whole_in_2d_and_3d ... ok
+test topic_map::tests::deterministic_and_unit_cube_in_3d ... ok
+
+test result: ok. 11 passed; 0 failed; 1 ignored; 0 measured; 2212 filtered out; finished in 4.43s
+
+     Running tests/env_fallback.rs (rust/target/debug/deps/env_fallback-47156b92c77a69b4)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+

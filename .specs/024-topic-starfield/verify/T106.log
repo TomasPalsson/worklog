@@ -1,0 +1,79 @@
+bun test v1.2.4 (fd9a5ea6)
+
+components/stats/TopicGalaxy.test.tsx:
+(pass) galaxyLayout dots > maps x/y in [0,1] to the padded viewBox
+(pass) galaxyLayout dots > radius is 2.5 + 6*sqrt(seconds/max): max gives 8.5, quarter gives 5.5, zero gives 2.5
+(pass) galaxyLayout dots > rank is chronological by day then block id; delay is min(rank*3, 1200) ms
+(pass) galaxyLayout dots > delay caps at 1200ms exactly at rank 400 and stays there past it [0.55ms]
+(pass) galaxyLayout dots > drops points whose topic is unknown instead of drawing NaN [0.02ms]
+(pass) wrapName > 24 chars stays one line [0.05ms]
+(pass) wrapName > 25 chars with a space at index 12 splits there [0.02ms]
+(pass) wrapName > wraps at the last space at or before index 24, keeping whole words [0.02ms]
+(pass) wrapName > a space exactly at index 24 is a valid split point [0.01ms]
+(pass) wrapName > a space at index 25 is too late: the first 24 chars are the first line
+(pass) wrapName > a 60-char spaced name gives two lines, each <= 24, second ending in an ellipsis
+(pass) wrapName > a 30-char name with no space is its first 24 chars then the rest
+(pass) wrapName > a second line of exactly 24 is kept, 25 is cut
+(pass) galaxyLayout labels > font size is 11 + 9*sqrt(share): whole share 20, quarter share 15.5
+(pass) galaxyLayout labels > sits at the hours-weighted median, not the mean or first member
+(pass) galaxyLayout labels > a topic with no points gets no label
+(pass) galaxyLayout labels > labels do not overlap after nudging a crowded fixture [0.47ms]
+(pass) galaxyLayout labels > a long-named label on an island at x=1 ends fully inside [8, 992] [0.03ms]
+(pass) galaxyLayout labels > a long-named label at the right edge is clamped to x1 <= 992
+(pass) galaxyLayout labels > a 200-char name wraps to two lines, the second cut to 23 chars + ellipsis; the topic keeps the full name
+(pass) galaxyLayout labels > the 42-char name renders two tspans, no ellipsis, and the full aria-label [10.95ms]
+(pass) galaxyLayout labels > a wrapped label is taller than an unwrapped one at the same font size, by one 1.1 line [0.12ms]
+(pass) galaxyLayout labels > a wrapped label's width is its widest line [0.02ms]
+(pass) galaxyLayout labels > ten topics with two near-identical long-named centroids end with no overlapping boxes, all inside the map [0.12ms]
+(pass) galaxyLayout labels > label box height counts the hours line and width covers the hours text [0.03ms]
+(pass) galaxyLayout labels > six labels crowded at the right edge stay inside the map and never overlap [0.21ms]
+(pass) galaxyLayout labels > hue comes from the topic id, not array position: id 3 of K=10 [0.04ms]
+(pass) galaxyLayout labels > labels far apart horizontally are left where they are [0.03ms]
+(pass) tips > renders none of the retired names [2.62ms]
+(pass) tips > dot tip has exact title and rows
+(pass) tips > dot tip says none for a missing ticket
+(pass) tips > label tip carries description, keywords, hours and blocks
+(pass) tips > label tip omits sub without a description
+(pass) TopicGalaxy markup > dots are pointer-only (tabindex -1, still tipped) and labels are the tab stops [2.52ms]
+(pass) TopicGalaxy markup > every label is focusable with a tip [1.95ms]
+(pass) TopicGalaxy markup > markup never contains NaN, undefined or null [1.76ms]
+(pass) TopicGalaxy markup > draws a dashed ring at r+5 only for oddballs [1.56ms]
+(pass) TopicGalaxy markup > pending chip shows only when naming is pending [4.67ms]
+(pass) TopicGalaxy markup > emits one hover isolation rule per topic [1.07ms]
+(pass) TopicGalaxy markup > isolation also triggers on keyboard focus (focus-visible and focus-within) [1.46ms]
+(pass) TopicGalaxy markup > shows the How line [2.84ms]
+(pass) TopicGalaxy markup > viewBox height follows the y extent but never drops below 360 (y 0.2-0.6 gives 360, not 620) [1.09ms]
+(pass) TopicGalaxy markup > viewBox height grows with the range: y 0-0.8 gives 0.8*540+80 = 512
+(pass) TopicGalaxy markup > full y range keeps 620
+(pass) TopicGalaxy markup > legend row has both marks and the plain-words text [1.09ms]
+(pass) TopicGalaxy markup > headline names the two largest topics by seconds (not first two) with their rounded combined share [0.90ms]
+(pass) TopicGalaxy markup > headline with one topic is '1 topic · {A}' with no percentage [0.61ms]
+(pass) TopicGalaxy markup > no headline in the empty state [0.99ms]
+(pass) TopicGalaxy markup > headline css is 16px in --fg
+(pass) TopicGalaxy markup > legend ends with the dot hint [1.52ms]
+(pass) TopicGalaxy markup > topic name fill is the topic hue lifted toward --fg [0.91ms]
+(pass) TopicGalaxy markup > every dot has a sibling hit circle r=12 behind it [1.31ms]
+(pass) TopicGalaxy markup > topic list has one focusable tipped row per topic with name and hours [1.01ms]
+(pass) TopicGalaxy markup > map svg fits its width: meet aspect ratio, no scroll or min-width container [1.26ms]
+(pass) TopicGalaxy markup > below 600px the css hides on-map labels, shows the list and enlarges dots 1.6x
+(pass) TopicGalaxy markup > the caption has no jargon outside details [1.07ms]
+(pass) TopicGalaxy markup > no points shows the empty state and message, with no svg map [0.48ms]
+(pass) TopicGalaxy markup > contains no hard-coded hex colours [1.12ms]
+(pass) phone tap targets and spacing > below 600px the hit circle is scaled x3 about its centre [0.03ms]
+(pass) phone tap targets and spacing > below 600px the map container is at least 260px tall
+(pass) phone tap targets and spacing > two labels at the same median y end at least 8px apart including the hours line [0.11ms]
+(pass) phone tap targets and spacing > every caption and legend font rule is at least 13px [0.11ms]
+(pass) Map / Star field toggle > defaults to Map pressed with the map drawn [0.93ms]
+(pass) Map / Star field toggle > clicking Star field flips aria-pressed, swaps the map + legend, keeps headline/how/method, and persists [4.51ms]
+(pass) Map / Star field toggle > restores a stored Star field choice after mount [4.14ms]
+(pass) Map / Star field toggle > ignores an unknown stored value [1.22ms]
+(pass) Map / Star field toggle > a throwing localStorage neither crashes mount nor blocks the toggle [1.42ms]
+(pass) Map / Star field toggle > does not import StarField statically [0.12ms]
+(pass) Map / Star field toggle > toggle buttons show a visible keyboard focus ring [0.02ms]
+(pass) Map / Star field toggle > StarField imports use extensionless specifiers so webpack can resolve them
+
+ 70 pass
+ 0 fail
+ 304 expect() calls
+Ran 70 tests across 1 files. [158.00ms]
+$ tsc --noEmit
