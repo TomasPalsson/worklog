@@ -3,8 +3,9 @@
 import { Fragment } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BillingIcon, DayIcon, FlagIcon, LoggedIcon, LogoMark, MirresIcon, SettingsIcon, StatsIcon, TasksIcon, WeekIcon } from "./icons";
+import { BillingIcon, DayIcon, LoggedIcon, LogoMark, MirresIcon, SettingsIcon, StatsIcon, TasksIcon, WeekIcon } from "./icons";
 import { ThemeToggle } from "./ThemeToggle";
+import { UnbilledIcon } from "./unbilled-icons";
 
 const DAY = /^\/(\d{4}-\d{2}-\d{2})$/;
 
@@ -15,14 +16,14 @@ const LINKS = [
   ["logged", "Logged", "/logged", LoggedIcon],
   ["stats", "Statistics", "/stats", StatsIcon],
   ["billing", "Billing", "/billing", BillingIcon],
-  ["loose-ends", "Loose ends", "/loose-ends", FlagIcon],
+  ["unbilled", "Unbilled", "/unbilled", UnbilledIcon],
   ["mirres", "Mirres", "/mirres", MirresIcon],
   ["settings", "Settings", "/settings", SettingsIcon],
 ] as const;
 
 function sectionOf(path: string): string {
   if (path === "/" || DAY.test(path)) return "day";
-  return ["week", "tasks", "logged", "stats", "billing", "loose-ends", "mirres", "settings"].find((s) => path === `/${s}` || path.startsWith(`/${s}/`)) ?? "";
+  return ["week", "tasks", "logged", "stats", "billing", "unbilled", "mirres", "settings"].find((s) => path === `/${s}` || path.startsWith(`/${s}/`)) ?? "";
 }
 
 export function AppNav() {

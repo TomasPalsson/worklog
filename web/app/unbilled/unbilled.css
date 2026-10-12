@@ -1,0 +1,299 @@
+/* Unbilled work (/unbilled). Page-scoped: every rule hangs off .ub-page and
+   uses the shared tokens only. States: amber = needs you (hatched when it is
+   Tempo, flat when it is billing), slate = waiting, sage = done. */
+
+.page:has(.ub-page) { max-width: 920px; }
+
+.ub-page {
+  --ub-gap: 40px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ub-gap);
+}
+
+.ub-page :focus-visible { outline: none; box-shadow: var(--ring); border-radius: var(--radius-sm); }
+
+/* ── header ─────────────────────────────────────────── */
+.ub-head h1 { font-size: 28px; letter-spacing: -0.02em; margin: 0 0 6px; }
+.ub-head .reg-lede { font-size: 14px; line-height: 1.5; max-width: 60ch; }
+.ub-cycle {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--fg);
+}
+.ub-cycle span {
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+/* ── the two steps ──────────────────────────────────── */
+.ub-steps {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+.ub-steps li {
+  position: relative;
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  column-gap: 12px;
+  row-gap: 2px;
+  align-items: center;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  color: var(--fg-muted);
+}
+.ub-steps li > svg { grid-row: span 2; color: var(--sage-ink); }
+.ub-steps li[data-open] > svg { color: var(--amber-ink); }
+.ub-steps strong { font-size: 14px; font-weight: 600; color: var(--fg); }
+.ub-steps span { font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.ub-steps li[data-open] span { color: var(--amber-ink); font-weight: 500; }
+/* connector: a short arrow between cards */
+.ub-steps li + li::before {
+  content: "";
+  position: absolute;
+  left: -14px;
+  top: 50%;
+  width: 12px;
+  height: 1.6px;
+  background: var(--border-strong);
+}
+.ub-steps li + li::after {
+  content: "";
+  position: absolute;
+  left: -6px;
+  top: calc(50% - 3.2px);
+  width: 6px;
+  height: 6px;
+  border-top: 1.6px solid var(--border-strong);
+  border-right: 1.6px solid var(--border-strong);
+  rotate: 45deg;
+}
+
+/* ── sections ───────────────────────────────────────── */
+.ub-sec h2 {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  padding-bottom: 10px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.ub-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+  letter-spacing: 0;
+}
+
+/* ── cycle strip ────────────────────────────────────── */
+.ub-strip-scroll { overflow-x: auto; padding: 4px 2px 6px; margin: -4px -2px 0; }
+.ub-strip {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(var(--ub-days, 30), minmax(24px, 1fr));
+  gap: 3px;
+  min-width: 720px;
+}
+.ub-cell > a,
+.ub-cell > span {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 0 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-decoration: none;
+  color: var(--fg-muted);
+}
+.ub-cell-wd { font-size: 10.5px; letter-spacing: 0.04em; color: var(--fg-muted); }
+.ub-cell-n { font-size: 12px; font-weight: 500; }
+.ub-cell[data-state="clear"] > * { background: var(--bg-sunk); color: var(--fg-muted); }
+.ub-cell[data-state="clear"] .ub-cell-wd { color: inherit; opacity: 0.75; }
+.ub-cell[data-state="bill"] > * { background: var(--amber-bg); border-color: var(--amber); color: var(--amber-ink); }
+/* Tempo-pending cells carry a hatched foot so the state differs by texture, not hue alone. */
+.ub-cell[data-state="tempo"] > * {
+  position: relative;
+  overflow: hidden;
+  padding-bottom: 12px;
+  background: var(--amber-bg);
+  border-color: var(--amber);
+  color: var(--amber-ink);
+}
+.ub-cell[data-state="tempo"] > *::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  height: 5px;
+  background: var(--art-hatch-amber);
+}
+.ub-cell[data-state="waiting"] > * { background: var(--slate-bg); border-color: var(--slate); color: var(--slate-ink); }
+.ub-cell[data-state="future"] > * { border: 1px dashed var(--border); color: var(--fg-muted); }
+.ub-cell[data-state="tempo"] .ub-cell-wd,
+.ub-cell[data-state="bill"] .ub-cell-wd,
+.ub-cell[data-state="waiting"] .ub-cell-wd { color: inherit; }
+.ub-cell[data-today] > * { box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--fg); }
+.ub-cell > a { transition: translate 120ms cubic-bezier(0.25, 1, 0.5, 1); }
+.ub-cell > a:hover { translate: 0 -2px; }
+
+.ub-strip-cap { margin-top: 10px; font-size: 12.5px; color: var(--fg-muted); }
+.ub-cell > a { cursor: pointer; }
+.ub-legend {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin-top: 12px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+.ub-legend li { display: flex; align-items: center; gap: 8px; }
+.ub-legend li::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+}
+.ub-legend [data-state="tempo"]::before { background: var(--art-hatch-amber), var(--amber-bg); border-color: var(--amber); }
+.ub-legend [data-state="bill"]::before { background: var(--amber-bg); border-color: var(--amber); }
+.ub-legend [data-state="waiting"]::before { background: var(--slate-bg); border-color: var(--slate); }
+.ub-legend [data-state="clear"]::before { background: var(--bg-sunk); border-color: var(--border); }
+
+/* ── day rows ───────────────────────────────────────
+   One row per day; the swatch is the strip cell's own colour + texture. */
+.ub-sec-lede { margin: -6px 0 12px; font-size: 13.5px; line-height: 1.5; max-width: 64ch; color: var(--fg-muted); }
+.ub-sec-lede strong { font-weight: 600; color: var(--fg); }
+.ub-rows { list-style: none; border-top: 1px solid var(--border); }
+.ub-row {
+  scroll-margin-top: 24px;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto auto;
+  align-items: start;
+  column-gap: 14px;
+  padding: 12px 6px;
+  border-bottom: 1px solid var(--border);
+}
+.ub-row:target { background: var(--bg-raised); }
+.ub-swatch {
+  width: 14px;
+  height: 14px;
+  margin-top: 3px;
+  border-radius: 3px;
+  border: 1px solid var(--amber);
+  background: var(--amber-bg);
+}
+.ub-row[data-state="tempo"] .ub-swatch { background: var(--art-hatch-amber), var(--amber-bg); }
+.ub-row[data-state="waiting"] .ub-swatch { border-color: var(--slate); background: var(--slate-bg); }
+.ub-row-main { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ub-row-main h3 { display: flex; align-items: baseline; gap: 8px; font-size: 14.5px; font-weight: 600; color: var(--fg); }
+.ub-row-main p { font-size: 13px; color: var(--fg-muted); }
+.ub-today {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--slate-ink);
+}
+.ub-row-hours {
+  margin-top: 1px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+/* fixed-width action column so the hours line up on every row */
+.ub-row-actions { display: flex; justify-content: flex-end; width: 176px; }
+.ub-sec-lede a { color: var(--fg); text-underline-offset: 3px; }
+.ub-tickets {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+.ub-tickets li { padding: 2px 8px; border-radius: 999px; background: var(--bg-sunk); }
+.ub-key { font-family: var(--font-mono); font-weight: 500; color: var(--amber-ink); }
+
+/* ── controls ───────────────────────────────────────── */
+.ub-btn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-strong);
+  background: var(--bg);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background 120ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+.ub-btn:hover { background: var(--bg-sunk); }
+
+/* ── empty / error / loading ────────────────────────── */
+.ub-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 48px 16px;
+  text-align: center;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  color: var(--sage-ink);
+}
+.ub-state--error { color: var(--terracotta-ink); }
+.ub-state h2 { font-size: 17px; font-weight: 600; color: var(--fg); margin-top: 6px; }
+.ub-state p { max-width: 46ch; font-size: 14px; line-height: 1.5; color: var(--fg-muted); }
+.ub-state code { font-family: var(--font-mono); font-size: 12.5px; padding: 1px 5px; border-radius: 4px; background: var(--bg-sunk); }
+.ub-state .ub-btn { margin-top: 6px; }
+
+.ub-loading { display: flex; flex-direction: column; gap: 16px; }
+.ub-skel { border-radius: var(--radius-md); background: var(--bg-sunk); }
+.ub-skel--title { height: 56px; width: 60%; }
+.ub-skel--steps { height: 76px; }
+.ub-skel--strip { height: 44px; }
+.ub-skel--card { height: 120px; }
+@media (prefers-reduced-motion: no-preference) {
+  .ub-skel { animation: ub-pulse 1.4s ease-in-out infinite alternate; }
+  @keyframes ub-pulse { to { opacity: 0.55; } }
+}
+
+/* ── phone ──────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .ub-page { --ub-gap: 28px; }
+  .ub-head { flex-direction: column; }
+  .ub-cycle { align-items: flex-start; }
+  .ub-steps { grid-template-columns: 1fr; gap: 8px; }
+  .ub-steps li { padding: 10px 14px; }
+  /* the strip scrolls sideways on a phone: fade its right edge so that reads */
+  .ub-strip-scroll { mask-image: linear-gradient(to right, black 85%, transparent); }
+  .ub-steps li + li::before,
+  .ub-steps li + li::after { display: none; }
+  .ub-row { grid-template-columns: 14px minmax(0, 1fr) auto; row-gap: 10px; }
+  .ub-row-actions { grid-column: 2 / -1; justify-content: flex-start; width: auto; }
+}
