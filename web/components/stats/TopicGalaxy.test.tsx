@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "bun:test";
 import { cleanup, render } from "@testing-library/react";
 import type { MapPoint, Topic, TopicsReport } from "@/lib/topics_contract";
+import { topicColor } from "./topicColor";
 import { galaxyLayout, galaxyTipDot, galaxyTipLabel, TopicGalaxy, wrapName } from "./TopicGalaxy";
 
 afterEach(cleanup);
@@ -278,10 +279,10 @@ describe("galaxyLayout labels", () => {
       for (let j = i + 1; j < labels.length; j++) expect(overlaps(labels[i], labels[j])).toBe(false);
   });
 
-  it("hue comes from the topic id, not array position: id 3 of K=10 is 133", () => {
+  it("hue comes from the topic id, not array position: id 3 of K=10", () => {
     const topics = [topic(3), ...Array.from({ length: 9 }, (_, i) => topic(i < 3 ? i : i + 1))];
     const { dots } = galaxyLayout(report({ topics, points: [point(1, { topic_id: 3 })] }));
-    expect(dots[0].fill).toBe("oklch(calc(var(--project-l) + -0.08) var(--project-c) 133)");
+    expect(dots[0].fill).toBe(topicColor(3, 10));
   });
 
   it("labels far apart horizontally are left where they are", () => {
@@ -474,7 +475,7 @@ describe("TopicGalaxy markup", () => {
     const { container } = render(<TopicGalaxy report={slim} />);
     const names = container.querySelectorAll("text.sx-gal-name");
     const fill = (names[1] as SVGElement).getAttribute("style")!;
-    expect(fill).toContain("oklch(calc(var(--project-l) + -0.08) var(--project-c) 205)");
+    expect(fill).toContain(topicColor(1, 2));
     expect(fill).toContain("var(--fg) 35%");
   });
 
