@@ -93,6 +93,8 @@ fn fresh_cache_makes_no_jira_call_and_answers_fast() {
     assert_eq!(got.tickets[0].estimate_seconds, Some(14400));
     assert_eq!(got.tickets[0].logged_seconds, 3600);
     assert_eq!(got.tickets[0].error, None);
+    let url = format!("{}/browse/G-1", server.base_url());
+    assert_eq!(got.tickets[0].url.as_deref(), Some(url.as_str())); // even from cache
 }
 
 #[test]
@@ -198,6 +200,7 @@ fn no_credentials_is_not_configured_and_keeps_cache() {
     assert_eq!(got.tickets[0].error, Some(ProgressError::NotConfigured)); // wrong: JiraUnavailable
     assert_eq!(got.tickets[0].logged_seconds, 3600);
     assert_eq!(got.tickets[1].pulled_at, None);
+    assert_eq!(got.tickets[0].url, None); // no Jira base without credentials
 }
 
 #[test]

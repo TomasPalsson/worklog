@@ -21,6 +21,9 @@ pub struct TicketProgress {
     pub logged_seconds: i64,
     pub pulled_at: Option<String>,
     pub error: Option<ProgressError>,
+    /// `{jira_base_url}/browse/{key}`; `None` without Jira credentials.
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]

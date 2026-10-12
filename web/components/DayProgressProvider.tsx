@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import { ExternalLink } from "lucide-react";
 import { loadDayProgress } from "@/app/actions-progress";
 import { formatDuration } from "@/lib/format";
 import { barModel, pendingSeconds } from "@/lib/progress";
@@ -93,6 +94,26 @@ export function TicketEstimate(args: TicketArgs) {
   const p = useTicketProgress(args);
   if (!p) return null;
   return <EstimateBar ticket={p.ticket} pending={p.pending} onRetry={p.retry} />;
+}
+
+/** "Open in Jira" on the ticket header, once the daemon knows the Jira base url. */
+export function TicketJiraLink({ ticketKey }: { ticketKey: string }) {
+  const url = useContext(Ctx)?.tickets?.get(ticketKey)?.url;
+  if (!url) return null;
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noreferrer"
+      className="ticket-jira-link"
+      aria-label={`Open ${ticketKey} in Jira`}
+      title="Open in Jira"
+      // Inside the group's <summary>: open the ticket, don't toggle the group.
+      onClick={(e) => e.stopPropagation()}
+    >
+      <ExternalLink size={13} aria-hidden="true" />
+    </a>
+  );
 }
 
 /** Collapsed-row badge: shows only when the estimate is running low or over, same numbers as the bar. */

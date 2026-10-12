@@ -15,7 +15,7 @@ import type { TempoLine } from "@/lib/tempo_line_contract";
 import { toast } from "@/lib/toast";
 import type { LineCheck } from "@/lib/verdict_contract";
 import { OriginIcon, originLabel } from "./BillingGroup";
-import { TicketEstimate, TicketEstimateBadge } from "./DayProgressProvider";
+import { TicketEstimate, TicketEstimateBadge, TicketJiraLink } from "./DayProgressProvider";
 import { LineHours } from "./LineHours";
 import { MirresLine } from "./MirresLine";
 
@@ -59,6 +59,7 @@ export function TicketGroup({
     syncState: group.syncState,
   };
   const estimateBadge = !group.unassigned && <TicketEstimateBadge {...estimateArgs} />;
+  const jiraLink = !group.unassigned && <TicketJiraLink ticketKey={group.key} />;
   const showMerge = canMergeGroup(group);
   // Separate transitions so a merge never shows "Writing…" on the text controls.
   const [pending, startTransition] = useTransition();
@@ -213,6 +214,7 @@ export function TicketGroup({
             <span className="ticket-line-main">
               <span className="ticket-line-head">
                 <span className="ticket-group-label">{group.label}</span>
+                {jiraLink}
                 <span className="ticket-group-meta">
                   {group.blocks.length} {blockNoun}
                 </span>
@@ -320,6 +322,7 @@ export function TicketGroup({
         ) : (
           <>
             <span className="ticket-group-label">{group.label}</span>
+            {jiraLink}
             <span className="ticket-group-meta">
               {group.blocks.length} {blockNoun}
             </span>

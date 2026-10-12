@@ -1617,6 +1617,19 @@ button {
   font-size: 14px;
   letter-spacing: 0.01em;
 }
+/* Same look as the task modal's "Open in Jira", sized for the header row. */
+.ticket-jira-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-left: -4px;
+  border-radius: var(--radius-sm);
+  color: var(--fg-muted);
+}
+.ticket-jira-link:hover { color: var(--fg); background: var(--bg-sunk); }
+.ticket-jira-link:focus-visible { outline: none; box-shadow: var(--ring); }
 .ticket-group-meta {
   position: relative;
   padding-left: 12px;
