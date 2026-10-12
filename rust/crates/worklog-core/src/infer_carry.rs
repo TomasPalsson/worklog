@@ -23,7 +23,9 @@ pub(crate) fn cut_at_ticket_edges(blocks: &[InferBlock], ticketed: &[Ticketed]) 
             .collect();
         hits.sort_by_key(|(s, _, _)| *s);
         hits.dedup_by(|x, y| x.2 == y.2);
-        if hits.len() < 2 {
+        // A meeting is one event with no folder: cutting it leaves pieces
+        // `span_block` can't anchor to a project, so all of it would vanish.
+        if b.is_calendar || hits.len() < 2 {
             out.push(b.clone());
             continue;
         }
@@ -141,6 +143,31 @@ mod tests {
         }
         rebuild();
         assert_eq!(tickets(), ["T-1", "T-2"], "neither ticket may be lost");
+    }
+
+    /// A meeting overlapping two prior ticketed blocks has no folder, so
+    /// cutting it left every piece without a project and all of it vanished.
+    #[test]
+    fn meeting_over_two_tickets_is_not_cut() {
+        let meeting = crate::infer::InferEvent {
+            ts: at(13, 0),
+            source: "gcal".into(),
+            duration_seconds: Some(3600),
+            jira_issue: None,
+            event_id: Some(1),
+            project_path: None,
+            session_id: None,
+            title: None,
+            lane_tag: None,
+        };
+        let block = crate::infer::new_block(&meeting);
+        let ticketed = vec![
+            (at(12, 50), at(14, 0), "T-1".to_string()),
+            (at(13, 31), at(14, 1), "T-2".to_string()),
+        ];
+        let out = super::cut_at_ticket_edges(&[block], &ticketed);
+        assert_eq!(out.len(), 1);
+        assert_eq!((out[0].started_at, out[0].ended_at), (at(13, 0), at(14, 0)));
     }
 
     #[test]
