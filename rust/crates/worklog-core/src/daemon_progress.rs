@@ -68,6 +68,7 @@ pub(crate) fn progress_with(
     let mut tickets = ticket_progress::view(conn, &keys, me)?;
     for t in &mut tickets {
         t.error = errors.get(&t.key).copied();
+        t.url = auth.map(|a| format!("{}/browse/{}", a.base_url.trim_end_matches('/'), t.key));
     }
     Ok(DayProgress { day, tickets })
 }

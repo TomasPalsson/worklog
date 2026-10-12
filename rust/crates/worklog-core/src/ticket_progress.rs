@@ -133,6 +133,7 @@ fn ticket_view(conn: &Connection, key: &str, me: Option<&str>) -> Result<TicketP
         people,
         pulled_at: head.map(|h| h.1),
         error: None,
+        url: None,
     })
 }
 

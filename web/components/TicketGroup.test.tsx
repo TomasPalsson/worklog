@@ -519,6 +519,21 @@ describe("TicketGroup estimate bar wiring", () => {
     expect(loadDayProgress).toHaveBeenCalledWith(DAY, undefined);
   });
 
+  it("links the ticket header to Jira in a new tab (catches a missing or same-tab link)", async () => {
+    loaded(ticket({ url: "https://jira.example/browse/PROJ-1" }));
+    withBar([blk()]);
+    const link = await screen.findByRole("link", { name: "Open PROJ-1 in Jira" });
+    expect(link.getAttribute("href")).toBe("https://jira.example/browse/PROJ-1");
+    expect(link.getAttribute("target")).toBe("_blank");
+  });
+
+  it("shows no Jira link when the daemon has no Jira base url (catches a dead '#' link)", async () => {
+    loaded(ticket({ url: null }));
+    withBar([blk()]);
+    await waitFor(() => expect(screen.getByRole("meter")).toBeTruthy());
+    expect(screen.queryByRole("link", { name: "Open PROJ-1 in Jira" })).toBeNull();
+  });
+
   it("an unsynced block adds its seconds on top of the logged ones (catches pending = 0)", async () => {
     loaded(ticket());
     withBar([blk()]);
