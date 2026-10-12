@@ -1,8 +1,10 @@
 import Link from "next/link";
+import type { ReactNode } from "react";
 import { formatDuration } from "@/lib/format";
-import type { LooseEnds } from "@/lib/time_leaks_contract";
-import { type CycleDay, type DayWork, summarise, TEMPO_SEND_HOUR } from "@/lib/unbilled";
-import { StepBilledIcon, StepLoggedIcon, StepTempoIcon } from "./unbilled-icons";
+import { relativeWords } from "@/lib/taskBoard";
+import type { UnbilledDays } from "@/lib/time_leaks_contract";
+import { type CycleDay, type DayWork, summarise, TEMPO_SEND_HOUR, type TicketGap } from "@/lib/unbilled";
+import { StepLoggedIcon, StepTempoIcon, UnbilledIcon } from "./unbilled-icons";
 import { AllSettledSpot, DaemonDownSpot } from "./unbilled-spots";
 
 const TICKETS_SHOWN = 4;
@@ -37,7 +39,9 @@ function DaemonDown() {
   );
 }
 
-export function Unbilled({ data, today, hourNow }: { data: LooseEnds | null; today: string; hourNow: number }) {
+type Props = { data: UnbilledDays | null; today: string; hourNow: number; now?: Date };
+
+export function Unbilled({ data, today, hourNow, now = new Date() }: Props) {
   if (!data) return <DaemonDown />;
   const s = summarise(data, today, hourNow);
   const range = cycleLabel(data.cycle_start, data.cycle_end);
@@ -47,22 +51,20 @@ export function Unbilled({ data, today, hourNow }: { data: LooseEnds | null; tod
         <div>
           <h1>Unbilled work</h1>
           <p className="reg-lede">
-            A day is finished when its hours are in Tempo and it is marked billed. These days in this billing cycle are
-            missing one or both.
+            A day is finished when all its work has a ticket and is in Tempo. These days in this billing cycle are not
+            there yet.
           </p>
         </div>
-        <p className="ub-cycle">
-          <span>Billing cycle</span>
-          {range}
-        </p>
+        <div className="ub-cycle">
+          <p>
+            <span>Billing cycle</span>
+            {range}
+          </p>
+          <TempoChecked at={data.tempo_pulled_at} now={now} />
+        </div>
       </header>
 
-      <Steps
-        open={s.days.reduce((a, d) => a + d.seconds, 0)}
-        tempo={s.tempo}
-        bill={s.bill}
-        billReady={s.days.filter((d) => d.tempo.state === "done").length}
-      />
+      <Steps open={s.tempo.seconds + s.ticket.seconds} tempo={s.tempo} ticket={s.ticket} />
 
       <section className="ub-sec" aria-labelledby="ub-strip-h">
         <h2 id="ub-strip-h">This cycle, day by day</h2>
@@ -73,7 +75,7 @@ export function Unbilled({ data, today, hourNow }: { data: LooseEnds | null; tod
         <div className="ub-state">
           <AllSettledSpot />
           <h2>Nothing left to finish</h2>
-          <p>Every day from {range} is in Tempo and marked billed.</p>
+          <p>Every day from {range} has a ticket on its work, is in Tempo and is exported.</p>
         </div>
       ) : (
         <DayLists days={s.days} today={today} />
@@ -82,10 +84,34 @@ export function Unbilled({ data, today, hourNow }: { data: LooseEnds | null; tod
   );
 }
 
-/** Two groups, one row per day: what is missing, the open hours, and the page that fixes it. */
+const DAY_MS = 86_400_000;
+
+/** When Tempo last answered; never, or over a day ago, says so and points at the pull. */
+function TempoChecked({ at, now }: { at: string | null; now: Date }) {
+  const stale = !at || now.getTime() - new Date(at).getTime() > DAY_MS;
+  return (
+    <p className="ub-pulled" data-stale={stale || undefined}>
+      {at ? (
+        <time dateTime={at} title={new Date(at).toLocaleString("en-GB")}>
+          Tempo checked {relativeWords(at, now)}
+        </time>
+      ) : (
+        "Tempo never checked"
+      )}
+      {stale && (
+        <Link href="/logged" prefetch={false}>
+          Pull Tempo on the Logged page
+        </Link>
+      )}
+    </p>
+  );
+}
+
+/** Three groups, one row per day each: Tempo gaps, ticketless work, then (collapsed) export. */
 function DayLists({ days, today }: { days: DayWork[]; today: string }) {
   const tempo = days.filter((d) => d.tempo.state !== "done");
-  const billOnly = days.filter((d) => d.tempo.state === "done");
+  const ticket = days.filter((d) => d.ticketless > 0);
+  const bill = days.filter((d) => d.bill > 0);
   return (
     <>
       {tempo.length > 0 && (
@@ -95,60 +121,88 @@ function DayLists({ days, today }: { days: DayWork[]; today: string }) {
           </h2>
           <p className="ub-sec-lede">
             The {TEMPO_SEND_HOUR}:00 send leaves a ticket out when its Tempo line has no ticket, rounds to zero hours,
-            or has no text. On the day page, fill in what is missing, then send the day to Tempo. Once a day is in Tempo
-            it moves to the billing list below.
+            or has no text; and a line can be short in Tempo, or deleted there. On the day page, fix the line, then send
+            the day to Tempo.
           </p>
           <ol className="ub-rows">
             {tempo.map((d) => (
-              <DayRow key={d.day} d={d} today={today} />
+              <TempoRow key={d.day} d={d} today={today} />
             ))}
           </ol>
         </section>
       )}
-      {billOnly.length > 0 && (
-        <section className="ub-sec" aria-labelledby="ub-bill-h">
-          <h2 id="ub-bill-h">
-            In Tempo, not marked billed <span className="ub-count">{billOnly.length}</span>
+      {ticket.length > 0 && (
+        <section className="ub-sec" aria-labelledby="ub-ticket-h">
+          <h2 id="ub-ticket-h">
+            No ticket yet <span className="ub-count">{ticket.length}</span>
           </h2>
-          <p className="ub-sec-lede">
-            On the Billing page, check the day’s invoice lines, then press <strong>Mark exported</strong> — that marks
-            the day billed. <Link href={`/billing?from=${billOnly[0].day}`}>Start with the oldest</Link>.
-          </p>
+          <p className="ub-sec-lede">Work without a ticket never reaches Tempo. On the day page, put a ticket on it.</p>
           <ol className="ub-rows">
-            {billOnly.map((d) => (
-              <DayRow key={d.day} d={d} today={today} />
+            {ticket.map((d) => (
+              <PlainRow key={d.day} id={`ticket-${d.day}`} state="ticket" day={d.day} today={today} seconds={d.ticketless}>
+                <Link href={`/${d.day}`} className="ub-btn">
+                  Add ticket
+                </Link>
+              </PlainRow>
             ))}
           </ol>
         </section>
       )}
+      {bill.length > 0 && <ExportList days={bill} today={today} />}
     </>
+  );
+}
+
+function ExportList({ days, today }: { days: DayWork[]; today: string }) {
+  const total = days.reduce((a, d) => a + d.bill, 0);
+  return (
+    <section className="ub-sec" aria-labelledby="ub-bill-h">
+      <h2 id="ub-bill-h">
+        Not exported to the invoice form <span className="ub-count">{days.length}</span>
+      </h2>
+      <details className="ub-details">
+        <summary>
+          {formatDuration(total)} over {days.length} {days.length === 1 ? "day" : "days"}
+        </summary>
+        <p className="ub-sec-lede">
+          Only matters if you invoice through the Billing page export. Press <strong>Mark exported</strong> there after
+          checking the lines.
+        </p>
+        <ol className="ub-rows">
+          {days.map((d) => (
+            <PlainRow key={d.day} id={`bill-${d.day}`} state="bill" day={d.day} today={today} seconds={d.bill}>
+              <Link href={`/billing?from=${d.day}`} className="ub-btn">
+                Open Billing
+              </Link>
+            </PlainRow>
+          ))}
+        </ol>
+      </details>
+    </section>
   );
 }
 
 type StepTotal = { seconds: number; days: number };
 
-function Steps({ open, tempo, bill, billReady }: { open: number; tempo: StepTotal; bill: StepTotal; billReady: number }) {
-  const left = (x: StepTotal, verb: string) =>
-    x.days === 0 ? `All ${verb}` : `${formatDuration(x.seconds)} not ${verb} · ${x.days} ${x.days === 1 ? "day" : "days"}`;
+function Steps({ open, tempo, ticket }: { open: number; tempo: StepTotal; ticket: StepTotal }) {
+  const left = (x: StepTotal, words: string, done: string) =>
+    x.days === 0 ? done : `${formatDuration(x.seconds)} ${words} · ${x.days} ${x.days === 1 ? "day" : "days"}`;
   return (
     <ol className="ub-steps" aria-label="How a day gets finished">
       <li>
         <StepLoggedIcon size={28} />
         <strong>Logged</strong>
-        <span>{open > 0 ? `${formatDuration(open)} still open this cycle` : "Your work, with a ticket on it"}</span>
+        <span>{open > 0 ? `${formatDuration(open)} still open this cycle` : "Nothing open this cycle"}</span>
       </li>
       <li data-open={tempo.days > 0 || undefined}>
         <StepTempoIcon size={28} />
-        <strong>Sent to Tempo</strong>
-        <span>{left(tempo, "sent")}</span>
+        <strong>In Tempo</strong>
+        <span>{left(tempo, "not in Tempo", "All in Tempo")}</span>
       </li>
-      <li data-open={bill.days > 0 || undefined}>
-        <StepBilledIcon size={28} />
-        <strong>Marked billed</strong>
-        <span>
-          {left(bill, "marked")}
-          {bill.days > billReady && ` (${billReady} already in Tempo)`}
-        </span>
+      <li data-open={ticket.days > 0 || undefined}>
+        <UnbilledIcon size={28} />
+        <strong>Has a ticket</strong>
+        <span>{left(ticket, "without a ticket", "All work has a ticket")}</span>
       </li>
     </ol>
   );
@@ -156,10 +210,19 @@ function Steps({ open, tempo, bill, billReady }: { open: number; tempo: StepTota
 
 const CELL_WORDS: Record<CycleDay["state"], string> = {
   tempo: "not in Tempo yet",
-  bill: "in Tempo, not marked billed",
+  ticket: "no ticket yet",
+  bill: "not exported to the invoice form",
   waiting: "sends to Tempo at 17:00",
   clear: "no open work",
   future: "not yet",
+};
+
+/** Which section's row a strip cell jumps to. */
+const CELL_TARGET: Partial<Record<CycleDay["state"], string>> = {
+  tempo: "day",
+  waiting: "day",
+  ticket: "ticket",
+  bill: "bill",
 };
 
 function CycleStrip({ cycle, today }: { cycle: CycleDay[]; today: string }) {
@@ -175,11 +238,11 @@ function CycleStrip({ cycle, today }: { cycle: CycleDay[]; today: string }) {
                 <span className="ub-cell-n">{Number(c.day.slice(8))}</span>
               </>
             );
-            const open = c.state === "tempo" || c.state === "bill" || c.state === "waiting";
+            const target = CELL_TARGET[c.state];
             return (
               <li key={c.day} className="ub-cell" data-state={c.state} data-today={c.day === today || undefined}>
-                {open ? (
-                  <a href={`#day-${c.day}`} aria-label={label} title={label}>
+                {target ? (
+                  <a href={`#${target}-${c.day}`} aria-label={label} title={label}>
                     {body}
                   </a>
                 ) : (
@@ -195,7 +258,8 @@ function CycleStrip({ cycle, today }: { cycle: CycleDay[]; today: string }) {
       <p className="ub-strip-cap">Click or tap a coloured day to jump to it below.</p>
       <ul className="ub-legend" aria-label="Legend">
         <li data-state="tempo">Not in Tempo yet</li>
-        <li data-state="bill">In Tempo, not marked billed</li>
+        <li data-state="ticket">No ticket yet</li>
+        <li data-state="bill">Not exported to the invoice form</li>
         <li data-state="waiting">Sends at {TEMPO_SEND_HOUR}:00</li>
         <li data-state="clear">No open work (nothing logged, or all done)</li>
       </ul>
@@ -203,44 +267,64 @@ function CycleStrip({ cycle, today }: { cycle: CycleDay[]; today: string }) {
   );
 }
 
-function DayRow({ d, today }: { d: DayWork; today: string }) {
+function DayHeading({ day, today }: { day: string; today: string }) {
+  return (
+    <h3>
+      {shortDay(day)}
+      {day === today && <span className="ub-today">today</span>}
+    </h3>
+  );
+}
+
+function reasonWords(t: TicketGap): string {
+  if (t.reason === "short") return `only ${formatDuration(t.inTempo)} in Tempo`;
+  return t.reason === "deleted" ? "deleted in Tempo" : "not sent";
+}
+
+function TempoRow({ d, today }: { d: DayWork; today: string }) {
   const tickets = d.tempo.tickets;
   const extra = tickets.length - TICKETS_SHOWN;
-  const tempoSeconds = tickets.reduce((a, t) => a + t.seconds, 0);
-  const state = d.tempo.state === "needs" ? "tempo" : d.tempo.state === "waiting" ? "waiting" : "bill";
+  const needs = d.tempo.state === "needs";
   return (
-    <li id={`day-${d.day}`} className="ub-row" data-state={state}>
+    <li id={`day-${d.day}`} className="ub-row" data-state={needs ? "tempo" : "waiting"}>
       <span className="ub-swatch" aria-hidden="true" />
       <div className="ub-row-main">
-        <h3>
-          {shortDay(d.day)}
-          {d.day === today && <span className="ub-today">today</span>}
-        </h3>
-        {d.tempo.state === "waiting" && <p>Sends to Tempo at {TEMPO_SEND_HOUR}:00 today</p>}
-        {d.tempo.state === "needs" && (
+        <DayHeading day={d.day} today={today} />
+        {!needs && <p>Sends to Tempo at {TEMPO_SEND_HOUR}:00 today</p>}
+        {needs && (
           <ul className="ub-tickets" aria-label="Not in Tempo">
             {tickets.slice(0, TICKETS_SHOWN).map((t) => (
               <li key={t.key}>
-                <span className="ub-key">{t.key}</span> {formatDuration(t.seconds)}
+                <span className="ub-key">{t.key}</span> {formatDuration(t.missing)} · {reasonWords(t)}
               </li>
             ))}
             {extra > 0 && <li>+{extra} more</li>}
           </ul>
         )}
       </div>
-      <span className="ub-row-hours">{formatDuration(d.tempo.state === "done" ? d.bill.seconds : tempoSeconds)}</span>
+      <span className="ub-row-hours">{formatDuration(d.tempo.seconds)}</span>
       <div className="ub-row-actions">
-        {d.tempo.state === "needs" && (
+        {needs && (
           <Link href={`/${d.day}`} className="ub-btn">
             Fix Tempo line
           </Link>
         )}
-        {d.tempo.state === "done" && (
-          <Link href={`/billing?from=${d.day}`} className="ub-btn">
-            Open Billing to mark billed
-          </Link>
-        )}
       </div>
+    </li>
+  );
+}
+
+type PlainRowProps = { id: string; state: string; day: string; today: string; seconds: number; children: ReactNode };
+
+function PlainRow({ id, state, day, today, seconds, children }: PlainRowProps) {
+  return (
+    <li id={id} className="ub-row" data-state={state}>
+      <span className="ub-swatch" aria-hidden="true" />
+      <div className="ub-row-main">
+        <DayHeading day={day} today={today} />
+      </div>
+      <span className="ub-row-hours">{formatDuration(seconds)}</span>
+      <div className="ub-row-actions">{children}</div>
     </li>
   );
 }

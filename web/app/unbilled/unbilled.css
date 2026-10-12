@@ -1,6 +1,7 @@
 /* Unbilled work (/unbilled). Page-scoped: every rule hangs off .ub-page and
    uses the shared tokens only. States: amber = needs you (hatched when it is
-   Tempo, flat when it is billing), slate = waiting, sage = done. */
+   Tempo, dashed border when it has no ticket, flat when it is export),
+   slate = waiting, sage = done. */
 
 .page:has(.ub-page) { max-width: 920px; }
 
@@ -27,12 +28,26 @@
   white-space: nowrap;
   color: var(--fg);
 }
+.ub-cycle > p:first-child { display: flex; flex-direction: column; align-items: inherit; gap: 2px; }
 .ub-cycle span {
   font-size: 10.5px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--fg-muted);
 }
+/* Tempo data age: muted, amber once it is over a day old (or never pulled). */
+.ub-pulled {
+  display: flex;
+  flex-direction: column;
+  align-items: inherit;
+  gap: 2px;
+  margin-top: 6px;
+  font-size: 12px;
+  white-space: normal;
+  color: var(--fg-muted);
+}
+.ub-pulled[data-stale] { color: var(--amber-ink); opacity: 0.85; }
+.ub-pulled a { color: inherit; text-underline-offset: 3px; }
 
 /* ── the two steps ──────────────────────────────────── */
 .ub-steps {
@@ -147,9 +162,12 @@
   background: var(--art-hatch-amber);
 }
 .ub-cell[data-state="waiting"] > * { background: var(--slate-bg); border-color: var(--slate); color: var(--slate-ink); }
+/* No-ticket cells: amber like the other needs-you states, told apart by a dashed border. */
+.ub-cell[data-state="ticket"] > * { background: var(--amber-bg); border: 1px dashed var(--amber-ink); color: var(--amber-ink); }
 .ub-cell[data-state="future"] > * { border: 1px dashed var(--border); color: var(--fg-muted); }
 .ub-cell[data-state="tempo"] .ub-cell-wd,
 .ub-cell[data-state="bill"] .ub-cell-wd,
+.ub-cell[data-state="ticket"] .ub-cell-wd,
 .ub-cell[data-state="waiting"] .ub-cell-wd { color: inherit; }
 .ub-cell[data-today] > * { box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--fg); }
 .ub-cell > a { transition: translate 120ms cubic-bezier(0.25, 1, 0.5, 1); }
@@ -176,6 +194,7 @@
 }
 .ub-legend [data-state="tempo"]::before { background: var(--art-hatch-amber), var(--amber-bg); border-color: var(--amber); }
 .ub-legend [data-state="bill"]::before { background: var(--amber-bg); border-color: var(--amber); }
+.ub-legend [data-state="ticket"]::before { background: var(--amber-bg); border: 1px dashed var(--amber-ink); }
 .ub-legend [data-state="waiting"]::before { background: var(--slate-bg); border-color: var(--slate); }
 .ub-legend [data-state="clear"]::before { background: var(--bg-sunk); border-color: var(--border); }
 
@@ -204,6 +223,16 @@
 }
 .ub-row[data-state="tempo"] .ub-swatch { background: var(--art-hatch-amber), var(--amber-bg); }
 .ub-row[data-state="waiting"] .ub-swatch { border-color: var(--slate); background: var(--slate-bg); }
+.ub-row[data-state="ticket"] .ub-swatch { border: 1px dashed var(--amber-ink); }
+/* export list: collapsed by default, it only matters for the Billing export */
+.ub-details > summary {
+  cursor: pointer;
+  margin-bottom: 12px;
+  font-size: 13.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+.ub-details[open] > summary { margin-bottom: 18px; }
 .ub-row-main { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .ub-row-main h3 { display: flex; align-items: baseline; gap: 8px; font-size: 14.5px; font-weight: 600; color: var(--fg); }
 .ub-row-main p { font-size: 13px; color: var(--fg-muted); }
