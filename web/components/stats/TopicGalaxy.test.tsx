@@ -647,4 +647,9 @@ describe("Map / Star field toggle", () => {
     const css = readFileSync(`${import.meta.dir}/../../app/stats/galaxy.css`, "utf8");
     expect(css).toMatch(/\.sx-gal-view[^{]*:focus-visible\s*\{[^}]*outline/);
   });
+
+  it("StarField imports use extensionless specifiers so webpack can resolve them", () => {
+    const src = readFileSync(`${import.meta.dir}/StarField.tsx`, "utf8");
+    expect(src).not.toMatch(/from "\.\/[^"]*\.js"/);
+  });
 });
