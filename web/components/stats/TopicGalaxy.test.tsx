@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
-import { afterEach, describe, expect, it } from "bun:test";
-import { cleanup, render } from "@testing-library/react";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import type { MapPoint, Topic, TopicsReport } from "@/lib/topics_contract";
 import { topicColor } from "./topicColor";
 import { galaxyLayout, galaxyTipDot, galaxyTipLabel, TopicGalaxy, wrapName } from "./TopicGalaxy";
@@ -575,5 +575,76 @@ describe("phone tap targets and spacing", () => {
       expect(m).not.toBeNull();
       expect(Number(m![1])).toBeGreaterThanOrEqual(13); // catches a leftover 12px
     }
+  });
+});
+
+describe("Map / Star field toggle", () => {
+  const rep = report({ topics: [topic(0)], points: [point(1), point(2), point(3)] });
+  const btn = (c: HTMLElement, name: string) => [...c.querySelectorAll("button")].find((b) => b.textContent === name)!;
+
+  it("defaults to Map pressed with the map drawn", () => {
+    const { container } = render(<TopicGalaxy report={rep} />);
+    expect(btn(container, "Map").getAttribute("aria-pressed")).toBe("true");
+    expect(btn(container, "Star field").getAttribute("aria-pressed")).toBe("false");
+    expect(btn(container, "Map").getAttribute("type")).toBe("button");
+    expect(container.querySelector(".sx-gal-svg")).not.toBeNull();
+  });
+
+  it("clicking Star field flips aria-pressed, swaps the map + legend, keeps headline/how/method, and persists", () => {
+    const { container } = render(<TopicGalaxy report={rep} />);
+    fireEvent.click(btn(container, "Star field"));
+    expect(btn(container, "Star field").getAttribute("aria-pressed")).toBe("true");
+    expect(btn(container, "Map").getAttribute("aria-pressed")).toBe("false");
+    expect(container.querySelector(".sx-gal-svg")).toBeNull();
+    expect(container.querySelector(".sx-gal-legend")).toBeNull();
+    expect(container.querySelector(".sx-gal-headline")).not.toBeNull();
+    expect(container.querySelector(".sx-gal-how")).not.toBeNull();
+    expect(container.querySelector("details")).not.toBeNull();
+    expect(window.localStorage.getItem("worklog.galaxyView")).toBe("stars");
+    fireEvent.click(btn(container, "Map"));
+    expect(window.localStorage.getItem("worklog.galaxyView")).toBe("map");
+    expect(container.querySelector(".sx-gal-svg")).not.toBeNull();
+  });
+
+  it("restores a stored Star field choice after mount", async () => {
+    window.localStorage.setItem("worklog.galaxyView", "stars");
+    const { container } = render(<TopicGalaxy report={rep} />);
+    await act(async () => {});
+    expect(btn(container, "Star field").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("ignores an unknown stored value", async () => {
+    window.localStorage.setItem("worklog.galaxyView", "bogus");
+    const { container } = render(<TopicGalaxy report={rep} />);
+    await act(async () => {});
+    expect(btn(container, "Map").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("a throwing localStorage neither crashes mount nor blocks the toggle", () => {
+    const get = spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("denied");
+    });
+    const set = spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("denied");
+    });
+    try {
+      const { container } = render(<TopicGalaxy report={rep} />);
+      fireEvent.click(btn(container, "Star field"));
+      expect(btn(container, "Star field").getAttribute("aria-pressed")).toBe("true");
+    } finally {
+      get.mockRestore();
+      set.mockRestore();
+    }
+  });
+
+  it("does not import StarField statically", () => {
+    const src = readFileSync(`${import.meta.dir}/TopicGalaxy.tsx`, "utf8");
+    expect(src).not.toMatch(/import[^;]*from\s+["']\.\/StarField["']/);
+    expect(src).toMatch(/import\(["']\.\/StarField["']\)/);
+  });
+
+  it("toggle buttons show a visible keyboard focus ring", () => {
+    const css = readFileSync(`${import.meta.dir}/../../app/stats/galaxy.css`, "utf8");
+    expect(css).toMatch(/\.sx-gal-view[^{]*:focus-visible\s*\{[^}]*outline/);
   });
 });

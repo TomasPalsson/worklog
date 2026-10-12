@@ -12,6 +12,10 @@
 .sx-gal-hours { font-family: var(--font-mono); font-size: 13px; fill: var(--fg-muted); stroke: var(--bg-sunk); stroke-width: 3px; paint-order: stroke; stroke-linejoin: round; }
 .sx-gal-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 32px 16px; }
 .sx-gal-chip { display: inline-block; margin: 8px 12px; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-raised); color: var(--fg-muted); font-size: 13px; }
+.sx-gal-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sx-gal-view { margin-right: 0; }
+.sx-gal-view .view-toggle-btn { height: 28px; font-size: 13px; }
+.sx-gal-view .view-toggle-btn:focus-visible { outline: 2px solid var(--fg-muted); outline-offset: -2px; }
 .sx-gal-hit { pointer-events: all; }
 .sx-gal-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 8px 2px 0; font-size: 13px; color: var(--fg-muted); }
 .sx-gal-key { display: inline-flex; align-items: center; gap: 6px; }

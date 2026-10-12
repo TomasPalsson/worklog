@@ -1,5 +1,8 @@
+"use client";
+
 import "@/app/stats/galaxy.css";
-import { useId } from "react";
+import dynamic from "next/dynamic";
+import { useEffect, useId, useState } from "react";
 import { formatDuration } from "@/lib/format";
 import type { MapPoint, Topic, TopicsReport } from "@/lib/topics_contract";
 import { AtlasEmpty, FirstTimeMark, OddballMark } from "./AtlasArt";
@@ -22,6 +25,18 @@ const NAME_LINE_H = 1.1; // second name line step, per font-size
 const LABEL_LINE_GAP = 16; // name-to-hours baseline step; the hours line is part of the label's box
 const HOURS_FONT = 13; // keep equal to .sx-gal-hours font-size in galaxy.css
 const MAX_LABEL_CHARS = 24;
+
+const VIEW_KEY = "worklog.galaxyView";
+const VIEWS = [
+  ["map", "Map"],
+  ["stars", "Star field"],
+] as const;
+type View = (typeof VIEWS)[number][0];
+
+const StarField = dynamic(() => import("./StarField"), {
+  ssr: false,
+  loading: () => <p className="sx-gal-how">Loading star field…</p>,
+});
 
 const HOW =
   "How it works: Each dot is a work block. Blocks about similar things sit close together, and each cluster is a topic. Names come from AI (Haiku), or from keywords if no model is available. Distance between islands is only roughly meaningful.";
@@ -352,11 +367,44 @@ function TopicList({ report }: { report: TopicsReport }) {
   );
 }
 
+function ViewToggle({ view, onChange }: { view: View; onChange: (v: View) => void }) {
+  return (
+    <div className="view-toggle sx-gal-view" role="group" aria-label="Galaxy view">
+      {VIEWS.map(([id, label]) => (
+        <button
+          key={id}
+          type="button"
+          className={`view-toggle-btn${view === id ? " is-active" : ""}`}
+          aria-pressed={view === id}
+          onClick={() => onChange(id)}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function TopicGalaxy({ report }: { report: TopicsReport }) {
   const layout = galaxyLayout(report);
+  const [view, setView] = useState<View>("map");
+  useEffect(() => {
+    try {
+      if (localStorage.getItem(VIEW_KEY) === "stars") setView("stars");
+    } catch {}
+  }, []);
+  const choose = (v: View) => {
+    setView(v);
+    try {
+      localStorage.setItem(VIEW_KEY, v);
+    } catch {}
+  };
   return (
     <div className="sx-gal sr-card">
-      <h3 className="sr-title">Topic galaxy</h3>
+      <div className="sx-gal-head">
+        <h3 className="sr-title">Topic galaxy</h3>
+        <ViewToggle view={view} onChange={choose} />
+      </div>
       {report.naming === "pending" && <span className="sx-gal-chip">AI is naming topics…</span>}
       {layout.dots.length === 0 ? (
         <div className="sx-gal-empty">
@@ -366,10 +414,16 @@ export function TopicGalaxy({ report }: { report: TopicsReport }) {
       ) : (
         <>
           <p className="sx-gal-headline">{galaxyHeadline(report.topics)}</p>
-          <div className="sx-gal-map">
-            <GalaxyMap report={report} layout={layout} />
-          </div>
-          <Legend />
+          {view === "stars" ? (
+            <StarField report={report} />
+          ) : (
+            <>
+              <div className="sx-gal-map">
+                <GalaxyMap report={report} layout={layout} />
+              </div>
+              <Legend />
+            </>
+          )}
           <TopicList report={report} />
         </>
       )}
