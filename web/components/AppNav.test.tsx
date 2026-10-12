@@ -12,7 +12,7 @@ describe("AppNav", () => {
     path = "/";
     const { container } = render(<AppNav />);
     const items = [...container.querySelectorAll(".app-rail-item")].map((e) => e.textContent).filter(Boolean);
-    expect(items).toEqual(["Day", "Week", "Tasks", "Logged", "Statistics", "Billing", "Loose ends", "Mirres", "Settings", "System"]);
+    expect(items).toEqual(["Day", "Week", "Tasks", "Logged", "Statistics", "Billing", "Unbilled", "Mirres", "Settings", "System"]);
   });
 
   it("links Billing to /billing and Settings to /settings with the day it came from", () => {
