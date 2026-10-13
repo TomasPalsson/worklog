@@ -20,3 +20,10 @@
 2026-10-09 · loose-docs · DATA-SOURCES, TIMELINE-REPORT, USER-STORIES, ZERO-TOUCH + timeline screenshot moved to archive · background docs, no spec
 2026-10-09 · 019-google-calendar-3lo-login · verified, PASS c79ffcb; merged #135 · Google Calendar login (worklog collect gcal --auth)
 2026-10-11 · 021-time-leaks · verified, PASS fb7801b; merged #158, follow-up #161 · Time leaks — honest totals, loud failures, ignore reasons, loose ends, tidy-up
+- 2026-10-13 · 024-topic-starfield · merged f91861a
+- 2026-10-13 · 023-topic-atlas · merged f91861a
+- 2026-10-13 · 022-topic-stats-and-search-fixes · merged f91861a
+- 2026-10-13 · 020-tempo-estimate-per-person · merged f91861a
+- 2026-10-13 · 001-web-setup-wizard · draft, never built · moved to archive by hand
+- 2026-10-13 · 012-tempo-hub · draft (PREP.md only) · moved to archive by hand
+- 2026-10-13 · 019-ticket-blocks-ai-text-tempo · draft (PREP.md only) · moved to archive by hand
