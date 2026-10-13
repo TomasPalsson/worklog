@@ -672,6 +672,50 @@ test('Enter with no matching ticket picks nothing, not create', async ($, on) =>
   expect('context' in next ? next.context : undefined).toBeUndefined()
 })
 
+// A session.append mock: what the model is told mid-session, after prompt.context is cached.
+const trackAppend = (on: On) => {
+  const notes: string[] = []
+  on('session.append', (_$, e, next) => {
+    notes.push(e.message.content.map(block => ('text' in block ? block.text : '')).join(''))
+    return next(e)
+  })
+  return notes
+}
+
+test('a key picked in the pane after the first prompt is told to the model at once', async ($, on) => {
+  seat(on, { current: 'GENAI-9-fix' }, MORE)
+  trackOpen(on)
+  const notes = trackAppend(on)
+  await $.session.start(start(WORK_CWD))
+  await $.prompt.submit(PROMPT)
+  await $.ui.render(PANE)
+  await $.ui.select({ plugin: 'worklog', key: 'ticket', value: 'GENAI-3' })
+  // wrong version: only prompt.context, which the engine cached at the first prompt
+  expect(notes).toEqual(['Session ticket: GENAI-3 (the Owner picked it in the worklog ticket picker).'])
+})
+
+test('create picked in the pane is told to the model at once, not only on the next prompt', async ($, on) => {
+  seat(on, { current: 'GENAI-9-fix' }, MORE)
+  trackOpen(on)
+  const notes = trackAppend(on)
+  await $.session.start(start(WORK_CWD))
+  await $.prompt.submit(PROMPT)
+  await $.ui.render(PANE)
+  await $.ui.select({ plugin: 'worklog', key: 'ticket', value: 'create' })
+  expect(notes).toEqual([CREATE(SESSION_ID)])
+})
+
+test('a failed record tells the model nothing', async ($, on) => {
+  seat(on, { current: 'GENAI-9-fix' }, { ...MORE, recordFails: true })
+  trackOpen(on)
+  const notes = trackAppend(on)
+  await $.session.start(start(WORK_CWD))
+  await $.prompt.submit(PROMPT)
+  await $.ui.render(PANE)
+  await $.ui.select({ plugin: 'worklog', key: 'ticket', value: 'GENAI-3' })
+  expect(notes).toEqual([])
+})
+
 test('a pane that cannot be placed logs the hint', async ($, on) => {
   const { seen } = seat(on, { current: 'GENAI-9-fix' }, MORE)
   trackOpen(on, false)

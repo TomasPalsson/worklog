@@ -90,15 +90,17 @@ async function openPicker(
   if (!opened.isPlaced) await $.ui.log('worklog: widen the terminal or run /wl ticket')
 }
 
-async function recordKey($: EngineInterface, cwd: string, state: TicketState, key: string, id: string): Promise<void> {
+async function recordKey($: EngineInterface, cwd: string, state: TicketState, key: string, id: string): Promise<boolean> {
   try {
     const result = await $.process.run(['worklog', 'ticket', 'use', key, '--session', id], { cwd })
     if (result.exitCode !== 0) throw new Error(result.stderr.trim())
     state.recorded = key
     state.handoff = undefined
     await $.ui.toast(`worklog: ${key}`)
+    return true
   } catch (error) {
     await $.ui.log(`worklog: could not record ${key} — ${error instanceof Error ? error.message : String(error)}`)
+    return false
   }
 }
 
@@ -107,8 +109,15 @@ async function choose($: EngineInterface, state: TicketState, value: string): Pr
   const id = await $.session.id()
   // a pick before the first prompt must stop askTicket asking again
   await $.store.set(`${TICKET_ASKED_STORE_PREFIX}${id}`, value)
-  if (value === 'create') state.handoff = handoffFor('Create a new ticket', id)
-  else if (state.cwd !== undefined) await recordKey($, state.cwd, state, value, id)
+  let note: string | undefined
+  if (value === 'create') note = state.handoff = handoffFor('Create a new ticket', id)
+  else if (state.cwd !== undefined && (await recordKey($, state.cwd, state, value, id))) {
+    note = `Session ticket: ${value} (the Owner picked it in the worklog ticket picker).`
+  }
+  // prompt.context was cached at the first prompt, so a pick from the pane is told as a row now
+  if (note !== undefined) {
+    await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: note }] } }).catch(() => undefined)
+  }
 }
 
 async function askTicket($: EngineInterface, cwd: string, state: TicketState, text: string): Promise<void> {
