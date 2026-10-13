@@ -17,7 +17,36 @@ const MAX_TICKET_DESCRIPTION_CHARS: usize = 2000;
 /// Phase 1 (under the lock): the ticket's `DescriptionInput` as the user message.
 pub fn prepare(conn: &Connection, key: &TempoLineKey) -> Result<String, String> {
     let input = clues_send::build_ticket_line_input(conn, key).map_err(|e| e.to_string())?;
-    serde_json::to_string(&input).map_err(|e| e.to_string())
+    let mut msg = serde_json::to_value(&input).map_err(|e| e.to_string())?;
+    let others = other_tickets(conn, key).map_err(|e| e.to_string())?;
+    if !others.is_empty() {
+        msg["other_tickets_today"] = others.into();
+    }
+    Ok(msg.to_string())
+}
+
+/// "KEY: summary" for every other ticket the day has: non-personal blocks
+/// or a line-text row. Sorted, deduped.
+fn other_tickets(conn: &Connection, key: &TempoLineKey) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT d.k, t.summary FROM (
+             SELECT jira_issue AS k FROM blocks
+              WHERE day = ?1 AND is_personal = 0 AND ignored_at IS NULL
+             UNION SELECT jira_issue FROM tempo_line_texts WHERE day = ?1
+         ) d LEFT JOIN jira_tickets t ON t.key = d.k
+         WHERE d.k IS NOT NULL AND d.k != '' AND d.k != ?2
+         ORDER BY d.k",
+    )?;
+    let rows = stmt.query_map([&key.day, &key.jira_issue], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+    })?;
+    rows.map(|row| {
+        row.map(|(k, summary)| match summary.filter(|s| !s.is_empty()) {
+            Some(s) => format!("{k}: {s}"),
+            None => k,
+        })
+    })
+    .collect()
 }
 
 /// Phase 2 (no connection): adds the Jira ticket's title and description to

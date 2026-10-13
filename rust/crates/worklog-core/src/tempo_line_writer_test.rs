@@ -111,3 +111,46 @@ fn empty_ticket_fields_are_left_out_and_long_descriptions_capped() {
         MAX_TICKET_DESCRIPTION_CHARS
     );
 }
+
+fn block(conn: &Connection, day: &str, issue: &str, personal: i32) {
+    conn.execute(
+        "INSERT INTO blocks (day, jira_issue, started_at, ended_at, duration_seconds, is_personal)
+         VALUES (?1, ?2, ?1 || 'T09:00:00+00:00', ?1 || 'T10:00:00+00:00', 3600, ?3)",
+        params![day, issue, personal],
+    )
+    .unwrap();
+}
+
+#[test]
+fn prepare_lists_the_days_other_tickets_with_summaries() {
+    let conn = open_memory().unwrap();
+    let key = key();
+    block(&conn, "2026-10-05", "APRO-1", 0);
+    block(&conn, "2026-10-05", "APRO-2", 0);
+    block(&conn, "2026-10-05", "APRO-4", 1);
+    block(&conn, "2026-10-06", "APRO-5", 0);
+    conn.execute(
+        "INSERT INTO tempo_line_texts (day, jira_issue, updated_at)
+         VALUES ('2026-10-05', 'APRO-3', 'x'), ('2026-10-06', 'APRO-6', 'x')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO jira_tickets (key, summary) VALUES ('APRO-2', 'Second'), ('APRO-1', 'Own')",
+        [],
+    )
+    .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&prepare(&conn, &key).unwrap()).unwrap();
+    assert_eq!(
+        v["other_tickets_today"],
+        serde_json::json!(["APRO-2: Second", "APRO-3"])
+    );
+}
+
+#[test]
+fn prepare_omits_other_tickets_when_there_are_none() {
+    let conn = open_memory().unwrap();
+    block(&conn, "2026-10-05", "APRO-1", 0);
+    let v: serde_json::Value = serde_json::from_str(&prepare(&conn, &key()).unwrap()).unwrap();
+    assert!(v.get("other_tickets_today").is_none());
+}
