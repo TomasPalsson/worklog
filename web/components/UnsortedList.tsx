@@ -21,6 +21,7 @@ import type { NoiseHost } from "@/lib/topics_contract";
 import { PalettePicker } from "./PalettePicker";
 import { AutoFiled } from "./AutoFiled";
 import { ReviewDrawer } from "./ReviewDrawer";
+import { DismissRest } from "./DismissRest";
 
 interface Props {
   day: string;
@@ -38,12 +39,17 @@ function isHidden(e: RoutedEvent): boolean {
 }
 
 /** Split the day's routed events into the three buckets the tray/drawer
- * branch on. Pulled out of the component so its body stays short. */
-function splitRoutedEvents(rows: RoutedEvent[]) {
+ * branch on. A firefox event on a host the owner always dismisses
+ * (`noise`) is hidden straight away — the drawer can still file it.
+ * Pulled out of the component so its body stays short. */
+function splitRoutedEvents(rows: RoutedEvent[], noiseHosts: NoiseHost[]) {
+  const noise = new Set(noiseHosts.map((n) => n.host));
+  const hide = (e: RoutedEvent) =>
+    isHidden(e) || (e.source === "firefox" && noise.has(hostOf(e.details) ?? ""));
   return {
-    unsorted: rows.filter((e) => e.folder === null && !isHidden(e)),
+    unsorted: rows.filter((e) => e.folder === null && !hide(e)),
     filed: rows.filter((e) => e.folder !== null),
-    hidden: rows.filter((e) => e.folder === null && isHidden(e)),
+    hidden: rows.filter((e) => e.folder === null && hide(e)),
   };
 }
 
@@ -76,7 +82,7 @@ export function UnsortedList({ day, events, folderOptions, noiseHosts = [] }: Pr
   const [initialOpen] = useState(() => events.some((e) => e.folder === null && !isHidden(e)));
   if (rows.length === 0) return null;
 
-  const { unsorted, filed, hidden } = splitRoutedEvents(rows);
+  const { unsorted, filed, hidden } = splitRoutedEvents(rows, noiseHosts);
 
   // Zero-touch default: nothing left for the owner to sort. Replace the
   // tray + AutoFiled disclosure with the quiet summary line + Review drawer.
@@ -86,12 +92,6 @@ export function UnsortedList({ day, events, folderOptions, noiseHosts = [] }: Pr
 
   const groups = groupEvents(unsorted);
   const { replaceEvents, removeEvents } = makeRowMutators(setRows);
-  const noiseCounts = new Map(noiseHosts.map((n) => [n.host, n.dismissed_before]));
-  const noiseOf = (g: EventGroup) => {
-    const host = g.source === "firefox" ? hostOf(g.events[0].details) : null;
-    return host === null ? undefined : noiseCounts.get(host);
-  };
-  const noiseGroups = groups.filter((g) => noiseOf(g) !== undefined);
 
   return (
     <>
@@ -116,7 +116,6 @@ export function UnsortedList({ day, events, folderOptions, noiseHosts = [] }: Pr
                 <GroupRow
                   key={g.key}
                   group={g}
-                  noiseCount={noiseOf(g)}
                   day={day}
                   folderOptions={folderOptions}
                   onFiled={replaceEvents}
@@ -124,7 +123,6 @@ export function UnsortedList({ day, events, folderOptions, noiseHosts = [] }: Pr
                 />
               ))}
             </ul>
-            <DismissNoise groups={noiseGroups} day={day} onDismissed={removeEvents} />
             <DismissRest groups={groups} day={day} onDismissed={removeEvents} />
           </>
         )}
@@ -142,7 +140,6 @@ function SourceIcon({ source }: { source: string }) {
 
 interface GroupRowProps {
   group: EventGroup;
-  noiseCount?: number;
   day: string;
   folderOptions: string[];
   onFiled: (updated: RoutedEvent[]) => void;
@@ -209,7 +206,7 @@ function useGroupRowActions(
   return { pending, error, exiting, ruleKind, pickProject, dismissGroup };
 }
 
-function GroupRow({ group, noiseCount, day, folderOptions, onFiled, onDismissed }: GroupRowProps) {
+function GroupRow({ group, day, folderOptions, onFiled, onDismissed }: GroupRowProps) {
   const [always, setAlways] = useState(false);
   const { pending, error, exiting, ruleKind, pickProject, dismissGroup } = useGroupRowActions(
     group,
@@ -229,9 +226,6 @@ function GroupRow({ group, noiseCount, day, folderOptions, onFiled, onDismissed 
           <SourceIcon source={group.source} />
           <span className="sort-row-name">{group.label}</span>
           <span className="sort-row-count">{countLabel(group)}</span>
-          {noiseCount !== undefined && (
-            <span className="sort-row-noise">dismissed {noiseCount}× before</span>
-          )}
           <span className="sort-row-range">
             {formatEventTime(group.earliestAt)}–{formatEventTime(group.latestAt)}
           </span>
@@ -344,132 +338,6 @@ function GroupRowControls({
         <p className="picker-error" role="alert">
           {error}
         </p>
-      )}
-    </div>
-  );
-}
-
-function DismissRest({
-  groups,
-  day,
-  onDismissed,
-}: {
-  groups: EventGroup[];
-  day: string;
-  onDismissed: (ids: number[]) => void;
-}) {
-  const [confirming, setConfirming] = useState(false);
-  const [pending, start] = useTransition();
-  if (groups.length === 0) return null;
-  const allIds = groups.flatMap((g) => g.events.map((ev) => ev.id));
-
-  function run() {
-    start(async () => {
-      for (const id of allIds) {
-        const r = await dismissEvent(id, null, day);
-        if (!r.ok) {
-          toast.error(`Dismiss failed — ${r.error}`);
-          return;
-        }
-      }
-      toast.ok(`Dismissed ${allIds.length} events`);
-      onDismissed(allIds);
-    });
-  }
-
-  return (
-    <div className="sort-tray-footer">
-      {confirming ? (
-        <>
-          <span className="sort-tray-confirm-text">
-            Dismiss {groups.length} group{groups.length === 1 ? "" : "s"}?
-          </span>
-          <button
-            type="button"
-            className="sort-tray-confirm-yes"
-            disabled={pending}
-            aria-busy={pending || undefined}
-            onClick={run}
-          >
-            Yes
-          </button>
-          <button
-            type="button"
-            className="sort-tray-confirm-no"
-            disabled={pending}
-            onClick={() => setConfirming(false)}
-          >
-            Cancel
-          </button>
-        </>
-      ) : (
-        <button type="button" className="sort-tray-dismiss-rest" onClick={() => setConfirming(true)}>
-          Dismiss the rest
-        </button>
-      )}
-    </div>
-  );
-}
-
-function DismissNoise({
-  groups,
-  day,
-  onDismissed,
-}: {
-  groups: EventGroup[];
-  day: string;
-  onDismissed: (ids: number[]) => void;
-}) {
-  const [confirming, setConfirming] = useState(false);
-  const [pending, start] = useTransition();
-  if (groups.length === 0) return null;
-  const allIds = groups.flatMap((g) => g.events.map((ev) => ev.id));
-
-  function run() {
-    start(async () => {
-      const doneIds: number[] = [];
-      for (const id of allIds) {
-        const r = await dismissEvent(id, null, day);
-        if (!r.ok) {
-          toast.error(`Dismiss failed — ${r.error}`);
-          break;
-        }
-        doneIds.push(id);
-      }
-      if (doneIds.length === allIds.length) toast.ok(`Dismissed ${allIds.length} events`);
-      onDismissed(doneIds);
-    });
-  }
-
-  return (
-    <div className="sort-tray-footer">
-      {confirming ? (
-        <>
-          <span className="sort-tray-confirm-text">
-            Dismiss {groups.length} noise group{groups.length === 1 ? "" : "s"}?
-          </span>
-          <button
-            type="button"
-            className="sort-tray-confirm-yes"
-            disabled={pending}
-            aria-busy={pending || undefined}
-            onClick={run}
-          >
-            Yes
-          </button>
-          <button
-            type="button"
-            className="sort-tray-confirm-no"
-            disabled={pending}
-            onClick={() => setConfirming(false)}
-          >
-            Cancel
-          </button>
-        </>
-      ) : (
-        <button type="button" className="sort-tray-dismiss-rest" onClick={() => setConfirming(true)}>
-          Dismiss {groups.length} noise groups
-        </button>
       )}
     </div>
   );
