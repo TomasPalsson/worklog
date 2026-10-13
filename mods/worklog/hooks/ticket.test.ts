@@ -636,6 +636,42 @@ test('picking create in the pane hands off the create-ticket instruction', async
   expect('context' in next ? next.context : undefined).toEqual([CREATE(SESSION_ID)])
 })
 
+test('typing in the filter narrows the list, create stays', async ($, on) => {
+  seat(on, { current: 'GENAI-9-fix' }, MORE)
+  trackOpen(on)
+  await $.session.start(start(WORK_CWD))
+  await $.prompt.submit(PROMPT)
+  await $.ui.render(PANE)
+  await $.ui.input({ plugin: 'worklog', key: 'filter', text: 'nEw', kind: 'change' })
+  // wrong version: case-sensitive or unfiltered list
+  expect(selects((await $.ui.render(PANE)) as Node)[0].props?.options).toEqual([
+    { value: 'GENAI-2', label: 'GENAI-2 Newer' },
+    { value: 'create', label: 'Create a new ticket' },
+  ])
+})
+
+test('Enter in the filter records the first matching ticket', async ($, on) => {
+  const { seen } = seat(on, { current: 'GENAI-9-fix' }, MORE)
+  trackOpen(on)
+  await $.session.start(start(WORK_CWD))
+  await $.prompt.submit(PROMPT)
+  await $.ui.render(PANE)
+  await $.ui.input({ plugin: 'worklog', key: 'filter', text: 'never' })
+  expect(seen.runs).toEqual([['worklog', 'ticket', 'use', 'GENAI-3', '--session', SESSION_ID]])
+})
+
+test('Enter with no matching ticket picks nothing, not create', async ($, on) => {
+  const { seen } = seat(on, { current: 'GENAI-9-fix' }, MORE)
+  trackOpen(on)
+  await $.session.start(start(WORK_CWD))
+  await $.prompt.submit(PROMPT)
+  await $.ui.render(PANE)
+  await $.ui.input({ plugin: 'worklog', key: 'filter', text: 'zzz' })
+  expect(seen.runs).toEqual([])
+  const next = await $.prompt.submit(PROMPT)
+  expect('context' in next ? next.context : undefined).toBeUndefined()
+})
+
 test('a pane that cannot be placed logs the hint', async ($, on) => {
   const { seen } = seat(on, { current: 'GENAI-9-fix' }, MORE)
   trackOpen(on, false)

@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, On } from 'claude-code'
 import { JIRA_KEY_RE, MORE_TICKETS, TICKET_ASKED_STORE_PREFIX, TICKET_PANE_ID } from './contract'
 import type { Io, RecentTask } from './contract'
-import { cut, daemonGet, keyOfChoice, ticketChoices, ticketPickerOptions, workContext } from './lib'
+import { cut, daemonGet, filterPickerOptions, keyOfChoice, ticketChoices, ticketPickerOptions, workContext } from './lib'
 
 const TASKS_CAP_MS = 1500
 const PICK_CAP_MS = 8000
@@ -28,6 +28,7 @@ type TicketState = {
 
 const picker = atom({ plugin: 'worklog', key: 'picker' } as const, {
   options: [] as { value: string; label: string }[],
+  query: '',
 })
 
 const handoffFor = (answer: string, id: string): string =>
@@ -84,7 +85,7 @@ async function openPicker(
   tasks: RecentTask[],
   likely?: string,
 ): Promise<void> {
-  await update($, picker, () => ({ options: ticketPickerOptions(state.ticket, tasks, likely) }))
+  await update($, picker, () => ({ options: ticketPickerOptions(state.ticket, tasks, likely), query: '' }))
   const opened = await $.ui.open({ id: TICKET_PANE_ID, title: 'worklog ticket', focus: true, closeOnEscape: true })
   if (!opened.isPlaced) await $.ui.log('worklog: widen the terminal or run /wl ticket')
 }
@@ -99,6 +100,15 @@ async function recordKey($: EngineInterface, cwd: string, state: TicketState, ke
   } catch (error) {
     await $.ui.log(`worklog: could not record ${key} — ${error instanceof Error ? error.message : String(error)}`)
   }
+}
+
+async function choose($: EngineInterface, state: TicketState, value: string): Promise<void> {
+  await $.ui.close({ id: TICKET_PANE_ID })
+  const id = await $.session.id()
+  // a pick before the first prompt must stop askTicket asking again
+  await $.store.set(`${TICKET_ASKED_STORE_PREFIX}${id}`, value)
+  if (value === 'create') state.handoff = handoffFor('Create a new ticket', id)
+  else if (state.cwd !== undefined) await recordKey($, state.cwd, state, value, id)
 }
 
 async function askTicket($: EngineInterface, cwd: string, state: TicketState, text: string): Promise<void> {
@@ -152,23 +162,24 @@ export function registerTicket(on: On): void {
   })
 
   on('ui.render', { component: 'Pane', requestId: TICKET_PANE_ID }, async ($, event) => {
-    const { Box, Select } = $.ui.resolve(event)
-    const { options } = await read($, picker)
+    const { Box, Input, Select } = $.ui.resolve(event)
+    const { options, query } = await read($, picker)
+    const shown = filterPickerOptions(options, query)
     return (
       <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
-        <Select
-          key="ticket"
+        <Input
+          key="filter"
           autoFocus
-          options={options}
-          onSelect={async value => {
-            await $.ui.close({ id: TICKET_PANE_ID })
-            const id = await $.session.id()
-            // a pick before the first prompt must stop askTicket asking again
-            await $.store.set(`${TICKET_ASKED_STORE_PREFIX}${id}`, value)
-            if (value === 'create') state.handoff = handoffFor('Create a new ticket', id)
-            else if (state.cwd !== undefined) await recordKey($, state.cwd, state, value, id)
+          placeholder="type to filter, Enter picks the first"
+          value={query}
+          submitLabel="pick"
+          onInput={value => update($, picker, current => ({ ...current, query: value }))}
+          onSubmit={async value => {
+            const first = filterPickerOptions(options, value).find(option => option.value !== 'create')
+            if (first !== undefined) await choose($, state, first.value)
           }}
         />
+        <Select key="ticket" options={shown} onSelect={value => choose($, state, value)} />
       </Box>
     )
   })

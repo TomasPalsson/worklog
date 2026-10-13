@@ -99,6 +99,18 @@ export function ticketPickerOptions(
   ]
 }
 
+// Every word of the query must appear in the label, any case; 'create' always stays.
+export function filterPickerOptions(
+  options: readonly { value: string; label: string }[],
+  query: string,
+): { value: string; label: string }[] {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean)
+  return options.filter(
+    (option) =>
+      option.value === 'create' || words.every((word) => option.label.toLowerCase().includes(word)),
+  )
+}
+
 export function keyOfChoice(label: string): string | undefined {
   return label.match(new RegExp(`^${JIRA_KEY_RE.source}(?:\\s|$)`))?.[1]
 }

@@ -10,6 +10,7 @@ import {
   ticketFromBranch,
   keyOfChoice,
   ticketChoices,
+  filterPickerOptions,
   ticketPickerOptions,
   workContext,
   workSeconds,
@@ -375,4 +376,15 @@ test('ticketPickerOptions: labels are cut to 60 characters and the branch key is
   expect(options.map((o) => o.value)).toEqual(['AB-1', 'create'])
   expect(options[0].label.length).toBe(60)
   expect(options[0].label.endsWith('…')).toBe(true)
+})
+
+test('filterPickerOptions: every word must match, any case, create always kept', () => {
+  const options = [
+    { value: 'AB-1', label: 'AB-1 VÍS Google Cloud' },
+    { value: 'AB-2', label: 'AB-2 Google drive' },
+    { value: 'create', label: 'Create a new ticket' },
+  ]
+  // wrong version: any-word match keeps AB-2; case-sensitive drops AB-1
+  expect(filterPickerOptions(options, 'google  CLOUD').map((o) => o.value)).toEqual(['AB-1', 'create'])
+  expect(filterPickerOptions(options, '')).toEqual(options)
 })

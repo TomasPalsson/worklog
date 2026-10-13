@@ -25,7 +25,7 @@ declare module 'claude-code' {
     worklog: {
       review: WorklogReview
       hours: string
-      picker: { options: { value: string; label: string }[] }
+      picker: { options: { value: string; label: string }[]; query: string }
     }
   }
 }
