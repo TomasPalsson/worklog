@@ -10,6 +10,8 @@ import {
   ticketFromBranch,
   keyOfChoice,
   ticketChoices,
+  filterPickerOptions,
+  ticketPickerOptions,
   workContext,
   workSeconds,
 } from './lib'
@@ -252,7 +254,7 @@ test('ticketChoices: no branch key takes the 2 newest, then Create and Skip', ()
   expect(ticketChoices(undefined, tasks)).toEqual([
     'AB-3 sum AB-3',
     'AB-2 sum AB-2',
-    'Create a new ticket',
+    'More tickets…',
     'Skip',
   ])
 })
@@ -263,7 +265,7 @@ test('ticketChoices: a branch key leads, with 1 recent task (4 total)', () => {
   expect(ticketChoices('GENAI-42', tasks)).toEqual([
     'GENAI-42',
     'AB-3 sum AB-3',
-    'Create a new ticket',
+    'More tickets…',
     'Skip',
   ])
 })
@@ -326,7 +328,7 @@ test('ticketChoices: a likely key leads, labelled when known, then the branch, t
   expect(ticketChoices('GENAI-42', tasks, 'AB-2')).toEqual([
     'AB-2 sum AB-2',
     'GENAI-42',
-    'Create a new ticket',
+    'More tickets…',
     'Skip',
   ])
   expect(ticketChoices(undefined, tasks, 'AB-2')).toEqual([
@@ -340,4 +342,49 @@ test('ticketChoices: a likely key leads, labelled when known, then the branch, t
 test('ticketChoices: a likely key equal to the branch shows once; unknown likely is a bare key', () => {
   expect(ticketChoices('GENAI-42', [], 'GENAI-42')).toEqual(['GENAI-42', 'Create a new ticket', 'Skip'])
   expect(ticketChoices(undefined, [], 'ZZ-1')).toEqual(['ZZ-1', 'Create a new ticket', 'Skip'])
+})
+
+test('ticketChoices: More tickets… only when an assigned task is hidden', () => {
+  const two = [task('AB-1', '2026-10-01'), task('AB-2', '2026-10-02')]
+  expect(ticketChoices(undefined, two)).toContain('Create a new ticket')
+  expect(ticketChoices(undefined, [...two, task('AB-3', '2026-10-03')])).toContain('More tickets…')
+  // an unassigned extra task is not hidden-assigned
+  expect(ticketChoices(undefined, [...two, task('AB-9', null, false)])).not.toContain('More tickets…')
+})
+
+test('ticketPickerOptions: leads first, then the rest newest first with null last, create last', () => {
+  const tasks = [
+    task('AB-1', null),
+    task('AB-2', '2026-10-02'),
+    task('AB-3', '2026-10-03'),
+    task('AB-4', '2026-10-04'),
+    task('AB-5', '2026-10-05', false),
+  ]
+  expect(ticketPickerOptions('GENAI-42', tasks, 'AB-2')).toEqual([
+    { value: 'AB-2', label: 'AB-2 sum AB-2' },
+    { value: 'GENAI-42', label: 'GENAI-42' },
+    { value: 'AB-4', label: 'AB-4 sum AB-4' },
+    { value: 'AB-3', label: 'AB-3 sum AB-3' },
+    { value: 'AB-1', label: 'AB-1 sum AB-1' },
+    { value: 'create', label: 'Create a new ticket' },
+  ])
+})
+
+test('ticketPickerOptions: labels are cut to 60 characters and the branch key is not repeated', () => {
+  const long = { ...task('AB-1', null), summary: 'x'.repeat(100) }
+  const options = ticketPickerOptions('AB-1', [long])
+  expect(options.map((o) => o.value)).toEqual(['AB-1', 'create'])
+  expect(options[0].label.length).toBe(60)
+  expect(options[0].label.endsWith('…')).toBe(true)
+})
+
+test('filterPickerOptions: every word must match, any case, create always kept', () => {
+  const options = [
+    { value: 'AB-1', label: 'AB-1 VÍS Google Cloud' },
+    { value: 'AB-2', label: 'AB-2 Google drive' },
+    { value: 'create', label: 'Create a new ticket' },
+  ]
+  // wrong version: any-word match keeps AB-2; case-sensitive drops AB-1
+  expect(filterPickerOptions(options, 'google  CLOUD').map((o) => o.value)).toEqual(['AB-1', 'create'])
+  expect(filterPickerOptions(options, '')).toEqual(options)
 })

@@ -23,7 +23,7 @@ type ReviewState = {
   error: string | undefined
 }
 
-const USAGE = 'usage: /wl today|week|review|install|ask <question>'
+const USAGE = 'usage: /wl today|week|review|install|ticket|ask <question>'
 
 const review = atom(
   { plugin: 'worklog', key: 'review' } as const,
@@ -217,13 +217,14 @@ export function registerCommand(on: On): void {
     await $.command.register({
       name: 'wl',
       description: 'Show logged hours, review today in a pane, or install origin/main',
-      argumentHint: 'today|week|review|install|ask',
+      argumentHint: 'today|week|review|install|ticket|ask',
     })
     return next(event)
   })
 
-  on('command.run', { command: 'wl' }, async ($, event) => {
+  on('command.run', { command: 'wl' }, async ($, event, next) => {
     const argument = event.args.trim()
+    if (argument === 'ticket') return next(event)
     const question = /^ask\s+(\S[\s\S]*)$/.exec(argument)?.[1]
     if (question !== undefined) return { text: await ask(await makeIo($), question) }
     if (argument === 'install') return { text: await install($, sessionCwd) }

@@ -22,6 +22,10 @@ export type WorklogReview = {
 
 declare module 'claude-code' {
   interface PluginState {
-    worklog: { review: WorklogReview; hours: string }
+    worklog: {
+      review: WorklogReview
+      hours: string
+      picker: { options: { value: string; label: string }[]; query: string }
+    }
   }
 }

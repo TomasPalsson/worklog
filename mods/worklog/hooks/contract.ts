@@ -8,6 +8,8 @@ export const DEFAULT_REQUIRED_SECONDS = 8 * 3600
 export const NUDGE_STORE_PREFIX = 'nudge:'
 export const TICKET_ASKED_STORE_PREFIX = 'ticket-asked:'
 export const REVIEW_PANE_ID = 'worklog-review'
+export const TICKET_PANE_ID = 'worklog-ticket'
+export const MORE_TICKETS = 'More tickets…'
 export const JIRA_KEY_RE = /\b([A-Z][A-Z0-9]{1,9}-\d+)\b/
 
 /** A local calendar day, `YYYY-MM-DD`, in the daemon's WORKLOG_TZ. */
