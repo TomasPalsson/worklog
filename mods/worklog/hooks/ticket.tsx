@@ -1,11 +1,11 @@
+import { atom, read, update } from 'claude-code'
 import type { EngineInterface, On } from 'claude-code'
-import { JIRA_KEY_RE, TICKET_ASKED_STORE_PREFIX } from './contract'
+import { JIRA_KEY_RE, MORE_TICKETS, TICKET_ASKED_STORE_PREFIX, TICKET_PANE_ID } from './contract'
 import type { Io, RecentTask } from './contract'
-import { daemonGet, keyOfChoice, ticketChoices, workContext } from './lib'
+import { cut, daemonGet, keyOfChoice, ticketChoices, ticketPickerOptions, workContext } from './lib'
 
 const TASKS_CAP_MS = 1500
 const PICK_CAP_MS = 8000
-const LABEL_MAX = 60
 const EXACT_KEY_RE = new RegExp(`^${JIRA_KEY_RE.source}$`)
 
 async function makeIo($: EngineInterface): Promise<Io> {
@@ -25,6 +25,10 @@ type TicketState = {
   recorded: string | undefined
   handoff: string | undefined
 }
+
+const picker = atom({ plugin: 'worklog', key: 'picker' } as const, {
+  options: [] as { value: string; label: string }[],
+})
 
 const handoffFor = (answer: string, id: string): string =>
   answer === 'Create a new ticket'
@@ -51,9 +55,6 @@ async function recentTasks(io: Io): Promise<RecentTask[]> {
   }
 }
 
-const cut = (label: string): string =>
-  label.length > LABEL_MAX ? `${label.slice(0, LABEL_MAX - 1)}…` : label
-
 type Pick = { picked: string | undefined; likely: string | undefined }
 
 // Verdict reads the first prompt; any failure means "no pick" and the Owner is asked.
@@ -77,6 +78,29 @@ async function verdictPick($: EngineInterface, cwd: string, id: string, ticket: 
   }
 }
 
+async function openPicker(
+  $: EngineInterface,
+  state: TicketState,
+  tasks: RecentTask[],
+  likely?: string,
+): Promise<void> {
+  await update($, picker, () => ({ options: ticketPickerOptions(state.ticket, tasks, likely) }))
+  const opened = await $.ui.open({ id: TICKET_PANE_ID, title: 'worklog ticket', focus: true, closeOnEscape: true })
+  if (!opened.isPlaced) await $.ui.log('worklog: widen the terminal or run /wl ticket')
+}
+
+async function recordKey($: EngineInterface, cwd: string, state: TicketState, key: string, id: string): Promise<void> {
+  try {
+    const result = await $.process.run(['worklog', 'ticket', 'use', key, '--session', id], { cwd })
+    if (result.exitCode !== 0) throw new Error(result.stderr.trim())
+    state.recorded = key
+    state.handoff = undefined
+    await $.ui.toast(`worklog: ${key}`)
+  } catch (error) {
+    await $.ui.log(`worklog: could not record ${key} — ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 async function askTicket($: EngineInterface, cwd: string, state: TicketState, text: string): Promise<void> {
   const id = await $.session.id()
   const marker = `${TICKET_ASKED_STORE_PREFIX}${id}`
@@ -89,7 +113,8 @@ async function askTicket($: EngineInterface, cwd: string, state: TicketState, te
     await $.ui.toast(`worklog: ${picked} (Verdict)`)
     return
   }
-  const options = ticketChoices(state.ticket, await recentTasks(await makeIo($)), likely).map(cut)
+  const tasks = await recentTasks(await makeIo($))
+  const options = ticketChoices(state.ticket, tasks, likely).map(cut)
   let answer: string
   try {
     answer = await $.ui.ask('Which Jira ticket is this session for?', { options, header: 'Ticket' })
@@ -99,20 +124,13 @@ async function askTicket($: EngineInterface, cwd: string, state: TicketState, te
     return
   }
   await $.store.set(marker, answer)
+  if (answer === MORE_TICKETS) return openPicker($, state, tasks, likely)
   const key = options.includes(answer) ? keyOfChoice(answer) : EXACT_KEY_RE.exec(answer)?.[1]
   if (key === undefined) {
     if (answer !== 'Skip') state.handoff = handoffFor(answer, id)
     return
   }
-  try {
-    const result = await $.process.run(['worklog', 'ticket', 'use', key, '--session', id], { cwd })
-    if (result.exitCode !== 0) throw new Error(result.stderr.trim())
-    state.recorded = key
-    state.handoff = undefined
-    await $.ui.toast(`worklog: ${key}`)
-  } catch (error) {
-    await $.ui.log(`worklog: could not record ${key} — ${error instanceof Error ? error.message : String(error)}`)
-  }
+  await recordKey($, cwd, state, key, id)
 }
 
 export function registerTicket(on: On): void {
@@ -124,6 +142,35 @@ export function registerTicket(on: On): void {
     if (state.ticket !== undefined) await $.ui.toast(`worklog: ${state.ticket}`)
     state.askable = isWork && event.isInteractive
     return next(event)
+  })
+
+  on('command.run', { command: 'wl' }, async ($, event, next) => {
+    if (event.args.trim() !== 'ticket') return next(event)
+    if (!state.askable || state.cwd === undefined) return { text: 'worklog ticket: not a work session' }
+    await openPicker($, state, await recentTasks(await makeIo($)))
+    return { text: 'worklog ticket picker opened' }
+  })
+
+  on('ui.render', { component: 'Pane', requestId: TICKET_PANE_ID }, async ($, event) => {
+    const { Box, Select } = $.ui.resolve(event)
+    const { options } = await read($, picker)
+    return (
+      <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
+        <Select
+          key="ticket"
+          autoFocus
+          options={options}
+          onSelect={async value => {
+            await $.ui.close({ id: TICKET_PANE_ID })
+            const id = await $.session.id()
+            // a pick before the first prompt must stop askTicket asking again
+            await $.store.set(`${TICKET_ASKED_STORE_PREFIX}${id}`, value)
+            if (value === 'create') state.handoff = handoffFor('Create a new ticket', id)
+            else if (state.cwd !== undefined) await recordKey($, state.cwd, state, value, id)
+          }}
+        />
+      </Box>
+    )
   })
 
   on('session.end', async ($, event, next) => {

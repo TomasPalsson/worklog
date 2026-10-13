@@ -38,8 +38,8 @@ const FILES: &[(&str, &str)] = &[
         include_str!("../../../../mods/worklog/hooks/status.ts"),
     ),
     (
-        "hooks/ticket.ts",
-        include_str!("../../../../mods/worklog/hooks/ticket.ts"),
+        "hooks/ticket.tsx",
+        include_str!("../../../../mods/worklog/hooks/ticket.tsx"),
     ),
     (
         "hooks/command.tsx",

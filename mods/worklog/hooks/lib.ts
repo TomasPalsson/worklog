@@ -1,4 +1,4 @@
-import { DAEMON_URL, JIRA_KEY_RE } from './contract'
+import { DAEMON_URL, JIRA_KEY_RE, MORE_TICKETS } from './contract'
 import type {
   Block,
   DaemonResult,
@@ -47,6 +47,21 @@ export function ticketFromBranch(branch: string | undefined): string | undefined
   return branch?.match(JIRA_KEY_RE)?.[1]
 }
 
+const LABEL_MAX = 60
+
+export const cut = (label: string): string =>
+  label.length > LABEL_MAX ? `${label.slice(0, LABEL_MAX - 1)}…` : label
+
+const leadKeys = (branchTicket: string | undefined, likely: string | undefined): string[] =>
+  [likely, branchTicket !== likely ? branchTicket : undefined].filter(
+    (key): key is string => key !== undefined,
+  )
+
+const newestFirst = (tasks: readonly RecentTask[], skip: readonly string[]): RecentTask[] =>
+  tasks
+    .filter((task) => task.assigned && !skip.includes(task.key))
+    .sort((a, b) => (b.last_worked_day ?? '').localeCompare(a.last_worked_day ?? ''))
+
 export function ticketChoices(
   branchTicket: string | undefined,
   recentTasks: readonly RecentTask[],
@@ -56,19 +71,31 @@ export function ticketChoices(
     const task = recentTasks.find((t) => t.key === key)
     return task ? `${key} ${task.summary}` : key
   }
-  const lead = [likely, branchTicket !== likely ? branchTicket : undefined].filter(
-    (key): key is string => key !== undefined,
-  )
-  const recent = recentTasks
-    .filter((task) => task.assigned && !lead.includes(task.key))
-    .sort((a, b) => (b.last_worked_day ?? '').localeCompare(a.last_worked_day ?? ''))
-    .slice(0, Math.max(0, 2 - lead.length))
-    .map((task) => `${task.key} ${task.summary}`)
+  const lead = leadKeys(branchTicket, likely)
+  const candidates = newestFirst(recentTasks, lead)
+  const recent = candidates.slice(0, Math.max(0, 2 - lead.length))
   return [
     ...lead.map((key) => (key === likely ? label(key) : key)),
-    ...recent,
-    'Create a new ticket',
+    ...recent.map((task) => `${task.key} ${task.summary}`),
+    candidates.length > recent.length ? MORE_TICKETS : 'Create a new ticket',
     'Skip',
+  ]
+}
+
+export function ticketPickerOptions(
+  branchTicket: string | undefined,
+  recentTasks: readonly RecentTask[],
+  likely?: string,
+): { value: string; label: string }[] {
+  const label = (key: string) => {
+    const task = recentTasks.find((t) => t.key === key)
+    return cut(task ? `${key} ${task.summary}` : key)
+  }
+  const lead = leadKeys(branchTicket, likely)
+  return [
+    ...lead.map((key) => ({ value: key, label: label(key) })),
+    ...newestFirst(recentTasks, lead).map((task) => ({ value: task.key, label: label(task.key) })),
+    { value: 'create', label: 'Create a new ticket' },
   ]
 }
 

@@ -152,7 +152,7 @@ test('session start registers /wl with its argument hint', async ($, on) => {
   const seen = world(on)
   mock.clock(on)
   await $.session.start(SESSION)
-  expect(seen.registered).toEqual([{ name: 'wl', argumentHint: 'today|week|review|install|ask' }])
+  expect(seen.registered).toEqual([{ name: 'wl', argumentHint: 'today|week|review|install|ticket|ask' }])
 })
 
 test('/wl today prints the hours of the blocks that are neither personal nor ignored', async ($, on) => {
@@ -179,8 +179,8 @@ test('any other argument, or none, prints the usage', async ($, on) => {
   world(on)
   mock.clock(on)
   await $.session.start(SESSION)
-  expect((await $.command.run(command('year'))).text).toBe('usage: /wl today|week|review|install|ask <question>')
-  expect((await $.command.run(command(''))).text).toBe('usage: /wl today|week|review|install|ask <question>')
+  expect((await $.command.run(command('year'))).text).toBe('usage: /wl today|week|review|install|ticket|ask <question>')
+  expect((await $.command.run(command(''))).text).toBe('usage: /wl today|week|review|install|ticket|ask <question>')
 })
 
 test('/wl today says so when the daemon is down', async ($, on) => {
@@ -391,8 +391,8 @@ test('/wl ask with no question prints the usage and asks the daemon nothing', as
   mock.clock(on)
   await $.session.start(SESSION)
   // catches: querying with an empty q
-  expect((await $.command.run(command('ask'))).text).toBe('usage: /wl today|week|review|install|ask <question>')
-  expect((await $.command.run(command('ask   '))).text).toBe('usage: /wl today|week|review|install|ask <question>')
+  expect((await $.command.run(command('ask'))).text).toBe('usage: /wl today|week|review|install|ticket|ask <question>')
+  expect((await $.command.run(command('ask   '))).text).toBe('usage: /wl today|week|review|install|ticket|ask <question>')
   expect(seen.requested.filter(url => url.includes('/ask'))).toEqual([])
 })
 
@@ -401,7 +401,7 @@ test('an argument that only starts with ask is not ask', async ($, on) => {
   mock.clock(on)
   await $.session.start(SESSION)
   // catches: startswith('ask') with no word boundary
-  expect((await $.command.run(command('asking kafka'))).text).toBe('usage: /wl today|week|review|install|ask <question>')
+  expect((await $.command.run(command('asking kafka'))).text).toBe('usage: /wl today|week|review|install|ticket|ask <question>')
   expect(seen.requested.filter(url => url.includes('/ask'))).toEqual([])
 })
 
@@ -529,4 +529,11 @@ test('/wl install reports a failed origin probe as an install failure, not a wro
   // catches: treating a failed origin lookup as a non-matching origin
   expect(text).toMatch(/^worklog install failed: .+/)
   expect(installs).toEqual([])
+})
+
+test('/wl ticket is passed on, not answered with the usage', async ($, on) => {
+  world(on)
+  mock.clock(on)
+  await $.session.start(SESSION)
+  expect((await $.command.run(command('ticket'))).text).not.toContain('usage:')
 })

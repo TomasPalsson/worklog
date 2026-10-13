@@ -169,14 +169,14 @@ test('a fresh work session asks one ticket question: branch ticket, recent, crea
     {
       question: QUESTION,
       header: 'Ticket',
-      options: ['GENAI-9', 'GENAI-2 Newer', 'Create a new ticket', 'Skip'],
+      options: ['GENAI-9', 'GENAI-2 Newer', 'More tickets…', 'Skip'],
     },
   ])
 })
 
 test('no branch ticket offers two recent tickets, newest day first', async ($, on) => {
   const { seen } = await asked({ tasks: TASKS }, WORK_CWD, 'main')($, on)
-  expect(seen.asks[0].options).toEqual(['GENAI-2 Newer', 'GENAI-1 Older', 'Create a new ticket', 'Skip'])
+  expect(seen.asks[0].options).toEqual(['GENAI-2 Newer', 'GENAI-1 Older', 'More tickets…', 'Skip'])
 })
 
 test('a non-interactive start asks nothing', async ($, on) => {
@@ -537,7 +537,7 @@ test('an unsure Verdict asks with its likeliest ticket first', async ($, on) => 
   const { seen } = seat(on, { current: 'GENAI-9-fix' }, { tasks: TASKS, pick: UNSURE })
   await $.session.start(start(WORK_CWD))
   await $.prompt.submit(PROMPT)
-  expect(seen.asks[0].options).toEqual(['GENAI-2 Newer', 'GENAI-9', 'Create a new ticket', 'Skip'])
+  expect(seen.asks[0].options).toEqual(['GENAI-2 Newer', 'GENAI-9', 'More tickets…', 'Skip'])
 })
 
 const FAILED_PICKS: [string, { exitCode: number; stdout: string }][] = [
@@ -550,7 +550,7 @@ for (const [name, pick] of FAILED_PICKS) {
     const { seen } = seat(on, { current: 'GENAI-9-fix' }, { tasks: TASKS, pick })
     await $.session.start(start(WORK_CWD))
     await $.prompt.submit(PROMPT)
-    expect(seen.asks[0].options).toEqual(['GENAI-9', 'GENAI-2 Newer', 'Create a new ticket', 'Skip'])
+    expect(seen.asks[0].options).toEqual(['GENAI-9', 'GENAI-2 Newer', 'More tickets…', 'Skip'])
   })
 }
 
@@ -568,4 +568,123 @@ test('outside a work folder no pick runs', async ($, on) => {
   await $.session.start(start('/tmp/play'))
   await $.prompt.submit(PROMPT)
   expect(seen.picks).toEqual([])
+})
+
+const PANE = {
+  component: 'Pane',
+  surface: 'terminal',
+  requestId: 'worklog-ticket',
+  viewport: { columns: 120, rows: 40, isFullscreen: true },
+  props: { title: 'worklog ticket', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 36 }, view: {} },
+} as const
+type Node = { type?: string; props?: Record<string, unknown>; children?: Node[] } | string
+const selects = (node: Node | null | undefined): { props?: Record<string, unknown> }[] =>
+  node === null || node === undefined || typeof node === 'string'
+    ? []
+    : [...(node.type === 'Select' ? [node] : []), ...(node.children ?? []).flatMap(selects)]
+
+const MORE = { tasks: TASKS, answer: 'More tickets…' }
+
+// A ui.open mock, registered after seat() so it wins.
+const trackOpen = (on: On, isPlaced = true) => {
+  const opened: string[] = []
+  on('ui.open', (_$, e) => {
+    opened.push(e.id)
+    return { value: { isPlaced } } as never
+  })
+  on('ui.close', () => ({ value: undefined }))
+  return opened
+}
+
+test('More tickets… opens the pane listing every assigned ticket plus create, and the prompt proceeds', async ($, on) => {
+  const { seen } = seat(on, { current: 'GENAI-9-fix' }, MORE)
+  const opened = trackOpen(on)
+  await $.session.start(start(WORK_CWD))
+  await $.prompt.submit(PROMPT)
+  expect(opened).toEqual(['worklog-ticket'])
+  expect(seen.stored[`ticket-asked:${SESSION_ID}`]).toBe('More tickets…')
+  const [select] = selects((await $.ui.render(PANE)) as Node)
+  expect(select.props?.options).toEqual([
+    { value: 'GENAI-9', label: 'GENAI-9' },
+    { value: 'GENAI-2', label: 'GENAI-2 Newer' },
+    { value: 'GENAI-1', label: 'GENAI-1 Older' },
+    { value: 'GENAI-3', label: 'GENAI-3 Never' },
+    { value: 'create', label: 'Create a new ticket' },
+  ])
+})
+
+test('picking a key in the pane records it and the next prompt context carries it', async ($, on) => {
+  const { seen } = seat(on, { current: 'GENAI-9-fix' }, MORE)
+  trackOpen(on)
+  await $.session.start(start(WORK_CWD))
+  await $.prompt.submit(PROMPT)
+  await $.ui.render(PANE)
+  await $.ui.select({ plugin: 'worklog', key: 'ticket', value: 'GENAI-3' })
+  expect(seen.runs).toEqual([['worklog', 'ticket', 'use', 'GENAI-3', '--session', SESSION_ID]])
+  expect(await blocksOf($)).toEqual([...OTHER.blocks, { name: 'worklog', text: 'Session ticket: GENAI-3' }])
+})
+
+test('picking create in the pane hands off the create-ticket instruction', async ($, on) => {
+  const { seen } = seat(on, { current: 'GENAI-9-fix' }, MORE)
+  trackOpen(on)
+  await $.session.start(start(WORK_CWD))
+  await $.prompt.submit(PROMPT)
+  await $.ui.render(PANE)
+  await $.ui.select({ plugin: 'worklog', key: 'ticket', value: 'create' })
+  expect(seen.runs).toEqual([])
+  const next = await $.prompt.submit(PROMPT)
+  expect('context' in next ? next.context : undefined).toEqual([CREATE(SESSION_ID)])
+})
+
+test('a pane that cannot be placed logs the hint', async ($, on) => {
+  const { seen } = seat(on, { current: 'GENAI-9-fix' }, MORE)
+  trackOpen(on, false)
+  await $.session.start(start(WORK_CWD))
+  await $.prompt.submit(PROMPT)
+  expect(seen.logs).toEqual(['worklog: widen the terminal or run /wl ticket'])
+})
+
+test('/wl ticket opens the pane after the ask already happened', async ($, on) => {
+  const { seen } = seat(on, { current: 'GENAI-9-fix' }, { tasks: TASKS, answer: 'Skip' })
+  const opened = trackOpen(on)
+  await $.session.start(start(WORK_CWD))
+  await $.prompt.submit(PROMPT)
+  expect(opened).toEqual([])
+  const result = await $.command.run({ command: 'wl', args: 'ticket', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+  expect(result.text).toBe('worklog ticket picker opened')
+  expect(opened).toEqual(['worklog-ticket'])
+  expect(selects((await $.ui.render(PANE)) as Node)[0].props?.options).toHaveLength(5)
+  expect(seen.asks.length).toBe(1)
+})
+
+test('/wl ticket outside a work session opens nothing', async ($, on) => {
+  seat(on, { current: 'GENAI-9-fix' }, { tasks: TASKS })
+  const opened = trackOpen(on)
+  await $.session.start(start('/tmp/play'))
+  const result = await $.command.run({ command: 'wl', args: 'ticket', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+  expect(opened).toEqual([])
+  expect(result.text).toBe('worklog ticket: not a work session')
+})
+
+test('a pane pick before the first prompt stops the first prompt asking', async ($, on) => {
+  const { seen } = seat(on, { current: 'GENAI-9-fix' }, { tasks: TASKS, answer: 'Skip' })
+  trackOpen(on)
+  await $.session.start(start(WORK_CWD))
+  await $.command.run({ command: 'wl', args: 'ticket', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+  await $.ui.render(PANE)
+  await $.ui.select({ plugin: 'worklog', key: 'ticket', value: 'GENAI-3' })
+  await $.prompt.submit(PROMPT)
+  expect(seen.asks).toEqual([])
+  expect(seen.picks).toEqual([])
+  expect(await blocksOf($)).toEqual([...OTHER.blocks, { name: 'worklog', text: 'Session ticket: GENAI-3' }])
+})
+
+test('with ticket and command hooks registered together, ticket opens the pane and others reach the usage', async ($, on) => {
+  seat(on, { current: 'GENAI-9-fix' }, { tasks: TASKS })
+  const opened = trackOpen(on)
+  await $.session.start(start(WORK_CWD))
+  const run = (args: string) => $.command.run({ command: 'wl', args, origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+  expect((await run('ticket')).text).toBe('worklog ticket picker opened')
+  expect(opened).toEqual(['worklog-ticket'])
+  expect((await run('year')).text).toContain('usage:')
 })
