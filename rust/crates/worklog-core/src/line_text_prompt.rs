@@ -6,7 +6,8 @@
 /// and the effect — only as far as the clues show. Describes the day task by task from `work_items` when
 /// present (grouping, spec change set: block-clues grouping) — at most
 /// three tasks, biggest by minutes first, never in time-of-day order,
-/// never blending two tasks' clues into one sentence.
+/// never blending two tasks' clues into one sentence. Ticket lines also get
+/// `other_tickets_today` so clues for the day's other tickets are dropped.
 pub const SYSTEM_PROMPT_IS: &str = "Þú skrifar 2-3 skýrar, hnitmiðaðar setningar \
 á íslensku fyrir yfirmann eða viðskiptavin sem er ekki tæknilega sinnaður. \
 Lýstu á hversdagslegan hátt hvað var gert fyrir þennan viðskiptavin þennan \
@@ -26,7 +27,12 @@ og \"commit_bodies\" sýna framkvæmdina. \
 \"ticket_summary\" og \"ticket_description\" lýsa Jira-málinu sem unnið \
 var í og sýna tilgang vinnunnar; notaðu þau til að skilja samhengið og \
 nefna markmiðið, en lýstu aðeins því sem hinar vísbendingarnar sýna að \
-var gert í raun. Lýstu raunverulegu eðli \
+var gert í raun. \
+\"other_tickets_today\" eru önnur Jira-mál sem unnið var í sama dag. \
+Lýstu eingöngu vinnu sem tilheyrir þessu máli: slepptu vísbendingum sem \
+eiga greinilega betur við eitt af hinum málunum eða eru greinilega um \
+allt annað en \"ticket_summary\" — en ef þú ert í vafa skaltu halda þeim. \
+Lýstu raunverulegu eðli \
 vinnunnar — til dæmis að skrifa eða endurskoða verklýsingu, tilboð eða \
 skjal — og segðu aldrei að kerfi hafi verið þróað ef vísbendingarnar \
 sýna skjalavinnu. Vertu nákvæmur: segðu í hverri setningu hvað var að \

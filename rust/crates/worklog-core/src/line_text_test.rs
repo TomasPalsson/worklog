@@ -496,3 +496,8 @@ fn line_text_invoker_error_skips_manual_origin_lines() {
         "the hand-edited line must never be reported as not_generated"
     );
 }
+
+#[test]
+fn prompt_tells_the_model_about_other_tickets_today() {
+    assert!(SYSTEM_PROMPT_IS.contains("other_tickets_today"));
+}
