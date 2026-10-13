@@ -83,6 +83,11 @@ fn set_dirs(root: &mut Map<String, Value>, dirs: &[&str]) -> Result<()> {
 
 pub fn install(data_dir: &Path) -> Result<PathBuf> {
     let dir = mod_dir(data_dir);
+    // hooks/ is wholly ours: a file dropped from FILES must not linger and shadow its rename
+    let hooks = dir.join("hooks");
+    if hooks.exists() {
+        std::fs::remove_dir_all(&hooks).with_context(|| format!("clearing {}", hooks.display()))?;
+    }
     for (relative, contents) in FILES {
         let target = dir.join(relative);
         std::fs::create_dir_all(target.parent().context("mod file has no parent")?)
@@ -176,6 +181,18 @@ mod tests {
             install(data).unwrap();
             assert_eq!(read_dirs().unwrap(), dir.to_string_lossy());
             assert!(is_installed(data));
+        });
+    }
+
+    #[test]
+    fn install_removes_stale_hook_files() {
+        with_home(None, |data| {
+            let dir = install(data).unwrap();
+            // a renamed module (ticket.ts -> ticket.tsx) left behind shadows the new one
+            std::fs::write(dir.join("hooks/ticket.ts"), "stale").unwrap();
+            install(data).unwrap();
+            assert!(!dir.join("hooks/ticket.ts").exists());
+            assert!(dir.join("hooks/ticket.tsx").is_file());
         });
     }
 
