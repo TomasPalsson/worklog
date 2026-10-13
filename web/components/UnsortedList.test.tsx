@@ -475,7 +475,7 @@ describe("Verdict one-tap choices", () => {
   });
 });
 
-describe("noise groups", () => {
+describe("noise hosts", () => {
   const ff = (id: number, details: string | null, source = "firefox"): RoutedEvent => ({
     ...firefox1,
     id,
@@ -484,99 +484,43 @@ describe("noise groups", () => {
     title: "t",
   });
   const noisy1 = ff(10, "https://News.Example.com/a");
-  const noisy2 = ff(11, "https://news.example.com/b");
-  const noisy3 = ff(12, "https://feed.example.org/x");
+  const noisy2 = ff(11, "http://localhost:3333/x");
   const other = ff(13, "https://docs.example.com/y");
   const hosts = [
     { host: "news.example.com", dismissed_before: 4 },
-    { host: "feed.example.org", dismissed_before: 2 },
+    { host: "localhost", dismissed_before: 179 },
   ];
   const renderNoise = (events: RoutedEvent[], noiseHosts = hosts) =>
     render(
       <UnsortedList day="2026-07-25" events={events} folderOptions={[]} noiseHosts={noiseHosts} />,
     );
 
-  it("tags a group whose host is listed, with its count (case-insensitive host)", () => {
+  it("a listed host never shows in To sort (case-insensitive, port ignored)", () => {
     renderNoise([noisy1, noisy2, other]);
-    expect(within(rowFor("news.example.com")).getByText("dismissed 4× before")).toBeTruthy();
-  });
-
-  it("does not tag a sibling or parent host (catches endsWith/includes matching)", () => {
-    renderNoise([other, noisy1], [{ host: "example.com", dismissed_before: 9 }]);
-    expect(screen.queryByText(/dismissed \d+× before/)).toBeNull();
-    expect(screen.queryByRole("button", { name: /noise group/ })).toBeNull();
-  });
-
-  it("tags a github.com group (grouped by org/repo) when github.com is listed", () => {
-    const gh = ff(30, "https://github.com/org/repo/pull/1");
-    renderNoise([gh, other], [{ host: "github.com", dismissed_before: 3 }]);
-    expect(within(rowFor("github.com/org/repo")).getByText("dismissed 3× before")).toBeTruthy();
-  });
-
-  it("does not tag non-firefox groups even when details parse to a listed host", () => {
-    renderNoise([ff(20, "https://news.example.com/a", "slack")]);
-    expect(screen.queryByText(/dismissed \d+× before/)).toBeNull();
-  });
-
-  it("unparseable details do not throw and are not tagged", () => {
-    renderNoise([ff(21, "not a url"), ff(22, null), noisy1]);
-    expect(screen.getAllByText(/dismissed \d+× before/).length).toBe(1);
-  });
-
-  it("no button when nothing is tagged (empty host list)", () => {
-    renderNoise([noisy1, other], []);
-    expect(screen.queryByRole("button", { name: /noise group/ })).toBeNull();
-  });
-
-  it("button label counts tagged groups: one tagged group says 1, two say 2", () => {
-    renderNoise([noisy1, other]);
-    expect(screen.getByRole("button", { name: "Dismiss 1 noise groups" })).toBeTruthy();
-    cleanup();
-    renderNoise([noisy1, noisy3, other]);
-    expect(screen.getByRole("button", { name: "Dismiss 2 noise groups" })).toBeTruthy();
-  });
-
-  it("confirms first, then dismisses only tagged groups' events with no rule kind", async () => {
-    renderNoise([noisy1, noisy2, noisy3, other]);
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss 2 noise groups" }));
-    expect(dismissEventCalls.length).toBe(0);
-    fireEvent.click(screen.getAllByRole("button", { name: "Yes" })[0]);
-    await waitFor(() => expect(dismissEventCalls.length).toBe(3));
-    expect(dismissEventCalls.map((c) => c[0]).sort()).toEqual([10, 11, 12]);
-    expect(dismissEventCalls.every((c) => c[1] === null && c[2] === "2026-07-25")).toBe(true);
-    await waitFor(() => expect(screen.queryByText("feed.example.org")).toBeNull());
+    expect(screen.queryByText("news.example.com")).toBeNull();
+    expect(screen.queryByText("localhost")).toBeNull();
     expect(screen.getByText("docs.example.com")).toBeTruthy();
   });
 
-  it("Cancel backs out without dismissing", () => {
-    renderNoise([noisy1, other]);
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss 1 noise groups" }));
-    fireEvent.click(screen.getAllByRole("button", { name: "Cancel" })[0]);
-    expect(screen.getByRole("button", { name: "Dismiss 1 noise groups" })).toBeTruthy();
-    expect(dismissEventCalls.length).toBe(0);
+  it("only noise left: no tray, the drawer counts it as hidden", () => {
+    renderNoise([noisy1, noisy2]);
+    expect(screen.queryByText("To sort")).toBeNull();
+    expect(screen.getByText(/2 hidden as noise/)).toBeTruthy();
   });
 
-  it("stops at the first failure and only removes what was dismissed", async () => {
-    dismissEventImpl.mockImplementationOnce(async (id, ruleKind, day) => {
-      dismissEventCalls.push([id, ruleKind, day]);
-      return { ok: true as const, data: { ...noisy1, id, label_origin: "dismissed" as const } } as never;
-    });
-    dismissEventImpl.mockImplementationOnce(async (id, ruleKind, day) => {
-      dismissEventCalls.push([id, ruleKind, day]);
-      return { ok: false as const, error: "boom" } as never;
-    });
-    const errSpy = spyOn(toast, "error").mockImplementation(() => 0 as never);
-    renderNoise([noisy1, noisy2, noisy3, other]);
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss 2 noise groups" }));
-    fireEvent.click(screen.getAllByRole("button", { name: "Yes" })[0]);
-    await waitFor(() => expect(dismissEventCalls.length).toBe(2));
-    // third call never happens (stop on first failure)
-    await new Promise((r) => setTimeout(r, 50));
-    expect(dismissEventCalls.length).toBe(2);
-    expect(screen.getByText("feed.example.org")).toBeTruthy();
-    // id 10 was dismissed, so the news group dropped from 2 visits to 1.
-    expect(within(rowFor("news.example.com")).getByText("1 visit")).toBeTruthy();
-    expect(errSpy).toHaveBeenCalledTimes(1);
-    errSpy.mockRestore();
+  it("a sibling or parent host still shows (no endsWith/includes matching)", () => {
+    renderNoise([other], [{ host: "example.com", dismissed_before: 9 }]);
+    expect(screen.getByText("docs.example.com")).toBeTruthy();
+  });
+
+  it("non-firefox events still show even when details parse to a listed host", () => {
+    renderNoise([ff(20, "https://news.example.com/a", "slack")]);
+    expect(screen.getByText("To sort")).toBeTruthy();
+  });
+
+  it("unparseable details do not throw and still show", () => {
+    renderNoise([ff(21, "not a url"), ff(22, null), noisy1]);
+    expect(screen.getByText("To sort")).toBeTruthy();
+    expect(screen.queryByText("news.example.com")).toBeNull();
   });
 });
