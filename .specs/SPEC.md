@@ -1,0 +1,11 @@
+# Current behaviours
+
+<!-- Maintained by spec-merge from archived TASKS.md Behaviors rows. Change a row with a Replaces: or Retire: mark in a later feature, not by hand. -->
+
+| Key | Given / When / Then | Proven by | Source |
+|-----|---------------------|-----------|--------|
+| skill/pin-hours-recipe | Given the Owner says "put 0,5h / 1h on this ticket" in a Claude Code session, when Claude follows the worklog skill, then it runs `worklog ticket hours <KEY> <hours>` with no confirm, using the session's ticket when none is named | skill_mentions_ticket_hours (grep) | 2026-10-15-025-pin-ticket-hours |
+| tempo-lines/apro-floor-kept | Given an APRÓ line (Mirres customer "APRÓ ehf." or account key `APRO-*`) with under 15 min tracked, when the day's Tempo lines are built, then its `union_seconds` and `effective_seconds` stay 0, and every line with ≥15 min rounds exactly as before (must never break) | apro_line_under_15_min_still_rounds_to_zero, lines_over_15_min_round_as_before | 2026-10-15-025-pin-ticket-hours |
+| tempo-lines/billable-never-down | Given a non-APRÓ line (any other Mirres customer, or no Mirres data) with 1–899 s tracked, when the day's Tempo lines are built, then `union_seconds` and `effective_seconds` are 1800, never 0 | billable_line_under_15_min_rounds_up_to_half_hour, line_without_mirres_counts_as_billable, apro_vitinn_project_under_other_customer_is_billable | 2026-10-15-025-pin-ticket-hours |
+| ticket/pin-hours | Given a ticket and a day, when `worklog ticket hours KEY 0,5` (or `0.5`, `1`) runs, then that day's line has `hours_override_seconds = 1800` and `effective_seconds = 1800`, even if the line had no blocks yet when the pin was set; `--clear` removes the override; a value that is not a positive multiple of 0.5 h is refused without writing | pin_hours_sets_override, pin_hours_before_blocks_applies_when_blocks_land, pin_hours_clear_removes_override, pin_hours_rejects_non_half_hour, cli_ticket_hours_parses_comma | 2026-10-15-025-pin-ticket-hours |
+| ticket/pin-hours-visible | Given the Owner told Claude "put 0,5h on this ticket", when they open today in the web UI, then that ticket's Tempo line shows 0.5h | human-verify | 2026-10-15-025-pin-ticket-hours |
