@@ -1,6 +1,7 @@
 //! Session Jira tickets — "session S is on ticket K". Stored in
 //! `session_tickets`; set by `worklog ticket use`, read by the hook
-//! (`hook_run::handle`) and the SessionStart hint.
+//! (`hook_run::handle`) and the SessionStart hint. `session_skips` holds
+//! sessions the Owner skipped; a rebuild ignores their blocks.
 
 use anyhow::{bail, Result};
 use regex::Regex;
@@ -22,6 +23,10 @@ pub fn set(conn: &Connection, session_id: &str, key: &str) -> Result<()> {
              set_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
         params![session_id, key],
     )?;
+    conn.execute(
+        "DELETE FROM session_skips WHERE session_id = ?1",
+        params![session_id],
+    )?;
     Ok(())
 }
 
@@ -36,14 +41,28 @@ pub fn get(conn: &Connection, session_id: &str) -> Result<Option<String>> {
         .optional()?)
 }
 
-/// Stub: the fix commit implements it.
-pub fn skip(_conn: &Connection, _session_id: &str) -> Result<()> {
+/// Mark a session skipped: a rebuild ignores its blocks.
+pub fn skip(conn: &Connection, session_id: &str) -> Result<()> {
+    if session_id.is_empty() {
+        bail!("session id must not be empty");
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO session_skips (session_id) VALUES (?1)",
+        params![session_id],
+    )?;
     Ok(())
 }
 
-/// Stub: the fix commit implements it.
-pub fn is_skipped(_conn: &Connection, _session_id: &str) -> Result<bool> {
-    Ok(false)
+/// Whether the Owner skipped this session.
+pub fn is_skipped(conn: &Connection, session_id: &str) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM session_skips WHERE session_id = ?1",
+            params![session_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
 }
 
 #[cfg(test)]

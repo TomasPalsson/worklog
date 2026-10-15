@@ -747,7 +747,8 @@ test('/wl ticket opens the pane after the ask already happened', async ($, on) =
   const result = await $.command.run({ command: 'wl', args: 'ticket', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
   expect(result.text).toBe('worklog ticket picker opened')
   expect(opened).toEqual(['worklog-ticket'])
-  expect(selects((await $.ui.render(PANE)) as Node)[0].props?.options).toHaveLength(5)
+  // branch ticket + 3 tasks + create + skip
+  expect(selects((await $.ui.render(PANE)) as Node)[0].props?.options).toHaveLength(6)
   expect(seen.asks.length).toBe(1)
 })
 

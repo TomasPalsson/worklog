@@ -575,6 +575,10 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
     // Load once per persist pass — cheap and avoids re-reading the TOML
     // for every block. classify() is pure given the config.
     let personal_cfg = crate::personal::PersonalConfig::load();
+    let skipped: std::collections::HashSet<String> = conn
+        .prepare("SELECT session_id FROM session_skips")?
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
 
     // Collect "carry" state so re-inference preserves tempo_worklog_id,
     // description, estimated_by, and manual ticket edits. We keep two
@@ -733,18 +737,25 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
         let has_real_ticket = jira_issue
             .as_deref()
             .is_some_and(|k| jira_ticket_known(&tx, k));
-        // Carry an ignore only when the block starts at exactly the same
-        // instant (strict map hit, not the overlap fallback) and did not
-        // grow past the prior end. A block that grew may now hold real work,
-        // so the ignore is dropped rather than silently swallowing it.
-        let (ignored_at, ignore_reason) = prior
-            .get(&started_key)
-            .and_then(|c| {
-                let ign = c.ignored_at.clone()?;
-                let (_, prior_end) = parse_pair(&c.started_at, &c.ended_at)?;
-                (b.ended_at <= prior_end).then(|| (Some(ign), c.ignore_reason.clone()))
-            })
-            .unwrap_or((None, None));
+        // An ignore is sticky once set, however the block grows or matches
+        // (re-ignoring grown blocks was the pain). A block built only from
+        // skipped sessions starts ignored, unless already synced/exported.
+        let from_skipped = !b.events.is_empty()
+            && b.events
+                .iter()
+                .all(|e| e.session_id.as_deref().is_some_and(|s| skipped.contains(s)));
+        let (ignored_at, ignore_reason) = match carry.and_then(|c| c.ignored_at.clone()) {
+            Some(ign) => (Some(ign), carry.and_then(|c| c.ignore_reason.clone())),
+            None if from_skipped && tempo_id.is_none() && exported_at.is_none() => (
+                Some(Utc::now().format("%Y-%m-%dT%H:%M:%.3fZ").to_string()),
+                Some(
+                    crate::time_leaks_contract::IgnoreReason::Noise
+                        .as_str()
+                        .to_string(),
+                ),
+            ),
+            None => (None, None),
+        };
         let is_personal = ignored_at.is_some() || (path_personal && !has_real_ticket);
         tx.execute(
             "INSERT INTO blocks (

@@ -203,6 +203,14 @@ pub fn set_ignored(
     } else {
         // ponytail: restore assumes the block was work before; store prior
         // is_personal if that ever matters.
+        // Un-skip its sessions, or the next rebuild re-ignores the block.
+        tx.execute(
+            "DELETE FROM session_skips WHERE session_id IN (
+                 SELECT e.session_id FROM block_events be
+                 JOIN events e ON e.id = be.event_id WHERE be.block_id = ?1)",
+            params![block_id],
+        )
+        .context("set_ignored: clearing session skips")?;
         tx.execute(
             "UPDATE blocks SET ignored_at = NULL, ignore_reason = NULL, is_personal = 0 WHERE id = ?1",
             params![block_id],
@@ -506,12 +514,8 @@ mod tests {
     fn restoring_a_skipped_sessions_block_unskips_the_session() {
         let conn = open_memory().unwrap();
         let id = seed(&conn);
-        let mut ev = crate::models::Event::minimal(
-            "claude_turn",
-            "x",
-            "2026-04-18T09:00:00+00:00",
-            "t",
-        );
+        let mut ev =
+            crate::models::Event::minimal("claude_turn", "x", "2026-04-18T09:00:00+00:00", "t");
         ev.session_id = Some("s1".into());
         let eid = crate::repo::upsert_event(&conn, &ev).unwrap();
         conn.execute(

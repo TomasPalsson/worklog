@@ -420,6 +420,12 @@ CREATE TABLE IF NOT EXISTS session_tickets (
     set_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
+-- Sessions the Owner skipped in the ticket question; a rebuild ignores their blocks. See session_tickets.rs.
+CREATE TABLE IF NOT EXISTS session_skips (
+    session_id TEXT PRIMARY KEY,
+    set_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
 -- The card kept for a block after its raw events are deleted (spec 010).
 -- `json` is a digest_contract::BlockDigest. A card is written once and
 -- never replaced.

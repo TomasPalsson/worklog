@@ -104,11 +104,21 @@ async function recordKey($: EngineInterface, cwd: string, state: TicketState, ke
   }
 }
 
+async function skipSession($: EngineInterface, cwd: string | undefined, id: string): Promise<void> {
+  try {
+    const result = await $.process.run(['worklog', 'ticket', 'skip', '--session', id], { cwd })
+    if (result.exitCode !== 0) throw new Error(result.stderr.trim())
+  } catch (error) {
+    await $.ui.log(`worklog: could not skip — ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 async function choose($: EngineInterface, state: TicketState, value: string): Promise<void> {
   await $.ui.close({ id: TICKET_PANE_ID })
   const id = await $.session.id()
   // a pick before the first prompt must stop askTicket asking again
   await $.store.set(`${TICKET_ASKED_STORE_PREFIX}${id}`, value)
+  if (value === 'skip') return skipSession($, state.cwd, id)
   let note: string | undefined
   if (value === 'create') note = state.handoff = handoffFor('Create a new ticket', id)
   else if (state.cwd !== undefined && (await recordKey($, state.cwd, state, value, id))) {
@@ -144,9 +154,10 @@ async function askTicket($: EngineInterface, cwd: string, state: TicketState, te
   }
   await $.store.set(marker, answer)
   if (answer === MORE_TICKETS) return openPicker($, state, tasks, likely)
+  if (answer === 'Skip') return skipSession($, cwd, id)
   const key = options.includes(answer) ? keyOfChoice(answer) : EXACT_KEY_RE.exec(answer)?.[1]
   if (key === undefined) {
-    if (answer !== 'Skip') state.handoff = handoffFor(answer, id)
+    state.handoff = handoffFor(answer, id)
     return
   }
   await recordKey($, cwd, state, key, id)
@@ -184,7 +195,7 @@ export function registerTicket(on: On): void {
           submitLabel="pick"
           onInput={value => update($, picker, current => ({ ...current, query: value }))}
           onSubmit={async value => {
-            const first = filterPickerOptions(options, value).find(option => option.value !== 'create')
+            const first = filterPickerOptions(options, value).find(option => option.value !== 'create' && option.value !== 'skip')
             if (first !== undefined) await choose($, state, first.value)
           }}
         />
