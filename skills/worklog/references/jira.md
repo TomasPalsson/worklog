@@ -37,6 +37,8 @@ On the first prompt the worklog mod lets Verdict pick the ticket from the reques
 
 Nobody present: record nothing, create nothing.
 
+Pinning hours: "put 0,5h / 1h on this ticket" or "pin Nh to KEY" runs `worklog ticket hours <KEY> <hours> [--day YYYY-MM-DD]`. No key named: use the session ticket (`worklog --json ticket pick`, or the session_tickets hint). No confirm; like `ticket use` it only writes locally. The pinned amount is what that day's Tempo line shows and sends. Change it by re-running with a new value, `--clear`, or the hours field on the web UI's Tempo line. Non-APRÓ lines never round below 0.5h.
+
 ## When worklog's verbs aren't enough (twg CLI)
 
 Only if `twg` is installed. Read-only.

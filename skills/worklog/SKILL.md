@@ -93,6 +93,7 @@ Match the user's phrasing left-to-right; first match wins.
 | "waiting on X" / "blocked on X" | **J**: ask whether to move the ticket to Blocked, then `worklog ticket move KEY Blocked` |
 | "finished" / "done with KEY" / "PR merged" | **J**: ask whether to move the ticket to Done, then `worklog ticket move KEY Done` |
 | "what ticket is this session on" / "No Jira ticket found for this session" / "set this session's ticket" | **J**: `references/jira.md` "This session's ticket". On the first prompt the mod lets Verdict pick the ticket and records it when sure, otherwise asks the Owner; never ask the Owner again. On a "create" instruction create with one confirm, on a "find" instruction run `ticket find` and confirm, then `worklog ticket use KEY --session <id>` |
+| "put 0,5h / 1h on this ticket" / "pin Nh to KEY" | **J**: `worklog ticket hours <KEY> <hours> [--day YYYY-MM-DD]`; no key named = the session ticket (`worklog --json ticket pick` / session_tickets, as in the session-ticket row). No confirm (it only writes locally, like `ticket use`). Change later by re-running with a new value, `--clear`, or the hours field on the web UI's Tempo line. Non-APRÓ lines never round below 0.5h |
 | "what can I close?" / "anything to close?" | **J**: `worklog ticket hints` |
 | "show me unsynced" / "what's pending sync" / "any dirty blocks" | `references/recipes.md` → Recipe 11 |
 
