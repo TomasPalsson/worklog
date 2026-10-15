@@ -8,3 +8,11 @@
 - Ruling: G002 review-diff reported incomplete:true with failedLenses=[] and incompleteLenses=[] — the only gap is one dismissed finding whose verify panel did not finish (no upper cap on pinned hours); triaged by hand as low impact (local CLI, self-inflicted), not re-run
 - Ruling: G001 verify rewritten from `flow check --fix --since 55acb00` (exits 1: no root Cargo.toml/package.json, the project lives in rust/ and web/) to the CLAUDE.md Rust gates; web/ is untouched by this branch (git diff 55acb00..HEAD --name-only has no web/ path), so bun gates are not run
 - Ruling: G003 verify rewritten from `test -s verify/` (resolves against repo root, where no verify/ exists) to `test -s .specs/025-pin-ticket-hours/verify/acceptance.md`
+- Assumption: CHK004 satisfied by a throwaway-WORKLOG_HOME sandbox run of the debug binary (hand-seeded jira_tickets issue ids for the dry-run), not the live daemon/web UI — evidence: transcript:591 (audit)
+- Assumption: CHK004 ticked `--by user` on the --finish pre-approval — evidence: transcript:731 (audit)
+- Assumption: Verified line written on the --finish pre-approval after claim-check confirmed 7/7 — evidence: transcript:1321 (audit)
+- Assumption: no per-task review-package for T001/T002/T003/T005; the orchestrator read each diff and relied on the branch-wide G002 review — evidence: transcript:168 (audit)
+- Assumption: is_apro review fix uses first-word-exact match ("APRÓ ehf." yes, "Aprosoft ehf." no) — evidence: transcript:990 (audit)
+- Assumption: flow:review-diff not re-run after the one-line 5800639 fix; local gates + acceptance + claim-check re-run instead — evidence: transcript:1036 (audit)
+- Assumption: 024's open CHK001 judged unrelated from its TASKS.md line only, without checking out the 024 branch — evidence: transcript:83 (audit)
+- Assumption: babysit drive with 60 min / 5 push / 9-min chunk limits (the skill defaults) — evidence: transcript:1394 (audit)
