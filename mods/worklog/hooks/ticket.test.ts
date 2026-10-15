@@ -237,9 +237,9 @@ test('typed text that is not a key records nothing', async ($, on) => {
   expect(seen.runs).toEqual([])
 })
 
-test('Skip records nothing', async ($, on) => {
+test('Skip marks the session skipped so its blocks land in ignored', async ($, on) => {
   const { seen } = await asked({ answer: 'Skip' })($, on)
-  expect(seen.runs).toEqual([])
+  expect(seen.runs).toEqual([['worklog', 'ticket', 'skip', '--session', SESSION_ID]])
 })
 
 test('Create a new ticket records nothing', async ($, on) => {
@@ -610,7 +610,20 @@ test('More tickets… opens the pane listing every assigned ticket plus create, 
     { value: 'GENAI-1', label: 'GENAI-1 Older' },
     { value: 'GENAI-3', label: 'GENAI-3 Never' },
     { value: 'create', label: 'Create a new ticket' },
+    { value: 'skip', label: 'Skip' },
   ])
+})
+
+test('picking Skip in the pane marks the session skipped and tells the model nothing', async ($, on) => {
+  const { seen } = seat(on, { current: 'GENAI-9-fix' }, MORE)
+  trackOpen(on)
+  await $.session.start(start(WORK_CWD))
+  await $.prompt.submit(PROMPT)
+  await $.ui.render(PANE)
+  await $.ui.select({ plugin: 'worklog', key: 'ticket', value: 'skip' })
+  expect(seen.runs).toEqual([['worklog', 'ticket', 'skip', '--session', SESSION_ID]])
+  const next = await $.prompt.submit(PROMPT)
+  expect('context' in next ? next.context : undefined).toBeUndefined()
 })
 
 test('picking a key in the pane records it and the next prompt context carries it', async ($, on) => {
@@ -647,6 +660,7 @@ test('typing in the filter narrows the list, create stays', async ($, on) => {
   expect(selects((await $.ui.render(PANE)) as Node)[0].props?.options).toEqual([
     { value: 'GENAI-2', label: 'GENAI-2 Newer' },
     { value: 'create', label: 'Create a new ticket' },
+    { value: 'skip', label: 'Skip' },
   ])
 })
 

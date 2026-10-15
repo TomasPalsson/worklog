@@ -36,6 +36,16 @@ pub fn get(conn: &Connection, session_id: &str) -> Result<Option<String>> {
         .optional()?)
 }
 
+/// Stub: the fix commit implements it.
+pub fn skip(_conn: &Connection, _session_id: &str) -> Result<()> {
+    Ok(())
+}
+
+/// Stub: the fix commit implements it.
+pub fn is_skipped(_conn: &Connection, _session_id: &str) -> Result<bool> {
+    Ok(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -60,6 +70,25 @@ mod tests {
     fn missing_is_none() {
         let c = open_memory().unwrap();
         assert_eq!(get(&c, "nope").unwrap(), None);
+    }
+
+    #[test]
+    fn skip_then_is_skipped() {
+        let c = open_memory().unwrap();
+        assert!(!is_skipped(&c, "s1").unwrap());
+        skip(&c, "s1").unwrap();
+        skip(&c, "s1").unwrap();
+        assert!(is_skipped(&c, "s1").unwrap());
+        assert!(skip(&c, "").is_err());
+    }
+
+    #[test]
+    fn using_a_ticket_after_skip_unskips() {
+        let c = open_memory().unwrap();
+        skip(&c, "s1").unwrap();
+        set(&c, "s1", "GENAI-9").unwrap();
+        // catches: a session picked later staying ignored
+        assert!(!is_skipped(&c, "s1").unwrap());
     }
 
     #[test]

@@ -503,6 +503,30 @@ mod tests {
     }
 
     #[test]
+    fn restoring_a_skipped_sessions_block_unskips_the_session() {
+        let conn = open_memory().unwrap();
+        let id = seed(&conn);
+        let mut ev = crate::models::Event::minimal(
+            "claude_turn",
+            "x",
+            "2026-04-18T09:00:00+00:00",
+            "t",
+        );
+        ev.session_id = Some("s1".into());
+        let eid = crate::repo::upsert_event(&conn, &ev).unwrap();
+        conn.execute(
+            "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+            params![id, eid],
+        )
+        .unwrap();
+        crate::session_tickets::skip(&conn, "s1").unwrap();
+        set_ignored(&conn, id, true, None).unwrap();
+        set_ignored(&conn, id, false, None).unwrap();
+        // catches: the next rebuild re-ignoring a block the Owner restored
+        assert!(!crate::session_tickets::is_skipped(&conn, "s1").unwrap());
+    }
+
+    #[test]
     fn set_ignored_sets_and_clears_both_flags() {
         let conn = open_memory().unwrap();
         let id = seed(&conn);
