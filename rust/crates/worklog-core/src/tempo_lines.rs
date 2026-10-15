@@ -239,11 +239,7 @@ pub fn set_text(conn: &Connection, body: &SetTempoLineText) -> Result<Option<Tem
 /// Hours override; `None` clears it. Rejects anything but a positive
 /// multiple of half an hour before touching the database.
 pub fn set_hours(conn: &Connection, body: &SetTempoLineHours) -> Result<Option<TempoLine>> {
-    if let Some(seconds) = body.seconds {
-        if seconds <= 0 || seconds % HALF_HOUR_SECONDS != 0 {
-            return Err(InvalidHours(seconds).into());
-        }
-    }
+    check_hours(body)?;
     let key = TempoLineKey {
         day: body.day.clone(),
         jira_issue: body.jira_issue.clone(),
@@ -251,20 +247,37 @@ pub fn set_hours(conn: &Connection, body: &SetTempoLineHours) -> Result<Option<T
     if line_for(conn, &key)?.is_none() {
         return Ok(None);
     }
-    ensure_row(conn, &key)?;
+    write_hours(conn, &key, body.seconds)?;
+    line_for(conn, &key)
+}
+
+/// Like `set_hours` but for a day whose blocks may not exist yet: the
+/// override waits in the row and applies once a block lands on the line.
+pub fn pin_hours(conn: &Connection, body: &SetTempoLineHours) -> Result<()> {
+    check_hours(body)?;
+    let key = TempoLineKey {
+        day: body.day.clone(),
+        jira_issue: body.jira_issue.clone(),
+    };
+    write_hours(conn, &key, body.seconds)
+}
+
+fn check_hours(body: &SetTempoLineHours) -> Result<()> {
+    match body.seconds {
+        Some(s) if s <= 0 || s % HALF_HOUR_SECONDS != 0 => Err(InvalidHours(s).into()),
+        _ => Ok(()),
+    }
+}
+
+fn write_hours(conn: &Connection, key: &TempoLineKey, seconds: Option<i64>) -> Result<()> {
+    ensure_row(conn, key)?;
     conn.execute(
         "UPDATE tempo_line_texts SET hours_override_seconds = ?3, updated_at = ?4
           WHERE day = ?1 AND jira_issue = ?2",
-        params![
-            key.day,
-            key.jira_issue,
-            body.seconds,
-            Utc::now().to_rfc3339()
-        ],
+        params![key.day, key.jira_issue, seconds, Utc::now().to_rfc3339()],
     )
     .context("set_hours")?;
-    finish_write(conn, &key)?;
-    line_for(conn, &key)
+    finish_write(conn, key)
 }
 
 /// `(key, descriptions, source_hash)` for every line with no text or a

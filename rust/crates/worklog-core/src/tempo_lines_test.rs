@@ -408,3 +408,79 @@ fn is_apro_rejects_lookalikes_and_missing_billing() {
     assert!(!is_apro(Some(&line_billing("X-1", Some("The Apro"), None)))); // starts_with, not contains
     assert!(is_apro(Some(&line_billing("X-1", Some("apro"), None))));
 }
+
+#[test]
+fn pin_hours_rejects_invalid_seconds_without_writing() {
+    let conn = db::open_memory().unwrap();
+    // 0 catches `< 0`; 2700 and 1 catch a missing modulo check; -1800 catches a missing sign check.
+    for bad in [0, -1800, 2700, 1] {
+        let err = pin_hours(&conn, &hours_body("APRO-1", Some(bad))).expect_err("invalid hours");
+        assert!(err.downcast_ref::<InvalidHours>().is_some(), "{bad}");
+    }
+    assert_eq!(row_count(&conn), 0);
+}
+
+#[test]
+fn pin_hours_before_any_block_applies_once_a_block_lands() {
+    let conn = db::open_memory().unwrap();
+    // A "line must exist" check (as in set_hours) would drop this pin.
+    pin_hours(&conn, &hours_body("APRO-1", Some(1800))).unwrap();
+    assert_eq!(row_count(&conn), 1);
+    assert!(lines_for_day(&conn, DAY).unwrap().is_empty());
+
+    seed_block(&conn, Some("APRO-1"), "2026-09-30T10:00:00Z", 3600, None);
+    let line = line_for(&conn, &key("APRO-1")).unwrap().unwrap();
+    assert_eq!(line.union_seconds, 3600);
+    assert_eq!(line.hours_override_seconds, Some(1800));
+    assert_eq!(line.effective_seconds, 1800);
+}
+
+#[test]
+fn pin_hours_survives_blocks_changing_and_repin_replaces() {
+    let conn = db::open_memory().unwrap();
+    seed_block(&conn, Some("APRO-1"), "2026-09-30T10:00:00Z", 3600, None);
+    pin_hours(&conn, &hours_body("APRO-1", Some(1800))).unwrap();
+    seed_block(&conn, Some("APRO-1"), "2026-09-30T12:00:00Z", 3600, None);
+    let line = line_for(&conn, &key("APRO-1")).unwrap().unwrap();
+    assert_eq!(line.union_seconds, 7200);
+    assert_eq!(line.effective_seconds, 1800, "pin wins over grown union");
+
+    pin_hours(&conn, &hours_body("APRO-1", Some(5400))).unwrap();
+    let line = line_for(&conn, &key("APRO-1")).unwrap().unwrap();
+    assert_eq!(line.effective_seconds, 5400);
+    assert_eq!(row_count(&conn), 1, "re-pin updates, never duplicates");
+}
+
+#[test]
+fn pin_hours_none_clears_and_deletes_empty_row_even_without_blocks() {
+    let conn = db::open_memory().unwrap();
+    pin_hours(&conn, &hours_body("APRO-1", Some(1800))).unwrap();
+    pin_hours(&conn, &hours_body("APRO-1", None)).unwrap();
+    assert_eq!(row_count(&conn), 0, "finish_write drops the empty row");
+}
+
+#[test]
+fn pin_hours_none_keeps_row_that_still_has_text() {
+    let conn = db::open_memory().unwrap();
+    seed_block(&conn, Some("APRO-1"), "2026-09-30T10:00:00Z", 3600, None);
+    set_text(&conn, &text_body("APRO-1", "hand written")).unwrap();
+    pin_hours(&conn, &hours_body("APRO-1", Some(1800))).unwrap();
+    pin_hours(&conn, &hours_body("APRO-1", None)).unwrap();
+    let line = line_for(&conn, &key("APRO-1")).unwrap().unwrap();
+    assert_eq!(line.text.as_deref(), Some("hand written"));
+    assert_eq!(line.hours_override_seconds, None);
+}
+
+#[test]
+fn pin_hours_marks_synced_blocks_dirty_only_for_that_line() {
+    let conn = db::open_memory().unwrap();
+    let synced = seed_block(&conn, Some("APRO-1"), "2026-09-30T10:00:00Z", 3600, None);
+    mark_synced(&conn, synced, "T-1");
+    let unsynced = seed_block(&conn, Some("APRO-1"), "2026-09-30T12:00:00Z", 3600, None);
+    let other = seed_block(&conn, Some("APRO-2"), "2026-09-30T10:00:00Z", 3600, None);
+    mark_synced(&conn, other, "T-2");
+    pin_hours(&conn, &hours_body("APRO-1", Some(1800))).unwrap();
+    assert_eq!(dirty_of(&conn, synced), 1);
+    assert_eq!(dirty_of(&conn, unsynced), 0);
+    assert_eq!(dirty_of(&conn, other), 0, "sibling ticket untouched");
+}
