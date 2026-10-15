@@ -1,0 +1,47 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.16s
+     Running unittests src/lib.rs (rust/target/debug/deps/worklog_core-5f98b59a3618f7a2)
+
+running 6 tests
+test tempo_lines::tests::pin_hours_rejects_invalid_seconds_without_writing ... ok
+test tempo_lines::tests::pin_hours_before_any_block_applies_once_a_block_lands ... ok
+test tempo_lines::tests::pin_hours_none_clears_and_deletes_empty_row_even_without_blocks ... ok
+test tempo_lines::tests::pin_hours_marks_synced_blocks_dirty_only_for_that_line ... ok
+test tempo_lines::tests::pin_hours_none_keeps_row_that_still_has_text ... ok
+test tempo_lines::tests::pin_hours_survives_blocks_changing_and_repin_replaces ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 2265 filtered out; finished in 0.17s
+
+     Running tests/env_fallback.rs (rust/target/debug/deps/env_fallback-47156b92c77a69b4)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.18s
+     Running unittests src/lib.rs (rust/target/debug/deps/worklog_cli-f7aced24bcd02290)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 132 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (rust/target/debug/deps/worklog-f43d7ade7b7f8383)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/cli.rs (rust/target/debug/deps/cli-d5359bfb9f7fead3)
+
+running 3 tests
+test ticket_hours_json_and_default_day ... ok
+test ticket_hours_pins_and_clears_with_comma_or_dot ... ok
+test ticket_hours_rejects_bad_input ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 53 filtered out; finished in 2.33s
+
+     Running tests/daemon.rs (rust/target/debug/deps/daemon-b3e4b722d19a066e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
