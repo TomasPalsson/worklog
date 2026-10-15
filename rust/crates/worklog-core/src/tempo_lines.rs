@@ -3,13 +3,13 @@
 //! `line_text.rs`, deliberately not generalised with it.
 
 use crate::billing::{block_interval, union_seconds};
-use crate::billing_round::round_to_half_hour;
+use crate::billing_round::{round_billable_half_hour, round_to_half_hour};
 use crate::clues_contract::LineTextOrigin;
 use crate::collectors::tempo::summarize_descriptions;
 use crate::models::Block;
 use crate::repo;
 use crate::tempo_line_contract::{
-    SetTempoLineHours, SetTempoLineText, TempoLine, TempoLineKey, HALF_HOUR_SECONDS,
+    LineBilling, SetTempoLineHours, SetTempoLineText, TempoLine, TempoLineKey, HALF_HOUR_SECONDS,
 };
 use crate::updater::crypto::sha256_hex;
 use crate::verdict_contract::LineCheck;
@@ -101,9 +101,33 @@ fn source_hash(descriptions: &[String]) -> String {
     sha256_hex(sorted.join("\n").as_bytes())
 }
 
+/// APRÓ's own tickets keep the 15-minute floor; everything else bills at
+/// least half an hour. Customer or Tempo account only, never project names.
+fn is_apro(billing: Option<&LineBilling>) -> bool {
+    let Some(b) = billing else { return false };
+    let customer: String = b
+        .customer
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .map(|c| match c {
+            'ó' | 'Ó' => 'o',
+            _ => c.to_ascii_lowercase(),
+        })
+        .collect();
+    customer.starts_with("apro") || b.account_key.to_uppercase().starts_with("APRO-")
+}
+
 fn build_line(conn: &Connection, key: &TempoLineKey, blocks: &[Block]) -> Result<TempoLine> {
     let stored = stored_row(conn, key)?;
-    let union = round_to_half_hour(union_seconds(blocks.iter().map(block_interval).collect()));
+    let billing = crate::mirres::stored_billing(conn, key)?;
+    let seconds = union_seconds(blocks.iter().map(block_interval).collect());
+    let union = if is_apro(billing.as_ref()) {
+        round_to_half_hour(seconds)
+    } else {
+        round_billable_half_hour(seconds)
+    };
     let override_seconds = stored.as_ref().and_then(|row| row.hours_override_seconds);
     Ok(TempoLine {
         day: key.day.clone(),
@@ -121,7 +145,7 @@ fn build_line(conn: &Connection, key: &TempoLineKey, blocks: &[Block]) -> Result
         hours_override_seconds: override_seconds,
         effective_seconds: override_seconds.unwrap_or(union),
         check_status: stored.and_then(|row| row.check_status),
-        billing: crate::mirres::stored_billing(conn, key)?,
+        billing,
     })
 }
 

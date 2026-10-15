@@ -11,9 +11,28 @@ pub fn round_to_half_hour(seconds: i64) -> i64 {
     ((seconds + HALF_HOUR_SECONDS - 1) / HALF_HOUR_SECONDS) * HALF_HOUR_SECONDS
 }
 
+/// Like [`round_to_half_hour`] but any tracked time bills at least one
+/// half hour.
+pub fn round_billable_half_hour(seconds: i64) -> i64 {
+    if seconds <= 0 {
+        return 0;
+    }
+    round_to_half_hour(seconds).max(HALF_HOUR_SECONDS)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn billable_rounding_never_drops_tracked_time_to_zero() {
+        assert_eq!(round_billable_half_hour(0), 0);
+        assert_eq!(round_billable_half_hour(-100), 0); // `< 0` must not turn negatives into 1800
+        assert_eq!(round_billable_half_hour(1), 1800); // no floor at all
+        assert_eq!(round_billable_half_hour(899), 1800); // reusing the 15-minute zero floor
+        assert_eq!(round_billable_half_hour(1800), 1800);
+        assert_eq!(round_billable_half_hour(1801), 3600); // max() against the wrong operand
+    }
 
     #[test]
     fn rounds_up_to_half_hour_with_zero_floor_below_15_minutes() {
