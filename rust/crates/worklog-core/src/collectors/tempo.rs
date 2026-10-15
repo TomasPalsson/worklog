@@ -1600,6 +1600,23 @@ mod tests {
             Some("PROJ-1"),
             Some("tiny"),
         );
+        crate::mirres::store_day(
+            &conn,
+            "2026-04-18",
+            &[(
+                "PROJ-1".to_string(),
+                crate::tempo_line_contract::LineBilling {
+                    account_key: "APRO-1".into(),
+                    customer: Some("APRÓ ehf.".into()),
+                    project: None,
+                    project_type: None,
+                    class: crate::tempo_line_contract::BillingClass::Billable,
+                    warning: None,
+                    details: None,
+                },
+            )],
+        )
+        .unwrap();
         let (report, results) = sync_day_with(
             &conn,
             &auth(server.base_url()),
