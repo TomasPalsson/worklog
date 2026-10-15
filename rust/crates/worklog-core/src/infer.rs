@@ -747,7 +747,7 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
         let (ignored_at, ignore_reason) = match carry.and_then(|c| c.ignored_at.clone()) {
             Some(ign) => (Some(ign), carry.and_then(|c| c.ignore_reason.clone())),
             None if from_skipped && tempo_id.is_none() && exported_at.is_none() => (
-                Some(Utc::now().format("%Y-%m-%dT%H:%M:%.3fZ").to_string()),
+                Some(Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()),
                 Some(
                     crate::time_leaks_contract::IgnoreReason::Noise
                         .as_str()
