@@ -20,3 +20,4 @@
 2026-10-09 · loose-docs · DATA-SOURCES, TIMELINE-REPORT, USER-STORIES, ZERO-TOUCH + timeline screenshot moved to archive · background docs, no spec
 2026-10-09 · 019-google-calendar-3lo-login · verified, PASS c79ffcb; merged #135 · Google Calendar login (worklog collect gcal --auth)
 2026-10-11 · 021-time-leaks · verified, PASS fb7801b; merged #158, follow-up #161 · Time leaks — honest totals, loud failures, ignore reasons, loose ends, tidy-up
+- 2026-10-15 · 025-pin-ticket-hours · merged ffbbd7a
