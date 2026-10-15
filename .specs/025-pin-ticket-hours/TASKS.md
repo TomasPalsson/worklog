@@ -1,5 +1,6 @@
 # Tasks — Pin ticket hours and never round billable time down
-Spec: none · Design: none · Base: 9997ac7 · Route: oneshot · Test: `cargo test --manifest-path rust/Cargo.toml`
+Approved: 2026-10-15 by user
+Spec: none · Design: none · Base: 55acb00 · Route: oneshot · Test: `cargo test --manifest-path rust/Cargo.toml`
 
 ## Behaviors
 | ID | Given / When / Then | Task | Proven by | Key |
@@ -17,7 +18,8 @@ Pin before any block exists on that day; pin then blocks change; a synced line b
 ## Phase 1 — Billable Tempo time never rounds down
 Goal: a short stretch of work on any non-APRÓ ticket shows and sends as 0.5h instead of 0, while APRÓ's own tickets keep the 15-minute floor.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core tempo_lines` — lines built from seeded blocks and seeded Mirres rows come out 1800 for billable, 0 for APRÓ.
-- [ ] T001 Billable lines never round below 0.5h (FR-01, FR-02): add `pub fn round_billable_half_hour(seconds) -> i64` to billing_round.rs (`seconds <= 0` → 0, else `max(round_to_half_hour(seconds), HALF_HOUR_SECONDS)`), plus a `fn is_apro(billing: Option<&LineBilling>) -> bool` in tempo_lines.rs (customer, trimmed, folded to ASCII lowercase with ó→o, starts with "apro"; or account_key uppercased starts with "APRO-"; `None` → false). In `build_line`, fetch `stored_billing` first and round the union with `round_to_half_hour` when APRÓ, `round_billable_half_hour` otherwise. Project names are never read. Unit tests for both helpers plus line-level tests seeded via the existing tempo_lines_test.rs fixtures and a `mirres_line_billing` row — files: rust/crates/worklog-core/src/billing_round.rs, rust/crates/worklog-core/src/tempo_lines.rs, rust/crates/worklog-core/src/tempo_lines_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core tempo_lines billing_round` — follow: rust/crates/worklog-core/src/tempo_lines_test.rs
+- [ ] T000 Baseline tests at Base — files: .specs/025-pin-ticket-hours/verify/baseline-tests.txt — verify: `bash -c 'cargo test --manifest-path rust/Cargo.toml > .specs/025-pin-ticket-hours/verify/baseline-full.log 2>&1; echo "exit $?" > .specs/025-pin-ticket-hours/verify/baseline-tests.txt; grep -E "^test .* FAILED|^failures:|test result:" .specs/025-pin-ticket-hours/verify/baseline-full.log >> .specs/025-pin-ticket-hours/verify/baseline-tests.txt; test -s .specs/025-pin-ticket-hours/verify/baseline-tests.txt'`
+- [ ] T001 Billable lines never round below 0.5h (FR-01, FR-02): add `pub fn round_billable_half_hour(seconds) -> i64` to billing_round.rs (`seconds <= 0` → 0, else `max(round_to_half_hour(seconds), HALF_HOUR_SECONDS)`), plus a `fn is_apro(billing: Option<&LineBilling>) -> bool` in tempo_lines.rs (customer, trimmed, folded to ASCII lowercase with ó→o, starts with "apro"; or account_key uppercased starts with "APRO-"; `None` → false). In `build_line`, fetch `stored_billing` first and round the union with `round_to_half_hour` when APRÓ, `round_billable_half_hour` otherwise. Project names are never read. Unit tests for both helpers plus line-level tests seeded via the existing tempo_lines_test.rs fixtures and a `mirres_line_billing` row — files: rust/crates/worklog-core/src/billing_round.rs, rust/crates/worklog-core/src/tempo_lines.rs, rust/crates/worklog-core/src/tempo_lines_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core tempo_lines billing_round` — after: T000 — follow: rust/crates/worklog-core/src/tempo_lines_test.rs
 
 ## Phase 2 — "Put 0,5h on this ticket" pins Tempo hours
 Goal: the Owner tells Claude an amount for a ticket, Claude runs one command, and that amount is what the day's Tempo line shows and sends; it stays editable in the web UI or by re-running the command.
@@ -27,6 +29,6 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core pi
 - [ ] CHK004 human-verify the pin end to end — files: skills/worklog/SKILL.md — verify: human: after `scripts/install-local.sh`, the Owner tells Claude "put 0,5h on this ticket" and today's Tempo line for that ticket in the web UI shows 0.5h — after: T002, T003
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `flow check --fix --since 9997ac7`
+- [ ] G001 project gates clean — files: . — verify: `flow check --fix --since 55acb00`
 - [ ] G002 branch review clean — files: . — verify: `flow pass`
 - [ ] G003 verification evidence exists — files: . — verify: `test -s verify/`
