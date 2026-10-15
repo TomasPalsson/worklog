@@ -96,10 +96,11 @@ export function ticketPickerOptions(
     ...lead.map((key) => ({ value: key, label: label(key) })),
     ...newestFirst(recentTasks, lead).map((task) => ({ value: task.key, label: label(task.key) })),
     { value: 'create', label: 'Create a new ticket' },
+    { value: 'skip', label: 'Skip' },
   ]
 }
 
-// Every word of the query must appear in the label, any case; 'create' always stays.
+// Every word of the query must appear in the label, any case; 'create' and 'skip' always stay.
 export function filterPickerOptions(
   options: readonly { value: string; label: string }[],
   query: string,
@@ -107,7 +108,7 @@ export function filterPickerOptions(
   const words = query.toLowerCase().split(/\s+/).filter(Boolean)
   return options.filter(
     (option) =>
-      option.value === 'create' || words.every((word) => option.label.toLowerCase().includes(word)),
+      option.value === 'create' || option.value === 'skip' || words.every((word) => option.label.toLowerCase().includes(word)),
   )
 }
 

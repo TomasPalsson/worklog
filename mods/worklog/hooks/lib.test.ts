@@ -367,13 +367,14 @@ test('ticketPickerOptions: leads first, then the rest newest first with null las
     { value: 'AB-3', label: 'AB-3 sum AB-3' },
     { value: 'AB-1', label: 'AB-1 sum AB-1' },
     { value: 'create', label: 'Create a new ticket' },
+    { value: 'skip', label: 'Skip' },
   ])
 })
 
 test('ticketPickerOptions: labels are cut to 60 characters and the branch key is not repeated', () => {
   const long = { ...task('AB-1', null), summary: 'x'.repeat(100) }
   const options = ticketPickerOptions('AB-1', [long])
-  expect(options.map((o) => o.value)).toEqual(['AB-1', 'create'])
+  expect(options.map((o) => o.value)).toEqual(['AB-1', 'create', 'skip'])
   expect(options[0].label.length).toBe(60)
   expect(options[0].label.endsWith('…')).toBe(true)
 })
@@ -383,8 +384,9 @@ test('filterPickerOptions: every word must match, any case, create always kept',
     { value: 'AB-1', label: 'AB-1 VÍS Google Cloud' },
     { value: 'AB-2', label: 'AB-2 Google drive' },
     { value: 'create', label: 'Create a new ticket' },
+    { value: 'skip', label: 'Skip' },
   ]
   // wrong version: any-word match keeps AB-2; case-sensitive drops AB-1
-  expect(filterPickerOptions(options, 'google  CLOUD').map((o) => o.value)).toEqual(['AB-1', 'create'])
+  expect(filterPickerOptions(options, 'google  CLOUD').map((o) => o.value)).toEqual(['AB-1', 'create', 'skip'])
   expect(filterPickerOptions(options, '')).toEqual(options)
 })

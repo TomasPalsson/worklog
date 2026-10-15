@@ -43,6 +43,11 @@ pub enum TicketCmd {
         #[arg(long)]
         session: String,
     },
+    /// Mark this Claude Code session skipped: its blocks land in ignored.
+    Skip {
+        #[arg(long)]
+        session: String,
+    },
     /// Let Verdict pick this session's ticket from the request text; records it when sure.
     Pick {
         text: String,
@@ -141,6 +146,19 @@ pub fn run_ticket<W: Write>(sub: TicketCmd, out: &mut W, json: bool) -> Result<(
             }
             let short: String = session.chars().take(8).collect();
             Ok(writeln!(out, "Session {short} is on {key}")?)
+        }
+        TicketCmd::Skip { session } => {
+            let paths = worklog_core::paths::Paths::resolve()?;
+            let conn = worklog_core::db::open(&paths.db)?;
+            worklog_core::session_tickets::skip(&conn, &session)?;
+            if json {
+                return dump(out, &json!({ "session_id": session, "skipped": true }));
+            }
+            let short: String = session.chars().take(8).collect();
+            Ok(writeln!(
+                out,
+                "Session {short} skipped — its blocks go to ignored"
+            )?)
         }
         TicketCmd::Pick {
             text,

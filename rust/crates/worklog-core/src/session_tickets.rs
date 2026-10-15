@@ -1,6 +1,7 @@
 //! Session Jira tickets — "session S is on ticket K". Stored in
 //! `session_tickets`; set by `worklog ticket use`, read by the hook
-//! (`hook_run::handle`) and the SessionStart hint.
+//! (`hook_run::handle`) and the SessionStart hint. `session_skips` holds
+//! sessions the Owner skipped; a rebuild ignores their blocks.
 
 use anyhow::{bail, Result};
 use regex::Regex;
@@ -22,6 +23,10 @@ pub fn set(conn: &Connection, session_id: &str, key: &str) -> Result<()> {
              set_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
         params![session_id, key],
     )?;
+    conn.execute(
+        "DELETE FROM session_skips WHERE session_id = ?1",
+        params![session_id],
+    )?;
     Ok(())
 }
 
@@ -34,6 +39,30 @@ pub fn get(conn: &Connection, session_id: &str) -> Result<Option<String>> {
             |r| r.get(0),
         )
         .optional()?)
+}
+
+/// Mark a session skipped: a rebuild ignores its blocks.
+pub fn skip(conn: &Connection, session_id: &str) -> Result<()> {
+    if session_id.is_empty() {
+        bail!("session id must not be empty");
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO session_skips (session_id) VALUES (?1)",
+        params![session_id],
+    )?;
+    Ok(())
+}
+
+/// Whether the Owner skipped this session.
+pub fn is_skipped(conn: &Connection, session_id: &str) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM session_skips WHERE session_id = ?1",
+            params![session_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
 }
 
 #[cfg(test)]
@@ -60,6 +89,25 @@ mod tests {
     fn missing_is_none() {
         let c = open_memory().unwrap();
         assert_eq!(get(&c, "nope").unwrap(), None);
+    }
+
+    #[test]
+    fn skip_then_is_skipped() {
+        let c = open_memory().unwrap();
+        assert!(!is_skipped(&c, "s1").unwrap());
+        skip(&c, "s1").unwrap();
+        skip(&c, "s1").unwrap();
+        assert!(is_skipped(&c, "s1").unwrap());
+        assert!(skip(&c, "").is_err());
+    }
+
+    #[test]
+    fn using_a_ticket_after_skip_unskips() {
+        let c = open_memory().unwrap();
+        skip(&c, "s1").unwrap();
+        set(&c, "s1", "GENAI-9").unwrap();
+        // catches: a session picked later staying ignored
+        assert!(!is_skipped(&c, "s1").unwrap());
     }
 
     #[test]

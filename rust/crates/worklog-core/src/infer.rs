@@ -575,6 +575,10 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
     // Load once per persist pass — cheap and avoids re-reading the TOML
     // for every block. classify() is pure given the config.
     let personal_cfg = crate::personal::PersonalConfig::load();
+    let skipped: std::collections::HashSet<String> = conn
+        .prepare("SELECT session_id FROM session_skips")?
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
 
     // Collect "carry" state so re-inference preserves tempo_worklog_id,
     // description, estimated_by, and manual ticket edits. We keep two
@@ -733,18 +737,25 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
         let has_real_ticket = jira_issue
             .as_deref()
             .is_some_and(|k| jira_ticket_known(&tx, k));
-        // Carry an ignore only when the block starts at exactly the same
-        // instant (strict map hit, not the overlap fallback) and did not
-        // grow past the prior end. A block that grew may now hold real work,
-        // so the ignore is dropped rather than silently swallowing it.
-        let (ignored_at, ignore_reason) = prior
-            .get(&started_key)
-            .and_then(|c| {
-                let ign = c.ignored_at.clone()?;
-                let (_, prior_end) = parse_pair(&c.started_at, &c.ended_at)?;
-                (b.ended_at <= prior_end).then(|| (Some(ign), c.ignore_reason.clone()))
-            })
-            .unwrap_or((None, None));
+        // An ignore is sticky once set, however the block grows or matches
+        // (re-ignoring grown blocks was the pain). A block built only from
+        // skipped sessions starts ignored, unless already synced/exported.
+        let from_skipped = !b.events.is_empty()
+            && b.events
+                .iter()
+                .all(|e| e.session_id.as_deref().is_some_and(|s| skipped.contains(s)));
+        let (ignored_at, ignore_reason) = match carry.and_then(|c| c.ignored_at.clone()) {
+            Some(ign) => (Some(ign), carry.and_then(|c| c.ignore_reason.clone())),
+            None if from_skipped && tempo_id.is_none() && exported_at.is_none() => (
+                Some(Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()),
+                Some(
+                    crate::time_leaks_contract::IgnoreReason::Noise
+                        .as_str()
+                        .to_string(),
+                ),
+            ),
+            None => (None, None),
+        };
         let is_personal = ignored_at.is_some() || (path_personal && !has_real_ticket);
         tx.execute(
             "INSERT INTO blocks (
@@ -1010,7 +1021,7 @@ mod tests {
     }
 
     #[test]
-    fn persist_blocks_drops_ignore_when_block_grows() {
+    fn persist_blocks_keeps_ignore_when_block_grows() {
         let conn = open_memory().unwrap();
         let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
         persist_blocks(&conn, day, &[ib((9, 0), (9, 30))]).unwrap();
@@ -1020,7 +1031,11 @@ mod tests {
         )
         .unwrap();
         persist_blocks(&conn, day, &[ib((9, 0), (10, 0))]).unwrap();
-        assert_eq!(ignored_state(&conn).0, None);
+        // The Owner ignored it once; a block that grows stays ignored.
+        assert_eq!(
+            ignored_state(&conn),
+            (Some("2026-04-18T12:00:00Z".to_string()), 1)
+        );
     }
 
     fn reason_of(conn: &rusqlite::Connection) -> Option<String> {
@@ -1060,26 +1075,82 @@ mod tests {
     }
 
     #[test]
-    fn persist_blocks_drops_ignore_reason_when_block_grows() {
-        let conn = open_memory().unwrap();
-        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
-        persist_blocks(&conn, day, &[ib((9, 0), (9, 30))]).unwrap();
-        ignore_with_reason(&conn, Some("internal"));
-        persist_blocks(&conn, day, &[ib((9, 0), (10, 0))]).unwrap();
-        // catches: carrying the reason independently of the ignored_at rule
-        assert_eq!(ignored_state(&conn).0, None);
-        assert_eq!(reason_of(&conn), None);
-    }
-
-    #[test]
-    fn persist_blocks_overlap_fallback_does_not_carry_ignore_reason() {
+    fn persist_blocks_keeps_ignore_reason_when_block_grows() {
         let conn = open_memory().unwrap();
         let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
         persist_blocks(&conn, day, &[ib((9, 0), (9, 30))]).unwrap();
         ignore_with_reason(&conn, Some("duplicate"));
-        persist_blocks(&conn, day, &[ib((9, 5), (9, 30))]).unwrap();
-        // catches: carrying the reason via the overlap fallback instead of the strict start match
-        assert_eq!(reason_of(&conn), None);
+        persist_blocks(&conn, day, &[ib((9, 0), (10, 0))]).unwrap();
+        // catches: carrying ignored_at but re-inserting ignore_reason as NULL
+        assert!(ignored_state(&conn).0.is_some());
+        assert_eq!(reason_of(&conn), Some("duplicate".to_string()));
+    }
+
+    #[test]
+    fn persist_blocks_overlap_fallback_keeps_ignore() {
+        let conn = open_memory().unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        persist_blocks(&conn, day, &[ib((9, 0), (9, 30))]).unwrap();
+        ignore_with_reason(&conn, Some("duplicate"));
+        persist_blocks(&conn, day, &[ib((8, 55), (9, 40))]).unwrap();
+        // catches: carrying the ignore only on an exact start match
+        assert_eq!(
+            ignored_state(&conn),
+            (Some("2026-04-18T12:00:00Z".to_string()), 1)
+        );
+        assert_eq!(reason_of(&conn), Some("duplicate".to_string()));
+    }
+
+    fn session_block(start: (u32, u32), end: (u32, u32), sessions: &[&str]) -> InferBlock {
+        let mut b = ib(start, end);
+        b.events = sessions
+            .iter()
+            .map(|s| InferEvent {
+                session_id: Some((*s).into()),
+                ..ev(start.0, start.1, "claude_turn")
+            })
+            .collect();
+        b
+    }
+
+    #[test]
+    fn persist_blocks_ignores_a_skipped_sessions_block() {
+        let conn = open_memory().unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        crate::session_tickets::skip(&conn, "s1").unwrap();
+        persist_blocks(&conn, day, &[session_block((9, 0), (9, 30), &["s1"])]).unwrap();
+        // catches: Skip in the ticket question still leaving the block in the day
+        let (ignored_at, personal) = ignored_state(&conn);
+        // catches: a malformed stamp (e.g. a format string missing seconds)
+        DateTime::parse_from_rfc3339(&ignored_at.unwrap()).unwrap();
+        assert_eq!(personal, 1);
+        assert_eq!(reason_of(&conn), Some("noise".to_string()));
+    }
+
+    #[test]
+    fn persist_blocks_never_ignores_a_synced_or_exported_skipped_block() {
+        for column in ["tempo_worklog_id", "exported_at"] {
+            let conn = open_memory().unwrap();
+            let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+            let block = [session_block((9, 0), (9, 30), &["s1"])];
+            persist_blocks(&conn, day, &block).unwrap();
+            conn.execute(&format!("UPDATE blocks SET {column} = '123'"), [])
+                .unwrap();
+            crate::session_tickets::skip(&conn, "s1").unwrap();
+            persist_blocks(&conn, day, &block).unwrap();
+            // catches: a skipped session hiding time already sent to Tempo or billed
+            assert_eq!(ignored_state(&conn), (None, 0), "{column}");
+        }
+    }
+
+    #[test]
+    fn persist_blocks_leaves_a_block_mixing_skipped_and_other_sessions() {
+        let conn = open_memory().unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        crate::session_tickets::skip(&conn, "s1").unwrap();
+        persist_blocks(&conn, day, &[session_block((9, 0), (9, 30), &["s1", "s2"])]).unwrap();
+        // catches: one skipped session hiding another session's real work
+        assert_eq!(ignored_state(&conn), (None, 0));
     }
 
     fn at(h: u32, m: u32) -> DateTime<Utc> {
