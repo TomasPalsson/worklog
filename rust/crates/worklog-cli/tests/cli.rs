@@ -956,3 +956,82 @@ fn ticket_pick_without_verdict_prints_all_null() {
         .success()
         .stdout("{\"picked\":null,\"likely\":null,\"confidence\":null}\n");
 }
+
+#[test]
+fn ticket_hours_pins_and_clears_with_comma_or_dot() {
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["ticket", "hours", "APRO-1", "0,5", "--day", "2026-09-30"])
+        .assert()
+        .success()
+        .stdout("APRO-1 on 2026-09-30: 0.5h (pinned)\n");
+    cmd(&home)
+        .args(["ticket", "hours", "APRO-1", "1.5", "--day", "2026-09-30"])
+        .assert()
+        .success()
+        .stdout("APRO-1 on 2026-09-30: 1.5h (pinned)\n");
+    cmd(&home)
+        .args([
+            "ticket",
+            "hours",
+            "APRO-1",
+            "--clear",
+            "--day",
+            "2026-09-30",
+        ])
+        .assert()
+        .success()
+        .stdout("APRO-1 on 2026-09-30: pin cleared\n");
+}
+
+#[test]
+fn ticket_hours_json_and_default_day() {
+    let home = TempDir::new().unwrap();
+    let out = cmd(&home)
+        .args([
+            "--json",
+            "ticket",
+            "hours",
+            "APRO-1",
+            "2",
+            "--day",
+            "2026-09-30",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(v["jira_issue"], "APRO-1");
+    assert_eq!(v["day"], "2026-09-30");
+    assert_eq!(v["hours"], 2.0);
+
+    // No --day: today, as YYYY-MM-DD.
+    cmd(&home)
+        .args(["ticket", "hours", "APRO-1", "1"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::is_match(r"^APRO-1 on \d{4}-\d{2}-\d{2}: 1h \(pinned\)\n$").unwrap(),
+        );
+}
+
+#[test]
+fn ticket_hours_rejects_bad_input() {
+    let home = TempDir::new().unwrap();
+    // Not a half-hour multiple, zero, junk, neither arg, both args.
+    for args in [
+        &["ticket", "hours", "APRO-1", "0.4"][..],
+        &["ticket", "hours", "APRO-1", "0"],
+        &["ticket", "hours", "APRO-1", "abc"],
+        &["ticket", "hours", "APRO-1"],
+        &["ticket", "hours", "APRO-1", "1", "--clear"],
+    ] {
+        cmd(&home).args(args).assert().failure();
+    }
+    cmd(&home)
+        .args(["ticket", "hours", "APRO-1", "1", "--day", "tomorrow"])
+        .assert()
+        .failure();
+}

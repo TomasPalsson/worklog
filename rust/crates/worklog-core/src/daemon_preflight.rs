@@ -172,6 +172,23 @@ mod tests {
             [],
         )
         .unwrap();
+        crate::mirres::store_day(
+            &conn,
+            "2026-10-01",
+            &[(
+                "AB-1".to_string(),
+                crate::tempo_line_contract::LineBilling {
+                    account_key: "APRO-1".into(),
+                    customer: Some("APRÓ ehf.".into()),
+                    project: None,
+                    project_type: None,
+                    class: crate::tempo_line_contract::BillingClass::Billable,
+                    warning: None,
+                    details: None,
+                },
+            )],
+        )
+        .unwrap();
         state_from_conn(conn)
     }
 

@@ -1,0 +1,15 @@
+# claim-check — 025 pin ticket hours (HEAD 4e235a1, re-run 2026-10-15)
+
+| Claim | Verdict | Command | Exit | Evidence |
+|---|---|---|---|---|
+| FR-01 APRÓ <15 min stays 0; ≥15 rounds as before | CONFIRMED (note) | `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib -- apro_lines_keep_the_fifteen_minute_floor is_apro_rejects_lookalikes rounds_up_to_half_hour_with_zero_floor_below_15_minutes > log 2>&1` | 0 | 3 passed. APRÓ test seeds a 600 s block -> 0 for APRO/apró/" APRÓ ehf."/APRO- key; lookalike test rejects Aprosoft/Aprocon/Aprilia; round_to_half_hour(899)=0, (900)=1800 etc. Note: the "≥15 min" half is covered only by the generic rounding table, no APRÓ-line test with ≥900 s. |
+| FR-02 non-APRÓ line 1–899 s -> 1800 | CONFIRMED (note) | `cargo test ... -p worklog-core --lib -- short_work_on_a_billable_line_rounds_up_to_half_an_hour project_name_never_makes_a_line_apro billable_rounding_never_drops_tracked_time_to_zero > log 2>&1` | 0 | 3 passed. Line tests use a 600 s block (no Mirres, "Acme", "APRO · Internal" project -> 1800); round_billable_half_hour 1->1800, 899->1800, 1801->3600, 0->0. 1 s and 899 s are exercised only at the function level, not through a line. |
+| FR-03 core pin/clear/refuse | CONFIRMED | `cargo test ... -p worklog-core --lib -- pin_hours > log 2>&1` | 0 | 6 passed: pin before blocks, re-pin replaces, clear (row deleted / text kept), rejects 0/-1800/2700/1 with no row written, synced blocks dirty only for that line. |
+| FR-03 CLI parses 0,5 / 0.5 / --clear / --json | CONFIRMED | `cargo test ... -p worklog-cli --test cli -- ticket_hours > log 2>&1` | 0 | 3 passed: "0,5" and "1.5" pin, --clear prints "pin cleared", --json has jira_issue/day/hours=2.0, bad input (0.4, 0, abc, no arg, both) fails. |
+| FR-04 skill teaches the pin, no confirm | CONFIRMED (note) | `bash -c 'grep -q "worklog ticket hours" skills/worklog/SKILL.md && grep -q "worklog ticket hours" skills/worklog/references/jira.md' > log 2>&1` | 0 | Both files contain the string. The command only proves the recipe is present; "no confirm" is not tested by it. |
+| FR-05 web UI Tempo line shows pinned 0.5h (human) | CONFIRMED as sandbox-only | `ls verify/CHK004.md; read it` | n/a | File exists. Its recorded output supports the "Shows:" line: pin before block -> 1800; re-pin 1 -> 3600; 0.4 refused with exit 1 and the row still 3600 (nothing new written); --clear -> 0 override rows; unpinned 10-min ACME-8 -> 1800. Not shown: the web UI itself or a live Claude loop (CHK004 says so). The script's `sync` lines record `${PIPESTATUS[0]}` correctly. I did not re-run the script. |
+| `cargo test --manifest-path rust/Cargo.toml` is green at HEAD | CONFIRMED | `cargo test --manifest-path rust/Cargo.toml > log 2>&1` | 0 | Suites ran 132, 56, 7, 2271, 2 tests (non-zero); no "FAILED" lines; every `test result` line is "0 failed". |
+
+Worktree note: `.specs/.next-call-count` was modified and `.claude/flow.json` untracked before this check, so "HEAD" is 4e235a1 plus those two files. Neither is Rust or skill code.
+
+Summary: 7 confirmed (4 with caveats), 0 unsupported, 0 inconclusive, 0 not-checkable.

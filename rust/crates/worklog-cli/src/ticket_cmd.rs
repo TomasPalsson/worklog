@@ -43,6 +43,17 @@ pub enum TicketCmd {
         #[arg(long)]
         session: String,
     },
+    /// Pin the hours Tempo gets for a ticket on a day ("0,5" or "0.5"), or clear the pin.
+    Hours {
+        key: String,
+        #[arg(required_unless_present = "clear", conflicts_with = "clear")]
+        hours: Option<String>,
+        /// YYYY-MM-DD in your local day; defaults to today.
+        #[arg(long)]
+        day: Option<String>,
+        #[arg(long)]
+        clear: bool,
+    },
     /// Mark this Claude Code session skipped: its blocks land in ignored.
     Skip {
         #[arg(long)]
@@ -147,6 +158,12 @@ pub fn run_ticket<W: Write>(sub: TicketCmd, out: &mut W, json: bool) -> Result<(
             let short: String = session.chars().take(8).collect();
             Ok(writeln!(out, "Session {short} is on {key}")?)
         }
+        TicketCmd::Hours {
+            key,
+            hours,
+            day,
+            clear,
+        } => pin_hours(&key, hours.filter(|_| !clear), day, out, json),
         TicketCmd::Skip { session } => {
             let paths = worklog_core::paths::Paths::resolve()?;
             let conn = worklog_core::db::open(&paths.db)?;
@@ -226,6 +243,51 @@ fn create<W: Write>(a: CreateArgs, out: &mut W, json: bool) -> Result<()> {
     }
     style::ok(out, &format!("created {} ({})", c.key, c.account.name))?;
     writeln!(out, "{}", c.url)?;
+    Ok(())
+}
+
+fn pin_hours<W: Write>(
+    key: &str,
+    hours: Option<String>,
+    day: Option<String>,
+    out: &mut W,
+    json: bool,
+) -> Result<()> {
+    let day = match day {
+        Some(d) => chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d")
+            .with_context(|| format!("--day must be YYYY-MM-DD, got {d:?}"))?,
+        None => chrono::Utc::now()
+            .with_timezone(&worklog_core::tz::day_offset())
+            .date_naive(),
+    }
+    .to_string();
+    let hours = hours
+        .map(|h| {
+            h.replace(',', ".")
+                .parse::<f64>()
+                .with_context(|| format!("hours must be a number, got {h:?}"))
+        })
+        .transpose()?;
+    let paths = worklog_core::paths::Paths::resolve()?;
+    let conn = worklog_core::db::open(&paths.db)?;
+    worklog_core::tempo_lines::pin_hours(
+        &conn,
+        &worklog_core::tempo_line_contract::SetTempoLineHours {
+            day: day.clone(),
+            jira_issue: key.to_string(),
+            seconds: hours.map(|h| (h * 3600.0).round() as i64),
+        },
+    )?;
+    if json {
+        return dump(
+            out,
+            &json!({ "jira_issue": key, "day": day, "hours": hours }),
+        );
+    }
+    match hours {
+        Some(h) => writeln!(out, "{key} on {day}: {h}h (pinned)")?,
+        None => writeln!(out, "{key} on {day}: pin cleared")?,
+    }
     Ok(())
 }
 

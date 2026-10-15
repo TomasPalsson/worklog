@@ -3,13 +3,13 @@
 //! `line_text.rs`, deliberately not generalised with it.
 
 use crate::billing::{block_interval, union_seconds};
-use crate::billing_round::round_to_half_hour;
+use crate::billing_round::{round_billable_half_hour, round_to_half_hour};
 use crate::clues_contract::LineTextOrigin;
 use crate::collectors::tempo::summarize_descriptions;
 use crate::models::Block;
 use crate::repo;
 use crate::tempo_line_contract::{
-    SetTempoLineHours, SetTempoLineText, TempoLine, TempoLineKey, HALF_HOUR_SECONDS,
+    LineBilling, SetTempoLineHours, SetTempoLineText, TempoLine, TempoLineKey, HALF_HOUR_SECONDS,
 };
 use crate::updater::crypto::sha256_hex;
 use crate::verdict_contract::LineCheck;
@@ -101,9 +101,35 @@ fn source_hash(descriptions: &[String]) -> String {
     sha256_hex(sorted.join("\n").as_bytes())
 }
 
+/// APRÓ's own tickets keep the 15-minute floor; everything else bills at
+/// least half an hour. Customer or Tempo account only, never project names.
+fn is_apro(billing: Option<&LineBilling>) -> bool {
+    let Some(b) = billing else { return false };
+    let customer: String = b
+        .customer
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .map(|c| match c {
+            'ó' | 'Ó' => 'o',
+            _ => c.to_ascii_lowercase(),
+        })
+        .collect();
+    // First word only: "APRÓ ehf." is APRÓ, "Aprosoft ehf." is not.
+    customer.split_whitespace().next() == Some("apro")
+        || b.account_key.to_uppercase().starts_with("APRO-")
+}
+
 fn build_line(conn: &Connection, key: &TempoLineKey, blocks: &[Block]) -> Result<TempoLine> {
     let stored = stored_row(conn, key)?;
-    let union = round_to_half_hour(union_seconds(blocks.iter().map(block_interval).collect()));
+    let billing = crate::mirres::stored_billing(conn, key)?;
+    let seconds = union_seconds(blocks.iter().map(block_interval).collect());
+    let union = if is_apro(billing.as_ref()) {
+        round_to_half_hour(seconds)
+    } else {
+        round_billable_half_hour(seconds)
+    };
     let override_seconds = stored.as_ref().and_then(|row| row.hours_override_seconds);
     Ok(TempoLine {
         day: key.day.clone(),
@@ -121,7 +147,7 @@ fn build_line(conn: &Connection, key: &TempoLineKey, blocks: &[Block]) -> Result
         hours_override_seconds: override_seconds,
         effective_seconds: override_seconds.unwrap_or(union),
         check_status: stored.and_then(|row| row.check_status),
-        billing: crate::mirres::stored_billing(conn, key)?,
+        billing,
     })
 }
 
@@ -215,11 +241,7 @@ pub fn set_text(conn: &Connection, body: &SetTempoLineText) -> Result<Option<Tem
 /// Hours override; `None` clears it. Rejects anything but a positive
 /// multiple of half an hour before touching the database.
 pub fn set_hours(conn: &Connection, body: &SetTempoLineHours) -> Result<Option<TempoLine>> {
-    if let Some(seconds) = body.seconds {
-        if seconds <= 0 || seconds % HALF_HOUR_SECONDS != 0 {
-            return Err(InvalidHours(seconds).into());
-        }
-    }
+    check_hours(body)?;
     let key = TempoLineKey {
         day: body.day.clone(),
         jira_issue: body.jira_issue.clone(),
@@ -227,20 +249,37 @@ pub fn set_hours(conn: &Connection, body: &SetTempoLineHours) -> Result<Option<T
     if line_for(conn, &key)?.is_none() {
         return Ok(None);
     }
-    ensure_row(conn, &key)?;
+    write_hours(conn, &key, body.seconds)?;
+    line_for(conn, &key)
+}
+
+/// Like `set_hours` but for a day whose blocks may not exist yet: the
+/// override waits in the row and applies once a block lands on the line.
+pub fn pin_hours(conn: &Connection, body: &SetTempoLineHours) -> Result<()> {
+    check_hours(body)?;
+    let key = TempoLineKey {
+        day: body.day.clone(),
+        jira_issue: body.jira_issue.clone(),
+    };
+    write_hours(conn, &key, body.seconds)
+}
+
+fn check_hours(body: &SetTempoLineHours) -> Result<()> {
+    match body.seconds {
+        Some(s) if s <= 0 || s % HALF_HOUR_SECONDS != 0 => Err(InvalidHours(s).into()),
+        _ => Ok(()),
+    }
+}
+
+fn write_hours(conn: &Connection, key: &TempoLineKey, seconds: Option<i64>) -> Result<()> {
+    ensure_row(conn, key)?;
     conn.execute(
         "UPDATE tempo_line_texts SET hours_override_seconds = ?3, updated_at = ?4
           WHERE day = ?1 AND jira_issue = ?2",
-        params![
-            key.day,
-            key.jira_issue,
-            body.seconds,
-            Utc::now().to_rfc3339()
-        ],
+        params![key.day, key.jira_issue, seconds, Utc::now().to_rfc3339()],
     )
     .context("set_hours")?;
-    finish_write(conn, &key)?;
-    line_for(conn, &key)
+    finish_write(conn, key)
 }
 
 /// `(key, descriptions, source_hash)` for every line with no text or a

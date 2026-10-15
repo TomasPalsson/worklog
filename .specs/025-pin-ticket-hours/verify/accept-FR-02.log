@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
+     Running unittests src/lib.rs (rust/target/debug/deps/worklog_core-5f98b59a3618f7a2)
+
+running 3 tests
+test billing_round::tests::billable_rounding_never_drops_tracked_time_to_zero ... ok
+test tempo_lines::tests::project_name_never_makes_a_line_apro ... ok
+test tempo_lines::tests::short_work_on_a_billable_line_rounds_up_to_half_an_hour ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 2268 filtered out; finished in 0.05s
+

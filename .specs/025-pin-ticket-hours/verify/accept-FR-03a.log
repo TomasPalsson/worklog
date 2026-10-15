@@ -1,0 +1,13 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.16s
+     Running unittests src/lib.rs (rust/target/debug/deps/worklog_core-5f98b59a3618f7a2)
+
+running 6 tests
+test tempo_lines::tests::pin_hours_before_any_block_applies_once_a_block_lands ... ok
+test tempo_lines::tests::pin_hours_marks_synced_blocks_dirty_only_for_that_line ... ok
+test tempo_lines::tests::pin_hours_none_clears_and_deletes_empty_row_even_without_blocks ... ok
+test tempo_lines::tests::pin_hours_rejects_invalid_seconds_without_writing ... ok
+test tempo_lines::tests::pin_hours_none_keeps_row_that_still_has_text ... ok
+test tempo_lines::tests::pin_hours_survives_blocks_changing_and_repin_replaces ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 2265 filtered out; finished in 0.27s
+

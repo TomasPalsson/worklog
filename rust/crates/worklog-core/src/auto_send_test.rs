@@ -183,6 +183,23 @@ fn readiness_follows_ticket_origin_and_text_check() {
         params![DAY, format!("{DAY}T12:00:00Z")],
     )
     .unwrap();
+    crate::mirres::store_day(
+        &conn,
+        DAY,
+        &[(
+            "N-ZERO".to_string(),
+            crate::tempo_line_contract::LineBilling {
+                account_key: "APRO-1".into(),
+                customer: Some("APRÓ ehf.".into()),
+                project: None,
+                project_type: None,
+                class: crate::tempo_line_contract::BillingClass::Billable,
+                warning: None,
+                details: None,
+            },
+        )],
+    )
+    .unwrap();
     conn.execute(
         "INSERT INTO tempo_line_texts (day, jira_issue, text, text_origin, check_status, updated_at)
          VALUES (?1, 'N-ZERO', 't', 'generated', 'passed', 'x')",

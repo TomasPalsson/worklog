@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.38s
+     Running unittests src/lib.rs (rust/target/debug/deps/worklog_core-5f98b59a3618f7a2)
+
+running 3 tests
+test billing_round::tests::rounds_up_to_half_hour_with_zero_floor_below_15_minutes ... ok
+test tempo_lines::tests::is_apro_rejects_lookalikes_and_missing_billing ... ok
+test tempo_lines::tests::apro_lines_keep_the_fifteen_minute_floor ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 2268 filtered out; finished in 0.12s
+
