@@ -116,7 +116,9 @@ fn is_apro(billing: Option<&LineBilling>) -> bool {
             _ => c.to_ascii_lowercase(),
         })
         .collect();
-    customer.starts_with("apro") || b.account_key.to_uppercase().starts_with("APRO-")
+    // First word only: "APRÓ ehf." is APRÓ, "Aprosoft ehf." is not.
+    customer.split_whitespace().next() == Some("apro")
+        || b.account_key.to_uppercase().starts_with("APRO-")
 }
 
 fn build_line(conn: &Connection, key: &TempoLineKey, blocks: &[Block]) -> Result<TempoLine> {

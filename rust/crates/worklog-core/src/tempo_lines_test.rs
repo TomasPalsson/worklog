@@ -407,6 +407,18 @@ fn is_apro_rejects_lookalikes_and_missing_billing() {
     assert!(!is_apro(Some(&line_billing("APRO", None, None)))); // account needs the "APRO-" separator
     assert!(!is_apro(Some(&line_billing("X-1", Some("The Apro"), None)))); // starts_with, not contains
     assert!(is_apro(Some(&line_billing("X-1", Some("apro"), None))));
+    // A different customer whose name merely starts with "apro" is not APRÓ.
+    assert!(!is_apro(Some(&line_billing(
+        "X-1",
+        Some("Aprosoft ehf."),
+        None
+    ))));
+    assert!(!is_apro(Some(&line_billing("X-1", Some("Aprocon"), None))));
+    assert!(is_apro(Some(&line_billing(
+        "X-1",
+        Some(" Apró ehf. "),
+        None
+    ))));
 }
 
 #[test]
