@@ -30,6 +30,6 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core pi
 - [x] CHK004 human-verify the pin end to end — files: skills/worklog/SKILL.md — verify: human: after `scripts/install-local.sh`, the Owner tells Claude "put 0,5h on this ticket" and today's Tempo line for that ticket in the web UI shows 0.5h — after: T002, T003 — done: 56fa8e8 by user
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `bash -c 'cargo test --manifest-path rust/Cargo.toml && cargo clippy --manifest-path rust/Cargo.toml --all-targets --all-features -- -D warnings && cargo fmt --manifest-path rust/Cargo.toml --all -- --check'`
-- [ ] G002 branch review clean — files: . — verify: `flow pass`
-- [ ] G003 verification evidence exists — files: . — verify: `test -s .specs/025-pin-ticket-hours/verify/acceptance.md`
+- [x] G001 project gates clean — files: . — verify: `bash -c 'cargo test --manifest-path rust/Cargo.toml && cargo clippy --manifest-path rust/Cargo.toml --all-targets --all-features -- -D warnings && cargo fmt --manifest-path rust/Cargo.toml --all -- --check'` — done: 98ed9f7
+- [x] G002 branch review clean — files: . — verify: `flow pass` — done: 98ed9f7
+- [x] G003 verification evidence exists — files: . — verify: `test -s .specs/025-pin-ticket-hours/verify/acceptance.md` — done: 98ed9f7
