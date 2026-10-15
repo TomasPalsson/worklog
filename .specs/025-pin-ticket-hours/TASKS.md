@@ -1,5 +1,6 @@
 # Tasks — Pin ticket hours and never round billable time down
 Approved: 2026-10-15 by user
+Verified: 2026-10-15 by user (pre-approved: /flow:next --finish)
 Spec: none · Design: none · Base: 55acb00 · Route: oneshot · Test: `cargo test --manifest-path rust/Cargo.toml`
 
 ## Behaviors
