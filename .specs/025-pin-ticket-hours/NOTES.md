@@ -1,0 +1,4 @@
+- Assumption: [mechanical] bypassed the 'disagreement' hard stop with --force — 024-topic-starfield's only open item is CHK001 (a human Chrome check) on another branch, unrelated to 025; the user's goal was /next --finish and the stop hook asked to keep going
+- Discovered: T001 turns 3 baseline-green tests red; each fixture relies on a ticketless-customer 10-min line rounding to 0 (collectors/tempo.rs aggregated_skips_group_under_fifteen_minutes, auto_send_test.rs N-ZERO, daemon_preflight.rs read_back_is_green_when_the_fresh_pull_matches_despite_stale_rows) — fold into T005
+- Ruling: those 3 fixtures keep their intent (the 0h skip path) by seeding an APRÓ Mirres row for their line, not by flipping assertions — FR-02 changes the non-APRÓ result on purpose
+- Ruling: T001 verify had two test filters before `--` (cargo rejects it); rewritten to `--lib -- tempo_lines billing_round`, same tests
