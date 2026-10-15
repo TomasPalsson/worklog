@@ -1121,9 +1121,26 @@ mod tests {
         persist_blocks(&conn, day, &[session_block((9, 0), (9, 30), &["s1"])]).unwrap();
         // catches: Skip in the ticket question still leaving the block in the day
         let (ignored_at, personal) = ignored_state(&conn);
-        assert!(ignored_at.is_some());
+        // catches: a malformed stamp (e.g. a format string missing seconds)
+        DateTime::parse_from_rfc3339(&ignored_at.unwrap()).unwrap();
         assert_eq!(personal, 1);
         assert_eq!(reason_of(&conn), Some("noise".to_string()));
+    }
+
+    #[test]
+    fn persist_blocks_never_ignores_a_synced_or_exported_skipped_block() {
+        for column in ["tempo_worklog_id", "exported_at"] {
+            let conn = open_memory().unwrap();
+            let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+            let block = [session_block((9, 0), (9, 30), &["s1"])];
+            persist_blocks(&conn, day, &block).unwrap();
+            conn.execute(&format!("UPDATE blocks SET {column} = '123'"), [])
+                .unwrap();
+            crate::session_tickets::skip(&conn, "s1").unwrap();
+            persist_blocks(&conn, day, &block).unwrap();
+            // catches: a skipped session hiding time already sent to Tempo or billed
+            assert_eq!(ignored_state(&conn), (None, 0), "{column}");
+        }
     }
 
     #[test]
