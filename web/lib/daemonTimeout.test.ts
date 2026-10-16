@@ -4,6 +4,7 @@ import { timeoutMs } from "./daemonTimeout";
 
 it("a ticket line's Generate/Regenerate waits long enough for one thinking AI call", () => {
   expect(timeoutMs("/tempo/lines/regenerate")).toBe(120_000);
+  expect(timeoutMs("/tempo/lines/redescribe")).toBe(120_000);
   expect(timeoutMs("/tempo/lines/text")).toBe(10_000); // plain writes stay quick
 });
 
