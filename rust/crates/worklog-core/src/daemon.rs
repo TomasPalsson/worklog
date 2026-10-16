@@ -135,6 +135,9 @@ mod daemon_line_text;
 #[path = "daemon_note_block.rs"]
 mod daemon_note_block;
 
+#[path = "daemon_redescribe.rs"]
+mod daemon_redescribe;
+
 #[path = "daemon_deildir.rs"]
 mod daemon_deildir;
 
@@ -245,6 +248,10 @@ pub fn router(state: Shared) -> Router {
             post(daemon_note_block::regenerate),
         )
         .route("/blocks/:id/note/status", get(daemon_note_block::status))
+        .route(
+            "/blocks/:id/redescribe",
+            post(daemon_redescribe::redescribe),
+        )
         .route("/tempo/lines/:day", get(daemon_tempo_lines::list_lines))
         .route("/mirres/overview", get(daemon_tempo_lines::mirres_overview))
         .route(
@@ -3398,6 +3405,10 @@ mod tests {
 
     mod daemon_note_block {
         include!("daemon_note_block_test.rs");
+    }
+
+    mod daemon_redescribe {
+        include!("daemon_redescribe_test.rs");
     }
 
     mod daemon_assist {
