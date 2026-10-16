@@ -79,19 +79,22 @@ On the day page each ticket group (super block, e.g. "GENAI-2023 · 4 blocks") h
 
 | ID | Priority | Requirement | Acceptance |
 |----|----------|-------------|------------|
-| FR-01 | MUST | A regenerate MUST change only the group's line text and its origin. Block hours, tickets, block descriptions, Tempo ids, export stamps and the line's hours override MUST be identical before and after; the only other change allowed is FR-08's re-sync mark. | Core test diffs every blocks row and the line row before and after |
+| FR-01 | MUST | A regenerate MUST change only these fields of the group's line: its text, its origin (to the Owner's text), its check status (cleared, as an "Edit text" save clears it), its source fingerprint (cleared) and its updated time. Block hours, tickets, block descriptions, Tempo ids, export stamps and the line's hours override MUST be identical before and after; the only block change allowed is FR-08's re-sync mark. | Core test diffs every blocks row and the line row before and after |
 | FR-02 | MUST | Right-clicking a super block header MUST open the group menu, with exactly one item "Regenerate with prompt…", and MUST NOT show the browser's menu | Component test: contextmenu is cancelled, one menuitem |
-| FR-03 | SHOULD | With the header focused, the ContextMenu key or Shift+F10 MUST open the menu; Esc MUST close it and return focus to the header | Component test |
-| FR-04 | MUST | The model input MUST contain the Owner's instruction, the group's current text (stored text, else the fallback text) and the same evidence Generate uses | Core test with a capturing fake model |
+| FR-03 | SHOULD | With the header focused, the ContextMenu key or Shift+F10 SHOULD open the menu; Esc SHOULD close it and return focus to the header | Component test |
+| FR-04 | MUST | The model input MUST contain the Owner's instruction, the group's current text — the text the header shows: the stored text, else the fallback built from the block descriptions — and the same evidence Generate sends (the ticket's blocks and clues, the ticket title and description, the day's other tickets) | Core test with a capturing fake model |
 | FR-05 | MUST | An instruction that is empty after trimming, or longer than 500 characters (counted in characters, not bytes), MUST be refused with a reason and nothing changed; the box MUST keep Regenerate disabled for it | Route test 400 + row unchanged; component test |
 | FR-06 | MUST | The instruction MUST be used for that one request only; it MUST NOT be stored or sent with any later request | Core test: second call carries no trace of the first |
-| FR-07 | MUST | The new text MUST pass the same text check Generate uses (with up to 3 tries); when no try passes, the request MUST fail with the reason and the text MUST be unchanged | Core test with fake replies that fail the check |
-| FR-08 | MUST | When any block of the group is synced to Tempo, those blocks MUST be marked changed after a successful regenerate; unsynced blocks MUST stay unmarked | Core test |
+| FR-07 | MUST | The new text MUST pass the same text check Generate uses (non-empty Icelandic, 1–3 sentences, no file paths, file names or tool names); a failed try MUST be re-asked with the failure reason, at most 3 tries in total; when no try passes, the request MUST fail with the last reason and the text MUST be unchanged | Core test with fake replies that fail the check |
+| FR-08 | MUST | After a successful regenerate, every non-personal block of that day and ticket that has a Tempo worklog id MUST get the same re-sync mark an "Edit text" save gives it today; blocks without a Tempo worklog id MUST stay unmarked; no Tempo worklog id is ever cleared | Core test |
 | FR-09 | MUST | The saved text MUST be marked as the Owner's own text, and the automatic generation pass MUST leave it untouched | Core test: automatic pass after a regenerate keeps the text |
-| FR-10 | MUST | If the group's text changed between the start of the request and the AI reply, the request MUST be refused with "the text changed while writing — try again" and the newer text kept | Core test |
-| FR-11 | MUST | For a group with no Tempo line (Unassigned), the item MUST be disabled with the tooltip "Pick a ticket first", and the route MUST answer not-found | Component test + route test |
-| FR-12 | MUST | While the AI is writing, an outside click MUST NOT close the box; Esc MUST close it; success MUST close the menu, toast "Text rewritten" and show the new text | Component test |
-| FR-13 | MUST | Right-clicking a block card inside a group MUST still open that block's own menu, not the group menu; a left click on the header MUST still open and close the group | Component test |
+| FR-10 | MUST | If the line's stored text at commit time differs from the stored text read at the start of the request (absent counts as a value), the request MUST be refused with "the text changed while writing — try again" and the newer text kept | Core test |
+| FR-11 | MUST | For the Unassigned group (blocks with no ticket) the item MUST be disabled with the tooltip "Pick a ticket first"; for a day + ticket with no live non-personal blocks the route MUST answer not-found; a ticketed group whose text was never stored is allowed (its stored text is created) | Component test + route test |
+| FR-12 | MUST | While the AI is writing, an outside click MUST NOT close the box | Component test |
+| FR-12a | MUST | Esc while writing MUST close the menu without cancelling the request; a reply that arrives afterwards MUST still be saved and toasted as usual | Component test |
+| FR-12b | MUST | Success MUST close the menu, toast "Text rewritten" and show the new text; failure MUST toast "Rewrite failed — <the route's error message>" and keep the box open with the instruction | Component test |
+| FR-13 | MUST | Right-clicking a block card inside a group MUST still open that block's own menu, not the group menu | Component test |
+| FR-13a | MUST | A left click on the header MUST still open and close the group, and its existing Edit text / Generate controls MUST work as before | Component test |
 
 ## 5. Non-functional requirements
 
@@ -113,7 +116,9 @@ On the day page each ticket group (super block, e.g. "GENAI-2023 · 4 blocks") h
 |---|------------|-----------|-----------------------|
 | A1 | The instructed text is stored as `manual`, so the badge reads as the Owner's text (discovery item 4) | High | The Owner expected an "AI" badge; cosmetic |
 | A2 | No "Replace your text?" confirm before overwriting hand-written text (item 6) | Med | An Owner loses hand-written text with one Enter; no undo |
-| A3 | The Verdict line check that Generate runs after writing is skipped; check status is cleared, as for hand-edited text | Med | A steered text gets no "needs a look" chip |
+| A3 | The extra after-write line check that Generate runs (the "needs a look" chip) is skipped; the check status is cleared per FR-01 | Med | A steered text gets no "needs a look" chip |
+| A6 | No new time limit: the model call keeps the timeout the existing Generate path has | Med | A hung call shows "Writing…" until that timeout; Esc closes the box (FR-12a) |
+| A7 | The group is addressed by the day and ticket the page already shows (the page's day bucketing) | High | n/a — same key "Edit text" uses |
 | A4 | The model sees the existing Icelandic system prompt plus one Icelandic paragraph telling it to follow the Owner's instruction | High | Instruction ignored → Owner retries |
 | A5 | A meeting-only line (meeting shortcut) is regenerated through the model like any other line when the Owner gives an instruction | Med | Meeting lines get model text instead of the meeting title |
 
