@@ -40,6 +40,12 @@ mock.module("@/app/actions-note-block", () => ({
   noteStatusAction: mock(async () => ({ ok: true as const, data: { state: "running" as const } })),
   addNoteBlock: mock(async () => ({ ok: false as const, error: "unused" })),
 }));
+const redescribeBlock = mock(async (_id: number, _day: string, _instruction: string) => ({
+  ok: true as const,
+  data: { block_id: 1, description: "Fixed the login bug" },
+}));
+type RedescribeReply = Awaited<ReturnType<typeof redescribeBlock>> | { ok: false; error: string };
+mock.module("@/app/actions-block-menu", () => ({ redescribeBlock }));
 mock.module("next/navigation", () => ({
   useRouter: () => ({ refresh: mock(() => {}) }),
   usePathname: () => "/",
@@ -53,7 +59,7 @@ beforeAll(async () => {
 afterEach(() => {
   cleanup();
   subscribe((queued) => queued.forEach((msg) => dismiss(msg.id)))();
-  for (const m of [setPersonal, setIgnored, deleteBlock, mergeGroup, describeBlock, undoLastChange]) m.mockClear();
+  for (const m of [setPersonal, setIgnored, deleteBlock, mergeGroup, describeBlock, undoLastChange, redescribeBlock]) m.mockClear();
   deleteBlock.mockImplementation(okRes);
 });
 
@@ -163,7 +169,7 @@ describe("BlockContextMenu opening (FR-08, FR-09)", () => {
     openMenu();
     const items = screen.getAllByRole("menuitem");
     expect(items.map((i) => i.tagName)).toEqual(items.map(() => "BUTTON"));
-    expect(items.length).toBe(6);
+    expect(items.length).toBe(7);
   });
 });
 
@@ -267,5 +273,131 @@ describe("BlockContextMenu synced guard (FR-14)", () => {
     openMenu(makeBlock({ tempo_worklog_id: "TW-1" }));
     fireEvent.click(item("Noise"));
     expect(setIgnored).not.toHaveBeenCalled();
+  });
+});
+
+describe("BlockContextMenu regenerate with prompt (FR-05, FR-07b)", () => {
+  const REGENERATE = "Regenerate with prompt…";
+  const openBox = (block: Block = makeBlock()) => {
+    openMenu(block);
+    fireEvent.click(item(REGENERATE));
+  };
+  const box = () => screen.getByLabelText("Instruction") as HTMLInputElement;
+  const submit = () => screen.getByRole("button", { name: /^(Regenerate|Writing…)$/ }) as HTMLButtonElement;
+  const type = (text: string) => fireEvent.change(box(), { target: { value: text } });
+  let finish: (r: RedescribeReply) => void;
+  const hold = () =>
+    redescribeBlock.mockImplementationOnce(
+      () => new Promise((resolve) => (finish = resolve as (r: RedescribeReply) => void)) as never,
+    );
+
+  it("picking the item swaps the list for an instruction box, menu still open (catches closing the menu)", () => {
+    openBox();
+    expect(screen.getByRole("menu")).toBeTruthy();
+    expect(screen.queryAllByRole("menuitem").length).toBe(0);
+    expect(document.activeElement).toBe(box());
+  });
+
+  it("the box is capped at 500 (catches a missing or wrong maxLength)", () => {
+    openBox();
+    expect(box().maxLength).toBe(500);
+  });
+
+  it("submit is disabled for blank and whitespace-only text (catches skipping the trim)", () => {
+    openBox();
+    expect(submit().disabled).toBe(true);
+    type("   ");
+    expect(submit().disabled).toBe(true);
+    type("x");
+    expect(submit().disabled).toBe(false);
+  });
+
+  it("500 Icelandic chars (1000 bytes) are accepted, 501 refused (catches byte counting and > for >=)", () => {
+    openBox();
+    type("þ".repeat(500));
+    expect(submit().disabled).toBe(false);
+    type("ðæ".repeat(250) + "þ");
+    expect(submit().disabled).toBe(true);
+  });
+
+  it("posts the trimmed instruction for this block and day", async () => {
+    openBox();
+    type("  þetta var innskráningarvillan  ");
+    fireEvent.click(submit());
+    await waitFor(() => expect(redescribeBlock).toHaveBeenCalledWith(1, DAY, "þetta var innskráningarvillan"));
+  });
+
+  it("while writing: button reads Writing… and is disabled, the box stays (catches closing on submit)", async () => {
+    hold();
+    openBox();
+    type("login bug");
+    fireEvent.click(submit());
+    await waitFor(() => expect(submit().textContent).toBe("Writing…"));
+    expect(submit().disabled).toBe(true);
+    expect(screen.getByRole("menu")).toBeTruthy();
+    finish({ ok: true, data: { block_id: 1, description: "x" } });
+  });
+
+  it("while writing, an outside click does not close the menu (catches the dismiss hook staying armed)", async () => {
+    hold();
+    openBox();
+    type("login bug");
+    fireEvent.click(submit());
+    await waitFor(() => expect(submit().textContent).toBe("Writing…"));
+    fireEvent.mouseDown(document.body);
+    expect(screen.getByRole("menu")).toBeTruthy();
+    finish({ ok: true, data: { block_id: 1, description: "x" } });
+  });
+
+  it("while writing, Esc still closes it (catches ignoring Esc as well)", async () => {
+    hold();
+    openBox();
+    type("login bug");
+    fireEvent.click(submit());
+    await waitFor(() => expect(submit().textContent).toBe("Writing…"));
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    finish({ ok: true, data: { block_id: 1, description: "x" } });
+  });
+
+  it("before writing, an outside click closes it as usual", () => {
+    openBox();
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("success closes the menu and toasts 'Description rewritten'", async () => {
+    openBox();
+    type("login bug");
+    fireEvent.click(submit());
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    expect(toasts().some((t) => t.text === "Description rewritten")).toBe(true);
+  });
+
+  it("failure toasts the reason, keeps the box open with the text kept and re-enabled (catches a swallowed error)", async () => {
+    redescribeBlock.mockImplementationOnce(async () => ({ ok: false, error: "model timed out" }) as never);
+    openBox();
+    type("login bug");
+    fireEvent.click(submit());
+    await waitFor(() => expect(toasts().some((t) => t.text === "Rewrite failed — model timed out")).toBe(true));
+    expect(screen.getByRole("menu")).toBeTruthy();
+    expect(box().value).toBe("login bug");
+    expect(submit().disabled).toBe(false);
+  });
+
+  it.each([
+    ["personal", { is_personal: true }, "personal blocks are not described"],
+    ["note", { rough_note: "fixed it" }, "note blocks are rewritten from their note"],
+    ["undescribed", { description: null }, "block has no description yet — describe it first"],
+    ["blank-description", { description: "" }, "block has no description yet — describe it first"],
+  ])("is disabled on a %s block with its reason as the tooltip", (_n, o, reason) => {
+    openMenu(makeBlock(o as Partial<Block>));
+    expect(item(REGENERATE).disabled).toBe(true);
+    expect(item(REGENERATE).title).toBe(reason);
+  });
+
+  it("stays enabled on a synced or exported block (FR-14)", () => {
+    openMenu(makeBlock({ tempo_worklog_id: "TW-1", exported_at: "2026-07-26T10:00:00Z" }));
+    expect(item(REGENERATE).disabled).toBe(false);
   });
 });

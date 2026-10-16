@@ -1,16 +1,19 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition, type KeyboardEvent, type MouseEvent } from "react";
+import { useEffect, useRef, useState, useTransition, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
 import type { Block } from "@/lib/types";
 import { formatRange } from "@/lib/format";
 import { deleteBlock, undoLastChange } from "@/app/actions";
+import { redescribeBlock } from "@/app/actions-block-menu";
+import type { NoteFields } from "@/lib/noteBlock";
+import { MAX_INSTRUCTION_CHARS } from "@/lib/redescribe";
 import { toast } from "@/lib/toast";
 import { menuKeys } from "./menuKeys";
 import { useMenuDismiss } from "./useMenuDismiss";
 import { useIgnoreActions } from "./useIgnoreActions";
 
 interface Props {
-  block: Block;
+  block: Block & NoteFields;
   day: string;
   /** The day's blocks; Duplicate merges into the nearest same-ticket one. */
   dayBlocks: Block[];
@@ -25,6 +28,10 @@ interface Props {
 }
 
 const DELETE_BLOCKED = "Synced or exported — can't delete";
+// Mirror the daemon's REASON_* strings so the tooltip says what a refusal would.
+const REDESCRIBE_PERSONAL = "personal blocks are not described";
+const REDESCRIBE_NOTE_BLOCK = "note blocks are rewritten from their note";
+const REDESCRIBE_NOT_DESCRIBED = "block has no description yet — describe it first";
 
 /** Open/close state and the card's right-click and ContextMenu / Shift+F10 handlers; `enabled` is false outside the day page. */
 export function useBlockContextMenu(enabled: boolean) {
@@ -56,10 +63,68 @@ export function useBlockContextMenu(enabled: boolean) {
   return { cardRef, cardProps, menuAt, closeMenu };
 }
 
+function redescribeBlockedReason(block: Block & NoteFields) {
+  if (block.is_personal) return REDESCRIBE_PERSONAL;
+  if (block.rough_note) return REDESCRIBE_NOTE_BLOCK;
+  if (!block.description?.trim()) return REDESCRIBE_NOT_DESCRIBED;
+  return undefined;
+}
+
+/** Replaces the item list: the one-time instruction for "Regenerate with prompt…". */
+function InstructionBox({ block, day, close, onWriting }: {
+  block: Block;
+  day: string;
+  close: () => void;
+  onWriting: (writing: boolean) => void;
+}) {
+  const [instruction, setInstruction] = useState("");
+  const [writing, setWriting] = useState(false);
+  const trimmed = instruction.trim();
+
+  // The menu's own dismiss is off while writing, so Esc is handled here.
+  useEffect(() => {
+    if (!writing) return;
+    const onKey = (e: globalThis.KeyboardEvent) => e.key === "Escape" && close();
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [writing, close]);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setWriting(true);
+    onWriting(true);
+    const r = await redescribeBlock(block.id, day, trimmed);
+    setWriting(false);
+    onWriting(false);
+    if (!r.ok) return toast.error(`Rewrite failed — ${r.error}`);
+    toast.ok("Description rewritten");
+    close();
+  };
+
+  return (
+    <form className="block-context-menu-instruction" onSubmit={submit}>
+      <input
+        autoFocus
+        type="text"
+        aria-label="Instruction"
+        maxLength={MAX_INSTRUCTION_CHARS}
+        value={instruction}
+        readOnly={writing}
+        onChange={(e) => setInstruction(e.target.value)}
+      />
+      <button type="submit" disabled={writing || !trimmed || [...trimmed].length > MAX_INSTRUCTION_CHARS}>
+        {writing ? "Writing…" : "Regenerate"}
+      </button>
+    </form>
+  );
+}
+
 /** The right-click menu on a day-page block card: the card's own actions plus Delete. */
 export function BlockContextMenu({ block, day, dayBlocks, x, y, close, onDescribe, onTogglePersonal, onInternal }: Props) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [, start] = useTransition();
+  const [boxOpen, setBoxOpen] = useState(false);
+  const [writing, setWriting] = useState(false);
   const locked = !!block.tempo_worklog_id || !!block.exported_at;
   const ignoreReason = block.tempo_worklog_id
     ? "Already synced to Tempo — remove the worklog there first"
@@ -67,7 +132,8 @@ export function BlockContextMenu({ block, day, dayBlocks, x, y, close, onDescrib
   const timeRangeLabel = formatRange(block.started_at, block.ended_at);
   const { onIgnore, onDuplicate } = useIgnoreActions(block, day, dayBlocks, close);
 
-  useMenuDismiss(true, menuRef, close);
+  // While the AI writes, an outside click must not lose the request; the box handles Esc itself.
+  useMenuDismiss(!writing, menuRef, close);
   useEffect(() => {
     menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)')?.focus();
   }, []);
@@ -84,6 +150,7 @@ export function BlockContextMenu({ block, day, dayBlocks, x, y, close, onDescrib
   const items: [label: string, run: () => void, disabledReason?: string][] = [
     ["Describe with Claude", () => (close(), onDescribe())],
     [block.is_personal ? "Mark as work" : "Mark personal", () => (close(), onTogglePersonal())],
+    ["Regenerate with prompt…", () => setBoxOpen(true), redescribeBlockedReason(block)],
     ["Noise", () => onIgnore("noise"), locked ? ignoreReason : undefined],
     ["Duplicate", onDuplicate, locked ? ignoreReason : undefined],
     ["Internal", () => (close(), onInternal()), locked ? ignoreReason : undefined],
@@ -98,18 +165,22 @@ export function BlockContextMenu({ block, day, dayBlocks, x, y, close, onDescrib
       style={{ left: x, top: y }}
       onKeyDown={menuKeys}
     >
-      {items.map(([label, run, disabledReason]) => (
-        <button
-          key={label}
-          type="button"
-          role="menuitem"
-          disabled={!!disabledReason}
-          title={disabledReason}
-          onClick={run}
-        >
-          {label}
-        </button>
-      ))}
+      {boxOpen ? (
+        <InstructionBox block={block} day={day} close={close} onWriting={setWriting} />
+      ) : (
+        items.map(([label, run, disabledReason]) => (
+          <button
+            key={label}
+            type="button"
+            role="menuitem"
+            disabled={!!disabledReason}
+            title={disabledReason}
+            onClick={run}
+          >
+            {label}
+          </button>
+        ))
+      )}
     </div>
   );
 }
