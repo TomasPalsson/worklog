@@ -51,7 +51,8 @@ export function useBlockContextMenu(enabled: boolean) {
   const cardProps = {
     tabIndex: enabled ? 0 : undefined,
     onContextMenu: (e: MouseEvent) => {
-      if (!enabled || (e.target as Element).closest(".block-context-menu")) return;
+      // Editable fields keep the native menu (paste, spell-check).
+      if (!enabled || (e.target as Element).closest(".block-context-menu, input, textarea, [contenteditable]")) return;
       e.preventDefault();
       setMenuAt({ x: e.clientX, y: e.clientY });
     },
@@ -154,7 +155,7 @@ export function BlockContextMenu({ block, day, dayBlocks, x, y, close, onDescrib
 
   // While the AI writes, an outside click must not lose the request; the box handles Esc itself.
   useMenuDismiss(!writing, menuRef, close);
-  const pos = useMenuClamp(menuRef, x, y, [boxOpen, splitOpen]);
+  const pos = useMenuClamp(menuRef, x, y, `${boxOpen}-${splitOpen}`);
   useEffect(() => {
     menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)')?.focus();
   }, []);

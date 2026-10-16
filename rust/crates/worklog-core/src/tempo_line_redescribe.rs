@@ -1,6 +1,7 @@
 //! Rewrite one ticket line's text from an Owner instruction (spec 027).
 //! Split in prepare / write / commit so the caller holds no connection
-//! across the model call. Writes the line text (as manual) and nothing else.
+//! across the model call. Writes only the line text (as manual) and marks the line's
+//! synced blocks for re-sync.
 
 use crate::estimate::ModelInvoker;
 use crate::line_text::SYSTEM_PROMPT_IS;

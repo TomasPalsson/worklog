@@ -110,6 +110,14 @@ describe("BlockContextMenu opening (FR-08, FR-09)", () => {
     expect(screen.getByRole("menu")).toBeTruthy();
   });
 
+  it("right-click on an input inside the card keeps the browser menu (catches a missing editable exclusion)", () => {
+    render(<BlockCard block={makeBlock()} tickets={[]} day={DAY} />);
+    const input = document.createElement("input");
+    card().appendChild(input);
+    expect(fireEvent.contextMenu(input)).toBe(true);
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
   it("opens at the pointer (catches a fixed position)", () => {
     openMenu();
     const style = (screen.getByRole("menu") as HTMLElement).style;

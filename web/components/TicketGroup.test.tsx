@@ -262,6 +262,14 @@ describe("TicketGroup line text", () => {
     expect(document.activeElement?.textContent).toMatch(/Edit text/);
   });
 
+  it("keeps the browser menu on the line text editor", () => {
+    renderGroup(group(), line());
+    fireEvent.click(screen.getByRole("button", { name: /Edit text/ }));
+    const notCancelled = fireEvent.contextMenu(screen.getByLabelText("Edit line text for PROJ-1"));
+    expect(notCancelled).toBe(true);
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
   it("drops the replace confirm when you start editing instead", () => {
     renderGroup(group(), line({ text_origin: "manual" }));
     fireEvent.click(screen.getByRole("button", { name: /Regenerate/ }));

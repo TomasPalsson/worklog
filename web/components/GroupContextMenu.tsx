@@ -24,7 +24,7 @@ export function GroupContextMenu({ lineKey, x, y, close }: Props) {
 
   // While the AI writes, an outside click must not lose the request; the box handles Esc itself.
   useMenuDismiss(!writing, menuRef, close);
-  const pos = useMenuClamp(menuRef, x, y, [boxOpen]);
+  const pos = useMenuClamp(menuRef, x, y, boxOpen);
   useEffect(() => {
     menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)')?.focus();
   }, []);
