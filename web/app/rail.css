@@ -5,6 +5,14 @@
   grid-template-columns: 76px minmax(0, 1fr);
 }
 
+/* margin:auto on a grid item disables stretch -> fit-content, so main
+   would shrink to its content (collapsing a group narrows the page) or
+   grow past the viewport. Pin it to the track; .page's max-width caps it. */
+.app-shell .page {
+  width: 100%;
+  min-width: 0;
+}
+
 .app-rail {
   position: sticky;
   top: 0;
@@ -96,10 +104,6 @@
   }
 
   .app-shell .page {
-    /* margin:auto on a grid item disables stretch -> fit-content, so a wide
-       child would grow main past the viewport. Pin it to the track. */
-    width: 100%;
-    min-width: 0;
     padding-bottom: 104px;
   }
 
