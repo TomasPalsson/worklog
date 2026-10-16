@@ -2656,6 +2656,34 @@ button {
   opacity: 0.5;
 }
 
+.block-context-menu-instruction {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px;
+}
+
+.block-context-menu-instruction input {
+  min-width: 220px;
+  min-height: 32px;
+  padding: 0 8px;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg-sunk);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.block-context-menu-instruction input:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+
+.block-context-menu-instruction [role="alert"] {
+  flex-basis: 100%;
+  color: var(--terracotta-ink);
+}
+
 .icon-btn {
   display: inline-flex;
   align-items: center;

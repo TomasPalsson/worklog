@@ -71,7 +71,11 @@ pub fn prepare(conn: &Connection, block_id: i64, instruction: &str) -> Result<Re
     })
 }
 
-pub fn invoke<I: ModelInvoker>(prep: &RedescribePrep, invoker: &I, model: &str) -> Result<String> {
+pub fn invoke<I: ModelInvoker + ?Sized>(
+    prep: &RedescribePrep,
+    invoker: &I,
+    model: &str,
+) -> Result<String> {
     let ticket = match (&prep.jira_issue, &prep.ticket_summary) {
         (Some(key), Some(summary)) => format!("{key} ({summary})"),
         (Some(key), None) => key.clone(),
@@ -126,12 +130,16 @@ pub fn commit(
     let changed = tx
         .execute(
             &format!(
-                "UPDATE blocks SET description = ?1, dirty = {MARK_DIRTY_IF_SYNCED} WHERE id = ?2"
+                "UPDATE blocks SET description = ?1, dirty = {MARK_DIRTY_IF_SYNCED} \
+                 WHERE id = ?2 AND description = ?3"
             ),
-            params![description, prep.block_id],
+            params![description, prep.block_id, prep.description],
         )
         .context("redescribe commit")?;
     if changed == 0 {
+        if repo::get_block(&tx, prep.block_id)?.is_some() {
+            bail!("the description changed while writing — try again");
+        }
         bail!("block {} not found", prep.block_id);
     }
     undo::seal(&tx, &[])?;
@@ -146,7 +154,7 @@ pub fn commit(
     })
 }
 
-pub fn redescribe_block_with<I: ModelInvoker>(
+pub fn redescribe_block_with<I: ModelInvoker + ?Sized>(
     conn: &Connection,
     block_id: i64,
     instruction: &str,

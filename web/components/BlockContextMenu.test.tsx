@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeAll, describe, expect, it, mock, spyOn } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { dismiss, subscribe, type ToastMsg } from "@/lib/toast";
 import { registryHook } from "./billingRegistryTestHook";
@@ -114,6 +114,17 @@ describe("BlockContextMenu opening (FR-08, FR-09)", () => {
     openMenu();
     const style = (screen.getByRole("menu") as HTMLElement).style;
     expect([style.left, style.top]).toEqual(["40px", "60px"]);
+  });
+
+  it("near the bottom edge it shifts up to fit (catches an unclamped menu)", () => {
+    const spy = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width: 100, height: 300 } as DOMRect);
+    const prior = window.innerHeight;
+    window.innerHeight = 400;
+    render(<BlockCard block={makeBlock()} tickets={[]} day={DAY} />);
+    fireEvent.contextMenu(card(), { clientX: 40, clientY: 350 });
+    expect((screen.getByRole("menu") as HTMLElement).style.top).toBe("92px");
+    window.innerHeight = prior;
+    spy.mockRestore();
   });
 
   it("is closed until asked (catches always-open)", () => {
@@ -389,6 +400,18 @@ describe("BlockContextMenu regenerate with prompt (FR-05, FR-07b)", () => {
     expect(submit().disabled).toBe(false);
   });
 
+  it("a rejected action returns the button to Regenerate, toasts, and keeps the text (catches a stuck Writing…)", async () => {
+    redescribeBlock.mockImplementationOnce(async () => {
+      throw new Error("boom");
+    });
+    openBox();
+    type("login bug");
+    fireEvent.click(submit());
+    await waitFor(() => expect(toasts().some((t) => t.text === "Rewrite failed — boom")).toBe(true));
+    expect(submit().textContent).toBe("Regenerate");
+    expect(box().value).toBe("login bug");
+  });
+
   it.each([
     ["personal", { is_personal: true }, "personal blocks are not described"],
     ["note", { rough_note: "fixed it" }, "note blocks are rewritten from their note"],
@@ -504,6 +527,19 @@ describe("BlockContextMenu merge with neighbour (FR-13, FR-14)", () => {
     openMenu(me, day);
     fireEvent.click(item(MERGE_NEXT));
     await waitFor(() => expect(mergeGroup).toHaveBeenCalledWith(2, [3], DAY));
+  });
+
+  it("equal start times break by id: each sees the other on opposite sides", () => {
+    const one = at(1, "10:00", "10:30");
+    const two = at(2, "10:00", "10:45");
+    // Equal starts overlap, so the merge itself is refused; the reason shows which side the twin is on.
+    openMenu(one, [one, two]);
+    expect(item(MERGE_PREV).title).toBe("No previous block");
+    expect(item(MERGE_NEXT).title).toBe("Overlaps in time — merging would double-count");
+    cleanup();
+    openMenu(two, [one, two]);
+    expect(item(MERGE_PREV).title).toBe("Overlaps in time — merging would double-count");
+    expect(item(MERGE_NEXT).title).toBe("No next block");
   });
 
   it("a refused merge toasts the reason (swallowed error)", async () => {

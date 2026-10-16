@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useTransition, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
 import type { Block } from "@/lib/types";
 import { formatRange } from "@/lib/format";
 import { deleteBlock, mergeGroup, undoLastChange } from "@/app/actions";
@@ -10,7 +10,7 @@ import { MAX_INSTRUCTION_CHARS } from "@/lib/redescribe";
 import { toast } from "@/lib/toast";
 import { menuKeys } from "./menuKeys";
 import { useMenuDismiss } from "./useMenuDismiss";
-import { useIgnoreActions } from "./useIgnoreActions";
+import { overlaps, useIgnoreActions } from "./useIgnoreActions";
 
 interface Props {
   block: Block & NoteFields;
@@ -74,13 +74,12 @@ function redescribeBlockedReason(block: Block & NoteFields) {
 
 /** The live blocks directly before and after `block` on its day, by start time. */
 function neighbours(block: Block, dayBlocks: Block[]) {
-  const start = Date.parse(block.started_at);
-  const others = dayBlocks
-    .filter((o) => o.id !== block.id && o.day === block.day && !o.ignored_at)
-    .sort((a, b) => Date.parse(a.started_at) - Date.parse(b.started_at));
+  // Ties on start time break by id so two same-start blocks see each other on opposite sides.
+  const order = (a: Block, b: Block) => Date.parse(a.started_at) - Date.parse(b.started_at) || a.id - b.id;
+  const others = dayBlocks.filter((o) => o.id !== block.id && o.day === block.day && !o.ignored_at).sort(order);
   return {
-    prev: others.filter((o) => Date.parse(o.started_at) <= start).at(-1),
-    next: others.find((o) => Date.parse(o.started_at) > start),
+    prev: others.filter((o) => order(o, block) < 0).at(-1),
+    next: others.find((o) => order(o, block) > 0),
   };
 }
 
@@ -88,10 +87,7 @@ function mergeBlockedReason(block: Block, other: Block | undefined, none: string
   if (block.tempo_worklog_id || block.exported_at) return MERGE_LOCKED;
   if (!other) return none;
   if (other.tempo_worklog_id || other.exported_at) return MERGE_LOCKED;
-  if (Date.parse(block.started_at) < Date.parse(other.ended_at) && Date.parse(other.started_at) < Date.parse(block.ended_at)) {
-    return MERGE_OVERLAP;
-  }
-  return undefined;
+  return overlaps(block, other) ? MERGE_OVERLAP : undefined;
 }
 
 /** Replaces the item list: whole minutes the first half keeps for "Split…". */
@@ -107,8 +103,14 @@ function SplitBox({ block, day, close }: { block: Block; day: string; close: () 
     e.preventDefault();
     setBusy(true);
     setError(undefined);
-    const r = await splitBlock(block.id, day, minutes);
-    setBusy(false);
+    let r: Awaited<ReturnType<typeof splitBlock>>;
+    try {
+      r = await splitBlock(block.id, day, minutes);
+    } catch (err) {
+      r = { ok: false, error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      setBusy(false);
+    }
     if (!r.ok) return setError(r.error);
     toast.ok(`Split ${formatRange(block.started_at, block.ended_at)} at ${minutes}m`);
     close();
@@ -158,9 +160,15 @@ function InstructionBox({ block, day, close, onWriting }: {
     e.preventDefault();
     setWriting(true);
     onWriting(true);
-    const r = await redescribeBlock(block.id, day, trimmed);
-    setWriting(false);
-    onWriting(false);
+    let r: Awaited<ReturnType<typeof redescribeBlock>>;
+    try {
+      r = await redescribeBlock(block.id, day, trimmed);
+    } catch (err) {
+      r = { ok: false, error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      setWriting(false);
+      onWriting(false);
+    }
     if (!r.ok) return toast.error(`Rewrite failed — ${r.error}`);
     toast.ok("Description rewritten");
     close();
@@ -184,7 +192,7 @@ function InstructionBox({ block, day, close, onWriting }: {
   );
 }
 
-/** The right-click menu on a day-page block card: the card's own actions plus Delete. */
+/** The right-click menu on a day-page block card: the card actions, Delete, Regenerate, Split and Merge. */
 export function BlockContextMenu({ block, day, dayBlocks, x, y, close, onDescribe, onTogglePersonal, onInternal }: Props) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [, start] = useTransition();
@@ -200,6 +208,16 @@ export function BlockContextMenu({ block, day, dayBlocks, x, y, close, onDescrib
 
   // While the AI writes, an outside click must not lose the request; the box handles Esc itself.
   useMenuDismiss(!writing, menuRef, close);
+  // Keep the menu on screen; re-measure when the content swaps to the instruction/split box.
+  const [pos, setPos] = useState({ left: x, top: y });
+  useLayoutEffect(() => {
+    const box = menuRef.current?.getBoundingClientRect();
+    if (!box) return;
+    setPos({
+      left: Math.max(8, Math.min(x, window.innerWidth - box.width - 8)),
+      top: Math.max(8, Math.min(y, window.innerHeight - box.height - 8)),
+    });
+  }, [x, y, boxOpen, splitOpen]);
   useEffect(() => {
     menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)')?.focus();
   }, []);
@@ -241,7 +259,7 @@ export function BlockContextMenu({ block, day, dayBlocks, x, y, close, onDescrib
       ref={menuRef}
       role="menu"
       className="block-context-menu"
-      style={{ left: x, top: y }}
+      style={pos}
       onKeyDown={menuKeys}
     >
       {splitOpen ? (

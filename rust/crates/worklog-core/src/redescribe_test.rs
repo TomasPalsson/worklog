@@ -317,3 +317,20 @@ fn undo_restores_the_old_row() {
     ));
     assert_eq!(snapshot(&conn, id), before);
 }
+
+#[test]
+fn commit_refuses_when_description_changed_since_prepare() {
+    let conn = open_memory().unwrap();
+    let id = described(&conn);
+    let prep = prepare(&conn, id, "make it shorter").unwrap();
+    conn.execute("UPDATE blocks SET description = 'hand edit'", [])
+        .unwrap();
+    let err = commit(&conn, &prep, "AI text").unwrap_err().to_string();
+    assert!(err.contains("changed while writing"), "{err}");
+    let now: String = conn
+        .query_row("SELECT description FROM blocks WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(now, "hand edit");
+}

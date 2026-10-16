@@ -3,7 +3,6 @@
 
 use axum::extract::{Path as AxumPath, State};
 use axum::Json;
-use serde_json::Value;
 
 use crate::estimate::{self, ModelInvoker};
 use crate::note_block_contract::{NOTE_MODEL, NOTE_THINKING_TOKENS};
@@ -14,7 +13,8 @@ use super::{with_conn, ApiError, Shared};
 
 /// Lets route-level tests answer the model call without a provider.
 #[cfg(test)]
-pub(crate) static TEST_REPLY: std::sync::Mutex<Option<Value>> = std::sync::Mutex::new(None);
+pub(crate) static TEST_REPLY: std::sync::Mutex<Option<serde_json::Value>> =
+    std::sync::Mutex::new(None);
 
 fn real_invoker() -> anyhow::Result<Box<dyn ModelInvoker>> {
     #[cfg(test)]
@@ -22,21 +22,6 @@ fn real_invoker() -> anyhow::Result<Box<dyn ModelInvoker>> {
         return Ok(Box::new(estimate::FixedInvoker(reply)));
     }
     estimate::build_regenerate_invoker(NOTE_THINKING_TOKENS)
-}
-
-/// `redescribe::invoke` wants a sized invoker; the factory hands back a box.
-struct BoxedInvoker(Box<dyn ModelInvoker>);
-
-impl ModelInvoker for BoxedInvoker {
-    fn invoke(
-        &self,
-        system: &str,
-        user: &str,
-        schema: &Value,
-        model: &str,
-    ) -> anyhow::Result<Value> {
-        self.0.invoke(system, user, schema, model)
-    }
 }
 
 pub async fn redescribe(
@@ -63,8 +48,7 @@ pub async fn redescribe(
     .map_err(prepare_error)?;
 
     let (prep, description) = tokio::task::spawn_blocking(move || {
-        let invoker = BoxedInvoker(real_invoker()?);
-        let description = redescribe::invoke(&prep, &invoker, NOTE_MODEL)?;
+        let description = redescribe::invoke(&prep, &*real_invoker()?, NOTE_MODEL)?;
         anyhow::Ok((prep, description))
     })
     .await

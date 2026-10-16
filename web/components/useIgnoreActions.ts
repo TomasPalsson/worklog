@@ -39,7 +39,7 @@ export function useIgnoreActions(block: Block, day: string, dayBlocks: Block[], 
   return { onIgnore, onDuplicate, isPending };
 }
 
-const overlaps = (a: Block, b: Block) =>
+export const overlaps =(a: Block, b: Block) =>
   Date.parse(a.started_at) < Date.parse(b.ended_at) && Date.parse(b.started_at) < Date.parse(a.ended_at);
 
 /** Nearest (by gap between intervals) other live block on the same day and ticket. */
