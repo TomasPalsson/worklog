@@ -1,4 +1,5 @@
 Approved: 2026-10-16 by user
+Verified: 2026-10-16 by user (pre-approved: /flow:next --finish)
 # Tasks — Super block regenerate with prompt
 Spec: spec.md · Design: design.md · Base: dc9a952 · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && cd web && bun test`
 
