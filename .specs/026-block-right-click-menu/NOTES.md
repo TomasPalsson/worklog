@@ -13,3 +13,5 @@
 - Minor: T005 InstructionBox.submit has no try/finally; a thrown server action leaves "Writing…" up (Esc still closes).
 - Minor: T005 reason strings duplicated from redescribe_contract.rs into BlockContextMenu.tsx (match today); stale doc comment at BlockContextMenu.tsx:~20 omits Regenerate.
 - Discovered: web/components/BlockContextMenu.tsx — menu opens at the pointer with no viewport clamp; near the window bottom its last items are off-screen (verify/CHK001-2-menu.jpg) — fold into gating fix
+- Assumption: [taste] T006 merge allows a personal neighbour (spec FR-13 "whatever the neighbour"); nearestSameTicket (Duplicate) excludes personal. The merged block takes the clicked block's personal flag.
+- Minor: T006 neighbour = adjacent live same-day block by start time; split max = ceil(duration/60)-1; a second private `overlaps` copy in BlockContextMenu.tsx (first in useIgnoreActions.ts).
