@@ -1,3 +1,4 @@
+Approved: 2026-10-16 by user
 # Tasks — Super block regenerate with prompt
 Spec: spec.md · Design: design.md · Base: 29ef38b · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && cd web && bun test`
 
