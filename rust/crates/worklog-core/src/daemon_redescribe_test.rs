@@ -107,6 +107,19 @@ async fn instruction_limit_is_500_chars_after_trim() {
     }
 }
 
+// catches: validating after the write, or a rejected instruction still committing the row
+#[tokio::test(flavor = "current_thread")]
+async fn over_long_instruction_leaves_block_row_unchanged() {
+    let _guard = REPLY_LOCK.lock().await;
+    let (state, id) = state_with_block().await;
+    let before = row(&state, id).await;
+    set_reply(Some(json!({"description": "Should not land"})));
+    let (status, _) = call(&state, id, json!({"instruction": "a".repeat(501)})).await;
+    set_reply(None);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(row(&state, id).await, before);
+}
+
 // catches: swallowing the error / contract reason text not reaching the body
 #[tokio::test(flavor = "current_thread")]
 async fn rejection_bodies_carry_the_contract_reason() {
