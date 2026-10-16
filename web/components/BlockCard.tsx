@@ -21,6 +21,7 @@ import { TicketCombobox } from "./TicketCombobox";
 import { EventList } from "./EventList";
 import { CommitList } from "./CommitList";
 import { IgnoreMenu } from "./IgnoreMenu";
+import { BlockContextMenu, useBlockContextMenu } from "./BlockContextMenu";
 import { useMenuDismiss } from "./useMenuDismiss";
 import { isAutoTicket } from "@/lib/tempo_line_contract";
 
@@ -70,6 +71,7 @@ export function BlockCard({
   const [durVal, setDurVal] = useState(Math.round(block.duration_seconds / 60));
   const [isPending, start] = useTransition();
   const descRef = useRef<HTMLDivElement>(null);
+  const { cardRef, cardProps, menuAt, closeMenu } = useBlockContextMenu(!hideTicketing);
 
   const assigned = !!block.jira_issue;
   const synced = !!block.tempo_worklog_id;
@@ -182,7 +184,7 @@ export function BlockCard({
   const showSparkles = shouldShowSparkles(block, isSoleInGroup);
 
   return (
-    <article id={`block-${block.id}`} className={cls} aria-label={ariaLabel}>
+    <article ref={cardRef} id={`block-${block.id}`} className={cls} aria-label={ariaLabel} {...cardProps}>
       <div className="block-time">
         <span className="range" aria-label={`time range ${timeRangeLabel}`}>
           {timeRangeLabel}
@@ -351,6 +353,19 @@ export function BlockCard({
         </button>
         <IgnoreMenu block={block} day={day} dayBlocks={dayBlocks} onInternal={() => setPicking(true)} />
       </div>
+      {menuAt && (
+        <BlockContextMenu
+          block={block}
+          day={day}
+          dayBlocks={dayBlocks}
+          x={menuAt.x}
+          y={menuAt.y}
+          close={closeMenu}
+          onDescribe={block.rough_note ? regenerate : onDescribe}
+          onTogglePersonal={onTogglePersonal}
+          onInternal={() => setPicking(true)}
+        />
+      )}
     </article>
   );
 }

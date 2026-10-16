@@ -498,6 +498,21 @@ describe("BlockCard ignore menu (FR-06)", () => {
   });
 });
 
+describe("block menu is day-page only (FR-15)", () => {
+  it("right-click opens nothing and leaves the browser menu alone when ticketing is hidden", () => {
+    render(<BlockCard block={makeBlock({})} tickets={[]} day="2026-07-25" hideTicketing />);
+    const notCancelled = fireEvent.contextMenu(screen.getByRole("article"));
+    expect(notCancelled).toBe(true);
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("the ContextMenu key opens nothing either", () => {
+    render(<BlockCard block={makeBlock({})} tickets={[]} day="2026-07-25" hideTicketing />);
+    fireEvent.keyDown(screen.getByRole("article"), { key: "ContextMenu" });
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+});
+
 describe("auto ticket tag", () => {
   const renderCard = (overrides: Partial<Block>) =>
     render(<BlockCard block={makeBlock(overrides)} tickets={[]} day="2026-07-25" />);

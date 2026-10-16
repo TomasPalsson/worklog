@@ -2630,6 +2630,60 @@ button {
   background: var(--bg-hover, rgba(127, 127, 127, 0.15));
 }
 
+.block-context-menu {
+  position: fixed;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+  padding: 4px;
+  background: var(--bg-elevated, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.block-context-menu button {
+  padding: 6px 10px;
+  text-align: left;
+  border-radius: var(--radius-sm);
+}
+
+.block-context-menu button:hover:not(:disabled) {
+  background: var(--bg-hover, rgba(127, 127, 127, 0.15));
+}
+
+.block-context-menu button:disabled {
+  opacity: 0.5;
+}
+
+.block-context-menu-instruction {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px;
+}
+
+.block-context-menu-instruction input {
+  min-width: 220px;
+  min-height: 32px;
+  padding: 0 8px;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg-sunk);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.block-context-menu-instruction input:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+
+.block-context-menu-instruction [role="alert"] {
+  flex-basis: 100%;
+  color: var(--terracotta-ink);
+}
+
 .icon-btn {
   display: inline-flex;
   align-items: center;

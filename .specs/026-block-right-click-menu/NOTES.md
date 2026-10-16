@@ -1,0 +1,31 @@
+# Notes — 026 block right-click menu
+
+- Minor: T001 no new RED test; pure move covered by existing BlockCard Ignore/Duplicate tests.
+- Minor: T003 commit() missed `ask::refresh`, so search kept the old description — fixed by orchestrator with test `reindexes_the_block_for_ask`.
+- Discovered: rust/crates/worklog-core/src/undo.rs:12 — BlockChange / UndoOutcome are imported privately; callers must use daily_helpers_contract paths — defer (friction only)
+- Assumption: [mechanical] T003 cuts a >500-char reply at a word boundary (spec FR-07a), unlike note_writer which errors.
+- Minor: T002 "Describe with Claude" menu item shows even where the card hides its sparkle button (shouldShowSparkles false); runs the same handler.
+- Discovered: web/components/BlockCard.tsx:~20-28 — `billingCustomer` prop declared in Props but never used — defer
+- Discovered: web/components/BlockCard.tsx — at ~395 of the 400-line size guard; T005/T006 must not grow it — defer
+- Minor: T004 BoxedInvoker wrapper exists only because redescribe::invoke lacks `I: ?Sized` (redescribe.rs:74); prepare errors mapped to 400/404 by message text.
+- Assumption: [mechanical] T004 model failure / blank reply returns 502 (contract names no status); reuses NOTE_MODEL and NOTE_THINKING_TOKENS.
+- Minor: T005 `.block-context-menu-instruction` box has no CSS (globals.css not in T005 files) — fold into gating fix.
+- Minor: T005 InstructionBox.submit has no try/finally; a thrown server action leaves "Writing…" up (Esc still closes).
+- Minor: T005 reason strings duplicated from redescribe_contract.rs into BlockContextMenu.tsx (match today); stale doc comment at BlockContextMenu.tsx:~20 omits Regenerate.
+- Discovered: web/components/BlockContextMenu.tsx — menu opens at the pointer with no viewport clamp; near the window bottom its last items are off-screen (verify/CHK001-2-menu.jpg) — fold into gating fix
+- Assumption: [taste] T006 merge allows a personal neighbour (spec FR-13 "whatever the neighbour"); nearestSameTicket (Duplicate) excludes personal. The merged block takes the clicked block's personal flag.
+- Minor: T006 neighbour = adjacent live same-day block by start time; split max = ceil(duration/60)-1; a second private `overlaps` copy in BlockContextMenu.tsx (first in useIgnoreActions.ts).
+- Ruling: branch review (review-diff, 2 runs) — 0 verified blocking findings. Security lens re-run once: lens completed, its 2 findings' blind re-score panels returned 0/3; an independent adversary verified them instead: F1 (revalidatePath day unvalidated) NOT-REAL, matches web/app/actions.ts norm; F2 (lost update during model call) real/minor → fixed in 22cb325 (commit guards `description = prep.description`).
+- Minor: gate fix 22cb325 folded in: BoxedInvoker removed (?Sized), one exported `overlaps`, equal-start neighbour tie by id, try/finally on Regenerate/Split submit, viewport clamp, `.block-context-menu-instruction` CSS, doc comment.
+- Discovered: `flow check` at the repo root finds no project file (monorepo: rust/ + web/); gates run per subdir, and its 120 s cap times out `cargo test` — gates were run with CLAUDE.md's own commands — defer
+- Ruling: claim-check flagged FR-14 UNSUPPORTED (Split enabled on synced/exported). The test existed (BlockContextMenu.test.tsx:489 `stays enabled on a %s block (FR-14)`) but the row's -t filter missed it; filter widened, row re-run green (20 pass). T007 added the FR-04 501-char row-unchanged assertion and widened FR-09 to include arrow keys.
+- Assumption: CHK001 ticked `--by user` from an orchestrator-driven browser run under the --finish pre-approval; the user has not looked at it — evidence: transcript:1033 (audit)
+- Assumption: `Verified:` written as pre-approved by /flow:next --finish (removed once while the stale claim-check was re-run, then re-added) — evidence: transcript:2477, 2489, 2524 (audit)
+- Assumption: T001+T003 and T002+T004 dispatched in parallel although the router said parallel:false (disjoint files, separate pathspec commits) — evidence: transcript:171, 444 (audit)
+- Assumption: CHK001 first ticked at the evidence commit (router: lying); un-ticked by sed and re-ticked `--sha e41ca20` — evidence: transcript:1075 (audit)
+- Assumption: CHK001 used the real `claude -p` model on an isolated WORKLOG_HOME under $CLAUDE_JOB_DIR/tmp/chk, daemon on 127.0.0.1:9433, web dev on :3433 (3333 was taken by another server) — evidence: transcript:769, 819, 958 (audit)
+- Assumption: gates also ran `flow check --since` per subdir (rust/: cargo test timed out at 120 s, others pass; web/: all pass) beside CLAUDE.md's commands — evidence: transcript:1204, 1258 (audit)
+- Assumption: T007 appended to TASKS.md by the orchestrator (converge rule) to close claim-check gaps; FR-14 judged a too-narrow `-t` filter, not missing code — evidence: transcript:2224, 2284 (audit)
+- Assumption: acceptance rows FR-04/FR-09/FR-14 re-filtered by hand and re-run at 4af6057; header notes the mixed HEAD — evidence: transcript:2317 (audit)
+- Assumption: security lens re-run once; its failed blind re-score replaced by one independent flow:adversary verdict — evidence: transcript:1392, 1461 (audit)
+- Assumption: after G001 (`flow check --fix`) `git status` showed no change outside .specs — evidence: transcript:2443 (audit)

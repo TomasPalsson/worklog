@@ -1,0 +1,4 @@
+Baseline at 6a168ef (Base) — Test: cargo test --manifest-path rust/Cargo.toml && cd web && bun test
+cargo test: exit 0 (all suites "test result: ok", 0 failed)
+bun test: exit 0 — 1969 pass, 0 fail, 159 files (after `bun install --frozen-lockfile`; a first run without node_modules failed every file to load)
+Failing tests at Base: none
