@@ -42,6 +42,6 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core te
 - [x] T009 [P] Rust tests for the converge gaps: a second redescribe with another instruction carries nothing of the first (FR-06), a redescribed line survives the automatic generation pass as manual (FR-09) — files: rust/crates/worklog-core/src/tempo_line_redescribe_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core tempo_line_redescribe` — no_claim: model is a scripted fake — follow: rust/crates/worklog-core/src/tempo_lines_test.rs — after: T003 — done: 073d075
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `flow check --fix --since dc9a952`
-- [ ] G002 branch review clean — files: . — verify: `flow pass`
-- [ ] G003 verification evidence exists — files: . — verify: `test -s verify/`
+- [x] G001 project gates clean — files: . — verify: `flow check --fix --since dc9a952` — done: 3ff36e0
+- [x] G002 branch review clean — files: . — verify: `flow pass` — done: 3ff36e0
+- [x] G003 verification evidence exists — files: . — verify: `test -s verify/` — done: 3ff36e0
