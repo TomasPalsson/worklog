@@ -259,7 +259,9 @@ fn commit_overwrites_an_unchanged_manual_text() {
 fn second_redescribe_carries_nothing_of_the_first_instruction() {
     let conn = open_memory().unwrap();
     seed_block(&conn, None);
-    let first = prepare(&conn, &key(), "gerðu það styttra").unwrap().unwrap();
+    let first = prepare(&conn, &key(), "gerðu það styttra")
+        .unwrap()
+        .unwrap();
     commit(&conn, &first, NEW_TEXT).unwrap();
 
     let second = prepare(&conn, &key(), "nefndu prófin").unwrap().unwrap();
