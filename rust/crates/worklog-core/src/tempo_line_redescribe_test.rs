@@ -252,3 +252,44 @@ fn commit_overwrites_an_unchanged_manual_text() {
     assert_eq!(got.text.as_deref(), Some(NEW_TEXT));
     assert_eq!(got.text_origin, Some(LineTextOrigin::Manual));
 }
+
+// Catches: a second redescribe that reuses the first instruction (cached
+// prep, appended history) instead of only the new one.
+#[test]
+fn second_redescribe_carries_nothing_of_the_first_instruction() {
+    let conn = open_memory().unwrap();
+    seed_block(&conn, None);
+    let first = prepare(&conn, &key(), "gerðu það styttra").unwrap().unwrap();
+    commit(&conn, &first, NEW_TEXT).unwrap();
+
+    let second = prepare(&conn, &key(), "nefndu prófin").unwrap().unwrap();
+    assert_eq!(second.instruction, "nefndu prófin");
+    assert_eq!(second.current_text, NEW_TEXT);
+    assert!(!second.user_msg.contains("gerðu það styttra"));
+    let spy = Spy(Mutex::new(Vec::new()));
+    write(&second, &spy, "m").unwrap();
+    let seen = spy.0.lock().unwrap();
+    assert!(!seen[0].0.contains("gerðu það styttra"));
+    assert!(!seen[0].1.contains("gerðu það styttra"));
+    let msg: serde_json::Value = serde_json::from_str(&seen[0].1).unwrap();
+    assert_eq!(msg["owner_instruction"], "nefndu prófin");
+}
+
+// Catches: a redescribed line stored as 'generated', so the automatic
+// pass lists it as pending or overwrites it.
+#[test]
+fn redescribed_line_survives_the_automatic_generation_pass() {
+    let conn = open_memory().unwrap();
+    seed_block(&conn, None);
+    store_generated(&conn, OLD_TEXT);
+    let prep = prepare(&conn, &key(), "styttra").unwrap().unwrap();
+    commit(&conn, &prep, NEW_TEXT).unwrap();
+
+    assert!(tempo_lines::pending_generation(&conn, DAY, None)
+        .unwrap()
+        .is_empty());
+    tempo_lines::commit_generated(&conn, &key(), "Sjálfvirkur texti.", "h2", false).unwrap();
+    let got = line(&conn);
+    assert_eq!(got.text.as_deref(), Some(NEW_TEXT));
+    assert_eq!(got.text_origin, Some(LineTextOrigin::Manual));
+}
