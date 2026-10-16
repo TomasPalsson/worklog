@@ -146,6 +146,57 @@ function renderGroup(blockGroup: BlockGroup, tempoLine?: TempoLine) {
   );
 }
 
+describe("TicketGroup header menu", () => {
+  const summary = () => document.querySelector("summary") as HTMLElement;
+  const item = () => screen.getByRole("menuitem", { name: "Regenerate with prompt…" }) as HTMLButtonElement;
+
+  it("right-click on the header opens the menu at the pointer (catches no handler)", () => {
+    renderGroup(group(), line());
+    fireEvent.contextMenu(summary(), { clientX: 30, clientY: 40 });
+    expect(item().disabled).toBe(false);
+    expect((screen.getByRole("menu") as HTMLElement).style.left).toBe("30px");
+  });
+
+  it("the ContextMenu key and Shift+F10 open it, other keys do not", () => {
+    renderGroup(group(), line());
+    fireEvent.keyDown(summary(), { key: "F10" });
+    fireEvent.keyDown(summary(), { key: "a" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    fireEvent.keyDown(summary(), { key: "ContextMenu" });
+    expect(screen.getByRole("menu")).toBeTruthy();
+    cleanup();
+    renderGroup(group(), line());
+    fireEvent.keyDown(summary(), { key: "F10", shiftKey: true });
+    expect(screen.getByRole("menu")).toBeTruthy();
+  });
+
+  it("a left click opens no menu and still toggles nothing extra (catches click opening the menu)", () => {
+    renderGroup(group(), line());
+    fireEvent.click(summary());
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("the Unassigned group's item is disabled with 'Pick a ticket first'", () => {
+    renderGroup(group({ key: "__unassigned__", label: "Unassigned", unassigned: true }));
+    fireEvent.contextMenu(summary());
+    expect(item().disabled).toBe(true);
+    expect(item().title).toBe("Pick a ticket first");
+  });
+
+  it("the header stays focusable for keyboard users (catches dropping tabIndex)", () => {
+    renderGroup(group(), line());
+    expect(summary().tabIndex).toBe(0);
+  });
+
+  it("Esc closes the menu and hands focus back to the header", () => {
+    renderGroup(group(), line());
+    fireEvent.contextMenu(summary());
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(summary());
+  });
+});
+
 describe("TicketGroup line text", () => {
   it("shows the stored text", () => {
     renderGroup(group(), line());
