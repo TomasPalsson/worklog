@@ -74,6 +74,21 @@ fn refusal(conn: &Connection, id: i64) -> String {
 
 // FR-01: returns the model's text and changes only the description.
 #[test]
+fn reindexes_the_block_for_ask() {
+    let conn = open_memory().unwrap();
+    let id = described(&conn);
+    run(&conn, id, "Fixed the logout redirect").unwrap();
+    let text: String = conn
+        .query_row(
+            "SELECT text FROM ask_index WHERE block_id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(text.contains("Fixed the logout redirect"), "{text}");
+}
+
+#[test]
 fn rewrites_only_the_description_column() {
     let conn = open_memory().unwrap();
     let id = described(&conn);

@@ -136,6 +136,7 @@ pub fn commit(
     }
     undo::seal(&tx, &[])?;
     tx.commit().context("redescribe commit")?;
+    crate::ask::refresh(conn, &[prep.block_id]);
     if let Some(block) = repo::get_block(conn, prep.block_id)? {
         change_log::refresh_day_logged(conn, &block.day, ChangeSource::Claude);
     }
