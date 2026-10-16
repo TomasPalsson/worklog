@@ -1085,7 +1085,17 @@ pub fn merge_same_ticket_adjacent(conn: &Connection, day_iso: &str) -> Result<u3
             && block_is_unsynced(conn, b.id)?
             && !block_has_saved_split(conn, &a.day, &a.started_at)?
             && !block_has_saved_split(conn, &b.day, &b.started_at)?;
-        if same && safe {
+        let close = match (
+            DateTime::parse_from_rfc3339(&a.ended_at),
+            DateTime::parse_from_rfc3339(&b.started_at),
+        ) {
+            (Ok(end), Ok(start)) => {
+                start.signed_duration_since(end)
+                    <= chrono::Duration::minutes(crate::infer::TIMEOUT_MINUTES)
+            }
+            _ => false,
+        };
+        if same && safe && close {
             merge_block_into(conn, a.id, b.id)?;
             // remove b from local view and try merging again from same i
             blocks.remove(i + 1);
@@ -1758,6 +1768,65 @@ mod tests {
         );
         let removed = merge_same_ticket_adjacent(&conn, "2026-05-12").unwrap();
         assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn merge_leaves_same_ticket_blocks_hours_apart() {
+        // catches: billing an 8h gap as work by merging across it
+        let conn = open_memory().unwrap();
+        insert_block_with(
+            &conn,
+            "2026-05-12",
+            "2026-05-12T00:06:00+00:00",
+            "2026-05-12T00:11:00+00:00",
+            300,
+            Some("GENAI-1"),
+            Some("claude_p"),
+            None,
+        );
+        insert_block_with(
+            &conn,
+            "2026-05-12",
+            "2026-05-12T08:47:00+00:00",
+            "2026-05-12T09:38:00+00:00",
+            3060,
+            Some("GENAI-1"),
+            Some("claude_p"),
+            None,
+        );
+        let removed = merge_same_ticket_adjacent(&conn, "2026-05-12").unwrap();
+        assert_eq!(removed, 0);
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM blocks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn merge_joins_same_ticket_blocks_exactly_30_min_apart() {
+        let conn = open_memory().unwrap();
+        insert_block_with(
+            &conn,
+            "2026-05-12",
+            "2026-05-12T09:00:00+00:00",
+            "2026-05-12T09:30:00+00:00",
+            1800,
+            Some("GENAI-1"),
+            Some("claude_p"),
+            None,
+        );
+        insert_block_with(
+            &conn,
+            "2026-05-12",
+            "2026-05-12T10:00:00+00:00",
+            "2026-05-12T10:30:00+00:00",
+            1800,
+            Some("GENAI-1"),
+            Some("claude_p"),
+            None,
+        );
+        let removed = merge_same_ticket_adjacent(&conn, "2026-05-12").unwrap();
+        assert_eq!(removed, 1);
     }
 
     #[test]
