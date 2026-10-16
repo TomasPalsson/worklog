@@ -12,3 +12,4 @@
 - Minor: T005 `.block-context-menu-instruction` box has no CSS (globals.css not in T005 files) — fold into gating fix.
 - Minor: T005 InstructionBox.submit has no try/finally; a thrown server action leaves "Writing…" up (Esc still closes).
 - Minor: T005 reason strings duplicated from redescribe_contract.rs into BlockContextMenu.tsx (match today); stale doc comment at BlockContextMenu.tsx:~20 omits Regenerate.
+- Discovered: web/components/BlockContextMenu.tsx — menu opens at the pointer with no viewport clamp; near the window bottom its last items are off-screen (verify/CHK001-2-menu.jpg) — fold into gating fix
