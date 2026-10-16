@@ -27,7 +27,7 @@ use crate::tempo_line_contract::{ticket_locked, TicketOrigin};
 // session intact while still closing on genuine breaks. Paired with
 // PreToolUse/PostToolUse hooks (see hook::EVENTS) which add heartbeats
 // during autonomous work.
-const TIMEOUT_MINUTES: i64 = 30;
+pub(crate) const TIMEOUT_MINUTES: i64 = 30;
 const CREDIT_MINUTES: i64 = 2;
 const MIN_BLOCK_MINUTES: i64 = 5;
 const MAX_BLOCK_MINUTES: i64 = 4 * 60;
