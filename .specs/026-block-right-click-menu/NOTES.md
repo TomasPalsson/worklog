@@ -9,3 +9,6 @@
 - Discovered: web/components/BlockCard.tsx — at ~395 of the 400-line size guard; T005/T006 must not grow it — defer
 - Minor: T004 BoxedInvoker wrapper exists only because redescribe::invoke lacks `I: ?Sized` (redescribe.rs:74); prepare errors mapped to 400/404 by message text.
 - Assumption: [mechanical] T004 model failure / blank reply returns 502 (contract names no status); reuses NOTE_MODEL and NOTE_THINKING_TOKENS.
+- Minor: T005 `.block-context-menu-instruction` box has no CSS (globals.css not in T005 files) — fold into gating fix.
+- Minor: T005 InstructionBox.submit has no try/finally; a thrown server action leaves "Writing…" up (Esc still closes).
+- Minor: T005 reason strings duplicated from redescribe_contract.rs into BlockContextMenu.tsx (match today); stale doc comment at BlockContextMenu.tsx:~20 omits Regenerate.
