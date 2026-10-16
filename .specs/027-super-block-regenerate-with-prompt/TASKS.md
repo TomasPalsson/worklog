@@ -1,6 +1,6 @@
 Approved: 2026-10-16 by user
 # Tasks — Super block regenerate with prompt
-Spec: spec.md · Design: design.md · Base: 29ef38b · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && cd web && bun test`
+Spec: spec.md · Design: design.md · Base: dc9a952 · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && cd web && bun test`
 
 ## Behaviors
 | ID | Given / When / Then | Task | Proven by | Key |
@@ -39,6 +39,6 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core te
 - [ ] CHK001 human-verify in the running review UI on an isolated database: right-click a super block header → Regenerate with prompt → an instruction → the group's text changes, hours, ticket and block texts do not — files: web/components/GroupContextMenu.tsx — verify: human: the group's text changed and hours, ticket and block texts did not — after: T004, T006
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `flow check --fix --since 29ef38b`
+- [ ] G001 project gates clean — files: . — verify: `flow check --fix --since dc9a952`
 - [ ] G002 branch review clean — files: . — verify: `flow pass`
 - [ ] G003 verification evidence exists — files: . — verify: `test -s verify/`
