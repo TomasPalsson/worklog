@@ -352,6 +352,8 @@ pub struct NewIssue {
     pub account_value: Option<String>,
     /// Jira accountId to assign; `None` → unassigned.
     pub assignee_account_id: Option<String>,
+    /// Jira Original Estimate; `None` → not set.
+    pub original_estimate_seconds: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -415,6 +417,12 @@ fn issue_body(issue: &NewIssue) -> serde_json::Value {
     }
     if let Some(id) = &issue.assignee_account_id {
         fields.insert("assignee".into(), serde_json::json!({ "id": id }));
+    }
+    if let Some(s) = issue.original_estimate_seconds.filter(|s| *s > 0) {
+        fields.insert(
+            "timetracking".into(),
+            serde_json::json!({ "originalEstimate": format!("{}m", s / 60) }),
+        );
     }
     serde_json::json!({ "fields": serde_json::Value::Object(fields) })
 }
@@ -1197,6 +1205,7 @@ mod tests {
             account_field_id: Some("customfield_10100".into()),
             account_value: Some("42".into()),
             assignee_account_id: None,
+            original_estimate_seconds: None,
         };
         let ticket = create_issue_with(&auth, &issue, &http::client().unwrap()).unwrap();
         mock.assert();
@@ -1204,6 +1213,24 @@ mod tests {
         assert_eq!(ticket.issue_id.as_deref(), Some("99123"));
         assert_eq!(ticket.project_key.as_deref(), Some("PROJ"));
         assert_eq!(ticket.summary, "Investigate billing drift");
+    }
+
+    #[test]
+    fn issue_body_sets_original_estimate_in_minutes_only_when_given() {
+        let mut issue = NewIssue {
+            project_key: "PROJ".into(),
+            summary: "s".into(),
+            issue_type: "Task".into(),
+            description: None,
+            account_field_id: None,
+            account_value: None,
+            assignee_account_id: None,
+            original_estimate_seconds: Some(5400),
+        };
+        let body = issue_body(&issue);
+        assert_eq!(body["fields"]["timetracking"]["originalEstimate"], "90m");
+        issue.original_estimate_seconds = None;
+        assert!(issue_body(&issue)["fields"].get("timetracking").is_none());
     }
 
     #[test]
@@ -1227,6 +1254,7 @@ mod tests {
             account_field_id: None,
             account_value: None,
             assignee_account_id: None,
+            original_estimate_seconds: None,
         };
         let err = format!(
             "{:#}",
@@ -1779,6 +1807,7 @@ mod tests {
             account_field_id: None,
             account_value: None,
             assignee_account_id: None,
+            original_estimate_seconds: None,
         };
         create_issue_with(&test_auth(&server), &issue, &http::client().unwrap()).unwrap();
         mock.assert();

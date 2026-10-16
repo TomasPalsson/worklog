@@ -261,6 +261,7 @@ async fn create_refuses_emoji_with_400_and_posts_nothing() {
         clues: vec![],
         assignee_account_id: None,
         unassigned: false,
+        estimate_seconds: None,
     };
     let err = create_assisted(state(), auth(&server), FIELD.into(), body)
         .await

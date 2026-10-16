@@ -124,6 +124,9 @@ pub fn assist_create_with(
     if has_emoji(&body.summary) || has_emoji(&body.description) {
         return Err(HubError::InvalidInput("ticket text must not contain emoji".into()).into());
     }
+    if body.estimate_seconds.is_some_and(|s| s <= 0) {
+        return Err(HubError::InvalidInput("estimate must be positive".into()).into());
+    }
     let account = allowed_accounts_with(auth, WRITE_PROJECT, CREATE_ISSUE_TYPE, field_id, client)?
         .into_iter()
         .find(|a| a.id == body.account_id)
@@ -148,6 +151,7 @@ pub fn assist_create_with(
             account_field_id: Some(field_id.into()),
             account_value: Some(account.id.clone()),
             assignee_account_id: assignee,
+            original_estimate_seconds: body.estimate_seconds,
         },
         client,
     )?;

@@ -118,6 +118,9 @@ pub struct AssistCreateBody {
     /// Leave the ticket unassigned; wins over the Owner default.
     #[serde(default)]
     pub unassigned: bool,
+    /// Owner's estimate, sent to Jira as the Original Estimate; `None` → not set.
+    #[serde(default)]
+    pub estimate_seconds: Option<i64>,
 }
 
 /// `POST /tickets/assist-create` response.
