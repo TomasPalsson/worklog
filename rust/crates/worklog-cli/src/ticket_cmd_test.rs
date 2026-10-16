@@ -99,6 +99,7 @@ fn assignee_and_unassigned_cannot_be_combined() {
     assert!(parse(&["--assignee", "x:1"]).is_ok());
     assert!(parse(&["--unassigned"]).is_ok());
     assert!(parse(&["--assignee", "x:1", "--unassigned"]).is_err());
+    assert!(parse(&["--estimate", "1,5"]).is_ok());
 }
 
 #[test]

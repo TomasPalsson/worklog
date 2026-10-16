@@ -205,6 +205,7 @@ fn body() -> AssistCreateBody {
         clues: vec!["innnes".into()],
         assignee_account_id: None,
         unassigned: false,
+        estimate_seconds: None,
     }
 }
 
@@ -247,6 +248,39 @@ fn create(
 fn decision_rows(conn: &Connection) -> i64 {
     conn.query_row("SELECT COUNT(*) FROM account_decisions", [], |r| r.get(0))
         .unwrap()
+}
+
+#[test]
+fn create_sends_the_estimate_as_original_estimate_and_refuses_non_positive() {
+    let server = MockServer::start();
+    mock_createmeta(&server, json!([{ "id": "42", "name": "Acme" }]));
+    let created = server.mock(|when, then| {
+        when.method(POST)
+            .path("/rest/api/3/issue")
+            .json_body_partial(
+                json!({ "fields": { "timetracking": { "originalEstimate": "90m" } } }).to_string(),
+            );
+        then.status(201)
+            .json_body(json!({ "id": "900", "key": "GENAI-900" }));
+    });
+    mock_transitions(&server, "GENAI-900");
+    mock_post_transition(&server, "GENAI-900", "11");
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/rest/api/3/issue/GENAI-900")
+            .query_param("fields", "status");
+        then.status(200)
+            .json_body(issue_body("In Progress", "indeterminate"));
+    });
+    let conn = db::open_memory().unwrap();
+    let mut b = body();
+    b.estimate_seconds = Some(5400);
+    create(&server, &conn, &b).unwrap();
+    created.assert_hits(1);
+    b.estimate_seconds = Some(0);
+    let err = format!("{:#}", create(&server, &conn, &b).unwrap_err());
+    assert!(err.contains("estimate must be positive"), "{err}");
+    created.assert_hits(1);
 }
 
 #[test]

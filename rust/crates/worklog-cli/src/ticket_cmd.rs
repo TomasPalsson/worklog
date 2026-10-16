@@ -18,6 +18,7 @@ use worklog_core::tempo_hub_contract::TicketStatus;
 
 use crate::daemon_client as daemon;
 use crate::style;
+use crate::ticket_hours::{estimate_seconds, pin_hours};
 
 #[derive(Subcommand, Debug)]
 pub enum TicketCmd {
@@ -92,6 +93,9 @@ pub struct CreateArgs {
     /// Leave the ticket unassigned instead of assigning it to you.
     #[arg(long)]
     pub unassigned: bool,
+    /// Estimated hours (e.g. 2 or 1,5), set as the Jira Original Estimate.
+    #[arg(long)]
+    pub estimate: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -104,7 +108,7 @@ pub enum AccountCmd {
     Relearn,
 }
 
-fn dump<W: Write, T: Serialize>(out: &mut W, v: &T) -> Result<()> {
+pub(crate) fn dump<W: Write, T: Serialize>(out: &mut W, v: &T) -> Result<()> {
     writeln!(out, "{}", serde_json::to_string_pretty(v)?)?;
     Ok(())
 }
@@ -232,9 +236,11 @@ pub fn run_account<W: Write>(sub: AccountCmd, out: &mut W, json: bool) -> Result
 fn create<W: Write>(a: CreateArgs, out: &mut W, json: bool) -> Result<()> {
     let description = std::fs::read_to_string(&a.description_file)
         .with_context(|| format!("reading {}", a.description_file.display()))?;
+    let estimate_seconds = a.estimate.as_deref().map(estimate_seconds).transpose()?;
     let body = AssistCreateBody {
         assignee_account_id: a.assignee,
         unassigned: a.unassigned,
+        estimate_seconds,
         ..create_body(a.summary, description, a.account, a.guessed, a.clues)
     };
     let c: AssistCreated = daemon::post("/tickets/assist-create", &serde_json::to_value(&body)?)?;
@@ -243,51 +249,6 @@ fn create<W: Write>(a: CreateArgs, out: &mut W, json: bool) -> Result<()> {
     }
     style::ok(out, &format!("created {} ({})", c.key, c.account.name))?;
     writeln!(out, "{}", c.url)?;
-    Ok(())
-}
-
-fn pin_hours<W: Write>(
-    key: &str,
-    hours: Option<String>,
-    day: Option<String>,
-    out: &mut W,
-    json: bool,
-) -> Result<()> {
-    let day = match day {
-        Some(d) => chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d")
-            .with_context(|| format!("--day must be YYYY-MM-DD, got {d:?}"))?,
-        None => chrono::Utc::now()
-            .with_timezone(&worklog_core::tz::day_offset())
-            .date_naive(),
-    }
-    .to_string();
-    let hours = hours
-        .map(|h| {
-            h.replace(',', ".")
-                .parse::<f64>()
-                .with_context(|| format!("hours must be a number, got {h:?}"))
-        })
-        .transpose()?;
-    let paths = worklog_core::paths::Paths::resolve()?;
-    let conn = worklog_core::db::open(&paths.db)?;
-    worklog_core::tempo_lines::pin_hours(
-        &conn,
-        &worklog_core::tempo_line_contract::SetTempoLineHours {
-            day: day.clone(),
-            jira_issue: key.to_string(),
-            seconds: hours.map(|h| (h * 3600.0).round() as i64),
-        },
-    )?;
-    if json {
-        return dump(
-            out,
-            &json!({ "jira_issue": key, "day": day, "hours": hours }),
-        );
-    }
-    match hours {
-        Some(h) => writeln!(out, "{key} on {day}: {h}h (pinned)")?,
-        None => writeln!(out, "{key} on {day}: pin cleared")?,
-    }
     Ok(())
 }
 
@@ -306,6 +267,7 @@ fn create_body(
         clues,
         assignee_account_id: None,
         unassigned: false,
+        estimate_seconds: None,
     }
 }
 
