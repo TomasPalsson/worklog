@@ -17,3 +17,12 @@
 - Minor: tempo_line_redescribe.rs — prepare() trims the instruction again after the route trimmed it; LineRedescribePrep.instruction is read only by tests
 - Minor: GroupContextMenu.tsx — `boxOpen && lineKey` re-checks lineKey only to narrow the type
 - Discovered: web/components/GroupContextMenu.test.tsx:34 — open helper renders `lineKey={lineKey ?? undefined}x={10}` with no space (works, reads like a typo) — defer
+- Assumption: per-task review-package + two-lens review skipped; orchestrator read each diff and ticked on the verify exit code, relying on the final branch review — evidence: transcript:352 (audit)
+- Assumption: CHK001 daemon ran with WORKLOG_ESTIMATOR_PROVIDER=claude_subprocess and an empty WORKLOG_SECRETS_FILE to get past the Keychain hang — evidence: transcript:1225 (audit)
+- Assumption: test DB reset by hand with sqlite3 after a direct curl wrote a text, before the browser run — evidence: transcript:1399 (audit)
+- Assumption: gates run with CLAUDE.md's own commands because flow check finds no root project file — evidence: transcript:2192 (audit)
+- Assumption: CHK001 unticked by sed and re-ticked with --sha 9eb7416 (menu commit) after flow tick took the evidence commit — evidence: transcript:1557 (audit)
+- Assumption: orchestrator committed the T009 developer's uncommitted test file itself — evidence: transcript:2008 (audit)
+- Assumption: FR-06 'not stored' left INCONCLUSIVE (no instruction column exists; nothing asserts it) — evidence: transcript:1861 (audit)
+- Assumption: no fresh review over the post-review commits (gate fix, T008, T009, rustfmt) — evidence: transcript:1946 (audit)
+- Assumption: review-diff not re-run after its receipt-check misfire; findings triaged by hand instead — evidence: transcript:1779 (audit)
