@@ -183,6 +183,25 @@ describe("TicketGroup header menu", () => {
     expect(item().title).toBe("Pick a ticket first");
   });
 
+  it("a block card inside the group opens the block menu, not the group menu (catches the handler on the whole group)", async () => {
+    const { BlockCard } = await import("./BlockCard");
+    const block = {
+      id: 1, day: "2026-09-25", jira_issue: "PROJ-1", started_at: "2026-09-25T10:00:00Z",
+      ended_at: "2026-09-25T10:30:00Z", duration_seconds: 1800, description: "worked on stuff",
+      estimated_by: "ai", tempo_worklog_id: null, is_personal: false, ignored_at: null, dirty: false,
+      event_count: 3, sources: [], project_path: null, confidence: "high",
+    } as unknown as import("@/lib/types").Block;
+    render(
+      <TicketGroup group={group()} day="2026-09-25" line={line()} saveText={saveText} saveHours={saveHours} regenerate={regenerate}>
+        <BlockCard block={block} tickets={[]} day="2026-09-25" dayBlocks={[]} />
+      </TicketGroup>,
+    );
+    fireEvent.contextMenu(screen.getByRole("article"), { clientX: 5, clientY: 6 });
+    expect(screen.getAllByRole("menu").length).toBe(1);
+    expect(screen.getByRole("menuitem", { name: "Describe with Claude" })).toBeTruthy();
+    expect(screen.getAllByRole("menuitem").length).toBeGreaterThan(1);
+  });
+
   it("the header stays focusable for keyboard users (catches dropping tabIndex)", () => {
     renderGroup(group(), line());
     expect(summary().tabIndex).toBe(0);

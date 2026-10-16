@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
+import { useState } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { RedescribeTempoLineBody, TempoLine, TempoLineKey } from "@/lib/tempo_line_contract";
 import { dismiss, subscribe, type ToastMsg } from "@/lib/toast";
@@ -146,5 +147,23 @@ describe("GroupContextMenu", () => {
     await waitFor(() => expect(submit().textContent).toBe("Writing…"));
     fireEvent.mouseDown(document.body);
     expect(close).not.toHaveBeenCalled();
+  });
+
+  it("Esc while writing closes the menu and the later reply still toasts (catches dropping the result on close)", async () => {
+    let finish!: (t: TempoLine) => void;
+    redescribe.mockImplementationOnce(() => new Promise<TempoLine>((resolve) => (finish = resolve)));
+    const Host = () => {
+      const [shown, setShown] = useState(true);
+      return shown ? <GroupContextMenu lineKey={key} x={10} y={10} close={() => setShown(false)} /> : null;
+    };
+    render(<Host />);
+    fireEvent.click(item());
+    type("login bug");
+    fireEvent.click(submit());
+    await waitFor(() => expect(submit().textContent).toBe("Writing…"));
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    finish(returned);
+    await waitFor(() => expect(toasts().some((t) => t.text === "Text rewritten")).toBe(true));
   });
 });
