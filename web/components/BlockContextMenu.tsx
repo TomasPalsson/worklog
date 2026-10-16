@@ -3,8 +3,8 @@
 import { useEffect, useRef, useState, useTransition, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
 import type { Block } from "@/lib/types";
 import { formatRange } from "@/lib/format";
-import { deleteBlock, undoLastChange } from "@/app/actions";
-import { redescribeBlock } from "@/app/actions-block-menu";
+import { deleteBlock, mergeGroup, undoLastChange } from "@/app/actions";
+import { redescribeBlock, splitBlock } from "@/app/actions-block-menu";
 import type { NoteFields } from "@/lib/noteBlock";
 import { MAX_INSTRUCTION_CHARS } from "@/lib/redescribe";
 import { toast } from "@/lib/toast";
@@ -28,6 +28,8 @@ interface Props {
 }
 
 const DELETE_BLOCKED = "Synced or exported — can't delete";
+const MERGE_LOCKED = "Synced or exported — can't merge";
+const MERGE_OVERLAP = "Overlaps in time — merging would double-count";
 // Mirror the daemon's REASON_* strings so the tooltip says what a refusal would.
 const REDESCRIBE_PERSONAL = "personal blocks are not described";
 const REDESCRIBE_NOTE_BLOCK = "note blocks are rewritten from their note";
@@ -68,6 +70,69 @@ function redescribeBlockedReason(block: Block & NoteFields) {
   if (block.rough_note) return REDESCRIBE_NOTE_BLOCK;
   if (!block.description?.trim()) return REDESCRIBE_NOT_DESCRIBED;
   return undefined;
+}
+
+/** The live blocks directly before and after `block` on its day, by start time. */
+function neighbours(block: Block, dayBlocks: Block[]) {
+  const start = Date.parse(block.started_at);
+  const others = dayBlocks
+    .filter((o) => o.id !== block.id && o.day === block.day && !o.ignored_at)
+    .sort((a, b) => Date.parse(a.started_at) - Date.parse(b.started_at));
+  return {
+    prev: others.filter((o) => Date.parse(o.started_at) <= start).at(-1),
+    next: others.find((o) => Date.parse(o.started_at) > start),
+  };
+}
+
+function mergeBlockedReason(block: Block, other: Block | undefined, none: string) {
+  if (block.tempo_worklog_id || block.exported_at) return MERGE_LOCKED;
+  if (!other) return none;
+  if (other.tempo_worklog_id || other.exported_at) return MERGE_LOCKED;
+  if (Date.parse(block.started_at) < Date.parse(other.ended_at) && Date.parse(other.started_at) < Date.parse(block.ended_at)) {
+    return MERGE_OVERLAP;
+  }
+  return undefined;
+}
+
+/** Replaces the item list: whole minutes the first half keeps for "Split…". */
+function SplitBox({ block, day, close }: { block: Block; day: string; close: () => void }) {
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const minutes = Number(value);
+  const max = Math.ceil(block.duration_seconds / 60) - 1;
+  const valid = value.trim() !== "" && Number.isInteger(minutes) && minutes >= 1 && minutes <= max;
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(undefined);
+    const r = await splitBlock(block.id, day, minutes);
+    setBusy(false);
+    if (!r.ok) return setError(r.error);
+    toast.ok(`Split ${formatRange(block.started_at, block.ended_at)} at ${minutes}m`);
+    close();
+  };
+
+  return (
+    <form className="block-context-menu-instruction" onSubmit={submit}>
+      <input
+        autoFocus
+        type="number"
+        aria-label="Minutes"
+        min={1}
+        max={max}
+        step={1}
+        value={value}
+        readOnly={busy}
+        onChange={(e) => setValue(e.target.value)}
+      />
+      <button type="submit" disabled={busy || !valid}>
+        Confirm
+      </button>
+      {error && <div role="alert">{error}</div>}
+    </form>
+  );
 }
 
 /** Replaces the item list: the one-time instruction for "Regenerate with prompt…". */
@@ -124,6 +189,7 @@ export function BlockContextMenu({ block, day, dayBlocks, x, y, close, onDescrib
   const menuRef = useRef<HTMLDivElement>(null);
   const [, start] = useTransition();
   const [boxOpen, setBoxOpen] = useState(false);
+  const [splitOpen, setSplitOpen] = useState(false);
   const [writing, setWriting] = useState(false);
   const locked = !!block.tempo_worklog_id || !!block.exported_at;
   const ignoreReason = block.tempo_worklog_id
@@ -147,10 +213,23 @@ export function BlockContextMenu({ block, day, dayBlocks, x, y, close, onDescrib
     });
   };
 
+  const onMerge = (other: Block) => {
+    close();
+    start(async () => {
+      const r = await mergeGroup(block.id, [other.id], day);
+      if (!r.ok) toast.error(`Merge failed — ${r.error}`);
+      else toast.ok(`Merged ${formatRange(other.started_at, other.ended_at)} into ${timeRangeLabel}`);
+    });
+  };
+  const { prev, next } = neighbours(block, dayBlocks);
+
   const items: [label: string, run: () => void, disabledReason?: string][] = [
     ["Describe with Claude", () => (close(), onDescribe())],
     [block.is_personal ? "Mark as work" : "Mark personal", () => (close(), onTogglePersonal())],
     ["Regenerate with prompt…", () => setBoxOpen(true), redescribeBlockedReason(block)],
+    ["Split…", () => setSplitOpen(true)],
+    ["Merge with previous", () => prev && onMerge(prev), mergeBlockedReason(block, prev, "No previous block")],
+    ["Merge with next", () => next && onMerge(next), mergeBlockedReason(block, next, "No next block")],
     ["Noise", () => onIgnore("noise"), locked ? ignoreReason : undefined],
     ["Duplicate", onDuplicate, locked ? ignoreReason : undefined],
     ["Internal", () => (close(), onInternal()), locked ? ignoreReason : undefined],
@@ -165,7 +244,9 @@ export function BlockContextMenu({ block, day, dayBlocks, x, y, close, onDescrib
       style={{ left: x, top: y }}
       onKeyDown={menuKeys}
     >
-      {boxOpen ? (
+      {splitOpen ? (
+        <SplitBox block={block} day={day} close={close} />
+      ) : boxOpen ? (
         <InstructionBox block={block} day={day} close={close} onWriting={setWriting} />
       ) : (
         items.map(([label, run, disabledReason]) => (

@@ -45,7 +45,11 @@ const redescribeBlock = mock(async (_id: number, _day: string, _instruction: str
   data: { block_id: 1, description: "Fixed the login bug" },
 }));
 type RedescribeReply = Awaited<ReturnType<typeof redescribeBlock>> | { ok: false; error: string };
-mock.module("@/app/actions-block-menu", () => ({ redescribeBlock }));
+const splitBlock = mock(async (_id: number, _day: string, _minutes: number) => ({
+  ok: true as const,
+  data: {},
+}));
+mock.module("@/app/actions-block-menu", () => ({ redescribeBlock, splitBlock }));
 mock.module("next/navigation", () => ({
   useRouter: () => ({ refresh: mock(() => {}) }),
   usePathname: () => "/",
@@ -59,7 +63,7 @@ beforeAll(async () => {
 afterEach(() => {
   cleanup();
   subscribe((queued) => queued.forEach((msg) => dismiss(msg.id)))();
-  for (const m of [setPersonal, setIgnored, deleteBlock, mergeGroup, describeBlock, undoLastChange, redescribeBlock]) m.mockClear();
+  for (const m of [setPersonal, setIgnored, deleteBlock, mergeGroup, describeBlock, undoLastChange, redescribeBlock, splitBlock]) m.mockClear();
   deleteBlock.mockImplementation(okRes);
 });
 
@@ -169,7 +173,7 @@ describe("BlockContextMenu opening (FR-08, FR-09)", () => {
     openMenu();
     const items = screen.getAllByRole("menuitem");
     expect(items.map((i) => i.tagName)).toEqual(items.map(() => "BUTTON"));
-    expect(items.length).toBe(7);
+    expect(items.length).toBe(10);
   });
 });
 
@@ -399,5 +403,169 @@ describe("BlockContextMenu regenerate with prompt (FR-05, FR-07b)", () => {
   it("stays enabled on a synced or exported block (FR-14)", () => {
     openMenu(makeBlock({ tempo_worklog_id: "TW-1", exported_at: "2026-07-26T10:00:00Z" }));
     expect(item(REGENERATE).disabled).toBe(false);
+  });
+});
+
+describe("BlockContextMenu split (FR-12)", () => {
+  // 30-minute block: valid first parts are 1..29.
+  const openSplit = (block: Block = makeBlock()) => {
+    openMenu(block);
+    fireEvent.click(item("Split…"));
+  };
+  const minutes = () => screen.getByLabelText("Minutes") as HTMLInputElement;
+  const confirm = () => screen.getByRole("button", { name: "Confirm" }) as HTMLButtonElement;
+  const type = (v: string) => fireEvent.change(minutes(), { target: { value: v } });
+
+  it("opens a blank minutes box, menu still open, Confirm disabled (catches a prefilled value)", () => {
+    openSplit();
+    expect(screen.getByRole("menu")).toBeTruthy();
+    expect(minutes().value).toBe("");
+    expect(confirm().disabled).toBe(true);
+  });
+
+  it.each([
+    ["0 (below range)", "0", true],
+    ["1 (lower bound)", "1", false],
+    ["29 (length - 1)", "29", false],
+    ["30 (== length, > for >=)", "30", true],
+    ["31", "31", true],
+    ["-5", "-5", true],
+    ["2.5 (fraction)", "2.5", true],
+    ["blank", "", true],
+  ])("Confirm for %s is disabled=%s", (_n, v, disabled) => {
+    openSplit();
+    type(v);
+    expect(confirm().disabled).toBe(disabled);
+  });
+
+  it("a 30m30s block allows 30 but not 31 (catches flooring the length)", () => {
+    openSplit(makeBlock({ duration_seconds: 1830 }));
+    type("30");
+    expect(confirm().disabled).toBe(false);
+    type("31");
+    expect(confirm().disabled).toBe(true);
+  });
+
+  it("confirm splits this block on this day at the typed minutes and closes", async () => {
+    openSplit(makeBlock({ id: 9 }));
+    type("12");
+    fireEvent.click(confirm());
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    expect(splitBlock).toHaveBeenCalledWith(9, DAY, 12);
+  });
+
+  it("a daemon refusal shows its reason inside the menu, keeps the box and value (swallowed error)", async () => {
+    splitBlock.mockImplementationOnce(async () => ({ ok: false, error: "split point 5m is not allowed" }) as never);
+    openSplit();
+    type("5");
+    fireEvent.click(confirm());
+    await waitFor(() => expect(screen.getByRole("menu").textContent).toContain("split point 5m is not allowed"));
+    expect(minutes().value).toBe("5");
+    expect(confirm().disabled).toBe(false);
+  });
+
+  it.each([
+    ["synced", { tempo_worklog_id: "TW-1" }],
+    ["exported", { exported_at: "2026-07-26T10:00:00Z" }],
+  ])("stays enabled on a %s block (FR-14)", (_n, o) => {
+    openMenu(makeBlock(o));
+    expect(item("Split…").disabled).toBe(false);
+  });
+});
+
+describe("BlockContextMenu merge with neighbour (FR-13, FR-14)", () => {
+  const at = (id: number, from: string, to: string, o: Partial<Block> = {}) =>
+    makeBlock({ id, started_at: `${DAY}T${from}:00Z`, ended_at: `${DAY}T${to}:00Z`, ...o });
+  const me = at(2, "10:00", "10:30", { jira_issue: "PROJ-1" });
+  const MERGE_PREV = "Merge with previous";
+  const MERGE_NEXT = "Merge with next";
+
+  it("merges into the previous block with the clicked block as primary, whatever ticket or gap", async () => {
+    const prev = at(1, "08:00", "08:30", { jira_issue: "OTHER-9" });
+    openMenu(me, [prev, me]);
+    fireEvent.click(item(MERGE_PREV));
+    await waitFor(() => expect(mergeGroup).toHaveBeenCalledWith(2, [1], DAY));
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("merges the next block, primary still the clicked one (catches swapped primary)", async () => {
+    openMenu(me, [me, at(3, "12:00", "12:30")]);
+    fireEvent.click(item(MERGE_NEXT));
+    await waitFor(() => expect(mergeGroup).toHaveBeenCalledWith(2, [3], DAY));
+  });
+
+  it("picks the adjacent neighbour from an unsorted list, not the first or last (catches array order)", async () => {
+    const day = [at(5, "15:00", "15:30"), at(4, "06:00", "06:30"), me, at(3, "11:00", "11:30"), at(1, "09:00", "09:30")];
+    openMenu(me, day);
+    fireEvent.click(item(MERGE_PREV));
+    await waitFor(() => expect(mergeGroup).toHaveBeenCalledWith(2, [1], DAY));
+    cleanup();
+    mergeGroup.mockClear();
+    openMenu(me, day);
+    fireEvent.click(item(MERGE_NEXT));
+    await waitFor(() => expect(mergeGroup).toHaveBeenCalledWith(2, [3], DAY));
+  });
+
+  it("a refused merge toasts the reason (swallowed error)", async () => {
+    mergeGroup.mockImplementationOnce(async () => ({ ok: false, error: "would orphan a synced block" }) as never);
+    openMenu(me, [at(1, "08:00", "08:30"), me]);
+    fireEvent.click(item(MERGE_PREV));
+    await waitFor(() => expect(toasts().some((t) => t.text.includes("would orphan a synced block"))).toBe(true));
+  });
+
+  it("first block of the day: previous disabled, next enabled; last block: the reverse", () => {
+    openMenu(me, [me, at(3, "12:00", "12:30")]);
+    expect(item(MERGE_PREV).disabled).toBe(true);
+    expect(item(MERGE_PREV).title).not.toBe("");
+    expect(item(MERGE_NEXT).disabled).toBe(false);
+    cleanup();
+    openMenu(me, [at(1, "08:00", "08:30"), me]);
+    expect(item(MERGE_PREV).disabled).toBe(false);
+    expect(item(MERGE_NEXT).disabled).toBe(true);
+  });
+
+  it("a lone block disables both", () => {
+    openMenu(me, [me]);
+    expect(item(MERGE_PREV).disabled).toBe(true);
+    expect(item(MERGE_NEXT).disabled).toBe(true);
+  });
+
+  it.each([
+    ["synced", { tempo_worklog_id: "TW-1" }],
+    ["exported", { exported_at: "2026-07-26T10:00:00Z" }],
+  ])("a %s neighbour disables only that side, with a reason", (_n, o) => {
+    openMenu(me, [at(1, "08:00", "08:30", o), me, at(3, "12:00", "12:30")]);
+    expect(item(MERGE_PREV).disabled).toBe(true);
+    expect(item(MERGE_PREV).title).not.toBe("");
+    expect(item(MERGE_NEXT).disabled).toBe(false);
+  });
+
+  it("a synced block further back does not matter (adjacent only)", () => {
+    openMenu(me, [at(0, "06:00", "06:30", { tempo_worklog_id: "TW-1" }), at(1, "08:00", "08:30"), me]);
+    expect(item(MERGE_PREV).disabled).toBe(false);
+  });
+
+  it("touching blocks merge; overlap by one minute does not (catches <= for <)", () => {
+    openMenu(me, [at(1, "09:30", "10:00"), me, at(3, "10:29", "11:00")]);
+    expect(item(MERGE_PREV).disabled).toBe(false);
+    expect(item(MERGE_NEXT).disabled).toBe(true);
+  });
+
+  it.each([
+    ["synced", { tempo_worklog_id: "TW-1" }],
+    ["exported", { exported_at: "2026-07-26T10:00:00Z" }],
+  ])("both Merge items are disabled when the clicked block is %s (FR-14)", (_n, o) => {
+    const mine = { ...me, ...o } as Block;
+    openMenu(mine, [at(1, "08:00", "08:30"), mine, at(3, "12:00", "12:30")]);
+    for (const name of [MERGE_PREV, MERGE_NEXT]) {
+      expect(item(name).disabled).toBe(true);
+      expect(item(name).title).not.toBe("");
+    }
+  });
+
+  it("ignored blocks and other days are not neighbours", () => {
+    openMenu(me, [at(1, "08:00", "08:30", { ignored_at: "2026-07-25T11:00:00Z" }), me, at(3, "12:00", "12:30", { day: "2026-07-26" })]);
+    expect(item(MERGE_PREV).disabled).toBe(true);
+    expect(item(MERGE_NEXT).disabled).toBe(true);
   });
 });
