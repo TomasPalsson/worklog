@@ -1,4 +1,5 @@
 Approved: 2026-10-16 by user
+Verified: 2026-10-16 by user (pre-approved: /flow:next --finish)
 # Tasks — Right-click menu on blocks
 Spec: spec.md · Design: design.md · Base: 6a168ef · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && cd web && bun test`
 

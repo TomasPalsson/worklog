@@ -1,23 +1,23 @@
-# claim-check: 026 acceptance.md (HEAD 22cb325, each command re-run via `bash -c`, exit read directly)
+# claim-check: 026 acceptance.md (re-run at HEAD bf05bc9)
+FR-01 CONFIRMED: exit 0, 1 test (rewrites_only_the_description_column) ran; asserts only description column changes.
+FR-02 CONFIRMED: exit 0, 1 passed; prompt carries instruction, description, ticket, evidence.
+FR-03 CONFIRMED: exit 0, 1 passed (instruction_is_not_remembered).
+FR-04 CONFIRMED: exit 0, 8 passed; blank, 500-limit-after-trim, over_long_instruction_leaves_block_row_unchanged all present and cover empty/501 -> 400 + block unchanged.
+FR-05 CONFIRMED: exit 0; rust refuses 4 passed (unknown/note/personal/missing-empty-blank); bun 17 pass 0 fail (37 skipped by filter); personal/note/undescribed/blank disabled-with-tooltip tests present. Note: the 17 include FR-07b and FR-14 tests; the 4 disabled-reason ones are the FR-05 evidence.
+FR-06 CONFIRMED: exit 0, 1 passed (synced_block_is_marked_dirty_and_keeps_its_ids).
+FR-07 CONFIRMED: exit 0, 1 passed (undo_restores_the_old_row).
+FR-07a CONFIRMED: exit 0; 3+1+2 = 6 passed (reply_*, unusable_replies, long_reply_*); empty and 600-char cut covered.
+FR-07b CONFIRMED: exit 0, bun pass 3 fail 0 (button Writing..., outside click ignored, Esc closes).
+FR-08 CONFIRMED: exit 0, bun pass 1 fail 0; asserts synchronous open and preventDefault.
+FR-09 CONFIRMED: exit 0, bun pass 4 fail 0 (ContextMenu key, Shift+F10, arrows, Esc + focus return). Command works only with the table `\|` read as `|` (as instructed); literal backslash-pipe in basic-regex matches 0.
+FR-10 CONFIRMED: exit 0, bun pass 6 fail 0; Describe, Personal, Work, Noise, Duplicate, Internal each tested.
+FR-11 CONFIRMED: exit 0, bun pass 9 fail 0; deleteBlock, Undo toast, refused delete, disabled on synced/exported present. The 3 synced-guard Ignore tests in the count are FR-14 filler, but 6 delete tests cover FR-11.
+FR-12 CONFIRMED: exit 0; 14 component + 13 splitBlock = 27 pass 0 fail; blank start, 0/30 disabled, 1/29 enabled, split called with minutes, refusal shown in menu.
+FR-13 CONFIRMED: exit 0, bun pass 14 fail 0; primary kept, any ticket/gap, prev/next/none/synced neighbour, overlap-by-1-minute disabled.
+FR-14 CONFIRMED: exit 0, bun pass 20 fail 0; Ignore x3 and both Merge disabled on synced/exported; Describe/Personal, Split, Regenerate stay enabled tests present; Delete via FR-11. Not tested here: the "daemon refusal shows as error toast" clause (merge/delete refusal toast tests exist in other filters but not in this command).
+FR-15 CONFIRMED: exit 0, bun pass 2 fail 0 (right-click and ContextMenu key open nothing with hideTicketing).
+CHK001 CONFIRMED (existence only): verify/CHK001.md (1837 B) and CHK001-1..5 jpg (49-56 KB each) exist and are non-empty.
 
-FR-01 CONFIRMED: exit 0, 1 passed; test diffs full row, only `description` changed.
-FR-02 CONFIRMED: exit 0, 1 passed; capturing fake model checks instruction + description + ticket + evidence.
-FR-03 CONFIRMED: exit 0, 1 passed; 1st run "make it shorter", 2nd call's prompt asserted free of it.
-FR-04 CONFIRMED (weak spot): exit 0, 7 passed; blank -> 400 and row unchanged asserted; 501 -> 400 asserted but "block unchanged" not asserted for the 501 case.
-FR-05 CONFIRMED: exit 0, rust 4 passed + bun 17 pass / 0 fail; personal/note/undescribed/blank disabled with exact reason title.
-FR-06 CONFIRMED: exit 0, 1 passed; changed cols = description+dirty, tempo id and exported_at kept.
-FR-07 CONFIRMED: exit 0, 1 passed; undo restores full row snapshot.
-FR-07a CONFIRMED: exit 0, 3+1+2 = 6 passed; empty/unusable reply leaves block, 600-char cut at word boundary.
-FR-07b CONFIRMED: exit 0, 3 pass / 0 fail (outside click ignored while writing, Esc closes).
-FR-08 CONFIRMED: exit 0, 1 pass; synchronous menu + default prevented.
-FR-09 CONFIRMED (narrow): exit 0, 3 pass; covers ContextMenu key, Shift+F10, Esc+focus return. Spec FR-09 also says "arrow keys move"; that test ("arrow keys move focus") exists but is NOT in the -t filter, so it is not part of this evidence.
-FR-10 CONFIRMED: exit 0, 6 pass; each item asserted against the same action mock.
-FR-11 CONFIRMED: exit 0, 9 pass; deleteBlock + Undo toast, disabled with exact "Synced or exported — can't delete" tooltip. (Filter also pulls in the 'synced guard' tests; count 9 is real.)
-FR-12 CONFIRMED: exit 0, 14 + 13 = 27 pass; 0/30 disabled, 1..29 enabled, splitBlock(…, minutes) asserted, refusal reason shown.
-FR-13 CONFIRMED: exit 0, 14 pass; primary = clicked block, no-neighbour / synced neighbour / overlap disabled, touching ok.
-FR-14 UNSUPPORTED (partial): exit 0, 19 pass, but the claim "others enabled" is only evidenced for Describe, Personal, Regenerate, and Delete's disabled state. No test in the filtered set (or anywhere in BlockContextMenu.test.tsx) asserts Split is enabled on a synced/exported block. Ignore x3 and Merge x2 disabled are covered.
-FR-15 CONFIRMED: exit 0, 2 pass; hideTicketing card: contextmenu not cancelled, no role=menu, ContextMenu key opens nothing.
-CHK001 CONFIRMED (existence only): CHK001.md and CHK001-{1-before,2-menu,3-instruction,4-writing,5-after}.jpg all exist and are non-empty. Content not judged (human check).
+Observed, not requested: acceptance.md line 3 says "Run at HEAD 22cb325"; actual HEAD is bf05bc9 (rows re-run at 4af6057 per same line).
 
-Counts: every "Showed" count matched the actual run (pass counts above, 0 fail; skips are only filter exclusions).
-Summary: 16 confirmed, 1 unsupported, 0 inconclusive, 0 not-checkable.
+18 confirmed, 0 unsupported, 0 inconclusive, 0 not-checkable.
