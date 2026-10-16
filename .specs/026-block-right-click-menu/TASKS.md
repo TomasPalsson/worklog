@@ -1,5 +1,6 @@
+Approved: 2026-10-16 by user
 # Tasks — Right-click menu on blocks
-Spec: spec.md · Design: design.md · Base: 2ae109a · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && cd web && bun test`
+Spec: spec.md · Design: design.md · Base: 6a168ef · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && cd web && bun test`
 
 ## Behaviors
 | ID | Given / When / Then | Task | Proven by | Key |
@@ -29,13 +30,14 @@ Synced or exported blocks (tempo_worklog_id / exported_at set) — T003, T006
 ## Phase 1 — Right-click opens a menu with today's block actions
 Goal: right-clicking a block on the day page opens a menu that runs Describe, Personal/Work, Ignore (Noise / Duplicate / Internal) and Delete through the existing server actions and daemon.
 Independent test: `cd web && bun test components/BlockContextMenu.test.tsx components/BlockCard.test.tsx` — menu items call the real action modules' mocked daemon paths.
-- [ ] T001 Prefactor: lift IgnoreMenu's onIgnore / onDuplicate handlers into a hook IgnoreMenu and the new menu both use, no behaviour change (FR-10) — files: web/components/useIgnoreActions.ts, web/components/IgnoreMenu.tsx — verify: `cd web && bun test components/BlockCard.test.tsx && bun run typecheck` — follow: web/components/useNoteRegenerate.ts
+- [ ] T000 Baseline: run the Test: command at Base into verify/baseline-tests.txt (exit code + failing test names) — files: .specs/026-block-right-click-menu/verify/baseline-tests.txt — verify: `test -s .specs/026-block-right-click-menu/verify/baseline-tests.txt`
+- [ ] T001 Prefactor: lift IgnoreMenu's onIgnore / onDuplicate handlers into a hook IgnoreMenu and the new menu both use, no behaviour change (FR-10) — files: web/components/useIgnoreActions.ts, web/components/IgnoreMenu.tsx — verify: `cd web && bun test components/BlockCard.test.tsx && bun run typecheck` — follow: web/components/useNoteRegenerate.ts — after: T000
 - [ ] T002 BlockContextMenu opened by right-click and keyboard, with Describe, Personal/Work, Noise, Duplicate, Internal, Delete+Undo; disabled when hideTicketing (FR-08, FR-09, FR-10, FR-11, FR-14, FR-15) — files: web/components/BlockContextMenu.tsx, web/components/BlockContextMenu.test.tsx, web/components/BlockCard.tsx, web/components/BlockCard.test.tsx, web/app/globals.css — verify: `cd web && bun test components/BlockContextMenu.test.tsx components/BlockCard.test.tsx && bun run typecheck` — follow: web/components/IgnoreMenu.tsx — after: T001
 
 ## Phase 2 — Regenerate a description from the Owner's instruction
 Goal: the Owner types an instruction in the menu and the block's description is rewritten by the AI, with hours and ticket untouched, through the core, the daemon route and the web action.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core redescribe && cd web && bun test components/BlockContextMenu.test.tsx app/actions-block-menu.test.ts` — route returns the fake model's description and only that column changed; the menu posts the instruction.
-- [ ] T003 Core redescribe: prepare / invoke / commit / redescribe_block_with writing only description + dirty under an undo step (FR-01, FR-02, FR-03, FR-05, FR-06, FR-07, FR-07a) — files: rust/crates/worklog-core/src/redescribe.rs, rust/crates/worklog-core/src/redescribe_test.rs, rust/crates/worklog-core/src/lib.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core redescribe` — no_claim: model is a FixedInvoker; real model wording not exercised — follow: rust/crates/worklog-core/src/note_writer.rs
+- [ ] T003 Core redescribe: prepare / invoke / commit / redescribe_block_with writing only description + dirty under an undo step (FR-01, FR-02, FR-03, FR-05, FR-06, FR-07, FR-07a) — files: rust/crates/worklog-core/src/redescribe.rs, rust/crates/worklog-core/src/redescribe_test.rs, rust/crates/worklog-core/src/lib.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core redescribe` — no_claim: model is a FixedInvoker; real model wording not exercised — follow: rust/crates/worklog-core/src/note_writer.rs — after: T000
 - [ ] T004 [P] Route POST /blocks/:id/redescribe with instruction validation and the fake-model test seam (FR-04, FR-05) — files: rust/crates/worklog-core/src/daemon_redescribe.rs, rust/crates/worklog-core/src/daemon_redescribe_test.rs, rust/crates/worklog-core/src/daemon.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core daemon_redescribe` — no_claim: model is a fixed fake reply — follow: rust/crates/worklog-core/src/daemon_note_block.rs — after: T003
 - [ ] T005 [P] Web: daemon client, redescribeBlock server action, and the "Regenerate with prompt…" item with inline instruction box, Writing… state that ignores outside clicks, disabled reasons (FR-05, FR-07b) — files: web/lib/daemonBlockMenu.ts, web/app/actions-block-menu.ts, web/app/actions-block-menu.test.ts, web/components/BlockContextMenu.tsx, web/components/BlockContextMenu.test.tsx, web/components/BlockCard.test.tsx — verify: `cd web && bun test app/actions-block-menu.test.ts components/BlockContextMenu.test.tsx components/BlockCard.test.tsx && bun run typecheck` — follow: web/app/actions-note-block.ts — after: T002
 - [ ] CHK001 human-verify the PREP Verify line in the running review UI: right-click a badly described block → Regenerate with prompt → "this was the login bug fix" → description matches, duration and ticket unchanged — files: web/components/BlockContextMenu.tsx — verify: human: user confirms the description changed and hours + ticket did not — after: T004, T005
@@ -46,6 +48,6 @@ Independent test: `cd web && bun test app/actions-block-menu.test.ts components/
 - [ ] T006 Split… (minutes input) and Merge with previous / next, primary = clicked block, disabled with no or synced neighbour (FR-12, FR-13, FR-14) — files: web/lib/daemonBlockMenu.ts, web/app/actions-block-menu.ts, web/app/actions-block-menu.test.ts, web/components/BlockContextMenu.tsx, web/components/BlockContextMenu.test.tsx — verify: `cd web && bun test app/actions-block-menu.test.ts components/BlockContextMenu.test.tsx && bun run typecheck` — after: T005
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `flow check --fix --since 2ae109a`
+- [ ] G001 project gates clean — files: . — verify: `flow check --fix --since 6a168ef`
 - [ ] G002 branch review clean — files: . — verify: `flow pass`
 - [ ] G003 verification evidence exists — files: . — verify: `test -s verify/`
