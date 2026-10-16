@@ -575,10 +575,15 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
     // Load once per persist pass — cheap and avoids re-reading the TOML
     // for every block. classify() is pure given the config.
     let personal_cfg = crate::personal::PersonalConfig::load();
-    let skipped: std::collections::HashSet<String> = conn
-        .prepare("SELECT session_id FROM session_skips")?
-        .query_map([], |r| r.get(0))?
-        .collect::<Result<_, _>>()?;
+    // Skip reach: a skip covers blocks starting within this long after it was pressed.
+    const SKIP_REACH_MINUTES: i64 = 60;
+    let skipped: std::collections::HashMap<String, DateTime<Utc>> = conn
+        .prepare("SELECT session_id, set_at FROM session_skips")?
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter_map(|(id, at)| Some((id, parse_maybe_utc(&at)?)))
+        .collect();
 
     // Collect "carry" state so re-inference preserves tempo_worklog_id,
     // description, estimated_by, and manual ticket edits. We keep two
@@ -740,10 +745,17 @@ pub fn persist_blocks(conn: &Connection, day: NaiveDate, blocks: &[InferBlock]) 
         // An ignore is sticky once set, however the block grows or matches
         // (re-ignoring grown blocks was the pain). A block built only from
         // skipped sessions starts ignored, unless already synced/exported.
+        // A skip covers blocks starting no later than an hour after it was
+        // pressed (a resume after a break is real work).
         let from_skipped = !b.events.is_empty()
-            && b.events
-                .iter()
-                .all(|e| e.session_id.as_deref().is_some_and(|s| skipped.contains(s)));
+            && b.events.iter().all(|e| {
+                e.session_id
+                    .as_deref()
+                    .and_then(|s| skipped.get(s))
+                    .is_some_and(|set_at| {
+                        b.started_at <= *set_at + chrono::Duration::minutes(SKIP_REACH_MINUTES)
+                    })
+            });
         let (ignored_at, ignore_reason) = match carry.and_then(|c| c.ignored_at.clone()) {
             Some(ign) => (Some(ign), carry.and_then(|c| c.ignore_reason.clone())),
             None if from_skipped && tempo_id.is_none() && exported_at.is_none() => (
@@ -1125,6 +1137,35 @@ mod tests {
         DateTime::parse_from_rfc3339(&ignored_at.unwrap()).unwrap();
         assert_eq!(personal, 1);
         assert_eq!(reason_of(&conn), Some("noise".to_string()));
+    }
+
+    fn skip_at(conn: &rusqlite::Connection, set_at: &str) {
+        conn.execute(
+            "INSERT INTO session_skips (session_id, set_at) VALUES ('s1', ?1)",
+            [set_at],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn persist_blocks_skip_does_not_reach_a_resume_after_a_break() {
+        let conn = open_memory().unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        skip_at(&conn, "2026-04-18T00:06:00.000Z");
+        persist_blocks(&conn, day, &[session_block((9, 0), (9, 30), &["s1"])]).unwrap();
+        // catches: a skipped session resumed hours later still hiding real work
+        assert_eq!(ignored_state(&conn), (None, 0));
+    }
+
+    #[test]
+    fn persist_blocks_skip_covers_a_block_starting_within_the_hour() {
+        let conn = open_memory().unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        skip_at(&conn, "2026-04-18T08:30:00.000Z");
+        persist_blocks(&conn, day, &[session_block((9, 0), (9, 30), &["s1"])]).unwrap();
+        let (ignored_at, personal) = ignored_state(&conn);
+        assert!(ignored_at.is_some());
+        assert_eq!(personal, 1);
     }
 
     #[test]
