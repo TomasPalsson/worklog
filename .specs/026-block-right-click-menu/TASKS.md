@@ -1,4 +1,5 @@
 Approved: 2026-10-16 by user
+Verified: 2026-10-16 by user (pre-approved: /flow:next --finish)
 # Tasks — Right-click menu on blocks
 Spec: spec.md · Design: design.md · Base: 6a168ef · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml && cd web && bun test`
 
@@ -49,6 +50,6 @@ Independent test: `cd web && bun test app/actions-block-menu.test.ts components/
 - [x] T007 Pin the FR-14 and FR-04 gaps claim-check found: Split stays enabled on a synced block and on an exported block; a 501-char instruction leaves the block row unchanged (FR-04, FR-14) — files: web/components/BlockContextMenu.test.tsx, rust/crates/worklog-core/src/daemon_redescribe_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core daemon_redescribe && cd web && bun test components/BlockContextMenu.test.tsx` — after: T006 — done: 4af6057
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `flow check --fix --since 6a168ef`
-- [ ] G002 branch review clean — files: . — verify: `flow pass`
-- [ ] G003 verification evidence exists — files: . — verify: `test -s verify/`
+- [x] G001 project gates clean — files: . — verify: `flow check --fix --since 6a168ef` — done: 20b38df
+- [x] G002 branch review clean — files: . — verify: `flow pass` — done: 20b38df
+- [x] G003 verification evidence exists — files: . — verify: `test -s verify/` — done: 20b38df
