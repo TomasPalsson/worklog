@@ -2637,9 +2637,10 @@ button {
   flex-direction: column;
   min-width: 180px;
   padding: 4px;
-  background: var(--bg-elevated, var(--bg));
-  border: 1px solid var(--border);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
+  box-shadow: var(--elevation-modal); /* none in dark: --bg-raised's lightness lifts it */
 }
 
 .block-context-menu button {
@@ -2656,6 +2657,138 @@ button {
   opacity: 0.5;
 }
 
+/* "Regenerate with prompt…" box: label, one-line instruction, hint, then
+   key hints beside a Claude-violet submit (same pairing as the claude badge). */
+.instruction-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  padding: 8px;
+}
+
+.instruction-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.instruction-head label {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.instruction-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+
+.instruction-box input {
+  width: 100%;
+  min-height: 36px;
+  padding: 0 10px;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg-sunk);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  transition: border-color 120ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.instruction-box input::placeholder {
+  color: var(--fg-subtle);
+}
+
+.instruction-box input:focus-visible {
+  outline: none;
+  border-color: transparent;
+  box-shadow: var(--ring);
+}
+
+.instruction-box input:read-only {
+  color: var(--fg-muted);
+}
+
+.instruction-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fg-muted);
+}
+
+.instruction-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.instruction-keys {
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.instruction-keys kbd {
+  padding: 1px 5px;
+  font: inherit;
+  font-family: var(--font-mono);
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.instruction-keys kbd + kbd,
+.instruction-keys kbd:not(:first-child) {
+  margin-left: 6px;
+}
+
+.block-context-menu .instruction-foot button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 12px;
+  font-weight: 600;
+  color: var(--violet);
+  background: var(--violet-bg);
+  border-radius: 6px;
+  transition: filter 120ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.block-context-menu .instruction-foot button:hover:not(:disabled) {
+  background: var(--violet-bg);
+  filter: brightness(0.92);
+}
+
+.block-context-menu .instruction-foot button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.block-context-menu .instruction-foot button:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+
+.block-context-menu .instruction-foot button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.instruction-box[aria-busy="true"] .instruction-foot button:disabled {
+  opacity: 1;
+  cursor: progress;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .instruction-box .spin { animation: none; }
+}
+
+/* Split box: minutes input and Confirm in one row. */
 .block-context-menu-instruction {
   display: flex;
   flex-wrap: wrap;
