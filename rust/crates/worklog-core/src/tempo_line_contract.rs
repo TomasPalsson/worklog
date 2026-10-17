@@ -88,6 +88,20 @@ pub struct SetTempoLineText {
     pub text: String,
 }
 
+/// Body of `POST /tempo/lines/redescribe` (spec 027): the Owner's one-time
+/// instruction for rewriting this line's text. Never stored. Its limits and
+/// 400 reasons are `redescribe_contract::{MAX_INSTRUCTION_CHARS,
+/// REASON_EMPTY_INSTRUCTION, REASON_INSTRUCTION_TOO_LONG}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RedescribeTempoLineBody {
+    pub day: String,
+    pub jira_issue: String,
+    pub instruction: String,
+}
+
+/// 409 body: the line's text changed while the model was writing.
+pub const REASON_TEXT_CHANGED: &str = "the text changed while writing — try again";
+
 /// Body of `POST /tempo/lines/hours`. `None` clears the override.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetTempoLineHours {

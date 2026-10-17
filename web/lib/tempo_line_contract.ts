@@ -16,6 +16,15 @@ export interface TempoLineKey {
   jira_issue: string;
 }
 
+/** Mirrors `tempo_line_contract::RedescribeTempoLineBody` (spec 027). The
+ * instruction's limit is `MAX_INSTRUCTION_CHARS` in `./redescribe`. */
+export interface RedescribeTempoLineBody extends TempoLineKey {
+  instruction: string;
+}
+
+/** Mirrors `tempo_line_contract::REASON_TEXT_CHANGED` (409 body). */
+export const REASON_TEXT_CHANGED = "the text changed while writing — try again";
+
 /** Mirrors `tempo_line_contract::TempoLine`. */
 export interface TempoLine {
   day: string;

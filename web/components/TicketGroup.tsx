@@ -17,6 +17,8 @@ import type { LineCheck } from "@/lib/verdict_contract";
 import { OriginIcon, originLabel } from "./BillingGroup";
 import { TicketEstimate, TicketEstimateBadge, TicketJiraLink } from "./DayProgressProvider";
 import { LineHours } from "./LineHours";
+import { useBlockContextMenu } from "./BlockContextMenu";
+import { GroupContextMenu } from "./GroupContextMenu";
 import { MirresLine } from "./MirresLine";
 
 interface Props {
@@ -65,7 +67,7 @@ export function TicketGroup({
   const [pending, startTransition] = useTransition();
   const lookHintId = useId();
   const [merging, startMerge] = useTransition();
-  const summaryRef = useRef<HTMLElement>(null);
+  const { cardRef: summaryRef, cardProps, menuAt, closeMenu } = useBlockContextMenu(true);
   const editButtonRef = useRef<HTMLButtonElement>(null);
   const refocusEdit = useRef(false);
   const [editing, setEditing] = useState(false);
@@ -201,11 +203,12 @@ export function TicketGroup({
   );
 
   return (
+    <>
     <details
       className={`ticket-group ${group.unassigned ? "unassigned" : "assigned"} sync-${group.syncState}`}
       open={group.defaultOpen}
     >
-      <summary ref={summaryRef} tabIndex={0} className={line && lineKey ? "ticket-line-summary" : undefined}>
+      <summary ref={summaryRef} {...cardProps} className={line && lineKey ? "ticket-line-summary" : undefined}>
         {line && lineKey ? (
           // A Tempo line reads like the worklog it becomes: ticket and
           // state on top, the worklog text under it, the billed hours —
@@ -351,6 +354,8 @@ export function TicketGroup({
         {children}
       </div>
     </details>
+    {menuAt && <GroupContextMenu lineKey={lineKey} x={menuAt.x} y={menuAt.y} close={closeMenu} />}
+    </>
   );
 }
 

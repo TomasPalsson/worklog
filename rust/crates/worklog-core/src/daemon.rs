@@ -144,6 +144,9 @@ mod daemon_deildir;
 #[path = "daemon_tempo_lines.rs"]
 mod daemon_tempo_lines;
 
+#[path = "daemon_tempo_line_redescribe.rs"]
+mod daemon_tempo_line_redescribe;
+
 #[path = "daemon_changes.rs"]
 mod daemon_changes;
 
@@ -263,6 +266,10 @@ pub fn router(state: Shared) -> Router {
         .route(
             "/tempo/lines/regenerate",
             post(daemon_tempo_lines::regenerate),
+        )
+        .route(
+            "/tempo/lines/redescribe",
+            post(daemon_tempo_line_redescribe::redescribe),
         )
         .route("/tasks", get(daemon_tasks::list_tasks))
         .route(
@@ -3409,6 +3416,10 @@ mod tests {
 
     mod daemon_redescribe {
         include!("daemon_redescribe_test.rs");
+    }
+
+    mod daemon_tempo_line_redescribe {
+        include!("daemon_tempo_line_redescribe_test.rs");
     }
 
     mod daemon_assist {

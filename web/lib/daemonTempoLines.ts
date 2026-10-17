@@ -2,7 +2,12 @@
 // lib/daemon.ts's `call` transport.
 
 import { call } from "./daemon";
-import type { MirresDay, TempoLine, TempoLineKey } from "./tempo_line_contract";
+import type {
+  MirresDay,
+  RedescribeTempoLineBody,
+  TempoLine,
+  TempoLineKey,
+} from "./tempo_line_contract";
 
 export async function tempoLines(day: string): Promise<TempoLine[]> {
   return call("GET", `/tempo/lines/${encodeURIComponent(day)}`);
@@ -32,4 +37,8 @@ export async function setTempoLineHours(
 
 export async function regenerateTempoLine(key: TempoLineKey): Promise<TempoLine> {
   return call("POST", "/tempo/lines/regenerate", key);
+}
+
+export async function redescribeTempoLine(body: RedescribeTempoLineBody): Promise<TempoLine> {
+  return call("POST", "/tempo/lines/redescribe", body);
 }

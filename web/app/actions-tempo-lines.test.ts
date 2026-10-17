@@ -2,7 +2,7 @@
 // Mirrors actions-overlaps.test.ts: mock next/cache and the daemon client.
 
 import { beforeAll, beforeEach, describe, expect, it, mock } from "bun:test";
-import type { TempoLine, TempoLineKey } from "@/lib/tempo_line_contract";
+import type { RedescribeTempoLineBody, TempoLine, TempoLineKey } from "@/lib/tempo_line_contract";
 
 const revalidateImpl = mock((_path: string) => {});
 mock.module("next/cache", () => ({
@@ -25,17 +25,20 @@ const setTextImpl = mock(async (_key: TempoLineKey, _text: string) => line);
 const setHoursImpl = mock(async (_key: TempoLineKey, _seconds: number | null) => line);
 const regenerateImpl = mock(async (_key: TempoLineKey) => line);
 const refreshImpl = mock(async (_day: string) => [line]);
+const redescribeImpl = mock(async (_body: RedescribeTempoLineBody) => line);
 
 mock.module("@/lib/daemonTempoLines", () => ({
   setTempoLineText: (k: TempoLineKey, t: string) => setTextImpl(k, t),
   setTempoLineHours: (k: TempoLineKey, s: number | null) => setHoursImpl(k, s),
   regenerateTempoLine: (k: TempoLineKey) => regenerateImpl(k),
   refreshMirres: (d: string) => refreshImpl(d),
+  redescribeTempoLine: (b: RedescribeTempoLineBody) => redescribeImpl(b),
 }));
 
 let saveTempoLineText: typeof import("./actions-tempo-lines").saveTempoLineText;
 let saveTempoLineHours: typeof import("./actions-tempo-lines").saveTempoLineHours;
 let regenerateTempoLineText: typeof import("./actions-tempo-lines").regenerateTempoLineText;
+let redescribeTempoLineText: typeof import("./actions-tempo-lines").redescribeTempoLineText;
 let refreshMirresAction: typeof import("./actions-tempo-lines").refreshMirresAction;
 
 beforeAll(async () => {
@@ -43,6 +46,7 @@ beforeAll(async () => {
   saveTempoLineText = mod.saveTempoLineText;
   saveTempoLineHours = mod.saveTempoLineHours;
   regenerateTempoLineText = mod.regenerateTempoLineText;
+  redescribeTempoLineText = mod.redescribeTempoLineText;
   refreshMirresAction = mod.refreshMirresAction;
 });
 
@@ -52,6 +56,7 @@ beforeEach(() => {
   setHoursImpl.mockClear();
   regenerateImpl.mockClear();
   refreshImpl.mockClear();
+  redescribeImpl.mockClear();
 });
 
 describe("saveTempoLineText", () => {
@@ -115,6 +120,45 @@ describe("regenerateTempoLineText", () => {
     expect(result).toEqual({ ok: true, data: line });
     expect(regenerateImpl).toHaveBeenCalledWith(key);
     expect(revalidateImpl).toHaveBeenCalledWith("/2026-09-24");
+  });
+});
+
+describe("redescribeTempoLineText", () => {
+  it("sends key + instruction as one body, returns the line, revalidates the day", async () => {
+    const result = await redescribeTempoLineText(key, "focus on the login fix");
+    expect(result).toEqual({ ok: true, data: line });
+    // catches a call that drops the instruction or the jira_issue
+    expect(redescribeImpl).toHaveBeenCalledWith({ ...key, instruction: "focus on the login fix" });
+    expect(revalidateImpl).toHaveBeenCalledWith("/2026-09-24");
+  });
+
+  it("passes a 500-char Icelandic instruction through whole", async () => {
+    const instruction = "þ".repeat(500);
+    await redescribeTempoLineText(key, instruction);
+    // catches byte counting or truncation in the action
+    expect(redescribeImpl).toHaveBeenCalledWith({ ...key, instruction });
+  });
+
+  it("surfaces a daemon error and does not revalidate", async () => {
+    redescribeImpl.mockImplementationOnce(async () => {
+      throw new Error("instruction is empty");
+    });
+    // catches swallowing the error
+    expect(await redescribeTempoLineText(key, " ")).toEqual({
+      ok: false,
+      error: "instruction is empty",
+    });
+    expect(revalidateImpl).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed page refresh after a successful write", async () => {
+    revalidateImpl.mockImplementationOnce(() => {
+      throw new Error("boom");
+    });
+    expect(await redescribeTempoLineText(key, "x")).toEqual({
+      ok: false,
+      error: "write succeeded but page refresh failed: boom",
+    });
   });
 });
 

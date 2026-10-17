@@ -1,14 +1,15 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState, useTransition, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
+import { useEffect, useRef, useState, useTransition, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
 import type { Block } from "@/lib/types";
 import { formatRange } from "@/lib/format";
 import { deleteBlock, mergeGroup, undoLastChange } from "@/app/actions";
 import { redescribeBlock, splitBlock } from "@/app/actions-block-menu";
 import type { NoteFields } from "@/lib/noteBlock";
-import { MAX_INSTRUCTION_CHARS } from "@/lib/redescribe";
 import { toast } from "@/lib/toast";
+import { InstructionBox } from "./InstructionBox";
 import { menuKeys } from "./menuKeys";
+import { useMenuClamp } from "./useMenuClamp";
 import { useMenuDismiss } from "./useMenuDismiss";
 import { overlaps, useIgnoreActions } from "./useIgnoreActions";
 
@@ -50,7 +51,8 @@ export function useBlockContextMenu(enabled: boolean) {
   const cardProps = {
     tabIndex: enabled ? 0 : undefined,
     onContextMenu: (e: MouseEvent) => {
-      if (!enabled || (e.target as Element).closest(".block-context-menu")) return;
+      // Editable fields keep the native menu (paste, spell-check).
+      if (!enabled || (e.target as Element).closest(".block-context-menu, input, textarea, [contenteditable]")) return;
       e.preventDefault();
       setMenuAt({ x: e.clientX, y: e.clientY });
     },
@@ -137,61 +139,6 @@ function SplitBox({ block, day, close }: { block: Block; day: string; close: () 
   );
 }
 
-/** Replaces the item list: the one-time instruction for "Regenerate with prompt…". */
-function InstructionBox({ block, day, close, onWriting }: {
-  block: Block;
-  day: string;
-  close: () => void;
-  onWriting: (writing: boolean) => void;
-}) {
-  const [instruction, setInstruction] = useState("");
-  const [writing, setWriting] = useState(false);
-  const trimmed = instruction.trim();
-
-  // The menu's own dismiss is off while writing, so Esc is handled here.
-  useEffect(() => {
-    if (!writing) return;
-    const onKey = (e: globalThis.KeyboardEvent) => e.key === "Escape" && close();
-    document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
-  }, [writing, close]);
-
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
-    setWriting(true);
-    onWriting(true);
-    let r: Awaited<ReturnType<typeof redescribeBlock>>;
-    try {
-      r = await redescribeBlock(block.id, day, trimmed);
-    } catch (err) {
-      r = { ok: false, error: err instanceof Error ? err.message : String(err) };
-    } finally {
-      setWriting(false);
-      onWriting(false);
-    }
-    if (!r.ok) return toast.error(`Rewrite failed — ${r.error}`);
-    toast.ok("Description rewritten");
-    close();
-  };
-
-  return (
-    <form className="block-context-menu-instruction" onSubmit={submit}>
-      <input
-        autoFocus
-        type="text"
-        aria-label="Instruction"
-        maxLength={MAX_INSTRUCTION_CHARS}
-        value={instruction}
-        readOnly={writing}
-        onChange={(e) => setInstruction(e.target.value)}
-      />
-      <button type="submit" disabled={writing || !trimmed || [...trimmed].length > MAX_INSTRUCTION_CHARS}>
-        {writing ? "Writing…" : "Regenerate"}
-      </button>
-    </form>
-  );
-}
-
 /** The right-click menu on a day-page block card: the card actions, Delete, Regenerate, Split and Merge. */
 export function BlockContextMenu({ block, day, dayBlocks, x, y, close, onDescribe, onTogglePersonal, onInternal }: Props) {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -208,16 +155,7 @@ export function BlockContextMenu({ block, day, dayBlocks, x, y, close, onDescrib
 
   // While the AI writes, an outside click must not lose the request; the box handles Esc itself.
   useMenuDismiss(!writing, menuRef, close);
-  // Keep the menu on screen; re-measure when the content swaps to the instruction/split box.
-  const [pos, setPos] = useState({ left: x, top: y });
-  useLayoutEffect(() => {
-    const box = menuRef.current?.getBoundingClientRect();
-    if (!box) return;
-    setPos({
-      left: Math.max(8, Math.min(x, window.innerWidth - box.width - 8)),
-      top: Math.max(8, Math.min(y, window.innerHeight - box.height - 8)),
-    });
-  }, [x, y, boxOpen, splitOpen]);
+  const pos = useMenuClamp(menuRef, x, y, `${boxOpen}-${splitOpen}`);
   useEffect(() => {
     menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)')?.focus();
   }, []);
@@ -265,7 +203,13 @@ export function BlockContextMenu({ block, day, dayBlocks, x, y, close, onDescrib
       {splitOpen ? (
         <SplitBox block={block} day={day} close={close} />
       ) : boxOpen ? (
-        <InstructionBox block={block} day={day} close={close} onWriting={setWriting} />
+        <InstructionBox
+          onSubmit={(instruction) => redescribeBlock(block.id, day, instruction)}
+          close={close}
+          onWriting={setWriting}
+          successMessage="Description rewritten"
+          failurePrefix="Rewrite failed"
+        />
       ) : (
         items.map(([label, run, disabledReason]) => (
           <button

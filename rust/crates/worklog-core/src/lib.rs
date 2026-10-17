@@ -113,6 +113,7 @@ pub mod task_board;
 pub mod task_draft;
 pub mod tempo_hub_contract;
 pub mod tempo_line_contract;
+pub mod tempo_line_redescribe;
 pub mod tempo_line_writer;
 pub mod tempo_lines;
 pub mod tempo_match;

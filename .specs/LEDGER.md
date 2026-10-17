@@ -25,3 +25,4 @@
 - 2026-10-15 · 022-topic-stats-and-search-fixes · merged eaaa049
 - 2026-10-15 · 023-topic-atlas · merged eaaa049
 - 2026-10-15 · 024-topic-starfield · merged eaaa049 · archived with CHK001 (live-copy + Chrome check) still open, by owner request
+- 2026-10-16 · 026-block-right-click-menu · merged 8dbf4bf

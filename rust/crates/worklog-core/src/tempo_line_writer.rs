@@ -85,8 +85,13 @@ fn add_ticket(user_msg: &str, summary: &str, description: &str) -> String {
 }
 
 /// Phase 2 (no connection): one model round trip, unvalidated.
-pub fn invoke(user_msg: &str, invoker: &dyn ModelInvoker, model: &str) -> Result<String, String> {
-    reply_to_text(invoker.invoke(SYSTEM_PROMPT_IS, user_msg, &line_text_schema(), model))
+pub fn invoke(
+    user_msg: &str,
+    invoker: &dyn ModelInvoker,
+    model: &str,
+    system: &str,
+) -> Result<String, String> {
+    reply_to_text(invoker.invoke(system, user_msg, &line_text_schema(), model))
 }
 
 /// Adds the ticket context ([`with_ticket`]), then invokes and validates,
@@ -97,11 +102,22 @@ pub fn write(
     invoker: &dyn ModelInvoker,
     model: &str,
 ) -> Result<String, String> {
+    write_with_system(user_msg, key, invoker, model, SYSTEM_PROMPT_IS)
+}
+
+/// [`write`] with a caller-supplied system prompt.
+pub fn write_with_system(
+    user_msg: &str,
+    key: &TempoLineKey,
+    invoker: &dyn ModelInvoker,
+    model: &str,
+    system: &str,
+) -> Result<String, String> {
     let user_msg = &with_ticket(user_msg, key);
     let mut msg = user_msg.to_string();
     let mut reason = String::new();
     for _ in 0..MAX_ATTEMPTS {
-        reason = match invoke(&msg, invoker, model).and_then(|t| line_text::validate(&t)) {
+        reason = match invoke(&msg, invoker, model, system).and_then(|t| line_text::validate(&t)) {
             Ok(text) => return Ok(text),
             Err(reason) => reason,
         };

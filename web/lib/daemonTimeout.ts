@@ -29,8 +29,8 @@ export function timeoutMs(path: string): number {
   if (path.startsWith("/tickets/create")) return 30_000;
   // Tempo hub: the AI draft shells out to `claude -p`; the pull pages Tempo.
   if (path.endsWith("/draft")) return 90_000;
-  // A ticket line's Generate/Regenerate is one thinking `claude -p` call — well past 10s.
-  if (path === "/tempo/lines/regenerate") return 120_000;
+  // A ticket line's Generate/Regenerate (and Regenerate with prompt) is one thinking `claude -p` call — well past 10s.
+  if (path === "/tempo/lines/regenerate" || path === "/tempo/lines/redescribe") return 120_000;
   if (path.startsWith("/tempo/pull")) return 60_000;
   if (/^\/tickets\/[^/]+\/(transitions?|comment|detail|blocks|log)$/.test(path)) return 20_000;
   if (path.startsWith("/projects")) return 20_000;

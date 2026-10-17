@@ -146,6 +146,76 @@ function renderGroup(blockGroup: BlockGroup, tempoLine?: TempoLine) {
   );
 }
 
+describe("TicketGroup header menu", () => {
+  const summary = () => document.querySelector("summary") as HTMLElement;
+  const item = () => screen.getByRole("menuitem", { name: "Regenerate with prompt…" }) as HTMLButtonElement;
+
+  it("right-click on the header opens the menu at the pointer (catches no handler)", () => {
+    renderGroup(group(), line());
+    fireEvent.contextMenu(summary(), { clientX: 30, clientY: 40 });
+    expect(item().disabled).toBe(false);
+    expect((screen.getByRole("menu") as HTMLElement).style.left).toBe("30px");
+  });
+
+  it("the ContextMenu key and Shift+F10 open it, other keys do not", () => {
+    renderGroup(group(), line());
+    fireEvent.keyDown(summary(), { key: "F10" });
+    fireEvent.keyDown(summary(), { key: "a" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    fireEvent.keyDown(summary(), { key: "ContextMenu" });
+    expect(screen.getByRole("menu")).toBeTruthy();
+    cleanup();
+    renderGroup(group(), line());
+    fireEvent.keyDown(summary(), { key: "F10", shiftKey: true });
+    expect(screen.getByRole("menu")).toBeTruthy();
+  });
+
+  it("a left click opens no menu and still toggles nothing extra (catches click opening the menu)", () => {
+    renderGroup(group(), line());
+    fireEvent.click(summary());
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("the Unassigned group's item is disabled with 'Pick a ticket first'", () => {
+    renderGroup(group({ key: "__unassigned__", label: "Unassigned", unassigned: true }));
+    fireEvent.contextMenu(summary());
+    expect(item().disabled).toBe(true);
+    expect(item().title).toBe("Pick a ticket first");
+  });
+
+  it("a block card inside the group opens the block menu, not the group menu (catches the handler on the whole group)", async () => {
+    const { BlockCard } = await import("./BlockCard");
+    const block = {
+      id: 1, day: "2026-09-25", jira_issue: "PROJ-1", started_at: "2026-09-25T10:00:00Z",
+      ended_at: "2026-09-25T10:30:00Z", duration_seconds: 1800, description: "worked on stuff",
+      estimated_by: "ai", tempo_worklog_id: null, is_personal: false, ignored_at: null, dirty: false,
+      event_count: 3, sources: [], project_path: null, confidence: "high",
+    } as unknown as import("@/lib/types").Block;
+    render(
+      <TicketGroup group={group()} day="2026-09-25" line={line()} saveText={saveText} saveHours={saveHours} regenerate={regenerate}>
+        <BlockCard block={block} tickets={[]} day="2026-09-25" dayBlocks={[]} />
+      </TicketGroup>,
+    );
+    fireEvent.contextMenu(screen.getByRole("article"), { clientX: 5, clientY: 6 });
+    expect(screen.getAllByRole("menu").length).toBe(1);
+    expect(screen.getByRole("menuitem", { name: "Describe with Claude" })).toBeTruthy();
+    expect(screen.getAllByRole("menuitem").length).toBeGreaterThan(1);
+  });
+
+  it("the header stays focusable for keyboard users (catches dropping tabIndex)", () => {
+    renderGroup(group(), line());
+    expect(summary().tabIndex).toBe(0);
+  });
+
+  it("Esc closes the menu and hands focus back to the header", () => {
+    renderGroup(group(), line());
+    fireEvent.contextMenu(summary());
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(summary());
+  });
+});
+
 describe("TicketGroup line text", () => {
   it("shows the stored text", () => {
     renderGroup(group(), line());
@@ -209,6 +279,14 @@ describe("TicketGroup line text", () => {
     fireEvent.click(screen.getByRole("button", { name: /Edit text/ }));
     fireEvent.keyDown(screen.getByLabelText("Edit line text for PROJ-1"), { key: "Escape" });
     expect(document.activeElement?.textContent).toMatch(/Edit text/);
+  });
+
+  it("keeps the browser menu on the line text editor", () => {
+    renderGroup(group(), line());
+    fireEvent.click(screen.getByRole("button", { name: /Edit text/ }));
+    const notCancelled = fireEvent.contextMenu(screen.getByLabelText("Edit line text for PROJ-1"));
+    expect(notCancelled).toBe(true);
+    expect(screen.queryByRole("menu")).toBeNull();
   });
 
   it("drops the replace confirm when you start editing instead", () => {

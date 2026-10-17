@@ -175,7 +175,7 @@ pub fn line_for(conn: &Connection, key: &TempoLineKey) -> Result<Option<TempoLin
         .transpose()
 }
 
-fn ensure_row(conn: &Connection, key: &TempoLineKey) -> Result<()> {
+pub(crate) fn ensure_row(conn: &Connection, key: &TempoLineKey) -> Result<()> {
     conn.execute(
         "INSERT OR IGNORE INTO tempo_line_texts (day, jira_issue, updated_at) VALUES (?1, ?2, ?3)",
         params![key.day, key.jira_issue, Utc::now().to_rfc3339()],
@@ -186,7 +186,7 @@ fn ensure_row(conn: &Connection, key: &TempoLineKey) -> Result<()> {
 
 /// Drops a row left with neither text nor override, and marks the line's
 /// already-synced blocks for re-sync.
-fn finish_write(conn: &Connection, key: &TempoLineKey) -> Result<()> {
+pub(crate) fn finish_write(conn: &Connection, key: &TempoLineKey) -> Result<()> {
     conn.execute(
         "DELETE FROM tempo_line_texts
           WHERE day = ?1 AND jira_issue = ?2

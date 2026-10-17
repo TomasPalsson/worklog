@@ -1,0 +1,6 @@
+Base: dc9a952 (HEAD 2c7a19b differs only in .specs/)
+Command: cargo test --manifest-path rust/Cargo.toml && cd web && bun test
+exit: 0
+failing: none
+cargo: passed=2499 failed=0
+bun: 2066 pass, 0 fail, 161 files
