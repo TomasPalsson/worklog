@@ -165,7 +165,10 @@ export default async function DayPage({
     : null;
 
   return (
-    <DayProgressProvider day={day}>
+    <DayProgressProvider
+      day={day}
+      ticketKeys={workGroups.filter((g) => !g.unassigned).map((g) => g.key).join(",")}
+    >
       <DayHeader
         day={day}
         heading={formatDayHeading(day)}
@@ -221,6 +224,7 @@ export default async function DayPage({
                   group={g}
                   day={day}
                   line={g.unassigned ? undefined : lines.find((l) => l.jira_issue === g.key)}
+                  title={g.unassigned ? undefined : tickets.find((t) => t.key === g.key)?.summary}
                 >
                   <ul className="blocks" role="list">
                     {g.blocks.map((b) => (

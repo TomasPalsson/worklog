@@ -108,7 +108,7 @@ mock.module("@/lib/daemon", () => ({
   },
 }));
 
-let DayProgressProvider: (props: { day: string; children: React.ReactNode }) => React.JSX.Element;
+let DayProgressProvider: (props: { day: string; ticketKeys?: string; children: React.ReactNode }) => React.JSX.Element;
 let TicketGroup: typeof import("./TicketGroup").TicketGroup;
 
 beforeAll(async () => {
@@ -478,6 +478,30 @@ describe("TicketGroup without a line", () => {
   });
 });
 
+describe("TicketGroup ticket title", () => {
+  const titled = (tempoLine?: TempoLine, title: string | null = "Import the SharePoint pages") =>
+    render(
+      <TicketGroup group={group()} day="2026-09-25" line={tempoLine} title={title}>
+        {null}
+      </TicketGroup>,
+    );
+
+  it("shows the Jira title next to the key on a Tempo line (catches key-only header)", () => {
+    titled(line());
+    expect(screen.getByText("Import the SharePoint pages")).toBeTruthy();
+  });
+
+  it("shows the Jira title without a Tempo line too (catches only one header branch)", () => {
+    titled();
+    expect(screen.getByText("Import the SharePoint pages")).toBeTruthy();
+  });
+
+  it("renders no empty title element when Jira has no title cached", () => {
+    titled(line(), null);
+    expect(document.querySelector(".ticket-group-title")).toBeNull();
+  });
+});
+
 describe("TicketGroup merge confirmation offers Undo (FR-29)", () => {
   const twoBlocks = () =>
     group({
@@ -603,6 +627,29 @@ describe("TicketGroup estimate bar wiring", () => {
     const link = await screen.findByRole("link", { name: "Open PROJ-1 in Jira" });
     expect(link.getAttribute("href")).toBe("https://jira.example/browse/PROJ-1");
     expect(link.getAttribute("target")).toBe("_blank");
+  });
+
+  it("a ticket that joins the day after first load gets its Jira link (catches loading only on mount)", async () => {
+    loaded(ticket({ url: "https://jira.example/browse/PROJ-1" }));
+    const tree = (keys: string) => (
+      <DayProgressProvider day={DAY} ticketKeys={keys}>
+        <TicketGroup group={group({ blocks: [blk()] })} day={DAY}>
+          {null}
+        </TicketGroup>
+        {keys.includes("PROJ-2") && (
+          <TicketGroup group={group({ key: "PROJ-2", label: "PROJ-2", blocks: [blk({ jira_issue: "PROJ-2" })] })} day={DAY}>
+            {null}
+          </TicketGroup>
+        )}
+      </DayProgressProvider>
+    );
+    const { rerender } = render(tree("PROJ-1"));
+    await screen.findByRole("link", { name: "Open PROJ-1 in Jira" });
+    loaded(ticket({ url: "https://jira.example/browse/PROJ-1" }), ticket({ key: "PROJ-2", url: "https://jira.example/browse/PROJ-2" }));
+    rerender(tree("PROJ-1,PROJ-2"));
+    await screen.findByRole("link", { name: "Open PROJ-2 in Jira" });
+    rerender(tree("PROJ-1,PROJ-2"));
+    expect(loadDayProgress).toHaveBeenCalledTimes(2); // same keys: no extra fetch
   });
 
   it("shows no Jira link when the daemon has no Jira base url (catches a dead '#' link)", async () => {
