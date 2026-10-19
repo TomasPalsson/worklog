@@ -478,6 +478,30 @@ describe("TicketGroup without a line", () => {
   });
 });
 
+describe("TicketGroup ticket title", () => {
+  const titled = (tempoLine?: TempoLine, title: string | null = "Import the SharePoint pages") =>
+    render(
+      <TicketGroup group={group()} day="2026-09-25" line={tempoLine} title={title}>
+        {null}
+      </TicketGroup>,
+    );
+
+  it("shows the Jira title next to the key on a Tempo line (catches key-only header)", () => {
+    titled(line());
+    expect(screen.getByText("Import the SharePoint pages")).toBeTruthy();
+  });
+
+  it("shows the Jira title without a Tempo line too (catches only one header branch)", () => {
+    titled();
+    expect(screen.getByText("Import the SharePoint pages")).toBeTruthy();
+  });
+
+  it("renders no empty title element when Jira has no title cached", () => {
+    titled(line(), null);
+    expect(document.querySelector(".ticket-group-title")).toBeNull();
+  });
+});
+
 describe("TicketGroup merge confirmation offers Undo (FR-29)", () => {
   const twoBlocks = () =>
     group({

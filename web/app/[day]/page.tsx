@@ -221,6 +221,7 @@ export default async function DayPage({
                   group={g}
                   day={day}
                   line={g.unassigned ? undefined : lines.find((l) => l.jira_issue === g.key)}
+                  title={g.unassigned ? undefined : tickets.find((t) => t.key === g.key)?.summary}
                 >
                   <ul className="blocks" role="list">
                     {g.blocks.map((b) => (

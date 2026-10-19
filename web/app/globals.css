@@ -1617,6 +1617,49 @@ button {
   font-size: 14px;
   letter-spacing: 0.01em;
 }
+/* The Jira summary: prose, so the reading face, and as bright as the key —
+   it is what says what the ticket is. Inline it gives way first when the row
+   is tight; under a Tempo line's head it gets its own line, up to two. */
+.ticket-group-title {
+  min-width: 0;
+  flex: 0 1 auto;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ticket-line-main > .ticket-group-title {
+  margin-top: -4px;
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  max-height: 2.6em;
+}
+/* Open, the whole title shows: the only way to read a cut one on touch. */
+.ticket-group[open] .ticket-group-title {
+  white-space: normal;
+  -webkit-line-clamp: unset;
+  max-height: none;
+  max-width: none;
+}
+/* Only the title (and the preview) may shrink: a key or chip that wraps
+   reads as two things. */
+.ticket-group-label,
+.ticket-group-meta {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+/* Without a Tempo line the italic preview shares the row; leave it room. */
+@media (min-width: 721px) {
+  .ticket-group > summary:not(.ticket-line-summary) .ticket-group-title {
+    max-width: 60ch;
+  }
+}
 /* Same look as the task modal's "Open in Jira", sized for the header row. */
 .ticket-jira-link {
   display: inline-flex;
@@ -1869,6 +1912,37 @@ button {
 @media (max-width: 720px) {
   .ticket-group > summary.ticket-line-summary {
     flex-wrap: wrap;
+  }
+  /* Phone, no Tempo line: key and chevron, then the title (up to two lines),
+     then the chips, then the preview. */
+  .ticket-group > summary:not(.ticket-line-summary) {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  .ticket-group > summary:not(.ticket-line-summary) > * {
+    order: 2;
+  }
+  .ticket-group > summary:not(.ticket-line-summary) > .ticket-group-label,
+  .ticket-group > summary:not(.ticket-line-summary) > .ticket-jira-link {
+    order: 0;
+  }
+  .ticket-group > summary:not(.ticket-line-summary) > .ticket-group-hint {
+    order: 0;
+    margin-left: auto;
+  }
+  .ticket-group > summary:not(.ticket-line-summary) > .ticket-group-title {
+    order: 1;
+    flex-basis: 100%;
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    max-height: 2.6em;
+  }
+  .ticket-group > summary:not(.ticket-line-summary) > .ticket-group-description {
+    order: 3;
+    flex-basis: 100%;
+    margin-left: 0;
   }
   .line-hours {
     align-items: flex-start;

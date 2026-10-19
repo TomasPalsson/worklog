@@ -26,6 +26,8 @@ interface Props {
   day: string;
   /** The day's Tempo line for this ticket; absent for the unassigned group. */
   line?: TempoLine & { check_status?: LineCheck | null };
+  /** The ticket's Jira summary, when the daemon has it cached. */
+  title?: string | null;
   /** Test-only overrides for the Tempo line server actions, as BillingGroup does. */
   saveText?: typeof saveTempoLineText;
   saveHours?: typeof saveTempoLineHours;
@@ -48,6 +50,7 @@ export function TicketGroup({
   group,
   day,
   line,
+  title,
   saveText = saveTempoLineText,
   saveHours = saveTempoLineHours,
   regenerate = regenerateTempoLineText,
@@ -62,6 +65,11 @@ export function TicketGroup({
   };
   const estimateBadge = !group.unassigned && <TicketEstimateBadge {...estimateArgs} />;
   const jiraLink = !group.unassigned && <TicketJiraLink ticketKey={group.key} />;
+  const titleEl = title && (
+    <span className="ticket-group-title" title={title}>
+      {title}
+    </span>
+  );
   const showMerge = canMergeGroup(group);
   // Separate transitions so a merge never shows "Writing…" on the text controls.
   const [pending, startTransition] = useTransition();
@@ -225,6 +233,8 @@ export function TicketGroup({
                 {estimateBadge}
                 {mergeButton}
               </span>
+              {/* Own line: the hours column leaves the head row too narrow for it. */}
+              {titleEl}
               {line.billing && <MirresLine billing={line.billing} issue={line.jira_issue} />}
               {/* Clicks here must not toggle the <details>. */}
               <span className="billing-text-wrap ticket-line-text" onClick={(e) => e.stopPropagation()}>
@@ -326,6 +336,7 @@ export function TicketGroup({
           <>
             <span className="ticket-group-label">{group.label}</span>
             {jiraLink}
+            {titleEl}
             <span className="ticket-group-meta">
               {group.blocks.length} {blockNoun}
             </span>
