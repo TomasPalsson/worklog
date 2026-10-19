@@ -21,8 +21,20 @@ const Ctx = createContext<Value | null>(null);
 const known = (t: TicketProgress): TicketProgress =>
   t.pulled_at?.startsWith("1970-01-01") ? { ...t, pulled_at: null } : t;
 
-/** Fetches the day's estimate numbers after first paint so nothing else waits on Jira. */
-export function DayProgressProvider({ day, children }: { day: string; children: ReactNode }) {
+/**
+ * Fetches the day's estimate numbers after first paint so nothing else waits on Jira.
+ * `ticketKeys` (the day's ticket keys, joined) refetches when a ticket joins the day
+ * after a refresh — the first answer has no row, so no bar and no Jira link, for it.
+ */
+export function DayProgressProvider({
+  day,
+  ticketKeys,
+  children,
+}: {
+  day: string;
+  ticketKeys?: string;
+  children: ReactNode;
+}) {
   const [state, setState] = useState<State>({ tickets: null, failed: false });
 
   const load = useCallback(
@@ -40,7 +52,7 @@ export function DayProgressProvider({ day, children }: { day: string; children: 
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, ticketKeys]);
 
   const retry = (key: string) => {
     if (state.tickets) {

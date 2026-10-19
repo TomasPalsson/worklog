@@ -108,7 +108,7 @@ mock.module("@/lib/daemon", () => ({
   },
 }));
 
-let DayProgressProvider: (props: { day: string; children: React.ReactNode }) => React.JSX.Element;
+let DayProgressProvider: (props: { day: string; ticketKeys?: string; children: React.ReactNode }) => React.JSX.Element;
 let TicketGroup: typeof import("./TicketGroup").TicketGroup;
 
 beforeAll(async () => {
@@ -627,6 +627,29 @@ describe("TicketGroup estimate bar wiring", () => {
     const link = await screen.findByRole("link", { name: "Open PROJ-1 in Jira" });
     expect(link.getAttribute("href")).toBe("https://jira.example/browse/PROJ-1");
     expect(link.getAttribute("target")).toBe("_blank");
+  });
+
+  it("a ticket that joins the day after first load gets its Jira link (catches loading only on mount)", async () => {
+    loaded(ticket({ url: "https://jira.example/browse/PROJ-1" }));
+    const tree = (keys: string) => (
+      <DayProgressProvider day={DAY} ticketKeys={keys}>
+        <TicketGroup group={group({ blocks: [blk()] })} day={DAY}>
+          {null}
+        </TicketGroup>
+        {keys.includes("PROJ-2") && (
+          <TicketGroup group={group({ key: "PROJ-2", label: "PROJ-2", blocks: [blk({ jira_issue: "PROJ-2" })] })} day={DAY}>
+            {null}
+          </TicketGroup>
+        )}
+      </DayProgressProvider>
+    );
+    const { rerender } = render(tree("PROJ-1"));
+    await screen.findByRole("link", { name: "Open PROJ-1 in Jira" });
+    loaded(ticket({ url: "https://jira.example/browse/PROJ-1" }), ticket({ key: "PROJ-2", url: "https://jira.example/browse/PROJ-2" }));
+    rerender(tree("PROJ-1,PROJ-2"));
+    await screen.findByRole("link", { name: "Open PROJ-2 in Jira" });
+    rerender(tree("PROJ-1,PROJ-2"));
+    expect(loadDayProgress).toHaveBeenCalledTimes(2); // same keys: no extra fetch
   });
 
   it("shows no Jira link when the daemon has no Jira base url (catches a dead '#' link)", async () => {
