@@ -32,7 +32,7 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --
 ## Phase 2 — A ticket line only names its own customer
 Goal: a ticket line that names another customer, or several, is rejected and re-asked; the model is told the ticket's customer.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib -- foreign_customers tempo_line_writer` — B-bad 2 on a Sjúkra ticket is re-asked, a VÍS text on a VÍS ticket passes.
-- [ ] T002 A ticket line naming another customer is re-asked (FR-06) — files: rust/crates/worklog-core/src/line_text.rs, rust/crates/worklog-core/src/line_text_test.rs, rust/crates/worklog-core/src/tempo_line_writer.rs, rust/crates/worklog-core/src/tempo_line_writer_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib -- foreign_customers tempo_line_writer` — no_claim: the model is stubbed; whether a real model obeys the prompt is not exercised — after: T001
+- [x] T002 A ticket line naming another customer is re-asked (FR-06) — files: rust/crates/worklog-core/src/line_text.rs, rust/crates/worklog-core/src/line_text_test.rs, rust/crates/worklog-core/src/tempo_line_writer.rs, rust/crates/worklog-core/src/tempo_line_writer_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib -- foreign_customers tempo_line_writer` — no_claim: the model is stubbed; whether a real model obeys the prompt is not exercised — after: T001 — done: 9eb90f6
 
 ## Phase 3 — Meeting and hand-typed lines get flagged, never rewritten
 Goal: a meeting or hand-typed line that breaks a rule or copies the ticket summary shows "needs a look", with its text untouched.
