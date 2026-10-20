@@ -19,3 +19,12 @@
 - Minor: gating security — static_check for meeting and hand-typed lines never runs foreign_customers, so "Fundur með Marel" on another customer's ticket is not flagged; spec A6 and design scope it out (2/3 TRUE_POSITIVE, minor)
 - Minor: gating security — the customer rule fails open when the registry cannot load or known_customers is missing; spec requires this (2/3 TRUE_POSITIVE, minor)
 - Minor: gating — the plural-verb rule rejects any first word ending in -u, so dative-noun openers ("Vinnu", "Uppsetningu") are re-asked or flagged; FR-05 prescribes it (2/3 TRUE_POSITIVE, minor)
+- Discovered: no PR opened — `git push -u origin flow/customer-safe-tempo-descriptions-job` was denied by the auto-mode permission classifier; the PR body is ready at .specs/028-customer-safe-tempo-descriptions/PR-BODY.md — defer
+- Assumption: gates ran as CLAUDE.md's rust commands (cargo test, clippy -D warnings, fmt --check) because `flow check --since fcf966f` found no root project file, following 026's precedent — evidence: transcript:20446dfd:693 (audit)
+- Assumption: web gates were skipped because `git diff --stat fcf966f..HEAD -- web` was empty — evidence: transcript:20446dfd:741 (audit)
+- Assumption: the gate-relaxation scan was slop-check --no-tools plus a [skip ci] grep over the branch log — evidence: transcript:20446dfd:746 (audit)
+- Assumption: G001 was ticked with `flow tick G001` although its verify `flow check --fix --since fcf966f` cannot run in this monorepo; the PASS file's rust gates stand in for it — evidence: transcript:20446dfd:1014 (audit)
+- Assumption: acceptance proof maps each FR to one named test (12 rows, FR-06 and FR-09 two each), each run alone with --exact — evidence: transcript:20446dfd:955 (audit)
+- Assumption: finish mode was re-armed in the worktree and disarmed in the main checkout — evidence: transcript:20446dfd:381 (audit)
+- Assumption: T001–T002 briefs were copied from the main checkout's review/ into the worktree's review/ — evidence: transcript:20446dfd:386 (audit)
+- Assumption: `Verified:` was written under the --finish pre-approval after acceptance.md had every row exit 0 and claim-check confirmed all rows — evidence: transcript:20446dfd:1096 (audit)
