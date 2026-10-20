@@ -1,0 +1,5 @@
+- Minor: T001 reason strings for spelled-number, Slack and plural-verb rules are not asserted — mutant replacing them with "zzz" survived (tempo_line_writer_test.rs reask_names_the_new_rules passes on the static suffix)
+- Minor: T001 the `.all(char::is_alphabetic)` guard in line_text_rules.rs starts_with_plural_verb is unpinned — `all`→`any` mutant survived; needs a hyphenated first word ending in "u"
+- Minor: T001 appendix_b_bad_texts_are_rejected_by_the_new_rules only asserts is_err, so an older rule could be the one rejecting
+- Ruling: T001 added rust/crates/worklog-core/src/line_text_rules.rs (brief contract allows a split for the size guard) and changed GOOD_TEXT in rust/crates/worklog-core/src/line_text_phases_test.rs, both outside files: — FR-05 ("first word ends in u") rejects the old fixture "Verkefninu var lokið í dag", so the fixture now reads "Lauk verkefninu í dag"; no assertion changed — cost if wrong: a generated text opening with a dative noun ending in "u" is re-asked once
+- Discovered: rust/crates/worklog-core/src/line_text_rules.rs:62 — a first word with a leading quote or NFD accent skips the plural-verb rule — defer

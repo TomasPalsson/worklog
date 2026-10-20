@@ -22,12 +22,12 @@ Icelandic texts with þ, ð, æ and customer aliases that are ordinary words ("f
 ## Phase 0 — Baseline
 Goal: the test suite's result at Base is on record before anything changes.
 Independent test: `test -s .specs/028-customer-safe-tempo-descriptions/verify/baseline-tests.txt` — the baseline file exists.
-- [ ] T000 Record the test suite at Base — files: .specs/028-customer-safe-tempo-descriptions/verify/baseline-tests.txt — verify: `test -s .specs/028-customer-safe-tempo-descriptions/verify/baseline-tests.txt`
+- [x] T000 Record the test suite at Base — files: .specs/028-customer-safe-tempo-descriptions/verify/baseline-tests.txt — verify: `test -s .specs/028-customer-safe-tempo-descriptions/verify/baseline-tests.txt` — done: 8524e76
 
 ## Phase 1 — A generated line can't hedge, spell numbers, name Slack or start plural
 Goal: a model reply with evidence talk, spelled numbers, Slack or a plural first verb is rejected and re-asked, and the prompt tells the model why.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib -- line_text tempo_line_writer` — Appendix B good texts pass, bad 1, 3, 4, 5, 6 fail, and the writer re-asks with the reason.
-- [ ] T001 A generated line with evidence talk, a spelled version, Slack or a plural verb is re-asked (FR-01, FR-02, FR-03, FR-04, FR-05, FR-07, FR-10) — files: rust/crates/worklog-core/src/line_text.rs, rust/crates/worklog-core/src/line_text_prompt.rs, rust/crates/worklog-core/src/line_text_test.rs, rust/crates/worklog-core/src/tempo_line_writer.rs, rust/crates/worklog-core/src/tempo_line_writer_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib -- line_text tempo_line_writer` — follow: rust/crates/worklog-core/src/line_text.rs — after: T000
+- [x] T001 A generated line with evidence talk, a spelled version, Slack or a plural verb is re-asked (FR-01, FR-02, FR-03, FR-04, FR-05, FR-07, FR-10) — files: rust/crates/worklog-core/src/line_text.rs, rust/crates/worklog-core/src/line_text_prompt.rs, rust/crates/worklog-core/src/line_text_test.rs, rust/crates/worklog-core/src/tempo_line_writer.rs, rust/crates/worklog-core/src/tempo_line_writer_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib -- line_text tempo_line_writer` — follow: rust/crates/worklog-core/src/line_text.rs — after: T000 — done: 4c6a1ec
 
 ## Phase 2 — A ticket line only names its own customer
 Goal: a ticket line that names another customer, or several, is rejected and re-asked; the model is told the ticket's customer.
