@@ -1,5 +1,6 @@
 # Tasks — Customer-safe Tempo descriptions
 Approved: 2026-10-20 by user
+Verified: 2026-10-20 by user (pre-approved: /flow:next --finish)
 Spec: spec.md · Design: design.md · Base: fcf966f · Route: dispatch · Test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core`
 
 ## Behaviors
