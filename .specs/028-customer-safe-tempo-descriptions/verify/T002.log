@@ -1,0 +1,31 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.44s
+     Running unittests src/lib.rs (rust/target/debug/deps/worklog_core-5f98b59a3618f7a2)
+
+running 24 tests
+test line_text::tests::foreign_customers_matches_whole_words_only ... ok
+test line_text::tests::foreign_customers_counts_customers_sharing_an_alias_once ... ok
+test line_text::tests::foreign_customers_with_unknown_ticket_customer_needs_two_customers ... ok
+test line_text::tests::foreign_customers_skips_ordinary_words_but_matches_the_capitalised_name ... ok
+test line_text::tests::foreign_customers_is_empty_for_the_tickets_own_customer ... ok
+test line_text::tests::foreign_customers_never_counts_apro ... ok
+test line_text::tests::foreign_customers_names_a_customer_the_ticket_does_not_have ... ok
+test line_text::tests::foreign_customers_handles_icelandic_letters_and_acronyms ... ok
+test line_text::tests::foreign_customers_lists_other_customers_sorted_by_registry_name ... ok
+test tempo_line_writer::tests::prompt_carries_every_new_rule ... ok
+test tempo_line_writer::tests::three_bad_replies_fail_with_the_attempt_count ... ok
+test tempo_line_writer::tests::valid_reply_is_returned_after_one_call ... ok
+test tempo_line_writer::tests::reask_names_the_new_rules ... ok
+test tempo_line_writer::tests::rejected_reply_is_retried_with_the_reason ... ok
+test tempo_line_writer::tests::own_customer_reply_passes_first_time ... ok
+test tempo_line_writer::tests::foreign_customer_reply_is_reasked_with_the_names ... ok
+test tempo_line_writer::tests::customer_rule_is_skipped_without_usable_customer_data ... ok
+test tempo_line_writer::tests::ticket_title_and_description_are_added_to_the_input ... ok
+test tempo_line_writer::tests::empty_ticket_fields_are_left_out_and_long_descriptions_capped ... ok
+test tempo_line_writer::tests::prepare_carries_the_ticket_block_descriptions_and_errors_without_blocks ... ok
+test tempo_line_writer::tests::prepare_omits_other_tickets_when_there_are_none ... ok
+test tempo_line_writer::tests::prepare_lists_the_days_other_tickets_with_summaries ... ok
+test tempo_line_writer::tests::prepare_carries_the_ticket_customer_and_every_known_customer ... ok
+test tempo_line_writer::tests::prepare_falls_back_to_the_parent_summary_and_omits_an_ambiguous_customer ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 2325 filtered out; finished in 0.19s
+
