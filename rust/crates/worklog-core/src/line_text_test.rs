@@ -64,8 +64,7 @@ fn seed_block(
     block_id
 }
 
-const GOOD_TEXT: &str =
-    "Verkefninu var lokið í dag. Allt gekk vel og viðskiptavinurinn var ánægður.";
+const GOOD_TEXT: &str = "Lauk verkefninu í dag. Allt gekk vel og viðskiptavinurinn var ánægður.";
 const ENGLISH_TEXT: &str = "Fixed the login bug. Added tests.";
 
 struct ErrInvoker;
@@ -500,4 +499,207 @@ fn line_text_invoker_error_skips_manual_origin_lines() {
 #[test]
 fn prompt_tells_the_model_about_other_tickets_today() {
     assert!(SYSTEM_PROMPT_IS.contains("other_tickets_today"));
+}
+
+const GOOD_TEXTS: [&str; 8] = [
+    "Tengdi VÍS Geitin frá Boost.ai við LibreChat í VÍS-tenantnum í gegnum LiteLLM og lagaði A2A-skilaboð þannig að agentinn fái nýjustu notandaskilaboðin; takmarkaði jafnframt aðgang með netfangi og setti upp samhengi fyrir hvert spjall. Undirbjó uppfærslu LiteLLM í v1.104.0 fyrir apro-prod.",
+    "Vann að svari fyrir SJTR um logging storage í APRÓ AI. Tók mið af spurningum um hvaða upplýsingar skrást þegar starfsfólk notar Run Code og hvort hægt sé að fá afrit af loggunum.",
+    "Endurskoðaði umfangsmat og kostnaðartillögu fyrir LiteLLM-uppsetningu RL fyrir marga sjóði: bætti við breytilegum tíma fyrir fundi og kynningar, hækkaði Enterprise-kostnaðinn og skýrði að mögulegur Keydesk-kostnaður væri óákveðinn. Kannaði í LibreChat hvort hægt sé að takmarka sýnileika módela við ákveðna user groups og hvort notendur geti tilheyrt fleiri en einum hópi.",
+    "Bætti Claude Haiku 5.5 við model-stillingar MMS-tenantins, samhliða Sonnet og Opus 5.5. Þetta gerir Haiku 5.5 aðgengilegt í þeirri tenant-uppsetningu.",
+    "Útbjó aggregation fyrir Matís til að laga custom agentinn í production, svo hægt sé að keyra uppfærsluna á Matís-gagnagrunninum. Skoðaði líka hvernig agentinn fær tools og hvort hann geti notað bæði innbyggða SearchNexNG-vefleit og Anthropic-vefleit.",
+    "Setti upp og virkjaði Data retention fyrir Sjúkra með sex mánaða varðveislu samtalssögu. Staðfesti að breytingarnar væru komnar í main og lokaði worktree-inu.",
+    "Uppfærði LibreChat-stillingu Hertz-tenantins í production þannig að hægt sé að hengja allt að 50 skjöl við eitt spjall. Þetta gerir Hertz-notendum kleift að senda fleiri skjöl í einu spjalli.",
+    "Lagaði í LibreChat að inline-tenglar á skrár sem code interpreterinn býr til opnist sem 404 í stað þess að sækja viðhengi úr spjallinu; tenglar án samsvarandi viðhengis birtast nú sem venjulegur texti. Bætti við prófunum, backporta uppfærsluna í LibreChat 0.8.8 og byggði nýja LibreChat-mynd.",
+];
+
+#[test]
+fn appendix_b_good_texts_pass_unchanged() {
+    for text in GOOD_TEXTS {
+        assert_eq!(validate(text).as_deref(), Ok(text), "{text}");
+    }
+}
+
+#[test]
+fn appendix_b_bad_texts_are_rejected_by_the_new_rules() {
+    let bad = [
+        "Vann að samráði við Coripharma um Code Interpreter á APRÓ AI platform. Engar upplýsingar liggja fyrir um að fundurinn hafi verið haldinn.",
+        "Bætti Claude Sonnet five point five við Claude Desktop profile Sjúkra. Þannig geta notendur Sjúkra valið líkanið.",
+        "Mældu aukinn biðtíma þar til Gemini 3.8 byrjar að svara. Sendi Hera tillögur að úrbótum í Slack.",
+        "Rannsakaði hvers vegna code interpreterinn skilar skráarslóðum. Engin breyting eða staðfest lausn liggur fyrir í vísbendingunum.",
+        "Yfirfór hvernig setja á upp shareable conversation links í LibreChat. Fylgdist með rolloutinu en vísbendingarnar staðfesta ekki hvort það lauk.",
+    ];
+    for text in bad {
+        assert!(validate(text).is_err(), "{text}");
+    }
+}
+
+#[test]
+fn every_evidence_phrase_is_rejected_in_any_case() {
+    for phrase in [
+        "liggja fyrir",
+        "liggur fyrir",
+        "vísbending",
+        "staðfesta ekki",
+        "staðfestir ekki",
+        "ekki staðfest",
+        "óljóst hvort",
+        "ekki ljóst hvort",
+    ] {
+        for variant in [phrase.to_string(), phrase.to_uppercase()] {
+            let text = format!("Lagaði villu í production. Það {variant} enn.");
+            let reason = unsafe_reason(&text).unwrap_or_default();
+            assert!(reason.contains("vísbend"), "{variant}: {reason}");
+        }
+    }
+}
+
+#[test]
+fn spelled_version_numbers_are_rejected_but_prose_numbers_pass() {
+    assert!(unsafe_reason("Bætti við five point five í dag.").is_some());
+    assert!(unsafe_reason("Bætti við point five í dag.").is_some());
+    assert!(unsafe_reason("Bætti við Sonnet sex komma fimm í dag.").is_some());
+    assert!(unsafe_reason("Bætti við komma sjö í dag.").is_some());
+    assert!(unsafe_reason("Bætti við Þrír komma fimm í dag.").is_some());
+    // no word boundary would reject these
+    assert!(unsafe_reason("Bætti við five points í dag.").is_none());
+    assert!(unsafe_reason("Bætti við gone point í dag.").is_none());
+    // a number word without point/komma is ordinary prose
+    assert!(unsafe_reason("Tók einn hóp og sex mánaða sögu.").is_none());
+    assert!(unsafe_reason("Þrír hópar, komma í texta.").is_none());
+}
+
+#[test]
+fn slack_is_rejected_as_a_whole_word_only() {
+    assert!(unsafe_reason("Svaraði í Slack í dag.").is_some());
+    assert!(unsafe_reason("Svaraði í slack í dag.").is_some());
+    assert!(unsafe_reason("Svaraði í SLACK.").is_some());
+    assert!(unsafe_reason("Lagaði slackers-lista í dag.").is_none());
+}
+
+#[test]
+fn plural_first_verb_is_rejected_by_its_first_word_only() {
+    assert!(unsafe_reason("Mældu biðtíma.").is_some());
+    assert!(unsafe_reason("Mældu, svo skoðaði.").is_some());
+    assert!(unsafe_reason("Fru skoðaði.").is_some()); // exactly 3 letters
+    assert!(unsafe_reason("Fu skoðaði.").is_none()); // just under 3
+    assert!(unsafe_reason("Mældi biðtíma og skoðaði hvort þeir mældu.").is_none());
+    assert!(unsafe_reason("Úr-vinnsla skoðuð.").is_none()); // not alphabetic
+    assert!(unsafe_reason("").is_none());
+}
+
+#[test]
+fn ordinary_icelandic_words_that_are_customer_aliases_pass() {
+    let text =
+        "Festi kerfið í production og skoðaði sýni úr gagnagrunninum. Þetta gerir ferlið stöðugra.";
+    assert_eq!(validate(text).as_deref(), Ok(text));
+}
+
+fn known(name: &str, aliases: &[&str]) -> KnownCustomer {
+    KnownCustomer {
+        name: name.to_string(),
+        aliases: aliases.iter().map(|a| a.to_string()).collect(),
+    }
+}
+
+fn registry_names() -> Vec<KnownCustomer> {
+    vec![
+        known("VÍS", &["VIS"]),
+        known("BYKO", &[]),
+        known("Sjúkra", &[]),
+        known("APRÓ", &["APRO"]),
+        known("Festi", &[]),
+        known("Matís", &["sýni"]),
+        known("Þjóðskrá", &["ÞÍ"]),
+        known("RU", &[]),
+        known("Háskólinn í Reykjavík", &["RU"]),
+    ]
+}
+
+#[test]
+fn foreign_customers_lists_other_customers_sorted_by_registry_name() {
+    let text = "Reiknaði Lambda-kostnað út frá raungögnum frá Vis, Byko og Sjúkra.";
+    assert_eq!(
+        foreign_customers(text, Some("Sjúkra"), &registry_names()),
+        ["BYKO", "VÍS"]
+    );
+}
+
+#[test]
+fn foreign_customers_is_empty_for_the_tickets_own_customer() {
+    let text = "Lagaði villu hjá VÍS í production.";
+    assert!(foreign_customers(text, Some("VÍS"), &registry_names()).is_empty());
+}
+
+#[test]
+fn foreign_customers_with_unknown_ticket_customer_needs_two_customers() {
+    let names = registry_names();
+    assert!(foreign_customers("Lagaði villu hjá Byko.", None, &names).is_empty());
+    assert_eq!(
+        foreign_customers("Lagaði villu hjá Byko og Sjúkra.", None, &names),
+        ["BYKO", "Sjúkra"]
+    );
+}
+
+#[test]
+fn foreign_customers_names_a_customer_the_ticket_does_not_have() {
+    let names = registry_names();
+    assert_eq!(
+        foreign_customers("Lagaði villu hjá Byko.", Some("Nobody"), &names),
+        ["BYKO"]
+    );
+}
+
+#[test]
+fn foreign_customers_never_counts_apro() {
+    let names = registry_names();
+    assert!(
+        foreign_customers("Vann á APRÓ platform fyrir APRO.", Some("Sjúkra"), &names).is_empty()
+    );
+    assert!(foreign_customers("APRÓ og Byko.", None, &names).is_empty());
+}
+
+#[test]
+fn foreign_customers_counts_customers_sharing_an_alias_once() {
+    let names = registry_names();
+    assert!(foreign_customers("Vann fyrir RU.", None, &names).is_empty());
+    assert!(foreign_customers(
+        "Vann fyrir Háskólinn í Reykjavík og RU.",
+        Some("RU"),
+        &names
+    )
+    .is_empty());
+}
+
+#[test]
+fn foreign_customers_skips_ordinary_words_but_matches_the_capitalised_name() {
+    let names = registry_names();
+    assert!(foreign_customers("Setti upp og festi útgáfuna.", Some("Sjúkra"), &names).is_empty());
+    assert!(foreign_customers("Tók sýni úr gögnunum.", Some("Sjúkra"), &names).is_empty());
+    assert_eq!(
+        foreign_customers("Vann fyrir Festi.", Some("Sjúkra"), &names),
+        ["Festi"]
+    );
+}
+
+#[test]
+fn foreign_customers_handles_icelandic_letters_and_acronyms() {
+    let names = registry_names();
+    assert_eq!(
+        foreign_customers("Vann fyrir Þjóðskrá.", Some("Sjúkra"), &names),
+        ["Þjóðskrá"]
+    );
+    assert!(foreign_customers("Vann fyrir þjóðskrá.", Some("Sjúkra"), &names).is_empty());
+    assert_eq!(
+        foreign_customers("Skoðaði þí kerfið.", Some("Sjúkra"), &names),
+        ["Þjóðskrá"]
+    );
+}
+
+#[test]
+fn foreign_customers_matches_whole_words_only() {
+    let names = registry_names();
+    assert!(
+        foreign_customers("Keyrði RUN skipun og true gildi.", Some("Sjúkra"), &names).is_empty()
+    );
+    assert!(foreign_customers("Vann með VISA greiðslur.", Some("Sjúkra"), &names).is_empty());
 }

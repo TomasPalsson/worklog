@@ -1,0 +1,74 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.32s
+     Running unittests src/lib.rs (rust/target/debug/deps/worklog_core-5f98b59a3618f7a2)
+
+running 67 tests
+test db::tests::billing_line_texts_rejects_an_origin_outside_the_check_constraint ... ok
+test db::tests::billing_line_texts_table_exists_and_schema_version_is_15 ... ok
+test db::tests::billing_line_texts_accepts_generated_and_manual_rows_keyed_by_day_folder_customer ... ok
+test db::tests::tempo_line_texts_enforces_origin_and_half_hour_override_and_keys_by_day_and_issue ... ok
+test collectors::tempo::tests::sync_sends_stored_line_text_and_hours_override ... ok
+test collectors::tempo::tests::sync_sends_long_stored_line_text_in_full ... ok
+test line_text::tests::appendix_b_bad_texts_are_rejected_by_the_new_rules ... ok
+test line_text::tests::every_evidence_phrase_is_rejected_in_any_case ... ok
+test line_text::tests::appendix_b_good_texts_pass_unchanged ... ok
+test billing::tests::billing_row_uses_a_stored_manual_line_text ... ok
+test billing::tests::billing_row_uses_a_stored_generated_line_text ... ok
+test billing::tests::csv_and_text_render_use_the_stored_line_text ... ok
+test daemon::tests::line_text_regenerate_rejects_a_second_call_while_running ... ok
+test daemon::tests::line_text_status_maps_every_job_state ... ok
+test daemon::tests::line_text_route_empty_text_resets ... ok
+test daemon::tests::line_text_route_stores_manual_text ... ok
+test line_text::tests::line_text_system_prompt_asks_for_specifics ... ok
+test line_text::tests::line_text_system_prompt_describes_work_items_task_by_task ... ok
+test line_text::tests::line_text_system_prompt_keeps_english_tech_terms ... ok
+test daemon::tests::line_text_regenerate_on_manual_line_starts_then_settles_failed ... ok
+test line_text::tests::line_text_validate_accepts_good_icelandic_text ... ok
+test line_text::tests::line_text_validate_accepts_long_text ... ok
+test line_text::tests::line_text_validate_allows_numbers ... ok
+test line_text::tests::line_text_validate_rejects_bare_filename ... ok
+test line_text::tests::line_text_validate_rejects_english_only ... ok
+test line_text::tests::line_text_validate_rejects_four_sentences ... ok
+test line_text::tests::line_text_validate_rejects_hash ... ok
+test line_text::tests::line_text_validate_rejects_json_wrapper ... ok
+test line_text::tests::line_text_validate_rejects_one_sentence ... ok
+test line_text::tests::line_text_validate_rejects_path ... ok
+test line_text::tests::line_text_validate_rejects_tool_name ... ok
+test line_text::tests::ordinary_icelandic_words_that_are_customer_aliases_pass ... ok
+test line_text::tests::plural_first_verb_is_rejected_by_its_first_word_only ... ok
+test line_text::tests::prompt_tells_the_model_about_other_tickets_today ... ok
+test line_text::tests::slack_is_rejected_as_a_whole_word_only ... ok
+test line_text::tests::spelled_version_numbers_are_rejected_but_prose_numbers_pass ... ok
+test line_text_jobs::tests::distinct_keys_are_independent ... ok
+test line_text_jobs::tests::finish_err_records_failed_with_reason ... ok
+test line_text_jobs::tests::finish_ok_then_running_can_restart ... ok
+test line_text_jobs::tests::try_start_then_second_call_for_same_key_is_rejected ... ok
+test line_text_jobs::tests::untracked_key_is_none ... ok
+test line_text::phases::tests::commit_skips_a_manual_edit_that_landed_between_prepare_and_invoke ... ok
+test tempo_line_writer::tests::empty_ticket_fields_are_left_out_and_long_descriptions_capped ... ok
+test line_text::phases::tests::prepare_skips_an_already_manual_line ... ok
+test line_text::phases::tests::prepare_invoke_commit_round_trip_generates_and_stores ... ok
+test line_text::phases::tests::invoke_many_runs_concurrently_and_keeps_reply_order ... ok
+test tempo_line_writer::tests::prompt_carries_every_new_rule ... ok
+test tempo_line_writer::tests::reask_names_the_new_rules ... ok
+test tempo_line_writer::tests::rejected_reply_is_retried_with_the_reason ... ok
+test tempo_line_writer::tests::three_bad_replies_fail_with_the_attempt_count ... ok
+test tempo_line_writer::tests::ticket_title_and_description_are_added_to_the_input ... ok
+test tempo_line_writer::tests::valid_reply_is_returned_after_one_call ... ok
+test line_text::tests::line_text_failure_keeps_previous_text_on_invalid_reply ... ok
+test line_text::tests::line_text_manual_never_overwritten ... ok
+test line_text::tests::line_text_invoker_error_reports_every_line_key_not_generated ... ok
+test line_text::tests::line_text_invoker_error_skips_manual_origin_lines ... ok
+test line_text::tests::line_text_set_manual_empty_deletes_row ... ok
+test line_text::tests::line_text_text_for_round_trips_origin ... ok
+test line_text::tests::line_text_failure_keeps_previous_text_on_invoker_error ... ok
+test line_text::tests::line_text_generate_for_day_stores_one_row_per_line_key ... ok
+test meeting_description::tests::meeting_only_line_text_is_the_meeting_names ... ok
+test billing::tests::billing_row_without_a_stored_line_text_keeps_todays_text ... ok
+test line_text::tests::line_text_unwraps_text_nested_as_json_inside_text ... ok
+test tempo_line_writer::tests::prepare_lists_the_days_other_tickets_with_summaries ... ok
+test tempo_line_writer::tests::prepare_carries_the_ticket_block_descriptions_and_errors_without_blocks ... ok
+test tempo_line_writer::tests::prepare_omits_other_tickets_when_there_are_none ... ok
+test ticket_blocks::tests::line_text_prefers_stored_over_fallback_and_seconds_honour_override ... ok
+
+test result: ok. 67 passed; 0 failed; 0 ignored; 0 measured; 2268 filtered out; finished in 0.65s
+

@@ -3,11 +3,14 @@
 //! with up to [`MAX_ATTEMPTS`] tries. Phases are split so the daemon never
 //! holds the sqlite connection across a model call.
 
+use crate::billing_registry::Registry;
 use crate::clues_send;
 use crate::collectors::jira::{self, JiraAuth};
 use crate::estimate::ModelInvoker;
 use crate::http;
-use crate::line_text::{self, line_text_schema, reply_to_text, SYSTEM_PROMPT_IS};
+use crate::line_text::{
+    self, foreign_customers, line_text_schema, reply_to_text, KnownCustomer, SYSTEM_PROMPT_IS,
+};
 use crate::tempo_line_contract::TempoLineKey;
 use rusqlite::Connection;
 
@@ -22,7 +25,37 @@ pub fn prepare(conn: &Connection, key: &TempoLineKey) -> Result<String, String> 
     if !others.is_empty() {
         msg["other_tickets_today"] = others.into();
     }
+    // An unreadable registry only drops the customer rule; the line is still written.
+    if let Ok(registry) = Registry::load(conn) {
+        if let Some(customer) = ticket_customer(conn, key, &registry) {
+            msg["ticket_customer"] = customer.into();
+        }
+        let known: Vec<KnownCustomer> = registry
+            .customers
+            .iter()
+            .map(|c| KnownCustomer {
+                name: c.name.clone(),
+                aliases: c.aliases.clone(),
+            })
+            .collect();
+        msg["known_customers"] = serde_json::json!(known);
+    }
     Ok(msg.to_string())
+}
+
+/// The customer the ticket's summary names, else its parent's summary.
+fn ticket_customer(conn: &Connection, key: &TempoLineKey, registry: &Registry) -> Option<String> {
+    let (summary, parent): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT summary, parent_summary FROM jira_tickets WHERE key = ?1",
+            [&key.jira_issue],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok()?;
+    [summary, parent]
+        .into_iter()
+        .flatten()
+        .find_map(|text| registry.customer_in_text(&text))
 }
 
 /// "KEY: summary" for every other ticket the day has: non-personal blocks
@@ -113,19 +146,47 @@ pub fn write_with_system(
     model: &str,
     system: &str,
 ) -> Result<String, String> {
+    let customers = customer_data(user_msg);
     let user_msg = &with_ticket(user_msg, key);
     let mut msg = user_msg.to_string();
     let mut reason = String::new();
     for _ in 0..MAX_ATTEMPTS {
-        reason = match invoke(&msg, invoker, model, system).and_then(|t| line_text::validate(&t)) {
+        reason = match invoke(&msg, invoker, model, system)
+            .and_then(|t| line_text::validate(&t))
+            .and_then(|t| check_customers(t, &customers))
+        {
             Ok(text) => return Ok(text),
             Err(reason) => reason,
         };
         msg = format!(
-            "{user_msg}\n\nSíðasta svar var hafnað: {reason}. Skrifaðu það aftur og fylgdu öllum reglunum (engin skráarnöfn, engin verkfæranöfn, 1–3 setningar á íslensku)."
+            "{user_msg}\n\nSíðasta svar var hafnað: {reason}. Skrifaðu það aftur og fylgdu öllum reglunum (engin skráarnöfn, engin verkfæranöfn, 1–3 setningar á íslensku, ekkert tal um vísbendingar eða hvað er óstaðfest, útgáfunúmer með tölustöfum, ekki nefna Slack, byrja á sögn í eintölu)."
         );
     }
     Err(format!("{reason} (reynt {MAX_ATTEMPTS} sinnum)"))
+}
+
+/// The `ticket_customer` and `known_customers` keys `prepare` wrote; `None`
+/// when `known_customers` is missing or unreadable.
+fn customer_data(user_msg: &str) -> Option<(Option<String>, Vec<KnownCustomer>)> {
+    let input: serde_json::Value = serde_json::from_str(user_msg).ok()?;
+    let known = serde_json::from_value(input.get("known_customers")?.clone()).ok()?;
+    let ticket = input["ticket_customer"].as_str().map(str::to_string);
+    Some((ticket, known))
+}
+
+fn check_customers(
+    text: String,
+    customers: &Option<(Option<String>, Vec<KnownCustomer>)>,
+) -> Result<String, String> {
+    let Some((ticket, known)) = customers else {
+        return Ok(text);
+    };
+    let foreign = foreign_customers(&text, ticket.as_deref(), known);
+    if foreign.is_empty() {
+        Ok(text)
+    } else {
+        Err(format!("nefnir annan viðskiptavin: {}", foreign.join(", ")))
+    }
 }
 
 #[path = "tempo_line_writer_test.rs"]

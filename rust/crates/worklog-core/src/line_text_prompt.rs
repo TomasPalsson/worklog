@@ -60,6 +60,10 @@ aðeins ef það er algengt í daglegu tali (t.d. villa, uppfærsla, \
 gagnagrunnur, vefsíða) og búðu aldrei til nýyrði eða orðrétta þýðingu. \
 Skrifaðu í germynd með sögnina fremst og án fornafns (t.d. \"Lagaði…\", \
 \"Setti upp…\", \"Uppfærði…\"), aldrei í þolmynd eins og \"var virkjuð\". \
+Lýstu aldrei vísbendingunum sjálfum og aldrei hvað er óþekkt eða óstaðfest. \
+Nefndu aldrei samstarfsfólk með nafni, aldrei Slack og aldrei innri rásir. \
+Skrifaðu útgáfunúmer með tölustöfum (t.d. 5.5) en aldrei með orðum. \
+Lýstu aðeins vinnu fyrir viðskiptavin þessa máls. \
 Ef vísbendingarnar eru fáorðar skaltu lýsa eðli \
 vinnunnar á einfaldan hátt án þess að finna upp á smáatriðum. Svaraðu \
 eingöngu með JSON á forminu {\"text\": \"...\"}.";

@@ -487,3 +487,49 @@ async fn get_carries_null_check_status_for_an_unchecked_line() {
     assert_eq!(lines[0]["check_status"], serde_json::Value::Null);
 }
 
+
+fn meeting_line_state(title: &str) -> Shared {
+    let conn = open_memory().unwrap();
+    conn.execute(
+        "INSERT INTO blocks (day, jira_issue, started_at, ended_at, duration_seconds)
+         VALUES (?1, 'APRO-1', '2026-09-30T09:00:00+00:00', '2026-09-30T10:00:00+00:00', 3600)",
+        params![DAY],
+    )
+    .unwrap();
+    let block_id = conn.last_insert_rowid();
+    let event_id = crate::repo::upsert_event(
+        &conn,
+        &crate::models::Event::minimal("gcal", "e1".to_string(), "2026-09-30T09:00:00+00:00", title),
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+        params![block_id, event_id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO jira_tickets (key, summary) VALUES ('APRO-1', 'Hertz - Greiningarfundur')",
+        [],
+    )
+    .unwrap();
+    state_from_conn(conn)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn daemon_tempo_lines_meeting_named_like_the_ticket_is_flagged_untouched() {
+    // catches: the meeting branch storing None, or rewriting the title
+    let state = meeting_line_state("Hertz - Greiningarfundur");
+    checked(&state, &[]).await;
+    assert_eq!(
+        stored(&state).await,
+        (Some("Hertz - Greiningarfundur".to_string()), Some("needs_look".to_string()))
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn daemon_tempo_lines_ordinary_meeting_title_is_left_unchecked() {
+    // catches: flagging or passing every meeting
+    let state = meeting_line_state("Vikulegur fundur");
+    checked(&state, &[]).await;
+    assert_eq!(stored(&state).await, (Some("Vikulegur fundur".to_string()), None));
+}

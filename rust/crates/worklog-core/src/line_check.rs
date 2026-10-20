@@ -29,6 +29,20 @@ where
     Ok(Some(LineCheck::Passed))
 }
 
+fn squashed(text: &str) -> String {
+    text.to_lowercase().split_whitespace().collect()
+}
+
+/// The no-model check for lines nobody generated (meetings, hand-typed):
+/// `NeedsLook` when the text breaks a customer-safe rule or is the ticket
+/// summary. Never `Passed` and never an edit: nobody verified the text.
+pub fn static_check(text: &str, ticket_summary: &str) -> Option<LineCheck> {
+    let summary = squashed(ticket_summary);
+    let copies_summary = !summary.is_empty() && squashed(text) == summary;
+    (copies_summary || crate::line_text::unsafe_reason(text).is_some())
+        .then_some(LineCheck::NeedsLook)
+}
+
 /// Checks `text`; on a fail asks `regenerate` for one new text and checks that.
 /// Returns the text to keep and its status. A failed regenerate keeps the
 /// original text, flagged.

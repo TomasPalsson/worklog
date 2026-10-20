@@ -220,16 +220,27 @@ pub fn set_text(conn: &Connection, body: &SetTempoLineText) -> Result<Option<Tem
     } else {
         (Some(trimmed), Some("manual"))
     };
+    let summary: Option<String> = conn
+        .query_row(
+            "SELECT summary FROM jira_tickets WHERE key = ?1",
+            [&key.jira_issue],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let status = text
+        .and_then(|t| crate::line_check::static_check(t, summary.as_deref().unwrap_or("")))
+        .map(|_| "needs_look");
     conn.execute(
         "UPDATE tempo_line_texts
-            SET text = ?3, text_origin = ?4, source_hash = NULL, check_status = NULL,
-                updated_at = ?5
+            SET text = ?3, text_origin = ?4, source_hash = NULL, check_status = ?5,
+                updated_at = ?6
           WHERE day = ?1 AND jira_issue = ?2",
         params![
             key.day,
             key.jira_issue,
             text,
             origin,
+            status,
             Utc::now().to_rfc3339()
         ],
     )
