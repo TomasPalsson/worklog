@@ -64,8 +64,7 @@ fn seed_block(
     block_id
 }
 
-const GOOD_TEXT: &str =
-    "Lauk verkefninu í dag. Allt gekk vel og viðskiptavinurinn var ánægður.";
+const GOOD_TEXT: &str = "Lauk verkefninu í dag. Allt gekk vel og viðskiptavinurinn var ánægður.";
 const ENGLISH_TEXT: &str = "Fixed the login bug. Added tests.";
 
 struct ErrInvoker;
@@ -590,6 +589,7 @@ fn plural_first_verb_is_rejected_by_its_first_word_only() {
 
 #[test]
 fn ordinary_icelandic_words_that_are_customer_aliases_pass() {
-    let text = "Festi kerfið í production og skoðaði sýni úr gagnagrunninum. Þetta gerir ferlið stöðugra.";
+    let text =
+        "Festi kerfið í production og skoðaði sýni úr gagnagrunninum. Þetta gerir ferlið stöðugra.";
     assert_eq!(validate(text).as_deref(), Ok(text));
 }
