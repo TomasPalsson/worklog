@@ -4,12 +4,14 @@
 //! T020: `validate`, `generate_for_day`, `set_manual`, `text_for`.
 
 use crate::billing;
+use crate::billing_registry::alias_matches;
 use crate::clues_contract::{BillingLineKey, LineTextOrigin};
 use crate::estimate::ModelInvoker;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::OnceLock;
@@ -139,6 +141,99 @@ fn has_icelandic_letter(text: &str) -> bool {
                 | 'Ð'
         )
     })
+}
+
+/// A registry customer as the ticket-line writer sees it: a name plus the
+/// aliases that spot it in text.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct KnownCustomer {
+    pub name: String,
+    pub aliases: Vec<String>,
+}
+
+/// Registry names of the customers `text` names that the ticket's
+/// customer does not own, sorted. With no `ticket_customer`, only two or
+/// more distinct customers count. APRÓ never counts; customers sharing
+/// an alias are one customer. An all-uppercase name or alias (an
+/// acronym) matches in any case, any other matches exactly as written,
+/// and an all-lowercase one is an ordinary word and is skipped.
+pub fn foreign_customers(
+    text: &str,
+    ticket_customer: Option<&str>,
+    known: &[KnownCustomer],
+) -> Vec<String> {
+    let names_of = |c: &KnownCustomer| -> Vec<String> {
+        std::iter::once(&c.name)
+            .chain(&c.aliases)
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+            .collect()
+    };
+    let mut group: Vec<usize> = (0..known.len()).collect();
+    for i in 0..known.len() {
+        let mine: Vec<String> = names_of(&known[i])
+            .iter()
+            .map(|n| n.to_lowercase())
+            .collect();
+        for j in i + 1..known.len() {
+            let shared = names_of(&known[j])
+                .iter()
+                .any(|n| mine.contains(&n.to_lowercase()));
+            if shared && group[i] != group[j] {
+                let (keep, old) = (group[i], group[j]);
+                group
+                    .iter_mut()
+                    .filter(|g| **g == old)
+                    .for_each(|g| *g = keep);
+            }
+        }
+    }
+    let own = ticket_customer.and_then(|t| {
+        known
+            .iter()
+            .position(|c| c.name.to_lowercase() == t.trim().to_lowercase())
+            .map(|i| group[i])
+    });
+    let mut hits: Vec<(usize, &str)> = Vec::new();
+    for (i, customer) in known.iter().enumerate() {
+        let is_apro = ["apró", "apro"].contains(&customer.name.trim().to_lowercase().as_str());
+        if !is_apro && names_of(customer).iter().any(|n| names_text(text, n)) {
+            hits.push((group[i], customer.name.as_str()));
+        }
+    }
+    let mut groups: Vec<usize> = hits.iter().map(|(g, _)| *g).collect();
+    groups.sort_unstable();
+    groups.dedup();
+    if ticket_customer.is_none() && groups.len() < 2 {
+        return Vec::new();
+    }
+    let mut foreign: Vec<String> = groups
+        .into_iter()
+        .filter(|g| Some(*g) != own)
+        .filter_map(|g| {
+            hits.iter()
+                .filter(|(hg, _)| *hg == g)
+                .map(|(_, n)| *n)
+                .min()
+        })
+        .map(str::to_string)
+        .collect();
+    foreign.sort();
+    foreign
+}
+
+fn names_text(text: &str, name: &str) -> bool {
+    if name == name.to_lowercase() {
+        false
+    } else if name == name.to_uppercase() {
+        alias_matches(text, name)
+    } else {
+        text.match_indices(name).any(|(start, found)| {
+            let before = text[..start].chars().next_back();
+            let after = text[start + found.len()..].chars().next();
+            !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
+        })
+    }
 }
 
 /// Result of one [`generate_for_day`] run.

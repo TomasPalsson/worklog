@@ -593,3 +593,113 @@ fn ordinary_icelandic_words_that_are_customer_aliases_pass() {
         "Festi kerfið í production og skoðaði sýni úr gagnagrunninum. Þetta gerir ferlið stöðugra.";
     assert_eq!(validate(text).as_deref(), Ok(text));
 }
+
+fn known(name: &str, aliases: &[&str]) -> KnownCustomer {
+    KnownCustomer {
+        name: name.to_string(),
+        aliases: aliases.iter().map(|a| a.to_string()).collect(),
+    }
+}
+
+fn registry_names() -> Vec<KnownCustomer> {
+    vec![
+        known("VÍS", &["VIS"]),
+        known("BYKO", &[]),
+        known("Sjúkra", &[]),
+        known("APRÓ", &["APRO"]),
+        known("Festi", &[]),
+        known("Matís", &["sýni"]),
+        known("Þjóðskrá", &["ÞÍ"]),
+        known("RU", &[]),
+        known("Háskólinn í Reykjavík", &["RU"]),
+    ]
+}
+
+#[test]
+fn foreign_customers_lists_other_customers_sorted_by_registry_name() {
+    let text = "Reiknaði Lambda-kostnað út frá raungögnum frá Vis, Byko og Sjúkra.";
+    assert_eq!(
+        foreign_customers(text, Some("Sjúkra"), &registry_names()),
+        ["BYKO", "VÍS"]
+    );
+}
+
+#[test]
+fn foreign_customers_is_empty_for_the_tickets_own_customer() {
+    let text = "Lagaði villu hjá VÍS í production.";
+    assert!(foreign_customers(text, Some("VÍS"), &registry_names()).is_empty());
+}
+
+#[test]
+fn foreign_customers_with_unknown_ticket_customer_needs_two_customers() {
+    let names = registry_names();
+    assert!(foreign_customers("Lagaði villu hjá Byko.", None, &names).is_empty());
+    assert_eq!(
+        foreign_customers("Lagaði villu hjá Byko og Sjúkra.", None, &names),
+        ["BYKO", "Sjúkra"]
+    );
+}
+
+#[test]
+fn foreign_customers_names_a_customer_the_ticket_does_not_have() {
+    let names = registry_names();
+    assert_eq!(
+        foreign_customers("Lagaði villu hjá Byko.", Some("Nobody"), &names),
+        ["BYKO"]
+    );
+}
+
+#[test]
+fn foreign_customers_never_counts_apro() {
+    let names = registry_names();
+    assert!(
+        foreign_customers("Vann á APRÓ platform fyrir APRO.", Some("Sjúkra"), &names).is_empty()
+    );
+    assert!(foreign_customers("APRÓ og Byko.", None, &names).is_empty());
+}
+
+#[test]
+fn foreign_customers_counts_customers_sharing_an_alias_once() {
+    let names = registry_names();
+    assert!(foreign_customers("Vann fyrir RU.", None, &names).is_empty());
+    assert!(foreign_customers(
+        "Vann fyrir Háskólinn í Reykjavík og RU.",
+        Some("RU"),
+        &names
+    )
+    .is_empty());
+}
+
+#[test]
+fn foreign_customers_skips_ordinary_words_but_matches_the_capitalised_name() {
+    let names = registry_names();
+    assert!(foreign_customers("Setti upp og festi útgáfuna.", Some("Sjúkra"), &names).is_empty());
+    assert!(foreign_customers("Tók sýni úr gögnunum.", Some("Sjúkra"), &names).is_empty());
+    assert_eq!(
+        foreign_customers("Vann fyrir Festi.", Some("Sjúkra"), &names),
+        ["Festi"]
+    );
+}
+
+#[test]
+fn foreign_customers_handles_icelandic_letters_and_acronyms() {
+    let names = registry_names();
+    assert_eq!(
+        foreign_customers("Vann fyrir Þjóðskrá.", Some("Sjúkra"), &names),
+        ["Þjóðskrá"]
+    );
+    assert!(foreign_customers("Vann fyrir þjóðskrá.", Some("Sjúkra"), &names).is_empty());
+    assert_eq!(
+        foreign_customers("Skoðaði þí kerfið.", Some("Sjúkra"), &names),
+        ["Þjóðskrá"]
+    );
+}
+
+#[test]
+fn foreign_customers_matches_whole_words_only() {
+    let names = registry_names();
+    assert!(
+        foreign_customers("Keyrði RUN skipun og true gildi.", Some("Sjúkra"), &names).is_empty()
+    );
+    assert!(foreign_customers("Vann með VISA greiðslur.", Some("Sjúkra"), &names).is_empty());
+}

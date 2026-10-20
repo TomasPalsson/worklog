@@ -182,3 +182,125 @@ fn prompt_carries_every_new_rule() {
         assert!(SYSTEM_PROMPT_IS.contains(phrase), "{phrase}");
     }
 }
+
+fn customer(conn: &Connection, name: &str, aliases: &[&str]) {
+    crate::billing_registry::upsert_customer(
+        conn,
+        &crate::billing_registry::Customer {
+            id: None,
+            name: name.into(),
+            aliases: aliases.iter().map(|a| a.to_string()).collect(),
+        },
+    )
+    .unwrap();
+}
+
+fn prepared(conn: &Connection) -> serde_json::Value {
+    serde_json::from_str(&prepare(conn, &key()).unwrap()).unwrap()
+}
+
+#[test]
+fn prepare_carries_the_ticket_customer_and_every_known_customer() {
+    let conn = open_memory().unwrap();
+    block(&conn, "2026-10-05", "APRO-1", 0);
+    customer(&conn, "Sjúkra", &[]);
+    customer(&conn, "VÍS", &["VIS"]);
+    conn.execute(
+        "INSERT INTO jira_tickets (key, summary) VALUES ('APRO-1', 'Data retention fyrir Sjúkra')",
+        [],
+    )
+    .unwrap();
+    let v = prepared(&conn);
+    assert_eq!(v["ticket_customer"], "Sjúkra");
+    assert_eq!(
+        v["known_customers"],
+        serde_json::json!([
+            {"name": "Sjúkra", "aliases": []},
+            {"name": "VÍS", "aliases": ["VIS"]},
+        ])
+    );
+}
+
+#[test]
+fn prepare_falls_back_to_the_parent_summary_and_omits_an_ambiguous_customer() {
+    let conn = open_memory().unwrap();
+    block(&conn, "2026-10-05", "APRO-1", 0);
+    customer(&conn, "Sjúkra", &[]);
+    customer(&conn, "VÍS", &["VIS"]);
+    conn.execute(
+        "INSERT INTO jira_tickets (key, summary, parent_summary) VALUES ('APRO-1', 'Lagfæra villu', 'Epic Sjúkra')",
+        [],
+    )
+    .unwrap();
+    assert_eq!(prepared(&conn)["ticket_customer"], "Sjúkra");
+    conn.execute(
+        "UPDATE jira_tickets SET summary = 'Sjúkra og VIS' WHERE key = 'APRO-1'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(prepared(&conn)["ticket_customer"], "Sjúkra");
+    conn.execute(
+        "UPDATE jira_tickets SET parent_summary = NULL WHERE key = 'APRO-1'",
+        [],
+    )
+    .unwrap();
+    assert!(prepared(&conn).get("ticket_customer").is_none());
+}
+
+const FOREIGN_REPLY: &str =
+    "Rannsakaði 503-villur hjá Sjúkra. Reiknaði kostnað út frá raungögnum frá Vis, Byko og Sjúkra.";
+const CLEAN_REPLY: &str = "Rannsakaði 503-villur hjá Sjúkra. Reiknaði kostnað út frá raungögnum.";
+
+fn customer_msg() -> String {
+    serde_json::json!({
+        "ticket_customer": "Sjúkra",
+        "known_customers": [
+            {"name": "Sjúkra", "aliases": []},
+            {"name": "VÍS", "aliases": ["VIS"]},
+            {"name": "BYKO", "aliases": []},
+        ],
+    })
+    .to_string()
+}
+
+#[test]
+fn foreign_customer_reply_is_reasked_with_the_names() {
+    let inv = Scripted(
+        Mutex::new(vec![FOREIGN_REPLY, CLEAN_REPLY]),
+        Mutex::new(Vec::new()),
+    );
+    assert_eq!(
+        write(&customer_msg(), &key(), &inv, "m").unwrap(),
+        CLEAN_REPLY
+    );
+    let seen = inv.1.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert!(
+        seen[1].contains("nefnir annan viðskiptavin: BYKO, VÍS"),
+        "{}",
+        seen[1]
+    );
+}
+
+#[test]
+fn own_customer_reply_passes_first_time() {
+    let inv = Scripted(Mutex::new(vec![CLEAN_REPLY]), Mutex::new(Vec::new()));
+    write(&customer_msg(), &key(), &inv, "m").unwrap();
+    assert_eq!(inv.1.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn customer_rule_is_skipped_without_usable_customer_data() {
+    for msg in [
+        "{}".to_string(),
+        r#"{"ticket_customer":"Sjúkra","known_customers":"oops"}"#.to_string(),
+        "not json".to_string(),
+    ] {
+        let inv = Scripted(Mutex::new(vec![FOREIGN_REPLY]), Mutex::new(Vec::new()));
+        assert_eq!(
+            write(&msg, &key(), &inv, "m").unwrap(),
+            FOREIGN_REPLY,
+            "{msg}"
+        );
+    }
+}
