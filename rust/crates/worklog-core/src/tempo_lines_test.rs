@@ -496,3 +496,57 @@ fn pin_hours_marks_synced_blocks_dirty_only_for_that_line() {
     assert_eq!(dirty_of(&conn, unsynced), 0);
     assert_eq!(dirty_of(&conn, other), 0, "sibling ticket untouched");
 }
+
+fn status_of(conn: &Connection, issue: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT check_status FROM tempo_line_texts WHERE jira_issue = ?1",
+        [issue],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+fn seed_summary(conn: &Connection, issue: &str, summary: &str) {
+    conn.execute(
+        "INSERT INTO jira_tickets (key, summary) VALUES (?1, ?2)",
+        params![issue, summary],
+    )
+    .unwrap();
+}
+
+#[test]
+fn tempo_lines_manual_save_keeps_a_rule_breaking_text_and_flags_it() {
+    // catches: rewriting the text, or leaving check_status NULL
+    let conn = db::open_memory().unwrap();
+    seed_block(&conn, Some("B-bad"), "2026-09-30T10:00:00Z", 1800, None);
+    let line = set_text(&conn, &text_body("B-bad", "Unnu í Slack rás"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(line.text.as_deref(), Some("Unnu í Slack rás"));
+    assert_eq!(line.check_status, Some(LineCheck::NeedsLook));
+}
+
+#[test]
+fn tempo_lines_manual_save_copying_the_ticket_summary_is_flagged() {
+    // catches: looking the summary up under the wrong key, or not at all
+    let conn = db::open_memory().unwrap();
+    seed_block(&conn, Some("B-1"), "2026-09-30T10:00:00Z", 1800, None);
+    seed_summary(&conn, "B-1", "Hertz - Greiningarfundur");
+    let line = set_text(&conn, &text_body("B-1", "hertz - greiningarfundur"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(line.check_status, Some(LineCheck::NeedsLook));
+}
+
+#[test]
+fn tempo_lines_manual_save_of_a_clean_text_is_never_marked_passed() {
+    // catches: Passed for unchecked text, or a stale flag surviving the edit
+    let conn = db::open_memory().unwrap();
+    seed_block(&conn, Some("B-1"), "2026-09-30T10:00:00Z", 1800, None);
+    set_text(&conn, &text_body("B-1", "Unnu í Slack rás")).unwrap();
+    let line = set_text(&conn, &text_body("B-1", "Lagaði villu í innskráningu"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(line.check_status, None);
+    assert_eq!(status_of(&conn, "B-1"), None);
+}

@@ -165,7 +165,8 @@ where
         let mut out = Vec::new();
         for (key, meeting, msg, summary, hash) in prepared {
             if let Some(text) = meeting {
-                out.push((key, text, None, hash));
+                let check = line_check::static_check(&text, &summary);
+                out.push((key, text, check, hash));
                 continue;
             }
             let written = msg.and_then(|m| {

@@ -267,3 +267,48 @@ fn tempo_lines_hand_edit_drops_the_old_check() {
     write_manual(&conn);
     assert_eq!(status_in_db(&conn), None);
 }
+
+#[test]
+fn line_check_static_flags_a_text_that_copies_the_summary_ignoring_case_and_spaces() {
+    // catches: exact-case compare, or compare without removing inner whitespace
+    assert_eq!(
+        static_check("Hertz - Greiningarfundur", "Hertz - Greiningarfundur "),
+        Some(LineCheck::NeedsLook)
+    );
+    assert_eq!(
+        static_check("fix  LOGIN\tredirect", SUMMARY),
+        Some(LineCheck::NeedsLook)
+    );
+}
+
+#[test]
+fn line_check_static_does_not_flag_a_text_that_only_contains_the_summary() {
+    // catches: contains() instead of equality
+    assert_eq!(static_check("Fix login redirect again", SUMMARY), None);
+}
+
+#[test]
+fn line_check_static_flags_a_rule_break_in_a_one_sentence_text() {
+    // catches: running full validate (sentence count) instead of the rules only
+    assert_eq!(
+        static_check("Staðfestir ekki villuna", SUMMARY),
+        Some(LineCheck::NeedsLook)
+    );
+    assert_eq!(
+        static_check("Unnu í Slack rás", SUMMARY),
+        Some(LineCheck::NeedsLook)
+    );
+}
+
+#[test]
+fn line_check_static_never_passes_a_clean_text() {
+    // catches: returning Passed for text nobody checked
+    assert_eq!(static_check("Lagaði villu í innskráningu", SUMMARY), None);
+}
+
+#[test]
+fn line_check_static_empty_summary_does_not_flag_an_empty_text() {
+    // catches: "" == "" counting as a copy
+    assert_eq!(static_check("", ""), None);
+    assert_eq!(static_check("Lagaði villu", "   "), None);
+}
