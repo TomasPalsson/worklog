@@ -37,7 +37,7 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --
 ## Phase 3 — Meeting and hand-typed lines get flagged, never rewritten
 Goal: a meeting or hand-typed line that breaks a rule or copies the ticket summary shows "needs a look", with its text untouched.
 Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib -- line_check tempo_lines daemon_tempo_lines` — a manual save of B-bad 1 keeps its text and is flagged; "Hertz - Greiningarfundur" is flagged.
-- [ ] T003 Meeting and hand-typed lines that break a rule or copy the ticket title show "needs a look" (FR-08, FR-09) — files: rust/crates/worklog-core/src/line_check.rs, rust/crates/worklog-core/src/line_check_test.rs, rust/crates/worklog-core/src/tempo_lines.rs, rust/crates/worklog-core/src/tempo_lines_test.rs, rust/crates/worklog-core/src/daemon_tempo_lines.rs, rust/crates/worklog-core/src/daemon_tempo_lines_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib -- line_check tempo_lines daemon_tempo_lines` — after: T002
+- [x] T003 Meeting and hand-typed lines that break a rule or copy the ticket title show "needs a look" (FR-08, FR-09) — files: rust/crates/worklog-core/src/line_check.rs, rust/crates/worklog-core/src/line_check_test.rs, rust/crates/worklog-core/src/tempo_lines.rs, rust/crates/worklog-core/src/tempo_lines_test.rs, rust/crates/worklog-core/src/daemon_tempo_lines.rs, rust/crates/worklog-core/src/daemon_tempo_lines_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib -- line_check tempo_lines daemon_tempo_lines` — after: T002 — done: 940881d
 
 ## Gates
 - [ ] G001 project gates clean — files: . — verify: `flow check --fix --since fcf966f`

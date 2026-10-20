@@ -1,0 +1,72 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s
+     Running unittests src/lib.rs (rust/target/debug/deps/worklog_core-5f98b59a3618f7a2)
+
+running 65 tests
+test daemon::tests::daemon_tempo_lines::get_carries_null_check_status_for_an_unchecked_line ... ok
+test daemon::tests::daemon_tempo_lines::get_carries_check_status_needs_look_for_a_flagged_line ... ok
+test daemon::tests::daemon_tempo_lines::get_carries_check_status_passed_for_a_passed_line ... ok
+test daemon::tests::daemon_tempo_lines::estimate_route_reports_tempo_lines_count ... ok
+test daemon::tests::daemon_tempo_lines::daemon_tempo_lines_meeting_named_like_the_ticket_is_flagged_untouched ... ok
+test daemon::tests::daemon_tempo_lines::forced_regenerate_fails_loudly_when_the_model_fails ... ok
+test daemon::tests::daemon_tempo_lines::generated_line_without_a_cached_ticket_summary_is_not_checked ... ok
+test daemon::tests::daemon_tempo_lines::generated_good_line_is_stored_passed_without_a_regenerate ... ok
+test line_check::tests::about_no_needs_look ... ok
+test line_check::tests::asks_the_two_questions_with_the_line_as_the_only_text ... ok
+test daemon::tests::daemon_tempo_lines::daemon_tempo_lines_ordinary_meeting_title_is_left_unchecked ... ok
+test line_check::tests::blank_summary_is_not_checked_and_not_asked ... ok
+test line_check::tests::both_yes_passes ... ok
+test line_check::tests::failed_regenerate_keeps_the_text_and_flags_it ... ok
+test line_check::tests::failing_line_is_regenerated_once_and_the_new_text_kept_when_it_passes ... ok
+test line_check::tests::line_check_static_empty_summary_does_not_flag_an_empty_text ... ok
+test line_check::tests::line_check_static_does_not_flag_a_text_that_only_contains_the_summary ... ok
+test line_check::tests::line_check_static_flags_a_text_that_copies_the_summary_ignoring_case_and_spaces ... ok
+test line_check::tests::line_check_static_flags_a_rule_break_in_a_one_sentence_text ... ok
+test line_check::tests::line_check_static_never_passes_a_clean_text ... ok
+test line_check::tests::line_failing_twice_is_flagged_after_exactly_one_regenerate ... ok
+test line_check::tests::passing_line_is_never_regenerated ... ok
+test daemon::tests::daemon_tempo_lines::generated_vague_line_is_regenerated_once_then_flagged ... ok
+test daemon::tests::daemon_tempo_lines::estimate_pass_counts_only_newly_generated_lines ... ok
+test daemon::tests::daemon_tempo_lines::generated_vague_line_is_replaced_by_a_passing_regenerate ... ok
+test daemon::tests::daemon_tempo_lines::forced_regenerate_asks_the_model_even_for_a_single_description ... ok
+test line_check::tests::unreachable_verdict_is_not_checked ... ok
+test line_check::tests::vague_needs_look ... ok
+test line_check::tests::verdict_gone_before_the_first_check_does_not_regenerate ... ok
+test daemon::tests::daemon_tempo_lines::failed_generation_stores_no_text_and_is_not_counted ... ok
+test daemon::tests::daemon_tempo_lines::generation_stores_text_once_and_skips_fresh_and_manual_lines_unless_forced ... ok
+test daemon::tests::daemon_tempo_lines::path_reply_is_retried_then_stored_and_the_prompt_carries_the_descriptions ... ok
+test tempo_lines::tests::is_apro_rejects_lookalikes_and_missing_billing ... ok
+test daemon::tests::daemon_tempo_lines::get_lists_the_day_line_with_union_hours_and_no_stored_text ... ok
+test daemon::tests::daemon_tempo_lines::hours_route_sets_override_400s_invalid_and_404s_unknown_line ... ok
+test daemon::tests::daemon_tempo_lines::regenerate_route_404s_for_unknown_line ... ok
+test line_check::tests::tempo_lines_set_check_stores_status_on_a_generated_line ... ok
+test daemon::tests::daemon_tempo_lines::unforced_generation_never_copies_english_when_the_model_fails ... ok
+test line_check::tests::tempo_lines_set_check_creates_no_row ... ok
+test tempo_lines::tests::clearing_text_keeps_the_row_while_an_override_remains ... ok
+test daemon::tests::daemon_tempo_lines::text_route_stores_manual_text_and_404s_for_unknown_line ... ok
+test line_check::tests::tempo_lines_new_generated_text_drops_the_old_check ... ok
+test line_check::tests::tempo_lines_set_check_never_touches_a_manual_line ... ok
+test daemon::tests::daemon_tempo_lines::three_bad_replies_fail_forced_loudly_and_store_nothing_unforced ... ok
+test tempo_lines::tests::commit_generated_keeps_override_and_dirties_synced_blocks ... ok
+test line_check::tests::tempo_lines_hand_edit_drops_the_old_check ... ok
+test tempo_lines::tests::line_for_is_none_without_blocks_for_that_ticket ... ok
+test tempo_lines::tests::manual_text_survives_generation_unless_forced ... ok
+test tempo_lines::tests::lines_for_day_unions_overlaps_and_skips_personal_and_unticketed ... ok
+test tempo_lines::tests::pending_generation_covers_missing_and_stale_generated_text_only ... ok
+test tempo_lines::tests::pin_hours_none_clears_and_deletes_empty_row_even_without_blocks ... ok
+test tempo_lines::tests::pin_hours_before_any_block_applies_once_a_block_lands ... ok
+test tempo_lines::tests::pin_hours_marks_synced_blocks_dirty_only_for_that_line ... ok
+test tempo_lines::tests::pin_hours_survives_blocks_changing_and_repin_replaces ... ok
+test tempo_lines::tests::pin_hours_none_keeps_row_that_still_has_text ... ok
+test tempo_lines::tests::pin_hours_rejects_invalid_seconds_without_writing ... ok
+test tempo_lines::tests::project_name_never_makes_a_line_apro ... ok
+test tempo_lines::tests::set_hours_validates_and_override_drives_effective_seconds ... ok
+test tempo_lines::tests::source_hash_ignores_block_order_and_whitespace ... ok
+test tempo_lines::tests::set_text_stores_manual_blank_clears_and_dirties_only_synced_blocks ... ok
+test tempo_lines::tests::tempo_lines_manual_save_keeps_a_rule_breaking_text_and_flags_it ... ok
+test tempo_lines::tests::tempo_lines_manual_save_copying_the_ticket_summary_is_flagged ... ok
+test tempo_lines::tests::tempo_lines_manual_save_of_a_clean_text_is_never_marked_passed ... ok
+test tempo_lines::tests::short_work_on_a_billable_line_rounds_up_to_half_an_hour ... ok
+test tempo_lines::tests::apro_lines_keep_the_fifteen_minute_floor ... ok
+
+test result: ok. 65 passed; 0 failed; 0 ignored; 0 measured; 2294 filtered out; finished in 1.05s
+
