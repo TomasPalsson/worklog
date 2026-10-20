@@ -40,6 +40,6 @@ Independent test: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --
 - [x] T003 Meeting and hand-typed lines that break a rule or copy the ticket title show "needs a look" (FR-08, FR-09) — files: rust/crates/worklog-core/src/line_check.rs, rust/crates/worklog-core/src/line_check_test.rs, rust/crates/worklog-core/src/tempo_lines.rs, rust/crates/worklog-core/src/tempo_lines_test.rs, rust/crates/worklog-core/src/daemon_tempo_lines.rs, rust/crates/worklog-core/src/daemon_tempo_lines_test.rs — verify: `cargo test --manifest-path rust/Cargo.toml -p worklog-core --lib -- line_check tempo_lines daemon_tempo_lines` — after: T002 — done: 940881d
 
 ## Gates
-- [ ] G001 project gates clean — files: . — verify: `flow check --fix --since fcf966f`
-- [ ] G002 branch review clean — files: . — verify: `flow pass`
-- [ ] G003 verification evidence exists — files: . — verify: `test -s verify/`
+- [x] G001 project gates clean — files: . — verify: `flow check --fix --since fcf966f` — done: 45df725
+- [x] G002 branch review clean — files: . — verify: `flow pass` — done: 45df725
+- [x] G003 verification evidence exists — files: . — verify: `test -s verify/` — done: 45df725
