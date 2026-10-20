@@ -22,6 +22,10 @@ mod prompt;
 /// size guard.
 pub use prompt::SYSTEM_PROMPT_IS;
 
+#[path = "line_text_rules.rs"]
+mod rules;
+pub use rules::unsafe_reason;
+
 /// Invoice text reaches customers in Icelandic: a stronger model than the
 /// per-block estimator's, for a handful of calls a day.
 pub const LINE_TEXT_MODEL: &str = "claude-sonnet-5";
@@ -56,6 +60,9 @@ pub fn validate(text: &str) -> std::result::Result<String, String> {
     }
     if !has_icelandic_letter(trimmed) {
         return Err("not Icelandic".to_string());
+    }
+    if let Some(reason) = unsafe_reason(trimmed) {
+        return Err(reason);
     }
     Ok(trimmed.to_string())
 }

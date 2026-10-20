@@ -122,7 +122,7 @@ pub fn write_with_system(
             Err(reason) => reason,
         };
         msg = format!(
-            "{user_msg}\n\nSíðasta svar var hafnað: {reason}. Skrifaðu það aftur og fylgdu öllum reglunum (engin skráarnöfn, engin verkfæranöfn, 1–3 setningar á íslensku)."
+            "{user_msg}\n\nSíðasta svar var hafnað: {reason}. Skrifaðu það aftur og fylgdu öllum reglunum (engin skráarnöfn, engin verkfæranöfn, 1–3 setningar á íslensku, ekkert tal um vísbendingar eða hvað er óstaðfest, útgáfunúmer með tölustöfum, ekki nefna Slack, byrja á sögn í eintölu)."
         );
     }
     Err(format!("{reason} (reynt {MAX_ATTEMPTS} sinnum)"))

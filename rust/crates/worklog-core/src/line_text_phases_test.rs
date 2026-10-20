@@ -58,8 +58,7 @@ fn seed_block(conn: &Connection, day: &str, folder: &str, source_id: &str) -> i6
     block_id
 }
 
-const GOOD_TEXT: &str =
-    "Verkefninu var lokið í dag. Allt gekk vel og viðskiptavinurinn var ánægður.";
+const GOOD_TEXT: &str = "Lauk verkefninu í dag. Allt gekk vel og viðskiptavinurinn var ánægður.";
 
 struct GoodInvoker;
 impl crate::estimate::ModelInvoker for GoodInvoker {

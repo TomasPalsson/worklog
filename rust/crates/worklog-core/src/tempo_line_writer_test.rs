@@ -154,3 +154,31 @@ fn prepare_omits_other_tickets_when_there_are_none() {
     let v: serde_json::Value = serde_json::from_str(&prepare(&conn, &key()).unwrap()).unwrap();
     assert!(v.get("other_tickets_today").is_none());
 }
+
+#[test]
+fn reask_names_the_new_rules() {
+    let inv = Scripted(
+        Mutex::new(vec![
+            "Mældu biðtíma. Sendi tillögur í Slack.",
+            "Mældi biðtíma. Sendi tillögur.",
+        ]),
+        Mutex::new(Vec::new()),
+    );
+    write("{}", &key(), &inv, "m").unwrap();
+    let seen = inv.1.lock().unwrap();
+    for rule in ["vísbendingar", "tölustöfum", "Slack", "eintölu"] {
+        assert!(seen[1].contains(rule), "{rule}: {}", seen[1]);
+    }
+}
+
+#[test]
+fn prompt_carries_every_new_rule() {
+    for phrase in [
+        "Lýstu aldrei vísbendingunum sjálfum",
+        "Nefndu aldrei samstarfsfólk með nafni, aldrei Slack",
+        "útgáfunúmer með tölustöfum",
+        "Lýstu aðeins vinnu fyrir viðskiptavin þessa máls",
+    ] {
+        assert!(SYSTEM_PROMPT_IS.contains(phrase), "{phrase}");
+    }
+}
