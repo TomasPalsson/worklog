@@ -193,9 +193,9 @@ async function gitOutput(io: Io, cwd: string, argv: string[]): Promise<string | 
 }
 
 export async function workContext(io: Io, cwd: string): Promise<WorkContext> {
-  const workFolder = io.home === undefined ? undefined : `${io.home}/Desktop/Work`
-  const inWorkFolder =
-    workFolder !== undefined && (cwd === workFolder || cwd.startsWith(`${workFolder}/`))
+  // `~/Work` is live; `~/Desktop/Work` is the legacy root historical sessions used.
+  const workFolders = io.home === undefined ? [] : [`${io.home}/Work`, `${io.home}/Desktop/Work`]
+  const inWorkFolder = workFolders.some((w) => cwd === w || cwd.startsWith(`${w}/`))
   const branch = (await gitOutput(io, cwd, ['branch', '--show-current'])) || undefined
   const origin = inWorkFolder ? undefined : await gitOutput(io, cwd, ['remote', 'get-url', 'origin'])
   return {

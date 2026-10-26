@@ -169,7 +169,7 @@ pub enum Format {
 ///   beneath the work prefix wins, so `sjukra/app` is still `sjukra`.
 ///
 /// Paths outside the work prefix fall back to their last segment, which
-/// keeps explicitly-configured work paths outside `~/Desktop/Work`
+/// keeps explicitly-configured work paths outside `~/Work`
 /// working. `None` only for an unusable path.
 pub fn work_folder_for_path(path: &str) -> Option<String> {
     // Drop the worktree / agent scaffolding.
@@ -182,18 +182,16 @@ pub fn work_folder_for_path(path: &str) -> Option<String> {
         return None;
     }
 
-    if let Some(prefix) = work_prefix() {
-        if let Some(rest) = base.strip_prefix(prefix) {
-            let rest = rest.trim_start_matches('/');
-            if rest.is_empty() {
-                // The work root itself is not a project — returning its
-                // basename here produced the nonsense folder "Work".
-                return None;
-            }
-            let first = rest.split('/').next().unwrap_or(rest);
-            if !first.is_empty() {
-                return Some(first.to_owned());
-            }
+    if let Some(rest) = under_work_prefix(base) {
+        let rest = rest.trim_start_matches('/');
+        if rest.is_empty() {
+            // The work root itself is not a project — returning its
+            // basename here produced the nonsense folder "Work".
+            return None;
+        }
+        let first = rest.split('/').next().unwrap_or(rest);
+        if !first.is_empty() {
+            return Some(first.to_owned());
         }
     }
 
@@ -208,7 +206,7 @@ pub fn work_folder_for_path(path: &str) -> Option<String> {
 ///
 /// [`work_folder_for_path`] is deliberately lenient — it falls back to the
 /// last path segment so explicitly-configured work paths outside
-/// `~/Desktop/Work` still attribute. That leniency is wrong for
+/// `~/Work` still attribute. That leniency is wrong for
 /// *discovery*: it turns `~/dotfiles` and `~/Desktop/Projects/exam` into
 /// candidate billing folders, cluttering the "unmapped folders" list with
 /// personal work that can never be billed.
@@ -217,8 +215,7 @@ pub fn billable_work_folder(path: &str) -> Option<String> {
         Some(i) => &path[..i],
         None => path,
     };
-    let prefix = work_prefix()?;
-    let rest = base.trim_end_matches('/').strip_prefix(prefix)?;
+    let rest = under_work_prefix(base.trim_end_matches('/'))?;
     let rest = rest.trim_start_matches('/');
     rest.split('/')
         .next()
@@ -226,22 +223,39 @@ pub fn billable_work_folder(path: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// `~/Desktop/Work`, expanded. Mirrors `personal::default_work_prefix` —
-/// the same prefix that decides work-vs-personal decides which path
-/// segment is the billable project root.
+/// Every root recognised as "the work folder": the live `~/Work` first,
+/// then the legacy `~/Desktop/Work` that historical events still carry.
+/// The same list decides work-vs-personal (`personal::default_work_prefix`)
+/// and which path segment is the billable project root.
 ///
 /// Computed once: the folder-resolution helpers run per path, and resolving
 /// the home directory on every call turned a hot loop into a syscall storm.
-pub(crate) fn work_prefix() -> Option<&'static str> {
-    static PREFIX: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    PREFIX
-        .get_or_init(|| {
-            dirs::home_dir().map(|mut p| {
-                p.push("Desktop/Work");
-                p.to_string_lossy().into_owned()
+pub(crate) fn work_prefixes() -> &'static [String] {
+    static PREFIXES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    PREFIXES.get_or_init(|| {
+        dirs::home_dir()
+            .map(|home| {
+                ["Work", "Desktop/Work"]
+                    .map(|r| home.join(r).to_string_lossy().into_owned())
+                    .to_vec()
             })
-        })
-        .as_deref()
+            .unwrap_or_default()
+    })
+}
+
+/// The live work root `~/Work` (first of [`work_prefixes`]) — what to list
+/// or synthesise paths from. Matching paths must use [`work_prefixes`].
+pub(crate) fn work_prefix() -> Option<&'static str> {
+    work_prefixes().first().map(String::as_str)
+}
+
+/// The remainder of `path` beneath the first matching work root (empty or
+/// starting with `/`), so `~/Workshop/x` is not mistaken for `~/Work`.
+fn under_work_prefix(path: &str) -> Option<&str> {
+    work_prefixes().iter().find_map(|p| {
+        path.strip_prefix(p.as_str())
+            .filter(|rest| rest.is_empty() || rest.starts_with('/'))
+    })
 }
 
 /// Most-frequent work folder across a block's events, derived from
@@ -2336,3 +2350,7 @@ mod billing_tenant_tests;
 #[cfg(test)]
 #[path = "billing_lifecycle_test.rs"]
 mod billing_lifecycle_tests;
+
+#[cfg(test)]
+#[path = "billing_work_roots_test.rs"]
+mod billing_work_roots_tests;

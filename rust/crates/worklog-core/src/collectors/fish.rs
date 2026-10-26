@@ -281,7 +281,7 @@ fn normalize_path(path: &str) -> String {
     format!("/{}", parts.join("/"))
 }
 
-/// The repo root under `~/Desktop/Work/<key>` or `~/Desktop/Projects/<key>`
+/// The repo root under `~/Work/<key>` (legacy `~/Desktop/Work/<key>`) or `~/Desktop/Projects/<key>`
 /// for `path`, collapsing `/.claude/worktrees/*` scaffolding first
 /// (mirrors `billing::work_folder_for_path`'s worktree collapse). Shared
 /// with `collectors::claude_transcripts`, which derives the same kind of
@@ -292,7 +292,7 @@ pub(crate) fn repo_root_for(path: &str, home: Option<&str>) -> Option<String> {
         Some(i) => &path[..i],
         None => path,
     };
-    for root_name in ["Desktop/Work", "Desktop/Projects"] {
+    for root_name in ["Work", "Desktop/Work", "Desktop/Projects"] {
         let prefix = format!("{home}/{root_name}");
         let Some(rest) = base.strip_prefix(&prefix) else {
             continue;

@@ -88,7 +88,7 @@ pub(crate) fn apply_split(
 
 fn is_work_block(b: &InferBlock) -> bool {
     b.dominant_project_path()
-        .is_some_and(|p| p.contains("/Desktop/Work/"))
+        .is_some_and(|p| crate::infer_lanes::is_work_path(&p))
 }
 
 fn events_between(events: &[InferEvent], s: DateTime<Utc>, e: DateTime<Utc>) -> Vec<InferEvent> {

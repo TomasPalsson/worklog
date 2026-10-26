@@ -19,7 +19,7 @@ const DOMINANCE_RATIO: u32 = 3;
 const CONTEXT_SOURCES: [&str; 4] = ["claude", "shell", "git_reflog", "claude_turn"];
 
 /// Collapse a raw `project_path` to its billable root key: the last path
-/// segment under `~/Desktop/Work` or `~/Desktop/Projects`, stripping
+/// segment under `~/Work`, legacy `~/Desktop/Work` or `~/Desktop/Projects`, stripping
 /// worktree scaffolding (`/.claude/worktrees/...`) first — mirrors
 /// `collectors::fish::repo_root_for`. `None` outside both roots.
 pub(crate) fn context_key(path: &str, home: &str) -> Option<String> {
@@ -27,7 +27,7 @@ pub(crate) fn context_key(path: &str, home: &str) -> Option<String> {
         Some(i) => &path[..i],
         None => path,
     };
-    for root in ["Desktop/Work", "Desktop/Projects"] {
+    for root in ["Work", "Desktop/Work", "Desktop/Projects"] {
         let prefix = format!("{home}/{root}");
         let Some(rest) = base.strip_prefix(prefix.as_str()) else {
             continue;
@@ -223,6 +223,10 @@ mod tests {
         let home = "/Users/x";
         assert_eq!(
             context_key("/Users/x/Desktop/Work/sjukra/.claude/worktrees/foo", home),
+            Some("sjukra".to_string())
+        );
+        assert_eq!(
+            context_key("/Users/x/Work/sjukra/.claude/worktrees/foo", home),
             Some("sjukra".to_string())
         );
         assert_eq!(

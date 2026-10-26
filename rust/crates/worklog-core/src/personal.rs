@@ -8,8 +8,8 @@
 //! Config lives at `~/.config/worklog/personal.toml`:
 //!
 //! ```toml
-//! work     = ["~/Desktop/Work/**"]      # explicit work paths
-//! personal = ["~/Desktop/Work/sandbox"] # explicit personal paths (override default)
+//! work     = ["~/Work/**"]              # explicit work paths
+//! personal = ["~/Work/sandbox"]         # explicit personal paths (override default)
 //! ignore   = ["~/Desktop/Projects/worklog/**"] # never recorded
 //! ```
 //!
@@ -22,7 +22,7 @@
 //!    have no cwd but represent billable signals)
 //! 2. matches a `work` pattern → **work**
 //! 3. matches a `personal` pattern → **personal**
-//! 4. default: under `~/Desktop/Work/**` → **work**, else **personal**
+//! 4. default: under `~/Work/**` (or legacy `~/Desktop/Work/**`) → **work**, else **personal**
 //!
 //! Patterns support a tiny glob dialect: a literal prefix optionally
 //! followed by `/**` or `/*`. `~` expands to the user's home. This is
@@ -61,7 +61,7 @@ pub struct PersonalConfig {
     personal_patterns: Vec<String>,
     /// Built-in default — anything under this prefix counts as work even
     /// without any config file.
-    default_work_prefix: Option<String>,
+    default_work_prefix: Vec<String>,
 }
 
 impl PersonalConfig {
@@ -131,21 +131,20 @@ impl PersonalConfig {
                 return true;
             }
         }
-        match &self.default_work_prefix {
-            Some(prefix) => !path_starts_with(&path, prefix),
-            None => false,
-        }
+        // No home dir → no prefixes → everything counts as work, as before.
+        !self.default_work_prefix.is_empty()
+            && !self
+                .default_work_prefix
+                .iter()
+                .any(|prefix| path_starts_with(&path, prefix))
     }
 }
 
-/// `~/Desktop/Work` (expanded). Returned as a directory prefix the
-/// classifier compares against with proper path-segment boundaries.
-fn default_work_prefix() -> Option<String> {
-    dirs::home_dir().map(|home| {
-        let mut p = home;
-        p.push("Desktop/Work");
-        p.to_string_lossy().into_owned()
-    })
+/// `~/Work` and the legacy `~/Desktop/Work` (expanded). Returned as
+/// directory prefixes the classifier compares against with proper
+/// path-segment boundaries.
+fn default_work_prefix() -> Vec<String> {
+    crate::billing::work_prefixes().to_vec()
 }
 
 /// Tiny prefix-glob matcher. Supported shapes:
@@ -357,6 +356,14 @@ mod tests {
         let cfg = PersonalConfig::default_only();
         let path = format!("{}/Desktop/Work/sjukra", home());
         assert!(!cfg.classify(Some(&path)));
+    }
+
+    #[test]
+    fn classify_default_recognises_live_and_legacy_roots_not_siblings() {
+        let cfg = PersonalConfig::default_only();
+        assert!(!cfg.classify(Some(&format!("{}/Work/foo", home()))));
+        assert!(!cfg.classify(Some(&format!("{}/Desktop/Work/foo", home()))));
+        assert!(cfg.classify(Some(&format!("{}/Workshop/foo", home()))));
     }
 
     #[test]
