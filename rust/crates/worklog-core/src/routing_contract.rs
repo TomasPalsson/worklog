@@ -62,7 +62,7 @@ pub struct BrowserStatus {
 /// `events.label_origin` as the lowercase string.
 ///
 /// `Link` = the event's own text named the project (an exact
-/// `github.com/<org>/<key>` or `Desktop/Work/<key>` mention — `named_project`
+/// `github.com/<org>/<key>` or `Work/<key>` (also legacy `Desktop/Work/<key>`) mention — `named_project`
 /// in routing.rs). `Context` = the day's `claude`/`shell`/`git_reflog`
 /// activity around the event's time named it (routing_context.rs), OR the
 /// end-of-day absorb step filed it inside a stretch of other-source work

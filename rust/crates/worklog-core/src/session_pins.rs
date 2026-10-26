@@ -129,11 +129,11 @@ pub fn resolve_event_customer(
 /// The `worklog session-hint` start-of-session text (design.md §4,
 /// contract T004), or `None` when nothing should be printed.
 ///
-/// Gated on `cwd` actually living under `~/Desktop/Work` (FR-01, §2.2) —
+/// Gated on `cwd` actually living under `~/Work` or legacy `~/Desktop/Work` (FR-01, §2.2) —
 /// `billing::billable_work_folder` is the strict form of the lookup;
 /// unlike `work_folder_for_path` it refuses to fall back to a bare
 /// basename for paths outside the work prefix, so a folder name outside
-/// `~/Desktop/Work` can never coincidentally match a registered
+/// `~/Work` can never coincidentally match a registered
 /// multi-tenant folder — and on top of the multi_tenant check.
 pub fn start_text(
     conn: &Connection,

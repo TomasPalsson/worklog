@@ -18,7 +18,7 @@ export type LocalDay = string
 /** What a session knows about where it runs; computed from the cwd. */
 export type WorkContext = {
   cwd: string
-  /** Under ~/Desktop/Work/ or the git `origin` remote is in the aproorg org. */
+  /** Under ~/Work/ (or legacy ~/Desktop/Work/) or the git `origin` remote is in the aproorg org. */
   isWork: boolean
   branch: string | undefined
   /** First Jira key in the branch name, if any. */

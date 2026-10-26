@@ -685,7 +685,7 @@ pub enum TagCmd {
     /// Add a path glob to the personal list (creates the config if missing).
     Personal {
         /// Glob pattern, e.g. `~/Desktop/Projects/ai-news/**` or
-        /// `~/Desktop/Work/scratch`. Tilde expansion is applied.
+        /// `~/Work/scratch`. Tilde expansion is applied.
         glob: String,
     },
     /// Add a path glob to the explicit work list — wins over the
@@ -3589,7 +3589,7 @@ fn cmd_tag_list<W: Write>(out: &mut W, json: bool) -> Result<()> {
             "work": file.work,
             "personal": file.personal,
             "ignore": file.ignore,
-            "default_rule": "any project_path under ~/Desktop/Work/** is work; everything else is personal",
+            "default_rule": "any project_path under ~/Work/** (or legacy ~/Desktop/Work/**) is work; everything else is personal",
         });
         writeln!(out, "{}", serde_json::to_string_pretty(&payload)?)?;
         return Ok(());
@@ -3597,7 +3597,7 @@ fn cmd_tag_list<W: Write>(out: &mut W, json: bool) -> Result<()> {
     writeln!(out, "config:  {}", path.display())?;
     writeln!(
         out,
-        "default: ~/Desktop/Work/** → work; everything else → personal"
+        "default: ~/Work/** (or legacy ~/Desktop/Work/**) → work; everything else → personal"
     )?;
     if file.work.is_empty() && file.personal.is_empty() && file.ignore.is_empty() {
         writeln!(out, "(no custom patterns — using default rule only)")?;

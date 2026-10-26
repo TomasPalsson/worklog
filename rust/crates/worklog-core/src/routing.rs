@@ -122,11 +122,11 @@ fn matching_rule(rules: &[Rule], row: &EventRow) -> Option<String> {
         .map(|rule| rule.folder.clone())
 }
 
-/// An event whose details name exactly one of `options` as `github.com/<org>/<key>` or `Desktop/Work/<key>`
+/// An event whose details name exactly one of `options` as `github.com/<org>/<key>` or `Work/<key>`
 /// (FR-10, origin Link, never classified); zero/two-plus hits is `None`. `details` only, never `title` (attacker-set).
 fn named_project(row: &EventRow, options: &[String]) -> Option<String> {
     let text = row.details.as_deref().unwrap_or("");
-    let re = Regex::new(r"(?:github\.com/[^/\s]+/|Desktop/Work/)([^/|>)\s'\x60]+)").unwrap();
+    let re = Regex::new(r"(?:github\.com/[^/\s]+/|Desktop/Work/|~/Work/|/Users/[^/\s]+/Work/|/home/[^/\s]+/Work/)([^/|>)\s'\x60]+)").unwrap();
     let mut found = BTreeSet::new();
     for cap in re.captures_iter(text) {
         let key = cap.get(1).unwrap().as_str();

@@ -1,7 +1,7 @@
 //! Git reflog collector.
 //!
 //! Reads `.git/logs/HEAD` directly for every repo directly under a set of
-//! root directories (default `~/Desktop/Work` and `~/Desktop/Projects`),
+//! root directories (default `~/Work`, legacy `~/Desktop/Work` and `~/Desktop/Projects`),
 //! plus every worktree's `.git/worktrees/<name>/logs/HEAD` and every
 //! submodule's `.git/modules/<path>/logs/HEAD` (recursively, for nested
 //! submodules) — all attributed to the main repo's root, since a
@@ -32,7 +32,11 @@ pub fn collect(conn: &Connection, since: NaiveDate, until: NaiveDate) -> Result<
             ..Default::default()
         });
     };
-    let roots = [home.join("Desktop/Work"), home.join("Desktop/Projects")];
+    let roots = [
+        home.join("Work"),
+        home.join("Desktop/Work"),
+        home.join("Desktop/Projects"),
+    ];
     collect_from_roots(conn, &roots, since, until)
 }
 

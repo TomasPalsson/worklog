@@ -445,6 +445,20 @@ fn agent_reflog_keeps_an_owned_work_run_against_personal_typing() {
 
 const FOO: &str = "/Users/dev/Desktop/Work/foo";
 
+#[test]
+fn live_work_root_is_not_personal_marked() {
+    let e = ev(
+        9,
+        0,
+        "claude_turn",
+        Some("/Users/dev/Work/x/.claude/worktrees/w"),
+    );
+    assert_eq!(lane_folder(&e), Some("x".to_string()));
+    assert!(is_work_path("/home/dev/Work/x"));
+    assert!(!is_work_path("/Users/dev/Workshop/x"));
+    assert!(!is_work_path("/Users/dev/Desktop/Projects/Work/x"));
+}
+
 fn tagged(mut e: InferEvent, tag: &str) -> InferEvent {
     e.lane_tag = Some(tag.to_string());
     e

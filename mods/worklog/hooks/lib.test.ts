@@ -191,6 +191,12 @@ test('workContext: under ~/Desktop/Work is work and carries branch and ticket', 
   })
 })
 
+test('workContext: under ~/Work is work', async () => {
+  const fake = fakeIo({ home: '/Users/me', git: { 'git branch --show-current': 'main\n' } })
+  expect((await workContext(fake.io, '/Users/me/Work/app')).isWork).toBe(true)
+  expect((await workContext(fake.io, '/Users/me/Workshop/app')).isWork).toBe(false)
+})
+
 test('workContext: an aproorg origin outside the work folder is work', async () => {
   const fake = fakeIo({
     home: '/Users/me',

@@ -81,15 +81,27 @@ pub(crate) fn is_lifecycle_row(source: &str, title: Option<&str>) -> bool {
 /// Silent runs shorter than this between the same owner are bridged.
 const BRIDGE_MINUTES: i64 = 12;
 
+/// True for a path under `~/Work` or the legacy `~/Desktop/Work`, whatever
+/// the home dir (events carry other machines' paths): `/Users|home/<u>/Work/`
+/// or any `/Desktop/Work/`.
+pub(crate) fn is_work_path(p: &str) -> bool {
+    p.contains("/Desktop/Work/")
+        || ["/Users/", "/home/"].iter().any(|root| {
+            p.strip_prefix(root)
+                .and_then(|r| r.split_once('/'))
+                .is_some_and(|(_, rest)| rest.starts_with("Work/"))
+        })
+}
+
 /// Lane folder for an event: its repo folder, `None` for folderless events.
-/// Personal (non-`~/Desktop/Work`) keys carry a marker so they can never
+/// Personal (non-`~/Work`, non-legacy `~/Desktop/Work`) keys carry a marker so they can never
 /// be mistaken for client work. `pub(crate)` so `infer_allocations` and
 /// `overlaps` fold project keys identically — both are folder-level
 /// concepts, never split by which customer's session touched it.
 pub(crate) fn lane_folder(e: &InferEvent) -> Option<String> {
     e.project_path.as_deref().map(|p| {
         let folder = work_folder_for_path(p).unwrap_or_else(|| p.to_string());
-        if p.contains("/Desktop/Work/") {
+        if is_work_path(p) {
             folder
         } else {
             format!("{PERSONAL_MARK}{folder}")
@@ -263,7 +275,7 @@ fn place_folderless(mut blocks: Vec<InferBlock>, folderless: Vec<InferEvent>) ->
     blocks
 }
 
-/// Client work lives under `~/Desktop/Work`; everything else (e.g.
+/// Client work lives under `~/Work` (legacy `~/Desktop/Work`); everything else (e.g.
 /// `~/Desktop/Projects`) is the owner's own and yields to it. `pub(crate)`
 /// so `overlaps` only ever considers WORK projects for a split.
 pub(crate) fn is_work(key: &str) -> bool {

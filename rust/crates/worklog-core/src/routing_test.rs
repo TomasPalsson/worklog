@@ -377,6 +377,33 @@ fn path_mention_files_by_link() {
 }
 
 #[test]
+fn path_mention_files_by_link_live_work_root() {
+    let _tz = utc();
+    let conn = open_memory().unwrap();
+    pin(&conn, "vitinn-infra", None);
+    let day = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+    let eid = repo::upsert_event(
+        &conn,
+        &Event::minimal(
+            SOURCE_FIREFOX,
+            "e1",
+            "2026-04-20T09:00:00+00:00",
+            "terminal",
+        ),
+    )
+    .unwrap();
+    set_details(&conn, eid, "cd ~/Work/vitinn-infra");
+
+    let stats = route_day(&conn, day, &PanicsIfCalled, default_rule()).unwrap();
+    assert_eq!(stats.rules_applied, 1);
+    assert_eq!(stats.guesses_applied, 0);
+
+    let routed = routed_for_day(&conn, day, false).unwrap();
+    assert_eq!(routed[0].folder.as_deref(), Some("vitinn-infra"));
+    assert_eq!(routed[0].label_origin, Some(LabelOrigin::Link));
+}
+
+#[test]
 fn two_named_projects_is_no_match() {
     let _tz = utc();
     let conn = open_memory().unwrap();

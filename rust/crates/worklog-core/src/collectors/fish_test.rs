@@ -92,6 +92,14 @@ fn never_stores_command_text() {
 }
 
 #[test]
+fn repo_root_for_accepts_live_work_root() {
+    assert_eq!(
+        repo_root_for("/Users/x/Work/widget/.claude/worktrees/a", Some("/Users/x")).as_deref(),
+        Some("/Users/x/Work/widget")
+    );
+}
+
+#[test]
 fn cd_tracking_attributes_a_later_command_to_the_repo() {
     let repo_dir = format!("{}/Desktop/Work/widget", home());
     let fixture = write_fixture(&format!(
