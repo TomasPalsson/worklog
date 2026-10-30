@@ -205,6 +205,32 @@ fn hook_payload_stored_and_scrubbed() {
 }
 
 #[test]
+fn hook_payload_drops_tool_response_but_keeps_tool_input() {
+    // `tool_response` was >99% of stored hook bytes (~500 MB in four days)
+    // and nothing reads it; the tool call itself (`tool_input`) stays.
+    let conn = open_memory().unwrap();
+    let payload = json!({
+        "hook_event_name": "PostToolUse",
+        "session_id": "s6",
+        "tool_name": "Read",
+        "tool_input": { "file_path": "/tmp/big.rs" },
+        "tool_response": { "content": "x".repeat(100_000) },
+    });
+    handle(&conn, &payload, now()).unwrap();
+    let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
+    let raw_json = events[0].raw_json.as_deref().unwrap();
+    let record: crate::clues_contract::RawRecord = serde_json::from_str(raw_json).unwrap();
+    match record {
+        crate::clues_contract::RawRecord::Hook { payload, .. } => {
+            assert!(payload.get("tool_response").is_none());
+            assert_eq!(payload["tool_input"]["file_path"], "/tmp/big.rs");
+            assert_eq!(payload["tool_name"], "Read");
+        }
+        other => panic!("expected RawRecord::Hook, got {other:?}"),
+    }
+}
+
+#[test]
 fn hook_collapses_worktree_cwd_to_project_root() {
     // A11/A12: collapse `/.claude/worktrees/<name>` the same way the
     // transcripts collector does, or the same repo splits into two

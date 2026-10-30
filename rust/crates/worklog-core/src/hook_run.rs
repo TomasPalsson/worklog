@@ -83,11 +83,17 @@ fn cap_prompt(s: &str, max: usize) -> String {
     format!("{kept}…<truncated {dropped} chars>")
 }
 
-/// The full hook payload, scrubbed, for the Details view (spec 006).
+/// The hook payload, scrubbed, for the Details view (spec 006), minus
+/// `tool_response`: it was >99% of stored hook bytes and nothing reads it
+/// (the transcript collectors keep capped tool output in `claude_tool`).
 fn raw_record(event: &str, payload: &Value) -> Option<String> {
+    let mut payload = crate::scrub::scrub_json(payload);
+    if let Some(map) = payload.as_object_mut() {
+        map.remove("tool_response");
+    }
     serde_json::to_string(&crate::clues_contract::RawRecord::Hook {
         event: event.to_owned(),
-        payload: crate::scrub::scrub_json(payload),
+        payload,
     })
     .ok()
 }
