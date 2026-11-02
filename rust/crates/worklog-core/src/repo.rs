@@ -440,8 +440,8 @@ pub fn get_ticket_issue_id(conn: &Connection, key: &str) -> Result<Option<String
 /// in the rest.
 pub fn set_ticket_issue_id(conn: &Connection, key: &str, issue_id: &str) -> Result<()> {
     conn.execute(
-        "INSERT INTO jira_tickets (key, summary, issue_id)
-         VALUES (?1, '', ?2)
+        "INSERT INTO jira_tickets (key, summary, issue_id, external)
+         VALUES (?1, '', ?2, 1)
          ON CONFLICT(key) DO UPDATE SET issue_id = excluded.issue_id",
         params![key, issue_id],
     )
