@@ -203,6 +203,10 @@ pub fn fetch_open_tickets_with(
         }
     }
     repo::mark_unreturned_done(conn, &returned)?;
+    // Best effort: the assigned refresh above already succeeded.
+    if let Err(e) = unassigned::cache_unassigned_with(conn, auth, client) {
+        tracing::warn!(error = %format!("{e:#}"), "caching unassigned tickets failed");
+    }
     Ok(report)
 }
 
@@ -1989,3 +1993,10 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "jira_unassigned_test.rs"]
+mod unassigned_tests;
+
+#[path = "jira_unassigned.rs"]
+mod unassigned;
