@@ -565,7 +565,7 @@ pub fn fetch_status_with(
 }
 
 /// Jira renders the account as `{id, name|value}`; `id` is a number or string.
-fn account_from(v: &serde_json::Value) -> Option<AllowedAccount> {
+pub(crate) fn account_from(v: &serde_json::Value) -> Option<AllowedAccount> {
     let id = match v.get("id")? {
         serde_json::Value::String(s) => s.clone(),
         serde_json::Value::Number(n) => n.to_string(),
@@ -615,46 +615,6 @@ pub(crate) fn get_all_pages(
             return Ok(all);
         }
     }
-}
-
-/// Accounts Jira will accept on create. An empty list is an error, never
-/// "everything allowed".
-pub fn allowed_accounts_with(
-    auth: &JiraAuth,
-    project: &str,
-    issue_type: &str,
-    field_id: &str,
-    client: &Client,
-) -> Result<Vec<AllowedAccount>> {
-    let base = format!(
-        "{}/rest/api/3/issue/createmeta/{project}/issuetypes",
-        auth.base_url
-    );
-    let types = get_all_pages(auth, &base, "issueTypes", "createmeta issue types", client)?;
-    let type_id = types
-        .iter()
-        .find(|t| str_at(t, &["name"]).as_deref() == Some(issue_type))
-        .and_then(|t| str_at(t, &["id"]))
-        .with_context(|| format!("jira project {project} has no issue type {issue_type}"))?;
-    let fields = get_all_pages(
-        auth,
-        &format!("{base}/{type_id}"),
-        "fields",
-        "createmeta fields",
-        client,
-    )?;
-    let accounts: Vec<AllowedAccount> = fields
-        .iter()
-        .find(|f| str_at(f, &["fieldId"]).as_deref() == Some(field_id))
-        .and_then(|f| f["allowedValues"].as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(account_from)
-        .collect();
-    if accounts.is_empty() {
-        anyhow::bail!("jira createmeta lists no allowed values for {field_id}");
-    }
-    Ok(accounts)
 }
 
 /// Newest tickets in `GENAI` that carry an account, with their summaries.
@@ -1815,114 +1775,6 @@ mod tests {
         };
         create_issue_with(&test_auth(&server), &issue, &http::client().unwrap()).unwrap();
         mock.assert();
-    }
-
-    #[test]
-    fn allowed_accounts_reads_createmeta_values_for_the_field() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET)
-                .path("/rest/api/3/issue/createmeta/GENAI/issuetypes");
-            then.status(200).json_body(json!({
-                "issueTypes": [{"id": "1", "name": "Bug"}, {"id": "7", "name": "Story"}]
-            }));
-        });
-        server.mock(|when, then| {
-            when.method(GET)
-                .path("/rest/api/3/issue/createmeta/GENAI/issuetypes/7");
-            then.status(200).json_body(json!({ "fields": [
-                {"fieldId": "summary"},
-                {"fieldId": "customfield_10100", "allowedValues": [
-                    {"id": "42", "name": "Acme"},
-                    {"id": 7, "value": "Globex"}
-                ]}
-            ]}));
-        });
-        let got = allowed_accounts_with(
-            &test_auth(&server),
-            "GENAI",
-            "Story",
-            "customfield_10100",
-            &http::client().unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            got,
-            vec![
-                AllowedAccount {
-                    id: "42".into(),
-                    name: "Acme".into()
-                },
-                AllowedAccount {
-                    id: "7".into(),
-                    name: "Globex".into()
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn allowed_accounts_follows_field_pages() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET)
-                .path("/rest/api/3/issue/createmeta/GENAI/issuetypes");
-            then.status(200)
-                .json_body(json!({ "issueTypes": [{"id": "7", "name": "Story"}] }));
-        });
-        server.mock(|when, then| {
-            when.method(GET)
-                .path("/rest/api/3/issue/createmeta/GENAI/issuetypes/7")
-                .query_param("startAt", "0");
-            then.status(200).json_body(json!({
-                "startAt": 0, "total": 2, "fields": [{"fieldId": "summary"}]
-            }));
-        });
-        server.mock(|when, then| {
-            when.method(GET)
-                .path("/rest/api/3/issue/createmeta/GENAI/issuetypes/7")
-                .query_param("startAt", "1");
-            then.status(200).json_body(json!({
-                "startAt": 1, "total": 2, "fields": [
-                {"fieldId": "customfield_10100", "allowedValues": [{"id": "42", "name": "Acme"}]}
-            ]}));
-        });
-        let got = allowed_accounts_with(
-            &test_auth(&server),
-            "GENAI",
-            "Story",
-            "customfield_10100",
-            &http::client().unwrap(),
-        )
-        .unwrap();
-        assert_eq!(got.len(), 1);
-    }
-
-    #[test]
-    fn allowed_accounts_empty_list_is_an_error() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET)
-                .path("/rest/api/3/issue/createmeta/GENAI/issuetypes");
-            then.status(200)
-                .json_body(json!({ "issueTypes": [{"id": "7", "name": "Story"}] }));
-        });
-        server.mock(|when, then| {
-            when.method(GET)
-                .path("/rest/api/3/issue/createmeta/GENAI/issuetypes/7");
-            then.status(200).json_body(json!({ "fields": [
-                {"fieldId": "customfield_10100", "allowedValues": []}
-            ]}));
-        });
-        let err = allowed_accounts_with(
-            &test_auth(&server),
-            "GENAI",
-            "Story",
-            "customfield_10100",
-            &http::client().unwrap(),
-        )
-        .unwrap_err();
-        assert!(format!("{err:#}").contains("customfield_10100"), "{err:#}");
     }
 
     #[test]

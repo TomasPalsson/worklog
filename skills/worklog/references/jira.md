@@ -16,12 +16,14 @@ Never post to Slack or any chat tool; the only outputs are Jira and the terminal
 
 ## Creating a ticket
 
-1. `worklog account suggest "<request text>"` ranks accounts; `worklog account allowed` lists the valid ids.
+1. `worklog account suggest "<request text>"` ranks accounts; `worklog account allowed <word>` lists the valid ids, filtered by name with accents ignored (e.g. `voruthroun` finds "vöruþróun").
 2. Draft the summary and description (text guide below) and write the description to a temp file.
 3. One confirm, showing the title and the account. An APRÓ account is one whose name contains "APRÓ" (case-insensitive, e.g. "[O] APRÓ Vitinn - rekstur", "[O] Vöruhús APRÓ"); every other account (customer accounts like "BYKO - ...") is non-APRÓ. For a non-APRÓ account the same confirm also asks "Estimated hours?" and the ticket is not created until the Owner gives a number; never guess it. APRÓ: no hours question. If the Owner switches the account to a non-APRÓ one, ask for hours before creating.
-4. `worklog ticket create --summary "<title>" --description-file <file> --account <id>`. When suggestions were shown, add `--guessed <first-suggestion-id>` (even if the user corrected it — that is how a wrong guess is learned), and `--clue "<phrase>"` (repeatable) for words from the request that point to the account. Non-APRÓ: add `--estimate <hours>` (1,5 or 1.5); it becomes the Jira Original Estimate. APRÓ: no `--estimate` unless the Owner gave hours anyway.
+4. `worklog ticket create --summary "<title>" --description-file <file> --account <id>` (`--account` also takes words from the account name when they pick exactly one account). When suggestions were shown, add `--guessed <first-suggestion-id>` (even if the user corrected it — that is how a wrong guess is learned), and `--clue "<phrase>"` (repeatable) for words from the request that point to the account. Non-APRÓ: add `--estimate <hours>` (1,5 or 1.5); it becomes the Jira Original Estimate. APRÓ: no `--estimate` unless the Owner gave hours anyway.
    The ticket is assigned to the user by default; never ask who it is for. Only when the user says otherwise: `--assignee <jira-accountId>` for someone else (ask for the accountId if it is not known), or `--unassigned` to leave it empty.
 5. Report the new key, link, assignee and the estimate when one was set. Create already moved it to In Progress; if that move failed, the error names the key — never create again.
+
+Tempo's Account field is a Forge field, so Jira's create form lists no accounts. worklog reads the open accounts linked to the project (plus global ones) from Tempo, which needs `tempo_api_token` and `jira_account_id`. If listing fails, the error ends with the missing secret; set it and retry.
 
 ## This session's ticket
 

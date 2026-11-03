@@ -3,6 +3,7 @@
 
 #![forbid(unsafe_code)]
 
+mod account_match;
 pub mod cli;
 pub mod daemon_client;
 mod eval_cmd;

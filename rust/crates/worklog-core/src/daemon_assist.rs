@@ -119,7 +119,13 @@ pub(super) async fn allowed_list(
     field_id: String,
 ) -> Result<Vec<AllowedAccount>, ApiError> {
     jira_call(auth, move |auth, client| {
-        jira::allowed_accounts_with(auth, WRITE_PROJECT, CREATE_ISSUE_TYPE, &field_id, client)
+        crate::account_source::allowed_accounts_from_secrets(
+            auth,
+            WRITE_PROJECT,
+            CREATE_ISSUE_TYPE,
+            &field_id,
+            client,
+        )
     })
     .await
 }

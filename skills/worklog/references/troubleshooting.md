@@ -435,6 +435,10 @@ worklog sync --day "$DAY"   # PUTs all dirty=1 blocks; clears flag on success
 
 ---
 
+## `ticket create` fails with "jira createmeta lists no allowed values for customfield_"
+
+Tempo's Account field is a Forge field, so Jira createmeta lists no accounts. An old binary prints this error: upgrade or reinstall worklog. A current binary reads the accounts from Tempo instead; if that fails it says "is a Forge field ... worklog reads them from Tempo", followed by the real cause (usually a missing `tempo_api_token` or `jira_account_id`). Set the secret it names with `worklog secret set <key>`, check `worklog secret list` shows it, and retry with `worklog account allowed <word>`.
+
 ## Doctor output reference
 
 `worklog doctor` (text mode) shows two sections:
