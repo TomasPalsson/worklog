@@ -16,6 +16,7 @@ use worklog_core::jira_assist_contract::{
 use worklog_core::models::JiraTicket;
 use worklog_core::tempo_hub_contract::TicketStatus;
 
+use crate::account_match::{is_account_id, matching, resolve_account};
 use crate::daemon_client as daemon;
 use crate::style;
 use crate::ticket_hours::{estimate_seconds, pin_hours};
@@ -77,7 +78,7 @@ pub struct CreateArgs {
     /// File holding the markdown description.
     #[arg(long)]
     pub description_file: PathBuf,
-    /// Account id (see `worklog account allowed`).
+    /// Account id, or words from its name (see worklog account allowed).
     #[arg(long)]
     pub account: String,
     /// worklog's first suggestion, when one was shown; differs from
@@ -101,7 +102,10 @@ pub struct CreateArgs {
 #[derive(Subcommand, Debug)]
 pub enum AccountCmd {
     /// Accounts GENAI stories may use.
-    Allowed,
+    Allowed {
+        /// Only accounts whose name contains every word (accents ignored).
+        query: Option<String>,
+    },
     /// Rank accounts for a piece of text.
     Suggest { text: String },
     /// Relearn account clues from existing tickets.
@@ -198,10 +202,15 @@ pub fn run_ticket<W: Write>(sub: TicketCmd, out: &mut W, json: bool) -> Result<(
 
 pub fn run_account<W: Write>(sub: AccountCmd, out: &mut W, json: bool) -> Result<()> {
     match sub {
-        AccountCmd::Allowed => {
-            let a: Vec<AllowedAccount> = daemon::get("/accounts/allowed")?;
+        AccountCmd::Allowed { query } => {
+            let all: Vec<AllowedAccount> = daemon::get("/accounts/allowed")?;
+            let q = query.as_deref().unwrap_or("");
+            let a = matching(&all, q);
             if json {
                 return dump(out, &a);
+            }
+            if a.is_empty() {
+                return Ok(writeln!(out, "no account matches {q}")?);
             }
             for x in &a {
                 writeln!(out, "{}  {}", x.id, x.name)?;
@@ -237,11 +246,23 @@ fn create<W: Write>(a: CreateArgs, out: &mut W, json: bool) -> Result<()> {
     let description = std::fs::read_to_string(&a.description_file)
         .with_context(|| format!("reading {}", a.description_file.display()))?;
     let estimate_seconds = a.estimate.as_deref().map(estimate_seconds).transpose()?;
+    let account = if is_account_id(&a.account) {
+        a.account.clone()
+    } else {
+        let all: Vec<AllowedAccount> = daemon::get("/accounts/allowed")?;
+        let id = resolve_account(&all, &a.account)?;
+        if !json {
+            if let Some(x) = all.iter().find(|x| x.id == id) {
+                writeln!(out, "account: {}  {}", x.id, x.name)?;
+            }
+        }
+        id
+    };
     let body = AssistCreateBody {
         assignee_account_id: a.assignee,
         unassigned: a.unassigned,
         estimate_seconds,
-        ..create_body(a.summary, description, a.account, a.guessed, a.clues)
+        ..create_body(a.summary, description, account, a.guessed, a.clues)
     };
     let c: AssistCreated = daemon::post("/tickets/assist-create", &serde_json::to_value(&body)?)?;
     if json {

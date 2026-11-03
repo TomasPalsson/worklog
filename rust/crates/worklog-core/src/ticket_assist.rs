@@ -5,9 +5,10 @@ use reqwest::blocking::Client;
 use rusqlite::Connection;
 
 use crate::account_clues;
+use crate::account_source::allowed_accounts_from_secrets;
 use crate::collectors::jira::{
-    allowed_accounts_with, create_issue_with, fetch_account_with, fetch_detail_with,
-    fetch_status_with, list_transitions_with, transition_with, JiraAuth, NewIssue,
+    create_issue_with, fetch_account_with, fetch_detail_with, fetch_status_with,
+    list_transitions_with, transition_with, JiraAuth, NewIssue,
 };
 use crate::jira_assist_contract::{
     is_writable_key, AllowedAccount, AssistCreateBody, AssistCreated, StartOutcome, StartResult,
@@ -127,15 +128,16 @@ pub fn assist_create_with(
     if body.estimate_seconds.is_some_and(|s| s <= 0) {
         return Err(HubError::InvalidInput("estimate must be positive".into()).into());
     }
-    let account = allowed_accounts_with(auth, WRITE_PROJECT, CREATE_ISSUE_TYPE, field_id, client)?
-        .into_iter()
-        .find(|a| a.id == body.account_id)
-        .ok_or_else(|| {
-            HubError::InvalidInput(format!(
-                "account {} is not allowed for {WRITE_PROJECT} {CREATE_ISSUE_TYPE}",
-                body.account_id
-            ))
-        })?;
+    let account =
+        allowed_accounts_from_secrets(auth, WRITE_PROJECT, CREATE_ISSUE_TYPE, field_id, client)?
+            .into_iter()
+            .find(|a| a.id == body.account_id)
+            .ok_or_else(|| {
+                HubError::InvalidInput(format!(
+                    "account {} is not allowed for {WRITE_PROJECT} {CREATE_ISSUE_TYPE}",
+                    body.account_id
+                ))
+            })?;
     let assignee = match (&body.assignee_account_id, body.unassigned) {
         (_, true) => None,
         (Some(id), false) => Some(id.clone()),

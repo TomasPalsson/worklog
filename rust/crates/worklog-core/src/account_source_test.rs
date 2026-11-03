@@ -123,7 +123,8 @@ fn listed_field_still_reads_createmeta_and_never_calls_tempo() {
         ]}));
     });
     let tempo_hit = server.mock(|when, then| {
-        when.method(GET).path_matches(regex::Regex::new("^/tempo/").unwrap());
+        when.method(GET)
+            .path_matches(regex::Regex::new("^/tempo/").unwrap());
         then.status(500);
     });
     let got = allowed_accounts(
@@ -137,4 +138,115 @@ fn listed_field_still_reads_createmeta_and_never_calls_tempo() {
     .unwrap();
     assert_eq!(got, vec![acct("42", "Acme")]);
     tempo_hit.assert_hits(0);
+}
+
+#[test]
+fn allowed_accounts_reads_createmeta_values_for_the_field() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/rest/api/3/issue/createmeta/GENAI/issuetypes");
+        then.status(200).json_body(json!({
+            "issueTypes": [{"id": "1", "name": "Bug"}, {"id": "7", "name": "Story"}]
+        }));
+    });
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/rest/api/3/issue/createmeta/GENAI/issuetypes/7");
+        then.status(200).json_body(json!({ "fields": [
+            {"fieldId": "summary"},
+            {"fieldId": "customfield_10100", "allowedValues": [
+                {"id": "42", "name": "Acme"},
+                {"id": 7, "value": "Globex"}
+            ]}
+        ]}));
+    });
+    let got = allowed_accounts(
+        &jira(&server),
+        None,
+        "GENAI",
+        "Story",
+        "customfield_10100",
+        &http::client().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        got,
+        vec![
+            AllowedAccount {
+                id: "42".into(),
+                name: "Acme".into()
+            },
+            AllowedAccount {
+                id: "7".into(),
+                name: "Globex".into()
+            },
+        ]
+    );
+}
+
+#[test]
+fn allowed_accounts_follows_field_pages() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/rest/api/3/issue/createmeta/GENAI/issuetypes");
+        then.status(200)
+            .json_body(json!({ "issueTypes": [{"id": "7", "name": "Story"}] }));
+    });
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/rest/api/3/issue/createmeta/GENAI/issuetypes/7")
+            .query_param("startAt", "0");
+        then.status(200).json_body(json!({
+            "startAt": 0, "total": 2, "fields": [{"fieldId": "summary"}]
+        }));
+    });
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/rest/api/3/issue/createmeta/GENAI/issuetypes/7")
+            .query_param("startAt", "1");
+        then.status(200).json_body(json!({
+            "startAt": 1, "total": 2, "fields": [
+            {"fieldId": "customfield_10100", "allowedValues": [{"id": "42", "name": "Acme"}]}
+        ]}));
+    });
+    let got = allowed_accounts(
+        &jira(&server),
+        None,
+        "GENAI",
+        "Story",
+        "customfield_10100",
+        &http::client().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(got.len(), 1);
+}
+
+#[test]
+fn allowed_accounts_empty_list_is_an_error() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/rest/api/3/issue/createmeta/GENAI/issuetypes");
+        then.status(200)
+            .json_body(json!({ "issueTypes": [{"id": "7", "name": "Story"}] }));
+    });
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/rest/api/3/issue/createmeta/GENAI/issuetypes/7");
+        then.status(200).json_body(json!({ "fields": [
+            {"fieldId": "customfield_10100", "allowedValues": []}
+        ]}));
+    });
+    let err = allowed_accounts(
+        &jira(&server),
+        None,
+        "GENAI",
+        "Story",
+        "customfield_10100",
+        &http::client().unwrap(),
+    )
+    .unwrap_err();
+    assert!(format!("{err:#}").contains("customfield_10100"), "{err:#}");
 }
