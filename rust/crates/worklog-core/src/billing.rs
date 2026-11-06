@@ -268,7 +268,7 @@ pub fn work_folder_for_block(conn: &Connection, block_id: i64) -> Result<Option<
     }
     let mut stmt = conn.prepare(
         "SELECT e.project_path, e.repo, e.source, e.title
-           FROM events e
+           FROM events e INDEXED BY idx_events_block_cover
            JOIN block_events be ON be.event_id = e.id
           WHERE be.block_id = ?1",
     )?;

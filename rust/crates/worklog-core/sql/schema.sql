@@ -64,6 +64,14 @@ CREATE INDEX IF NOT EXISTS idx_events_jira ON events(jira_issue);
 -- page) so it never reads the wide event rows. Leading on project_path, not started_at,
 -- so no started_at-ordered query can pick it up and change its tie order.
 CREATE INDEX IF NOT EXISTS idx_events_path_started ON events(project_path, started_at);
+-- Lets stats::stats_report skip the hook's `claude` rows (~3/4 of the table,
+-- unused by stats) without reading them. Partial, so only a query carrying
+-- the exact `source != 'claude'` term can pick it.
+CREATE INDEX IF NOT EXISTS idx_events_not_claude ON events(started_at) WHERE source != 'claude';
+-- Slim copy of the columns block→event lookups read, so they don't pull the
+-- wide raw_json rows off disk. Queries opt in with INDEXED BY; leading on id,
+-- its order is rowid order.
+CREATE INDEX IF NOT EXISTS idx_events_block_cover ON events(id, source, project_path, repo, title);
 
 CREATE TABLE IF NOT EXISTS sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
