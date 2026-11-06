@@ -2708,12 +2708,29 @@ where
     F: FnOnce(&Connection) -> Result<T> + Send + 'static,
     T: Send + 'static,
 {
-    tokio::task::spawn_blocking(move || {
+    // Hyper drops this future when the client hangs up, but the blocking
+    // task keeps queueing for the lock. Without this flag the abandoned
+    // work still ran later, so timed-out web requests piled up behind
+    // the lock until every new request timed out too.
+    struct Abandon(Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for Abandon {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let abandoned = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = Abandon(abandoned.clone());
+    let out = tokio::task::spawn_blocking(move || {
         let conn = state.conn.blocking_lock();
+        if abandoned.load(std::sync::atomic::Ordering::SeqCst) {
+            anyhow::bail!("client went away before the connection was free");
+        }
         f(&conn)
     })
     .await
-    .context("spawn_blocking")?
+    .context("spawn_blocking")?;
+    std::mem::forget(flag);
+    out
 }
 
 /// Latest non-empty `blocks.exported_at` across a day's blocks, or
@@ -3377,6 +3394,10 @@ mod tests {
 
     use crate::db::open_memory;
     use crate::models::{Event, JiraTicket};
+
+    mod with_conn_cancel {
+        include!("daemon_with_conn_test.rs");
+    }
 
     mod deild {
         include!("daemon_deildir_test.rs");
