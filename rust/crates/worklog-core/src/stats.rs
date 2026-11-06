@@ -120,7 +120,7 @@ pub fn stats_report(
         "SELECT source, started_at, title, details,
                 CASE WHEN source IN ('claude_tool','shell','claude_turn','claude_helper','git_reflog')
                      THEN raw_json END, duration_seconds
-           FROM events WHERE started_at >= ?1 AND started_at < ?2",
+           FROM events WHERE started_at >= ?1 AND started_at < ?2 AND source != 'claude'",
     )?;
     let mut rows = stmt.query(params![start, end])?;
     while let Some(r) = rows.next()? {
@@ -255,7 +255,7 @@ pub fn stats_report(
     let mut src_stmt = conn.prepare(
         "SELECT be.block_id, e.source, COUNT(*)
            FROM block_events be
-           JOIN events e ON e.id = be.event_id
+           JOIN events e INDEXED BY idx_events_block_cover ON e.id = be.event_id
            JOIN blocks b ON b.id = be.block_id
           WHERE b.day BETWEEN ?1 AND ?2
           GROUP BY be.block_id, e.source
