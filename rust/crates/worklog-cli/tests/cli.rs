@@ -21,6 +21,10 @@ fn cmd(home: &TempDir) -> Command {
     c.env("WORKLOG_ENV_FILE", home.path().join("absent.env"));
     // Shut up tracing during tests.
     c.env("RUST_LOG", "error");
+    // The developer's shell may export these; tests must be hermetic.
+    c.env_remove("WORKLOG_DISABLE");
+    c.env_remove("WORKLOG_HOOK_SUPPRESS");
+    c.env("CODEX_HOME", home.path().join("codex"));
     c
 }
 
@@ -207,6 +211,87 @@ fn hook_install_status_uninstall_roundtrip() {
         .assert()
         .success()
         .stdout(predicate::str::contains("installed: no"));
+}
+
+#[test]
+fn hook_install_default_command_is_absolute() {
+    let home = TempDir::new().unwrap();
+    cmd(&home).args(["hook", "install"]).assert().success();
+    let raw = std::fs::read_to_string(home.path().join("claude/settings.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let c = v["hooks"]["Stop"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap();
+    assert!(c.starts_with('/') || c.starts_with("'/"), "{c}");
+    assert!(c.ends_with(" hook-run"), "{c}");
+    assert!(c.contains("worklog"), "{c}");
+    cmd(&home)
+        .args(["hook", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("installed: yes"));
+}
+
+#[test]
+fn hook_install_codex_roundtrip() {
+    let home = TempDir::new().unwrap();
+    let hooks_path = home.path().join("codex/hooks.json");
+    std::fs::create_dir_all(home.path().join("codex")).unwrap();
+    let foreign = serde_json::json!({ "hooks": [{ "type": "command", "command": "/opt/other" }] });
+    std::fs::write(
+        &hooks_path,
+        serde_json::json!({ "hooks": { "Stop": [foreign] } }).to_string(),
+    )
+    .unwrap();
+
+    for _ in 0..2 {
+        cmd(&home)
+            .args(["hook", "install", "--codex"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("/hooks"));
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&hooks_path).unwrap()).unwrap();
+    for ev in [
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "Stop",
+        "SubagentStop",
+        "SessionEnd",
+    ] {
+        let arr = v["hooks"][ev].as_array().unwrap();
+        let ours: Vec<&str> = arr
+            .iter()
+            .filter_map(|h| h["hooks"][0]["command"].as_str())
+            .filter(|c| c.contains("worklog"))
+            .collect();
+        assert_eq!(ours.len(), 1, "{ev}: {arr:?}");
+        assert!(ours[0].ends_with("hook-run --source codex"), "{}", ours[0]);
+    }
+    assert_eq!(v["hooks"]["Stop"][0], foreign);
+    assert!(!home.path().join("claude/settings.json").exists());
+
+    cmd(&home)
+        .args(["hook", "status", "--codex"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("installed: yes"));
+    cmd(&home)
+        .args(["hook", "uninstall", "--codex"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hook removed"));
+    cmd(&home)
+        .args(["hook", "status", "--codex"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("installed: no"));
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&hooks_path).unwrap()).unwrap();
+    assert_eq!(v, serde_json::json!({ "hooks": { "Stop": [foreign] } }));
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -404,6 +489,70 @@ fn hook_run_writes_claude_event_from_stdin() {
         .success()
         .stdout(predicate::str::contains("events=1"))
         .stdout(predicate::str::contains("sessions=1"));
+}
+
+const SESSION_START: &str =
+    r#"{"hook_event_name":"SessionStart","session_id":"S1","cwd":"/tmp/x"}"#;
+
+/// `events.source` values; empty when the DB file does not exist.
+fn event_sources(home: &TempDir) -> Vec<String> {
+    let db = home.path().join("worklog.db");
+    if !db.exists() {
+        return Vec::new();
+    }
+    let conn = rusqlite::Connection::open(db).unwrap();
+    let Ok(mut st) = conn.prepare("SELECT source FROM events") else {
+        return Vec::new();
+    };
+    st.query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[test]
+fn hook_run_disabled_writes_nothing() {
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .arg("hook-run")
+        .env("WORKLOG_DISABLE", "1")
+        .write_stdin(SESSION_START)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::is_empty());
+    assert!(event_sources(&home).is_empty());
+}
+
+#[test]
+fn hook_run_enabled_writes_one_row() {
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .arg("hook-run")
+        .write_stdin(SESSION_START)
+        .assert()
+        .success();
+    assert_eq!(event_sources(&home), vec!["claude"]);
+    // Empty value means NOT disabled.
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .arg("hook-run")
+        .env("WORKLOG_DISABLE", "")
+        .write_stdin(SESSION_START)
+        .assert()
+        .success();
+    assert_eq!(event_sources(&home), vec!["claude"]);
+}
+
+#[test]
+fn hook_run_source_codex_stores_codex() {
+    let home = TempDir::new().unwrap();
+    cmd(&home)
+        .args(["hook-run", "--source", "codex"])
+        .write_stdin(r#"{"hook_event_name":"UserPromptSubmit","session_id":"codex-s1","cwd":"/tmp/proj","transcript_path":"/tmp/t.jsonl","prompt":"fix the flaky test in the parser module","model":"gpt-5.2-codex","turn_id":"turn-1"}"#)
+        .assert()
+        .success();
+    assert_eq!(event_sources(&home), vec!["codex"]);
 }
 
 #[test]

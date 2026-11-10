@@ -318,3 +318,23 @@ fn multi_block_titles_survive_compression() {
     assert_eq!(dominant_title_for_blocks(&c, &[b1, b2]).unwrap(), title);
     assert_eq!(distinct_paths_for_blocks(&c, &[b1, b2]).unwrap(), paths);
 }
+
+#[test]
+fn codex_hook_titles_never_reach_the_invoice_from_live_blocks() {
+    let c = open_memory().unwrap();
+    let b = seed_block(&c, "2026-09-25T10:36:00+00:00", 960);
+    let mut ev = Event::minimal(
+        "codex",
+        "cx1",
+        "2026-09-25T10:36:00Z",
+        "UserPromptSubmit — aws dynamodb query",
+    );
+    ev.project_path = Some(work("apro-skills"));
+    let eid = repository::upsert_event(&c, &ev).unwrap();
+    c.execute(
+        "INSERT INTO block_events (block_id, event_id) VALUES (?1, ?2)",
+        params![b, eid],
+    )
+    .unwrap();
+    assert_eq!(dominant_title_for_blocks(&c, &[b]).unwrap(), None);
+}

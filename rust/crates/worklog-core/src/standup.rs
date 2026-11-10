@@ -274,7 +274,7 @@ fn first_prompts(conn: &Connection, yesterday: NaiveDate, today: NaiveDate) -> R
             let (Some(session), Some(details)) = (event.session_id, event.details) else {
                 continue;
             };
-            if event.source == "claude" && seen.insert(session) {
+            if crate::hook_run::is_hook_source(&event.source) && seen.insert(session) {
                 // Scrub before the cut so a token is never sliced into a prefix the patterns miss.
                 let clean = scrub::scrub_secrets(&details);
                 out.push(clean.chars().take(PROMPT_CHARS).collect());

@@ -74,6 +74,7 @@ shim that forwards the mutation and calls `revalidatePath`.
 ```bash
 worklog setup          # preflight + interactive secrets + db migrate
 worklog hook install   # register the Claude Code hook
+worklog hook install --codex   # register the hook for the Codex CLI (then approve under /hooks)
 worklog day            # full daily pipeline (collect → infer → estimate → UI)
 ```
 
@@ -115,7 +116,7 @@ worklog day --no-serve
 | `worklog web up [--port]` | Bring up the dockerised Next.js UI |
 | `worklog web down / status / logs / build` | Container lifecycle |
 | `worklog daemon [--socket] [--tcp]` | Axum API server (unix + TCP) |
-| `worklog hook [install\|uninstall\|status]` | Claude Code hook wiring |
+| `worklog hook [install\|uninstall\|status] [--codex]` | Claude Code (or Codex) hook wiring |
 | `worklog schedule [install\|uninstall\|status]` | Scheduled collection (launchd / systemd --user) |
 | `worklog secret [set\|get\|rm\|list]` | Credentials in the OS keychain |
 | `worklog db [migrate\|info\|path]` | DB operations |
@@ -123,6 +124,15 @@ worklog day --no-serve
 | `worklog dev [keygen\|sign\|make-patch\|apply-patch]` | Maintainer tooling |
 
 Every subcommand accepts `--json` for structured output.
+
+## Hooks
+
+- `worklog hook install` writes the absolute path of the running binary into
+  `~/.claude/settings.json`, so it works without `worklog` on the hook's PATH.
+- `--codex` writes `$CODEX_HOME/hooks.json` (default `~/.codex`) instead. Codex
+  only runs hooks you approve: open codex and approve them under `/hooks`.
+- `WORKLOG_DISABLE=1` makes `hook-run` a silent no-op.
+- `hook-run --source codex` tags the recorded events as `codex`.
 
 ## Google Calendar login
 

@@ -16,7 +16,7 @@ fn session_start_inserts_event_and_session_row() {
         "cwd": "/Users/tomas/project",
         "user_prompt": "look at PROJ-42"
     });
-    handle(&conn, &payload, now()).unwrap();
+    handle(&conn, &payload, now(), HookSource::Claude).unwrap();
 
     // Event written with source=claude and jira key extracted.
     let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
@@ -48,6 +48,7 @@ fn stop_event_closes_session() {
             "cwd": "/p"
         }),
         now(),
+        HookSource::Claude,
     )
     .unwrap();
     handle(
@@ -57,6 +58,7 @@ fn stop_event_closes_session() {
             "session_id": "x"
         }),
         now() + chrono::Duration::minutes(15),
+        HookSource::Claude,
     )
     .unwrap();
 
@@ -75,8 +77,8 @@ fn stop_event_closes_session() {
 fn dedupe_is_keyed_on_session_event_timestamp() {
     let conn = open_memory().unwrap();
     let p = json!({ "hook_event_name": "UserPromptSubmit", "session_id": "s1" });
-    handle(&conn, &p, now()).unwrap();
-    handle(&conn, &p, now()).unwrap(); // same timestamp → same source_id → upsert, not duplicate
+    handle(&conn, &p, now(), HookSource::Claude).unwrap();
+    handle(&conn, &p, now(), HookSource::Claude).unwrap(); // same timestamp → same source_id → upsert, not duplicate
     let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
     assert_eq!(events.len(), 1);
 }
@@ -86,7 +88,7 @@ fn handle_does_not_panic_on_missing_fields() {
     let conn = open_memory().unwrap();
     // Only a session id — everything else is missing.
     let p = json!({ "session_id": "bare" });
-    handle(&conn, &p, now()).unwrap();
+    handle(&conn, &p, now(), HookSource::Claude).unwrap();
     let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].title, "unknown");
@@ -107,7 +109,7 @@ fn captures_full_prompt_up_to_cap_in_details() {
         "session_id": "s1",
         "user_prompt": prompt,
     });
-    handle(&conn, &payload, now()).unwrap();
+    handle(&conn, &payload, now(), HookSource::Claude).unwrap();
     let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(
@@ -129,7 +131,7 @@ fn truncates_prompts_over_cap_with_explicit_marker() {
         "session_id": "s2",
         "user_prompt": prompt,
     });
-    handle(&conn, &payload, now()).unwrap();
+    handle(&conn, &payload, now(), HookSource::Claude).unwrap();
     let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
     let details = events[0]
         .details
@@ -161,7 +163,7 @@ fn no_prompt_event_stores_no_details() {
         "session_id": "s3",
         "transcript_path": "/tmp/transcript-abc.jsonl",
     });
-    handle(&conn, &payload, now()).unwrap();
+    handle(&conn, &payload, now(), HookSource::Claude).unwrap();
     let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
     assert_eq!(
         events[0].details, None,
@@ -182,7 +184,7 @@ fn hook_payload_stored_and_scrubbed() {
         "tool_name": "Bash",
         "tool_input": { "command": format!("curl -H 'Authorization: Bearer {token}' https://x") },
     });
-    handle(&conn, &payload, now()).unwrap();
+    handle(&conn, &payload, now(), HookSource::Claude).unwrap();
     let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
     let raw_json = events[0]
         .raw_json
@@ -216,7 +218,7 @@ fn hook_payload_drops_tool_response_but_keeps_tool_input() {
         "tool_input": { "file_path": "/tmp/big.rs" },
         "tool_response": { "content": "x".repeat(100_000) },
     });
-    handle(&conn, &payload, now()).unwrap();
+    handle(&conn, &payload, now(), HookSource::Claude).unwrap();
     let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
     let raw_json = events[0].raw_json.as_deref().unwrap();
     let record: crate::clues_contract::RawRecord = serde_json::from_str(raw_json).unwrap();
@@ -243,7 +245,7 @@ fn hook_collapses_worktree_cwd_to_project_root() {
         "session_id": "wt1",
         "cwd": cwd,
     });
-    handle(&conn, &payload, now()).unwrap();
+    handle(&conn, &payload, now(), HookSource::Claude).unwrap();
     let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
     assert_eq!(
         events[0].project_path.as_deref(),
@@ -264,7 +266,7 @@ fn task_notification_prompt_is_redacted_before_storage() {
         "session_id": "s6",
         "user_prompt": notif,
     });
-    handle(&conn, &payload, now()).unwrap();
+    handle(&conn, &payload, now(), HookSource::Claude).unwrap();
     let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
     let details = events[0].details.as_deref().unwrap_or("");
     assert!(details.contains("Agent review done"));
@@ -289,7 +291,7 @@ fn cap_prompt_is_char_safe_for_multi_byte_unicode() {
         "session_id": "s4",
         "user_prompt": prompt,
     });
-    handle(&conn, &payload, now()).unwrap();
+    handle(&conn, &payload, now(), HookSource::Claude).unwrap();
     let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
     let details = events[0].details.as_deref().unwrap();
     // First 4096 chars must be "日"*4096. Count chars, not bytes.
@@ -317,7 +319,7 @@ fn prompt_secret_never_reaches_title_details_or_raw_json() {
         "session_id": "s5",
         "user_prompt": prompt,
     });
-    handle(&conn, &payload, now()).unwrap();
+    handle(&conn, &payload, now(), HookSource::Claude).unwrap();
     let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
     let ev = &events[0];
     assert!(!ev.title.contains(&token), "title leaked: {}", ev.title);
@@ -351,7 +353,7 @@ fn prompt_scrubbed_before_title_cut_never_leaks_a_partial_token() {
         "session_id": "s6",
         "user_prompt": prompt,
     });
-    handle(&conn, &payload, now()).unwrap();
+    handle(&conn, &payload, now(), HookSource::Claude).unwrap();
     let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
     let title = &events[0].title;
     assert!(
@@ -373,7 +375,7 @@ fn repo_on_branch(branch: &str) -> tempfile::TempDir {
 
 fn jira_issue_for(payload: &Value) -> Option<String> {
     let conn = open_memory().unwrap();
-    handle(&conn, payload, now()).unwrap();
+    handle(&conn, payload, now(), HookSource::Claude).unwrap();
     let events = repo::load_day_events(&conn, "2026-04-18").unwrap();
     events[0].jira_issue.clone()
 }
@@ -441,6 +443,7 @@ fn hook_db_failure_is_recorded_and_still_ok() {
         &conn,
         r#"{"hook_event_name":"Stop","session_id":"s"}"#,
         now(),
+        HookSource::Claude,
     )
     .unwrap();
     assert!(last_err(&conn, "claude").is_some());
@@ -450,7 +453,7 @@ fn hook_db_failure_is_recorded_and_still_ok() {
 fn hook_invalid_json_is_recorded() {
     let conn = open_memory().unwrap();
     // Recording only handle() failures misses parse failures.
-    handle_input(&conn, "{not json", now()).unwrap();
+    handle_input(&conn, "{not json", now(), HookSource::Claude).unwrap();
     let err = last_err(&conn, "claude").expect("recorded");
     assert!(err.contains("invalid JSON"), "{err}");
 }
@@ -463,6 +466,7 @@ fn hook_success_records_no_error() {
         &conn,
         r#"{"hook_event_name":"Stop","session_id":"s"}"#,
         now(),
+        HookSource::Claude,
     )
     .unwrap();
     assert_eq!(last_err(&conn, "claude"), None);
@@ -516,9 +520,9 @@ const STOP: &str = r#"{"hook_event_name":"Stop","session_id":"s"}"#;
 #[test]
 fn hook_open_failure_returns_ok() {
     // Propagating the open error would block Claude.
-    assert!(run_with(STOP, || anyhow::bail!("no db")).is_ok());
+    assert!(run_with(STOP, || anyhow::bail!("no db"), HookSource::Claude).is_ok());
     // Invalid JSON with an unopenable DB is stderr only, still Ok.
-    assert!(run_with("{not json", || anyhow::bail!("no db")).is_ok());
+    assert!(run_with("{not json", || anyhow::bail!("no db"), HookSource::Claude).is_ok());
 }
 
 #[test]
@@ -528,10 +532,14 @@ fn hook_invalid_json_message_and_open_still_attempted_once() {
     assert!(msg.starts_with("invalid JSON on stdin: "), "{msg}");
     // Catches: skipping the open for bad JSON (health could never be recorded).
     let calls = std::cell::Cell::new(0);
-    run_with("{not json", || {
-        calls.set(calls.get() + 1);
-        anyhow::bail!("no db")
-    })
+    run_with(
+        "{not json",
+        || {
+            calls.set(calls.get() + 1);
+            anyhow::bail!("no db")
+        },
+        HookSource::Claude,
+    )
     .unwrap();
     assert_eq!(calls.get(), 1);
 }
@@ -543,7 +551,7 @@ fn hook_error_text_keeps_full_anyhow_chain() {
         "CREATE TRIGGER boom BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'boom'); END",
     )
     .unwrap();
-    handle_input(&conn, STOP, now()).unwrap();
+    handle_input(&conn, STOP, now(), HookSource::Claude).unwrap();
     // `to_string()` keeps only the outermost context ("upsert event"),
     // dropping the SQLite cause after it.
     let err = last_err(&conn, "claude").expect("recorded");
@@ -560,7 +568,7 @@ fn seed_last_ok(conn: &Connection, age_secs: i64) -> String {
 fn last_ok_younger_than_60s_is_not_rewritten() {
     let conn = open_memory().unwrap();
     let seeded = seed_last_ok(&conn, 59);
-    handle_input(&conn, STOP, now()).unwrap();
+    handle_input(&conn, STOP, now(), HookSource::Claude).unwrap();
     // Writing on every call changes the stamp.
     assert_eq!(last_ok(&conn, "claude"), Some(seeded));
 }
@@ -569,7 +577,7 @@ fn last_ok_younger_than_60s_is_not_rewritten() {
 fn last_ok_exactly_60s_old_is_rewritten() {
     let conn = open_memory().unwrap();
     let seeded = seed_last_ok(&conn, 60);
-    handle_input(&conn, STOP, now()).unwrap();
+    handle_input(&conn, STOP, now(), HookSource::Claude).unwrap();
     // `<=` instead of `<` would keep the stale stamp.
     assert_ne!(last_ok(&conn, "claude"), Some(seeded));
 }
@@ -578,7 +586,58 @@ fn last_ok_exactly_60s_old_is_rewritten() {
 fn error_is_recorded_even_when_last_ok_is_fresh() {
     let conn = open_memory().unwrap();
     seed_last_ok(&conn, 1);
-    handle_input(&conn, "{not json", now()).unwrap();
+    handle_input(&conn, "{not json", now(), HookSource::Claude).unwrap();
     // Throttling the whole record call would swallow errors.
     assert!(last_err(&conn, "claude").is_some());
+}
+
+const CODEX_PROMPT: &str = r#"{"hook_event_name":"UserPromptSubmit","session_id":"codex-s1","cwd":"/tmp/proj","transcript_path":"/tmp/t.jsonl","prompt":"fix the flaky test in the parser module","model":"gpt-5.2-codex","turn_id":"turn-1"}"#;
+
+fn sources_and_sessions(conn: &Connection) -> Vec<(String, Option<String>)> {
+    let mut st = conn
+        .prepare("SELECT source, session_id FROM events")
+        .unwrap();
+    st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[test]
+fn codex_payload_is_stored_with_codex_source() {
+    let conn = open_memory().unwrap();
+    let payload: Value = serde_json::from_str(CODEX_PROMPT).unwrap();
+    handle(&conn, &payload, now(), HookSource::Codex).unwrap();
+    assert_eq!(
+        sources_and_sessions(&conn),
+        vec![("codex".to_owned(), Some("codex-s1".to_owned()))]
+    );
+}
+
+#[test]
+fn same_payload_with_claude_source_is_stored_as_claude() {
+    let conn = open_memory().unwrap();
+    let payload: Value = serde_json::from_str(CODEX_PROMPT).unwrap();
+    handle(&conn, &payload, now(), HookSource::Claude).unwrap();
+    assert_eq!(
+        sources_and_sessions(&conn),
+        vec![("claude".to_owned(), Some("codex-s1".to_owned()))]
+    );
+}
+
+#[test]
+fn is_hook_source_accepts_claude_and_codex_only() {
+    assert!(is_hook_source("claude"));
+    assert!(is_hook_source("codex"));
+    assert!(!is_hook_source("git"));
+    assert!(!is_hook_source("claude_tool"));
+    assert!(!is_hook_source(""));
+}
+
+#[test]
+fn codex_health_is_recorded_under_codex_not_claude() {
+    let conn = open_memory().unwrap();
+    handle_input(&conn, "{not json", now(), HookSource::Codex).unwrap();
+    assert!(last_err(&conn, "codex").is_some());
+    assert!(last_err(&conn, "claude").is_none());
 }

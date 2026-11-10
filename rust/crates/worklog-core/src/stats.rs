@@ -120,7 +120,7 @@ pub fn stats_report(
         "SELECT source, started_at, title, details,
                 CASE WHEN source IN ('claude_tool','shell','claude_turn','claude_helper','git_reflog')
                      THEN raw_json END, duration_seconds
-           FROM events WHERE started_at >= ?1 AND started_at < ?2 AND source != 'claude'",
+           FROM events WHERE started_at >= ?1 AND started_at < ?2 AND source NOT IN ('claude','codex')",
     )?;
     let mut rows = stmt.query(params![start, end])?;
     while let Some(r) = rows.next()? {

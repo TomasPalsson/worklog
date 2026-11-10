@@ -199,3 +199,15 @@ fn infer_evidence_three_owner_events_stays_its_own_block() {
         "a sliver with >= 3 owner events must survive untouched: {out:?}"
     );
 }
+
+#[test]
+fn infer_evidence_codex_hook_rows_count_as_prompt_and_tool_hook() {
+    let titled = |title: &str| {
+        let mut e = ev(9, 0, "codex", Some("s1"));
+        e.title = Some(title.into());
+        e
+    };
+    assert!(is_prompt(&titled("UserPromptSubmit — fix it")));
+    assert!(is_tool_hook(&titled("PreToolUse")));
+    assert!(!is_prompt(&titled("PreToolUse")));
+}

@@ -73,7 +73,7 @@ pub(crate) fn is_lifecycle(e: &InferEvent) -> bool {
 /// `billing::work_folder_for_block` skips the same lifecycle riders from
 /// its folder vote via this.
 pub(crate) fn is_lifecycle_row(source: &str, title: Option<&str>) -> bool {
-    source == "claude"
+    crate::hook_run::is_hook_source(source)
         && title.is_some_and(|t| {
             t.starts_with("SessionStart") || t.starts_with("Stop") || t.starts_with("SessionEnd")
         })
