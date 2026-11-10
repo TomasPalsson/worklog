@@ -16,7 +16,7 @@ const WINDOW_MINUTES: i64 = 10;
 /// The dominant key must outnumber the runner-up by at least this ratio.
 const DOMINANCE_RATIO: u32 = 3;
 
-const CONTEXT_SOURCES: [&str; 4] = ["claude", "shell", "git_reflog", "claude_turn"];
+const CONTEXT_SOURCES: [&str; 5] = ["claude", "shell", "git_reflog", "claude_turn", "codex"];
 
 /// Collapse a raw `project_path` to its billable root key: the last path
 /// segment under `~/Work`, legacy `~/Desktop/Work` or `~/Desktop/Projects`, stripping
@@ -58,7 +58,7 @@ pub(crate) fn context_events_for_day(
     let mut stmt = conn
         .prepare(
             "SELECT started_at, project_path FROM events
-              WHERE source IN (?1, ?2, ?3, ?4) AND started_at >= ?5 AND started_at < ?6
+              WHERE source IN (?1, ?2, ?3, ?4, ?5) AND started_at >= ?6 AND started_at < ?7
                 AND project_path IS NOT NULL",
         )
         .context("preparing context events query")?;
@@ -69,6 +69,7 @@ pub(crate) fn context_events_for_day(
                 CONTEXT_SOURCES[1],
                 CONTEXT_SOURCES[2],
                 CONTEXT_SOURCES[3],
+                CONTEXT_SOURCES[4],
                 start.to_rfc3339(),
                 end.to_rfc3339(),
             ],

@@ -94,7 +94,7 @@ pub(crate) fn drop_isolated_claude_work(events: Vec<InferEvent>) -> Vec<InferEve
 /// UserPromptSubmit hook (`hook_run::title_for`) for the same prompt.
 fn is_prompt(e: &InferEvent) -> bool {
     e.source == "claude_turn"
-        || (e.source == "claude"
+        || (crate::hook_run::is_hook_source(&e.source)
             && e.title
                 .as_deref()
                 .is_some_and(|t| t.starts_with("UserPromptSubmit")))
@@ -102,7 +102,7 @@ fn is_prompt(e: &InferEvent) -> bool {
 
 /// A `claude` hook fired by the tool working, not by the owner.
 fn is_tool_hook(e: &InferEvent) -> bool {
-    e.source == "claude"
+    crate::hook_run::is_hook_source(&e.source)
         && e.title.as_deref().is_some_and(|t| {
             t.starts_with("PreToolUse")
                 || t.starts_with("PostToolUse")

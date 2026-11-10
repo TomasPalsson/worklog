@@ -52,7 +52,7 @@ pub fn build_digest(conn: &Connection, block_id: i64) -> Result<BlockDigest> {
         ranked_by_count(
             events
                 .iter()
-                .filter(|e| !e.source.starts_with("claude"))
+                .filter(|e| !e.source.starts_with("claude") && e.source != "codex")
                 .map(|e| e.title.trim().to_string()),
         ),
         MAX_INVOICE_TITLES,

@@ -80,6 +80,8 @@ bash tests/install/smoke.sh
 - The billing registry lives in SQLite and is edited **only** through
   the review UI (Settings-adjacent Billing panel → daemon
   `/billing/*`). Do not add a config-file path for it.
+- Hook events carry source `claude` or `codex` (`hook-run --source`); match
+  hook rows via `hook_run::is_hook_source`, never a bare "claude" literal.
 - The Claude Code mod (`mods/worklog/`) is embedded by
   `claude_mod.rs` (closed file list, no tests) and written to
   `<data dir>/claude-mod` by `worklog hook install`, then registered by

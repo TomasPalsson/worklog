@@ -505,3 +505,11 @@ fn tagged_lanes_in_one_folder_compete_and_split_into_separate_blocks() {
         );
     }
 }
+
+#[test]
+fn codex_hook_rows_are_lifecycle_like_claude() {
+    assert!(is_lifecycle_row("codex", Some("SessionStart")));
+    assert!(is_lifecycle_row("codex", Some("Stop")));
+    assert!(!is_lifecycle_row("codex", Some("UserPromptSubmit — x")));
+    assert!(!is_lifecycle_row("git", Some("Stop")));
+}

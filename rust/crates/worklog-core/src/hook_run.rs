@@ -123,11 +123,38 @@ fn details_for(prompt: Option<&str>) -> Option<String> {
     }
 }
 
+/// Which agent CLI fired the hook; becomes `events.source`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HookSource {
+    #[default]
+    Claude,
+    Codex,
+}
+
+impl HookSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HookSource::Claude => "claude",
+            HookSource::Codex => "codex",
+        }
+    }
+}
+
+/// True for `events.source` values written by `worklog hook-run`.
+pub fn is_hook_source(source: &str) -> bool {
+    matches!(source, "claude" | "codex")
+}
+
 /// Process a single hook payload against an already-open connection. Errors
 /// are logged to stderr by the caller; this function bails on a hard db
 /// failure only so the CLI entrypoint can still return exit 0 (we never
 /// want to block the user's Claude session).
-pub fn handle(conn: &Connection, payload: &Value, now: DateTime<Utc>) -> Result<()> {
+pub fn handle(
+    conn: &Connection,
+    payload: &Value,
+    now: DateTime<Utc>,
+    source: HookSource,
+) -> Result<()> {
     let event = payload
         .get("hook_event_name")
         .and_then(Value::as_str)
@@ -162,7 +189,7 @@ pub fn handle(conn: &Connection, payload: &Value, now: DateTime<Utc>) -> Result<
 
     let ev = Event {
         id: None,
-        source: "claude".into(),
+        source: source.as_str().into(),
         source_id: format!("{session_id}:{event}:{}", now.to_rfc3339()),
         started_at: now.to_rfc3339(),
         ended_at: None,
@@ -202,14 +229,22 @@ pub const MAX_STDIN_BYTES: u64 = 4 * 1024 * 1024;
 /// subprocess so the inner `worklog hook-run` no-ops.
 pub const SUPPRESS_ENV: &str = "WORKLOG_HOOK_SUPPRESS";
 
+/// Privacy switch for side sessions: when set and non-empty, the hook
+/// records nothing — no stdin read, no DB open, no output. An empty value
+/// means NOT disabled.
+pub const DISABLE_ENV: &str = "WORKLOG_DISABLE";
+
 /// CLI entrypoint. Reads stdin, opens db, handles. Always returns Ok —
 /// hook-side errors are logged to stderr but never propagated (Claude
 /// must never be blocked by a worklog failure).
-pub fn run_from_stdin() -> Result<()> {
+pub fn run_from_stdin(source: HookSource) -> Result<()> {
     // Drop the event when invoked from worklog's own estimator subprocess
     // (see `SUPPRESS_ENV`). Checked before reading stdin so the payload is
     // discarded unparsed.
     if std::env::var_os(SUPPRESS_ENV).is_some() {
+        return Ok(());
+    }
+    if std::env::var_os(DISABLE_ENV).is_some_and(|v| !v.is_empty()) {
         return Ok(());
     }
     use std::io::Read;
@@ -231,11 +266,15 @@ pub fn run_from_stdin() -> Result<()> {
         );
         return Ok(());
     }
-    run_with(&buf, || {
-        let paths = crate::paths::Paths::resolve()?;
-        paths.ensure()?;
-        crate::db::open(&paths.db)
-    })
+    run_with(
+        &buf,
+        || {
+            let paths = crate::paths::Paths::resolve()?;
+            paths.ensure()?;
+            crate::db::open(&paths.db)
+        },
+        source,
+    )
 }
 
 fn parse_payload(input: &str) -> std::result::Result<Value, String> {
@@ -245,13 +284,17 @@ fn parse_payload(input: &str) -> std::result::Result<Value, String> {
 /// Parses first (invalid JSON is reported to stderr even if the DB cannot
 /// open), then opens the DB. An open failure reports to stderr and returns
 /// Ok so Claude is never blocked.
-fn run_with(input: &str, open: impl FnOnce() -> Result<Connection>) -> Result<()> {
+fn run_with(
+    input: &str,
+    open: impl FnOnce() -> Result<Connection>,
+    source: HookSource,
+) -> Result<()> {
     let parsed = parse_payload(input);
     if let Err(msg) = &parsed {
         eprintln!("worklog hook: {msg}");
     }
     match open() {
-        Ok(conn) => finish(&conn, parsed, Utc::now()),
+        Ok(conn) => finish(&conn, parsed, Utc::now(), source),
         Err(e) => {
             eprintln!("worklog hook: cannot open db: {e:#}");
             Ok(())
@@ -261,21 +304,27 @@ fn run_with(input: &str, open: impl FnOnce() -> Result<Connection>) -> Result<()
 
 /// Parse and handle one raw payload. A failure goes to stderr and into the
 /// `claude` source health, never out as an error.
-pub fn handle_input(conn: &Connection, input: &str, now: DateTime<Utc>) -> Result<()> {
+pub fn handle_input(
+    conn: &Connection,
+    input: &str,
+    now: DateTime<Utc>,
+    source: HookSource,
+) -> Result<()> {
     let parsed = parse_payload(input);
     if let Err(msg) = &parsed {
         eprintln!("worklog hook: {msg}");
     }
-    finish(conn, parsed, now)
+    finish(conn, parsed, now, source)
 }
 
 fn finish(
     conn: &Connection,
     parsed: std::result::Result<Value, String>,
     now: DateTime<Utc>,
+    source: HookSource,
 ) -> Result<()> {
     let outcome = match parsed {
-        Ok(p) => handle(conn, &p, now).map_err(|e| {
+        Ok(p) => handle(conn, &p, now, source).map_err(|e| {
             let msg = format!("{e:#}");
             eprintln!("worklog hook: {msg}");
             msg
@@ -283,10 +332,10 @@ fn finish(
         Err(m) => Err(m),
     };
     let health = outcome.as_ref().map(|_| ()).map_err(|m| m.as_str());
-    if health.is_ok() && last_ok_is_fresh(conn, now) {
+    if health.is_ok() && last_ok_is_fresh(conn, now, source) {
         return Ok(());
     }
-    if let Err(e) = crate::collect_health::record(conn, "claude", health) {
+    if let Err(e) = crate::collect_health::record(conn, source.as_str(), health) {
         eprintln!("worklog hook: recording failed: {e}");
     }
     Ok(())
@@ -294,15 +343,18 @@ fn finish(
 
 const LAST_OK_MIN_AGE_SECS: i64 = 60;
 
-fn last_ok_is_fresh(conn: &Connection, now: DateTime<Utc>) -> bool {
-    crate::purge::meta_get(conn, &crate::time_leaks_contract::collect_ok_key("claude"))
-        .ok()
-        .flatten()
-        .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-        .is_some_and(|t| {
-            let age = (now - t.with_timezone(&Utc)).num_seconds();
-            (0..LAST_OK_MIN_AGE_SECS).contains(&age)
-        })
+fn last_ok_is_fresh(conn: &Connection, now: DateTime<Utc>, source: HookSource) -> bool {
+    crate::purge::meta_get(
+        conn,
+        &crate::time_leaks_contract::collect_ok_key(source.as_str()),
+    )
+    .ok()
+    .flatten()
+    .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+    .is_some_and(|t| {
+        let age = (now - t.with_timezone(&Utc)).num_seconds();
+        (0..LAST_OK_MIN_AGE_SECS).contains(&age)
+    })
 }
 
 // Tests live in hook_run_test.rs (same module, split file for line budget).
@@ -324,7 +376,7 @@ mod stored_ticket_tests {
             "cwd": cwd,
             "prompt": prompt,
         });
-        handle(conn, &payload, now).unwrap();
+        handle(conn, &payload, now, HookSource::Claude).unwrap();
         let day = now.format("%Y-%m-%d").to_string();
         repo::load_day_events(conn, &day).unwrap()[0]
             .jira_issue

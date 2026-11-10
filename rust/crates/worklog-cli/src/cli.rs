@@ -373,7 +373,11 @@ model ids for the subprocess path, `provider/model` form for LiteLLM.")]
 
     /// Claude Code hook — reads a JSON event from stdin and records it.
     #[command(name = "hook-run", hide = true)]
-    HookRun,
+    HookRun {
+        /// Which agent CLI fired the hook.
+        #[arg(long, value_enum, default_value_t = HookSourceArg::Claude)]
+        source: HookSourceArg,
+    },
 
     /// Claude Code session-start hook — reads SessionStart JSON from
     /// stdin and prints the session's Jira ticket (or how to find one),
@@ -617,18 +621,40 @@ pub enum HookCmd {
         /// (`worklog-rs hook-run` or `worklog hook-run`).
         #[arg(long)]
         command: Option<String>,
+        /// Target the Codex CLI (~/.codex/hooks.json) instead of Claude Code.
+        #[arg(long)]
+        codex: bool,
     },
     /// Remove worklog handlers; leaves other tools' hooks alone.
-    Uninstall,
+    Uninstall {
+        /// Target the Codex CLI (~/.codex/hooks.json) instead of Claude Code.
+        #[arg(long)]
+        codex: bool,
+    },
     /// Report whether worklog is registered and which events it listens on.
-    Status,
+    Status {
+        /// Target the Codex CLI (~/.codex/hooks.json) instead of Claude Code.
+        #[arg(long)]
+        codex: bool,
+    },
     /// Process a single Claude Code hook event from stdin. Back-compat
     /// alias for the top-level `hook-run` — keeps existing
     /// ~/.claude/settings.json entries like `worklog hook run` working
     /// after the Python-era CLI shape was retired. New installs write
     /// `hook-run` directly; this alias is the graceful migration path.
     #[command(hide = true)]
-    Run,
+    Run {
+        /// Which agent CLI fired the hook.
+        #[arg(long, value_enum, default_value_t = HookSourceArg::Claude)]
+        source: HookSourceArg,
+    },
+}
+
+/// CLI mirror of `hook_run::HookSource` (core carries no clap dependency).
+#[derive(clap::ValueEnum, Debug, Clone, Copy)]
+pub enum HookSourceArg {
+    Claude,
+    Codex,
 }
 
 #[derive(Subcommand, Debug)]
@@ -869,10 +895,10 @@ pub fn run_with<W: Write>(
             SecretCmd::List => cmd_secret_list(out, cli.json),
         },
         Cmd::Hook(sub) => match sub {
-            HookCmd::Install { command } => cmd_hook_install(command, out, cli.json),
-            HookCmd::Uninstall => cmd_hook_uninstall(out, cli.json),
-            HookCmd::Status => cmd_hook_status(out, cli.json),
-            HookCmd::Run => cmd_hook_run(),
+            HookCmd::Install { command, codex } => cmd_hook_install(command, codex, out, cli.json),
+            HookCmd::Uninstall { codex } => cmd_hook_uninstall(codex, out, cli.json),
+            HookCmd::Status { codex } => cmd_hook_status(codex, out, cli.json),
+            HookCmd::Run { source } => cmd_hook_run(source),
         },
         Cmd::Schedule(sub) => match sub {
             ScheduleCmd::Install { interval, command } => {
@@ -954,7 +980,7 @@ pub fn run_with<W: Write>(
             session,
             at,
         } => cmd_pin(&customer, &session, at, out),
-        Cmd::HookRun => cmd_hook_run(),
+        Cmd::HookRun { source } => cmd_hook_run(source),
         Cmd::SessionHint => cmd_session_hint(out),
         Cmd::Daemon { sub, socket, tcp } => match sub {
             None => cmd_daemon(socket, tcp),
@@ -1369,12 +1395,31 @@ fn cmd_secret_rm<W: Write>(key: &str, out: &mut W) -> Result<()> {
     Ok(())
 }
 
-fn cmd_hook_install<W: Write>(command: Option<String>, out: &mut W, json: bool) -> Result<()> {
-    let cmd = command.unwrap_or_else(hook::default_command);
-    let status = hook::install(&cmd)?;
-    let mod_dir = claude_mod::install(&Paths::resolve()?.data_dir)?;
+const CODEX_APPROVE_NOTE: &str =
+    "Codex only runs hooks you approve: open codex and approve them under /hooks.";
+
+fn cmd_hook_install<W: Write>(
+    command: Option<String>,
+    codex: bool,
+    out: &mut W,
+    json: bool,
+) -> Result<()> {
+    let (cmd, status, mod_dir) = if codex {
+        let cmd = command.unwrap_or_else(hook::default_codex_command);
+        let status = hook::install_codex(&cmd)?;
+        (cmd, status, None)
+    } else {
+        let cmd = command.unwrap_or_else(hook::default_command);
+        let status = hook::install(&cmd)?;
+        let mod_dir = claude_mod::install(&Paths::resolve()?.data_dir)?;
+        (cmd, status, Some(mod_dir))
+    };
     if json {
-        writeln!(out, "{}", serde_json::to_string_pretty(&status)?)?;
+        let mut value = serde_json::to_value(&status)?;
+        if codex {
+            value["note"] = CODEX_APPROVE_NOTE.into();
+        }
+        writeln!(out, "{}", serde_json::to_string_pretty(&value)?)?;
     } else {
         writeln!(
             out,
@@ -1383,18 +1428,28 @@ fn cmd_hook_install<W: Write>(command: Option<String>, out: &mut W, json: bool) 
             status.events.len()
         )?;
         writeln!(out, "  command: {cmd}")?;
-        writeln!(
-            out,
-            "  mod:     {}",
-            worklog_core::paths::short_display(&mod_dir)
-        )?;
+        if let Some(mod_dir) = mod_dir {
+            writeln!(
+                out,
+                "  mod:     {}",
+                worklog_core::paths::short_display(&mod_dir)
+            )?;
+        }
+        if codex {
+            writeln!(out, "{CODEX_APPROVE_NOTE}")?;
+        }
     }
     Ok(())
 }
 
-fn cmd_hook_uninstall<W: Write>(out: &mut W, json: bool) -> Result<()> {
-    let status = hook::uninstall()?;
-    claude_mod::uninstall(&Paths::resolve()?.data_dir)?;
+fn cmd_hook_uninstall<W: Write>(codex: bool, out: &mut W, json: bool) -> Result<()> {
+    let status = if codex {
+        hook::uninstall_codex()?
+    } else {
+        let status = hook::uninstall()?;
+        claude_mod::uninstall(&Paths::resolve()?.data_dir)?;
+        status
+    };
     if json {
         writeln!(out, "{}", serde_json::to_string_pretty(&status)?)?;
     } else {
@@ -1407,12 +1462,18 @@ fn cmd_hook_uninstall<W: Write>(out: &mut W, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_hook_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
-    let status = hook::status()?;
-    let mod_installed = claude_mod::is_installed(&Paths::resolve()?.data_dir);
+fn cmd_hook_status<W: Write>(codex: bool, out: &mut W, json: bool) -> Result<()> {
+    let (status, mod_installed) = if codex {
+        (hook::status_codex()?, None)
+    } else {
+        let mod_installed = claude_mod::is_installed(&Paths::resolve()?.data_dir);
+        (hook::status()?, Some(mod_installed))
+    };
     if json {
         let mut value = serde_json::to_value(&status)?;
-        value["mod_installed"] = mod_installed.into();
+        if let Some(m) = mod_installed {
+            value["mod_installed"] = m.into();
+        }
         writeln!(out, "{}", serde_json::to_string_pretty(&value)?)?;
         return Ok(());
     }
@@ -1430,11 +1491,9 @@ fn cmd_hook_status<W: Write>(out: &mut W, json: bool) -> Result<()> {
     } else {
         writeln!(out, "installed: no")?;
     }
-    writeln!(
-        out,
-        "mod:       {}",
-        if mod_installed { "yes" } else { "no" }
-    )?;
+    if let Some(m) = mod_installed {
+        writeln!(out, "mod:       {}", if m { "yes" } else { "no" })?;
+    }
     Ok(())
 }
 
@@ -4066,10 +4125,13 @@ impl StepOutcome {
     }
 }
 
-fn cmd_hook_run() -> Result<()> {
+fn cmd_hook_run(source: HookSourceArg) -> Result<()> {
     // All output goes to stderr (handled inside hook_run::run_from_stdin) so
     // Claude Code never sees bytes on stdout.
-    hook_run::run_from_stdin()
+    hook_run::run_from_stdin(match source {
+        HookSourceArg::Claude => hook_run::HookSource::Claude,
+        HookSourceArg::Codex => hook_run::HookSource::Codex,
+    })
 }
 
 /// `worklog session-hint`. Every failure is swallowed and prints nothing —

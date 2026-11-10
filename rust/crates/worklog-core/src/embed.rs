@@ -93,7 +93,7 @@ fn strip_keys(s: &str) -> String {
 
 pub(crate) const PROMPTS_SQL: &str =
     "SELECT e.details FROM block_events be CROSS JOIN events e INDEXED BY idx_events_block_cover ON e.id = be.event_id
-         WHERE be.block_id = ?1 AND e.source = 'claude'
+         WHERE be.block_id = ?1 AND e.source IN ('claude','codex')
            AND e.title LIKE 'UserPromptSubmit%' AND length(e.details) > 20
          ORDER BY e.started_at, e.id LIMIT ?2";
 

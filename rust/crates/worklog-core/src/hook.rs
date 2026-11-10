@@ -65,30 +65,50 @@ pub fn settings_path() -> Result<PathBuf> {
     Ok(base.join("settings.json"))
 }
 
-/// Default command string registered in the hook handler.
-///
-/// Preference order (most preferred first):
-/// 1. `worklog-hook` — the old standalone Rust hook binary. Users on
-///    Stage 0-era installs may still have it; if so, use it directly.
-/// 2. `worklog-rs` — the Stage 1-4 binary name, kept for users who
-///    haven't re-run the curl installer yet.
-/// 3. `worklog` on PATH — the current pure-Rust binary.
-///
-/// All three flavours accept `hook-run` (hyphenated top-level command);
-/// `worklog hook run` (two words) is also accepted via the back-compat
-/// alias so an existing settings.json entry doesn't break after a
-/// binary swap.
+/// Override the Codex config dir for tests and power users.
+pub const ENV_CODEX_HOME: &str = "CODEX_HOME";
+
+/// Resolve `~/.codex/hooks.json` (honouring `$CODEX_HOME` if set).
+pub fn codex_hooks_path() -> Result<PathBuf> {
+    let base = match std::env::var_os(ENV_CODEX_HOME) {
+        Some(v) if !v.is_empty() => PathBuf::from(v),
+        _ => dirs::home_dir()
+            .context("no home directory available")?
+            .join(".codex"),
+    };
+    Ok(base.join("hooks.json"))
+}
+
+/// Default command string registered in the hook handler: the absolute
+/// path of the running binary plus ` hook-run`, so the hook keeps working
+/// when `worklog` isn't on the PATH Claude Code / Codex run it with.
+/// Paths with shell-special characters are single-quoted (both agents run
+/// the command through `sh -c`). Falls back to the bare `worklog hook-run`
+/// if the current executable can't be resolved.
 pub fn default_command() -> String {
-    if let Some(p) = which::which_ok("worklog-hook") {
-        return p.to_string_lossy().into_owned();
+    match std::env::current_exe() {
+        Ok(exe) => {
+            let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+            format!("{} hook-run", sh_quote(&exe.to_string_lossy()))
+        }
+        Err(_) => "worklog hook-run".to_owned(),
     }
-    if let Some(p) = which::which_ok("worklog-rs") {
-        return format!("{} hook-run", p.to_string_lossy());
+}
+
+/// Default command for the Codex CLI: the recorder tagged `--source codex`.
+pub fn default_codex_command() -> String {
+    format!("{} --source codex", default_command())
+}
+
+/// Quote `s` for `sh` unless it only has safe characters.
+fn sh_quote(s: &str) -> String {
+    if !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._+-".contains(c))
+    {
+        return s.to_owned();
     }
-    if let Some(p) = which::which_ok("worklog") {
-        return format!("{} hook-run", p.to_string_lossy());
-    }
-    "worklog hook-run".to_owned()
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Derive the `session-hint` invocation from the recorder's `hook-run`
@@ -107,7 +127,31 @@ fn session_hint_command(command: &str) -> String {
 }
 
 pub fn install(command: &str) -> Result<HookStatus> {
-    let path = settings_path()?;
+    install_at(settings_path()?, command, true)
+}
+
+pub fn uninstall() -> Result<HookStatus> {
+    uninstall_at(settings_path()?)
+}
+
+pub fn status() -> Result<HookStatus> {
+    status_at(settings_path()?)
+}
+
+/// Register the recorder in `$CODEX_HOME/hooks.json` (no session-hint).
+pub fn install_codex(command: &str) -> Result<HookStatus> {
+    install_at(codex_hooks_path()?, command, false)
+}
+
+pub fn uninstall_codex() -> Result<HookStatus> {
+    uninstall_at(codex_hooks_path()?)
+}
+
+pub fn status_codex() -> Result<HookStatus> {
+    status_at(codex_hooks_path()?)
+}
+
+fn install_at(path: PathBuf, command: &str, session_hint: bool) -> Result<HookStatus> {
     let mut root = read_settings(&path)?;
     let hooks = root
         .entry("hooks".to_owned())
@@ -144,7 +188,7 @@ pub fn install(command: &str) -> Result<HookStatus> {
                 { "type": "command", "command": command }
             ]
         }));
-        if *ev == "SessionStart" {
+        if session_hint && *ev == "SessionStart" {
             arr.push(json!({
                 "hooks": [
                     { "type": "command", "command": session_hint_command(command) }
@@ -162,8 +206,7 @@ pub fn install(command: &str) -> Result<HookStatus> {
     })
 }
 
-pub fn uninstall() -> Result<HookStatus> {
-    let path = settings_path()?;
+fn uninstall_at(path: PathBuf) -> Result<HookStatus> {
     if !path.exists() {
         return Ok(HookStatus {
             settings_path: path,
@@ -198,8 +241,7 @@ pub fn uninstall() -> Result<HookStatus> {
     })
 }
 
-pub fn status() -> Result<HookStatus> {
-    let path = settings_path()?;
+fn status_at(path: PathBuf) -> Result<HookStatus> {
     if !path.exists() {
         return Ok(HookStatus {
             settings_path: path,
@@ -264,6 +306,24 @@ pub(crate) fn write_settings(path: &Path, v: &Value) -> Result<()> {
     Ok(())
 }
 
+/// A worklog hook command: the program (everything before the first
+/// `hook-run` / `session-hint` / `hook` word, or the whole command for the
+/// bare `worklog-hook` binary) has a basename containing `worklog`. A
+/// bare substring match would also eat foreign hooks that merely live under
+/// a `worklog/` directory.
+fn is_worklog_command(cmd: &str) -> bool {
+    let words: Vec<&str> = cmd.split_whitespace().collect();
+    let end = words
+        .iter()
+        .position(|w| matches!(*w, "hook-run" | "session-hint" | "hook"))
+        .unwrap_or(words.len());
+    let prog = words[..end].join(" ");
+    let prog = prog.trim_matches('\'');
+    prog.rsplit('/')
+        .next()
+        .is_some_and(|b| b.contains("worklog"))
+}
+
 fn is_worklog_handler(handler: &Value) -> bool {
     let Some(list) = handler.get("hooks").and_then(Value::as_array) else {
         return false;
@@ -271,7 +331,7 @@ fn is_worklog_handler(handler: &Value) -> bool {
     list.iter().any(|h| {
         h.get("command")
             .and_then(Value::as_str)
-            .map(|c| c.contains("worklog"))
+            .map(is_worklog_command)
             .unwrap_or(false)
     })
 }
@@ -283,28 +343,13 @@ fn find_worklog_command(arr: &[Value]) -> Option<String> {
         };
         for h in list {
             if let Some(cmd) = h.get("command").and_then(Value::as_str) {
-                if cmd.contains("worklog") {
+                if is_worklog_command(cmd) {
                     return Some(cmd.to_owned());
                 }
             }
         }
     }
     None
-}
-
-/// A tiny `which` shim so the core crate doesn't grow a dep for one call.
-mod which {
-    use std::path::PathBuf;
-    pub fn which_ok(bin: &str) -> Option<PathBuf> {
-        let path = std::env::var_os("PATH")?;
-        for dir in std::env::split_paths(&path) {
-            let candidate = dir.join(bin);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-        None
-    }
 }
 
 #[cfg(test)]
@@ -320,17 +365,27 @@ mod tests {
 
     struct TestDir {
         _tmp: tempfile::TempDir,
+        _codex: tempfile::TempDir,
     }
 
     fn enter(tmp: tempfile::TempDir) -> (std::sync::MutexGuard<'static, ()>, TestDir) {
         let g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var(ENV_CLAUDE_HOME, tmp.path());
-        (g, TestDir { _tmp: tmp })
+        let codex = tempdir().unwrap();
+        std::env::set_var(ENV_CODEX_HOME, codex.path());
+        (
+            g,
+            TestDir {
+                _tmp: tmp,
+                _codex: codex,
+            },
+        )
     }
 
     impl Drop for TestDir {
         fn drop(&mut self) {
             std::env::remove_var(ENV_CLAUDE_HOME);
+            std::env::remove_var(ENV_CODEX_HOME);
         }
     }
 
@@ -528,5 +583,258 @@ mod tests {
         let (_g, _t) = enter(tempdir().unwrap());
         let s = uninstall().unwrap();
         assert!(!s.installed);
+    }
+
+    // ── Claude + Codex shared behaviour ──
+
+    struct Target {
+        codex: bool,
+        path: fn() -> Result<PathBuf>,
+        install: fn(&str) -> Result<HookStatus>,
+        uninstall: fn() -> Result<HookStatus>,
+        status: fn() -> Result<HookStatus>,
+        suffix: &'static str,
+    }
+
+    const TARGETS: [Target; 2] = [
+        Target {
+            codex: false,
+            path: settings_path,
+            install,
+            uninstall,
+            status,
+            suffix: "hook-run",
+        },
+        Target {
+            codex: true,
+            path: codex_hooks_path,
+            install: install_codex,
+            uninstall: uninstall_codex,
+            status: status_codex,
+            suffix: "hook-run --source codex",
+        },
+    ];
+
+    fn read(t: &Target) -> Value {
+        serde_json::from_str(&std::fs::read_to_string((t.path)().unwrap()).unwrap()).unwrap()
+    }
+
+    fn seed(t: &Target, v: &Value) {
+        let p = (t.path)().unwrap();
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, serde_json::to_string_pretty(v).unwrap()).unwrap();
+    }
+
+    fn cmds(root: &Value, ev: &str) -> Vec<String> {
+        root["hooks"][ev]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["hooks"][0]["command"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn install_twice_leaves_one_recorder_per_event() {
+        let (_g, _t) = enter(tempdir().unwrap());
+        for t in &TARGETS {
+            let cmd = format!("/x/worklog {}", t.suffix);
+            (t.install)(&cmd).unwrap();
+            (t.install)(&cmd).unwrap();
+            let root = read(t);
+            for ev in EVENTS {
+                let c = cmds(&root, ev);
+                if !t.codex && *ev == "SessionStart" {
+                    assert_eq!(c, vec![cmd.clone(), "/x/worklog session-hint".to_owned()]);
+                } else {
+                    assert_eq!(c, vec![cmd.clone()], "{ev} codex={}", t.codex);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn foreign_entries_survive_install_and_uninstall() {
+        let (_g, _t) = enter(tempdir().unwrap());
+        for t in &TARGETS {
+            let seeded = json!({
+                "theme": "dark",
+                "hooks": {
+                    "PreToolUse": [
+                        { "matcher": "Bash", "hooks": [{ "type": "command", "command": "/opt/other" }] }
+                    ],
+                    "Notification": [
+                        { "hooks": [{ "type": "command", "command": "/opt/notify" }] }
+                    ]
+                }
+            });
+            seed(t, &seeded);
+            (t.install)(&format!("/x/worklog {}", t.suffix)).unwrap();
+            let root = read(t);
+            assert_eq!(root["theme"], seeded["theme"]);
+            assert_eq!(
+                root["hooks"]["Notification"],
+                seeded["hooks"]["Notification"]
+            );
+            assert_eq!(
+                root["hooks"]["PreToolUse"][0],
+                seeded["hooks"]["PreToolUse"][0]
+            );
+            assert_eq!(root["hooks"]["PreToolUse"].as_array().unwrap().len(), 2);
+            (t.uninstall)().unwrap();
+            assert_eq!(read(t), seeded, "codex={}", t.codex);
+        }
+    }
+
+    #[test]
+    fn foreign_hook_under_a_worklog_directory_is_not_ours() {
+        let (_g, _t) = enter(tempdir().unwrap());
+        for t in &TARGETS {
+            let seeded = json!({
+                "hooks": { "Stop": [
+                    { "hooks": [{ "type": "command", "command": "/Users/me/worklog/scripts/audit.sh" }] }
+                ] }
+            });
+            seed(t, &seeded);
+            (t.install)(&format!("/x/worklog {}", t.suffix)).unwrap();
+            assert_eq!(read(t)["hooks"]["Stop"][0], seeded["hooks"]["Stop"][0]);
+            (t.uninstall)().unwrap();
+            assert_eq!(read(t), seeded, "codex={}", t.codex);
+        }
+        assert!(is_worklog_command("'/My Apps/worklog' hook-run"));
+        assert!(is_worklog_command("worklog-hook"));
+        assert!(is_worklog_command("worklog hook run"));
+    }
+
+    #[test]
+    fn bare_and_absolute_entries_are_recognised_removed_and_replaced() {
+        let (_g, _t) = enter(tempdir().unwrap());
+        for t in &TARGETS {
+            for old in [
+                format!("worklog {}", t.suffix),
+                format!("/opt/x/bin/worklog {}", t.suffix),
+                format!("'/a b/worklog' {}", t.suffix),
+                format!(
+                    "[ -n \"$WORKLOG_DISABLE\" ] || \"$HOME/.local/bin/worklog\" {}",
+                    t.suffix
+                ),
+            ] {
+                let mut hooks = Map::new();
+                for ev in EVENTS {
+                    hooks.insert(
+                        (*ev).to_owned(),
+                        json!([{ "hooks": [{ "type": "command", "command": old }] }]),
+                    );
+                }
+                seed(t, &json!({ "hooks": hooks }));
+                let s = (t.status)().unwrap();
+                assert!(s.installed, "{old}");
+                assert_eq!(s.events.len(), EVENTS.len());
+
+                (t.install)("/new/worklog hook-run").unwrap();
+                let root = read(t);
+                for ev in EVENTS {
+                    let c = cmds(&root, ev);
+                    assert_eq!(c[0], "/new/worklog hook-run", "{old}");
+                    let n = if !t.codex && *ev == "SessionStart" {
+                        2
+                    } else {
+                        1
+                    };
+                    assert_eq!(c.len(), n, "{old} {ev}");
+                }
+
+                seed(
+                    t,
+                    &json!({ "hooks": { "Stop": [
+                        { "hooks": [{ "type": "command", "command": old }] }
+                    ] } }),
+                );
+                (t.uninstall)().unwrap();
+                assert_eq!(read(t), json!({}), "{old}");
+                assert!(!(t.status)().unwrap().installed);
+            }
+        }
+    }
+
+    #[test]
+    fn codex_install_has_no_session_hint_and_tags_source() {
+        let (_g, _t) = enter(tempdir().unwrap());
+        install_codex("/x/worklog hook-run --source codex").unwrap();
+        let root = read(&TARGETS[1]);
+        for ev in EVENTS {
+            let c = cmds(&root, ev);
+            assert_eq!(c.len(), 1);
+            assert!(c[0].ends_with("hook-run --source codex"));
+        }
+        assert!(!std::fs::read_to_string(codex_hooks_path().unwrap())
+            .unwrap()
+            .contains("session-hint"));
+        assert!(!settings_path().unwrap().exists());
+        install("/x/worklog hook-run").unwrap();
+        assert!(!codex_hooks_path()
+            .unwrap()
+            .with_extension("json.bak")
+            .exists());
+    }
+
+    #[test]
+    fn malformed_json_errors_and_is_left_untouched() {
+        let (_g, _t) = enter(tempdir().unwrap());
+        for t in &TARGETS {
+            let p = (t.path)().unwrap();
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, "{ not json").unwrap();
+            assert!((t.install)("worklog hook-run").is_err());
+            assert!((t.uninstall)().is_err());
+            assert_eq!(std::fs::read_to_string(&p).unwrap(), "{ not json");
+        }
+    }
+
+    #[test]
+    fn codex_backup_is_named_after_the_file() {
+        let (_g, _t) = enter(tempdir().unwrap());
+        install_codex("worklog hook-run --source codex").unwrap();
+        install_codex("worklog hook-run --source codex").unwrap();
+        assert!(codex_hooks_path()
+            .unwrap()
+            .with_file_name("hooks.json.bak")
+            .exists());
+    }
+
+    #[test]
+    fn codex_hooks_path_honours_codex_home() {
+        let (_g, t) = enter(tempdir().unwrap());
+        assert_eq!(
+            codex_hooks_path().unwrap(),
+            t._codex.path().join("hooks.json")
+        );
+    }
+
+    #[test]
+    fn default_command_is_absolute() {
+        let c = default_command();
+        assert!(c.starts_with('/') || c.starts_with("'/"), "{c}");
+        assert!(c.ends_with(" hook-run"), "{c}");
+        assert!(default_codex_command().ends_with(" hook-run --source codex"));
+    }
+
+    #[test]
+    fn sh_quote_plain_space_and_quote() {
+        assert_eq!(sh_quote("/usr/local/bin/worklog"), "/usr/local/bin/worklog");
+        assert_eq!(sh_quote("/a b/worklog"), "'/a b/worklog'");
+        assert_eq!(sh_quote("/a'b/worklog"), "'/a'\\''b/worklog'");
+    }
+
+    #[test]
+    fn session_hint_derives_from_absolute_and_quoted_paths() {
+        assert_eq!(
+            session_hint_command("/usr/bin/worklog hook-run"),
+            "/usr/bin/worklog session-hint"
+        );
+        assert_eq!(
+            session_hint_command("'/a b/worklog' hook-run"),
+            "'/a b/worklog' session-hint"
+        );
     }
 }

@@ -400,7 +400,8 @@ fn dominant_title_for_blocks(conn: &Connection, block_ids: &[i64]) -> Result<Opt
                FROM events e
                JOIN block_events be ON be.event_id = e.id
               WHERE be.block_id IN ({placeholders})
-                AND e.source NOT LIKE 'claude%'"
+                AND e.source NOT LIKE 'claude%'
+                AND e.source != 'codex'"
         );
         let mut stmt = conn.prepare(&sql)?;
         let live_titles: Vec<String> = stmt
