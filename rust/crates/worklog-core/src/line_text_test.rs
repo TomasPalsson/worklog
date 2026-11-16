@@ -203,6 +203,12 @@ fn line_text_validate_rejects_tool_name() {
 }
 
 #[test]
+fn line_text_validate_accepts_agent_and_task_as_product_words() {
+    let text = "Setti upp Custom Agent í LibreChat fyrir viðskiptavininn. Bætti við Task yfirliti í leiðbeiningarnar.";
+    assert_eq!(validate(text), Ok(text.to_string()));
+}
+
+#[test]
 fn line_text_validate_rejects_english_only() {
     assert!(validate(ENGLISH_TEXT).is_err());
 }

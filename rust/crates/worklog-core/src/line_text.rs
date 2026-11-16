@@ -110,7 +110,7 @@ fn tool_name_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r"\b(Bash|Read|Edit|Write|Grep|Glob|MultiEdit|NotebookEdit|WebFetch|WebSearch|TodoWrite|Agent|Task)\b",
+            r"\b(Bash|Read|Edit|Write|Grep|Glob|MultiEdit|NotebookEdit|WebFetch|WebSearch|TodoWrite)\b",
         )
         .unwrap()
     })
