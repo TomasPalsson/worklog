@@ -263,13 +263,27 @@ describe("BlockContextMenu delete (FR-11)", () => {
     expect(toasts().some((t) => t.action?.label === "Undo")).toBe(false);
   });
 
-  it.each([
-    ["synced", { tempo_worklog_id: "TW-1" }],
-    ["exported", { exported_at: "2026-07-26T10:00:00Z" }],
-  ])("Delete is disabled with its reason on a %s block", (_n, o) => {
-    openMenu(makeBlock(o));
+  it("Delete is disabled with its reason on an exported block", () => {
+    openMenu(makeBlock({ exported_at: "2026-07-26T10:00:00Z" }));
     expect(item("Delete").disabled).toBe(true);
-    expect(item("Delete").title).toBe("Synced or exported — can't delete");
+    expect(item("Delete").title).toBe("Exported for billing — can't delete");
+  });
+
+  it("a synced block's first Delete click only asks to confirm (catches a one-click Tempo delete)", () => {
+    openMenu(makeBlock({ tempo_worklog_id: "TW-1" }));
+    deleteBlock.mockClear();
+    fireEvent.click(item("Delete"));
+    expect(deleteBlock).not.toHaveBeenCalled();
+    expect(item("Confirm: also delete from Tempo").disabled).toBe(false);
+  });
+
+  it("a synced block deletes on confirm and the toast offers no Undo (Tempo can't be undone)", async () => {
+    openMenu(makeBlock({ tempo_worklog_id: "TW-1" }));
+    fireEvent.click(item("Delete"));
+    fireEvent.click(item("Confirm: also delete from Tempo"));
+    await waitFor(() => expect(deleteBlock).toHaveBeenCalledWith(1, DAY));
+    await waitFor(() => expect(toasts().some((t) => t.text.includes("Tempo"))).toBe(true));
+    expect(toasts().some((t) => t.action?.label === "Undo")).toBe(false);
   });
 
   it("Delete is enabled on an unsynced, unexported block (catches always-disabled)", () => {

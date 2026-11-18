@@ -28,7 +28,8 @@ interface Props {
   onInternal: () => void;
 }
 
-const DELETE_BLOCKED = "Synced or exported — can't delete";
+const DELETE_BLOCKED = "Exported for billing — can't delete";
+const DELETE_CONFIRM_TEMPO = "Confirm: also delete from Tempo";
 const MERGE_LOCKED = "Synced or exported — can't merge";
 const MERGE_OVERLAP = "Overlaps in time — merging would double-count";
 // Mirror the daemon's REASON_* strings so the tooltip says what a refusal would.
@@ -139,32 +140,21 @@ function SplitBox({ block, day, close }: { block: Block; day: string; close: () 
   );
 }
 
-/** The right-click menu on a day-page block card: the card actions, Delete, Regenerate, Split and Merge. */
-export function BlockContextMenu({ block, day, dayBlocks, x, y, close, onDescribe, onTogglePersonal, onInternal }: Props) {
-  const menuRef = useRef<HTMLDivElement>(null);
+/** Delete and Merge for the menu; a synced block's Delete needs a second click (see below). */
+function useWriteActions(block: Block, day: string, close: () => void) {
   const [, start] = useTransition();
-  const [boxOpen, setBoxOpen] = useState(false);
-  const [splitOpen, setSplitOpen] = useState(false);
-  const [writing, setWriting] = useState(false);
-  const locked = !!block.tempo_worklog_id || !!block.exported_at;
-  const ignoreReason = block.tempo_worklog_id
-    ? "Already synced to Tempo — remove the worklog there first"
-    : "Already exported for billing";
   const timeRangeLabel = formatRange(block.started_at, block.ended_at);
-  const { onIgnore, onDuplicate } = useIgnoreActions(block, day, dayBlocks, close);
-
-  // While the AI writes, an outside click must not lose the request; the box handles Esc itself.
-  useMenuDismiss(!writing, menuRef, close);
-  const pos = useMenuClamp(menuRef, x, y, `${boxOpen}-${splitOpen}`);
-  useEffect(() => {
-    menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)')?.focus();
-  }, []);
-
+  // A synced block's delete also removes its Tempo worklog (daemon `delete_block`), so it
+  // takes a second click and offers no Undo: undo would restore the block with a dead Tempo id.
+  const synced = !!block.tempo_worklog_id;
+  const [deleteArmed, setDeleteArmed] = useState(false);
   const onDelete = () => {
+    if (synced && !deleteArmed) return setDeleteArmed(true);
     close();
     start(async () => {
       const r = await deleteBlock(block.id, day);
       if (!r.ok) toast.error(`Delete failed — ${r.error}`);
+      else if (synced) toast.ok(`Deleted ${timeRangeLabel} here and in Tempo`);
       else toast.undoable(`Deleted ${timeRangeLabel}`, () => undoLastChange(day));
     });
   };
@@ -177,9 +167,41 @@ export function BlockContextMenu({ block, day, dayBlocks, x, y, close, onDescrib
       else toast.ok(`Merged ${formatRange(other.started_at, other.ended_at)} into ${timeRangeLabel}`);
     });
   };
+  return { deleteArmed, onDelete, onMerge };
+}
+
+type MenuItem = [label: string, run: () => void, disabledReason?: string];
+
+function MenuItems({ items }: { items: MenuItem[] }) {
+  return items.map(([label, run, disabledReason]) => (
+    <button key={label} type="button" role="menuitem" disabled={!!disabledReason} title={disabledReason} onClick={run}>
+      {label}
+    </button>
+  ));
+}
+
+/** The right-click menu on a day-page block card: the card actions, Delete, Regenerate, Split and Merge. */
+export function BlockContextMenu({ block, day, dayBlocks, x, y, close, onDescribe, onTogglePersonal, onInternal }: Props) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [boxOpen, setBoxOpen] = useState(false);
+  const [splitOpen, setSplitOpen] = useState(false);
+  const [writing, setWriting] = useState(false);
+  const locked = !!block.tempo_worklog_id || !!block.exported_at;
+  const ignoreReason = block.tempo_worklog_id
+    ? "Already synced to Tempo — remove the worklog there first"
+    : "Already exported for billing";
+  const { onIgnore, onDuplicate } = useIgnoreActions(block, day, dayBlocks, close);
+  const { deleteArmed, onDelete, onMerge } = useWriteActions(block, day, close);
+
+  // While the AI writes, an outside click must not lose the request; the box handles Esc itself.
+  useMenuDismiss(!writing, menuRef, close);
+  const pos = useMenuClamp(menuRef, x, y, `${boxOpen}-${splitOpen}`);
+  useEffect(() => {
+    menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)')?.focus();
+  }, []);
   const { prev, next } = neighbours(block, dayBlocks);
 
-  const items: [label: string, run: () => void, disabledReason?: string][] = [
+  const items: MenuItem[] = [
     ["Describe with Claude", () => (close(), onDescribe())],
     [block.is_personal ? "Mark as work" : "Mark personal", () => (close(), onTogglePersonal())],
     ["Regenerate with prompt…", () => setBoxOpen(true), redescribeBlockedReason(block)],
@@ -189,17 +211,11 @@ export function BlockContextMenu({ block, day, dayBlocks, x, y, close, onDescrib
     ["Noise", () => onIgnore("noise"), locked ? ignoreReason : undefined],
     ["Duplicate", onDuplicate, locked ? ignoreReason : undefined],
     ["Internal", () => (close(), onInternal()), locked ? ignoreReason : undefined],
-    ["Delete", onDelete, locked ? DELETE_BLOCKED : undefined],
+    [deleteArmed ? DELETE_CONFIRM_TEMPO : "Delete", onDelete, block.exported_at ? DELETE_BLOCKED : undefined],
   ];
 
   return (
-    <div
-      ref={menuRef}
-      role="menu"
-      className="block-context-menu"
-      style={pos}
-      onKeyDown={menuKeys}
-    >
+    <div ref={menuRef} role="menu" className="block-context-menu" style={pos} onKeyDown={menuKeys}>
       {splitOpen ? (
         <SplitBox block={block} day={day} close={close} />
       ) : boxOpen ? (
@@ -211,18 +227,7 @@ export function BlockContextMenu({ block, day, dayBlocks, x, y, close, onDescrib
           failurePrefix="Rewrite failed"
         />
       ) : (
-        items.map(([label, run, disabledReason]) => (
-          <button
-            key={label}
-            type="button"
-            role="menuitem"
-            disabled={!!disabledReason}
-            title={disabledReason}
-            onClick={run}
-          >
-            {label}
-          </button>
-        ))
+        <MenuItems items={items} />
       )}
     </div>
   );
